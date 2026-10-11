@@ -1828,8 +1828,7 @@ async fn cmd_runs_exec(
                     err.suggestion("use --source-run-id to load a moment from a different run")
                 }
                 (Some(400), Some(flag)) => err.suggestion(format!(
-                    "check that {flag} names the run the moment comes from, and raise \
-                     --timeout: the rewarm counts against it"
+                    "check that {flag} names the run the moment comes from"
                 )),
                 _ => err,
             });
@@ -1900,11 +1899,7 @@ async fn cmd_runs_exec(
                 None => user_error("command timed out after the server's default timeout")
                     .suggestion("set a longer timeout with --timeout"),
             };
-            Err(match rewarm_flag {
-                Some(_) => err
-                    .note("the rewarm counts against --timeout; raise it to give the rewarm time"),
-                None => err,
-            })
+            Err(err)
         }
         // Exit 0 must mean "the script ran and exited 0", so a stream that
         // ends without a terminal result — truncation — is a failure.

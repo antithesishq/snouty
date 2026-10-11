@@ -89,6 +89,17 @@ stdout 'seconds or h/m/s units \(e\.g\. 90s, 5m\)'
 stdout '\[default: the server.s, 10m as of release 64\.0\]'
 stdout '--timeout 5m'
 
+# The help names the flag that loads a cold moment, in the same words as the
+# cold-moment suggestion.
+snouty runs exec --help
+stdout 'Use --source-run-id to load a moment from a\s+different run\.'
+! stdout 'name the run it comes from'
+
+# Rewarming a cold moment can take minutes, and --timeout does not apply to
+# it.
+snouty runs exec --help
+stdout 'The `--timeout` flag does not apply to the time it\s+takes to rewarm a moment\.'
+
 # The command authenticates with the Antithesis API. An API key is required,
 # like every run-scoped endpoint.
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'uname -a'
@@ -219,7 +230,7 @@ stdout '"status":"exited"'
 # moment comes from (source_run_id and source_session_id). The server rewarms
 # the moment by replaying that run's inputs. Verified against release 64.0
 # (orbitinghail): without either, a moment off the session's own timeline
-# answers 400 "Moment not warm", and the rewarm counts against --timeout.
+# answers 400 "Moment not warm". --timeout does not count the rewarm.
 # Without the flags, neither field is sent.
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request
 stdout 'source_run_id=absent source_session_id=absent'
@@ -307,15 +318,18 @@ stdout '(?s)^\{"status":"rewarming","percent_complete":0\}\n.*\{"status":"rewarm
 ! stderr 'rewarming'
 
 # With a source, a 400 is a rewarm that did not finish (or a source that is
-# not the moment's run). snouty names the flag and --timeout.
+# not the moment's run). snouty names the flag. --timeout does not count the
+# rewarm, so snouty does not suggest a longer --timeout.
 ! snouty runs exec run-2 1002528785118888238 278.1311443040613 slow-rewarm --source-run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
 stderr 'rewarm did not reach the target moment'
-stderr 'check that --source-run-id names the run the moment comes from, and raise --timeout'
+stderr 'check that --source-run-id names the run the moment comes from$'
+! stderr 'raise --timeout'
 
-# A timeout with a source says the rewarm counts against --timeout.
+# A timeout with a source says nothing about the rewarm: --timeout does not
+# apply to it.
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'sleep 60' --source-session-id ba4ebf3181dd342334b86c58941813c6-64-0
 stderr 'command timed out'
-stderr 'the rewarm counts against --timeout'
+! stderr 'rewarm'
 
 # The two flags are mutually exclusive, and an empty ID is rejected before any
 # API call.

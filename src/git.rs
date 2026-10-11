@@ -1,70 +1,50 @@
 //! Reads the checked-out commit and the `origin` remote of a local git checkout.
 
 use std::path::Path;
-use std::process::Command;
-use std::str::FromStr;
-use std::time::Duration;
 
 use color_eyre::eyre::{Report, Result, bail};
+use gix::refs::Category;
 use log::debug;
 
-use crate::process::output_with_timeout;
-
-/// Each query reads only local files. A stalled git (for example on a hung
-/// network mount) must not hold up the launch for long.
-const GIT_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// The commit that a work tree has checked out.
+/// The state of the git checkout that holds a directory.
 #[derive(Debug)]
-pub struct Head {
+pub struct Checkout {
     pub commit: String,
-    /// `None` when HEAD is detached.
+    /// `None` when HEAD is not on a local branch, for example when it is detached.
     pub branch: Option<String>,
+    /// `None` when there is no `origin` remote.
+    pub origin: Option<gix::Url>,
 }
 
-/// Returns the trimmed stdout of git, or `None` when git fails. The failure
-/// reason goes to the debug log, because no caller can act on it.
-fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    let mut cmd = Command::new("git");
-    // A git hook exports these, and they take precedence over `-C`.
-    cmd.env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .arg("-C")
-        .arg(dir)
-        .args(args);
-    let output = output_with_timeout(cmd, GIT_TIMEOUT)
-        .inspect_err(|e| debug!("git {args:?} in {}: {e:#}", dir.display()))
-        .ok()?;
-    if !output.status.success() {
-        debug!(
-            "git {args:?} in {} failed: {}",
-            dir.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-        return None;
-    }
-    String::from_utf8(output.stdout)
+/// Reads the git checkout that holds `dir`. `None` outside a checkout, or on a
+/// branch that has no commit yet. The reason goes to the debug log, because no
+/// caller can act on it.
+pub fn checkout(dir: &Path) -> Option<Checkout> {
+    let read = || -> Result<Checkout> {
+        let repo = gix::discover(dir)?;
+        let commit = repo.head_id()?.to_string();
+        let branch = repo
+            .head_name()?
+            .and_then(|name| match name.category_and_short_name()? {
+                (Category::LocalBranch, short) => Some(short.to_string()),
+                _ => None,
+            });
+        let origin = repo
+            .find_remote("origin")
+            .ok()
+            .and_then(|remote| remote.url(gix::remote::Direction::Fetch).cloned());
+        Ok(Checkout {
+            commit,
+            branch,
+            origin,
+        })
+    };
+    read()
+        .inspect_err(|e| debug!("no git checkout at {}: {e:#}", dir.display()))
         .ok()
-        .map(|s| s.trim().to_owned())
 }
 
-/// The commit checked out in the work tree that holds `dir`. `None` outside a
-/// work tree, or on a branch that has no commit yet.
-pub fn head(dir: &Path) -> Option<Head> {
-    let out = git(dir, &["rev-parse", "HEAD", "--symbolic-full-name", "HEAD"])?;
-    let (commit, full_name) = out.split_once('\n')?;
-    Some(Head {
-        commit: commit.to_owned(),
-        branch: full_name.strip_prefix("refs/heads/").map(str::to_owned),
-    })
-}
-
-/// The URL of the `origin` remote, or `None` when there is none.
-pub fn origin_url(dir: &Path) -> Option<String> {
-    git(dir, &["remote", "get-url", "origin"])
-}
-
-/// A repository on github.com, parsed from a git remote URL.
+/// A repository on github.com.
 #[derive(Debug, PartialEq, Eq)]
 pub struct GitHubRepo {
     pub owner: String,
@@ -80,27 +60,18 @@ impl GitHubRepo {
     }
 }
 
-/// Parses a GitHub remote URL in either form git accepts:
-/// `scheme://[user@]host[:port]/owner/name` or scp-like `[user@]host:owner/name`.
-/// Fails for any other host.
-impl FromStr for GitHubRepo {
-    type Err = Report;
+/// Fails for a remote on any host other than GitHub.
+impl TryFrom<&gix::Url> for GitHubRepo {
+    type Error = Report;
 
-    fn from_str(url: &str) -> Result<Self> {
-        let (authority, path) = match url.split_once("://") {
-            Some((_, rest)) => rest.split_once('/').unwrap_or((rest, "")),
-            None => url.split_once(':').unwrap_or((url, "")),
-        };
-        let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-        let host = host.split_once(':').map_or(host, |(h, _)| h);
+    fn try_from(url: &gix::Url) -> Result<Self> {
         // GitHub serves SSH on port 443 at ssh.github.com.
-        if !["github.com", "ssh.github.com"]
-            .iter()
-            .any(|h| host.eq_ignore_ascii_case(h))
-        {
+        if !url.host().is_some_and(|host| {
+            host.eq_ignore_ascii_case("github.com") || host.eq_ignore_ascii_case("ssh.github.com")
+        }) {
             bail!("{url} is not a github.com remote");
         }
-        let path = path.trim_matches('/');
+        let path = std::str::from_utf8(&url.path)?.trim_matches('/');
         let path = path.strip_suffix(".git").unwrap_or(path);
         match path.split_once('/') {
             Some((owner, name)) if !owner.is_empty() && !name.is_empty() && !name.contains('/') => {
@@ -119,6 +90,10 @@ mod tests {
     use super::*;
     use hegel::Generator;
     use hegel::generators;
+
+    fn github_repo(url: &str) -> Result<GitHubRepo> {
+        GitHubRepo::try_from(&gix::url::parse(url)?)
+    }
 
     #[hegel::test]
     fn github_remote_urls_parse_in_every_form(tc: hegel::TestCase) {
@@ -139,10 +114,7 @@ mod tests {
             format!("git@github.com:{owner}/{name}{suffix}"),
             format!("github.com:{owner}/{name}{suffix}"),
         ]));
-        assert_eq!(
-            url.parse::<GitHubRepo>().ok(),
-            Some(GitHubRepo { owner, name })
-        );
+        assert_eq!(github_repo(&url).ok(), Some(GitHubRepo { owner, name }));
     }
 
     #[test]
@@ -156,7 +128,7 @@ mod tests {
             "https://github.com/acme/widget/tree/main",
             "git@github.com:acme",
         ] {
-            assert!(url.parse::<GitHubRepo>().is_err(), "{url} parsed");
+            assert!(github_repo(url).is_err(), "{url} parsed");
         }
     }
 }

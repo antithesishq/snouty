@@ -24,7 +24,7 @@ use snouty::params::{
     ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID,
     ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION, ANT_EVENT_DESCRIPTION,
     ANT_FILTER_LOGS_MATCHING, ANT_FILTER_SOURCE_MATCHING, ANT_IS_EPHEMERAL, ANT_PERFORMANCE_TIER,
-    ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, Params, VCS_PREFIX, VCS_REPO_BRANCH,
+    ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, Params, VCS_PARAMS, VCS_REPO_BRANCH,
     VCS_REPO_NAME, VCS_REPO_OWNER, VCS_REPO_TYPE, VCS_VERSION_ID, VCS_VERSION_LINK,
 };
 use snouty::settings::Settings;
@@ -262,9 +262,9 @@ async fn cmd_launch(
         return Err(user_error("invalid arguments: no parameters provided"));
     }
 
-    // Any user `vcs.*` param turns detection off, so that a detected commit
-    // link cannot point at a different commit.
-    if !args.no_vcs && !params.as_map().keys().any(|k| k.starts_with(VCS_PREFIX)) {
+    // A user value for any detected key turns detection off, so that a
+    // detected commit link cannot point at a different commit.
+    if !args.no_vcs && !VCS_PARAMS.iter().any(|&(key, _)| params.contains_key(key)) {
         params.merge(detect_vcs_params(
             args.config.as_deref().unwrap_or(Path::new(".")),
         ));
@@ -339,19 +339,23 @@ async fn cmd_launch(
 /// Antithesis GitHub trigger action sends them. Empty outside a git checkout.
 fn detect_vcs_params(dir: &Path) -> Params {
     let mut vcs = Params::new();
-    let Some(head) = git::head(dir) else {
+    let Some(checkout) = git::checkout(dir) else {
         return vcs;
     };
-    if let Some(repo) = git::origin_url(dir).and_then(|url| url.parse::<GitHubRepo>().ok()) {
+    if let Some(repo) = checkout
+        .origin
+        .as_ref()
+        .and_then(|url| GitHubRepo::try_from(url).ok())
+    {
         vcs.insert(VCS_REPO_TYPE, "github");
-        vcs.insert(VCS_VERSION_LINK, repo.commit_url(&head.commit));
+        vcs.insert(VCS_VERSION_LINK, repo.commit_url(&checkout.commit));
         vcs.insert(VCS_REPO_OWNER, repo.owner);
         vcs.insert(VCS_REPO_NAME, repo.name);
     }
-    if let Some(branch) = head.branch {
+    if let Some(branch) = checkout.branch {
         vcs.insert(VCS_REPO_BRANCH, branch);
     }
-    vcs.insert(VCS_VERSION_ID, head.commit);
+    vcs.insert(VCS_VERSION_ID, checkout.commit);
     vcs
 }
 

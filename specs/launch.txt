@@ -311,13 +311,21 @@ stderr '"vcs.repo_branch": "feature/vcs"'
 stderr '"vcs.version_id": "[0-9a-f]{40}"'
 stderr '"vcs.version_link": "https://github.com/acme/widget/commit/[0-9a-f]{40}"'
 
-# A --param for any `vcs.*` key turns the detection off, so that a detected
+# A --param for a detected key turns the detection off, so that a detected
 #    commit link cannot sit next to a different commit.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch --launcher basic_test --config-image config:latest --duration 30 --param vcs.version_id=abc123
 stderr '"vcs.version_id": "abc123"'
 ! stderr 'vcs.version_link'
 ! stderr 'vcs.repo_branch'
+
+# A --param for a `vcs.*` key that snouty does not detect is sent with the
+#    detected values.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --param vcs.system_name=widget
+stderr '"vcs.system_name": "widget"'
+stderr '"vcs.repo_owner": "acme"'
+stderr '"vcs.version_id": "[0-9a-f]{40}"'
 
 # Detected params do not count as parameters the user provided.
 mock-server 200 '{}'

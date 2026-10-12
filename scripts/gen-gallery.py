@@ -12,7 +12,8 @@ than being silently emitted.
 Human output, including help and isolated configuration stories, runs in a
 120-column, 40-row terminal. Markdown contains the terminal's text and full
 scrollback; adjacent asciinema recordings preserve colors and redraws. JSON
-commands use pipes so their structured output stays separate from stderr.
+commands use pipes so their structured output stays separate from stderr. A
+story that models a log file uses pipes too, with stderr in the stdout pipe.
 
 There are three kinds of story:
 
@@ -61,11 +62,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -74,6 +80,8 @@ import pyte
 
 # A syntactically-valid but nonexistent run id, for clean-error stories.
 UNKNOWN_RUN = "ffffffffffffffffffffffffffffffff-54-5"
+# An input hash that no run reaches, for the `snouty debug` error stories.
+UNKNOWN_HASH = "1234567890123456789"
 
 # Stories are captured concurrently (each is one or two snouty subprocesses that
 # can each block on snouty's 60s timeout); checks are then evaluated serially.
@@ -117,9 +125,6 @@ SESSION_IN_PROGRESS = "in_progress"
 SESSION_ENDED = frozenset({"completed", "cancelled", "incomplete"})
 EXEC_READY_DEADLINE = 600
 EXEC_READY_POLL = 15
-
-# Loading a cold moment replays the source run's inputs; one load took 27s.
-EXEC_REWARM_TIMEOUT = 300
 
 
 class GalleryError(Exception):
@@ -199,15 +204,19 @@ class Snouty:
         args: list[str],
         env: dict[str, str | None] | None = None,
         stdin: str | None = None,
+        pipe: bool = False,
     ) -> Result:
-        if "--json" not in args:
+        """Run snouty on a terminal, or on pipes for `--json` or with `pipe`.
+        A `pipe` run without `--json` sends stderr into the stdout pipe, so the
+        lines keep the order that a log file would show."""
+        if "--json" not in args and not pipe:
             screen = pyte.HistoryScreen(TTY_COLS, TTY_ROWS, history=sys.maxsize)
             # A shell pipes `stdin` to snouty, as a heredoc does, so stdin is a
             # pipe while stdout and stderr stay on the terminal.
             program, argv = self.binary, args
             if stdin is not None:
-                pipe = 'stdin=$1; shift; printf %s "$stdin" | "$@"'
-                program, argv = Path("/bin/sh"), ["-c", pipe, "sh", stdin, str(self.binary), *args]
+                feed = 'stdin=$1; shift; printf %s "$stdin" | "$@"'
+                program, argv = Path("/bin/sh"), ["-c", feed, "sh", stdin, str(self.binary), *args]
             session = TtySession(
                 program,
                 argv,
@@ -226,11 +235,12 @@ class Snouty:
         proc = subprocess.run(
             [str(self.binary), *args],
             input=stdin,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE if "--json" in args else subprocess.STDOUT,
             text=True,
             env=self._env if env is None else self.env_with(env),
         )
-        return Result(args, proc.stdout, proc.stderr, proc.returncode, stdin=stdin)
+        return Result(args, proc.stdout, proc.stderr or "", proc.returncode, stdin=stdin)
 
     def json_lines(self, args: list[str], env: dict[str, str | None] | None = None) -> list[dict]:
         """Run `snouty --json <args>` and parse NDJSON rows.
@@ -254,6 +264,95 @@ class Snouty:
                 f"{res.stderr.strip() or '<no stderr>'}"
             )
         return json.loads(res.stdout)
+
+
+# The only paths that the launch guard forwards: the runs endpoints, which
+# the checks before a launch read, and the version probe. Every launch
+# endpoint is under /api/v1/launch/, so the guard refuses it.
+_GUARD_RUNS_PREFIX = "/api/v0/runs/"
+_GUARD_VERSION_PATH = "/api/version"
+
+# Headers that apply to one connection, which the guard does not forward.
+_HOP_HEADERS = frozenset(
+    {"connection", "content-length", "host", "keep-alive", "transfer-encoding"}
+)
+
+# A base URL where nothing listens, for a guarded story that is only listed.
+_NO_SERVER_URL = "http://127.0.0.1:9"
+
+
+class LaunchGuard:
+    """A local HTTP proxy in front of the tenant that refuses every launch.
+
+    The `snouty debug` error stories must fail before the launch, but if that
+    check regresses, the launch starts a billable session. These stories set
+    ANTITHESIS_BASE_URL to the guard. The guard forwards only the runs
+    endpoints and the version probe to the tenant. It answers every other request, a launch
+    included, with 403 and records it in `refused`, so a regression fails the
+    story and starts no session."""
+
+    def __init__(self, upstream: str, https_proxy: str | None) -> None:
+        self.upstream = upstream.rstrip("/")
+        self.refused: list[str] = []
+        proxies = {"https": https_proxy, "http": https_proxy} if https_proxy else {}
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
+        guard = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def forward(self) -> None:
+                body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                path = urllib.parse.urlsplit(self.path).path
+                runs = path.startswith(_GUARD_RUNS_PREFIX) and ".." not in path
+                if not (runs or path == _GUARD_VERSION_PATH):
+                    guard.refused.append(f"{self.command} {self.path}")
+                    self.reply(403, {}, b'{"error": "the gallery launch guard refuses this path"}')
+                    return
+                request = urllib.request.Request(
+                    guard.upstream + self.path,
+                    data=body or None,
+                    headers={k: v for k, v in self.headers.items() if k.lower() not in _HOP_HEADERS},
+                    method=self.command,
+                )
+                try:
+                    with opener.open(request, timeout=60) as resp:
+                        self.reply(resp.status, dict(resp.headers.items()), resp.read())
+                except urllib.error.HTTPError as e:
+                    self.reply(e.code, dict(e.headers.items()), e.read())
+
+            def reply(self, status: int, headers: dict[str, str], body: bytes) -> None:
+                self.send_response(status)
+                for k, v in headers.items():
+                    if k.lower() not in _HOP_HEADERS:
+                        self.send_header(k, v)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            do_GET = do_POST = forward
+
+            def log_message(self, format: str, *args) -> None:
+                pass
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self._server.server_address[1]}"
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def for_tenant(cls, sn: Snouty) -> LaunchGuard:
+        """A guard in front of the tenant that snouty's settings name. Doctor
+        exits non-zero when some check fails, but it still reports the settings."""
+        doctor = sn.run(["--json", "doctor", "--offline"])
+        settings = json.loads(doctor.stdout).get("settings") or {}
+        upstream = os.environ.get("ANTITHESIS_BASE_URL")
+        if not upstream:
+            if not settings.get("tenant"):
+                raise GalleryError("no tenant or ANTITHESIS_BASE_URL is set")
+            upstream = f"https://{settings['tenant']}.antithesis.com"
+        return cls(upstream, settings.get("https_proxy"))
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
 
 
 # ---------------------------------------------------------------------------
@@ -981,9 +1080,12 @@ class ExecSession:
     # EXEC_MARKER_TEXT to EXEC_MARKER_PATH.
     follow_hash: str = ""
     follow_vtime: str = "0"
-    # A property moment of the base run, after the session's moment.
+    # Two property moments of the base run, after the session's moment: one
+    # for the terminal story and one for the pipe story, so each loads a moment.
     rewarm_hash: str = ""
     rewarm_vtime: str = "0"
+    rewarm_pipe_hash: str = ""
+    rewarm_pipe_vtime: str = "0"
 
 
 EXEC_MARKER_PATH = "/tmp/snouty-gallery-marker"
@@ -1112,11 +1214,13 @@ def _container(sn: Snouty, run: str, h: str, v: str) -> str:
     return names.most_common(1)[0][0]
 
 
-def _rewarm_moment(sn: Snouty, run: str, after: float) -> dict:
-    """A property moment of `run` after vtime `after`: a counter-example first,
-    then an example. The choice is random, because a reused session can already
-    hold a moment that an earlier gallery run loaded."""
+def _rewarm_moments(sn: Snouty, run: str, after: float) -> tuple[dict, dict]:
+    """Two different property moments of `run` after vtime `after`:
+    counter-examples first, then examples. The choice is random, because a
+    reused session can already hold a moment that an earlier gallery run
+    loaded."""
     props = sn.json_lines(["runs", "properties", run])
+    picked: dict[tuple[str, str], dict] = {}
     for key in ("counterexamples", "examples"):
         moments = [
             v["moment"]
@@ -1124,9 +1228,13 @@ def _rewarm_moment(sn: Snouty, run: str, after: float) -> dict:
             for v in _moments(p.get(key) or [])
             if float(v["moment"]["vtime"]) > after
         ]
-        if moments:
-            return random.choice(moments)
-    raise GalleryError(f"no property moment of {run} after vtime {after} to rewarm")
+        random.shuffle(moments)
+        for m in moments:
+            picked.setdefault(_moment_strs(m), m)
+    if len(picked) < 2:
+        raise GalleryError(f"{run} has fewer than two property moments after vtime {after} to rewarm")
+    first, second, *_ = picked.values()
+    return first, second
 
 
 def discover_exec_session(sn: Snouty, d: Discovery, reuse: bool) -> ExecSession:
@@ -1152,7 +1260,9 @@ def _ready_exec_session(sn: Snouty, row: dict, launch: Result | None) -> ExecSes
     # The readiness probe is the exec that the follow-up story chains from.
     first = _wait_ready(sn, x, f'echo "{EXEC_MARKER_TEXT}" > {EXEC_MARKER_PATH}')
     x.follow_hash, x.follow_vtime = _moment_strs(_ndjson(first.stdout)[-1]["end_moment"])
-    x.rewarm_hash, x.rewarm_vtime = _moment_strs(_rewarm_moment(sn, base, float(v)))
+    tty, pipe = _rewarm_moments(sn, base, float(v))
+    x.rewarm_hash, x.rewarm_vtime = _moment_strs(tty)
+    x.rewarm_pipe_hash, x.rewarm_pipe_vtime = _moment_strs(pipe)
     x.container = _container(sn, base, h, v)
     print(f"  exec session  : {x.session} (base {base}; container {x.container})", file=sys.stderr)
     return x
@@ -1203,6 +1313,9 @@ class Story:
     # story that models an unconfigured machine (e.g. the no-auth doctor stories).
     isolate_config: bool = False
     stdin: str | None = None
+    # Capture on pipes rather than a terminal, with stderr in the stdout pipe,
+    # as a CI log or `2>&1 | tee` shows the output.
+    pipe: bool = False
     # A result that discovery captured, because later stories depend on its side
     # effects. The story shows it and runs nothing.
     precaptured: Result | None = None
@@ -1717,6 +1830,36 @@ def exits_1_with(*needles: str):
     return chk
 
 
+def fails_before_launch(guard: LaunchGuard | None, *needles: str):
+    """`fails_with`, and snouty sent no launch request to `guard`."""
+    failed = fails_with(*needles)
+
+    def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+        ok, detail = failed(sr, reg)
+        refused = guard.refused if guard is not None else []
+        return (ok and not refused, f"{detail}, launches refused={refused!r}")
+
+    return chk
+
+
+REWARM_LINE = re.compile(r"^rewarming moment: (\d+)%$", re.MULTILINE)
+
+
+def rewarm_lines_once(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+    """A piped `runs exec` that loads a moment: at least one rewarm line, no
+    percentage twice, and the end-moment trailer."""
+    text = sr.result.combined
+    percents = REWARM_LINE.findall(text)
+    repeated = sorted({p for p in percents if percents.count(p) > 1})
+    trailer = contains_text(text, "end moment:")
+    ok = sr.result.ok and bool(percents) and not repeated and trailer
+    return (
+        ok,
+        f"exit={sr.result.returncode}, rewarm lines={percents!r}, repeated={repeated!r}, "
+        f"trailer={trailer}",
+    )
+
+
 def logs_non_empty(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     n = len(sr.rows or [])
     return (n > 0, f"{n} log lines")
@@ -1852,8 +1995,13 @@ INVALID_QUERY = (
 )
 
 
-def build_stories(d: Discovery) -> list[Story]:
+def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]:
+    """The goal stories that need discovery. The `debug-bad-*` stories send
+    their requests through `guard`; without one, a listing, they point at a
+    base URL where nothing listens."""
     kw, kw2 = d.event_keyword, d.event_kw2
+    guard_url = guard.url if guard is not None else _NO_SERVER_URL
+    guarded: dict[str, str | None] = {"ANTITHESIS_BASE_URL": guard_url}
     vmin = _begin_vtime(d.logs_vtime)
     stories = [
         # -- listing --------------------------------------------------------
@@ -2288,6 +2436,30 @@ def build_stories(d: Discovery) -> list[Story]:
             expect_message("error", "not found", "no ", "invalid"),
             json_capable=False,
         ),
+        # -- debug errors (fail before the launch) ---------------------------
+        Story(
+            "debug-bad-run",
+            "Debug a run that does not exist",
+            "I mistype the run ID when I open a debugging session.",
+            "snouty fails with `run not found: <id>` and starts no session, so nothing "
+            "is billed. Exit 1.",
+            ["debug", "--run-id", UNKNOWN_RUN, "--input-hash", UNKNOWN_HASH, "--vtime", "100"],
+            fails_before_launch(guard, f"run not found: {UNKNOWN_RUN}"),
+            json_capable=False,
+            env=guarded,
+        ),
+        Story(
+            "debug-bad-hash",
+            "Debug at an input hash that the run does not have",
+            f"I paste an input hash from a different run when I debug run {d.success}.",
+            "snouty fails, says that no moment of the run matches the input hash, and "
+            "tells me how to find a moment with `snouty runs events`. It starts no "
+            "session. Exit 1.",
+            ["debug", "--run-id", d.success, "--input-hash", UNKNOWN_HASH, "--vtime", "100"],
+            fails_before_launch(guard, f"no moment matches input hash {UNKNOWN_HASH}"),
+            json_capable=False,
+            env=guarded,
+        ),
         # -- doctor (one story per distinct auth output) --------------------
         Story(
             "doctor-api-key",
@@ -2558,8 +2730,7 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
             "I want to see the whole timeline while my script executes: the workload's logs, "
             "the assertions, and Antithesis events, next to my script's output.",
             "Events print as `runs logs` prints them, the script's output among them, then "
-            "the end-moment trailer. The injected command is one `command injected (input N)` "
-            "line, not a raw JSON blob. Exit 0.",
+            "the end-moment trailer. Exit 0.",
             [*exec_at, "--events", 'echo "first line"; echo "second line"'],
             succeeds_with("first line", "second line", "end moment:"),
         ),
@@ -2640,11 +2811,31 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
                 x.rewarm_vtime,
                 "--source-run-id",
                 x.base_run,
-                "--timeout",
-                str(EXEC_REWARM_TIMEOUT),
                 "uname -n",
             ],
             succeeds_with("end moment:"),
+        ),
+        exec_story(
+            "runs-exec--source-run-id-piped",
+            "Load a moment from a script, with the output in a log",
+            f"My CI job runs `snouty runs exec` at a later moment of run {x.base_run}, "
+            "and its stdout and stderr go to a log file, not a terminal.",
+            "Off a terminal, snouty shows the rewarm progress as `rewarming moment: N%` "
+            "lines, one line for each new percentage, with no repeated line and no "
+            "progress-bar redraws. Then the script's output and the end-moment trailer "
+            "appear. Exit 0.",
+            [
+                "runs",
+                "exec",
+                x.session,
+                x.rewarm_pipe_hash,
+                x.rewarm_pipe_vtime,
+                "--source-run-id",
+                x.base_run,
+                "uname -n",
+            ],
+            rewarm_lines_once,
+            pipe=True,
         ),
     ]
     return stories
@@ -3091,6 +3282,18 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
             fails_with("declared as external"),
         ),
         v(
+            "validate-build-only",
+            "Validate a service that has only a build: section",
+            "My compose service has a `build:` section but no `image:` name.",
+            "The error says every service needs an explicit `image:` reference and names "
+            "the service that has none, before any container starts.",
+            [str(s / "build-only")],
+            fails_with(
+                "every compose service needs an explicit `image:` reference",
+                "service 'app' has no `image:` field",
+            ),
+        ),
+        v(
             "validate-missing-image",
             "Validate when a service image is missing locally",
             "A service references an image I haven't built or pulled.",
@@ -3400,6 +3603,10 @@ def _captured_block(
 ) -> str:
     block = _shell_block(result.args, result.combined, result.returncode, cap, result.stdin)
     if result.cast is None:
+        if "--json" not in result.args:
+            return block + (
+                "\n\n_Capture: pipes, stderr into the stdout pipe; no terminal emulation._"
+            )
         return block + "\n\n_Capture: pipes (JSON); no terminal emulation._"
     cast_name = f"{name}.cast"
     (out_dir / cast_name).write_text(result.cast)
@@ -3578,7 +3785,11 @@ def run_story(sn: Snouty, story: Story) -> StoryRun:
     if story.isolate_config:
         return _run_isolated_story(sn, story)
     # Help-only stories pass no `args`; don't invoke a bare `snouty`.
-    result = sn.run(story.args, story.env, story.stdin) if story.args else Result([], "", "", 0)
+    result = (
+        sn.run(story.args, story.env, story.stdin, story.pipe)
+        if story.args
+        else Result([], "", "", 0)
+    )
     rows = None
     if story.json_capable and story.args:
         try:
@@ -3690,11 +3901,13 @@ def main() -> int:
 
     sn = Snouty(snouty_bin)
     failures: list[tuple[str, str]] = []
+    guard: LaunchGuard | None = None
     try:
         stories: list[Story] = []
         if need_api:
             disc = discover(sn)
-            stories += build_stories(disc)
+            guard = LaunchGuard.for_tenant(sn)
+            stories += build_stories(disc, guard)
             if need_exec:
                 # When `--only` selects `debug`, launch a new session so the
                 # story has a launch to show.
@@ -3755,6 +3968,8 @@ def main() -> int:
         print(f"\nerror: {e}", file=sys.stderr)
         return 1
     finally:
+        if guard is not None:
+            guard.close()
         sn.cleanup()
         shutil.rmtree(fixtures_dir, ignore_errors=True)
 

@@ -1,0 +1,7 @@
+# A service with `build:` and no `image:`. Antithesis runs compose under its
+# own project name, so the default build tag names no image there. snouty
+# rejects the service before it starts any container. There is no Dockerfile:
+# validate stops before a build, and the build script skips the sample.
+services:
+  app:
+    build: .

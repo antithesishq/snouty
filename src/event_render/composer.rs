@@ -444,6 +444,26 @@ mod tests {
         assert_eq!(out, format!("…/{}\x1b0:000", "0".repeat(34)));
     }
 
+    /// An escape sequence makes the width of a suffix not monotonic in its
+    /// length. Wherever ESC sits, also at each bisect midpoint, the cut keeps
+    /// a suffix that fits, and the suffix one char longer does not fit.
+    #[test]
+    fn truncate_path_keeps_a_maximal_suffix_wherever_an_escape_sits() {
+        let budget = VALUE_TRUNCATE_WIDTH - console::measure_text_width("…");
+        let plain = format!("/{}", "0".repeat(60));
+        for at in 1..=plain.len() {
+            let path = format!("{}\x1b{}", &plain[..at], &plain[at..]);
+            let out = truncate_path(&path, VALUE_TRUNCATE_WIDTH);
+            let kept = out.strip_prefix('…').expect("a cut path starts with `…`");
+            assert!(path.ends_with(kept), "ESC at {at}");
+            assert!(console::measure_text_width(kept) <= budget, "ESC at {at}");
+            let rest = &path[..path.len() - kept.len()];
+            let longer = rest.char_indices().last().map(|(index, _)| &path[index..]);
+            let longer = longer.expect("the whole path does not fit");
+            assert!(console::measure_text_width(longer) > budget, "ESC at {at}");
+        }
+    }
+
     #[test]
     fn kv_values_render_nested_json_rather_than_dropping_it() {
         // User-controlled values are not always scalars; a nested value shows

@@ -7,6 +7,8 @@
 //! server-side; the API is expected to grow more places that take an event
 //! set, so everything snouty knows about the DSL lives here.
 
+use crate::vtime::VTime;
+
 /// The DSL's verbs. A pipeline starts with one of these.
 pub const VERBS: &[&str] = &[
     "matches",
@@ -44,6 +46,24 @@ pub fn substring_filter(needles: &[String]) -> String {
         "filter(ev => {SKIP_BOOTSTRAP} && ({})(ev, {needles}))",
         NEEDLE_FILTER.trim()
     )
+}
+
+/// The event-set expression `(ev, moment)` that decides whether one event
+/// sits under `moment.input_hash`, at most `moment.tolerance` seconds from
+/// `moment.vtime`. The hash compares as a string: as a number it loses
+/// precision, and hashes that differ in their last digits compare equal.
+pub(crate) const MOMENT_FILTER: &str = "(ev, moment) => ev.moment.input_hash == moment.input_hash \
+     && Math.abs(ev.moment.vtime - moment.vtime) <= moment.tolerance";
+
+/// Build the event set that keeps the events under `input_hash` at most
+/// `tolerance` seconds from `vtime`.
+pub fn moment_filter(input_hash: &str, vtime: VTime, tolerance: f64) -> String {
+    let moment = serde_json::json!({
+        "input_hash": input_hash,
+        "vtime": vtime,
+        "tolerance": tolerance,
+    });
+    format!("filter(ev => ({MOMENT_FILTER})(ev, {moment}))")
 }
 
 #[cfg(test)]

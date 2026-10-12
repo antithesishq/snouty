@@ -713,6 +713,48 @@ pub async fn ensure_run_exists(api: &AntithesisApi, run_id: &str) -> Result<()> 
     }
 }
 
+/// How far, in seconds, a debugging vtime may sit from the nearest event
+/// under its input hash. A valid vtime can fall between that hash's events,
+/// or before its first or after its last, until the run moves to the next
+/// hash. On two runs (1941 hashes), a hash's events spanned at most 1.9 s,
+/// and the next hash came at most 3.1 s after a hash's last event.
+const DEBUG_MOMENT_TOLERANCE_SECONDS: f64 = 5.0;
+
+/// Fail unless an event of `run_id` sits under `input_hash` near `vtime`.
+/// The launch endpoint accepts a moment that the run never reached and
+/// starts a billable session, so check the moment first.
+pub async fn ensure_moment_exists(
+    api: &AntithesisApi,
+    run_id: &str,
+    input_hash: &str,
+    vtime: VTime,
+) -> Result<()> {
+    let query = event_set_dsl::moment_filter(input_hash, vtime, DEBUG_MOMENT_TOLERANCE_SECONDS);
+    let search = SearchMode::Query {
+        stream: false,
+        limit: Some(NonZeroU64::MIN),
+    };
+    let stream = match api.search_run_events_query(run_id, &query, search).await {
+        Ok(stream) => stream,
+        // The run exists, so a 404 is a tenant release that does not serve
+        // the search. There is no way to check.
+        Err(err) if api_error_status(&err) == Some(404) => {
+            debug!("cannot check the moment: the events search answered 404");
+            return Ok(());
+        }
+        Err(err) => return Err(err),
+    };
+    match event_lines(stream, ErrorRows::Abort).try_next().await? {
+        Some(_) => Ok(()),
+        None => Err(user_error(format!(
+            "no moment matches input hash {input_hash} near vtime {vtime} in run {run_id}"
+        ))
+        .suggestion(format!(
+            "search for a moment using `snouty runs events {run_id} <search query>`"
+        ))),
+    }
+}
+
 /// Translate an error from a run-scoped endpoint (show/build-logs/events/logs)
 /// into the shared friendly "run not found: X" message when the failure is a
 /// 404 for a bad run id. Any non-404 error passes through untouched (full

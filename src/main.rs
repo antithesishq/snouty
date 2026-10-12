@@ -442,16 +442,21 @@ async fn cmd_debug(
     params.ensure_single_debug_target()?;
 
     let api = AntithesisApi::new_for_launch(settings, verbose)?;
-    // The launch endpoint accepts an unknown run and starts a billable
-    // session, so check the run first. The runs endpoints refuse a password,
-    // so with one there is no way to check.
-    if let Some(run_id) = params
-        .as_map()
-        .get(ANT_DEBUGGING_RUN_ID)
-        .and_then(|v| v.as_str())
+    // The launch endpoint accepts an unknown run or moment and starts a
+    // billable session, so check them first. The runs endpoints refuse a
+    // password, so with one there is no way to check.
+    let param = |key| params.as_map().get(key).and_then(|v| v.as_str());
+    if let Some(run_id) = param(ANT_DEBUGGING_RUN_ID)
         && !api.uses_password()
     {
         snouty::runs::ensure_run_exists(&api, run_id).await?;
+        // Validation requires both, and normalization made the vtime a string.
+        if let (Some(input_hash), Some(vtime)) = (
+            param(ANT_DEBUGGING_INPUT_HASH),
+            param(ANT_DEBUGGING_VTIME).and_then(|v| v.parse().ok()),
+        ) {
+            snouty::runs::ensure_moment_exists(&api, run_id, input_hash, vtime).await?;
+        }
     }
 
     eprintln!(
@@ -470,11 +475,9 @@ async fn cmd_debug(
              snouty runs wait {run_id} --until running"
         );
         // The launch sent both as strings: `launch_mvd_request` refuses anything else.
-        let moment = |key| params.as_map().get(key).and_then(|v| v.as_str());
-        if let (Some(input_hash), Some(vtime)) = (
-            moment(ANT_DEBUGGING_INPUT_HASH),
-            moment(ANT_DEBUGGING_VTIME),
-        ) {
+        if let (Some(input_hash), Some(vtime)) =
+            (param(ANT_DEBUGGING_INPUT_HASH), param(ANT_DEBUGGING_VTIME))
+        {
             // A session that is still loading makes `runs exec` fail with a
             // suggestion to try again, so the hint does not repeat it.
             println!(

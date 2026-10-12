@@ -35,16 +35,11 @@ const CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 const ATTACH_READY: &str = "attach-ready";
 
 fn session_root() -> Result<PathBuf> {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join(format!("snouty-{}", nix::unistd::geteuid())));
-    let root = base.join("snouty").join("simulate");
-    for (directory, private) in [
-        (base.clone(), true),
-        (base.join("snouty"), false),
-        (root.clone(), true),
-    ] {
+    let base = crate::settings::cache_dir()
+        .ok_or_eyre("cannot determine simulation state directory; set XDG_CACHE_HOME or HOME")?;
+    let root = base.join("simulate");
+    std::fs::create_dir_all(base.parent().expect("cache directory has a parent"))?;
+    for directory in [base.clone(), root.clone()] {
         if !directory.exists() {
             let mut builder = std::fs::DirBuilder::new();
             builder.mode(0o700);
@@ -57,10 +52,10 @@ fn session_root() -> Result<PathBuf> {
         let metadata = std::fs::symlink_metadata(&directory)?;
         if !metadata.is_dir()
             || metadata.uid() != nix::unistd::geteuid().as_raw()
-            || metadata.permissions().mode() & if private { 0o077 } else { 0o022 } != 0
+            || metadata.permissions().mode() & 0o077 != 0
         {
             bail!(
-                "simulation runtime directory is not private: {}",
+                "simulation state directory is not private: {}",
                 directory.display()
             );
         }
@@ -329,6 +324,7 @@ pub(super) async fn run(
             .guest_iso(&guest_image, run_dir.path(), args.platform)
             .await?;
         eprintln!("Booting guest...");
+        let scratch_disk = create_scratch_disk(run_dir.path()).await?;
         vm = Some(
             Vm::boot(
                 &iso,
@@ -337,10 +333,12 @@ pub(super) async fn run(
                 BootOutput::Hidden,
                 args.memory,
                 args.platform,
+                Some(&scratch_disk),
             )
             .await?,
         );
         let guest = vm.as_mut().expect("guest booted");
+        guest.run_script(SCRATCH_SETUP).await?;
         guest.run_script(PREPARE).await?;
         if args.node_kills {
             guest
@@ -502,7 +500,7 @@ pub(super) async fn run(
         summary.infrastructure_failures += 1;
         eprintln!("Instrumentation read failed: {error:#}");
     }
-    for name in ["ssh_config", "images.tar"] {
+    for name in ["ssh_config", "images.tar", "scratch.qcow2"] {
         let path = run_dir.path().join(name);
         if let Err(error) = std::fs::remove_file(&path)
             && error.kind() != std::io::ErrorKind::NotFound
@@ -532,6 +530,25 @@ pub(super) async fn run(
         Err(_) => output.closed = true,
     }
     Ok(summary.exit_code(reason))
+}
+
+const SCRATCH_SETUP: &str = include_str!("assets/scratch-storage.sh");
+
+async fn create_scratch_disk(run_dir: &Path) -> Result<PathBuf> {
+    let disk = run_dir.join("scratch.qcow2");
+    let output = tokio::process::Command::new("qemu-img")
+        .args(["create", "-f", "qcow2"])
+        .arg(&disk)
+        .arg(super::vm::SCRATCH_DISK_SIZE)
+        .output()
+        .await?;
+    if !output.status.success() {
+        bail!(
+            "cannot create simulation scratch disk: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(disk)
 }
 
 async fn resolve_guest_image(
@@ -578,6 +595,7 @@ pub(super) async fn shell(
     let iso = images
         .guest_iso(&guest_image, run_dir.path(), args.platform)
         .await?;
+    let scratch_disk = create_scratch_disk(run_dir.path()).await?;
     eprintln!("Booting guest...");
     let mut signals = Signals::install()?;
     let mut guest = tokio::select! {
@@ -590,8 +608,10 @@ pub(super) async fn shell(
             BootOutput::Visible,
             args.memory,
             args.platform,
+            Some(&scratch_disk),
         ) => result?,
     };
+    guest.run_script(SCRATCH_SETUP).await?;
     eprintln!("Opening guest shell. Exit the shell to stop the VM.");
     let shell = tokio::select! {
         biased;

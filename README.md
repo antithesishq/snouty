@@ -313,8 +313,12 @@ Compose setup in a local guest VM:
 SNOUTY_UNSTABLE_FEATURES=simulate snouty simulate ./config
 ```
 
-Install QEMU, OpenSSH, tar, and the container engine and Compose tools described
-above. ARM64 guests also require `qemu-system-aarch64` and EDK2 AArch64 UEFI.
+Install QEMU (including `qemu-img`), OpenSSH, tar, and the container engine and
+Compose tools described above. Simulation uses a sparse 16 GiB qcow2 scratch
+disk for Podman image-copy temporary files and image storage. It lives under
+`$XDG_CACHE_HOME/snouty/simulate` (default `$HOME/.cache/snouty/simulate`) and
+is removed when the simulation exits. ARM64 guests also require
+`qemu-system-aarch64` and EDK2 AArch64 UEFI.
 The guest platform defaults to the host architecture. Use `--platform arm64` to
 run an ARM64 guest and ARM64 workload images on an x86-64 host.
 The guest image defaults to `antithesis-guest:v<RELEASE>` in your configured

@@ -16,6 +16,7 @@ use super::SimulatePlatform;
 use super::firmware::platform_firmware;
 
 const AUTHORIZED_KEY_FW_CFG: &str = "opt/antithesis/authorized_key";
+pub(super) const SCRATCH_DISK_SIZE: &str = "16G";
 #[cfg(target_os = "linux")]
 const QEMU_ACCELERATOR: &str = "kvm:tcg";
 #[cfg(target_os = "macos")]
@@ -163,6 +164,7 @@ impl Vm {
         boot_output: BootOutput,
         memory_mib: u64,
         platform: SimulatePlatform,
+        scratch_disk: Option<&Path>,
     ) -> Result<Self> {
         let run_dir = fs::canonicalize(run_dir)?;
         if platform != SimulatePlatform::default() {
@@ -212,6 +214,12 @@ impl Vm {
                 ))
                 .args(["-nodefaults", "-smp", "1", "-m"])
                 .arg(memory_mib.to_string());
+            if let Some(scratch_disk) = scratch_disk {
+                command.args([
+                    "-drive",
+                    &format!("file={},if=virtio,format=qcow2", scratch_disk.display()),
+                ]);
+            }
             if let Some(code) = &firmware {
                 command.arg("-bios").arg(code);
             }

@@ -89,7 +89,9 @@ elif name == 'ssh':
     elif command == 'bash -s':
         script = sys.stdin.read()
         record('batch_script', script)
-        if 'shmctl --thread_pause_enable' in script:
+        if 'mkfs.ext4' in script:
+            record('scratch_setup_script', script)
+        elif 'shmctl --thread_pause_enable' in script:
             record('thread_pause_enabled', 'yes')
         elif "cat > /opt/antithesis/fault_config.json <<'CONFIG'\n" in script:
             config = script.split("<<'CONFIG'\n", 1)[1].rsplit('CONFIG\n', 1)[0]
@@ -136,8 +138,9 @@ elif name == 'ssh':
             record('upload_blocked', 'yes')
             while True:
                 time.sleep(1)
-    elif command == 'podman load':
+    elif command in ('podman load', 'podman --tmpdir=/var/tmp load'):
         record('image_load_ssh_config', config.read_text())
+        record('image_load_command', command)
         sys.stdin.buffer.read()
     else:
         sys.exit('unexpected ssh command: ' + repr(args))
@@ -153,6 +156,10 @@ elif name == 'ssh-keygen':
     public_key.write_text('fixture public key\n')
     record('private_key_path', private_key)
     record('public_key_path', public_key)
+elif name == 'qemu-img':
+    assert args[:3] == ['create', '-f', 'qcow2'], args
+    Path(args[3]).write_text('qcow2 fixture')
+    record('scratch_disk_path', args[3])
 elif name in ('qemu-system-x86_64', 'qemu-system-aarch64'):
     if '-fw_cfg' not in args:
         sys.exit('unexpected QEMU command: ' + repr(args))

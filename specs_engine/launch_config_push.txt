@@ -78,14 +78,6 @@ stderr 'warning: image `docker.io/library/nginx-snouty-absent@sha256:00000000000
 ! stderr 'unpinned'
 stderr '"antithesis.config_image":.*@sha256:'
 
-# A build-only service resolves to compose's default build tag, which no
-# registry serves, so --allow-remote-images still rejects it when it is not
-# built.
-mock-server 200 '{"runId":"run-123","statusCode":200}'
-! snouty launch --launcher basic_test -c buildonly_missing_config --duration 30 --allow-remote-images
-stderr 'the default build tag `buildonly_missing_config-app:latest` is not in the local image store'
-! stderr 'Pushing image:'
-
 # A local image referenced WITHOUT a build stanza, but built before launch, is
 # pushed and pinned anyway — local availability is enough.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
@@ -102,22 +94,20 @@ mock-server 200 '{"runId":"run-123","statusCode":200}'
 stderr '.*image: localapp:latest.*'
 ! stderr 'Pushing image:'
 
-# A build-only service without an explicit image: resolves to compose's
-# default build tag (<project>-<service>:latest). Built beforehand, it's
-# pushed and pinned like any other local image.
+# Every service needs an explicit image:, because the platform runs compose
+# under its own project name. The default tag that `docker compose build`
+# gives a build-only service names no image there. The launch fails before
+# anything is pushed, even when that tag is built, and with
+# --allow-remote-images too.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
 build-image --platform linux/amd64 buildonly_config-app:latest images/myapp
-snouty launch --launcher basic_test -c buildonly_config --duration 30
-stderr 'Pushing image:.*buildonly_config-app'
-stderr '"antithesis.config_image":.*@sha256:'
-
-# The same service without the build is rejected with guidance naming the
-# default tag, before anything is pushed. --allow-remote-images cannot help a
-# default build tag, so the error does not suggest it.
+! snouty launch --launcher basic_test -c buildonly_config --duration 30
+stderr 'every compose service needs an explicit `image:` reference'
+stderr 'service .app. has no `image:` field'
+! stderr 'Pushing image:'
 mock-server 200 '{"runId":"run-123","statusCode":200}'
-! snouty launch --launcher basic_test -c buildonly_missing_config --duration 30
-stderr '.*image: buildonly_missing_config-app:latest .compose.s default build tag for service .app..*'
-! stderr 'allow-remote-images'
+! snouty launch --launcher basic_test -c buildonly_config --duration 30 --allow-remote-images
+stderr 'service .app. has no `image:` field'
 ! stderr 'Pushing image:'
 
 # A non-amd64 image scheduled for push is rejected before any push happens.
@@ -199,10 +189,6 @@ services:
   app:
     image: localapp:latest
 -- buildonly_config/docker-compose.yaml --
-services:
-  app:
-    build: .
--- buildonly_missing_config/docker-compose.yaml --
 services:
   app:
     build: .

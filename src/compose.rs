@@ -366,9 +366,6 @@ impl DockerCompose {
     /// Run `compose config [extra_args]`, returning the resolved YAML as a
     /// string.
     fn config(&self, overlay: Option<&Path>, extra_args: &[&str]) -> Result<String> {
-        // No COMPOSE_PROJECT_NAME override: the project name must resolve
-        // exactly as it does when the user runs `docker compose` in the
-        // config dir, because default build tags are derived from it.
         let cli = &self.cli;
         let mut cmd = self.command(overlay, &["config"]);
         cmd.args(extra_args);
@@ -540,7 +537,7 @@ impl DockerCompose {
                 MissingImages::Reject => {
                     return Err(launch_missing_images_error(rt, &contents, &absent));
                 }
-                MissingImages::AssumeRemote => warn_remote_images(rt, &contents, &absent)?,
+                MissingImages::AssumeRemote => warn_remote_images(rt, &contents, &absent),
             }
         }
 
@@ -587,18 +584,10 @@ fn launch_missing_images_error(
     contents: &ComposeContents,
     absent: &[&str],
 ) -> color_eyre::Report {
-    let mut err = missing_images_error(rt, contents, absent);
-    // The flag cannot help a default build tag, so suggest it only for other
-    // images.
-    if absent
-        .iter()
-        .any(|image| !is_default_image(contents, image))
-    {
-        err = err.with_suggestion(|| {
-            "if a registry that the platform can reach serves the missing images, add \
-             `--allow-remote-images` to launch them unpinned"
-        });
-    }
+    let err = missing_images_error(rt, contents, absent).with_suggestion(|| {
+        "if a registry that the platform can reach serves the missing images, add \
+         `--allow-remote-images` to launch them unpinned"
+    });
     // `--config-image` conflicts with `--config`, so the suggestion says to
     // replace `--config`, not to add a flag.
     err.with_suggestion(|| {
@@ -607,27 +596,8 @@ fn launch_missing_images_error(
     })
 }
 
-/// Warn about each image in `absent`, which the launch leaves as written. A
-/// default build tag fails instead, because no registry serves it.
-fn warn_remote_images(
-    rt: &dyn ContainerRuntime,
-    contents: &ComposeContents,
-    absent: &[&str],
-) -> Result<()> {
-    if let Some(&image) = absent
-        .iter()
-        .find(|image| is_default_image(contents, image))
-    {
-        bail!(
-            user_error(format!(
-                "the default build tag `{image}` is not in the local image store"
-            ))
-            .suggestion(
-                "run `docker compose build`, or add an `image:` field that names an image in \
-                 a registry"
-            )
-        );
-    }
+/// Warn about each image in `absent`, which the launch leaves as written.
+fn warn_remote_images(rt: &dyn ContainerRuntime, contents: &ComposeContents, absent: &[&str]) {
     // An image in the store of another engine was likely built for this
     // launch, so the platform cannot pull it.
     let absent_refs: Vec<String> = absent.iter().map(|image| image.to_string()).collect();
@@ -661,7 +631,6 @@ fn warn_remote_images(
             );
         }
     }
-    Ok(())
 }
 
 /// Split local `images` into those a registry already serves, each mapped to
@@ -770,7 +739,7 @@ pub enum MissingImages {
     /// Fail the launch: snouty never pulls, so it cannot pin the image.
     Reject,
     /// Leave the reference unpinned, so the platform pulls it by name at run
-    /// time. A default build tag still fails, because no registry serves it.
+    /// time.
     AssumeRemote,
 }
 /// Where snouty pushes `image` inside the tenant repository at `prefix`.
@@ -864,10 +833,9 @@ fn rewrite_compose_images(yaml: &str, references: &BTreeMap<String, String>) -> 
     }
     serde_yaml::to_string(&doc).wrap_err("failed to serialize pinned docker-compose.yaml")
 }
-/// Every compose service must carry an explicit `image:` reference; pinning
-/// (and the Antithesis platform) addresses services by image. In particular a
-/// `build:`-only service would otherwise silently run under a compose-generated
-/// default name that snouty never pushed.
+/// Every compose service must carry an explicit `image:` reference. The
+/// platform runs compose under its own project name, so the default tag that
+/// `docker compose build` gives a `build:`-only service names no image there.
 fn ensure_services_have_images(contents: &ComposeContents) -> Result<()> {
     if contents.services_without_image.is_empty() {
         return Ok(());
@@ -899,23 +867,13 @@ pub fn stage_pinned_config(config_dir: &Path, pinned_yaml: &str) -> Result<tempf
 pub struct ComposeService {
     pub name: String,
     pub image: String,
-    /// True when `image` is the compose-generated default build tag
-    /// (`<project>-<service>:latest`) synthesized for a `build:`-only
-    /// service, rather than an explicit `image:` value.
-    pub default_image: bool,
 }
 /// Parsed contents of a compose config file.
 #[derive(Debug)]
 pub struct ComposeContents {
-    /// One entry per service, each resolved to an image reference: the
-    /// explicit `image:` value, or for `build:`-only services the
-    /// compose-default build tag (`<project>-<service>:latest`, flagged via
-    /// [`ComposeService::default_image`]).
+    /// One entry per service with an explicit `image:` field.
     pub services: Vec<ComposeService>,
-    /// Names of services whose image reference couldn't be resolved — no
-    /// explicit `image:` and no way to derive compose's default name. A
-    /// backstop: compose itself rejects services with neither `image` nor
-    /// `build`, and `docker-compose config` always reports a project `name`.
+    /// Names of services without an explicit `image:` field.
     pub services_without_image: Vec<String>,
     /// Service names that have a `build:` stanza.
     pub build_services: HashSet<String>,
@@ -926,13 +884,6 @@ pub struct ComposeContents {
 pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
     let doc: serde_yaml::Value =
         serde_yaml::from_str(yaml).wrap_err("failed to parse docker-compose.yaml")?;
-
-    // `docker-compose config` resolves the project name (file `name:`, else
-    // the config directory's basename) and reports it at the top level. It's
-    // what compose prefixes onto default build tags, so resolution here
-    // matches what `docker compose build` produced — provided nothing
-    // overrides the project name out from under us.
-    let project_name = doc.get("name").and_then(|n| n.as_str());
 
     let mut services = Vec::new();
     let mut services_without_image = Vec::new();
@@ -948,15 +899,6 @@ pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
                     services.push(ComposeService {
                         name: name_str.to_string(),
                         image: image.to_string(),
-                        default_image: false,
-                    });
-                } else if has_build && let Some(project) = project_name {
-                    // `docker compose build` tags a build-only service as
-                    // `<project>-<service>` (implicitly `:latest`).
-                    services.push(ComposeService {
-                        name: name_str.to_string(),
-                        image: format!("{project}-{name_str}:latest"),
-                        default_image: true,
                     });
                 } else {
                     services_without_image.push(name_str.to_string());
@@ -1007,13 +949,6 @@ pub fn validate_images_are_available(
     }
     Err(missing_images_error(runtime, contents, &absent))
 }
-/// True when `image` is the compose-generated default build tag of a service.
-fn is_default_image(contents: &ComposeContents, image: &str) -> bool {
-    contents
-        .services
-        .iter()
-        .any(|service| service.default_image && service.image == image)
-}
 /// The error for the images in `absent`. It explains only why the images
 /// must be local, and each caller adds its own suggestions.
 fn missing_images_error(
@@ -1028,11 +963,6 @@ fn missing_images_error(
             .iter()
             .find(|service| service.image == image);
         let hint = match service {
-            Some(service) if service.default_image => format!(
-                " (compose's default build tag for service '{}' — run `docker compose build`, \
-                 or add an explicit `image:` if it was built under another name)",
-                service.name
-            ),
             Some(service) if contents.build_services.contains(&service.name) => {
                 " (service has a `build:` stanza — build it first; snouty doesn't build)"
                     .to_string()
@@ -1355,12 +1285,10 @@ services:
                 ComposeService {
                     name: "app".to_string(),
                     image: "us-central1-docker.pkg.dev/proj/repo/app:v1".to_string(),
-                    default_image: false,
                 },
                 ComposeService {
                     name: "sidecar".to_string(),
                     image: "us-central1-docker.pkg.dev/proj/repo/sidecar:latest".to_string(),
-                    default_image: false,
                 },
             ]
         );
@@ -1368,16 +1296,14 @@ services:
             contents.build_services,
             HashSet::from(["builder".to_string()])
         );
-        // No top-level `name:` → the builder service can't be resolved to
-        // compose's default build tag.
         assert_eq!(contents.services_without_image, vec!["builder".to_string()]);
         assert!(contents.networks.is_empty());
     }
     #[test]
-    fn parse_compose_config_synthesizes_default_build_tags() {
-        // `docker-compose config` output always carries the resolved project
-        // name; build-only services resolve to `<project>-<service>:latest`,
-        // exactly the tag `docker compose build` produces.
+    fn parse_compose_config_needs_an_explicit_image_even_with_a_project_name() {
+        // `docker compose build` tags a build-only service
+        // `<project>-<service>`, but the platform runs compose under its own
+        // project name, so that tag names no image there.
         let yaml = "\
 name: myproj
 services:
@@ -1390,20 +1316,12 @@ services:
         let contents = parse_compose_config(yaml).unwrap();
         assert_eq!(
             contents.services,
-            vec![
-                ComposeService {
-                    name: "app".to_string(),
-                    image: "myapp:latest".to_string(),
-                    default_image: false,
-                },
-                ComposeService {
-                    name: "builder".to_string(),
-                    image: "myproj-builder:latest".to_string(),
-                    default_image: true,
-                },
-            ]
+            vec![ComposeService {
+                name: "app".to_string(),
+                image: "myapp:latest".to_string(),
+            }]
         );
-        assert!(contents.services_without_image.is_empty());
+        assert_eq!(contents.services_without_image, vec!["builder".to_string()]);
     }
     #[test]
     fn parse_compose_config_no_services() {
@@ -2151,19 +2069,16 @@ services:
                 rt.name()
             );
 
-            // Case 4 — `build:`-only service with no `image:` resolves to
-            // compose's default build tag (`<project>-<service>:latest`);
-            // when that tag was never built, the error names it with
-            // guidance instead of silently launching an image the platform
-            // can't pull.
+            // Case 4 — a `build:`-only service with no `image:` fails before
+            // anything is pushed.
             let err = pinned_app("services:\n  app:\n    build: .\n").expect_err(&format!(
-                "{}: expected unbuilt default-tag service to fail",
+                "{}: expected a service without `image:` to fail",
                 rt.name()
             ));
             let debug = format!("{err:?}");
             assert!(
-                debug.contains("-app:latest") && debug.contains("default build tag"),
-                "{}: error should name the default build tag, got: {debug}",
+                debug.contains("service 'app' has no `image:` field"),
+                "{}: error should name the service, got: {debug}",
                 rt.name()
             );
 
@@ -2279,7 +2194,6 @@ services:
                 .map(|(name, image)| ComposeService {
                     name: name.to_string(),
                     image: image.to_string(),
-                    default_image: false,
                 })
                 .collect(),
             services_without_image: Vec::new(),
@@ -2400,30 +2314,6 @@ services:
         assert!(
             debug.contains("in place of `--config <dir>`"),
             "expected the hint to replace --config, not add it, got: {debug}"
-        );
-    }
-    #[test]
-    fn launch_missing_images_error_does_not_suggest_remote_images_for_a_default_build_tag() {
-        let mut contents = contents_of(&[("app", "proj-app:latest")], &["app"]);
-        contents.services[0].default_image = true;
-        let err =
-            launch_missing_images_error(&FakeRuntime::default(), &contents, &["proj-app:latest"]);
-        let debug = format!("{err:?}");
-        assert!(
-            !debug.contains("--allow-remote-images"),
-            "the flag cannot help a default build tag, got: {debug}"
-        );
-    }
-    #[test]
-    fn warn_remote_images_rejects_a_default_build_tag() {
-        let mut contents = contents_of(&[("app", "proj-app:latest")], &["app"]);
-        contents.services[0].default_image = true;
-        let err = warn_remote_images(&FakeRuntime::default(), &contents, &["proj-app:latest"])
-            .unwrap_err();
-        let msg = format!("{err:?}");
-        assert!(
-            msg.contains("default build tag `proj-app:latest`"),
-            "expected the default build tag to be named, got: {msg}"
         );
     }
     #[test]
@@ -2596,12 +2486,10 @@ services:
                 ComposeService {
                     name: "app".to_string(),
                     image: "myapp:latest".to_string(),
-                    default_image: false,
                 },
                 ComposeService {
                     name: "sidecar".to_string(),
                     image: "docker.io/library/nginx:latest".to_string(),
-                    default_image: false,
                 },
             ]
         );

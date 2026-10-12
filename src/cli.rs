@@ -1,7 +1,7 @@
 use std::num::NonZeroU64;
 
 use chrono::{DateTime, Utc};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 use crate::api::{
     PerformanceTier, RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SourceRunId,
@@ -207,7 +207,7 @@ Examples:
   snouty runs properties --failing <run_id>
   snouty runs properties <run_id> --name <substring> --detail
   snouty runs build-logs <run_id>
-  snouty runs logs <run_id> <hash> [vtime]
+  snouty runs logs <run_id> <input_hash> [vtime]
   snouty runs events <run_id> -m <query>
   snouty runs search <run_id> 'contains({output_text: "error"})'
   snouty runs exec <run_id> <input_hash> <vtime> 'uname -a'
@@ -662,7 +662,7 @@ pub struct LaunchArgs {
     /// Performance tier for the run. Higher tiers explore system states faster
     /// through more parallelism. They also consume core hours faster. The
     /// server default is `standard`. To send a tier that is not listed, use
-    /// `--param antithesis.performance_tier=TIER`.
+    /// `--param=antithesis.performance_tier=TIER`.
     #[arg(long, value_enum)]
     pub performance_tier: Option<PerformanceTier>,
 
@@ -676,14 +676,22 @@ pub struct LaunchArgs {
     pub params: Vec<String>,
 }
 
+/// Without --stdin, the flags must name the whole moment. With it, stdin can
+/// supply every parameter and the flags override it.
 #[derive(Args)]
+#[command(group(
+    ArgGroup::new("target")
+        .args(["stdin", "run_id", "session_id"])
+        .required(true)
+        .multiple(true)
+))]
 pub struct DebugArgs {
     /// Read parameters from stdin (JSON)
     #[arg(long)]
     pub stdin: bool,
 
     /// Run ID of the test run to debug (preferred; mutually exclusive with --session-id)
-    #[arg(long)]
+    #[arg(long, conflicts_with = "session_id")]
     pub run_id: Option<String>,
 
     /// Session ID of the test run to debug (mutually exclusive with --run-id)
@@ -691,11 +699,11 @@ pub struct DebugArgs {
     pub session_id: Option<String>,
 
     /// Input hash identifying the moment to debug
-    #[arg(long, allow_hyphen_values = true)]
+    #[arg(long, allow_hyphen_values = true, required_unless_present = "stdin")]
     pub input_hash: Option<String>,
 
     /// Virtual time identifying the moment to debug
-    #[arg(long)]
+    #[arg(long, required_unless_present = "stdin")]
     pub vtime: Option<VTime>,
 
     /// Debugging session title, shown as the test name in `snouty runs list`
@@ -1174,8 +1182,8 @@ JSON object on its own line, and the trailer is left out:
         #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
         container: Option<String>,
 
-        /// Print every event of the timeline while the script executes, as
-        /// `runs logs` prints them, in place of only the script's output
+        /// Print every event of the timeline while the script executes, in place
+        /// of only the script's output. The events use the runs logs format
         #[arg(long)]
         events: bool,
 

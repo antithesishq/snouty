@@ -467,10 +467,10 @@ fn debug_fails_missing_required_fields() {
     let mock_url = start_mock_server(r#"{}"#, 200);
 
     snouty_with_mock(&mock_url)
-        .args(["debug", "--input-hash", "abc"])
+        .args(["debug", "--input-hash", "abc", "--run-id", "run-1"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("validation failed"));
+        .stderr(predicate::str::contains("--vtime <VTIME>"));
 }
 
 #[test]

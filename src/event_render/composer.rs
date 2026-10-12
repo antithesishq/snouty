@@ -156,17 +156,25 @@ fn truncate_path(path: &str, width: usize) -> Cow<'_, str> {
     // Measure each suffix as a whole. Measuring one char at a time gives a
     // different width when the text holds escape sequences. A shorter suffix
     // can be wider, because a cut can split an escape sequence, so check the
-    // whole tail first.
+    // whole tail first. Bisect the char starts, so that a long tail of
+    // zero-width chars does not cost one measure for each char.
     let fits = |start: usize| console::measure_text_width(&tail[start..]) <= budget;
     let start = if fits(0) {
         0
     } else {
-        tail.char_indices()
-            .rev()
-            .map(|(index, _)| index)
-            .take_while(|&index| fits(index))
-            .last()
-            .unwrap_or(tail.len())
+        let starts: Vec<usize> = tail.char_indices().map(|(index, _)| index).collect();
+        let at = |i: usize| starts.get(i).copied().unwrap_or(tail.len());
+        // The suffix at `lo` does not fit, and the suffix at `hi` fits.
+        let (mut lo, mut hi) = (0, starts.len());
+        while hi - lo > 1 {
+            let mid = lo + (hi - lo) / 2;
+            if fits(at(mid)) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        at(hi)
     };
     format!("{HEAD}{}", &tail[start..]).into()
 }
@@ -426,8 +434,9 @@ mod tests {
         }
     }
 
-    /// A Hegel counterexample: `console` reads ESC and the char after it as
-    /// an escape sequence of zero width, so the final segment fits.
+    /// `console` reads ESC and the char after it as an escape sequence of
+    /// zero width. The cut must measure the kept text as a whole, so that
+    /// the final segment fits here.
     #[test]
     fn truncate_path_measures_escape_sequences_as_the_whole_value_does() {
         let path = format!("00/{}\x1b0:000", "0".repeat(34));

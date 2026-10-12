@@ -1440,9 +1440,9 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
     }
 
     // `snouty debug` checks an input hash with
-    // [`event_set_dsl::input_hash_filter`]: the hash follows the filter's
-    // start as a JSON string.
-    if let Some(applied) = query.strip_prefix(crate::event_set_dsl::INPUT_HASH_FILTER) {
+    // [`event_set_dsl::input_hash_filter`]: the hash follows this start as a
+    // JSON string.
+    if let Some(applied) = query.strip_prefix("filter(ev => ev.moment.input_hash == ") {
         let input_hash: serde_json::Value = applied
             .strip_suffix(')')
             .and_then(|hash| serde_json::from_str(hash).ok())

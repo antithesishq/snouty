@@ -95,6 +95,15 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 stderr "'antithesis.test_name' cannot be overridden via --param"
 ! stderr 'Requesting the Antithesis multiverse debugger'
 
+# Every parameter value must be a string, a custom one too. A raw JSON
+#    value on stdin that is not a string fails validation before any API call.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+stdin debug_number_param.txt
+! snouty debug --stdin
+stderr 'validation failed'
+stderr 'attrs.retries: 3 is not of type .string.'
+! stderr 'Requesting the Antithesis multiverse debugger'
+
 # The live API answers success with HTTP 200. snouty also accepts the
 #    documented 202.
 mock-server 202 '{"statusCode":202,"runId":"run-123"}'
@@ -254,4 +263,11 @@ stderr 'ANTITHESIS_EXTRA_HEADERS entry missing \':\' separator: "not-a-valid-hea
     "antithesis.debugging.input_hash": "abc",
     "antithesis.debugging.session_id": "sess",
     "antithesis.debugging.vtime": "not-a-number"
+}
+-- debug_number_param.txt --
+{
+    "antithesis.debugging.input_hash": "abc",
+    "antithesis.debugging.session_id": "sess",
+    "antithesis.debugging.vtime": "123",
+    "attrs.retries": 3
 }

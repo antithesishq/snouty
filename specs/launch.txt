@@ -122,6 +122,11 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 ! snouty launch --launcher basic_test --duration 30 --param antithesis.duration=60
 stderr 'cannot be overridden via --param.*'
 
+# A --param value must be a key=value pair. clap rejects any other form
+#    before any API call.
+! snouty launch --launcher basic_test --duration 30 --param no-equals-sign
+stderr 'invalid value .no-equals-sign. for .--param.*expected key=value'
+
 # At least one source of parameters must be provided; otherwise the
 #    command fails.
 mock-server 200 '{}'

@@ -125,7 +125,8 @@
       "allOf": [
         { "$ref": "#/$defs/debuggingCore" },
         { "$ref": "#/$defs/reportRecipients" }
-      ]
+      ],
+      "additionalProperties": { "type": "string" }
     }
   }
 }

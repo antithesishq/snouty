@@ -406,7 +406,9 @@ fn merge_param_flags(params: &mut Params, param_flags: Vec<Param>) -> Result<()>
         return Err(user_error(format!(
             "invalid arguments: '{key}' cannot be overridden via --param"
         ))
-        .suggestion("use the dedicated flag instead"));
+        .suggestion(format!(
+            "remove the --param for '{key}', or the flag that sets it"
+        )));
     }
     params.merge(extra);
     Ok(())

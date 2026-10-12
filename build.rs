@@ -262,11 +262,7 @@ fn drop_launch_status_code(spec: &mut serde_json::Value) {
 /// `/api/v1/launch/debugging` accepts it: on orbitinghail, release 64.0, the
 /// new session lists it in its `parameters`.
 fn add_mvd_test_name(spec: &mut serde_json::Value) {
-    let variants = spec
-        .pointer_mut("/components/schemas/MVD_Params/oneOf")
-        .and_then(serde_json::Value::as_array_mut)
-        .expect("openapi spec has no MVD_Params.oneOf; update `add_mvd_test_name` in build.rs");
-    for variant in variants {
+    for variant in mvd_params_variants(spec, "add_mvd_test_name") {
         let properties = variant
             .get_mut("properties")
             .and_then(serde_json::Value::as_object_mut)
@@ -291,11 +287,7 @@ fn add_mvd_test_name(spec: &mut serde_json::Value) {
 /// does. Open each variant the way `Params` is open, so the generated type
 /// carries an `extra` map.
 fn open_mvd_params(spec: &mut serde_json::Value) {
-    let variants = spec
-        .pointer_mut("/components/schemas/MVD_Params/oneOf")
-        .and_then(serde_json::Value::as_array_mut)
-        .expect("openapi spec has no MVD_Params.oneOf; update `open_mvd_params` in build.rs");
-    for variant in variants {
+    for variant in mvd_params_variants(spec, "open_mvd_params") {
         let variant = variant
             .as_object_mut()
             .expect("an MVD_Params variant is not an object; update `open_mvd_params`");
@@ -309,6 +301,19 @@ fn open_mvd_params(spec: &mut serde_json::Value) {
             "MVD_Params now sets additionalProperties; delete `open_mvd_params` in build.rs"
         );
     }
+}
+
+/// The `oneOf` variants of `MVD_Params`. `transform` names the caller in the
+/// panic message.
+fn mvd_params_variants<'a>(
+    spec: &'a mut serde_json::Value,
+    transform: &str,
+) -> &'a mut Vec<serde_json::Value> {
+    spec.pointer_mut("/components/schemas/MVD_Params/oneOf")
+        .and_then(serde_json::Value::as_array_mut)
+        .unwrap_or_else(|| {
+            panic!("openapi spec has no MVD_Params.oneOf; update `{transform}` in build.rs")
+        })
 }
 
 /// Decode `Params.antithesis.performance_tier` as a plain string. `runs list`

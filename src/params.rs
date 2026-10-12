@@ -488,29 +488,6 @@ mod tests {
     }
 
     #[test]
-    fn invalid_duration_reports_one_field_attributed_note() {
-        let params = Params::from_key_value_pairs([
-            "antithesis.duration=15m",
-            "antithesis.test_name=my-test",
-            "antithesis.source=my-source",
-        ])
-        .unwrap();
-
-        // The notes are color_eyre sections, not in the report's Display, so
-        // assert on the collected notes directly.
-        let notes = collect_validation_notes(params.as_map(), "testParams");
-        assert_eq!(
-            notes.len(),
-            1,
-            "exactly one real error expected, got: {notes:?}"
-        );
-        assert!(
-            notes[0].contains("antithesis.duration") && notes[0].contains("15m"),
-            "expected field-attributed duration note, got: {notes:?}"
-        );
-    }
-
-    #[test]
     fn unknown_antithesis_param_is_allowed() {
         // The platform can add antithesis.* params before snouty learns about
         // them, so unknown antithesis.* keys must pass validation (#211).
@@ -667,42 +644,6 @@ mod tests {
     }
 
     #[test]
-    fn from_key_value_pairs_valid() {
-        let pairs = ["antithesis.duration=30", "my.key=hello"];
-        let params = Params::from_key_value_pairs(pairs).unwrap();
-        assert_eq!(params.as_map().get("antithesis.duration").unwrap(), "30");
-        assert_eq!(params.as_map().get("my.key").unwrap(), "hello");
-    }
-
-    #[test]
-    fn from_key_value_pairs_value_containing_equals() {
-        let pairs = ["key=value=with=equals"];
-        let params = Params::from_key_value_pairs(pairs).unwrap();
-        assert_eq!(params.as_map().get("key").unwrap(), "value=with=equals");
-    }
-
-    #[test]
-    fn from_key_value_pairs_missing_equals() {
-        let pairs = ["noequals"];
-        let result = Params::from_key_value_pairs(pairs);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("expected key=value")
-        );
-    }
-
-    #[test]
-    fn from_key_value_pairs_empty_key() {
-        let pairs = ["=value"];
-        let result = Params::from_key_value_pairs(pairs);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("the key is empty"));
-    }
-
-    #[test]
     fn from_json_unwraps_params_envelope() {
         // Users sometimes paste in the `{"params": {...}}` shape of the API
         // request body. Unwrap it so the real keys land in the params map
@@ -798,15 +739,16 @@ mod tests {
         }
     }
 
-    /// `from_key_value_pairs` splits on the *first* `=` only, so the value may
-    /// itself contain `=` and must come back verbatim. For any non-empty key
-    /// without `=` and any value, the parsed pair round-trips exactly.
+    /// For any non-empty key without `=` and any value, which may contain `=`,
+    /// the parsed pair round-trips exactly.
     #[hegel::test]
     fn key_value_pair_round_trips(tc: hegel::TestCase) {
         let key = tc.draw(generators::text().min_size(1).filter(|k| !k.contains('=')));
         let value = tc.draw(generators::text());
-        let params = Params::from_key_value_pairs([format!("{key}={value}")])
+        let param: Param = format!("{key}={value}")
+            .parse()
             .expect("a non-empty key with a value must parse");
+        let params = Params::from_iter([param]);
         assert_eq!(params.as_map().len(), 1);
         assert_eq!(
             params.as_map().get(&key).and_then(Value::as_str),

@@ -1288,38 +1288,27 @@ async fn finish_launch<T: DeserializeOwned>(
 fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequest> {
     use generated::types::MvdParams;
 
-    let mut input_hash = None;
-    let mut vtime = None;
-    let mut event_description = None;
-    let mut test_name = None;
-    let mut recipients = None;
-    let mut run_id = None;
-    let mut session_id = None;
-    let mut extra = HashMap::new();
-
-    for (key, value) in params.as_map() {
-        let value = value
-            .as_str()
-            .ok_or_else(|| eyre!("debugging params must be strings: {key}"))?
-            .to_string();
-        let slot = match key.as_str() {
-            ANT_DEBUGGING_INPUT_HASH => &mut input_hash,
-            ANT_DEBUGGING_VTIME => &mut vtime,
-            ANT_EVENT_DESCRIPTION => &mut event_description,
-            ANT_TEST_NAME => &mut test_name,
-            ANT_REPORT_RECIPIENTS => &mut recipients,
-            ANT_DEBUGGING_RUN_ID => &mut run_id,
-            ANT_DEBUGGING_SESSION_ID => &mut session_id,
-            _ => {
-                extra.insert(key.clone(), value);
-                continue;
-            }
-        };
-        *slot = Some(value);
-    }
-
-    let input_hash = input_hash.ok_or_else(|| eyre!("missing {ANT_DEBUGGING_INPUT_HASH}"))?;
-    let vtime = vtime.ok_or_else(|| eyre!("missing {ANT_DEBUGGING_VTIME}"))?;
+    let mut extra = params
+        .as_map()
+        .iter()
+        .map(|(key, value)| {
+            let value = value
+                .as_str()
+                .ok_or_else(|| eyre!("debugging params must be strings: {key}"))?;
+            Ok((key.clone(), value.to_owned()))
+        })
+        .collect::<Result<HashMap<_, _>>>()?;
+    let input_hash = extra
+        .remove(ANT_DEBUGGING_INPUT_HASH)
+        .ok_or_else(|| eyre!("missing {ANT_DEBUGGING_INPUT_HASH}"))?;
+    let vtime = extra
+        .remove(ANT_DEBUGGING_VTIME)
+        .ok_or_else(|| eyre!("missing {ANT_DEBUGGING_VTIME}"))?;
+    let event_description = extra.remove(ANT_EVENT_DESCRIPTION);
+    let test_name = extra.remove(ANT_TEST_NAME);
+    let recipients = extra.remove(ANT_REPORT_RECIPIENTS);
+    let run_id = extra.remove(ANT_DEBUGGING_RUN_ID);
+    let session_id = extra.remove(ANT_DEBUGGING_SESSION_ID);
 
     // The MVD_Params schema is a oneOf, so the target run is identified by
     // exactly one of run_id or session_id. cmd_debug enforces this with a
@@ -2269,8 +2258,8 @@ mod tests {
         }
     }
 
-    // launch_mvd_request sorts each param into a typed field or `extra`, so
-    // it must send every documented param and every custom one.
+    // The request body must hold every param under its own key, whether it
+    // goes into a typed field or into `extra`.
     #[test]
     fn launch_mvd_request_sends_every_debugging_param() {
         let schema: serde_json::Value =

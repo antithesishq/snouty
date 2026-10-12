@@ -287,13 +287,13 @@ class LaunchGuard:
     The `snouty debug` error stories must fail before the launch, but if that
     check regresses, the launch starts a billable session. These stories set
     ANTITHESIS_BASE_URL to the guard. The guard forwards only the runs
-    endpoints and the version probe to the tenant. It answers every other request, a launch
-    included, with 403 and records it in `refused`, so a regression fails the
-    story and starts no session."""
+    endpoints and the version probe to the tenant. It answers every other
+    request, a launch included, with 403 and records the request line and body
+    in `refused`, so a regression fails the story and starts no session."""
 
     def __init__(self, upstream: str, https_proxy: str | None) -> None:
         self.upstream = upstream.rstrip("/")
-        self.refused: list[str] = []
+        self.refused: list[tuple[str, str]] = []
         proxies = {"https": https_proxy, "http": https_proxy} if https_proxy else {}
         opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
         guard = self
@@ -304,7 +304,8 @@ class LaunchGuard:
                 path = urllib.parse.urlsplit(self.path).path
                 runs = path.startswith(_GUARD_RUNS_PREFIX) and ".." not in path
                 if not (runs or path == _GUARD_VERSION_PATH):
-                    guard.refused.append(f"{self.command} {self.path}")
+                    text = body.decode(errors="replace")
+                    guard.refused.append((f"{self.command} {self.path}", text))
                     self.reply(403, {}, b'{"error": "the gallery launch guard refuses this path"}')
                     return
                 request = urllib.request.Request(
@@ -1830,13 +1831,17 @@ def exits_1_with(*needles: str):
     return chk
 
 
-def fails_before_launch(guard: LaunchGuard | None, *needles: str):
-    """`fails_with`, and snouty sent no launch request to `guard`."""
+def fails_before_launch(guard: LaunchGuard | None, run: str, *needles: str):
+    """`fails_with`, and `guard` refused no request for `run`. The debug
+    stories share one guard and are captured at the same time, so the check
+    counts only the refused requests that name the story's own run."""
     failed = fails_with(*needles)
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         ok, detail = failed(sr, reg)
-        refused = guard.refused if guard is not None else []
+        refused = [
+            line for line, body in (guard.refused if guard is not None else []) if run in line + body
+        ]
         return (ok and not refused, f"{detail}, launches refused={refused!r}")
 
     return chk
@@ -2444,7 +2449,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "snouty fails with `run not found: <id>` and starts no session, so nothing "
             "is billed. Exit 1.",
             ["debug", "--run-id", UNKNOWN_RUN, "--input-hash", UNKNOWN_HASH, "--vtime", "100"],
-            fails_before_launch(guard, f"run not found: {UNKNOWN_RUN}"),
+            fails_before_launch(guard, UNKNOWN_RUN, f"run not found: {UNKNOWN_RUN}"),
             json_capable=False,
             env=guarded,
         ),
@@ -2456,7 +2461,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "tells me how to find a moment with `snouty runs events`. It starts no "
             "session. Exit 1.",
             ["debug", "--run-id", d.success, "--input-hash", UNKNOWN_HASH, "--vtime", "100"],
-            fails_before_launch(guard, f"no moment matches input hash {UNKNOWN_HASH}"),
+            fails_before_launch(guard, d.success, f"no moment matches input hash {UNKNOWN_HASH}"),
             json_capable=False,
             env=guarded,
         ),

@@ -105,6 +105,25 @@ stderr 'no moment matches input hash 5181922178177328214 in run run-1'
 stderr -literal 'Suggestion: search for a moment using `snouty runs events run-1 <search query>`'
 ! stderr 'Requesting the Antithesis multiverse debugger'
 ! stdout 'Debugging session started'
+
+# A run that is still starting has no searchable events, so its input hash
+#    cannot be checked. snouty refuses the run, and nothing is launched.
+mock-runs-server
+! snouty debug --input-hash 5181922178177328213 --run-id session-starting --vtime 404
+stderr 'run session-starting is still starting; debug it once it is in progress or complete'
+stderr -literal 'Suggestion: wait for it with `snouty runs wait session-starting --until running`'
+! stderr 'Requesting the Antithesis multiverse debugger'
+! stdout 'Debugging session started'
+
+# A run that is in progress has searchable events, so the input hash is
+#    checked and the session is launched. run-2 is in progress.
+mock-runs-server
+snouty debug --input-hash 5181922178177328213 --run-id run-2 --vtime 404
+stderr 'Requesting the Antithesis multiverse debugger'
+stdout 'Debugging session started: run_id mock-run-id'
+mock-runs-server
+! snouty debug --input-hash 5181922178177328214 --run-id run-2 --vtime 404
+stderr 'no moment matches input hash 5181922178177328214 in run run-2'
 env ANTITHESIS_API_KEY=
 
 # The runs endpoints refuse a username and password, so with them the run

@@ -786,6 +786,27 @@ mock-runs-server
 ! snouty runs events no-such-run --match one --match two
 stderr 'run not found: no-such-run'
 
+# A run that is still starting has no searchable events yet, and the search
+#    answers 404. snouty says so, and does not say that the run is missing.
+mock-runs-server
+[!staging] ! snouty runs events session-starting --match anything
+[!staging] stderr 'run session-starting is still starting and has no searchable events yet'
+[!staging] stderr -literal 'Suggestion: wait for it with `snouty runs wait session-starting --until running`, then try again'
+[!staging] ! stderr 'run not found'
+[!staging] ! stderr 'tenant releases before'
+mock-runs-server
+[!staging] ! snouty runs search session-starting 'contains({output_text: "x"})'
+[!staging] stderr 'run session-starting is still starting and has no searchable events yet'
+[!staging] ! stderr 'run not found'
+
+# A run that exists and is not starting, but whose search answers 404, gets
+#    the server's error and a note about the tenant release.
+mock-runs-server
+[!staging] ! snouty runs events session-loading --match anything
+[!staging] stderr 'API error: 404'
+[!staging] stderr 'tenant releases before 62\.2 do not serve the events-search API'
+[!staging] ! stderr 'still starting'
+
 # `snouty runs search` runs one event-set DSL query server-side and prints
 # each matching event as a classified block under its `moment HASH`
 # divider, exactly like `runs events` (no table: on a live run the stream

@@ -153,15 +153,21 @@ fn truncate_path(path: &str, width: usize) -> Cow<'_, str> {
     }
     let budget = width.saturating_sub(console::measure_text_width(HEAD));
     let tail = path.rfind('/').map_or(path, |slash| &path[slash..]);
-    let mut used = 0;
-    let mut start = tail.len();
-    for (index, c) in tail.char_indices().rev() {
-        used += console::measure_text_width(c.encode_utf8(&mut [0; 4]));
-        if used > budget {
-            break;
-        }
-        start = index;
-    }
+    // Measure each suffix as a whole. Measuring one char at a time gives a
+    // different width when the text holds escape sequences. A shorter suffix
+    // can be wider, because a cut can split an escape sequence, so check the
+    // whole tail first.
+    let fits = |start: usize| console::measure_text_width(&tail[start..]) <= budget;
+    let start = if fits(0) {
+        0
+    } else {
+        tail.char_indices()
+            .rev()
+            .map(|(index, _)| index)
+            .take_while(|&index| fits(index))
+            .last()
+            .unwrap_or(tail.len())
+    };
     format!("{HEAD}{}", &tail[start..]).into()
 }
 
@@ -418,6 +424,15 @@ mod tests {
             }
             _ => assert!(!kept.contains('/')),
         }
+    }
+
+    /// A Hegel counterexample: `console` reads ESC and the char after it as
+    /// an escape sequence of zero width, so the final segment fits.
+    #[test]
+    fn truncate_path_measures_escape_sequences_as_the_whole_value_does() {
+        let path = format!("00/{}\x1b0:000", "0".repeat(34));
+        let out = truncate_path(&path, VALUE_TRUNCATE_WIDTH);
+        assert_eq!(out, format!("…/{}\x1b0:000", "0".repeat(34)));
     }
 
     #[test]

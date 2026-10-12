@@ -1439,6 +1439,25 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
         return (400, body, json);
     }
 
+    // `snouty debug` checks an input hash with
+    // [`event_set_dsl::input_hash_filter`]: the hash follows this start as a
+    // JSON string.
+    if let Some(applied) = query.strip_prefix("filter(ev => ev.moment.input_hash == ") {
+        let input_hash: serde_json::Value = applied
+            .strip_suffix(')')
+            .and_then(|hash| serde_json::from_str(hash).ok())
+            .expect("the hash snouty wrote is a JSON string");
+        let (_, logs) = mock_route_get_run_logs(run_id);
+        let found = logs.lines().find(|line| {
+            let event: serde_json::Value = serde_json::from_str(line).expect("fixture is JSON");
+            event["moment"]["input_hash"] == input_hash
+        });
+        return match found {
+            Some(line) => (200, format!("{line}\n"), ndjson),
+            None => (200, String::new(), ndjson),
+        };
+    }
+
     let needles = query_needles(query);
     // The haystack the query asked for. `runs events` reads an event's text
     // fields; a query that stringifies the event asks for the event's JSON,

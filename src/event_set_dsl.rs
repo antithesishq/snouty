@@ -46,6 +46,14 @@ pub fn substring_filter(needles: &[String]) -> String {
     )
 }
 
+/// Build the event set that keeps the events under `input_hash`. The hash
+/// compares as a string: as a number it loses precision, and hashes that
+/// differ in their last digits compare equal.
+pub fn input_hash_filter(input_hash: &str) -> String {
+    let input_hash = serde_json::to_string(input_hash).expect("strings serialize to JSON");
+    format!("filter(ev => ev.moment.input_hash == {input_hash})")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -153,15 +153,29 @@ fn truncate_path(path: &str, width: usize) -> Cow<'_, str> {
     }
     let budget = width.saturating_sub(console::measure_text_width(HEAD));
     let tail = path.rfind('/').map_or(path, |slash| &path[slash..]);
-    let mut used = 0;
-    let mut start = tail.len();
-    for (index, c) in tail.char_indices().rev() {
-        used += console::measure_text_width(c.encode_utf8(&mut [0; 4]));
-        if used > budget {
-            break;
+    // Measure each suffix as a whole. Measuring one char at a time gives a
+    // different width when the text holds escape sequences. A shorter suffix
+    // can be wider, because a cut can split an escape sequence, so check the
+    // whole tail first. Bisect the char starts, so that a long tail of
+    // zero-width chars does not cost one measure for each char.
+    let fits = |start: usize| console::measure_text_width(&tail[start..]) <= budget;
+    let start = if fits(0) {
+        0
+    } else {
+        let starts: Vec<usize> = tail.char_indices().map(|(index, _)| index).collect();
+        let at = |i: usize| starts.get(i).copied().unwrap_or(tail.len());
+        // The suffix at `lo` does not fit, and the suffix at `hi` fits.
+        let (mut lo, mut hi) = (0, starts.len());
+        while hi - lo > 1 {
+            let mid = lo + (hi - lo) / 2;
+            if fits(at(mid)) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
         }
-        start = index;
-    }
+        at(hi)
+    };
     format!("{HEAD}{}", &tail[start..]).into()
 }
 
@@ -417,6 +431,36 @@ mod tests {
                 assert_eq!(kept, tail);
             }
             _ => assert!(!kept.contains('/')),
+        }
+    }
+
+    /// `console` reads ESC and the char after it as an escape sequence of
+    /// zero width. The cut must measure the kept text as a whole, so that
+    /// the final segment fits here.
+    #[test]
+    fn truncate_path_measures_escape_sequences_as_the_whole_value_does() {
+        let path = format!("00/{}\x1b0:000", "0".repeat(34));
+        let out = truncate_path(&path, VALUE_TRUNCATE_WIDTH);
+        assert_eq!(out, format!("…/{}\x1b0:000", "0".repeat(34)));
+    }
+
+    /// An escape sequence makes the width of a suffix not monotonic in its
+    /// length. Wherever ESC sits, also at each bisect midpoint, the cut keeps
+    /// a suffix that fits, and the suffix one char longer does not fit.
+    #[test]
+    fn truncate_path_keeps_a_maximal_suffix_wherever_an_escape_sits() {
+        let budget = VALUE_TRUNCATE_WIDTH - console::measure_text_width("…");
+        let plain = format!("/{}", "0".repeat(60));
+        for at in 1..=plain.len() {
+            let path = format!("{}\x1b{}", &plain[..at], &plain[at..]);
+            let out = truncate_path(&path, VALUE_TRUNCATE_WIDTH);
+            let kept = out.strip_prefix('…').expect("a cut path starts with `…`");
+            assert!(path.ends_with(kept), "ESC at {at}");
+            assert!(console::measure_text_width(kept) <= budget, "ESC at {at}");
+            let rest = &path[..path.len() - kept.len()];
+            let longer = rest.char_indices().last().map(|(index, _)| &path[index..]);
+            let longer = longer.expect("the whole path does not fit");
+            assert!(console::measure_text_width(longer) > budget, "ESC at {at}");
         }
     }
 

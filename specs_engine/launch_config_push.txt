@@ -39,6 +39,7 @@ mock-server 200 '{"runId":"run-123","statusCode":200}'
 stderr '.*some images are not available locally.*'
 stderr '.*image: docker.io/library/nginx-snouty-absent:latest.*'
 stderr '.*pull or build the missing images, then retry.*'
+stderr 'add `--allow-remote-images` to launch without local validation and pinning'
 ! stderr 'Pushing image:'
 
 # Mixed: even though the build image is present, a missing remote image fails
@@ -48,6 +49,28 @@ build-image --platform linux/amd64 myapp:latest images/myapp
 ! snouty launch --launcher basic_test -c mixed_config --duration 30
 stderr '.*image: docker.io/library/nginx-snouty-absent:latest.*'
 ! stderr 'Pushing image:'
+
+# With --allow-remote-images, a missing image does not fail the launch, and the
+# local image is still pinned. An earlier case pushed `myapp`, so the registry
+# can already serve it.
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+build-image --platform linux/amd64 myapp:latest images/myapp
+snouty launch --launcher basic_test -c mixed_config --duration 30 --allow-remote-images
+stderr '^warning: these images are not in the local image store, so snouty cannot validate and pin them:$'
+stderr '^  docker.io/library/nginx-snouty-absent:latest$'
+stderr '(Pushing image|Image already in a registry, skipping push):.*myapp'
+! stderr '(Pushing image|skipping push):.*nginx-snouty-absent'
+stderr '"antithesis.config_image":.*@sha256:'
+
+# A service with a `build:` stanza whose image is not local was possibly not
+# built, so the launch also warns that it does not run the local code. The
+# warning names that service even when another service shares the image.
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+snouty launch --launcher basic_test -c unbuilt_config --duration 30 --allow-remote-images
+stderr '^  snouty-unbuilt-xyz:latest$'
+stderr '^warning: these services have a `build:` stanza, but their images are not in the local image store. To launch the local code, run `docker compose build`:$'
+stderr '^  app$'
+! stderr '^  api$'
 
 # A local image referenced WITHOUT a build stanza, but built before launch, is
 # pushed and pinned anyway — local availability is enough.
@@ -65,20 +88,20 @@ mock-server 200 '{"runId":"run-123","statusCode":200}'
 stderr '.*image: localapp:latest.*'
 ! stderr 'Pushing image:'
 
-# A build-only service without an explicit image: resolves to compose's
-# default build tag (<project>-<service>:latest). Built beforehand, it's
-# pushed and pinned like any other local image.
+# Every service needs an explicit image:, because Antithesis runs compose
+# under its own project name. The default tag that `docker compose build`
+# gives a build-only service names no image there. The launch fails before
+# anything is pushed, even when that tag is built, and with
+# --allow-remote-images too.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
 build-image --platform linux/amd64 buildonly_config-app:latest images/myapp
-snouty launch --launcher basic_test -c buildonly_config --duration 30
-stderr 'Pushing image:.*buildonly_config-app'
-stderr '"antithesis.config_image":.*@sha256:'
-
-# The same service without the build is rejected with guidance naming the
-# default tag, before anything is pushed.
+! snouty launch --launcher basic_test -c buildonly_config --duration 30
+stderr 'every compose service needs an explicit `image:` reference'
+stderr 'service .app. has no `image:` field'
+! stderr 'Pushing image:'
 mock-server 200 '{"runId":"run-123","statusCode":200}'
-! snouty launch --launcher basic_test -c buildonly_missing_config --duration 30
-stderr '.*image: buildonly_missing_config-app:latest .compose.s default build tag for service .app..*'
+! snouty launch --launcher basic_test -c buildonly_config --duration 30 --allow-remote-images
+stderr 'service .app. has no `image:` field'
 ! stderr 'Pushing image:'
 
 # A non-amd64 image scheduled for push is rejected before any push happens.
@@ -95,6 +118,12 @@ mock-server 200 '{"runId":"run-123","statusCode":200}'
 snouty launch --launcher basic_k8s_test -c k8s_config --duration 30
 stderr '"antithesis.config_image":.*@sha256:'
 ! stderr '"antithesis.images"'
+
+# --allow-remote-images has no effect on a Kubernetes config.
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+snouty launch --launcher basic_k8s_test -c k8s_config --duration 30 --allow-remote-images
+stderr '"antithesis.config_image":.*@sha256:'
+! stderr 'not in the local image store'
 
 # With --config, the `vcs.*` params come from the git checkout that holds the
 # config dir, not from the current directory.
@@ -134,6 +163,13 @@ services:
     image: myapp:latest
   nginx:
     image: docker.io/library/nginx-snouty-absent:latest
+-- unbuilt_config/docker-compose.yaml --
+services:
+  api:
+    image: snouty-unbuilt-xyz:latest
+  app:
+    build: .
+    image: snouty-unbuilt-xyz:latest
 -- prebuilt_config/docker-compose.yaml --
 services:
   app:
@@ -143,10 +179,6 @@ services:
   app:
     image: localapp:latest
 -- buildonly_config/docker-compose.yaml --
-services:
-  app:
-    build: .
--- buildonly_missing_config/docker-compose.yaml --
 services:
   app:
     build: .

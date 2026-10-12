@@ -38,6 +38,14 @@ stderr '.*both docker-compose.yaml and a manifests/ subdirectory.*'
 ! snouty launch --launcher basic_test -c config --config-image some-image:latest --duration 30
 stderr '--config.*'
 
+# --allow-remote-images only applies to a local config dir, so it requires
+# --config and conflicts with --config-image.
+! snouty launch --launcher basic_test --allow-remote-images --duration 30
+stderr 'the following required arguments were not provided'
+stderr '--config <CONFIG>'
+! snouty launch --launcher basic_test --allow-remote-images --config-image some-image:latest --duration 30
+stderr '--allow-remote-images.* cannot be used with .--config-image'
+
 # --config conflicts with --param antithesis.config_image.
 ! snouty launch --launcher basic_test -c config --param antithesis.config_image=some-image:latest
 stderr 'cannot be overridden via --param.*'

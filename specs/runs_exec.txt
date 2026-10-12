@@ -444,11 +444,16 @@ stderr '^Suggestion: start a debugging session at this moment with `snouty debug
 ! stderr 'not ready'
 
 # The same holds for an incomplete run, and with a rewarm source: the run
-# status is the cause, so snouty does not point at the flag.
-! snouty runs exec run-3 1002528785118888238 278.1311443040613 'true' --source-run-id no-such-run
+# status is the cause, so snouty does not point at the flag. A cold moment is
+# in its source, not in the run, so the `snouty debug` command names the
+# source.
+! snouty runs exec run-3 1002528785118888238 278.1311443040613 'true' --source-run-id run-1
 stderr '^Note: `runs exec` needs a run that is in progress\. This run is incomplete$'
-stderr '`snouty debug --run-id run-3 --input-hash 1002528785118888238 --vtime 278\.1311443040613`'
-! stderr 'names an existing source'
+stderr '`snouty debug --run-id run-1 --input-hash 1002528785118888238 --vtime 278\.1311443040613`$'
+! stderr 'names the run the moment comes from'
+
+! snouty runs exec run-3 1002528785118888238 278.1311443040613 'true' --source-session-id ba4ebf3181dd342334b86c58941813c6-64-0
+stderr '`snouty debug --session-id ba4ebf3181dd342334b86c58941813c6-64-0 --input-hash 1002528785118888238 --vtime 278\.1311443040613`$'
 
 # An unknown run id is the shared "run not found" error every run-scoped
 # command reports. The endpoint's own 404 body is an unhelpful "Resource not

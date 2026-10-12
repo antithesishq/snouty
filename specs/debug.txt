@@ -85,22 +85,15 @@ stderr 'run not found: no-such-run'
 ! stderr 'Requesting the Antithesis multiverse debugger'
 ! stdout 'Debugging session started'
 
-# The moment is checked too, with one events search on the run. The launch
-#    endpoint accepts a moment that the run never reached and starts a
-#    billable session. The moment matches when the run has an event under
-#    the input hash at most 5 seconds from the vtime. The vtime can be
-#    rounded, and can sit between the hash's events, or before its first or
-#    after its last: the run stays at one hash until its next input, often
-#    seconds later. The mock run has events under hash 5181922178177328213
-#    at vtimes 400.5 to 402.0.
-mock-runs-server
-snouty debug --input-hash 5181922178177328213 --run-id run-1 --vtime 401.6
-stderr 'Requesting the Antithesis multiverse debugger'
-stdout 'Debugging session started: run_id mock-run-id'
-
-# A rounded vtime after the hash's last event launches.
+# The input hash is checked too, with one events search on the run. The
+#    launch endpoint accepts a hash that the run never reached and starts a
+#    billable session. The hash matches when the run has an event under it.
+#    The vtime is not checked: a valid vtime can be rounded, and can sit
+#    between the hash's events or after its last. The mock run has events
+#    under hash 5181922178177328213 at vtimes 400.5 to 402.0.
 mock-runs-server
 snouty debug --input-hash 5181922178177328213 --run-id run-1 --vtime 404
+stderr 'Requesting the Antithesis multiverse debugger'
 stdout 'Debugging session started: run_id mock-run-id'
 
 # An input hash with no event in the run gives an error, and nothing is
@@ -108,27 +101,21 @@ stdout 'Debugging session started: run_id mock-run-id'
 #    its last digit does not match.
 mock-runs-server
 ! snouty debug --input-hash 5181922178177328214 --run-id run-1 --vtime 401.6
-stderr 'no moment matches input hash 5181922178177328214 near vtime 401.6 in run run-1'
+stderr 'no moment matches input hash 5181922178177328214 in run run-1'
 stderr -literal 'Suggestion: search for a moment using `snouty runs events run-1 <search query>`'
 ! stderr 'Requesting the Antithesis multiverse debugger'
 ! stdout 'Debugging session started'
-
-# A vtime far from every event under the hash gives the same error.
-mock-runs-server
-! snouty debug --input-hash 5181922178177328213 --run-id run-1 --vtime 410
-stderr 'no moment matches input hash 5181922178177328213 near vtime 410.0 in run run-1'
-! stderr 'Requesting the Antithesis multiverse debugger'
 env ANTITHESIS_API_KEY=
 
 # The runs endpoints refuse a username and password, so with them the run
-#    and the moment are not looked up. The single-response mock answers every request with the
-#    launch response, which a run lookup cannot parse.
+#    and the input hash are not looked up. The single-response mock answers
+#    every request with the launch response, which a run lookup cannot parse.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty debug --input-hash abc123 --run-id no-such-run --vtime 1234567890
 stdout 'Debugging session started: run_id run-123'
 
-# --session-id remains supported for backwards compatibility. The moment is
-#    not looked up for a session.
+# --session-id remains supported for backwards compatibility. The input
+#    hash is not looked up for a session.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty debug --input-hash abc123 --session-id d5d1c9cf0e64b5dd69b00e97b07fe3f4-18-1 --vtime 1234567890
 stderr '"antithesis.debugging.session_id": "d5d1c9cf0e64b5dd69b00e97b07fe3f4-18-1"'

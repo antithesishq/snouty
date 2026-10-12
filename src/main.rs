@@ -442,7 +442,7 @@ async fn cmd_debug(
     params.ensure_single_debug_target()?;
 
     let api = AntithesisApi::new_for_launch(settings, verbose)?;
-    // The launch endpoint accepts an unknown run or moment and starts a
+    // The launch endpoint accepts an unknown run or input hash and starts a
     // billable session, so check them first. The runs endpoints refuse a
     // password, so with one there is no way to check.
     let param = |key| params.as_map().get(key).and_then(|v| v.as_str());
@@ -450,12 +450,8 @@ async fn cmd_debug(
         && !api.uses_password()
     {
         snouty::runs::ensure_run_exists(&api, run_id).await?;
-        // Validation requires both, and normalization made the vtime a string.
-        if let (Some(input_hash), Some(vtime)) = (
-            param(ANT_DEBUGGING_INPUT_HASH),
-            param(ANT_DEBUGGING_VTIME).and_then(|v| v.parse().ok()),
-        ) {
-            snouty::runs::ensure_moment_exists(&api, run_id, input_hash, vtime).await?;
+        if let Some(input_hash) = param(ANT_DEBUGGING_INPUT_HASH) {
+            snouty::runs::ensure_input_hash_exists(&api, run_id, input_hash).await?;
         }
     }
 

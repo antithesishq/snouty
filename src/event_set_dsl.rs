@@ -7,8 +7,6 @@
 //! server-side; the API is expected to grow more places that take an event
 //! set, so everything snouty knows about the DSL lives here.
 
-use crate::vtime::VTime;
-
 /// The DSL's verbs. A pipeline starts with one of these.
 pub const VERBS: &[&str] = &[
     "matches",
@@ -48,22 +46,15 @@ pub fn substring_filter(needles: &[String]) -> String {
     )
 }
 
-/// The event-set expression `(ev, moment)` that decides whether one event
-/// sits under `moment.input_hash`, at most `moment.tolerance` seconds from
-/// `moment.vtime`. The hash compares as a string: as a number it loses
-/// precision, and hashes that differ in their last digits compare equal.
-pub(crate) const MOMENT_FILTER: &str = "(ev, moment) => ev.moment.input_hash == moment.input_hash \
-     && Math.abs(ev.moment.vtime - moment.vtime) <= moment.tolerance";
+/// The start of the event set that keeps the events under one input hash.
+/// The hash compares as a string: as a number it loses precision, and
+/// hashes that differ in their last digits compare equal.
+pub(crate) const INPUT_HASH_FILTER: &str = "filter(ev => ev.moment.input_hash == ";
 
-/// Build the event set that keeps the events under `input_hash` at most
-/// `tolerance` seconds from `vtime`.
-pub fn moment_filter(input_hash: &str, vtime: VTime, tolerance: f64) -> String {
-    let moment = serde_json::json!({
-        "input_hash": input_hash,
-        "vtime": vtime,
-        "tolerance": tolerance,
-    });
-    format!("filter(ev => ({MOMENT_FILTER})(ev, {moment}))")
+/// Build the event set that keeps the events under `input_hash`.
+pub fn input_hash_filter(input_hash: &str) -> String {
+    let input_hash = serde_json::to_string(input_hash).expect("strings serialize to JSON");
+    format!("{INPUT_HASH_FILTER}{input_hash})")
 }
 
 #[cfg(test)]

@@ -1439,26 +1439,18 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
         return (400, body, json);
     }
 
-    // `snouty debug` applies [`event_set_dsl::MOMENT_FILTER`] to one JSON
-    // object, so cutting the query at that expression leaves the object.
-    if let Some((_, applied)) = query.split_once(crate::event_set_dsl::MOMENT_FILTER) {
-        let object = applied
-            .find('{')
-            .zip(applied.rfind('}'))
-            .map(|(open, close)| &applied[open..=close])
-            .expect("`snouty debug` applies the filter to a JSON object");
-        let moment: serde_json::Value =
-            serde_json::from_str(object).expect("the object snouty wrote is JSON");
+    // `snouty debug` checks an input hash with
+    // [`event_set_dsl::input_hash_filter`]: the hash follows the filter's
+    // start as a JSON string.
+    if let Some(applied) = query.strip_prefix(crate::event_set_dsl::INPUT_HASH_FILTER) {
+        let input_hash: serde_json::Value = applied
+            .strip_suffix(')')
+            .and_then(|hash| serde_json::from_str(hash).ok())
+            .expect("the hash snouty wrote is a JSON string");
         let (_, logs) = mock_route_get_run_logs(run_id);
         let found = logs.lines().find(|line| {
             let event: serde_json::Value = serde_json::from_str(line).expect("fixture is JSON");
-            let vtime =
-                |v: &serde_json::Value| crate::vtime::VTime::from_json(v).map(|t| t.as_seconds());
-            event["moment"]["input_hash"] == moment["input_hash"]
-                && vtime(&event["moment"]["vtime"])
-                    .zip(vtime(&moment["vtime"]))
-                    .zip(moment["tolerance"].as_f64())
-                    .is_some_and(|((ev, want), tol)| (ev - want).abs() <= tol)
+            event["moment"]["input_hash"] == input_hash
         });
         return match found {
             Some(line) => (200, format!("{line}\n"), ndjson),

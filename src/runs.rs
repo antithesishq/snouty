@@ -713,23 +713,15 @@ pub async fn ensure_run_exists(api: &AntithesisApi, run_id: &str) -> Result<()> 
     }
 }
 
-/// How far, in seconds, a debugging vtime may sit from the nearest event
-/// under its input hash. A valid vtime can fall between that hash's events,
-/// or before its first or after its last, until the run moves to the next
-/// hash. On two runs (1941 hashes), a hash's events spanned at most 1.9 s,
-/// and the next hash came at most 3.1 s after a hash's last event.
-const DEBUG_MOMENT_TOLERANCE_SECONDS: f64 = 5.0;
-
-/// Fail unless an event of `run_id` sits under `input_hash` near `vtime`.
-/// The launch endpoint accepts a moment that the run never reached and
-/// starts a billable session, so check the moment first.
-pub async fn ensure_moment_exists(
+/// Fail unless `run_id` has an event under `input_hash`. The launch endpoint
+/// accepts a hash that the run never reached and starts a billable session,
+/// so check the hash first.
+pub async fn ensure_input_hash_exists(
     api: &AntithesisApi,
     run_id: &str,
     input_hash: &str,
-    vtime: VTime,
 ) -> Result<()> {
-    let query = event_set_dsl::moment_filter(input_hash, vtime, DEBUG_MOMENT_TOLERANCE_SECONDS);
+    let query = event_set_dsl::input_hash_filter(input_hash);
     let search = SearchMode::Query {
         stream: false,
         limit: Some(NonZeroU64::MIN),
@@ -739,7 +731,7 @@ pub async fn ensure_moment_exists(
         // The run exists, so a 404 is a tenant release that does not serve
         // the search. There is no way to check.
         Err(err) if api_error_status(&err) == Some(404) => {
-            debug!("cannot check the moment: the events search answered 404");
+            debug!("cannot check the input hash: the events search answered 404");
             return Ok(());
         }
         Err(err) => return Err(err),
@@ -747,7 +739,7 @@ pub async fn ensure_moment_exists(
     match event_lines(stream, ErrorRows::Abort).try_next().await? {
         Some(_) => Ok(()),
         None => Err(user_error(format!(
-            "no moment matches input hash {input_hash} near vtime {vtime} in run {run_id}"
+            "no moment matches input hash {input_hash} in run {run_id}"
         ))
         .suggestion(format!(
             "search for a moment using `snouty runs events {run_id} <search query>`"

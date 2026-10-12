@@ -247,62 +247,44 @@ stdout 'source_run_id=absent source_session_id=ba4ebf3181dd342334b86c58941813c6-
 ! snouty runs exec run-2 1002528785118888238 278.1311443040613 'true'
 stderr 'Moment not warm'
 stderr 'use --source-run-id to load a moment from a different run$'
-! stderr 'may still be loading'
+! stderr 'not ready'
 
-# A new debugging session answers 404, then the cold 400, for minutes after
-# launch (orbitinghail, release 64.0). In the gallery a session took 3 to 4
-# minutes from launch to accept commands. For a debugging session that
-# started less than 10 minutes ago, snouty first says to try again. The cold
-# 400 keeps the --source-run-id suggestion, because the moment can also come
-# from another run. Only these error paths read the run: success adds no
-# request.
+# A debugging session in `starting` cannot accept a command. Whatever the
+# error, snouty says to wait for the session, and gives no other suggestion.
+# Only these error paths read the run: success adds no request.
+! snouty runs exec session-starting -3625518438076122494 398.4898056755774 'true'
+stderr 'Resource not found'
+stderr '^Suggestion: the debugging session is not ready yet. Wait for it with `snouty runs wait session-starting --until running`, then try again$'
+
+! snouty runs exec session-starting 1002528785118888238 278.1311443040613 'true'
+stderr 'Moment not warm'
+stderr 'not ready yet'
+! stderr 'use --source-run-id'
+
+! snouty runs exec session-starting -3625518438076122494 398.4898056755774 'true' --source-run-id run-1
+stderr 'not ready yet'
+! stderr 'names an existing source'
+
+# Release 64.0 reports `in_progress` for minutes before a session accepts
+# commands (orbitinghail), and answers the 404 or the cold 400 in that time.
+# snouty does not guess that such a session is loading: it gives the
+# suggestion for each error, as for any session in `in_progress`.
 ! snouty runs exec session-loading -3625518438076122494 398.4898056755774 'true'
 stderr 'Resource not found'
-stderr 'the session may still be loading: a new debugging session takes a few minutes to accept commands. Try again in a minute$'
+! stderr 'Suggestion'
 
 ! snouty runs exec session-loading 1002528785118888238 278.1311443040613 'true'
 stderr 'Moment not warm'
-stderr '(?s)Try again in a minute\nSuggestion: use --source-run-id to load a moment from a different run'
+stderr '^Suggestion: use --source-run-id to load a moment from a different run$'
+! stderr 'not ready'
 
-# With a rewarm source, a 404 can also be a bad source, and a retry does not
-# fix that. snouty reads the source run to tell the two apart. In an eval on
-# orbitinghail (release 64.0), agents passed a correct --source-run-id to a
-# new session and got the 404 for up to 7 minutes. When the source run
-# exists, a recent session gets the note and no source suggestion. When the
-# source run does not exist, snouty names the flag and gives no note.
 ! snouty runs exec session-loading -3625518438076122494 398.4898056755774 'true' --source-run-id run-1
-stderr 'Try again in a minute$'
-! stderr 'names an existing source'
+stderr '^Suggestion: check that --source-run-id names an existing source$'
+! stderr 'not ready'
 
-! snouty runs exec session-loading -3625518438076122494 398.4898056755774 'true' --source-run-id no-such-run
-stderr 'check that --source-run-id names an existing source'
-! stderr 'may still be loading'
-
-# An older session is past the loading window, so a source run that exists
-# does not explain the 404. snouty keeps the source suggestion: the server
-# can refuse a run as a source for a reason that snouty cannot see.
-! snouty runs exec session-old -3625518438076122494 398.4898056755774 'true' --source-run-id run-1
-stderr 'check that --source-run-id names an existing source'
-! stderr 'may still be loading'
-
-# There is no cheap probe for a source session, so its 404 keeps the source
-# suggestion.
 ! snouty runs exec session-loading -3625518438076122494 398.4898056755774 'true' --source-session-id ba4ebf3181dd342334b86c58941813c6-64-0
-stderr 'check that --source-session-id names an existing source'
-! stderr 'may still be loading'
-
-# An older session, or a run that is not a debugging session, gets no note.
-! snouty runs exec session-old -3625518438076122494 398.4898056755774 'true'
-stderr 'Resource not found'
-! stderr 'may still be loading'
-
-! snouty runs exec session-old 1002528785118888238 278.1311443040613 'true'
-stderr 'use --source-run-id to load a moment from a different run$'
-! stderr 'may still be loading'
-
-! snouty runs exec run-starting -3625518438076122494 398.4898056755774 'true'
-stderr 'Resource not found'
-! stderr 'may still be loading'
+stderr '^Suggestion: check that --source-session-id names an existing source$'
+! stderr 'not ready'
 
 # With a source, snouty prints one rewarm progress line per percentage on stderr
 # when stderr is not a terminal. stdout keeps only the script's output.

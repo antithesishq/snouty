@@ -842,33 +842,30 @@ fn mock_run_not_found(run_id: &str) -> (u16, String) {
     (404, format!(r#"{{"message":"run not found: {run_id}"}}"#))
 }
 
-/// Runs whose `created_at` is a number of minutes before the request, so a
-/// spec can tell a session that may still be loading from an older one:
-/// (run_id, minutes since launch, launcher). They are in progress, and kept
-/// out of MOCK_RUNS so the list-oriented specs don't see them. Like a new
-/// session on release 64.0, they answer `runs exec` with a bare 404, or with
-/// the cold 400 for a cold moment.
-const MOCK_FRESH_RUNS: &[(&str, i64, &str)] = &[
-    ("session-loading", 2, "debugging"),
-    ("session-old", 60, "debugging"),
-    ("run-starting", 2, "nightly"),
+/// Debugging sessions that do not accept commands yet: (run_id, status).
+/// They are kept out of MOCK_RUNS so the list-oriented specs don't see them.
+/// Like a new session on release 64.0, they answer `runs exec` with a bare
+/// 404, or with the cold 400 for a cold moment. That server reports
+/// `in_progress` before a session accepts commands.
+const MOCK_LOADING_SESSIONS: &[(&str, &str)] = &[
+    ("session-starting", "starting"),
+    ("session-loading", "in_progress"),
 ];
 
-fn mock_fresh_run(run_id: &str) -> Option<(i64, &'static str)> {
-    MOCK_FRESH_RUNS
+fn mock_loading_session(run_id: &str) -> Option<&'static str> {
+    MOCK_LOADING_SESSIONS
         .iter()
-        .find(|(id, ..)| *id == run_id)
-        .map(|&(_, minutes, launcher)| (minutes, launcher))
+        .find(|(id, _)| *id == run_id)
+        .map(|&(_, status)| status)
 }
 
 fn mock_route_get_run(run_id: &str) -> (u16, String) {
-    if let Some((minutes, launcher)) = mock_fresh_run(run_id) {
-        let created = chrono::Utc::now() - chrono::TimeDelta::minutes(minutes);
+    if let Some(status) = mock_loading_session(run_id) {
         let body = serde_json::json!({
             "run_id": run_id,
-            "status": "in_progress",
-            "created_at": created.to_rfc3339(),
-            "launcher": launcher,
+            "status": status,
+            "created_at": chrono::Utc::now().to_rfc3339(),
+            "launcher": "debugging",
         });
         return (200, body.to_string());
     }
@@ -1214,7 +1211,7 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     let cold = request["moment"]["input_hash"] == MOCK_COLD_HASH;
     let has_source =
         request.get("source_run_id").is_some() || request.get("source_session_id").is_some();
-    if mock_fresh_run(run_id).is_some() {
+    if mock_loading_session(run_id).is_some() {
         if cold && !has_source {
             return mock_exec_cold();
         }

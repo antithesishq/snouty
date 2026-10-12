@@ -1,5 +1,7 @@
+use std::fmt;
+use std::str::FromStr;
+
 use jsonschema::Validator;
-use jsonschema::error::ValidationErrorKind;
 use log::debug;
 use serde_json::{Map, Value};
 
@@ -59,6 +61,46 @@ pub const ANT_DEBUGGING_RUN_ID: &str = "antithesis.debugging.run_id";
 pub const ANT_DEBUGGING_INPUT_HASH: &str = "antithesis.debugging.input_hash";
 pub const ANT_DEBUGGING_VTIME: &str = "antithesis.debugging.vtime";
 
+/// One `--param key=value` argument. The value may contain `=`: only the
+/// first `=` splits.
+#[derive(Debug, Clone)]
+pub struct Param {
+    key: String,
+    value: String,
+}
+
+#[derive(Debug)]
+pub enum ParseParamError {
+    MissingEquals,
+    EmptyKey,
+}
+
+impl fmt::Display for ParseParamError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            ParseParamError::MissingEquals => "expected key=value",
+            ParseParamError::EmptyKey => "the key is empty",
+        })
+    }
+}
+
+impl std::error::Error for ParseParamError {}
+
+impl FromStr for Param {
+    type Err = ParseParamError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let (key, value) = s.split_once('=').ok_or(ParseParamError::MissingEquals)?;
+        if key.is_empty() {
+            return Err(ParseParamError::EmptyKey);
+        }
+        Ok(Self {
+            key: key.to_owned(),
+            value: value.to_owned(),
+        })
+    }
+}
+
 /// Params parsed from CLI arguments and validated against the JSON schema.
 #[derive(Debug, Clone, Default)]
 pub struct Params {
@@ -72,30 +114,16 @@ impl Params {
     }
 
     /// Parse params from `key=value` pairs.
-    ///
-    /// Values may contain `=` (only the first `=` is used as the delimiter).
-    /// Errors on missing `=` or empty key.
+    #[cfg(test)]
     pub fn from_key_value_pairs<I, S>(pairs: I) -> Result<Self>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut inner = Map::new();
-        for pair in pairs {
-            let pair = pair.as_ref();
-            let (key, value) = pair.split_once('=').ok_or_else(|| {
-                user_error(format!(
-                    "invalid parameter: expected key=value, got: {pair}"
-                ))
-            })?;
-            if key.is_empty() {
-                return Err(user_error(format!(
-                    "invalid parameter: empty key in: {pair}"
-                )));
-            }
-            inner.insert(key.to_string(), Value::String(value.to_string()));
-        }
-        Ok(Self { inner })
+        Ok(pairs
+            .into_iter()
+            .map(|pair| pair.as_ref().parse())
+            .collect::<std::result::Result<_, ParseParamError>>()?)
     }
 
     /// Create params from a JSON value.
@@ -230,6 +258,16 @@ impl Params {
     }
 }
 
+impl FromIterator<Param> for Params {
+    fn from_iter<I: IntoIterator<Item = Param>>(params: I) -> Self {
+        let inner = params
+            .into_iter()
+            .map(|Param { key, value }| (key, Value::String(value)))
+            .collect();
+        Self { inner }
+    }
+}
+
 fn is_sensitive_key(key: &str) -> bool {
     key.ends_with(".token") || key == ANT_REPORT_RECIPIENTS
 }
@@ -279,17 +317,8 @@ fn validate_against_def(params: &Map<String, Value>, def_name: &str) -> Result<(
     Err(report)
 }
 
-/// Collect the human-readable notes for every validation error, with the
-/// misleading `unevaluatedProperties` cascade filtered out. Returns an empty
-/// vec when the params are valid.
-///
-/// `unevaluatedProperties: false` reports every sibling property as
-/// "unexpected" whenever a more specific subschema (e.g. the `duration`
-/// pattern) fails: once the failing subschema is dropped, its properties are
-/// left unevaluated and the catch-all fires on all of them. Those properties
-/// are usually valid and required, so the note sends readers chasing fields
-/// that aren't actually wrong. When a more specific violation already fired,
-/// we drop the cascade and surface only the real error(s).
+/// Collect the human-readable notes for every validation error. Returns an
+/// empty vec when the params are valid.
 fn collect_validation_notes(params: &Map<String, Value>, def_name: &str) -> Vec<String> {
     let schema: Value = serde_json::from_str(SCHEMA).expect("valid schema");
 
@@ -302,16 +331,9 @@ fn collect_validation_notes(params: &Map<String, Value>, def_name: &str) -> Vec<
     let validator = Validator::new(&def_schema).expect("valid schema");
     let instance = Value::Object(params.clone());
 
-    let errors: Vec<_> = validator.iter_errors(&instance).collect();
-    let is_cascade = |e: &jsonschema::ValidationError| {
-        matches!(e.kind(), ValidationErrorKind::UnevaluatedProperties { .. })
-    };
-    let has_specific_error = errors.iter().any(|e| !is_cascade(e));
-
-    errors
-        .iter()
-        .filter(|e| !(has_specific_error && is_cascade(e)))
-        .map(note_for_error)
+    validator
+        .iter_errors(&instance)
+        .map(|error| note_for_error(&error))
         .collect()
 }
 
@@ -321,8 +343,8 @@ fn collect_validation_notes(params: &Map<String, Value>, def_name: &str) -> Vec<
 /// The jsonschema messages describe only the value and the violated
 /// constraint (e.g. `"asdf" does not match "^[0-9]+(\.[0-9]+)?$"`); they never
 /// name the field. The field lives in the error's instance path, so we pull it
-/// from there and put it up front. Object-level errors (e.g. unevaluated
-/// properties) carry an empty instance path and already name the property in
+/// from there and put it up front. Object-level errors (e.g. a missing
+/// required property) carry an empty instance path and already name the property in
 /// their message, so they pass through unprefixed.
 fn note_for_error(error: &jsonschema::ValidationError) -> String {
     let pointer = error.instance_path().as_str();
@@ -466,10 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_duration_does_not_cascade_into_unevaluated_properties() {
-        // A bad `antithesis.duration` value used to drag every sibling property
-        // into a misleading "Unevaluated properties are not allowed" note. The
-        // only real error is the duration pattern; the siblings are valid.
+    fn invalid_duration_reports_one_field_attributed_note() {
         let params = Params::from_key_value_pairs([
             "antithesis.duration=15m",
             "antithesis.test_name=my-test",
@@ -477,24 +496,17 @@ mod tests {
         ])
         .unwrap();
 
-        // The cascade is surfaced as color_eyre notes, not in the report's
-        // Display, so assert on the collected notes directly.
+        // The notes are color_eyre sections, not in the report's Display, so
+        // assert on the collected notes directly.
         let notes = collect_validation_notes(params.as_map(), "testParams");
         assert_eq!(
             notes.len(),
             1,
             "exactly one real error expected, got: {notes:?}"
         );
-        // The real, specific failure is reported, and the note names the
-        // offending field so the reader knows where to look.
         assert!(
             notes[0].contains("antithesis.duration") && notes[0].contains("15m"),
             "expected field-attributed duration note, got: {notes:?}"
-        );
-        // ...but no cascade naming the valid siblings.
-        assert!(
-            notes.iter().all(|n| !n.contains("Unevaluated properties")),
-            "cascade should be suppressed, got: {notes:?}"
         );
     }
 
@@ -559,7 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_debugging_params_rejects_custom_props() {
+    fn validate_debugging_params_accepts_custom_props() {
         let pairs = [
             "antithesis.debugging.input_hash=abc123",
             "antithesis.debugging.session_id=sess-456",
@@ -567,7 +579,7 @@ mod tests {
             "my.custom.prop=value",
         ];
         let params = Params::from_key_value_pairs(pairs).unwrap();
-        assert!(params.validate_debugging_params().is_err());
+        assert!(params.validate_debugging_params().is_ok());
     }
 
     #[test]
@@ -687,7 +699,7 @@ mod tests {
         let pairs = ["=value"];
         let result = Params::from_key_value_pairs(pairs);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("empty key"));
+        assert!(result.unwrap_err().to_string().contains("the key is empty"));
     }
 
     #[test]

@@ -7,6 +7,7 @@ use crate::api::{
     PerformanceTier, RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SourceRunId,
     SourceSessionId,
 };
+use crate::params::Param;
 use crate::time::{BareUnit, HumanDuration, ParseDurationError};
 use crate::vtime::VTime;
 
@@ -236,6 +237,11 @@ Using CLI arguments:
     --title "stalled leader election" \
     --description "debug this moment" \
     --recipients "team@example.com"
+
+Extra parameters can be passed with --param, as for `snouty launch`. A --param
+cannot replace the value of a dedicated flag, such as --title:
+  snouty debug --run-id <run_id> --input-hash <hash> --vtime <vtime> \
+    --param attrs.team=payments
 
 Add --json for machine-readable output. The response prints as one JSON
 object:
@@ -673,7 +679,7 @@ pub struct LaunchArgs {
 
     /// Extra parameters as key=value pairs (repeatable)
     #[arg(long = "param")]
-    pub params: Vec<String>,
+    pub params: Vec<Param>,
 }
 
 #[derive(Args)]
@@ -709,6 +715,10 @@ pub struct DebugArgs {
     /// Report recipients (semicolon-delimited email addresses)
     #[arg(long)]
     pub recipients: Option<String>,
+
+    /// Extra parameters as key=value pairs (repeatable)
+    #[arg(long = "param")]
+    pub params: Vec<Param>,
 }
 
 /// The block-rendering paragraph `runs events` and `runs search` share in

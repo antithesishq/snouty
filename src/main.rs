@@ -24,7 +24,7 @@ use snouty::params::{
     ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID,
     ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION, ANT_EVENT_DESCRIPTION,
     ANT_FILTER_LOGS_MATCHING, ANT_FILTER_SOURCE_MATCHING, ANT_IS_EPHEMERAL, ANT_PERFORMANCE_TIER,
-    ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, Params, RUN_CALLER_TYPE, VCS_PARAMS,
+    ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, Param, Params, RUN_CALLER_TYPE, VCS_PARAMS,
     VCS_REPO_BRANCH, VCS_REPO_NAME, VCS_REPO_OWNER, VCS_REPO_TYPE, VCS_VERSION_ID,
     VCS_VERSION_LINK,
 };
@@ -243,21 +243,7 @@ async fn cmd_launch(
         None
     };
 
-    if !args.params.is_empty() {
-        let extra = Params::from_key_value_pairs(&args.params)?;
-
-        // Check for conflicts with typed flags already set in params
-        for key in extra.as_map().keys() {
-            if params.contains_key(key) {
-                return Err(user_error(format!(
-                    "invalid arguments: '{key}' cannot be overridden via --param"
-                ))
-                .suggestion("use the dedicated flag instead"));
-            }
-        }
-
-        params.merge(extra);
-    }
+    merge_param_flags(&mut params, args.params)?;
 
     if params.is_empty() {
         return Err(user_error("invalid arguments: no parameters provided"));
@@ -412,13 +398,29 @@ fn debug_typed_params(args: &DebugArgs) -> Params {
     params
 }
 
+/// Merge the `--param` values into `params`, which holds the typed flags. A
+/// `--param` cannot set a key that a typed flag set.
+fn merge_param_flags(params: &mut Params, param_flags: Vec<Param>) -> Result<()> {
+    let extra: Params = param_flags.into_iter().collect();
+    if let Some(key) = extra.as_map().keys().find(|key| params.contains_key(key)) {
+        return Err(user_error(format!(
+            "invalid arguments: '{key}' cannot be overridden via --param"
+        ))
+        .suggestion("use the dedicated flag instead"));
+    }
+    params.merge(extra);
+    Ok(())
+}
+
 fn debug_params(args: DebugArgs) -> Result<Params> {
     let mut params = if args.stdin {
         get_stdin_params()?
     } else {
         Params::default()
     };
-    params.merge(debug_typed_params(&args));
+    let mut flags = debug_typed_params(&args);
+    merge_param_flags(&mut flags, args.params)?;
+    params.merge(flags);
 
     if params.is_empty() {
         return Err(user_error("invalid arguments: no parameters provided"));

@@ -20,6 +20,17 @@
 ! snouty debug --input-hash abc --run-id run-123 --vtime 123
 stderr 'No Antithesis credentials found.*'
 
+# The help documents --param for custom parameters.
+snouty debug --help
+stdout '--param attrs\.team=payments'
+
+# A --param value must be a key=value pair. clap rejects any other form
+#    before any API call.
+! snouty debug --input-hash abc --run-id run-123 --vtime 123 --param no-equals-sign
+stderr 'invalid value .no-equals-sign. for .--param.*expected key=value'
+! snouty debug --input-hash abc --run-id run-123 --vtime 123 --param =value
+stderr 'invalid value .=value. for .--param.*the key is empty'
+
 [staging] skip
 
 # Parameters are validated against the debuggingParams schema before
@@ -67,6 +78,22 @@ stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 # The mock-server directive configures username/password credentials, which are
 # deprecated — the launch warns and steers the user to `snouty login`.
 stderr 'warning: username/password authentication is deprecated'
+
+# --param adds custom parameters to the session, as it does for `snouty
+#    launch`. Unknown keys, antithesis.* or user-defined, pass through.
+#    Sensitive values are redacted in the printed parameters.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --param attrs.team=payments --param antithesis.brand_new_param=on --param antithesis.integrations.github.token=secret
+stderr '"attrs.team": "payments"'
+stderr '"antithesis.brand_new_param": "on"'
+stderr '"antithesis.integrations.github.token": "\[REDACTED\]"'
+stdout 'Debugging session started: run_id run-123'
+
+# --param cannot override the value of a dedicated flag.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --title mine --param antithesis.test_name=other
+stderr "'antithesis.test_name' cannot be overridden via --param"
+! stderr 'Requesting the Antithesis multiverse debugger'
 
 # The live API answers success with HTTP 200. snouty also accepts the
 #    documented 202.
@@ -145,6 +172,12 @@ stderr '"antithesis.debugging.run_id": "9043254f65c9c65d63fe043a0abfc7fc-53-1"'
 stderr '"antithesis.debugging.input_hash": "override"'
 stderr '"antithesis.debugging.vtime": "329.8037810830865"'
 stderr '"antithesis.report.recipients": "\[REDACTED\]"'
+
+# A --param value also takes priority over the same key on stdin.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+stdin debug_run_json.txt
+snouty debug --stdin --param antithesis.debugging.input_hash=from-param
+stderr '"antithesis.debugging.input_hash": "from-param"'
 
 # On success, a confirmation with the run_id is printed to stdout. The
 #    session takes a few minutes to start, so the next steps follow: the

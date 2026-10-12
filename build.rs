@@ -58,6 +58,7 @@ fn generate_api_client(out_dir: &Path) {
     open_performance_tier(&mut spec_value);
     unrequire_search_limit_default(&mut spec_value);
     add_mvd_test_name(&mut spec_value);
+    open_mvd_params(&mut spec_value);
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
 
     let mut settings = progenitor::GenerationSettings::default();
@@ -281,6 +282,31 @@ fn add_mvd_test_name(spec: &mut serde_json::Value) {
                 )
                 .is_none(),
             "MVD_Params now documents antithesis.test_name; delete `add_mvd_test_name` in build.rs"
+        );
+    }
+}
+
+/// The spec closes `MVD_Params` to its documented keys, but
+/// `/api/v1/launch/debugging` accepts custom string params, as a test launch
+/// does. Open each variant the way `Params` is open, so the generated type
+/// carries an `extra` map.
+fn open_mvd_params(spec: &mut serde_json::Value) {
+    let variants = spec
+        .pointer_mut("/components/schemas/MVD_Params/oneOf")
+        .and_then(serde_json::Value::as_array_mut)
+        .expect("openapi spec has no MVD_Params.oneOf; update `open_mvd_params` in build.rs");
+    for variant in variants {
+        let variant = variant
+            .as_object_mut()
+            .expect("an MVD_Params variant is not an object; update `open_mvd_params`");
+        assert!(
+            variant
+                .insert(
+                    "additionalProperties".to_owned(),
+                    serde_json::json!({"type": "string"}),
+                )
+                .is_none(),
+            "MVD_Params now sets additionalProperties; delete `open_mvd_params` in build.rs"
         );
     }
 }

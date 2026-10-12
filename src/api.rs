@@ -1288,25 +1288,38 @@ async fn finish_launch<T: DeserializeOwned>(
 fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequest> {
     use generated::types::MvdParams;
 
-    let map = params.as_map();
-    let get = |key: &str| -> Result<Option<String>> {
-        match map.get(key) {
-            None => Ok(None),
-            Some(value) => value
-                .as_str()
-                .map(|s| Some(s.to_string()))
-                .ok_or_else(|| eyre!("debugging params must be strings: {key}")),
-        }
-    };
+    let mut input_hash = None;
+    let mut vtime = None;
+    let mut event_description = None;
+    let mut test_name = None;
+    let mut recipients = None;
+    let mut run_id = None;
+    let mut session_id = None;
+    let mut extra = HashMap::new();
 
-    let input_hash = get(ANT_DEBUGGING_INPUT_HASH)?
-        .ok_or_else(|| eyre!("missing {ANT_DEBUGGING_INPUT_HASH}"))?;
-    let vtime = get(ANT_DEBUGGING_VTIME)?.ok_or_else(|| eyre!("missing {ANT_DEBUGGING_VTIME}"))?;
-    let event_description = get(ANT_EVENT_DESCRIPTION)?;
-    let test_name = get(ANT_TEST_NAME)?;
-    let recipients = get(ANT_REPORT_RECIPIENTS)?;
-    let run_id = get(ANT_DEBUGGING_RUN_ID)?;
-    let session_id = get(ANT_DEBUGGING_SESSION_ID)?;
+    for (key, value) in params.as_map() {
+        let value = value
+            .as_str()
+            .ok_or_else(|| eyre!("debugging params must be strings: {key}"))?
+            .to_string();
+        let slot = match key.as_str() {
+            ANT_DEBUGGING_INPUT_HASH => &mut input_hash,
+            ANT_DEBUGGING_VTIME => &mut vtime,
+            ANT_EVENT_DESCRIPTION => &mut event_description,
+            ANT_TEST_NAME => &mut test_name,
+            ANT_REPORT_RECIPIENTS => &mut recipients,
+            ANT_DEBUGGING_RUN_ID => &mut run_id,
+            ANT_DEBUGGING_SESSION_ID => &mut session_id,
+            _ => {
+                extra.insert(key.clone(), value);
+                continue;
+            }
+        };
+        *slot = Some(value);
+    }
+
+    let input_hash = input_hash.ok_or_else(|| eyre!("missing {ANT_DEBUGGING_INPUT_HASH}"))?;
+    let vtime = vtime.ok_or_else(|| eyre!("missing {ANT_DEBUGGING_VTIME}"))?;
 
     // The MVD_Params schema is a oneOf, so the target run is identified by
     // exactly one of run_id or session_id. cmd_debug enforces this with a
@@ -1320,6 +1333,7 @@ fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequ
             antithesis_event_description: event_description,
             antithesis_report_recipients: recipients,
             antithesis_test_name: test_name,
+            extra,
         },
         (None, Some(session_id)) => MvdParams::SessionId {
             antithesis_debugging_input_hash: input_hash,
@@ -1328,6 +1342,7 @@ fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequ
             antithesis_event_description: event_description,
             antithesis_report_recipients: recipients,
             antithesis_test_name: test_name,
+            extra,
         },
         (Some(_), Some(_)) => return Err(eyre!("specify exactly one of --run-id / --session-id")),
         (None, None) => return Err(eyre!("specify --run-id or --session-id")),
@@ -2254,8 +2269,8 @@ mod tests {
         }
     }
 
-    // launch_mvd_request copies each param into a typed field, so it drops a
-    // param that has no field.
+    // launch_mvd_request sorts each param into a typed field or `extra`, so
+    // it must send every documented param and every custom one.
     #[test]
     fn launch_mvd_request_sends_every_debugging_param() {
         let schema: serde_json::Value =
@@ -2278,6 +2293,7 @@ mod tests {
             for &key in keys.iter().filter(|&&key| key != other) {
                 params.insert(key, format!("value of {key}"));
             }
+            params.insert("attrs.team", "payments");
             let body = serde_json::to_value(launch_mvd_request(&params).unwrap()).unwrap();
             assert_eq!(
                 body["params"],

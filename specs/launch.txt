@@ -47,11 +47,8 @@ stderr 'cannot be used with'
 stderr 'invalid value .abc. for .--duration'
 stderr 'number of minutes.*'
 
-# Parameters are validated against the testParams schema before making
-#    any API call. A bad antithesis.* value (here via the raw --param escape
-#    hatch) reports only the real error, attributed to the offending field,
-#    not a misleading "unevaluated properties" cascade that names its valid
-#    siblings.
+# Parameters are validated against the testParams schema before any API
+#    call. The error for a bad antithesis.* value names the field.
 ! snouty launch --launcher basic_test --param antithesis.duration=asdf --param antithesis.source=ci
 stderr 'validation failed.*'
 stderr 'antithesis\.duration: .*'
@@ -122,7 +119,7 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 ! snouty launch --launcher basic_test --duration 30 --param antithesis.duration=60
 stderr 'cannot be overridden via --param.*'
 
-# A --param value must be a key=value pair. clap rejects any other form
+# A --param value must be a key=value pair. snouty rejects any other form
 #    before any API call.
 ! snouty launch --launcher basic_test --duration 30 --param no-equals-sign
 stderr 'invalid value .no-equals-sign. for .--param.*expected key=value'

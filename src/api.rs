@@ -2258,8 +2258,7 @@ mod tests {
         }
     }
 
-    // The request body must hold every param under its own key, whether it
-    // goes into a typed field or into `extra`.
+    // Every param reaches the body, through a typed field or through `extra`.
     #[test]
     fn launch_mvd_request_sends_every_debugging_param() {
         let schema: serde_json::Value =

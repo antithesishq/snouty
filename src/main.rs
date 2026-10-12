@@ -398,8 +398,8 @@ fn debug_typed_params(args: &DebugArgs) -> Params {
     params
 }
 
-/// Merge the `--param` values into `params`, which holds the typed flags. A
-/// `--param` cannot set a key that a typed flag set.
+/// `params` holds only the typed flags. A `--param` can replace a stdin
+/// value, but not a typed flag.
 fn merge_param_flags(params: &mut Params, param_flags: Vec<Param>) -> Result<()> {
     let extra: Params = param_flags.into_iter().collect();
     if let Some(key) = extra.as_map().keys().find(|key| params.contains_key(key)) {

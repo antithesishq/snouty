@@ -113,7 +113,6 @@ impl Params {
         Self::default()
     }
 
-    /// Parse params from `key=value` pairs.
     #[cfg(test)]
     pub fn from_key_value_pairs<I, S>(pairs: I) -> Result<Self>
     where
@@ -317,8 +316,6 @@ fn validate_against_def(params: &Map<String, Value>, def_name: &str) -> Result<(
     Err(report)
 }
 
-/// Collect the human-readable notes for every validation error. Returns an
-/// empty vec when the params are valid.
 fn collect_validation_notes(params: &Map<String, Value>, def_name: &str) -> Vec<String> {
     let schema: Value = serde_json::from_str(SCHEMA).expect("valid schema");
 
@@ -340,12 +337,10 @@ fn collect_validation_notes(params: &Map<String, Value>, def_name: &str) -> Vec<
 /// Render a single validation error as a note, prefixed with the offending
 /// field name when the error is attributable to a specific property.
 ///
-/// The jsonschema messages describe only the value and the violated
-/// constraint (e.g. `"asdf" does not match "^[0-9]+(\.[0-9]+)?$"`); they never
-/// name the field. The field lives in the error's instance path, so we pull it
-/// from there and put it up front. Object-level errors (e.g. a missing
-/// required property) carry an empty instance path and already name the property in
-/// their message, so they pass through unprefixed.
+/// jsonschema messages name the value and the violated constraint, but not
+/// the field (e.g. `"asdf" does not match "^[0-9]+(\.[0-9]+)?$"`). An
+/// object-level error, such as a missing required property, has an empty
+/// instance path and already names the property, so it gets no prefix.
 fn note_for_error(error: &jsonschema::ValidationError) -> String {
     let pointer = error.instance_path().as_str();
     match pointer.strip_prefix('/') {

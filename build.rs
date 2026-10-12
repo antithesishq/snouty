@@ -282,12 +282,11 @@ fn add_mvd_test_name(spec: &mut serde_json::Value) {
     }
 }
 
-/// The spec closes `MVD_Params` to its documented keys, but a debugging
-/// session is a notebook like any other and accepts custom string params, as
-/// a test launch does (per the snouty maintainers). On orbitinghail, release
-/// 64.0, every debugging session lists server-set params beyond the
-/// documented ones, such as `antithesis.performance_tier`. Open each variant
-/// the way `Params` is open, so the generated type carries an `extra` map.
+/// The spec closes `MVD_Params` to its documented keys, but
+/// `/api/v1/launch/debugging` accepts custom string params (per the snouty
+/// maintainers). On orbitinghail, release 64.0, a debugging session lists
+/// params that the spec does not document, such as
+/// `antithesis.performance_tier`.
 fn open_mvd_params(spec: &mut serde_json::Value) {
     for variant in mvd_params_variants(spec, "open_mvd_params") {
         let variant = variant
@@ -306,8 +305,6 @@ fn open_mvd_params(spec: &mut serde_json::Value) {
     }
 }
 
-/// The `oneOf` variants of `MVD_Params`. `transform` names the caller in the
-/// panic message.
 fn mvd_params_variants<'a>(
     spec: &'a mut serde_json::Value,
     transform: &str,

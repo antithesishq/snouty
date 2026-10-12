@@ -121,7 +121,7 @@
     },
 
     "debuggingParams": {
-      "description": "Parameters for debugging session webhook. Known antithesis.* params are value-checked; unknown params (antithesis.* or user-defined) pass through, as for testParams.",
+      "description": "Parameters for debugging session webhook. Known antithesis.* params are value-checked; unknown params (antithesis.* or user-defined) pass through as strings.",
       "allOf": [
         { "$ref": "#/$defs/debuggingCore" },
         { "$ref": "#/$defs/reportRecipients" }

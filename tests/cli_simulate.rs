@@ -55,6 +55,7 @@ impl Simulation {
             "ssh-keygen",
             "qemu-system-x86_64",
             "qemu-system-aarch64",
+            "qemu-img",
         ] {
             symlink(&script, bin.join(tool)).unwrap();
         }
@@ -285,6 +286,26 @@ fn configured_memory_is_passed_to_qemu() {
 }
 
 #[test]
+fn simulation_uses_ephemeral_scratch_disk_for_podman_storage() {
+    let mut simulation = Simulation::start("clean-once");
+    simulation.wait_for("stdout", "workload");
+    let args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
+    let drive = args.windows(2).find(|args| args[0] == "-drive").unwrap();
+    assert!(drive[1].contains("scratch.qcow2,if=virtio,format=qcow2"));
+    let setup = simulation.read("scratch_setup_script");
+    assert!(setup.contains("mkfs.ext4 -F \"$device\""));
+    assert!(setup.contains("mount --bind /mnt/snouty-scratch/tmp /var/tmp"));
+    assert!(setup.contains("mount --bind /mnt/snouty-scratch/storage /var/lib/containers/storage"));
+    assert!(setup.contains("image_copy_tmp_dir = \"/var/tmp\""));
+    assert_eq!(simulation.read("image_load_command"), "podman load");
+    let scratch_disk = simulation.read("scratch_disk_path");
+    assert!(scratch_disk.ends_with("/scratch.qcow2"));
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    simulation.finish();
+    assert!(!Path::new(&scratch_disk).exists());
+}
+
+#[test]
 fn guest_has_no_vga_and_lets_qemu_assign_the_network_address() {
     let mut simulation = Simulation::start("clean-once");
     simulation.wait_for("qemu_args", "-vga");
@@ -443,7 +464,13 @@ fn start_shell_simulation(mode: &str) -> (TempDir, OsSession) {
     )
     .unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-    for tool in ["docker", "ssh", "ssh-keygen", "qemu-system-x86_64"] {
+    for tool in [
+        "docker",
+        "ssh",
+        "ssh-keygen",
+        "qemu-system-x86_64",
+        "qemu-img",
+    ] {
         symlink(&script, bin.join(tool)).unwrap();
     }
     fs::write(root.join("mode"), mode).unwrap();
@@ -505,6 +532,16 @@ fn hidden_shell_bypasses_compose_and_owns_the_terminal() {
     assert!(!boot.as_bytes().windows(5).any(|bytes| bytes == b"\x1b[18t"));
     assert!(!boot.as_bytes().windows(4).any(|bytes| bytes == b"\x1b[6n"));
     Expect::expect(&mut session, "guest shell ready").expect("guest shell opened");
+    let setup = fs::read_to_string(root.join("scratch_setup_script")).unwrap();
+    assert!(setup.contains("image_copy_tmp_dir = \"/var/tmp\""));
+    let scratch_disk = fs::read_to_string(root.join("scratch_disk_path")).unwrap();
+    let qemu_args: Vec<String> =
+        serde_json::from_str(&fs::read_to_string(root.join("qemu_args")).unwrap()).unwrap();
+    assert!(
+        qemu_args
+            .windows(2)
+            .any(|args| args[0] == "-drive" && args[1].contains("scratch.qcow2"))
+    );
     Expect::send_line(&mut session, "whoami").expect("write to guest shell");
     Expect::expect(&mut session, "root").expect("guest shell replied");
     Expect::send_line(&mut session, "poweroff").expect("power off guest");
@@ -529,7 +566,11 @@ fn hidden_shell_bypasses_compose_and_owns_the_terminal() {
         fs::read_to_string(root.join("shell_input")).unwrap(),
         "whoami\npoweroff"
     );
-    assert!(!root.join("batch_script").exists());
+    assert!(
+        fs::read_to_string(root.join("batch_script"))
+            .unwrap()
+            .contains("image_copy_tmp_dir = \"/var/tmp\"")
+    );
     assert!(!root.join("rollout_started").exists());
     assert_eq!(poweroff, "yes");
     let closing = String::from_utf8_lossy(closing.as_bytes());
@@ -541,6 +582,7 @@ fn hidden_shell_bypasses_compose_and_owns_the_terminal() {
     assert_eq!(fs::read_to_string(root.join("qemu_signal")).unwrap(), "15");
     let run_dir = fs::read_to_string(root.join("run_dir")).unwrap();
     assert!(!Path::new(&run_dir).exists());
+    assert!(!Path::new(&scratch_disk).exists());
 }
 
 #[test]
@@ -563,7 +605,7 @@ fn attach_opens_shell_without_stopping_compose_simulation() {
     assert_eq!(run_dir.file_name().unwrap(), id);
     assert_eq!(
         run_dir,
-        simulation.root().join("runtime/snouty/simulate").join(id)
+        simulation.root().join("cache/snouty/simulate").join(id)
     );
     assert!(run_dir.join("attach-ready").exists());
 

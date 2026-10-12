@@ -16,7 +16,6 @@ use std::io::Write;
 
 use color_eyre::Section;
 use color_eyre::eyre::Result;
-use log::debug;
 use serde_json::json;
 
 use futures_util::stream::BoxStream;
@@ -139,10 +138,7 @@ pub(super) async fn explain_search_error(
                      API as documented; `snouty doctor` reports the tenant release"
                 ))
             }
-            RunProbe::ProbeFailed(probe_err) => {
-                debug!("could not read run {run_id}: {probe_err}");
-                err
-            }
+            RunProbe::ProbeFailed(probe_err) => probe_err,
         },
         Some(400) => err.note(
             "the server rejected the request; its message above says which part \

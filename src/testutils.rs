@@ -830,7 +830,7 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
 /// Run ids that exist on the mock server. Nested endpoints (properties, logs,
 /// events, build logs) 404 for any other id, matching the real API and letting
 /// run-scoped commands disambiguate "run not found" from an empty resource.
-/// `run-empty` and `run-no-events` are properties-only fixtures and are
+/// The `run-empty*` fixtures and `run-no-events` are properties-only fixtures and are
 /// recognised separately by `mock_route_list_run_properties`; `run-stream-error`
 /// is recognised separately by the streaming routes, whose response ends with
 /// a `Stream_Error` line.
@@ -867,6 +867,29 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
             "created_at": chrono::Utc::now().to_rfc3339(),
             "launcher": "debugging",
         });
+        return (200, body.to_string());
+    }
+    // The `run-empty*` fixtures have no properties. They are kept out of
+    // MOCK_RUNS so the list-oriented specs don't see them. Each one models a
+    // different reason for the empty result.
+    let empty_run = match run_id {
+        "run-empty" => Some(("completed", true)),
+        "run-empty-no-report" => Some(("completed", false)),
+        "run-empty-in-progress" => Some(("in_progress", false)),
+        _ => None,
+    };
+    if let Some((status, has_report)) = empty_run {
+        let mut body = serde_json::json!({
+            "run_id": run_id,
+            "status": status,
+            "created_at": "2025-03-20T02:00:00Z",
+            "launcher": "nightly",
+        });
+        if has_report {
+            body["links"] = serde_json::json!({
+                "triage_report": format!("https://demo.antithesis.com/reports/{run_id}"),
+            });
+        }
         return (200, body.to_string());
     }
     // `run-unknown-status` is kept out of MOCK_RUNS so the list-oriented specs
@@ -1007,7 +1030,7 @@ fn mock_route_get_run_logs(run_id: &str) -> (u16, String) {
 }
 
 fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, String) {
-    if run_id == "run-empty" {
+    if run_id.starts_with("run-empty") {
         return (200, r#"{"data":[],"next_cursor":null}"#.to_string());
     }
 

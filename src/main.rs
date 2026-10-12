@@ -17,7 +17,7 @@ use snouty::compose;
 use snouty::config;
 use snouty::container;
 use snouty::docs;
-use snouty::error::{api_error_status, user_error};
+use snouty::error::user_error;
 use snouty::git::{self, GitHubRepo};
 use snouty::login::cmd_login;
 use snouty::params::{
@@ -381,17 +381,7 @@ async fn submit_launch(
     );
 
     let api = AntithesisApi::new_for_launch(settings, verbose)?;
-    // The OpenAPI spec documents a 404 from this endpoint as an unknown
-    // launcher, and its body (`{"statusCode":404,"runId":null}`) says no more.
-    api.launch_test(launcher, &params).await.map_err(|err| {
-        if api_error_status(&err) == Some(404) {
-            user_error(format!("unknown launcher: {launcher}")).suggestion(
-                "check the launcher name; the LAUNCHER column of `snouty runs list` shows the launchers of earlier runs",
-            )
-        } else {
-            err
-        }
-    })
+    api.launch_test(launcher, &params).await
 }
 
 fn debug_typed_params(args: &DebugArgs) -> Params {

@@ -242,8 +242,15 @@ stderr '"antithesis.images": "app@sha256:abc;db:latest"'
 mock-server 404 '{"statusCode":404,"runId":null}'
 ! snouty launch --launcher no_such_launcher --duration 30
 stderr 'unknown launcher: no_such_launcher'
-stderr 'LAUNCHER column of `snouty runs list`'
+stderr '`snouty runs list --detail` shows the launchers'
 ! stderr 'API error'
+
+# A 404 without the envelope, such as an HTML page from a wrong host, keeps
+# the generic API error, because it does not show that the launcher is unknown.
+mock-server 404 '<html><body>404 Not Found</body></html>'
+! snouty launch --launcher basic_test --config-image config:latest --duration 30
+stderr 'API error: 404 Not Found'
+! stderr 'unknown launcher'
 
 # Other errors that reach the test launcher show the HTTP status and the body.
 # (The launcher does no request validation beyond auth, so it never returns a

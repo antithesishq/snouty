@@ -581,6 +581,24 @@ impl AntithesisApi {
             .body(body)
             .send()
             .await;
+        // The OpenAPI spec documents a 404 that carries the Launch_Error_Response
+        // envelope (live body: `{"statusCode":404,"runId":null}`) as an unknown
+        // launcher. A 404 without the envelope, such as an HTML page from a
+        // wrong host, keeps the generic API error.
+        let result = match result {
+            Err(ClientError::UnexpectedResponse(response))
+                if response.status() == reqwest::StatusCode::NOT_FOUND =>
+            {
+                let body = read_error_body(response).await;
+                if serde_json::from_str::<generated::types::LaunchErrorResponse>(&body).is_ok() {
+                    return Err(user_error(format!("unknown launcher: {launcher}")).suggestion(
+                        "check the launcher name; `snouty runs list --detail` shows the launchers of earlier runs",
+                    ));
+                }
+                return Err(format_api_error(404, &error_body_message(&body)));
+            }
+            result => result,
+        };
         let response: generated::types::LaunchResponse = finish_launch(result).await?;
         Ok(LaunchResponse {
             run_id: response.run_id,
@@ -2358,26 +2376,27 @@ mod tests {
     }
 
     // Error bodies are taken as they come — empty, HTML, the live envelope, or
-    // the pre-58.6 `{message}` shape — and every one keeps the HTTP status.
+    // the pre-58.6 `{message}` shape — and every one keeps the HTTP status. A
+    // 404 without the envelope must not claim an unknown launcher.
     #[tokio::test]
     async fn launch_test_reports_the_status_for_any_error_body() {
-        for body in [
-            "",
-            "<html><body>404 Not Found</body></html>",
-            r#"{"statusCode":404,"runId":null}"#,
+        for (status, body) in [
+            (404, ""),
+            (404, "<html><body>404 Not Found</body></html>"),
+            (500, r#"{"statusCode":500,"runId":null}"#),
         ] {
-            let mock_server = mock_launch_test(404, body).await;
+            let mock_server = mock_launch_test(status, body).await;
             let api = test_api_optionally_with_cache(&mock_server, None);
             let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
 
             let report = api.launch_test("basic_test", &params).await.unwrap_err();
             assert_eq!(
                 crate::error::api_error_status(&report),
-                Some(404),
+                Some(status),
                 "body {body:?} lost its status"
             );
             assert!(
-                format!("{report:#}").contains("API error: 404 Not Found"),
+                format!("{report:#}").contains(&format!("API error: {status}")),
                 "body {body:?} produced: {report:#}"
             );
         }

@@ -264,8 +264,14 @@ async fn cmd_launch(
     }
 
     // A user value for any detected key turns detection off, so that a
-    // detected commit link cannot point at a different commit.
-    if !args.no_vcs && !VCS_PARAMS.iter().any(|&(key, _)| params.contains_key(key)) {
+    // detected commit link cannot point at a different commit. A pre-built
+    // config image has no config dir, and the current directory need not hold
+    // its source, so it turns detection off too.
+    let prebuilt_image = args.config.is_none() && params.contains_key(ANT_CONFIG_IMAGE);
+    if !args.no_vcs
+        && !prebuilt_image
+        && !VCS_PARAMS.iter().any(|&(key, _)| params.contains_key(key))
+    {
         params.merge(detect_vcs_params(
             args.config.as_deref().unwrap_or(Path::new(".")),
         ));
@@ -333,11 +339,19 @@ async fn cmd_launch(
 
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
-    } else {
+    } else if let Some(run_id) = response.run_id.as_deref() {
+        println!("Test run started: run_id {run_id}");
         println!(
-            "Test run started: run_id {}",
-            response.run_id.as_deref().unwrap_or("(unknown)")
+            "\nwait for the run to finish with:\n  \
+             snouty runs wait {run_id}"
         );
+        println!(
+            "\nor watch its errors live after it starts running:\n  \
+             snouty runs wait {run_id} --until running\n  \
+             snouty runs search {run_id} --follow 'contains({{output_text: \"error\"}})'"
+        );
+    } else {
+        println!("Test run started: run_id (unknown)");
     }
 
     Ok(())

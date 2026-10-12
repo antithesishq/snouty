@@ -615,3 +615,38 @@ fn runs_list_exits_cleanly_when_stdout_closes_early() {
     );
     assert!(!stderr.contains("panicked"), "stderr:\n{stderr}");
 }
+
+// `snouty launch | head -1` takes the run ID line and closes stdout before the
+// next-step lines are written. snouty must exit cleanly, not panic.
+#[test]
+fn launch_exits_cleanly_when_stdout_closes_early() {
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
+
+    // The read end is closed before snouty spawns, so its first stdout write
+    // hits a broken pipe.
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_snouty"))
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1")
+        .env("ANTITHESIS_API_KEY", "testkey")
+        .env("ANTITHESIS_TENANT", "testtenant")
+        .env("ANTITHESIS_BASE_URL", &mock_url)
+        .args(["launch", "--launcher", "advanced_test", "--duration", "30"])
+        .args(["--source", "ci", "--no-vcs"])
+        .stdout(writer)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap()
+        .wait_with_output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "expected clean exit on broken pipe, got {:?}; stderr:\n{stderr}",
+        output.status
+    );
+    assert!(!stderr.contains("panicked"), "stderr:\n{stderr}");
+}

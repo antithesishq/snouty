@@ -1,4 +1,4 @@
-use std::io::{self, ErrorKind, IsTerminal, Read};
+use std::io::{self, ErrorKind, IsTerminal, Read, Write};
 use std::path::Path;
 use std::process::Command;
 
@@ -68,10 +68,7 @@ async fn main() {
         .install()
         .unwrap();
     env_logger::Builder::from_default_env()
-        .format(|buf, record| {
-            use std::io::Write;
-            writeln!(buf, "{}", record.args())
-        })
+        .format(|buf, record| writeln!(buf, "{}", record.args()))
         .init();
     if let Err(report) = run(Cli::parse()).await {
         // One rendering for every error: `render_report` collapses the chain
@@ -340,16 +337,19 @@ async fn cmd_launch(
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else if let Some(run_id) = response.run_id.as_deref() {
-        println!("Test run started: run_id {run_id}");
-        println!(
-            "\nWait for the run to finish with:\n  \
-             snouty runs wait {run_id}"
-        );
-        println!(
-            "\nOr watch its errors live after it starts running:\n  \
+        // `writeln!` and not `println!`: a reader that stops after the run ID
+        // line (`| head -1`) closes the pipe, and `println!` panics on that.
+        writeln!(
+            io::stdout(),
+            "Test run started: run_id {run_id}\n\
+             \n\
+             Wait for the run to finish with:\n  \
+             snouty runs wait {run_id}\n\
+             \n\
+             Or watch its errors live after it starts running:\n  \
              snouty runs wait {run_id} --until running\n  \
              snouty runs search {run_id} --follow 'contains({{output_text: \"error\"}})'"
-        );
+        )?;
     } else {
         println!("Test run started: run_id (unknown)");
     }

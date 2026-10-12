@@ -516,12 +516,12 @@ impl DockerCompose {
     /// The local image store is the single source of truth for what a launch
     /// runs — snouty never pulls. A local image is rewritten to the digest in
     /// a registry that already serves its bytes, or — when no registry has
-    /// it — pushed to `registry` and rewritten to the pushed digest. So the
-    /// platform always pulls exactly what was resolved here. `missing`
+    /// it — pushed to `registry` and rewritten to the pushed digest. So
+    /// Antithesis always pulls exactly what was resolved here. `missing`
     /// decides what happens to an image that is not local.
     ///
-    /// A reference into `registry` itself comes back bare, because the
-    /// platform resolves such a name against the tenant's own repository.
+    /// A reference into `registry` itself comes back bare, because
+    /// Antithesis resolves such a name against the tenant's own repository.
     pub fn pin_images(
         &self,
         rt: &dyn ContainerRuntime,
@@ -585,8 +585,8 @@ fn launch_missing_images_error(
     absent: &[&str],
 ) -> color_eyre::Report {
     let err = missing_images_error(rt, contents, absent).with_suggestion(|| {
-        "if a registry that the platform can reach serves the missing images, add \
-         `--allow-remote-images` to launch them unpinned"
+        "if a registry that Antithesis can reach serves the missing images, add \
+         `--allow-remote-images` to launch without local validation and pinning"
     });
     // `--config-image` conflicts with `--config`, so the suggestion says to
     // replace `--config`, not to add a flag.
@@ -596,40 +596,48 @@ fn launch_missing_images_error(
     })
 }
 
-/// Warn about each image in `absent`, which the launch leaves as written.
+/// Warn about the images in `absent`, which the launch leaves as written.
 fn warn_remote_images(rt: &dyn ContainerRuntime, contents: &ComposeContents, absent: &[&str]) {
+    let warn = |text: String| eprintln!("{}", crate::render::wrap_if_tty(&text));
+    let listing = |items: Vec<&str>| {
+        items
+            .iter()
+            .map(|item| format!("  {item}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
     // An image in the store of another engine was likely built for this
-    // launch, so the platform cannot pull it.
+    // launch, so Antithesis cannot pull it.
     let absent_refs: Vec<String> = absent.iter().map(|image| image.to_string()).collect();
     let elsewhere = images_available_in_other_engines(rt, &absent_refs);
     if let Some((warnings, suggestion)) = cross_engine_guidance(rt.name(), &elsewhere) {
         for warning in warnings {
-            eprintln!("warning: {warning}");
+            warn(format!("warning: {warning}"));
         }
-        eprintln!("{suggestion}");
+        warn(suggestion);
     }
-    for image in absent {
-        if image.contains('@') {
-            eprintln!(
-                "warning: image `{image}` is not in the local image store. snouty cannot \
-                 check its architecture."
-            );
-        } else {
-            eprintln!(
-                "warning: image `{image}` is not in the local image store, so snouty leaves \
-                 it unpinned. Its tag can resolve to a different image on each run, and \
-                 snouty cannot check its architecture."
-            );
-        }
-    }
-    for service in &contents.services {
-        if contents.build_services.contains(&service.name) && absent.contains(&&*service.image) {
-            eprintln!(
-                "warning: service '{}' has a `build:` stanza. To launch the local code, build \
-                 it first.",
-                service.name
-            );
-        }
+
+    warn(format!(
+        "warning: these images are not in the local image store, so snouty cannot validate \
+         and pin them:\n{}",
+        listing(absent.to_vec())
+    ));
+    let unbuilt: Vec<&str> = contents
+        .services
+        .iter()
+        .filter(|service| {
+            contents.build_services.contains(&service.name)
+                && absent.contains(&service.image.as_str())
+        })
+        .map(|service| service.name.as_str())
+        .collect();
+    if !unbuilt.is_empty() {
+        warn(format!(
+            "warning: these services have a `build:` stanza, but their images are not in the \
+             local image store. To launch the local code, run `docker compose build`:\n{}",
+            listing(unbuilt)
+        ));
     }
 }
 
@@ -656,7 +664,7 @@ fn find_served_images<'a>(
 
 /// Push each local image in `images` into the tenant repository at `prefix`,
 /// and map it to its pushed digest reference. No push overwrites the tenant
-/// tag that the platform reads for an image in `remote`.
+/// tag that Antithesis reads for an image in `remote`.
 fn push_images<'a>(
     rt: &dyn ContainerRuntime,
     images: &[&'a str],
@@ -703,8 +711,8 @@ fn push_images<'a>(
         .collect()
 }
 
-/// The tag in the tenant repository at `prefix` that the platform reads first
-/// for `image`, or `None` when `image` names another registry. The platform
+/// The tag in the tenant repository at `prefix` that Antithesis reads first
+/// for `image`, or `None` when `image` names another registry. Antithesis
 /// resolves a bare name against the tenant repository before public
 /// registries.
 fn tenant_tag(image: &str, prefix: &str) -> Option<String> {
@@ -738,7 +746,7 @@ fn service_rewrites(
 pub enum MissingImages {
     /// Fail the launch: snouty never pulls, so it cannot pin the image.
     Reject,
-    /// Leave the reference unpinned, so the platform pulls it by name at run
+    /// Leave the reference unpinned, so Antithesis pulls it by name at run
     /// time.
     AssumeRemote,
 }
@@ -833,8 +841,8 @@ fn rewrite_compose_images(yaml: &str, references: &BTreeMap<String, String>) -> 
     }
     serde_yaml::to_string(&doc).wrap_err("failed to serialize pinned docker-compose.yaml")
 }
-/// Every compose service must carry an explicit `image:` reference. The
-/// platform runs compose under its own project name, so the default tag that
+/// Every compose service must carry an explicit `image:` reference.
+/// Antithesis runs compose under its own project name, so the default tag that
 /// `docker compose build` gives a `build:`-only service names no image there.
 fn ensure_services_have_images(contents: &ComposeContents) -> Result<()> {
     if contents.services_without_image.is_empty() {
@@ -1302,7 +1310,7 @@ services:
     #[test]
     fn parse_compose_config_needs_an_explicit_image_even_with_a_project_name() {
         // `docker compose build` tags a build-only service
-        // `<project>-<service>`, but the platform runs compose under its own
+        // `<project>-<service>`, but Antithesis runs compose under its own
         // project name, so that tag names no image there.
         let yaml = "\
 name: myproj
@@ -2318,8 +2326,8 @@ services:
     }
     #[test]
     fn push_images_does_not_push_over_a_tenant_tag_that_a_remote_image_reads() {
-        // A reference into the tenant repository, and a bare name, which the
-        // platform resolves against the tenant repository first.
+        // A reference into the tenant repository, and a bare name, which
+        // Antithesis resolves against the tenant repository first.
         for (local, remote) in [
             ("own:v2", "reg.example.com/own:v2"),
             ("reg.example.com/own:v2", "own:v2"),
@@ -2359,7 +2367,7 @@ services:
             BTreeMap::from([
                 ("app".to_string(), "myapp:latest@sha256:a".to_string()),
                 // A remote image in the tenant repository loses the address
-                // too, so the platform does not need to resolve it.
+                // too, so Antithesis does not need to resolve it.
                 ("own".to_string(), "own:v2".to_string()),
             ])
         );

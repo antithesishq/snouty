@@ -14,7 +14,7 @@ stderr 'not executable.*'
 stderr 'suite/first_noexec.*'
 stderr 'chmod \+x the listed commands.*'
 
-# A build-only service has no explicit image:. The platform runs compose under
+# A build-only service has no explicit image:. Antithesis runs compose under
 # its own project name, so the default build tag names no image there, and
 # validate rejects the service before it starts any container.
 ! snouty validate config_buildonly --timeout 30

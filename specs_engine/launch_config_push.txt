@@ -40,7 +40,7 @@ mock-server 200 '{"runId":"run-123","statusCode":200}'
 stderr '.*some images are not available locally.*'
 stderr '.*image: docker.io/library/nginx-snouty-absent:latest.*'
 stderr '.*pull or build the missing images, then retry.*'
-stderr 'add `--allow-remote-images` to launch them unpinned'
+stderr 'add `--allow-remote-images` to launch without local validation and pinning'
 ! stderr 'Pushing image:'
 
 # Mixed: even though the build image is present, a missing remote image fails
@@ -57,7 +57,8 @@ stderr '.*image: docker.io/library/nginx-snouty-absent:latest.*'
 mock-server 200 '{"runId":"run-123","statusCode":200}'
 build-image --platform linux/amd64 myapp:latest images/myapp
 snouty launch --launcher basic_test -c mixed_config --duration 30 --allow-remote-images
-stderr 'warning: image `docker.io/library/nginx-snouty-absent:latest` is not in the local image store, so snouty leaves it unpinned. Its tag can resolve to a different image on each run, and snouty cannot check its architecture.'
+stderr '^warning: these images are not in the local image store, so snouty cannot validate and pin them:$'
+stderr '^  docker.io/library/nginx-snouty-absent:latest$'
 stderr '(Pushing image|Image already in a registry, skipping push):.*myapp'
 ! stderr '(Pushing image|skipping push):.*nginx-snouty-absent'
 stderr '"antithesis.config_image":.*@sha256:'
@@ -67,16 +68,10 @@ stderr '"antithesis.config_image":.*@sha256:'
 # warning names that service even when another service shares the image.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
 snouty launch --launcher basic_test -c unbuilt_config --duration 30 --allow-remote-images
-stderr 'warning: image `snouty-unbuilt-xyz:latest` is not in the local image store'
-stderr 'warning: service .app. has a `build:` stanza. To launch the local code, build it first.'
-
-# A reference that already carries a digest is pinned, so the warning only
-# says that snouty cannot check its architecture.
-mock-server 200 '{"runId":"run-123","statusCode":200}'
-snouty launch --launcher basic_test -c remote_digest_config --duration 30 --allow-remote-images
-stderr 'warning: image `docker.io/library/nginx-snouty-absent@sha256:0000000000000000000000000000000000000000000000000000000000000000` is not in the local image store. snouty cannot check its architecture.'
-! stderr 'unpinned'
-stderr '"antithesis.config_image":.*@sha256:'
+stderr '^  snouty-unbuilt-xyz:latest$'
+stderr '^warning: these services have a `build:` stanza, but their images are not in the local image store. To launch the local code, run `docker compose build`:$'
+stderr '^  app$'
+! stderr '^  api$'
 
 # A local image referenced WITHOUT a build stanza, but built before launch, is
 # pushed and pinned anyway — local availability is enough.
@@ -94,7 +89,7 @@ mock-server 200 '{"runId":"run-123","statusCode":200}'
 stderr '.*image: localapp:latest.*'
 ! stderr 'Pushing image:'
 
-# Every service needs an explicit image:, because the platform runs compose
+# Every service needs an explicit image:, because Antithesis runs compose
 # under its own project name. The default tag that `docker compose build`
 # gives a build-only service names no image there. The launch fails before
 # anything is pushed, even when that tag is built, and with
@@ -176,10 +171,6 @@ services:
   app:
     build: .
     image: snouty-unbuilt-xyz:latest
--- remote_digest_config/docker-compose.yaml --
-services:
-  app:
-    image: docker.io/library/nginx-snouty-absent@sha256:0000000000000000000000000000000000000000000000000000000000000000
 -- prebuilt_config/docker-compose.yaml --
 services:
   app:

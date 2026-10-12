@@ -342,11 +342,11 @@ async fn cmd_launch(
     } else if let Some(run_id) = response.run_id.as_deref() {
         println!("Test run started: run_id {run_id}");
         println!(
-            "\nwait for the run to finish with:\n  \
+            "\nWait for the run to finish with:\n  \
              snouty runs wait {run_id}"
         );
         println!(
-            "\nor watch its errors live after it starts running:\n  \
+            "\nOr watch its errors live after it starts running:\n  \
              snouty runs wait {run_id} --until running\n  \
              snouty runs search {run_id} --follow 'contains({{output_text: \"error\"}})'"
         );

@@ -2262,6 +2262,22 @@ def build_stories(d: Discovery) -> list[Story]:
             expect_ok=False,
         ),
         Story(
+            "runs-exec-completed-run",
+            "Try to run a command in a completed run",
+            "I copy a moment from a completed run and try to run a shell command at it.",
+            "A clean error: `runs exec` needs a run that is in progress, and this run is "
+            "completed. A suggestion gives the `snouty debug` command that starts a "
+            "debugging session at the same moment. Non-zero exit.",
+            ["runs", "exec", d.success, d.logs_hash, d.logs_vtime, "uname -n"],
+            fails_with(
+                "Note: `runs exec` needs a run that is in progress. This run is completed",
+                f"snouty debug --run-id {d.success} --input-hash {d.logs_hash} "
+                f"--vtime {d.logs_vtime}",
+            ),
+            json_capable=False,
+            expect_ok=False,
+        ),
+        Story(
             "runs-logs-incomplete",
             "Stream logs at the failure moment of an incomplete run",
             "I want the logs right at the moment an incomplete run failed.",
@@ -2834,7 +2850,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
         _help_story(
             "help-runs-exec",
             "Learn how to execute a script in a live run",
-            "I want the help to tell me which runs accept a script, which tenant "
+            "I want the help to tell me that a script needs a run that is in progress, "
+            "a test run or a debugging session, which tenant "
             "release the command needs, how "
             "to pick the moment and the container, when a moment needs "
             "--source-run-id or --source-session-id, where the script's output goes, "

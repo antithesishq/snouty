@@ -2383,9 +2383,9 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
         })
         .collect();
 
-    // LAUNCHER shrinks to its header width before RUN shrinks. RUN ID,
-    // STATUS, and CREATED never shrink, so a `runs show RUN_ID` follow-up
-    // always works.
+    // LAUNCHER shrinks to 8 columns before RUN shrinks to 8. RUN ID, STATUS,
+    // and CREATED never shrink, so a `runs show RUN_ID` follow-up always
+    // works.
     Table::builder()
         .column(Column::new("RUN ID"))
         .column(Column::new("STATUS"))
@@ -2397,7 +2397,7 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
         )
         .column(
             Column::new("RUN")
-                .fit(Fit::Truncate { floor: 0 })
+                .fit(Fit::Truncate { floor: 8 })
                 .priority(1),
         )
         .render(rows, width)
@@ -4509,6 +4509,8 @@ mod tests {
             "long description long description long …"
         );
         assert!(table.contains("abc-54-1  cancelled"), "{table}");
+        // RUN stops at 8 columns, even when the table stays too wide.
+        assert_eq!(cell(run.clone(), 40, RUNS_TABLE_RUN), "long de…");
     }
 
     #[test]

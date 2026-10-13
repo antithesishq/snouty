@@ -830,8 +830,8 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
 /// Run ids that exist on the mock server. Nested endpoints (properties, logs,
 /// events, build logs) 404 for any other id, matching the real API and letting
 /// run-scoped commands disambiguate "run not found" from an empty resource.
-/// `run-empty` and `run-no-events` are properties-only fixtures and are
-/// recognised separately by `mock_route_list_run_properties`; `run-stream-error`
+/// `run-empty` (no properties, no build logs) and `run-no-events` are
+/// recognised separately by their own routes; `run-stream-error`
 /// is recognised separately by the streaming routes, whose response ends with
 /// a `Stream_Error` line.
 fn mock_run_known(run_id: &str) -> bool {
@@ -1017,13 +1017,13 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
 
     // Like the real API, the properties endpoint 404s only for an unknown run
     // id. A run that is not `completed` has an empty list, and so does the
-    // properties-only `run-empty` fixture.
-    let completed = match MOCK_RUNS.iter().find(|(id, ..)| *id == run_id) {
+    // `run-empty` fixture.
+    let has_properties = match MOCK_RUNS.iter().find(|(id, ..)| *id == run_id) {
         Some(&(_, status, ..)) => status == "completed",
         None if run_id == "run-empty" => false,
         None => return mock_run_not_found(run_id),
     };
-    if !completed {
+    if !has_properties {
         return (200, r#"{"data":[],"next_cursor":null}"#.to_string());
     }
 

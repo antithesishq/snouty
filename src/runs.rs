@@ -1741,6 +1741,19 @@ impl ReadyDisplay {
     }
 }
 
+impl Drop for ReadyDisplay {
+    /// A wait that fails leaves its spinner on the line. The newline puts the
+    /// error on a line of its own.
+    fn drop(&mut self) {
+        if let Self::Spinner(spinner) = self
+            && !spinner.is_finished()
+        {
+            spinner.abandon();
+            eprintln!();
+        }
+    }
+}
+
 /// The marker in a 400's message that the moment is cold. It opens both
 /// messages observed on orbitinghail (release 64.0): `Moment not warm and no
 /// provided source_run_id or source_session_id. …` at first, and `Moment not

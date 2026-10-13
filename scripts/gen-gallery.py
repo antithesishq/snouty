@@ -2212,14 +2212,9 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-properties-incomplete",
             "Properties for a run that never finished",
             "I try to view properties on an incomplete run.",
-            "An empty property set exits zero, says that a run that is not complete "
-            "can have no properties, and shows `snouty runs show <run ID>` to inspect "
-            "the run.",
+            "An empty property set exits zero and says `No properties found.`",
             ["runs", "properties", d.fail],
-            succeeds_with(
-                "No properties found. A run that is not complete can have no properties."
-                f"\n\nInspect the run with `snouty runs show {d.fail}`."
-            ),
+            succeeds_with("No properties found."),
             json_capable=False,
         ),
         # -- property detail (`properties --name <x> --detail`) -------------

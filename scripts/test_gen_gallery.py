@@ -126,13 +126,13 @@ class TerminalCapture(unittest.TestCase):
 
     def test_wording_checks_accept_wrapping_but_require_the_text_and_exit(self):
         story = next(s for s in gallery.build_stories(gallery.Discovery(fail="run-1")) if s.slug == "runs-properties-incomplete")
-        output = "No properties found.\n\nInspect the run with\n`snouty runs show run-1`."
+        output = "No properties\nfound."
         run = gallery.StoryRun(story, gallery.Result(story.args, output, "", 0), None)
         self.assertTrue(story.check(run, gallery.Registry())[0])
         run.result.returncode = 1
         self.assertFalse(story.check(run, gallery.Registry())[0])
         run.result.returncode = 0
-        run.result.stdout = output.replace("runs show", "runs logs")
+        run.result.stdout = "No properties match (failing)."
         self.assertFalse(story.check(run, gallery.Registry())[0])
 
 

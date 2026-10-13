@@ -328,10 +328,16 @@ fn collect_validation_notes(params: &Map<String, Value>, def_name: &str) -> Vec<
     let validator = Validator::new(&def_schema).expect("valid schema");
     let instance = Value::Object(params.clone());
 
-    validator
-        .iter_errors(&instance)
-        .map(|error| note_for_error(&error))
-        .collect()
+    // debuggingParams checks a documented key's type twice, once in its own
+    // subschema and once through `additionalProperties`, which does not see
+    // the `allOf` properties. Report each note once.
+    let mut notes = Vec::new();
+    for note in validator.iter_errors(&instance).map(|e| note_for_error(&e)) {
+        if !notes.contains(&note) {
+            notes.push(note);
+        }
+    }
+    notes
 }
 
 /// Render a single validation error as a note, prefixed with the offending

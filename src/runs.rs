@@ -30,7 +30,7 @@ use crate::render::{
     CodeSpans, OutputOptions, indent_lines, render_kv, sanitize, sanitize_multiline, wrap_text,
 };
 use crate::settings::Settings;
-use crate::table::{Fit, Shrink, render_table};
+use crate::table::{Align, Column, Fit, Table};
 use crate::time::{HumanDuration, format_local_with_offset};
 use crate::vtime::VTime;
 
@@ -1028,7 +1028,11 @@ fn render_moments_table(p: &EventProperty) -> String {
             event.moment.vtime.to_string(),
         ]);
     }
-    render_table(&["STATUS", "HASH", "VTIME"], rows, &[], Fit::Unbounded)
+    Table::builder()
+        .column(Column::new("STATUS"))
+        .column(Column::new("HASH"))
+        .column(Column::new("VTIME"))
+        .render(rows, usize::MAX)
 }
 
 /// The values of a non-event ("system") property under a `Result` label. A
@@ -1234,6 +1238,11 @@ fn render_properties_table(properties: &[Property]) -> String {
     // matches); folding the group into NAME would have made the displayed name
     // un-copyable. This is human-facing output; use `--json` for automation.
     let width = terminal_width();
+    // Right-align the numeric EXAMPLES column so magnitudes line up.
+    let table = Table::builder()
+        .column(Column::new("STATUS"))
+        .column(Column::new("EXAMPLES").align(Align::Right))
+        .column(Column::new("NAME").fit(Fit::Wrap { floor: 20 }));
 
     group_property_sections(properties)
         .iter()
@@ -1248,19 +1257,7 @@ fn render_properties_table(properties: &[Property]) -> String {
                     ]
                 })
                 .collect();
-            // Right-align the numeric EXAMPLES column so magnitudes line up.
-            let table = render_table(
-                &["STATUS", "EXAMPLES", "NAME"],
-                rows,
-                &[1],
-                Fit::Wrap {
-                    width,
-                    order: &[Shrink {
-                        column: 2,
-                        floor: 20,
-                    }],
-                },
-            );
+            let table = table.render(rows, width);
             match title {
                 Some(title) => format!("{}\n{}", sanitize(title), table),
                 None => table,
@@ -2353,23 +2350,6 @@ fn merge_fault_windows(
     }
 }
 
-const RUNS_TABLE_HEADERS: [&str; 5] = ["RUN ID", "STATUS", "CREATED", "LAUNCHER", "RUN"];
-const RUNS_TABLE_LAUNCHER: usize = 3;
-const RUNS_TABLE_RUN: usize = 4;
-
-/// LAUNCHER shrinks to its header width before RUN shrinks. RUN ID, STATUS,
-/// and CREATED never shrink, so a `runs show RUN_ID` follow-up always works.
-const RUNS_TABLE_SHRINK_ORDER: &[Shrink] = &[
-    Shrink {
-        column: RUNS_TABLE_LAUNCHER,
-        floor: 8,
-    },
-    Shrink {
-        column: RUNS_TABLE_RUN,
-        floor: 0,
-    },
-];
-
 fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
     let rows: Vec<Vec<String>> = runs
         .iter()
@@ -2403,21 +2383,34 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
         })
         .collect();
 
-    render_table(
-        &RUNS_TABLE_HEADERS,
-        rows,
-        &[],
-        Fit::Truncate {
-            width,
-            order: RUNS_TABLE_SHRINK_ORDER,
-        },
-    )
+    // LAUNCHER shrinks to its header width before RUN shrinks. RUN ID,
+    // STATUS, and CREATED never shrink, so a `runs show RUN_ID` follow-up
+    // always works.
+    Table::builder()
+        .column(Column::new("RUN ID"))
+        .column(Column::new("STATUS"))
+        .column(Column::new("CREATED"))
+        .column(
+            Column::new("LAUNCHER")
+                .fit(Fit::Truncate { floor: 8 })
+                .priority(0),
+        )
+        .column(
+            Column::new("RUN")
+                .fit(Fit::Truncate { floor: 0 })
+                .priority(1),
+        )
+        .render(rows, width)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use hegel::generators;
+
+    /// Column indexes of the runs table.
+    const RUNS_TABLE_LAUNCHER: usize = 3;
+    const RUNS_TABLE_RUN: usize = 4;
     use serde_json::json;
 
     /// Test surface for the annotated-logs pipeline: classify the line

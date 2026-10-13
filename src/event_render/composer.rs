@@ -98,43 +98,43 @@ impl<'a> Event<'a> for Chatter<'a> {
             for (key, rendered) in payload_pairs(self.0) {
                 block.detail_line(format_args!("{}={rendered}", sanitize(key)))?;
             }
-        } else {
-            let container_id = self.0.get("container_id").and_then(Value::as_str);
-            let line = DisplayWith(|f: &mut fmt::Formatter<'_>| {
-                write!(f, "composer")?;
-                for (key, rendered) in payload_pairs(self.0) {
-                    let shown = shorten(key, &rendered, container_id);
-                    write!(f, " {}={shown}", sanitize(key))?;
-                }
-                Ok(())
-            });
-            write!(block, "{}", style(line).dim())?;
+            return Ok(());
         }
-        Ok(())
+
+        // A `new_command` is the container id, `_`, and the script name, so
+        // `container_id` and `new_command_path` already say what it says.
+        let has_path = self
+            .0
+            .get("new_command_path")
+            .and_then(Value::as_str)
+            .is_some_and(|path| !path.is_empty());
+        let line = DisplayWith(|f: &mut fmt::Formatter<'_>| {
+            write!(f, "composer")?;
+            for (key, rendered) in payload_pairs(self.0) {
+                if has_path && key == "new_command" {
+                    continue;
+                }
+                write!(f, " {}={}", sanitize(key), shorten(key, &rendered))?;
+            }
+            Ok(())
+        });
+        write!(block, "{}", style(line).dim())
     }
 }
 
 /// `docker ps` shows this many characters of a container id.
 const CONTAINER_ID_WIDTH: usize = 12;
 
-/// Shortens one chatter value for the one-line form. A path keeps its end,
-/// because the script name tells the commands apart. A container id keeps
-/// its start, as `docker ps` does. A `new_command` is the record's container
-/// id, `_`, and the script name, so it drops the id. A `weight` is a
+/// Shortens one chatter value for the one-line form. A path keeps its last
+/// directory and file name, so that one script always reads the same. A
+/// container id keeps its start, as `docker ps` does. A `weight` is a
 /// probability, so three decimals are sufficient.
-fn shorten<'a>(key: &str, rendered: &'a str, container_id: Option<&str>) -> Cow<'a, str> {
+fn shorten<'a>(key: &str, rendered: &'a str) -> Cow<'a, str> {
     match key {
         "command" | "removed_command" | "new_command_path" => {
             truncate_path(rendered, VALUE_TRUNCATE_WIDTH)
         }
         "container_id" => console::truncate_str(rendered, CONTAINER_ID_WIDTH, ""),
-        "new_command" => match container_id
-            .and_then(|id| rendered.strip_prefix(id))
-            .and_then(|rest| rest.strip_prefix('_'))
-        {
-            Some(script) if !script.is_empty() => truncate_path(script, VALUE_TRUNCATE_WIDTH),
-            _ => console::truncate_str(rendered, VALUE_TRUNCATE_WIDTH, "…"),
-        },
         "weight" => match rendered.parse::<f64>() {
             Ok(weight) if weight.is_finite() => format!("{weight:.3}").into(),
             _ => console::truncate_str(rendered, VALUE_TRUNCATE_WIDTH, "…"),
@@ -143,13 +143,18 @@ fn shorten<'a>(key: &str, rendered: &'a str, container_id: Option<&str>) -> Cow<
     }
 }
 
-/// Shortens a path that is wider than `width` to `…` and its final segment,
-/// such as `…/check.py`, so that each cut path has the same form. When the
-/// final segment does not fit, the result keeps the end of it.
+/// Shortens a path to its last directory and file name, such as
+/// `rqlite/check.sh`, so that the same script reads the same in each record.
+/// When that does not fit `width`, the result is `…` and the final segment,
+/// such as `…/check.sh`, or the end of the final segment.
 fn truncate_path(path: &str, width: usize) -> Cow<'_, str> {
     const HEAD: &str = "…";
-    if console::measure_text_width(path) <= width {
-        return path.into();
+    let last_two = path
+        .rmatch_indices('/')
+        .nth(1)
+        .map_or(path, |(slash, _)| &path[slash + 1..]);
+    if console::measure_text_width(last_two) <= width {
+        return last_two.into();
     }
     let budget = width.saturating_sub(console::measure_text_width(HEAD));
     let tail = path.rfind('/').map_or(path, |slash| &path[slash..]);
@@ -257,9 +262,10 @@ mod tests {
             "source": {"name": "antithesis_test_composer"},
             "moment": {"input_hash": "-1", "vtime": "13.3"}
         });
+        // A path keeps its last directory and file name.
         let block = render_one(entry.clone());
         assert!(
-            block.contains("composer new_command_path=git_walk/anytime_invariants"),
+            block.contains("composer new_command_path=git_walk/anytime_invariants "),
             "got: {block}"
         );
         // The 64-hex container id keeps 12 characters, as `docker ps` does.
@@ -293,19 +299,34 @@ mod tests {
         };
         let long = "/opt/antithesis/test/v1/wellnest/parallel_driver_check_ins.py";
 
-        // The wire form is a string; a long command keeps its final segment.
+        // The wire form is a string; a long command keeps its last
+        // directory and file name.
         let block = render_one(chatter(json!("0.037937902697115555"), long));
         assert!(
             block.ends_with(
-                "composer weight_type=configured weight=0.038 command=…/parallel_driver_check_ins.py"
+                "composer weight_type=configured weight=0.038 command=wellnest/parallel_driver_check_ins.py"
             ),
             "got: {block}"
         );
 
-        // A numeric weight rounds the same; a short command is unchanged.
-        let block = render_one(chatter(json!(0.0555555), "/opt/t/a.py"));
+        // A numeric weight rounds the same. The same script reads the same
+        // from an absolute path and from a relative one.
+        for command in ["/opt/antithesis/test/v1/rqlite/a.sh", "rqlite/a.sh"] {
+            let block = render_one(chatter(json!(0.0555555), command));
+            assert!(
+                block.ends_with("weight=0.056 command=rqlite/a.sh"),
+                "got: {block}"
+            );
+        }
+        let block = render_one(chatter(json!(0.0555555), "a.py"));
+        assert!(block.ends_with("weight=0.056 command=a.py"), "got: {block}");
+
+        // When the last directory and file name do not fit, the file name
+        // stays.
+        let dir = "d".repeat(40);
+        let block = render_one(chatter(json!(0.0555555), &format!("/opt/{dir}/a.py")));
         assert!(
-            block.ends_with("weight=0.056 command=/opt/t/a.py"),
+            block.ends_with("weight=0.056 command=…/a.py"),
             "got: {block}"
         );
 
@@ -332,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn composer_paths_keep_the_script_name_and_new_command_drops_the_container_id() {
+    fn composer_paths_keep_the_script_name_and_new_command_path_replaces_new_command() {
         let id = "89e64f6a3e9f09e966b298ba707d46ee2bc3f8c8624ac7fc0c498afc66253642";
         let chatter = |pairs: Value| {
             let mut entry = pairs;
@@ -347,38 +368,45 @@ mod tests {
             "removed_command": "/opt/antithesis/test/v1/wellnest/parallel_driver_journal.py"
         })));
         assert!(
-            block.ends_with("composer removed_command=…/parallel_driver_journal.py"),
+            block.ends_with("composer removed_command=wellnest/parallel_driver_journal.py"),
             "got: {block}"
         );
-        let block = render_one(chatter(json!({
+        let record = chatter(json!({
             "new_command_path": "wellnest/parallel_driver_check_ins.py",
             "container_id": id,
             "new_command": format!("{id}_parallel_driver_check_ins.py"),
-        })));
+        }));
+        // container_id and new_command_path say what new_command says, so
+        // new_command is left out.
+        let block = render_one(record.clone());
         assert!(
             block.ends_with(
                 "composer new_command_path=wellnest/parallel_driver_check_ins.py \
-                 container_id=89e64f6a3e9f new_command=parallel_driver_check_ins.py"
+                 container_id=89e64f6a3e9f"
             ),
             "got: {block}"
         );
-
-        // The script after the id is cut as a path.
-        let block = render_one(chatter(json!({
-            "container_id": id,
-            "new_command": format!("{id}_/opt/antithesis/test/v1/wellnest/parallel_driver_journal.py"),
-        })));
+        // --detail shows every pair.
+        let block = render_one_detailed(record);
         assert!(
-            block.ends_with("new_command=…/parallel_driver_journal.py"),
+            block.ends_with(&format!(
+                "[test_composer] composer\n                    \
+                 new_command_path=wellnest/parallel_driver_check_ins.py\n                    \
+                 container_id={id}\n                    \
+                 new_command={id}_parallel_driver_check_ins.py"
+            )),
             "got: {block}"
         );
 
-        // A new_command without the record's container id in front is
-        // truncated as other values are.
-        let other = "0123456789abcdef0123456789abcdef0123456789abcdef_x.py";
-        let block = render_one(chatter(json!({"container_id": id, "new_command": other})));
+        // A new_command with no new_command_path is truncated as other
+        // values are.
+        let command = format!("{id}_parallel_driver_check_ins.py");
+        let block = render_one(chatter(json!({"container_id": id, "new_command": command})));
         assert!(
-            block.ends_with(&format!("new_command={}…", &other[..39])),
+            block.ends_with(&format!(
+                "composer container_id=89e64f6a3e9f new_command={}…",
+                &command[..39]
+            )),
             "got: {block}"
         );
 
@@ -407,9 +435,9 @@ mod tests {
         );
     }
 
-    /// For any path, the cut form fits the width and keeps the end of the
-    /// input. It starts at the final `/` when that segment fits, and else
-    /// holds no `/`.
+    /// For any path, the short form fits the width and keeps the end of the
+    /// input. It is the last two segments when they fit. Else it starts at
+    /// the final `/` when that segment fits, and else holds no `/`.
     #[hegel::test]
     fn truncate_path_fits_and_keeps_the_final_segment(tc: hegel::TestCase) {
         let segments = tc.draw(hegel::generators::integers::<usize>().max_value(6));
@@ -419,8 +447,10 @@ mod tests {
             .join("/");
         let out = truncate_path(&s, VALUE_TRUNCATE_WIDTH);
         assert!(console::measure_text_width(&out) <= VALUE_TRUNCATE_WIDTH);
-        if out == s {
-            assert!(console::measure_text_width(&s) <= VALUE_TRUNCATE_WIDTH);
+        let last_two = s.split('/').rev().take(2).collect::<Vec<_>>();
+        let last_two = last_two.into_iter().rev().collect::<Vec<_>>().join("/");
+        if console::measure_text_width(&last_two) <= VALUE_TRUNCATE_WIDTH {
+            assert_eq!(out, last_two);
             return;
         }
         let kept = out.strip_prefix('…').expect("a cut path starts with `…`");

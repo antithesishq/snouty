@@ -8,7 +8,7 @@ use indoc::writedoc;
 use log::info;
 
 use color_eyre::Section;
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Report, Result};
 use semver::Version;
 use snouty::OutputOptions;
 use snouty::api::AntithesisApi;
@@ -25,8 +25,8 @@ use snouty::params::{
     ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID,
     ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION, ANT_EVENT_DESCRIPTION,
     ANT_FILTER_LOGS_MATCHING, ANT_FILTER_SOURCE_MATCHING, ANT_IS_EPHEMERAL, ANT_PERFORMANCE_TIER,
-    ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, Params, RUN_CALLER_TYPE, VCS_PARAMS,
-    VCS_REPO_BRANCH, VCS_REPO_NAME, VCS_REPO_OWNER, VCS_REPO_TYPE, VCS_VERSION_ID,
+    ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, DuplicateKey, Params, RUN_CALLER_TYPE,
+    VCS_PARAMS, VCS_REPO_BRANCH, VCS_REPO_NAME, VCS_REPO_OWNER, VCS_REPO_TYPE, VCS_VERSION_ID,
     VCS_VERSION_LINK,
 };
 use snouty::settings::Settings;
@@ -224,21 +224,9 @@ async fn cmd_launch(
         None
     };
 
-    if !args.params.is_empty() {
-        let extra = Params::from_key_value_pairs(&args.params)?;
-
-        // Check for conflicts with typed flags already set in params
-        for key in extra.as_map().keys() {
-            if params.contains_key(key) {
-                return Err(user_error(format!(
-                    "invalid arguments: '{key}' cannot be overridden via --param"
-                ))
-                .suggestion("use the dedicated flag instead"));
-            }
-        }
-
-        params.merge(extra);
-    }
+    params
+        .extend_checked(args.params.into_iter().collect())
+        .map_err(param_overrides_flag)?;
 
     if params.is_empty() {
         return Err(user_error("invalid arguments: no parameters provided"));
@@ -408,12 +396,30 @@ fn debug_typed_params(args: &DebugArgs) -> Params {
     params
 }
 
+/// The error for a `--param` that sets a key a typed flag already set.
+fn param_overrides_flag(DuplicateKey(key): DuplicateKey) -> Report {
+    user_error(format!(
+        "invalid arguments: '{key}' cannot be overridden via --param"
+    ))
+}
+
 async fn cmd_debug(
     args: DebugArgs,
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
-    let params = debug_typed_params(&args);
+    let mut params = debug_typed_params(&args);
+    params
+        .extend_checked(args.params.into_iter().collect())
+        .map_err(param_overrides_flag)?;
+    // clap takes exactly one of --run-id and --session-id, but a --param can
+    // add the other.
+    if params.contains_key(ANT_DEBUGGING_RUN_ID) && params.contains_key(ANT_DEBUGGING_SESSION_ID) {
+        return Err(user_error(format!(
+            "invalid arguments: pass only one of {ANT_DEBUGGING_RUN_ID} and \
+             {ANT_DEBUGGING_SESSION_ID}"
+        )));
+    }
     params.validate_debugging_params()?;
 
     let api = AntithesisApi::new_for_launch(settings, verbose)?;
@@ -445,7 +451,7 @@ async fn cmd_debug(
             "\nThe session takes a few minutes to start. Wait for it with:\n  \
              snouty runs wait {run_id} --until running"
         );
-        // The launch sent both as strings: `launch_mvd_request` refuses anything else.
+        // Both come from typed flags, so they are strings.
         if let (Some(input_hash), Some(vtime)) =
             (param(ANT_DEBUGGING_INPUT_HASH), param(ANT_DEBUGGING_VTIME))
         {

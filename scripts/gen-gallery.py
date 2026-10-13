@@ -1163,6 +1163,8 @@ def _launch_session(sn: Snouty, base_run: str) -> tuple[dict, Result]:
             "snouty gallery",
             "--description",
             description,
+            "--param",
+            "attrs.source=snouty-gallery",
         ]
     )
     if not launch.ok:
@@ -2692,9 +2694,11 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
                 "debug",
                 "Open a debugging session at a moment",
                 f"I want to debug run {x.base_run} from the moment its setup completed, "
-                "and give the session a title and a description.",
+                "and give the session a title, a description, and a custom attrs.source "
+                "parameter.",
                 "snouty shows the parameters it sends, with the title as "
-                "antithesis.test_name, and the run ID of the new debugging session. It says "
+                "antithesis.test_name and the custom attrs.source parameter, and the run ID of "
+                "the new debugging session. It says "
                 "that the session takes minutes to start, and gives the `runs wait` command "
                 "to wait for it and the `runs exec` command to use when it is ready. Exit 0.",
                 x.launch.args,

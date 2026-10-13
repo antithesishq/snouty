@@ -1,11 +1,11 @@
 use jsonschema::Validator;
-use jsonschema::error::ValidationErrorKind;
 use log::debug;
 use serde_json::{Map, Value};
 
 use color_eyre::Section;
 use color_eyre::eyre::Result;
 
+use crate::cli::KVPair;
 use crate::error::user_error;
 
 const SCHEMA: &str = include_str!("params_schema.json");
@@ -58,6 +58,10 @@ pub const ANT_DEBUGGING_RUN_ID: &str = "antithesis.debugging.run_id";
 pub const ANT_DEBUGGING_INPUT_HASH: &str = "antithesis.debugging.input_hash";
 pub const ANT_DEBUGGING_VTIME: &str = "antithesis.debugging.vtime";
 
+/// The key that both sides of [`Params::extend_checked`] set.
+#[derive(Debug)]
+pub struct DuplicateKey(pub String);
+
 /// Params parsed from CLI arguments and validated against the JSON schema.
 #[derive(Debug, Clone, Default)]
 pub struct Params {
@@ -70,31 +74,16 @@ impl Params {
         Self::default()
     }
 
-    /// Parse params from `key=value` pairs.
-    ///
-    /// Values may contain `=` (only the first `=` is used as the delimiter).
-    /// Errors on missing `=` or empty key.
+    #[cfg(test)]
     pub fn from_key_value_pairs<I, S>(pairs: I) -> Result<Self>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut inner = Map::new();
-        for pair in pairs {
-            let pair = pair.as_ref();
-            let (key, value) = pair.split_once('=').ok_or_else(|| {
-                user_error(format!(
-                    "invalid parameter: expected key=value, got: {pair}"
-                ))
-            })?;
-            if key.is_empty() {
-                return Err(user_error(format!(
-                    "invalid parameter: empty key in: {pair}"
-                )));
-            }
-            inner.insert(key.to_string(), Value::String(value.to_string()));
-        }
-        Ok(Self { inner })
+        Ok(pairs
+            .into_iter()
+            .map(|pair| pair.as_ref().parse())
+            .collect::<std::result::Result<_, crate::cli::ParseKVPairError>>()?)
     }
 
     /// Validate params against the test params schema and the log filter
@@ -149,6 +138,16 @@ impl Params {
         }
     }
 
+    /// Merge `other` into this one, or merge nothing when `other` sets a key
+    /// that this one already holds.
+    pub fn extend_checked(&mut self, other: Params) -> std::result::Result<(), DuplicateKey> {
+        if let Some(key) = other.inner.keys().find(|&key| self.inner.contains_key(key)) {
+            return Err(DuplicateKey(key.clone()));
+        }
+        self.merge(other);
+        Ok(())
+    }
+
     /// Get a redacted copy of the params for safe display in logs/CI.
     /// Sensitive fields (tokens, emails) are replaced with "[REDACTED]".
     pub fn to_redacted_map(&self) -> Map<String, Value> {
@@ -164,6 +163,16 @@ impl Params {
                 (k.clone(), value)
             })
             .collect()
+    }
+}
+
+impl FromIterator<KVPair> for Params {
+    fn from_iter<I: IntoIterator<Item = KVPair>>(pairs: I) -> Self {
+        let inner = pairs
+            .into_iter()
+            .map(|KVPair { key, value }| (key, Value::String(value)))
+            .collect();
+        Self { inner }
     }
 }
 
@@ -216,17 +225,6 @@ fn validate_against_def(params: &Map<String, Value>, def_name: &str) -> Result<(
     Err(report)
 }
 
-/// Collect the human-readable notes for every validation error, with the
-/// misleading `unevaluatedProperties` cascade filtered out. Returns an empty
-/// vec when the params are valid.
-///
-/// `unevaluatedProperties: false` reports every sibling property as
-/// "unexpected" whenever a more specific subschema (e.g. the `duration`
-/// pattern) fails: once the failing subschema is dropped, its properties are
-/// left unevaluated and the catch-all fires on all of them. Those properties
-/// are usually valid and required, so the note sends readers chasing fields
-/// that aren't actually wrong. When a more specific violation already fired,
-/// we drop the cascade and surface only the real error(s).
 fn collect_validation_notes(params: &Map<String, Value>, def_name: &str) -> Vec<String> {
     let schema: Value = serde_json::from_str(SCHEMA).expect("valid schema");
 
@@ -239,28 +237,19 @@ fn collect_validation_notes(params: &Map<String, Value>, def_name: &str) -> Vec<
     let validator = Validator::new(&def_schema).expect("valid schema");
     let instance = Value::Object(params.clone());
 
-    let errors: Vec<_> = validator.iter_errors(&instance).collect();
-    let is_cascade = |e: &jsonschema::ValidationError| {
-        matches!(e.kind(), ValidationErrorKind::UnevaluatedProperties { .. })
-    };
-    let has_specific_error = errors.iter().any(|e| !is_cascade(e));
-
-    errors
-        .iter()
-        .filter(|e| !(has_specific_error && is_cascade(e)))
-        .map(note_for_error)
+    validator
+        .iter_errors(&instance)
+        .map(|error| note_for_error(&error))
         .collect()
 }
 
 /// Render a single validation error as a note, prefixed with the offending
 /// field name when the error is attributable to a specific property.
 ///
-/// The jsonschema messages describe only the value and the violated
-/// constraint (e.g. `"asdf" does not match "^[0-9]+(\.[0-9]+)?$"`); they never
-/// name the field. The field lives in the error's instance path, so we pull it
-/// from there and put it up front. Object-level errors (e.g. unevaluated
-/// properties) carry an empty instance path and already name the property in
-/// their message, so they pass through unprefixed.
+/// jsonschema messages name the value and the violated constraint, but not
+/// the field (e.g. `"asdf" does not match "^[0-9]+(\.[0-9]+)?$"`). An
+/// object-level error, such as a missing required property, has an empty
+/// instance path and already names the property, so it gets no prefix.
 fn note_for_error(error: &jsonschema::ValidationError) -> String {
     let pointer = error.instance_path().as_str();
     match pointer.strip_prefix('/') {
@@ -353,39 +342,6 @@ mod tests {
     }
 
     #[test]
-    fn invalid_duration_does_not_cascade_into_unevaluated_properties() {
-        // A bad `antithesis.duration` value used to drag every sibling property
-        // into a misleading "Unevaluated properties are not allowed" note. The
-        // only real error is the duration pattern; the siblings are valid.
-        let params = Params::from_key_value_pairs([
-            "antithesis.duration=15m",
-            "antithesis.test_name=my-test",
-            "antithesis.source=my-source",
-        ])
-        .unwrap();
-
-        // The cascade is surfaced as color_eyre notes, not in the report's
-        // Display, so assert on the collected notes directly.
-        let notes = collect_validation_notes(params.as_map(), "testParams");
-        assert_eq!(
-            notes.len(),
-            1,
-            "exactly one real error expected, got: {notes:?}"
-        );
-        // The real, specific failure is reported, and the note names the
-        // offending field so the reader knows where to look.
-        assert!(
-            notes[0].contains("antithesis.duration") && notes[0].contains("15m"),
-            "expected field-attributed duration note, got: {notes:?}"
-        );
-        // ...but no cascade naming the valid siblings.
-        assert!(
-            notes.iter().all(|n| !n.contains("Unevaluated properties")),
-            "cascade should be suppressed, got: {notes:?}"
-        );
-    }
-
-    #[test]
     fn unknown_antithesis_param_is_allowed() {
         // The platform can add antithesis.* params before snouty learns about
         // them, so unknown antithesis.* keys must pass validation (#211).
@@ -446,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_debugging_params_rejects_custom_props() {
+    fn validate_debugging_params_accepts_custom_props() {
         let pairs = [
             "antithesis.debugging.input_hash=abc123",
             "antithesis.debugging.session_id=sess-456",
@@ -454,7 +410,7 @@ mod tests {
             "my.custom.prop=value",
         ];
         let params = Params::from_key_value_pairs(pairs).unwrap();
-        assert!(params.validate_debugging_params().is_err());
+        assert!(params.validate_debugging_params().is_ok());
     }
 
     #[test]
@@ -478,6 +434,23 @@ mod tests {
         ];
         let params = Params::from_key_value_pairs(pairs).unwrap();
         assert!(params.validate_debugging_params().is_ok());
+    }
+
+    #[test]
+    fn extend_checked_merges_nothing_on_a_duplicate_key() {
+        let mut base = Params::from_key_value_pairs(["a=1"]).unwrap();
+        let DuplicateKey(key) = base
+            .extend_checked(Params::from_key_value_pairs(["b=2", "a=3"]).unwrap())
+            .unwrap_err();
+        assert_eq!(key, "a");
+        assert_eq!(
+            base.as_map(),
+            Params::from_key_value_pairs(["a=1"]).unwrap().as_map()
+        );
+
+        base.extend_checked(Params::from_key_value_pairs(["b=2"]).unwrap())
+            .unwrap();
+        assert_eq!(base.as_map().get("b").unwrap(), "2");
     }
 
     #[test]
@@ -508,42 +481,6 @@ mod tests {
             base.as_map().get("antithesis.report.recipients").unwrap(),
             "team@example.com"
         );
-    }
-
-    #[test]
-    fn from_key_value_pairs_valid() {
-        let pairs = ["antithesis.duration=30", "my.key=hello"];
-        let params = Params::from_key_value_pairs(pairs).unwrap();
-        assert_eq!(params.as_map().get("antithesis.duration").unwrap(), "30");
-        assert_eq!(params.as_map().get("my.key").unwrap(), "hello");
-    }
-
-    #[test]
-    fn from_key_value_pairs_value_containing_equals() {
-        let pairs = ["key=value=with=equals"];
-        let params = Params::from_key_value_pairs(pairs).unwrap();
-        assert_eq!(params.as_map().get("key").unwrap(), "value=with=equals");
-    }
-
-    #[test]
-    fn from_key_value_pairs_missing_equals() {
-        let pairs = ["noequals"];
-        let result = Params::from_key_value_pairs(pairs);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("expected key=value")
-        );
-    }
-
-    #[test]
-    fn from_key_value_pairs_empty_key() {
-        let pairs = ["=value"];
-        let result = Params::from_key_value_pairs(pairs);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("empty key"));
     }
 
     /// `unescape_pointer_token` is the exact inverse of RFC 6901 escaping
@@ -598,22 +535,22 @@ mod tests {
         }
     }
 
-    /// `from_key_value_pairs` splits on the *first* `=` only, so the value may
-    /// itself contain `=` and must come back verbatim. For any non-empty key
-    /// without `=` and any value, the parsed pair round-trips exactly.
+    /// For any non-empty key without `=` and any value, which may contain `=`,
+    /// the parsed pair round-trips exactly.
     #[hegel::test]
     fn key_value_pair_round_trips(tc: hegel::TestCase) {
         let key = tc.draw(generators::text().min_size(1).filter(|k| !k.contains('=')));
         let value = tc.draw(generators::text());
-        let params = Params::from_key_value_pairs([format!("{key}={value}")])
+        let pair: KVPair = format!("{key}={value}")
+            .parse()
             .expect("a non-empty key with a value must parse");
+        let params = Params::from_iter([pair]);
         assert_eq!(params.as_map().len(), 1);
         assert_eq!(
             params.as_map().get(&key).and_then(Value::as_str),
             Some(value.as_str())
         );
     }
-
     /// Redaction preserves the exact key set and leaves every value either
     /// untouched or replaced by the marker — it never drops, adds, or reorders
     /// keys, and only the documented sensitive keys are masked.

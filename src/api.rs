@@ -17,8 +17,7 @@ use crate::auth::{AuthenticationInfo, PasswordPolicy};
 use crate::env;
 use crate::error::{ApiError, user_error};
 use crate::params::{
-    ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID,
-    ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION, ANT_EVENT_DESCRIPTION, ANT_IMAGES,
+    ANT_CONFIG_IMAGE, ANT_DESCRIPTION, ANT_DURATION, ANT_EVENT_DESCRIPTION, ANT_IMAGES,
     ANT_IS_EPHEMERAL, ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, ATTRS_PREFIX, Params,
     VCS_PARAMS,
 };
@@ -1299,57 +1298,10 @@ async fn recover_launch_error<T: DeserializeOwned>(err: ClientError<()>) -> Resu
 }
 
 fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequest> {
-    use generated::types::MvdParams;
-
-    let map = params.as_map();
-    let get = |key: &str| -> Result<Option<String>> {
-        match map.get(key) {
-            None => Ok(None),
-            Some(value) => value
-                .as_str()
-                .map(|s| Some(s.to_string()))
-                .ok_or_else(|| eyre!("debugging params must be strings: {key}")),
-        }
-    };
-
-    let input_hash = get(ANT_DEBUGGING_INPUT_HASH)?
-        .ok_or_else(|| eyre!("missing {ANT_DEBUGGING_INPUT_HASH}"))?;
-    let vtime = get(ANT_DEBUGGING_VTIME)?.ok_or_else(|| eyre!("missing {ANT_DEBUGGING_VTIME}"))?;
-    let event_description = get(ANT_EVENT_DESCRIPTION)?;
-    let test_name = get(ANT_TEST_NAME)?;
-    let recipients = get(ANT_REPORT_RECIPIENTS)?;
-    let run_id = get(ANT_DEBUGGING_RUN_ID)?;
-    let session_id = get(ANT_DEBUGGING_SESSION_ID)?;
-
-    // The MVD_Params schema is a oneOf, so the target run is identified by
-    // exactly one of run_id or session_id. cmd_debug enforces this with a
-    // friendly message before we get here; the both/neither arms below are a
-    // defensive backstop.
-    let typed_params = match (run_id, session_id) {
-        (Some(run_id), None) => MvdParams::RunId {
-            antithesis_debugging_input_hash: input_hash,
-            antithesis_debugging_run_id: run_id,
-            antithesis_debugging_vtime: vtime,
-            antithesis_event_description: event_description,
-            antithesis_report_recipients: recipients,
-            antithesis_test_name: test_name,
-        },
-        (None, Some(session_id)) => MvdParams::SessionId {
-            antithesis_debugging_input_hash: input_hash,
-            antithesis_debugging_session_id: session_id,
-            antithesis_debugging_vtime: vtime,
-            antithesis_event_description: event_description,
-            antithesis_report_recipients: recipients,
-            antithesis_test_name: test_name,
-        },
-        (Some(_), Some(_)) => return Err(eyre!("specify exactly one of --run-id / --session-id")),
-        (None, None) => return Err(eyre!("specify --run-id or --session-id")),
-    };
-
-    generated::types::LaunchMvdRequest::try_from(
-        generated::types::builder::LaunchMvdRequest::default().params(typed_params),
-    )
-    .wrap_err("failed to build debugging request")
+    // cmd_debug has validated the params and checked that exactly one of
+    // run_id or session_id is set, so they fit one MvdParams variant.
+    serde_json::from_value(serde_json::json!({ "params": params.as_map() }))
+        .wrap_err("failed to build debugging request")
 }
 
 /// The tenant version that first served the run properties resource. Runs
@@ -1684,6 +1636,7 @@ fn error_body_message(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::params::{ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID};
     use hegel::{Generator, generators};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2267,8 +2220,7 @@ mod tests {
         }
     }
 
-    // launch_mvd_request copies each param into a typed field, so it drops a
-    // param that has no field.
+    // Every param reaches the body, through a typed field or through `extra`.
     #[test]
     fn launch_mvd_request_sends_every_debugging_param() {
         let schema: serde_json::Value =
@@ -2291,6 +2243,7 @@ mod tests {
             for &key in keys.iter().filter(|&&key| key != other) {
                 params.insert(key, format!("value of {key}"));
             }
+            params.insert("attrs.team", "payments");
             let body = serde_json::to_value(launch_mvd_request(&params).unwrap()).unwrap();
             assert_eq!(
                 body["params"],

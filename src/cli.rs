@@ -39,6 +39,46 @@ const fn assert_run_statuses_complete(status: RunStatus) {
 
 const _: () = assert_run_statuses_complete(RunStatus::Starting);
 
+/// A `key=value` argument, such as `--param`. The value may contain `=`:
+/// only the first `=` splits.
+#[derive(Debug, Clone)]
+pub struct KVPair {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug)]
+pub enum ParseKVPairError {
+    MissingEquals,
+    EmptyKey,
+}
+
+impl std::fmt::Display for ParseKVPairError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ParseKVPairError::MissingEquals => "expected key=value",
+            ParseKVPairError::EmptyKey => "the key is empty",
+        })
+    }
+}
+
+impl std::error::Error for ParseKVPairError {}
+
+impl std::str::FromStr for KVPair {
+    type Err = ParseKVPairError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (key, value) = s.split_once('=').ok_or(ParseKVPairError::MissingEquals)?;
+        if key.is_empty() {
+            return Err(ParseKVPairError::EmptyKey);
+        }
+        Ok(Self {
+            key: key.to_owned(),
+            value: value.to_owned(),
+        })
+    }
+}
+
 /// clap value parser for `--status` that keeps a friendly, enumerated error
 /// message (the generated `RunStatus::from_str` only says "invalid value").
 fn parse_run_status(value: &str) -> Result<RunStatus, String> {
@@ -249,6 +289,11 @@ Example:
     --title "stalled leader election" \
     --description "debug this moment" \
     --recipients "team@example.com"
+
+Extra parameters can be passed with --param, as for `snouty launch`. A --param
+cannot replace the value of a dedicated flag, such as --title:
+  snouty debug --run-id <run_id> --input-hash <hash> --vtime <vtime> \
+    --param attrs.team=payments
 
 Add --json for machine-readable output. The response prints as one JSON
 object:
@@ -687,7 +732,7 @@ pub struct LaunchArgs {
 
     /// Extra parameters as key=value pairs (repeatable)
     #[arg(long = "param")]
-    pub params: Vec<String>,
+    pub params: Vec<KVPair>,
 }
 
 #[derive(Args)]
@@ -720,6 +765,10 @@ pub struct DebugArgs {
     /// Report recipients (semicolon-delimited email addresses)
     #[arg(long)]
     pub recipients: Option<String>,
+
+    /// Extra parameters as key=value pairs (repeatable)
+    #[arg(long = "param")]
+    pub params: Vec<KVPair>,
 }
 
 /// The block-rendering paragraph `runs events` and `runs search` share in

@@ -58,6 +58,7 @@ fn generate_api_client(out_dir: &Path) {
     open_performance_tier(&mut spec_value);
     unrequire_search_limit_default(&mut spec_value);
     add_mvd_test_name(&mut spec_value);
+    open_mvd_params(&mut spec_value);
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
 
     let mut settings = progenitor::GenerationSettings::default();
@@ -261,11 +262,7 @@ fn drop_launch_status_code(spec: &mut serde_json::Value) {
 /// `/api/v1/launch/debugging` accepts it: on orbitinghail, release 64.0, the
 /// new session lists it in its `parameters`.
 fn add_mvd_test_name(spec: &mut serde_json::Value) {
-    let variants = spec
-        .pointer_mut("/components/schemas/MVD_Params/oneOf")
-        .and_then(serde_json::Value::as_array_mut)
-        .expect("openapi spec has no MVD_Params.oneOf; update `add_mvd_test_name` in build.rs");
-    for variant in variants {
+    for variant in mvd_params_variants(spec, "add_mvd_test_name") {
         let properties = variant
             .get_mut("properties")
             .and_then(serde_json::Value::as_object_mut)
@@ -283,6 +280,37 @@ fn add_mvd_test_name(spec: &mut serde_json::Value) {
             "MVD_Params now documents antithesis.test_name; delete `add_mvd_test_name` in build.rs"
         );
     }
+}
+
+/// The spec closes `MVD_Params` to its documented keys, but
+/// `/api/v1/launch/debugging` accepts custom params of any JSON type (per the
+/// snouty maintainers). On orbitinghail, release 64.0, a debugging session lists
+/// params that the spec does not document, such as
+/// `antithesis.performance_tier`.
+fn open_mvd_params(spec: &mut serde_json::Value) {
+    for variant in mvd_params_variants(spec, "open_mvd_params") {
+        let variant = variant
+            .as_object_mut()
+            .expect("an MVD_Params variant is not an object; update `open_mvd_params`");
+        assert!(
+            variant
+                .insert("additionalProperties".to_owned(), serde_json::json!({}),)
+                .is_none(),
+            "MVD_Params now sets additionalProperties; if it allows any value, delete \
+             `open_mvd_params` in build.rs"
+        );
+    }
+}
+
+fn mvd_params_variants<'a>(
+    spec: &'a mut serde_json::Value,
+    transform: &str,
+) -> &'a mut Vec<serde_json::Value> {
+    spec.pointer_mut("/components/schemas/MVD_Params/oneOf")
+        .and_then(serde_json::Value::as_array_mut)
+        .unwrap_or_else(|| {
+            panic!("openapi spec has no MVD_Params.oneOf; update `{transform}` in build.rs")
+        })
 }
 
 /// Decode `Params.antithesis.performance_tier` as a plain string. `runs list`

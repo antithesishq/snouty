@@ -783,7 +783,7 @@ def _pick_completed_run(sn: Snouty) -> CompletedPick:
             fail_prop = _pick_property_with_moments(sn, run, props, "Failing")
             pass_prop = _pick_property_with_moments(sn, run, props, "Passing")
             nonevent_prop = _pick_nonevent_property(sn, run, props)
-            name_filter = _pick_name_filter([p["name"] for p in props])
+            name_filter = _pick_name_filter(props)
         except GalleryError as e:
             print(f"  skip {run}: {e}", file=sys.stderr)
             last_reason = str(e)
@@ -994,12 +994,15 @@ def _pick_nonevent_property(sn: Snouty, run: str, props: list[dict]) -> str:
     raise GalleryError(f"no non-event property on {run} renders a usable value")
 
 
-def _pick_name_filter(prop_names: list[str]) -> str:
+def _pick_name_filter(props: list[dict]) -> str:
     """A case-insensitive word contained in exactly one property name — so the
-    `--name` filter story narrows the list to a single, predictable property."""
-    lower = [n.lower() for n in prop_names]
-    for name in prop_names:
-        for word in re.findall(r"[A-Za-z]{4,}", name):
+    `--name` filter story narrows the list to a single, predictable property.
+    `--name` matches the API name, but snouty shows it without its `<group>: `
+    prefix, so the word comes from the shown name."""
+    lower = [p["name"].lower() for p in props]
+    for p in props:
+        shown = p["name"].removeprefix(f"{p.get('group') or ''}: ")
+        for word in re.findall(r"[A-Za-z]{4,}", shown):
             w = word.lower()
             if sum(w in n for n in lower) == 1:
                 return word

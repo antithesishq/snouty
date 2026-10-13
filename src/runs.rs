@@ -809,11 +809,21 @@ async fn explain_logs_error(
     }
 }
 
+/// An empty-string group counts as no group.
 fn property_group(p: &Property) -> Option<&str> {
     match p {
         Property::EventProperty(p) => p.group.as_deref(),
         Property::NonEventProperty(p) => p.group.as_deref(),
     }
+    .filter(|g| !g.is_empty())
+}
+
+/// The property's name without the `"<group>: "` prefix that the API puts on a
+/// grouped property's name in newer runs. Older runs send the bare name.
+fn property_display_name(p: &Property) -> &str {
+    property_group(p)
+        .and_then(|g| p.name().strip_prefix(g)?.strip_prefix(": "))
+        .unwrap_or(p.name())
 }
 
 /// `(examples, counterexamples)` for a property, defaulting a missing count to 0.
@@ -867,6 +877,7 @@ fn property_status_label(status: PropertyStatus) -> &'static str {
 }
 
 /// How a wrapped free-text block lays its label out (see [`render_prose_block`]).
+#[derive(Clone, Copy)]
 enum ProseLayout {
     /// Label sits in a fixed-width column; the first body line follows it and
     /// continuation lines indent to the same column (hanging indent). The body
@@ -928,8 +939,7 @@ fn render_prose_block(label: &str, text: &str, layout: ProseLayout) -> String {
 
 /// `runs properties --detail`: the same per-group sections as the summary table,
 /// but each property is expanded into its examples (indented beneath it) rather
-/// than a one-line row. The group heading is shown once per section, separate
-/// from the property details.
+/// than a one-line row.
 fn render_properties_detail(properties: &[Property]) -> String {
     group_property_sections(properties)
         .iter()
@@ -948,18 +958,24 @@ fn render_properties_detail(properties: &[Property]) -> String {
         .join("\n\n")
 }
 
-/// One property's detail within a group section: a `Name`/`ID`/`Status`
-/// header (no `Group` line — the section heading carries it) followed by its
-/// examples. Every field goes through [`render_field`], so a short value sits
-/// inline against the value column while a long or multi-line one drops to an
-/// indented block beneath its label.
+/// One property's detail: a `Name`/`ID`/`Group`/`Status` header, then its
+/// examples.
 fn render_property_detail(property: &Property) -> String {
-    let mut out = String::new();
-    out.push_str(&render_field("Name", &sanitize(property.name())));
-    out.push('\n');
+    let hanging = ProseLayout::HangingIndent {
+        label_col: PROPERTY_LABEL_WIDTH,
+        min_body_width: 1,
+    };
+    let mut out = render_prose_block("Name", &sanitize(property_display_name(property)), hanging);
+    // `render_prose_block` drops a blank body, but the Name line always prints.
+    if out.is_empty() {
+        out.push_str("Name\n");
+    }
     if let Some(id) = property.id() {
         out.push_str(&render_field("ID", &sanitize(id)));
         out.push('\n');
+    }
+    if let Some(group) = property_group(property) {
+        out.push_str(&render_prose_block("Group", &sanitize(group), hanging));
     }
     out.push_str(&render_field(
         "Status",
@@ -1191,8 +1207,7 @@ fn property_examples_cell(p: &Property) -> String {
 /// Order properties into display sections shared by the table and `--detail`
 /// views: named groups containing a failing property first (then the rest,
 /// alphabetical), with ungrouped properties in a final "(ungrouped)" section.
-/// Within each section, failing entries sort first, then by name. An
-/// empty-string group counts as no group.
+/// Within each section, failing entries sort first, then by name.
 ///
 /// Each section's heading is `Some(name)`, except the ungrouped section's, which
 /// is `None` when there are no named groups to contrast it against — a lone
@@ -1202,7 +1217,7 @@ fn group_property_sections(properties: &[Property]) -> Vec<(Option<String>, Vec<
         props.sort_by(|a, b| {
             is_failing(b)
                 .cmp(&is_failing(a))
-                .then_with(|| a.name().cmp(b.name()))
+                .then_with(|| property_display_name(a).cmp(property_display_name(b)))
         });
     }
 
@@ -1210,7 +1225,7 @@ fn group_property_sections(properties: &[Property]) -> Vec<(Option<String>, Vec<
     let mut grouped: std::collections::BTreeMap<&str, Vec<&Property>> = Default::default();
     let mut ungrouped: Vec<&Property> = Vec::new();
     for p in properties {
-        match property_group(p).filter(|g| !g.is_empty()) {
+        match property_group(p) {
             Some(g) => grouped.entry(g).or_default().push(p),
             None => ungrouped.push(p),
         }
@@ -1240,11 +1255,8 @@ fn group_property_sections(properties: &[Property]) -> Vec<(Option<String>, Vec<
 }
 
 fn render_properties_table(properties: &[Property]) -> String {
-    // One table per group — far more scannable than a single flat table, and it
-    // mirrors the report UI. The group is the section heading, so the NAME column
-    // shows just the property's own name (the string a `--name`/`--detail` filter
-    // matches); folding the group into NAME would have made the displayed name
-    // un-copyable. This is human-facing output; use `--json` for automation.
+    // One table per group, like the report UI. The heading carries the group, so
+    // NAME drops the group prefix.
     let width = terminal_width();
     // Right-align the numeric EXAMPLES column so magnitudes line up.
     let table = Table::builder()
@@ -1261,7 +1273,7 @@ fn render_properties_table(properties: &[Property]) -> String {
                     vec![
                         property_status_label(p.status()).to_string(),
                         property_examples_cell(p),
-                        sanitize(p.name()),
+                        sanitize(property_display_name(p)),
                     ]
                 })
                 .collect();
@@ -2602,8 +2614,6 @@ mod tests {
         assert!(table.contains("EXAMPLES"));
         assert!(table.contains("NAME"));
         assert!(!table.contains("GROUP"));
-        // The group is the heading, not folded into NAME — so the displayed name
-        // is exactly what a `--name` filter matches.
         assert!(
             !table.contains('▸'),
             "group should not be folded into NAME\n{table}"
@@ -2811,6 +2821,30 @@ mod tests {
         assert!(!out.contains("Result:"), "got: {out}");
     }
 
+    /// The display name drops a `<group>: ` prefix and keeps any other name
+    /// whole. It is a suffix of the API name, so a name copied from human output
+    /// still matches `--name`.
+    #[hegel::test]
+    fn property_display_name_strips_group_prefix(tc: hegel::TestCase) {
+        let group = tc.draw(generators::text().min_size(1));
+        let name = tc.draw(generators::text());
+        let prefixed = format!("{group}: {name}");
+        let p = event_property(
+            &prefixed,
+            PropertyStatus::Passing,
+            Some(&group),
+            vec![],
+            vec![],
+        );
+        assert_eq!(property_display_name(&p), name);
+        let p = event_property(&name, PropertyStatus::Passing, Some(&group), vec![], vec![]);
+        if !name.starts_with(&format!("{group}: ")) {
+            assert_eq!(property_display_name(&p), name);
+        }
+        let p = event_property(&prefixed, PropertyStatus::Passing, None, vec![], vec![]);
+        assert_eq!(property_display_name(&p), prefixed);
+    }
+
     #[test]
     fn render_properties_detail_groups_and_indents_examples() {
         let properties = vec![
@@ -2833,8 +2867,23 @@ mod tests {
         // Grouped: the "Safety" group heads its section, ungrouped trails.
         assert!(out.contains("Safety"), "got: {out}");
         assert!(out.contains("(ungrouped)"));
-        // No Group key/value line (the heading carries it) and no rule separator.
-        assert!(!out.contains("Group     Safety"));
+        assert!(
+            out.contains("Name      First\nGroup     Safety\nStatus"),
+            "got: {out}"
+        );
+        assert!(out.contains("Name      Second\nStatus"), "got: {out}");
+        let bare = event_property(
+            "Safety: ",
+            PropertyStatus::Passing,
+            Some("Safety"),
+            vec![],
+            vec![],
+        );
+        let bare_out = render_property_detail(&bare);
+        assert!(
+            bare_out.starts_with("Name\nGroup     Safety\n"),
+            "got: {bare_out}"
+        );
         assert!(!out.contains('─'));
         // Each property keeps its header and an Examples line carrying its
         // totals, with the table indented beneath it (no `:`).

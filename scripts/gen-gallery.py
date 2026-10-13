@@ -1414,9 +1414,8 @@ def _cell_matches(cell: str, want: str) -> bool:
 def rows_at_most_with_run_cells(limit: int):
     """`rows_at_most`, plus each table row's LAUNCHER and RUN cells are right.
 
-    LAUNCHER is the launcher, and RUN is `expected_run_cell`. A cell that
-    ends in `…` is cut to fit the terminal, so it must be a prefix of that
-    value.
+    LAUNCHER is the launcher, and RUN is `expected_run_cell`; either may be
+    cut to fit with `…`.
     """
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
@@ -2022,7 +2021,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "List recent runs to find one to inspect",
             "I want to scan recent runs and pick one to dig into.",
             "Up to 10 recent runs, newest first, with legible RUN ID/STATUS/CREATED/"
-            "LAUNCHER/RUN columns; LAUNCHER shows at most 10 characters; RUN is the "
+            "LAUNCHER/RUN columns; a LAUNCHER or RUN cell cut to fit ends in `…`; RUN is the "
             "test name, and a run with no test name (a debugging session) shows the "
             "first line of its description or event description there, else `-`; "
             "when more runs exist, a stderr note says the output stopped at the limit.",

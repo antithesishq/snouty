@@ -2353,14 +2353,13 @@ fn merge_fault_windows(
     }
 }
 
-/// The columns of the runs table.
 const RUNS_TABLE_HEADERS: [&str; 5] = ["RUN ID", "STATUS", "CREATED", "LAUNCHER", "RUN"];
 const RUNS_TABLE_LAUNCHER: usize = 3;
 const RUNS_TABLE_RUN: usize = 4;
 
-/// RUN gives up width first, but keeps enough to say what the run is. Then
-/// LAUNCHER, then the rest of RUN. RUN ID, STATUS, and CREATED stay whole, so
-/// a `runs show RUN_ID` follow-up always works.
+/// RUN keeps enough width to say what the run is before LAUNCHER shrinks.
+/// RUN ID, STATUS, and CREATED never shrink, so a `runs show RUN_ID`
+/// follow-up always works.
 const RUNS_TABLE_SHRINK_ORDER: &[Shrink] = &[
     Shrink {
         column: RUNS_TABLE_RUN,
@@ -2377,14 +2376,14 @@ const RUNS_TABLE_SHRINK_ORDER: &[Shrink] = &[
 ];
 
 fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
-    // A full description never fit beside the full run id, so RUN shows at
-    // most its first line; `runs list --detail` shows it in full.
     let rows: Vec<Vec<String>> = runs
         .iter()
         .map(|run| {
             // A run with no test name (a debugging session, for one) shows the
-            // first line of its description or event description, so the row
-            // still says what the run is. LAUNCHER has its own column.
+            // first line of its description or event description. A full
+            // description does not fit beside the run id; `runs list --detail`
+            // shows it. LAUNCHER is not a fallback, because it has its own
+            // column.
             fn first_line(text: &str) -> Option<&str> {
                 text.lines().map(str::trim).find(|line| !line.is_empty())
             }
@@ -4501,8 +4500,8 @@ mod tests {
     fn runs_table_cuts_run_before_launcher() {
         let mut run = debugging_run(Some(&"long description ".repeat(4)));
         run.launcher = "Basic Test (no faults)".to_string();
-        // RUN ID, STATUS, CREATED, and LAUNCHER, with their separators, take
-        // 54 columns, so at 74 RUN is at its floor.
+        // The other columns and their gaps take 54 columns, so at width 74
+        // RUN is at its 20-column floor.
         assert_eq!(
             cell(run.clone(), 74, RUNS_TABLE_LAUNCHER),
             "Basic Test (no faults)"
@@ -4511,7 +4510,6 @@ mod tests {
             cell(run.clone(), 74, RUNS_TABLE_RUN),
             "long description lo…"
         );
-        // Then LAUNCHER shrinks to its header, and RUN ID stays whole.
         let table = render_runs_table(&[run.clone()], 60);
         assert!(
             table.lines().all(|line| line.chars().count() <= 60),

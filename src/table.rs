@@ -33,9 +33,9 @@ pub(crate) enum Fit<'a> {
     Wrap { width: usize, order: &'a [Shrink] },
 }
 
-/// Tells `tabled` which column to make one column narrower. `tabled` calls
-/// `peak` until the table fits, and it calls it again if the column it gets
-/// cannot shrink, so `peak` returns `None` when no step can shrink.
+/// Picks the column that `tabled` narrows next. `peak` returns `None` once no
+/// step can shrink, because `tabled` asks again for a column that cannot
+/// shrink, and would loop forever.
 struct ShrinkOrder {
     /// Each floor is raised to the header width.
     steps: Vec<Shrink>,
@@ -96,8 +96,8 @@ pub(crate) fn render_table(
             );
         }
         Fit::Wrap { width, order } => {
-            // tabled's own wrap splits a word that is longer than the column,
-            // so tabled only picks the widths here.
+            // tabled's wrap splits a word longer than the column, so tabled
+            // only picks the widths and wrap_text wraps.
             let mut fitted = table.clone();
             fitted.with(Width::truncate(width).priority(shrink_order(order)));
             for step in order {
@@ -323,8 +323,8 @@ mod tests {
             .chain([1])
             .max()
             .unwrap();
-        // The narrowest the table can be: column 0 whole, then column 1 at
-        // its header width.
+        // `first + 3` is the narrowest table: column 0 whole, a gap, and
+        // column 1 at its header width.
         let width = tc.draw(
             generators::integers::<usize>()
                 .min_value(first + 3)

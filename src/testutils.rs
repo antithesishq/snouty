@@ -751,7 +751,7 @@ const MOCK_RUNS: &[(&str, &str, &str, &str, &str)] = &[
         "nightly smoke on main",
     ),
     ("run-2", "in_progress", "2025-03-19T14:00:00Z", "debug", ""),
-    // A launcher longer than any cut that a table could make.
+    // A long launcher: piped output must show it whole.
     (
         "run-3",
         "incomplete",

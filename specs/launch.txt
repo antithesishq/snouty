@@ -96,7 +96,7 @@ stderr 'invalid value .ultra. for .--performance-tier'
 stderr 'possible values: standard, fast, turbo'
 snouty launch --help
 stdout 'possible values: standard, fast, turbo\]'
-stdout '--param antithesis\.performance_tier=TIER'
+stdout '`--param=antithesis\.performance_tier=TIER`'
 
 # `launch` does not accept --stdin.
 ! snouty launch --launcher basic_test --stdin --duration 30

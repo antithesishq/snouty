@@ -80,6 +80,9 @@ snouty runs --help
 stdout 'exec.*Execute a command in a run'
 stdout 'cancel, run commands in, and read the logs'
 stdout 'snouty runs exec <run_id> <input_hash> <vtime> .uname -a.$'
+# The examples call the input hash `<input_hash>` in every line.
+stdout -literal 'snouty runs logs <run_id> <input_hash> [vtime]'
+! stdout '<hash>'
 snouty runs exec --help
 ! stdout 'SNOUTY_UNSTABLE_FEATURES'
 

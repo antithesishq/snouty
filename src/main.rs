@@ -467,7 +467,7 @@ async fn cmd_debug(
     } else if let Some(run_id) = response.run_id.as_deref() {
         println!("Debugging session started: run_id {run_id}");
         println!(
-            "\nthe session takes a few minutes to start. Wait for it with:\n  \
+            "\nThe session takes a few minutes to start. Wait for it with:\n  \
              snouty runs wait {run_id} --until running"
         );
         // The launch sent both as strings: `launch_mvd_request` refuses anything else.
@@ -477,7 +477,7 @@ async fn cmd_debug(
             // A session that is still loading makes `runs exec` fail with a
             // suggestion to try again, so the hint does not repeat it.
             println!(
-                "\nthen run a script at this moment:\n  \
+                "\nThen run a script at this moment:\n  \
                  snouty runs exec {run_id} {input_hash} {vtime} '<script>'"
             );
         }

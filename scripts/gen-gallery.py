@@ -2869,13 +2869,15 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "is required or preferred. Username/password should remain marked deprecated. "
             "The help should say that credentials come from `snouty login` and name the next "
             "step, `snouty runs wait <run_id>`. `--performance-tier` should list the three "
-            "tiers: standard, fast, and turbo.",
+            "tiers: standard, fast, and turbo. No code span in a flag's help should split "
+            "across two lines.",
             ["launch"],
         ),
         _help_story(
             "help-debug",
             "Understand how to open a debugging session",
-            "I run `snouty debug --help` to learn how to debug a moment.",
+            "I run `snouty debug --help` to learn how to debug a moment. The usage line "
+            "should show that a target (--stdin, --run-id, or --session-id) is required.",
             ["debug"],
         ),
         _help_story(
@@ -3094,7 +3096,7 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
             "validate-missing-image",
             "Validate when a service image is missing locally",
             "A service references an image I haven't built or pulled.",
-            "The error lists the missing image and reminds me snouty never pulls.",
+            "The error lists the missing image and says snouty does not pull or build images.",
             [str(s / "missing-image")],
             fails_with("some images are not available locally"),
             needs_docker=True,

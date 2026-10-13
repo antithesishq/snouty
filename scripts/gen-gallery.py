@@ -3023,8 +3023,9 @@ def build_help_stories(d: Discovery) -> list[Story]:
         _help_story(
             "help-runs-exec",
             "Learn how to execute a script in a live run",
-            "I want the help to tell me that a script needs a run that is in progress, "
-            "a test run or a debugging session, which tenant "
+            "I want the help to tell me that a script needs a run that is ready, "
+            "a test run or a debugging session, that the command waits until it is ready, "
+            "which tenant "
             "release the command needs, how "
             "to pick the moment and the container, when a moment needs "
             "--source-run-id or --source-session-id, where the script's output goes, "

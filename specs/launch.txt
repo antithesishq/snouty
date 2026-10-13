@@ -160,10 +160,10 @@ stderr '"run.caller_type": "snouty"'
 stdout 'Test run started: run_id run-123'
 
 # After the run ID, the output names the next steps: wait for the run to
-#    finish, or watch its errors live with `runs search --follow`. A live
+#    finish, or watch its output live with `runs search --follow`. A live
 #    search needs a running run, so that step waits for it first.
 stdout '(?s)Test run started: run_id run-123\n\nWait for the run to finish with:\n  snouty runs wait run-123\n'
-stdout '(?s)Or watch its errors live once it is ready:\n  snouty runs wait run-123 --until ready\n  snouty runs search run-123 --follow .contains\(.output_text: "error".\).$'
+stdout '(?s)Or watch its output live once it is ready:\n  snouty runs wait run-123 --until ready\n  snouty runs search run-123 --follow .contains\(.output_text: "needle".\).$'
 
 # A --param value replaces the default run.caller_type.
 mock-server 200 '{"message":"Success","runId":"run-123"}'

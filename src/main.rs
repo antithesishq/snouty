@@ -319,9 +319,9 @@ async fn cmd_launch(
                 Wait for the run to finish with:
                   snouty runs wait {run_id}
 
-                Or watch its errors live once it is ready:
+                Or watch its output live once it is ready:
                   snouty runs wait {run_id} --until ready
-                  snouty runs search {run_id} --follow 'contains({{output_text: "error"}})'
+                  snouty runs search {run_id} --follow 'contains({{output_text: "needle"}})'
             "#
         )?;
     } else {

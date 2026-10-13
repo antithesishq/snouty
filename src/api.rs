@@ -252,15 +252,14 @@ impl RunSummary {
 }
 
 impl RunDetail {
-    /// Whether the run accepts commands. A run from before
-    /// [`MIN_SUB_STATUS_RELEASE`] has no sub-status, so it is ready while it is
-    /// in progress.
+    /// Whether the run accepts commands: it is in progress, with the `Ready`
+    /// sub-status. A run from before [`MIN_SUB_STATUS_RELEASE`] has no
+    /// sub-status, so it is ready while it is in progress.
     pub(crate) fn is_ready(&self) -> bool {
+        let in_progress = self.status == RunStatus::InProgress;
         match run_release(&self.run_id) {
-            Some(release) if release < MIN_SUB_STATUS_RELEASE => {
-                self.status == RunStatus::InProgress
-            }
-            _ => self.sub_status == Some(RunSubStatus::Ready),
+            Some(release) if release < MIN_SUB_STATUS_RELEASE => in_progress,
+            _ => in_progress && self.sub_status == Some(RunSubStatus::Ready),
         }
     }
 
@@ -2941,6 +2940,13 @@ mod tests {
         assert!(!run("9043254f65c9c65d63fe043a0abfc7fc-63-1", "starting").is_ready());
         assert!(!run("9043254f65c9c65d63fe043a0abfc7fc-64-0", "in_progress").is_ready());
         assert!(!run("run-1", "in_progress").is_ready());
+        // A sub-status of `Ready` is not enough: the run must be in progress.
+        let mut stopped = run("run-1", "completed");
+        stopped.sub_status = Some(RunSubStatus::Ready);
+        assert!(!stopped.is_ready());
+        let mut ready = run("run-1", "in_progress");
+        ready.sub_status = Some(RunSubStatus::Ready);
+        assert!(ready.is_ready());
     }
 
     #[hegel::test]

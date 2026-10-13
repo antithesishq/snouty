@@ -979,10 +979,7 @@ With --web it prints the report URL as {"url": ...} and opens no browser:
     #[command(long_about = r#"Wait until a run is ready or complete.
 
 --until sets the status to wait for:
-  ready     The run is ready to use, or it is already complete. A debugging
-            session is ready when it accepts commands, which can be minutes
-            after its status becomes in_progress. Any other run, and any run
-            from before release 64, is ready while it is in_progress.
+  ready     The run is ready to use, or it is already complete.
   complete  The run is complete: completed, cancelled, or incomplete. This
             is the default.
 
@@ -1170,14 +1167,12 @@ on its own line:
     #[command(
         long_about = r#"Execute a bash script in a run that is in progress, at a moment.
 
-The run must be in progress. It can be a test run or a debugging session. A
-run that is not ready yet holds the command until it is, with no time limit:
-a debugging session that `snouty debug` launches takes a few minutes to be
-ready. While it waits, snouty says so on stderr. To execute
-at a moment of a run that is already complete, start a debugging session at
-that moment. The script
-executes on a fresh branch of the multiverse, so it does not interact with
-other work happening in the session, like fuzzing or other executing commands.
+The run must be ready. It can be a test run or a debugging session. The exec
+command will wait until the run is ready before running the script. To execute
+at a moment of a completed run, start a debugging session at that moment. The
+script executes on a fresh branch of the multiverse, so it does not interact
+with other work happening in the session, like fuzzing or other executing
+commands.
 
 INPUT_HASH and VTIME identify the moment to execute at, and the moment must be
 warm. A warm moment is a moment that is loaded into the run. Every moment

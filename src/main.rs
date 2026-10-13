@@ -7,7 +7,7 @@ use clap_complete::Shell;
 use log::{debug, info};
 
 use color_eyre::Section;
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::{Context, Report, Result};
 use semver::Version;
 use snouty::OutputOptions;
 use snouty::api::AntithesisApi;
@@ -24,8 +24,8 @@ use snouty::params::{
     ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID,
     ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION, ANT_EVENT_DESCRIPTION,
     ANT_FILTER_LOGS_MATCHING, ANT_FILTER_SOURCE_MATCHING, ANT_IS_EPHEMERAL, ANT_PERFORMANCE_TIER,
-    ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, Param, Params, RUN_CALLER_TYPE, VCS_PARAMS,
-    VCS_REPO_BRANCH, VCS_REPO_NAME, VCS_REPO_OWNER, VCS_REPO_TYPE, VCS_VERSION_ID,
+    ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, DuplicateKey, Params, RUN_CALLER_TYPE,
+    VCS_PARAMS, VCS_REPO_BRANCH, VCS_REPO_NAME, VCS_REPO_OWNER, VCS_REPO_TYPE, VCS_VERSION_ID,
     VCS_VERSION_LINK,
 };
 use snouty::settings::Settings;
@@ -243,7 +243,9 @@ async fn cmd_launch(
         None
     };
 
-    merge_param_flags(&mut params, args.params)?;
+    params
+        .extend_checked(args.params.into_iter().collect())
+        .map_err(param_overrides_flag)?;
 
     if params.is_empty() {
         return Err(user_error("invalid arguments: no parameters provided"));
@@ -398,20 +400,14 @@ fn debug_typed_params(args: &DebugArgs) -> Params {
     params
 }
 
-/// `params` holds only the typed flags. A `--param` can replace a stdin
-/// value, but not a typed flag.
-fn merge_param_flags(params: &mut Params, param_flags: Vec<Param>) -> Result<()> {
-    let extra: Params = param_flags.into_iter().collect();
-    if let Some(key) = extra.as_map().keys().find(|key| params.contains_key(key)) {
-        return Err(user_error(format!(
-            "invalid arguments: '{key}' cannot be overridden via --param"
-        ))
-        .suggestion(format!(
-            "remove the --param for '{key}', or the flag that sets it"
-        )));
-    }
-    params.merge(extra);
-    Ok(())
+/// The error for a `--param` that sets a key a typed flag already set.
+fn param_overrides_flag(DuplicateKey(key): DuplicateKey) -> Report {
+    user_error(format!(
+        "invalid arguments: '{key}' cannot be overridden via --param"
+    ))
+    .suggestion(format!(
+        "remove the --param for '{key}', or the flag that sets it"
+    ))
 }
 
 fn debug_params(args: DebugArgs) -> Result<Params> {
@@ -420,8 +416,12 @@ fn debug_params(args: DebugArgs) -> Result<Params> {
     } else {
         Params::default()
     };
+    // `flags` holds only the typed flags, so a --param can replace a stdin
+    // value but not a typed flag.
     let mut flags = debug_typed_params(&args);
-    merge_param_flags(&mut flags, args.params)?;
+    flags
+        .extend_checked(args.params.into_iter().collect())
+        .map_err(param_overrides_flag)?;
     params.merge(flags);
 
     if params.is_empty() {

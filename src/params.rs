@@ -101,6 +101,10 @@ impl FromStr for Param {
     }
 }
 
+/// The key that both sides of [`Params::extend_checked`] set.
+#[derive(Debug)]
+pub struct DuplicateKey(pub String);
+
 /// Params parsed from CLI arguments and validated against the JSON schema.
 #[derive(Debug, Clone, Default)]
 pub struct Params {
@@ -237,6 +241,16 @@ impl Params {
         for (key, value) in other.inner {
             self.inner.insert(key, value);
         }
+    }
+
+    /// Merge `other` into this one, or merge nothing when `other` sets a key
+    /// that this one already holds.
+    pub fn extend_checked(&mut self, other: Params) -> std::result::Result<(), DuplicateKey> {
+        if let Some(key) = other.inner.keys().find(|&key| self.inner.contains_key(key)) {
+            return Err(DuplicateKey(key.clone()));
+        }
+        self.merge(other);
+        Ok(())
     }
 
     /// Get a redacted copy of the params for safe display in logs/CI.
@@ -606,6 +620,23 @@ mod tests {
         params.insert("antithesis.debugging.input_hash", "abc");
         let err = params.ensure_single_debug_target().unwrap_err().to_string();
         assert!(err.contains("specify --run-id or --session-id"));
+    }
+
+    #[test]
+    fn extend_checked_merges_nothing_on_a_duplicate_key() {
+        let mut base = Params::from_key_value_pairs(["a=1"]).unwrap();
+        let DuplicateKey(key) = base
+            .extend_checked(Params::from_key_value_pairs(["b=2", "a=3"]).unwrap())
+            .unwrap_err();
+        assert_eq!(key, "a");
+        assert_eq!(
+            base.as_map(),
+            Params::from_key_value_pairs(["a=1"]).unwrap().as_map()
+        );
+
+        base.extend_checked(Params::from_key_value_pairs(["b=2"]).unwrap())
+            .unwrap();
+        assert_eq!(base.as_map().get("b").unwrap(), "2");
     }
 
     #[test]

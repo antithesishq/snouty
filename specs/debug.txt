@@ -20,6 +20,14 @@
 ! snouty debug --input-hash abc --run-id run-123 --vtime 123
 stderr 'No Antithesis credentials found.*'
 
+# The help names the flags that identify the moment. The flags are the
+#    only input: there is no --stdin.
+snouty debug --help
+stdout -literal 'Usage: snouty debug [OPTIONS] --input-hash <INPUT_HASH> --vtime <VTIME> <--run-id <RUN_ID>|--session-id <SESSION_ID>>'
+! stdout 'stdin'
+! snouty debug --stdin --input-hash abc --run-id run-123 --vtime 123
+stderr "unexpected argument '--stdin' found"
+
 # The help documents --param for custom parameters.
 snouty debug --help
 stdout '--param attrs\.team=payments'
@@ -33,12 +41,21 @@ stderr 'invalid value .=value. for .--param.*the key is empty'
 
 [staging] skip
 
-# Parameters are validated against the debuggingParams schema before
-#    making any API call. Required fields: input_hash, vtime, and exactly
-#    one of run_id or session_id.
+# The flags must name the whole moment: --input-hash, --vtime, and one of
+#    --run-id or --session-id. The error names each missing flag, before any
+#    API call.
 mock-server 200 '{}'
-! snouty debug --input-hash abc
-stderr 'validation failed.*'
+! snouty debug --run-id run-1 --vtime 1
+stderr 'required arguments were not provided'
+stderr '^  --input-hash <INPUT_HASH>$'
+! stderr 'validation failed'
+! stderr 'is a required property'
+
+! snouty debug --input-hash abc --run-id run-1
+stderr '^  --vtime <VTIME>$'
+
+! snouty debug --input-hash abc --vtime 1
+stderr -literal '  <--run-id <RUN_ID>|--session-id <SESSION_ID>>'
 
 # --vtime is parsed into the vtime type, so a malformed value is rejected
 # before any API call.
@@ -52,20 +69,15 @@ stderr 'vtime is not a finite decimal number'
 stderr 'unexpected argument.*'
 
 # The target run must be identified by exactly one of --run-id or
-#    --session-id. Supplying both, or neither, is an error caught before any
-#    API call.
+#    --session-id. Supplying both is an error caught before any API call.
 ! snouty debug --input-hash abc --vtime 1 --run-id r-1 --session-id s-1
-stderr 'specify exactly one of --run-id / --session-id.*'
-
-! snouty debug --input-hash abc --vtime 1
-stderr 'specify --run-id or --session-id.*'
+stderr -literal "the argument '--run-id <RUN_ID>' cannot be used with '--session-id <SESSION_ID>'"
 
 # Parameters are provided as typed flags. Before sending, the resolved
 #    parameters are printed to stderr with sensitive values redacted. The
 #    target run is identified by --run-id (preferred for new integrations).
 #    --title sends antithesis.test_name, the session's title.
-#    The vtime is normalized to its exact print, so every route into a moment
-#    (flags, raw JSON) sends the same text: `1234567890` becomes
+#    The vtime is sent as its exact print: `1234567890` becomes
 #    `1234567890.0`.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --title 'stalled leader election' --description 'debug this moment' --recipients team@example.com
@@ -95,22 +107,12 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 stderr "'antithesis.test_name' cannot be overridden via --param"
 ! stderr 'Requesting the Antithesis multiverse debugger'
 
-# A custom parameter can hold any JSON value. stdin passes it through as it
-#    is.
+# --param cannot add a second target: clap takes exactly one of --run-id
+#    and --session-id, and a --param for the other one is refused before any
+#    API call.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-stdin debug_custom_types.txt
-snouty debug --stdin
-stderr '"attrs.retries": 3'
-stderr '"attrs.flaky": true'
-stdout 'Debugging session started: run_id run-123'
-
-# A documented parameter must be a string. A non-string value on stdin fails
-#    validation before any API call.
-mock-server 200 '{"message":"Success","runId":"run-123"}'
-stdin debug_number_param.txt
-! snouty debug --stdin
-stderr 'validation failed'
-stderr -count=1 '^Note: antithesis.debugging.input_hash: 123 is not of type .string.'
+! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --param antithesis.debugging.session_id=sess
+stderr 'pass only one of antithesis.debugging.run_id and antithesis.debugging.session_id'
 ! stderr 'Requesting the Antithesis multiverse debugger'
 
 # The live API answers success with HTTP 200. snouty also accepts the
@@ -184,50 +186,17 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty debug --input-hash abc123 --session-id d5d1c9cf0e64b5dd69b00e97b07fe3f4-18-1 --vtime 1234567890
 stderr '"antithesis.debugging.session_id": "d5d1c9cf0e64b5dd69b00e97b07fe3f4-18-1"'
 
-# Parameters can alternatively be read from stdin via --stdin, as JSON or
-#    JSON5. A stdin vtime is normalized the same way the flags' is.
-mock-server 200 '{"message":"Success","runId":"run-123"}'
-stdin debug_json.txt
-snouty debug --stdin
-stderr '"antithesis.debugging.input_hash": "abc"'
-stderr '"antithesis.debugging.vtime": "123.0"'
-
-# A vtime that isn't a number is rejected wherever it came from — here from
-# raw JSON on stdin, which no typed flag validated.
-mock-server 200 '{}'
-stdin debug_bad_vtime.txt
-! snouty debug --stdin
-stderr 'vtime is not a finite decimal number'
-stderr 'antithesis.debugging.vtime = "not-a-number"'
-
-# When both stdin and CLI args are provided, CLI args take priority over
-#    stdin values.
-mock-server 200 '{"message":"Success","runId":"run-123"}'
-stdin debug_run_json.txt
-snouty debug --stdin --input-hash override --recipients team@example.com
-stderr '"antithesis.debugging.run_id": "9043254f65c9c65d63fe043a0abfc7fc-53-1"'
-stderr '"antithesis.debugging.input_hash": "override"'
-stderr '"antithesis.debugging.vtime": "329.8037810830865"'
-stderr '"antithesis.report.recipients": "\[REDACTED\]"'
-
-# A --param value also takes priority over the same key on stdin.
-mock-server 200 '{"message":"Success","runId":"run-123"}'
-stdin debug_run_json.txt
-snouty debug --stdin --param antithesis.debugging.input_hash=from-param
-stderr '"antithesis.debugging.input_hash": "from-param"'
-
 # On success, a confirmation with the run_id is printed to stdout. The
 #    session takes a few minutes to start, so the next steps follow: the
 #    command that waits until the session runs, and the `runs exec` command
 #    at the debugged moment. The hint does not say to try again: when the
 #    session is still loading, `runs exec` itself says so.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-stdin debug_run_json.txt
-snouty debug --stdin
+snouty debug --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --input-hash 6057726200491963783 --vtime 329.8037810830865
 stdout 'Debugging session started: run_id run-123'
-stdout -literal 'the session takes a few minutes to start. Wait for it with:'
+stdout -literal 'The session takes a few minutes to start. Wait for it with:'
 stdout '^  snouty runs wait run-123 --until running$'
-stdout -literal 'then run a script at this moment:'
+stdout -literal 'Then run a script at this moment:'
 stdout -literal "  snouty runs exec run-123 6057726200491963783 329.8037810830865 '<script>'"
 ! stdout '(?i)try again'
 
@@ -237,8 +206,7 @@ stdout -literal "  snouty runs exec run-123 6057726200491963783 329.803781083086
 # the response anyway (the mock answers HTTP 200 saying 202). Use --verbose to
 # see the response as it arrived.
 mock-server 200 '{"statusCode":202,"runId":"run-123"}'
-stdin debug_run_json.txt
-snouty --json debug --stdin
+snouty --json debug --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --input-hash 6057726200491963783 --vtime 329.8037810830865
 stdout '\s*"runId": "run-123".*'
 ! stdout '.*statusCode.*'
 ! stdout 'snouty runs'
@@ -273,36 +241,3 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 set-env ANTITHESIS_EXTRA_HEADERS not-a-valid-header-line
 ! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
 stderr 'ANTITHESIS_EXTRA_HEADERS entry missing \':\' separator: "not-a-valid-header-line".*'
-
--- debug_run_json.txt --
-{
-    "antithesis.debugging.run_id": "9043254f65c9c65d63fe043a0abfc7fc-53-1",
-    "antithesis.debugging.input_hash": "6057726200491963783",
-    "antithesis.debugging.vtime": 329.8037810830865
-}
--- debug_json.txt --
-{
-    "antithesis.debugging.input_hash": "abc",
-    "antithesis.debugging.session_id": "sess",
-    "antithesis.debugging.vtime": "123"
-}
--- debug_bad_vtime.txt --
-{
-    "antithesis.debugging.input_hash": "abc",
-    "antithesis.debugging.session_id": "sess",
-    "antithesis.debugging.vtime": "not-a-number"
-}
--- debug_number_param.txt --
-{
-    "antithesis.debugging.input_hash": 123,
-    "antithesis.debugging.session_id": "sess",
-    "antithesis.debugging.vtime": "123"
-}
--- debug_custom_types.txt --
-{
-    "antithesis.debugging.input_hash": "abc",
-    "antithesis.debugging.session_id": "sess",
-    "antithesis.debugging.vtime": "123",
-    "attrs.retries": 3,
-    "attrs.flaky": true
-}

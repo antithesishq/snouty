@@ -633,7 +633,14 @@ async fn cmd_runs_properties(
             outln!("{}", serde_json::to_string(property)?)?;
         }
     } else if properties.is_empty() {
-        outln!("{}", no_properties_message(run_id, &filter))?;
+        // An unfiltered empty result has three causes. Fetch the run to say
+        // which one applies.
+        let run = if filter.is_empty() {
+            api.get_run(run_id).await.ok().map(|run| run.untag())
+        } else {
+            None
+        };
+        outln!("{}", no_properties_message(run_id, &filter, run.as_ref()))?;
     } else if detail {
         outln!("{}", render_properties_detail(&properties))?;
         // One next step for the whole listing: every HASH/VTIME row above feeds it.
@@ -653,8 +660,17 @@ async fn cmd_runs_properties(
     Ok(())
 }
 
-/// The empty-result message, naming whichever filters were active.
-fn no_properties_message(run_id: &str, filter: &PropertyFilter) -> String {
+impl PropertyFilter<'_> {
+    fn is_empty(&self) -> bool {
+        self.status.is_none() && self.name.is_none() && self.group.is_none()
+    }
+}
+
+/// The empty-result message. With filters, it names them. Without filters, it
+/// uses the run's status and report link to tell why there are no properties.
+/// If snouty cannot get the run, it uses the message for a run that is not
+/// complete.
+fn no_properties_message(run_id: &str, filter: &PropertyFilter, run: Option<&RunDetail>) -> String {
     let mut parts = Vec::new();
     match filter.status {
         Some(PropertyStatus::Passing) => parts.push("passing".to_string()),
@@ -668,8 +684,22 @@ fn no_properties_message(run_id: &str, filter: &PropertyFilter) -> String {
         parts.push(format!("group '{group}'"));
     }
     if parts.is_empty() {
+        let reason = match run {
+            Some(run) if run.status == RunStatus::Completed => {
+                let has_report = run
+                    .links
+                    .as_ref()
+                    .is_some_and(|l| l.triage_report.is_some());
+                if has_report {
+                    "The run completed and reported no properties."
+                } else {
+                    "The run completed, but it has no report yet. A report can take some minutes after a run completes."
+                }
+            }
+            _ => "A run that is not complete can have no properties.",
+        };
         format!(
-            "No properties found. A run that is not complete can have no properties.\n\nInspect the run with `snouty runs show {run_id}`."
+            "No properties found. {reason}\n\nInspect the run with `snouty runs show {run_id}`."
         )
     } else {
         format!("No properties match ({}).", parts.join(", "))
@@ -1738,13 +1768,16 @@ impl RewarmDisplay {
 /// warm in the live run and no source_run_id provided.` from 2026-10-07.
 const MOMENT_NOT_WARM: &str = "Moment not warm";
 
-/// Add suggestions to a failed `runs exec` request. `rewarm_flag` names the
+/// Add suggestions to a failed `runs exec` request. `debug_command` starts a
+/// debugging session at the request's moment, and `rewarm_flag` names the
 /// rewarm source's flag, if one was given.
 ///
-/// snouty reads the run on every error response. A session in `starting`
-/// cannot accept a command, so whatever the status code, the action is to
-/// wait. Otherwise, the server's responses on orbitinghail (release 64.0)
-/// mean:
+/// snouty reads the run on every error response. A run in `starting` cannot
+/// accept a command, so whatever the status code, the action is to wait. A
+/// run that has stopped cannot accept a command either: on orbitinghail, a
+/// completed test run answers 400 `This run is not currently active or
+/// reachable. Unable to execute command.` Otherwise, the server's responses
+/// on orbitinghail (release 64.0) mean:
 ///
 /// - 404 `Resource not found`: the run or the source does not exist.
 /// - 400 `Moment not warm…`: the moment is cold and there is no source.
@@ -1757,6 +1790,7 @@ const MOMENT_NOT_WARM: &str = "Moment not warm";
 async fn explain_exec_error(
     api: &AntithesisApi,
     run_id: &str,
+    debug_command: &str,
     rewarm_flag: Option<&str>,
     err: color_eyre::eyre::Report,
 ) -> color_eyre::eyre::Report {
@@ -1775,9 +1809,16 @@ async fn explain_exec_error(
     let cold = api_error_message(&err).is_some_and(|m| m.contains(MOMENT_NOT_WARM));
     match (run.status, status, rewarm_flag) {
         (RunStatus::Starting, ..) => err.suggestion(format!(
-            "the debugging session is not ready yet. Wait for it with \
+            "the run is not ready yet. Wait for it with \
              `snouty runs wait {run_id} --until running`, then try again"
         )),
+        (status, ..) if status.is_terminal() => err
+            .note(format!(
+                "`runs exec` needs a run that is in progress. This run is {status}"
+            ))
+            .suggestion(format!(
+                "start a debugging session at this moment with `{debug_command}`"
+            )),
         (_, 404, Some(flag)) => {
             err.suggestion(format!("check that {flag} names an existing source"))
         }
@@ -1885,14 +1926,26 @@ async fn cmd_runs_exec(
     debug!("executing command in run: {}", run_id);
     let timeout = exec.timeout;
     let mut renderer = exec.events.then(|| EventStreamRenderer::new(false));
-    let rewarm_flag = exec.rewarm.as_ref().map(|source| match source {
-        RewarmSource::Run(_) => "--source-run-id",
-        RewarmSource::Session(_) => "--source-session-id",
-    });
+    // A cold moment is in its rewarm source, not in RUN_ID, so a debugging
+    // session at that moment starts from the source.
+    let (rewarm_flag, debug_target) = match &exec.rewarm {
+        Some(RewarmSource::Run(id)) => (Some("--source-run-id"), format!("--run-id {}", **id)),
+        Some(RewarmSource::Session(id)) => (
+            Some("--source-session-id"),
+            format!("--session-id {}", **id),
+        ),
+        None => (None, format!("--run-id {run_id}")),
+    };
+    let debug_command = format!(
+        "snouty debug {debug_target} --input-hash {} --vtime {}",
+        exec.moment.input_hash, exec.moment.vtime
+    );
     let api = AntithesisApi::new(settings, verbose)?;
     let stream = match api.execute_command(run_id, exec).await {
         Ok(stream) => stream,
-        Err(err) => return Err(explain_exec_error(&api, run_id, rewarm_flag, err).await),
+        Err(err) => {
+            return Err(explain_exec_error(&api, run_id, &debug_command, rewarm_flag, err).await);
+        }
     };
 
     // Only the last line can be the terminal result. A line that parses as

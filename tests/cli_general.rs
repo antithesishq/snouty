@@ -409,8 +409,7 @@ fn debug_with_cli_args() {
         .stderr(predicate::str::contains(
             r#""antithesis.debugging.session_id": "sess-456""#,
         ))
-        // Normalized to the vtime's exact print, so every route into a moment
-        // sends the same text (see `Params::normalize_debug_vtime`).
+        // The vtime is sent as the exact print of the parsed `VTime`.
         .stderr(predicate::str::contains(
             r#""antithesis.debugging.vtime": "1234567890.0""#,
         ))
@@ -446,33 +445,14 @@ fn debug_with_json_flag() {
 }
 
 #[test]
-fn debug_with_stdin_json() {
-    let mock_url = start_mock_server(r#"{"runId": "run-1", "statusCode": 202}"#, 200);
-    let json = r#"{
-         "antithesis.debugging.input_hash": "abc",
-         "antithesis.debugging.session_id": "sess",
-         "antithesis.debugging.vtime": "123"
-     }"#;
-
-    snouty_with_mock(&mock_url)
-        .args(["debug", "--stdin"])
-        .write_stdin(json)
-        .assert()
-        .success()
-        .stderr(predicate::str::contains(
-            r#""antithesis.debugging.input_hash": "abc""#,
-        ));
-}
-
-#[test]
 fn debug_fails_missing_required_fields() {
     let mock_url = start_mock_server(r#"{}"#, 200);
 
     snouty_with_mock(&mock_url)
-        .args(["debug", "--input-hash", "abc"])
+        .args(["debug", "--input-hash", "abc", "--run-id", "run-1"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("validation failed"));
+        .stderr(predicate::str::contains("--vtime <VTIME>"));
 }
 
 #[test]
@@ -509,41 +489,6 @@ fn completions_unsupported_shell_fails() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("invalid value 'nushell'"));
-}
-
-#[test]
-fn debug_merges_stdin_with_cli_args() {
-    let mock_url = start_mock_server(r#"{"runId": "run-1", "statusCode": 202}"#, 200);
-    let json = r#"{
-         "antithesis.debugging.session_id": "f89d5c11f5e3bf5e4bb3641809800cee-44-22",
-         "antithesis.debugging.input_hash": "6057726200491963783",
-         "antithesis.debugging.vtime": 329.8037810830865
-     }"#;
-
-    snouty_with_mock(&mock_url)
-        .args([
-            "debug",
-            "--stdin",
-            "--input-hash",
-            "override",
-            "--recipients",
-            "team@example.com",
-        ])
-        .write_stdin(json)
-        .assert()
-        .success()
-        .stderr(predicate::str::contains(
-            r#""antithesis.debugging.session_id": "f89d5c11f5e3bf5e4bb3641809800cee-44-22""#,
-        ))
-        .stderr(predicate::str::contains(
-            r#""antithesis.debugging.input_hash": "override""#,
-        ))
-        .stderr(predicate::str::contains(
-            r#""antithesis.debugging.vtime": "329.8037810830865""#,
-        ))
-        .stderr(predicate::str::contains(
-            r#""antithesis.report.recipients": "[REDACTED]""#,
-        ));
 }
 
 #[test]
@@ -607,6 +552,41 @@ fn runs_list_exits_cleanly_when_stdout_closes_early() {
         .unwrap();
 
     let output = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "expected clean exit on broken pipe, got {:?}; stderr:\n{stderr}",
+        output.status
+    );
+    assert!(!stderr.contains("panicked"), "stderr:\n{stderr}");
+}
+
+// `snouty launch | head -1` takes the run ID line and closes stdout before the
+// next-step lines are written. snouty must exit cleanly, not panic.
+#[test]
+fn launch_exits_cleanly_when_stdout_closes_early() {
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
+
+    // The read end is closed before snouty spawns, so its first stdout write
+    // hits a broken pipe.
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_snouty"))
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1")
+        .env("ANTITHESIS_API_KEY", "testkey")
+        .env("ANTITHESIS_TENANT", "testtenant")
+        .env("ANTITHESIS_BASE_URL", &mock_url)
+        .args(["launch", "--launcher", "advanced_test", "--duration", "30"])
+        .args(["--source", "ci", "--no-vcs"])
+        .stdout(writer)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap()
+        .wait_with_output()
+        .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),

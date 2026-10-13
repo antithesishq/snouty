@@ -494,15 +494,34 @@ stderr '^Error: API error: 400.*'
 [!staging] ! snouty runs
 [!staging] stderr 'API error: 429 Too Many Requests.*'
 
-# An unfiltered empty result succeeds, says that a run that is not complete
-# can have no properties, and points to the run details. A filtered empty
-# result keeps the filter message.
-mock-runs-server
-snouty runs properties run-empty
-stdout '^No properties found\. A run that is not complete can have no properties\.$'
-stdout '^Inspect the run with `snouty runs show run-empty`\.$'
-! stdout 'this run is|properties are generated'
-! stderr '^Error:'
+# An unfiltered empty result succeeds and points to the run details. The
+# message uses the run's status and report link to tell why there are no
+# properties. A filtered empty result keeps the filter message.
+#
+# A run that is not complete can have no properties.
+[!staging] mock-runs-server
+[!staging] snouty runs properties run-empty-in-progress
+[!staging] stdout '^No properties found\. A run that is not complete can have no properties\.$'
+[!staging] stdout '^Inspect the run with `snouty runs show run-empty-in-progress`\.$'
+[!staging] ! stdout 'completed'
+[!staging] ! stderr '^Error:'
+
+# A completed run with no report link has no properties until its report is
+# ready.
+[!staging] mock-runs-server
+[!staging] snouty runs properties run-empty-no-report
+[!staging] stdout '^No properties found\. The run completed, but it has no report yet\. A report can take some minutes after a run completes\.$'
+[!staging] stdout '^Inspect the run with `snouty runs show run-empty-no-report`\.$'
+[!staging] ! stdout 'not complete'
+[!staging] ! stderr '^Error:'
+
+# A completed run with a report link reported no properties.
+[!staging] mock-runs-server
+[!staging] snouty runs properties run-empty
+[!staging] stdout '^No properties found\. The run completed and reported no properties\.$'
+[!staging] stdout '^Inspect the run with `snouty runs show run-empty`\.$'
+[!staging] ! stdout 'not complete|no report'
+[!staging] ! stderr '^Error:'
 
 mock-runs-server
 snouty runs properties run-empty --failing

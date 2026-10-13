@@ -19,7 +19,7 @@ At a glance:
 **Static misconfigurations** (fail before any container starts; need the
 docker/podman + docker-compose binaries, but not a running daemon):
 `neither/`, `wrong-extension/`, `ambiguous/`, `malformed-compose/`,
-`no-services/`, `external-network/`.
+`no-services/`, `external-network/`, `build-only/`.
 
 **Need a running Docker daemon:**
 - `missing-image/` — queries the local image store to report the missing image.

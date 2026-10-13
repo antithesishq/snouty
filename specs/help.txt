@@ -27,6 +27,18 @@ snouty launch --help
 snouty runs logs --help
 ! stdout '^.{101,}$'
 
+# A code span in flag help has no space in it, so the wrap never splits it
+#    across two lines, at any terminal width. A line with an odd number of
+#    backticks holds half of a split span.
+env COLUMNS=120
+snouty launch --help
+! stdout '^[^`]*(`[^`]*`[^`]*)*`[^`]*$'
+snouty launch -h
+! stdout '^[^`]*(`[^`]*`[^`]*)*`[^`]*$'
+snouty runs exec -h
+! stdout '^[^`]*(`[^`]*`[^`]*)*`[^`]*$'
+env COLUMNS=
+
 # validate --help documents both the compose and Kubernetes flows.
 snouty validate --help
 stdout '^Examples:$'

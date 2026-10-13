@@ -1,7 +1,7 @@
 use std::num::NonZeroU64;
 
 use chrono::{DateTime, Utc};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 use crate::api::{
     PerformanceTier, RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SourceRunId,
@@ -204,7 +204,9 @@ them on the run and `snouty runs show` lists them:
 When the config dir (or the current directory, without --config) is in a git
 checkout, the launch records the checked-out commit and branch in run metadata.
 For a github.com `origin` remote, it also records the repository and a link to
-the commit. `snouty runs show` lists them under Version Control.
+the commit. `snouty runs show` lists them under Version Control. A pre-built
+config image (--config-image or --param antithesis.config_image) turns this
+off.
 
 Additional container images that the config parser can't discover (e.g. an
 image referenced only in a Kubernetes CRD field) can be registered with the
@@ -218,7 +220,8 @@ JSON object:
   snouty launch --json --launcher basic_test --duration 30 | jq -r .runId
 
 Next, wait for the run to finish with `snouty runs wait <run_id>`. The run ID is
-the `run_id` value in the launch output, or `.runId` in the --json output.
+the `run_id` value in the launch output, or `.runId` in the --json output. To
+watch its events live, use `snouty runs search <run_id> --follow <query>`.
 
 Credentials come from `snouty login` or from the environment variables below.
 Tenant and repository may be set via the environment variables below, or in a
@@ -257,7 +260,7 @@ Examples:
   snouty runs properties --failing <run_id>
   snouty runs properties <run_id> --name <substring> --detail
   snouty runs build-logs <run_id>
-  snouty runs logs <run_id> <hash> [vtime]
+  snouty runs logs <run_id> <input_hash> [vtime]
   snouty runs events <run_id> -m <query>
   snouty runs search <run_id> 'contains({output_text: "error"})'
   snouty runs exec <run_id> <input_hash> <vtime> 'uname -a'
@@ -278,7 +281,7 @@ of its table or its rendered events:
 Identify the target run with exactly one of --run-id (preferred) or
 --session-id.
 
-Using CLI arguments:
+Example:
   snouty debug \
     --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 \
     --input-hash 6057726200491963783 \
@@ -717,12 +720,13 @@ pub struct LaunchArgs {
     /// Performance tier for the run. Higher tiers explore system states faster
     /// through more parallelism. They also consume core hours faster. The
     /// server default is `standard`. To send a tier that is not listed, use
-    /// `--param antithesis.performance_tier=TIER`.
+    /// `--param=antithesis.performance_tier=TIER`.
     #[arg(long, value_enum)]
     pub performance_tier: Option<PerformanceTier>,
 
     /// Do not record the commit, branch, and repository of the local git
-    /// checkout in run metadata
+    /// checkout in run metadata. A pre-built config image (--config-image)
+    /// also turns the detection off
     #[arg(long)]
     pub no_vcs: bool,
 
@@ -732,11 +736,8 @@ pub struct LaunchArgs {
 }
 
 #[derive(Args)]
+#[command(group(ArgGroup::new("target").args(["run_id", "session_id"]).required(true)))]
 pub struct DebugArgs {
-    /// Read parameters from stdin (JSON)
-    #[arg(long)]
-    pub stdin: bool,
-
     /// Run ID of the test run to debug (preferred; mutually exclusive with --session-id)
     #[arg(long)]
     pub run_id: Option<String>,
@@ -747,11 +748,11 @@ pub struct DebugArgs {
 
     /// Input hash identifying the moment to debug
     #[arg(long, allow_hyphen_values = true)]
-    pub input_hash: Option<String>,
+    pub input_hash: String,
 
     /// Virtual time identifying the moment to debug
     #[arg(long)]
-    pub vtime: Option<VTime>,
+    pub vtime: VTime,
 
     /// Debugging session title, shown as the test name in `snouty runs list`
     #[arg(long)]
@@ -1162,24 +1163,25 @@ on its own line:
         render: EventOutputArgs,
     },
 
-    /// Execute a command in a run's live session
+    /// Execute a command in a run that is in progress
     #[command(
-        long_about = r#"Execute a bash script in a run's live session, at a moment.
+        long_about = r#"Execute a bash script in a run that is in progress, at a moment.
 
-The run must have a live session. A run has one while it is in progress, and
-for a while after it completes. A debugging session that `snouty debug`
-launches is a run with a live session too: pass its run ID once it is ready,
-which can take a few minutes. The script executes on a fresh branch of the
-multiverse, so it does not disturb the session.
+The run must be in progress. It can be a test run or a debugging session. A
+debugging session that `snouty debug` launches takes a few minutes to start:
+pass its run ID when it is ready. To execute at a moment of a run that is
+already complete, start a debugging session at that moment. The script
+executes on a fresh branch of the multiverse, so it does not interact with
+other work happening in the session, like fuzzing or other executing commands.
 
 INPUT_HASH and VTIME identify the moment to execute at, and the moment must be
-warm. A warm moment is a moment that is loaded into the session. Every moment
-generated in the session is warm: by fuzzing, and by an earlier `runs exec`,
-so the end moment of one command is warm for the next. A moment from another
-run or session is cold. Use --source-run-id to load a moment from a
-different run. Rewarming a moment can take minutes and depends on the
-magnitude of the vtime. The `--timeout` flag does not apply to the time it
-takes to rewarm a moment. Find a moment with `runs properties --detail` or
+warm. A warm moment is a moment that is loaded into the run. Every moment
+generated in the run is warm: by fuzzing, and by an earlier `runs exec`, so
+the end moment of one command is warm for the next. A moment from another run
+is cold. Use --source-run-id to load a moment from a different run.
+Rewarming a moment can take minutes and depends on the magnitude of the
+vtime. The `--timeout` flag does not apply to the time it takes to rewarm a
+moment. Find a moment with `runs properties --detail`, `runs search`, or
 `runs events`.
 
 The script executes on the host, or in the container that --container names.
@@ -1233,13 +1235,12 @@ JSON object on its own line, and the trailer is left out:
         #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
         container: Option<String>,
 
-        /// Print every event of the timeline while the script executes, as
-        /// `runs logs` prints them, in place of only the script's output
+        /// Emit every event rather than just the script's output.
         #[arg(long)]
         events: bool,
 
         /// Run that a cold moment comes from; the server loads the moment
-        /// into the session
+        /// into the run
         #[arg(long, conflicts_with = "source_session_id")]
         source_run_id: Option<SourceRunId>,
 

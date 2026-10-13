@@ -979,10 +979,7 @@ fn missing_images_error(
         };
         err = err.with_note(|| format!("image: {image}{hint}"));
     }
-    err = err.with_note(|| {
-        "snouty never pulls — what it validates and launches is exactly what's in your \
-         local image store, so every referenced image must already be present there"
-    });
+    err = err.with_note(|| "snouty does not pull or build images");
 
     // A missing image is often just sitting in the *other* installed engine's
     // store — the usual cause is `docker compose build` landing it in docker
@@ -2266,8 +2263,8 @@ services:
             "expected build-stanza hint on the second missing image, got: {debug}"
         );
         assert!(
-            debug.contains("snouty never pulls"),
-            "expected the why-it's-required-locally note, got: {debug}"
+            debug.contains("snouty does not pull or build images"),
+            "expected the no-pull note, got: {debug}"
         );
         assert!(
             !debug.contains("--config-image"),

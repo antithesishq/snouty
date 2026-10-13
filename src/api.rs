@@ -2244,7 +2244,6 @@ mod tests {
                 params.insert(key, format!("value of {key}"));
             }
             params.insert("attrs.team", "payments");
-            params.merge(Params::from_json(&serde_json::json!({"attrs.retries": 3})).unwrap());
             let body = serde_json::to_value(launch_mvd_request(&params).unwrap()).unwrap();
             assert_eq!(
                 body["params"],

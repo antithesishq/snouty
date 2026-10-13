@@ -1,13 +1,14 @@
-use std::io::{self, ErrorKind, IsTerminal, Read};
+use std::io::{self, ErrorKind, IsTerminal, Write};
 use std::path::Path;
 use std::process::Command;
 
 use clap::{CommandFactory, Parser};
 use clap_complete::Shell;
-use log::{debug, info};
+use indoc::writedoc;
+use log::info;
 
 use color_eyre::Section;
-use color_eyre::eyre::{Context, Report, Result};
+use color_eyre::eyre::{Report, Result};
 use semver::Version;
 use snouty::OutputOptions;
 use snouty::api::AntithesisApi;
@@ -31,23 +32,6 @@ use snouty::params::{
 use snouty::settings::Settings;
 use snouty::validate;
 
-fn read_stdin() -> Result<String> {
-    let mut buf = String::new();
-    io::stdin()
-        .read_to_string(&mut buf)
-        .wrap_err("invalid arguments: failed to read stdin")?;
-    let buf = buf.trim().to_string();
-    Ok(buf)
-}
-
-fn get_stdin_params() -> Result<Params> {
-    let input = read_stdin()?;
-    debug!("parsing input as JSON");
-    let value: serde_json::Value =
-        json5::from_str(&input).wrap_err("invalid arguments: invalid JSON")?;
-    Params::from_json(&value)
-}
-
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     // Drop the "Backtrace omitted. Run with RUST_BACKTRACE=1…" footer: it's noise
@@ -68,10 +52,7 @@ async fn main() {
         .install()
         .unwrap();
     env_logger::Builder::from_default_env()
-        .format(|buf, record| {
-            use std::io::Write;
-            writeln!(buf, "{}", record.args())
-        })
+        .format(|buf, record| writeln!(buf, "{}", record.args()))
         .init();
     if let Err(report) = run(Cli::parse()).await {
         // One rendering for every error: `render_report` collapses the chain
@@ -252,8 +233,14 @@ async fn cmd_launch(
     }
 
     // A user value for any detected key turns detection off, so that a
-    // detected commit link cannot point at a different commit.
-    if !args.no_vcs && !VCS_PARAMS.iter().any(|&(key, _)| params.contains_key(key)) {
+    // detected commit link cannot point at a different commit. A pre-built
+    // config image has no config dir, and the current directory need not hold
+    // its source, so it turns detection off too.
+    let prebuilt_image = args.config.is_none() && params.contains_key(ANT_CONFIG_IMAGE);
+    if !args.no_vcs
+        && !prebuilt_image
+        && !VCS_PARAMS.iter().any(|&(key, _)| params.contains_key(key))
+    {
         params.merge(detect_vcs_params(
             args.config.as_deref().unwrap_or(Path::new(".")),
         ));
@@ -321,11 +308,24 @@ async fn cmd_launch(
 
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
+    } else if let Some(run_id) = response.run_id.as_deref() {
+        // `writedoc!` and not `println!`: a reader that stops after the run ID
+        // line (`| head -1`) closes the pipe, and `println!` panics on that.
+        writedoc!(
+            io::stdout(),
+            r#"
+                Test run started: run_id {run_id}
+
+                Wait for the run to finish with:
+                  snouty runs wait {run_id}
+
+                Or watch its errors live after it starts running:
+                  snouty runs wait {run_id} --until running
+                  snouty runs search {run_id} --follow 'contains({{output_text: "error"}})'
+            "#
+        )?;
     } else {
-        println!(
-            "Test run started: run_id {}",
-            response.run_id.as_deref().unwrap_or("(unknown)")
-        );
+        println!("Test run started: run_id (unknown)");
     }
 
     Ok(())
@@ -381,12 +381,8 @@ fn debug_typed_params(args: &DebugArgs) -> Params {
     if let Some(session_id) = &args.session_id {
         params.insert(ANT_DEBUGGING_SESSION_ID, session_id.as_str());
     }
-    if let Some(input_hash) = &args.input_hash {
-        params.insert(ANT_DEBUGGING_INPUT_HASH, input_hash.as_str());
-    }
-    if let Some(vtime) = &args.vtime {
-        params.insert(ANT_DEBUGGING_VTIME, vtime.to_string());
-    }
+    params.insert(ANT_DEBUGGING_INPUT_HASH, args.input_hash.as_str());
+    params.insert(ANT_DEBUGGING_VTIME, args.vtime.to_string());
     if let Some(title) = &args.title {
         params.insert(ANT_TEST_NAME, title.as_str());
     }
@@ -407,40 +403,24 @@ fn param_overrides_flag(DuplicateKey(key): DuplicateKey) -> Report {
     ))
 }
 
-fn debug_params(args: DebugArgs) -> Result<Params> {
-    let mut params = if args.stdin {
-        get_stdin_params()?
-    } else {
-        Params::default()
-    };
-    // `flags` holds only the typed flags, so a --param can replace a stdin
-    // value but not a typed flag.
-    let mut flags = debug_typed_params(&args);
-    flags
-        .extend_checked(args.params.into_iter().collect())
-        .map_err(param_overrides_flag)?;
-    params.merge(flags);
-
-    if params.is_empty() {
-        return Err(user_error("invalid arguments: no parameters provided"));
-    }
-
-    Ok(params)
-}
-
 async fn cmd_debug(
     args: DebugArgs,
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
-    let mut params = debug_params(args)?;
-    // Every path into the moment has merged by now — the typed flags and raw
-    // JSON on stdin — so normalizing here makes both send the same text. It
-    // runs before validation, so a bad vtime reports itself rather than
-    // surfacing as a schema error.
-    params.normalize_debug_vtime()?;
+    let mut params = debug_typed_params(&args);
+    params
+        .extend_checked(args.params.into_iter().collect())
+        .map_err(param_overrides_flag)?;
+    // clap takes exactly one of --run-id and --session-id, but a --param can
+    // add the other.
+    if params.contains_key(ANT_DEBUGGING_RUN_ID) && params.contains_key(ANT_DEBUGGING_SESSION_ID) {
+        return Err(user_error(format!(
+            "invalid arguments: pass only one of {ANT_DEBUGGING_RUN_ID} and \
+             {ANT_DEBUGGING_SESSION_ID}"
+        )));
+    }
     params.validate_debugging_params()?;
-    params.ensure_single_debug_target()?;
 
     let api = AntithesisApi::new_for_launch(settings, verbose)?;
     // The launch endpoint accepts an unknown run or input hash and starts a
@@ -468,17 +448,17 @@ async fn cmd_debug(
     } else if let Some(run_id) = response.run_id.as_deref() {
         println!("Debugging session started: run_id {run_id}");
         println!(
-            "\nthe session takes a few minutes to start. Wait for it with:\n  \
+            "\nThe session takes a few minutes to start. Wait for it with:\n  \
              snouty runs wait {run_id} --until running"
         );
-        // The launch sent both as strings: `launch_mvd_request` refuses anything else.
+        // Both come from typed flags, so they are strings.
         if let (Some(input_hash), Some(vtime)) =
             (param(ANT_DEBUGGING_INPUT_HASH), param(ANT_DEBUGGING_VTIME))
         {
             // A session that is still loading makes `runs exec` fail with a
             // suggestion to try again, so the hint does not repeat it.
             println!(
-                "\nthen run a script at this moment:\n  \
+                "\nThen run a script at this moment:\n  \
                  snouty runs exec {run_id} {input_hash} {vtime} '<script>'"
             );
         }

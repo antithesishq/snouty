@@ -1,11 +1,3 @@
-// Whether an event carries text that holds every needle.
-//
-// snouty applies this to `(ev, needles)`, with the needles lowercased: `m`
-// folds only the haystack. An assertion catalog entry
-// (`antithesis_assert.hit === false`) never matches on `output_text`: it is no
-// evidence that anything ran.
-//
-// snouty strips these comments before it sends the query.
 (ev, needles) => {
   const m = (s, needle) => s != null && String(s).toLowerCase().includes(needle);
   const assert_hit = ev.antithesis_assert?.hit === true;

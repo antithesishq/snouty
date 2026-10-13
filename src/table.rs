@@ -23,7 +23,8 @@ pub(crate) enum Fit<'a> {
     /// step is at its floor, the table stays wider than `width`.
     Truncate { width: usize, order: &'a [Shrink] },
     /// Like [`Fit::Truncate`], but wrap the cells at spaces instead of cutting
-    /// them. Continuation lines start under the column.
+    /// them. Continuation lines start under the column. `tabled` wraps, not
+    /// `render::wrap_text`, because the shrink order sets each column width.
     Wrap { width: usize, order: &'a [Shrink] },
 }
 
@@ -31,8 +32,8 @@ pub(crate) enum Fit<'a> {
 /// `peak` until the table fits, and it calls it again if the column it gets
 /// cannot shrink, so `peak` returns `None` when no step can shrink.
 struct ShrinkOrder {
-    /// `(column, floor)`, with each floor raised to the header width.
-    steps: Vec<(usize, usize)>,
+    /// Each floor is raised to the header width.
+    steps: Vec<Shrink>,
 }
 
 impl Peaker for ShrinkOrder {
@@ -41,8 +42,8 @@ impl Peaker for ShrinkOrder {
     fn peak(&mut self, mins: &[usize], values: &[usize]) -> Option<usize> {
         self.steps
             .iter()
-            .find(|&&(column, floor)| values[column] > mins[column] + floor)
-            .map(|&(column, _)| column)
+            .find(|step| values[step.column] > mins[step.column] + step.floor)
+            .map(|step| step.column)
     }
 }
 
@@ -58,9 +59,11 @@ pub(crate) fn render_table(
     let shrink_order = |order: &[Shrink]| ShrinkOrder {
         steps: order
             .iter()
-            .map(|step| {
-                let header = console::measure_text_width(headers[step.column]);
-                (step.column, step.floor.max(header))
+            .map(|step| Shrink {
+                column: step.column,
+                floor: step
+                    .floor
+                    .max(console::measure_text_width(headers[step.column])),
             })
             .collect(),
     };
@@ -228,9 +231,11 @@ mod tests {
     /// one: piped output keeps every cell whole.
     #[hegel::test]
     fn unlimited_width_changes_nothing(tc: hegel::TestCase) {
-        let cells = generators::text().filter(|s: &String| {
-            !s.is_empty() && s.chars().all(|c| c.is_ascii_graphic() || c == ' ')
-        });
+        // Printable ASCII: space through `~`.
+        let cells = generators::text()
+            .min_size(1)
+            .min_codepoint(0x20)
+            .max_codepoint(0x7e);
         let rows = tc.draw(generators::vecs(
             generators::vecs(cells).min_size(3).max_size(3),
         ));

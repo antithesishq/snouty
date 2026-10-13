@@ -1249,7 +1249,6 @@ fn render_properties_table(properties: &[Property]) -> String {
                 })
                 .collect();
             // Right-align the numeric EXAMPLES column so magnitudes line up.
-            // Only NAME wraps.
             let table = render_table(
                 &["STATUS", "EXAMPLES", "NAME"],
                 rows,
@@ -4452,13 +4451,13 @@ mod tests {
         );
     }
 
-    /// The RUN cell of a one-run table at `width` columns.
-    fn run_cell(run: RunSummary, width: usize) -> String {
+    /// The cell in `column` of a one-run table at `width` columns.
+    fn cell(run: RunSummary, width: usize, column: usize) -> String {
         let table = render_runs_table(&[run], width);
         let row = table.lines().nth(1).unwrap();
         row.split("  ")
             .filter(|cell| !cell.is_empty())
-            .nth(4)
+            .nth(column)
             .unwrap()
             .trim()
             .to_string()
@@ -4486,25 +4485,16 @@ mod tests {
         )
     }
 
-    /// The LAUNCHER cell of a one-run table at `width` columns.
-    fn launcher_cell(run: RunSummary, width: usize) -> String {
-        let table = render_runs_table(&[run], width);
-        let row = table.lines().nth(1).unwrap();
-        row.split("  ")
-            .filter(|cell| !cell.is_empty())
-            .nth(3)
-            .unwrap()
-            .trim()
-            .to_string()
-    }
-
     #[test]
     fn runs_table_shows_whole_launcher_when_it_fits() {
         let mut run = debugging_run(Some("probe the stall"));
         run.launcher = "Basic Test (no faults)".to_string();
-        assert_eq!(launcher_cell(run.clone(), 200), "Basic Test (no faults)");
+        assert_eq!(
+            cell(run.clone(), 200, RUNS_TABLE_LAUNCHER),
+            "Basic Test (no faults)"
+        );
         run.launcher = String::new();
-        assert_eq!(launcher_cell(run, 200), "-");
+        assert_eq!(cell(run, 200, RUNS_TABLE_LAUNCHER), "-");
     }
 
     #[test]
@@ -4513,15 +4503,21 @@ mod tests {
         run.launcher = "Basic Test (no faults)".to_string();
         // RUN ID, STATUS, CREATED, and LAUNCHER, with their separators, take
         // 54 columns, so at 74 RUN is at its floor.
-        assert_eq!(launcher_cell(run.clone(), 74), "Basic Test (no faults)");
-        assert_eq!(run_cell(run.clone(), 74), "long description lo…");
+        assert_eq!(
+            cell(run.clone(), 74, RUNS_TABLE_LAUNCHER),
+            "Basic Test (no faults)"
+        );
+        assert_eq!(
+            cell(run.clone(), 74, RUNS_TABLE_RUN),
+            "long description lo…"
+        );
         // Then LAUNCHER shrinks to its header, and RUN ID stays whole.
         let table = render_runs_table(&[run.clone()], 60);
         assert!(
             table.lines().all(|line| line.chars().count() <= 60),
             "{table}"
         );
-        assert_eq!(launcher_cell(run.clone(), 60), "Basic T…");
+        assert_eq!(cell(run.clone(), 60, RUNS_TABLE_LAUNCHER), "Basic T…");
         assert!(table.contains("abc-54-1  cancelled"), "{table}");
     }
 
@@ -4536,45 +4532,45 @@ mod tests {
             Some("probe the stall"),
         );
         let run = with_event_description(run, "debug this moment");
-        assert_eq!(run_cell(run, 100), "nightly");
+        assert_eq!(cell(run, 100, RUNS_TABLE_RUN), "nightly");
     }
 
     #[test]
     fn runs_table_shows_description_first_line_when_test_name_missing() {
         let run = debugging_run(Some("\n  probe the stall\x1b \nsecond line"));
-        assert_eq!(run_cell(run, 100), r"probe the stall\x1B");
+        assert_eq!(cell(run, 100, RUNS_TABLE_RUN), r"probe the stall\x1B");
     }
 
     #[test]
     fn runs_table_reads_top_level_description() {
         let mut run = debugging_run(None);
         run.description = Some("top-level description".to_string());
-        assert_eq!(run_cell(run, 100), "top-level description");
+        assert_eq!(cell(run, 100, RUNS_TABLE_RUN), "top-level description");
     }
 
     #[test]
     fn runs_table_prefers_top_level_description_over_parameter() {
         let mut run = debugging_run(Some("parameter description"));
         run.description = Some("top-level description".to_string());
-        assert_eq!(run_cell(run, 100), "top-level description");
+        assert_eq!(cell(run, 100, RUNS_TABLE_RUN), "top-level description");
     }
 
     #[test]
     fn runs_table_shows_event_description_when_description_missing() {
         let run = with_event_description(debugging_run(None), "debug this moment\nmore");
-        assert_eq!(run_cell(run, 100), "debug this moment");
+        assert_eq!(cell(run, 100, RUNS_TABLE_RUN), "debug this moment");
     }
 
     #[test]
     fn runs_table_prefers_description_over_event_description() {
         let run = with_event_description(debugging_run(Some("probe the stall")), "debug this");
-        assert_eq!(run_cell(run, 100), "probe the stall");
+        assert_eq!(cell(run, 100, RUNS_TABLE_RUN), "probe the stall");
     }
 
     #[test]
     fn runs_table_skips_blank_description() {
         let run = with_event_description(debugging_run(Some(" \n ")), "\n");
-        assert_eq!(run_cell(run, 100), "-");
+        assert_eq!(cell(run, 100, RUNS_TABLE_RUN), "-");
     }
 
     #[test]
@@ -4603,9 +4599,9 @@ mod tests {
     #[test]
     fn runs_table_truncates_long_description() {
         let run = debugging_run(Some(&"long description ".repeat(10)));
-        let cell = run_cell(run, 80);
-        assert!(cell.starts_with("long description"), "got: {cell}");
-        assert!(cell.ends_with('…'), "got: {cell}");
+        let run_cell = cell(run, 80, RUNS_TABLE_RUN);
+        assert!(run_cell.starts_with("long description"), "got: {run_cell}");
+        assert!(run_cell.ends_with('…'), "got: {run_cell}");
     }
 
     #[test]

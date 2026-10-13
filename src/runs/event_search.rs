@@ -129,7 +129,7 @@ pub(super) async fn explain_search_error(
                 "run {run_id} is still starting and has no searchable events yet"
             ))
             .suggestion(format!(
-                "wait for it with `snouty runs wait {run_id} --until running`, then try again"
+                "wait for it with `snouty runs wait {run_id} --until ready`, then try again"
             )),
             RunProbe::Exists(_) => {
                 let (major, minor) = MIN_SEARCH_RELEASE;

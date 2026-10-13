@@ -119,6 +119,9 @@ mock-runs-server
 mock-runs-server
 [!staging] snouty runs show $R_run_id
 [!staging] stdout 'Run ID +run-2$'
+# A run's sub-status follows its status after a colon. A run in progress is
+# ready; a complete run has no sub-status.
+[!staging] stdout '^Status +in_progress:ready$'
 
 # `--limit 0` asks for nothing, so clap rejects it before any request.
 mock-runs-server
@@ -158,7 +161,7 @@ snouty --json runs list --status completed --limit 100
 mock-runs-server
 snouty runs show $R_run_id
 stdout 'Run ID.*$R_run_id'
-[!staging] stdout 'Status.*completed'
+[!staging] stdout '^Status +completed$'
 [!staging] stdout 'Duration.*30m'
 [!staging] stdout 'Elapsed.*30m33s'
 [!staging] stdout 'Launcher.*nightly'
@@ -792,7 +795,7 @@ stderr 'run not found: no-such-run'
 mock-runs-server
 [!staging] ! snouty runs events session-starting --match anything
 [!staging] stderr 'run session-starting is still starting and has no searchable events yet'
-[!staging] stderr -literal 'Suggestion: wait for it with `snouty runs wait session-starting --until running`, then try again'
+[!staging] stderr -literal 'Suggestion: wait for it with `snouty runs wait session-starting --until ready`, then try again'
 [!staging] ! stderr 'run not found'
 [!staging] ! stderr 'tenant releases before'
 mock-runs-server

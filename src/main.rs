@@ -319,8 +319,8 @@ async fn cmd_launch(
                 Wait for the run to finish with:
                   snouty runs wait {run_id}
 
-                Or watch its errors live after it starts running:
-                  snouty runs wait {run_id} --until running
+                Or watch its errors live once it is ready:
+                  snouty runs wait {run_id} --until ready
                   snouty runs search {run_id} --follow 'contains({{output_text: "error"}})'
             "#
         )?;
@@ -449,7 +449,7 @@ async fn cmd_debug(
         println!("Debugging session started: run_id {run_id}");
         println!(
             "\nThe session takes a few minutes to start. Wait for it with:\n  \
-             snouty runs wait {run_id} --until running"
+             snouty runs wait {run_id} --until ready"
         );
         // Both come from typed flags, so they are strings.
         if let (Some(input_hash), Some(vtime)) =

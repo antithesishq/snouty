@@ -158,7 +158,7 @@ stderr -literal 'Suggestion: search for a moment using `snouty runs events run-1
 mock-runs-server
 ! snouty debug --input-hash 5181922178177328213 --run-id session-starting --vtime 404
 stderr 'run session-starting is still starting; debug it once it is in progress or complete'
-stderr -literal 'Suggestion: wait for it with `snouty runs wait session-starting --until running`'
+stderr -literal 'Suggestion: wait for it with `snouty runs wait session-starting --until ready`'
 ! stderr 'Requesting the Antithesis multiverse debugger'
 ! stdout 'Debugging session started'
 
@@ -195,7 +195,7 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty debug --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --input-hash 6057726200491963783 --vtime 329.8037810830865
 stdout 'Debugging session started: run_id run-123'
 stdout -literal 'The session takes a few minutes to start. Wait for it with:'
-stdout '^  snouty runs wait run-123 --until running$'
+stdout '^  snouty runs wait run-123 --until ready$'
 stdout -literal 'Then run a script at this moment:'
 stdout -literal "  snouty runs exec run-123 6057726200491963783 329.8037810830865 '<script>'"
 ! stdout '(?i)try again'

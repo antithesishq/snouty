@@ -152,6 +152,50 @@ pub enum VersionError {
     Unreachable(String),
 }
 
+/// `Run_Detail.sub_status`. Open (see `open_sub_status` in build.rs): a value
+/// this build does not know decodes as `Other` and keeps its spelling.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(from = "String", into = "String")]
+pub enum RunSubStatus {
+    /// A debugging session that accepts commands, or any other run that is in
+    /// progress.
+    Ready,
+    Other(String),
+}
+
+impl RunSubStatus {
+    const READY: &'static str = "Ready";
+}
+
+impl From<String> for RunSubStatus {
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            Self::READY => Self::Ready,
+            _ => Self::Other(value),
+        }
+    }
+}
+
+impl From<RunSubStatus> for String {
+    fn from(value: RunSubStatus) -> Self {
+        match value {
+            RunSubStatus::Ready => RunSubStatus::READY.to_owned(),
+            RunSubStatus::Other(value) => value,
+        }
+    }
+}
+
+/// Lowercase like `RunStatus`; a value this build does not know prints as the
+/// server spelled it.
+impl std::fmt::Display for RunSubStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Ready => "ready",
+            Self::Other(value) => value,
+        })
+    }
+}
+
 impl RunStatus {
     /// Whether the run has stopped and its status will not change again.
     /// `unknown` is not terminal: it is the server saying it cannot classify
@@ -197,6 +241,19 @@ impl RunSummary {
 }
 
 impl RunDetail {
+    pub(crate) fn is_ready(&self) -> bool {
+        self.sub_status == Some(RunSubStatus::Ready)
+    }
+
+    /// The status, and the sub-status after a colon when the run has one:
+    /// `in_progress:ready`.
+    pub(crate) fn status_label(&self) -> String {
+        match &self.sub_status {
+            Some(sub_status) => format!("{}:{sub_status}", self.status),
+            None => self.status.to_string(),
+        }
+    }
+
     pub(crate) fn test_name(&self) -> Option<&str> {
         params_test_name(self.parameters.as_ref())
     }
@@ -292,6 +349,7 @@ fn normalize_property(property: Property) -> Result<Property> {
                 example_count: p.example_count,
                 examples,
                 group: p.group,
+                id: p.id,
                 is_event: p.is_event,
                 is_group: p.is_group,
                 name: p.name,
@@ -2813,6 +2871,32 @@ mod tests {
                 generated::types::ParamsAntithesisIsEphemeral::True,
                 generated::types::ParamsAntithesisIsEphemeral::False,
             ]
+        );
+    }
+
+    #[test]
+    fn run_detail_keeps_an_unknown_sub_status() {
+        let run = |sub_status: &str| -> RunDetail {
+            serde_json::from_value(serde_json::json!({
+                "run_id": "run-1",
+                "status": "in_progress",
+                "created_at": "2025-03-20T02:00:00Z",
+                "launcher": "debugging",
+                "sub_status": sub_status,
+            }))
+            .unwrap()
+        };
+        let ready = run("Ready");
+        assert!(ready.is_ready());
+        assert_eq!(ready.status_label(), "in_progress:ready");
+        assert_eq!(serde_json::to_value(&ready).unwrap()["sub_status"], "Ready");
+
+        let loading = run("Loading");
+        assert!(!loading.is_ready());
+        assert_eq!(loading.status_label(), "in_progress:Loading");
+        assert_eq!(
+            serde_json::to_value(&loading).unwrap()["sub_status"],
+            "Loading"
         );
     }
 

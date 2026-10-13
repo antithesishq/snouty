@@ -56,6 +56,7 @@ fn generate_api_client(out_dir: &Path) {
     drop_launch_status_code(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
     open_performance_tier(&mut spec_value);
+    open_sub_status(&mut spec_value);
     unrequire_search_limit_default(&mut spec_value);
     add_mvd_test_name(&mut spec_value);
     open_mvd_params(&mut spec_value);
@@ -73,6 +74,14 @@ fn generate_api_client(out_dir: &Path) {
     settings.with_conversion(
         vtime_schema,
         "crate::vtime::VTime",
+        std::iter::empty::<progenitor::TypeImpl>(),
+    );
+    let sub_status_schema: schemars::schema::SchemaObject =
+        serde_json::from_value(serde_json::json!({"type": "string", "format": SUB_STATUS_FORMAT}))
+            .unwrap();
+    settings.with_conversion(
+        sub_status_schema,
+        "crate::api::RunSubStatus",
         std::iter::empty::<progenitor::TypeImpl>(),
     );
     settings.with_patch(
@@ -93,6 +102,11 @@ fn generate_api_client(out_dir: &Path) {
     assert!(
         content.contains("pub vtime: crate::vtime::VTime"),
         "generated client does not use crate::vtime::VTime for Moment.vtime; \
+         the with_conversion schema match no longer applies"
+    );
+    assert!(
+        content.contains("pub sub_status: ::std::option::Option<crate::api::RunSubStatus>"),
+        "generated client does not use crate::api::RunSubStatus for Run_Detail.sub_status; \
          the with_conversion schema match no longer applies"
     );
 
@@ -351,6 +365,25 @@ fn open_performance_tier(spec: &mut serde_json::Value) {
          copy in build.rs"
     );
 }
+
+/// Decode `Run_Detail.sub_status` into the handwritten `RunSubStatus`, which
+/// keeps a value this build does not know. A closed enum would fail `runs show`
+/// and `runs wait` on the day the server adds a value.
+fn open_sub_status(spec: &mut serde_json::Value) {
+    const POINTER: &str = "/components/schemas/Run_Detail/allOf/1/properties/sub_status";
+    let values = remove_schema_key(spec, POINTER, "enum", "open_sub_status");
+    assert!(
+        values
+            .as_array()
+            .is_some_and(|values| values.contains(&serde_json::json!("Ready"))),
+        "Run_Detail.sub_status's enum no longer lists `Ready`; update `RunSubStatus` in \
+         src/api.rs and `open_sub_status` in build.rs"
+    );
+    spec.pointer_mut(POINTER).unwrap()["format"] = serde_json::json!(SUB_STATUS_FORMAT);
+}
+
+/// The format `open_sub_status` marks the schema with, for `with_conversion`.
+const SUB_STATUS_FORMAT: &str = "run-sub-status";
 
 /// The schema `open_performance_tier` adds.
 const PERFORMANCE_TIER_SCHEMA: &str = "PerformanceTier";

@@ -449,15 +449,17 @@ async fn cmd_runs_wait(
     };
 
     if json {
-        outln!(
-            "{}",
-            serde_json::to_string_pretty(&json!({
-                "run_id": run.run_id,
-                "status": run.status,
-            }))?
-        )?;
+        let mut out = json!({
+            "run_id": run.run_id,
+            "status": run.status,
+        });
+        // Absent, as in the run's detail, when the run has no sub-status.
+        if let Some(sub_status) = &run.sub_status {
+            out["sub_status"] = json!(sub_status);
+        }
+        outln!("{}", serde_json::to_string_pretty(&out)?)?;
     } else {
-        outln!("run {} is {}", run.run_id, run.status)?;
+        outln!("run {} is {}", run.run_id, run.status_label())?;
     }
 
     Ok(())
@@ -529,16 +531,17 @@ async fn wait_for_run(
             );
         }
         let reached = match until {
-            WaitUntil::Running => run.status != RunStatus::Starting,
+            WaitUntil::Ready => run.is_ready() || run.status.is_terminal(),
             WaitUntil::Complete => run.status.is_terminal(),
         };
         if reached {
             return Ok(run);
         }
 
-        if last_status != Some(run.status) {
-            eprintln!("run {run_id} is {}", run.status);
-            last_status = Some(run.status);
+        let label = run.status_label();
+        if last_status.as_ref() != Some(&label) {
+            eprintln!("run {run_id} is {label}");
+            last_status = Some(label);
         }
 
         if !warned_over_schedule && let Some(warning) = over_schedule_warning(&run, Utc::now()) {
@@ -706,7 +709,7 @@ pub async fn ensure_run_debuggable(api: &AntithesisApi, run_id: &str) -> Result<
             "run {run_id} is still starting; debug it once it is in progress or complete"
         ))
         .suggestion(format!(
-            "wait for it with `snouty runs wait {run_id} --until running`"
+            "wait for it with `snouty runs wait {run_id} --until ready`"
         ))),
         RunProbe::Exists(_) => Ok(()),
     }
@@ -1292,7 +1295,7 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         rows.push(("Test Name", name.to_string()));
     }
 
-    rows.push(("Status", run.status.to_string()));
+    rows.push(("Status", run.status_label()));
     rows.push(("Created", format_local_with_offset(run.created_at)));
 
     if let Some(t) = run.started_at {
@@ -1685,21 +1688,19 @@ const MOMENT_NOT_WARM: &str = "Moment not warm";
 /// debugging session at the request's moment, and `rewarm_flag` names the
 /// rewarm source's flag, if one was given.
 ///
-/// snouty reads the run on every error response. A run in `starting` cannot
-/// accept a command, so whatever the status code, the action is to wait. A
-/// run that has stopped cannot accept a command either: on orbitinghail, a
-/// completed test run answers 400 `This run is not currently active or
-/// reachable. Unable to execute command.` Otherwise, the server's responses
-/// on orbitinghail (release 64.0) mean:
+/// snouty reads the run on every error response. A run that is starting, or
+/// in progress and not ready, cannot accept a command, so whatever the status
+/// code, the action is to wait. A debugging session on release 64.0 is
+/// `in_progress` for minutes before it is ready, and answers the 404 or the
+/// cold 400 in that time. A run that has stopped cannot accept a command
+/// either: on orbitinghail, a completed test run answers 400 `This run is not
+/// currently active or reachable. Unable to execute command.` Otherwise, the
+/// server's responses on orbitinghail (release 64.0) mean:
 ///
 /// - 404 `Resource not found`: the run or the source does not exist.
 /// - 400 `Moment not warm…`: the moment is cold and there is no source.
 /// - Any other 400: the session has ended, a rewarm did not finish, or the
 ///   source is not the moment's run.
-///
-/// Release 64.0 reports `in_progress` for minutes before a session accepts
-/// commands, and answers the 404 or the cold 400 in that time. snouty gives
-/// no loading note then: the server is to keep such a session in `starting`.
 async fn explain_exec_error(
     api: &AntithesisApi,
     run_id: &str,
@@ -1719,12 +1720,14 @@ async fn explain_exec_error(
         }
         RunProbe::Exists(run) => run,
     };
+    if matches!(run.status, RunStatus::Starting | RunStatus::InProgress) && !run.is_ready() {
+        return err.suggestion(format!(
+            "the session is not ready yet. Wait for it with \
+             `snouty runs wait {run_id} --until ready`, then try again"
+        ));
+    }
     let cold = api_error_message(&err).is_some_and(|m| m.contains(MOMENT_NOT_WARM));
     match (run.status, status, rewarm_flag) {
-        (RunStatus::Starting, ..) => err.suggestion(format!(
-            "the run is not ready yet. Wait for it with \
-             `snouty runs wait {run_id} --until running`, then try again"
-        )),
         (status, ..) if status.is_terminal() => err
             .note(format!(
                 "`runs exec` needs a run that is in progress. This run is {status}"
@@ -2458,6 +2461,7 @@ mod tests {
             example_count: Some(ex_count),
             examples,
             group: group.map(str::to_string),
+            id: None,
             is_event: true,
             is_group: None,
             name: name.to_string(),
@@ -2479,6 +2483,7 @@ mod tests {
             example_count: Some(ex_count),
             examples,
             group: None,
+            id: None,
             is_event: false,
             is_group: None,
             name: name.to_string(),
@@ -4803,11 +4808,17 @@ mod tests {
         /// matches in mount order and skips a mock whose `up_to_n_times`
         /// budget is spent.
         async fn mount_get_run_statuses(server: &MockServer, statuses: &[&str]) {
-            for (i, status) in statuses.iter().enumerate() {
+            mount_get_run_bodies(server, statuses.iter().map(|s| run_body(s)).collect()).await;
+        }
+
+        /// As [`mount_get_run_statuses`], with a whole run body per poll.
+        async fn mount_get_run_bodies(server: &MockServer, bodies: Vec<serde_json::Value>) {
+            let count = bodies.len();
+            for (i, body) in bodies.into_iter().enumerate() {
                 let mock = Mock::given(method("GET"))
                     .and(path("/api/v0/runs/run-w"))
-                    .respond_with(ResponseTemplate::new(200).set_body_json(run_body(status)));
-                let mock = if i + 1 < statuses.len() {
+                    .respond_with(ResponseTemplate::new(200).set_body_json(body));
+                let mock = if i + 1 < count {
                     mock.up_to_n_times(1)
                 } else {
                     mock
@@ -4851,18 +4862,39 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn wait_until_running_stops_once_the_run_starts() {
+        async fn wait_until_ready_stops_once_the_run_is_ready() {
             let server = MockServer::start().await;
-            mount_get_run_statuses(&server, &["starting", "in_progress", "completed"]).await;
+            let mut ready = run_body("in_progress");
+            ready["sub_status"] = json!("Ready");
+            let bodies = vec![
+                run_body("starting"),
+                run_body("in_progress"),
+                ready,
+                run_body("completed"),
+            ];
+            mount_get_run_bodies(&server, bodies).await;
             let api = test_api(&server.uri());
 
-            let run = wait_for_run(&api, "run-w", FAST_POLL, WaitUntil::Running)
+            let run = wait_for_run(&api, "run-w", FAST_POLL, WaitUntil::Ready)
                 .await
                 .unwrap();
 
-            assert_eq!(run.status, RunStatus::InProgress);
+            assert!(run.is_ready());
             let requests = server.received_requests().await.unwrap();
-            assert_eq!(requests.len(), 2);
+            assert_eq!(requests.len(), 3);
+        }
+
+        #[tokio::test]
+        async fn wait_until_ready_stops_at_a_complete_run() {
+            let server = MockServer::start().await;
+            mount_get_run_statuses(&server, &["starting", "incomplete"]).await;
+            let api = test_api(&server.uri());
+
+            let run = wait_for_run(&api, "run-w", FAST_POLL, WaitUntil::Ready)
+                .await
+                .unwrap();
+
+            assert_eq!(run.status, RunStatus::Incomplete);
         }
 
         #[tokio::test]

@@ -853,7 +853,8 @@ fn mock_run_not_found(run_id: &str) -> (u16, String) {
 /// They are kept out of MOCK_RUNS so the list-oriented specs don't see them.
 /// Like a new session on release 64.0, they answer `runs exec` with a bare
 /// 404, or with the cold 400 for a cold moment. That server reports
-/// `in_progress` before a session accepts commands.
+/// `in_progress` without the `Ready` sub-status before a session accepts
+/// commands.
 const MOCK_LOADING_SESSIONS: &[(&str, &str)] = &[
     ("session-starting", "starting"),
     ("session-loading", "in_progress"),
@@ -898,6 +899,11 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
     ];
     if !description.is_empty() {
         fields.push(format!(r#""description":"{description}""#));
+    }
+    // Like the live API (orbitinghail, release 64.0), a run in progress that
+    // is not a loading debugging session is `Ready`.
+    if status == "in_progress" {
+        fields.push(r#""sub_status":"Ready""#.to_string());
     }
     if status == "completed" || status == "incomplete" {
         fields.push(r#""started_at":"2025-03-20T02:01:12Z""#.to_string());

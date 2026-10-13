@@ -1190,8 +1190,9 @@ def _wait_ready(sn: Snouty, x: ExecSession, script: str) -> Result:
         if status in SESSION_ENDED:
             raise GalleryError(f"debugging session {x.session} has ended ({status})")
         waiting_for = f"status {status}"
-        # TODO: once the API reports `in_progress` only for a ready session,
-        # execute once and fail on an error instead of retrying.
+        # TODO: once a session that the API reports as ready (`sub_status`
+        # `Ready`) is seen to accept commands, wait for that and execute once
+        # instead of retrying.
         if status != SESSION_STARTING:
             res = _exec_json(sn, x, script)
             if res.ok:
@@ -2694,13 +2695,22 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
                 "to wait for it and the `runs exec` command to use when it is ready. Exit 0.",
                 x.launch.args,
                 succeeds_with(
-                    "Debugging session started", "--until running", "snouty runs exec"
+                    "Debugging session started", "--until ready", "snouty runs exec"
                 ),
                 json_capable=False,
                 precaptured=x.launch,
             )
         )
     stories += [
+        exec_story(
+            "runs-show-session",
+            "Check that a debugging session is ready",
+            "My debugging session accepts commands now, and I want its status.",
+            "Status is in_progress:ready: the run is in progress, and its sub-status says "
+            "that the session is ready. The launcher is debugging.",
+            ["runs", "show", x.session],
+            contains_all("in_progress:ready", DEBUGGING_LAUNCHER),
+        ),
         exec_story(
             "runs-exec",
             "Run a command in a live debugging session",
@@ -2963,15 +2973,15 @@ def build_help_stories(d: Discovery) -> list[Story]:
         _help_story(
             "help-runs-wait",
             "Learn how to wait for a run to start or finish",
-            "I want the help to explain the two --until statuses (running and complete), "
+            "I want the help to explain the two --until statuses (ready and complete), "
             "that each is a minimum, that an `unknown` status fails the command, and what "
             "--poll-interval and --timeout do.",
             ["runs", "wait"],
             ["runs", "wait", s],
             samples=[
                 (
-                    "--until running on a completed run (it has already started)",
-                    ["runs", "wait", s, "--until", "running"],
+                    "--until ready on a completed run (it is already complete)",
+                    ["runs", "wait", s, "--until", "ready"],
                 )
             ],
             # wait on a terminal run prints one status line; nothing columnar

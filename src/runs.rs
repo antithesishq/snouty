@@ -1747,9 +1747,10 @@ impl ReadyDisplay {
 /// warm in the live run and no source_run_id provided.` from 2026-10-07.
 const MOMENT_NOT_WARM: &str = "Moment not warm";
 
-/// Add suggestions to a failed `runs exec` request in `run`, which is ready
-/// or complete. `debug_command` starts a debugging session at the request's
-/// moment, and `rewarm_flag` names the rewarm source's flag, if one was given.
+/// Add suggestions to a failed `runs exec` request in a run with status
+/// `run_status`, which is ready or complete. `debug_command` starts a
+/// debugging session at the request's moment, and `rewarm_flag` names the
+/// rewarm source's flag, if one was given.
 ///
 /// A run that has stopped cannot accept a command: on orbitinghail, a
 /// completed test run answers 400 `This run is not currently active or
@@ -1761,7 +1762,7 @@ const MOMENT_NOT_WARM: &str = "Moment not warm";
 /// - Any other 400: a rewarm did not finish, or the source is not the
 ///   moment's run.
 fn explain_exec_error(
-    run: &RunDetail,
+    run_status: RunStatus,
     debug_command: &str,
     rewarm_flag: Option<&str>,
     err: color_eyre::eyre::Report,
@@ -1769,22 +1770,22 @@ fn explain_exec_error(
     let Some(status) = api_error_status(&err) else {
         return err;
     };
-    let cold = api_error_message(&err).is_some_and(|m| m.contains(MOMENT_NOT_WARM));
-    match (run.status, status, rewarm_flag) {
-        (status, ..) if status.is_terminal() => err
+    if run_status.is_terminal() {
+        return err
             .note(format!(
-                "`runs exec` needs a run that is in progress. This run is {status}"
+                "`runs exec` needs a run that is in progress. This run is {run_status}"
             ))
             .suggestion(format!(
                 "start a debugging session at this moment with `{debug_command}`"
-            )),
-        (_, 404, Some(flag)) => {
-            err.suggestion(format!("check that {flag} names an existing source"))
-        }
-        (_, 400, None) if cold => {
+            ));
+    }
+    let cold = api_error_message(&err).is_some_and(|m| m.contains(MOMENT_NOT_WARM));
+    match (status, rewarm_flag) {
+        (404, Some(flag)) => err.suggestion(format!("check that {flag} names an existing source")),
+        (400, None) if cold => {
             err.suggestion("use --source-run-id to load a moment from a different run")
         }
-        (_, 400, Some(flag)) => err.suggestion(format!(
+        (400, Some(flag)) => err.suggestion(format!(
             "check that {flag} names the run the moment comes from"
         )),
         _ => err,
@@ -1930,7 +1931,7 @@ async fn exec_when_ready(
     let stream = api
         .execute_command(run_id, exec)
         .await
-        .map_err(|err| explain_exec_error(&run, &debug_command, rewarm_flag, err))?;
+        .map_err(|err| explain_exec_error(run.status, &debug_command, rewarm_flag, err))?;
 
     // Only the last line can be the terminal result. A line that parses as
     // one is held until the next line arrives, and is shown as an event if one
@@ -4872,6 +4873,12 @@ mod tests {
             })
         }
 
+        fn ready_run_body() -> serde_json::Value {
+            let mut body = run_body("in_progress");
+            body["sub_status"] = json!("Ready");
+            body
+        }
+
         /// Serve each status in order, the last one indefinitely: wiremock
         /// matches in mount order and skips a mock whose `up_to_n_times`
         /// budget is spent.
@@ -4932,12 +4939,10 @@ mod tests {
         #[tokio::test]
         async fn wait_until_ready_stops_once_the_run_is_ready() {
             let server = MockServer::start().await;
-            let mut ready = run_body("in_progress");
-            ready["sub_status"] = json!("Ready");
             let bodies = vec![
                 run_body("starting"),
                 run_body("in_progress"),
-                ready,
+                ready_run_body(),
                 run_body("completed"),
             ];
             mount_get_run_bodies(&server, bodies).await;
@@ -4952,8 +4957,23 @@ mod tests {
             assert_eq!(requests.len(), 3);
         }
 
-        fn exec_request() -> ExecRequest {
-            ExecRequest {
+        #[tokio::test]
+        async fn exec_waits_until_the_run_is_ready() {
+            let server = MockServer::start().await;
+            let bodies = vec![
+                run_body("starting"),
+                run_body("in_progress"),
+                ready_run_body(),
+            ];
+            mount_get_run_bodies(&server, bodies).await;
+            let result = crate::testutils::mock_exec_exited(Some(0));
+            Mock::given(method("POST"))
+                .and(path("/api/v0/runs/run-w/command"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(format!("{result}\n")))
+                .mount(&server)
+                .await;
+            let api = test_api(&server.uri());
+            let exec = ExecRequest {
                 moment: Moment {
                     input_hash: "1".to_owned(),
                     vtime: "2.5".parse().unwrap(),
@@ -4963,61 +4983,15 @@ mod tests {
                 timeout: None,
                 events: false,
                 rewarm: None,
-            }
-        }
+            };
 
-        async fn mount_exec_success(server: &MockServer) {
-            let result = json!({
-                "status": "exited",
-                "exit_code": 0,
-                "end_moment": {"input_hash": "1", "vtime": "2.5"},
-            });
-            Mock::given(method("POST"))
-                .and(path("/api/v0/runs/run-w/command"))
-                .respond_with(ResponseTemplate::new(200).set_body_string(format!("{result}\n")))
-                .mount(server)
-                .await;
-        }
+            exec_when_ready(&api, "run-w", exec, FAST_POLL, true)
+                .await
+                .unwrap();
 
-        async fn request_methods(server: &MockServer) -> Vec<String> {
             let requests = server.received_requests().await.unwrap();
-            requests.iter().map(|r| r.method.to_string()).collect()
-        }
-
-        #[tokio::test]
-        async fn exec_waits_until_the_run_is_ready() {
-            let server = MockServer::start().await;
-            let mut ready = run_body("in_progress");
-            ready["sub_status"] = json!("Ready");
-            let bodies = vec![run_body("starting"), run_body("in_progress"), ready];
-            mount_get_run_bodies(&server, bodies).await;
-            mount_exec_success(&server).await;
-            let api = test_api(&server.uri());
-
-            exec_when_ready(&api, "run-w", exec_request(), FAST_POLL, true)
-                .await
-                .unwrap();
-
-            assert_eq!(
-                request_methods(&server).await,
-                ["GET", "GET", "GET", "POST"]
-            );
-        }
-
-        // A complete run does not wait: the server decides whether it can
-        // still execute.
-        #[tokio::test]
-        async fn exec_does_not_wait_for_a_complete_run() {
-            let server = MockServer::start().await;
-            mount_get_run_statuses(&server, &["completed"]).await;
-            mount_exec_success(&server).await;
-            let api = test_api(&server.uri());
-
-            exec_when_ready(&api, "run-w", exec_request(), FAST_POLL, true)
-                .await
-                .unwrap();
-
-            assert_eq!(request_methods(&server).await, ["GET", "POST"]);
+            let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
+            assert_eq!(methods, ["GET", "GET", "GET", "POST"]);
         }
 
         #[tokio::test]

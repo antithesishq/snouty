@@ -849,40 +849,31 @@ fn mock_run_not_found(run_id: &str) -> (u16, String) {
     (404, format!(r#"{{"message":"run not found: {run_id}"}}"#))
 }
 
-/// Debugging sessions that do not accept commands yet: (run_id, status).
-/// They are kept out of MOCK_RUNS so the list-oriented specs don't see them.
-/// Like a new session on release 64.0, they report `in_progress` without the
-/// `Ready` sub-status before they accept commands.
-const MOCK_LOADING_SESSIONS: &[(&str, &str)] = &[
-    ("session-starting", "starting"),
-    ("session-loading", "in_progress"),
+/// Debugging sessions kept out of MOCK_RUNS so the list-oriented specs don't
+/// see them: (run_id, status, sub_status). Like a new session on release
+/// 64.0, the loading ones report `in_progress` without the `Ready` sub-status
+/// before they accept commands. `runs exec` reads the run before it executes,
+/// so the exec fixture `run-stream-error` is ready.
+const MOCK_HIDDEN_SESSIONS: &[(&str, &str, Option<&str>)] = &[
+    ("session-starting", "starting", None),
+    ("session-loading", "in_progress", None),
+    ("run-stream-error", "in_progress", Some("Ready")),
 ];
 
-fn mock_loading_session(run_id: &str) -> Option<&'static str> {
-    MOCK_LOADING_SESSIONS
-        .iter()
-        .find(|(id, _)| *id == run_id)
-        .map(|&(_, status)| status)
-}
-
 fn mock_route_get_run(run_id: &str) -> (u16, String) {
-    if let Some(status) = mock_loading_session(run_id) {
-        let body = serde_json::json!({
+    if let Some(&(_, status, sub_status)) =
+        MOCK_HIDDEN_SESSIONS.iter().find(|(id, ..)| *id == run_id)
+    {
+        let mut body = serde_json::json!({
             "run_id": run_id,
             "status": status,
             "created_at": chrono::Utc::now().to_rfc3339(),
             "launcher": "debugging",
         });
+        if let Some(sub_status) = sub_status {
+            body["sub_status"] = serde_json::json!(sub_status);
+        }
         return (200, body.to_string());
-    }
-    // `runs exec` reads the run before it executes, so the exec fixture
-    // `run-stream-error` is a ready run.
-    if run_id == "run-stream-error" {
-        return (
-            200,
-            r#"{"run_id":"run-stream-error","status":"in_progress","sub_status":"Ready","created_at":"2025-03-20T02:00:00Z","launcher":"debugging"}"#
-                .to_string(),
-        );
     }
     // `run-unknown-status` is kept out of MOCK_RUNS so the list-oriented specs
     // don't see it.
@@ -1178,7 +1169,7 @@ fn mock_exec_output(stream: &str, text: &str, vtime: &str) -> String {
 }
 
 /// A command killed by the session can have no exit code.
-fn mock_exec_exited(exit_code: Option<i64>) -> String {
+pub fn mock_exec_exited(exit_code: Option<i64>) -> String {
     serde_json::json!({
         "status": "exited",
         "exit_code": exit_code,
@@ -1208,11 +1199,6 @@ fn mock_exec_command_received() -> String {
 
 /// The input hash of a moment the mock session holds cold.
 pub const MOCK_COLD_HASH: &str = "1002528785118888238";
-
-fn mock_exec_cold() -> (u16, String) {
-    let message = "Moment not warm in the live run and no source_run_id provided.";
-    (400, serde_json::json!({ "message": message }).to_string())
-}
 
 fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     // See the `run-stream-error` fixture note in `mock_route_get_run_build_logs`.
@@ -1262,7 +1248,8 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     // verbatim from orbitinghail (release 64.0; the no-source one as of
     // 2026-10-07).
     if cold && !has_source {
-        return mock_exec_cold();
+        let message = "Moment not warm in the live run and no source_run_id provided.";
+        return (400, serde_json::json!({ "message": message }).to_string());
     }
     if cold && script.trim() == "slow-rewarm" {
         let message = format!(

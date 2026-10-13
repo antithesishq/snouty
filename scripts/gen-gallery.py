@@ -115,12 +115,11 @@ DISCOVERY_MAX_PAGES = 10
 # `runs list` reports this launcher for a debugging session.
 DEBUGGING_LAUNCHER = "debugging"
 
-# A debugging session that is `starting` or `in_progress` is live. It accepts
-# commands once its sub-status is `Ready`, minutes after it is `in_progress`.
+# A debugging session that is `starting` or `in_progress` is live.
 SESSION_STARTING = "starting"
 SESSION_IN_PROGRESS = "in_progress"
-EXEC_READY_DEADLINE = 600
-EXEC_READY_POLL = 15
+SESSION_LIST_DEADLINE = 600
+SESSION_LIST_POLL = 15
 
 
 class GalleryError(Exception):
@@ -1165,25 +1164,16 @@ def _launch_session(sn: Snouty, base_run: str) -> tuple[dict, Result]:
     )
     if not launch.ok:
         raise GalleryError(f"`snouty debug` failed (exit {launch.returncode}): {launch.combined}")
-    deadline = time.monotonic() + EXEC_READY_DEADLINE
+    deadline = time.monotonic() + SESSION_LIST_DEADLINE
     while time.monotonic() < deadline:
         for r in _debugging_sessions(sn):
             if (r.get("parameters") or {}).get(_DESCRIPTION) == description:
                 return r, launch
         print(f"  waiting for the session {description!r} to list its parameters", file=sys.stderr)
-        time.sleep(EXEC_READY_POLL)
+        time.sleep(SESSION_LIST_POLL)
     raise GalleryError(
-        f"the debugging session {description!r} listed no parameters within {EXEC_READY_DEADLINE}s"
+        f"the debugging session {description!r} listed no parameters within {SESSION_LIST_DEADLINE}s"
     )
-
-
-def _first_exec(sn: Snouty, x: ExecSession, script: str) -> Result:
-    """Execute `script` in session `x`. `runs exec` waits until the session is
-    ready, so a failure is final."""
-    res = _exec_json(sn, x, script)
-    if not res.ok:
-        raise GalleryError(f"`runs exec` failed in debugging session {x.session}: {res.stderr.strip()}")
-    return res
 
 
 def _container(sn: Snouty, run: str, h: str, v: str) -> str:
@@ -1240,8 +1230,11 @@ def _ready_exec_session(sn: Snouty, row: dict, launch: Result | None) -> ExecSes
     params = row["parameters"]
     base, h, v = params[_DEBUG_RUN], params[_DEBUG_HASH], params[_DEBUG_VTIME]
     x = ExecSession(session=row["run_id"], base_run=base, hash=h, vtime=v, launch=launch)
-    # The readiness probe is the exec that the follow-up story chains from.
-    first = _first_exec(sn, x, f'echo "{EXEC_MARKER_TEXT}" > {EXEC_MARKER_PATH}')
+    # The follow-up story chains from this exec. `runs exec` waits until the
+    # session is ready, so a failure is final.
+    first = _exec_json(sn, x, f'echo "{EXEC_MARKER_TEXT}" > {EXEC_MARKER_PATH}')
+    if not first.ok:
+        raise GalleryError(f"`runs exec` failed in debugging session {x.session}: {first.stderr.strip()}")
     x.follow_hash, x.follow_vtime = _moment_strs(_ndjson(first.stdout)[-1]["end_moment"])
     tty, pipe = _rewarm_moments(sn, base, float(v))
     x.rewarm_hash, x.rewarm_vtime = _moment_strs(tty)

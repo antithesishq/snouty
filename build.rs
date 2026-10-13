@@ -283,8 +283,8 @@ fn add_mvd_test_name(spec: &mut serde_json::Value) {
 }
 
 /// The spec closes `MVD_Params` to its documented keys, but
-/// `/api/v1/launch/debugging` accepts custom string params (per the snouty
-/// maintainers). On orbitinghail, release 64.0, a debugging session lists
+/// `/api/v1/launch/debugging` accepts custom params of any JSON type (per the
+/// snouty maintainers). On orbitinghail, release 64.0, a debugging session lists
 /// params that the spec does not document, such as
 /// `antithesis.performance_tier`.
 fn open_mvd_params(spec: &mut serde_json::Value) {
@@ -294,12 +294,9 @@ fn open_mvd_params(spec: &mut serde_json::Value) {
             .expect("an MVD_Params variant is not an object; update `open_mvd_params`");
         assert!(
             variant
-                .insert(
-                    "additionalProperties".to_owned(),
-                    serde_json::json!({"type": "string"}),
-                )
+                .insert("additionalProperties".to_owned(), serde_json::json!({}),)
                 .is_none(),
-            "MVD_Params now sets additionalProperties; if it allows string values, delete \
+            "MVD_Params now sets additionalProperties; if it allows any value, delete \
              `open_mvd_params` in build.rs"
         );
     }

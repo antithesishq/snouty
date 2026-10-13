@@ -4,6 +4,7 @@ use std::process::Command;
 
 use clap::{CommandFactory, Parser};
 use clap_complete::Shell;
+use indoc::writedoc;
 use log::{debug, info};
 
 use color_eyre::Section;
@@ -337,18 +338,20 @@ async fn cmd_launch(
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else if let Some(run_id) = response.run_id.as_deref() {
-        // `writeln!` and not `println!`: a reader that stops after the run ID
+        // `writedoc!` and not `println!`: a reader that stops after the run ID
         // line (`| head -1`) closes the pipe, and `println!` panics on that.
-        writeln!(
+        writedoc!(
             io::stdout(),
-            "Test run started: run_id {run_id}\n\
-             \n\
-             Wait for the run to finish with:\n  \
-             snouty runs wait {run_id}\n\
-             \n\
-             Or watch its errors live after it starts running:\n  \
-             snouty runs wait {run_id} --until running\n  \
-             snouty runs search {run_id} --follow 'contains({{output_text: \"error\"}})'"
+            r#"
+                Test run started: run_id {run_id}
+
+                Wait for the run to finish with:
+                  snouty runs wait {run_id}
+
+                Or watch its errors live after it starts running:
+                  snouty runs wait {run_id} --until running
+                  snouty runs search {run_id} --follow 'contains({{output_text: "error"}})'
+            "#
         )?;
     } else {
         println!("Test run started: run_id (unknown)");

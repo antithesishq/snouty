@@ -166,8 +166,7 @@ checkout, the launch records the checked-out commit and branch in run metadata.
 For a github.com `origin` remote, it also records the repository and a link to
 the commit. `snouty runs show` lists them under Version Control. A pre-built
 config image (--config-image or --param antithesis.config_image) turns this
-off, because the current directory need not hold its source. To record them
-then, pass `--param vcs.<name>=<value>`.
+off.
 
 Additional container images that the config parser can't discover (e.g. an
 image referenced only in a Kubernetes CRD field) can be registered with the

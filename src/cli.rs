@@ -1109,9 +1109,10 @@ on its own line:
 
 The run must be in progress. It can be a test run or a debugging session. A
 debugging session that `snouty debug` launches takes a few minutes to start:
-pass its run ID when it is ready. To execute at a moment of a run that is not
-in progress, start a debugging session at that moment. The script executes on
-a fresh branch of the multiverse, so it does not disturb the run.
+pass its run ID when it is ready. To execute at a moment of a run that is
+already complete, start a debugging session at that moment. The script
+executes on a fresh branch of the multiverse, so it does not interact with
+other work happening in the session, like fuzzing or other executing commands.
 
 INPUT_HASH and VTIME identify the moment to execute at, and the moment must be
 warm. A warm moment is a moment that is loaded into the run. Every moment
@@ -1120,7 +1121,8 @@ the end moment of one command is warm for the next. A moment from another run
 is cold. Use --source-run-id to load a moment from a different run.
 Rewarming a moment can take minutes and depends on the magnitude of the
 vtime. The `--timeout` flag does not apply to the time it takes to rewarm a
-moment. Find a moment with `runs properties --detail` or `runs events`.
+moment. Find a moment with `runs properties --detail`, `runs search`, or
+`runs events`.
 
 The script executes on the host, or in the container that --container names.
 The command needs tenant release 64.0 or newer; `snouty doctor` reports the

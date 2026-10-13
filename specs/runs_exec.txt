@@ -91,6 +91,8 @@ stdout '^Execute a bash script in a run that is in progress, at a moment\.$'
 stdout 'The run must be in progress\. It can be a test run or a debugging session\.'
 ! stdout 'live session'
 ! stdout 'after it completes'
+stdout 'a run that is\s+already complete, start a debugging session at that moment'
+stdout 'Find a moment with `runs properties --detail`, `runs search`, or\s+`runs events`\.'
 snouty runs --help
 stdout 'exec +Execute a command in a run that is in progress$'
 

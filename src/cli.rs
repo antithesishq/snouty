@@ -7,7 +7,7 @@ use crate::api::{
     PerformanceTier, RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SourceRunId,
     SourceSessionId,
 };
-use crate::params::Param;
+use crate::params::Params;
 use crate::time::{BareUnit, HumanDuration, ParseDurationError};
 use crate::vtime::VTime;
 
@@ -39,6 +39,56 @@ const fn assert_run_statuses_complete(status: RunStatus) {
 }
 
 const _: () = assert_run_statuses_complete(RunStatus::Starting);
+
+/// A `key=value` argument, such as `--param`. The value may contain `=`:
+/// only the first `=` splits.
+#[derive(Debug, Clone)]
+pub struct KVExpr {
+    key: String,
+    value: String,
+}
+
+#[derive(Debug)]
+pub enum ParseKVExprError {
+    MissingEquals,
+    EmptyKey,
+}
+
+impl std::fmt::Display for ParseKVExprError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ParseKVExprError::MissingEquals => "expected key=value",
+            ParseKVExprError::EmptyKey => "the key is empty",
+        })
+    }
+}
+
+impl std::error::Error for ParseKVExprError {}
+
+impl std::str::FromStr for KVExpr {
+    type Err = ParseKVExprError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (key, value) = s.split_once('=').ok_or(ParseKVExprError::MissingEquals)?;
+        if key.is_empty() {
+            return Err(ParseKVExprError::EmptyKey);
+        }
+        Ok(Self {
+            key: key.to_owned(),
+            value: value.to_owned(),
+        })
+    }
+}
+
+impl FromIterator<KVExpr> for Params {
+    fn from_iter<I: IntoIterator<Item = KVExpr>>(exprs: I) -> Self {
+        let mut params = Params::new();
+        for KVExpr { key, value } in exprs {
+            params.insert(key, value);
+        }
+        params
+    }
+}
 
 /// clap value parser for `--status` that keeps a friendly, enumerated error
 /// message (the generated `RunStatus::from_str` only says "invalid value").
@@ -689,7 +739,7 @@ pub struct LaunchArgs {
 
     /// Extra parameters as key=value pairs (repeatable)
     #[arg(long = "param")]
-    pub params: Vec<Param>,
+    pub params: Vec<KVExpr>,
 }
 
 #[derive(Args)]
@@ -728,7 +778,7 @@ pub struct DebugArgs {
 
     /// Extra parameters as key=value pairs (repeatable)
     #[arg(long = "param")]
-    pub params: Vec<Param>,
+    pub params: Vec<KVExpr>,
 }
 
 /// The block-rendering paragraph `runs events` and `runs search` share in
@@ -1361,6 +1411,8 @@ impl Default for RunsListArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hegel::generators::{self, Generator};
+    use serde_json::Value;
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("args should parse")
@@ -1720,5 +1772,22 @@ mod tests {
         }
 
         walk(&<Cli as clap::CommandFactory>::command());
+    }
+
+    /// For any non-empty key without `=` and any value, which may contain `=`,
+    /// the parsed pair round-trips exactly.
+    #[hegel::test]
+    fn key_value_pair_round_trips(tc: hegel::TestCase) {
+        let key = tc.draw(generators::text().min_size(1).filter(|k| !k.contains('=')));
+        let value = tc.draw(generators::text());
+        let expr: KVExpr = format!("{key}={value}")
+            .parse()
+            .expect("a non-empty key with a value must parse");
+        let params = Params::from_iter([expr]);
+        assert_eq!(params.as_map().len(), 1);
+        assert_eq!(
+            params.as_map().get(&key).and_then(Value::as_str),
+            Some(value.as_str())
+        );
     }
 }

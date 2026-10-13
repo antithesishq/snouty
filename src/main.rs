@@ -405,9 +405,6 @@ fn param_overrides_flag(DuplicateKey(key): DuplicateKey) -> Report {
     user_error(format!(
         "invalid arguments: '{key}' cannot be overridden via --param"
     ))
-    .suggestion(format!(
-        "remove the --param for '{key}', or the flag that sets it"
-    ))
 }
 
 fn debug_params(args: DebugArgs) -> Result<Params> {

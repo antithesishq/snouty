@@ -1,6 +1,3 @@
-use std::fmt;
-use std::str::FromStr;
-
 use jsonschema::Validator;
 use log::debug;
 use serde_json::{Map, Value};
@@ -61,46 +58,6 @@ pub const ANT_DEBUGGING_RUN_ID: &str = "antithesis.debugging.run_id";
 pub const ANT_DEBUGGING_INPUT_HASH: &str = "antithesis.debugging.input_hash";
 pub const ANT_DEBUGGING_VTIME: &str = "antithesis.debugging.vtime";
 
-/// One `--param key=value` argument. The value may contain `=`: only the
-/// first `=` splits.
-#[derive(Debug, Clone)]
-pub struct Param {
-    key: String,
-    value: String,
-}
-
-#[derive(Debug)]
-pub enum ParseParamError {
-    MissingEquals,
-    EmptyKey,
-}
-
-impl fmt::Display for ParseParamError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            ParseParamError::MissingEquals => "expected key=value",
-            ParseParamError::EmptyKey => "the key is empty",
-        })
-    }
-}
-
-impl std::error::Error for ParseParamError {}
-
-impl FromStr for Param {
-    type Err = ParseParamError;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        let (key, value) = s.split_once('=').ok_or(ParseParamError::MissingEquals)?;
-        if key.is_empty() {
-            return Err(ParseParamError::EmptyKey);
-        }
-        Ok(Self {
-            key: key.to_owned(),
-            value: value.to_owned(),
-        })
-    }
-}
-
 /// The key that both sides of [`Params::extend_checked`] set.
 #[derive(Debug)]
 pub struct DuplicateKey(pub String);
@@ -126,7 +83,7 @@ impl Params {
         Ok(pairs
             .into_iter()
             .map(|pair| pair.as_ref().parse())
-            .collect::<std::result::Result<_, ParseParamError>>()?)
+            .collect::<std::result::Result<_, crate::cli::ParseKVExprError>>()?)
     }
 
     /// Create params from a JSON value.
@@ -271,16 +228,6 @@ impl Params {
     }
 }
 
-impl FromIterator<Param> for Params {
-    fn from_iter<I: IntoIterator<Item = Param>>(params: I) -> Self {
-        let inner = params
-            .into_iter()
-            .map(|Param { key, value }| (key, Value::String(value)))
-            .collect();
-        Self { inner }
-    }
-}
-
 fn is_sensitive_key(key: &str) -> bool {
     key.ends_with(".token") || key == ANT_REPORT_RECIPIENTS
 }
@@ -376,7 +323,7 @@ fn unescape_pointer_token(token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hegel::generators::{self, Generator};
+    use hegel::generators;
     use serde_json::json;
 
     fn debug_vtime(params: &Params) -> Option<&str> {
@@ -763,23 +710,6 @@ mod tests {
                 Some(v.as_str())
             );
         }
-    }
-
-    /// For any non-empty key without `=` and any value, which may contain `=`,
-    /// the parsed pair round-trips exactly.
-    #[hegel::test]
-    fn key_value_pair_round_trips(tc: hegel::TestCase) {
-        let key = tc.draw(generators::text().min_size(1).filter(|k| !k.contains('=')));
-        let value = tc.draw(generators::text());
-        let param: Param = format!("{key}={value}")
-            .parse()
-            .expect("a non-empty key with a value must parse");
-        let params = Params::from_iter([param]);
-        assert_eq!(params.as_map().len(), 1);
-        assert_eq!(
-            params.as_map().get(&key).and_then(Value::as_str),
-            Some(value.as_str())
-        );
     }
 
     /// Redaction preserves the exact key set and leaves every value either

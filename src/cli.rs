@@ -241,7 +241,7 @@ of its table or its rendered events:
 Identify the target run with exactly one of --run-id (preferred) or
 --session-id.
 
-Using CLI arguments:
+Example:
   snouty debug \
     --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 \
     --input-hash 6057726200491963783 \
@@ -690,22 +690,11 @@ pub struct LaunchArgs {
     pub params: Vec<String>,
 }
 
-/// Without --stdin, the flags must name the whole moment. With it, stdin can
-/// supply every parameter and the flags override it.
 #[derive(Args)]
-#[command(group(
-    ArgGroup::new("target")
-        .args(["stdin", "run_id", "session_id"])
-        .required(true)
-        .multiple(true)
-))]
+#[command(group(ArgGroup::new("target").args(["run_id", "session_id"]).required(true)))]
 pub struct DebugArgs {
-    /// Read parameters from stdin (JSON)
-    #[arg(long)]
-    pub stdin: bool,
-
     /// Run ID of the test run to debug (preferred; mutually exclusive with --session-id)
-    #[arg(long, conflicts_with = "session_id")]
+    #[arg(long)]
     pub run_id: Option<String>,
 
     /// Session ID of the test run to debug (mutually exclusive with --run-id)
@@ -713,12 +702,12 @@ pub struct DebugArgs {
     pub session_id: Option<String>,
 
     /// Input hash identifying the moment to debug
-    #[arg(long, allow_hyphen_values = true, required_unless_present = "stdin")]
-    pub input_hash: Option<String>,
+    #[arg(long, allow_hyphen_values = true)]
+    pub input_hash: String,
 
     /// Virtual time identifying the moment to debug
-    #[arg(long, required_unless_present = "stdin")]
-    pub vtime: Option<VTime>,
+    #[arg(long)]
+    pub vtime: VTime,
 
     /// Debugging session title, shown as the test name in `snouty runs list`
     #[arg(long)]

@@ -3092,7 +3092,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "help-debug",
             "Understand how to open a debugging session",
             "I run `snouty debug --help` to learn how to debug a moment. The usage line "
-            "should show that a target (--stdin, --run-id, or --session-id) is required.",
+            "should show that --input-hash, --vtime, and one of --run-id or --session-id are "
+            "required.",
             ["debug"],
         ),
         _help_story(

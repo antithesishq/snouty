@@ -409,8 +409,7 @@ fn debug_with_cli_args() {
         .stderr(predicate::str::contains(
             r#""antithesis.debugging.session_id": "sess-456""#,
         ))
-        // Normalized to the vtime's exact print, so every route into a moment
-        // sends the same text (see `Params::normalize_debug_vtime`).
+        // The vtime is sent as the exact print of the parsed `VTime`.
         .stderr(predicate::str::contains(
             r#""antithesis.debugging.vtime": "1234567890.0""#,
         ))
@@ -443,25 +442,6 @@ fn debug_with_json_flag() {
         .assert()
         .success()
         .stdout(predicate::str::contains(r#""runId": "run-abc-1-1""#));
-}
-
-#[test]
-fn debug_with_stdin_json() {
-    let mock_url = start_mock_server(r#"{"runId": "run-1", "statusCode": 202}"#, 200);
-    let json = r#"{
-         "antithesis.debugging.input_hash": "abc",
-         "antithesis.debugging.session_id": "sess",
-         "antithesis.debugging.vtime": "123"
-     }"#;
-
-    snouty_with_mock(&mock_url)
-        .args(["debug", "--stdin"])
-        .write_stdin(json)
-        .assert()
-        .success()
-        .stderr(predicate::str::contains(
-            r#""antithesis.debugging.input_hash": "abc""#,
-        ));
 }
 
 #[test]
@@ -509,41 +489,6 @@ fn completions_unsupported_shell_fails() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("invalid value 'nushell'"));
-}
-
-#[test]
-fn debug_merges_stdin_with_cli_args() {
-    let mock_url = start_mock_server(r#"{"runId": "run-1", "statusCode": 202}"#, 200);
-    let json = r#"{
-         "antithesis.debugging.session_id": "f89d5c11f5e3bf5e4bb3641809800cee-44-22",
-         "antithesis.debugging.input_hash": "6057726200491963783",
-         "antithesis.debugging.vtime": 329.8037810830865
-     }"#;
-
-    snouty_with_mock(&mock_url)
-        .args([
-            "debug",
-            "--stdin",
-            "--input-hash",
-            "override",
-            "--recipients",
-            "team@example.com",
-        ])
-        .write_stdin(json)
-        .assert()
-        .success()
-        .stderr(predicate::str::contains(
-            r#""antithesis.debugging.session_id": "f89d5c11f5e3bf5e4bb3641809800cee-44-22""#,
-        ))
-        .stderr(predicate::str::contains(
-            r#""antithesis.debugging.input_hash": "override""#,
-        ))
-        .stderr(predicate::str::contains(
-            r#""antithesis.debugging.vtime": "329.8037810830865""#,
-        ))
-        .stderr(predicate::str::contains(
-            r#""antithesis.report.recipients": "[REDACTED]""#,
-        ));
 }
 
 #[test]

@@ -1,14 +1,14 @@
-use std::io::{self, ErrorKind, IsTerminal, Read, Write};
+use std::io::{self, ErrorKind, IsTerminal, Write};
 use std::path::Path;
 use std::process::Command;
 
 use clap::{CommandFactory, Parser};
 use clap_complete::Shell;
 use indoc::writedoc;
-use log::{debug, info};
+use log::info;
 
 use color_eyre::Section;
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::Result;
 use semver::Version;
 use snouty::OutputOptions;
 use snouty::api::AntithesisApi;
@@ -31,23 +31,6 @@ use snouty::params::{
 };
 use snouty::settings::Settings;
 use snouty::validate;
-
-fn read_stdin() -> Result<String> {
-    let mut buf = String::new();
-    io::stdin()
-        .read_to_string(&mut buf)
-        .wrap_err("invalid arguments: failed to read stdin")?;
-    let buf = buf.trim().to_string();
-    Ok(buf)
-}
-
-fn get_stdin_params() -> Result<Params> {
-    let input = read_stdin()?;
-    debug!("parsing input as JSON");
-    let value: serde_json::Value =
-        json5::from_str(&input).wrap_err("invalid arguments: invalid JSON")?;
-    Params::from_json(&value)
-}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -410,12 +393,8 @@ fn debug_typed_params(args: &DebugArgs) -> Params {
     if let Some(session_id) = &args.session_id {
         params.insert(ANT_DEBUGGING_SESSION_ID, session_id.as_str());
     }
-    if let Some(input_hash) = &args.input_hash {
-        params.insert(ANT_DEBUGGING_INPUT_HASH, input_hash.as_str());
-    }
-    if let Some(vtime) = &args.vtime {
-        params.insert(ANT_DEBUGGING_VTIME, vtime.to_string());
-    }
+    params.insert(ANT_DEBUGGING_INPUT_HASH, args.input_hash.as_str());
+    params.insert(ANT_DEBUGGING_VTIME, args.vtime.to_string());
     if let Some(title) = &args.title {
         params.insert(ANT_TEST_NAME, title.as_str());
     }
@@ -429,34 +408,13 @@ fn debug_typed_params(args: &DebugArgs) -> Params {
     params
 }
 
-fn debug_params(args: DebugArgs) -> Result<Params> {
-    let mut params = if args.stdin {
-        get_stdin_params()?
-    } else {
-        Params::default()
-    };
-    params.merge(debug_typed_params(&args));
-
-    if params.is_empty() {
-        return Err(user_error("invalid arguments: no parameters provided"));
-    }
-
-    Ok(params)
-}
-
 async fn cmd_debug(
     args: DebugArgs,
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
-    let mut params = debug_params(args)?;
-    // Every path into the moment has merged by now — the typed flags and raw
-    // JSON on stdin — so normalizing here makes both send the same text. It
-    // runs before validation, so a bad vtime reports itself rather than
-    // surfacing as a schema error.
-    params.normalize_debug_vtime()?;
+    let params = debug_typed_params(&args);
     params.validate_debugging_params()?;
-    params.ensure_single_debug_target()?;
 
     let api = AntithesisApi::new_for_launch(settings, verbose)?;
     // The launch endpoint accepts an unknown run or input hash and starts a

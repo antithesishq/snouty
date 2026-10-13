@@ -7,9 +7,7 @@ use color_eyre::eyre::{Context, Report, Result, eyre};
 use color_eyre::{Section, SectionExt};
 use futures_util::{StreamExt, stream};
 use log::debug;
-use progenitor_client::{
-    ClientHooks, ClientInfo, Error as ClientError, OperationInfo, ResponseValue,
-};
+use progenitor_client::{ClientHooks, ClientInfo, Error as ClientError, OperationInfo};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, Proxy};
 use serde::de::DeserializeOwned;
@@ -585,21 +583,20 @@ impl AntithesisApi {
         // envelope (live body: `{"statusCode":404,"runId":null}`) as an unknown
         // launcher. A 404 without the envelope, such as an HTML page from a
         // wrong host, keeps the generic API error.
-        let result = match result {
+        let response: generated::types::LaunchResponse = match result {
+            Ok(response) => response.into_inner(),
             Err(ClientError::UnexpectedResponse(response))
                 if response.status() == reqwest::StatusCode::NOT_FOUND =>
             {
                 let body = read_error_body(response).await;
                 if serde_json::from_str::<generated::types::LaunchErrorResponse>(&body).is_ok() {
-                    return Err(user_error(format!("unknown launcher: {launcher}")).suggestion(
-                        "check the launcher name; `snouty runs list --detail` shows the launchers of earlier runs",
-                    ));
+                    return Err(user_error(format!("unknown launcher: {launcher}"))
+                        .suggestion("check the launcher name, or ask support@antithesis.com for the launchers on your tenant"));
                 }
                 return Err(format_api_error(404, &error_body_message(&body)));
             }
-            result => result,
+            Err(err) => recover_launch_error(err).await?,
         };
-        let response: generated::types::LaunchResponse = finish_launch(result).await?;
         Ok(LaunchResponse {
             run_id: response.run_id,
         })
@@ -607,8 +604,11 @@ impl AntithesisApi {
 
     pub async fn launch_debugging(&self, params: &Params) -> Result<LaunchResponse> {
         let body = launch_mvd_request(params)?;
-        let result = self.client.launch_mvd().body(body).send().await;
-        let response: generated::types::LaunchMvdResponse = finish_launch(result).await?;
+        let response: generated::types::LaunchMvdResponse =
+            match self.client.launch_mvd().body(body).send().await {
+                Ok(response) => response.into_inner(),
+                Err(err) => recover_launch_error(err).await?,
+            };
         Ok(LaunchResponse {
             run_id: response.run_id,
         })
@@ -1278,7 +1278,7 @@ fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
     .wrap_err("failed to build launch request")
 }
 
-/// Resolve a launch / debugging-launch webhook response.
+/// Resolve the error from a launch / debugging-launch webhook call.
 ///
 /// These webhooks return an HTTP status the OpenAPI spec under-documents (it
 /// lists a single 2xx, while the live API has been seen to answer 200). The
@@ -1288,18 +1288,13 @@ fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
 /// errors, status first — `build.rs` leaves them undocumented, so the status is
 /// always there to lead with. TODO: drop the any-2xx path once the spec
 /// documents the 200 these webhooks send.
-async fn finish_launch<T: DeserializeOwned>(
-    result: std::result::Result<ResponseValue<T>, ClientError<()>>,
-) -> Result<T> {
-    match result {
-        Ok(response) => Ok(response.into_inner()),
-        Err(ClientError::UnexpectedResponse(response)) if response.status().is_success() => {
-            response
-                .json::<T>()
-                .await
-                .wrap_err("parsing launch response body")
-        }
-        Err(err) => Err(format_api_client_error(err).await),
+async fn recover_launch_error<T: DeserializeOwned>(err: ClientError<()>) -> Result<T> {
+    match err {
+        ClientError::UnexpectedResponse(response) if response.status().is_success() => response
+            .json::<T>()
+            .await
+            .wrap_err("parsing launch response body"),
+        err => Err(format_api_client_error(err).await),
     }
 }
 

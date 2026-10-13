@@ -195,8 +195,8 @@ fn unrequire_search_limit_default(spec: &mut serde_json::Value) {
     );
 }
 
-/// Strip the schema default from `Search_Count_Request.validate_only`, so a
-/// count request omits the field and does not send the server's own default.
+/// Strip the `default: false` from `Search_Count_Request.validate_only`, so
+/// the generated field is an `Option` that a count request omits.
 fn unrequire_search_count_validate_only_default(spec: &mut serde_json::Value) {
     remove_schema_key(
         spec,

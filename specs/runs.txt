@@ -888,8 +888,8 @@ mock-runs-server
 ! snouty runs search run-1 'contains({output_text: "x"})' --check --follow
 stderr 'cannot be used with'
 
-# `--count` prints how many events in the whole run match the query, from the
-# events-search count endpoint. No limit applies.
+# `--count` prints how many events in the whole run match the query. No limit
+# applies.
 mock-runs-server
 snouty runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --count
 stdout '^3 events matched the query\.$'
@@ -918,7 +918,7 @@ mock-runs-server
 ! snouty runs search no-such-run 'contains({output_text: "x"})' --count
 stderr 'run not found: no-such-run'
 
-# A count has no sample, so the sample flags conflict with it.
+# A count has no sample, so the sample flags and --check conflict with it.
 mock-runs-server
 ! snouty runs search run-1 'contains({output_text: "x"})' --count --limit 5
 stderr 'cannot be used with'
@@ -927,6 +927,8 @@ stderr 'cannot be used with'
 ! snouty runs search run-1 'contains({output_text: "x"})' --count --check
 stderr 'cannot be used with'
 ! snouty runs search run-1 'contains({output_text: "x"})' --count --detail
+stderr 'cannot be used with'
+! snouty --json runs search run-1 'contains({output_text: "x"})' --count --raw
 stderr 'cannot be used with'
 
 # The help names --count and says that it counts the whole run.

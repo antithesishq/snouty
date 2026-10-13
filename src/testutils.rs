@@ -705,8 +705,8 @@ fn mock_route(
                 let (s, b, ct) = mock_route_search_events(run_id, req_body);
                 (s, b, ct, NO_CACHE_CACHE_CONTROL)
             } else if let Some(run_id) = rest.strip_suffix("/events/search/count") {
-                // The count endpoint answers with the number of events the
-                // search would stream. A count request carries no `limit`.
+                // A count request carries no `limit`, so the search streams
+                // every match.
                 let (s, b, ct) = mock_route_search_events(run_id, req_body);
                 if s == 200 {
                     let body = serde_json::json!({ "count": b.lines().count() }).to_string();

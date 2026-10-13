@@ -3781,9 +3781,6 @@ mod tests {
             .unwrap();
     }
 
-    // The count wrapper POSTs only the query: `validate_only` is the server's
-    // default and stays off the wire (see build.rs's
-    // `unrequire_search_count_validate_only_default`).
     #[tokio::test]
     async fn count_run_events_query_posts_query_only() {
         let mock_server = MockServer::start().await;

@@ -104,6 +104,18 @@ impl ApiVersion {
     }
 }
 
+/// The first release whose runs report `sub_status`.
+const MIN_SUB_STATUS_RELEASE: (u64, u64) = (64, 0);
+
+/// The release that a run ID ends with: `<hex>-<major>-<minor>`, as in
+/// `0df9ac1f5155c14f88ea41f5ad503e07-64-0`.
+fn run_release(run_id: &str) -> Option<(u64, u64)> {
+    let mut parts = run_id.rsplit('-');
+    let minor = parts.next()?.parse().ok()?;
+    let major = parts.next()?.parse().ok()?;
+    Some((major, minor))
+}
+
 fn parse_release(version: &str) -> Option<(u64, u64)> {
     let mut parts = version.split('.');
     let major = parts.next()?.trim().parse().ok()?;
@@ -240,8 +252,16 @@ impl RunSummary {
 }
 
 impl RunDetail {
+    /// Whether the run accepts commands. A run from before
+    /// [`MIN_SUB_STATUS_RELEASE`] has no sub-status, so it is ready while it is
+    /// in progress.
     pub(crate) fn is_ready(&self) -> bool {
-        self.sub_status == Some(RunSubStatus::Ready)
+        match run_release(&self.run_id) {
+            Some(release) if release < MIN_SUB_STATUS_RELEASE => {
+                self.status == RunStatus::InProgress
+            }
+            _ => self.sub_status == Some(RunSubStatus::Ready),
+        }
     }
 
     /// The status, and the sub-status after a colon when the run has one:
@@ -2903,6 +2923,35 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&loading).unwrap()["sub_status"],
             "Loading"
+        );
+    }
+
+    #[test]
+    fn a_run_before_64_is_ready_while_it_is_in_progress() {
+        let run = |run_id: &str, status: &str| -> RunDetail {
+            serde_json::from_value(serde_json::json!({
+                "run_id": run_id,
+                "status": status,
+                "created_at": "2025-03-20T02:00:00Z",
+                "launcher": "debugging",
+            }))
+            .unwrap()
+        };
+        assert!(run("9043254f65c9c65d63fe043a0abfc7fc-63-1", "in_progress").is_ready());
+        assert!(!run("9043254f65c9c65d63fe043a0abfc7fc-63-1", "starting").is_ready());
+        assert!(!run("9043254f65c9c65d63fe043a0abfc7fc-64-0", "in_progress").is_ready());
+        assert!(!run("run-1", "in_progress").is_ready());
+    }
+
+    #[hegel::test]
+    fn run_release_reads_the_run_id_suffix(tc: hegel::TestCase) {
+        use hegel::generators;
+        let id = tc.draw(generators::text());
+        let major = tc.draw(generators::integers::<u64>());
+        let minor = tc.draw(generators::integers::<u64>());
+        assert_eq!(
+            run_release(&format!("{id}-{major}-{minor}")),
+            Some((major, minor))
         );
     }
 

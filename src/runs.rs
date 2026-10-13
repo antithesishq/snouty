@@ -1684,15 +1684,13 @@ impl RewarmDisplay {
 }
 
 /// What `runs exec` shows on stderr while it waits for the run to be ready:
-/// a spinner on a terminal, else a line when the status changes and a line
-/// each whole minute while it does not. The waiting line leaves out the run
-/// ID, because the line is already long enough to wrap on a narrow terminal.
+/// a spinner on a terminal, else a line at once and a line each whole minute.
 enum ReadyDisplay {
     Spinner(ProgressBar),
     Lines {
         start: Instant,
-        /// The status label and the whole minutes waited at the last line.
-        last: Option<(String, u64)>,
+        /// The whole minutes waited at the last line.
+        last_minutes: Option<u64>,
     },
 }
 
@@ -1701,42 +1699,42 @@ impl ReadyDisplay {
         if !std::io::stderr().is_terminal() {
             return Self::Lines {
                 start: Instant::now(),
-                last: None,
+                last_minutes: None,
             };
         }
-        let style = ProgressStyle::with_template(
-            "{spinner} waiting for the run to be ready: {msg} ({elapsed})",
-        )
-        .expect("the template is valid");
+        let style =
+            ProgressStyle::with_template("{spinner} waiting for the run to be ready ({elapsed})")
+                .expect("the template is valid");
         let spinner = ProgressBar::new_spinner().with_style(style);
         spinner.enable_steady_tick(Duration::from_millis(120));
         Self::Spinner(spinner)
     }
 
-    fn show(&mut self, run: &RunDetail) {
-        let label = run.status_label();
-        match self {
-            Self::Spinner(spinner) => spinner.set_message(label),
-            Self::Lines { start, last } => {
-                let waited = start.elapsed().as_secs();
-                let minutes = waited / 60;
-                let due = last.as_ref().is_none_or(|(last_label, last_minutes)| {
-                    *last_label != label || minutes > *last_minutes
-                });
-                if due {
-                    let waited = HumanDuration::from_seconds(waited);
-                    eprintln!("waiting for the run to be ready: {label} ({waited})");
-                    *last = Some((label, minutes));
-                }
+    fn show(&mut self) {
+        if let Self::Lines {
+            start,
+            last_minutes,
+        } = self
+        {
+            let waited = start.elapsed().as_secs();
+            let minutes = waited / 60;
+            if last_minutes.is_none_or(|last| minutes > last) {
+                let waited = HumanDuration::from_seconds(waited);
+                eprintln!("waiting for the run to be ready ({waited})");
+                *last_minutes = Some(minutes);
             }
         }
     }
 
+    /// End the display. A run that stopped instead of becoming ready gets no
+    /// line: the error that follows names its status.
     fn finish(self, run: &RunDetail) {
         if let Self::Spinner(spinner) = &self {
             spinner.finish_and_clear();
         }
-        eprintln!("run {} is {}", run.run_id, run.status_label());
+        if run.is_ready() {
+            eprintln!("run {} is ready", run.run_id);
+        }
     }
 }
 
@@ -1933,8 +1931,8 @@ async fn exec_when_ready(
         exec.moment.input_hash, exec.moment.vtime
     );
     let mut waiting: Option<ReadyDisplay> = None;
-    let run = wait_for_run(api, run_id, poll, WaitUntil::Ready, |run| {
-        waiting.get_or_insert_with(ReadyDisplay::new).show(run);
+    let run = wait_for_run(api, run_id, poll, WaitUntil::Ready, |_| {
+        waiting.get_or_insert_with(ReadyDisplay::new).show();
     })
     .await?;
     if let Some(waiting) = waiting {

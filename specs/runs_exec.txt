@@ -277,8 +277,8 @@ stderr 'use --source-run-id to load a moment from a different run$'
 # cover the wait, because their test server can change the run's status
 # between polls.
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true'
-! stderr 'waiting for run'
-! stderr 'run run-2 is'
+! stderr 'waiting for the run'
+! stderr 'run run-2 is ready'
 
 # With a source, snouty prints one rewarm progress line per percentage on stderr
 # when stderr is not a terminal. stdout keeps only the script's output.

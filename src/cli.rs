@@ -981,8 +981,8 @@ With --web it prints the report URL as {"url": ...} and opens no browser:
 --until sets the status to wait for:
   ready     The run is ready to use, or it is already complete. A debugging
             session is ready when it accepts commands, which can be minutes
-            after its status becomes in_progress. Any other run is ready
-            while it is in_progress.
+            after its status becomes in_progress. Any other run, and any run
+            from before release 64, is ready while it is in_progress.
   complete  The run is complete: completed, cancelled, or incomplete. This
             is the default.
 
@@ -1173,7 +1173,7 @@ on its own line:
 The run must be in progress. It can be a test run or a debugging session. A
 run that is not ready yet holds the command until it is, with no time limit:
 a debugging session that `snouty debug` launches takes a few minutes to be
-ready. While it waits, snouty shows the run's status on stderr. To execute
+ready. While it waits, snouty says so on stderr. To execute
 at a moment of a run that is already complete, start a debugging session at
 that moment. The script
 executes on a fresh branch of the multiverse, so it does not interact with

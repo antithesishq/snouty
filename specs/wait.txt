@@ -42,6 +42,7 @@ stdout '--timeout'
 stdout '--until'
 stdout 'ready .*ready to use, or it is'
 stdout 'accepts commands'
+stdout 'from before release 64, is ready while it is in_progress'
 stdout 'The status is a minimum'
 ! stdout 'runs exec'
 

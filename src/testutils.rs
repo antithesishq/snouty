@@ -751,7 +751,14 @@ const MOCK_RUNS: &[(&str, &str, &str, &str, &str)] = &[
         "nightly smoke on main",
     ),
     ("run-2", "in_progress", "2025-03-19T14:00:00Z", "debug", ""),
-    ("run-3", "incomplete", "2025-03-18T08:00:00Z", "nightly", ""),
+    // A launcher longer than any cut that a table could make.
+    (
+        "run-3",
+        "incomplete",
+        "2025-03-18T08:00:00Z",
+        "nightly recovery (no faults)",
+        "",
+    ),
 ];
 
 /// run-3 has no description. It has only the event description that a

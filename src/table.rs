@@ -1,10 +1,15 @@
 //! Borderless tables for human-facing output, laid out by `tabled`.
 
 use tabled::builder::Builder;
-use tabled::settings::formatting::TrimStrategy;
-use tabled::settings::object::{Columns, Segment};
+use tabled::grid::dimension::Dimension;
+use tabled::settings::object::Columns;
 use tabled::settings::peaker::Peaker;
-use tabled::settings::{Alignment, Padding, Style, Width};
+use tabled::settings::{Alignment, Format, Padding, Style, Width};
+
+use crate::render::{CodeSpans, wrap_text};
+
+/// The spaces between two columns.
+const GAP: usize = 2;
 
 /// One step of a table's shrink order: shrink `column` until its content is
 /// `floor` columns wide. A column never shrinks below its header.
@@ -23,8 +28,8 @@ pub(crate) enum Fit<'a> {
     /// step is at its floor, the table stays wider than `width`.
     Truncate { width: usize, order: &'a [Shrink] },
     /// Like [`Fit::Truncate`], but wrap the cells at spaces instead of cutting
-    /// them. Continuation lines start under the column. `tabled` wraps, not
-    /// `render::wrap_text`, because the shrink order sets each column width.
+    /// them. Continuation lines start under the column. A word that is longer
+    /// than the column stays whole, and makes the table wider than `width`.
     Wrap { width: usize, order: &'a [Shrink] },
 }
 
@@ -76,7 +81,7 @@ pub(crate) fn render_table(
     let mut table = builder.build();
     table
         .with(Style::empty())
-        .with(Padding::new(0, 2, 0, 0))
+        .with(Padding::new(0, GAP, 0, 0))
         .modify(Columns::last(), Padding::zero());
     for &column in right_aligned {
         table.modify(Columns::one(column), Alignment::right());
@@ -91,13 +96,19 @@ pub(crate) fn render_table(
             );
         }
         Fit::Wrap { width, order } => {
-            // A line that wraps at a space would otherwise start with it.
-            table.modify(Segment::all(), TrimStrategy::Horizontal);
-            table.with(
-                Width::wrap(width)
-                    .keep_words(true)
-                    .priority(shrink_order(order)),
-            );
+            // tabled's own wrap splits a word that is longer than the column,
+            // so tabled only picks the widths here.
+            let mut fitted = table.clone();
+            fitted.with(Width::truncate(width).priority(shrink_order(order)));
+            for step in order {
+                let column = step.column;
+                let padding = if column + 1 == headers.len() { 0 } else { GAP };
+                let width = fitted.get_dimension().get_width(column) - padding;
+                table.modify(
+                    Columns::one(column),
+                    Format::content(|cell| wrap_text(cell, width, CodeSpans::Ignore).join("\n")),
+                );
+            }
         }
     }
 
@@ -206,6 +217,31 @@ mod tests {
     }
 
     #[test]
+    fn wrap_keeps_a_long_word_whole() {
+        let out = render_table(
+            &["STATUS", "NAME"],
+            vec![row(&[
+                "failing",
+                "Safety ▸ my_service::partition_tolerance_holds",
+            ])],
+            &[],
+            Fit::Wrap {
+                width: 30,
+                order: &[Shrink {
+                    column: 1,
+                    floor: 20,
+                }],
+            },
+        );
+        assert_eq!(
+            out,
+            "STATUS   NAME\n\
+             failing  Safety ▸\n\
+             \x20        my_service::partition_tolerance_holds"
+        );
+    }
+
+    #[test]
     fn wrap_stops_at_the_floor() {
         let out = render_table(
             &["STATUS", "NAME"],
@@ -261,20 +297,16 @@ mod tests {
             },
         );
         assert_eq!(truncated, unbounded);
-        // Wrap trims each cell, so compare tables whose cells have no
-        // leading or trailing spaces.
-        if rows.iter().flatten().all(|cell| cell.trim() == cell) {
-            let wrapped = render_table(
-                &headers,
-                rows,
-                &[1],
-                Fit::Wrap {
-                    width: usize::MAX,
-                    order: &order,
-                },
-            );
-            assert_eq!(wrapped, unbounded);
-        }
+        let wrapped = render_table(
+            &headers,
+            rows,
+            &[1],
+            Fit::Wrap {
+                width: usize::MAX,
+                order: &order,
+            },
+        );
+        assert_eq!(wrapped, unbounded);
     }
 
     /// A table that can shrink enough fits in the width, and no line ends in

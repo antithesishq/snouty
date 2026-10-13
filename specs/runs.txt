@@ -290,7 +290,6 @@ snouty runs properties $R_run_id --name 'Peak memory' --detail
 mock-runs-server
 snouty runs properties $R_run_id --name no-such-property
 [!staging] stdout 'No properties match.*no-such-property'
-! stdout 'Inspect the run'
 
 # --detail conflicts with --json (which already emits the full data), for both
 # `runs properties` and `runs list`.

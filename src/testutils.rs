@@ -1008,10 +1008,6 @@ fn mock_route_get_run_logs(run_id: &str) -> (u16, String) {
 }
 
 fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, String) {
-    if run_id == "run-empty" {
-        return (200, r#"{"data":[],"next_cursor":null}"#.to_string());
-    }
-
     if run_id == "run-no-events" {
         return (
             200,
@@ -1020,11 +1016,15 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
     }
 
     // Like the real API, the properties endpoint 404s only for an unknown run
-    // id. A run that is not `completed` has an empty list.
-    match MOCK_RUNS.iter().find(|(id, ..)| *id == run_id) {
-        Some(&(_, "completed", ..)) => {}
-        Some(_) => return (200, r#"{"data":[],"next_cursor":null}"#.to_string()),
+    // id. A run that is not `completed` has an empty list, and so does the
+    // properties-only `run-empty` fixture.
+    let completed = match MOCK_RUNS.iter().find(|(id, ..)| *id == run_id) {
+        Some(&(_, status, ..)) => status == "completed",
+        None if run_id == "run-empty" => false,
         None => return mock_run_not_found(run_id),
+    };
+    if !completed {
+        return (200, r#"{"data":[],"next_cursor":null}"#.to_string());
     }
 
     let status = mock_query_param(query, "status");

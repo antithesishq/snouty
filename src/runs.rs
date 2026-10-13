@@ -633,7 +633,14 @@ async fn cmd_runs_properties(
             outln!("{}", serde_json::to_string(property)?)?;
         }
     } else if properties.is_empty() {
-        outln!("{}", no_properties_message(run_id, &filter))?;
+        // An unfiltered empty result has three causes. Fetch the run to say
+        // which one applies.
+        let run = if filter.is_empty() {
+            api.get_run(run_id).await.ok().map(|run| run.untag())
+        } else {
+            None
+        };
+        outln!("{}", no_properties_message(run_id, &filter, run.as_ref()))?;
     } else if detail {
         outln!("{}", render_properties_detail(&properties))?;
         // One next step for the whole listing: every HASH/VTIME row above feeds it.
@@ -653,8 +660,17 @@ async fn cmd_runs_properties(
     Ok(())
 }
 
-/// The empty-result message, naming whichever filters were active.
-fn no_properties_message(run_id: &str, filter: &PropertyFilter) -> String {
+impl PropertyFilter<'_> {
+    fn is_empty(&self) -> bool {
+        self.status.is_none() && self.name.is_none() && self.group.is_none()
+    }
+}
+
+/// The empty-result message. With filters, it names them. Without filters, it
+/// uses the run's status and report link to tell why there are no properties.
+/// If snouty cannot get the run, it uses the message for a run that is not
+/// complete.
+fn no_properties_message(run_id: &str, filter: &PropertyFilter, run: Option<&RunDetail>) -> String {
     let mut parts = Vec::new();
     match filter.status {
         Some(PropertyStatus::Passing) => parts.push("passing".to_string()),
@@ -668,8 +684,22 @@ fn no_properties_message(run_id: &str, filter: &PropertyFilter) -> String {
         parts.push(format!("group '{group}'"));
     }
     if parts.is_empty() {
+        let reason = match run {
+            Some(run) if run.status == RunStatus::Completed => {
+                let has_report = run
+                    .links
+                    .as_ref()
+                    .is_some_and(|l| l.triage_report.is_some());
+                if has_report {
+                    "The run completed and reported no properties."
+                } else {
+                    "The run completed, but it has no report yet. A report can take some minutes after a run completes."
+                }
+            }
+            _ => "A run that is not complete can have no properties.",
+        };
         format!(
-            "No properties found. A run that is not complete can have no properties.\n\nInspect the run with `snouty runs show {run_id}`."
+            "No properties found. {reason}\n\nInspect the run with `snouty runs show {run_id}`."
         )
     } else {
         format!("No properties match ({}).", parts.join(", "))

@@ -849,11 +849,11 @@ fn mock_run_not_found(run_id: &str) -> (u16, String) {
     (404, format!(r#"{{"message":"run not found: {run_id}"}}"#))
 }
 
-/// Debugging sessions kept out of MOCK_RUNS so the list-oriented specs don't
-/// see them: (run_id, status, sub_status). Like a new session on release
-/// 64.0, the loading ones report `in_progress` without the `Ready` sub-status
-/// before they accept commands. `runs exec` reads the run before it executes,
-/// so the exec fixture `run-stream-error` is ready.
+/// Debugging sessions kept out of MOCK_RUNS so the list-oriented specs do
+/// not see them: (run_id, status, sub_status). A loading session reports
+/// `in_progress` without the `Ready` sub-status, as a new session does on
+/// release 64.0. `run-stream-error` is ready, because `runs exec` reads the
+/// run before it executes.
 const MOCK_HIDDEN_SESSIONS: &[(&str, &str, Option<&str>)] = &[
     ("session-starting", "starting", None),
     ("session-loading", "in_progress", None),

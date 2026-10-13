@@ -366,9 +366,8 @@ fn open_performance_tier(spec: &mut serde_json::Value) {
     );
 }
 
-/// Decode `Run_Detail.sub_status` into the handwritten `RunSubStatus`, which
-/// keeps a value this build does not know. A closed enum would fail `runs show`
-/// and `runs wait` on the day the server adds a value.
+/// Decode `Run_Detail.sub_status` into the handwritten `RunSubStatus`, so that
+/// `runs show` and `runs wait` do not fail when the server adds a value.
 fn open_sub_status(spec: &mut serde_json::Value) {
     const POINTER: &str = "/components/schemas/Run_Detail/allOf/1/properties/sub_status";
     let values = remove_schema_key(spec, POINTER, "enum", "open_sub_status");

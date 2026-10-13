@@ -107,9 +107,8 @@ snouty --json runs wait $R_run_id --until ready
 [!staging] stdout '"status".*"completed"'
 ! stdout 'sub_status'
 
-# run-2 is in_progress and ready on the mock, so the wait ends. The output
-# gives the sub-status after the status. The timeout only keeps a regression
-# from hanging the spec.
+# run-2 is in_progress and ready on the mock, so the wait ends. The timeout
+# only keeps a regression from hanging the spec.
 mock-runs-server
 [!staging] snouty runs wait run-2 --until ready --timeout 10s
 [!staging] stdout '^run run-2 is in_progress:ready$'

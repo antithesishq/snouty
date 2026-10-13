@@ -1685,8 +1685,8 @@ impl RewarmDisplay {
 
 /// What `runs exec` shows on stderr while it waits for the run to be ready:
 /// a spinner on a terminal, else a line when the status changes and a line
-/// each whole minute while it does not. The run ID stays out of the text,
-/// which is already long enough to wrap a narrow terminal.
+/// each whole minute while it does not. The waiting line leaves out the run
+/// ID, because the line is already long enough to wrap on a narrow terminal.
 enum ReadyDisplay {
     Spinner(ProgressBar),
     Lines {
@@ -1732,7 +1732,6 @@ impl ReadyDisplay {
         }
     }
 
-    /// End the display with the status the wait stopped at.
     fn finish(self, run: &RunDetail) {
         if let Self::Spinner(spinner) = &self {
             spinner.finish_and_clear();
@@ -1903,13 +1902,13 @@ async fn cmd_runs_exec(
 }
 
 /// How often `runs exec` reads a run that is not ready. A debugging session
-/// becomes ready minutes after it starts, so the `runs wait` floor of a minute
-/// could add most of a minute to its first command.
+/// becomes ready minutes after it starts, so a poll each minute (the `runs
+/// wait` floor) could delay its first command by most of a minute.
 const EXEC_READY_POLL: Duration = Duration::from_secs(10);
 
-/// The body of `runs exec`: wait until the run is ready or complete, then
-/// execute. The wait is unbounded, like a rewarm. A complete run does not
-/// wait: the server answers for it.
+/// Wait until the run is ready or complete, then execute. The wait has no
+/// time limit. A complete run executes at once, and the server answers with
+/// an error.
 async fn exec_when_ready(
     api: &AntithesisApi,
     run_id: &str,
@@ -4892,14 +4891,14 @@ mod tests {
             body
         }
 
-        /// Serve each status in order, the last one indefinitely: wiremock
-        /// matches in mount order and skips a mock whose `up_to_n_times`
-        /// budget is spent.
+        /// Serve each status in order, the last one indefinitely.
         async fn mount_get_run_statuses(server: &MockServer, statuses: &[&str]) {
             mount_get_run_bodies(server, statuses.iter().map(|s| run_body(s)).collect()).await;
         }
 
         /// As [`mount_get_run_statuses`], with a whole run body per poll.
+        /// Wiremock matches in mount order and skips a mock whose
+        /// `up_to_n_times` budget is spent.
         async fn mount_get_run_bodies(server: &MockServer, bodies: Vec<serde_json::Value>) {
             let count = bodies.len();
             for (i, body) in bodies.into_iter().enumerate() {

@@ -158,7 +158,7 @@ pub enum VersionError {
 #[serde(from = "String", into = "String")]
 pub enum RunSubStatus {
     /// A debugging session that accepts commands, or any other run that is in
-    /// progress.
+    /// progress (observed on orbitinghail, release 64.0).
     Ready,
     Other(String),
 }

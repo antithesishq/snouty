@@ -326,7 +326,7 @@
       "post": {
         "operationId": "executeCommand",
         "summary": "Execute a command in a test run",
-        "description": "Executes a bash command in the live run associated with the test run, starting at the requested moment. When `include_system_logs` is `true`, every event observed during the command's execution is included, not just the command's own stdout and stderr. Output is streamed as newline-delimited JSON (NDJSON). Command output uses the same `Event` shape returned by the run logs endpoint, without an additional wrapper. A successful stream ends with exactly one command result whose `status` is `exited` or `timed_out`; a stream that fails after the response begins ends with a `Stream_Error`. If the requested moment is not warm in the live run and a source run is available, the server rewarms it before running the command and emits `Rewarm_Progress` records ahead of the command output.",
+        "description": "Executes a bash command in the live run associated with the test run, starting at the requested moment. When `include_system_logs` is `true`, every event observed during the command's execution is included, not just the command's own stdout and stderr. Output is streamed as newline-delimited JSON (NDJSON). Command output uses the same `Event` shape returned by the run logs endpoint, without an additional wrapper. A successful stream ends with exactly one command result whose `status` is `exited` or `timed_out`; a stream that fails after the response begins ends with a `Stream_Error`. If the requested moment is not warm in the live run and a source run is available, the server rewarms it before running the command and emits `Rewarm_Progress` records ahead of the command output. For Kubernetes-orchestrated runs, set `_ANTITHESIS_HOST` as the container parameter and drive the cluster with `kubectl` commands. For example, `kubectl get pods -A` to list the pods and `kubectl exec <pod> -n <namespace> -c <container> -- <command>` to run a command inside a pod.",
         "tags": ["Test runs"],
         "parameters": [
           {
@@ -347,14 +347,43 @@
               "schema": {
                 "$ref": "#/components/schemas/Execute_Command_Request"
               },
-              "example": {
-                "moment": {
-                  "input_hash": "-3625518438076122494",
-                  "vtime": "398.4898056755774"
+              "examples": {
+                "docker_compose": {
+                  "summary": "Run a command in a Docker Compose service container",
+                  "value": {
+                    "moment": {
+                      "input_hash": "-3625518438076122494",
+                      "vtime": "398.4898056755774"
+                    },
+                    "script": "cat /etc/hostname",
+                    "timeout_seconds": 30,
+                    "container": "my-service"
+                  }
                 },
-                "script": "uname -a",
-                "timeout_seconds": 30,
-                "container": "_ANTITHESIS_HOST"
+                "host": {
+                  "summary": "Run a command on the host",
+                  "value": {
+                    "moment": {
+                      "input_hash": "-3625518438076122494",
+                      "vtime": "398.4898056755774"
+                    },
+                    "script": "uname -a",
+                    "timeout_seconds": 30,
+                    "container": "_ANTITHESIS_HOST"
+                  }
+                },
+                "kubernetes": {
+                  "summary": "Inspect pods in a Kubernetes run",
+                  "value": {
+                    "moment": {
+                      "input_hash": "-3625518438076122494",
+                      "vtime": "398.4898056755774"
+                    },
+                    "script": "kubectl get pods -A && kubectl exec deploy/my-service -- cat /etc/hostname",
+                    "timeout_seconds": 30,
+                    "container": "_ANTITHESIS_HOST"
+                  }
+                }
               }
             }
           }
@@ -2176,6 +2205,11 @@
                 "additionalProperties": true,
                 "description": "Aggregate results for the test run. Structure varies by run type. May be absent or partial for runs that have not yet completed."
               },
+              "sub_status": {
+                "type": "string",
+                "enum": ["Ready"],
+                "description": "Indicates whether the run is ready to use. For multiverse debugging sessions, this is `Ready` once the debugging session is ready. For all other runs, this is `Ready` while the run is in progress. Absent otherwise."
+              },
               "failure_moment": {
                 "type": "object",
                 "nullable": true,
@@ -2329,7 +2363,7 @@
             "format": "uint64",
             "minimum": 0,
             "default": 600,
-            "description": "Maximum number of seconds to wait for the command to exit before emitting a `timed_out` result. Defaults to 600."
+            "description": "Maximum number of seconds to wait for the command to exit before emitting a `timed_out` result. Defaults to 600. Time spent rewarming the requested moment does not count toward this timeout. Rewarming has a separate one-hour limit; exceeding it returns an error and the command is not executed."
           },
           "source_session_id": {
             "type": "string",
@@ -2695,6 +2729,10 @@
         "description": "Shared fields for all property results. A property result from a test run. Properties with `is_group` set to true represent a group property that contain other individual properties; individual properties within that group reference it via the `group` field.",
         "required": ["name", "status", "is_event"],
         "properties": {
+          "id": {
+            "type": "string",
+            "description": "A unique, stable identifier for the property."
+          },
           "name": {
             "type": "string",
             "description": "The name of the property."

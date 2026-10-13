@@ -849,31 +849,30 @@ fn mock_run_not_found(run_id: &str) -> (u16, String) {
     (404, format!(r#"{{"message":"run not found: {run_id}"}}"#))
 }
 
-/// Debugging sessions that do not accept commands yet: (run_id, status).
-/// They are kept out of MOCK_RUNS so the list-oriented specs don't see them.
-/// Like a new session on release 64.0, they answer `runs exec` with a bare
-/// 404, or with the cold 400 for a cold moment. That server reports
-/// `in_progress` before a session accepts commands.
-const MOCK_LOADING_SESSIONS: &[(&str, &str)] = &[
-    ("session-starting", "starting"),
-    ("session-loading", "in_progress"),
+/// Debugging sessions kept out of MOCK_RUNS so the list-oriented specs do
+/// not see them: (run_id, status, sub_status). A loading session reports
+/// `in_progress` without the `Ready` sub-status, as a new session does on
+/// release 64.0. `run-stream-error` is ready, because `runs exec` reads the
+/// run before it executes.
+const MOCK_HIDDEN_SESSIONS: &[(&str, &str, Option<&str>)] = &[
+    ("session-starting", "starting", None),
+    ("session-loading", "in_progress", None),
+    ("run-stream-error", "in_progress", Some("Ready")),
 ];
 
-fn mock_loading_session(run_id: &str) -> Option<&'static str> {
-    MOCK_LOADING_SESSIONS
-        .iter()
-        .find(|(id, _)| *id == run_id)
-        .map(|&(_, status)| status)
-}
-
 fn mock_route_get_run(run_id: &str) -> (u16, String) {
-    if let Some(status) = mock_loading_session(run_id) {
-        let body = serde_json::json!({
+    if let Some(&(_, status, sub_status)) =
+        MOCK_HIDDEN_SESSIONS.iter().find(|(id, ..)| *id == run_id)
+    {
+        let mut body = serde_json::json!({
             "run_id": run_id,
             "status": status,
             "created_at": chrono::Utc::now().to_rfc3339(),
             "launcher": "debugging",
         });
+        if let Some(sub_status) = sub_status {
+            body["sub_status"] = serde_json::json!(sub_status);
+        }
         return (200, body.to_string());
     }
     // `run-unknown-status` is kept out of MOCK_RUNS so the list-oriented specs
@@ -898,6 +897,11 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
     ];
     if !description.is_empty() {
         fields.push(format!(r#""description":"{description}""#));
+    }
+    // Like the live API (orbitinghail, release 64.0), a run in progress that
+    // is not a loading debugging session is `Ready`.
+    if status == "in_progress" {
+        fields.push(r#""sub_status":"Ready""#.to_string());
     }
     if status == "completed" || status == "incomplete" {
         fields.push(r#""started_at":"2025-03-20T02:01:12Z""#.to_string());
@@ -1037,11 +1041,11 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
     let after = mock_query_param(query, "after");
 
     // Full-precision vtimes so a precision fault fails a spec (see specs/runs.txt).
-    let failing = r#"{"name":"Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"group":"Safety","example_count":12,"counterexample_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"398.4898056755774"}}],"counterexamples":[{"moment":{"input_hash":"-200","vtime":"313.15126806590706"}},{"moment":{"input_hash":"-100","vtime":"45.334635781589895"}}]}"#.to_string();
+    let failing = r#"{"id":"97cf5fcafa500ed62bf109d81834c5b881a2c854","name":"Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"group":"Safety","example_count":12,"counterexample_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"398.4898056755774"}}],"counterexamples":[{"moment":{"input_hash":"-200","vtime":"313.15126806590706"}},{"moment":{"input_hash":"-100","vtime":"45.334635781589895"}}]}"#.to_string();
     // A failing non-event ("system") property: the violating value lives in
     // `counterexamples`, so `--detail` must label it apart from the satisfying
     // `examples`.
-    let failing_nonevent = r#"{"name":"Peak memory stays below cap","description":"Peak memory never exceeds the configured limit","status":"Failing","is_event":false,"group":"Resources","example_count":2,"counterexample_count":1,"examples":[820,910],"counterexamples":[1340]}"#.to_string();
+    let failing_nonevent = r#"{"id":"d2558d97fabac81ba7eb4676e47a0cba558263f8","name":"Peak memory stays below cap","description":"Peak memory never exceeds the configured limit","status":"Failing","is_event":false,"group":"Resources","example_count":2,"counterexample_count":1,"examples":[820,910],"counterexamples":[1340]}"#.to_string();
     let passing = r#"{"name":"Setup completes","description":"Setup eventually succeeds","status":"Passing","is_event":false,"example_count":1,"counterexample_count":0,"examples":[{"final_counter":42}]}"#.to_string();
 
     let (data, next_cursor) = match (status.as_deref(), after.as_deref()) {
@@ -1165,7 +1169,7 @@ fn mock_exec_output(stream: &str, text: &str, vtime: &str) -> String {
 }
 
 /// A command killed by the session can have no exit code.
-fn mock_exec_exited(exit_code: Option<i64>) -> String {
+pub fn mock_exec_exited(exit_code: Option<i64>) -> String {
     serde_json::json!({
         "status": "exited",
         "exit_code": exit_code,
@@ -1196,11 +1200,6 @@ fn mock_exec_command_received() -> String {
 /// The input hash of a moment the mock session holds cold.
 pub const MOCK_COLD_HASH: &str = "1002528785118888238";
 
-fn mock_exec_cold() -> (u16, String) {
-    let message = "Moment not warm in the live run and no source_run_id provided.";
-    (400, serde_json::json!({ "message": message }).to_string())
-}
-
 fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     // See the `run-stream-error` fixture note in `mock_route_get_run_build_logs`.
     if run_id == "run-stream-error" {
@@ -1217,12 +1216,6 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     let cold = request["moment"]["input_hash"] == MOCK_COLD_HASH;
     let has_source =
         request.get("source_run_id").is_some() || request.get("source_session_id").is_some();
-    if mock_loading_session(run_id).is_some() {
-        if cold && !has_source {
-            return mock_exec_cold();
-        }
-        return (404, MOCK_BARE_404_BODY.to_string());
-    }
     if !mock_run_known(run_id) {
         // snouty's "run not found" translation must work from the status
         // alone.
@@ -1255,7 +1248,8 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     // verbatim from orbitinghail (release 64.0; the no-source one as of
     // 2026-10-07).
     if cold && !has_source {
-        return mock_exec_cold();
+        let message = "Moment not warm in the live run and no source_run_id provided.";
+        return (400, serde_json::json!({ "message": message }).to_string());
     }
     if cold && script.trim() == "slow-rewarm" {
         let message = format!(

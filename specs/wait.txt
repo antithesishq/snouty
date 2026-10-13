@@ -1,6 +1,6 @@
 # snouty runs wait
 #
-# Wait until a run is running or complete (`--until`, default complete), then
+# Wait until a run is ready or complete (`--until`, default complete), then
 # report its status. Complete means a terminal state: completed, cancelled, or
 # incomplete. The command exits 0 for every status it stops at; the run's
 # outcome is in the output, not the exit code. A run that reports status
@@ -28,7 +28,7 @@ stderr 'must be a number of minutes'
 
 # `snouty runs --help` lists the wait subcommand.
 snouty runs --help
-stdout 'wait.*running or complete'
+stdout 'wait.*ready or complete'
 
 # `snouty runs wait --help` explains the two --until statuses, that each is a
 # minimum, the unknown-status failure, and that re-running resumes the wait
@@ -40,7 +40,7 @@ stdout 'interrupt and re-run'
 stdout '--poll-interval'
 stdout '--timeout'
 stdout '--until'
-stdout 'running .*in_progress, or it is'
+stdout 'ready .*The run is ready to use, or it is already complete\.$'
 stdout 'The status is a minimum'
 ! stdout 'runs exec'
 
@@ -90,24 +90,39 @@ mock-runs-server
 
 # --until takes one of two points in the run's lifecycle.
 ! snouty runs wait some-run --until in_progress
-stderr 'possible values: running, complete'
+stderr 'possible values: ready, complete'
+! snouty runs wait some-run --until running
+stderr 'possible values: ready, complete'
 
-# `--until running` stops once the run has started. A completed run has
-# already started, so the wait succeeds at once and reports the run's actual
-# status.
+# `--until ready` stops once the run is ready, or complete. A completed run
+# never becomes ready, so the wait succeeds at once and reports the run's
+# actual status. A complete run has no sub-status, so the JSON has none.
 mock-runs-server
-snouty runs wait $R_run_id --until running
-stdout 'run .* is completed'
+snouty runs wait $R_run_id --until ready
+stdout 'run .* is completed$'
 
 mock-runs-server
-snouty --json runs wait $R_run_id --until running
+snouty --json runs wait $R_run_id --until ready
 [!staging] stdout '"status".*"completed"'
+! stdout 'sub_status'
 
-# run-2 is in_progress on the mock: it has started, so the wait ends. The
-# timeout only keeps a regression from hanging the spec.
+# run-2 is in_progress and ready on the mock, so the wait ends. The timeout
+# only keeps a regression from hanging the spec.
 mock-runs-server
-[!staging] snouty runs wait run-2 --until running --timeout 10s
-[!staging] stdout 'run run-2 is in_progress'
+[!staging] snouty runs wait run-2 --until ready --timeout 10s
+[!staging] stdout '^run run-2 is in_progress:ready$'
+
+mock-runs-server
+[!staging] snouty --json runs wait run-2 --until ready --timeout 10s
+[!staging] stdout '"sub_status": "Ready"'
+
+# A debugging session in `in_progress` is not ready until it accepts
+# commands, so the wait goes on. The first poll is at once, and the next one
+# is a minute later, so a wait that stops at the first poll returns before
+# the timeout.
+mock-runs-server
+[!staging] ! snouty runs wait session-loading --until ready --timeout 3s
+[!staging] stderr 'timed out waiting for run session-loading'
 
 # `--until complete` is the default: it waits for a terminal state.
 mock-runs-server

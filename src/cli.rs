@@ -576,8 +576,8 @@ pub struct UpdateArgs {
 /// The point in a run's lifecycle that `runs wait --until` waits for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
 pub enum WaitUntil {
-    /// The run is in_progress, or already complete
-    Running,
+    /// The run is ready to use, or already complete
+    Ready,
     /// The run is completed, cancelled, or incomplete
     Complete,
 }
@@ -975,16 +975,16 @@ With --web it prints the report URL as {"url": ...} and opens no browser:
         web: bool,
     },
 
-    /// Wait until a run is running or complete
-    #[command(long_about = r#"Wait until a run is running or complete.
+    /// Wait until a run is ready or complete
+    #[command(long_about = r#"Wait until a run is ready or complete.
 
 --until sets the status to wait for:
-  running   The run has status in_progress, or it is already complete.
+  ready     The run is ready to use, or it is already complete.
   complete  The run is complete: completed, cancelled, or incomplete. This
             is the default.
 
 The status is a minimum. A run can only move forward, and a complete run
-never starts again. Thus `--until running` on a complete run returns at once.
+never starts again. Thus `--until ready` on a complete run returns at once.
 
 When the run reaches the status, the command prints the run's current status
 and exits 0, whatever that status is. A run that reports status `unknown`
@@ -997,7 +997,7 @@ interrupt and re-run: it holds no state beyond the run id.
 Examples:
   snouty runs wait <run_id>
   snouty runs wait <run_id> --timeout 2h
-  snouty runs wait <run_id> --until running
+  snouty runs wait <run_id> --until ready
   snouty launch --json --launcher basic_test ... | jq -r .runId | xargs snouty runs wait
 
 Add --json for machine-readable output. The final status prints as one JSON
@@ -1167,12 +1167,12 @@ on its own line:
     #[command(
         long_about = r#"Execute a bash script in a run that is in progress, at a moment.
 
-The run must be in progress. It can be a test run or a debugging session. A
-debugging session that `snouty debug` launches takes a few minutes to start:
-pass its run ID when it is ready. To execute at a moment of a run that is
-already complete, start a debugging session at that moment. The script
-executes on a fresh branch of the multiverse, so it does not interact with
-other work happening in the session, like fuzzing or other executing commands.
+The run must be ready. It can be a test run or a debugging session. The exec
+command will wait until the run is ready before running the script.
+
+The script executes on a fresh branch of the multiverse, so it does not
+interact with other work happening in the session, like fuzzing or other
+executing commands.
 
 INPUT_HASH and VTIME identify the moment to execute at, and the moment must be
 warm. A warm moment is a moment that is loaded into the run. Every moment

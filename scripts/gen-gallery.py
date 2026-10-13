@@ -115,16 +115,11 @@ DISCOVERY_MAX_PAGES = 10
 # `runs list` reports this launcher for a debugging session.
 DEBUGGING_LAUNCHER = "debugging"
 
-# A debugging session accepts commands only while it is `in_progress`, but it
-# can be `in_progress` for minutes before it accepts them. Observed on
-# orbitinghail (release 64.0, 2026-10-11): `starting` for about 100s, then
-# `in_progress` while the command endpoint answered 404 for about 2 minutes
-# and then 400 `unknown_moment`. It stayed `in_progress` once commands executed.
+# A debugging session that is `starting` or `in_progress` is live.
 SESSION_STARTING = "starting"
 SESSION_IN_PROGRESS = "in_progress"
-SESSION_ENDED = frozenset({"completed", "cancelled", "incomplete"})
-EXEC_READY_DEADLINE = 600
-EXEC_READY_POLL = 15
+SESSION_LIST_DEADLINE = 600
+SESSION_LIST_POLL = 15
 
 
 class GalleryError(Exception):
@@ -1169,41 +1164,16 @@ def _launch_session(sn: Snouty, base_run: str) -> tuple[dict, Result]:
     )
     if not launch.ok:
         raise GalleryError(f"`snouty debug` failed (exit {launch.returncode}): {launch.combined}")
-    deadline = time.monotonic() + EXEC_READY_DEADLINE
+    deadline = time.monotonic() + SESSION_LIST_DEADLINE
     while time.monotonic() < deadline:
         for r in _debugging_sessions(sn):
             if (r.get("parameters") or {}).get(_DESCRIPTION) == description:
                 return r, launch
         print(f"  waiting for the session {description!r} to list its parameters", file=sys.stderr)
-        time.sleep(EXEC_READY_POLL)
+        time.sleep(SESSION_LIST_POLL)
     raise GalleryError(
-        f"the debugging session {description!r} listed no parameters within {EXEC_READY_DEADLINE}s"
+        f"the debugging session {description!r} listed no parameters within {SESSION_LIST_DEADLINE}s"
     )
-
-
-def _wait_ready(sn: Snouty, x: ExecSession, script: str) -> Result:
-    """Wait while the session is starting, then execute `script` until it
-    succeeds. Fail at once when the session has ended."""
-    deadline = time.monotonic() + EXEC_READY_DEADLINE
-    while True:
-        status = sn.json_obj(["runs", "show", x.session]).get("status")
-        if status in SESSION_ENDED:
-            raise GalleryError(f"debugging session {x.session} has ended ({status})")
-        waiting_for = f"status {status}"
-        # TODO: once the API reports `in_progress` only for a ready session,
-        # execute once and fail on an error instead of retrying.
-        if status != SESSION_STARTING:
-            res = _exec_json(sn, x, script)
-            if res.ok:
-                return res
-            waiting_for = res.stderr.strip()
-        if time.monotonic() > deadline:
-            raise GalleryError(
-                f"debugging session {x.session} did not accept `runs exec` within "
-                f"{EXEC_READY_DEADLINE}s; last: {waiting_for}"
-            )
-        print(f"  waiting for {x.session}: {waiting_for}", file=sys.stderr)
-        time.sleep(EXEC_READY_POLL)
 
 
 def _container(sn: Snouty, run: str, h: str, v: str) -> str:
@@ -1260,8 +1230,11 @@ def _ready_exec_session(sn: Snouty, row: dict, launch: Result | None) -> ExecSes
     params = row["parameters"]
     base, h, v = params[_DEBUG_RUN], params[_DEBUG_HASH], params[_DEBUG_VTIME]
     x = ExecSession(session=row["run_id"], base_run=base, hash=h, vtime=v, launch=launch)
-    # The readiness probe is the exec that the follow-up story chains from.
-    first = _wait_ready(sn, x, f'echo "{EXEC_MARKER_TEXT}" > {EXEC_MARKER_PATH}')
+    # The follow-up story chains from this exec. `runs exec` waits until the
+    # session is ready, so a failure is final.
+    first = _exec_json(sn, x, f'echo "{EXEC_MARKER_TEXT}" > {EXEC_MARKER_PATH}')
+    if not first.ok:
+        raise GalleryError(f"`runs exec` failed in debugging session {x.session}: {first.stderr.strip()}")
     x.follow_hash, x.follow_vtime = _moment_strs(_ndjson(first.stdout)[-1]["end_moment"])
     tty, pipe = _rewarm_moments(sn, base, float(v))
     x.rewarm_hash, x.rewarm_vtime = _moment_strs(tty)
@@ -2690,17 +2663,26 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
                 "snouty shows the parameters it sends, with the title as "
                 "antithesis.test_name and the custom attrs.source parameter, and the run ID of "
                 "the new debugging session. It says "
-                "that the session takes minutes to start, and gives the `runs wait` command "
-                "to wait for it and the `runs exec` command to use when it is ready. Exit 0.",
+                "that the session takes minutes to be ready, and gives the `runs exec` command "
+                "to run at the moment, which waits until the session is ready. Exit 0.",
                 x.launch.args,
                 succeeds_with(
-                    "Debugging session started", "--until running", "snouty runs exec"
+                    "Debugging session started", "waits until the session is ready", "snouty runs exec"
                 ),
                 json_capable=False,
                 precaptured=x.launch,
             )
         )
     stories += [
+        exec_story(
+            "runs-show-session",
+            "Check that a debugging session is ready",
+            "My debugging session accepts commands now, and I want its status.",
+            "Status is in_progress:ready: the run is in progress, and its sub-status says "
+            "that the session is ready. The launcher is debugging.",
+            ["runs", "show", x.session],
+            contains_all("in_progress:ready", DEBUGGING_LAUNCHER),
+        ),
         exec_story(
             "runs-exec",
             "Run a command in a live debugging session",
@@ -2963,15 +2945,15 @@ def build_help_stories(d: Discovery) -> list[Story]:
         _help_story(
             "help-runs-wait",
             "Learn how to wait for a run to start or finish",
-            "I want the help to explain the two --until statuses (running and complete), "
+            "I want the help to explain the two --until statuses (ready and complete), "
             "that each is a minimum, that an `unknown` status fails the command, and what "
             "--poll-interval and --timeout do.",
             ["runs", "wait"],
             ["runs", "wait", s],
             samples=[
                 (
-                    "--until running on a completed run (it has already started)",
-                    ["runs", "wait", s, "--until", "running"],
+                    "--until ready on a completed run (it is already complete)",
+                    ["runs", "wait", s, "--until", "ready"],
                 )
             ],
             # wait on a terminal run prints one status line; nothing columnar
@@ -3041,8 +3023,9 @@ def build_help_stories(d: Discovery) -> list[Story]:
         _help_story(
             "help-runs-exec",
             "Learn how to execute a script in a live run",
-            "I want the help to tell me that a script needs a run that is in progress, "
-            "a test run or a debugging session, which tenant "
+            "I want the help to tell me that a script needs a run that is ready, "
+            "a test run or a debugging session, that the command waits until it is ready, "
+            "which tenant "
             "release the command needs, how "
             "to pick the moment and the container, when a moment needs "
             "--source-run-id or --source-session-id, where the script's output goes, "

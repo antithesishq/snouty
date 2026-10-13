@@ -1,7 +1,7 @@
 use std::io::{IsTerminal, Read, Write};
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use color_eyre::Section;
 use color_eyre::eyre::{Result, WrapErr, eyre};
@@ -435,7 +435,19 @@ async fn cmd_runs_wait(
     debug!("waiting for run: {}", run_id);
 
     let api = AntithesisApi::new_uncached(settings, verbose)?;
-    let wait = wait_for_run(&api, run_id, poll_interval, until);
+    let mut last_status = None;
+    let mut warned_over_schedule = false;
+    let wait = wait_for_run(&api, run_id, poll_interval, until, |run| {
+        let label = run.status_label();
+        if last_status.as_ref() != Some(&label) {
+            eprintln!("run {run_id} is {label}");
+            last_status = Some(label);
+        }
+        if !warned_over_schedule && let Some(warning) = over_schedule_warning(run, Utc::now()) {
+            eprintln!("warning: {warning}");
+            warned_over_schedule = true;
+        }
+    });
     let run = match timeout {
         Some(limit) => match tokio::time::timeout(limit.into(), wait).await {
             Ok(result) => result?,
@@ -449,15 +461,17 @@ async fn cmd_runs_wait(
     };
 
     if json {
-        outln!(
-            "{}",
-            serde_json::to_string_pretty(&json!({
-                "run_id": run.run_id,
-                "status": run.status,
-            }))?
-        )?;
+        let mut out = json!({
+            "run_id": run.run_id,
+            "status": run.status,
+        });
+        // Absent, as in the run's detail, when the run has no sub-status.
+        if let Some(sub_status) = &run.sub_status {
+            out["sub_status"] = json!(sub_status);
+        }
+        outln!("{}", serde_json::to_string_pretty(&out)?)?;
     } else {
-        outln!("run {} is {}", run.run_id, run.status)?;
+        outln!("run {} is {}", run.run_id, run.status_label())?;
     }
 
     Ok(())
@@ -493,8 +507,8 @@ async fn cmd_runs_cancel(
 }
 
 /// Poll `get_run` every `poll_interval` until the run reaches the `until`
-/// point. Status changes and warnings go to stderr; stdout stays reserved for
-/// the final result. A run that reports `unknown` fails the wait (see
+/// point, and call `on_wait` with each poll that has not reached it. The first
+/// poll is at once. A run that reports `unknown` fails the wait (see
 /// [`RunStatus::is_terminal`]).
 ///
 /// Never returns on its own — the caller bounds it with `tokio::time::timeout`.
@@ -503,13 +517,12 @@ async fn wait_for_run(
     run_id: &str,
     poll_interval: Duration,
     until: WaitUntil,
+    mut on_wait: impl FnMut(&RunDetail),
 ) -> Result<RunDetail> {
     let mut poll = tokio::time::interval(poll_interval);
     // A poll delayed by a slow response schedules the next one a full
     // interval later, instead of firing early to catch up.
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut last_status = None;
-    let mut warned_over_schedule = false;
 
     loop {
         poll.tick().await;
@@ -529,22 +542,13 @@ async fn wait_for_run(
             );
         }
         let reached = match until {
-            WaitUntil::Running => run.status != RunStatus::Starting,
+            WaitUntil::Ready => run.is_ready() || run.status.is_terminal(),
             WaitUntil::Complete => run.status.is_terminal(),
         };
         if reached {
             return Ok(run);
         }
-
-        if last_status != Some(run.status) {
-            eprintln!("run {run_id} is {}", run.status);
-            last_status = Some(run.status);
-        }
-
-        if !warned_over_schedule && let Some(warning) = over_schedule_warning(&run, Utc::now()) {
-            eprintln!("warning: {warning}");
-            warned_over_schedule = true;
-        }
+        on_wait(&run);
     }
 }
 
@@ -706,7 +710,7 @@ pub async fn ensure_run_debuggable(api: &AntithesisApi, run_id: &str) -> Result<
             "run {run_id} is still starting; debug it once it is in progress or complete"
         ))
         .suggestion(format!(
-            "wait for it with `snouty runs wait {run_id} --until running`"
+            "wait for it with `snouty runs wait {run_id} --until ready`"
         ))),
         RunProbe::Exists(_) => Ok(()),
     }
@@ -944,7 +948,7 @@ fn render_properties_detail(properties: &[Property]) -> String {
         .join("\n\n")
 }
 
-/// One property's detail within a group section: a `Name`/`Status`
+/// One property's detail within a group section: a `Name`/`ID`/`Status`
 /// header (no `Group` line — the section heading carries it) followed by its
 /// examples. Every field goes through [`render_field`], so a short value sits
 /// inline against the value column while a long or multi-line one drops to an
@@ -953,6 +957,10 @@ fn render_property_detail(property: &Property) -> String {
     let mut out = String::new();
     out.push_str(&render_field("Name", &sanitize(property.name())));
     out.push('\n');
+    if let Some(id) = property.id() {
+        out.push_str(&render_field("ID", &sanitize(id)));
+        out.push('\n');
+    }
     out.push_str(&render_field(
         "Status",
         property_status_label(property.status()),
@@ -1292,7 +1300,7 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         rows.push(("Test Name", name.to_string()));
     }
 
-    rows.push(("Status", run.status.to_string()));
+    rows.push(("Status", run.status_label()));
     rows.push(("Created", format_local_with_offset(run.created_at)));
 
     if let Some(t) = run.started_at {
@@ -1675,34 +1683,96 @@ impl RewarmDisplay {
     }
 }
 
+/// What `runs exec` shows on stderr while it waits for the run to be ready:
+/// a spinner on a terminal, else a line at once and a line each whole minute.
+enum ReadyDisplay {
+    Spinner(ProgressBar),
+    Lines {
+        start: Instant,
+        /// The whole minutes waited at the last line.
+        last_minutes: Option<u64>,
+    },
+}
+
+impl ReadyDisplay {
+    fn new() -> Self {
+        if !std::io::stderr().is_terminal() {
+            return Self::Lines {
+                start: Instant::now(),
+                last_minutes: None,
+            };
+        }
+        let style =
+            ProgressStyle::with_template("{spinner} waiting for the run to be ready ({elapsed})")
+                .expect("the template is valid");
+        let spinner = ProgressBar::new_spinner().with_style(style);
+        spinner.enable_steady_tick(Duration::from_millis(120));
+        Self::Spinner(spinner)
+    }
+
+    fn show(&mut self) {
+        if let Self::Lines {
+            start,
+            last_minutes,
+        } = self
+        {
+            let waited = start.elapsed().as_secs();
+            let minutes = waited / 60;
+            if last_minutes.is_none_or(|last| minutes > last) {
+                let waited = HumanDuration::from_seconds(waited);
+                eprintln!("waiting for the run to be ready ({waited})");
+                *last_minutes = Some(minutes);
+            }
+        }
+    }
+
+    /// End the display. A run that stopped instead of becoming ready gets no
+    /// line: the error that follows names its status.
+    fn finish(self, run: &RunDetail) {
+        if let Self::Spinner(spinner) = &self {
+            spinner.finish_and_clear();
+        }
+        if run.is_ready() {
+            eprintln!("run {} is ready", run.run_id);
+        }
+    }
+}
+
+impl Drop for ReadyDisplay {
+    /// A wait that fails leaves its spinner on the line. The newline puts the
+    /// error on a line of its own.
+    fn drop(&mut self) {
+        if let Self::Spinner(spinner) = self
+            && !spinner.is_finished()
+        {
+            spinner.abandon();
+            eprintln!();
+        }
+    }
+}
+
 /// The marker in a 400's message that the moment is cold. It opens both
 /// messages observed on orbitinghail (release 64.0): `Moment not warm and no
 /// provided source_run_id or source_session_id. …` at first, and `Moment not
 /// warm in the live run and no source_run_id provided.` from 2026-10-07.
 const MOMENT_NOT_WARM: &str = "Moment not warm";
 
-/// Add suggestions to a failed `runs exec` request. `debug_command` starts a
+/// Add suggestions to a failed `runs exec` request in a run with status
+/// `run_status`, which is ready or complete. `debug_command` starts a
 /// debugging session at the request's moment, and `rewarm_flag` names the
 /// rewarm source's flag, if one was given.
 ///
-/// snouty reads the run on every error response. A run in `starting` cannot
-/// accept a command, so whatever the status code, the action is to wait. A
-/// run that has stopped cannot accept a command either: on orbitinghail, a
+/// A run that has stopped cannot accept a command: on orbitinghail, a
 /// completed test run answers 400 `This run is not currently active or
 /// reachable. Unable to execute command.` Otherwise, the server's responses
 /// on orbitinghail (release 64.0) mean:
 ///
-/// - 404 `Resource not found`: the run or the source does not exist.
+/// - 404 `Resource not found`: the source does not exist.
 /// - 400 `Moment not warm…`: the moment is cold and there is no source.
-/// - Any other 400: the session has ended, a rewarm did not finish, or the
-///   source is not the moment's run.
-///
-/// Release 64.0 reports `in_progress` for minutes before a session accepts
-/// commands, and answers the 404 or the cold 400 in that time. snouty gives
-/// no loading note then: the server is to keep such a session in `starting`.
-async fn explain_exec_error(
-    api: &AntithesisApi,
-    run_id: &str,
+/// - Any other 400: a rewarm did not finish, or the source is not the
+///   moment's run.
+fn explain_exec_error(
+    run_status: RunStatus,
     debug_command: &str,
     rewarm_flag: Option<&str>,
     err: color_eyre::eyre::Report,
@@ -1710,35 +1780,22 @@ async fn explain_exec_error(
     let Some(status) = api_error_status(&err) else {
         return err;
     };
-    let run = match probe_run(api, run_id).await {
-        RunProbe::NotFound => return user_error(format!("run not found: {run_id}")),
-        // The exec error is the one to show. The probe only adds a suggestion.
-        RunProbe::ProbeFailed(probe_err) => {
-            debug!("could not read run {run_id}: {probe_err}");
-            return err;
-        }
-        RunProbe::Exists(run) => run,
-    };
-    let cold = api_error_message(&err).is_some_and(|m| m.contains(MOMENT_NOT_WARM));
-    match (run.status, status, rewarm_flag) {
-        (RunStatus::Starting, ..) => err.suggestion(format!(
-            "the run is not ready yet. Wait for it with \
-             `snouty runs wait {run_id} --until running`, then try again"
-        )),
-        (status, ..) if status.is_terminal() => err
+    if run_status.is_terminal() {
+        return err
             .note(format!(
-                "`runs exec` needs a run that is in progress. This run is {status}"
+                "`runs exec` needs a run that is in progress. This run is {run_status}"
             ))
             .suggestion(format!(
                 "start a debugging session at this moment with `{debug_command}`"
-            )),
-        (_, 404, Some(flag)) => {
-            err.suggestion(format!("check that {flag} names an existing source"))
-        }
-        (_, 400, None) if cold => {
+            ));
+    }
+    let cold = api_error_message(&err).is_some_and(|m| m.contains(MOMENT_NOT_WARM));
+    match (status, rewarm_flag) {
+        (404, Some(flag)) => err.suggestion(format!("check that {flag} names an existing source")),
+        (400, None) if cold => {
             err.suggestion("use --source-run-id to load a moment from a different run")
         }
-        (_, 400, Some(flag)) => err.suggestion(format!(
+        (400, Some(flag)) => err.suggestion(format!(
             "check that {flag} names the run the moment comes from"
         )),
         _ => err,
@@ -1837,6 +1894,26 @@ async fn cmd_runs_exec(
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
     debug!("executing command in run: {}", run_id);
+    // Uncached, so each poll of the wait observes fresh state.
+    let api = AntithesisApi::new_uncached(settings, verbose)?;
+    exec_when_ready(&api, run_id, exec, EXEC_READY_POLL, json).await
+}
+
+/// How often `runs exec` reads a run that is not ready. A debugging session
+/// becomes ready minutes after it starts, so a poll each minute (the `runs
+/// wait` floor) could delay its first command by most of a minute.
+const EXEC_READY_POLL: Duration = Duration::from_secs(10);
+
+/// Wait until the run is ready or complete, then execute. The wait has no
+/// time limit. A complete run executes at once, and the server answers with
+/// an error.
+async fn exec_when_ready(
+    api: &AntithesisApi,
+    run_id: &str,
+    exec: ExecRequest,
+    poll: Duration,
+    json: bool,
+) -> Result<()> {
     let timeout = exec.timeout;
     let mut renderer = exec.events.then(|| EventStreamRenderer::new(false));
     // A cold moment is in its rewarm source, not in RUN_ID, so a debugging
@@ -1853,13 +1930,18 @@ async fn cmd_runs_exec(
         "snouty debug {debug_target} --input-hash {} --vtime {}",
         exec.moment.input_hash, exec.moment.vtime
     );
-    let api = AntithesisApi::new(settings, verbose)?;
-    let stream = match api.execute_command(run_id, exec).await {
-        Ok(stream) => stream,
-        Err(err) => {
-            return Err(explain_exec_error(&api, run_id, &debug_command, rewarm_flag, err).await);
-        }
-    };
+    let mut waiting: Option<ReadyDisplay> = None;
+    let run = wait_for_run(api, run_id, poll, WaitUntil::Ready, |_| {
+        waiting.get_or_insert_with(ReadyDisplay::new).show();
+    })
+    .await?;
+    if let Some(waiting) = waiting {
+        waiting.finish(&run);
+    }
+    let stream = api
+        .execute_command(run_id, exec)
+        .await
+        .map_err(|err| explain_exec_error(run.status, &debug_command, rewarm_flag, err))?;
 
     // Only the last line can be the terminal result. A line that parses as
     // one is held until the next line arrives, and is shown as an event if one
@@ -2458,6 +2540,7 @@ mod tests {
             example_count: Some(ex_count),
             examples,
             group: group.map(str::to_string),
+            id: None,
             is_event: true,
             is_group: None,
             name: name.to_string(),
@@ -2479,6 +2562,7 @@ mod tests {
             example_count: Some(ex_count),
             examples,
             group: None,
+            id: None,
             is_event: false,
             is_group: None,
             name: name.to_string(),
@@ -4799,15 +4883,27 @@ mod tests {
             })
         }
 
-        /// Serve each status in order, the last one indefinitely: wiremock
-        /// matches in mount order and skips a mock whose `up_to_n_times`
-        /// budget is spent.
+        fn ready_run_body() -> serde_json::Value {
+            let mut body = run_body("in_progress");
+            body["sub_status"] = json!("Ready");
+            body
+        }
+
+        /// Serve each status in order, the last one indefinitely.
         async fn mount_get_run_statuses(server: &MockServer, statuses: &[&str]) {
-            for (i, status) in statuses.iter().enumerate() {
+            mount_get_run_bodies(server, statuses.iter().map(|s| run_body(s)).collect()).await;
+        }
+
+        /// As [`mount_get_run_statuses`], with a whole run body per poll.
+        /// Wiremock matches in mount order and skips a mock whose
+        /// `up_to_n_times` budget is spent.
+        async fn mount_get_run_bodies(server: &MockServer, bodies: Vec<serde_json::Value>) {
+            let count = bodies.len();
+            for (i, body) in bodies.into_iter().enumerate() {
                 let mock = Mock::given(method("GET"))
                     .and(path("/api/v0/runs/run-w"))
-                    .respond_with(ResponseTemplate::new(200).set_body_json(run_body(status)));
-                let mock = if i + 1 < statuses.len() {
+                    .respond_with(ResponseTemplate::new(200).set_body_json(body));
+                let mock = if i + 1 < count {
                     mock.up_to_n_times(1)
                 } else {
                     mock
@@ -4826,7 +4922,7 @@ mod tests {
             mount_get_run_statuses(&server, &["starting", "in_progress", "completed"]).await;
             let api = test_api(&server.uri());
 
-            let run = wait_for_run(&api, "run-w", FAST_POLL, WaitUntil::Complete)
+            let run = wait_for_run(&api, "run-w", FAST_POLL, WaitUntil::Complete, |_| {})
                 .await
                 .unwrap();
 
@@ -4843,7 +4939,7 @@ mod tests {
                 mount_get_run_statuses(&server, &["in_progress", status]).await;
                 let api = test_api(&server.uri());
 
-                let run = wait_for_run(&api, "run-w", FAST_POLL, WaitUntil::Complete)
+                let run = wait_for_run(&api, "run-w", FAST_POLL, WaitUntil::Complete, |_| {})
                     .await
                     .unwrap();
                 assert_eq!(run.status.to_string(), status);
@@ -4851,18 +4947,74 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn wait_until_running_stops_once_the_run_starts() {
+        async fn wait_until_ready_stops_once_the_run_is_ready() {
             let server = MockServer::start().await;
-            mount_get_run_statuses(&server, &["starting", "in_progress", "completed"]).await;
+            let bodies = vec![
+                run_body("starting"),
+                run_body("in_progress"),
+                ready_run_body(),
+                run_body("completed"),
+            ];
+            mount_get_run_bodies(&server, bodies).await;
             let api = test_api(&server.uri());
 
-            let run = wait_for_run(&api, "run-w", FAST_POLL, WaitUntil::Running)
+            let run = wait_for_run(&api, "run-w", FAST_POLL, WaitUntil::Ready, |_| {})
                 .await
                 .unwrap();
 
-            assert_eq!(run.status, RunStatus::InProgress);
+            assert!(run.is_ready());
             let requests = server.received_requests().await.unwrap();
-            assert_eq!(requests.len(), 2);
+            assert_eq!(requests.len(), 3);
+        }
+
+        #[tokio::test]
+        async fn exec_waits_until_the_run_is_ready() {
+            let server = MockServer::start().await;
+            let bodies = vec![
+                run_body("starting"),
+                run_body("in_progress"),
+                ready_run_body(),
+            ];
+            mount_get_run_bodies(&server, bodies).await;
+            let result = crate::testutils::mock_exec_exited(Some(0));
+            Mock::given(method("POST"))
+                .and(path("/api/v0/runs/run-w/command"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(format!("{result}\n")))
+                .mount(&server)
+                .await;
+            let api = test_api(&server.uri());
+            let exec = ExecRequest {
+                moment: Moment {
+                    input_hash: "1".to_owned(),
+                    vtime: "2.5".parse().unwrap(),
+                },
+                script: "true".to_owned(),
+                container: None,
+                timeout: None,
+                events: false,
+                rewarm: None,
+            };
+
+            exec_when_ready(&api, "run-w", exec, FAST_POLL, true)
+                .await
+                .unwrap();
+
+            let requests = server.received_requests().await.unwrap();
+            let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
+            assert_eq!(methods, ["GET", "GET", "GET", "POST"]);
+        }
+
+        #[tokio::test]
+        async fn wait_until_ready_stops_at_a_complete_run() {
+            let server = MockServer::start().await;
+            mount_get_run_statuses(&server, &["starting", "incomplete"]).await;
+            let api = test_api(&server.uri());
+
+            let run = wait_for_run(&api, "run-w", FAST_POLL, WaitUntil::Ready, |_| {})
+                .await
+                .unwrap();
+
+            assert_eq!(run.status, RunStatus::Incomplete);
         }
 
         #[tokio::test]
@@ -4871,7 +5023,7 @@ mod tests {
             mount_get_run_statuses(&server, &["in_progress", "unknown"]).await;
             let api = test_api(&server.uri());
 
-            let err = wait_for_run(&api, "run-w", FAST_POLL, WaitUntil::Complete)
+            let err = wait_for_run(&api, "run-w", FAST_POLL, WaitUntil::Complete, |_| {})
                 .await
                 .unwrap_err();
 
@@ -4895,6 +5047,7 @@ mod tests {
                 "run-w",
                 Duration::from_secs(3600),
                 WaitUntil::Complete,
+                |_| {},
             );
             tokio::time::timeout(Duration::from_secs(1), wait)
                 .await
@@ -4922,7 +5075,7 @@ mod tests {
                 .await;
             let api = test_api(&server.uri());
 
-            let wait = wait_for_run(&api, "run-w", FAST_POLL, WaitUntil::Complete);
+            let wait = wait_for_run(&api, "run-w", FAST_POLL, WaitUntil::Complete, |_| {});
             tokio::time::timeout(Duration::from_secs(1), wait)
                 .await
                 .expect_err("a hung request must not outlive the timeout");
@@ -4938,7 +5091,7 @@ mod tests {
                 .await;
             let api = test_api(&server.uri());
 
-            let err = wait_for_run(&api, "BAD-ID", FAST_POLL, WaitUntil::Complete)
+            let err = wait_for_run(&api, "BAD-ID", FAST_POLL, WaitUntil::Complete, |_| {})
                 .await
                 .unwrap_err();
             assert_eq!(format!("{err:#}"), "run not found: BAD-ID");
@@ -4955,7 +5108,7 @@ mod tests {
                 .await;
             let api = test_api(&server.uri());
 
-            let err = wait_for_run(&api, "run-w", FAST_POLL, WaitUntil::Complete)
+            let err = wait_for_run(&api, "run-w", FAST_POLL, WaitUntil::Complete, |_| {})
                 .await
                 .unwrap_err();
             assert_eq!(api_error_status(&err), Some(500));

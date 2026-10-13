@@ -104,6 +104,18 @@ impl ApiVersion {
     }
 }
 
+/// The first release whose runs report `sub_status`.
+const MIN_SUB_STATUS_RELEASE: (u64, u64) = (64, 0);
+
+/// The release that a run ID ends with: `<hex>-<major>-<minor>`, as in
+/// `0df9ac1f5155c14f88ea41f5ad503e07-64-0`.
+fn run_release(run_id: &str) -> Option<(u64, u64)> {
+    let mut parts = run_id.rsplit('-');
+    let minor = parts.next()?.parse().ok()?;
+    let major = parts.next()?.parse().ok()?;
+    Some((major, minor))
+}
+
 fn parse_release(version: &str) -> Option<(u64, u64)> {
     let mut parts = version.split('.');
     let major = parts.next()?.trim().parse().ok()?;
@@ -152,6 +164,49 @@ pub enum VersionError {
     Unreachable(String),
 }
 
+/// `Run_Detail.sub_status`. Open (see `open_sub_status` in build.rs): a value
+/// this build does not know decodes as `Other` and keeps its spelling.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(from = "String", into = "String")]
+pub enum RunSubStatus {
+    /// A debugging session that accepts commands, or any other run that is in
+    /// progress (observed on orbitinghail, release 64.0).
+    Ready,
+    Other(String),
+}
+
+impl RunSubStatus {
+    const READY: &'static str = "Ready";
+}
+
+impl From<String> for RunSubStatus {
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            Self::READY => Self::Ready,
+            _ => Self::Other(value),
+        }
+    }
+}
+
+impl From<RunSubStatus> for String {
+    fn from(value: RunSubStatus) -> Self {
+        match value {
+            RunSubStatus::Ready => RunSubStatus::READY.to_owned(),
+            RunSubStatus::Other(value) => value,
+        }
+    }
+}
+
+/// Lowercase like `RunStatus`, also for a value this build does not know.
+impl std::fmt::Display for RunSubStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ready => f.write_str("ready"),
+            Self::Other(value) => f.write_str(&value.to_lowercase()),
+        }
+    }
+}
+
 impl RunStatus {
     /// Whether the run has stopped and its status will not change again.
     /// `unknown` is not terminal: it is the server saying it cannot classify
@@ -197,6 +252,26 @@ impl RunSummary {
 }
 
 impl RunDetail {
+    /// Whether the run accepts commands: it is in progress, with the `Ready`
+    /// sub-status. A run from before [`MIN_SUB_STATUS_RELEASE`] has no
+    /// sub-status, so it is ready while it is in progress.
+    pub(crate) fn is_ready(&self) -> bool {
+        let in_progress = self.status == RunStatus::InProgress;
+        match run_release(&self.run_id) {
+            Some(release) if release < MIN_SUB_STATUS_RELEASE => in_progress,
+            _ => in_progress && self.sub_status == Some(RunSubStatus::Ready),
+        }
+    }
+
+    /// The status, and the sub-status after a colon when the run has one:
+    /// `in_progress:ready`.
+    pub(crate) fn status_label(&self) -> String {
+        match &self.sub_status {
+            Some(sub_status) => format!("{}:{sub_status}", self.status),
+            None => self.status.to_string(),
+        }
+    }
+
     pub(crate) fn test_name(&self) -> Option<&str> {
         params_test_name(self.parameters.as_ref())
     }
@@ -265,6 +340,13 @@ impl Property {
             Self::NonEventProperty(p) => p.status,
         }
     }
+
+    pub fn id(&self) -> Option<&str> {
+        match self {
+            Self::EventProperty(p) => p.id.as_deref(),
+            Self::NonEventProperty(p) => p.id.as_deref(),
+        }
+    }
 }
 
 /// `Property` is an untagged `oneOf` whose variants are structurally similar:
@@ -292,6 +374,7 @@ fn normalize_property(property: Property) -> Result<Property> {
                 example_count: p.example_count,
                 examples,
                 group: p.group,
+                id: p.id,
                 is_event: p.is_event,
                 is_group: p.is_group,
                 name: p.name,
@@ -2813,6 +2896,68 @@ mod tests {
                 generated::types::ParamsAntithesisIsEphemeral::True,
                 generated::types::ParamsAntithesisIsEphemeral::False,
             ]
+        );
+    }
+
+    #[test]
+    fn run_detail_keeps_an_unknown_sub_status() {
+        let run = |sub_status: &str| -> RunDetail {
+            serde_json::from_value(serde_json::json!({
+                "run_id": "run-1",
+                "status": "in_progress",
+                "created_at": "2025-03-20T02:00:00Z",
+                "launcher": "debugging",
+                "sub_status": sub_status,
+            }))
+            .unwrap()
+        };
+        let ready = run("Ready");
+        assert!(ready.is_ready());
+        assert_eq!(ready.status_label(), "in_progress:ready");
+        assert_eq!(serde_json::to_value(&ready).unwrap()["sub_status"], "Ready");
+
+        let loading = run("Loading");
+        assert!(!loading.is_ready());
+        assert_eq!(loading.status_label(), "in_progress:loading");
+        assert_eq!(
+            serde_json::to_value(&loading).unwrap()["sub_status"],
+            "Loading"
+        );
+    }
+
+    #[test]
+    fn a_run_before_64_is_ready_while_it_is_in_progress() {
+        let run = |run_id: &str, status: &str| -> RunDetail {
+            serde_json::from_value(serde_json::json!({
+                "run_id": run_id,
+                "status": status,
+                "created_at": "2025-03-20T02:00:00Z",
+                "launcher": "debugging",
+            }))
+            .unwrap()
+        };
+        assert!(run("9043254f65c9c65d63fe043a0abfc7fc-63-1", "in_progress").is_ready());
+        assert!(!run("9043254f65c9c65d63fe043a0abfc7fc-63-1", "starting").is_ready());
+        assert!(!run("9043254f65c9c65d63fe043a0abfc7fc-64-0", "in_progress").is_ready());
+        assert!(!run("run-1", "in_progress").is_ready());
+        // A sub-status of `Ready` is not enough: the run must be in progress.
+        let mut stopped = run("run-1", "completed");
+        stopped.sub_status = Some(RunSubStatus::Ready);
+        assert!(!stopped.is_ready());
+        let mut ready = run("run-1", "in_progress");
+        ready.sub_status = Some(RunSubStatus::Ready);
+        assert!(ready.is_ready());
+    }
+
+    #[hegel::test]
+    fn run_release_reads_the_run_id_suffix(tc: hegel::TestCase) {
+        use hegel::generators;
+        let id = tc.draw(generators::text());
+        let major = tc.draw(generators::integers::<u64>());
+        let minor = tc.draw(generators::integers::<u64>());
+        assert_eq!(
+            run_release(&format!("{id}-{major}-{minor}")),
+            Some((major, minor))
         );
     }
 

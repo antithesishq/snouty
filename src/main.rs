@@ -319,9 +319,11 @@ async fn cmd_launch(
                 Wait for the run to finish with:
                   snouty runs wait {run_id}
 
-                Or watch its errors live after it starts running:
-                  snouty runs wait {run_id} --until running
-                  snouty runs search {run_id} --follow 'contains({{output_text: "error"}})'
+                Or interact with the run once it is ready:
+                  snouty runs wait {run_id} --until ready
+                  snouty runs search {run_id} --follow <query>
+                  snouty runs events {run_id} <query>
+                  snouty runs exec {run_id} <input_hash> <vtime> <script>
             "#
         )?;
     } else {
@@ -447,18 +449,13 @@ async fn cmd_debug(
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else if let Some(run_id) = response.run_id.as_deref() {
         println!("Debugging session started: run_id {run_id}");
-        println!(
-            "\nThe session takes a few minutes to start. Wait for it with:\n  \
-             snouty runs wait {run_id} --until running"
-        );
+        println!("\nThe session takes a few minutes to be ready.");
         // Both come from typed flags, so they are strings.
         if let (Some(input_hash), Some(vtime)) =
             (param(ANT_DEBUGGING_INPUT_HASH), param(ANT_DEBUGGING_VTIME))
         {
-            // A session that is still loading makes `runs exec` fail with a
-            // suggestion to try again, so the hint does not repeat it.
             println!(
-                "\nThen run a script at this moment:\n  \
+                "Run a script at this moment; `runs exec` waits until the session is ready:\n  \
                  snouty runs exec {run_id} {input_hash} {vtime} '<script>'"
             );
         }

@@ -18,7 +18,7 @@ Snouty provides the following subcommands. Invoke `snouty <command> --help` to f
   - `snouty runs logs <run_id> <hash> [vtime]`: stream a run's logs along one branch.
   - `snouty runs events <run_id> -m <needle>`: search events in a run.
   - `snouty runs search <run_id> <query>`: run an event-set DSL query against a run's events.
-  - `snouty runs exec <run_id> <hash> <vtime> [script]`: run a bash script in a run's live session at a given moment. Needs tenant release 64.0 or newer.
+  - `snouty runs exec <run_id> <hash> <vtime> [script]`: run a bash script at a given moment in a run that is in progress (a test run or a debugging session). Needs tenant release 64.0 or newer.
 - `snouty debug`: start a debug session.
 - `snouty validate`: locally run and validate your docker-compose.yaml setup.
 - `snouty doctor`: check your environment is configured correctly.

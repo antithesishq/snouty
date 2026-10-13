@@ -1125,24 +1125,25 @@ on its own line:
         render: EventOutputArgs,
     },
 
-    /// Execute a command in a run's live session
+    /// Execute a command in a run that is in progress
     #[command(
-        long_about = r#"Execute a bash script in a run's live session, at a moment.
+        long_about = r#"Execute a bash script in a run that is in progress, at a moment.
 
-The run must have a live session. A run has one while it is in progress, and
-for a while after it completes. A debugging session that `snouty debug`
-launches is a run with a live session too: pass its run ID once it is ready,
-which can take a few minutes. The script executes on a fresh branch of the
-multiverse, so it does not disturb the session.
+The run must be in progress. It can be a test run or a debugging session. A
+debugging session that `snouty debug` launches takes a few minutes to start:
+pass its run ID when it is ready. To execute at a moment of a run that is
+already complete, start a debugging session at that moment. The script
+executes on a fresh branch of the multiverse, so it does not interact with
+other work happening in the session, like fuzzing or other executing commands.
 
 INPUT_HASH and VTIME identify the moment to execute at, and the moment must be
-warm. A warm moment is a moment that is loaded into the session. Every moment
-generated in the session is warm: by fuzzing, and by an earlier `runs exec`,
-so the end moment of one command is warm for the next. A moment from another
-run or session is cold. Use --source-run-id to load a moment from a
-different run. Rewarming a moment can take minutes and depends on the
-magnitude of the vtime. The `--timeout` flag does not apply to the time it
-takes to rewarm a moment. Find a moment with `runs properties --detail` or
+warm. A warm moment is a moment that is loaded into the run. Every moment
+generated in the run is warm: by fuzzing, and by an earlier `runs exec`, so
+the end moment of one command is warm for the next. A moment from another run
+is cold. Use --source-run-id to load a moment from a different run.
+Rewarming a moment can take minutes and depends on the magnitude of the
+vtime. The `--timeout` flag does not apply to the time it takes to rewarm a
+moment. Find a moment with `runs properties --detail`, `runs search`, or
 `runs events`.
 
 The script executes on the host, or in the container that --container names.
@@ -1201,7 +1202,7 @@ JSON object on its own line, and the trailer is left out:
         events: bool,
 
         /// Run that a cold moment comes from; the server loads the moment
-        /// into the session
+        /// into the run
         #[arg(long, conflicts_with = "source_session_id")]
         source_run_id: Option<SourceRunId>,
 

@@ -1255,7 +1255,7 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     if !live {
         return (
             400,
-            r#"{"message":"Bad request: minting session token failed: Invalid status code: 503 Service Unavailable"}"#.to_string(),
+            r#"{"message":"This run is not currently active or reachable. Unable to execute command."}"#.to_string(),
         );
     }
 
@@ -1666,7 +1666,7 @@ mod tests {
         // run-1 is completed: no live session, the API's verbatim 400.
         let (status, out) = mock_route_execute_command("run-1", body);
         assert_eq!(status, 400);
-        assert!(out.contains("minting session token failed"), "got: {out}");
+        assert!(out.contains("not currently active"), "got: {out}");
         // Unknown runs 404 with the live endpoint's unhelpful body, which
         // never names the run — snouty's "run not found" translation depends
         // on the status, not the message.

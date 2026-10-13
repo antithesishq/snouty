@@ -1,7 +1,7 @@
 # snouty runs exec
 #
-# Execute a bash script in the live session of a test run, at a specific
-# moment in the run's execution timeline.
+# Execute a bash script in a run that is in progress (a test run or a
+# debugging session), at a specific moment in the run's execution timeline.
 #
 # Session semantics verified against the live API (orbitinghail, release
 # 60.0): the command needs a live session, and a run keeps one while it runs
@@ -9,7 +9,8 @@
 # 400. The window is not documented; a run that completed 48 minutes earlier
 # still executed, and runs that completed 17 hours and 1 day earlier did not.
 # The mock below models the simpler rule "in-progress only", which is enough
-# to drive both paths. The script executes on a fresh branch of the multiverse
+# to drive both paths. The help and the errors give only that rule, because
+# the window is not documented. The script executes on a fresh branch of the multiverse
 # — the response moments carry a new input_hash — so the running test is not
 # disturbed.
 #
@@ -86,6 +87,18 @@ stdout -literal 'snouty runs logs <run_id> <input_hash> [vtime]'
 snouty runs exec --help
 ! stdout 'SNOUTY_UNSTABLE_FEATURES'
 
+# The help says that the run must be in progress, and that a test run works
+# as well as a debugging session.
+snouty runs exec --help
+stdout '^Execute a bash script in a run that is in progress, at a moment\.$'
+stdout 'The run must be in progress\. It can be a test run or a debugging session\.'
+! stdout 'live session'
+! stdout 'after it completes'
+stdout 'a run that is\s+already complete, start a debugging session at that moment'
+stdout 'Find a moment with `runs properties --detail`, `runs search`, or\s+`runs events`\.'
+snouty runs --help
+stdout 'exec +Execute a command in a run that is in progress$'
+
 # --timeout takes seconds or h/m/s units. Without it, the server's default
 # applies.
 snouty runs exec --help
@@ -102,7 +115,7 @@ stdout 'Use --source-run-id to load a moment from a\s+different run\.'
 # Rewarming a cold moment can take minutes, and --timeout does not apply to
 # it.
 snouty runs exec --help
-stdout 'The `--timeout` flag does not apply to the time it\s+takes to rewarm a moment\.'
+stdout 'The `--timeout` flag does not apply to the time\s+it\s+takes\s+to\s+rewarm\s+a\s+moment\.'
 
 # The command authenticates with the Antithesis API. An API key is required,
 # like every run-scoped endpoint.
@@ -113,6 +126,13 @@ stderr 'No Antithesis credentials found.*'
 [staging] skip
 
 mock-runs-server
+
+# `runs exec` works in any run that is in progress, a test run as well as a
+# debugging session. run-2 is a test run: its launcher is `debug`, not
+# `debugging`.
+snouty runs show run-2
+stdout 'Launcher +debug$'
+stdout 'Status +in_progress$'
 
 # Happy path: output events are routed by stream — `info` lines to stdout,
 # `error` lines to stderr — and the end-moment trailer lands on stderr.
@@ -252,12 +272,13 @@ stderr 'Moment not warm'
 stderr 'use --source-run-id to load a moment from a different run$'
 ! stderr 'not ready'
 
-# A debugging session in `starting` cannot accept a command. Whatever the
-# error, snouty says to wait for the session, and gives no other suggestion.
-# Only these error paths read the run: success adds no request.
+# A run in `starting` cannot accept a command. Whatever the error, snouty
+# says to wait for the run, and gives no other suggestion. Only these error
+# paths read the run: success adds no request.
 ! snouty runs exec session-starting -3625518438076122494 398.4898056755774 'true'
 stderr 'Resource not found'
-stderr '^Suggestion: the debugging session is not ready yet. Wait for it with `snouty runs wait session-starting --until running`, then try again$'
+stderr '^Suggestion: the run is not ready yet. Wait for it with `snouty runs wait session-starting --until running`, then try again$'
+! stderr 'in progress'
 
 ! snouty runs exec session-starting 1002528785118888238 278.1311443040613 'true'
 stderr 'Moment not warm'
@@ -416,13 +437,28 @@ stderr '"exit_code":5'
 stdout 'partial output'
 stderr 'stream ended before the command reported completion.*'
 
-# A run whose live session has ended fails with the server's error as-is. The
-# message is known to be rough (it leaks "minting session token failed"); the
-# API team is improving it server-side, so snouty does not translate it.
-# TODO: update this expectation once the API team replaces the message.
+# `runs exec` needs a run that is in progress. A run that has stopped fails
+# with the server's error (verbatim from orbitinghail, release 64.0, for a
+# completed `basic_test` run), then snouty gives the run's status and the
+# `snouty debug` command that starts a debugging session at the same moment.
 ! snouty runs exec run-1 -3625518438076122494 398.4898056755774 'uname -a'
-stderr 'API error: 400 Bad Request.*minting session token failed.*'
+stderr '^Error: API error: 400 Bad Request — This run is not currently active or reachable\. Unable to execute command\.$'
+stderr '^Note: `runs exec` needs a run that is in progress\. This run is completed$'
+stderr '^Suggestion: start a debugging session at this moment with `snouty debug --run-id run-1 --input-hash -3625518438076122494 --vtime 398\.4898056755774`$'
 ! stderr 'source-run-id'
+! stderr 'not ready'
+
+# The same holds for an incomplete run, and with a rewarm source: the run
+# status is the cause, so snouty does not point at the flag. A cold moment is
+# in its source, not in the run, so the `snouty debug` command names the
+# source.
+! snouty runs exec run-3 1002528785118888238 278.1311443040613 'true' --source-run-id run-1
+stderr '^Note: `runs exec` needs a run that is in progress\. This run is incomplete$'
+stderr '`snouty debug --run-id run-1 --input-hash 1002528785118888238 --vtime 278\.1311443040613`$'
+! stderr 'names the run the moment comes from'
+
+! snouty runs exec run-3 1002528785118888238 278.1311443040613 'true' --source-session-id ba4ebf3181dd342334b86c58941813c6-64-0
+stderr '`snouty debug --session-id ba4ebf3181dd342334b86c58941813c6-64-0 --input-hash 1002528785118888238 --vtime 278\.1311443040613`$'
 
 # An unknown run id is the shared "run not found" error every run-scoped
 # command reports. The endpoint's own 404 body is an unhelpful "Resource not

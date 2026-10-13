@@ -1182,8 +1182,7 @@ JSON object on its own line, and the trailer is left out:
         #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
         container: Option<String>,
 
-        /// Print every event of the timeline while the script executes, in place
-        /// of only the script's output. The events use the runs logs format
+        /// Emit every event rather than just the script's output.
         #[arg(long)]
         events: bool,
 

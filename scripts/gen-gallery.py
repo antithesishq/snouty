@@ -2691,11 +2691,11 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
                 "snouty shows the parameters it sends, with the title as "
                 "antithesis.test_name and the custom attrs.source parameter, and the run ID of "
                 "the new debugging session. It says "
-                "that the session takes minutes to start, and gives the `runs wait` command "
-                "to wait for it and the `runs exec` command to use when it is ready. Exit 0.",
+                "that the session takes minutes to be ready, and gives the `runs exec` command "
+                "to run at the moment, which waits until the session is ready. Exit 0.",
                 x.launch.args,
                 succeeds_with(
-                    "Debugging session started", "--until ready", "snouty runs exec"
+                    "Debugging session started", "waits until the session is ready", "snouty runs exec"
                 ),
                 json_capable=False,
                 precaptured=x.launch,

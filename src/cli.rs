@@ -1171,9 +1171,11 @@ on its own line:
         long_about = r#"Execute a bash script in a run that is in progress, at a moment.
 
 The run must be in progress. It can be a test run or a debugging session. A
-debugging session that `snouty debug` launches takes a few minutes to start:
-pass its run ID when it is ready. To execute at a moment of a run that is
-already complete, start a debugging session at that moment. The script
+run that is not ready yet holds the command until it is, with no time limit:
+a debugging session that `snouty debug` launches takes a few minutes to be
+ready. While it waits, snouty shows the run's status on stderr. To execute
+at a moment of a run that is already complete, start a debugging session at
+that moment. The script
 executes on a fresh branch of the multiverse, so it does not interact with
 other work happening in the session, like fuzzing or other executing commands.
 

@@ -851,10 +851,8 @@ fn mock_run_not_found(run_id: &str) -> (u16, String) {
 
 /// Debugging sessions that do not accept commands yet: (run_id, status).
 /// They are kept out of MOCK_RUNS so the list-oriented specs don't see them.
-/// Like a new session on release 64.0, they answer `runs exec` with a bare
-/// 404, or with the cold 400 for a cold moment. That server reports
-/// `in_progress` without the `Ready` sub-status before a session accepts
-/// commands.
+/// Like a new session on release 64.0, they report `in_progress` without the
+/// `Ready` sub-status before they accept commands.
 const MOCK_LOADING_SESSIONS: &[(&str, &str)] = &[
     ("session-starting", "starting"),
     ("session-loading", "in_progress"),
@@ -876,6 +874,15 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
             "launcher": "debugging",
         });
         return (200, body.to_string());
+    }
+    // `runs exec` reads the run before it executes, so the exec fixture
+    // `run-stream-error` is a ready run.
+    if run_id == "run-stream-error" {
+        return (
+            200,
+            r#"{"run_id":"run-stream-error","status":"in_progress","sub_status":"Ready","created_at":"2025-03-20T02:00:00Z","launcher":"debugging"}"#
+                .to_string(),
+        );
     }
     // `run-unknown-status` is kept out of MOCK_RUNS so the list-oriented specs
     // don't see it.
@@ -1223,12 +1230,6 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     let cold = request["moment"]["input_hash"] == MOCK_COLD_HASH;
     let has_source =
         request.get("source_run_id").is_some() || request.get("source_session_id").is_some();
-    if mock_loading_session(run_id).is_some() {
-        if cold && !has_source {
-            return mock_exec_cold();
-        }
-        return (404, MOCK_BARE_404_BODY.to_string());
-    }
     if !mock_run_known(run_id) {
         // snouty's "run not found" translation must work from the status
         // alone.

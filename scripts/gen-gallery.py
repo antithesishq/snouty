@@ -115,14 +115,10 @@ DISCOVERY_MAX_PAGES = 10
 # `runs list` reports this launcher for a debugging session.
 DEBUGGING_LAUNCHER = "debugging"
 
-# A debugging session accepts commands only while it is `in_progress`, but it
-# can be `in_progress` for minutes before it accepts them. Observed on
-# orbitinghail (release 64.0, 2026-10-11): `starting` for about 100s, then
-# `in_progress` while the command endpoint answered 404 for about 2 minutes
-# and then 400 `unknown_moment`. It stayed `in_progress` once commands executed.
+# A debugging session that is `starting` or `in_progress` is live. It accepts
+# commands once its sub-status is `Ready`, minutes after it is `in_progress`.
 SESSION_STARTING = "starting"
 SESSION_IN_PROGRESS = "in_progress"
-SESSION_ENDED = frozenset({"completed", "cancelled", "incomplete"})
 EXEC_READY_DEADLINE = 600
 EXEC_READY_POLL = 15
 
@@ -1181,30 +1177,13 @@ def _launch_session(sn: Snouty, base_run: str) -> tuple[dict, Result]:
     )
 
 
-def _wait_ready(sn: Snouty, x: ExecSession, script: str) -> Result:
-    """Wait while the session is starting, then execute `script` until it
-    succeeds. Fail at once when the session has ended."""
-    deadline = time.monotonic() + EXEC_READY_DEADLINE
-    while True:
-        status = sn.json_obj(["runs", "show", x.session]).get("status")
-        if status in SESSION_ENDED:
-            raise GalleryError(f"debugging session {x.session} has ended ({status})")
-        waiting_for = f"status {status}"
-        # TODO: once a session that the API reports as ready (`sub_status`
-        # `Ready`) is seen to accept commands, wait for that and execute once
-        # instead of retrying.
-        if status != SESSION_STARTING:
-            res = _exec_json(sn, x, script)
-            if res.ok:
-                return res
-            waiting_for = res.stderr.strip()
-        if time.monotonic() > deadline:
-            raise GalleryError(
-                f"debugging session {x.session} did not accept `runs exec` within "
-                f"{EXEC_READY_DEADLINE}s; last: {waiting_for}"
-            )
-        print(f"  waiting for {x.session}: {waiting_for}", file=sys.stderr)
-        time.sleep(EXEC_READY_POLL)
+def _first_exec(sn: Snouty, x: ExecSession, script: str) -> Result:
+    """Execute `script` in session `x`. `runs exec` waits until the session is
+    ready, so a failure is final."""
+    res = _exec_json(sn, x, script)
+    if not res.ok:
+        raise GalleryError(f"`runs exec` failed in debugging session {x.session}: {res.stderr.strip()}")
+    return res
 
 
 def _container(sn: Snouty, run: str, h: str, v: str) -> str:
@@ -1262,7 +1241,7 @@ def _ready_exec_session(sn: Snouty, row: dict, launch: Result | None) -> ExecSes
     base, h, v = params[_DEBUG_RUN], params[_DEBUG_HASH], params[_DEBUG_VTIME]
     x = ExecSession(session=row["run_id"], base_run=base, hash=h, vtime=v, launch=launch)
     # The readiness probe is the exec that the follow-up story chains from.
-    first = _wait_ready(sn, x, f'echo "{EXEC_MARKER_TEXT}" > {EXEC_MARKER_PATH}')
+    first = _first_exec(sn, x, f'echo "{EXEC_MARKER_TEXT}" > {EXEC_MARKER_PATH}')
     x.follow_hash, x.follow_vtime = _moment_strs(_ndjson(first.stdout)[-1]["end_moment"])
     tty, pipe = _rewarm_moments(sn, base, float(v))
     x.rewarm_hash, x.rewarm_vtime = _moment_strs(tty)

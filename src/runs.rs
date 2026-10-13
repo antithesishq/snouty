@@ -2357,17 +2357,12 @@ const RUNS_TABLE_HEADERS: [&str; 5] = ["RUN ID", "STATUS", "CREATED", "LAUNCHER"
 const RUNS_TABLE_LAUNCHER: usize = 3;
 const RUNS_TABLE_RUN: usize = 4;
 
-/// RUN keeps enough width to say what the run is before LAUNCHER shrinks.
-/// RUN ID, STATUS, and CREATED never shrink, so a `runs show RUN_ID`
-/// follow-up always works.
+/// LAUNCHER shrinks to its header width before RUN shrinks. RUN ID, STATUS,
+/// and CREATED never shrink, so a `runs show RUN_ID` follow-up always works.
 const RUNS_TABLE_SHRINK_ORDER: &[Shrink] = &[
     Shrink {
-        column: RUNS_TABLE_RUN,
-        floor: 20,
-    },
-    Shrink {
         column: RUNS_TABLE_LAUNCHER,
-        floor: 0,
+        floor: 8,
     },
     Shrink {
         column: RUNS_TABLE_RUN,
@@ -4497,25 +4492,29 @@ mod tests {
     }
 
     #[test]
-    fn runs_table_cuts_run_before_launcher() {
+    fn runs_table_cuts_launcher_before_run() {
         let mut run = debugging_run(Some(&"long description ".repeat(4)));
         run.launcher = "Basic Test (no faults)".to_string();
-        // The other columns and their gaps take 54 columns, so at width 74
-        // RUN is at its 20-column floor.
+        let description = "long description ".repeat(4).trim_end().to_string();
+        // Whole, the table is 121 columns wide. At 107, LAUNCHER is at its
+        // 8-column floor and RUN is still whole.
         assert_eq!(
-            cell(run.clone(), 74, RUNS_TABLE_LAUNCHER),
+            cell(run.clone(), 121, RUNS_TABLE_LAUNCHER),
             "Basic Test (no faults)"
         );
-        assert_eq!(
-            cell(run.clone(), 74, RUNS_TABLE_RUN),
-            "long description lo…"
-        );
-        let table = render_runs_table(&[run.clone()], 60);
+        assert_eq!(cell(run.clone(), 107, RUNS_TABLE_LAUNCHER), "Basic T…");
+        assert_eq!(cell(run.clone(), 107, RUNS_TABLE_RUN), description);
+        // Then RUN shrinks, and RUN ID stays whole.
+        let table = render_runs_table(&[run.clone()], 80);
         assert!(
-            table.lines().all(|line| line.chars().count() <= 60),
+            table.lines().all(|line| line.chars().count() <= 80),
             "{table}"
         );
-        assert_eq!(cell(run.clone(), 60, RUNS_TABLE_LAUNCHER), "Basic T…");
+        assert_eq!(cell(run.clone(), 80, RUNS_TABLE_LAUNCHER), "Basic T…");
+        assert_eq!(
+            cell(run.clone(), 80, RUNS_TABLE_RUN),
+            "long description long description long …"
+        );
         assert!(table.contains("abc-54-1  cancelled"), "{table}");
     }
 

@@ -668,7 +668,12 @@ fn mock_route(
     match (method, path_part) {
         ("POST", p) if p.starts_with("/api/v0/runs/") && p.ends_with("/events/search") => {
             let run_id = &p["/api/v0/runs/".len()..p.len() - "/events/search".len()];
-            let (s, b, ct) = mock_route_search_events(run_id, req_body);
+            let (s, b, ct) = mock_route_search_events(run_id, req_body, MockSearch::Events);
+            (s, b, ct, NO_CACHE_CACHE_CONTROL)
+        }
+        ("POST", p) if p.starts_with("/api/v0/runs/") && p.ends_with("/events/search/count") => {
+            let run_id = &p["/api/v0/runs/".len()..p.len() - "/events/search/count".len()];
+            let (s, b, ct) = mock_route_search_events(run_id, req_body, MockSearch::Count);
             (s, b, ct, NO_CACHE_CACHE_CONTROL)
         }
         ("GET", "/api/v0/runs") => {
@@ -1348,7 +1353,18 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
 /// `orbitinghail`, run `d4b213720b4f72d68132653843623a04-62-2`).
 const MOCK_BOOTSTRAP_EVENT: &str = r#"{"output_text":"Bootstrapping","source":{"name":"bootstrap","stream":"info"},"moment":{"input_hash":"6133169164192300224","vtime":"0.5"}}"#;
 
-/// `POST /runs/{id}/events/search` — the events-search endpoint.
+/// Which events-search endpoint a request reached.
+#[derive(Clone, Copy, PartialEq)]
+enum MockSearch {
+    /// `POST /runs/{id}/events/search`: the matching events, as NDJSON.
+    Events,
+    /// `POST /runs/{id}/events/search/count`: `{"count": N}`, the number of
+    /// matching events. The request carries no `limit`.
+    Count,
+}
+
+/// `POST /runs/{id}/events/search` — the events-search endpoint, and its
+/// `/count` sibling, which answers with the number of matches instead.
 /// `validate_only` returns an empty 200, and matching events stream back as
 /// NDJSON. The mock ends the stream at `limit`, as release 61 does (observed
 /// on tenant `orbitinghail`, run `bafc3d6cb0ff883696153e2a8e30aee7-61-1`: a
@@ -1363,13 +1379,17 @@ const MOCK_BOOTSTRAP_EVENT: &str = r#"{"output_text":"Bootstrapping","source":{"
 /// `contains({...})` needles and for the multi-needle JS filter `runs events`
 /// builds. Validity checking is one rule: the pipeline must start with a
 /// known verb.
-fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static str) {
+fn mock_route_search_events(
+    run_id: &str,
+    body: &str,
+    endpoint: MockSearch,
+) -> (u16, String, &'static str) {
     let json = "application/json";
     let ndjson = "application/x-ndjson";
 
     // Like the other streaming routes: `run-stream-error` answers with a
     // stream that ends in a `Stream_Error` line, whatever the query.
-    if run_id == "run-stream-error" {
+    if run_id == "run-stream-error" && endpoint == MockSearch::Events {
         let (status, body) = mock_route_get_run_logs(run_id);
         return (status, body, ndjson);
     }
@@ -1403,7 +1423,11 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
         return (400, body, json);
     }
     if request["validate_only"].as_bool().unwrap_or(false) {
-        return (200, String::new(), ndjson);
+        let content_type = match endpoint {
+            MockSearch::Events => ndjson,
+            MockSearch::Count => json,
+        };
+        return (200, String::new(), content_type);
     }
 
     // The mock EXECUTES every query the same way: every needle must be a
@@ -1441,7 +1465,9 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
     // `snouty debug` checks an input hash with
     // [`event_set_dsl::input_hash_filter`]: the hash follows this start as a
     // JSON string.
-    if let Some(applied) = query.strip_prefix("filter(ev => ev.moment.input_hash == ") {
+    if let Some(applied) = query.strip_prefix("filter(ev => ev.moment.input_hash == ")
+        && endpoint == MockSearch::Events
+    {
         let input_hash: serde_json::Value = applied
             .strip_suffix(')')
             .and_then(|hash| serde_json::from_str(hash).ok())
@@ -1481,6 +1507,10 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
             needles.iter().all(|needle| haystack.contains(needle))
         })
         .collect();
+    if endpoint == MockSearch::Count {
+        let body = serde_json::json!({ "count": matches.len() }).to_string();
+        return (200, body, json);
+    }
     if let Some(limit) = request["limit"].as_u64() {
         matches.truncate(limit as usize);
     }
@@ -1583,11 +1613,12 @@ mod tests {
             request.to_string()
         };
 
-        let (status, all, _) = mock_route_search_events("run-1", &body(None));
+        let (status, all, _) = mock_route_search_events("run-1", &body(None), MockSearch::Events);
         assert_eq!(status, 200);
         assert_eq!(all.lines().count(), 3, "fixture should match three events");
 
-        let (status, capped, _) = mock_route_search_events("run-1", &body(Some(1)));
+        let (status, capped, _) =
+            mock_route_search_events("run-1", &body(Some(1)), MockSearch::Events);
         assert_eq!(status, 200);
         assert_eq!(capped.lines().count(), 1);
         assert!(
@@ -1595,7 +1626,8 @@ mod tests {
             "the first match should be retained, got: {capped}"
         );
 
-        let (status, out, _) = mock_route_search_events("run-1", &body(Some(1000)));
+        let (status, out, _) =
+            mock_route_search_events("run-1", &body(Some(1000)), MockSearch::Events);
         assert_eq!(status, 400, "got: {out}");
         assert!(out.contains("out of the range"), "got: {out}");
     }

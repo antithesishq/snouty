@@ -2369,6 +2369,17 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             json_capable=False,
             expect_ok=False,
         ),
+        Story(
+            "runs-search-count",
+            f"Count the events that match '{kw}'",
+            "A search shows only a sample of the matches; I want to know how many "
+            "events in the whole run match my query.",
+            "One line that states the number of matching events, and exit 0. No "
+            "event lines, and no note about a limit.",
+            ["runs", "search", d.success, f'contains({{output_text: "{kw}"}})', "--count"],
+            expect_message("matched the query"),
+            json_capable=False,
+        ),
         # -- logs -----------------------------------------------------------
         Story(
             "runs-logs",
@@ -3022,7 +3033,7 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "help-runs-search",
             "Learn the event-set DSL query command",
             "I want the help to explain the QUERY syntax (verbs), the tenant release the "
-            "events-search API needs, the mode switches, and the output line format.",
+            "events-search API needs, the mode switches, --count, and the output line format.",
             ["runs", "search"],
             ["runs", "search", s, f'contains({{output_text: "{d.event_keyword}"}})'],
         ),

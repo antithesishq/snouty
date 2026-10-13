@@ -109,6 +109,27 @@ pub(super) async fn check_query(
     Ok(())
 }
 
+/// Print how many events in the run match `query` (`runs search --count`).
+pub(super) async fn count_query(
+    api: &AntithesisApi,
+    run_id: &str,
+    query: &str,
+    json: bool,
+) -> Result<()> {
+    let count = match api.count_run_events_query(run_id, query).await {
+        Ok(count) => count,
+        Err(err) => return Err(explain_search_error(api, run_id, err).await),
+    };
+    let mut stdout = std::io::stdout().lock();
+    if json {
+        writeln!(stdout, "{}", json!({"count": count}))?;
+    } else {
+        let noun = if count == 1 { "event" } else { "events" };
+        writeln!(stdout, "{count} {noun} matched the query.")?;
+    }
+    Ok(())
+}
+
 /// Classify an events-search failure. On a 404, the run is probed to say
 /// why: the run does not exist, the run is still starting and has no
 /// searchable events, or the tenant release does not serve the endpoint

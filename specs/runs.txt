@@ -888,6 +888,52 @@ mock-runs-server
 ! snouty runs search run-1 'contains({output_text: "x"})' --check --follow
 stderr 'cannot be used with'
 
+# `--count` prints how many events in the whole run match the query, from the
+# events-search count endpoint. No limit applies.
+mock-runs-server
+snouty runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --count
+stdout '^3 events matched the query\.$'
+
+# One match takes the singular noun, and no match is a count of zero.
+mock-runs-server
+snouty runs search $R_run_id 'contains({output_text: "Bootstrapping"})' --count
+stdout '^1 event matched the query\.$'
+mock-runs-server
+snouty runs search $R_run_id 'contains({output_text: "zzz-no-such-needle"})' --count
+stdout '^0 events matched the query\.$'
+
+# With --json the count prints as one JSON object.
+mock-runs-server
+snouty --json runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --count
+stdout '^\{"count":3\}$'
+
+# The count endpoint rejects an invalid query with the same error as a search.
+mock-runs-server
+! snouty runs search $R_run_id 'bogus_verb({x: "y"})' --count
+stderr 'API error: 400 Bad Request'
+stderr 'Event set DSL error:\n  bogus_verb'
+
+# An unknown run reports "run not found".
+mock-runs-server
+! snouty runs search no-such-run 'contains({output_text: "x"})' --count
+stderr 'run not found: no-such-run'
+
+# A count has no sample, so the sample flags conflict with it.
+mock-runs-server
+! snouty runs search run-1 'contains({output_text: "x"})' --count --limit 5
+stderr 'cannot be used with'
+! snouty runs search run-1 'contains({output_text: "x"})' --count --follow
+stderr 'cannot be used with'
+! snouty runs search run-1 'contains({output_text: "x"})' --count --check
+stderr 'cannot be used with'
+! snouty runs search run-1 'contains({output_text: "x"})' --count --detail
+stderr 'cannot be used with'
+
+# The help names --count and says that it counts the whole run.
+snouty runs search --help
+stdout '--count'
+stdout 'Add --count to print how many events in the whole run match the query'
+
 # An unknown run reports "run not found", like every run-scoped command.
 mock-runs-server
 ! snouty runs search no-such-run 'contains({output_text: "x"})'

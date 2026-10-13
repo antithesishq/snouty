@@ -704,11 +704,20 @@ async fn probe_run(api: &AntithesisApi, run_id: &str) -> RunProbe {
     }
 }
 
-/// Fail with the shared "run not found: X" error unless `run_id` names a run.
-pub async fn ensure_run_exists(api: &AntithesisApi, run_id: &str) -> Result<()> {
+/// Fail unless `run_id` names a run that `snouty debug` can use: the shared
+/// "run not found: X" error for an unknown run, and an error for a run that is
+/// still starting. A starting run has no searchable events, so its input hash
+/// cannot be checked.
+pub async fn ensure_run_debuggable(api: &AntithesisApi, run_id: &str) -> Result<()> {
     match probe_run(api, run_id).await {
         RunProbe::NotFound => Err(user_error(format!("run not found: {run_id}"))),
         RunProbe::ProbeFailed(err) => Err(err),
+        RunProbe::Exists(run) if run.status == RunStatus::Starting => Err(user_error(format!(
+            "run {run_id} is still starting; debug it once it is in progress or complete"
+        ))
+        .suggestion(format!(
+            "wait for it with `snouty runs wait {run_id} --until running`"
+        ))),
         RunProbe::Exists(_) => Ok(()),
     }
 }
@@ -728,8 +737,8 @@ pub async fn ensure_input_hash_exists(
     };
     let stream = match api.search_run_events_query(run_id, &query, search).await {
         Ok(stream) => stream,
-        // The run exists, so a 404 is a tenant release that does not serve
-        // the search. There is no way to check.
+        // The run exists and is not starting, so a 404 is a tenant release
+        // that does not serve the search. There is no way to check.
         Err(err) if api_error_status(&err) == Some(404) => {
             debug!("cannot check the input hash: the events search answered 404");
             return Ok(());
@@ -1546,7 +1555,9 @@ async fn cmd_runs_search(
         .await
     {
         Ok(stream) => stream,
-        Err(err) => return Err(event_search::explain_search_error(&args.run_id, err)),
+        Err(err) => {
+            return Err(event_search::explain_search_error(&api, &args.run_id, err).await);
+        }
     };
     // A user-written DSL pipeline can reshape rows into any object,
     // `{"error": ...}` included, so this stream must not guess that such a
@@ -1582,10 +1593,13 @@ async fn cmd_runs_events(
         stream: false,
         limit: Some(limit),
     };
-    let stream = api
+    let stream = match api
         .search_run_events_query(run_id, &event_set_dsl::substring_filter(matches), search)
         .await
-        .map_err(|err| event_search::explain_search_error(run_id, err))?;
+    {
+        Ok(stream) => stream,
+        Err(err) => return Err(event_search::explain_search_error(&api, run_id, err).await),
+    };
     let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode);
     print_event_lines(
         lines,

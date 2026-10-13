@@ -26,6 +26,7 @@ pub mod runs;
 pub mod scripts;
 #[doc(hidden)]
 pub mod settings;
+pub(crate) mod table;
 pub mod tag;
 #[doc(hidden)]
 pub mod testutils;

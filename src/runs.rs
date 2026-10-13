@@ -30,6 +30,7 @@ use crate::render::{
     CodeSpans, OutputOptions, indent_lines, render_kv, sanitize, sanitize_multiline, wrap_text,
 };
 use crate::settings::Settings;
+use crate::table::{Align, Column, Fit, Table};
 use crate::time::{HumanDuration, format_local_with_offset};
 use crate::vtime::VTime;
 
@@ -1027,12 +1028,11 @@ fn render_moments_table(p: &EventProperty) -> String {
             event.moment.vtime.to_string(),
         ]);
     }
-    let headers = vec![
-        "STATUS".to_string(),
-        "HASH".to_string(),
-        "VTIME".to_string(),
-    ];
-    render_table(&headers, &rows)
+    Table::builder()
+        .column(Column::new("STATUS"))
+        .column(Column::new("HASH"))
+        .column(Column::new("VTIME"))
+        .render(rows, usize::MAX)
 }
 
 /// The values of a non-event ("system") property under a `Result` label. A
@@ -1237,15 +1237,12 @@ fn render_properties_table(properties: &[Property]) -> String {
     // shows just the property's own name (the string a `--name`/`--detail` filter
     // matches); folding the group into NAME would have made the displayed name
     // un-copyable. This is human-facing output; use `--json` for automation.
-    let headers = vec![
-        "STATUS".to_string(),
-        "EXAMPLES".to_string(),
-        "NAME".to_string(),
-    ];
-    // Right-align the numeric EXAMPLES column so magnitudes line up; STATUS and
-    // the wrapped NAME column stay left-aligned.
-    let aligns = [Align::Left, Align::Right, Align::Left];
     let width = terminal_width();
+    // Right-align the numeric EXAMPLES column so magnitudes line up.
+    let table = Table::builder()
+        .column(Column::new("STATUS"))
+        .column(Column::new("EXAMPLES").align(Align::Right))
+        .column(Column::new("NAME").fit(Fit::Wrap { floor: 20 }));
 
     group_property_sections(properties)
         .iter()
@@ -1260,7 +1257,7 @@ fn render_properties_table(properties: &[Property]) -> String {
                     ]
                 })
                 .collect();
-            let table = render_table_wrap_last(&headers, &rows, width, &aligns);
+            let table = table.render(rows, width);
             match title {
                 Some(title) => format!("{}\n{}", sanitize(title), table),
                 None => table,
@@ -2353,227 +2350,67 @@ fn merge_fault_windows(
     }
 }
 
-/// How the final column of a table is laid out once the leading columns have
-/// been sized to their widest cell. The leading columns are always padded to
-/// their widest cell; only the final column's policy varies.
-enum LastColumn {
-    /// Emit the final column verbatim with no padding or width bound. The table
-    /// can grow as wide as its widest final cell.
-    Raw,
-    /// Bound the final column to whatever width remains after the leading columns
-    /// fit within `total_width`, truncating a too-long cell with an ellipsis.
-    Truncate { total_width: usize },
-    /// Bound the final column like [`Truncate`], but wrap a too-long cell across
-    /// multiple lines with a hanging indent under the column start (floored at a
-    /// readable minimum width).
-    Wrap { total_width: usize },
-}
-
-/// Per-column horizontal alignment for the leading (fixed-width) columns. The
-/// final column is never padded, so its alignment is ignored.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Align {
-    Left,
-    Right,
-}
-
-/// Pad `cell` to `width` columns on the side dictated by `align`.
-fn pad_cell(cell: &str, width: usize, align: Align) -> String {
-    match align {
-        Align::Left => format!("{cell:<width$}"),
-        Align::Right => format!("{cell:>width$}"),
-    }
-}
-
-/// Shared column-sizing core for every table snouty renders. Leading columns are
-/// sized to their widest cell (header included, counted in chars) and aligned per
-/// `aligns`; the final column follows `last_column`. Lines are right-trimmed, so
-/// a `Raw` final column never leaves trailing padding. `aligns` must have one
-/// entry per header (the last entry is ignored — the final column isn't padded).
-fn render_columns(
-    headers: &[String],
-    rows: &[Vec<String>],
-    last_column: LastColumn,
-    aligns: &[Align],
-) -> String {
-    let last = headers.len() - 1;
-
-    // Size every leading column to the widest of its header and cells. The final
-    // column is sized below according to the policy.
-    let mut widths = headers
-        .iter()
-        .map(|header| header.chars().count())
-        .collect::<Vec<_>>();
-    for row in rows {
-        for (index, cell) in row.iter().enumerate().take(last) {
-            widths[index] = widths[index].max(cell.chars().count());
-        }
-    }
-
-    // Two-space separators between columns; the leading columns plus separators
-    // form the prefix a wrapped final column hangs under.
-    let prefix_width: usize = widths.iter().take(last).sum::<usize>() + 2 * last;
-
-    match &last_column {
-        LastColumn::Raw => {
-            // Final column unbounded: `push_table_row` emits it unpadded, so its
-            // width never matters — leave `widths[last]` at the header width.
-            let mut output = String::new();
-            push_table_row(&mut output, headers, &widths, aligns);
-            for row in rows {
-                push_table_row(&mut output, row, &widths, aligns);
-            }
-            output.trim_end().to_string()
-        }
-        LastColumn::Truncate { total_width } => {
-            let last_width = total_width
-                .saturating_sub(prefix_width)
-                .max(headers[last].chars().count());
-            widths[last] = last_width;
-
-            let mut output = String::new();
-            push_table_row(&mut output, headers, &widths, aligns);
-            for row in rows {
-                let mut row = row.clone();
-                row[last] = console::truncate_str(&row[last], last_width, "…").into_owned();
-                push_table_row(&mut output, &row, &widths, aligns);
-            }
-            output.trim_end().to_string()
-        }
-        LastColumn::Wrap { total_width } => {
-            let last_width = total_width
-                .saturating_sub(prefix_width)
-                .max(headers[last].chars().count())
-                .max(20);
-
-            let mut output = String::new();
-            push_table_row(&mut output, headers, &widths, aligns);
-            for row in rows {
-                let wrapped = wrap_text(&row[last], last_width, CodeSpans::Ignore);
-                let wrapped = if wrapped.is_empty() {
-                    vec![String::new()]
-                } else {
-                    wrapped
-                };
-                for (line_index, line) in wrapped.iter().enumerate() {
-                    if line_index == 0 {
-                        for index in 0..last {
-                            output.push_str(&pad_cell(&row[index], widths[index], aligns[index]));
-                            output.push_str("  ");
-                        }
-                        output.push_str(line);
-                    } else {
-                        output.push_str(&format!("{:prefix_width$}{line}", ""));
-                    }
-                    output.push('\n');
-                }
-            }
-            output.trim_end().to_string()
-        }
-    }
-}
-
-/// The most characters that the LAUNCHER column of the runs table shows.
-const LAUNCHER_WIDTH: usize = 10;
-
 fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
-    // RUN is the final, width-bounded column, truncated with an ellipsis (a
-    // `runs show RUN_ID` follow-up still works off the full id). A full
-    // description never fit beside the full run id, so RUN shows at most its
-    // first line; `runs list --detail` shows it in full. LAUNCHER is cut to
-    // LAUNCHER_WIDTH so that RUN keeps most of the width.
-    let headers = vec![
-        "RUN ID".to_string(),
-        "STATUS".to_string(),
-        "CREATED".to_string(),
-        "LAUNCHER".to_string(),
-        "RUN".to_string(),
-    ];
+    let rows: Vec<Vec<String>> = runs
+        .iter()
+        .map(|run| {
+            // A run with no test name (a debugging session, for one) shows the
+            // first line of its description or event description. A full
+            // description does not fit beside the run id; `runs list --detail`
+            // shows it. LAUNCHER is not a fallback, because it has its own
+            // column.
+            fn first_line(text: &str) -> Option<&str> {
+                text.lines().map(str::trim).find(|line| !line.is_empty())
+            }
+            let test_name = [
+                run.test_name(),
+                run.display_description().and_then(first_line),
+            ]
+            .into_iter()
+            .flatten()
+            .find(|text| !text.is_empty())
+            .map_or_else(|| "-".to_string(), sanitize);
+            vec![
+                sanitize(&run.run_id),
+                run.status.to_string(),
+                relative_time(run.created_at),
+                match run.launcher.as_str() {
+                    "" => "-".to_string(),
+                    launcher => sanitize(launcher),
+                },
+                test_name,
+            ]
+        })
+        .collect();
 
-    let rows: Vec<Vec<String>> =
-        runs.iter()
-            .map(|run| {
-                // A run with no test name (a debugging session, for one) shows the
-                // first line of its description or event description, so the row
-                // still says what the run is. LAUNCHER has its own column.
-                fn first_line(text: &str) -> Option<&str> {
-                    text.lines().map(str::trim).find(|line| !line.is_empty())
-                }
-                let test_name = [
-                    run.test_name(),
-                    run.display_description().and_then(first_line),
-                ]
-                .into_iter()
-                .flatten()
-                .find(|text| !text.is_empty())
-                .map_or_else(|| "-".to_string(), sanitize);
-                vec![
-                    sanitize(&run.run_id),
-                    run.status.to_string(),
-                    relative_time(run.created_at),
-                    match run.launcher.as_str() {
-                        "" => "-".to_string(),
-                        launcher => console::truncate_str(&sanitize(launcher), LAUNCHER_WIDTH, "…")
-                            .into_owned(),
-                    },
-                    test_name,
-                ]
-            })
-            .collect();
-
-    render_columns(
-        &headers,
-        &rows,
-        LastColumn::Truncate { total_width: width },
-        &left_aligned(headers.len()),
-    )
-}
-
-/// All-left-aligned alignment vector for a table with `n` columns — the default
-/// for tables that don't right-align any column.
-fn left_aligned(n: usize) -> Vec<Align> {
-    vec![Align::Left; n]
-}
-
-/// Auto-width table whose final column is emitted verbatim (no padding, no
-/// width bound). All leading columns are left-aligned.
-fn render_table(headers: &[String], rows: &[Vec<String>]) -> String {
-    render_columns(headers, rows, LastColumn::Raw, &left_aligned(headers.len()))
-}
-
-/// Like [`render_table`], but the final column wraps to whatever width is left
-/// over after the (fixed-width) leading columns, so a single long cell can't
-/// push the table past `total_width`. Continuation lines indent to the start of
-/// the final column. Leading columns are sized to their widest cell and aligned
-/// per `aligns` (one entry per header; the final, wrapped column isn't padded).
-fn render_table_wrap_last(
-    headers: &[String],
-    rows: &[Vec<String>],
-    total_width: usize,
-    aligns: &[Align],
-) -> String {
-    render_columns(headers, rows, LastColumn::Wrap { total_width }, aligns)
-}
-
-fn push_table_row(output: &mut String, row: &[String], widths: &[usize], aligns: &[Align]) {
-    let last = row.len().saturating_sub(1);
-    for (index, cell) in row.iter().enumerate() {
-        if index > 0 {
-            output.push_str("  ");
-        }
-        if index == last {
-            output.push_str(cell);
-        } else {
-            output.push_str(&pad_cell(cell, widths[index], aligns[index]));
-        }
-    }
-    output.push('\n');
+    // LAUNCHER shrinks to 8 columns before RUN shrinks to 8. RUN ID, STATUS,
+    // and CREATED never shrink, so a `runs show RUN_ID` follow-up always
+    // works.
+    Table::builder()
+        .column(Column::new("RUN ID"))
+        .column(Column::new("STATUS"))
+        .column(Column::new("CREATED"))
+        .column(
+            Column::new("LAUNCHER")
+                .fit(Fit::Truncate { floor: 8 })
+                .priority(0),
+        )
+        .column(
+            Column::new("RUN")
+                .fit(Fit::Truncate { floor: 8 })
+                .priority(1),
+        )
+        .render(rows, width)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use hegel::generators;
+
+    /// Column indexes of the runs table.
+    const RUNS_TABLE_LAUNCHER: usize = 3;
+    const RUNS_TABLE_RUN: usize = 4;
     use serde_json::json;
 
     /// Test surface for the annotated-logs pipeline: classify the line
@@ -4584,34 +4421,6 @@ mod tests {
     }
 
     #[test]
-    fn wrap_last_wraps_a_name_with_stray_backticks() {
-        // A backtick in a property name is not a code span: the name wraps
-        // at its spaces and stays inside the width.
-        let name = "can`t lose a write, even when the leader won`t answer in time";
-        let headers = vec!["STATUS".to_string(), "NAME".to_string()];
-        let rows = vec![vec!["failing".to_string(), name.to_string()]];
-        let out = render_table_wrap_last(&headers, &rows, 40, &[Align::Left, Align::Left]);
-        for line in out.lines() {
-            assert!(
-                line.chars().count() <= 40,
-                "line wider than 40: {line:?}\n{out}"
-            );
-        }
-    }
-
-    #[test]
-    fn wrap_last_does_not_wrap_when_piped() {
-        // With usize::MAX width the final column is emitted on a single line
-        // (no wrap), so a long NAME survives intact for piping/grep.
-        let long = "Safety ▸ a property name long enough to wrap on any real terminal width";
-        let headers = vec!["STATUS".to_string(), "NAME".to_string()];
-        let rows = vec![vec!["failing".to_string(), long.to_string()]];
-        let out = render_table_wrap_last(&headers, &rows, usize::MAX, &[Align::Left, Align::Left]);
-        let row = out.lines().find(|l| l.contains("failing")).unwrap();
-        assert!(row.contains(long), "name was wrapped: {out}");
-    }
-
-    #[test]
     fn runs_table_shows_dash_not_launcher_when_run_has_no_text() {
         let runs = vec![summary(
             "abc-54-1",
@@ -4629,13 +4438,13 @@ mod tests {
         );
     }
 
-    /// The RUN cell of a one-run table at `width` columns.
-    fn run_cell(run: RunSummary, width: usize) -> String {
+    /// The cell in `column` of a one-run table at `width` columns.
+    fn cell(run: RunSummary, width: usize, column: usize) -> String {
         let table = render_runs_table(&[run], width);
         let row = table.lines().nth(1).unwrap();
         row.split("  ")
             .filter(|cell| !cell.is_empty())
-            .nth(4)
+            .nth(column)
             .unwrap()
             .trim()
             .to_string()
@@ -4663,28 +4472,45 @@ mod tests {
         )
     }
 
-    /// The LAUNCHER cell of a one-run table.
-    fn launcher_cell(run: RunSummary) -> String {
-        let table = render_runs_table(&[run], 200);
-        let row = table.lines().nth(1).unwrap();
-        row.split("  ")
-            .filter(|cell| !cell.is_empty())
-            .nth(3)
-            .unwrap()
-            .trim()
-            .to_string()
+    #[test]
+    fn runs_table_shows_whole_launcher_when_it_fits() {
+        let mut run = debugging_run(Some("probe the stall"));
+        run.launcher = "Basic Test (no faults)".to_string();
+        assert_eq!(
+            cell(run.clone(), 200, RUNS_TABLE_LAUNCHER),
+            "Basic Test (no faults)"
+        );
+        run.launcher = String::new();
+        assert_eq!(cell(run, 200, RUNS_TABLE_LAUNCHER), "-");
     }
 
     #[test]
-    fn runs_table_shows_launcher_cut_to_ten_characters() {
-        let mut run = debugging_run(Some("probe the stall"));
-        assert_eq!(launcher_cell(run.clone()), "debugging");
-        run.launcher = "basic_test".to_string();
-        assert_eq!(launcher_cell(run.clone()), "basic_test");
+    fn runs_table_cuts_launcher_before_run() {
+        let mut run = debugging_run(Some(&"long description ".repeat(4)));
         run.launcher = "Basic Test (no faults)".to_string();
-        assert_eq!(launcher_cell(run.clone()), "Basic Tes…");
-        run.launcher = String::new();
-        assert_eq!(launcher_cell(run), "-");
+        let description = "long description ".repeat(4).trim_end().to_string();
+        // Whole, the table is 121 columns wide. At 107, LAUNCHER is at its
+        // 8-column floor and RUN is still whole.
+        assert_eq!(
+            cell(run.clone(), 121, RUNS_TABLE_LAUNCHER),
+            "Basic Test (no faults)"
+        );
+        assert_eq!(cell(run.clone(), 107, RUNS_TABLE_LAUNCHER), "Basic T…");
+        assert_eq!(cell(run.clone(), 107, RUNS_TABLE_RUN), description);
+        // Then RUN shrinks, and RUN ID stays whole.
+        let table = render_runs_table(&[run.clone()], 80);
+        assert!(
+            table.lines().all(|line| line.chars().count() <= 80),
+            "{table}"
+        );
+        assert_eq!(cell(run.clone(), 80, RUNS_TABLE_LAUNCHER), "Basic T…");
+        assert_eq!(
+            cell(run.clone(), 80, RUNS_TABLE_RUN),
+            "long description long description long …"
+        );
+        assert!(table.contains("abc-54-1  cancelled"), "{table}");
+        // RUN stops at 8 columns, even when the table stays too wide.
+        assert_eq!(cell(run.clone(), 40, RUNS_TABLE_RUN), "long de…");
     }
 
     #[test]
@@ -4698,45 +4524,45 @@ mod tests {
             Some("probe the stall"),
         );
         let run = with_event_description(run, "debug this moment");
-        assert_eq!(run_cell(run, 100), "nightly");
+        assert_eq!(cell(run, 100, RUNS_TABLE_RUN), "nightly");
     }
 
     #[test]
     fn runs_table_shows_description_first_line_when_test_name_missing() {
         let run = debugging_run(Some("\n  probe the stall\x1b \nsecond line"));
-        assert_eq!(run_cell(run, 100), r"probe the stall\x1B");
+        assert_eq!(cell(run, 100, RUNS_TABLE_RUN), r"probe the stall\x1B");
     }
 
     #[test]
     fn runs_table_reads_top_level_description() {
         let mut run = debugging_run(None);
         run.description = Some("top-level description".to_string());
-        assert_eq!(run_cell(run, 100), "top-level description");
+        assert_eq!(cell(run, 100, RUNS_TABLE_RUN), "top-level description");
     }
 
     #[test]
     fn runs_table_prefers_top_level_description_over_parameter() {
         let mut run = debugging_run(Some("parameter description"));
         run.description = Some("top-level description".to_string());
-        assert_eq!(run_cell(run, 100), "top-level description");
+        assert_eq!(cell(run, 100, RUNS_TABLE_RUN), "top-level description");
     }
 
     #[test]
     fn runs_table_shows_event_description_when_description_missing() {
         let run = with_event_description(debugging_run(None), "debug this moment\nmore");
-        assert_eq!(run_cell(run, 100), "debug this moment");
+        assert_eq!(cell(run, 100, RUNS_TABLE_RUN), "debug this moment");
     }
 
     #[test]
     fn runs_table_prefers_description_over_event_description() {
         let run = with_event_description(debugging_run(Some("probe the stall")), "debug this");
-        assert_eq!(run_cell(run, 100), "probe the stall");
+        assert_eq!(cell(run, 100, RUNS_TABLE_RUN), "probe the stall");
     }
 
     #[test]
     fn runs_table_skips_blank_description() {
         let run = with_event_description(debugging_run(Some(" \n ")), "\n");
-        assert_eq!(run_cell(run, 100), "-");
+        assert_eq!(cell(run, 100, RUNS_TABLE_RUN), "-");
     }
 
     #[test]
@@ -4765,9 +4591,9 @@ mod tests {
     #[test]
     fn runs_table_truncates_long_description() {
         let run = debugging_run(Some(&"long description ".repeat(10)));
-        let cell = run_cell(run, 80);
-        assert!(cell.starts_with("long description"), "got: {cell}");
-        assert!(cell.ends_with('…'), "got: {cell}");
+        let run_cell = cell(run, 80, RUNS_TABLE_RUN);
+        assert!(run_cell.starts_with("long description"), "got: {run_cell}");
+        assert!(run_cell.ends_with('…'), "got: {run_cell}");
     }
 
     #[test]

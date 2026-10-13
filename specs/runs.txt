@@ -41,10 +41,11 @@ stdout '^RUN ID +STATUS +CREATED +LAUNCHER +RUN$'
 [!staging] stdout 'run-2.*in_progress'
 # The LAUNCHER column shows the launcher. The RUN column shows the test name.
 # A run with no test name shows the first line of its description, then its
-# event description, then `-`. No mock run has a test name.
+# event description, then `-`. No mock run has a test name. Piped output
+# never cuts a cell, so a long launcher shows in full.
 [!staging] stdout '^run-1 +completed +.* nightly +nightly smoke on main$'
 [!staging] stdout '^run-2 +in_progress +.* debug +-$'
-[!staging] stdout '^run-3 +incomplete +.* nightly +recovery probe$'
+[!staging] stdout '^run-3 +incomplete +.* nightly recovery \(no faults\) +recovery probe$'
 # The default table has no DESCRIPTION column; use `runs list --detail` to see
 # the full description.
 ! stdout 'DESCRIPTION'
@@ -56,7 +57,7 @@ mock-runs-server
 [!staging] ! stdout 'run-1'
 mock-runs-server
 [!staging] snouty runs list --status incomplete
-[!staging] stdout '^run-3 +incomplete +.* nightly +recovery probe$'
+[!staging] stdout '^run-3 +incomplete +.* nightly recovery \(no faults\) +recovery probe$'
 mock-runs-server
 [!staging] snouty runs list --launcher nightly
 [!staging] stdout '^run-1 +completed +.* nightly +nightly smoke on main$'

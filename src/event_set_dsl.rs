@@ -44,44 +44,27 @@ const fn has_comment(fragment: &str) -> bool {
     false
 }
 
-/// `src` on one line: each line break, with the whitespace around it, becomes
-/// one space. Returns the line in the first `.1` bytes of the buffer; `N` must
-/// be at least `src.len()`.
+/// `src` on one line: each `\n` or `\r` becomes a space. `N` must be
+/// `src.len()`.
 ///
 /// A query goes out on one line, so a server that rewrites it cannot be
 /// tripped by a line break.
-const fn one_line<const N: usize>(src: &str) -> ([u8; N], usize) {
-    const fn is_blank(byte: u8) -> bool {
-        matches!(byte, b' ' | b'\t' | b'\r' | b'\n')
-    }
-
+const fn one_line<const N: usize>(src: &str) -> [u8; N] {
     let src = src.as_bytes();
     let mut out = [0u8; N];
-    let mut n = 0;
     let mut i = 0;
-    while i < src.len() {
-        if matches!(src[i], b'\r' | b'\n') {
-            while n > 0 && is_blank(out[n - 1]) {
-                n -= 1;
-            }
-            while i < src.len() && is_blank(src[i]) {
-                i += 1;
-            }
-            if n > 0 && i < src.len() {
-                out[n] = b' ';
-                n += 1;
-            }
-        } else {
-            out[n] = src[i];
-            n += 1;
-            i += 1;
-        }
+    while i < N {
+        out[i] = match src[i] {
+            b'\n' | b'\r' => b' ',
+            byte => byte,
+        };
+        i += 1;
     }
-    (out, n)
+    out
 }
 
-/// Declare a query fragment: fail the build if it holds a comment, and join
-/// it onto one line. Joined lines get no automatic semicolons, so a fragment
+/// Declare a query fragment: fail the build if it holds a comment, and put it
+/// on one line. A fragment on one line gets no automatic semicolons, so it
 /// ends its statements with `;`.
 macro_rules! query_fragment {
     ($text:expr) => {{
@@ -92,10 +75,10 @@ macro_rules! query_fragment {
                 "a query fragment holds a comment; move it into the Rust source"
             )
         };
-        const LINE: ([u8; SRC.len()], usize) = one_line(SRC);
-        const TEXT: &str = match core::str::from_utf8(LINE.0.split_at(LINE.1).0) {
+        const LINE: [u8; SRC.len()] = one_line(SRC);
+        const TEXT: &str = match core::str::from_utf8(&LINE) {
             Ok(text) => text,
-            Err(_) => panic!("joining lines split a UTF-8 character"),
+            Err(_) => panic!("a space replaced part of a UTF-8 character"),
         };
         TEXT
     }};
@@ -165,31 +148,10 @@ mod tests {
         assert!(!has_comment(&input_hash_filter("123")));
     }
 
-    fn join(src: &str) -> String {
-        let (out, n) = one_line::<256>(src);
-        String::from_utf8(out[..n].to_vec()).unwrap()
-    }
-
     #[test]
-    fn one_line_joins_lines_with_one_space() {
-        assert_eq!(join("a {\n  b;\r\n\n    c;  \n}"), "a { b; c; }");
-        assert_eq!(join("a  b\n"), "a  b");
-        assert_eq!(join(""), "");
-    }
-
-    // Joining only ever removes whitespace, so every token survives in order.
-    #[hegel::test]
-    fn one_line_keeps_every_token(tc: hegel::TestCase) {
-        let pieces = tc.draw(generators::vecs(generators::sampled_from(vec![
-            "a", "b;", " ", "\t", "\n", "\r\n",
-        ])));
-        let text: String = pieces.concat();
-        let joined = join(&text);
-        assert!(!joined.contains(['\n', '\r']), "got: {joined:?}");
-        assert_eq!(
-            joined.split_whitespace().collect::<Vec<_>>(),
-            text.split_whitespace().collect::<Vec<_>>()
-        );
+    fn one_line_turns_line_breaks_into_spaces() {
+        assert_eq!(&one_line::<11>("a {\r\n  b;\n}"), b"a {    b; }");
+        assert_eq!(&one_line::<0>(""), b"");
     }
 
     // A query goes out on one line, whatever the needles hold.

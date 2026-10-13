@@ -5,6 +5,7 @@ use serde_json::{Map, Value};
 use color_eyre::Section;
 use color_eyre::eyre::Result;
 
+use crate::cli::KVPair;
 use crate::error::user_error;
 use crate::vtime::{ParseVTimeError, VTime};
 
@@ -83,7 +84,7 @@ impl Params {
         Ok(pairs
             .into_iter()
             .map(|pair| pair.as_ref().parse())
-            .collect::<std::result::Result<_, crate::cli::ParseKVExprError>>()?)
+            .collect::<std::result::Result<_, crate::cli::ParseKVPairError>>()?)
     }
 
     /// Create params from a JSON value.
@@ -228,6 +229,16 @@ impl Params {
     }
 }
 
+impl FromIterator<KVPair> for Params {
+    fn from_iter<I: IntoIterator<Item = KVPair>>(pairs: I) -> Self {
+        let inner = pairs
+            .into_iter()
+            .map(|KVPair { key, value }| (key, Value::String(value)))
+            .collect();
+        Self { inner }
+    }
+}
+
 fn is_sensitive_key(key: &str) -> bool {
     key.ends_with(".token") || key == ANT_REPORT_RECIPIENTS
 }
@@ -323,7 +334,7 @@ fn unescape_pointer_token(token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hegel::generators;
+    use hegel::generators::{self, Generator};
     use serde_json::json;
 
     fn debug_vtime(params: &Params) -> Option<&str> {
@@ -712,6 +723,22 @@ mod tests {
         }
     }
 
+    /// For any non-empty key without `=` and any value, which may contain `=`,
+    /// the parsed pair round-trips exactly.
+    #[hegel::test]
+    fn key_value_pair_round_trips(tc: hegel::TestCase) {
+        let key = tc.draw(generators::text().min_size(1).filter(|k| !k.contains('=')));
+        let value = tc.draw(generators::text());
+        let pair: KVPair = format!("{key}={value}")
+            .parse()
+            .expect("a non-empty key with a value must parse");
+        let params = Params::from_iter([pair]);
+        assert_eq!(params.as_map().len(), 1);
+        assert_eq!(
+            params.as_map().get(&key).and_then(Value::as_str),
+            Some(value.as_str())
+        );
+    }
     /// Redaction preserves the exact key set and leaves every value either
     /// untouched or replaced by the marker — it never drops, adds, or reorders
     /// keys, and only the documented sensitive keys are masked.

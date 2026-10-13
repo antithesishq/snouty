@@ -846,14 +846,8 @@ impl AntithesisApi {
     /// return the number of events in the run that match it.
     pub async fn count_run_events_query(&self, run_id: &str, query: &str) -> Result<u64> {
         let body = generated::types::SearchCountRequest::builder().query(query);
-        match self
-            .client
-            .search_count()
-            .run_id(run_id)
-            .body(body)
-            .send()
-            .await
-        {
+        let request = self.client.search_count().run_id(run_id).body(body);
+        match request.send().await {
             Ok(response) => Ok(response.into_inner().count),
             Err(err) => Err(format_api_client_error(err).await),
         }

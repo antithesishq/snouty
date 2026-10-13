@@ -1556,12 +1556,12 @@ async fn classify_client_error(err: ClientError<()>) -> ApiFailure {
     }
 }
 
-/// How much of an error response body to read. Error bodies are meant to be a
-/// sentence; anything far past that is an intermediary's web page, and only the
-/// first line of it will ever be shown. Bounding the read keeps a misbehaving
-/// proxy from making snouty buffer an arbitrarily large body to print 200
-/// characters of it.
-const MAX_ERROR_BODY: usize = 4 * 1024;
+/// How much of an error response body to read. The events-search endpoint
+/// echoes the full query in a rejection and puts the reason last (tenants
+/// `orbitinghail` and a customer tenant), so a small limit cuts off the
+/// reason and breaks the JSON. The limit stops a misbehaving proxy from making
+/// snouty buffer an unbounded body.
+const MAX_ERROR_BODY: usize = 64 * 1024;
 
 /// Read up to [`MAX_ERROR_BODY`] of an error response, chunk by chunk, and drop
 /// the rest. Truncating mid-character is fine — the result is only ever
@@ -1895,6 +1895,44 @@ mod tests {
             .unwrap();
 
         assert_eq!(read_error_body(response).await, "upstream is down");
+    }
+
+    #[tokio::test]
+    async fn search_run_events_query_shows_the_reason_of_a_long_rejection() {
+        let query = format!("filter(ev => ev.a == \"{}\" ==== 1)", "x".repeat(7000));
+        let caret = " ".repeat(query.len() - 6);
+        let message = format!(
+            "Bad request: failed to execute pangolin query due to a runtime error: \
+             Event set DSL error: {query}\n{caret}^\ninvalid JavaScript expression"
+        );
+        let mock_server = mock_endpoint(
+            "POST",
+            "/api/v0/runs/run-1/events/search",
+            400,
+            &serde_json::json!({ "message": message }).to_string(),
+        )
+        .await;
+
+        let api = test_api_optionally_with_cache(&mock_server, None);
+        let Err(err) = api
+            .search_run_events_query(
+                "run-1",
+                &query,
+                SearchMode::Query {
+                    stream: false,
+                    limit: None,
+                },
+            )
+            .await
+        else {
+            panic!("expected the 400 to surface as an error");
+        };
+        let rendered = format!("{err:?}");
+        assert!(
+            rendered.contains("invalid JavaScript expression"),
+            "got: {rendered}"
+        );
+        assert!(!rendered.contains(r#"{"message""#), "got: {rendered}");
     }
 
     // ---- lay_out_dsl_error ------------------------------------------------

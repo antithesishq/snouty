@@ -919,8 +919,7 @@ Query snippets (each is a complete QUERY, ready to paste):
 Rows reshaped by map/narrow/fold print as raw JSON.
 
 Add --count to print how many events in the whole run match the query,
-instead of a sample. No limit applies, and the server scans the whole run,
-so a count can take longer than a sample.
+instead of a sample. No limit applies.
 
 Add --json for machine-readable output. Each event prints as one JSON
 object on its own line:

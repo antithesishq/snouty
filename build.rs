@@ -58,6 +58,7 @@ fn generate_api_client(out_dir: &Path) {
     open_performance_tier(&mut spec_value);
     open_sub_status(&mut spec_value);
     unrequire_search_limit_default(&mut spec_value);
+    unrequire_search_count_validate_only_default(&mut spec_value);
     add_mvd_test_name(&mut spec_value);
     open_mvd_params(&mut spec_value);
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
@@ -205,6 +206,17 @@ fn unrequire_search_limit_default(spec: &mut serde_json::Value) {
         "/components/schemas/Search_Request/properties/limit",
         "default",
         "unrequire_search_limit_default",
+    );
+}
+
+/// Strip the `default: false` from `Search_Count_Request.validate_only`, so
+/// the generated field is an `Option` that a count request omits.
+fn unrequire_search_count_validate_only_default(spec: &mut serde_json::Value) {
+    remove_schema_key(
+        spec,
+        "/components/schemas/Search_Count_Request/properties/validate_only",
+        "default",
+        "unrequire_search_count_validate_only_default",
     );
 }
 

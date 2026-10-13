@@ -925,6 +925,17 @@ impl AntithesisApi {
         }
     }
 
+    /// POST an event-set DSL query to the events-search count endpoint and
+    /// return the number of events in the run that match it.
+    pub async fn count_run_events_query(&self, run_id: &str, query: &str) -> Result<u64> {
+        let body = generated::types::SearchCountRequest::builder().query(query);
+        let request = self.client.search_count().run_id(run_id).body(body);
+        match request.send().await {
+            Ok(response) => Ok(response.into_inner().count),
+            Err(err) => Err(format_api_client_error(err).await),
+        }
+    }
+
     /// Stream at most `limit` runs, newest first, fetching pages as they are
     /// consumed. The endpoint accepts pages of at most 100 runs; the last
     /// page shrinks to what the limit still allows.
@@ -3951,6 +3962,30 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn count_run_events_query_posts_query_only() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v0/runs/run-1/events/search/count"))
+            .and(body_json(serde_json::json!({
+                "query": "contains({output_text: \"raft\"})",
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "count": 318446,
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let api = test_api_optionally_with_cache(&mock_server, None);
+        let count = api
+            .count_run_events_query("run-1", "contains({output_text: \"raft\"})")
+            .await
+            .unwrap();
+        assert_eq!(count, 318446);
     }
 
     // An error must keep its HTTP status so callers can classify it — the 404

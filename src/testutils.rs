@@ -666,11 +666,6 @@ fn mock_route(
     let ndjson = "application/x-ndjson";
 
     match (method, path_part) {
-        ("POST", p) if p.starts_with("/api/v0/runs/") && p.ends_with("/events/search") => {
-            let run_id = &p["/api/v0/runs/".len()..p.len() - "/events/search".len()];
-            let (s, b, ct) = mock_route_search_events(run_id, req_body);
-            (s, b, ct, NO_CACHE_CACHE_CONTROL)
-        }
         ("GET", "/api/v0/runs") => {
             let (s, b) = mock_route_list_runs(query, empty);
             (s, b, json, NO_CACHE_CACHE_CONTROL)
@@ -706,7 +701,20 @@ fn mock_route(
         }
         ("POST", p) if p.starts_with("/api/v0/runs/") => {
             let rest = &p["/api/v0/runs/".len()..];
-            if let Some(run_id) = rest.strip_suffix("/command") {
+            if let Some(run_id) = rest.strip_suffix("/events/search") {
+                let (s, b, ct) = mock_route_search_events(run_id, req_body);
+                (s, b, ct, NO_CACHE_CACHE_CONTROL)
+            } else if let Some(run_id) = rest.strip_suffix("/events/search/count") {
+                // A count request carries no `limit`, so the search streams
+                // every match.
+                let (s, b, ct) = mock_route_search_events(run_id, req_body);
+                if s == 200 {
+                    let body = serde_json::json!({ "count": b.lines().count() }).to_string();
+                    (s, body, json, NO_CACHE_CACHE_CONTROL)
+                } else {
+                    (s, b, ct, NO_CACHE_CACHE_CONTROL)
+                }
+            } else if let Some(run_id) = rest.strip_suffix("/command") {
                 let (s, b) = mock_route_execute_command(run_id, req_body);
                 (s, b, ndjson, NO_CACHE_CACHE_CONTROL)
             } else if let Some(run_id) = rest.strip_suffix("/cancel") {

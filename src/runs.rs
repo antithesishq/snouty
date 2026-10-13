@@ -1503,6 +1503,9 @@ async fn cmd_runs_search(
     if args.check {
         return event_search::check_query(&api, &args.run_id, &args.query, mode.json()).await;
     }
+    if args.count {
+        return event_search::count_query(&api, &args.run_id, &args.query, mode.json()).await;
+    }
     // `--follow` with no limit is the one unbounded case: the caller asked to
     // watch an in-progress run, so the stream stays open.
     let limit = match (args.follow, args.limit) {

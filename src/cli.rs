@@ -918,10 +918,16 @@ Query snippets (each is a complete QUERY, ready to paste):
     r#"
 Rows reshaped by map/narrow/fold print as raw JSON.
 
+Add --count to print how many events in the whole run match the query,
+instead of a sample. No limit applies.
+
 Add --json for machine-readable output. Each event prints as one JSON
 object on its own line:
   snouty --json runs search <run_id> 'contains({output_text: "err"})' \
-    | jq -r .moment.vtime"#
+    | jq -r .moment.vtime
+With --count, the count prints as one JSON object:
+  snouty --json runs search <run_id> 'contains({output_text: "err"})' \
+    --count | jq .count"#
 );
 
 #[derive(Subcommand)]
@@ -1333,6 +1339,11 @@ pub struct RunsSearchArgs {
     /// Check the query's syntax without running it
     #[arg(long, conflicts_with = "follow")]
     pub check: bool,
+
+    /// Print the number of events in the run that match the query, instead
+    /// of a sample of them
+    #[arg(long, conflicts_with_all = ["follow", "check", "limit", "raw", "detail"])]
+    pub count: bool,
 
     #[command(flatten)]
     pub render: EventOutputArgs,

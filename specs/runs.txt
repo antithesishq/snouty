@@ -290,7 +290,6 @@ snouty runs properties $R_run_id --name 'Peak memory' --detail
 mock-runs-server
 snouty runs properties $R_run_id --name no-such-property
 [!staging] stdout 'No properties match.*no-such-property'
-! stdout 'Inspect the run'
 
 # --detail conflicts with --json (which already emits the full data), for both
 # `runs properties` and `runs list`.
@@ -494,45 +493,30 @@ stderr '^Error: API error: 400.*'
 [!staging] ! snouty runs
 [!staging] stderr 'API error: 429 Too Many Requests.*'
 
-# An unfiltered empty result succeeds and points to the run details. The
-# message uses the run's status and report link to tell why there are no
-# properties. A filtered empty result keeps the filter message.
-#
-# A run that is not complete can have no properties.
-[!staging] mock-runs-server
-[!staging] snouty runs properties run-empty-in-progress
-[!staging] stdout '^No properties found\. A run that is not complete can have no properties\.$'
-[!staging] stdout '^Inspect the run with `snouty runs show run-empty-in-progress`\.$'
-[!staging] ! stdout 'completed'
-[!staging] ! stderr '^Error:'
-
-# A completed run with no report link has no properties until its report is
-# ready.
-[!staging] mock-runs-server
-[!staging] snouty runs properties run-empty-no-report
-[!staging] stdout '^No properties found\. The run completed, but it has no report yet\. A report can take some minutes after a run completes\.$'
-[!staging] stdout '^Inspect the run with `snouty runs show run-empty-no-report`\.$'
-[!staging] ! stdout 'not complete'
-[!staging] ! stderr '^Error:'
-
-# A completed run with a report link reported no properties.
+# An unfiltered empty result succeeds with a short note.
 [!staging] mock-runs-server
 [!staging] snouty runs properties run-empty
-[!staging] stdout '^No properties found\. The run completed and reported no properties\.$'
-[!staging] stdout '^Inspect the run with `snouty runs show run-empty`\.$'
-[!staging] ! stdout 'not complete|no report'
+[!staging] stdout '^No properties found\.$'
 [!staging] ! stderr '^Error:'
 
+# A run that is not complete has an empty list, not a 404. run-3 is the
+# incomplete fixture.
+[!staging] mock-runs-server
+[!staging] snouty runs properties run-3
+[!staging] stdout '^No properties found\.$'
+[!staging] ! stderr '^Error:'
+
+# A filtered empty result names the filters.
 mock-runs-server
 snouty runs properties run-empty --failing
 stdout '^No properties match \(failing\)\.$'
-! stdout 'not complete|Inspect the run'
+! stdout 'No properties found'
 
 # An empty JSON result succeeds without human guidance.
 mock-runs-server
 snouty --json runs properties run-empty
 ! stdout '.'
-! stderr 'No properties|Inspect the run|^Error:'
+! stderr 'No properties|^Error:'
 
 # `snouty runs properties` renders one row per property regardless of whether
 # any examples were sampled.
@@ -590,15 +574,6 @@ stderr '^Error: API error: 404 Not Found — Resource not found$'
 stderr '^Suggestion: the run exists but no moment matches this hash and vtime$'
 stderr '^Suggestion: search for a moment using `snouty runs events run-1 <search query>`$'
 ! stderr 'list valid moments with'
-
-# A real but incomplete run has no properties yet: explain that they're
-# generated on completion instead of reporting the run as missing. run-3 is the
-# incomplete fixture; its properties endpoint 404s like the real API.
-mock-runs-server
-! snouty runs properties run-3
-stderr '.*no properties for run run-3.*'
-stderr '.*this run is incomplete.*'
-! stderr '.*run not found.*'
 
 # `snouty runs properties` requires a run ID.
 ! snouty runs properties

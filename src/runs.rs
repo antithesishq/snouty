@@ -596,18 +596,11 @@ async fn cmd_runs_properties(
     debug!("listing properties for run: {}", run_id);
 
     let api = AntithesisApi::new(settings, verbose)?;
-    let mut properties = match api
+    let mut properties = api
         .stream_run_properties(run_id, filter.status)
         .try_collect::<Vec<_>>()
         .await
-    {
-        Ok(properties) => properties,
-        // The properties endpoint 404s both for a bogus run id and for a real
-        // run that simply has no triage report yet (only `completed` runs do).
-        // Fetch the run to say which, instead of leaking a bare "404 Not Found".
-        // TODO: drop the probe once the endpoint tells the two apart.
-        Err(err) => return Err(explain_properties_error(&api, run_id, err).await),
-    };
+        .map_err(|err| explain_run_not_found(run_id, err))?;
 
     // Apply the client-side filters: both group and name are (case-insensitive)
     // substring matches.
@@ -633,14 +626,7 @@ async fn cmd_runs_properties(
             outln!("{}", serde_json::to_string(property)?)?;
         }
     } else if properties.is_empty() {
-        // An unfiltered empty result has three causes. Fetch the run to say
-        // which one applies.
-        let run = if filter.is_empty() {
-            api.get_run(run_id).await.ok().map(|run| run.untag())
-        } else {
-            None
-        };
-        outln!("{}", no_properties_message(run_id, &filter, run.as_ref()))?;
+        outln!("{}", no_properties_message(&filter))?;
     } else if detail {
         outln!("{}", render_properties_detail(&properties))?;
         // One next step for the whole listing: every HASH/VTIME row above feeds it.
@@ -660,17 +646,7 @@ async fn cmd_runs_properties(
     Ok(())
 }
 
-impl PropertyFilter<'_> {
-    fn is_empty(&self) -> bool {
-        self.status.is_none() && self.name.is_none() && self.group.is_none()
-    }
-}
-
-/// The empty-result message. With filters, it names them. Without filters, it
-/// uses the run's status and report link to tell why there are no properties.
-/// If snouty cannot get the run, it uses the message for a run that is not
-/// complete.
-fn no_properties_message(run_id: &str, filter: &PropertyFilter, run: Option<&RunDetail>) -> String {
+fn no_properties_message(filter: &PropertyFilter) -> String {
     let mut parts = Vec::new();
     match filter.status {
         Some(PropertyStatus::Passing) => parts.push("passing".to_string()),
@@ -684,23 +660,7 @@ fn no_properties_message(run_id: &str, filter: &PropertyFilter, run: Option<&Run
         parts.push(format!("group '{group}'"));
     }
     if parts.is_empty() {
-        let reason = match run {
-            Some(run) if run.status == RunStatus::Completed => {
-                let has_report = run
-                    .links
-                    .as_ref()
-                    .is_some_and(|l| l.triage_report.is_some());
-                if has_report {
-                    "The run completed and reported no properties."
-                } else {
-                    "The run completed, but it has no report yet. A report can take some minutes after a run completes."
-                }
-            }
-            _ => "A run that is not complete can have no properties.",
-        };
-        format!(
-            "No properties found. {reason}\n\nInspect the run with `snouty runs show {run_id}`."
-        )
+        "No properties found.".to_string()
     } else {
         format!("No properties match ({}).", parts.join(", "))
     }
@@ -714,8 +674,7 @@ enum RunProbe {
     /// The run id is bad: `get_run` also returned a structured 404.
     NotFound,
     /// The run exists; carries its full detail so callers can tailor the message
-    /// (status, and the failure moment for incomplete runs). Boxed to keep the
-    /// enum small.
+    /// to its status. Boxed to keep the enum small.
     Exists(Box<RunDetail>),
     /// `get_run` failed for some other reason (timeout, 502, auth). Propagate
     /// this rather than claiming the run doesn't exist.
@@ -842,49 +801,6 @@ async fn explain_logs_error(
             ))
     } else {
         err
-    }
-}
-
-/// Turn a properties-endpoint failure into a message that explains *why* there
-/// are no properties. Only a 404 is rewritten; every other error (auth, network,
-/// 5xx) passes through untouched.
-async fn explain_properties_error(
-    api: &AntithesisApi,
-    run_id: &str,
-    err: color_eyre::eyre::Report,
-) -> color_eyre::eyre::Report {
-    if api_error_status(&err) != Some(404) {
-        return err;
-    }
-    // A 404 here means either the run doesn't exist or it has no triage report.
-    // Probe the run to tell them apart: a missing run 404s on `get_run` too,
-    // while a real run reports its status (its report just isn't available).
-    match probe_run(api, run_id).await {
-        RunProbe::NotFound => user_error(format!("run not found: {run_id}")),
-        RunProbe::ProbeFailed(probe_err) => probe_err,
-        // Completed runs are expected to have properties; if one 404s anyway,
-        // that's a genuine surprise — keep the original error.
-        RunProbe::Exists(run) if run.status == RunStatus::Completed => err,
-        RunProbe::Exists(run) => {
-            // The message states the error; the *why* and the concrete next steps
-            // hang off it as notes. For an incomplete run we already fetched the
-            // failure moment while probing, so prefill it into the `runs logs` hint.
-            let report = user_error(format!("no properties for run {run_id}"))
-                .note(format!(
-                    "properties are generated when a run completes; this run is {}",
-                    run.status
-                ))
-                .note(format!("inspect the run with `snouty runs show {run_id}`"));
-            // A placeholder 0/0 moment streams no logs, so skip the "view logs"
-            // hint there rather than point at an empty stream.
-            match run.real_failure_moment() {
-                Some(moment) => report.note(format!(
-                    "view logs at the failure with `snouty runs logs {run_id} {} {}`",
-                    moment.input_hash, moment.vtime
-                )),
-                None => report,
-            }
-        }
     }
 }
 
@@ -5020,66 +4936,6 @@ mod tests {
             let result = explain_run_scoped_error(&api, "run-1", api_error(500, "boom 404")).await;
             assert_eq!(api_error_status(&result), Some(500));
             assert!(!format!("{result:#}").contains("run not found"));
-        }
-
-        #[tokio::test]
-        async fn properties_error_reports_missing_run_on_404_probe() {
-            let server = mock_get_run("BAD-ID", 404, json!({"message": "nope"})).await;
-            let api = test_api(&server.uri());
-            let result =
-                explain_properties_error(&api, "BAD-ID", api_error(404, "API error: 404")).await;
-            assert_eq!(format!("{result:#}"), "run not found: BAD-ID");
-        }
-
-        #[tokio::test]
-        async fn properties_error_explains_incomplete_run() {
-            let server = mock_get_run(
-                "run-3",
-                200,
-                json!({
-                    "run_id": "run-3",
-                    "status": "incomplete",
-                    "created_at": "2025-03-18T08:00:00Z",
-                    "launcher": "nightly"
-                }),
-            )
-            .await;
-            let api = test_api(&server.uri());
-            let result =
-                explain_properties_error(&api, "run-3", api_error(404, "API error: 404")).await;
-            // The message is a clean statement of the error …
-            let msg = format!("{result:#}");
-            assert_eq!(msg, "no properties for run run-3", "got: {msg}");
-            // … while the *why* and the next step ride along as notes (rendered by
-            // the full report, not the message chain).
-            let report = format!("{result:?}");
-            assert!(report.contains("this run is incomplete"), "got: {report}");
-            assert!(report.contains("snouty runs show run-3"), "got: {report}");
-        }
-
-        #[tokio::test]
-        async fn properties_error_propagates_non_404_probe_failure() {
-            let server = mock_get_run("run-1", 502, json!({"message": "bad gateway"})).await;
-            let api = test_api(&server.uri());
-            let result =
-                explain_properties_error(&api, "run-1", api_error(404, "API error: 404")).await;
-            assert!(!format!("{result:#}").contains("run not found"));
-            assert_eq!(api_error_status(&result), Some(502));
-        }
-
-        #[tokio::test]
-        async fn properties_error_passes_through_500_with_404_in_body() {
-            let server = MockServer::start().await;
-            let api = test_api(&server.uri());
-            let result = explain_properties_error(
-                &api,
-                "run-1",
-                api_error(500, "API error: 500 — proxy 404 page"),
-            )
-            .await;
-            assert_eq!(api_error_status(&result), Some(500));
-            assert!(!format!("{result:#}").contains("run not found"));
-            assert!(!format!("{result:#}").contains("no properties for run"));
         }
     }
 

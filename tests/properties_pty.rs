@@ -55,5 +55,5 @@ fn long_name_wraps_under_its_value() {
         "{screen}"
     );
     assert_eq!(lines[name + 1], "          limit", "{screen}");
-    assert_eq!(lines[name + 2], "Group     Safety", "{screen}");
+    assert!(lines[name + 2].starts_with("ID"), "{screen}");
 }

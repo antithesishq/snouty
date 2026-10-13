@@ -958,7 +958,7 @@ fn render_properties_detail(properties: &[Property]) -> String {
         .join("\n\n")
 }
 
-/// One property's detail: a `Name`/`Group`/`ID`/`Status` header, then its
+/// One property's detail: a `Name`/`ID`/`Group`/`Status` header, then its
 /// examples.
 fn render_property_detail(property: &Property) -> String {
     let hanging = ProseLayout::HangingIndent {
@@ -970,12 +970,12 @@ fn render_property_detail(property: &Property) -> String {
     if out.is_empty() {
         out.push_str("Name\n");
     }
-    if let Some(group) = property_group(property) {
-        out.push_str(&render_prose_block("Group", &sanitize(group), hanging));
-    }
     if let Some(id) = property.id() {
         out.push_str(&render_field("ID", &sanitize(id)));
         out.push('\n');
+    }
+    if let Some(group) = property_group(property) {
+        out.push_str(&render_prose_block("Group", &sanitize(group), hanging));
     }
     out.push_str(&render_field(
         "Status",

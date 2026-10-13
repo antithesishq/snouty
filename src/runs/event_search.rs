@@ -77,7 +77,7 @@ pub(super) fn render_event_stream(
                 .boxed()
         }
         EventOutput::Human { detail } => {
-            let mut renderer = EventStreamRenderer::new(detail, super::terminal_width());
+            let mut renderer = EventStreamRenderer::new(detail);
             event_lines(stream, error_rows)
                 .map_ok(move |entry| renderer.render_entry(&entry))
                 .boxed()

@@ -120,37 +120,13 @@ impl<'a> Event<'a> for Chatter<'a> {
         }
 
         let container_id = self.0.get("container_id").and_then(Value::as_str);
-        let pairs: Vec<(&String, String, Option<String>)> = payload_pairs(self.0)
-            .filter(|(key, _)| !(path_after_new_command && *key == "new_command_path"))
-            .map(|(key, rendered)| {
-                let short = shorten(key, &rendered, container_id).map(Cow::into_owned);
-                (key, rendered, short)
-            })
-            .collect();
-        let fixed = "composer".len()
-            + pairs
-                .iter()
-                .map(|(key, _, short)| {
-                    " =".len()
-                        + console::measure_text_width(&sanitize(key))
-                        + short.as_deref().map_or(0, console::measure_text_width)
-                })
-                .sum::<usize>();
-        let left = block.width().saturating_sub(fixed);
         let line = DisplayWith(|f: &mut fmt::Formatter<'_>| {
             write!(f, "composer")?;
-            // The generic values share the columns that the rest of the line
-            // leaves, in record order.
-            let mut left = left;
-            for (key, rendered, short) in &pairs {
-                let shown = match short {
-                    Some(short) => Cow::Borrowed(short.as_str()),
-                    None => {
-                        let cut = console::truncate_str(rendered, left.max(MIN_FIT_WIDTH), "…");
-                        left = left.saturating_sub(console::measure_text_width(&cut));
-                        cut
-                    }
-                };
+            for (key, rendered) in payload_pairs(self.0) {
+                if path_after_new_command && key == "new_command_path" {
+                    continue;
+                }
+                let shown = shorten(key, &rendered, container_id);
                 write!(f, " {}={shown}", sanitize(key))?;
             }
             Ok(())
@@ -162,34 +138,29 @@ impl<'a> Event<'a> for Chatter<'a> {
 /// `docker ps` shows this many characters of a container id.
 const CONTAINER_ID_WIDTH: usize = 12;
 
-/// A generic value is never cut below this many columns, even when the line
-/// has fewer left. A shorter cut says too little, so the line wraps instead.
-const MIN_FIT_WIDTH: usize = 12;
-
-/// Shortens one chatter value with a known form for the one-line form. It
-/// gives `None` for a generic value, which the line cuts to the columns it
-/// has left. A path keeps only its final segment, so that one script always
-/// reads the same. A container id keeps its start, as `docker ps` does. A
-/// `new_command` is the record's container id, `_`, and the script name, so
-/// it drops the id. A `weight` is a probability, so three decimals are
-/// sufficient.
-fn shorten<'a>(key: &str, rendered: &'a str, container_id: Option<&str>) -> Option<Cow<'a, str>> {
+/// Shortens one chatter value for the one-line form. A path keeps only its
+/// final segment, so that one script always reads the same. A container id
+/// keeps its start, as `docker ps` does. A `new_command` is the record's
+/// container id, `_`, and the script name, so it drops the id. A `weight` is
+/// a probability, so three decimals are sufficient.
+fn shorten<'a>(key: &str, rendered: &'a str, container_id: Option<&str>) -> Cow<'a, str> {
     match key {
         "command" | "removed_command" | "new_command_path" => {
-            Some(truncate_path(rendered, VALUE_TRUNCATE_WIDTH))
+            truncate_path(rendered, VALUE_TRUNCATE_WIDTH)
         }
-        "container_id" => Some(console::truncate_str(rendered, CONTAINER_ID_WIDTH, "")),
-        "new_command" => container_id
+        "container_id" => console::truncate_str(rendered, CONTAINER_ID_WIDTH, ""),
+        "new_command" => match container_id
             .and_then(|id| rendered.strip_prefix(id))
             .and_then(|rest| rest.strip_prefix('_'))
-            .filter(|script| !script.is_empty())
-            .map(|script| truncate_path(script, VALUE_TRUNCATE_WIDTH)),
-        "weight" => rendered
-            .parse::<f64>()
-            .ok()
-            .filter(|weight| weight.is_finite())
-            .map(|weight| format!("{weight:.3}").into()),
-        _ => None,
+        {
+            Some(script) if !script.is_empty() => truncate_path(script, VALUE_TRUNCATE_WIDTH),
+            _ => console::truncate_str(rendered, VALUE_TRUNCATE_WIDTH, "…"),
+        },
+        "weight" => match rendered.parse::<f64>() {
+            Ok(weight) if weight.is_finite() => format!("{weight:.3}").into(),
+            _ => console::truncate_str(rendered, VALUE_TRUNCATE_WIDTH, "…"),
+        },
+        _ => console::truncate_str(rendered, VALUE_TRUNCATE_WIDTH, "…"),
     }
 }
 
@@ -363,10 +334,15 @@ mod tests {
         let block = render_one(chatter(json!(0.0555555), "a.py"));
         assert!(block.ends_with("weight=0.056 command=a.py"), "got: {block}");
 
-        // An unparsable weight is not rounded, and is fit to the line as
-        // other values are.
+        // An unparsable weight is not rounded, and is truncated as other
+        // values are.
         let block = render_one(chatter(json!("high"), "/opt/t/a.py"));
         assert!(block.contains(" weight=high "), "got: {block}");
+        let block = render_one(chatter(json!("x".repeat(50)), "/opt/t/a.py"));
+        assert!(
+            block.contains(&format!(" weight={}… ", "x".repeat(39))),
+            "got: {block}"
+        );
 
         // --detail: full values.
         let block = render_one_detailed(chatter(json!("0.037937902697115555"), long));
@@ -437,15 +413,16 @@ mod tests {
             "got: {block}"
         );
 
-        // A new_command without the record's container id in front is fit
-        // to the line as other values are, and new_command_path stays out.
+        // A new_command without the record's container id in front is
+        // truncated as other values are, and new_command_path stays out.
         let other = "0123456789abcdef0123456789abcdef0123456789abcdef_x.py";
         let block = render_one(chatter(json!({
             "new_command_path": "t/x.py", "container_id": id, "new_command": other,
         })));
         assert!(
             block.ends_with(&format!(
-                "composer container_id=89e64f6a3e9f new_command={other}"
+                "composer container_id=89e64f6a3e9f new_command={}…",
+                &other[..39]
             )),
             "got: {block}"
         );
@@ -472,48 +449,6 @@ mod tests {
                 "\n                    new_command={id}_parallel_driver_check_ins.py"
             )),
             "got: {block}"
-        );
-    }
-
-    #[test]
-    fn composer_generic_values_fit_the_columns_left_on_the_line() {
-        // Shape observed in release 64.0 run
-        // ec15457239ac0157d76fd3c4d8988a63-64-0.
-        let entry = json!({
-            "tasks_len": "1", "added_task": "parallel_driver_writes.sh",
-            "all_running_tasks": "['parallel_driver_writes.sh']",
-            "source": {"name": "antithesis_test_composer"},
-            "moment": {"input_hash": "-1", "vtime": "74.69880"}
-        });
-        let line = |width: usize| {
-            let block = renderer_with_width(false, width).render_entry(&entry);
-            block.lines().nth(1).unwrap().to_string()
-        };
-
-        // The values before it are whole, and the last value takes the
-        // columns that are left.
-        let fit = line(120);
-        assert_eq!(
-            fit,
-            "74.6988   [test_composer] composer tasks_len=1 \
-             added_task=parallel_driver_writes.sh all_running_tasks=['parallel_driver…"
-        );
-        assert_eq!(console::measure_text_width(&fit), 120);
-
-        // A line that has room cuts nothing.
-        assert!(
-            line(usize::MAX).ends_with(" all_running_tasks=['parallel_driver_writes.sh']"),
-            "got: {}",
-            line(usize::MAX)
-        );
-
-        // With no columns left, a value keeps its first 11 characters.
-        assert!(
-            line(60).ends_with(
-                "composer tasks_len=1 added_task=parallel_dr… all_running_tasks=['parallel_…"
-            ),
-            "got: {}",
-            line(60)
         );
     }
 

@@ -59,6 +59,16 @@ fn parse_poll_interval(value: &str) -> Result<HumanDuration, String> {
     Ok(interval)
 }
 
+/// clap value parser for `launch --duration`: a [`HumanDuration`] of at least
+/// 1 minute, so that a typo such as `0` fails before it starts a run.
+fn parse_launch_duration(value: &str) -> Result<HumanDuration, String> {
+    let duration = value.parse::<HumanDuration>().map_err(|e| e.to_string())?;
+    if duration.seconds() < 60 {
+        return Err("must be at least 1 minute".to_string());
+    }
+    Ok(duration)
+}
+
 /// clap value parser for `validate --timeout`: a [`HumanDuration`] whose bare
 /// number counts seconds, as the flag has always taken.
 fn parse_timeout_seconds(value: &str) -> Result<HumanDuration, ParseDurationError> {
@@ -623,10 +633,10 @@ pub struct LaunchArgs {
     #[arg(long)]
     pub description: Option<String>,
 
-    /// Test duration in minutes, or h/m units (e.g. 90m, 2h, 1h30m)
-    // `HumanDuration: FromStr` gives clap the parser; we send it to the API as
-    // `.minutes().to_string()`, the (possibly fractional) minute count it wants.
-    #[arg(long)]
+    /// Test duration in minutes, or h/m units (e.g. 90m, 2h, 1h30m); at least 1 minute
+    // We send it to the API as `.minutes().to_string()`, the (possibly
+    // fractional) minute count it wants.
+    #[arg(long, value_parser = parse_launch_duration)]
     pub duration: Option<HumanDuration>,
 
     /// Mark the test run as ephemeral. Ephemeral runs will not appear in future reports as a historic result.

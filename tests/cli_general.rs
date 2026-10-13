@@ -243,7 +243,7 @@ fn launch_duration_rejects_non_numeric() {
 fn launch_duration_accepts_fractional() {
     let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
-    // Fractional minutes are kept for backwards compatibility (0.05 -> 3s).
+    // Fractional minutes are kept for backwards compatibility (1.05 -> 63s).
     snouty_with_mock(&mock_url)
         .args([
             "launch",
@@ -252,11 +252,11 @@ fn launch_duration_accepts_fractional() {
             "--config-image",
             "config:latest",
             "--duration",
-            "0.05",
+            "1.05",
         ])
         .assert()
         .success()
-        .stderr(predicate::str::contains(r#""antithesis.duration": "0.05""#));
+        .stderr(predicate::str::contains(r#""antithesis.duration": "1.05""#));
 }
 
 #[test]
@@ -340,7 +340,9 @@ fn launch_reports_api_errors() {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("API error: 404"));
+        .stderr(predicate::str::contains(
+            "unknown launcher: no_such_launcher",
+        ));
 }
 
 #[test]

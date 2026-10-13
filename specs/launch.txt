@@ -47,6 +47,17 @@ stderr 'cannot be used with'
 stderr 'invalid value .abc. for .--duration'
 stderr 'number of minutes.*'
 
+# A --duration below 1 minute fails at flag-parse time, before any request,
+#    so a typo such as `0` cannot start a run.
+! snouty launch --launcher basic_test --config-image config:latest --duration 0
+stderr 'invalid value .0. for .--duration <DURATION>.: must be at least 1 minute'
+! snouty launch --launcher basic_test --config-image config:latest --duration 0m
+stderr 'must be at least 1 minute'
+! snouty launch --launcher basic_test --config-image config:latest --duration 0h
+stderr 'must be at least 1 minute'
+! snouty launch --launcher basic_test --config-image config:latest --duration 59s
+stderr 'must be at least 1 minute'
+
 # Parameters are validated against the testParams schema before making
 #    any API call. A bad antithesis.* value (here via the raw --param escape
 #    hatch) reports only the real error, attributed to the offending field,
@@ -224,17 +235,29 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch --launcher basic_test --config-image config:latest --duration 30 --param 'antithesis.images=app@sha256:abc;db:latest'
 stderr '"antithesis.images": "app@sha256:abc;db:latest"'
 
-# On an error that reaches the test launcher (e.g. an unknown launcher name),
-# the command exits with an error showing the HTTP status. Such errors carry
-# the Launch_Error_Response envelope ({ statusCode, runId: null }), verified
-# against the live API — no message text, and runId is null. The status comes
-# from the response, and the body is echoed for debugging. (The launcher does
-# no request validation beyond auth, so it never returns a 400; 404 is the
-# canonical reachable failure.) TODO: test a 400 here once the launcher
-# validates requests.
+# A 404 from the launch endpoint means that the launcher does not exist. Its
+# body is the Launch_Error_Response envelope ({ statusCode, runId: null }),
+# verified against the live API, with no message text. The command names the
+# launcher and tells the user to ask support for the launchers on the tenant.
 mock-server 404 '{"statusCode":404,"runId":null}'
 ! snouty launch --launcher no_such_launcher --duration 30
-stderr 'API error: 404 Not Found.*'
+stderr 'unknown launcher: no_such_launcher'
+stderr 'ask support@antithesis\.com for the launchers on your tenant'
+! stderr 'API error'
+
+# A 404 without the envelope, such as an HTML page from a wrong host, keeps
+# the generic API error, because it does not show that the launcher is unknown.
+mock-server 404 '<html><body>404 Not Found</body></html>'
+! snouty launch --launcher basic_test --config-image config:latest --duration 30
+stderr 'API error: 404 Not Found'
+! stderr 'unknown launcher'
+
+# Other errors that reach the test launcher show the HTTP status and the body.
+# (The launcher does no request validation beyond auth, so it never returns a
+# 400.) TODO: test a 400 here once the launcher validates requests.
+mock-server 500 '{"statusCode":500,"runId":null}'
+! snouty launch --launcher basic_test --config-image config:latest --duration 30
+stderr 'API error: 500 Internal Server Error.*'
 
 # `snouty run` still works but prints a deprecation warning.
 mock-server 200 '{"message":"Success","runId":"run-123"}'

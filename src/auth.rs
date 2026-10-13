@@ -19,7 +19,6 @@ use color_eyre::{
 use http::HeaderValue;
 use keyring_core::Entry;
 use log::warn;
-use progenitor_client::OperationInfo;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 use tokio::sync::OnceCell;
@@ -441,17 +440,13 @@ impl AuthenticationInfo {
         Ok(Self::for_ambient_configuration_with_attribution(profile, policy)?.extract())
     }
 
-    pub(crate) async fn authenticate_request<E>(
+    pub(crate) async fn authenticate_request(
         &self,
         client: &reqwest::Client,
         base_url: &str,
         request: &mut reqwest::Request,
-        _info: &OperationInfo,
-    ) -> std::result::Result<(), progenitor_client::Error<E>> {
-        let header = self
-            .auth_header(client, base_url)
-            .await
-            .map_err(|e| progenitor_client::Error::Custom(e.to_string()))?;
+    ) -> Result<()> {
+        let header = self.auth_header(client, base_url).await?;
         request
             .headers_mut()
             .insert(reqwest::header::AUTHORIZATION, header);

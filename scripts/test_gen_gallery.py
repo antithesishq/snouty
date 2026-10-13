@@ -109,7 +109,7 @@ class TerminalCapture(unittest.TestCase):
         run = gallery.StoryRun(story, result, None, result, [("variant", result)])
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
-            gallery.write_story(out, story, run, True, "ok")
+            gallery.write_story(out, story, run, True, "ok", "snouty 0.0.0")
             markdown = (out / "sample.md").read_text()
             self.assertEqual(markdown.count("Capture: terminal"), 3)
             for name in ("sample-help", "sample-default", "sample-variant-1"):
@@ -117,11 +117,11 @@ class TerminalCapture(unittest.TestCase):
                 self.assertIn(f"[Download recording]({name}.cast)", markdown)
                 self.assertEqual((out / f"{name}.cast").read_text(), result.cast)
             story.help_cmd = None
-            gallery.write_story(out, story, run, True, "ok")
+            gallery.write_story(out, story, run, True, "ok", "snouty 0.0.0")
             self.assertIn("asciinema play sample.cast", (out / "sample.md").read_text())
             self.assertEqual((out / "sample.cast").read_text(), result.cast)
             run.result = gallery.Result(["doctor", "--json"], '{}\n', "", 0)
-            gallery.write_story(out, story, run, True, "ok")
+            gallery.write_story(out, story, run, True, "ok", "snouty 0.0.0")
             self.assertIn("Capture: pipes (JSON)", (out / "sample.md").read_text())
 
     def test_wording_checks_accept_wrapping_but_require_the_text_and_exit(self):
@@ -271,21 +271,20 @@ or set ANTITHESIS_API_KEY; ask Antithesis support for an API key if you don't ha
         self.assertFalse(passed)
 
     def test_legacy_auth_requires_restrictions_and_migration_actions(self):
-        output = """`snouty runs` and other API commands refuse username/password
-username/password authentication is deprecated; run `snouty login` to switch
-username/password only enables `snouty launch` and `snouty debug`
-read from the [ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD] environment variables
-or set ANTITHESIS_API_KEY; ask Antithesis support for an API key if you don't have one
+        output = """  ⚠ username/password for user [alice] only works for `snouty launch` and `snouty debug`
+      WARNING: username/password is deprecated, and `snouty runs` and other API commands refuse it
+      NOTE: read from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables
+      NOTE: run `snouty login` to store an API key, then `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`
 """
         passed, detail = self.check("doctor-legacy-auth", output, 0)
         self.assertTrue(passed, detail)
         for action in (
-            "refuse username/password",
+            "refuse it",
             "deprecated",
             "snouty launch",
             "snouty debug",
             "snouty login",
-            "ANTITHESIS_API_KEY",
+            "unset ANTITHESIS_USERNAME",
         ):
             with self.subTest(action=action):
                 passed, _ = self.check("doctor-legacy-auth", output.replace(action, ""), 0)

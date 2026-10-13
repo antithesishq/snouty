@@ -936,13 +936,13 @@ impl ClientHooks<ClientState> for generated::Client {
     async fn pre<E>(
         &self,
         request: &mut reqwest::Request,
-        info: &OperationInfo,
+        _info: &OperationInfo,
     ) -> std::result::Result<(), ClientError<E>> {
         self.inner()
             .authn_info
-            .authenticate_request(self.client(), self.baseurl(), request, info)
-            .await?;
-        Ok(())
+            .authenticate_request(self.client(), self.baseurl(), request)
+            .await
+            .map_err(|e| ClientError::Custom(e.to_string()))
     }
 
     async fn exec(

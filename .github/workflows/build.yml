@@ -61,9 +61,17 @@ jobs:
         uses: auguwu/clippy-action@9817d076b82df0194935be9db6154c56ac07b317 # 1.5.0
         with:
           token: ${{secrets.GITHUB_TOKEN}}
+          check-args: --all-targets
+          args: -D warnings
 
       - name: Spell Check Repo
         uses: crate-ci/typos@00f422f3b19c57bc6338715ebfe3316d38768461 # v1.50.3
+
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+
+      - name: Gallery script tests
+        working-directory: scripts
+        run: uv run python -m unittest test_gen_gallery
   test:
     runs-on: ${{ matrix.os }}
     needs: skip-check

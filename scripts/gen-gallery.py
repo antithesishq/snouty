@@ -1404,16 +1404,19 @@ def expected_run_cell(row: dict) -> str:
     return next((c for c in candidates if isinstance(c, str) and c), "-")
 
 
-# `runs list` cuts the LAUNCHER column to this many characters.
-LAUNCHER_WIDTH = 10
+def _cell_matches(cell: str, want: str) -> bool:
+    """A table cell shows `want`, or a prefix of it cut with `…`."""
+    if cell.endswith("…"):
+        return want.startswith(cell[:-1])
+    return cell == want
 
 
 def rows_at_most_with_run_cells(limit: int):
     """`rows_at_most`, plus each table row's LAUNCHER and RUN cells are right.
 
-    LAUNCHER is the launcher, cut to LAUNCHER_WIDTH characters. RUN is
-    `expected_run_cell`; a RUN cell that ends in `…` is truncated, so it must
-    be a prefix of that value.
+    LAUNCHER is the launcher, and RUN is `expected_run_cell`. A cell that
+    ends in `…` is cut to fit the terminal, so it must be a prefix of that
+    value.
     """
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
@@ -1426,16 +1429,10 @@ def rows_at_most_with_run_cells(limit: int):
             cells = re.split(r" {2,}", line.strip(), maxsplit=4) if line else []
             launcher_cell, cell = cells[3:] if len(cells) == 5 else ("", "")
             launcher = row.get("launcher") or "-"
-            if len(launcher) > LAUNCHER_WIDTH:
-                launcher = launcher[: LAUNCHER_WIDTH - 1] + "…"
-            if launcher_cell != launcher:
+            if not _cell_matches(launcher_cell, launcher):
                 bad.append(f"{run_id}: LAUNCHER {launcher_cell!r} != {launcher!r}")
             want = expected_run_cell(row)
-            if cell.endswith("…"):
-                ok = want.startswith(cell[:-1])
-            else:
-                ok = cell == want
-            if not ok:
+            if not _cell_matches(cell, want):
                 bad.append(f"{run_id}: {cell!r} != {want!r}")
         n = len(rows)
         detail = "; ".join(bad) or "LAUNCHER and RUN cells match"

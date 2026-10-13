@@ -66,6 +66,9 @@ keyring-core = "1.0.0"
 textwrap = { version = "0.16.2", default-features = false, features = ["unicode-width"] }
 indoc = "2.0.7"
 sha2 = "0.10"
+# No default features: snouty never derives `Tabled` or uses the macros. `ansi`
+# measures and cuts a colored cell by its visible width.
+tabled = { version = "0.22", default-features = false, features = ["ansi"] }
 # Only the crossterm backend: the default `fuzzy` filter (fuzzy-matcher) is
 # pointless for a three-entry menu, and the `macros`/`one-liners` sugar is unused.
 inquire = { version = "0.9", default-features = false, features = ["crossterm"] }

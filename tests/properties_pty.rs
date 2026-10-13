@@ -39,7 +39,9 @@ fn long_name_wraps_under_its_value() {
 
     let mut session = OsSession::spawn(command).expect("spawn snouty on a PTY");
     session.set_expect_timeout(Some(Duration::from_secs(30)));
-    let captures = session.expect(expectrl::Eof).expect("snouty exits");
+    let captures = session
+        .expect("<hash> <vtime>")
+        .expect("the detail ends with the runs logs next step");
     let screen =
         String::from_utf8_lossy(&strip_ansi_escapes::strip(captures.as_bytes())).replace('\r', "");
 

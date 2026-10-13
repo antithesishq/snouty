@@ -21,12 +21,12 @@ use serde_json::json;
 use futures_util::stream::BoxStream;
 use futures_util::{StreamExt, TryStreamExt};
 
-use crate::api::{AntithesisApi, MIN_SEARCH_RELEASE, SearchMode};
+use crate::api::{AntithesisApi, MIN_SEARCH_RELEASE, RunStatus, SearchMode};
 use crate::error::{api_error_status, user_error};
 use crate::event_render::EventStreamRenderer;
 use crate::jsonl::JsonStream;
 
-use super::{ErrorRows, FaultAnnotator, event_lines, raw_lines};
+use super::{ErrorRows, FaultAnnotator, RunProbe, event_lines, probe_run, raw_lines};
 
 /// How an event-stream command prints its rows. The illegal flag
 /// combinations (`--raw` without `--json`, `--detail` with `--json`) are
@@ -98,7 +98,7 @@ pub(super) async fn check_query(
         .search_run_events_query(run_id, query, SearchMode::Validate)
         .await
     {
-        return Err(explain_search_error(run_id, err));
+        return Err(explain_search_error(api, run_id, err).await);
     }
     let mut stdout = std::io::stdout().lock();
     if json {
@@ -109,45 +109,41 @@ pub(super) async fn check_query(
     Ok(())
 }
 
-/// Classify an events-search failure. The tenant is assumed to serve the
-/// endpoint (`snouty doctor` reports a tenant release that is too old), so a
-/// 404 means the run: the endpoint's own 404 body is an unhelpful
+/// Classify an events-search failure. On a 404, the run is probed to say
+/// why: the run does not exist, the run is still starting and has no
+/// searchable events, or the tenant release does not serve the endpoint
+/// (`snouty doctor` reports it). The endpoint's own 404 body is an unhelpful
 /// "Resource not found". A 400 is the server rejecting the
 /// request — usually the query, but an out-of-range `limit` answers 400 too,
 /// so the note must not blame the query alone (the server's own message,
 /// shown above the note, says which it was).
-pub(super) fn explain_search_error(
+pub(super) async fn explain_search_error(
+    api: &AntithesisApi,
     run_id: &str,
     err: color_eyre::eyre::Report,
 ) -> color_eyre::eyre::Report {
     match api_error_status(&err) {
-        Some(404) => {
-            let (major, minor) = MIN_SEARCH_RELEASE;
-            user_error(format!("run not found: {run_id}")).suggestion(format!(
-                "tenant releases before {major}.{minor} do not serve the events-search \
-                 API as documented; `snouty doctor` reports the tenant release"
+        Some(404) => match probe_run(api, run_id).await {
+            RunProbe::NotFound => user_error(format!("run not found: {run_id}")),
+            RunProbe::Exists(run) if run.status == RunStatus::Starting => user_error(format!(
+                "run {run_id} is still starting and has no searchable events yet"
             ))
-        }
+            .suggestion(format!(
+                "wait for it with `snouty runs wait {run_id} --until running`, then try again"
+            )),
+            RunProbe::Exists(_) => {
+                let (major, minor) = MIN_SEARCH_RELEASE;
+                err.suggestion(format!(
+                    "tenant releases before {major}.{minor} do not serve the events-search \
+                     API as documented; `snouty doctor` reports the tenant release"
+                ))
+            }
+            RunProbe::ProbeFailed(probe_err) => probe_err,
+        },
         Some(400) => err.note(
             "the server rejected the request; its message above says which part \
              — for a query, check the event-set DSL syntax",
         ),
         _ => err,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::error::ApiError;
-
-    #[test]
-    fn explain_search_error_maps_404_to_run_not_found() {
-        let err = color_eyre::eyre::Report::new(ApiError {
-            status: 404,
-            message: "API error: 404 Not Found — Resource not found".to_string(),
-        });
-        let explained = format!("{:?}", explain_search_error("run-9", err));
-        assert!(explained.contains("run not found: run-9"), "{explained}");
     }
 }

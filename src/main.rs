@@ -453,7 +453,7 @@ async fn cmd_debug(
     if let Some(run_id) = param(ANT_DEBUGGING_RUN_ID)
         && !api.uses_password()
     {
-        snouty::runs::ensure_run_exists(&api, run_id).await?;
+        snouty::runs::ensure_run_debuggable(&api, run_id).await?;
         if let Some(input_hash) = param(ANT_DEBUGGING_INPUT_HASH) {
             snouty::runs::ensure_input_hash_exists(&api, run_id, input_hash).await?;
         }

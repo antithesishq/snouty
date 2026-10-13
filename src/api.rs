@@ -7,9 +7,7 @@ use color_eyre::eyre::{Context, Report, Result, eyre};
 use color_eyre::{Section, SectionExt};
 use futures_util::{StreamExt, stream};
 use log::debug;
-use progenitor_client::{
-    ClientHooks, ClientInfo, Error as ClientError, OperationInfo, ResponseValue,
-};
+use progenitor_client::{ClientHooks, ClientInfo, Error as ClientError, OperationInfo};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, Proxy};
 use serde::de::DeserializeOwned;
@@ -581,7 +579,24 @@ impl AntithesisApi {
             .body(body)
             .send()
             .await;
-        let response: generated::types::LaunchResponse = finish_launch(result).await?;
+        // The OpenAPI spec documents a 404 that carries the Launch_Error_Response
+        // envelope (live body: `{"statusCode":404,"runId":null}`) as an unknown
+        // launcher. A 404 without the envelope, such as an HTML page from a
+        // wrong host, keeps the generic API error.
+        let response: generated::types::LaunchResponse = match result {
+            Ok(response) => response.into_inner(),
+            Err(ClientError::UnexpectedResponse(response))
+                if response.status() == reqwest::StatusCode::NOT_FOUND =>
+            {
+                let body = read_error_body(response).await;
+                if serde_json::from_str::<generated::types::LaunchErrorResponse>(&body).is_ok() {
+                    return Err(user_error(format!("unknown launcher: {launcher}"))
+                        .suggestion("check the launcher name, or ask support@antithesis.com for the launchers on your tenant"));
+                }
+                return Err(format_api_error(404, &error_body_message(&body)));
+            }
+            Err(err) => recover_launch_error(err).await?,
+        };
         Ok(LaunchResponse {
             run_id: response.run_id,
         })
@@ -589,8 +604,11 @@ impl AntithesisApi {
 
     pub async fn launch_debugging(&self, params: &Params) -> Result<LaunchResponse> {
         let body = launch_mvd_request(params)?;
-        let result = self.client.launch_mvd().body(body).send().await;
-        let response: generated::types::LaunchMvdResponse = finish_launch(result).await?;
+        let response: generated::types::LaunchMvdResponse =
+            match self.client.launch_mvd().body(body).send().await {
+                Ok(response) => response.into_inner(),
+                Err(err) => recover_launch_error(err).await?,
+            };
         Ok(LaunchResponse {
             run_id: response.run_id,
         })
@@ -1260,7 +1278,7 @@ fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
     .wrap_err("failed to build launch request")
 }
 
-/// Resolve a launch / debugging-launch webhook response.
+/// Resolve the error from a launch / debugging-launch webhook call.
 ///
 /// These webhooks return an HTTP status the OpenAPI spec under-documents (it
 /// lists a single 2xx, while the live API has been seen to answer 200). The
@@ -1270,18 +1288,13 @@ fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
 /// errors, status first — `build.rs` leaves them undocumented, so the status is
 /// always there to lead with. TODO: drop the any-2xx path once the spec
 /// documents the 200 these webhooks send.
-async fn finish_launch<T: DeserializeOwned>(
-    result: std::result::Result<ResponseValue<T>, ClientError<()>>,
-) -> Result<T> {
-    match result {
-        Ok(response) => Ok(response.into_inner()),
-        Err(ClientError::UnexpectedResponse(response)) if response.status().is_success() => {
-            response
-                .json::<T>()
-                .await
-                .wrap_err("parsing launch response body")
-        }
-        Err(err) => Err(format_api_client_error(err).await),
+async fn recover_launch_error<T: DeserializeOwned>(err: ClientError<()>) -> Result<T> {
+    match err {
+        ClientError::UnexpectedResponse(response) if response.status().is_success() => response
+            .json::<T>()
+            .await
+            .wrap_err("parsing launch response body"),
+        err => Err(format_api_client_error(err).await),
     }
 }
 
@@ -2362,26 +2375,27 @@ mod tests {
     }
 
     // Error bodies are taken as they come — empty, HTML, the live envelope, or
-    // the pre-58.6 `{message}` shape — and every one keeps the HTTP status.
+    // the pre-58.6 `{message}` shape — and every one keeps the HTTP status. A
+    // 404 without the envelope must not claim an unknown launcher.
     #[tokio::test]
     async fn launch_test_reports_the_status_for_any_error_body() {
-        for body in [
-            "",
-            "<html><body>404 Not Found</body></html>",
-            r#"{"statusCode":404,"runId":null}"#,
+        for (status, body) in [
+            (404, ""),
+            (404, "<html><body>404 Not Found</body></html>"),
+            (500, r#"{"statusCode":500,"runId":null}"#),
         ] {
-            let mock_server = mock_launch_test(404, body).await;
+            let mock_server = mock_launch_test(status, body).await;
             let api = test_api_optionally_with_cache(&mock_server, None);
             let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
 
             let report = api.launch_test("basic_test", &params).await.unwrap_err();
             assert_eq!(
                 crate::error::api_error_status(&report),
-                Some(404),
+                Some(status),
                 "body {body:?} lost its status"
             );
             assert!(
-                format!("{report:#}").contains("API error: 404 Not Found"),
+                format!("{report:#}").contains(&format!("API error: {status}")),
                 "body {body:?} produced: {report:#}"
             );
         }

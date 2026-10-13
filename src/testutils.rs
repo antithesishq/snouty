@@ -1041,7 +1041,10 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
     let after = mock_query_param(query, "after");
 
     // Full-precision vtimes so a precision fault fails a spec (see specs/runs.txt).
-    let failing = r#"{"id":"97cf5fcafa500ed62bf109d81834c5b881a2c854","name":"Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"group":"Safety","example_count":12,"counterexample_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"398.4898056755774"}}],"counterexamples":[{"moment":{"input_hash":"-200","vtime":"313.15126806590706"}},{"moment":{"input_hash":"-100","vtime":"45.334635781589895"}}]}"#.to_string();
+    // The API prefixes a grouped property's name with `<group>: `, as observed on
+    // the antithesis-orbitinghail tenant; "Peak memory" keeps the bare name that
+    // older runs send.
+    let failing = r#"{"id":"97cf5fcafa500ed62bf109d81834c5b881a2c854","name":"Safety: Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"group":"Safety","example_count":12,"counterexample_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"398.4898056755774"}}],"counterexamples":[{"moment":{"input_hash":"-200","vtime":"313.15126806590706"}},{"moment":{"input_hash":"-100","vtime":"45.334635781589895"}}]}"#.to_string();
     // A failing non-event ("system") property: the violating value lives in
     // `counterexamples`, so `--detail` must label it apart from the satisfying
     // `examples`.

@@ -217,6 +217,9 @@ snouty runs properties $R_run_id
 [!staging] stdout 'STATUS.*EXAMPLES.*NAME'
 # Counter has 12 examples and 3 counterexamples -> `12/3`.
 [!staging] stdout 'failing.*12/3.*Counter value stays below limit'
+# The API sends the name as `Safety: Counter value…`. The heading carries the
+# group, so NAME drops the `Safety: ` prefix.
+[!staging] ! stdout 'Safety: Counter'
 [!staging] stdout 'passing.*Setup completes'
 
 # `snouty runs properties --failing` shows only failing properties.
@@ -240,7 +243,7 @@ stderr '.*cannot be used with.*'
 # src/vtime.rs for why an f64 holds it exactly).
 mock-runs-server
 snouty --json runs properties $R_run_id
-[!staging] stdout '"name".*"Counter value stays below limit"'
+[!staging] stdout '"name":"Safety: Counter value stays below limit"'
 [!staging] stdout '"status".*"Failing"'
 [!staging] stdout '"vtime":45\.334635781589895'
 [!staging] ! stdout '"description"'
@@ -252,6 +255,8 @@ snouty --json runs properties $R_run_id
 mock-runs-server
 snouty runs properties $R_run_id --name 'Counter value' --detail
 [!staging] stdout 'STATUS.*HASH.*VTIME'
+# Name shows the name without its group prefix, and Group follows it.
+[!staging] stdout '^Name      Counter value stays below limit\nGroup     Safety\nID        97cf5fcafa500ed62bf109d81834c5b881a2c854\nStatus    failing$'
 [!staging] stdout '(?s)failing.*-100.*45\.334635781589895.*failing.*-200.*313\.15126806590706.*passing.*-300.*398\.4898056755774'
 [!staging] ! stdout 'Details|Counter stays within safe bounds'
 # The Examples label carries the run's totals, and says how many of them the

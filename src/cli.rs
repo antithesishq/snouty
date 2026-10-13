@@ -1077,7 +1077,8 @@ object on its own line. --json is mutually exclusive with --detail:
         #[arg(long)]
         failing: bool,
 
-        /// Only properties whose name contains this substring (case-insensitive)
+        /// Only properties whose name, as `--json` shows it, contains this
+        /// substring (case-insensitive)
         #[arg(long)]
         name: Option<String>,
 

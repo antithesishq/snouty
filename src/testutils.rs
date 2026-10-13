@@ -1043,11 +1043,11 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
     let after = mock_query_param(query, "after");
 
     // Full-precision vtimes so a precision fault fails a spec (see specs/runs.txt).
-    let failing = r#"{"name":"Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"group":"Safety","example_count":12,"counterexample_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"398.4898056755774"}}],"counterexamples":[{"moment":{"input_hash":"-200","vtime":"313.15126806590706"}},{"moment":{"input_hash":"-100","vtime":"45.334635781589895"}}]}"#.to_string();
+    let failing = r#"{"id":"97cf5fcafa500ed62bf109d81834c5b881a2c854","name":"Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"group":"Safety","example_count":12,"counterexample_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"398.4898056755774"}}],"counterexamples":[{"moment":{"input_hash":"-200","vtime":"313.15126806590706"}},{"moment":{"input_hash":"-100","vtime":"45.334635781589895"}}]}"#.to_string();
     // A failing non-event ("system") property: the violating value lives in
     // `counterexamples`, so `--detail` must label it apart from the satisfying
     // `examples`.
-    let failing_nonevent = r#"{"name":"Peak memory stays below cap","description":"Peak memory never exceeds the configured limit","status":"Failing","is_event":false,"group":"Resources","example_count":2,"counterexample_count":1,"examples":[820,910],"counterexamples":[1340]}"#.to_string();
+    let failing_nonevent = r#"{"id":"d2558d97fabac81ba7eb4676e47a0cba558263f8","name":"Peak memory stays below cap","description":"Peak memory never exceeds the configured limit","status":"Failing","is_event":false,"group":"Resources","example_count":2,"counterexample_count":1,"examples":[820,910],"counterexamples":[1340]}"#.to_string();
     let passing = r#"{"name":"Setup completes","description":"Setup eventually succeeds","status":"Passing","is_event":false,"example_count":1,"counterexample_count":0,"examples":[{"final_counter":42}]}"#.to_string();
 
     let (data, next_cursor) = match (status.as_deref(), after.as_deref()) {

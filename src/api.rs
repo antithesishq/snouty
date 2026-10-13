@@ -185,14 +185,13 @@ impl From<RunSubStatus> for String {
     }
 }
 
-/// Lowercase like `RunStatus`; a value this build does not know prints as the
-/// server spelled it.
+/// Lowercase like `RunStatus`, also for a value this build does not know.
 impl std::fmt::Display for RunSubStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Ready => "ready",
-            Self::Other(value) => value,
-        })
+        match self {
+            Self::Ready => f.write_str("ready"),
+            Self::Other(value) => f.write_str(&value.to_lowercase()),
+        }
     }
 }
 
@@ -320,6 +319,13 @@ impl Property {
         match self {
             Self::EventProperty(p) => p.status,
             Self::NonEventProperty(p) => p.status,
+        }
+    }
+
+    pub fn id(&self) -> Option<&str> {
+        match self {
+            Self::EventProperty(p) => p.id.as_deref(),
+            Self::NonEventProperty(p) => p.id.as_deref(),
         }
     }
 }
@@ -2893,7 +2899,7 @@ mod tests {
 
         let loading = run("Loading");
         assert!(!loading.is_ready());
-        assert_eq!(loading.status_label(), "in_progress:Loading");
+        assert_eq!(loading.status_label(), "in_progress:loading");
         assert_eq!(
             serde_json::to_value(&loading).unwrap()["sub_status"],
             "Loading"

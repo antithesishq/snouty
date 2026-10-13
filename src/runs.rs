@@ -947,7 +947,7 @@ fn render_properties_detail(properties: &[Property]) -> String {
         .join("\n\n")
 }
 
-/// One property's detail within a group section: a `Name`/`Status`
+/// One property's detail within a group section: a `Name`/`ID`/`Status`
 /// header (no `Group` line — the section heading carries it) followed by its
 /// examples. Every field goes through [`render_field`], so a short value sits
 /// inline against the value column while a long or multi-line one drops to an
@@ -956,6 +956,10 @@ fn render_property_detail(property: &Property) -> String {
     let mut out = String::new();
     out.push_str(&render_field("Name", &sanitize(property.name())));
     out.push('\n');
+    if let Some(id) = property.id() {
+        out.push_str(&render_field("ID", &sanitize(id)));
+        out.push('\n');
+    }
     out.push_str(&render_field(
         "Status",
         property_status_label(property.status()),

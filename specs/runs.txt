@@ -260,6 +260,9 @@ snouty runs properties $R_run_id --name 'Counter value' --detail
 [!staging] stdout '^Examples  showing 1 out of 12 passing examples and 2 out of 3 failing examples$'
 [!staging] stdout '^view logs leading up to an example:$'
 [!staging] stdout '^  snouty runs logs \S+ <hash> <vtime>$'
+# The property's stable ID follows its name. A property that has no ID has no
+# ID line.
+[!staging] stdout '(?s)^Name +Counter value stays below limit\nID +97cf5fcafa500ed62bf109d81834c5b881a2c854\nStatus +failing$'
 
 # --name is a case-insensitive substring filter over property names; without
 # --detail it just narrows the (grouped) table.
@@ -280,6 +283,7 @@ snouty runs properties $R_run_id --group safety
 mock-runs-server
 snouty runs properties $R_run_id --name 'Setup completes' --detail
 [!staging] stdout 'Result.*final_counter'
+[!staging] ! stdout '^ID '
 [!staging] stdout '"final_counter".*42'
 [!staging] ! stdout 'view logs'
 

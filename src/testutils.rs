@@ -1123,7 +1123,7 @@ fn extract_quoted_literals(query: &str) -> Vec<String> {
 /// other query keeps every string literal it holds, which is what
 /// `contains({...})` and a hand-written filter need.
 fn query_needles(query: &str) -> Vec<String> {
-    let literals = match query.split_once(crate::event_set_dsl::NEEDLE_FILTER.trim()) {
+    let literals = match query.split_once(crate::event_set_dsl::NEEDLE_FILTER) {
         Some((_, applied)) => {
             let array = applied
                 .find('[')
@@ -1463,7 +1463,7 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
     // field names and all. The mock honors what was asked, so a spec sees
     // the difference between the two — that difference is what made `runs
     // events` answer differently on each backend (issue #252).
-    let reads_event_json = !query.contains(crate::event_set_dsl::NEEDLE_FILTER.trim())
+    let reads_event_json = !query.contains(crate::event_set_dsl::NEEDLE_FILTER)
         && query.contains("JSON.stringify(ev)");
     // The search reaches bootstrap events, which the log stream never holds
     // (they precede its timeline). A query carrying `SKIP_BOOTSTRAP` drops them.
@@ -1536,10 +1536,15 @@ mod tests {
         let query = crate::event_set_dsl::substring_filter(&[
             "Raft".to_string(),
             r#"a "]) quote"#.to_string(),
+            "http://etcd0".to_string(),
         ]);
         assert_eq!(
             query_needles(&query),
-            vec!["raft".to_string(), r#"a "]) quote"#.to_string()]
+            vec![
+                "raft".to_string(),
+                r#"a "]) quote"#.to_string(),
+                "http://etcd0".to_string()
+            ]
         );
         // A query snouty did not build keeps every literal it holds.
         assert_eq!(

@@ -23,6 +23,8 @@ stdout '^  ANTITHESIS_REPOSITORY +Container registry for pushing images\.$'
 snouty launch --help
 stdout '^Credentials come from `snouty login` or from the environment variables below\.$'
 stdout 'wait for the run to finish with `snouty runs wait <run_id>`'
+stdout '`snouty runs search <run_id> --follow <query>`'
+stdout 'A pre-built\s+config image \(--config-image or --param antithesis\.config_image\) turns this\s+off'
 
 # The help documents user-defined `attrs.*` params, which `runs show` lists.
 snouty launch --help
@@ -155,6 +157,12 @@ stderr '"antithesis.source": "ci-pipeline"'
 stderr '"run.caller_type": "snouty"'
 stdout 'Test run started: run_id run-123'
 
+# After the run ID, the output names the next steps: wait for the run to
+#    finish, or watch its errors live with `runs search --follow`. A live
+#    search needs a running run, so that step waits for it first.
+stdout '(?s)Test run started: run_id run-123\n\nWait for the run to finish with:\n  snouty runs wait run-123\n'
+stdout '(?s)Or watch its errors live after it starts running:\n  snouty runs wait run-123 --until running\n  snouty runs search run-123 --follow .contains\(.output_text: "error".\).$'
+
 # A --param value replaces the default run.caller_type.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch --launcher basic_test --config-image config:latest --duration 30 --param run.caller_type=ci
@@ -190,6 +198,7 @@ snouty --json launch --launcher basic_test --config-image config:latest --durati
 stdout '\s*"runId": "run-123".*'
 ! stdout '.*statusCode.*'
 ! stdout 'Test run started.*'
+! stdout 'snouty runs'
 
 # 6b. --ephemeral flag sets antithesis.is_ephemeral to "true".
 mock-server 200 '{"message":"Success","runId":"run-123"}'
@@ -326,7 +335,7 @@ exec git init -q -b feature/vcs checkout
 cd checkout
 exec git -c user.name=snouty -c user.email=snouty@example.com commit -q --allow-empty -m init
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30
+snouty launch --launcher advanced_test --duration 30
 stderr '"vcs.repo_branch": "feature/vcs"'
 stderr '"vcs.version_id": "[0-9a-f]{40}"'
 ! stderr 'vcs.repo_type'
@@ -334,7 +343,7 @@ stderr '"vcs.version_id": "[0-9a-f]{40}"'
 
 exec git remote add origin git@github.com:acme/widget.git
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30
+snouty launch --launcher advanced_test --duration 30
 stderr '"vcs.repo_type": "github"'
 stderr '"vcs.repo_owner": "acme"'
 stderr '"vcs.repo_name": "widget"'
@@ -342,10 +351,24 @@ stderr '"vcs.repo_branch": "feature/vcs"'
 stderr '"vcs.version_id": "[0-9a-f]{40}"'
 stderr '"vcs.version_link": "https://github.com/acme/widget/commit/[0-9a-f]{40}"'
 
+# A pre-built config image has no config dir, and the current directory need
+#    not hold its source, so it turns the detection off. `--param vcs.*`
+#    values are still sent.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --duration 30
+! stderr 'vcs\.'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --duration 30 --param antithesis.config_image=config:latest
+! stderr 'vcs\.'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --param vcs.version_id=abc123
+stderr '"vcs.version_id": "abc123"'
+! stderr 'vcs.repo_owner'
+
 # A --param for a detected key turns the detection off, so that a detected
 #    commit link cannot sit next to a different commit.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30 --param vcs.version_id=abc123
+snouty launch --launcher advanced_test --duration 30 --param vcs.version_id=abc123
 stderr '"vcs.version_id": "abc123"'
 ! stderr 'vcs.version_link'
 ! stderr 'vcs.repo_branch'
@@ -353,7 +376,7 @@ stderr '"vcs.version_id": "abc123"'
 # A --param for a `vcs.*` key that snouty does not detect is sent with the
 #    detected values.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30 --param vcs.system_name=widget
+snouty launch --launcher advanced_test --duration 30 --param vcs.system_name=widget
 stderr '"vcs.system_name": "widget"'
 stderr '"vcs.repo_owner": "acme"'
 stderr '"vcs.version_id": "[0-9a-f]{40}"'
@@ -366,18 +389,18 @@ stderr 'no parameters provided.*'
 
 # --no-vcs turns the detection off.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30 --no-vcs
+snouty launch --launcher advanced_test --duration 30 --no-vcs
 ! stderr 'vcs\.'
 
 # A detached HEAD has no branch.
 exec git checkout -q --detach
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30
+snouty launch --launcher advanced_test --duration 30
 ! stderr 'vcs.repo_branch'
 stderr '"vcs.version_id": "[0-9a-f]{40}"'
 
 # A GIT_DIR from a git hook does not redirect the detection.
 env GIT_DIR=/nonexistent
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30
+snouty launch --launcher advanced_test --duration 30
 stderr '"vcs.repo_owner": "acme"'

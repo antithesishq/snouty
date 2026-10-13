@@ -3064,9 +3064,11 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "variable list should describe each setting without implying that its variable "
             "is required or preferred. Username/password should remain marked deprecated. "
             "The help should say that credentials come from `snouty login` and name the next "
-            "step, `snouty runs wait <run_id>`. `--performance-tier` should list the three "
-            "tiers: standard, fast, and turbo. No code span in a flag's help should split "
-            "across two lines.",
+            "step, `snouty runs wait <run_id>`, and how to watch the run live with "
+            "`snouty runs search <run_id> --follow`. It should say that a pre-built config "
+            "image turns off the `vcs.*` detection. `--performance-tier` should list the "
+            "three tiers: standard, fast, and turbo. No code span in a flag's help should "
+            "split across two lines.",
             ["launch"],
         ),
         _help_story(

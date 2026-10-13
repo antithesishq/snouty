@@ -164,7 +164,9 @@ them on the run and `snouty runs show` lists them:
 When the config dir (or the current directory, without --config) is in a git
 checkout, the launch records the checked-out commit and branch in run metadata.
 For a github.com `origin` remote, it also records the repository and a link to
-the commit. `snouty runs show` lists them under Version Control.
+the commit. `snouty runs show` lists them under Version Control. A pre-built
+config image (--config-image or --param antithesis.config_image) turns this
+off.
 
 Additional container images that the config parser can't discover (e.g. an
 image referenced only in a Kubernetes CRD field) can be registered with the
@@ -178,7 +180,8 @@ JSON object:
   snouty launch --json --launcher basic_test --duration 30 | jq -r .runId
 
 Next, wait for the run to finish with `snouty runs wait <run_id>`. The run ID is
-the `run_id` value in the launch output, or `.runId` in the --json output.
+the `run_id` value in the launch output, or `.runId` in the --json output. To
+watch its events live, use `snouty runs search <run_id> --follow <query>`.
 
 Credentials come from `snouty login` or from the environment variables below.
 Tenant and repository may be set via the environment variables below, or in a
@@ -677,7 +680,8 @@ pub struct LaunchArgs {
     pub performance_tier: Option<PerformanceTier>,
 
     /// Do not record the commit, branch, and repository of the local git
-    /// checkout in run metadata
+    /// checkout in run metadata. A pre-built config image (--config-image)
+    /// also turns the detection off
     #[arg(long)]
     pub no_vcs: bool,
 

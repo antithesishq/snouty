@@ -1,9 +1,10 @@
-use std::io::{self, ErrorKind, IsTerminal, Read};
+use std::io::{self, ErrorKind, IsTerminal, Read, Write};
 use std::path::Path;
 use std::process::Command;
 
 use clap::{CommandFactory, Parser};
 use clap_complete::Shell;
+use indoc::writedoc;
 use log::{debug, info};
 
 use color_eyre::Section;
@@ -68,10 +69,7 @@ async fn main() {
         .install()
         .unwrap();
     env_logger::Builder::from_default_env()
-        .format(|buf, record| {
-            use std::io::Write;
-            writeln!(buf, "{}", record.args())
-        })
+        .format(|buf, record| writeln!(buf, "{}", record.args()))
         .init();
     if let Err(report) = run(Cli::parse()).await {
         // One rendering for every error: `render_report` collapses the chain
@@ -264,8 +262,14 @@ async fn cmd_launch(
     }
 
     // A user value for any detected key turns detection off, so that a
-    // detected commit link cannot point at a different commit.
-    if !args.no_vcs && !VCS_PARAMS.iter().any(|&(key, _)| params.contains_key(key)) {
+    // detected commit link cannot point at a different commit. A pre-built
+    // config image has no config dir, and the current directory need not hold
+    // its source, so it turns detection off too.
+    let prebuilt_image = args.config.is_none() && params.contains_key(ANT_CONFIG_IMAGE);
+    if !args.no_vcs
+        && !prebuilt_image
+        && !VCS_PARAMS.iter().any(|&(key, _)| params.contains_key(key))
+    {
         params.merge(detect_vcs_params(
             args.config.as_deref().unwrap_or(Path::new(".")),
         ));
@@ -333,11 +337,24 @@ async fn cmd_launch(
 
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
+    } else if let Some(run_id) = response.run_id.as_deref() {
+        // `writedoc!` and not `println!`: a reader that stops after the run ID
+        // line (`| head -1`) closes the pipe, and `println!` panics on that.
+        writedoc!(
+            io::stdout(),
+            r#"
+                Test run started: run_id {run_id}
+
+                Wait for the run to finish with:
+                  snouty runs wait {run_id}
+
+                Or watch its errors live after it starts running:
+                  snouty runs wait {run_id} --until running
+                  snouty runs search {run_id} --follow 'contains({{output_text: "error"}})'
+            "#
+        )?;
     } else {
-        println!(
-            "Test run started: run_id {}",
-            response.run_id.as_deref().unwrap_or("(unknown)")
-        );
+        println!("Test run started: run_id (unknown)");
     }
 
     Ok(())

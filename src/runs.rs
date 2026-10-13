@@ -1925,7 +1925,9 @@ async fn cmd_runs_exec(
 ) -> Result<()> {
     debug!("executing command in run: {}", run_id);
     let timeout = exec.timeout;
-    let mut renderer = exec.events.then(|| EventStreamRenderer::new(false));
+    let mut renderer = exec
+        .events
+        .then(|| EventStreamRenderer::new(false, terminal_width()));
     // A cold moment is in its rewarm source, not in RUN_ID, so a debugging
     // session at that moment starts from the source.
     let (rewarm_flag, debug_target) = match &exec.rewarm {

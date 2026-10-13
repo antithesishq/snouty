@@ -622,6 +622,10 @@ stdout '^2\.0       \[app\] \{"level":"warn","msg":"slow request"\}$'
 stdout '^311\.8487  \[control\] CATALOG AlwaysOrUnreachable "Counter'\''s value retrieved"$'
 stdout '^400\.5     \[test_composer\] task started core/parallel_driver_fetch$'
 stdout '^401\.5     \[fault_injector\] FAULT network/clog Stopped max=0\.3s nodes=client2,setup$'
+# A composer `new_command` names the script, so its `new_command_path` stays
+# behind --detail.
+stdout '^400\.7     \[test_composer\] composer container_id=d700ef3d05a2 new_command=parallel_driver_fetch$'
+! stdout 'new_command_path'
 # Locations and attached details stay behind --detail.
 ! stdout '@ control\.go'
 # Consecutive timeline segments are separated by one blank line.
@@ -648,6 +652,9 @@ stdout '^moment -123$'
 stdout '^moment -456$'
 stdout '^311\.8487535319291   \[control\] CATALOG AlwaysOrUnreachable "Counter'\''s value retrieved"$'
 stdout '^ +@ control\.go:get:87$'
+# --detail shows every composer value whole.
+stdout '(?s)\n +new_command=d700ef3d05a263_parallel_driver_fetch\n +new_command_path=core/parallel_driver_fetch\n'
+stdout -count=1 'new_command_path='
 
 # `--detail` formats human output, so it cannot combine with `--json` (same
 # rule as `runs list`/`runs properties`; `runs events` and `runs search`

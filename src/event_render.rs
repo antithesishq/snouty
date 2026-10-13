@@ -120,6 +120,9 @@ const SOURCE_TRUNCATE_WIDTH: usize = 40;
 struct Block<'a> {
     out: &'a mut String,
     detail: bool,
+    /// The columns left on the headline's line after the vtime and source
+    /// cells.
+    width: usize,
     headline_done: bool,
 }
 
@@ -132,6 +135,10 @@ impl fmt::Write for Block<'_> {
 impl Block<'_> {
     fn detail(&self) -> bool {
         self.detail
+    }
+
+    fn width(&self) -> usize {
+        self.width
     }
 
     /// How far a detail line indents to sit under the source column. The
@@ -453,15 +460,18 @@ fn render_source(entry: &Value, detail: bool) -> String {
 /// separation included, no trailing newline.
 pub(crate) struct EventStreamRenderer {
     detail: bool,
+    /// The terminal's columns, or `usize::MAX` when output is not a terminal.
+    width: usize,
     /// The current segment's hash; `Some` also means at least one block was
     /// written, so the next divider needs a blank line above it.
     last_input_hash: Option<String>,
 }
 
 impl EventStreamRenderer {
-    pub(crate) fn new(detail: bool) -> Self {
+    pub(crate) fn new(detail: bool, width: usize) -> Self {
         Self {
             detail,
+            width,
             last_input_hash: None,
         }
     }
@@ -531,9 +541,12 @@ impl EventStreamRenderer {
             .dim(),
             style(&source).cyan(),
         )?;
+        let prefix =
+            vtime_width(self.detail) + VTIME_GAP + console::measure_text_width(&source) + 1;
         let mut block = Block {
             out,
             detail: self.detail,
+            width: self.width.saturating_sub(prefix),
             headline_done: false,
         };
         render_payload(entry, &mut block)?;
@@ -555,10 +568,16 @@ pub(super) mod testkit {
     /// Every rendering assertion is on the un-colored text: colors are a
     /// terminal affordance layered by `console`, which the test harness (a
     /// pipe, not a tty) disables. Force that off so a color-forcing
-    /// environment can't flake the suite.
+    /// environment can't flake the suite. As for a pipe, no value is cut to
+    /// fit a width.
     pub(crate) fn renderer(detail: bool) -> EventStreamRenderer {
+        renderer_with_width(detail, usize::MAX)
+    }
+
+    /// A renderer for a terminal `width` columns wide.
+    pub(crate) fn renderer_with_width(detail: bool, width: usize) -> EventStreamRenderer {
         console::set_colors_enabled(false);
-        EventStreamRenderer::new(detail)
+        EventStreamRenderer::new(detail, width)
     }
 
     pub(crate) fn render_one(entry: Value) -> String {

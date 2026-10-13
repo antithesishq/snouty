@@ -11,7 +11,9 @@ use serde_json::{Map, Value};
 use crate::render::sanitize;
 
 use super::ansi::strip_ansi;
-use super::{Block, DisplayWith, Event, VALUE_TRUNCATE_WIDTH, format_duration, payload_pairs};
+use super::{
+    Block, DisplayWith, Event, VALUE_TRUNCATE_WIDTH, format_duration, format_value, payload_pairs,
+};
 
 fn from_composer(entry: &Value) -> bool {
     entry["source"]["name"].as_str() == Some("antithesis_test_composer")
@@ -92,63 +94,112 @@ impl<'a> Event<'a> for Chatter<'a> {
     }
 
     fn render(&self, block: &mut Block<'_>) -> fmt::Result {
+        // A `new_command` names the script, so `new_command_path` only
+        // repeats it. Only `--detail` shows it, on the line after.
+        let path_after_new_command = self
+            .0
+            .get("new_command")
+            .and_then(Value::as_str)
+            .is_some_and(|command| !command.is_empty());
         if block.detail() {
             // One pair per line, untruncated.
             write!(block, "{}", style("composer").dim())?;
             for (key, rendered) in payload_pairs(self.0) {
-                block.detail_line(format_args!("{}={rendered}", sanitize(key)))?;
-            }
-        } else {
-            let container_id = self.0.get("container_id").and_then(Value::as_str);
-            let line = DisplayWith(|f: &mut fmt::Formatter<'_>| {
-                write!(f, "composer")?;
-                for (key, rendered) in payload_pairs(self.0) {
-                    let shown = shorten(key, &rendered, container_id);
-                    write!(f, " {}={shown}", sanitize(key))?;
+                if path_after_new_command && key == "new_command_path" {
+                    continue;
                 }
-                Ok(())
-            });
-            write!(block, "{}", style(line).dim())?;
+                block.detail_line(format_args!("{}={rendered}", sanitize(key)))?;
+                if path_after_new_command
+                    && key == "new_command"
+                    && let Some(path) = self.0.get("new_command_path").and_then(format_value)
+                {
+                    block.detail_line(format_args!("new_command_path={path}"))?;
+                }
+            }
+            return Ok(());
         }
-        Ok(())
+
+        let container_id = self.0.get("container_id").and_then(Value::as_str);
+        let pairs: Vec<(&String, String, Option<String>)> = payload_pairs(self.0)
+            .filter(|(key, _)| !(path_after_new_command && *key == "new_command_path"))
+            .map(|(key, rendered)| {
+                let short = shorten(key, &rendered, container_id).map(Cow::into_owned);
+                (key, rendered, short)
+            })
+            .collect();
+        let fixed = "composer".len()
+            + pairs
+                .iter()
+                .map(|(key, _, short)| {
+                    " =".len()
+                        + console::measure_text_width(&sanitize(key))
+                        + short.as_deref().map_or(0, console::measure_text_width)
+                })
+                .sum::<usize>();
+        let left = block.width().saturating_sub(fixed);
+        let line = DisplayWith(|f: &mut fmt::Formatter<'_>| {
+            write!(f, "composer")?;
+            // The generic values share the columns that the rest of the line
+            // leaves, in record order.
+            let mut left = left;
+            for (key, rendered, short) in &pairs {
+                let shown = match short {
+                    Some(short) => Cow::Borrowed(short.as_str()),
+                    None => {
+                        let cut = console::truncate_str(rendered, left.max(MIN_FIT_WIDTH), "…");
+                        left = left.saturating_sub(console::measure_text_width(&cut));
+                        cut
+                    }
+                };
+                write!(f, " {}={shown}", sanitize(key))?;
+            }
+            Ok(())
+        });
+        write!(block, "{}", style(line).dim())
     }
 }
 
 /// `docker ps` shows this many characters of a container id.
 const CONTAINER_ID_WIDTH: usize = 12;
 
-/// Shortens one chatter value for the one-line form. A path keeps its end,
-/// because the script name tells the commands apart. A container id keeps
-/// its start, as `docker ps` does. A `new_command` is the record's container
-/// id, `_`, and the script name, so it drops the id. A `weight` is a
-/// probability, so three decimals are sufficient.
-fn shorten<'a>(key: &str, rendered: &'a str, container_id: Option<&str>) -> Cow<'a, str> {
+/// A generic value is never cut below this many columns, even when the line
+/// has fewer left. A shorter cut says too little, so the line wraps instead.
+const MIN_FIT_WIDTH: usize = 12;
+
+/// Shortens one chatter value with a known form for the one-line form. It
+/// gives `None` for a generic value, which the line cuts to the columns it
+/// has left. A path keeps only its final segment, so that one script always
+/// reads the same. A container id keeps its start, as `docker ps` does. A
+/// `new_command` is the record's container id, `_`, and the script name, so
+/// it drops the id. A `weight` is a probability, so three decimals are
+/// sufficient.
+fn shorten<'a>(key: &str, rendered: &'a str, container_id: Option<&str>) -> Option<Cow<'a, str>> {
     match key {
         "command" | "removed_command" | "new_command_path" => {
-            truncate_path(rendered, VALUE_TRUNCATE_WIDTH)
+            Some(truncate_path(rendered, VALUE_TRUNCATE_WIDTH))
         }
-        "container_id" => console::truncate_str(rendered, CONTAINER_ID_WIDTH, ""),
-        "new_command" => match container_id
+        "container_id" => Some(console::truncate_str(rendered, CONTAINER_ID_WIDTH, "")),
+        "new_command" => container_id
             .and_then(|id| rendered.strip_prefix(id))
             .and_then(|rest| rest.strip_prefix('_'))
-        {
-            Some(script) if !script.is_empty() => truncate_path(script, VALUE_TRUNCATE_WIDTH),
-            _ => console::truncate_str(rendered, VALUE_TRUNCATE_WIDTH, "…"),
-        },
-        "weight" => match rendered.parse::<f64>() {
-            Ok(weight) if weight.is_finite() => format!("{weight:.3}").into(),
-            _ => console::truncate_str(rendered, VALUE_TRUNCATE_WIDTH, "…"),
-        },
-        _ => console::truncate_str(rendered, VALUE_TRUNCATE_WIDTH, "…"),
+            .filter(|script| !script.is_empty())
+            .map(|script| truncate_path(script, VALUE_TRUNCATE_WIDTH)),
+        "weight" => rendered
+            .parse::<f64>()
+            .ok()
+            .filter(|weight| weight.is_finite())
+            .map(|weight| format!("{weight:.3}").into()),
+        _ => None,
     }
 }
 
-/// Shortens a path that is wider than `width` to `…` and its final segment,
-/// such as `…/check.py`, so that each cut path has the same form. When the
-/// final segment does not fit, the result keeps the end of it.
+/// Shortens a path to `…` and its final segment, such as `…/check.py`, so
+/// that each path has the same form. A name with no `/` that fits `width` is
+/// unchanged. When the final segment does not fit, the result keeps the end
+/// of it.
 fn truncate_path(path: &str, width: usize) -> Cow<'_, str> {
     const HEAD: &str = "…";
-    if console::measure_text_width(path) <= width {
+    if !path.contains('/') && console::measure_text_width(path) <= width {
         return path.into();
     }
     let budget = width.saturating_sub(console::measure_text_width(HEAD));
@@ -257,9 +308,10 @@ mod tests {
             "source": {"name": "antithesis_test_composer"},
             "moment": {"input_hash": "-1", "vtime": "13.3"}
         });
+        // A path keeps only its final segment, even when it is short.
         let block = render_one(entry.clone());
         assert!(
-            block.contains("composer new_command_path=git_walk/anytime_invariants"),
+            block.contains("composer new_command_path=…/anytime_invariants "),
             "got: {block}"
         );
         // The 64-hex container id keeps 12 characters, as `docker ps` does.
@@ -302,22 +354,19 @@ mod tests {
             "got: {block}"
         );
 
-        // A numeric weight rounds the same; a short command is unchanged.
+        // A numeric weight rounds the same; a short command is cut the same.
         let block = render_one(chatter(json!(0.0555555), "/opt/t/a.py"));
         assert!(
-            block.ends_with("weight=0.056 command=/opt/t/a.py"),
+            block.ends_with("weight=0.056 command=…/a.py"),
             "got: {block}"
         );
+        let block = render_one(chatter(json!(0.0555555), "a.py"));
+        assert!(block.ends_with("weight=0.056 command=a.py"), "got: {block}");
 
-        // An unparsable weight is not rounded, and is truncated as other
-        // values are.
+        // An unparsable weight is not rounded, and is fit to the line as
+        // other values are.
         let block = render_one(chatter(json!("high"), "/opt/t/a.py"));
         assert!(block.contains(" weight=high "), "got: {block}");
-        let block = render_one(chatter(json!("x".repeat(50)), "/opt/t/a.py"));
-        assert!(
-            block.contains(&format!(" weight={}… ", "x".repeat(39))),
-            "got: {block}"
-        );
 
         // --detail: full values.
         let block = render_one_detailed(chatter(json!("0.037937902697115555"), long));
@@ -355,11 +404,26 @@ mod tests {
             "container_id": id,
             "new_command": format!("{id}_parallel_driver_check_ins.py"),
         })));
+        // The new_command names the script, so new_command_path is left out.
         assert!(
             block.ends_with(
-                "composer new_command_path=wellnest/parallel_driver_check_ins.py \
-                 container_id=89e64f6a3e9f new_command=parallel_driver_check_ins.py"
+                "composer container_id=89e64f6a3e9f new_command=parallel_driver_check_ins.py"
             ),
+            "got: {block}"
+        );
+        // --detail shows new_command_path on the line after new_command.
+        let block = render_one_detailed(chatter(json!({
+            "new_command_path": "wellnest/parallel_driver_check_ins.py",
+            "container_id": id,
+            "new_command": format!("{id}_parallel_driver_check_ins.py"),
+        })));
+        assert!(
+            block.ends_with(&format!(
+                "[test_composer] composer\n                    \
+                 container_id={id}\n                    \
+                 new_command={id}_parallel_driver_check_ins.py\n                    \
+                 new_command_path=wellnest/parallel_driver_check_ins.py"
+            )),
             "got: {block}"
         );
 
@@ -373,12 +437,16 @@ mod tests {
             "got: {block}"
         );
 
-        // A new_command without the record's container id in front is
-        // truncated as other values are.
+        // A new_command without the record's container id in front is fit
+        // to the line as other values are, and new_command_path stays out.
         let other = "0123456789abcdef0123456789abcdef0123456789abcdef_x.py";
-        let block = render_one(chatter(json!({"container_id": id, "new_command": other})));
+        let block = render_one(chatter(json!({
+            "new_command_path": "t/x.py", "container_id": id, "new_command": other,
+        })));
         assert!(
-            block.ends_with(&format!("new_command={}…", &other[..39])),
+            block.ends_with(&format!(
+                "composer container_id=89e64f6a3e9f new_command={other}"
+            )),
             "got: {block}"
         );
 
@@ -407,9 +475,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn composer_generic_values_fit_the_columns_left_on_the_line() {
+        // Shape observed in release 64.0 run
+        // ec15457239ac0157d76fd3c4d8988a63-64-0.
+        let entry = json!({
+            "tasks_len": "1", "added_task": "parallel_driver_writes.sh",
+            "all_running_tasks": "['parallel_driver_writes.sh']",
+            "source": {"name": "antithesis_test_composer"},
+            "moment": {"input_hash": "-1", "vtime": "74.69880"}
+        });
+        let line = |width: usize| {
+            let block = renderer_with_width(false, width).render_entry(&entry);
+            block.lines().nth(1).unwrap().to_string()
+        };
+
+        // The values before it are whole, and the last value takes the
+        // columns that are left.
+        let fit = line(120);
+        assert_eq!(
+            fit,
+            "74.6988   [test_composer] composer tasks_len=1 \
+             added_task=parallel_driver_writes.sh all_running_tasks=['parallel_driver…"
+        );
+        assert_eq!(console::measure_text_width(&fit), 120);
+
+        // A line that has room cuts nothing.
+        assert!(
+            line(usize::MAX).ends_with(" all_running_tasks=['parallel_driver_writes.sh']"),
+            "got: {}",
+            line(usize::MAX)
+        );
+
+        // With no columns left, a value keeps its first 11 characters.
+        assert!(
+            line(60).ends_with(
+                "composer tasks_len=1 added_task=parallel_dr… all_running_tasks=['parallel_…"
+            ),
+            "got: {}",
+            line(60)
+        );
+    }
+
     /// For any path, the cut form fits the width and keeps the end of the
     /// input. It starts at the final `/` when that segment fits, and else
-    /// holds no `/`.
+    /// holds no `/`. Only a name with no `/` that fits stays whole.
     #[hegel::test]
     fn truncate_path_fits_and_keeps_the_final_segment(tc: hegel::TestCase) {
         let segments = tc.draw(hegel::generators::integers::<usize>().max_value(6));
@@ -419,8 +529,8 @@ mod tests {
             .join("/");
         let out = truncate_path(&s, VALUE_TRUNCATE_WIDTH);
         assert!(console::measure_text_width(&out) <= VALUE_TRUNCATE_WIDTH);
-        if out == s {
-            assert!(console::measure_text_width(&s) <= VALUE_TRUNCATE_WIDTH);
+        if !s.contains('/') && console::measure_text_width(&s) <= VALUE_TRUNCATE_WIDTH {
+            assert_eq!(out, s);
             return;
         }
         let kept = out.strip_prefix('…').expect("a cut path starts with `…`");

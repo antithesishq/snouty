@@ -94,7 +94,6 @@ stdout '^Execute a bash script in a run that is in progress, at a moment\.$'
 stdout 'The run must be ready\. It can be a test run or a debugging session\.'
 ! stdout 'live session'
 ! stdout 'after it completes'
-stdout 'To execute\s+at a moment of a completed run, start a debugging session at that moment\.'
 stdout 'The exec\s+command will wait until the run is ready before running the script\.'
 stdout 'Find a moment with `runs properties --detail`, `runs search`, or\s+`runs events`\.'
 snouty runs --help

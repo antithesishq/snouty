@@ -493,8 +493,7 @@ stderr '^Error: API error: 400.*'
 [!staging] ! snouty runs
 [!staging] stderr 'API error: 429 Too Many Requests.*'
 
-# An unfiltered empty result succeeds with a short note. A filtered empty
-# result names the filters.
+# An unfiltered empty result succeeds with a short note.
 [!staging] mock-runs-server
 [!staging] snouty runs properties run-empty
 [!staging] stdout '^No properties found\.$'
@@ -507,6 +506,7 @@ stderr '^Error: API error: 400.*'
 [!staging] stdout '^No properties found\.$'
 [!staging] ! stderr '^Error:'
 
+# A filtered empty result names the filters.
 mock-runs-server
 snouty runs properties run-empty --failing
 stdout '^No properties match \(failing\)\.$'

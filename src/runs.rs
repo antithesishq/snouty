@@ -646,7 +646,6 @@ async fn cmd_runs_properties(
     Ok(())
 }
 
-/// The empty-result message. With filters, it names them.
 fn no_properties_message(filter: &PropertyFilter) -> String {
     let mut parts = Vec::new();
     match filter.status {
@@ -675,8 +674,7 @@ enum RunProbe {
     /// The run id is bad: `get_run` also returned a structured 404.
     NotFound,
     /// The run exists; carries its full detail so callers can tailor the message
-    /// (status, and the failure moment for incomplete runs). Boxed to keep the
-    /// enum small.
+    /// to its status. Boxed to keep the enum small.
     Exists(Box<RunDetail>),
     /// `get_run` failed for some other reason (timeout, 502, auth). Propagate
     /// this rather than claiming the run doesn't exist.
@@ -747,7 +745,7 @@ pub async fn ensure_input_hash_exists(
     }
 }
 
-/// Translate an error from a run-scoped endpoint (show/build-logs/events/logs/properties)
+/// Translate an error from a run-scoped endpoint (show/build-logs/events/logs)
 /// into the shared friendly "run not found: X" message when the failure is a
 /// 404 for a bad run id. Any non-404 error passes through untouched (full
 /// report), so genuine server faults are never masked.

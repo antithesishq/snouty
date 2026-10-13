@@ -966,6 +966,10 @@ fn render_property_detail(property: &Property) -> String {
         min_body_width: 1,
     };
     let mut out = render_prose_block("Name", &sanitize(property_display_name(property)), hanging);
+    // `render_prose_block` drops a blank body, but the Name line always prints.
+    if out.is_empty() {
+        out.push_str("Name\n");
+    }
     if let Some(group) = property_group(property) {
         out.push_str(&render_prose_block("Group", &sanitize(group), hanging));
     }
@@ -2868,6 +2872,18 @@ mod tests {
             "got: {out}"
         );
         assert!(out.contains("Name      Second\nStatus"), "got: {out}");
+        let bare = event_property(
+            "Safety: ",
+            PropertyStatus::Passing,
+            Some("Safety"),
+            vec![],
+            vec![],
+        );
+        let bare_out = render_property_detail(&bare);
+        assert!(
+            bare_out.starts_with("Name\nGroup     Safety\n"),
+            "got: {bare_out}"
+        );
         assert!(!out.contains('─'));
         // Each property keeps its header and an Examples line carrying its
         // totals, with the table indented beneath it (no `:`).

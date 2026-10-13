@@ -1,7 +1,3 @@
-// Whether an event carries text that holds every needle.
-//
-// snouty applies this to `(ev, needles)`, with the needles lowercased: `m`
-// folds only the haystack.
 (ev, needles) => {
   const m = (s, needle) => s != null && String(s).toLowerCase().includes(needle);
   const assert_hit = ev.antithesis_assert?.hit === true;

@@ -11,9 +11,7 @@ use serde_json::{Map, Value};
 use crate::render::sanitize;
 
 use super::ansi::strip_ansi;
-use super::{
-    Block, DisplayWith, Event, VALUE_TRUNCATE_WIDTH, format_duration, format_value, payload_pairs,
-};
+use super::{Block, DisplayWith, Event, VALUE_TRUNCATE_WIDTH, format_duration, payload_pairs};
 
 fn from_composer(entry: &Value) -> bool {
     entry["source"]["name"].as_str() == Some("antithesis_test_composer")
@@ -94,40 +92,29 @@ impl<'a> Event<'a> for Chatter<'a> {
     }
 
     fn render(&self, block: &mut Block<'_>) -> fmt::Result {
-        // A `new_command` names the script, so `new_command_path` only
-        // repeats it. Only `--detail` shows it, on the line after.
-        let path_after_new_command = self
-            .0
-            .get("new_command")
-            .and_then(Value::as_str)
-            .is_some_and(|command| !command.is_empty());
         if block.detail() {
             // One pair per line, untruncated.
             write!(block, "{}", style("composer").dim())?;
             for (key, rendered) in payload_pairs(self.0) {
-                if path_after_new_command && key == "new_command_path" {
-                    continue;
-                }
                 block.detail_line(format_args!("{}={rendered}", sanitize(key)))?;
-                if path_after_new_command
-                    && key == "new_command"
-                    && let Some(path) = self.0.get("new_command_path").and_then(format_value)
-                {
-                    block.detail_line(format_args!("new_command_path={path}"))?;
-                }
             }
             return Ok(());
         }
 
-        let container_id = self.0.get("container_id").and_then(Value::as_str);
+        // A `new_command` is the container id, `_`, and the script name, so
+        // `container_id` and `new_command_path` already say what it says.
+        let has_path = self
+            .0
+            .get("new_command_path")
+            .and_then(Value::as_str)
+            .is_some_and(|path| !path.is_empty());
         let line = DisplayWith(|f: &mut fmt::Formatter<'_>| {
             write!(f, "composer")?;
             for (key, rendered) in payload_pairs(self.0) {
-                if path_after_new_command && key == "new_command_path" {
+                if has_path && key == "new_command" {
                     continue;
                 }
-                let shown = shorten(key, &rendered, container_id);
-                write!(f, " {}={shown}", sanitize(key))?;
+                write!(f, " {}={}", sanitize(key), shorten(key, &rendered))?;
             }
             Ok(())
         });
@@ -138,24 +125,16 @@ impl<'a> Event<'a> for Chatter<'a> {
 /// `docker ps` shows this many characters of a container id.
 const CONTAINER_ID_WIDTH: usize = 12;
 
-/// Shortens one chatter value for the one-line form. A path keeps only its
-/// final segment, so that one script always reads the same. A container id
-/// keeps its start, as `docker ps` does. A `new_command` is the record's
-/// container id, `_`, and the script name, so it drops the id. A `weight` is
-/// a probability, so three decimals are sufficient.
-fn shorten<'a>(key: &str, rendered: &'a str, container_id: Option<&str>) -> Cow<'a, str> {
+/// Shortens one chatter value for the one-line form. A path keeps its last
+/// directory and file name, so that one script always reads the same. A
+/// container id keeps its start, as `docker ps` does. A `weight` is a
+/// probability, so three decimals are sufficient.
+fn shorten<'a>(key: &str, rendered: &'a str) -> Cow<'a, str> {
     match key {
         "command" | "removed_command" | "new_command_path" => {
             truncate_path(rendered, VALUE_TRUNCATE_WIDTH)
         }
         "container_id" => console::truncate_str(rendered, CONTAINER_ID_WIDTH, ""),
-        "new_command" => match container_id
-            .and_then(|id| rendered.strip_prefix(id))
-            .and_then(|rest| rest.strip_prefix('_'))
-        {
-            Some(script) if !script.is_empty() => truncate_path(script, VALUE_TRUNCATE_WIDTH),
-            _ => console::truncate_str(rendered, VALUE_TRUNCATE_WIDTH, "…"),
-        },
         "weight" => match rendered.parse::<f64>() {
             Ok(weight) if weight.is_finite() => format!("{weight:.3}").into(),
             _ => console::truncate_str(rendered, VALUE_TRUNCATE_WIDTH, "…"),
@@ -374,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn composer_paths_keep_the_script_name_and_new_command_drops_the_container_id() {
+    fn composer_paths_keep_the_script_name_and_new_command_path_replaces_new_command() {
         let id = "89e64f6a3e9f09e966b298ba707d46ee2bc3f8c8624ac7fc0c498afc66253642";
         let chatter = |pairs: Value| {
             let mut entry = pairs;
@@ -392,54 +371,41 @@ mod tests {
             block.ends_with("composer removed_command=wellnest/parallel_driver_journal.py"),
             "got: {block}"
         );
-        let block = render_one(chatter(json!({
+        let record = chatter(json!({
             "new_command_path": "wellnest/parallel_driver_check_ins.py",
             "container_id": id,
             "new_command": format!("{id}_parallel_driver_check_ins.py"),
-        })));
-        // The new_command names the script, so new_command_path is left out.
+        }));
+        // container_id and new_command_path say what new_command says, so
+        // new_command is left out.
+        let block = render_one(record.clone());
         assert!(
             block.ends_with(
-                "composer container_id=89e64f6a3e9f new_command=parallel_driver_check_ins.py"
+                "composer new_command_path=wellnest/parallel_driver_check_ins.py \
+                 container_id=89e64f6a3e9f"
             ),
             "got: {block}"
         );
-        // --detail shows new_command_path on the line after new_command.
-        let block = render_one_detailed(chatter(json!({
-            "new_command_path": "wellnest/parallel_driver_check_ins.py",
-            "container_id": id,
-            "new_command": format!("{id}_parallel_driver_check_ins.py"),
-        })));
+        // --detail shows every pair.
+        let block = render_one_detailed(record);
         assert!(
             block.ends_with(&format!(
                 "[test_composer] composer\n                    \
+                 new_command_path=wellnest/parallel_driver_check_ins.py\n                    \
                  container_id={id}\n                    \
-                 new_command={id}_parallel_driver_check_ins.py\n                    \
-                 new_command_path=wellnest/parallel_driver_check_ins.py"
+                 new_command={id}_parallel_driver_check_ins.py"
             )),
             "got: {block}"
         );
 
-        // The script after the id is cut as a path.
-        let block = render_one(chatter(json!({
-            "container_id": id,
-            "new_command": format!("{id}_/opt/antithesis/test/v1/wellnest/parallel_driver_journal.py"),
-        })));
-        assert!(
-            block.ends_with("new_command=wellnest/parallel_driver_journal.py"),
-            "got: {block}"
-        );
-
-        // A new_command without the record's container id in front is
-        // truncated as other values are, and new_command_path stays out.
-        let other = "0123456789abcdef0123456789abcdef0123456789abcdef_x.py";
-        let block = render_one(chatter(json!({
-            "new_command_path": "t/x.py", "container_id": id, "new_command": other,
-        })));
+        // A new_command with no new_command_path is truncated as other
+        // values are.
+        let command = format!("{id}_parallel_driver_check_ins.py");
+        let block = render_one(chatter(json!({"container_id": id, "new_command": command})));
         assert!(
             block.ends_with(&format!(
                 "composer container_id=89e64f6a3e9f new_command={}…",
-                &other[..39]
+                &command[..39]
             )),
             "got: {block}"
         );

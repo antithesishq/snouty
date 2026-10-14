@@ -57,7 +57,7 @@ Write the notes at the level of commands, flags, and major changes to output or 
 
 - Write one entry per command or feature. Merge the PRs that changed the same command into one entry.
 - Leave out implementation detail, internal-only changes (refactors, tests, CI, contributor docs), and small changes to the wording of help or messages. Keep a CI or dependency change that changes the platforms or the installers.
-- Write each entry as the net change relative to `vPREV`. When a feature is new in this release, describe the feature once; do not list the iterations that built it (e.g. a rewrite of a command that did not exist in the previous release is part of the feature, not an entry). When a later change reverses an earlier one, leave out both.
+- Write each entry as the net change relative to `vPREV`. When a feature is new in this release, describe the feature once; do not list the iterations that built it (e.g. a rewrite of a command that did not exist in the previous release is part of the feature, not an entry). When one change since `vPREV` reverses another, leave out both.
 - Put the breaking changes first, then the other changes, largest first. A breaking change can make a command, script, or config that worked with `vPREV` fail or act differently: a removed or renamed command or flag, a changed default, a new requirement on input, a changed `--json` shape, or a higher platform requirement. Start each with `**Breaking**:` and tell the user what to do instead.
 - Link every PR that contributes to an entry with the public base URL, e.g. `([#176](https://github.com/antithesishq/snouty/pull/176))`. Do not use the exe proxy hostname.
 

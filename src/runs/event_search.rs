@@ -138,21 +138,19 @@ const SEARCH_RETRY_MAX: Duration = Duration::from_secs(15);
 /// Send an events-search request with `send`, and send it again while the
 /// run's events are not searchable yet.
 ///
-/// The endpoint's 404 body is an unhelpful "Resource not found", so a 404 is
-/// explained by a probe of the run:
+/// The endpoint's 404 body is an unhelpful "Resource not found", so a 404
+/// probes the run:
 ///
-/// - The run does not exist: "run not found".
+/// - The run does not exist: fail with "run not found".
 /// - The run ID names a release before [`MIN_SEARCH_RELEASE`]: that release
-///   does not serve the endpoint, so there is nothing to wait for.
-/// - The run is starting or in progress: the server indexes a new run's events
-///   some minutes after it starts (observed on orbitinghail, release 64.0: a
-///   404 for 2 to 3 minutes after the run was ready). Wait, and try again.
-/// - The run has stopped, or its status is unknown: its events will not
-///   become searchable, so stop.
+///   does not serve the endpoint, so fail at once.
+/// - The run is starting or in progress: wait, and try again. The search of a
+///   new run answers 404 for some minutes after the run is ready (observed on
+///   orbitinghail, release 64.0: 2 to 3 minutes). No timeout applies.
+/// - The run has stopped, or its status is unknown: fail.
 ///
-/// A 400 is the server rejecting the request — usually the query, but an
-/// out-of-range `limit` answers 400 too, so the note must not blame the query
-/// alone (the server's own message, shown above the note, says which it was).
+/// A 400 comes from the query or from an out-of-range `limit`, so its note
+/// does not blame the query alone. The server's message says which.
 pub(super) async fn search_when_searchable<T, Fut>(
     api: &AntithesisApi,
     run_id: &str,
@@ -197,7 +195,7 @@ where
         }
         if !matches!(run.status, RunStatus::Starting | RunStatus::InProgress) {
             return Err(err.note(format!(
-                "run {run_id} is {}, and its events are not searchable",
+                "run {run_id} has status \"{}\", so snouty did not wait for its events",
                 run.status
             )));
         }

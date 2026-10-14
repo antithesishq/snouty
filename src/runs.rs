@@ -1691,10 +1691,8 @@ impl RewarmDisplay {
     }
 }
 
-/// What snouty shows on stderr while it waits for a run: a spinner on a
-/// terminal, else a line at once and a line each whole minute. `runs exec`
-/// waits for the run to be ready, and the events search waits for the run's
-/// events to become searchable.
+/// What snouty shows on stderr while it waits: a spinner on a terminal, else
+/// a line at once and a line each whole minute.
 enum WaitDisplay {
     Spinner(ProgressBar),
     Lines {
@@ -1947,10 +1945,10 @@ async fn exec_when_ready(
             .show();
     })
     .await?;
-    // A run that stopped instead of becoming ready gets no line: the error
-    // that follows names its status.
     if let Some(waiting) = waiting {
         waiting.finish();
+        // A run that stopped instead of becoming ready gets no line: the
+        // error that follows names its status.
         if run.is_ready() {
             eprintln!("run {run_id} is ready");
         }
@@ -5231,7 +5229,7 @@ mod tests {
                 let report = format!("{err:?}");
                 assert!(
                     report.contains(&format!(
-                        "run run-w is {status}, and its events are not searchable"
+                        "run run-w has status \"{status}\", so snouty did not wait for its events"
                     )),
                     "got: {report}"
                 );
@@ -5242,7 +5240,7 @@ mod tests {
 
         #[tokio::test]
         async fn search_does_not_wait_for_a_run_from_an_old_release() {
-            let run_id = "0df9ac1f5155c14f88ea41f5ad503e07-61-1";
+            let run_id = crate::testutils::MOCK_OLD_RELEASE_RUN;
             let server = MockServer::start().await;
             let mut body = run_body("in_progress");
             body["run_id"] = json!(run_id);

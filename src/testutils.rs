@@ -761,20 +761,18 @@ fn mock_route(
 struct MockState {
     /// Serve no runs at all.
     empty: bool,
-    /// Whether [`MOCK_INDEXING_RUN`] has been searched. Its first search
-    /// answers the live endpoint's bare 404, and later ones search run-2's
-    /// events.
+    /// The first search of [`MOCK_INDEXING_RUN`] answers the live endpoint's
+    /// bare 404. Later searches answer with run-2's events.
     indexing_run_searched: bool,
 }
 
-/// A ready run whose events the server has not indexed yet. On the live
-/// server, the events search of a new run answers 404 for some minutes
-/// after the run is ready (observed on orbitinghail, release 64.0).
+/// A ready run whose first events search answers 404, as a new run's search
+/// does on release 64.0 (orbitinghail).
 const MOCK_INDEXING_RUN: &str = "run-indexing";
 
 /// An in-progress run from a release before `MIN_SEARCH_RELEASE`, whose
 /// events search answers 404.
-const MOCK_OLD_RELEASE_RUN: &str = "0df9ac1f5155c14f88ea41f5ad503e07-61-1";
+pub(crate) const MOCK_OLD_RELEASE_RUN: &str = "0df9ac1f5155c14f88ea41f5ad503e07-61-1";
 
 fn mock_query_param(query: Option<&str>, key: &str) -> Option<String> {
     form_urlencoded::parse(query?.as_bytes())

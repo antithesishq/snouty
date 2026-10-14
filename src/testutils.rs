@@ -472,8 +472,8 @@ pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
 ///   for any other known run, 404 for an unknown run
 /// - `GET  /auth/cli/config` — `{"port_strategy":"disabled"}`
 ///
-/// Only the `/api/` routes require the bearer token; the OAuth routes take
-/// none, as on the real server.
+/// Every route but the OAuth routes (`/auth/cli/`) requires the bearer token.
+/// The OAuth routes take none, as on the real server.
 pub struct MockApiServer {
     url: String,
     token: String,
@@ -530,7 +530,7 @@ impl MockApiServer {
                             "application/json",
                             NO_CACHE_CACHE_CONTROL,
                         )
-                    } else if path.starts_with("/api/")
+                    } else if !path.starts_with("/auth/cli/")
                         && !mock_check_auth(&request, &expected_token)
                     {
                         (

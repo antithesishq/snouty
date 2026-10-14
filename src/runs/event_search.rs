@@ -129,16 +129,15 @@ pub(super) async fn count_query(
     Ok(())
 }
 
-/// Wait until the run is ready or complete, as `runs exec` does, then send
-/// one events-search request with `send`. `poll` is how often the wait reads
-/// the run. Pass the normal client: the wait bypasses its cache by itself.
+/// Wait until the run is ready or terminal, then send one events-search
+/// request with `send`. The wait bypasses the response cache by itself, so
+/// pass the cached client.
 ///
 /// The wait reads the run, so the run exists when the request goes out. A 404
-/// then means a run from a release before [`MIN_SEARCH_RELEASE`], which does
-/// not serve the endpoint; the endpoint's own 404 body is an unhelpful
-/// "Resource not found". A 400 comes from the query or from an out-of-range
-/// `limit`, so its note does not blame the query alone. The server's message
-/// says which.
+/// on a run from a release before [`MIN_SEARCH_RELEASE`] gets a suggestion
+/// about the release: those releases do not serve the endpoint, and its 404
+/// body is an unhelpful "Resource not found". A 400 comes from the query or
+/// from an out-of-range `limit`, so its note does not blame the query alone.
 pub(super) async fn search_when_ready<T, Fut>(
     api: &AntithesisApi,
     run_id: &str,

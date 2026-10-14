@@ -797,18 +797,16 @@ mock-runs-server
 ! snouty runs events no-such-run --match one --match two
 stderr 'run not found: no-such-run'
 
-# `runs events` and `runs search` need a ready run, as `runs exec` does. On a
-#    run that is not ready, they wait until it is ready, with a line on
-#    stderr (a spinner on a terminal), then search. Rust tests in src/runs.rs
-#    cover the wait, because their test server can change the run's status
-#    between polls. The help of both commands says so.
+# `runs events` and `runs search` wait until the run is ready, as `runs exec`
+#    does. The Rust tests in src/runs.rs cover the wait, because their mock
+#    server can change the run's status between polls.
 snouty runs events --help
 stdout '^The run must be ready or complete\. If it is not, the command waits until it$'
 stdout '^is ready, as `snouty runs exec` does, and shows a line on stderr\.$'
 snouty runs search --help
 stdout '^The run must be ready or complete\. If it is not, the command waits until it$'
 stdout '^is ready, as `snouty runs exec` does, and shows a line on stderr\.$'
-# A ready run (run-2) searches at once in every mode, with no waiting line.
+# A ready run searches at once in every mode, with no waiting line.
 mock-runs-server
 [!staging] snouty runs events run-2 --match parallel_driver_fetch
 [!staging] stdout 'parallel_driver_fetch'
@@ -831,7 +829,8 @@ mock-runs-server
 #    suggestion about the tenant release.
 mock-runs-server
 [!staging] ! snouty runs events 0df9ac1f5155c14f88ea41f5ad503e07-61-1 --match anything
-[!staging] stderr 'API error: 404'
+[!staging] stderr 'API error: 404 Not Found — Resource not found'
+[!staging] ! stderr 'run not found'
 [!staging] stderr 'tenant releases before 62\.2 do not serve the events-search API'
 [!staging] ! stderr 'waiting for the run'
 

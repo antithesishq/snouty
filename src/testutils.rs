@@ -859,10 +859,9 @@ fn mock_run_not_found(run_id: &str) -> (u16, String) {
 
 /// Debugging sessions, and runs that only some specs read, kept out of
 /// MOCK_RUNS so the list-oriented specs do not see them: (run_id, status,
-/// sub_status). A loading session reports
-/// `in_progress` without the `Ready` sub-status, as a new session does on
-/// release 64.0. `run-stream-error` is ready, because `runs exec` reads the
-/// run before it executes.
+/// sub_status). A loading session reports `in_progress` without the `Ready`
+/// sub-status, as a new session does on release 64.0. `run-stream-error` is
+/// ready, because `runs exec` reads the run before it executes.
 const MOCK_HIDDEN_SESSIONS: &[(&str, &str, Option<&str>)] = &[
     ("session-starting", "starting", None),
     ("session-loading", "in_progress", None),
@@ -1391,6 +1390,11 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
     if run_id == "run-stream-error" {
         let (status, body) = mock_route_get_run_logs(run_id);
         return (status, body, ndjson);
+    }
+    // A release before `MIN_SEARCH_RELEASE` does not serve the endpoint, and
+    // answers with the live server's bare 404.
+    if run_id == MOCK_OLD_RELEASE_RUN {
+        return (404, MOCK_BARE_404_BODY.to_string(), json);
     }
     if !mock_run_known(run_id) {
         let (status, body) = mock_run_not_found(run_id);

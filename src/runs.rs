@@ -1691,8 +1691,8 @@ impl RewarmDisplay {
     }
 }
 
-/// What `runs exec` shows on stderr while it waits for the run to be ready:
-/// a spinner on a terminal, else a line at once and a line each whole minute.
+/// What a command shows on stderr while it waits for the run to be ready: a
+/// spinner on a terminal, else a line at once and a line each whole minute.
 enum ReadyDisplay {
     Spinner(ProgressBar),
     Lines {
@@ -1906,16 +1906,13 @@ async fn cmd_runs_exec(
     exec_when_ready(&api, run_id, exec, READY_POLL, json).await
 }
 
-/// How often `runs exec`, `runs search`, and `runs events` read a run that is
-/// not ready. A debugging session becomes ready minutes after it starts, so a
-/// poll each minute (the `runs wait` floor) could delay the command by most
-/// of a minute.
+/// How often a command that needs a ready run polls a run that is not ready.
+/// A debugging session becomes ready minutes after it starts, so a one-minute
+/// poll (the `runs wait` floor) could delay the command by most of a minute.
 const READY_POLL: Duration = Duration::from_secs(10);
 
-/// Wait until the run is ready or complete, with a [`ReadyDisplay`] on stderr
-/// while it is not. The wait has no time limit. `runs exec`, `runs search`,
-/// and `runs events` need a ready run; on a complete run they go on at once,
-/// and the server answers.
+/// Wait until the run is ready or terminal, and show a [`ReadyDisplay`] on
+/// stderr while it is not. The wait has no time limit.
 async fn wait_until_ready(api: &AntithesisApi, run_id: &str, poll: Duration) -> Result<RunDetail> {
     let mut waiting: Option<ReadyDisplay> = None;
     let run = wait_for_run(api, run_id, poll, WaitUntil::Ready, |_| {
@@ -5224,7 +5221,8 @@ mod tests {
             let new = "0df9ac1f5155c14f88ea41f5ad503e07-64-0";
             for (run_id, hint) in [(old, true), (new, false)] {
                 let server = MockServer::start().await;
-                // A run from before release 64.0 has no sub-status.
+                // A run from before release 64.0 has no sub-status, so it is
+                // ready while in progress.
                 let mut body = if hint {
                     run_body("in_progress")
                 } else {
@@ -5271,16 +5269,15 @@ mod tests {
             )
             .unwrap();
 
-            // The "search" is a read that the cache admits, to show which
-            // client it goes through.
+            // The search stand-in is a cacheable read, so the test can see
+            // which client sends it.
             for _ in 0..2 {
                 event_search::search_when_ready(&api, "run-w", FAST_POLL, || api.get_run("run-w"))
                     .await
                     .unwrap();
             }
 
-            // Each wait reads the server. The first search stores the
-            // complete run, and the second search reads it from the cache.
+            // Both waits reach the server. The second search reads the cache.
             assert_eq!(request_methods(&server).await, ["GET", "GET", "GET"]);
         }
 

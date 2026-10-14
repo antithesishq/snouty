@@ -28,8 +28,7 @@ git push -u origin <branch>
 Write the body to a file, `pr-body.md`, so the shell never mangles it.
 
 Write prose that explains the change and why. State the behavior change that
-the user sees. If there is none, say so. The release notes come from this
-text. Bullets are fine for listing specific changes; section headers usually
+the user sees. If there is none, say so. Bullets are fine for listing specific changes; section headers usually
 are not. Do not add a `## Summary` header, a `## Test plan` section, or any
 other template boilerplate. Do not list outstanding work, test checklists, or
 follow-up TODOs.

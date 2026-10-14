@@ -84,7 +84,7 @@ legs must pass before the PR merges rather than after the tag is cut.
 git switch -c release/vX.Y.Z
 ```
 
-Stage only `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md`. If there are any other changes abort. Then commit with message:
+Stage only `Cargo.toml`, `snouty-macros/Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md`. If there are any other changes abort. Then commit with message:
 
 ```
 chore: Release snouty version X.Y.Z

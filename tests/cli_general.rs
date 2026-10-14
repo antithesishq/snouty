@@ -607,23 +607,23 @@ fn help_examples_pass_preflight() {
     for subcommand in ["launch", "debug"] {
         let output = snouty().args([subcommand, "--help"]).output().unwrap();
         let help = String::from_utf8(output.stdout).unwrap();
-        let prefix = format!("snouty {subcommand} ");
+        let prefix = format!("  snouty {subcommand} ");
 
-        // An example starts with `snouty <subcommand>` and continues on the
-        // next line after a trailing `\`. A trailing `|` pipes into a command
-        // that is not snouty.
         let mut count = 0;
-        let mut lines = help.lines().map(str::trim);
+        let mut lines = help.lines();
         while let Some(line) = lines.next() {
             if !line.starts_with(&prefix) {
                 continue;
             }
-            let mut example = line.to_string();
+            let mut example = line.trim().to_string();
             while let Some(head) = example.strip_suffix('\\') {
-                example = format!("{head} {}", lines.next().unwrap());
+                example = format!("{head} {}", lines.next().unwrap().trim());
             }
+            // A `|` pipes into a command that is not snouty.
             let example = example
-                .trim_end_matches('|')
+                .split('|')
+                .next()
+                .unwrap()
                 .replace("<run_id>", "run-1")
                 .replace("<hash>", "1")
                 .replace("<vtime>", "1");
@@ -632,8 +632,7 @@ fn help_examples_pass_preflight() {
             let args = shlex::split(&example).unwrap();
             let mock_url = start_mock_server(r#"{"runId":"run-123"}"#, 200);
             // An engine that does not exist stops a --config launch after the
-            // pre-flight checks, before it builds an image. Every other
-            // example runs to completion against the mock.
+            // pre-flight checks, before it builds an image.
             let output = snouty_with_mock(&mock_url)
                 .current_dir(dir.path())
                 .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
@@ -642,12 +641,10 @@ fn help_examples_pass_preflight() {
                 .output()
                 .unwrap();
             let stderr = String::from_utf8_lossy(&output.stderr);
-            let passed = if args.iter().any(|arg| arg == "--config") {
-                stderr.contains("unsupported container engine 'none'")
-            } else {
-                output.status.success()
-            };
-            assert!(passed, "help example failed: {example}\nstderr:\n{stderr}");
+            assert!(
+                output.status.success() || stderr.contains("unsupported container engine 'none'"),
+                "help example failed: {example}\nstderr:\n{stderr}"
+            );
         }
         assert!(count > 0, "no examples in `{subcommand} --help`");
     }

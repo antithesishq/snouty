@@ -1005,7 +1005,7 @@ Examples:
   snouty runs wait <run_id>
   snouty runs wait <run_id> --timeout 2h
   snouty runs wait <run_id> --until ready
-  snouty launch --json --launcher basic_test ... | jq -r .runId | xargs snouty runs wait
+  snouty launch --json --config ./config ... | jq -r .runId | xargs snouty runs wait
 
 Add --json for machine-readable output. The final status prints as one JSON
 object:

@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+#[cfg(unix)]
+pub(crate) mod pty;
+
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
 use std::io::Read;

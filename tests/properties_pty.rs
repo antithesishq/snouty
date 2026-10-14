@@ -3,32 +3,24 @@
 
 #![cfg(unix)]
 
-use std::process::Command;
+mod support;
+
 use std::time::Duration;
 
 use expectrl::Expect;
-use expectrl::session::OsSession;
 use snouty::testutils::MockApiServer;
+use support::pty;
 
-/// Narrow enough that the mock's "Counter value stays
-/// below limit" does not fit after the 10-column label. `stty` sets it in the
-/// child before snouty starts, so no read of the terminal size can race the
-/// resize.
-const PTY_COLS: usize = 36;
+/// Narrow enough that the mock's "Counter value stays below limit" does not
+/// fit after the 10-column label.
+const PTY_COLS: u16 = 36;
 
 #[test]
 fn long_name_wraps_under_its_value() {
     let server = MockApiServer::start();
     let home = tempfile::TempDir::new().expect("temp HOME");
-    let mut command = Command::new("sh");
+    let mut command = pty::command(r#"exec "$0" runs properties run-1 --name counter --detail"#);
     command
-        .args([
-            "-c",
-            &format!(
-                "stty rows 40 cols {PTY_COLS}; exec \"$0\" runs properties run-1 --name counter --detail"
-            ),
-            env!("CARGO_BIN_EXE_snouty"),
-        ])
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", home.path())
@@ -37,7 +29,7 @@ fn long_name_wraps_under_its_value() {
         .env("ANTITHESIS_BASE_URL", server.url())
         .env("ANTITHESIS_API_KEY", server.token());
 
-    let mut session = OsSession::spawn(command).expect("spawn snouty on a PTY");
+    let mut session = pty::spawn(command, PTY_COLS, 40);
     session.set_expect_timeout(Some(Duration::from_secs(30)));
     let captures = session
         .expect("<hash> <vtime>")

@@ -1353,9 +1353,9 @@ impl HttpClient {
         if !self.verbose {
             return;
         }
-        // Built again rather than kept next to the credentials, so the log
-        // reads nothing from them but the redacted request headers. The client
-        // was built from the same headers, so this cannot fail.
+        // CodeQL flags a log that reads from a struct holding a credential, so
+        // build the default headers again here. They already built the client,
+        // so this does not fail.
         let default_headers = default_request_headers().unwrap_or_default();
         let mut out = String::new();
         format_request(request, &default_headers, body, &mut out);

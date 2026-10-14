@@ -761,7 +761,7 @@ pub async fn cmd_doctor(
                     ),
                 ),
                 Ok(CliOAuthConfig::Fixed { .. } | CliOAuthConfig::Ephemeral) => {}
-                // An unreadable answer cannot tell whether OAuth is enabled.
+                // An error does not tell whether OAuth is enabled.
                 Err(err) => debug!("could not read the tenant's OAuth configuration: {err:#}"),
             }
         }

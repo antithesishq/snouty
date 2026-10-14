@@ -1,16 +1,17 @@
 use color_eyre::eyre::Result;
+use log::debug;
 use serde::{Serialize, Serializer};
 
 use crate::api::{
-    AntithesisApi, ApiVersion, MIN_CANCEL_RELEASE, MIN_EXEC_RELEASE, MIN_SEARCH_RELEASE,
-    VersionError,
+    AntithesisApi, ApiVersion, HttpClient, MIN_CANCEL_RELEASE, MIN_EXEC_RELEASE,
+    MIN_SEARCH_RELEASE, VersionError,
 };
 use crate::attributed_value::AttributedValue;
 use crate::auth::AuthenticationInfo;
 use crate::compose;
 use crate::container;
 use crate::features;
-use crate::login::{CliOAuthConfig, query_oauth_configuration};
+use crate::login::{CliOAuthConfig, fetch_cli_config};
 use crate::render::{OutputOptions, render_kv};
 use crate::settings::Settings;
 
@@ -743,15 +744,23 @@ pub async fn cmd_doctor(
             checks.push(version_check(&host, version));
         }
 
+        // A bad proxy URL or extra header stops the client from building. The
+        // API check above is skipped then too.
         if let Some(base_url) = settings.base_url()
-            && let Ok(CliOAuthConfig::Disabled) = query_oauth_configuration(base_url).await
+            && let Ok(client) = HttpClient::new(settings, verbose)
         {
-            checks.push(
-                Check::warn("oauth-configured", "OAuth is configured for this tenant").note(
-                    Level::Note,
-                    "Request that your tenant administrator configure and enable OAuth login",
+            match fetch_cli_config(&client, base_url).await {
+                Ok(CliOAuthConfig::Disabled) => checks.push(
+                    Check::warn("oauth-configured", "OAuth is configured for this tenant").note(
+                        Level::Note,
+                        "Request that your tenant administrator configure and enable OAuth login",
+                    ),
                 ),
-            );
+                Ok(CliOAuthConfig::Fixed { .. } | CliOAuthConfig::Ephemeral) => {}
+                // Login also offers only an API key here, without a word, and
+                // an unreachable tenant is for the API check to report.
+                Err(err) => debug!("could not read the tenant's OAuth configuration: {err:#}"),
+            }
         }
     }
 

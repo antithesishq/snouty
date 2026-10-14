@@ -112,6 +112,33 @@ env ANTITHESIS_BASE_URL=http://127.0.0.1:1
 stderr '.*Antithesis API unreachable.*'
 stderr '.*could not connect to 127.0.0.1.*'
 
+# --- CLI OAuth probe ---
+# doctor asks GET /auth/cli/config whether the tenant offers OAuth login to the
+# CLI, and warns when it does not. The probe needs no credentials, so no API key
+# is set here and doctor skips the API check. mock-server answers every request
+# with the same response.
+env ANTITHESIS_API_KEY=
+
+# `port_strategy: disabled`: the tenant has OAuth, but not for the CLI. With
+# --verbose, the probe shows in the request log.
+[!staging] mock-server 200 '{"port_strategy":"disabled"}'
+[!staging] snouty --verbose doctor
+[!staging] stderr '^> GET http://127\.0\.0\.1:\d+/auth/cli/config$'
+[!staging] stderr '^  ⚠ OAuth is configured for this tenant$'
+[!staging] stderr '^      NOTE: Request that your tenant administrator configure and enable OAuth login$'
+
+# 403: the tenant has not enabled CLI OAuth at all. `snouty login` reads it the
+# same way, and offers only an API key.
+[!staging] mock-server 403 '{"message":"CLI OAuth login is not enabled for this tenant"}'
+[!staging] snouty doctor
+[!staging] stderr '^  ⚠ OAuth is configured for this tenant$'
+
+# An answer doctor cannot read gives no warning: the probe cannot tell whether
+# OAuth is enabled.
+[!staging] mock-server 200 '{"latest_api_version":"v1","release_version":"56.0"}'
+[!staging] snouty doctor
+[!staging] ! stderr '^  ⚠ .*OAuth'
+
 # --- conflicting credential sources (issue #292) ---
 # A credential exported in the environment hides one that `snouty login` stored
 # in the credentials file. The scan reads no network, and without an API key

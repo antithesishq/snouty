@@ -602,8 +602,10 @@ impl AntithesisApi {
         let base_url = normalize_base_url(crate::settings::require(settings.base_url(), "tenant")?);
         debug!("initializing API client for {}", base_url);
 
-        let default_headers = default_request_headers()?;
-        let http_client = build_http_client(default_headers.clone(), settings)?;
+        let HttpClient {
+            client: http_client,
+            verbose_headers,
+        } = HttpClient::new(settings, verbose)?;
         let cache_dir = match cache {
             ResponseCache::Default => api_cache::default_dir(),
             ResponseCache::Disabled => None,
@@ -619,7 +621,7 @@ impl AntithesisApi {
         );
         let state = ClientState {
             authn_info,
-            default_headers: verbose.then_some(default_headers),
+            default_headers: verbose_headers,
         };
         let client = generated::Client::new_with_client(&base_url, http_client, state);
 
@@ -1320,20 +1322,68 @@ fn extra_headers_from_env() -> Result<Vec<(HeaderName, HeaderValue)>> {
     }
 }
 
-fn build_http_client(default_headers: HeaderMap, settings: &Settings) -> Result<Client> {
-    // Only a connect timeout (see CONNECT_TIMEOUT): no read or total timeout, so a
-    // slow-but-alive Antithesis request is never aborted no matter how long it runs.
-    let mut builder = Client::builder()
-        .default_headers(default_headers)
-        .connect_timeout(CONNECT_TIMEOUT);
+/// An HTTP client with the setup of the API client: the User-Agent,
+/// `ANTITHESIS_EXTRA_HEADERS`, the configured proxy, and the connect timeout.
+/// Requests outside the generated API, such as the OAuth routes, use it
+/// directly through [`HttpClient::send`].
+pub(crate) struct HttpClient {
+    client: Client,
+    /// `Some` enables the `--verbose` request/response log on stderr, as
+    /// [`ClientState::default_headers`] does.
+    verbose_headers: Option<HeaderMap>,
+}
 
-    if let Some(proxy_address) = settings.https_proxy() {
-        let proxy = Proxy::all(proxy_address)
-            .wrap_err_with(|| eyre!("invalid proxy URL: {proxy_address}"))?;
-        builder = builder.proxy(proxy);
+impl HttpClient {
+    pub(crate) fn new(settings: &Settings, verbose: bool) -> Result<Self> {
+        let default_headers = default_request_headers()?;
+        // Only a connect timeout (see CONNECT_TIMEOUT): no read or total timeout, so a
+        // slow-but-alive Antithesis request is never aborted no matter how long it runs.
+        let mut builder = Client::builder()
+            .default_headers(default_headers.clone())
+            .connect_timeout(CONNECT_TIMEOUT);
+
+        if let Some(proxy_address) = settings.https_proxy() {
+            let proxy = Proxy::all(proxy_address)
+                .wrap_err_with(|| eyre!("invalid proxy URL: {proxy_address}"))?;
+            builder = builder.proxy(proxy);
+        }
+
+        Ok(Self {
+            client: builder.build().wrap_err("failed to build API client")?,
+            verbose_headers: verbose.then_some(default_headers),
+        })
     }
 
-    builder.build().wrap_err("failed to build API client")
+    pub(crate) fn get(&self, url: &str) -> reqwest::RequestBuilder {
+        self.client.get(url)
+    }
+
+    pub(crate) fn post(&self, url: &str) -> reqwest::RequestBuilder {
+        self.client.post(url)
+    }
+
+    /// Send `request` once, with no transient retry: a caller that sets a
+    /// total timeout on it gets that bound.
+    pub(crate) async fn send(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> reqwest::Result<reqwest::Response> {
+        let request = request.build()?;
+        if let Some(default_headers) = &self.verbose_headers {
+            let mut out = String::new();
+            format_request(&request, default_headers, &mut out);
+            eprint!("{out}");
+        }
+        let result = self.client.execute(request).await;
+        if self.verbose_headers.is_some()
+            && let Ok(response) = &result
+        {
+            let mut out = String::new();
+            format_response(response, &mut out);
+            eprint!("{out}");
+        }
+        result
+    }
 }
 
 fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {

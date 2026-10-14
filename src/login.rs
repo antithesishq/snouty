@@ -23,6 +23,7 @@ use tokio::sync::mpsc;
 
 use crate::settings;
 use crate::{
+    api::HttpClient,
     attributed_value::AttributedValue,
     auth::{AuthenticationInfo, PasswordPolicy, PersistableCredentials, persist},
     env,
@@ -163,7 +164,14 @@ async fn do_cmd_login(
     // Capture the credential kind and where it was stored so the summary can name
     // both; `None` when the user chose to skip credential setup.
     let credential_summary = if prompter.is_interactive() {
-        match prompt_for_auth(prompter, &tenant_to_use, current_credentials.as_ref()).await? {
+        match prompt_for_auth(
+            prompter,
+            current_settings,
+            &tenant_to_use,
+            current_credentials.as_ref(),
+        )
+        .await?
+        {
             Some(credentials) => {
                 let kind = match &credentials {
                     PersistableCredentials::ApiKey { .. } => "API key",
@@ -356,13 +364,15 @@ impl std::fmt::Display for AuthSetupType {
 
 async fn prompt_for_auth(
     prompter: &dyn Prompter,
+    settings: &Settings,
     tenant: &str,
     previous_value: Option<&AttributedValue<AuthenticationInfo>>,
 ) -> Result<Option<PersistableCredentials>> {
     // ANTITHESIS_BASE_URL trumps the supplied tenant because the former is used by spec tests
     let base_url = env::var(settings::ANTITHESIS_BASE_URL_VAR_NAME)?
         .unwrap_or_else(|| format!("https://{tenant}.antithesis.com"));
-    let client = build_oauth_client()?;
+    // TODO: pass `--verbose` through to here once `cmd_login` receives it.
+    let client = HttpClient::new(settings, false)?;
     let oauth_config = fetch_cli_config(&client, &base_url).await;
 
     let oauth_offered = oauth_config
@@ -393,13 +403,6 @@ async fn prompt_for_auth(
             .await
             .map(Some),
     }
-}
-
-fn build_oauth_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .timeout(OAUTH_HTTP_TIMEOUT)
-        .build()
-        .wrap_err("failed to build the OAuth HTTP client")
 }
 
 /// How many trailing characters of a stored secret its hint shows. Enough to
@@ -499,7 +502,7 @@ struct TokenResponse {
 ///    `Authorization` header, alongside the PKCE verifier) and the flow token
 ///    (in the body) for an Antithesis token.
 async fn complete_oauth_login(
-    client: &reqwest::Client,
+    client: &HttpClient,
     base_url: &str,
     config: &CliOAuthConfig,
 ) -> Result<PersistableCredentials> {
@@ -554,24 +557,24 @@ async fn complete_oauth_login(
     })
 }
 
-pub(crate) async fn query_oauth_configuration(base_url: &str) -> Result<CliOAuthConfig> {
-    fetch_cli_config(&build_oauth_client()?, base_url).await
-}
-
 /// `GET /auth/cli/config` — the redirect strategy for this tenant. A 403 means
-/// the tenant has not enabled CLI OIDC at all (the route is feature-gated).
-async fn fetch_cli_config(client: &reqwest::Client, base_url: &str) -> Result<CliOAuthConfig> {
+/// the tenant has not enabled CLI OIDC at all (the route is feature-gated), and
+/// is [`CliOAuthConfig::Disabled`] too.
+pub(crate) async fn fetch_cli_config(
+    client: &HttpClient,
+    base_url: &str,
+) -> Result<CliOAuthConfig> {
     let response = client
-        .get(format!("{base_url}/auth/cli/config"))
-        .send()
+        .send(
+            client
+                .get(&format!("{base_url}/auth/cli/config"))
+                .timeout(OAUTH_HTTP_TIMEOUT),
+        )
         .await
         .wrap_err("failed to contact the tenant's OAuth configuration endpoint")?;
 
     if response.status() == StatusCode::FORBIDDEN {
-        return Err(
-            user_error("this tenant has not enabled OAuth login for the CLI")
-                .suggestion("choose API key authentication instead"),
-        );
+        return Ok(CliOAuthConfig::Disabled);
     }
 
     response
@@ -644,7 +647,7 @@ async fn with_ipv6_loopback(mut listeners: Vec<TcpListener>, port: u16) -> Callb
 /// `POST /auth/cli/login` — hand the proxy the PKCE challenge and CSRF state and
 /// the loopback port, and get back the IdP authorization URL.
 async fn request_login_redirect(
-    client: &reqwest::Client,
+    client: &HttpClient,
     base_url: &str,
     port: u16,
     code_challenge: &str,
@@ -663,15 +666,17 @@ async fn request_login_redirect(
         location: String,
     }
 
-    let redirect: LoginRedirect = client
-        .post(format!("{base_url}/auth/cli/login"))
+    let request = client
+        .post(&format!("{base_url}/auth/cli/login"))
+        .timeout(OAUTH_HTTP_TIMEOUT)
         .json(&LoginRequest {
             port,
             code_challenge,
             code_challenge_method: "S256",
             cli_state,
-        })
-        .send()
+        });
+    let redirect: LoginRedirect = client
+        .send(request)
         .await
         .wrap_err("failed to initiate OAuth login")?
         .error_for_status()
@@ -689,7 +694,7 @@ async fn request_login_redirect(
 /// `Bearer base64url-nopad(code:verifier)` (keeping the secrets out of the
 /// body/URL); the flow token goes in the JSON body.
 async fn exchange_code_for_tokens(
-    client: &reqwest::Client,
+    client: &HttpClient,
     base_url: &str,
     auth_code: &str,
     code_verifier: &str,
@@ -702,11 +707,13 @@ async fn exchange_code_for_tokens(
 
     let credentials = BASE64_URL_SAFE_NO_PAD.encode(format!("{auth_code}:{code_verifier}"));
 
-    client
-        .post(format!("{base_url}/auth/cli/token"))
+    let request = client
+        .post(&format!("{base_url}/auth/cli/token"))
+        .timeout(OAUTH_HTTP_TIMEOUT)
         .bearer_auth(credentials)
-        .json(&TokenExchangeBody { flow_token })
-        .send()
+        .json(&TokenExchangeBody { flow_token });
+    client
+        .send(request)
         .await
         .wrap_err("failed to exchange the authorization code for tokens")?
         .error_for_status()

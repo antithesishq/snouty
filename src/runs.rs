@@ -419,9 +419,7 @@ fn open_run_report(run: &RunDetail, json: bool) -> Result<()> {
 }
 
 /// `runs wait`: poll the run until it reaches a terminal state, then report
-/// the final status. The client is uncached (see
-/// [`crate::api::ResponseCache::Disabled`]) so every poll observes fresh
-/// state, and `timeout` bounds the whole wait — including any in-flight
+/// the final status. `timeout` bounds the whole wait — including any in-flight
 /// request, since the HTTP client has no read timeout (see `CONNECT_TIMEOUT`
 /// in api.rs) — so a hung request cannot outlive it.
 async fn cmd_runs_wait(
@@ -434,7 +432,7 @@ async fn cmd_runs_wait(
 ) -> Result<()> {
     debug!("waiting for run: {}", run_id);
 
-    let api = AntithesisApi::new_uncached(settings, verbose)?;
+    let api = AntithesisApi::new(settings, verbose)?;
     let mut last_status = None;
     let mut warned_over_schedule = false;
     let wait = wait_for_run(&api, run_id, poll_interval, until, |run| {
@@ -509,7 +507,8 @@ async fn cmd_runs_cancel(
 /// Poll `get_run` every `poll_interval` until the run reaches the `until`
 /// point, and call `on_wait` with each poll that has not reached it. The first
 /// poll is at once. A run that reports `unknown` fails the wait (see
-/// [`RunStatus::is_terminal`]).
+/// [`RunStatus::is_terminal`]). The polls bypass the response cache, so each
+/// one observes fresh state.
 ///
 /// Never returns on its own — the caller bounds it with `tokio::time::timeout`.
 async fn wait_for_run(
@@ -523,6 +522,7 @@ async fn wait_for_run(
     // A poll delayed by a slow response schedules the next one a full
     // interval later, instead of firing early to catch up.
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let api = api.uncached();
 
     loop {
         poll.tick().await;
@@ -1499,8 +1499,7 @@ async fn cmd_runs_search(
 ) -> Result<()> {
     debug!("querying events for run: {}", args.run_id);
 
-    // Uncached, so each poll of the wait for a ready run observes fresh state.
-    let api = AntithesisApi::new_uncached(settings, verbose)?;
+    let api = AntithesisApi::new(settings, verbose)?;
     if args.check {
         return event_search::check_query(&api, &args.run_id, &args.query, mode.json()).await;
     }
@@ -1550,8 +1549,7 @@ async fn cmd_runs_events(
             .suggestion("each `-m/--match` needle must be a non-empty substring"));
     }
 
-    // Uncached, so each poll of the wait for a ready run observes fresh state.
-    let api = AntithesisApi::new_uncached(settings, verbose)?;
+    let api = AntithesisApi::new(settings, verbose)?;
     let search = SearchMode::Query {
         stream: false,
         limit: Some(limit),
@@ -1904,8 +1902,7 @@ async fn cmd_runs_exec(
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
     debug!("executing command in run: {}", run_id);
-    // Uncached, so each poll of the wait observes fresh state.
-    let api = AntithesisApi::new_uncached(settings, verbose)?;
+    let api = AntithesisApi::new(settings, verbose)?;
     exec_when_ready(&api, run_id, exec, READY_POLL, json).await
 }
 
@@ -5249,6 +5246,42 @@ mod tests {
                 );
                 assert_eq!(request_methods(&server).await, ["GET", "POST"]);
             }
+        }
+
+        #[tokio::test]
+        async fn ready_wait_bypasses_the_cache_and_the_search_does_not() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v0/runs/run-w"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .insert_header("cache-control", crate::testutils::CACHEABLE_CACHE_CONTROL)
+                        .set_body_json(run_body("completed")),
+                )
+                .mount(&server)
+                .await;
+            let cache_dir = tempfile::tempdir().unwrap();
+            let api = AntithesisApi::build(
+                &Settings::for_test_base_url(server.uri()),
+                AuthenticationInfo::ApiKey {
+                    api_key: "test-key".to_owned(),
+                },
+                false,
+                crate::api::ResponseCache::Dir(cache_dir.path().to_path_buf()),
+            )
+            .unwrap();
+
+            // The "search" is a read that the cache admits, to show which
+            // client it goes through.
+            for _ in 0..2 {
+                event_search::search_when_ready(&api, "run-w", FAST_POLL, || api.get_run("run-w"))
+                    .await
+                    .unwrap();
+            }
+
+            // Each wait reads the server. The first search stores the
+            // complete run, and the second search reads it from the cache.
+            assert_eq!(request_methods(&server).await, ["GET", "GET", "GET"]);
         }
 
         #[tokio::test]

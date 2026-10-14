@@ -482,9 +482,9 @@ pub(crate) enum ResponseCache {
     /// `$XDG_RUNTIME_DIR/snouty/api-cache-v3`, falling back to a per-user
     /// directory under the system temp dir — the default for every command.
     Default,
-    /// No response cache: every request hits the server. The handlers
-    /// already keep mutable resources out of the cache, so this exists for
-    /// callers that want no cache I/O at all (status polls, tests).
+    /// No response cache: every request hits the server. A command that
+    /// needs it at run time takes [`AntithesisApi::uncached`].
+    #[cfg(test)]
     Disabled,
     /// Cache under this directory.
     #[cfg(test)]
@@ -566,17 +566,15 @@ impl AntithesisApi {
         )
     }
 
-    /// Like [`AntithesisApi::new`], but with [`ResponseCache::Disabled`].
-    pub fn new_uncached(settings: &Settings, verbose: bool) -> Result<Self> {
-        Self::build(
-            settings,
-            AuthenticationInfo::for_ambient_configuration(
-                settings.profile(),
-                PasswordPolicy::Reject,
-            )?,
-            verbose,
-            ResponseCache::Disabled,
-        )
+    /// The same client, with its response cache disabled: every request
+    /// reaches the server. A poll of a run's status uses it, so that each poll
+    /// observes fresh state.
+    pub fn uncached(&self) -> Self {
+        Self {
+            client: self.client.clone(),
+            base_url: self.base_url.clone(),
+            cache: self.cache.disabled(),
+        }
     }
 
     /// Like [`AntithesisApi::new`], but accepts the deprecated
@@ -612,6 +610,7 @@ impl AntithesisApi {
         let http_client = build_http_client(default_headers.clone(), settings)?;
         let cache_dir = match cache {
             ResponseCache::Default => api_cache::default_dir(),
+            #[cfg(test)]
             ResponseCache::Disabled => None,
             #[cfg(test)]
             ResponseCache::Dir(dir) => Some(dir),

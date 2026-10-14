@@ -131,7 +131,7 @@ pub(super) async fn count_query(
 
 /// Wait until the run is ready or complete, as `runs exec` does, then send
 /// one events-search request with `send`. `poll` is how often the wait reads
-/// the run.
+/// the run. Pass the normal client: the wait bypasses its cache by itself.
 ///
 /// The wait reads the run, so the run exists when the request goes out. A 404
 /// then means a run from a release before [`MIN_SEARCH_RELEASE`], which does

@@ -15,7 +15,7 @@ cargo-dist reads the top-level `CHANGELOG.md` when the release tag is pushed. It
 2. A pre-release (e.g. `0.7.0-rc.2`) with no exact heading falls back to the stable heading (`# Version 0.7.0`), then to the `# Unreleased` heading. cargo-dist rewrites the heading to include the pre-release version in the GitHub Release.
 3. A stable version matches only its exact heading. A missing heading does not fail the release; cargo-dist just omits the notes.
 
-The convention: only the release PR edits `CHANGELOG.md`. In step 2, write the notes from the code changes since the last stable release. `CHANGELOG.md` holds at most one pre-release section: the one for the newest pre-release of the next version, e.g. `# Version 0.7.0-rc.2 (YYYY-MM-DD)`. It lists the changes since the last stable release. Each new pre-release replaces that section, and the stable release replaces it with the section for the version.
+The convention: only the release PR edits `CHANGELOG.md`. Step 2 writes the notes from the code. `CHANGELOG.md` holds at most one pre-release section: the one for the newest pre-release of the next version, e.g. `# Version 0.7.0-rc.2 (YYYY-MM-DD)`. It lists the changes since the last stable release. Each new pre-release replaces that section, and the stable release replaces it with the section for the version.
 
 ## Pre-releases
 
@@ -40,14 +40,14 @@ If any check fails, report the issue clearly and stop.
 
 ### 2. Write the Release Notes in CHANGELOG.md
 
-Write the notes from the code that changed, not from PR descriptions. A description can describe an approach that changed in review, or a behavior that a later PR changed again.
+Write the notes from the code that changed, not from PR descriptions. A description can show an approach that changed in review. A later PR can also change the behavior again.
 
-Find the most recent stable tag `vPREV` (not an `-rc.N` tag) with `git tag -l 'v[0-9]*' --sort=-v:refname | grep -v -- -rc | head -1`. Read the user-facing changes since `vPREV`:
+Find the most recent stable tag `vPREV` (not an `-rc.N` tag) with `git tag -l 'v[0-9]*' --sort=-v:refname | grep -v -- -rc | head -1`. Read the changes that the user sees since `vPREV`:
 
 - The commands, flags, defaults, and help text: `git diff vPREV..HEAD -- src/cli.rs`.
 - The specs, which record the behavior that the user sees: `git diff vPREV..HEAD -- specs/ specs_engine/`. A changed or removed assertion in an existing spec often marks a breaking change.
 - The user docs: `git diff vPREV..HEAD -- README.md COOKBOOK.md`.
-- The release packaging: `git diff vPREV..HEAD -- dist-workspace.toml .github/workflows/release.yml`. A newer build runner can raise the minimum glibc of the Linux binaries. A new `cargo-dist-version` can change the installers; read the cargo-dist release notes for each version in that range with `gh release view vN -R axodotdev/cargo-dist`.
+- The release packaging: `git diff vPREV..HEAD -- dist-workspace.toml .github/workflows/release.yml`. A newer build runner can raise the minimum glibc of the Linux binaries. A new `cargo-dist-version` can change the installers. Read the cargo-dist release notes for each version in that range with `gh release view vN -R axodotdev/cargo-dist`.
 
 Then list the commits with `git log --oneline vPREV..HEAD`. Each squash-merge subject ends in `(#N)`. When the diffs above do not explain a change, read its commit with `git show <sha>`. Use the PR number only to link the entry. Do not skip a commit because of its title: a dependency or CI commit can change the platforms or the installers.
 
@@ -55,8 +55,8 @@ When `CHANGELOG.md` has a section for an earlier pre-release of this version, us
 
 Write the notes at the level of commands, flags, and major changes to output or behavior. Follow these rules:
 
-- Write one entry per command or feature, not one per PR. Merge the PRs that changed the same command into one entry.
-- Leave out implementation detail, internal-only changes (refactors, tests, CI, contributor docs), and small changes to the wording of help or messages.
+- Write one entry per command or feature. Merge the PRs that changed the same command into one entry.
+- Leave out implementation detail, internal-only changes (refactors, tests, CI, contributor docs), and small changes to the wording of help or messages. Keep a CI or dependency change that changes the platforms or the installers.
 - Write each entry as the net change relative to `vPREV`. When a feature is new in this release, describe the feature once; do not list the iterations that built it (e.g. a rewrite of a command that did not exist in the previous release is part of the feature, not an entry). When a later change reverses an earlier one, leave out both.
 - Put the breaking changes first, then the other changes, largest first. A breaking change can make a command, script, or config that worked with `vPREV` fail or act differently: a removed or renamed command or flag, a changed default, a new requirement on input, a changed `--json` shape, or a higher platform requirement. Start each with `**Breaking**:` and tell the user what to do instead.
 - Link every PR that contributes to an entry with the public base URL, e.g. `([#176](https://github.com/antithesishq/snouty/pull/176))`. Do not use the exe proxy hostname.

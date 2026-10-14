@@ -595,3 +595,61 @@ fn launch_exits_cleanly_when_stdout_closes_early() {
     );
     assert!(!stderr.contains("panicked"), "stderr:\n{stderr}");
 }
+
+/// Users copy the help examples verbatim, so every `launch` and `debug`
+/// example must pass argument parsing and the pre-flight checks.
+#[test]
+fn help_examples_pass_preflight() {
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir(dir.path().join("config")).unwrap();
+    std::fs::write(dir.path().join("config/docker-compose.yaml"), "").unwrap();
+
+    for subcommand in ["launch", "debug"] {
+        let output = snouty().args([subcommand, "--help"]).output().unwrap();
+        let help = String::from_utf8(output.stdout).unwrap();
+        let prefix = format!("snouty {subcommand} ");
+
+        // An example starts with `snouty <subcommand>` and continues on the
+        // next line after a trailing `\` or `|`. The pipe and what follows it
+        // are not snouty.
+        let mut examples = Vec::new();
+        let mut lines = help.lines().map(str::trim);
+        while let Some(line) = lines.next() {
+            if !line.starts_with(&prefix) {
+                continue;
+            }
+            let mut example = line.to_string();
+            while example.ends_with(['\\', '|']) {
+                let next = lines.next().unwrap();
+                example = format!("{} {next}", example.trim_end_matches('\\'));
+            }
+            let example = example.split(" | ").next().unwrap();
+            examples.push(
+                example
+                    .replace("<run_id>", "run-1")
+                    .replace("<hash>", "1")
+                    .replace("<vtime>", "1"),
+            );
+        }
+        assert!(!examples.is_empty(), "no examples in `{subcommand} --help`");
+
+        for example in examples {
+            let args = shlex::split(&example).unwrap();
+            let mock_url = start_mock_server(r#"{"runId":"run-123"}"#, 200);
+            // An engine that does not exist stops a --config launch after the
+            // pre-flight checks, before it builds an image.
+            let output = snouty_with_mock(&mock_url)
+                .current_dir(dir.path())
+                .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+                .env("SNOUTY_CONTAINER_ENGINE", "none")
+                .args(&args[1..])
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success() || stderr.contains("unsupported container engine 'none'"),
+                "help example failed: {example}\nstderr:\n{stderr}"
+            );
+        }
+    }
+}

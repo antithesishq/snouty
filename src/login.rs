@@ -371,8 +371,7 @@ async fn prompt_for_auth(
     // ANTITHESIS_BASE_URL trumps the supplied tenant because the former is used by spec tests
     let base_url = env::var(settings::ANTITHESIS_BASE_URL_VAR_NAME)?
         .unwrap_or_else(|| format!("https://{tenant}.antithesis.com"));
-    // TODO: pass `--verbose` through to here once `cmd_login` receives it, and
-    // redact the token exchange body, which the log prints in full.
+    // TODO: pass `--verbose` through to here once `cmd_login` receives it.
     let client = HttpClient::new(settings, false)?;
     let oauth_config = fetch_cli_config(&client, &base_url).await;
 

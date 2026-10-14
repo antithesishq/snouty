@@ -1051,8 +1051,8 @@ impl ClientHooks<ClientState> for generated::Client {
             None
         };
 
-        http.log_request(&request);
-        let result = execute_with_transient_retry(self.client(), http.is_verbose(), request).await;
+        http.log_request(&request, LoggedBody::Shown);
+        let result = execute_with_transient_retry(self.client(), http.verbose, request).await;
 
         let result = match (result, retry_request) {
             (Ok(response), Some(mut retry_request))
@@ -1067,13 +1067,9 @@ impl ClientHooks<ClientState> for generated::Client {
                         retry_request
                             .headers_mut()
                             .insert(reqwest::header::AUTHORIZATION, header);
-                        http.log_request(&retry_request);
-                        execute_with_transient_retry(
-                            self.client(),
-                            http.is_verbose(),
-                            retry_request,
-                        )
-                        .await
+                        http.log_request(&retry_request, LoggedBody::Shown);
+                        execute_with_transient_retry(self.client(), http.verbose, retry_request)
+                            .await
                     }
                     Ok(None) => Ok(response),
                     Err(err) => {
@@ -1112,7 +1108,20 @@ fn format_response(response: &reqwest::Response, out: &mut String) {
     }
 }
 
-fn format_request(request: &reqwest::Request, default_headers: &HeaderMap, out: &mut String) {
+/// Whether the `--verbose` log prints a request body.
+#[derive(Clone, Copy)]
+enum LoggedBody {
+    Shown,
+    /// For a body that can hold a secret, such as the OAuth token exchange.
+    Withheld,
+}
+
+fn format_request(
+    request: &reqwest::Request,
+    default_headers: &HeaderMap,
+    logged_body: LoggedBody,
+    out: &mut String,
+) {
     use std::fmt::Write;
 
     let _ = writeln!(out, "> {} {}", request.method(), request.url());
@@ -1138,6 +1147,10 @@ fn format_request(request: &reqwest::Request, default_headers: &HeaderMap, out: 
     let Some(body) = request.body() else {
         return;
     };
+    if let LoggedBody::Withheld = logged_body {
+        let _ = writeln!(out, "> <body withheld>");
+        return;
+    }
     let Some(bytes) = body.as_bytes() else {
         let _ = writeln!(out, "> <streaming body>");
         return;
@@ -1164,21 +1177,28 @@ fn is_sensitive_header(name: &HeaderName) -> bool {
     matches!(name, n if n == AUTHORIZATION || n == PROXY_AUTHORIZATION || n == COOKIE || n == SET_COOKIE)
 }
 
-/// Redact a sensitive header value. For `Authorization` /
-/// `Proxy-Authorization` the auth scheme is preserved so the log still shows
-/// what kind of credential was sent (`Bearer secret-token` becomes
-/// `bearer sec...`). Other sensitive headers (cookies) are reduced to their
-/// first three chars.
-fn redact_sensitive_value(name: &HeaderName, value: &str) -> String {
+/// The log's stand-in for a sensitive header value. It is always a literal,
+/// so no part of the credential reaches the log. For `Authorization` and
+/// `Proxy-Authorization` it still names a known auth scheme, to show what kind
+/// of credential was sent.
+fn redact_sensitive_value(name: &HeaderName, value: &str) -> &'static str {
     use reqwest::header::{AUTHORIZATION, PROXY_AUTHORIZATION};
-    let take_prefix = |s: &str| s.chars().take(3).collect::<String>();
-    let is_auth = name == AUTHORIZATION || name == PROXY_AUTHORIZATION;
-    match value.split_once(' ') {
-        Some((scheme, rest)) if is_auth => {
-            format!("{} {}...", scheme.to_ascii_lowercase(), take_prefix(rest))
+    const SCHEMES: [(&str, &str); 3] = [
+        ("Bearer ", "Bearer [redacted]"),
+        ("Basic ", "Basic [redacted]"),
+        ("GHA ", "GHA [redacted]"),
+    ];
+    if name == AUTHORIZATION || name == PROXY_AUTHORIZATION {
+        for (scheme, redacted) in SCHEMES {
+            if value
+                .get(..scheme.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(scheme))
+            {
+                return redacted;
+            }
         }
-        _ => format!("{}...", take_prefix(value)),
     }
+    "[redacted]"
 }
 
 #[derive(Clone, Default)]
@@ -1304,15 +1324,13 @@ fn extra_headers_from_env() -> Result<Vec<(HeaderName, HeaderValue)>> {
 #[derive(Clone, Debug)]
 pub(crate) struct HttpClient {
     client: Client,
-    /// The default headers, kept for the `--verbose` log because reqwest adds
-    /// them only in `Client::execute`. `None` disables the log.
-    verbose_headers: Option<HeaderMap>,
+    /// Enables the `--verbose` request/response log on stderr.
+    verbose: bool,
 }
 
 impl HttpClient {
     pub(crate) fn new(settings: &Settings, verbose: bool) -> Result<Self> {
         let default_headers = default_request_headers()?;
-        let verbose_headers = verbose.then(|| default_headers.clone());
         // Only a connect timeout (see CONNECT_TIMEOUT): no read or total timeout, so a
         // slow-but-alive Antithesis request is never aborted no matter how long it runs.
         let mut builder = Client::builder()
@@ -1327,24 +1345,25 @@ impl HttpClient {
 
         Ok(Self {
             client: builder.build().wrap_err("failed to build API client")?,
-            verbose_headers,
+            verbose,
         })
     }
 
-    fn is_verbose(&self) -> bool {
-        self.verbose_headers.is_some()
-    }
-
-    fn log_request(&self, request: &reqwest::Request) {
-        if let Some(default_headers) = &self.verbose_headers {
-            let mut out = String::new();
-            format_request(request, default_headers, &mut out);
-            eprint!("{out}");
+    fn log_request(&self, request: &reqwest::Request, body: LoggedBody) {
+        if !self.verbose {
+            return;
         }
+        // Built again rather than kept next to the credentials, so the log
+        // reads nothing from them but the redacted request headers. The client
+        // was built from the same headers, so this cannot fail.
+        let default_headers = default_request_headers().unwrap_or_default();
+        let mut out = String::new();
+        format_request(request, &default_headers, body, &mut out);
+        eprint!("{out}");
     }
 
     fn log_response(&self, result: &reqwest::Result<reqwest::Response>) {
-        if self.is_verbose()
+        if self.verbose
             && let Ok(response) = result
         {
             let mut out = String::new();
@@ -1362,13 +1381,14 @@ impl HttpClient {
     }
 
     /// Sends `request` once, with no transient retry, so a per-request timeout
-    /// bounds the whole call.
+    /// bounds the whole call. The `--verbose` log withholds the body: the OAuth
+    /// requests carry the CSRF state and the flow token there.
     pub(crate) async fn send(
         &self,
         request: reqwest::RequestBuilder,
     ) -> reqwest::Result<reqwest::Response> {
         let request = request.build()?;
-        self.log_request(&request);
+        self.log_request(&request, LoggedBody::Withheld);
         let result = self.client.execute(request).await;
         self.log_response(&result);
         result
@@ -1870,13 +1890,28 @@ mod tests {
         *request.body_mut() = Some(r#"{"hello":"world"}"#.into());
 
         let mut out = String::new();
-        format_request(&request, &HeaderMap::new(), &mut out);
+        format_request(&request, &HeaderMap::new(), LoggedBody::Shown, &mut out);
 
         assert!(out.contains("POST http://example.com/api/v1/launch"));
-        assert!(out.contains("authorization: bearer sec...\n"));
-        assert!(!out.contains("secret-rest"));
+        assert!(out.contains("authorization: Bearer [redacted]\n"));
+        assert!(!out.contains("sec"));
         assert!(out.contains("content-type: application/json"));
         assert!(out.contains(r#"{"hello":"world"}"#));
+    }
+
+    #[test]
+    fn format_request_withholds_a_secret_body() {
+        let mut request = reqwest::Request::new(
+            reqwest::Method::POST,
+            "http://example.com/auth/cli/token".parse().unwrap(),
+        );
+        *request.body_mut() = Some(r#"{"flow_token":"secret-flow-token"}"#.into());
+
+        let mut out = String::new();
+        format_request(&request, &HeaderMap::new(), LoggedBody::Withheld, &mut out);
+
+        assert!(out.contains("> <body withheld>\n"));
+        assert!(!out.contains("flow_token"));
     }
 
     #[test]
@@ -1894,10 +1929,10 @@ mod tests {
         );
 
         let mut out = String::new();
-        format_request(&request, &defaults, &mut out);
+        format_request(&request, &defaults, LoggedBody::Shown, &mut out);
 
-        assert!(out.contains("authorization: basic dXN...\n"));
-        assert!(!out.contains("dXNlcjpwYXNz"));
+        assert!(out.contains("authorization: Basic [redacted]\n"));
+        assert!(!out.contains("dXN"));
     }
 
     #[test]
@@ -1906,22 +1941,26 @@ mod tests {
         let set_cookie = HeaderName::from_static("set-cookie");
 
         assert_eq!(
-            redact_sensitive_value(&AUTHORIZATION, "Bearer secret-token-12345"),
-            "bearer sec..."
+            redact_sensitive_value(&AUTHORIZATION, "bearer secret-token-12345"),
+            "Bearer [redacted]"
         );
         assert_eq!(
             redact_sensitive_value(&AUTHORIZATION, "Basic dXNlcjpwYXNz"),
-            "basic dXN..."
+            "Basic [redacted]"
+        );
+        // An unknown scheme is not named: it could be the credential itself.
+        assert_eq!(
+            redact_sensitive_value(&AUTHORIZATION, "Token secret-token"),
+            "[redacted]"
         );
         assert_eq!(
             redact_sensitive_value(&COOKIE, "sessionid=abcdef"),
-            "ses..."
+            "[redacted]"
         );
-        // Set-Cookie values often contain spaces (e.g. attributes), so the
-        // scheme-detection heuristic must not apply.
+        // A Set-Cookie value that looks like an auth scheme is still not named.
         assert_eq!(
-            redact_sensitive_value(&set_cookie, "session=very-secret; Path=/"),
-            "ses..."
+            redact_sensitive_value(&set_cookie, "Bearer very-secret; Path=/"),
+            "[redacted]"
         );
     }
 
@@ -1940,7 +1979,7 @@ mod tests {
         defaults.insert("api-version", HeaderValue::from_static("1.0"));
 
         let mut out = String::new();
-        format_request(&request, &defaults, &mut out);
+        format_request(&request, &defaults, LoggedBody::Shown, &mut out);
 
         assert_eq!(out.matches("api-version").count(), 1);
         assert!(out.contains("api-version: 2.0"));
@@ -2250,8 +2289,8 @@ mod tests {
 
         assert!(out.contains("< 418 I'm a teapot"));
         assert!(out.contains("< content-type: text/plain"));
-        assert!(out.contains("< set-cookie: ses..."));
-        assert!(!out.contains("very-secret-token"));
+        assert!(out.contains("< set-cookie: [redacted]\n"));
+        assert!(!out.contains("session"));
     }
 
     #[test]
@@ -2263,7 +2302,7 @@ mod tests {
         *request.body_mut() = Some(vec![0xff_u8, 0xfe, 0xfd].into());
 
         let mut out = String::new();
-        format_request(&request, &HeaderMap::new(), &mut out);
+        format_request(&request, &HeaderMap::new(), LoggedBody::Shown, &mut out);
 
         assert!(out.contains("<3 bytes>"));
     }

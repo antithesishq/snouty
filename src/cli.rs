@@ -803,12 +803,11 @@ lifecycle, test composer — each in their own concise form."#
     };
 }
 
-/// How `runs search` and `runs events` behave on a new run.
-macro_rules! new_run_search_help {
+/// How `runs search` and `runs events` behave on a run that is not ready.
+macro_rules! ready_wait_search_help {
     () => {
-        r#"The events of a new run become searchable some minutes after the run is
-ready. Until then, the command waits and shows a line on stderr. A search
-in the first minutes after that can match no events."#
+        r#"The run must be ready or complete. If it is not, the command waits until it
+is ready, as `snouty runs exec` does, and shows a line on stderr."#
     };
 }
 
@@ -932,7 +931,7 @@ Add --count to print how many events in the whole run match the query,
 instead of a sample. No limit applies.
 
 "#,
-    new_run_search_help!(),
+    ready_wait_search_help!(),
     r#"
 
 Add --json for machine-readable output. Each event prints as one JSON
@@ -1295,7 +1294,7 @@ result is a sample of the matching events in no fixed order, capped at
 and how the run's timelines relate the events.
 
 "#,
-            new_run_search_help!(),
+            ready_wait_search_help!(),
             r#"
 
 For log output, the equivalent search is:

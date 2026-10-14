@@ -1499,7 +1499,8 @@ async fn cmd_runs_search(
 ) -> Result<()> {
     debug!("querying events for run: {}", args.run_id);
 
-    let api = AntithesisApi::new(settings, verbose)?;
+    // Uncached, so each poll of the wait for a ready run observes fresh state.
+    let api = AntithesisApi::new_uncached(settings, verbose)?;
     if args.check {
         return event_search::check_query(&api, &args.run_id, &args.query, mode.json()).await;
     }
@@ -1516,7 +1517,7 @@ async fn cmd_runs_search(
         stream: args.follow,
         limit,
     };
-    let stream = event_search::search_when_searchable(&api, &args.run_id, || {
+    let stream = event_search::search_when_ready(&api, &args.run_id, READY_POLL, || {
         api.search_run_events_query(&args.run_id, &args.query, search)
     })
     .await?;
@@ -1549,13 +1550,14 @@ async fn cmd_runs_events(
             .suggestion("each `-m/--match` needle must be a non-empty substring"));
     }
 
-    let api = AntithesisApi::new(settings, verbose)?;
+    // Uncached, so each poll of the wait for a ready run observes fresh state.
+    let api = AntithesisApi::new_uncached(settings, verbose)?;
     let search = SearchMode::Query {
         stream: false,
         limit: Some(limit),
     };
     let query = event_set_dsl::substring_filter(matches);
-    let stream = event_search::search_when_searchable(&api, run_id, || {
+    let stream = event_search::search_when_ready(&api, run_id, READY_POLL, || {
         api.search_run_events_query(run_id, &query, search)
     })
     .await?;
@@ -1691,39 +1693,35 @@ impl RewarmDisplay {
     }
 }
 
-/// What snouty shows on stderr while it waits: a spinner on a terminal, else
-/// a line at once and a line each whole minute.
-enum WaitDisplay {
+/// What `runs exec` shows on stderr while it waits for the run to be ready:
+/// a spinner on a terminal, else a line at once and a line each whole minute.
+enum ReadyDisplay {
     Spinner(ProgressBar),
     Lines {
-        message: &'static str,
         start: Instant,
         /// The whole minutes waited at the last line.
         last_minutes: Option<u64>,
     },
 }
 
-impl WaitDisplay {
-    fn new(message: &'static str) -> Self {
+impl ReadyDisplay {
+    fn new() -> Self {
         if !std::io::stderr().is_terminal() {
             return Self::Lines {
-                message,
                 start: Instant::now(),
                 last_minutes: None,
             };
         }
-        let style = ProgressStyle::with_template("{spinner} {msg} ({elapsed})")
-            .expect("the template is valid");
-        let spinner = ProgressBar::new_spinner()
-            .with_style(style)
-            .with_message(message);
+        let style =
+            ProgressStyle::with_template("{spinner} waiting for the run to be ready ({elapsed})")
+                .expect("the template is valid");
+        let spinner = ProgressBar::new_spinner().with_style(style);
         spinner.enable_steady_tick(Duration::from_millis(120));
         Self::Spinner(spinner)
     }
 
     fn show(&mut self) {
         if let Self::Lines {
-            message,
             start,
             last_minutes,
         } = self
@@ -1732,21 +1730,25 @@ impl WaitDisplay {
             let minutes = waited / 60;
             if last_minutes.is_none_or(|last| minutes > last) {
                 let waited = HumanDuration::from_seconds(waited);
-                eprintln!("{message} ({waited})");
+                eprintln!("waiting for the run to be ready ({waited})");
                 *last_minutes = Some(minutes);
             }
         }
     }
 
-    /// End a wait that succeeded.
-    fn finish(self) {
+    /// End the display. A run that stopped instead of becoming ready gets no
+    /// line: the error that follows names its status.
+    fn finish(self, run: &RunDetail) {
         if let Self::Spinner(spinner) = &self {
             spinner.finish_and_clear();
+        }
+        if run.is_ready() {
+            eprintln!("run {} is ready", run.run_id);
         }
     }
 }
 
-impl Drop for WaitDisplay {
+impl Drop for ReadyDisplay {
     /// A wait that fails leaves its spinner on the line. The newline puts the
     /// error on a line of its own.
     fn drop(&mut self) {
@@ -1904,13 +1906,30 @@ async fn cmd_runs_exec(
     debug!("executing command in run: {}", run_id);
     // Uncached, so each poll of the wait observes fresh state.
     let api = AntithesisApi::new_uncached(settings, verbose)?;
-    exec_when_ready(&api, run_id, exec, EXEC_READY_POLL, json).await
+    exec_when_ready(&api, run_id, exec, READY_POLL, json).await
 }
 
-/// How often `runs exec` reads a run that is not ready. A debugging session
-/// becomes ready minutes after it starts, so a poll each minute (the `runs
-/// wait` floor) could delay its first command by most of a minute.
-const EXEC_READY_POLL: Duration = Duration::from_secs(10);
+/// How often `runs exec`, `runs search`, and `runs events` read a run that is
+/// not ready. A debugging session becomes ready minutes after it starts, so a
+/// poll each minute (the `runs wait` floor) could delay the command by most
+/// of a minute.
+const READY_POLL: Duration = Duration::from_secs(10);
+
+/// Wait until the run is ready or complete, with a [`ReadyDisplay`] on stderr
+/// while it is not. The wait has no time limit. `runs exec`, `runs search`,
+/// and `runs events` need a ready run; on a complete run they go on at once,
+/// and the server answers.
+async fn wait_until_ready(api: &AntithesisApi, run_id: &str, poll: Duration) -> Result<RunDetail> {
+    let mut waiting: Option<ReadyDisplay> = None;
+    let run = wait_for_run(api, run_id, poll, WaitUntil::Ready, |_| {
+        waiting.get_or_insert_with(ReadyDisplay::new).show();
+    })
+    .await?;
+    if let Some(waiting) = waiting {
+        waiting.finish(&run);
+    }
+    Ok(run)
+}
 
 /// Wait until the run is ready or complete, then execute. The wait has no
 /// time limit. A complete run executes at once, and the server answers with
@@ -1938,21 +1957,7 @@ async fn exec_when_ready(
         "snouty debug {debug_target} --input-hash {} --vtime {}",
         exec.moment.input_hash, exec.moment.vtime
     );
-    let mut waiting: Option<WaitDisplay> = None;
-    let run = wait_for_run(api, run_id, poll, WaitUntil::Ready, |_| {
-        waiting
-            .get_or_insert_with(|| WaitDisplay::new("waiting for the run to be ready"))
-            .show();
-    })
-    .await?;
-    if let Some(waiting) = waiting {
-        waiting.finish();
-        // A run that stopped instead of becoming ready gets no line: the
-        // error that follows names its status.
-        if run.is_ready() {
-            eprintln!("run {run_id} is ready");
-        }
-    }
+    let run = wait_until_ready(api, run_id, poll).await?;
     let stream = api
         .execute_command(run_id, exec)
         .await
@@ -5167,107 +5172,95 @@ mod tests {
             assert_eq!(api_error_status(&err), Some(500));
         }
 
-        /// Answer the count endpoint of `run_id` with the live endpoint's
-        /// bare 404 `unindexed` times, then with `{"count": 3}`.
-        async fn mount_count_after_404s(server: &MockServer, run_id: &str, unindexed: u64) {
-            let route = format!("/api/v0/runs/{run_id}/events/search/count");
+        /// Answer the count endpoint of `run_id` with `{"count": 3}`, or with
+        /// the live endpoint's bare 404.
+        async fn mount_count(server: &MockServer, run_id: &str, found: bool) {
+            let response = if found {
+                ResponseTemplate::new(200).set_body_json(json!({"count": 3}))
+            } else {
+                ResponseTemplate::new(404)
+                    .set_body_raw(crate::testutils::MOCK_BARE_404_BODY, "application/json")
+            };
             Mock::given(method("POST"))
-                .and(path(route.as_str()))
-                .respond_with(
-                    ResponseTemplate::new(404)
-                        .set_body_raw(crate::testutils::MOCK_BARE_404_BODY, "application/json"),
-                )
-                .up_to_n_times(unindexed)
-                .mount(server)
-                .await;
-            Mock::given(method("POST"))
-                .and(path(route.as_str()))
-                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"count": 3})))
+                .and(path(format!("/api/v0/runs/{run_id}/events/search/count")))
+                .respond_with(response)
                 .mount(server)
                 .await;
         }
 
-        async fn count_searches(server: &MockServer) -> usize {
+        async fn request_methods(server: &MockServer) -> Vec<String> {
             let requests = server.received_requests().await.unwrap();
-            requests
-                .iter()
-                .filter(|r| r.method.as_str() == "POST")
-                .count()
+            requests.iter().map(|r| r.method.to_string()).collect()
         }
 
-        async fn count_when_searchable(api: &AntithesisApi, run_id: &str) -> Result<u64> {
-            event_search::search_when_searchable(api, run_id, || {
+        async fn count_when_ready(api: &AntithesisApi, run_id: &str) -> Result<u64> {
+            event_search::search_when_ready(api, run_id, FAST_POLL, || {
                 api.count_run_events_query(run_id, "filter(ev => true)")
             })
             .await
         }
 
         #[tokio::test]
-        async fn search_waits_until_the_events_of_a_new_run_are_searchable() {
+        async fn search_waits_until_the_run_is_ready() {
             let server = MockServer::start().await;
-            mount_get_run_statuses(&server, &["starting", "in_progress"]).await;
-            mount_count_after_404s(&server, "run-w", 2).await;
+            let bodies = vec![
+                run_body("starting"),
+                run_body("in_progress"),
+                ready_run_body(),
+            ];
+            mount_get_run_bodies(&server, bodies).await;
+            mount_count(&server, "run-w", true).await;
             let api = test_api(&server.uri());
 
-            let count = count_when_searchable(&api, "run-w").await.unwrap();
+            let count = count_when_ready(&api, "run-w").await.unwrap();
 
             assert_eq!(count, 3);
-            assert_eq!(count_searches(&server).await, 3);
+            assert_eq!(
+                request_methods(&server).await,
+                ["GET", "GET", "GET", "POST"]
+            );
         }
 
         #[tokio::test]
-        async fn search_stops_waiting_when_the_run_stops() {
-            for status in ["completed", "cancelled", "incomplete", "unknown"] {
+        async fn search_404_names_the_release_only_for_an_old_run() {
+            let old = crate::testutils::MOCK_OLD_RELEASE_RUN;
+            let new = "0df9ac1f5155c14f88ea41f5ad503e07-64-0";
+            for (run_id, hint) in [(old, true), (new, false)] {
                 let server = MockServer::start().await;
-                mount_get_run_statuses(&server, &["in_progress", status]).await;
-                mount_count_after_404s(&server, "run-w", u64::MAX).await;
+                // A run from before release 64.0 has no sub-status.
+                let mut body = if hint {
+                    run_body("in_progress")
+                } else {
+                    ready_run_body()
+                };
+                body["run_id"] = json!(run_id);
+                mount_get_run_bodies(&server, vec![body]).await;
+                mount_count(&server, run_id, false).await;
                 let api = test_api(&server.uri());
 
-                let err = count_when_searchable(&api, "run-w").await.unwrap_err();
+                let err = count_when_ready(&api, run_id).await.unwrap_err();
 
                 assert_eq!(api_error_status(&err), Some(404));
                 let report = format!("{err:?}");
-                assert!(
-                    report.contains(&format!(
-                        "run run-w has status \"{status}\", so snouty did not wait for its events"
-                    )),
+                assert_eq!(
+                    report.contains("tenant releases before 62.2 do not serve the events-search"),
+                    hint,
                     "got: {report}"
                 );
-                assert!(!report.contains("tenant releases before"), "got: {report}");
-                assert_eq!(count_searches(&server).await, 2);
+                assert_eq!(request_methods(&server).await, ["GET", "POST"]);
             }
-        }
-
-        #[tokio::test]
-        async fn search_does_not_wait_for_a_run_from_an_old_release() {
-            let run_id = crate::testutils::MOCK_OLD_RELEASE_RUN;
-            let server = MockServer::start().await;
-            let mut body = run_body("in_progress");
-            body["run_id"] = json!(run_id);
-            mount_get_run_bodies(&server, vec![body]).await;
-            mount_count_after_404s(&server, run_id, u64::MAX).await;
-            let api = test_api(&server.uri());
-
-            let err = count_when_searchable(&api, run_id).await.unwrap_err();
-
-            let report = format!("{err:?}");
-            assert!(
-                report.contains("tenant releases before 62.2 do not serve the events-search API"),
-                "got: {report}"
-            );
-            assert_eq!(count_searches(&server).await, 1);
         }
 
         #[tokio::test]
         async fn search_of_an_unknown_run_says_run_not_found() {
             let server = MockServer::start().await;
-            mount_count_after_404s(&server, "BAD-ID", u64::MAX).await;
+            mount_count(&server, "BAD-ID", false).await;
             let api = test_api(&server.uri());
 
-            let err = count_when_searchable(&api, "BAD-ID").await.unwrap_err();
+            let err = count_when_ready(&api, "BAD-ID").await.unwrap_err();
 
             assert_eq!(format!("{err:#}"), "run not found: BAD-ID");
-            assert_eq!(count_searches(&server).await, 1);
+            assert_eq!(request_methods(&server).await, ["GET"]);
         }
 
         const STARTED_AT: &str = "2025-03-20T02:00:00Z";

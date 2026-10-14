@@ -512,10 +512,6 @@ impl MockApiServer {
         let expected_token = MOCK_API_TOKEN.to_string();
 
         let handle = thread::spawn(move || {
-            let mut state = MockState {
-                empty,
-                indexing_run_searched: false,
-            };
             for mut stream in listener.incoming().flatten() {
                 let Some(request) = mock_read_request(&mut stream) else {
                     continue;
@@ -539,7 +535,7 @@ impl MockApiServer {
                     } else {
                         let (method, path) = mock_parse_request_line(&request);
                         let req_body = mock_request_body(&request);
-                        mock_route(&method, &path, req_body, &mut state)
+                        mock_route(&method, &path, req_body, empty)
                     };
 
                 let response = format!(
@@ -658,7 +654,7 @@ fn mock_route(
     method: &str,
     path: &str,
     req_body: &str,
-    state: &mut MockState,
+    empty: bool,
 ) -> (u16, String, &'static str, &'static str) {
     // Split path and query string
     let (path_part, query) = match path.split_once('?') {
@@ -671,7 +667,7 @@ fn mock_route(
 
     match (method, path_part) {
         ("GET", "/api/v0/runs") => {
-            let (s, b) = mock_route_list_runs(query, state.empty);
+            let (s, b) = mock_route_list_runs(query, empty);
             (s, b, json, NO_CACHE_CACHE_CONTROL)
         }
         ("GET", p) if p.starts_with("/api/v0/runs/") => {
@@ -704,18 +700,7 @@ fn mock_route(
             (s, b, ct, cache_control)
         }
         ("POST", p) if p.starts_with("/api/v0/runs/") => {
-            let mut rest = &p["/api/v0/runs/".len()..];
-            let indexed;
-            if let Some(endpoint) = rest.strip_prefix(MOCK_INDEXING_RUN)
-                && endpoint.starts_with("/events/search")
-            {
-                if !state.indexing_run_searched {
-                    state.indexing_run_searched = true;
-                    return (404, MOCK_BARE_404_BODY.into(), json, NO_CACHE_CACHE_CONTROL);
-                }
-                indexed = format!("run-2{endpoint}");
-                rest = &indexed;
-            }
+            let rest = &p["/api/v0/runs/".len()..];
             if let Some(run_id) = rest.strip_suffix("/events/search") {
                 let (s, b, ct) = mock_route_search_events(run_id, req_body);
                 (s, b, ct, NO_CACHE_CACHE_CONTROL)
@@ -756,23 +741,6 @@ fn mock_route(
         ),
     }
 }
-
-/// What the mock server remembers between requests.
-struct MockState {
-    /// Serve no runs at all.
-    empty: bool,
-    /// The first search of [`MOCK_INDEXING_RUN`] answers the live endpoint's
-    /// bare 404. Later searches answer with run-2's events.
-    indexing_run_searched: bool,
-}
-
-/// A ready run whose first events search answers 404, as a new run's search
-/// does on release 64.0 (orbitinghail).
-const MOCK_INDEXING_RUN: &str = "run-indexing";
-
-/// An in-progress run from a release before `MIN_SEARCH_RELEASE`, whose
-/// events search answers 404.
-pub(crate) const MOCK_OLD_RELEASE_RUN: &str = "0df9ac1f5155c14f88ea41f5ad503e07-61-1";
 
 fn mock_query_param(query: Option<&str>, key: &str) -> Option<String> {
     form_urlencoded::parse(query?.as_bytes())
@@ -891,16 +859,21 @@ fn mock_run_not_found(run_id: &str) -> (u16, String) {
 
 /// Debugging sessions, and runs that only some specs read, kept out of
 /// MOCK_RUNS so the list-oriented specs do not see them: (run_id, status,
-/// sub_status). A loading session reports `in_progress` without the `Ready`
-/// sub-status, as a new session does on release 64.0. `run-stream-error` is
-/// ready, because `runs exec` reads the run before it executes.
+/// sub_status). A loading session reports
+/// `in_progress` without the `Ready` sub-status, as a new session does on
+/// release 64.0. `run-stream-error` is ready, because `runs exec` reads the
+/// run before it executes.
 const MOCK_HIDDEN_SESSIONS: &[(&str, &str, Option<&str>)] = &[
     ("session-starting", "starting", None),
     ("session-loading", "in_progress", None),
     ("run-stream-error", "in_progress", Some("Ready")),
-    (MOCK_INDEXING_RUN, "in_progress", Some("Ready")),
     (MOCK_OLD_RELEASE_RUN, "in_progress", None),
 ];
+
+/// An in-progress run from a release before `MIN_SEARCH_RELEASE`, whose
+/// events search answers 404. A run from before release 64.0 has no
+/// sub-status, so it is ready.
+pub(crate) const MOCK_OLD_RELEASE_RUN: &str = "0df9ac1f5155c14f88ea41f5ad503e07-61-1";
 
 fn mock_route_get_run(run_id: &str) -> (u16, String) {
     if let Some(&(_, status, sub_status)) =

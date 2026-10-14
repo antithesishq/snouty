@@ -22,12 +22,12 @@ use serde_json::json;
 use futures_util::stream::BoxStream;
 use futures_util::{StreamExt, TryStreamExt};
 
-use crate::api::{AntithesisApi, MIN_SEARCH_RELEASE, RunStatus, SearchMode};
-use crate::error::{api_error_status, user_error};
+use crate::api::{AntithesisApi, MIN_SEARCH_RELEASE, SearchMode};
+use crate::error::api_error_status;
 use crate::event_render::EventStreamRenderer;
 use crate::jsonl::JsonStream;
 
-use super::{ErrorRows, FaultAnnotator, RunProbe, WaitDisplay, event_lines, probe_run, raw_lines};
+use super::{ErrorRows, FaultAnnotator, READY_POLL, event_lines, raw_lines, wait_until_ready};
 
 /// How an event-stream command prints its rows. The illegal flag
 /// combinations (`--raw` without `--json`, `--detail` with `--json`) are
@@ -95,7 +95,7 @@ pub(super) async fn check_query(
     query: &str,
     json: bool,
 ) -> Result<()> {
-    let _ = search_when_searchable(api, run_id, || {
+    let _ = search_when_ready(api, run_id, READY_POLL, || {
         api.search_run_events_query(run_id, query, SearchMode::Validate)
     })
     .await?;
@@ -115,8 +115,10 @@ pub(super) async fn count_query(
     query: &str,
     json: bool,
 ) -> Result<()> {
-    let count =
-        search_when_searchable(api, run_id, || api.count_run_events_query(run_id, query)).await?;
+    let count = search_when_ready(api, run_id, READY_POLL, || {
+        api.count_run_events_query(run_id, query)
+    })
+    .await?;
     let mut stdout = std::io::stdout().lock();
     if json {
         writeln!(stdout, "{}", json!({"count": count}))?;
@@ -127,84 +129,38 @@ pub(super) async fn count_query(
     Ok(())
 }
 
-/// The wait before the first retry of a search that answered 404. Each retry
-/// doubles the wait, up to [`SEARCH_RETRY_MAX`].
-#[cfg(not(test))]
-const SEARCH_RETRY_FIRST: Duration = Duration::from_secs(1);
-#[cfg(test)]
-const SEARCH_RETRY_FIRST: Duration = Duration::from_millis(10);
-const SEARCH_RETRY_MAX: Duration = Duration::from_secs(15);
-
-/// Send an events-search request with `send`, and send it again while the
-/// run's events are not searchable yet.
+/// Wait until the run is ready or complete, as `runs exec` does, then send
+/// one events-search request with `send`. `poll` is how often the wait reads
+/// the run.
 ///
-/// The endpoint's 404 body is an unhelpful "Resource not found", so a 404
-/// probes the run:
-///
-/// - The run does not exist: fail with "run not found".
-/// - The run ID names a release before [`MIN_SEARCH_RELEASE`]: that release
-///   does not serve the endpoint, so fail at once.
-/// - The run is starting or in progress: wait, and try again. The search of a
-///   new run answers 404 for some minutes after the run is ready (observed on
-///   orbitinghail, release 64.0: 2 to 3 minutes). No timeout applies.
-/// - The run has stopped, or its status is unknown: fail.
-///
-/// A 400 comes from the query or from an out-of-range `limit`, so its note
-/// does not blame the query alone. The server's message says which.
-pub(super) async fn search_when_searchable<T, Fut>(
+/// The wait reads the run, so the run exists when the request goes out. A 404
+/// then means a run from a release before [`MIN_SEARCH_RELEASE`], which does
+/// not serve the endpoint; the endpoint's own 404 body is an unhelpful
+/// "Resource not found". A 400 comes from the query or from an out-of-range
+/// `limit`, so its note does not blame the query alone. The server's message
+/// says which.
+pub(super) async fn search_when_ready<T, Fut>(
     api: &AntithesisApi,
     run_id: &str,
-    mut send: impl FnMut() -> Fut,
+    poll: Duration,
+    send: impl FnOnce() -> Fut,
 ) -> Result<T>
 where
     Fut: Future<Output = Result<T>>,
 {
-    let mut waiting: Option<WaitDisplay> = None;
-    let mut retry = SEARCH_RETRY_FIRST;
-    loop {
-        let err = match send().await {
-            Ok(answer) => {
-                if let Some(waiting) = waiting {
-                    waiting.finish();
-                }
-                return Ok(answer);
-            }
-            Err(err) => err,
-        };
-        match api_error_status(&err) {
-            Some(404) => {}
-            Some(400) => {
-                return Err(err.note(
-                    "the server rejected the request; its message above says which part \
-                     — for a query, check the event-set DSL syntax",
-                ));
-            }
-            _ => return Err(err),
-        }
-        let run = match probe_run(api, run_id).await {
-            RunProbe::NotFound => return Err(user_error(format!("run not found: {run_id}"))),
-            RunProbe::ProbeFailed(probe_err) => return Err(probe_err),
-            RunProbe::Exists(run) => run,
-        };
-        if !run.serves_events_search() {
+    let run = wait_until_ready(api, run_id, poll).await?;
+    send().await.map_err(|err| match api_error_status(&err) {
+        Some(404) if !run.serves_events_search() => {
             let (major, minor) = MIN_SEARCH_RELEASE;
-            return Err(err.suggestion(format!(
+            err.suggestion(format!(
                 "tenant releases before {major}.{minor} do not serve the events-search \
                  API as documented; `snouty doctor` reports the tenant release"
-            )));
+            ))
         }
-        if !matches!(run.status, RunStatus::Starting | RunStatus::InProgress) {
-            return Err(err.note(format!(
-                "run {run_id} has status \"{}\", so snouty did not wait for its events",
-                run.status
-            )));
-        }
-        waiting
-            .get_or_insert_with(|| {
-                WaitDisplay::new("waiting for the run's events to become searchable")
-            })
-            .show();
-        tokio::time::sleep(retry).await;
-        retry = (retry * 2).min(SEARCH_RETRY_MAX);
-    }
+        Some(400) => err.note(
+            "the server rejected the request; its message above says which part \
+             — for a query, check the event-set DSL syntax",
+        ),
+        _ => err,
+    })
 }

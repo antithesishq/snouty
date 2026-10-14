@@ -797,48 +797,43 @@ mock-runs-server
 ! snouty runs events no-such-run --match one --match two
 stderr 'run not found: no-such-run'
 
-# The events search of a new run answers 404 for some minutes after the run
-#    is ready. While the run is starting or in progress, snouty waits and
-#    tries again, with a line on stderr (a spinner on a terminal). The help
-#    of both commands says so. The mock answers 404 to the first search of
-#    run-indexing on each server.
+# `runs events` and `runs search` need a ready run, as `runs exec` does. On a
+#    run that is not ready, they wait until it is ready, with a line on
+#    stderr (a spinner on a terminal), then search. Rust tests in src/runs.rs
+#    cover the wait, because their test server can change the run's status
+#    between polls. The help of both commands says so.
 snouty runs events --help
-stdout '^The events of a new run become searchable some minutes after the run is$'
-stdout '^ready\. Until then, the command waits and shows a line on stderr\.'
+stdout '^The run must be ready or complete\. If it is not, the command waits until it$'
+stdout '^is ready, as `snouty runs exec` does, and shows a line on stderr\.$'
 snouty runs search --help
-stdout '^The events of a new run become searchable some minutes after the run is$'
-stdout '^ready\. Until then, the command waits and shows a line on stderr\.'
+stdout '^The run must be ready or complete\. If it is not, the command waits until it$'
+stdout '^is ready, as `snouty runs exec` does, and shows a line on stderr\.$'
+# A ready run (run-2) searches at once in every mode, with no waiting line.
 mock-runs-server
-[!staging] snouty runs events run-indexing --match parallel_driver_fetch
-[!staging] stderr '^waiting for the run.s events to become searchable \(0s\)$'
+[!staging] snouty runs events run-2 --match parallel_driver_fetch
 [!staging] stdout 'parallel_driver_fetch'
-[!staging] ! stderr 'tenant releases before'
-[!staging] ! stderr 'Error'
-mock-runs-server
-[!staging] snouty runs search run-indexing 'contains({output_text: "parallel_driver_fetch"})'
-[!staging] stderr '^waiting for the run.s events to become searchable \(0s\)$'
+[!staging] ! stderr 'waiting for the run'
+[!staging] ! stderr 'is ready'
+[!staging] snouty runs search run-2 'contains({output_text: "parallel_driver_fetch"})'
 [!staging] stdout 'parallel_driver_fetch'
-mock-runs-server
-[!staging] snouty runs search run-indexing 'contains({output_text: "parallel_driver_fetch"})' --follow --limit 1
-[!staging] stderr '^waiting for the run.s events to become searchable \(0s\)$'
+[!staging] ! stderr 'waiting for the run'
+[!staging] snouty runs search run-2 'contains({output_text: "parallel_driver_fetch"})' --follow --limit 1
 [!staging] stdout 'parallel_driver_fetch'
-mock-runs-server
-[!staging] snouty runs search run-indexing 'contains({output_text: "parallel_driver_fetch"})' --count
-[!staging] stderr '^waiting for the run.s events to become searchable \(0s\)$'
+[!staging] ! stderr 'waiting for the run'
+[!staging] snouty runs search run-2 'contains({output_text: "parallel_driver_fetch"})' --count
 [!staging] stdout '^3 events matched the query\.$'
-mock-runs-server
-[!staging] snouty runs search run-indexing 'contains({output_text: "x"})' --check
-[!staging] stderr '^waiting for the run.s events to become searchable \(0s\)$'
+[!staging] ! stderr 'waiting for the run'
+[!staging] snouty runs search run-2 'contains({output_text: "x"})' --check
 [!staging] stdout '^query is valid$'
+[!staging] ! stderr 'waiting for the run'
 
-# A run from a release before 62.2 gets the server's 404 and a suggestion
-#    about the tenant release. snouty does not wait, though the run is in
-#    progress.
+# A ready run from a release before 62.2 gets the server's 404 and a
+#    suggestion about the tenant release.
 mock-runs-server
 [!staging] ! snouty runs events 0df9ac1f5155c14f88ea41f5ad503e07-61-1 --match anything
 [!staging] stderr 'API error: 404'
 [!staging] stderr 'tenant releases before 62\.2 do not serve the events-search API'
-[!staging] ! stderr 'waiting for'
+[!staging] ! stderr 'waiting for the run'
 
 # `snouty runs search` runs one event-set DSL query server-side and prints
 # each matching event as a classified block under its `moment HASH`

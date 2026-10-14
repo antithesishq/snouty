@@ -164,11 +164,6 @@ stdout 'Test run started: run_id run-123'
 #    follow its events, search them, or execute a script.
 stdout '(?s)Test run started: run_id run-123\n\nWait for the run to finish with:\n  snouty runs wait run-123\n'
 stdout '(?s)Or interact with the run once it is ready:\n  snouty runs wait run-123 --until ready\n  snouty runs search run-123 --follow <query>\n  snouty runs events run-123 <query>\n  snouty runs exec run-123 <input_hash> <vtime> <script>$'
-# The output says that the search commands wait until a new run's events
-#    are searchable, and that an early search can match no events.
-stdout '^The run.s events become searchable some minutes after the run is$'
-stdout -literal 'ready, and `runs search` and `runs events` wait until then. A'
-stdout -literal 'search in those first minutes can match no events.'
 
 # A --param value replaces the default run.caller_type.
 mock-server 200 '{"message":"Success","runId":"run-123"}'

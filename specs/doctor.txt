@@ -138,8 +138,10 @@ env ANTITHESIS_API_KEY=
 # --- conflicting credential sources (issue #292) ---
 # A credential exported in the environment hides one that `snouty login` stored
 # in the credentials file. The scan reads no network, and without an API key
-# doctor makes no API call, so this block needs no mock and no `--offline`.
+# doctor makes no API call. The OAuth probe still sends a request, so the base
+# URL points where nothing listens, and these blocks need no mock.
 isolate-home credential_conflict
+env ANTITHESIS_BASE_URL=http://127.0.0.1:1
 env ANTITHESIS_API_KEY=
 env ANTITHESIS_USERNAME=testuser
 env ANTITHESIS_PASSWORD=testpass

@@ -190,13 +190,13 @@ Alternatively, pass a pre-built config image directly:
     --duration 30
 
 Extra parameters can be passed with --param:
-  snouty launch --launcher basic_test --duration 30 \
+  snouty launch --launcher basic_test --config ./config --duration 30 \
     --param antithesis.integrations.github.token=TOKEN \
     --param my.custom.property=value
 
 User-defined attributes are params with an `attrs.` prefix. The server records
 them on the run and `snouty runs show` lists them:
-  snouty launch --launcher basic_test --duration 30 \
+  snouty launch --launcher basic_test --config ./config --duration 30 \
     --param attrs.team=payments \
     --param attrs.branch=main \
     --param attrs.build=12345
@@ -217,7 +217,8 @@ list:
 
 Add --json for machine-readable output. The launch response prints as one
 JSON object:
-  snouty launch --json --launcher basic_test --duration 30 | jq -r .runId
+  snouty launch --json --launcher basic_test --config ./config --duration 30 |
+    jq -r .runId
 
 Next, wait for the run to finish with `snouty runs wait <run_id>`. The run ID is
 the `run_id` value in the launch output, or `.runId` in the --json output. To
@@ -1004,7 +1005,7 @@ Examples:
   snouty runs wait <run_id>
   snouty runs wait <run_id> --timeout 2h
   snouty runs wait <run_id> --until ready
-  snouty launch --json --launcher basic_test ... | jq -r .runId | xargs snouty runs wait
+  snouty launch --json --config ./config ... | jq -r .runId | xargs snouty runs wait
 
 Add --json for machine-readable output. The final status prints as one JSON
 object:

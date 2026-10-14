@@ -3077,7 +3077,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "`snouty runs search <run_id> --follow`. It should say that a pre-built config "
             "image turns off the `vcs.*` detection. `--performance-tier` should list the "
             "three tiers: standard, fast, and turbo. No code span in a flag's help should "
-            "split across two lines.",
+            "split across two lines. Each example for a launcher that needs a config image "
+            "should pass one, so that I can copy it as written.",
             ["launch"],
         ),
         _help_story(

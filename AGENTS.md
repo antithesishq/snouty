@@ -213,8 +213,7 @@ All code must be simple and idiomatic.
   investigated belongs in the PR. Prefer to let the code speak for itself.
 - A PR description states the behavior change that the user sees, or says
   that there is none. Before each push, make the title and description agree
-  with the branch. The release skill writes the changelog from these
-  descriptions, and only the release PR edits `CHANGELOG.md`.
+  with the branch. Only the release PR edits `CHANGELOG.md`.
 - All prose is ASD-STE100 simplified technical English.
 - Do not name one platform when the problem is general. Use generic examples,
   not one machine's paths.

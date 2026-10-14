@@ -109,8 +109,8 @@ another account with write access approves.
 
 ## 4. Keep the description current
 
-The release notes come from the PR description, so keep it true for the
-branch as it is now.
+Reviewers read the PR description, and the release notes link to it. Keep
+it true for the branch as it is now.
 
 Before each push, compare the title and description with the whole branch:
 `git diff origin/main...HEAD`. Update them when the push changes the

@@ -610,46 +610,45 @@ fn help_examples_pass_preflight() {
         let prefix = format!("snouty {subcommand} ");
 
         // An example starts with `snouty <subcommand>` and continues on the
-        // next line after a trailing `\` or `|`. The pipe and what follows it
-        // are not snouty.
-        let mut examples = Vec::new();
+        // next line after a trailing `\`. A trailing `|` pipes into a command
+        // that is not snouty.
+        let mut count = 0;
         let mut lines = help.lines().map(str::trim);
         while let Some(line) = lines.next() {
             if !line.starts_with(&prefix) {
                 continue;
             }
             let mut example = line.to_string();
-            while example.ends_with(['\\', '|']) {
-                let next = lines.next().unwrap();
-                example = format!("{} {next}", example.trim_end_matches('\\'));
+            while let Some(head) = example.strip_suffix('\\') {
+                example = format!("{head} {}", lines.next().unwrap());
             }
-            let example = example.split(" | ").next().unwrap();
-            examples.push(
-                example
-                    .replace("<run_id>", "run-1")
-                    .replace("<hash>", "1")
-                    .replace("<vtime>", "1"),
-            );
-        }
-        assert!(!examples.is_empty(), "no examples in `{subcommand} --help`");
+            let example = example
+                .trim_end_matches('|')
+                .replace("<run_id>", "run-1")
+                .replace("<hash>", "1")
+                .replace("<vtime>", "1");
+            count += 1;
 
-        for example in examples {
             let args = shlex::split(&example).unwrap();
             let mock_url = start_mock_server(r#"{"runId":"run-123"}"#, 200);
             // An engine that does not exist stops a --config launch after the
-            // pre-flight checks, before it builds an image.
+            // pre-flight checks, before it builds an image. Every other
+            // example runs to completion against the mock.
             let output = snouty_with_mock(&mock_url)
                 .current_dir(dir.path())
                 .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
-                .env("SNOUTY_CONTAINER_ENGINE", "none")
+                .env(snouty::settings::CONTAINER_ENGINE_VAR_NAME, "none")
                 .args(&args[1..])
                 .output()
                 .unwrap();
             let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(
-                output.status.success() || stderr.contains("unsupported container engine 'none'"),
-                "help example failed: {example}\nstderr:\n{stderr}"
-            );
+            let passed = if args.iter().any(|arg| arg == "--config") {
+                stderr.contains("unsupported container engine 'none'")
+            } else {
+                output.status.success()
+            };
+            assert!(passed, "help example failed: {example}\nstderr:\n{stderr}");
         }
+        assert!(count > 0, "no examples in `{subcommand} --help`");
     }
 }

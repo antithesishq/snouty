@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use expectrl::Expect;
 use snouty::testutils::MockApiServer;
-use support::pty;
+use support::pty::PtyCommand;
 
 /// Narrow enough that the mock's "Counter value stays below limit" does not
 /// fit after the 10-column label.
@@ -19,7 +19,7 @@ const PTY_COLS: u16 = 36;
 fn long_name_wraps_under_its_value() {
     let server = MockApiServer::start();
     let home = tempfile::TempDir::new().expect("temp HOME");
-    let mut command = pty::command(r#"exec "$0" runs properties run-1 --name counter --detail"#);
+    let mut command = PtyCommand::new(r#"exec "$0" runs properties run-1 --name counter --detail"#);
     command
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
@@ -29,7 +29,7 @@ fn long_name_wraps_under_its_value() {
         .env("ANTITHESIS_BASE_URL", server.url())
         .env("ANTITHESIS_API_KEY", server.token());
 
-    let mut session = pty::spawn(command, PTY_COLS, 40);
+    let mut session = command.spawn(PTY_COLS, 40);
     session.set_expect_timeout(Some(Duration::from_secs(30)));
     let captures = session
         .expect("<hash> <vtime>")

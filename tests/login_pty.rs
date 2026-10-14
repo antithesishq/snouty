@@ -26,7 +26,7 @@ use std::time::Duration;
 use expectrl::Expect;
 use expectrl::process::unix::WaitStatus;
 use expectrl::session::OsSession;
-use support::pty;
+use support::pty::PtyCommand;
 
 /// How long to wait for any single expected string. Generous for CI; a healthy
 /// exchange completes in milliseconds.
@@ -93,8 +93,8 @@ fn spawn_login(
     let base_url = support::start_mock_server(OAUTH_DISABLED, 200);
 
     let mut command = match stdout {
-        Stdout::Pty => pty::command(r#"exec "$0" "$@""#),
-        Stdout::File => pty::command(&format!(r#"exec "$0" "$@" > "$HOME/{STDOUT_FILE}""#)),
+        Stdout::Pty => PtyCommand::new(r#"exec "$0" "$@""#),
+        Stdout::File => PtyCommand::new(&format!(r#"exec "$0" "$@" > "$HOME/{STDOUT_FILE}""#)),
     };
     command
         .args([
@@ -113,7 +113,7 @@ fn spawn_login(
         .env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1")
         .envs(env.iter().copied());
 
-    let mut session = pty::spawn(command, PTY_COLS, 24);
+    let mut session = command.spawn(PTY_COLS, 24);
     session.set_expect_timeout(Some(EXPECT_TIMEOUT));
     (home, session)
 }

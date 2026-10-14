@@ -9,9 +9,8 @@ mod support;
 use std::time::Duration;
 
 use expectrl::Expect;
-use support::pty;
+use support::pty::PtyCommand;
 
-/// The PTY's column count.
 const PTY_COLS: u16 = 80;
 
 /// A note too long for the terminal wraps at a word boundary, with its
@@ -20,7 +19,7 @@ const PTY_COLS: u16 = 80;
 #[test]
 fn long_notes_wrap_under_their_text() {
     let home = tempfile::TempDir::new().expect("temp HOME");
-    let mut command = pty::command(r#"exec "$0" doctor --offline"#);
+    let mut command = PtyCommand::new(r#"exec "$0" doctor --offline"#);
     command
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
@@ -32,7 +31,7 @@ fn long_notes_wrap_under_their_text() {
         .env("ANTITHESIS_USERNAME", "pty-user")
         .env("ANTITHESIS_PASSWORD", "pty-password");
 
-    let mut session = pty::spawn(command, PTY_COLS, 40);
+    let mut session = command.spawn(PTY_COLS, 40);
     session.set_expect_timeout(Some(Duration::from_secs(30)));
     let captures = session
         .expect("Resolved settings")

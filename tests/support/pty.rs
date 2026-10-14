@@ -6,9 +6,8 @@ use std::process::Command;
 use expectrl::Expect;
 use expectrl::session::OsSession;
 
-/// A `sh -c` script, with `$0` set to the snouty binary, that starts only
-/// after [`PtyCommand::spawn`] has sized the PTY. It derefs to the `sh`
-/// command, to set the child's environment.
+/// A `sh -c` script with `$0` set to the snouty binary and `$1`… set to the
+/// added args. The script starts only after [`PtyCommand::spawn`] sizes the PTY.
 pub(crate) struct PtyCommand(Command);
 
 impl PtyCommand {
@@ -22,16 +21,14 @@ impl PtyCommand {
         Self(command)
     }
 
-    /// Spawns the script on a PTY of `cols` by `rows`.
     pub(crate) fn spawn(self, cols: u16, rows: u16) -> OsSession {
         let mut session = OsSession::spawn(self.0).expect("spawn on a PTY");
         session
             .get_process_mut()
             .set_window_size(cols, rows)
             .expect("set the PTY size");
-        // `ptyprocess` sets the size to 80x24 from the parent after the child
-        // execs, so a size the child sets itself can be overwritten after
-        // snouty has read it. The script waits for this line instead.
+        // `ptyprocess` resets the size to 80x24 after the child execs. The
+        // script waits for this line, so snouty reads only the size set above.
         session.send_line("").expect("let the script start");
         session
     }

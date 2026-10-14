@@ -4,7 +4,7 @@ use serde::{Serialize, Serializer};
 
 use crate::api::{
     AntithesisApi, ApiVersion, HttpClient, MIN_CANCEL_RELEASE, MIN_EXEC_RELEASE,
-    MIN_SEARCH_RELEASE, VersionError,
+    MIN_SEARCH_RELEASE, VersionError, normalize_base_url,
 };
 use crate::attributed_value::AttributedValue;
 use crate::auth::AuthenticationInfo;
@@ -735,21 +735,25 @@ pub async fn cmd_doctor(
         // unauthenticated users to set a key. The client is built from the
         // resolved settings (base url / tenant), and `verbose` logs the
         // request/response.
+        let mut api_unreachable = false;
         if let Ok(api) = AntithesisApi::new(settings, verbose) {
             let host = api.host();
             let version = api.get_version().await;
             if let Ok(version) = &version {
                 checks.extend(release_floor_checks(version));
             }
+            api_unreachable = matches!(version, Err(VersionError::Unreachable(_)));
             checks.push(version_check(&host, version));
         }
 
         // A bad proxy URL or extra header stops the client from building. The
-        // API check above is skipped then too.
-        if let Some(base_url) = settings.base_url()
+        // API check above is skipped then too. A tenant the API check could not
+        // reach would only make the probe wait out its own timeout.
+        if !api_unreachable
+            && let Some(base_url) = settings.base_url()
             && let Ok(client) = HttpClient::new(settings, verbose)
         {
-            match fetch_cli_config(&client, base_url).await {
+            match fetch_cli_config(&client, &normalize_base_url(base_url)).await {
                 Ok(CliOAuthConfig::Disabled) => checks.push(
                     Check::warn("oauth-configured", "OAuth is configured for this tenant").note(
                         Level::Note,

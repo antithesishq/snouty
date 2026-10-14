@@ -602,10 +602,7 @@ impl AntithesisApi {
         let base_url = normalize_base_url(crate::settings::require(settings.base_url(), "tenant")?);
         debug!("initializing API client for {}", base_url);
 
-        let HttpClient {
-            client: http_client,
-            verbose_headers,
-        } = HttpClient::new(settings, verbose)?;
+        let http = HttpClient::new(settings, verbose)?;
         let cache_dir = match cache {
             ResponseCache::Default => api_cache::default_dir(),
             ResponseCache::Disabled => None,
@@ -619,11 +616,11 @@ impl AntithesisApi {
             base_url.clone(),
             verbose,
         );
-        let state = ClientState {
-            authn_info,
-            default_headers: verbose_headers,
-        };
-        let client = generated::Client::new_with_client(&base_url, http_client, state);
+        let client = generated::Client::new_with_client(
+            &base_url,
+            http.client.clone(),
+            ClientState { authn_info, http },
+        );
 
         Ok(Self {
             client,
@@ -1021,11 +1018,9 @@ impl AntithesisApi {
 #[derive(Clone, Debug)]
 pub struct ClientState {
     authn_info: AuthenticationInfo,
-    /// Default headers reqwest will merge into the outgoing request at
-    /// `Client::execute` time (after our `exec` hook runs). `Some` enables
-    /// verbose request/response logging to stderr; we hold the headers here
-    /// so the log matches what's actually sent.
-    default_headers: Option<HeaderMap>,
+    /// The client the generated API sends through, kept here for its
+    /// `--verbose` request/response log.
+    http: HttpClient,
 }
 
 impl ClientHooks<ClientState> for generated::Client {
@@ -1047,7 +1042,7 @@ impl ClientHooks<ClientState> for generated::Client {
         _info: &OperationInfo,
     ) -> reqwest::Result<reqwest::Response> {
         let state = self.inner();
-        let verbose_headers = state.default_headers.as_ref();
+        let http = &state.http;
 
         // Keep a resendable copy so a token refresh can retry the request once if
         // the first attempt is rejected as unauthorized but we have a refreshable credential
@@ -1057,14 +1052,8 @@ impl ClientHooks<ClientState> for generated::Client {
             None
         };
 
-        if let Some(default_headers) = verbose_headers {
-            let mut out = String::new();
-            format_request(&request, default_headers, &mut out);
-            eprint!("{out}");
-        }
-
-        let result =
-            execute_with_transient_retry(self.client(), verbose_headers.is_some(), request).await;
+        http.log_request(&request);
+        let result = execute_with_transient_retry(self.client(), http.is_verbose(), request).await;
 
         let result = match (result, retry_request) {
             (Ok(response), Some(mut retry_request))
@@ -1079,14 +1068,10 @@ impl ClientHooks<ClientState> for generated::Client {
                         retry_request
                             .headers_mut()
                             .insert(reqwest::header::AUTHORIZATION, header);
-                        if let Some(default_headers) = verbose_headers {
-                            let mut out = String::new();
-                            format_request(&retry_request, default_headers, &mut out);
-                            eprint!("{out}");
-                        }
+                        http.log_request(&retry_request);
                         execute_with_transient_retry(
                             self.client(),
-                            verbose_headers.is_some(),
+                            http.is_verbose(),
                             retry_request,
                         )
                         .await
@@ -1101,14 +1086,7 @@ impl ClientHooks<ClientState> for generated::Client {
             (result, _) => result,
         };
 
-        if verbose_headers.is_some()
-            && let Ok(response) = &result
-        {
-            let mut out = String::new();
-            format_response(response, &mut out);
-            eprint!("{out}");
-        }
-
+        http.log_response(&result);
         result
     }
 }
@@ -1278,7 +1256,7 @@ where
     })
 }
 
-fn normalize_base_url(base_url: impl Into<String>) -> String {
+pub(crate) fn normalize_base_url(base_url: impl Into<String>) -> String {
     let base_url = base_url.into();
     let trimmed = base_url.trim_end_matches('/');
     trimmed
@@ -1326,20 +1304,24 @@ fn extra_headers_from_env() -> Result<Vec<(HeaderName, HeaderValue)>> {
 /// `ANTITHESIS_EXTRA_HEADERS`, the configured proxy, and the connect timeout.
 /// Requests outside the generated API, such as the OAuth routes, use it
 /// directly through [`HttpClient::send`].
+#[derive(Clone, Debug)]
 pub(crate) struct HttpClient {
     client: Client,
-    /// `Some` enables the `--verbose` request/response log on stderr, as
-    /// [`ClientState::default_headers`] does.
+    /// Default headers reqwest will merge into the outgoing request at
+    /// `Client::execute` time. `Some` enables the `--verbose` request/response
+    /// log on stderr; we hold the headers here so the log matches what's
+    /// actually sent.
     verbose_headers: Option<HeaderMap>,
 }
 
 impl HttpClient {
     pub(crate) fn new(settings: &Settings, verbose: bool) -> Result<Self> {
         let default_headers = default_request_headers()?;
+        let verbose_headers = verbose.then(|| default_headers.clone());
         // Only a connect timeout (see CONNECT_TIMEOUT): no read or total timeout, so a
         // slow-but-alive Antithesis request is never aborted no matter how long it runs.
         let mut builder = Client::builder()
-            .default_headers(default_headers.clone())
+            .default_headers(default_headers)
             .connect_timeout(CONNECT_TIMEOUT);
 
         if let Some(proxy_address) = settings.https_proxy() {
@@ -1350,15 +1332,37 @@ impl HttpClient {
 
         Ok(Self {
             client: builder.build().wrap_err("failed to build API client")?,
-            verbose_headers: verbose.then_some(default_headers),
+            verbose_headers,
         })
     }
 
-    pub(crate) fn get(&self, url: &str) -> reqwest::RequestBuilder {
+    fn is_verbose(&self) -> bool {
+        self.verbose_headers.is_some()
+    }
+
+    fn log_request(&self, request: &reqwest::Request) {
+        if let Some(default_headers) = &self.verbose_headers {
+            let mut out = String::new();
+            format_request(request, default_headers, &mut out);
+            eprint!("{out}");
+        }
+    }
+
+    fn log_response(&self, result: &reqwest::Result<reqwest::Response>) {
+        if self.is_verbose()
+            && let Ok(response) = result
+        {
+            let mut out = String::new();
+            format_response(response, &mut out);
+            eprint!("{out}");
+        }
+    }
+
+    pub(crate) fn get(&self, url: impl reqwest::IntoUrl) -> reqwest::RequestBuilder {
         self.client.get(url)
     }
 
-    pub(crate) fn post(&self, url: &str) -> reqwest::RequestBuilder {
+    pub(crate) fn post(&self, url: impl reqwest::IntoUrl) -> reqwest::RequestBuilder {
         self.client.post(url)
     }
 
@@ -1369,19 +1373,9 @@ impl HttpClient {
         request: reqwest::RequestBuilder,
     ) -> reqwest::Result<reqwest::Response> {
         let request = request.build()?;
-        if let Some(default_headers) = &self.verbose_headers {
-            let mut out = String::new();
-            format_request(&request, default_headers, &mut out);
-            eprint!("{out}");
-        }
+        self.log_request(&request);
         let result = self.client.execute(request).await;
-        if self.verbose_headers.is_some()
-            && let Ok(response) = &result
-        {
-            let mut out = String::new();
-            format_response(response, &mut out);
-            eprint!("{out}");
-        }
+        self.log_response(&result);
         result
     }
 }

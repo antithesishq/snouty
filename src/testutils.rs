@@ -470,8 +470,10 @@ pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
 /// - `POST /api/v1/launch/{launcher_name}` — returns a mock launch response
 /// - `POST /api/v0/runs/{run_id}/cancel` — 200 for an in-progress run, 409
 ///   for any other known run, 404 for an unknown run
-/// - `GET  /auth/cli/config` — `{"port_strategy":"disabled"}`, with no
-///   `Authorization` required, as the OAuth routes take none
+/// - `GET  /auth/cli/config` — `{"port_strategy":"disabled"}`
+///
+/// Only the `/api/` routes require the bearer token; the OAuth routes take
+/// none, as on the real server.
 pub struct MockApiServer {
     url: String,
     token: String,
@@ -528,14 +530,9 @@ impl MockApiServer {
                             "application/json",
                             NO_CACHE_CACHE_CONTROL,
                         )
-                    } else if method == "GET" && path == "/auth/cli/config" {
-                        (
-                            200,
-                            r#"{"port_strategy":"disabled"}"#.to_string(),
-                            "application/json",
-                            NO_CACHE_CACHE_CONTROL,
-                        )
-                    } else if !mock_check_auth(&request, &expected_token) {
+                    } else if path.starts_with("/api/")
+                        && !mock_check_auth(&request, &expected_token)
+                    {
                         (
                             401,
                             r#"{"message":"Invalid or expired bearer token."}"#.to_string(),
@@ -675,6 +672,12 @@ fn mock_route(
     let ndjson = "application/x-ndjson";
 
     match (method, path_part) {
+        ("GET", "/auth/cli/config") => (
+            200,
+            r#"{"port_strategy":"disabled"}"#.to_string(),
+            json,
+            NO_CACHE_CACHE_CONTROL,
+        ),
         ("GET", "/api/v0/runs") => {
             let (s, b) = mock_route_list_runs(query, empty);
             (s, b, json, NO_CACHE_CACHE_CONTROL)

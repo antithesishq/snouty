@@ -557,6 +557,15 @@ async fn complete_oauth_login(
     })
 }
 
+/// Send one OAuth request, bounded by [`OAUTH_HTTP_TIMEOUT`]: the shared
+/// client has only a connect timeout.
+async fn send_oauth(
+    client: &HttpClient,
+    request: reqwest::RequestBuilder,
+) -> reqwest::Result<reqwest::Response> {
+    client.send(request.timeout(OAUTH_HTTP_TIMEOUT)).await
+}
+
 /// `GET /auth/cli/config` — the redirect strategy for this tenant. A 403 means
 /// the tenant has not enabled CLI OIDC at all (the route is feature-gated), and
 /// is [`CliOAuthConfig::Disabled`] too.
@@ -564,12 +573,7 @@ pub(crate) async fn fetch_cli_config(
     client: &HttpClient,
     base_url: &str,
 ) -> Result<CliOAuthConfig> {
-    let response = client
-        .send(
-            client
-                .get(&format!("{base_url}/auth/cli/config"))
-                .timeout(OAUTH_HTTP_TIMEOUT),
-        )
+    let response = send_oauth(client, client.get(format!("{base_url}/auth/cli/config")))
         .await
         .wrap_err("failed to contact the tenant's OAuth configuration endpoint")?;
 
@@ -667,16 +671,14 @@ async fn request_login_redirect(
     }
 
     let request = client
-        .post(&format!("{base_url}/auth/cli/login"))
-        .timeout(OAUTH_HTTP_TIMEOUT)
+        .post(format!("{base_url}/auth/cli/login"))
         .json(&LoginRequest {
             port,
             code_challenge,
             code_challenge_method: "S256",
             cli_state,
         });
-    let redirect: LoginRedirect = client
-        .send(request)
+    let redirect: LoginRedirect = send_oauth(client, request)
         .await
         .wrap_err("failed to initiate OAuth login")?
         .error_for_status()
@@ -708,12 +710,10 @@ async fn exchange_code_for_tokens(
     let credentials = BASE64_URL_SAFE_NO_PAD.encode(format!("{auth_code}:{code_verifier}"));
 
     let request = client
-        .post(&format!("{base_url}/auth/cli/token"))
-        .timeout(OAUTH_HTTP_TIMEOUT)
+        .post(format!("{base_url}/auth/cli/token"))
         .bearer_auth(credentials)
         .json(&TokenExchangeBody { flow_token });
-    client
-        .send(request)
+    send_oauth(client, request)
         .await
         .wrap_err("failed to exchange the authorization code for tokens")?
         .error_for_status()

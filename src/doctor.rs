@@ -746,9 +746,9 @@ pub async fn cmd_doctor(
             checks.push(version_check(&host, version));
         }
 
-        // A bad proxy URL or extra header stops the client from building. The
-        // API check above is skipped then too. A tenant the API check could not
-        // reach would only make the probe wait out its own timeout.
+        // A client that fails to build (bad proxy URL or extra header) skips
+        // the API check too. Skip the probe when the API check could not reach
+        // the tenant: the probe would only wait out its timeout.
         if !api_unreachable
             && let Some(base_url) = settings.base_url()
             && let Ok(client) = HttpClient::new(settings, verbose)
@@ -761,8 +761,7 @@ pub async fn cmd_doctor(
                     ),
                 ),
                 Ok(CliOAuthConfig::Fixed { .. } | CliOAuthConfig::Ephemeral) => {}
-                // Login also offers only an API key here, without a word, and
-                // an unreachable tenant is for the API check to report.
+                // An unreadable answer cannot tell whether OAuth is enabled.
                 Err(err) => debug!("could not read the tenant's OAuth configuration: {err:#}"),
             }
         }

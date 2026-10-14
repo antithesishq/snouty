@@ -1018,8 +1018,7 @@ impl AntithesisApi {
 #[derive(Clone, Debug)]
 pub struct ClientState {
     authn_info: AuthenticationInfo,
-    /// The client the generated API sends through, kept here for its
-    /// `--verbose` request/response log.
+    /// The `exec` hook logs through this client when `--verbose` is set.
     http: HttpClient,
 }
 
@@ -1118,9 +1117,8 @@ fn format_request(request: &reqwest::Request, default_headers: &HeaderMap, out: 
 
     let _ = writeln!(out, "> {} {}", request.method(), request.url());
 
-    // reqwest merges `default_headers` at `Client::execute` time, after this
-    // hook runs. Merge them in explicitly so the verbose log matches what's
-    // actually sent, with sensitive values redacted.
+    // reqwest adds `default_headers` in `Client::execute`, after this log.
+    // Merge them here, redacted, so the log shows the request as sent.
     let mut emit = |name: &HeaderName, value: &HeaderValue| {
         let value = value.to_str().unwrap_or("[non-ascii]");
         if is_sensitive_header(name) {
@@ -1300,17 +1298,14 @@ fn extra_headers_from_env() -> Result<Vec<(HeaderName, HeaderValue)>> {
     }
 }
 
-/// An HTTP client with the setup of the API client: the User-Agent,
-/// `ANTITHESIS_EXTRA_HEADERS`, the configured proxy, and the connect timeout.
-/// Requests outside the generated API, such as the OAuth routes, use it
-/// directly through [`HttpClient::send`].
+/// An HTTP client with the API client's User-Agent, `ANTITHESIS_EXTRA_HEADERS`,
+/// proxy, and connect timeout. Send requests outside the generated API through
+/// [`HttpClient::send`].
 #[derive(Clone, Debug)]
 pub(crate) struct HttpClient {
     client: Client,
-    /// Default headers reqwest will merge into the outgoing request at
-    /// `Client::execute` time. `Some` enables the `--verbose` request/response
-    /// log on stderr; we hold the headers here so the log matches what's
-    /// actually sent.
+    /// The default headers, kept for the `--verbose` log because reqwest adds
+    /// them only in `Client::execute`. `None` disables the log.
     verbose_headers: Option<HeaderMap>,
 }
 
@@ -1366,8 +1361,8 @@ impl HttpClient {
         self.client.post(url)
     }
 
-    /// Send `request` once, with no transient retry: a caller that sets a
-    /// total timeout on it gets that bound.
+    /// Sends `request` once, with no transient retry, so a per-request timeout
+    /// bounds the whole call.
     pub(crate) async fn send(
         &self,
         request: reqwest::RequestBuilder,

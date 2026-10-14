@@ -467,8 +467,8 @@ pub(crate) enum CliOAuthConfig {
     Fixed { ports: Vec<u16> },
     /// Bind any available port (an OS-assigned ephemeral port).
     Ephemeral,
-    /// The tenant has CLI OIDC wired up but no redirect strategy resolved, so
-    /// CLI OAuth login is not usable.
+    /// CLI OAuth login is not usable: the tenant answers `port_strategy:
+    /// disabled`, or 403.
     Disabled,
 }
 
@@ -566,9 +566,9 @@ async fn send_oauth(
     client.send(request.timeout(OAUTH_HTTP_TIMEOUT)).await
 }
 
-/// `GET /auth/cli/config` — the redirect strategy for this tenant. A 403 means
-/// the tenant has not enabled CLI OIDC at all (the route is feature-gated), and
-/// is [`CliOAuthConfig::Disabled`] too.
+/// `GET /auth/cli/config` — the redirect strategy for this tenant. The route is
+/// feature-gated: a tenant without CLI OIDC answers 403, which maps to
+/// [`CliOAuthConfig::Disabled`].
 pub(crate) async fn fetch_cli_config(
     client: &HttpClient,
     base_url: &str,

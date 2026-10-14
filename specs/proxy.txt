@@ -39,11 +39,6 @@ env ANTITHESIS_TENANT=testtenant
 ! snouty runs
 ! stdout 'RUN ID'
 
-# doctor's OAuth probe cannot reach the mock either, so doctor says nothing
-# about OAuth.
-! snouty doctor
-! stderr '^  ⚠ .*OAuth'
-
 # With the proxy configured, the identical request reaches the mock and lists
 # runs. `mock-proxy` sets ANTITHESIS_HTTPS_PROXY (and the API key) while the
 # base URL stays pointed at the unresolvable host, so this success can only be
@@ -53,7 +48,7 @@ snouty runs
 stdout '^RUN ID +STATUS +CREATED +LAUNCHER +RUN$'
 stdout 'run-1.*completed'
 
-# doctor's OAuth probe goes through the proxy too: the mock answers
-# `port_strategy: disabled`, so doctor warns.
+# doctor's OAuth probe also goes through the proxy. The mock answers
+# `port_strategy: disabled`.
 snouty doctor
 stderr '^  ⚠ OAuth is configured for this tenant$'

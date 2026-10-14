@@ -109,7 +109,7 @@ const MIN_SUB_STATUS_RELEASE: (u64, u64) = (64, 0);
 
 /// The release that a run ID ends with: `<hex>-<major>-<minor>`, as in
 /// `0df9ac1f5155c14f88ea41f5ad503e07-64-0`.
-fn run_release(run_id: &str) -> Option<(u64, u64)> {
+pub(crate) fn run_release(run_id: &str) -> Option<(u64, u64)> {
     let mut parts = run_id.rsplit('-');
     let minor = parts.next()?.parse().ok()?;
     let major = parts.next()?.parse().ok()?;

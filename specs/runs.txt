@@ -797,26 +797,51 @@ mock-runs-server
 ! snouty runs events no-such-run --match one --match two
 stderr 'run not found: no-such-run'
 
-# A run that is still starting has no searchable events yet, and the search
-#    answers 404. snouty says so, and does not say that the run is missing.
+# The server indexes the events of a new run some minutes after the run
+#    starts, and until then the search answers 404. When the run exists and
+#    is starting or in progress, snouty waits and tries again, with a line on
+#    stderr (a spinner on a terminal). The search answers 404 for the first
+#    search of each mock server's run-indexing. Rust tests in src/runs.rs
+#    cover a starting run and a run that stops while snouty waits, because
+#    their test server can change the run's status between polls. The help
+#    of both commands says so.
+snouty runs events --help
+stdout '^The events of a new run become searchable some minutes after the run is$'
+stdout '^ready\. Until then, the command waits and shows a line on stderr\.'
+snouty runs search --help
+stdout '^The events of a new run become searchable some minutes after the run is$'
+stdout '^ready\. Until then, the command waits and shows a line on stderr\.'
 mock-runs-server
-[!staging] ! snouty runs events session-starting --match anything
-[!staging] stderr 'run session-starting is still starting and has no searchable events yet'
-[!staging] stderr -literal 'Suggestion: wait for it with `snouty runs wait session-starting --until ready`, then try again'
-[!staging] ! stderr 'run not found'
+[!staging] snouty runs events run-indexing --match parallel_driver_fetch
+[!staging] stderr '^waiting for the run.s events to become searchable \(0s\)$'
+[!staging] stdout 'parallel_driver_fetch'
 [!staging] ! stderr 'tenant releases before'
+[!staging] ! stderr 'Error'
 mock-runs-server
-[!staging] ! snouty runs search session-starting 'contains({output_text: "x"})'
-[!staging] stderr 'run session-starting is still starting and has no searchable events yet'
-[!staging] ! stderr 'run not found'
+[!staging] snouty runs search run-indexing 'contains({output_text: "parallel_driver_fetch"})'
+[!staging] stderr '^waiting for the run.s events to become searchable \(0s\)$'
+[!staging] stdout 'parallel_driver_fetch'
+mock-runs-server
+[!staging] snouty runs search run-indexing 'contains({output_text: "parallel_driver_fetch"})' --follow --limit 1
+[!staging] stderr '^waiting for the run.s events to become searchable \(0s\)$'
+[!staging] stdout 'parallel_driver_fetch'
+mock-runs-server
+[!staging] snouty runs search run-indexing 'contains({output_text: "parallel_driver_fetch"})' --count
+[!staging] stderr '^waiting for the run.s events to become searchable \(0s\)$'
+[!staging] stdout '^3 events matched the query\.$'
+mock-runs-server
+[!staging] snouty runs search run-indexing 'contains({output_text: "x"})' --check
+[!staging] stderr '^waiting for the run.s events to become searchable \(0s\)$'
+[!staging] stdout '^query is valid$'
 
-# A run that exists and is not starting, but whose search answers 404, gets
-#    the server's error and a note about the tenant release.
+# A run whose ID names a release before 62.2 is from a tenant release that
+#    does not serve the events-search API, so its 404 gets the server's error
+#    and a suggestion about the tenant release, and snouty does not wait.
 mock-runs-server
-[!staging] ! snouty runs events session-loading --match anything
+[!staging] ! snouty runs events 0df9ac1f5155c14f88ea41f5ad503e07-61-1 --match anything
 [!staging] stderr 'API error: 404'
 [!staging] stderr 'tenant releases before 62\.2 do not serve the events-search API'
-[!staging] ! stderr 'still starting'
+[!staging] ! stderr 'waiting for'
 
 # `snouty runs search` runs one event-set DSL query server-side and prints
 # each matching event as a classified block under its `moment HASH`

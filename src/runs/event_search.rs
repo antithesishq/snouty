@@ -13,6 +13,7 @@
 //! absence from the subset is not absence from the run.
 
 use std::io::Write;
+use std::time::Duration;
 
 use color_eyre::Section;
 use color_eyre::eyre::Result;
@@ -21,12 +22,12 @@ use serde_json::json;
 use futures_util::stream::BoxStream;
 use futures_util::{StreamExt, TryStreamExt};
 
-use crate::api::{AntithesisApi, MIN_SEARCH_RELEASE, RunStatus, SearchMode};
+use crate::api::{AntithesisApi, MIN_SEARCH_RELEASE, RunStatus, SearchMode, run_release};
 use crate::error::{api_error_status, user_error};
 use crate::event_render::EventStreamRenderer;
 use crate::jsonl::JsonStream;
 
-use super::{ErrorRows, FaultAnnotator, RunProbe, event_lines, probe_run, raw_lines};
+use super::{ErrorRows, FaultAnnotator, RunProbe, WaitDisplay, event_lines, probe_run, raw_lines};
 
 /// How an event-stream command prints its rows. The illegal flag
 /// combinations (`--raw` without `--json`, `--detail` with `--json`) are
@@ -94,12 +95,10 @@ pub(super) async fn check_query(
     query: &str,
     json: bool,
 ) -> Result<()> {
-    if let Err(err) = api
-        .search_run_events_query(run_id, query, SearchMode::Validate)
-        .await
-    {
-        return Err(explain_search_error(api, run_id, err).await);
-    }
+    let _empty_body = search_when_searchable(api, run_id, SEARCH_RETRY_FIRST, || {
+        api.search_run_events_query(run_id, query, SearchMode::Validate)
+    })
+    .await?;
     let mut stdout = std::io::stdout().lock();
     if json {
         writeln!(stdout, "{}", json!({"valid": true}))?;
@@ -116,10 +115,10 @@ pub(super) async fn count_query(
     query: &str,
     json: bool,
 ) -> Result<()> {
-    let count = match api.count_run_events_query(run_id, query).await {
-        Ok(count) => count,
-        Err(err) => return Err(explain_search_error(api, run_id, err).await),
-    };
+    let count = search_when_searchable(api, run_id, SEARCH_RETRY_FIRST, || {
+        api.count_run_events_query(run_id, query)
+    })
+    .await?;
     let mut stdout = std::io::stdout().lock();
     if json {
         writeln!(stdout, "{}", json!({"count": count}))?;
@@ -130,41 +129,84 @@ pub(super) async fn count_query(
     Ok(())
 }
 
-/// Classify an events-search failure. On a 404, the run is probed to say
-/// why: the run does not exist, the run is still starting and has no
-/// searchable events, or the tenant release does not serve the endpoint
-/// (`snouty doctor` reports it). The endpoint's own 404 body is an unhelpful
-/// "Resource not found". A 400 is the server rejecting the
-/// request — usually the query, but an out-of-range `limit` answers 400 too,
-/// so the note must not blame the query alone (the server's own message,
-/// shown above the note, says which it was).
-pub(super) async fn explain_search_error(
+/// The wait before the first retry of a search that answered 404. Each retry
+/// doubles the wait, up to [`SEARCH_RETRY_MAX`].
+pub(super) const SEARCH_RETRY_FIRST: Duration = Duration::from_secs(1);
+const SEARCH_RETRY_MAX: Duration = Duration::from_secs(15);
+
+/// Send an events-search request with `send`, and send it again while the
+/// run's events are not searchable yet.
+///
+/// The endpoint's 404 body is an unhelpful "Resource not found", so a 404 is
+/// explained by a probe of the run:
+///
+/// - The run does not exist: "run not found".
+/// - The run ID names a release before [`MIN_SEARCH_RELEASE`]: that release
+///   does not serve the endpoint, so there is nothing to wait for.
+/// - The run is starting or in progress: the server indexes a new run's events
+///   some minutes after it starts (observed on orbitinghail, release 64.0: a
+///   404 for 2 to 3 minutes after the run was ready). Wait, and try again.
+/// - The run has stopped, or its status is unknown: its events will not
+///   become searchable, so stop.
+///
+/// A 400 is the server rejecting the request — usually the query, but an
+/// out-of-range `limit` answers 400 too, so the note must not blame the query
+/// alone (the server's own message, shown above the note, says which it was).
+pub(super) async fn search_when_searchable<T, Fut>(
     api: &AntithesisApi,
     run_id: &str,
-    err: color_eyre::eyre::Report,
-) -> color_eyre::eyre::Report {
-    match api_error_status(&err) {
-        Some(404) => match probe_run(api, run_id).await {
-            RunProbe::NotFound => user_error(format!("run not found: {run_id}")),
-            RunProbe::Exists(run) if run.status == RunStatus::Starting => user_error(format!(
-                "run {run_id} is still starting and has no searchable events yet"
-            ))
-            .suggestion(format!(
-                "wait for it with `snouty runs wait {run_id} --until ready`, then try again"
-            )),
-            RunProbe::Exists(_) => {
-                let (major, minor) = MIN_SEARCH_RELEASE;
-                err.suggestion(format!(
-                    "tenant releases before {major}.{minor} do not serve the events-search \
-                     API as documented; `snouty doctor` reports the tenant release"
-                ))
+    first_retry: Duration,
+    mut send: impl FnMut() -> Fut,
+) -> Result<T>
+where
+    Fut: Future<Output = Result<T>>,
+{
+    let mut waiting: Option<WaitDisplay> = None;
+    let mut retry = first_retry;
+    loop {
+        let err = match send().await {
+            Ok(answer) => {
+                if let Some(waiting) = waiting {
+                    waiting.finish();
+                }
+                return Ok(answer);
             }
-            RunProbe::ProbeFailed(probe_err) => probe_err,
-        },
-        Some(400) => err.note(
-            "the server rejected the request; its message above says which part \
-             — for a query, check the event-set DSL syntax",
-        ),
-        _ => err,
+            Err(err) => err,
+        };
+        match api_error_status(&err) {
+            Some(404) => {}
+            Some(400) => {
+                return Err(err.note(
+                    "the server rejected the request; its message above says which part \
+                     — for a query, check the event-set DSL syntax",
+                ));
+            }
+            _ => return Err(err),
+        }
+        let run = match probe_run(api, run_id).await {
+            RunProbe::NotFound => return Err(user_error(format!("run not found: {run_id}"))),
+            RunProbe::ProbeFailed(probe_err) => return Err(probe_err),
+            RunProbe::Exists(run) => run,
+        };
+        if run_release(run_id).is_some_and(|release| release < MIN_SEARCH_RELEASE) {
+            let (major, minor) = MIN_SEARCH_RELEASE;
+            return Err(err.suggestion(format!(
+                "tenant releases before {major}.{minor} do not serve the events-search \
+                 API as documented; `snouty doctor` reports the tenant release"
+            )));
+        }
+        if run.status.is_terminal() || run.status == RunStatus::Unknown {
+            return Err(err.note(format!(
+                "run {run_id} is {}, and its events are not searchable",
+                run.status
+            )));
+        }
+        waiting
+            .get_or_insert_with(|| {
+                WaitDisplay::new("waiting for the run's events to become searchable")
+            })
+            .show();
+        tokio::time::sleep(retry).await;
+        retry = (retry * 2).min(SEARCH_RETRY_MAX);
     }
 }

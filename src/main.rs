@@ -324,6 +324,10 @@ async fn cmd_launch(
                   snouty runs search {run_id} --follow <query>
                   snouty runs events {run_id} <query>
                   snouty runs exec {run_id} <input_hash> <vtime> <script>
+
+                The run's events become searchable some minutes after the run is
+                ready, and `runs search` and `runs events` wait until then. A
+                search in those first minutes can match no events.
             "#
         )?;
     } else {

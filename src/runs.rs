@@ -1516,15 +1516,13 @@ async fn cmd_runs_search(
         stream: args.follow,
         limit,
     };
-    let stream = match api
-        .search_run_events_query(&args.run_id, &args.query, search)
-        .await
-    {
-        Ok(stream) => stream,
-        Err(err) => {
-            return Err(event_search::explain_search_error(&api, &args.run_id, err).await);
-        }
-    };
+    let stream = event_search::search_when_searchable(
+        &api,
+        &args.run_id,
+        event_search::SEARCH_RETRY_FIRST,
+        || api.search_run_events_query(&args.run_id, &args.query, search),
+    )
+    .await?;
     // A user-written DSL pipeline can reshape rows into any object,
     // `{"error": ...}` included, so this stream must not guess that such a
     // row is the server's Stream_Error signal.
@@ -1559,13 +1557,14 @@ async fn cmd_runs_events(
         stream: false,
         limit: Some(limit),
     };
-    let stream = match api
-        .search_run_events_query(run_id, &event_set_dsl::substring_filter(matches), search)
-        .await
-    {
-        Ok(stream) => stream,
-        Err(err) => return Err(event_search::explain_search_error(&api, run_id, err).await),
-    };
+    let query = event_set_dsl::substring_filter(matches);
+    let stream = event_search::search_when_searchable(
+        &api,
+        run_id,
+        event_search::SEARCH_RETRY_FIRST,
+        || api.search_run_events_query(run_id, &query, search),
+    )
+    .await?;
     let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode);
     print_event_lines(
         lines,
@@ -1698,35 +1697,41 @@ impl RewarmDisplay {
     }
 }
 
-/// What `runs exec` shows on stderr while it waits for the run to be ready:
-/// a spinner on a terminal, else a line at once and a line each whole minute.
-enum ReadyDisplay {
+/// What snouty shows on stderr while it waits for a run: a spinner on a
+/// terminal, else a line at once and a line each whole minute. `runs exec`
+/// waits for the run to be ready, and the events search waits for the run's
+/// events to become searchable.
+enum WaitDisplay {
     Spinner(ProgressBar),
     Lines {
+        message: &'static str,
         start: Instant,
         /// The whole minutes waited at the last line.
         last_minutes: Option<u64>,
     },
 }
 
-impl ReadyDisplay {
-    fn new() -> Self {
+impl WaitDisplay {
+    fn new(message: &'static str) -> Self {
         if !std::io::stderr().is_terminal() {
             return Self::Lines {
+                message,
                 start: Instant::now(),
                 last_minutes: None,
             };
         }
-        let style =
-            ProgressStyle::with_template("{spinner} waiting for the run to be ready ({elapsed})")
-                .expect("the template is valid");
-        let spinner = ProgressBar::new_spinner().with_style(style);
+        let style = ProgressStyle::with_template("{spinner} {msg} ({elapsed})")
+            .expect("the template is valid");
+        let spinner = ProgressBar::new_spinner()
+            .with_style(style)
+            .with_message(message);
         spinner.enable_steady_tick(Duration::from_millis(120));
         Self::Spinner(spinner)
     }
 
     fn show(&mut self) {
         if let Self::Lines {
+            message,
             start,
             last_minutes,
         } = self
@@ -1735,25 +1740,21 @@ impl ReadyDisplay {
             let minutes = waited / 60;
             if last_minutes.is_none_or(|last| minutes > last) {
                 let waited = HumanDuration::from_seconds(waited);
-                eprintln!("waiting for the run to be ready ({waited})");
+                eprintln!("{message} ({waited})");
                 *last_minutes = Some(minutes);
             }
         }
     }
 
-    /// End the display. A run that stopped instead of becoming ready gets no
-    /// line: the error that follows names its status.
-    fn finish(self, run: &RunDetail) {
+    /// End a wait that succeeded.
+    fn finish(self) {
         if let Self::Spinner(spinner) = &self {
             spinner.finish_and_clear();
-        }
-        if run.is_ready() {
-            eprintln!("run {} is ready", run.run_id);
         }
     }
 }
 
-impl Drop for ReadyDisplay {
+impl Drop for WaitDisplay {
     /// A wait that fails leaves its spinner on the line. The newline puts the
     /// error on a line of its own.
     fn drop(&mut self) {
@@ -1945,13 +1946,20 @@ async fn exec_when_ready(
         "snouty debug {debug_target} --input-hash {} --vtime {}",
         exec.moment.input_hash, exec.moment.vtime
     );
-    let mut waiting: Option<ReadyDisplay> = None;
+    let mut waiting: Option<WaitDisplay> = None;
     let run = wait_for_run(api, run_id, poll, WaitUntil::Ready, |_| {
-        waiting.get_or_insert_with(ReadyDisplay::new).show();
+        waiting
+            .get_or_insert_with(|| WaitDisplay::new("waiting for the run to be ready"))
+            .show();
     })
     .await?;
+    // A run that stopped instead of becoming ready gets no line: the error
+    // that follows names its status.
     if let Some(waiting) = waiting {
-        waiting.finish(&run);
+        waiting.finish();
+        if run.is_ready() {
+            eprintln!("run {run_id} is ready");
+        }
     }
     let stream = api
         .execute_command(run_id, exec)
@@ -5164,6 +5172,115 @@ mod tests {
                 .await
                 .unwrap_err();
             assert_eq!(api_error_status(&err), Some(500));
+        }
+
+        /// Answer the count endpoint of `run_id` with the live endpoint's
+        /// bare 404 `unindexed` times, then with `{"count": 3}`.
+        async fn mount_count_after_404s(server: &MockServer, run_id: &str, unindexed: u64) {
+            let route = format!("/api/v0/runs/{run_id}/events/search/count");
+            if unindexed > 0 {
+                Mock::given(method("POST"))
+                    .and(path(route.as_str()))
+                    .respond_with(
+                        ResponseTemplate::new(404)
+                            .set_body_json(json!({"message": "Resource not found"})),
+                    )
+                    .up_to_n_times(unindexed)
+                    .mount(server)
+                    .await;
+            }
+            Mock::given(method("POST"))
+                .and(path(route.as_str()))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"count": 3})))
+                .mount(server)
+                .await;
+        }
+
+        async fn count_searches(server: &MockServer) -> usize {
+            let requests = server.received_requests().await.unwrap();
+            requests
+                .iter()
+                .filter(|r| r.method.as_str() == "POST")
+                .count()
+        }
+
+        async fn count_when_searchable(api: &AntithesisApi, run_id: &str) -> Result<u64> {
+            event_search::search_when_searchable(api, run_id, FAST_POLL, || {
+                api.count_run_events_query(run_id, "filter(ev => true)")
+            })
+            .await
+        }
+
+        #[tokio::test]
+        async fn search_waits_until_the_events_of_a_new_run_are_searchable() {
+            let server = MockServer::start().await;
+            mount_get_run_statuses(&server, &["starting", "in_progress"]).await;
+            mount_count_after_404s(&server, "run-w", 2).await;
+            let api = test_api(&server.uri());
+
+            let count = count_when_searchable(&api, "run-w").await.unwrap();
+
+            assert_eq!(count, 3);
+            assert_eq!(count_searches(&server).await, 3);
+        }
+
+        #[tokio::test]
+        async fn search_stops_waiting_when_the_run_stops() {
+            for status in ["completed", "cancelled", "incomplete", "unknown"] {
+                let server = MockServer::start().await;
+                mount_get_run_statuses(&server, &["in_progress", status]).await;
+                mount_count_after_404s(&server, "run-w", u64::MAX).await;
+                let api = test_api(&server.uri());
+
+                let err = count_when_searchable(&api, "run-w").await.unwrap_err();
+
+                assert_eq!(api_error_status(&err), Some(404));
+                let report = format!("{err:?}");
+                assert!(
+                    report.contains(&format!(
+                        "run run-w is {status}, and its events are not searchable"
+                    )),
+                    "got: {report}"
+                );
+                assert!(!report.contains("tenant releases before"), "got: {report}");
+                assert_eq!(count_searches(&server).await, 2);
+            }
+        }
+
+        #[tokio::test]
+        async fn search_does_not_wait_for_a_run_from_an_old_release() {
+            let run_id = "0df9ac1f5155c14f88ea41f5ad503e07-61-1";
+            let server = MockServer::start().await;
+            let mut body = run_body("in_progress");
+            body["run_id"] = json!(run_id);
+            Mock::given(method("GET"))
+                .and(path(format!("/api/v0/runs/{run_id}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .mount(&server)
+                .await;
+            mount_count_after_404s(&server, run_id, u64::MAX).await;
+            let api = test_api(&server.uri());
+
+            let err = count_when_searchable(&api, run_id).await.unwrap_err();
+
+            let report = format!("{err:?}");
+            assert!(
+                report.contains("tenant releases before 62.2 do not serve the events-search API"),
+                "got: {report}"
+            );
+            assert_eq!(count_searches(&server).await, 1);
+        }
+
+        #[tokio::test]
+        async fn search_of_an_unknown_run_says_run_not_found() {
+            let server = MockServer::start().await;
+            mount_count_after_404s(&server, "BAD-ID", u64::MAX).await;
+            let api = test_api(&server.uri());
+
+            let err = count_when_searchable(&api, "BAD-ID").await.unwrap_err();
+
+            assert_eq!(format!("{err:#}"), "run not found: BAD-ID");
+            assert_eq!(count_searches(&server).await, 1);
         }
 
         const STARTED_AT: &str = "2025-03-20T02:00:00Z";

@@ -800,11 +800,9 @@ stderr 'run not found: no-such-run'
 # The server indexes the events of a new run some minutes after the run
 #    starts, and until then the search answers 404. When the run exists and
 #    is starting or in progress, snouty waits and tries again, with a line on
-#    stderr (a spinner on a terminal). The search answers 404 for the first
-#    search of each mock server's run-indexing. Rust tests in src/runs.rs
-#    cover a starting run and a run that stops while snouty waits, because
-#    their test server can change the run's status between polls. The help
-#    of both commands says so.
+#    stderr (a spinner on a terminal). The help of both commands says so. The
+#    mock answers 404 for the first search of run-indexing on each server.
+#    Rust tests in src/runs.rs cover a run that stops while snouty waits.
 snouty runs events --help
 stdout '^The events of a new run become searchable some minutes after the run is$'
 stdout '^ready\. Until then, the command waits and shows a line on stderr\.'
@@ -836,7 +834,8 @@ mock-runs-server
 
 # A run whose ID names a release before 62.2 is from a tenant release that
 #    does not serve the events-search API, so its 404 gets the server's error
-#    and a suggestion about the tenant release, and snouty does not wait.
+#    and a suggestion about the tenant release, and snouty does not wait,
+#    though the run is in progress.
 mock-runs-server
 [!staging] ! snouty runs events 0df9ac1f5155c14f88ea41f5ad503e07-61-1 --match anything
 [!staging] stderr 'API error: 404'

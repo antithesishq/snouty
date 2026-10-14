@@ -22,7 +22,7 @@ use serde_json::json;
 use futures_util::stream::BoxStream;
 use futures_util::{StreamExt, TryStreamExt};
 
-use crate::api::{AntithesisApi, MIN_SEARCH_RELEASE, RunStatus, SearchMode, run_release};
+use crate::api::{AntithesisApi, MIN_SEARCH_RELEASE, RunStatus, SearchMode};
 use crate::error::{api_error_status, user_error};
 use crate::event_render::EventStreamRenderer;
 use crate::jsonl::JsonStream;
@@ -95,7 +95,7 @@ pub(super) async fn check_query(
     query: &str,
     json: bool,
 ) -> Result<()> {
-    let _empty_body = search_when_searchable(api, run_id, SEARCH_RETRY_FIRST, || {
+    let _ = search_when_searchable(api, run_id, || {
         api.search_run_events_query(run_id, query, SearchMode::Validate)
     })
     .await?;
@@ -115,10 +115,8 @@ pub(super) async fn count_query(
     query: &str,
     json: bool,
 ) -> Result<()> {
-    let count = search_when_searchable(api, run_id, SEARCH_RETRY_FIRST, || {
-        api.count_run_events_query(run_id, query)
-    })
-    .await?;
+    let count =
+        search_when_searchable(api, run_id, || api.count_run_events_query(run_id, query)).await?;
     let mut stdout = std::io::stdout().lock();
     if json {
         writeln!(stdout, "{}", json!({"count": count}))?;
@@ -131,7 +129,10 @@ pub(super) async fn count_query(
 
 /// The wait before the first retry of a search that answered 404. Each retry
 /// doubles the wait, up to [`SEARCH_RETRY_MAX`].
-pub(super) const SEARCH_RETRY_FIRST: Duration = Duration::from_secs(1);
+#[cfg(not(test))]
+const SEARCH_RETRY_FIRST: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const SEARCH_RETRY_FIRST: Duration = Duration::from_millis(10);
 const SEARCH_RETRY_MAX: Duration = Duration::from_secs(15);
 
 /// Send an events-search request with `send`, and send it again while the
@@ -155,14 +156,13 @@ const SEARCH_RETRY_MAX: Duration = Duration::from_secs(15);
 pub(super) async fn search_when_searchable<T, Fut>(
     api: &AntithesisApi,
     run_id: &str,
-    first_retry: Duration,
     mut send: impl FnMut() -> Fut,
 ) -> Result<T>
 where
     Fut: Future<Output = Result<T>>,
 {
     let mut waiting: Option<WaitDisplay> = None;
-    let mut retry = first_retry;
+    let mut retry = SEARCH_RETRY_FIRST;
     loop {
         let err = match send().await {
             Ok(answer) => {
@@ -188,14 +188,14 @@ where
             RunProbe::ProbeFailed(probe_err) => return Err(probe_err),
             RunProbe::Exists(run) => run,
         };
-        if run_release(run_id).is_some_and(|release| release < MIN_SEARCH_RELEASE) {
+        if !run.serves_events_search() {
             let (major, minor) = MIN_SEARCH_RELEASE;
             return Err(err.suggestion(format!(
                 "tenant releases before {major}.{minor} do not serve the events-search \
                  API as documented; `snouty doctor` reports the tenant release"
             )));
         }
-        if run.status.is_terminal() || run.status == RunStatus::Unknown {
+        if !matches!(run.status, RunStatus::Starting | RunStatus::InProgress) {
             return Err(err.note(format!(
                 "run {run_id} is {}, and its events are not searchable",
                 run.status

@@ -514,7 +514,7 @@ impl MockApiServer {
         let handle = thread::spawn(move || {
             let mut state = MockState {
                 empty,
-                unindexed_searches: MOCK_UNINDEXED_SEARCHES,
+                indexing_run_searched: false,
             };
             for mut stream in listener.incoming().flatten() {
                 let Some(request) = mock_read_request(&mut stream) else {
@@ -704,17 +704,17 @@ fn mock_route(
             (s, b, ct, cache_control)
         }
         ("POST", p) if p.starts_with("/api/v0/runs/") => {
-            let mut rest = p["/api/v0/runs/".len()..].to_string();
-            // The first searches of `MOCK_INDEXING_RUN` answer the live
-            // endpoint's bare 404, and later ones search run-2's events.
+            let mut rest = &p["/api/v0/runs/".len()..];
+            let indexed;
             if let Some(endpoint) = rest.strip_prefix(MOCK_INDEXING_RUN)
                 && endpoint.starts_with("/events/search")
             {
-                if state.unindexed_searches > 0 {
-                    state.unindexed_searches -= 1;
+                if !state.indexing_run_searched {
+                    state.indexing_run_searched = true;
                     return (404, MOCK_BARE_404_BODY.into(), json, NO_CACHE_CACHE_CONTROL);
                 }
-                rest = format!("run-2{endpoint}");
+                indexed = format!("run-2{endpoint}");
+                rest = &indexed;
             }
             if let Some(run_id) = rest.strip_suffix("/events/search") {
                 let (s, b, ct) = mock_route_search_events(run_id, req_body);
@@ -761,8 +761,10 @@ fn mock_route(
 struct MockState {
     /// Serve no runs at all.
     empty: bool,
-    /// The searches of [`MOCK_INDEXING_RUN`] that still answer 404.
-    unindexed_searches: u32,
+    /// Whether [`MOCK_INDEXING_RUN`] has been searched. Its first search
+    /// answers the live endpoint's bare 404, and later ones search run-2's
+    /// events.
+    indexing_run_searched: bool,
 }
 
 /// A ready run whose events the server has not indexed yet. On the live
@@ -770,11 +772,8 @@ struct MockState {
 /// after the run is ready (observed on orbitinghail, release 64.0).
 const MOCK_INDEXING_RUN: &str = "run-indexing";
 
-/// How many searches of [`MOCK_INDEXING_RUN`] answer 404 on each mock server.
-const MOCK_UNINDEXED_SEARCHES: u32 = 1;
-
-/// A completed run from a release before `MIN_SEARCH_RELEASE`, whose events
-/// search answers 404.
+/// An in-progress run from a release before `MIN_SEARCH_RELEASE`, whose
+/// events search answers 404.
 const MOCK_OLD_RELEASE_RUN: &str = "0df9ac1f5155c14f88ea41f5ad503e07-61-1";
 
 fn mock_query_param(query: Option<&str>, key: &str) -> Option<String> {
@@ -902,7 +901,7 @@ const MOCK_HIDDEN_SESSIONS: &[(&str, &str, Option<&str>)] = &[
     ("session-loading", "in_progress", None),
     ("run-stream-error", "in_progress", Some("Ready")),
     (MOCK_INDEXING_RUN, "in_progress", Some("Ready")),
-    (MOCK_OLD_RELEASE_RUN, "completed", None),
+    (MOCK_OLD_RELEASE_RUN, "in_progress", None),
 ];
 
 fn mock_route_get_run(run_id: &str) -> (u16, String) {
@@ -995,7 +994,7 @@ fn mock_route_cancel_run(run_id: &str) -> (u16, String) {
 
 /// The bare 404 body the live API sends for an unknown resource. It never
 /// names the resource.
-const MOCK_BARE_404_BODY: &str = r#"{"message":"Resource not found"}"#;
+pub(crate) const MOCK_BARE_404_BODY: &str = r#"{"message":"Resource not found"}"#;
 
 /// The bare 404 body the live cancel endpoint sends for an unknown run. Its
 /// shape differs from [`MOCK_BARE_404_BODY`].

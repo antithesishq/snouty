@@ -109,7 +109,7 @@ const MIN_SUB_STATUS_RELEASE: (u64, u64) = (64, 0);
 
 /// The release that a run ID ends with: `<hex>-<major>-<minor>`, as in
 /// `0df9ac1f5155c14f88ea41f5ad503e07-64-0`.
-pub(crate) fn run_release(run_id: &str) -> Option<(u64, u64)> {
+fn run_release(run_id: &str) -> Option<(u64, u64)> {
     let mut parts = run_id.rsplit('-');
     let minor = parts.next()?.parse().ok()?;
     let major = parts.next()?.parse().ok()?;
@@ -261,6 +261,12 @@ impl RunDetail {
             Some(release) if release < MIN_SUB_STATUS_RELEASE => in_progress,
             _ => in_progress && self.sub_status == Some(RunSubStatus::Ready),
         }
+    }
+
+    /// Whether the run's tenant release serves the events-search API: a run
+    /// ID that names no release counts as one that does.
+    pub(crate) fn serves_events_search(&self) -> bool {
+        run_release(&self.run_id).is_none_or(|release| release >= MIN_SEARCH_RELEASE)
     }
 
     /// The status, and the sub-status after a colon when the run has one:

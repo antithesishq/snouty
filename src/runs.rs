@@ -1516,12 +1516,9 @@ async fn cmd_runs_search(
         stream: args.follow,
         limit,
     };
-    let stream = event_search::search_when_searchable(
-        &api,
-        &args.run_id,
-        event_search::SEARCH_RETRY_FIRST,
-        || api.search_run_events_query(&args.run_id, &args.query, search),
-    )
+    let stream = event_search::search_when_searchable(&api, &args.run_id, || {
+        api.search_run_events_query(&args.run_id, &args.query, search)
+    })
     .await?;
     // A user-written DSL pipeline can reshape rows into any object,
     // `{"error": ...}` included, so this stream must not guess that such a
@@ -1558,12 +1555,9 @@ async fn cmd_runs_events(
         limit: Some(limit),
     };
     let query = event_set_dsl::substring_filter(matches);
-    let stream = event_search::search_when_searchable(
-        &api,
-        run_id,
-        event_search::SEARCH_RETRY_FIRST,
-        || api.search_run_events_query(run_id, &query, search),
-    )
+    let stream = event_search::search_when_searchable(&api, run_id, || {
+        api.search_run_events_query(run_id, &query, search)
+    })
     .await?;
     let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode);
     print_event_lines(
@@ -4954,14 +4948,15 @@ mod tests {
             mount_get_run_bodies(server, statuses.iter().map(|s| run_body(s)).collect()).await;
         }
 
-        /// As [`mount_get_run_statuses`], with a whole run body per poll.
-        /// Wiremock matches in mount order and skips a mock whose
-        /// `up_to_n_times` budget is spent.
+        /// As [`mount_get_run_statuses`], with a whole run body per poll, each
+        /// served at its own `run_id`. Wiremock matches in mount order and
+        /// skips a mock whose `up_to_n_times` budget is spent.
         async fn mount_get_run_bodies(server: &MockServer, bodies: Vec<serde_json::Value>) {
             let count = bodies.len();
             for (i, body) in bodies.into_iter().enumerate() {
+                let route = format!("/api/v0/runs/{}", body["run_id"].as_str().unwrap());
                 let mock = Mock::given(method("GET"))
-                    .and(path("/api/v0/runs/run-w"))
+                    .and(path(route))
                     .respond_with(ResponseTemplate::new(200).set_body_json(body));
                 let mock = if i + 1 < count {
                     mock.up_to_n_times(1)
@@ -5178,17 +5173,15 @@ mod tests {
         /// bare 404 `unindexed` times, then with `{"count": 3}`.
         async fn mount_count_after_404s(server: &MockServer, run_id: &str, unindexed: u64) {
             let route = format!("/api/v0/runs/{run_id}/events/search/count");
-            if unindexed > 0 {
-                Mock::given(method("POST"))
-                    .and(path(route.as_str()))
-                    .respond_with(
-                        ResponseTemplate::new(404)
-                            .set_body_json(json!({"message": "Resource not found"})),
-                    )
-                    .up_to_n_times(unindexed)
-                    .mount(server)
-                    .await;
-            }
+            Mock::given(method("POST"))
+                .and(path(route.as_str()))
+                .respond_with(
+                    ResponseTemplate::new(404)
+                        .set_body_raw(crate::testutils::MOCK_BARE_404_BODY, "application/json"),
+                )
+                .up_to_n_times(unindexed)
+                .mount(server)
+                .await;
             Mock::given(method("POST"))
                 .and(path(route.as_str()))
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({"count": 3})))
@@ -5205,7 +5198,7 @@ mod tests {
         }
 
         async fn count_when_searchable(api: &AntithesisApi, run_id: &str) -> Result<u64> {
-            event_search::search_when_searchable(api, run_id, FAST_POLL, || {
+            event_search::search_when_searchable(api, run_id, || {
                 api.count_run_events_query(run_id, "filter(ev => true)")
             })
             .await
@@ -5253,11 +5246,7 @@ mod tests {
             let server = MockServer::start().await;
             let mut body = run_body("in_progress");
             body["run_id"] = json!(run_id);
-            Mock::given(method("GET"))
-                .and(path(format!("/api/v0/runs/{run_id}")))
-                .respond_with(ResponseTemplate::new(200).set_body_json(body))
-                .mount(&server)
-                .await;
+            mount_get_run_bodies(&server, vec![body]).await;
             mount_count_after_404s(&server, run_id, u64::MAX).await;
             let api = test_api(&server.uri());
 

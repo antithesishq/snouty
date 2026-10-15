@@ -250,6 +250,7 @@ All tools are marked read-only. Each tool returns the same output as its command
 | `runs_build_logs` | `snouty runs build-logs`                                    |
 | `runs_logs`       | `snouty runs logs`                                          |
 | `runs_search`     | `snouty runs search`                                        |
+| `runs_exec`       | `snouty runs exec`                                          |
 | `docs_tree`       | `snouty docs tree`                                          |
 | `docs_show`       | `snouty docs show` (returns the page as Markdown, not JSON) |
 | `docs_search`     | `snouty docs search`                                        |

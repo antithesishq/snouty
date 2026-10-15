@@ -1,0 +1,35 @@
+Execute a bash script in a run that is in progress, at a moment.
+
+The run must be ready. It can be a test run or a debugging session. The call
+waits until the run is ready before it runs the script.
+
+The script executes on a fresh branch of the multiverse, so it does not
+interact with other work happening in the session, like fuzzing or other
+executing commands.
+
+input_hash and vtime identify the moment to execute at, and the moment must
+be warm. Give input_hash as a string. A warm moment is a moment that is
+loaded into the run. Every moment generated in the run is warm: by fuzzing,
+and by an earlier runs_exec call, so the end moment of one call is warm for
+the next. A moment from another run is cold. Set source_run_id, or
+source_session_id, to load a moment from a different run. Loading a cold
+moment can take minutes and depends on the magnitude of the vtime. timeout
+does not count that time. Find a moment with the runs_properties,
+runs_search or runs_logs tool.
+
+The script executes on the host, or in the container that container names.
+The tool needs tenant release 64.0 or newer; the doctor tool reports the
+tenant release. timeout is the number of seconds the server waits for the
+script to exit. Without it, the server's default applies (600 seconds as of
+release 64.0).
+
+Returns one JSON object per frame of the stream, one per line. While a cold
+moment loads, frames {"status": "rewarming", "percent_complete": N} report
+the progress. An output frame has moment, output_text and source.stream:
+"info" for the script's standard output and "error" for its standard error.
+With events true, the frames are every event of the timeline, in the shape
+that the runs_logs tool returns. The last frame is the result:
+{"status": "exited", "exit_code": ..., "end_moment": ...}, or
+{"status": "timed_out", ...}. end_moment is the end of the new branch, to
+execute a follow-up script from. A non-zero exit code, a timeout, or a
+stream with no result frame marks the result isError, after all the frames.

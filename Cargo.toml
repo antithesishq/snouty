@@ -5,6 +5,7 @@ members = ["snouty-macros"]
 name = "snouty"
 version = "0.8.0-rc.1"
 edition = "2024"
+rust-version = "1.89"
 description = "A CLI tool for using the Antithesis API"
 license = "Apache-2.0"
 repository = "https://github.com/antithesishq/snouty"

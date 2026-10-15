@@ -23,9 +23,11 @@ pub fn source_error<'a, T: std::error::Error + 'static>(
 pub fn root_cause<'a>(
     err: &'a (dyn std::error::Error + 'static),
 ) -> &'a (dyn std::error::Error + 'static) {
-    std::iter::successors(Some(err), |err| err.source())
-        .last()
-        .unwrap_or(err)
+    let mut cause = err;
+    while let Some(source) = cause.source() {
+        cause = source;
+    }
+    cause
 }
 
 /// Recursively copy the contents of `src` into `dst` (which must already exist).

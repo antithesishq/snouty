@@ -608,10 +608,10 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
     let status = session.get_process().wait().expect("wait for snouty login");
     let stdout = std::fs::read_to_string(home.path().join(STDOUT_FILE)).expect("read stdout");
 
-    // Check for leaks before any message prints stderr or stdout, so that no
-    // failure message holds a secret. Each secret goes by its label.
+    // Check for leaks before the messages below print stderr or stdout. A leak
+    // message names the value by its label only.
     let cli_state = login["cli_state"].as_str().expect("a cli_state");
-    let mut secrets = vec![
+    let mut checked = vec![
         ("access token", ACCESS_TOKEN.to_owned()),
         ("refresh token", REFRESH_TOKEN.to_owned()),
         ("authorization code", AUTH_CODE.to_owned()),
@@ -626,16 +626,17 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
     if let Some(bearer) = bearer {
         let decoded = BASE64_URL_SAFE_NO_PAD.decode(&bearer).expect("base64url");
         let code_verifier = String::from_utf8(decoded)
-            .expect("UTF-8 credentials")
-            .strip_prefix(&format!("{AUTH_CODE}:"))
-            .expect("the code, then the verifier")
-            .to_owned();
-        secrets.push(("PKCE verifier", code_verifier));
-        secrets.push(("token exchange credential", bearer));
+            .ok()
+            .and_then(|decoded| Some(decoded.strip_prefix(&format!("{AUTH_CODE}:"))?.to_owned()))
+            .unwrap_or_else(|| {
+                panic!("the token exchange credential is not the code, then the verifier")
+            });
+        checked.push(("PKCE verifier", code_verifier));
+        checked.push(("token exchange credential", bearer));
     }
-    for (label, secret) in &secrets {
-        assert!(!stderr.contains(secret), "the {label} leaked into stderr");
-        assert!(!stdout.contains(secret), "the {label} leaked into stdout");
+    for (label, value) in &checked {
+        assert!(!stderr.contains(value), "the {label} leaked into stderr");
+        assert!(!stdout.contains(value), "the {label} leaked into stdout");
     }
 
     assert!(

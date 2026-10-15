@@ -776,23 +776,6 @@ pub struct DebugArgs {
 /// their long help. A macro rather than a `const` so both call sites can
 /// splice it into their `concat!`-built literals (`concat!` takes literals
 /// only, and a macro expansion is one).
-/// How a run is structured: the paragraph `runs search` and `runs logs` share
-/// in their long help. A macro for the same reason as
-/// [`classified_blocks_help`].
-macro_rules! run_structure_help {
-    () => {
-        r#"How a run is structured: An Antithesis run is a tree of timelines, not one
-history. A timeline is a series of input_hashes. An input_hash is a hash of
-every input Antithesis sent up to that point. Antithesis branches a timeline
-by sending an input from some moment, which creates a new input_hash. Every
-event has an input_hash and a vtime, and one input_hash can have zero or more
-events. Events that share an input_hash are on the same timeline. vtime is
-the virtual time at which the event was emitted on its timeline. Antithesis
-virtualizes the clock, so vtime can jump forward by any amount, but it never
-goes backward. vtime orders events only within one timeline."#
-    };
-}
-
 macro_rules! classified_blocks_help {
     () => {
         r#"Matching events print as classified blocks: a `moment HASH` divider opens
@@ -811,6 +794,16 @@ is ready, as `snouty runs exec` does, and shows a line on stderr."#
     };
 }
 
+/// The tenant release `runs search` and `runs events` need, as `runs exec`
+/// and `runs cancel` state theirs. Keep the number in step with
+/// [`crate::api::MIN_SEARCH_RELEASE`].
+macro_rules! events_search_release_help {
+    () => {
+        r#"The command needs tenant release 62.2 or newer; `snouty doctor` reports the
+tenant release."#
+    };
+}
+
 /// `runs search`'s long help. Static text: the `search_long_about` test
 /// keeps it in sync with [`event_set_dsl::VERBS`] (every verb must appear)
 /// and holds every line to 78 columns, since clap prints long_about
@@ -818,9 +811,8 @@ is ready, as `snouty runs exec` does, and shows a line on stderr."#
 const SEARCH_LONG_ABOUT: &str = concat!(
     r#"Run an event-set DSL query against a run's events.
 
-"#,
-    run_structure_help!(),
-    r#"
+For how a run is structured (timelines, input_hash, vtime), read
+`snouty runs logs --help`.
 
 How to read the results: The output is a sample of the matching events, and
 they can come from different timelines. The server returns at most --limit
@@ -932,6 +924,10 @@ instead of a sample. No limit applies.
 
 "#,
     ready_wait_search_help!(),
+    r#"
+
+"#,
+    events_search_release_help!(),
     r#"
 
 Add --json for machine-readable output. Each event prints as one JSON
@@ -1139,9 +1135,15 @@ object on its own line:
         long_about = concat!(
             r#"Stream the logs of one timeline of a run.
 
-"#,
-            run_structure_help!(),
-            r#"
+How a run is structured: An Antithesis run is a tree of timelines, not one
+history. A timeline is a series of input_hashes. An input_hash is a hash of
+every input Antithesis sent up to that point. Antithesis branches a timeline
+by sending an input from some moment, which creates a new input_hash. Every
+event has an input_hash and a vtime, and one input_hash can have zero or more
+events. Events that share an input_hash are on the same timeline. vtime is
+the virtual time at which the event was emitted on its timeline. Antithesis
+virtualizes the clock, so vtime can jump forward by any amount, but it never
+goes backward. vtime orders events only within one timeline.
 
 INPUT_HASH identifies the timeline: the hash of every input Antithesis sent
 from the root to that point. Logs stream from the root (or --begin-vtime) to
@@ -1295,6 +1297,10 @@ and how the run's timelines relate the events.
 
 "#,
             ready_wait_search_help!(),
+            r#"
+
+"#,
+            events_search_release_help!(),
             r#"
 
 For log output, the equivalent search is:

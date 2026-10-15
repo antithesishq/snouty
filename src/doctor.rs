@@ -623,7 +623,7 @@ const RELEASE_FLOORS: [ReleaseFloor; 3] = [
         name: "events_search",
         serves: "the events-search API",
         min: MIN_SEARCH_RELEASE,
-        consequence: "`runs search` and `runs events` fail",
+        consequence: "`runs search` and `runs events` can fail or hang",
     },
     ReleaseFloor {
         name: "execute_command",

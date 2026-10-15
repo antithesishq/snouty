@@ -73,8 +73,8 @@ pub struct ApiVersion {
 /// documented contract. Releases 58.11 through 60.1 serve the endpoint but
 /// ignore `limit` on a run with a live stream, and hold a non-streaming
 /// connection open after the last match; 62.2 does neither (observed on
-/// tenant `orbitinghail`). `runs search`, and `runs events` with several
-/// terms, assume the tenant meets this; `snouty doctor` checks it.
+/// tenant `orbitinghail`). `runs search` and `runs events`
+/// assume the tenant meets this; `snouty doctor` checks it.
 pub const MIN_SEARCH_RELEASE: (u64, u64) = (62, 2);
 
 /// The first tenant release whose execute-command API takes `container`.

@@ -26,6 +26,15 @@ stdout '.*"name": "credentials".*'
 stdout '.*"status": "error".*'
 stdout '.*"level": "error".*'
 
+# --json omits feature ids this build does not know, such as the retired
+# runs-search and runs-exec.
+env SNOUTY_UNSTABLE_FEATURES=runs-search,runs-exec
+! snouty doctor --json
+stdout '"settings": \{'
+! stdout '"features"'
+! stdout 'runs-search|runs-exec'
+env SNOUTY_UNSTABLE_FEATURES=
+
 # With only username/password set, doctor reports one warning: the deprecated
 # credentials work only for launch and debug. Exported credentials still hide
 # whatever `snouty login` stores, so the next step also unsets them. (doctor

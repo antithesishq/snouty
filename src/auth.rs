@@ -430,6 +430,12 @@ impl AuthenticationInfo {
         Ok(found)
     }
 
+    /// Whether this is an API key that cannot authenticate, because it is
+    /// blank (see [`is_blank_api_key`]).
+    pub(crate) fn has_blank_api_key(&self) -> bool {
+        matches!(self, Self::ApiKey { api_key } if is_blank_api_key(api_key))
+    }
+
     /// The credential stored for `profile`: its keychain entry, else its
     /// section of the credentials file. This is what [`persist`] for `profile`
     /// replaces. The environment and other profiles are not read.

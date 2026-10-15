@@ -179,9 +179,7 @@ async fn do_cmd_login(
         .inspect_err(|err| debug!("no stored credentials to read: {err:#}"))
         .ok()
         .flatten()
-        .filter(|stored| {
-            !matches!(stored.value(), AuthenticationInfo::ApiKey { api_key } if is_blank_api_key(api_key))
-        });
+        .filter(|stored| !stored.value().has_blank_api_key());
 
     // The kind of credential login wrote, and where.
     let written = if prompter.is_interactive() {

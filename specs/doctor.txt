@@ -214,13 +214,14 @@ stderr '^  ✗ the API key is empty$'
 stderr '^      NOTE: read from the \[default\] profile in .+credentials\.toml$'
 ! stderr 'API key provided'
 
-# The hidden-credential warning skips an empty key, because an empty key cannot
-# authenticate.
+# Doctor does not offer an empty key as a source to fall back on, because an
+# empty key cannot authenticate.
 env ANTITHESIS_USERNAME=envuser
 env ANTITHESIS_PASSWORD=envpass
 snouty doctor --offline
 stderr '^  ⚠ username/password for user \[envuser\] only works for `snouty launch` and `snouty debug`$'
 ! stderr 'hiding your API key'
+! stderr 'more than one credential source'
 
 -- credential_conflict/.config/snouty/credentials.toml --
 [default]

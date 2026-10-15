@@ -7,7 +7,7 @@ use crate::api::{
     MIN_SEARCH_RELEASE, VersionError, normalize_base_url,
 };
 use crate::attributed_value::AttributedValue;
-use crate::auth::{AuthenticationInfo, is_blank_api_key};
+use crate::auth::AuthenticationInfo;
 use crate::compose;
 use crate::container;
 use crate::features;
@@ -266,14 +266,18 @@ fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
         )];
     };
 
+    // A blank API key cannot authenticate, so it is no source to fall back on.
+    let shadowed: Vec<_> = shadowed
+        .iter()
+        .filter(|s| !s.value().has_blank_api_key())
+        .collect();
+
     // A username and password in use while they hide a credential the API
     // accepts: the one thing to do is free that credential (issue #292).
     if let AuthenticationInfo::Password { .. } = credentials.value()
-        && let Some(hidden) = shadowed.iter().find(|s| match s.value() {
-            AuthenticationInfo::Password { .. } => false,
-            AuthenticationInfo::ApiKey { api_key } => !is_blank_api_key(api_key),
-            _ => true,
-        })
+        && let Some(hidden) = shadowed
+            .iter()
+            .find(|s| !matches!(s.value(), AuthenticationInfo::Password { .. }))
     {
         return vec![hidden_credential_check(credentials, hidden)];
     }
@@ -294,7 +298,7 @@ fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
                 credentials,
             )]
         }
-        AuthenticationInfo::ApiKey { api_key } if is_blank_api_key(api_key) => {
+        credential if credential.has_blank_api_key() => {
             vec![enrich_with_origin(
                 with_credential_remedy(
                     Check::fail(CREDENTIALS_CHECK_NAME, "the API key is empty")
@@ -314,7 +318,7 @@ fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
         }
     };
 
-    checks.extend(shadowed_credentials_check(credentials, shadowed));
+    checks.extend(shadowed_credentials_check(credentials, &shadowed));
     checks
 }
 
@@ -417,7 +421,7 @@ fn login_to_replace(profile: Option<&str>) -> String {
 /// expected.
 fn shadowed_credentials_check(
     in_use: &AttributedValue<AuthenticationInfo>,
-    shadowed: &[AttributedValue<AuthenticationInfo>],
+    shadowed: &[&AttributedValue<AuthenticationInfo>],
 ) -> Option<Check> {
     if shadowed.is_empty() {
         return None;

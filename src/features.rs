@@ -34,8 +34,7 @@ use crate::env;
 /// comma-separated list of ids.
 pub const UNSTABLE_FEATURES_VAR_NAME: &str = "SNOUTY_UNSTABLE_FEATURES";
 
-/// A gated feature. Its id is the variant name in kebab-case, so `RunsExec`
-/// has the id `runs-exec`.
+/// The id of a feature is its variant name in kebab-case.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
 pub enum Feature {
     /// Stands in for a real feature in tests.
@@ -63,9 +62,8 @@ impl Display for Feature {
 /// The features `SNOUTY_UNSTABLE_FEATURES` enables, in the order listed.
 /// Empty when the variable is unset or names no feature this build knows.
 ///
-/// An unknown id is dropped, because every snouty on the machine shares one
-/// exported variable, so it can hold an id from a newer build or a retired
-/// one.
+/// Drops an unknown id: every snouty on the machine shares one exported
+/// variable, which can hold an id from a newer build or a retired one.
 ///
 /// A non-Unicode value is treated as unset rather than failing the command:
 /// this is read before the parse, where there is no good way to report an
@@ -77,9 +75,9 @@ pub fn enabled() -> Vec<Feature> {
     }
 }
 
-/// The known features one comma-separated list names, in order. Drops blank
-/// entries and unknown ids. Separate from [`enabled`] so tests need not set
-/// process-global state.
+/// Parses a comma-separated list of ids into features, in order, and drops
+/// blank entries and unknown ids. Separate from [`enabled`] so tests need not
+/// set process-global state.
 fn parse_features_list(value: &str) -> Vec<Feature> {
     value
         .split(',')

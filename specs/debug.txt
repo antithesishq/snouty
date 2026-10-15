@@ -132,9 +132,9 @@ stderr 'run not found: no-such-run'
 ! stderr 'Requesting the Antithesis multiverse debugger'
 ! stdout 'Debugging session started'
 
-# The input hash is checked too, with one events search on the run. The
-#    launch endpoint accepts a hash that the run never reached and starts a
-#    billable session. The hash matches when the run has an event under it.
+# The input hash is checked too. The launch endpoint accepts a hash that
+#    the run never reached, and starts a billable session. The hash matches
+#    when the run has at least one event under it.
 #    The vtime is not checked: a valid vtime can be rounded, and can sit
 #    between the hash's events or after its last. The mock run has events
 #    under hash 5181922178177328213 at vtimes 400.5 to 402.0.
@@ -153,17 +153,37 @@ stderr -literal 'Suggestion: search for a moment using `snouty runs events run-1
 ! stderr 'Requesting the Antithesis multiverse debugger'
 ! stdout 'Debugging session started'
 
-# A run that is still starting has no searchable events, so its input hash
-#    cannot be checked. snouty refuses the run, and nothing is launched.
+# Before a run is ready, its events search and count answer 404, so the
+#    input hash cannot be checked. snouty refuses the run, and nothing is
+#    launched. session-starting is starting, and session-loading is in
+#    progress without the `ready` sub-status.
 mock-runs-server
 ! snouty debug --input-hash 5181922178177328213 --run-id session-starting --vtime 404
-stderr 'run session-starting is still starting; debug it once it is in progress or complete'
+stderr 'run session-starting is not ready yet: its status is starting'
 stderr -literal 'Suggestion: wait for it with `snouty runs wait session-starting --until ready`'
 ! stderr 'Requesting the Antithesis multiverse debugger'
 ! stdout 'Debugging session started'
+mock-runs-server
+! snouty debug --input-hash 5181922178177328213 --run-id session-loading --vtime 404
+stderr 'run session-loading is not ready yet: its status is in_progress'
+stderr -literal 'Suggestion: wait for it with `snouty runs wait session-loading --until ready`'
+! stderr 'Requesting the Antithesis multiverse debugger'
+! stdout 'Debugging session started'
 
-# A run that is in progress has searchable events, so the input hash is
-#    checked and the session is launched. run-2 is in progress.
+# When the count fails for a run that is ready or has stopped, snouty
+#    gives the error and launches nothing. A 404 does not skip the check.
+#    The run below is from release 61.1, so it is ready while in progress,
+#    and its count answers 404. The error names the release floor, as a
+#    search does.
+mock-runs-server
+! snouty debug --input-hash 5181922178177328213 --run-id 0df9ac1f5155c14f88ea41f5ad503e07-61-1 --vtime 404
+stderr 'API error: 404'
+stderr 'tenant releases before 62\.2 do not serve the events-search API'
+! stderr 'Requesting the Antithesis multiverse debugger'
+! stdout 'Debugging session started'
+
+# For a run that is ready, the input hash is checked. run-2 is in progress
+#    and ready.
 mock-runs-server
 snouty debug --input-hash 5181922178177328213 --run-id run-2 --vtime 404
 stderr 'Requesting the Antithesis multiverse debugger'
@@ -171,6 +191,14 @@ stdout 'Debugging session started: run_id mock-run-id'
 mock-runs-server
 ! snouty debug --input-hash 5181922178177328214 --run-id run-2 --vtime 404
 stderr 'no moment matches input hash 5181922178177328214 in run run-2'
+
+# The check uses the events-search count endpoint, not the events search.
+#    On a run that is in progress, a search for a hash with no event can
+#    take many minutes to answer.
+mock-runs-server
+! snouty --verbose debug --input-hash 5181922178177328214 --run-id run-2 --vtime 404
+stderr '^> POST .*/api/v0/runs/run-2/events/search/count$'
+! stderr '^> POST .*/events/search$'
 env ANTITHESIS_API_KEY=
 
 # The runs endpoints refuse a username and password, so with them the run

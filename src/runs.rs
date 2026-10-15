@@ -573,6 +573,7 @@ fn over_schedule_warning(run: &RunDetail, now: DateTime<Utc>) -> Option<String> 
 
 /// Filters applied to `runs properties`. `status` is served by the API; `name`
 /// and `group` are case-insensitive substring matches applied client-side.
+/// `name` matches [`property_display_name`].
 struct PropertyFilter<'a> {
     status: Option<PropertyStatus>,
     name: Option<&'a str>,
@@ -607,8 +608,6 @@ async fn cmd_runs_properties(
         .await
         .map_err(|err| explain_run_not_found(run_id, err))?;
 
-    // Apply the client-side filters: both group and name are (case-insensitive)
-    // substring matches.
     if let Some(group) = filter.group {
         let needle = group.to_lowercase();
         properties
@@ -616,7 +615,7 @@ async fn cmd_runs_properties(
     }
     if let Some(name) = filter.name {
         let needle = name.to_lowercase();
-        properties.retain(|p| p.name().to_lowercase().contains(&needle));
+        properties.retain(|p| property_display_name(p).to_lowercase().contains(&needle));
     }
 
     properties.sort_by(|a, b| {
@@ -2821,8 +2820,7 @@ mod tests {
     }
 
     /// The display name drops a `<group>: ` prefix and keeps any other name
-    /// whole. It is a suffix of the API name, so a name copied from human output
-    /// still matches `--name`.
+    /// whole.
     #[hegel::test]
     fn property_display_name_strips_group_prefix(tc: hegel::TestCase) {
         let group = tc.draw(generators::text().min_size(1));

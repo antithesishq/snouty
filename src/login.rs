@@ -946,6 +946,25 @@ mod tests {
         assert!(rendered.contains("PWNED"), "got: {rendered:?}");
     }
 
+    /// Whatever the callback sends, the error text holds no terminal control
+    /// character except tab.
+    #[hegel::test]
+    fn parse_callback_idp_error_is_free_of_terminal_controls(tc: hegel::TestCase) {
+        let error = tc.draw(hegel::generators::text());
+        let description = tc.draw(hegel::generators::text());
+        let query = form_urlencoded::Serializer::new(String::new())
+            .append_pair("error", &error)
+            .append_pair("error_description", &description)
+            .finish();
+        let rendered = format!("{}", parse_callback_params(&query).unwrap_err());
+        assert!(
+            !rendered
+                .chars()
+                .any(|ch| ch != '\t' && ch.is_ascii_control()),
+            "got: {rendered:?}"
+        );
+    }
+
     #[test]
     fn parse_callback_requires_code_and_state() {
         assert!(parse_callback_params("state=only_state").is_err());

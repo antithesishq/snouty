@@ -564,7 +564,6 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
             .expect("wiremock records requests")
             .into_iter()
             .find(|request| request.url.path() == route)
-            .unwrap_or_else(|| panic!("no request to {route}"))
     };
 
     let url = tenant.uri();
@@ -585,6 +584,7 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
     // The tenant records the login request before it answers.
     stderr += &expect(&mut session, "< 200 OK");
     let login: Value = received("/auth/cli/login")
+        .expect("a login request")
         .body_json()
         .expect("a JSON login body");
     let port = login["port"]
@@ -606,12 +606,42 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
     let rest = Expect::expect(&mut session, expectrl::Eof).expect("read the PTY to its end");
     stderr += &String::from_utf8_lossy(rest.as_bytes());
     let status = session.get_process().wait().expect("wait for snouty login");
+    let stdout = std::fs::read_to_string(home.path().join(STDOUT_FILE)).expect("read stdout");
+
+    // Check for leaks before any message prints stderr or stdout, so that no
+    // failure message holds a secret. Each secret goes by its label.
+    let cli_state = login["cli_state"].as_str().expect("a cli_state");
+    let mut secrets = vec![
+        ("access token", ACCESS_TOKEN.to_owned()),
+        ("refresh token", REFRESH_TOKEN.to_owned()),
+        ("authorization code", AUTH_CODE.to_owned()),
+        ("flow token", FLOW_TOKEN.to_owned()),
+        ("CSRF state", cli_state.to_owned()),
+    ];
+    // The token exchange sends `base64url(code:verifier)` as its bearer token.
+    let bearer = received("/auth/cli/token").and_then(|request| {
+        let value = request.headers.get("authorization")?.to_str().ok()?;
+        Some(value.strip_prefix("Bearer ")?.to_owned())
+    });
+    if let Some(bearer) = bearer {
+        let decoded = BASE64_URL_SAFE_NO_PAD.decode(&bearer).expect("base64url");
+        let code_verifier = String::from_utf8(decoded)
+            .expect("UTF-8 credentials")
+            .strip_prefix(&format!("{AUTH_CODE}:"))
+            .expect("the code, then the verifier")
+            .to_owned();
+        secrets.push(("PKCE verifier", code_verifier));
+        secrets.push(("token exchange credential", bearer));
+    }
+    for (label, secret) in &secrets {
+        assert!(!stderr.contains(secret), "the {label} leaked into stderr");
+        assert!(!stdout.contains(secret), "the {label} leaked into stdout");
+    }
+
     assert!(
         matches!(status, WaitStatus::Exited(_, 0)),
         "login failed: {status:?}\n{stderr}"
     );
-    let stdout = std::fs::read_to_string(home.path().join(STDOUT_FILE)).expect("read stdout");
-
     for request in [
         format!("> GET {url}/auth/cli/config"),
         format!("> POST {url}/auth/cli/token"),
@@ -620,37 +650,8 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
         assert!(stderr.contains(&request), "no {request:?} in:\n{stderr}");
     }
     assert_eq!(stderr.matches("> <body withheld>").count(), 2, "{stderr}");
-
-    let cli_state = login["cli_state"].as_str().expect("a cli_state");
-    let token_request = received("/auth/cli/token");
-    let bearer = token_request
-        .headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .expect("a bearer token exchange");
-    let decoded = BASE64_URL_SAFE_NO_PAD.decode(bearer).expect("base64url");
-    let code_verifier = String::from_utf8(decoded)
-        .expect("UTF-8 credentials")
-        .strip_prefix(&format!("{AUTH_CODE}:"))
-        .expect("the code, then the verifier")
-        .to_owned();
-    for secret in [
-        ACCESS_TOKEN,
-        REFRESH_TOKEN,
-        AUTH_CODE,
-        FLOW_TOKEN,
-        cli_state,
-        code_verifier.as_str(),
-        bearer,
-    ] {
-        assert!(!stderr.contains(secret), "{secret:?} in stderr:\n{stderr}");
-        assert!(!stdout.contains(secret), "{secret:?} in stdout:\n{stdout}");
-    }
-
-    let creds = credentials(home.path());
     assert!(
-        creds.contains(&format!(r#"antithesis_token = "{ACCESS_TOKEN}""#)),
-        "{creds}"
+        credentials(home.path()).contains(&format!(r#"antithesis_token = "{ACCESS_TOKEN}""#)),
+        "the credentials file does not hold the issued access token"
     );
 }

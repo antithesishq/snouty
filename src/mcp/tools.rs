@@ -23,7 +23,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 use crate::OutputOptions;
-use crate::api::{RunStatus, SEARCH_MAX_LIMIT};
+use crate::api::{RunStatus, SEARCH_MAX_LIMIT, SourceRunId, SourceSessionId};
 use crate::cli::{
     ALL_RUN_STATUSES, DEFAULT_DOCS_SEARCH_LIMIT, DEFAULT_RUNS_LIMIT, DocsCommands, EventOutputArgs,
     RunsCommands, RunsListArgs, RunsSearchArgs, check_search_limit, parse_run_status,
@@ -34,6 +34,7 @@ use crate::error::render_report;
 use crate::event_render::strip_ansi;
 use crate::help::{HelpPage, Target};
 use crate::settings::Settings;
+use crate::time::HumanDuration;
 use crate::vtime::VTime;
 
 /// Declares [`ToolName`] with one row per tool: the variant and its name.
@@ -81,6 +82,7 @@ tools! {
     RunsBuildLogs => "runs_build_logs",
     RunsLogs => "runs_logs",
     RunsSearch => "runs_search",
+    RunsExec => "runs_exec",
     DocsTree => "docs_tree",
     DocsShow => "docs_show",
     DocsSearch => "docs_search",
@@ -99,6 +101,7 @@ impl ToolName {
             ToolName::RunsBuildLogs => HelpPage::RunsBuildLogs,
             ToolName::RunsLogs => HelpPage::RunsLogs,
             ToolName::RunsSearch => HelpPage::RunsSearch,
+            ToolName::RunsExec => HelpPage::RunsExec,
             ToolName::DocsTree => HelpPage::DocsTree,
             ToolName::DocsShow => HelpPage::DocsShow,
             ToolName::DocsSearch => HelpPage::DocsSearch,
@@ -115,6 +118,7 @@ impl ToolName {
             ToolName::RunsBuildLogs => schema_for_input::<RunParams>(),
             ToolName::RunsLogs => schema_for_input::<RunsLogsParams>(),
             ToolName::RunsSearch => schema_for_input::<RunsSearchParams>(),
+            ToolName::RunsExec => schema_for_input::<RunsExecParams>(),
             ToolName::DocsTree => schema_for_input::<DocsTreeParams>(),
             ToolName::DocsShow => schema_for_input::<DocsShowParams>(),
             ToolName::DocsSearch => schema_for_input::<DocsSearchParams>(),
@@ -365,6 +369,28 @@ impl Call {
                     },
                 }))
             }
+            ToolName::RunsExec => {
+                let p: RunsExecParams = params(args)?;
+                if p.source_run_id.is_some() && p.source_session_id.is_some() {
+                    return Err(
+                        "invalid params: source_run_id and source_session_id cannot \
+                                both be set"
+                            .into(),
+                    );
+                }
+                Call::Runs(RunsCommands::Exec {
+                    run_id: p.run_id,
+                    input_hash: p.input_hash,
+                    vtime: p.vtime,
+                    // Always `Some`: with no script, the command reads stdin.
+                    script: Some(p.script),
+                    container: p.container,
+                    events: p.events,
+                    source_run_id: p.source_run_id,
+                    source_session_id: p.source_session_id,
+                    timeout: p.timeout.map(|s| HumanDuration::from_seconds(s.get())),
+                })
+            }
             ToolName::DocsTree => {
                 let p: DocsTreeParams = params(args)?;
                 Call::Docs(DocsCommands::Tree {
@@ -500,6 +526,46 @@ struct RunsSearchParams {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(crate = "rmcp::schemars")]
+struct RunsExecParams {
+    /// The run ID: a run in progress, or a debugging session
+    #[serde(deserialize_with = "non_empty")]
+    run_id: String,
+    /// The input hash of the moment to execute at. A string, as it appears in
+    /// the output of runs_properties, runs_search and runs_logs.
+    #[serde(deserialize_with = "non_empty")]
+    input_hash: String,
+    /// The virtual time of the moment to execute at
+    #[schemars(schema_with = "vtime_schema")]
+    vtime: VTime,
+    /// The bash script to execute
+    #[serde(deserialize_with = "non_empty")]
+    script: String,
+    /// The name or ID of the container to execute in. Without it, the script
+    /// executes on the host.
+    #[serde(default, deserialize_with = "optional_non_empty")]
+    container: Option<String>,
+    /// Stream every event of the timeline while the script executes, not
+    /// only the script's output
+    #[serde(default)]
+    events: bool,
+    /// The run that a cold moment comes from. The server loads the moment
+    /// into the run first. Cannot be set together with source_session_id.
+    #[serde(default, deserialize_with = "parsed")]
+    #[schemars(schema_with = "optional_string_schema")]
+    source_run_id: Option<SourceRunId>,
+    /// The session that a cold moment comes from, in place of source_run_id
+    #[serde(default, deserialize_with = "parsed")]
+    #[schemars(schema_with = "optional_string_schema")]
+    source_session_id: Option<SourceSessionId>,
+    /// Seconds the server waits for the script to exit (default: the
+    /// server's, 600 as of release 64.0). Loading a cold moment does not
+    /// count.
+    timeout: Option<NonZeroU64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(crate = "rmcp::schemars")]
 struct DocsTreeParams {
     /// A case-insensitive filter on page paths and titles
     filter: Option<String>,
@@ -570,6 +636,26 @@ fn non_empty<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Er
     validate_non_empty(&String::deserialize(deserializer)?).map_err(D::Error::custom)
 }
 
+fn optional_non_empty<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    Option::<String>::deserialize(deserializer)?
+        .map(|value| validate_non_empty(&value).map_err(D::Error::custom))
+        .transpose()
+}
+
+/// A string parsed into its domain type, through `FromStr`.
+fn parsed<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: FromStr,
+    T::Err: fmt::Display,
+{
+    Option::<String>::deserialize(deserializer)?
+        .map(|value| value.parse().map_err(D::Error::custom))
+        .transpose()
+}
+
 fn run_status<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<RunStatus>, D::Error> {
     Option::<String>::deserialize(deserializer)?
         .map(|status| parse_run_status(&status).map_err(D::Error::custom))
@@ -598,6 +684,15 @@ fn run_status_schema(_: &mut SchemaGenerator) -> Schema {
 
 fn optional_vtime_schema(_: &mut SchemaGenerator) -> Schema {
     json_schema!({ "type": ["number", "string", "null"] })
+}
+
+/// A vtime is seconds as a JSON number, or its decimal-string form.
+fn vtime_schema(_: &mut SchemaGenerator) -> Schema {
+    json_schema!({ "type": ["number", "string"] })
+}
+
+fn optional_string_schema(_: &mut SchemaGenerator) -> Schema {
+    json_schema!({ "type": ["string", "null"], "minLength": 1 })
 }
 
 fn search_limit_schema(_: &mut SchemaGenerator) -> Schema {
@@ -630,6 +725,9 @@ mod tests {
             }
             ToolName::RunsLogs => json!({"run_id": "r", "input_hash": "-1"}),
             ToolName::RunsSearch => json!({"run_id": "r", "query": "q"}),
+            ToolName::RunsExec => {
+                json!({"run_id": "r", "input_hash": "-1", "vtime": 1, "script": "ls"})
+            }
             ToolName::DocsShow => json!({"path": "p"}),
             ToolName::DocsSearch => json!({"query": "q"}),
             ToolName::ToolHelp => json!({"tool": "runs_search"}),
@@ -735,6 +833,24 @@ mod tests {
                 json!({"run_id": "r", "passing": true, "failing": true}),
             ),
             (ToolName::RunsSearch, json!({"run_id": "r", "query": " "})),
+            (
+                ToolName::RunsExec,
+                json!({"run_id": "r", "input_hash": "-1", "vtime": 1}),
+            ),
+            (
+                ToolName::RunsExec,
+                json!({"run_id": "r", "input_hash": "-1", "vtime": 1, "script": " "}),
+            ),
+            (
+                ToolName::RunsExec,
+                json!({"run_id": "r", "input_hash": "-1", "vtime": 1, "script": "ls",
+                       "source_run_id": "a", "source_session_id": "b"}),
+            ),
+            (
+                ToolName::RunsExec,
+                json!({"run_id": "r", "input_hash": "-1", "vtime": 1, "script": "ls",
+                       "timeout": 0}),
+            ),
             (ToolName::DocsTree, json!({"depth": 0})),
             (ToolName::DocsSearch, json!({"query": ""})),
             (ToolName::ToolHelp, json!({"tool": "nope"})),
@@ -766,6 +882,28 @@ mod tests {
 
     #[test]
     fn params_reach_the_cli_command() {
+        let Ok(Call::Runs(RunsCommands::Exec {
+            script,
+            container,
+            events,
+            source_run_id,
+            timeout,
+            ..
+        })) = Call::parse(
+            ToolName::RunsExec,
+            json!({"run_id": "r", "input_hash": "-1", "vtime": "1.5", "script": "ls",
+                   "container": "db", "events": true, "source_run_id": "run-9",
+                   "timeout": 5}),
+        )
+        else {
+            panic!("runs_exec did not parse");
+        };
+        assert_eq!(script.as_deref(), Some("ls"));
+        assert_eq!(container.as_deref(), Some("db"));
+        assert!(events);
+        assert_eq!(source_run_id.as_deref().map(String::as_str), Some("run-9"));
+        assert_eq!(timeout, Some(HumanDuration::from_seconds(5)));
+
         let Ok(Call::Docs(DocsCommands::Search { match_mode, .. })) =
             Call::parse(ToolName::DocsSearch, json!({"query": "x", "match": true}))
         else {

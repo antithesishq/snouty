@@ -26,10 +26,10 @@ JSON-RPC method. For a tool call, the line also shows the tool name, and
 shows the request params, and the tools log their API requests.
 
 The tools are runs_list, runs_show, runs_properties, runs_build_logs, runs_logs,
-runs_search, docs_tree, docs_show, docs_search, doctor and tool_help. Each tool
-returns the same output as its command in JSON mode. All tools are marked
-read-only. A tool description is short; tool_help returns the full help of a
-tool.
+runs_search, runs_exec, docs_tree, docs_show, docs_search, doctor and tool_help.
+Each tool returns the same output as its command in JSON mode. All tools are
+marked read-only. A tool description is short; tool_help returns the full help
+of a tool.
 
 The server accepts a request only when its Host header is the listen address
 (for example 127.0.0.1:8765) or an --allowed-host value. It refuses a request

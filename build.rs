@@ -562,6 +562,8 @@ fn rustc_version() -> Result<String, Box<dyn std::error::Error>> {
 /// Long-help templates. Each top-level `.txt` file is one page. `fragments/`
 /// holds text that pages include.
 const HELP_DIR: &str = "help";
+/// The subdirectory of `HELP_DIR` that holds the short MCP tool descriptions.
+const MCP_TOOLS_DIR: &str = "mcp_tools";
 
 /// The readers of a rendered help page. This mirrors `snouty::help::Target`,
 /// because a build script cannot use the crate it builds. A target that is
@@ -593,9 +595,10 @@ impl std::fmt::Display for HelpTarget {
     }
 }
 
-/// Renders every help page once per target into `OUT_DIR/help/<target>/`. A
-/// template sees the booleans `cli` and `mcp`. A template error fails the
-/// build with the file name.
+/// Renders every help page once per target into `OUT_DIR/help/<target>/`, and
+/// each MCP tool description into `OUT_DIR/help/mcp_tools/`. A template sees
+/// the booleans `cli` and `mcp`. A template error fails the build with the
+/// file name.
 fn render_help(out_dir: &Path) {
     let mut env = minijinja::Environment::new();
     env.set_loader(
@@ -635,6 +638,15 @@ fn render_help(out_dir: &Path) {
         for name in &pages {
             render_page(&env, name, &context, &dir.join(name));
         }
+    }
+
+    // The short MCP tool descriptions exist only for MCP.
+    let dir = help_out.join(MCP_TOOLS_DIR);
+    fs::create_dir_all(&dir).unwrap();
+    let context = HelpTarget::Mcp.context();
+    for name in txt_files(&Path::new(HELP_DIR).join(MCP_TOOLS_DIR)) {
+        let template = format!("{MCP_TOOLS_DIR}/{name}");
+        render_page(&env, &template, &context, &dir.join(&name));
     }
 }
 

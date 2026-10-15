@@ -28,16 +28,30 @@ command, named for its path below `snouty` with `_` between the parts:
 
 - `build.rs` renders each template with
   [minijinja](https://docs.rs/minijinja) two times: for the CLI, with `cli`
-  true and `mcp` false, and for MCP, with `cli` false and `mcp` true.
-  `src/help.rs` embeds the renders. A `HelpPage` variant names each page.
+  true and `mcp` false, and for the MCP `tool_help` tool, with `cli` false
+  and `mcp` true. `src/help.rs` embeds the renders. A `HelpPage` variant names
+  each page.
+- `help/mcp_tools/` holds the short description of each MCP tool, which
+  `tools/list` sends. Every listed description is sent on each request, so
+  keep it under 1 KiB (`mcp_tool_descriptions_are_short` checks this). Open
+  with what the tool does and when to use it. Name the tool to use instead.
+  Give the param formats, the output shape, and an example for any syntax.
+  When the description leaves out details, end it with
+  `More: tool_help {"tool": "<name>"}`.
 - A template error or an undefined variable fails `cargo build`, and the
   error names the file.
 - Put text that two or more pages share in `help/fragments/`, and add it with
   `{% include "fragments/<name>.txt" %}`.
+- Put text that only a CLI user needs, such as examples, `--json`, and human
+  output, in `{% if cli %}`. An MCP tool has no flags and no human output, so
+  its help tells the agent how to set the params and how to read the result.
+  `mcp_help_is_cli_free` fails when an MCP text names a flag, a `snouty`
+  command, or human output.
 - Whitespace: a line that holds only a block tag (`{% if %}`, `{% else %}`,
   `{% endif %}`) disappears from the render. An `{% include %}` line becomes
   the lines of the included file. The final newline of a page is removed.
-- `tests/fixtures/help/cli/` holds one snapshot of each CLI render. After you
+- `tests/fixtures/help/cli/`, `tests/fixtures/help/mcp/` and
+  `tests/fixtures/help/mcp_tools/` hold one snapshot of each render. After you
   change a template, bless the snapshots and read the fixture diff:
 
   ```

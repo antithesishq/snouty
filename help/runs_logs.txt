@@ -10,6 +10,7 @@ the virtual time at which the event was emitted on its timeline. Antithesis
 virtualizes the clock, so vtime can jump forward by any amount, but it never
 goes backward. vtime orders events only within one timeline.
 
+{% if cli %}
 INPUT_HASH identifies the timeline: the hash of every input Antithesis sent
 from the root to that point. Logs stream from the root (or --begin-vtime) to
 the timeline's current end; a run in progress can extend the timeline, so
@@ -24,3 +25,18 @@ each in their own concise form.
 Add --json for machine-readable output. Each event prints as one JSON object
 on its own line:
   snouty --json runs logs <run_id> <hash> | jq -r .moment.vtime
+{% else %}
+input_hash identifies the timeline: the hash of every input Antithesis sent
+from the root to that point. Give it as a string, exactly as other tools
+return it. Logs start at the root (or at begin_vtime) and end at the
+timeline's current end; a run in progress can extend the timeline, so the
+same input_hash can return more logs later. Give vtime to end the logs at
+that moment instead.
+
+Returns one JSON object per event, one per line. Each event has a moment
+object with input_hash and vtime, and vtime is an exact JSON number. Log
+output is in output_text, and source tells which container and stream
+emitted it. Other event shapes (SDK assertions in antithesis_assert, faults
+in fault) have their own keys. active_faults lists the faults that are
+active at the event.
+{% endif %}

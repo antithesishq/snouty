@@ -1,0 +1,19 @@
+Show a run's metadata: id, status, timestamps, launcher, and description.
+
+Returns one JSON object. The keys include run_id, status, created_at,
+started_at, completed_at, launcher, description, links and parameters.
+links.triage_report is the URL of the triage report.
+
+parameters holds the parameters the run was launched with. Two values report
+time and they mean different things. parameters["antithesis.duration"] is
+the workload length requested at launch, in minutes. The wall-clock time
+from started_at to completed_at also spans provisioning, setup and teardown,
+so the two values can be different. parameters["antithesis.source"] is the
+source the run was launched from, when the launcher recorded one. The keys
+that start with "attrs." are user-defined attributes.
+
+An incomplete run also has failure_moment, an object with input_hash and
+vtime, and failure_reason when the run reports one. Pass the input_hash and
+vtime of failure_moment to the runs_logs tool to read the logs up to the
+failure. For a timed-out or killed run, failure_moment can be a placeholder
+with input_hash "0" and vtime 0. That moment has no logs.

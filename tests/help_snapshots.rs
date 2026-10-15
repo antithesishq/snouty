@@ -1,12 +1,14 @@
-//! Snapshot tests for every command's long help. A change to a help page must
-//! show up as a fixture diff. Run with `SNOUTY_BLESS=1` to rewrite the
-//! fixtures.
+//! Snapshot tests for every command's long help and every MCP tool text. A
+//! change to a help page must show up as a fixture diff. Run with
+//! `SNOUTY_BLESS=1` to rewrite the fixtures.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use clap::CommandFactory;
 use snouty::cli::Cli;
+use snouty::help::Target;
+use snouty::mcp::ToolName;
 
 const BLESS_ENV: &str = "SNOUTY_BLESS";
 
@@ -89,4 +91,69 @@ fn cli_long_help_matches_fixtures() {
     let mut pages = BTreeMap::new();
     collect(&Cli::command(), "", &mut pages);
     check_fixtures("cli", &pages);
+}
+
+#[test]
+fn mcp_tool_help_matches_fixtures() {
+    let pages = ToolName::ALL
+        .into_iter()
+        .filter_map(|tool| Some((tool.to_string(), tool.page()?.text(Target::Mcp).to_owned())))
+        .collect();
+    check_fixtures("mcp", &pages);
+}
+
+#[test]
+fn mcp_tool_descriptions_match_fixtures() {
+    let pages = ToolName::ALL
+        .into_iter()
+        .map(|tool| (tool.to_string(), tool.description().to_owned()))
+        .collect();
+    check_fixtures("mcp_tools", &pages);
+}
+
+/// The MCP texts of each tool: its description and its full help.
+fn mcp_texts(tool: ToolName) -> impl Iterator<Item = &'static str> {
+    std::iter::once(tool.description()).chain(tool.page().map(|page| page.text(Target::Mcp)))
+}
+
+/// An MCP tool text tells an agent how to call the tool and read its JSON.
+/// It must not document flags, command lines, or human output.
+/// `snouty login` is the exception: the user runs it to store credentials.
+#[test]
+fn mcp_help_is_cli_free() {
+    const FORBIDDEN: [&str; 3] = ["--", "snouty ", "human"];
+    for tool in ToolName::ALL {
+        for text in mcp_texts(tool) {
+            let text = text.replace("`snouty login`", "");
+            for word in FORBIDDEN {
+                assert!(
+                    !text.contains(word),
+                    "MCP help for {tool} contains {word:?}"
+                );
+            }
+        }
+    }
+}
+
+/// Clients cap a tool description at 1 KiB, and every listed description
+/// is sent on each request.
+#[test]
+fn mcp_tool_descriptions_are_short() {
+    const MAX_BYTES: usize = 1024;
+    for tool in ToolName::ALL {
+        let len = tool.description().len();
+        assert!(len <= MAX_BYTES, "{tool} description is {len} bytes");
+    }
+}
+
+/// A description that points to tool_help names its own tool, so the agent
+/// gets the right page.
+#[test]
+fn mcp_tool_descriptions_point_to_their_own_help() {
+    let pointer = regex::Regex::new(r#"tool_help \{"tool": "(\w+)"\}"#).unwrap();
+    for tool in ToolName::ALL {
+        for found in pointer.captures_iter(tool.description()) {
+            assert_eq!(&found[1], tool.to_string(), "{tool} points to other help");
+        }
+    }
 }

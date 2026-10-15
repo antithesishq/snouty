@@ -1067,9 +1067,9 @@ Each table is headed by its group; columns are STATUS, EXAMPLES (✓/✗), NAME
 counterexample count (✗) when a property has counterexamples: 0/186k is 0
 examples and 186k counterexamples.
 
-Narrow with --name and/or --group. Both are case-insensitive substring matches against the relevant fields. Add --detail
-to expand the matches into their examples and counter-example moments instead
-of the table.
+Narrow with --name and/or --group. Both are case-insensitive substring matches
+against the relevant fields. Add --detail to expand the matches into their
+examples and counter-example moments instead of the table.
 
 Examples:
   snouty runs properties <run_id> --failing

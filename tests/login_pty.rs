@@ -68,20 +68,16 @@ fn start_login() -> (tempfile::TempDir, OsSession) {
 /// As [`start_login`], with each `(path, contents)` in `seed` written under the
 /// temp `$HOME` first — the pre-existing state a fresh login would not have.
 fn start_login_with(seed: &[(&str, &str)]) -> (tempfile::TempDir, OsSession) {
-    start_login_with_env(seed, &[])
-}
-
-/// As [`start_login_with`], with each `(name, value)` in `env` also set for
-/// the child.
-fn start_login_with_env(
-    seed: &[(&str, &str)],
-    env: &[(&str, &str)],
-) -> (tempfile::TempDir, OsSession) {
-    spawn_login(seed, env, Stdout::Pty)
+    spawn_login(Login {
+        seed,
+        ..Login::default()
+    })
 }
 
 /// Where the child's stdout goes.
+#[derive(Default)]
 enum Stdout {
+    #[default]
     Pty,
     /// The file [`STDOUT_FILE`] under the temp `$HOME`. stdin and stderr stay on
     /// the PTY.
@@ -90,21 +86,30 @@ enum Stdout {
 
 const STDOUT_FILE: &str = "stdout.txt";
 
-fn spawn_login(
-    seed: &[(&str, &str)],
-    env: &[(&str, &str)],
+/// How [`spawn_login`] runs `snouty login --tenant … --repository …`.
+#[derive(Default)]
+struct Login<'a> {
+    /// Each `(path, contents)` is written under the temp `$HOME` first.
+    seed: &'a [(&'a str, &'a str)],
+    /// Without it, a mock backend answers the `/auth/cli/config` probe with
+    /// [`OAUTH_DISABLED`].
+    base_url: Option<&'a str>,
+    /// Each `(name, value)` is set for the child.
+    env: &'a [(&'a str, &'a str)],
     stdout: Stdout,
-) -> (tempfile::TempDir, OsSession) {
+    args: &'a [&'a str],
+}
+
+fn spawn_login(login: Login) -> (tempfile::TempDir, OsSession) {
     let home = tempfile::TempDir::new().expect("temp HOME");
-    for (path, contents) in seed {
+    for (path, contents) in login.seed {
         let path = home.path().join(path);
         std::fs::create_dir_all(path.parent().expect("seed path has a parent"))
             .expect("create the seed directory");
         std::fs::write(path, contents).expect("write the seed file");
     }
-    let base_url = support::start_mock_server(OAUTH_DISABLED, 200);
 
-    let mut command = match stdout {
+    let mut command = match login.stdout {
         Stdout::Pty => PtyCommand::new(r#"exec "$0" "$@""#),
         Stdout::File => PtyCommand::new(&format!(r#"exec "$0" "$@" > "$HOME/{STDOUT_FILE}""#)),
     };
@@ -116,14 +121,21 @@ fn spawn_login(
             "--repository",
             "pty-repo",
         ])
+        .args(login.args)
         .env_clear()
         .env("HOME", home.path())
         .env("TERM", "xterm-256color")
-        .env("ANTITHESIS_BASE_URL", base_url)
+        .env(
+            "ANTITHESIS_BASE_URL",
+            login.base_url.map_or_else(
+                || support::start_mock_server(OAUTH_DISABLED, 200),
+                str::to_owned,
+            ),
+        )
         // Force file-based credential storage so a macOS run doesn't touch
         // the real keychain.
         .env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1")
-        .envs(env.iter().copied());
+        .envs(login.env.iter().copied());
 
     let mut session = command.spawn(PTY_COLS, 24);
     session.set_expect_timeout(Some(EXPECT_TIMEOUT));
@@ -405,13 +417,13 @@ fn an_api_key_that_replaces_a_stored_password_says_so() {
 /// so the summary does not claim to replace it.
 #[test]
 fn an_api_key_does_not_claim_to_replace_a_password_from_the_environment() {
-    let (_home, mut session) = start_login_with_env(
-        &[],
-        &[
+    let (_home, mut session) = spawn_login(Login {
+        env: &[
             ("ANTITHESIS_USERNAME", "puser"),
             ("ANTITHESIS_PASSWORD", "pty-pass"),
         ],
-    );
+        ..Login::default()
+    });
     expect(&mut session, "Please enter your API Key");
     send(&mut session, "sk-pty-key-123\r");
     let seen = finish(session);
@@ -424,8 +436,11 @@ fn an_api_key_does_not_claim_to_replace_a_password_from_the_environment() {
 /// lines, because stdout is not a terminal.
 #[test]
 fn a_redirected_summary_keeps_whole_lines() {
-    let (home, mut session) =
-        spawn_login(&[(CREDENTIALS_FILE, STORED_PASSWORD)], &[], Stdout::File);
+    let (home, mut session) = spawn_login(Login {
+        seed: &[(CREDENTIALS_FILE, STORED_PASSWORD)],
+        stdout: Stdout::File,
+        ..Login::default()
+    });
     expect(&mut session, "Please enter your API Key");
     send(&mut session, "sk-pty-key-123\r");
     expect(&mut session, REPLACE_PASSWORD);
@@ -464,5 +479,180 @@ fn esc_at_the_api_key_prompt_skips_credential_storage() {
     assert!(
         !home.path().join(CREDENTIALS_FILE).exists(),
         "Esc must write no credentials file"
+    );
+}
+
+/// When the OAuth configuration probe gets no response, login offers only an
+/// API key, and `--verbose` says why the probe failed.
+#[test]
+fn verbose_logs_why_the_oauth_probe_failed() {
+    // A port that refuses connections: bound, then released.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a port");
+    let refused = format!("http://{}", listener.local_addr().expect("local address"));
+    drop(listener);
+    let (_home, mut session) = spawn_login(Login {
+        base_url: Some(&refused),
+        args: &["--verbose"],
+        ..Login::default()
+    });
+
+    expect(&mut session, &format!("> GET {refused}/auth/cli/config"));
+    expect(&mut session, "* request failed: ");
+    expect(&mut session, "Please enter your API Key");
+    send(&mut session, "\x1b");
+    finish(session);
+}
+
+/// `--verbose` logs the three OAuth requests of a single sign-on to stderr,
+/// and no token, code, verifier, or state reaches the log or stdout.
+///
+/// Linux only: the macOS browser opener has a fixed path, so the sign-in would
+/// open a real browser. On Linux, a `PATH` with no opener on it stops that.
+#[cfg(target_os = "linux")]
+#[test]
+fn verbose_logs_the_oauth_requests_without_secrets() {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
+    use serde_json::{Value, json};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const ACCESS_TOKEN: &str = "pty-access-token";
+    const REFRESH_TOKEN: &str = "pty-refresh-token";
+    const AUTH_CODE: &str = "pty-auth-code";
+    const FLOW_TOKEN: &str = "pty-flow-token";
+
+    // wiremock serves from its own thread. The runtime only mounts the mocks
+    // and reads the received requests.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a tokio runtime");
+    let tenant = rt.block_on(async {
+        let tenant = MockServer::start().await;
+        for (verb, route, body) in [
+            (
+                "GET",
+                "/auth/cli/config",
+                json!({"port_strategy": "ephemeral"}),
+            ),
+            (
+                "POST",
+                "/auth/cli/login",
+                json!({"location": "https://idp.example.com/authorize"}),
+            ),
+            (
+                "POST",
+                "/auth/cli/token",
+                json!({"antithesis_token": ACCESS_TOKEN, "refresh_token": REFRESH_TOKEN}),
+            ),
+        ] {
+            Mock::given(method(verb))
+                .and(path(route))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .mount(&tenant)
+                .await;
+        }
+        tenant
+    });
+    let received = |route: &str| {
+        rt.block_on(tenant.received_requests())
+            .expect("wiremock records requests")
+            .into_iter()
+            .find(|request| request.url.path() == route)
+    };
+
+    let url = tenant.uri();
+    let no_opener = tempfile::TempDir::new().expect("an empty PATH directory");
+    let no_opener = no_opener.path().to_str().expect("a UTF-8 temp path");
+    let (home, mut session) = spawn_login(Login {
+        base_url: Some(&url),
+        env: &[("PATH", no_opener)],
+        stdout: Stdout::File,
+        args: &["--verbose"],
+        ..Login::default()
+    });
+
+    let mut stderr = expect(&mut session, "What kind of credentials");
+    // Single sign-on is the default.
+    send(&mut session, "\r");
+    stderr += &expect(&mut session, &format!("> POST {url}/auth/cli/login"));
+    // wiremock records a request before it answers, so the login request is
+    // readable once "< 200 OK" shows.
+    stderr += &expect(&mut session, "< 200 OK");
+    let login: Value = received("/auth/cli/login")
+        .expect("a login request")
+        .body_json()
+        .expect("a JSON login body");
+    let port = login["port"]
+        .as_u64()
+        .and_then(|port| u16::try_from(port).ok())
+        .expect("a port number");
+
+    let mut callback = TcpStream::connect(("127.0.0.1", port)).expect("reach the callback");
+    write!(
+        callback,
+        "GET /callback?code={AUTH_CODE}&state={FLOW_TOKEN} HTTP/1.1\r\n\
+         Host: localhost\r\nConnection: close\r\n\r\n"
+    )
+    .expect("send the callback");
+    // snouty can exit before it writes the whole result page, so the page
+    // itself is not checked.
+    let _ = callback.read_to_end(&mut Vec::new());
+
+    let rest = Expect::expect(&mut session, expectrl::Eof).expect("read the PTY to its end");
+    stderr += &String::from_utf8_lossy(rest.as_bytes());
+    let status = session.get_process().wait().expect("wait for snouty login");
+    let stdout = std::fs::read_to_string(home.path().join(STDOUT_FILE)).expect("read stdout");
+
+    // Check for leaks first, because the assertions below print stderr.
+    let cli_state = login["cli_state"].as_str().expect("a cli_state");
+    let mut checked = vec![
+        ("access token", ACCESS_TOKEN.to_owned()),
+        ("refresh token", REFRESH_TOKEN.to_owned()),
+        ("authorization code", AUTH_CODE.to_owned()),
+        ("flow token", FLOW_TOKEN.to_owned()),
+        ("CSRF state", cli_state.to_owned()),
+    ];
+    // The token exchange sends `base64url(code:verifier)` as its bearer token.
+    let bearer = received("/auth/cli/token").and_then(|request| {
+        let value = request.headers.get("authorization")?.to_str().ok()?;
+        Some(value.strip_prefix("Bearer ")?.to_owned())
+    });
+    if let Some(bearer) = bearer {
+        let decoded = BASE64_URL_SAFE_NO_PAD.decode(&bearer).expect("base64url");
+        // A `FromUtf8Error` prints its bytes, so drop it to keep the verifier
+        // out of the panic.
+        let code_verifier = String::from_utf8(decoded)
+            .ok()
+            .and_then(|decoded| Some(decoded.strip_prefix(&format!("{AUTH_CODE}:"))?.to_owned()))
+            .unwrap_or_else(|| {
+                panic!("the token exchange credential is not the code, then the verifier")
+            });
+        checked.push(("PKCE verifier", code_verifier));
+        checked.push(("token exchange credential", bearer));
+    }
+    for (label, value) in &checked {
+        assert!(!stderr.contains(value), "the {label} leaked into stderr");
+        assert!(!stdout.contains(value), "the {label} leaked into stdout");
+    }
+
+    assert!(
+        matches!(status, WaitStatus::Exited(_, 0)),
+        "login failed: {status:?}\n{stderr}"
+    );
+    for request in [
+        format!("> GET {url}/auth/cli/config"),
+        format!("> POST {url}/auth/cli/token"),
+        "> authorization: Bearer [redacted]".to_owned(),
+    ] {
+        assert!(stderr.contains(&request), "no {request:?} in:\n{stderr}");
+    }
+    assert_eq!(stderr.matches("> <body withheld>").count(), 2, "{stderr}");
+    assert!(
+        credentials(home.path()).contains(&format!(r#"antithesis_token = "{ACCESS_TOKEN}""#)),
+        "the credentials file does not hold the issued access token"
     );
 }

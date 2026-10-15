@@ -3575,6 +3575,26 @@ def build_tty_stories() -> list[Story]:
                 _CREDS: _SEED_PASSWORD_CREDS_TOML,
             },
         ),
+        _tty_story(
+            "login-verbose",
+            "See the requests login sends",
+            "I want to see which requests login sends to the tenant and what comes back, to "
+            "debug a sign-in problem.",
+            ["--verbose", "login"],
+            (
+                (_ASK_TENANT, ENTER),
+                (_ASK_REPO, ENTER),
+                (_ASK_KEY, _FAKE_KEY + ENTER),
+            ),
+            tty_persisted(
+                # The live tenant decides the probe's outcome, so only the
+                # request is checked.
+                prompts=(f"> GET https://{_TENANT}.antithesis.com/auth/cli/config",),
+                files=((_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_KEY}"')),),
+                secrets_absent=(_FAKE_KEY,),
+            ),
+            seed_files={_SETTINGS: _SEED_SETTINGS_TOML},
+        ),
     ]
 
 

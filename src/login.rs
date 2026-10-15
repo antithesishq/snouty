@@ -29,6 +29,7 @@ use crate::{
     auth::{AuthenticationInfo, PersistableCredentials, is_blank_api_key, persist},
     env,
     error::user_error,
+    render::OutputOptions,
     settings::{
         ANTITHESIS_PROFILE_ENV_VAR_NAME, Settings, update_settings_in_global_file,
         validate_tenant_host,
@@ -127,17 +128,20 @@ impl Prompter for InquirePrompter {
     }
 }
 
+/// With `output.verbose`, login logs its OAuth requests to stderr.
 pub async fn cmd_login(
     tenant: Option<String>,
     repository: Option<String>,
     profile: Option<&str>,
     current_settings: &Settings,
+    output: OutputOptions,
 ) -> Result<()> {
     do_cmd_login(
         tenant,
         repository,
         profile,
         current_settings,
+        output,
         &InquirePrompter,
     )
     .await
@@ -148,6 +152,7 @@ async fn do_cmd_login(
     repository: Option<String>,
     profile: Option<&str>,
     current_settings: &Settings,
+    OutputOptions { verbose, .. }: OutputOptions,
     prompter: &dyn Prompter,
 ) -> Result<()> {
     let profile_to_use = profile
@@ -184,7 +189,8 @@ async fn do_cmd_login(
     // The kind of credential login wrote, and where.
     let written = if prompter.is_interactive() {
         let stored_value = stored.as_ref().map(AttributedValue::value);
-        match prompt_for_auth(prompter, current_settings, &tenant_to_use, stored_value).await? {
+        let client = HttpClient::new(current_settings, verbose)?;
+        match prompt_for_auth(prompter, &client, &tenant_to_use, stored_value).await? {
             Some(credentials) => {
                 let kind = match &credentials {
                     PersistableCredentials::ApiKey { .. } => "API key",
@@ -339,16 +345,14 @@ impl std::fmt::Display for AuthSetupType {
 /// `stored`, or declines to replace it.
 async fn prompt_for_auth(
     prompter: &dyn Prompter,
-    settings: &Settings,
+    client: &HttpClient,
     tenant: &str,
     stored: Option<&AuthenticationInfo>,
 ) -> Result<Option<PersistableCredentials>> {
     // ANTITHESIS_BASE_URL trumps the supplied tenant because the former is used by spec tests
     let base_url = env::var(settings::ANTITHESIS_BASE_URL_VAR_NAME)?
         .unwrap_or_else(|| format!("https://{tenant}.antithesis.com"));
-    // TODO: pass `--verbose` through to here once `cmd_login` receives it.
-    let client = HttpClient::new(settings, false)?;
-    let oauth_config = fetch_cli_config(&client, &base_url).await;
+    let oauth_config = fetch_cli_config(client, &base_url).await;
 
     let oauth_offered = oauth_config
         .as_ref()
@@ -399,7 +403,7 @@ async fn prompt_for_auth(
         {
             Ok(None)
         }
-        Some(AuthSetupType::OAuth) => complete_oauth_login(&client, &base_url, &oauth_config?)
+        Some(AuthSetupType::OAuth) => complete_oauth_login(client, &base_url, &oauth_config?)
             .await
             .map(Some),
     }
@@ -1316,6 +1320,23 @@ mod tests {
         format!("http://{addr}")
     }
 
+    /// [`do_cmd_login`] without `--tenant`, `--repository`, or `--verbose`.
+    async fn login(
+        profile: Option<&str>,
+        settings: &Settings,
+        prompter: &dyn Prompter,
+    ) -> Result<()> {
+        do_cmd_login(
+            None,
+            None,
+            profile,
+            settings,
+            OutputOptions::default(),
+            prompter,
+        )
+        .await
+    }
+
     /// A fresh login with no flags prompts for tenant, repository, and credential
     /// kind, then persists an API key.
     #[tokio::test]
@@ -1328,7 +1349,7 @@ mod tests {
             .secret("sk-test-key")
             .build();
 
-        do_cmd_login(None, None, None, &settings, &prompter).await?;
+        login(None, &settings, &prompter).await?;
 
         let stored = env.settings();
         assert!(stored.contains(r#"tenant = "mytenant""#), "{stored}");
@@ -1352,6 +1373,7 @@ mod tests {
             Some("myrepo".to_owned()),
             None,
             &settings,
+            OutputOptions::default(),
             &prompter,
         )
         .await?;
@@ -1391,7 +1413,7 @@ mod tests {
             .confirm(true)
             .build();
 
-        do_cmd_login(None, None, None, &settings, &prompter).await?;
+        login(None, &settings, &prompter).await?;
 
         assert!(
             prompter
@@ -1420,7 +1442,7 @@ mod tests {
             .confirm(false)
             .build();
 
-        do_cmd_login(None, None, None, &settings, &prompter).await?;
+        login(None, &settings, &prompter).await?;
 
         assert_eq!(env.credentials(), STORED_PASSWORD);
         assert!(env.settings().contains(r#"tenant = "mytenant""#));
@@ -1440,7 +1462,7 @@ mod tests {
             .secret("pk-secret")
             .build();
 
-        do_cmd_login(None, None, Some("prod"), &settings, &prompter).await?;
+        login(Some("prod"), &settings, &prompter).await?;
 
         let creds = env.credentials();
         assert!(creds.contains("ppass"), "{creds}");
@@ -1459,7 +1481,7 @@ mod tests {
             .secret("pk-secret")
             .build();
 
-        do_cmd_login(None, None, Some("prod"), &settings, &prompter).await?;
+        login(Some("prod"), &settings, &prompter).await?;
 
         let stored = env.settings();
         assert!(stored.contains("[profile.prod]"), "{stored}");
@@ -1476,7 +1498,7 @@ mod tests {
             .input("underscores_are_not_allowed")
             .build();
 
-        let result = do_cmd_login(None, None, None, &settings, &prompter).await;
+        let result = login(None, &settings, &prompter).await;
 
         let err = result.expect_err("an invalid tenant must fail the login");
         assert!(
@@ -1505,7 +1527,7 @@ mod tests {
             .secret("sk-test-key")
             .build();
 
-        do_cmd_login(None, None, None, &settings, &prompter).await?;
+        login(None, &settings, &prompter).await?;
 
         let (menu, default) = &prompter.selects()[0];
         assert_eq!(
@@ -1534,7 +1556,7 @@ mod tests {
             .secret("")
             .build();
 
-        do_cmd_login(None, None, None, &settings, &prompter).await?;
+        login(None, &settings, &prompter).await?;
 
         let (menu, default) = &prompter.selects()[0];
         assert_eq!(menu[*default], API_KEY);
@@ -1557,7 +1579,7 @@ mod tests {
             .secret("") // hit enter
             .build();
 
-        do_cmd_login(None, None, None, &settings, &prompter).await?;
+        login(None, &settings, &prompter).await?;
 
         assert_eq!(
             prompter.secret_hints(),
@@ -1587,7 +1609,7 @@ mod tests {
             .secret("antithesis_api_key_v2_STORED_9Pgw")
             .build();
 
-        do_cmd_login(None, None, None, &settings, &prompter).await?;
+        login(None, &settings, &prompter).await?;
 
         assert_eq!(env.credentials(), seeded);
         Ok(())
@@ -1608,7 +1630,7 @@ mod tests {
             .secret(" antithesis_api_key_v2_STORED_9Pgw\n")
             .build();
 
-        do_cmd_login(None, None, None, &settings, &prompter).await?;
+        login(None, &settings, &prompter).await?;
 
         assert_eq!(env.credentials(), seeded);
         Ok(())
@@ -1630,7 +1652,7 @@ mod tests {
             .secret("pk-secret")
             .build();
 
-        do_cmd_login(None, None, Some("prod"), &settings, &prompter).await?;
+        login(Some("prod"), &settings, &prompter).await?;
 
         assert_eq!(prompter.secret_hints(), vec![None]);
         let creds = env.credentials();
@@ -1655,7 +1677,7 @@ mod tests {
             .confirm(true)
             .build();
 
-        do_cmd_login(None, None, None, &settings, &prompter).await?;
+        login(None, &settings, &prompter).await?;
 
         let creds = env.credentials();
         assert!(
@@ -1681,7 +1703,7 @@ mod tests {
             .secret("sk-test-key")
             .build();
 
-        do_cmd_login(None, None, None, &settings, &prompter).await?;
+        login(None, &settings, &prompter).await?;
 
         assert_eq!(prompter.secret_hints(), vec![None]);
         let creds = env.credentials();
@@ -1738,7 +1760,7 @@ mod tests {
             .confirm(false)
             .build();
 
-        do_cmd_login(None, None, None, &settings, &prompter).await?;
+        login(None, &settings, &prompter).await?;
 
         assert_eq!(
             prompter.prompts().last().map(String::as_str),
@@ -1763,7 +1785,7 @@ mod tests {
             .secret("sk-typed-key")
             .build();
 
-        let result = do_cmd_login(None, None, None, &settings, &prompter).await;
+        let result = login(None, &settings, &prompter).await;
         // SAFETY: as above.
         unsafe { std::env::remove_var("ANTITHESIS_API_KEY") };
         result?;
@@ -1788,7 +1810,7 @@ mod tests {
             .skip_secret()
             .build();
 
-        do_cmd_login(None, None, None, &settings, &prompter).await?;
+        login(None, &settings, &prompter).await?;
 
         assert!(env.settings().contains(r#"tenant = "mytenant""#));
         assert!(
@@ -1809,7 +1831,7 @@ mod tests {
             .skip_select()
             .build();
 
-        do_cmd_login(None, None, None, &settings, &prompter).await?;
+        login(None, &settings, &prompter).await?;
 
         assert!(!env.config_dir().join("credentials.toml").exists());
         Ok(())
@@ -1932,7 +1954,7 @@ mod tests {
             .input("registry.example.com/acme/app")
             .secret("sk-KEYCHAIN-TEST")
             .build();
-        do_cmd_login(None, None, None, &settings, &prompter).await?;
+        login(None, &settings, &prompter).await?;
 
         assert!(
             !env.config_dir().join("credentials.toml").exists(),
@@ -1979,7 +2001,7 @@ mod tests {
             .input("registry.example.com/acme/app")
             .secret("sk-PROD-KEY")
             .build();
-        do_cmd_login(None, None, Some("prod"), &prof_settings, &prof_prompter).await?;
+        login(Some("prod"), &prof_settings, &prof_prompter).await?;
         assert!(
             security(
                 &home,

@@ -18,6 +18,17 @@ pub fn source_error<'a, T: std::error::Error + 'static>(
     None
 }
 
+/// The last error in `err`'s source chain.
+pub fn root_cause<'a>(
+    err: &'a (dyn std::error::Error + 'static),
+) -> &'a (dyn std::error::Error + 'static) {
+    let mut cause = err;
+    while let Some(source) = cause.source() {
+        cause = source;
+    }
+    cause
+}
+
 /// Recursively copy the contents of `src` into `dst` (which must already exist).
 ///
 /// Symlinks are recreated as-is (not dereferenced), so the copied tree is

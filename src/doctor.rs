@@ -92,7 +92,7 @@ fn print_notes(notes: &[Note]) {
 
 /// One health check: local tooling, settings validity, authentication, and
 /// API connectivity. The headline `message` states the bare fact; the `notes`
-/// carry explanations and how-tos. `name` is a stable snake_case key for `--json`.
+/// carry explanations and how-tos. `name` is a stable snake_case `--json` key.
 /// Checks own all of doctor's pass/warn/fail semantics — the settings table is
 /// purely informational.
 #[derive(Serialize)]

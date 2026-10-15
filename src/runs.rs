@@ -573,7 +573,7 @@ fn over_schedule_warning(run: &RunDetail, now: DateTime<Utc>) -> Option<String> 
 
 /// Filters applied to `runs properties`. `status` is served by the API; `name`
 /// and `group` are case-insensitive substring matches applied client-side.
-/// `name` matches [`property_display_name`], the name that the NAME column shows.
+/// `name` matches [`property_display_name`].
 struct PropertyFilter<'a> {
     status: Option<PropertyStatus>,
     name: Option<&'a str>,

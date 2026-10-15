@@ -776,8 +776,7 @@ def _pick_completed_run(sn: Snouty) -> CompletedPick:
     last_reason = "no completed run found"
     for r in runs:
         run = r["run_id"]
-        # The pickers pass names to `--name`, which matches the name that snouty
-        # shows: the API name without its `<group>: ` prefix.
+        # `--name` matches the shown name, which drops the `<group>: ` prefix.
         props = [
             {**p, "name": p["name"].removeprefix(f"{g}: ")} if (g := p.get("group")) else p
             for p in sn.json_lines(["runs", "properties", run])
@@ -911,9 +910,8 @@ def _render_property(sn: Snouty, run: str, name: str) -> str:
 
 
 def _matches_only_itself(prop: dict, props: list[dict]) -> bool:
-    """Whether `--name <prop's name>` selects only this property. `--name` is a
-    substring filter, and two groups can hold the same shown name, so a name can
-    also select other properties, and the --detail story would expand them too."""
+    """Whether `--name <prop's name>` selects only this property. `--name` matches
+    a substring, and two groups can hold the same shown name."""
     name = prop["name"].lower()
     return sum(name in p["name"].lower() for p in props) == 1
 
@@ -982,8 +980,8 @@ def _has_real_value(value) -> bool:
 def _pick_nonevent_property(sn: Snouty, run: str, props: list[dict]) -> str:
     """Pick a non-event property that renders a real example value. We read the
     example arrays straight from the JSON and only render-probe the chosen one."""
-    # An event sibling that the same `--name` selects would add moment rows to
-    # the probe and make us think we'd misclassified.
+    # If `--name` also selects an event property, its moment rows make the probe
+    # reject this one.
     candidates = []
     for p in props:
         if p.get("is_event") is not False or not _matches_only_itself(p, props):

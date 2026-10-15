@@ -29,17 +29,36 @@ command, named for its path below `snouty` with `_` between the parts:
 - Write each paragraph on one line. `HelpPage::cli` wraps the paragraphs when
   the help prints: to the terminal width, up to 100 columns, and to 80
   columns off a terminal. Indent a line that must keep its layout, such as an
-  example command or a table row; an indented line never wraps.
-- `build.rs` renders each template with [minijinja](https://docs.rs/minijinja),
-  and `src/help.rs` embeds the renders. A `HelpPage` variant names each page.
+  example command or a table row; an indented line never wraps. MCP text is
+  not wrapped.
+- `build.rs` renders each template with [minijinja](https://docs.rs/minijinja)
+  two times: for the CLI, with `cli` true and `mcp` false, and for the MCP
+  `tool_help` tool, with `cli` false and `mcp` true. `src/help.rs` embeds the
+  renders. A `HelpPage` variant names each page.
+- `help/mcp_tools/` holds the short description of each MCP tool, which
+  `tools/list` sends. Every listed description is sent on each request, so
+  keep it under 1 KiB (`mcp_tool_descriptions_are_short` checks this). Open
+  with what the tool does and when to use it. Name the tool to use instead.
+  Give the param formats, the output shape, and an example for any syntax.
+  When the description leaves out details, end it with
+  `More: tool_help {"tool": "<name>"}`.
 - A template error or an undefined variable fails `cargo build`, and the
   error names the file.
 - Put text that two or more pages share in `help/fragments/`, and add it with
   `{% include "fragments/<name>.txt" %}`. An `{% include %}` line becomes the
   lines of the included file. The final newline of a page is removed.
+- Put text that only a CLI user needs, such as examples, `--json`, and human
+  output, in `{% if cli %}`. An MCP tool has no flags and no human output, so
+  its help tells the agent how to set the params and how to read the result.
+  `mcp_help_is_cli_free` fails when an MCP text names a flag, a `snouty`
+  command, or human output. A line that holds only a block tag disappears
+  from the render. Inside a paragraph, keep the tags on the paragraph's line,
+  and end a tag at the end of a line with `+%}` so the line break stays.
 - `tests/help_snapshots.rs` keeps an [insta](https://insta.rs) snapshot of
-  every command's `--help` as it prints off a terminal, in
-  `tests/snapshots/help/`. After you change a template, a flag or a
+  every command's `--help` as it prints off a terminal in
+  `tests/snapshots/help/`, of each MCP page in `tests/snapshots/help/mcp/`,
+  and of each short MCP tool description in
+  `tests/snapshots/help/mcp_tools/`. After you change a template, a flag or a
   subcommand, review the snapshot diff with `cargo insta review`, or accept
   every change and read the diff in git:
 

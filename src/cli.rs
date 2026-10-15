@@ -1,4 +1,7 @@
+use std::fmt;
+use std::net::{IpAddr, Ipv4Addr};
 use std::num::NonZeroU64;
+use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
@@ -7,6 +10,11 @@ use crate::api::{
     PerformanceTier, RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SourceRunId,
     SourceSessionId,
 };
+use color_eyre::Section;
+use color_eyre::eyre::Report;
+
+use crate::error::user_error;
+use crate::features::{self, Feature};
 use crate::help::HelpPage;
 use crate::time::{BareUnit, HumanDuration, ParseDurationError};
 use crate::vtime::VTime;
@@ -15,7 +23,7 @@ use crate::vtime::VTime;
 /// error output. The generated enum offers no iteration, so this array is the
 /// source of truth; [`assert_run_statuses_complete`] forces an update here
 /// whenever the generated enum gains a variant.
-const ALL_RUN_STATUSES: [RunStatus; 6] = [
+pub(crate) const ALL_RUN_STATUSES: [RunStatus; 6] = [
     RunStatus::Starting,
     RunStatus::InProgress,
     RunStatus::Completed,
@@ -82,7 +90,7 @@ impl std::str::FromStr for KVPair {
 
 /// clap value parser for `--status` that keeps a friendly, enumerated error
 /// message (the generated `RunStatus::from_str` only says "invalid value").
-fn parse_run_status(value: &str) -> Result<RunStatus, String> {
+pub(crate) fn parse_run_status(value: &str) -> Result<RunStatus, String> {
     value.parse::<RunStatus>().map_err(|_| {
         let valid = ALL_RUN_STATUSES.map(|s| s.to_string()).join(", ");
         format!("invalid status: '{value}'\nvalid values: {valid}")
@@ -130,11 +138,16 @@ fn parse_exec_timeout(value: &str) -> Result<HumanDuration, String> {
 /// clap value parser for the event-search `--limit`: 1 to
 /// [`SEARCH_MAX_LIMIT`], so an out-of-range value fails before any request.
 fn parse_search_limit(value: &str) -> Result<NonZeroU64, String> {
-    value
-        .parse::<u64>()
-        .ok()
-        .filter(|limit| (1..=SEARCH_MAX_LIMIT).contains(limit))
-        .and_then(NonZeroU64::new)
+    // Text that is not a whole number gets the same error as a number out of
+    // range.
+    check_search_limit(value.parse().unwrap_or(0))
+}
+
+/// The range check of [`parse_search_limit`], shared with the MCP params,
+/// which get the limit as a JSON number.
+pub(crate) fn check_search_limit(limit: u64) -> Result<NonZeroU64, String> {
+    NonZeroU64::new(limit)
+        .filter(|limit| limit.get() <= SEARCH_MAX_LIMIT)
         .ok_or_else(|| format!("must be a whole number from 1 to {SEARCH_MAX_LIMIT}"))
 }
 
@@ -235,9 +248,103 @@ pub enum Commands {
         #[arg(long, value_parser = validate_non_empty)]
         repository: Option<String>,
     },
+
+    /// Serve snouty's run, docs and doctor commands to AI agents over MCP
+    // Gated: hidden while its feature is off, and refused by
+    // [`gated_command_error`].
+    #[command(
+        hide = !features::is_enabled(Feature::Mcp),
+        long_about = HelpPage::Mcp.cli()
+    )]
+    Mcp(McpArgs),
 }
 
-fn validate_non_empty(value: &str) -> Result<String, String> {
+/// The port `snouty mcp` listens on when `--port` names none.
+pub const DEFAULT_MCP_PORT: u16 = 8765;
+
+#[derive(Args, Debug)]
+pub struct McpArgs {
+    /// Serve one client over stdin and stdout instead of HTTP
+    #[arg(long, conflicts_with_all = ["host", "port", "allowed_hosts"])]
+    pub stdio: bool,
+
+    /// IP address to listen on
+    #[arg(long, default_value_t = IpAddr::V4(Ipv4Addr::LOCALHOST))]
+    pub host: IpAddr,
+
+    /// Port to listen on (0 picks a free port)
+    #[arg(long, default_value_t = DEFAULT_MCP_PORT)]
+    pub port: u16,
+
+    /// Also accept requests whose Host header is this value (repeatable).
+    /// Without a port, any port matches.
+    #[arg(long = "allowed-host", value_name = "HOST[:PORT]")]
+    pub allowed_hosts: Vec<AllowedHost>,
+}
+
+/// A Host header value that `snouty mcp` accepts: a host name or IP address,
+/// with an optional port.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AllowedHost(http::uri::Authority);
+
+impl FromStr for AllowedHost {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let authority: http::uri::Authority = value
+            .parse()
+            .map_err(|e| format!("not a valid host: {e}"))?;
+        // A Host header has no user info, so an entry with one never matches.
+        if authority.as_str().contains('@') {
+            return Err("a host must not contain '@'".to_owned());
+        }
+        if authority.host().is_empty() {
+            return Err("the host name is empty".to_owned());
+        }
+        // rmcp lets an entry with no port match every port, so a port that
+        // is empty or not a u16 must not become no port.
+        let has_port = authority.as_str().len() > authority.host().len();
+        if has_port && authority.port_u16().is_none() {
+            return Err("the port must be a number from 0 to 65535".to_owned());
+        }
+        Ok(AllowedHost(authority))
+    }
+}
+
+impl fmt::Display for AllowedHost {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// The number of results `docs search` returns when `--limit` names none.
+pub const DEFAULT_DOCS_SEARCH_LIMIT: usize = 10;
+
+/// Refuses a gated command while its feature is off. A hidden subcommand is
+/// still callable, so dispatch checks this first.
+pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Report> {
+    let (feature, path) = match command {
+        Commands::Mcp(_) => (Feature::Mcp, "snouty mcp"),
+        _ => return None,
+    };
+    if enabled.contains(&feature) {
+        return None;
+    }
+    Some(
+        user_error(format!(
+            "`{path}` is an unstable feature and is not enabled"
+        ))
+        .note(format!(
+            "enable it by setting {}={}",
+            features::UNSTABLE_FEATURES_VAR_NAME,
+            feature
+        ))
+        .note("an unstable feature can change or go away in any release")
+        .suggestion(format!("run `{path} --help` for what it does")),
+    )
+}
+
+pub(crate) fn validate_non_empty(value: &str) -> Result<String, String> {
     if value.trim().is_empty() {
         Err("Value may not be empty or whitespace".to_owned())
     } else {
@@ -255,7 +362,7 @@ pub enum DocsCommands {
         list: bool,
 
         /// Maximum number of results to return
-        #[arg(short = 'n', long, default_value = "10")]
+        #[arg(short = 'n', long, default_value_t = DEFAULT_DOCS_SEARCH_LIMIT)]
         limit: usize,
 
         /// Treat the query as a raw FTS5 expression (AND/OR/NOT/NEAR, "phrases",
@@ -788,6 +895,7 @@ impl Default for RunsListArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::help::Target;
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("args should parse")
@@ -1095,7 +1203,7 @@ mod tests {
         let (major, minor) = crate::api::MIN_SEARCH_RELEASE;
         let sentence = format!("tenant release {major}.{minor} or newer");
         for page in [HelpPage::RunsSearch, HelpPage::RunsEvents] {
-            assert!(page.text().contains(&sentence), "{page:?}");
+            assert!(page.text(Target::Cli).contains(&sentence), "{page:?}");
         }
     }
 
@@ -1103,9 +1211,13 @@ mod tests {
     /// [`event_set_dsl::VERBS`].
     #[test]
     fn search_long_about_names_every_verb() {
-        let about = HelpPage::RunsSearch.text();
+        let about = HelpPage::RunsSearch.text(Target::Cli);
         for verb in crate::event_set_dsl::VERBS {
             assert!(about.contains(verb), "missing verb {verb}");
+        }
+        let about = HelpPage::RunsSearch.text(Target::Mcp);
+        for verb in crate::event_set_dsl::VERBS {
+            assert!(about.contains(verb), "MCP: missing verb {verb}");
         }
     }
 
@@ -1115,7 +1227,14 @@ mod tests {
     /// never raises the subject.
     #[test]
     fn every_long_help_says_what_json_does() {
-        const NO_JSON: [&str; 5] = ["validate", "completions", "version", "update", "login"];
+        const NO_JSON: [&str; 6] = [
+            "validate",
+            "completions",
+            "version",
+            "update",
+            "login",
+            "mcp",
+        ];
 
         fn walk(command: &clap::Command) {
             for sub in command.get_subcommands() {
@@ -1134,5 +1253,54 @@ mod tests {
         }
 
         walk(&<Cli as clap::CommandFactory>::command());
+    }
+
+    #[test]
+    fn mcp_is_hidden_until_its_feature_is_on() {
+        let cli = <Cli as clap::CommandFactory>::command();
+        let mcp = cli.find_subcommand("mcp").expect("mcp is a command");
+        assert_eq!(mcp.is_hide_set(), !features::is_enabled(Feature::Mcp));
+    }
+
+    #[test]
+    fn mcp_is_refused_until_its_feature_is_on() {
+        let mcp = Cli::try_parse_from(["snouty", "mcp", "--stdio"])
+            .expect("args should parse")
+            .command;
+        let err = gated_command_error(&mcp, &[]).expect("mcp is gated");
+        assert!(format!("{err:?}").contains("SNOUTY_UNSTABLE_FEATURES=mcp"));
+        assert!(gated_command_error(&mcp, &[Feature::Mcp]).is_none());
+    }
+
+    #[hegel::test]
+    fn allowed_host_round_trips_and_has_no_user_info(tc: hegel::TestCase) {
+        let value = tc.draw(hegel::generators::text().alphabet("ab1.:@[]-"));
+        if let Ok(host) = value.parse::<AllowedHost>() {
+            assert!(!value.contains('@'), "accepted {value:?}");
+            assert_eq!(host.to_string(), value);
+            assert_eq!(host.to_string().parse::<AllowedHost>(), Ok(host));
+        }
+    }
+
+    #[test]
+    fn allowed_host_takes_a_name_with_an_optional_port() {
+        for value in [
+            "myhost.example",
+            "myhost.example:8765",
+            "[::1]:8765",
+            "10.0.0.1",
+        ] {
+            assert!(value.parse::<AllowedHost>().is_ok(), "{value}");
+        }
+        for value in [
+            "",
+            "user@myhost.example",
+            "http://myhost.example",
+            ":8765",
+            "myhost:99999",
+            "myhost:",
+        ] {
+            assert!(value.parse::<AllowedHost>().is_err(), "{value}");
+        }
     }
 }

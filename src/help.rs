@@ -1,5 +1,6 @@
-//! Long help text. build.rs renders each `help/*.txt` template, this module
-//! embeds the renders, and [`HelpPage::cli`] wraps a page for `--help`.
+//! Long help text. build.rs renders each `help/*.txt` template once per
+//! [`Target`], this module embeds the renders, and [`HelpPage::cli`] wraps a
+//! page for `--help`.
 
 use std::fmt;
 
@@ -12,6 +13,15 @@ const MAX_WIDTH: usize = 100;
 
 /// The width off a terminal. Pipes, files and tests get one fixed layout.
 const PIPE_WIDTH: usize = 80;
+
+/// Who reads a rendered help page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    /// The command's `--help`.
+    Cli,
+    /// The full help of an MCP tool, which `tool_help` returns.
+    Mcp,
+}
 
 /// Declares [`HelpPage`] with one row per page: the variant and the name of
 /// its template, `help/$name.txt`.
@@ -26,13 +36,18 @@ macro_rules! help_pages {
         impl HelpPage {
             pub const ALL: [HelpPage; [$($name),*].len()] = [$(HelpPage::$variant,)*];
 
-            /// The page as build.rs rendered it, with each paragraph on one
-            /// line.
-            pub fn text(self) -> &'static str {
-                match self {
-                    $(HelpPage::$variant => include_str!(concat!(
-                        env!("OUT_DIR"), "/help/", $name, ".txt"
-                    )),)*
+            /// The page as build.rs rendered it for `target`, with each
+            /// paragraph on one line.
+            pub fn text(self, target: Target) -> &'static str {
+                match (self, target) {
+                    $(
+                        (HelpPage::$variant, Target::Cli) => include_str!(concat!(
+                            env!("OUT_DIR"), "/help/cli/", $name, ".txt"
+                        )),
+                        (HelpPage::$variant, Target::Mcp) => include_str!(concat!(
+                            env!("OUT_DIR"), "/help/mcp/", $name, ".txt"
+                        )),
+                    )*
                 }
             }
         }
@@ -57,6 +72,7 @@ help_pages! {
     Update => "update",
     Docs => "docs",
     Login => "login",
+    Mcp => "mcp",
     DocsSearch => "docs_search",
     DocsTree => "docs_tree",
     DocsShow => "docs_show",
@@ -86,9 +102,9 @@ impl HelpPage {
         self.wrapped(width)
     }
 
-    /// The page with each paragraph wrapped to `width`.
+    /// The CLI page with each paragraph wrapped to `width`.
     pub fn wrapped(self, width: usize) -> String {
-        wrap_help(self.text(), width)
+        wrap_help(self.text(Target::Cli), width)
     }
 }
 

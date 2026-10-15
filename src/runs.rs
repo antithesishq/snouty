@@ -542,7 +542,7 @@ async fn wait_for_run(
             );
         }
         let reached = match until {
-            WaitUntil::Ready => run.is_ready() || run.status.is_terminal(),
+            WaitUntil::Ready => run.is_ready_or_terminal(),
             WaitUntil::Complete => run.status.is_terminal(),
         };
         if reached {
@@ -698,56 +698,52 @@ async fn probe_run(api: &AntithesisApi, run_id: &str) -> RunProbe {
     }
 }
 
-/// Fail unless `run_id` names a run that `snouty debug` can use: the shared
-/// "run not found: X" error for an unknown run, and an error for a run that is
-/// still starting. A starting run has no searchable events, so its input hash
-/// cannot be checked.
-pub async fn ensure_run_debuggable(api: &AntithesisApi, run_id: &str) -> Result<()> {
+/// Fail unless `snouty debug` can use the run `run_id`. An unknown run gives
+/// the shared "run not found: X" error. A run that is not ready or terminal
+/// also gives an error: before a run is ready, its events search and count
+/// answer 404 `Resource not found` (observed on tenant orbitinghail, release
+/// 64.0), so its input hash cannot be checked.
+pub async fn ensure_run_debuggable(api: &AntithesisApi, run_id: &str) -> Result<RunDetail> {
     match probe_run(api, run_id).await {
         RunProbe::NotFound => Err(user_error(format!("run not found: {run_id}"))),
         RunProbe::ProbeFailed(err) => Err(err),
-        RunProbe::Exists(run) if run.status == RunStatus::Starting => Err(user_error(format!(
-            "run {run_id} is still starting; debug it once it is in progress or complete"
+        RunProbe::Exists(run) if !run.is_ready_or_terminal() => Err(user_error(format!(
+            "run {run_id} is not ready yet: its status is {}",
+            run.status_label()
         ))
         .suggestion(format!(
             "wait for it with `snouty runs wait {run_id} --until ready`"
         ))),
-        RunProbe::Exists(_) => Ok(()),
+        RunProbe::Exists(run) => Ok(*run),
     }
 }
 
-/// Fail unless `run_id` has an event under `input_hash`. The launch endpoint
+/// Fail unless `run` has an event under `input_hash`. The launch endpoint
 /// accepts a hash that the run never reached and starts a billable session,
-/// so check the hash first.
+/// so check the hash first. `run` must be ready or terminal, as
+/// [`ensure_run_debuggable`] checks. Use the count: on a run in progress, a
+/// search for a hash with no event ran 10 minutes without an answer
+/// (orbitinghail, release 64.0).
 pub async fn ensure_input_hash_exists(
     api: &AntithesisApi,
-    run_id: &str,
+    run: &RunDetail,
     input_hash: &str,
 ) -> Result<()> {
+    let run_id = &run.run_id;
     let query = event_set_dsl::input_hash_filter(input_hash);
-    let search = SearchMode::Query {
-        stream: false,
-        limit: Some(NonZeroU64::MIN),
-    };
-    let stream = match api.search_run_events_query(run_id, &query, search).await {
-        Ok(stream) => stream,
-        // The run exists and is not starting, so a 404 is a tenant release
-        // that does not serve the search. There is no way to check.
-        Err(err) if api_error_status(&err) == Some(404) => {
-            debug!("cannot check the input hash: the events search answered 404");
-            return Ok(());
-        }
-        Err(err) => return Err(err),
-    };
-    match event_lines(stream, ErrorRows::Abort).try_next().await? {
-        Some(_) => Ok(()),
-        None => Err(user_error(format!(
+    let count = api
+        .count_run_events_query(run_id, &query)
+        .await
+        .map_err(|err| event_search::explain_search_error(run, err))?;
+    if count == 0 {
+        return Err(user_error(format!(
             "no moment matches input hash {input_hash} in run {run_id}"
         ))
         .suggestion(format!(
             "search for a moment using `snouty runs events {run_id} <search query>`"
-        ))),
+        )));
     }
+    Ok(())
 }
 
 /// Translate an error from a run-scoped endpoint (show/build-logs/events/logs)

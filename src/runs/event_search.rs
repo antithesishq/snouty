@@ -22,7 +22,7 @@ use serde_json::json;
 use futures_util::stream::BoxStream;
 use futures_util::{StreamExt, TryStreamExt};
 
-use crate::api::{AntithesisApi, MIN_SEARCH_RELEASE, SearchMode};
+use crate::api::{AntithesisApi, MIN_SEARCH_RELEASE, RunDetail, SearchMode};
 use crate::error::api_error_status;
 use crate::event_render::EventStreamRenderer;
 use crate::jsonl::JsonStream;
@@ -132,12 +132,6 @@ pub(super) async fn count_query(
 /// Wait until the run is ready or terminal, then send one events-search
 /// request with `send`. The wait bypasses the response cache by itself, so
 /// pass the cached client.
-///
-/// The wait reads the run, so the run exists when the request goes out. A 404
-/// on a run from a release before [`MIN_SEARCH_RELEASE`] gets a suggestion
-/// about the release: those releases do not serve the endpoint, and its 404
-/// body is an unhelpful "Resource not found". A 400 comes from the query or
-/// from an out-of-range `limit`, so its note does not blame the query alone.
 pub(super) async fn search_when_ready<T, Fut>(
     api: &AntithesisApi,
     run_id: &str,
@@ -148,7 +142,19 @@ where
     Fut: Future<Output = Result<T>>,
 {
     let run = wait_until_ready(api, run_id, poll).await?;
-    send().await.map_err(|err| match api_error_status(&err) {
+    send().await.map_err(|err| explain_search_error(&run, err))
+}
+
+/// Annotate an events-search error for `run`. `run` must exist and be ready
+/// or terminal. Releases before [`MIN_SEARCH_RELEASE`] do not serve the
+/// endpoint and answer 404 with an unhelpful "Resource not found", so the
+/// error gets a suggestion that names the release. A 400 comes from the query
+/// or from an out-of-range `limit`, so its note does not blame the query alone.
+pub(super) fn explain_search_error(
+    run: &RunDetail,
+    err: color_eyre::eyre::Report,
+) -> color_eyre::eyre::Report {
+    match api_error_status(&err) {
         Some(404) if !run.serves_events_search() => {
             let (major, minor) = MIN_SEARCH_RELEASE;
             err.suggestion(format!(
@@ -161,5 +167,5 @@ where
              — for a query, check the event-set DSL syntax",
         ),
         _ => err,
-    })
+    }
 }

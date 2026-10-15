@@ -1482,14 +1482,19 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
             .and_then(|hash| serde_json::from_str(hash).ok())
             .expect("the hash snouty wrote is a JSON string");
         let (_, logs) = mock_route_get_run_logs(run_id);
-        let found = logs.lines().find(|line| {
-            let event: serde_json::Value = serde_json::from_str(line).expect("fixture is JSON");
-            event["moment"]["input_hash"] == input_hash
-        });
-        return match found {
-            Some(line) => (200, format!("{line}\n"), ndjson),
-            None => (200, String::new(), ndjson),
-        };
+        let limit = request["limit"]
+            .as_u64()
+            .map_or(usize::MAX, |limit| limit as usize);
+        let found: String = logs
+            .lines()
+            .filter(|line| {
+                let event: serde_json::Value = serde_json::from_str(line).expect("fixture is JSON");
+                event["moment"]["input_hash"] == input_hash
+            })
+            .take(limit)
+            .map(|line| format!("{line}\n"))
+            .collect();
+        return (200, found, ndjson);
     }
 
     let needles = query_needles(query);

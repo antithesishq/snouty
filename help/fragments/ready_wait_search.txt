@@ -1,0 +1,2 @@
+The run must be ready or complete. If it is not, the command waits until it
+is ready, as `snouty runs exec` does, and shows a line on stderr.

@@ -1,0 +1,5 @@
+Print the path to the cached SQLite database
+
+Useful for directly querying the documentation database with external tools.
+
+This command prints the path only. --json has no effect on it.

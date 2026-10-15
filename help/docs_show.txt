@@ -1,0 +1,6 @@
+Show full contents of a documentation page
+
+Displays the full markdown content of a page by its path.
+If the exact path is not found, suggests similar pages.
+
+This command prints text only. --json has no effect on it.

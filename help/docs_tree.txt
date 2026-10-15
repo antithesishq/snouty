@@ -1,0 +1,16 @@
+Print a tree of documentation paths
+
+Builds a directory-like tree from all page paths stored in the documentation database.
+
+Examples:
+  snouty docs tree
+  snouty docs tree --depth 2
+  snouty docs tree -d 2
+  snouty docs tree sdk
+
+Add --json for machine-readable output. The tree prints as one JSON object,
+{"children": [node, ...]}. Each node has name, the last segment of its path,
+and path, the value to pass to `snouty docs show`. A node has title when it is
+a page, and children, sorted by name, when it has child nodes that --depth did
+not remove. When no page matches, the output is {"children": []}:
+  snouty --json docs tree sdk | jq -r '.. | .path? // empty'

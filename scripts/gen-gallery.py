@@ -377,6 +377,7 @@ Frame = tuple[str, str]
 # Keys a step can send. `inquire` holds the terminal in raw mode for a prompt's
 # whole lifetime, so these arrive as key events rather than line-edited text.
 ENTER = "\r"
+ESC = "\x1b"
 
 # The pseudo-terminal's size. 120 columns keeps snouty's own lines — which carry
 # absolute paths under the throwaway `$HOME` — clear of the wrap boundary, so a
@@ -3399,6 +3400,7 @@ _TENANT = "acme"
 _REPO = "registry.example.com/acme/app"
 _SETTINGS = ".config/snouty/settings.toml"
 _CREDS = ".config/snouty/credentials.toml"
+_SEED_SETTINGS_TOML = f'tenant = "{_TENANT}"\nrepository = "{_REPO}"\n'
 # A `credentials.toml` exactly as `snouty login` writes it.
 _SEED_CREDS_TOML = f'[default]\ntype = "ApiKey"\napi_key = "{_SEED_KEY}"\n'
 
@@ -3408,6 +3410,9 @@ _ASK_TENANT = "What Antithesis tenant"
 _ASK_REPO = "What container repository"
 _ASK_CREDENTIALS = "What kind of credentials"
 _ASK_KEY = "Please enter your API Key"
+_EMPTY_KEY_REFUSED = "An empty value is not valid."
+_ASK_REPLACE_PASSWORD = "Replace your stored username and password?"
+_RETAINED = "Retained your previously stored credentials"
 # A `credentials.toml` with a username and password, as an older snouty wrote it.
 _SEED_PASSWORD_CREDS_TOML = (
     f'[default]\ntype = "Password"\nusername = "puser"\npassword = "{_FAKE_PASS}"\n'
@@ -3485,6 +3490,8 @@ def build_tty_stories() -> list[Story]:
             ),
             tty_persisted(
                 prompts=(_TENANT, _REPO),
+                # Keeping the stored key replaces nothing.
+                absent_prompts=("replacing your stored",),
                 files=(
                     (_SETTINGS, (f'tenant = "{_TENANT}"', f'repository = "{_REPO}"')),
                     # Every answer was a bare Enter, so the stored key must survive.
@@ -3493,7 +3500,7 @@ def build_tty_stories() -> list[Story]:
                 secrets_absent=(_SEED_KEY,),
             ),
             seed_files={
-                _SETTINGS: f'tenant = "{_TENANT}"\nrepository = "{_REPO}"\n',
+                _SETTINGS: _SEED_SETTINGS_TOML,
                 _CREDS: _SEED_CREDS_TOML,
             },
         ),
@@ -3507,16 +3514,64 @@ def build_tty_stories() -> list[Story]:
                 (_ASK_TENANT, ENTER),
                 (_ASK_REPO, ENTER),
                 (_ASK_KEY, _FAKE_KEY + ENTER),
+                (_ASK_REPLACE_PASSWORD, "y" + ENTER),
             ),
             tty_persisted(
-                # The summary must say that the new key replaced the password.
-                prompts=(_ASK_KEY, ", replacing your stored username and password."),
+                prompts=(
+                    _ASK_KEY,
+                    _ASK_REPLACE_PASSWORD,
+                    ", replacing your stored username and password.",
+                ),
                 absent_prompts=(_ASK_CREDENTIALS,),
                 files=((_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_KEY}"')),),
                 secrets_absent=(_FAKE_KEY, _FAKE_PASS),
             ),
             seed_files={
-                _SETTINGS: f'tenant = "{_TENANT}"\nrepository = "{_REPO}"\n',
+                _SETTINGS: _SEED_SETTINGS_TOML,
+                _CREDS: _SEED_PASSWORD_CREDS_TOML,
+            },
+        ),
+        _tty_story(
+            "login-enter-keeps-stored-password",
+            "Hit Enter through login with a stored username/password",
+            "An older snouty stored my username and password. I re-ran login to check my settings "
+            "and hit Enter at every prompt. My working credentials must not be lost.",
+            ["login"],
+            (
+                (_ASK_TENANT, ENTER),
+                (_ASK_REPO, ENTER),
+                (_ASK_KEY, ENTER),
+                (_EMPTY_KEY_REFUSED, ESC),
+            ),
+            tty_persisted(
+                prompts=(_ASK_KEY, _EMPTY_KEY_REFUSED, _RETAINED),
+                files=((_CREDS, ('type = "Password"', f'password = "{_FAKE_PASS}"')),),
+                secrets_absent=(_FAKE_PASS,),
+            ),
+            seed_files={
+                _SETTINGS: _SEED_SETTINGS_TOML,
+                _CREDS: _SEED_PASSWORD_CREDS_TOML,
+            },
+        ),
+        _tty_story(
+            "login-declines-replacing-password",
+            "Decline to replace a stored username/password",
+            "An older snouty stored my username and password. I typed an API key at login, but "
+            "then decided to keep the password for now.",
+            ["login"],
+            (
+                (_ASK_TENANT, ENTER),
+                (_ASK_REPO, ENTER),
+                (_ASK_KEY, _FAKE_KEY + ENTER),
+                (_ASK_REPLACE_PASSWORD, "n" + ENTER),
+            ),
+            tty_persisted(
+                prompts=(_ASK_REPLACE_PASSWORD, _RETAINED),
+                files=((_CREDS, ('type = "Password"', f'password = "{_FAKE_PASS}"')),),
+                secrets_absent=(_FAKE_KEY, _FAKE_PASS),
+            ),
+            seed_files={
+                _SETTINGS: _SEED_SETTINGS_TOML,
                 _CREDS: _SEED_PASSWORD_CREDS_TOML,
             },
         ),

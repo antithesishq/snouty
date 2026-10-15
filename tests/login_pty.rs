@@ -46,6 +46,18 @@ fn row_of_stars() -> String {
 /// The `GET /auth/cli/config` body that reports OAuth disabled for the CLI.
 const OAUTH_DISABLED: &str = r#"{"port_strategy":"disabled"}"#;
 
+/// A username and password as an older snouty stored them.
+const STORED_PASSWORD: &str =
+    "[default]\ntype = \"Password\"\nusername = \"puser\"\npassword = \"pty-pass\"\n";
+
+const CREDENTIALS_FILE: &str = ".config/snouty/credentials.toml";
+
+const REPLACE_PASSWORD: &str = "Replace your stored username and password?";
+
+const EMPTY_REFUSED: &str = "An empty value is not valid.";
+
+const RETAINED: &str = "Retained your previously stored credentials";
+
 /// Spawn `snouty login --tenant … --repository …` on a PTY against an
 /// isolated `$HOME` and a mock backend that answers the `/auth/cli/config`
 /// probe with [`OAUTH_DISABLED`].
@@ -180,7 +192,7 @@ fn rendered_lines(seen: &str) -> Vec<String> {
 }
 
 fn credentials(home: &Path) -> String {
-    std::fs::read_to_string(home.join(".config/snouty/credentials.toml")).unwrap_or_default()
+    std::fs::read_to_string(home.join(CREDENTIALS_FILE)).unwrap_or_default()
 }
 
 /// A pasted API key echoes one `*` per character, and the key itself never
@@ -242,7 +254,7 @@ fn accepts_an_api_key_longer_than_the_terminal_width() {
 fn bare_enter_keeps_the_stored_api_key() {
     let stored = "antithesis_api_key_v2_PTYSTORED_9Pgw";
     let (home, mut session) = start_login_with(&[(
-        ".config/snouty/credentials.toml",
+        CREDENTIALS_FILE,
         &format!("[default]\ntype = \"ApiKey\"\napi_key = \"{stored}\"\n"),
     )]);
 
@@ -261,18 +273,103 @@ fn bare_enter_keeps_the_stored_api_key() {
         creds.contains(&format!(r#"api_key = "{stored}""#)),
         "a bare Enter must keep the stored key: {creds}"
     );
+    assert!(seen.contains(RETAINED), "{seen}");
+    assert!(!seen.contains("replacing"), "{seen}");
+}
+
+/// A bare Enter at the API key prompt is refused, and the prompt asks again.
+#[test]
+fn bare_enter_without_a_stored_key_asks_again() {
+    let (home, mut session) = start_login();
+    expect(&mut session, "Please enter your API Key");
+    send(&mut session, "\r");
+    expect(&mut session, EMPTY_REFUSED);
+    send(&mut session, "sk-pty-key-123\r");
+    finish(session);
+
+    let creds = credentials(home.path());
+    assert!(creds.contains(r#"api_key = "sk-pty-key-123""#), "{creds}");
+}
+
+/// A bare Enter does not replace a stored username and password with an empty
+/// key: the prompt refuses it, and Esc then keeps the password.
+#[test]
+fn bare_enter_keeps_a_stored_password() {
+    let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, STORED_PASSWORD)]);
+    expect(&mut session, "Please enter your API Key");
+    send(&mut session, "\r");
+    expect(&mut session, EMPTY_REFUSED);
+    send(&mut session, "\x1b");
+    let seen = finish(session);
+
+    assert!(seen.contains(RETAINED), "{seen}");
+    assert_eq!(credentials(home.path()), STORED_PASSWORD);
+}
+
+/// Login asks before a new API key replaces stored OAuth tokens, and a bare
+/// Enter answers no.
+#[test]
+fn an_api_key_asks_before_it_replaces_stored_oauth_tokens() {
+    let stored = "[default]\ntype = \"OAuth\"\nantithesis_token = \"pty-token\"\n";
+    let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, stored)]);
+    expect(&mut session, "Please enter your API Key");
+    send(&mut session, "sk-pty-key-123\r");
+    expect(&mut session, "Replace your stored OAuth credentials?");
+    send(&mut session, "\r");
+    let seen = finish(session);
+
+    assert!(seen.contains(RETAINED), "{seen}");
+    assert_eq!(credentials(home.path()), stored);
+}
+
+/// Login asks before a new API key replaces a stored username and password,
+/// and a bare Enter answers no: the credentials file stays as it was.
+#[test]
+fn declining_keeps_a_stored_password() {
+    let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, STORED_PASSWORD)]);
+    expect(&mut session, "Please enter your API Key");
+    send(&mut session, "sk-pty-key-123\r");
+    expect(&mut session, REPLACE_PASSWORD);
+    send(&mut session, "\r");
+    let seen = finish(session);
+
+    assert!(seen.contains(RETAINED), "{seen}");
+    assert_eq!(credentials(home.path()), STORED_PASSWORD);
+}
+
+/// Login asks before a new API key replaces a different stored key, and the
+/// summary says that it replaced it.
+#[test]
+fn a_different_api_key_asks_before_it_replaces_the_stored_key() {
+    let (home, mut session) = start_login_with(&[(
+        CREDENTIALS_FILE,
+        "[default]\ntype = \"ApiKey\"\napi_key = \"antithesis_api_key_v2_PTYSTORED_9Pgw\"\n",
+    )]);
+    expect(&mut session, "Please enter your API Key (********9Pgw)");
+    send(&mut session, "sk-pty-key-123\r");
+    expect(&mut session, "Replace your stored API key?");
+    send(&mut session, "y\r");
+    let seen = finish(session);
+
+    assert!(
+        rendered_lines(&seen)
+            .join(" ")
+            .contains("credentials.toml, replacing your stored API key."),
+        "{seen}"
+    );
+    let creds = credentials(home.path());
+    assert!(creds.contains(r#"api_key = "sk-pty-key-123""#), "{creds}");
 }
 
 /// A new API key that overwrites a stored username and password says so in the
 /// summary, because a script that still uses the password will no longer work.
 #[test]
 fn an_api_key_that_replaces_a_stored_password_says_so() {
-    let (home, mut session) = start_login_with(&[(
-        ".config/snouty/credentials.toml",
-        "[default]\ntype = \"Password\"\nusername = \"puser\"\npassword = \"pty-pass\"\n",
-    )]);
+    let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, STORED_PASSWORD)]);
     expect(&mut session, "Please enter your API Key");
     send(&mut session, "sk-pty-key-123\r");
+    expect(&mut session, REPLACE_PASSWORD);
+    send(&mut session, "y\r");
     let seen = finish(session);
 
     // The temp path makes this line longer than the PTY, so snouty wraps it.
@@ -327,16 +424,12 @@ fn an_api_key_does_not_claim_to_replace_a_password_from_the_environment() {
 /// lines, because stdout is not a terminal.
 #[test]
 fn a_redirected_summary_keeps_whole_lines() {
-    let (home, mut session) = spawn_login(
-        &[(
-            ".config/snouty/credentials.toml",
-            "[default]\ntype = \"Password\"\nusername = \"puser\"\npassword = \"pty-pass\"\n",
-        )],
-        &[],
-        Stdout::File,
-    );
+    let (home, mut session) =
+        spawn_login(&[(CREDENTIALS_FILE, STORED_PASSWORD)], &[], Stdout::File);
     expect(&mut session, "Please enter your API Key");
     send(&mut session, "sk-pty-key-123\r");
+    expect(&mut session, REPLACE_PASSWORD);
+    send(&mut session, "y\r");
     // Read the PTY to its end before the wait: on macOS a child cannot exit
     // while its terminal output is unread.
     Expect::expect(&mut session, expectrl::Eof).expect("read the PTY to its end");
@@ -369,7 +462,7 @@ fn esc_at_the_api_key_prompt_skips_credential_storage() {
 
     assert!(seen.contains("Skipped credential storage"), "{seen}");
     assert!(
-        !home.path().join(".config/snouty/credentials.toml").exists(),
+        !home.path().join(CREDENTIALS_FILE).exists(),
         "Esc must write no credentials file"
     );
 }

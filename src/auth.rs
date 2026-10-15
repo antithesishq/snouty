@@ -211,9 +211,6 @@ pub(crate) enum PasswordPolicy {
     /// Accept them and print the deprecation warning: the launch commands
     /// (`snouty launch`, `snouty debug`) take this path.
     WarnDeprecated,
-    /// Accept them silently: the caller only inspects the stored credential
-    /// (`snouty login`, `snouty doctor`) and must not warn.
-    Inspect,
 }
 
 #[derive(Clone)]
@@ -431,6 +428,26 @@ impl AuthenticationInfo {
             }
         }
         Ok(found)
+    }
+
+    /// The credential stored for `profile`: its keychain entry, else its
+    /// section of the credentials file. This is what [`persist`] for `profile`
+    /// replaces. The environment and other profiles are not read.
+    ///
+    /// The [`PasswordPolicy`] gate does not run, so only a caller that never
+    /// authenticates with the result may call it.
+    pub(crate) fn stored_for_profile(
+        profile: Option<&str>,
+    ) -> Result<Option<AttributedValue<Self>>> {
+        for origin in [
+            CredentialOrigin::Keychain { profile },
+            CredentialOrigin::CredentialsFile { profile },
+        ] {
+            if let Some(found) = origin.resolve()? {
+                return Ok(Some(found));
+            }
+        }
+        Ok(None)
     }
 
     pub(crate) fn for_ambient_configuration(
@@ -882,6 +899,12 @@ pub fn initialize_credential_store() -> Result<()> {
     Ok(())
 }
 
+/// Whether `api_key` is empty or only whitespace. Such a key cannot
+/// authenticate.
+pub(crate) fn is_blank_api_key(api_key: &str) -> bool {
+    api_key.trim().is_empty()
+}
+
 pub(crate) fn persist(
     credentials: PersistableCredentials,
     profile: Option<&str>,
@@ -1083,7 +1106,6 @@ fn apply_password_policy(
             );
             Ok(authn_info)
         }
-        PasswordPolicy::Inspect => Ok(authn_info),
     }
 }
 

@@ -7,7 +7,7 @@ use crate::api::{
     MIN_SEARCH_RELEASE, VersionError, normalize_base_url,
 };
 use crate::attributed_value::AttributedValue;
-use crate::auth::AuthenticationInfo;
+use crate::auth::{AuthenticationInfo, is_blank_api_key};
 use crate::compose;
 use crate::container;
 use crate::features;
@@ -269,9 +269,11 @@ fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
     // A username and password in use while they hide a credential the API
     // accepts: the one thing to do is free that credential (issue #292).
     if let AuthenticationInfo::Password { .. } = credentials.value()
-        && let Some(hidden) = shadowed
-            .iter()
-            .find(|s| !matches!(s.value(), AuthenticationInfo::Password { .. }))
+        && let Some(hidden) = shadowed.iter().find(|s| match s.value() {
+            AuthenticationInfo::Password { .. } => false,
+            AuthenticationInfo::ApiKey { api_key } => !is_blank_api_key(api_key),
+            _ => true,
+        })
     {
         return vec![hidden_credential_check(credentials, hidden)];
     }
@@ -292,6 +294,15 @@ fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
                 credentials,
             )]
         }
+        AuthenticationInfo::ApiKey { api_key } if is_blank_api_key(api_key) => {
+            vec![enrich_with_origin(
+                with_credential_remedy(
+                    Check::fail(CREDENTIALS_CHECK_NAME, "the API key is empty")
+                        .note(Level::Error, "an empty API key cannot authenticate"),
+                ),
+                credentials,
+            )]
+        }
         AuthenticationInfo::ApiKey { .. } => {
             vec![enrich_with_origin(
                 Check::ok("api_key", "API key provided"),
@@ -307,8 +318,8 @@ fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
     checks
 }
 
-/// The check that reports a credential shortfall: no credential at all, or
-/// only the deprecated username and password.
+/// The check that reports a credential shortfall: no credential at all, an
+/// empty API key, or only the deprecated username and password.
 const CREDENTIALS_CHECK_NAME: &str = "credentials";
 
 fn missing_credentials_check(message: impl Into<String>) -> Check {
@@ -402,8 +413,8 @@ fn login_to_replace(profile: Option<&str>) -> String {
     format!("run `snouty login{flag}` to replace it with an API key")
 }
 
-/// A warning, not a failure: snouty is authenticated, just not with the
-/// credential the user expected.
+/// A warning, not a failure: the credential in use is not the one the user
+/// expected.
 fn shadowed_credentials_check(
     in_use: &AttributedValue<AuthenticationInfo>,
     shadowed: &[AttributedValue<AuthenticationInfo>],

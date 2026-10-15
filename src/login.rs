@@ -14,7 +14,8 @@ use bytes::Bytes;
 use color_eyre::Section;
 use color_eyre::eyre::{Context, Result, eyre};
 use http::{StatusCode, header};
-use inquire::{Password, PasswordDisplayMode, Select, Text};
+use inquire::validator::Validation;
+use inquire::{Confirm, Password, PasswordDisplayMode, Select, Text};
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -25,7 +26,7 @@ use crate::settings;
 use crate::{
     api::HttpClient,
     attributed_value::AttributedValue,
-    auth::{AuthenticationInfo, PasswordPolicy, PersistableCredentials, persist},
+    auth::{AuthenticationInfo, PersistableCredentials, is_blank_api_key, persist},
     env,
     error::user_error,
     settings::{
@@ -61,7 +62,12 @@ trait Prompter {
     /// [`secret_hint`]). When it is set, the prompt shows it and says that an
     /// empty answer keeps the stored secret. The secret itself never reaches
     /// the prompter.
+    ///
+    /// The prompt asks again when [`refuses_blank_secret`] refuses the answer.
     fn secret(&self, prompt: &str, hint: Option<&str>) -> Result<Option<String>>;
+
+    /// A yes/no question that defaults to no. Esc also answers no.
+    fn confirm(&self, prompt: &str) -> Result<bool>;
 }
 
 /// The production [`Prompter`]: `inquire` prompts reading the real terminal.
@@ -98,11 +104,26 @@ impl Prompter for InquirePrompter {
             Some(_) => "hit enter to keep the stored value, or Esc to skip",
             None => "hit Esc to skip",
         };
+        let keeps_stored = hint.is_some();
         let password = Password::new(&message)
             .with_display_mode(PasswordDisplayMode::Masked)
             .without_confirmation()
-            .with_help_message(help);
+            .with_help_message(help)
+            .with_validator(move |input: &str| {
+                Ok(if refuses_blank_secret(input, keeps_stored) {
+                    Validation::Invalid("An empty value is not valid.".into())
+                } else {
+                    Validation::Valid
+                })
+            });
         Ok(password.prompt_skippable()?)
+    }
+
+    fn confirm(&self, prompt: &str) -> Result<bool> {
+        Ok(Confirm::new(prompt)
+            .with_default(false)
+            .prompt_skippable()?
+            .unwrap_or(false))
     }
 }
 
@@ -150,28 +171,22 @@ async fn do_cmd_login(
         )?,
     };
 
-    // Whatever credentials are already in reach, so the menu can default to the
-    // kind last used and the key prompt can offer the stored key back. Having
-    // none is the ordinary state on a first login rather than a failure, so the
-    // error is logged at debug level and then dropped.
-    let current_credentials = AuthenticationInfo::for_ambient_configuration_with_attribution(
-        profile_to_use.as_deref(),
-        PasswordPolicy::Inspect,
-    )
-    .inspect_err(|err| debug!("no ambient credentials to offer back: {err:#}"))
-    .ok();
+    // The credential that a bare Enter at the key prompt keeps, and that storing
+    // a new credential replaces. A read error counts as nothing stored:
+    // `persist` backs up an unparsable credentials file before it writes one.
+    // A blank key cannot authenticate, so it also counts as nothing stored.
+    let stored = AuthenticationInfo::stored_for_profile(profile_to_use.as_deref())
+        .inspect_err(|err| debug!("no stored credentials to read: {err:#}"))
+        .ok()
+        .flatten()
+        .filter(|stored| {
+            !matches!(stored.value(), AuthenticationInfo::ApiKey { api_key } if is_blank_api_key(api_key))
+        });
 
-    // Capture the credential kind and where it was stored so the summary can name
-    // both; `None` when the user chose to skip credential setup.
-    let credential_summary = if prompter.is_interactive() {
-        match prompt_for_auth(
-            prompter,
-            current_settings,
-            &tenant_to_use,
-            current_credentials.as_ref(),
-        )
-        .await?
-        {
+    // The kind of credential login wrote, and where.
+    let written = if prompter.is_interactive() {
+        let stored_value = stored.as_ref().map(AttributedValue::value);
+        match prompt_for_auth(prompter, current_settings, &tenant_to_use, stored_value).await? {
             Some(credentials) => {
                 let kind = match &credentials {
                     PersistableCredentials::ApiKey { .. } => "API key",
@@ -202,8 +217,8 @@ async fn do_cmd_login(
         &repository_to_use,
         profile_to_use.as_deref(),
         &settings_path,
-        credential_summary,
-        current_credentials,
+        written,
+        stored,
     );
 
     Ok(())
@@ -216,8 +231,8 @@ fn print_login_summary(
     repository: &str,
     profile: Option<&str>,
     settings_path: &Path,
-    credentials: Option<AttributedValue<&str>>,
-    previous_credentials: Option<AttributedValue<AuthenticationInfo>>,
+    written: Option<AttributedValue<&str>>,
+    stored: Option<AttributedValue<AuthenticationInfo>>,
 ) {
     // Wrap each line at word boundaries on a terminal: a long settings path
     // otherwise makes the terminal cut the line mid-word.
@@ -237,22 +252,14 @@ fn print_login_summary(
         "\nSaved {saved}{scope} to {}.",
         settings_path.display()
     ));
-    let replaced = match (&credentials, &previous_credentials) {
-        (Some(new), Some(previous)) => replaced_stored_password(new, previous, profile),
-        _ => false,
-    };
-    let replaced = if replaced {
-        ", replacing your stored username and password"
-    } else {
-        ""
-    };
-    match credentials {
+    match written {
         Some(AttributedValue::Keychain {
             value: kind,
             entry_name: _,
         }) => {
             say(&format!(
-                "Stored your {kind}{scope} in the system keychain{replaced}."
+                "Stored your {kind}{scope} in the system keychain{}.",
+                replacing(stored.as_ref())
             ));
         }
         Some(AttributedValue::SettingsFile {
@@ -261,11 +268,12 @@ fn print_login_summary(
             profile: _,
         }) => {
             say(&format!(
-                "Stored your {kind}{scope} in {}{replaced}.",
-                path.display()
+                "Stored your {kind}{scope} in {}{}.",
+                path.display(),
+                replacing(stored.as_ref())
             ));
         }
-        _ => match previous_credentials {
+        _ => match stored {
             Some(AttributedValue::Keychain { .. }) => {
                 say(&format!(
                     "Retained your previously stored credentials{scope} in the system keychain."
@@ -289,45 +297,12 @@ fn print_login_summary(
     say("Run `snouty doctor` to verify your setup.");
 }
 
-/// Whether storing `new` deleted a username and password that `previous` names,
-/// because a script that still uses it will no longer work. A password from
-/// somewhere else, such as the environment, is still there.
-fn replaced_stored_password(
-    new: &AttributedValue<&str>,
-    previous: &AttributedValue<AuthenticationInfo>,
-    profile: Option<&str>,
-) -> bool {
-    match (new, previous) {
-        (
-            AttributedValue::Keychain { entry_name, .. },
-            AttributedValue::Keychain {
-                value: AuthenticationInfo::Password { .. },
-                entry_name: previous_entry_name,
-            },
-        ) => entry_name == previous_entry_name,
-        // A keychain write also clears the profile from the credentials file.
-        (
-            AttributedValue::Keychain { .. },
-            AttributedValue::SettingsFile {
-                value: AuthenticationInfo::Password { .. },
-                profile: previous_profile,
-                ..
-            },
-        ) => previous_profile.as_deref() == profile,
-        (
-            AttributedValue::SettingsFile {
-                settings_file_path,
-                profile,
-                ..
-            },
-            AttributedValue::SettingsFile {
-                value: AuthenticationInfo::Password { .. },
-                settings_file_path: previous_path,
-                profile: previous_profile,
-            },
-        ) => settings_file_path == previous_path && profile == previous_profile,
-        _ => false,
-    }
+/// The summary's note on `stored`. A write for the profile always replaces
+/// `stored`, because login writes nothing when the user keeps it.
+fn replacing(stored: Option<&AttributedValue<AuthenticationInfo>>) -> String {
+    stored
+        .map(|stored| format!(", replacing your stored {}", stored.value()))
+        .unwrap_or_default()
 }
 
 fn prompt_for_value(
@@ -362,11 +337,13 @@ impl std::fmt::Display for AuthSetupType {
     }
 }
 
+/// Returns the credential to store, or `None` when the user skips, keeps
+/// `stored`, or declines to replace it.
 async fn prompt_for_auth(
     prompter: &dyn Prompter,
     settings: &Settings,
     tenant: &str,
-    previous_value: Option<&AttributedValue<AuthenticationInfo>>,
+    stored: Option<&AuthenticationInfo>,
 ) -> Result<Option<PersistableCredentials>> {
     // ANTITHESIS_BASE_URL trumps the supplied tenant because the former is used by spec tests
     let base_url = env::var(settings::ANTITHESIS_BASE_URL_VAR_NAME)?
@@ -379,9 +356,13 @@ async fn prompt_for_auth(
         .as_ref()
         .is_ok_and(|config| !matches!(config, CliOAuthConfig::Disabled));
 
+    let key_to_keep = match stored {
+        Some(AuthenticationInfo::ApiKey { api_key }) => Some(api_key.as_str()),
+        _ => None,
+    };
+
     // Single sign-on leads the menu and is the default, unless an API key is
     // stored: then "log in again the same way" stays one keystroke.
-    let stored_key = stored_api_key(previous_value);
     let choice = if oauth_offered {
         let options = [AuthSetupType::OAuth, AuthSetupType::ApiKey];
         let labels = options.iter().map(ToString::to_string).collect();
@@ -389,7 +370,7 @@ async fn prompt_for_auth(
             .select(
                 "What kind of credentials would you like to use? (Hit Esc to skip)",
                 labels,
-                usize::from(stored_key.is_some()),
+                usize::from(key_to_keep.is_some()),
             )?
             .map(|index| options[index])
     } else {
@@ -398,10 +379,46 @@ async fn prompt_for_auth(
 
     match choice {
         None => Ok(None),
-        Some(AuthSetupType::ApiKey) => prompt_for_api_key(prompter, stored_key),
+        Some(AuthSetupType::ApiKey) => {
+            let hint = key_to_keep.map(secret_hint);
+            let entered = prompter.secret("Please enter your API Key", hint.as_deref())?;
+            // Trim a pasted key: an API key holds no whitespace.
+            Ok(match entered.as_deref().map(str::trim) {
+                // An empty answer, or the stored key typed again, keeps the
+                // stored key.
+                Some(api_key) if api_key.is_empty() || Some(api_key) == key_to_keep => None,
+                Some(api_key) if confirm_replacement(prompter, stored, AuthSetupType::ApiKey)? => {
+                    Some(PersistableCredentials::ApiKey {
+                        api_key: api_key.to_owned(),
+                    })
+                }
+                _ => None,
+            })
+        }
+        // Ask before the browser sign-in, so that a no wastes no sign-in.
+        Some(AuthSetupType::OAuth)
+            if !confirm_replacement(prompter, stored, AuthSetupType::OAuth)? =>
+        {
+            Ok(None)
+        }
         Some(AuthSetupType::OAuth) => complete_oauth_login(&client, &base_url, &oauth_config?)
             .await
             .map(Some),
+    }
+}
+
+/// Asks before a new credential of kind `new` replaces `stored`, and returns
+/// whether to store it.
+fn confirm_replacement(
+    prompter: &dyn Prompter,
+    stored: Option<&AuthenticationInfo>,
+    new: AuthSetupType,
+) -> Result<bool> {
+    match (stored, new) {
+        (None, _) => Ok(true),
+        // Signing in again only renews the session that the stored tokens hold.
+        (Some(AuthenticationInfo::OAuth { .. }), AuthSetupType::OAuth) => Ok(true),
+        (Some(stored), _) => prompter.confirm(&format!("Replace your stored {stored}?")),
     }
 }
 
@@ -426,38 +443,10 @@ fn secret_hint(secret: &str) -> String {
     format!("{}{tail}", "*".repeat(HINT_STARS))
 }
 
-/// The API key already in storage, when that is what the previous credentials
-/// hold. Credentials read from the environment are left out on purpose: keeping
-/// one would copy an ambient secret into the credentials file.
-fn stored_api_key(previous: Option<&AttributedValue<AuthenticationInfo>>) -> Option<&str> {
-    match previous {
-        None | Some(AttributedValue::EnvironmentVariable { .. }) => None,
-        Some(credentials) => match credentials.value() {
-            AuthenticationInfo::ApiKey { api_key } => Some(api_key),
-            _ => None,
-        },
-    }
-}
-
-/// An empty answer at a masked prompt keeps the secret already stored — that is
-/// what the prompt's hint offers. With nothing stored, the empty answer stands.
-fn keep_stored_if_empty(entered: String, stored: Option<&str>) -> String {
-    match stored {
-        Some(stored) if entered.is_empty() => stored.to_owned(),
-        _ => entered,
-    }
-}
-
-/// Returns `None` when the user skips the prompt with Esc.
-fn prompt_for_api_key(
-    prompter: &dyn Prompter,
-    stored: Option<&str>,
-) -> Result<Option<PersistableCredentials>> {
-    let hint = stored.map(secret_hint);
-    let entered = prompter.secret("Please enter your API Key", hint.as_deref())?;
-    Ok(entered.map(|entered| PersistableCredentials::ApiKey {
-        api_key: keep_stored_if_empty(entered, stored),
-    }))
+/// A masked prompt refuses a blank answer, except the empty answer that keeps a
+/// stored secret.
+fn refuses_blank_secret(answer: &str, keeps_stored: bool) -> bool {
+    is_blank_api_key(answer) && !(keeps_stored && answer.is_empty())
 }
 
 #[derive(Debug, Deserialize)]
@@ -853,66 +842,6 @@ mod tests {
 
     use super::*;
 
-    fn stored_password_in_keychain(entry_name: &str) -> AttributedValue<AuthenticationInfo> {
-        AttributedValue::Keychain {
-            value: AuthenticationInfo::Password {
-                username: "puser".to_owned(),
-                password: "ppass".to_owned(),
-            },
-            entry_name: entry_name.to_owned(),
-        }
-    }
-
-    fn stored_password_in_file(profile: Option<&str>) -> AttributedValue<AuthenticationInfo> {
-        AttributedValue::SettingsFile {
-            value: AuthenticationInfo::Password {
-                username: "puser".to_owned(),
-                password: "ppass".to_owned(),
-            },
-            settings_file_path: "/creds.toml".into(),
-            profile: profile.map(str::to_owned),
-        }
-    }
-
-    fn new_key_in_keychain(entry_name: &str) -> AttributedValue<&'static str> {
-        AttributedValue::Keychain {
-            value: "API key",
-            entry_name: entry_name.to_owned(),
-        }
-    }
-
-    #[test]
-    fn a_keychain_write_replaces_a_password_in_the_same_entry() {
-        let new = new_key_in_keychain("_default_");
-        assert!(replaced_stored_password(
-            &new,
-            &stored_password_in_keychain("_default_"),
-            None
-        ));
-        assert!(!replaced_stored_password(
-            &new,
-            &stored_password_in_keychain("profile_other"),
-            None
-        ));
-    }
-
-    #[test]
-    fn a_keychain_write_replaces_a_password_in_the_file_for_the_same_profile() {
-        // The keychain write clears this profile from the credentials file.
-        let new = new_key_in_keychain("profile_p");
-        assert!(replaced_stored_password(
-            &new,
-            &stored_password_in_file(Some("p")),
-            Some("p")
-        ));
-        // The default section of the file is still there.
-        assert!(!replaced_stored_password(
-            &new,
-            &stored_password_in_file(None),
-            Some("p")
-        ));
-    }
-
     #[test]
     fn secret_hint_shows_a_prefix_and_a_fixed_run_of_stars() {
         // The tail is the key's own, so the user recognizes which key is
@@ -933,68 +862,6 @@ mod tests {
     fn secret_hint_never_shows_more_than_it_has() {
         assert_eq!(secret_hint("ab"), "********ab");
         assert_eq!(secret_hint(""), "********");
-    }
-
-    #[test]
-    fn empty_answer_keeps_the_stored_secret() {
-        assert_eq!(
-            keep_stored_if_empty(String::new(), Some("stored")),
-            "stored"
-        );
-    }
-
-    #[test]
-    fn a_typed_answer_replaces_the_stored_secret() {
-        assert_eq!(
-            keep_stored_if_empty("typed".to_owned(), Some("stored")),
-            "typed"
-        );
-    }
-
-    #[test]
-    fn empty_answer_stands_when_nothing_is_stored() {
-        assert_eq!(keep_stored_if_empty(String::new(), None), "");
-    }
-
-    #[test]
-    fn stored_api_key_reads_a_key_out_of_storage() {
-        let stored = Some(AttributedValue::SettingsFile {
-            value: AuthenticationInfo::ApiKey {
-                api_key: "antithesis_api_key_v2_NOTREAL_9Pgw".to_owned(),
-            },
-            settings_file_path: Path::new("/tmp/credentials.toml").to_path_buf(),
-            profile: None,
-        });
-        assert_eq!(
-            stored_api_key(stored.as_ref()),
-            Some("antithesis_api_key_v2_NOTREAL_9Pgw")
-        );
-    }
-
-    #[test]
-    fn stored_api_key_ignores_a_key_from_the_environment() {
-        // Keeping it would copy an ambient secret into the credentials file.
-        let ambient = Some(AttributedValue::EnvironmentVariable {
-            value: AuthenticationInfo::ApiKey {
-                api_key: "antithesis_api_key_v2_NOTREAL_9Pgw".to_owned(),
-            },
-            environment_variable_names: vec!["ANTITHESIS_API_KEY"],
-        });
-        assert_eq!(stored_api_key(ambient.as_ref()), None);
-    }
-
-    #[test]
-    fn stored_api_key_ignores_credentials_of_another_kind() {
-        let password = Some(AttributedValue::SettingsFile {
-            value: AuthenticationInfo::Password {
-                username: "user".to_owned(),
-                password: "FAKE-not-a-real-password".to_owned(),
-            },
-            settings_file_path: Path::new("/tmp/credentials.toml").to_path_buf(),
-            profile: None,
-        });
-        assert_eq!(stored_api_key(password.as_ref()), None);
-        assert_eq!(stored_api_key(None), None);
     }
 
     #[test]
@@ -1069,6 +936,23 @@ mod tests {
     fn parse_callback_requires_code_and_state() {
         assert!(parse_callback_params("state=only_state").is_err());
         assert!(parse_callback_params("code=only_code").is_err());
+    }
+
+    /// A masked prompt accepts any answer with a non-whitespace character,
+    /// refuses any blank answer that is not empty, and accepts the empty
+    /// answer only when it keeps a stored secret.
+    #[hegel::test]
+    fn masked_prompt_refuses_exactly_the_blank_answers(tc: hegel::TestCase) {
+        let answer = tc.draw(hegel::generators::text());
+        let keeps_stored = tc.draw(hegel::generators::booleans());
+        let refused = refuses_blank_secret(&answer, keeps_stored);
+        if answer.chars().any(|c| !c.is_whitespace()) {
+            assert!(!refused, "{answer:?}");
+        } else if answer.is_empty() {
+            assert_eq!(refused, !keeps_stored);
+        } else {
+            assert!(refused, "{answer:?}");
+        }
     }
 
     /// The `href` the sign-in page renders decodes back to the IdP URL, so
@@ -1195,6 +1079,7 @@ mod tests {
         Input(String),
         Select(Option<usize>),
         Secret(Option<String>),
+        Confirm(bool),
     }
 
     /// Fluent builder for a script of [`Answer`]s, in the order the flow will ask.
@@ -1222,6 +1107,10 @@ mod tests {
         /// Esc at a masked prompt.
         fn skip_secret(mut self) -> Self {
             self.0.push(Answer::Secret(None));
+            self
+        }
+        fn confirm(mut self, value: bool) -> Self {
+            self.0.push(Answer::Confirm(value));
             self
         }
         fn build(self) -> ScriptedPrompter {
@@ -1297,8 +1186,18 @@ mod tests {
         fn secret(&self, prompt: &str, hint: Option<&str>) -> Result<Option<String>> {
             self.secret_hints.borrow_mut().push(hint.map(str::to_owned));
             match self.next("secret", prompt) {
+                Answer::Secret(Some(value)) if refuses_blank_secret(&value, hint.is_some()) => {
+                    panic!("the real prompt refuses the blank answer {value:?} at {prompt:?}")
+                }
                 Answer::Secret(value) => Ok(value),
                 _ => panic!("next scripted answer was not a secret at {prompt:?}"),
+            }
+        }
+
+        fn confirm(&self, prompt: &str) -> Result<bool> {
+            match self.next("confirm", prompt) {
+                Answer::Confirm(value) => Ok(value),
+                _ => panic!("next scripted answer was not a confirm at {prompt:?}"),
             }
         }
     }
@@ -1476,27 +1375,78 @@ mod tests {
         Ok(())
     }
 
+    /// A username and password as an older snouty stored them.
+    const STORED_PASSWORD: &str =
+        "[default]\ntype = \"Password\"\nusername = \"puser\"\npassword = \"ppass\"\n";
+
     /// Login reads a username and password an older snouty stored, asks for an
-    /// API key, and replaces the stored credentials.
+    /// API key, confirms, and replaces the stored credentials.
     #[tokio::test]
     async fn login_replaces_a_stored_username_and_password_with_an_api_key() -> Result<()> {
         let env = LoginEnv::new();
-        env.seed(
-            ".config/snouty/credentials.toml",
-            "[default]\ntype = \"Password\"\nusername = \"puser\"\npassword = \"ppass\"\n",
-        );
+        env.seed(".config/snouty/credentials.toml", STORED_PASSWORD);
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
             .secret("sk-test-key")
+            .confirm(true)
             .build();
 
         do_cmd_login(None, None, None, &settings, &prompter).await?;
 
+        assert!(
+            prompter
+                .prompts()
+                .contains(&"Replace your stored username and password?".to_owned()),
+            "{:?}",
+            prompter.prompts()
+        );
         let creds = env.credentials();
         assert!(creds.contains(r#"type = "ApiKey""#), "{creds}");
         assert!(!creds.contains("ppass"), "{creds}");
+        Ok(())
+    }
+
+    /// Declining to replace a stored username and password leaves the
+    /// credentials file as it was. The tenant and repository are still saved.
+    #[tokio::test]
+    async fn login_keeps_a_stored_password_when_the_user_declines() -> Result<()> {
+        let env = LoginEnv::new();
+        env.seed(".config/snouty/credentials.toml", STORED_PASSWORD);
+        let settings = env.resolve_settings(None)?;
+        let prompter = Script::default()
+            .input("mytenant")
+            .input("myrepo")
+            .secret("sk-test-key")
+            .confirm(false)
+            .build();
+
+        do_cmd_login(None, None, None, &settings, &prompter).await?;
+
+        assert_eq!(env.credentials(), STORED_PASSWORD);
+        assert!(env.settings().contains(r#"tenant = "mytenant""#));
+        Ok(())
+    }
+
+    /// A stored credential of another profile is not replaced, so login does
+    /// not ask.
+    #[tokio::test]
+    async fn login_does_not_ask_to_replace_another_profiles_credential() -> Result<()> {
+        let env = LoginEnv::new();
+        env.seed(".config/snouty/credentials.toml", STORED_PASSWORD);
+        let settings = env.resolve_settings(Some("prod"))?;
+        let prompter = Script::default()
+            .input("ptenant")
+            .input("prepo")
+            .secret("pk-secret")
+            .build();
+
+        do_cmd_login(None, None, Some("prod"), &settings, &prompter).await?;
+
+        let creds = env.credentials();
+        assert!(creds.contains("ppass"), "{creds}");
+        assert!(creds.contains(r#"api_key = "pk-secret""#), "{creds}");
         Ok(())
     }
 
@@ -1594,7 +1544,7 @@ mod tests {
     }
 
     /// A stored API key is offered back: the prompt shows a masked hint, and an
-    /// empty answer keeps the stored key rather than saving an empty one.
+    /// empty answer keeps the stored key.
     #[tokio::test]
     async fn login_keeps_the_stored_api_key_on_an_empty_answer() -> Result<()> {
         let env = LoginEnv::new();
@@ -1624,7 +1574,74 @@ mod tests {
         Ok(())
     }
 
-    /// A key typed at the prompt replaces the stored one.
+    /// Typing the stored key again keeps it: login asks nothing and writes
+    /// nothing.
+    #[tokio::test]
+    async fn login_writes_nothing_when_the_stored_key_is_typed_again() -> Result<()> {
+        let env = LoginEnv::new();
+        let seeded =
+            "[default]\ntype = \"ApiKey\"\napi_key = \"antithesis_api_key_v2_STORED_9Pgw\"\n";
+        env.seed(".config/snouty/credentials.toml", seeded);
+        let settings = env.resolve_settings(None)?;
+        let prompter = Script::default()
+            .input("mytenant")
+            .input("myrepo")
+            .secret("antithesis_api_key_v2_STORED_9Pgw")
+            .build();
+
+        do_cmd_login(None, None, None, &settings, &prompter).await?;
+
+        assert_eq!(env.credentials(), seeded);
+        Ok(())
+    }
+
+    /// Whitespace around a pasted key is dropped, so the stored key pasted
+    /// with a trailing newline still keeps it.
+    #[tokio::test]
+    async fn login_trims_a_pasted_key() -> Result<()> {
+        let env = LoginEnv::new();
+        let seeded =
+            "[default]\ntype = \"ApiKey\"\napi_key = \"antithesis_api_key_v2_STORED_9Pgw\"\n";
+        env.seed(".config/snouty/credentials.toml", seeded);
+        let settings = env.resolve_settings(None)?;
+        let prompter = Script::default()
+            .input("mytenant")
+            .input("myrepo")
+            .secret(" antithesis_api_key_v2_STORED_9Pgw\n")
+            .build();
+
+        do_cmd_login(None, None, None, &settings, &prompter).await?;
+
+        assert_eq!(env.credentials(), seeded);
+        Ok(())
+    }
+
+    /// Login for a profile offers back only that profile's key, not the key of
+    /// the default profile, and storing a key for it replaces nothing.
+    #[tokio::test]
+    async fn login_does_not_offer_another_profiles_key() -> Result<()> {
+        let env = LoginEnv::new();
+        env.seed(
+            ".config/snouty/credentials.toml",
+            "[default]\ntype = \"ApiKey\"\napi_key = \"sk-default-key\"\n",
+        );
+        let settings = env.resolve_settings(Some("prod"))?;
+        let prompter = Script::default()
+            .input("ptenant")
+            .input("prepo")
+            .secret("pk-secret")
+            .build();
+
+        do_cmd_login(None, None, Some("prod"), &settings, &prompter).await?;
+
+        assert_eq!(prompter.secret_hints(), vec![None]);
+        let creds = env.credentials();
+        assert!(creds.contains(r#"api_key = "sk-default-key""#), "{creds}");
+        assert!(creds.contains(r#"api_key = "pk-secret""#), "{creds}");
+        Ok(())
+    }
+
+    /// A key typed at the prompt replaces the stored one once the user confirms.
     #[tokio::test]
     async fn login_replaces_the_stored_api_key_when_one_is_typed() -> Result<()> {
         let env = LoginEnv::new();
@@ -1637,6 +1654,7 @@ mod tests {
             .input("mytenant")
             .input("myrepo")
             .secret("antithesis_api_key_v2_NEW_7Qxz")
+            .confirm(true)
             .build();
 
         do_cmd_login(None, None, None, &settings, &prompter).await?;
@@ -1646,6 +1664,89 @@ mod tests {
             creds.contains(r#"api_key = "antithesis_api_key_v2_NEW_7Qxz""#),
             "{creds}"
         );
+        Ok(())
+    }
+
+    /// A blank stored API key is not offered back, so an empty answer cannot
+    /// keep it, and a new key replaces it without a question.
+    #[tokio::test]
+    async fn login_replaces_a_blank_stored_api_key_without_asking() -> Result<()> {
+        let env = LoginEnv::new();
+        env.seed(
+            ".config/snouty/credentials.toml",
+            "[default]\ntype = \"ApiKey\"\napi_key = \"\"\n",
+        );
+        let settings = env.resolve_settings(None)?;
+        let prompter = Script::default()
+            .input("mytenant")
+            .input("myrepo")
+            .secret("sk-test-key")
+            .build();
+
+        do_cmd_login(None, None, None, &settings, &prompter).await?;
+
+        assert_eq!(prompter.secret_hints(), vec![None]);
+        let creds = env.credentials();
+        assert!(creds.contains(r#"api_key = "sk-test-key""#), "{creds}");
+        Ok(())
+    }
+
+    /// OAuth tokens as a single sign-on login stores them.
+    const STORED_OAUTH: &str =
+        "[default]\ntype = \"OAuth\"\nantithesis_token = \"tok\"\nrefresh_token = \"ref\"\n";
+
+    /// A new single sign-on replaces stored OAuth tokens without a question,
+    /// but an API key that would replace them still asks.
+    #[test]
+    fn only_a_new_sign_in_replaces_stored_oauth_tokens_without_asking() -> Result<()> {
+        let env = LoginEnv::new();
+        env.seed(".config/snouty/credentials.toml", STORED_OAUTH);
+        let stored = AuthenticationInfo::stored_for_profile(None)?;
+        let stored = stored.as_ref().map(AttributedValue::value);
+
+        // An empty script panics if the flow asks anything.
+        let prompter = Script::default().build();
+        assert!(confirm_replacement(
+            &prompter,
+            stored,
+            AuthSetupType::OAuth
+        )?);
+
+        let prompter = Script::default().confirm(false).build();
+        assert!(!confirm_replacement(
+            &prompter,
+            stored,
+            AuthSetupType::ApiKey
+        )?);
+        assert_eq!(
+            prompter.prompts(),
+            vec!["Replace your stored OAuth credentials?".to_owned()]
+        );
+        Ok(())
+    }
+
+    /// Single sign-on asks before the browser sign-in starts, and a no keeps
+    /// the stored credential without a sign-in.
+    #[tokio::test]
+    async fn login_asks_before_single_sign_on_replaces_a_stored_credential() -> Result<()> {
+        let env = LoginEnv::with_oauth_config(OAUTH_EPHEMERAL);
+        let seeded = "[default]\ntype = \"ApiKey\"\napi_key = \"sk-stored-key\"\n";
+        env.seed(".config/snouty/credentials.toml", seeded);
+        let settings = env.resolve_settings(None)?;
+        let prompter = Script::default()
+            .input("mytenant")
+            .input("myrepo")
+            .select(0)
+            .confirm(false)
+            .build();
+
+        do_cmd_login(None, None, None, &settings, &prompter).await?;
+
+        assert_eq!(
+            prompter.prompts().last().map(String::as_str),
+            Some("Replace your stored API key?")
+        );
+        assert_eq!(env.credentials(), seeded);
         Ok(())
     }
 
@@ -1862,19 +1963,14 @@ mod tests {
             "credential not found in keychain under `_default_`"
         );
 
-        // --- Read-back: resolving ambient credentials returns the stored key
-        // straight from the keychain, proving the secret round-trips. Reading in
-        // the same process that wrote it doesn't trip the ACL prompt the
-        // `security` CLI would. ---
-        let resolved = AuthenticationInfo::for_ambient_configuration_with_attribution(
-            None,
-            PasswordPolicy::Inspect,
-        )?;
+        // --- Read-back: an in-process read does not trip the ACL prompt that
+        // the `security` CLI would. ---
+        let resolved = AuthenticationInfo::stored_for_profile(None)?;
         match &resolved {
-            AttributedValue::Keychain {
+            Some(AttributedValue::Keychain {
                 value: AuthenticationInfo::ApiKey { api_key },
                 ..
-            } => assert_eq!(api_key.as_str(), "sk-KEYCHAIN-TEST"),
+            }) => assert_eq!(api_key.as_str(), "sk-KEYCHAIN-TEST"),
             _ => panic!("expected the API key to resolve from the keychain"),
         }
 

@@ -907,9 +907,15 @@ def _pick_second_needle(event: dict, keyword: str) -> str | None:
 
 
 def _render_property(sn: Snouty, run: str, name: str) -> str:
-    # `--name` is a substring filter; passing the exact name selects it (plus any
-    # other name it's a substring of, which is fine for these render probes).
     return sn.run(["runs", "properties", run, "--name", name, "--detail"]).combined
+
+
+def _matches_only_itself(prop: dict, props: list[dict]) -> bool:
+    """Whether `--name <prop's name>` selects only this property. `--name` is a
+    substring filter, and two groups can hold the same shown name, so a name can
+    also select other properties, and the --detail story would expand them too."""
+    name = prop["name"].lower()
+    return sum(name in p["name"].lower() for p in props) == 1
 
 
 _MOMENT_ROW = re.compile(r"-?\d{6,}\s+\d+\.\d+")  # long hash + float vtime
@@ -939,7 +945,9 @@ def _pick_property_with_moments(sn: Snouty, run: str, props: list[dict], status:
     candidates = [
         (p, m)
         for p in props
-        if p.get("status") == status and (m := _moments(p.get(arr_key) or []))
+        if p.get("status") == status
+        and (m := _moments(p.get(arr_key) or []))
+        and _matches_only_itself(p, props)
     ]
     candidates.sort(key=lambda c: len(c[1]), reverse=True)
     for p, _ in candidates:
@@ -974,16 +982,11 @@ def _has_real_value(value) -> bool:
 def _pick_nonevent_property(sn: Snouty, run: str, props: list[dict]) -> str:
     """Pick a non-event property that renders a real example value. We read the
     example arrays straight from the JSON and only render-probe the chosen one."""
-    # `--name` is a substring filter, so the chosen name must not be a substring
-    # of any *other* property's name — otherwise the --detail probe would also
-    # expand that other property, and an event sibling's moment rows would make us
-    # think we'd misclassified. Require the name to match only itself.
-    lower_names = [p["name"].lower() for p in props]
+    # An event sibling that the same `--name` selects would add moment rows to
+    # the probe and make us think we'd misclassified.
     candidates = []
     for p in props:
-        if p.get("is_event") is not False:
-            continue
-        if sum(p["name"].lower() in n for n in lower_names) != 1:
+        if p.get("is_event") is not False or not _matches_only_itself(p, props):
             continue
         values = (p.get("examples") or []) + (p.get("counterexamples") or [])
         if any(_has_real_value(v) for v in values):

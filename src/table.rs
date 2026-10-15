@@ -199,6 +199,15 @@ mod tests {
     }
 
     #[test]
+    fn right_aligned_cells_line_up_under_a_multibyte_header() {
+        let out = Table::builder()
+            .column(Column::new("N (✓/✗)").align(Align::Right))
+            .column(Column::new("B"))
+            .render(vec![row(&["1/2", "x"])], usize::MAX);
+        assert_eq!(out, "N (✓/✗)  B\n    1/2  x");
+    }
+
+    #[test]
     fn colored_cells_measure_by_visible_width() {
         let red = console::style("red").red().force_styling(true).to_string();
         let out = Table::builder()

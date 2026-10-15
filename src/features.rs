@@ -12,8 +12,9 @@
 //! go away, in any release. Nothing behind this gate is covered by whatever
 //! stability the rest of the CLI has.
 //!
-//! A gated command needs a clap `hide` attribute and a check before dispatch:
-//! a hidden subcommand is still callable, and clap_complete still lists it.
+//! A gated command needs a [`Feature`] variant, a clap `hide` attribute, and a
+//! check before dispatch: a hidden subcommand is still callable, and
+//! clap_complete still lists it.
 //!
 //! Deliberately an environment variable and not a setting. The gate has to be
 //! known before the command line is parsed, because it decides which
@@ -21,39 +22,67 @@
 //! without first parsing `--settings`/`--profile`, which would mean parsing the
 //! command line twice. An environment variable has no such dependency.
 
+use std::fmt::{self, Display, Formatter};
+
+use clap::ValueEnum;
+use log::debug;
+
 use crate::env;
 
 /// The environment variable that enables unstable features, as a
 /// comma-separated list of ids.
 pub const UNSTABLE_FEATURES_VAR_NAME: &str = "SNOUTY_UNSTABLE_FEATURES";
 
-/// The feature ids `SNOUTY_UNSTABLE_FEATURES` lists, in order. Empty when the
-/// variable is unset or holds nothing usable; whitespace and empty entries are
-/// dropped, so `"a, b,"` is `[a, b]`.
+/// A feature that can be turned on by id. `ValueEnum` derives the id from the
+/// variant name in kebab-case, so a `RunsExec` variant has the id `runs-exec`.
 ///
-/// Callers must not reject an unknown id: every snouty on the machine shares
+/// No command is gated now, so there are no variants.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
+pub enum Feature {}
+
+impl Display for Feature {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let value = self
+            .to_possible_value()
+            .expect("no Feature variant is skipped");
+        f.write_str(value.get_name())
+    }
+}
+
+/// The features `SNOUTY_UNSTABLE_FEATURES` enables, in the order listed.
+/// Empty when the variable is unset or names no feature this build knows.
+///
+/// An unknown id is dropped, not rejected: every snouty on the machine shares
 /// one exported variable, so it can hold an id from a newer build or a retired
 /// one.
 ///
 /// A non-Unicode value is treated as unset rather than failing the command:
 /// this is read before the parse, where there is no good way to report an
 /// error, and the cost of ignoring it is only that a feature stays off.
-pub fn enabled() -> Vec<String> {
+pub fn enabled() -> Vec<Feature> {
     match env::var(UNSTABLE_FEATURES_VAR_NAME) {
         Ok(Some(value)) => parse_list(&value),
         _ => Vec::new(),
     }
 }
 
-/// The ids in one comma-separated list. Factored out of the environment read
-/// so the splitting rule can be unit-tested without changing process-global
-/// state — the same split `crate::env` makes for its own pure part.
-fn parse_list(value: &str) -> Vec<String> {
+/// The features one comma-separated list names. Whitespace and empty entries
+/// are dropped, so `"a, b,"` names `a` and `b`. Factored out of the
+/// environment read so the rule can be unit-tested without changing
+/// process-global state — the same split `crate::env` makes for its own pure
+/// part.
+fn parse_list(value: &str) -> Vec<Feature> {
     value
         .split(',')
         .map(str::trim)
         .filter(|id| !id.is_empty())
-        .map(str::to_string)
+        .filter_map(|id| {
+            let feature = Feature::from_str(id, false).ok();
+            if feature.is_none() {
+                debug!("ignoring unknown feature `{id}` in {UNSTABLE_FEATURES_VAR_NAME}");
+            }
+            feature
+        })
         .collect()
 }
 
@@ -62,9 +91,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_list_drops_blanks_and_whitespace() {
-        assert_eq!(parse_list("one"), ["one"]);
-        assert_eq!(parse_list(" one ,, other , "), ["one", "other"]);
+    fn a_list_keeps_known_ids_and_drops_the_rest() {
+        let known: Vec<String> = Feature::value_variants()
+            .iter()
+            .map(Feature::to_string)
+            .collect();
+        let list = format!(" from-the-future ,, {} , runs-exec , ", known.join(" , "));
+        assert_eq!(parse_list(&list), Feature::value_variants());
         assert!(parse_list("").is_empty());
         assert!(parse_list(" , ").is_empty());
     }

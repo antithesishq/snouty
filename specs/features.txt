@@ -1,9 +1,10 @@
 # Opt-in features
 #
-# A feature gates a command that isn't ready to be on for everyone — because
-# the Antithesis API it calls is still changing shape, or because most tenants
-# can't serve it yet. Gating lets such a command ship in a release without
-# putting it in front of users who would only hit a wall.
+# A feature can gate a command that isn't ready to be on for everyone —
+# because the Antithesis API it calls is still changing shape, or because most
+# tenants can't serve it yet. Gating lets such a command ship in a release
+# without putting it in front of users who would only hit a wall. No command
+# is gated now, so no feature id has an effect.
 #
 # Features are enabled by id in SNOUTY_UNSTABLE_FEATURES, a comma-separated list. They
 # are deliberately an environment variable and not a setting: the gate decides
@@ -13,18 +14,19 @@
 
 # 1. An unknown id does not break snouty: every snouty on the machine shares
 #    one exported SNOUTY_UNSTABLE_FEATURES, so it can hold an id from a newer
-#    build or a retired one.
+#    build or a retired one, such as runs-exec.
 env SNOUTY_UNSTABLE_FEATURES=from-the-future,runs-exec
 ! snouty runs exec run-1 -123 1.0 'uname -a'
 stderr 'No Antithesis credentials found.*'
 
-# 2. `snouty doctor` reports the listed features. Whitespace and empty
-#    entries are ignored. (`set-env` keeps the spaces; the `env` directive
-#    would split on them.) doctor exits non-zero here (no credentials or
-#    container runtime), but the table still prints.
-set-env SNOUTY_UNSTABLE_FEATURES  runs-exec , , other
+# 2. `snouty doctor` lists only the features this build knows, so it omits
+#    the row for ids that have no effect. Whitespace and empty entries are
+#    ignored. (`set-env` keeps the spaces; the `env` directive would split on
+#    them.) doctor exits non-zero here (no credentials or container runtime),
+#    but the table still prints.
+set-env SNOUTY_UNSTABLE_FEATURES  runs-search , , runs-exec
 ! snouty doctor
-stderr 'features +runs-exec, other$'
+! stderr '^\s*features\s'
 
 # 3. An empty value counts as unset, so doctor omits the row.
 env SNOUTY_UNSTABLE_FEATURES=

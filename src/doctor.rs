@@ -10,7 +10,7 @@ use crate::attributed_value::AttributedValue;
 use crate::auth::AuthenticationInfo;
 use crate::compose;
 use crate::container;
-use crate::features;
+use crate::features::{self, Feature};
 use crate::login::{CliOAuthConfig, fetch_cli_config};
 use crate::render::{OutputOptions, render_kv};
 use crate::settings::Settings;
@@ -574,7 +574,7 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
 /// The resolved-settings table: the value snouty resolved for each setting and
 /// where it came from (env > profile > project/global file). Purely
 /// informational — required/optional semantics are reported by [`collect_checks`].
-fn resolve_settings(settings: &Settings, features: &[String]) -> Vec<Setting> {
+fn resolve_settings(settings: &Settings, features: &[Feature]) -> Vec<Setting> {
     let mut rows = vec![
         Setting::maybe("profile", settings.profile()),
         Setting::maybe("tenant", settings.tenant()),
@@ -590,7 +590,8 @@ fn resolve_settings(settings: &Settings, features: &[String]) -> Vec<Setting> {
     // Only when set: features are opt-in, so an empty row would be noise on
     // every ordinary run.
     if !features.is_empty() {
-        rows.push(Setting::new("features", features.join(", ")));
+        let ids: Vec<String> = features.iter().map(Feature::to_string).collect();
+        rows.push(Setting::new("features", ids.join(", ")));
     }
     rows
 }
@@ -841,6 +842,8 @@ pub async fn cmd_doctor(
 
 #[cfg(test)]
 mod tests {
+    use clap::ValueEnum;
+
     use crate::auth::{API_KEY_VAR_NAME, PASSWORD_VAR_NAME, USERNAME_VAR_NAME};
     use crate::cli::UpdateChannel;
 
@@ -1216,15 +1219,16 @@ mod tests {
         let rows = resolve_settings(&Settings::default(), &[]);
         assert!(!rows.iter().any(|r| r.name == "features"));
 
-        let rows = resolve_settings(
-            &Settings::default(),
-            &["one".to_string(), "other".to_string()],
+        // Vacuous until a feature exists.
+        let all = Feature::value_variants();
+        let rows = resolve_settings(&Settings::default(), all);
+        let ids: Vec<String> = all.iter().map(Feature::to_string).collect();
+        assert_eq!(
+            rows.iter()
+                .find(|r| r.name == "features")
+                .map(Setting::render_value),
+            (!all.is_empty()).then(|| ids.join(", ")).as_deref(),
         );
-        let row = rows
-            .iter()
-            .find(|r| r.name == "features")
-            .expect("the row appears when a feature is on");
-        assert_eq!(row.render_value(), "one, other");
     }
 
     #[test]

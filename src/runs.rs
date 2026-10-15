@@ -1254,10 +1254,11 @@ fn render_properties_table(properties: &[Property]) -> String {
     // One table per group, like the report UI. The heading carries the group, so
     // NAME drops the group prefix.
     let width = terminal_width();
-    // Right-align the numeric EXAMPLES column so magnitudes line up.
+    // Right-align the numeric EXAMPLES column so magnitudes line up. The ✓/✗
+    // header order must match property_examples_cell.
     let table = Table::builder()
         .column(Column::new("STATUS"))
-        .column(Column::new("EXAMPLES").align(Align::Right))
+        .column(Column::new("EXAMPLES (✓/✗)").align(Align::Right))
         .column(Column::new("NAME").fit(Fit::Wrap { floor: 20 }));
 
     group_property_sections(properties)
@@ -2609,7 +2610,7 @@ mod tests {
             table.contains("\nSTATUS"),
             "expected a column header\n{table}"
         );
-        assert!(table.contains("EXAMPLES"));
+        assert!(table.contains("EXAMPLES (✓/✗)"));
         assert!(table.contains("NAME"));
         assert!(!table.contains("GROUP"));
         assert!(

@@ -2988,8 +2988,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
         _help_story(
             "help-runs-properties",
             "Learn the properties table, filters, and --detail",
-            "I want the help to explain the STATUS/EXAMPLES/NAME columns and the "
-            "examples/counterexamples count, and the --name/--group/--detail flags "
+            "I want the help to explain the STATUS, EXAMPLES (✓/✗), and NAME columns "
+            "and the examples/counterexamples count, and the --name/--group/--detail flags "
             "(including how --detail feeds a moment into `runs logs`).",
             ["runs", "properties"],
             ["runs", "properties", s],
@@ -3000,7 +3000,7 @@ def build_help_stories(d: Discovery) -> list[Story]:
                     ["runs", "properties", s, "--name", d.pass_event_prop, "--detail"],
                 ),
             ],
-            align=("STATUS", "EXAMPLES", "NAME"),
+            align=("STATUS", "EXAMPLES (✓/✗)", "NAME"),
         ),
         _help_story(
             "help-runs-events",

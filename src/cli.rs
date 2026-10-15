@@ -1067,9 +1067,10 @@ JSON object:
     #[command(
         long_about = r#"List a run's property (assertion) results, one table per group.
 
-Each table is headed by its group; columns are STATUS, EXAMPLES, NAME (failing
-first). EXAMPLES is the example count, shown as examples/counterexamples when a
-property has counterexamples.
+Each table is headed by its group; columns are STATUS, EXAMPLES (✓/✗), NAME
+(failing first). EXAMPLES is the example count (✓), followed by the
+counterexample count (✗) when a property has counterexamples: 0/186k is 0
+examples and 186k counterexamples.
 
 Narrow with --name and/or --group (both case-insensitive substring matches);
 add --detail to expand the matches into their examples and counter-example

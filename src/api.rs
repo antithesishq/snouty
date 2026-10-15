@@ -269,7 +269,6 @@ impl RunDetail {
         run_release(&self.run_id).is_none_or(|release| release >= MIN_SEARCH_RELEASE)
     }
 
-    /// True when `runs wait --until ready` returns for this run.
     pub(crate) fn is_ready_or_terminal(&self) -> bool {
         self.is_ready() || self.status.is_terminal()
     }

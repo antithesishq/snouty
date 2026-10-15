@@ -155,8 +155,8 @@ stderr -literal 'Suggestion: search for a moment using `snouty runs events run-1
 
 # Before a run is ready, its events search and count answer 404, so the
 #    input hash cannot be checked. snouty refuses the run, and nothing is
-#    launched. session-starting is starting, and session-loading is in
-#    progress without the `ready` sub-status.
+#    launched. session-starting is starting. session-loading is in progress,
+#    without the `ready` sub-status.
 mock-runs-server
 ! snouty debug --input-hash 5181922178177328213 --run-id session-starting --vtime 404
 stderr 'run session-starting is not ready yet: its status is starting'
@@ -171,10 +171,10 @@ stderr -literal 'Suggestion: wait for it with `snouty runs wait session-loading 
 ! stdout 'Debugging session started'
 
 # When the count fails for a run that is ready or has stopped, snouty
-#    gives the error and launches nothing. A 404 does not skip the check.
-#    The run below is from release 61.1, so it is ready while in progress,
-#    and its count answers 404. The error names the release floor, as a
-#    search does.
+#    gives the error and launches nothing. The run below is from release
+#    61.1, so it has no sub-status and is ready while in progress. Its
+#    release does not serve the count, so the count answers 404, and the
+#    error names the release floor.
 mock-runs-server
 ! snouty debug --input-hash 5181922178177328213 --run-id 0df9ac1f5155c14f88ea41f5ad503e07-61-1 --vtime 404
 stderr 'API error: 404'

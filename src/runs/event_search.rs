@@ -131,8 +131,7 @@ pub(super) async fn count_query(
 
 /// Wait until the run is ready or terminal, then send one events-search
 /// request with `send`. The wait bypasses the response cache by itself, so
-/// pass the cached client. The wait reads the run, so the run exists when the
-/// request goes out.
+/// pass the cached client.
 pub(super) async fn search_when_ready<T, Fut>(
     api: &AntithesisApi,
     run_id: &str,
@@ -146,12 +145,11 @@ where
     send().await.map_err(|err| explain_search_error(&run, err))
 }
 
-/// Annotate an events-search error for `run`, which exists and is ready or
-/// terminal. A 404 on a run from a release before [`MIN_SEARCH_RELEASE`] gets
-/// a suggestion about the release: those releases do not serve the endpoint,
-/// and its 404 body is an unhelpful "Resource not found". A 400 comes from the
-/// query or from an out-of-range `limit`, so its note does not blame the query
-/// alone.
+/// Annotate an events-search error for `run`. `run` must exist and be ready
+/// or terminal. Releases before [`MIN_SEARCH_RELEASE`] do not serve the
+/// endpoint and answer 404 with an unhelpful "Resource not found", so the
+/// error gets a suggestion that names the release. A 400 comes from the query
+/// or from an out-of-range `limit`, so its note does not blame the query alone.
 pub(super) fn explain_search_error(
     run: &RunDetail,
     err: color_eyre::eyre::Report,

@@ -699,10 +699,10 @@ async fn probe_run(api: &AntithesisApi, run_id: &str) -> RunProbe {
 }
 
 /// Fail unless `snouty debug` can use the run `run_id`. An unknown run gives
-/// the shared "run not found: X" error, and a run that is not ready gives an
-/// error too. Before a run is ready, its events search and count answer 404
-/// `Resource not found` (observed on tenant orbitinghail, release 64.0), so
-/// its input hash cannot be checked. Returns the run.
+/// the shared "run not found: X" error. A run that is not ready or terminal
+/// also gives an error: before a run is ready, its events search and count
+/// answer 404 `Resource not found` (observed on tenant orbitinghail, release
+/// 64.0), so its input hash cannot be checked.
 pub async fn ensure_run_debuggable(api: &AntithesisApi, run_id: &str) -> Result<RunDetail> {
     match probe_run(api, run_id).await {
         RunProbe::NotFound => Err(user_error(format!("run not found: {run_id}"))),
@@ -720,7 +720,10 @@ pub async fn ensure_run_debuggable(api: &AntithesisApi, run_id: &str) -> Result<
 
 /// Fail unless `run` has an event under `input_hash`. The launch endpoint
 /// accepts a hash that the run never reached and starts a billable session,
-/// so check the hash first. `run` comes from [`ensure_run_debuggable`].
+/// so check the hash first. `run` must be ready or terminal, as
+/// [`ensure_run_debuggable`] checks. Use the count: on a run in progress, a
+/// search for a hash with no event ran 10 minutes without an answer
+/// (orbitinghail, release 64.0).
 pub async fn ensure_input_hash_exists(
     api: &AntithesisApi,
     run: &RunDetail,

@@ -26,8 +26,8 @@ stdout '.*"name": "credentials".*'
 stdout '.*"status": "error".*'
 stdout '.*"level": "error".*'
 
-# The settings list only the features this build knows (see features.txt), in
-# --json as well: no command is gated now, so the retired ids get no field.
+# --json omits feature ids this build does not know, such as the retired
+# runs-search and runs-exec.
 env SNOUTY_UNSTABLE_FEATURES=runs-search,runs-exec
 ! snouty doctor --json
 stdout '"settings": \{'

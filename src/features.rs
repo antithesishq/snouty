@@ -34,13 +34,11 @@ use crate::env;
 /// comma-separated list of ids.
 pub const UNSTABLE_FEATURES_VAR_NAME: &str = "SNOUTY_UNSTABLE_FEATURES";
 
-/// A feature that can be turned on by id. `ValueEnum` derives the id from the
-/// variant name in kebab-case, so a `RunsExec` variant has the id `runs-exec`.
-///
-/// No command is gated now, so only tests have a variant.
+/// A gated feature. Its id is the variant name in kebab-case, so `RunsExec`
+/// has the id `runs-exec`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
 pub enum Feature {
-    /// Stands in for a real feature, so tests can turn one on.
+    /// Stands in for a real feature in tests.
     #[cfg(test)]
     Example,
 }
@@ -65,8 +63,8 @@ impl Display for Feature {
 /// The features `SNOUTY_UNSTABLE_FEATURES` enables, in the order listed.
 /// Empty when the variable is unset or names no feature this build knows.
 ///
-/// An unknown id is dropped, not rejected: every snouty on the machine shares
-/// one exported variable, so it can hold an id from a newer build or a retired
+/// An unknown id is dropped, because every snouty on the machine shares one
+/// exported variable, so it can hold an id from a newer build or a retired
 /// one.
 ///
 /// A non-Unicode value is treated as unset rather than failing the command:
@@ -79,11 +77,9 @@ pub fn enabled() -> Vec<Feature> {
     }
 }
 
-/// The features one comma-separated list names. Whitespace and empty entries
-/// are dropped, so `"a, b,"` names `a` and `b`. Factored out of the
-/// environment read so the rule can be unit-tested without changing
-/// process-global state — the same split `crate::env` makes for its own pure
-/// part.
+/// The known features one comma-separated list names, in order. Drops blank
+/// entries and unknown ids. Separate from [`enabled`] so tests need not set
+/// process-global state.
 fn parse_list(value: &str) -> Vec<Feature> {
     value
         .split(',')

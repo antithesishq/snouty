@@ -791,7 +791,8 @@ fn html(body: Bytes) -> impl IntoResponse {
 /// Parse the callback query string (e.g. `code=…&state=…`) into the
 /// authorization code and flow token. The proxy carries the flow token in the
 /// standard OAuth `state` parameter. An IdP-reported `error` surfaces as an error.
-/// Any page that knows the port can send it, so its control characters are escaped.
+/// Any page that knows the port can send a callback, so `error` and
+/// `error_description` are escaped for the terminal.
 fn parse_callback_params(query: &str) -> Result<CallbackParams> {
     let mut auth_code = None;
     let mut flow_token = None;
@@ -947,7 +948,7 @@ mod tests {
     }
 
     #[hegel::test]
-    fn parse_callback_idp_error_holds_no_ascii_controls_except_tab(tc: hegel::TestCase) {
+    fn parse_callback_idp_error_holds_no_controls_except_tab(tc: hegel::TestCase) {
         let error = tc.draw(hegel::generators::text());
         let description = tc.draw(hegel::generators::text());
         let query = form_urlencoded::Serializer::new(String::new())
@@ -956,9 +957,7 @@ mod tests {
             .finish();
         let rendered = format!("{}", parse_callback_params(&query).unwrap_err());
         assert!(
-            !rendered
-                .chars()
-                .any(|ch| ch != '\t' && ch.is_ascii_control()),
+            !rendered.chars().any(|ch| ch != '\t' && ch.is_control()),
             "got: {rendered:?}"
         );
     }

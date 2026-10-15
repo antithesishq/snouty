@@ -1755,16 +1755,19 @@ impl Drop for ReadyDisplay {
     }
 }
 
-/// The marker in a 400's message that the moment is cold. It opens both
-/// messages observed on orbitinghail (release 64.0): `Moment not warm and no
-/// provided source_run_id or source_session_id. …` at first, and `Moment not
-/// warm in the live run and no source_run_id provided.` from 2026-10-07.
-const MOMENT_NOT_WARM: &str = "Moment not warm";
+/// Markers in a 400's message that the moment is not loaded in the run, when
+/// the request names no rewarm source. Observed on orbitinghail:
+///
+/// - Release 64.0: `Moment not warm and no provided source_run_id or
+///   source_session_id. …` at first, and `Moment not warm in the live run and
+///   no source_run_id provided.` from 2026-10-07.
+/// - Release 64.4, 2026-10-14: `failed to execute pangolin query due to a
+///   runtime error: Invalid root end: WireMoment { input_hash: "…", vtime: … }`,
+///   for a moment from another run and for a moment that no run has.
+const MOMENT_NOT_LOADED: [&str; 2] = ["Moment not warm", "Invalid root end"];
 
-/// Add suggestions to a failed `runs exec` request in a run with status
-/// `run_status`, which is ready or complete. `debug_command` starts a
-/// debugging session at the request's moment, and `rewarm_flag` names the
-/// rewarm source's flag, if one was given.
+/// Explain a failed `runs exec` request at `moment` in `run`, which is ready
+/// or complete. `rewarm` is the request's rewarm source, if one was given.
 ///
 /// A run that has stopped cannot accept a command: on orbitinghail, a
 /// completed test run answers 400 `This run is not currently active or
@@ -1772,34 +1775,57 @@ const MOMENT_NOT_WARM: &str = "Moment not warm";
 /// on orbitinghail (release 64.0) mean:
 ///
 /// - 404 `Resource not found`: the source does not exist.
-/// - 400 `Moment not warm…`: the moment is cold and there is no source.
+/// - 400 with a [`MOMENT_NOT_LOADED`] marker: the moment is cold and there is
+///   no source.
 /// - Any other 400: a rewarm did not finish, or the source is not the
 ///   moment's run.
 fn explain_exec_error(
-    run_status: RunStatus,
-    debug_command: &str,
-    rewarm_flag: Option<&str>,
+    run: &RunDetail,
+    moment: &Moment,
+    rewarm: Option<&RewarmSource>,
     err: color_eyre::eyre::Report,
 ) -> color_eyre::eyre::Report {
     let Some(status) = api_error_status(&err) else {
         return err;
     };
-    if run_status.is_terminal() {
+    let run_id = &run.run_id;
+    let Moment { input_hash, vtime } = moment;
+    // A cold moment is in its rewarm source, not in the run, so a debugging
+    // session at that moment starts from the source.
+    let (rewarm_flag, debug_target) = match rewarm {
+        Some(RewarmSource::Run(id)) => (Some("--source-run-id"), format!("--run-id {}", **id)),
+        Some(RewarmSource::Session(id)) => (
+            Some("--source-session-id"),
+            format!("--session-id {}", **id),
+        ),
+        None => (None, format!("--run-id {run_id}")),
+    };
+    if run.status.is_terminal() {
         return err
             .note(format!(
-                "`runs exec` needs a run that is in progress. This run is {run_status}"
+                "`runs exec` needs a run that is in progress. This run is {}",
+                run.status
             ))
             .suggestion(format!(
-                "start a debugging session at this moment with `{debug_command}`"
+                "start a debugging session at this moment with \
+                 `snouty debug {debug_target} --input-hash {input_hash} --vtime {vtime}`"
             ));
     }
-    let cold = api_error_message(&err).is_some_and(|m| m.contains(MOMENT_NOT_WARM));
-    match (status, rewarm_flag) {
-        (404, Some(flag)) => err.suggestion(format!("check that {flag} names an existing source")),
-        (400, None) if cold => {
-            err.suggestion("use --source-run-id to load a moment from a different run")
+    let not_loaded = api_error_message(&err)
+        .filter(|message| MOMENT_NOT_LOADED.iter().any(|marker| message.contains(marker)));
+    match (status, rewarm_flag, not_loaded) {
+        (404, Some(flag), _) => {
+            err.suggestion(format!("check that {flag} names an existing source"))
         }
-        (400, Some(flag)) => err.suggestion(format!(
+        (400, None, Some(message)) => user_error(format!(
+            "moment {input_hash} {vtime} is not loaded in run {run_id}"
+        ))
+        .note(format!("the server answered: {message}"))
+        .suggestion(format!(
+            "load the moment from the run it comes from with \
+             `snouty runs exec {run_id} {input_hash} {vtime} --source-run-id <run_id> <script>`"
+        )),
+        (400, Some(flag), _) => err.suggestion(format!(
             "check that {flag} names the run the moment comes from"
         )),
         _ => err,
@@ -1933,25 +1959,14 @@ async fn exec_when_ready(
 ) -> Result<()> {
     let timeout = exec.timeout;
     let mut renderer = exec.events.then(|| EventStreamRenderer::new(false));
-    // A cold moment is in its rewarm source, not in RUN_ID, so a debugging
-    // session at that moment starts from the source.
-    let (rewarm_flag, debug_target) = match &exec.rewarm {
-        Some(RewarmSource::Run(id)) => (Some("--source-run-id"), format!("--run-id {}", **id)),
-        Some(RewarmSource::Session(id)) => (
-            Some("--source-session-id"),
-            format!("--session-id {}", **id),
-        ),
-        None => (None, format!("--run-id {run_id}")),
-    };
-    let debug_command = format!(
-        "snouty debug {debug_target} --input-hash {} --vtime {}",
-        exec.moment.input_hash, exec.moment.vtime
-    );
+    // The request moves into `execute_command`, and its error needs these.
+    let moment = exec.moment.clone();
+    let rewarm = exec.rewarm.clone();
     let run = wait_until_ready(api, run_id, poll).await?;
     let stream = api
         .execute_command(run_id, exec)
         .await
-        .map_err(|err| explain_exec_error(run.status, &debug_command, rewarm_flag, err))?;
+        .map_err(|err| explain_exec_error(&run, &moment, rewarm.as_ref(), err))?;
 
     // Only the last line can be the terminal result. A line that parses as
     // one is held until the next line arrives, and is shown as an event if one

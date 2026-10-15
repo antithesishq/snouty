@@ -1229,6 +1229,10 @@ fn mock_exec_command_received() -> String {
 /// The input hash of a moment the mock session holds cold.
 pub const MOCK_COLD_HASH: &str = "1002528785118888238";
 
+/// The input hash of a second cold moment. Without a source, the mock answers
+/// it with release 64.4's message, and [`MOCK_COLD_HASH`] with release 64.0's.
+const MOCK_COLD_HASH_64_4: &str = "-1529494436880291199";
+
 fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     // See the `run-stream-error` fixture note in `mock_route_get_run_build_logs`.
     if run_id == "run-stream-error" {
@@ -1273,9 +1277,16 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     }
     // A moment off the session's own timeline is cold. Without a source, the
     // live endpoint answers 400. With a source, a rewarm that outlives the
-    // timeout also answers 400 (the `slow-rewarm` script). Both messages are
-    // verbatim from orbitinghail (release 64.0; the no-source one as of
-    // 2026-10-07).
+    // timeout also answers 400 (the `slow-rewarm` script). The messages are
+    // verbatim from orbitinghail: release 64.0 (the no-source one as of
+    // 2026-10-07) and release 64.4 (2026-10-14, for the moment at vtime
+    // 13.514954556245357).
+    if request["moment"]["input_hash"] == MOCK_COLD_HASH_64_4 && !has_source {
+        let message = format!(
+            r#"failed to execute pangolin query due to a runtime error: Invalid root end: WireMoment {{ input_hash: "{MOCK_COLD_HASH_64_4}", vtime: 58046287826 }}"#
+        );
+        return (400, serde_json::json!({ "message": message }).to_string());
+    }
     if cold && !has_source {
         let message = "Moment not warm in the live run and no source_run_id provided.";
         return (400, serde_json::json!({ "message": message }).to_string());

@@ -1766,19 +1766,18 @@ impl Drop for ReadyDisplay {
 ///   for a moment from another run and for a moment that no run has.
 const MOMENT_NOT_LOADED: [&str; 2] = ["Moment not warm", "Invalid root end"];
 
-/// Explain a failed `runs exec` request at `moment` in `run`, which is ready
-/// or complete. `rewarm` is the request's rewarm source, if one was given.
+/// Explain a failed `runs exec` request in `run`, which is ready or complete.
 ///
 /// A run that has stopped cannot accept a command: on orbitinghail, a
 /// completed test run answers 400 `This run is not currently active or
 /// reachable. Unable to execute command.` Otherwise, the server's responses
-/// on orbitinghail (release 64.0) mean:
+/// on orbitinghail mean:
 ///
-/// - 404 `Resource not found`: the source does not exist.
-/// - 400 with a [`MOMENT_NOT_LOADED`] marker: the moment is cold and there is
-///   no source.
-/// - Any other 400: a rewarm did not finish, or the source is not the
-///   moment's run.
+/// - 404 `Resource not found` (release 64.0): the source does not exist.
+/// - 400 with a [`MOMENT_NOT_LOADED`] marker: the moment is not loaded in the
+///   run and there is no source.
+/// - Any other 400 (release 64.0): a rewarm did not finish, or the source is
+///   not the moment's run.
 fn explain_exec_error(
     run: &RunDetail,
     moment: &Moment,
@@ -1790,17 +1789,14 @@ fn explain_exec_error(
     };
     let run_id = &run.run_id;
     let Moment { input_hash, vtime } = moment;
-    // A cold moment is in its rewarm source, not in the run, so a debugging
-    // session at that moment starts from the source.
-    let (rewarm_flag, debug_target) = match rewarm {
-        Some(RewarmSource::Run(id)) => (Some("--source-run-id"), format!("--run-id {}", **id)),
-        Some(RewarmSource::Session(id)) => (
-            Some("--source-session-id"),
-            format!("--session-id {}", **id),
-        ),
-        None => (None, format!("--run-id {run_id}")),
-    };
     if run.status.is_terminal() {
+        // A cold moment is in its rewarm source, not in the run, so a debugging
+        // session at that moment starts from the source.
+        let debug_target = match rewarm {
+            Some(RewarmSource::Run(id)) => format!("--run-id {}", **id),
+            Some(RewarmSource::Session(id)) => format!("--session-id {}", **id),
+            None => format!("--run-id {run_id}"),
+        };
         return err
             .note(format!(
                 "`runs exec` needs a run that is in progress. This run is {}",
@@ -1811,8 +1807,15 @@ fn explain_exec_error(
                  `snouty debug {debug_target} --input-hash {input_hash} --vtime {vtime}`"
             ));
     }
-    let not_loaded = api_error_message(&err)
-        .filter(|message| MOMENT_NOT_LOADED.iter().any(|marker| message.contains(marker)));
+    let rewarm_flag = rewarm.map(|source| match source {
+        RewarmSource::Run(_) => "--source-run-id",
+        RewarmSource::Session(_) => "--source-session-id",
+    });
+    let not_loaded = api_error_message(&err).filter(|message| {
+        MOMENT_NOT_LOADED
+            .iter()
+            .any(|marker| message.contains(marker))
+    });
     match (status, rewarm_flag, not_loaded) {
         (404, Some(flag), _) => {
             err.suggestion(format!("check that {flag} names an existing source"))
@@ -1820,7 +1823,7 @@ fn explain_exec_error(
         (400, None, Some(message)) => user_error(format!(
             "moment {input_hash} {vtime} is not loaded in run {run_id}"
         ))
-        .note(format!("the server answered: {message}"))
+        .note(message.to_string())
         .suggestion(format!(
             "load the moment from the run it comes from with \
              `snouty runs exec {run_id} {input_hash} {vtime} --source-run-id <run_id> <script>`"
@@ -1959,7 +1962,6 @@ async fn exec_when_ready(
 ) -> Result<()> {
     let timeout = exec.timeout;
     let mut renderer = exec.events.then(|| EventStreamRenderer::new(false));
-    // The request moves into `execute_command`, and its error needs these.
     let moment = exec.moment.clone();
     let rewarm = exec.rewarm.clone();
     let run = wait_until_ready(api, run_id, poll).await?;

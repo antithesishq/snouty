@@ -265,20 +265,18 @@ stdout 'source_run_id=1f1211ea49946d4f63a92d65ee42476d-64-0 source_session_id=ab
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --source-session-id ba4ebf3181dd342334b86c58941813c6-64-0
 stdout 'source_run_id=absent source_session_id=ba4ebf3181dd342334b86c58941813c6-64-0'
 
-# A cold moment without a source fails. snouty says that the moment is not
-# loaded in the run, gives the server's 400 as a note, and gives the command
-# with --source-run-id. Release 64.0 answers "Moment not warm".
+# A cold moment without a source fails. Release 64.0 answers "Moment not
+# warm".
 ! snouty runs exec run-2 1002528785118888238 278.1311443040613 'true'
 stderr '^Error: moment 1002528785118888238 278\.1311443040613 is not loaded in run run-2$'
-stderr '^Note: the server answered: API error: 400 Bad Request — Moment not warm'
+stderr '^Note: API error: 400 Bad Request — Moment not warm'
 stderr '^Suggestion: load the moment from the run it comes from with `snouty runs exec run-2 1002528785118888238 278\.1311443040613 --source-run-id <run_id> <script>`$'
 ! stderr 'not ready'
 
-# Release 64.4 answers "Invalid root end" for the same cause, and snouty
-# explains it the same way.
+# Release 64.4 answers "Invalid root end" for the same cause.
 ! snouty runs exec run-2 -1529494436880291199 13.514954556245357 'true'
 stderr '^Error: moment -1529494436880291199 13\.514954556245357 is not loaded in run run-2$'
-stderr '^Note: the server answered: API error: 400 Bad Request — failed to execute pangolin query due to a runtime error: Invalid root end: WireMoment'
+stderr '^Note: API error: 400 Bad Request — failed to execute pangolin query due to a runtime error: Invalid root end: WireMoment'
 stderr '^Suggestion: load the moment from the run it comes from with `snouty runs exec run-2 -1529494436880291199 13\.514954556245357 --source-run-id <run_id> <script>`$'
 
 # A ready run executes at once, with no waiting line. Rust tests in src/runs.rs

@@ -29,7 +29,7 @@ use crate::{
     auth::{AuthenticationInfo, PersistableCredentials, is_blank_api_key, persist},
     env,
     error::user_error,
-    render::OutputOptions,
+    render::{OutputOptions, sanitize},
     settings::{
         ANTITHESIS_PROFILE_ENV_VAR_NAME, Settings, update_settings_in_global_file,
         validate_tenant_host,
@@ -790,7 +790,8 @@ fn html(body: Bytes) -> impl IntoResponse {
 
 /// Parse the callback query string (e.g. `code=…&state=…`) into the
 /// authorization code and flow token. The proxy carries the flow token in the
-/// standard OAuth `state` parameter. An IdP-reported `error` surfaces as an error.
+/// standard OAuth `state` parameter. An IdP-reported `error` surfaces as an error,
+/// sanitized for the terminal: any page that knows the port can send it.
 fn parse_callback_params(query: &str) -> Result<CallbackParams> {
     let mut auth_code = None;
     let mut flow_token = None;
@@ -800,8 +801,8 @@ fn parse_callback_params(query: &str) -> Result<CallbackParams> {
         match key.as_ref() {
             "code" => auth_code = Some(value.into_owned()),
             "state" => flow_token = Some(value.into_owned()),
-            "error" => error = Some(value.into_owned()),
-            "error_description" => error_description = Some(value.into_owned()),
+            "error" => error = Some(sanitize(&value)),
+            "error_description" => error_description = Some(sanitize(&value)),
             _ => {}
         }
     }
@@ -932,6 +933,17 @@ mod tests {
         let rendered = format!("{err}");
         assert!(rendered.contains("access_denied"), "got: {rendered}");
         assert!(rendered.contains("user said no"), "got: {rendered}");
+    }
+
+    #[test]
+    fn parse_callback_escapes_terminal_controls_in_the_idp_error() {
+        let err = parse_callback_params(
+            "error=x%1b%5b2J&error_description=%1b%5d0%3bPWNED%07%1b%5b31mRED",
+        )
+        .unwrap_err();
+        let rendered = format!("{err}");
+        assert!(!rendered.contains(['\x1b', '\x07']), "got: {rendered:?}");
+        assert!(rendered.contains("PWNED"), "got: {rendered:?}");
     }
 
     #[test]

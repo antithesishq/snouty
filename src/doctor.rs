@@ -266,6 +266,12 @@ fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
         )];
     };
 
+    // A blank API key cannot authenticate, so it is no source to fall back on.
+    let shadowed: Vec<_> = shadowed
+        .iter()
+        .filter(|s| !s.value().has_blank_api_key())
+        .collect();
+
     // A username and password in use while they hide a credential the API
     // accepts: the one thing to do is free that credential (issue #292).
     if let AuthenticationInfo::Password { .. } = credentials.value()
@@ -292,6 +298,15 @@ fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
                 credentials,
             )]
         }
+        credential if credential.has_blank_api_key() => {
+            vec![enrich_with_origin(
+                with_credential_remedy(
+                    Check::fail(CREDENTIALS_CHECK_NAME, "the API key is empty")
+                        .note(Level::Error, "an empty API key cannot authenticate"),
+                ),
+                credentials,
+            )]
+        }
         AuthenticationInfo::ApiKey { .. } => {
             vec![enrich_with_origin(
                 Check::ok("api_key", "API key provided"),
@@ -303,12 +318,12 @@ fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
         }
     };
 
-    checks.extend(shadowed_credentials_check(credentials, shadowed));
+    checks.extend(shadowed_credentials_check(credentials, &shadowed));
     checks
 }
 
-/// The check that reports a credential shortfall: no credential at all, or
-/// only the deprecated username and password.
+/// The check that reports a credential shortfall: no credential at all, an
+/// empty API key, or only the deprecated username and password.
 const CREDENTIALS_CHECK_NAME: &str = "credentials";
 
 fn missing_credentials_check(message: impl Into<String>) -> Check {
@@ -402,11 +417,11 @@ fn login_to_replace(profile: Option<&str>) -> String {
     format!("run `snouty login{flag}` to replace it with an API key")
 }
 
-/// A warning, not a failure: snouty is authenticated, just not with the
-/// credential the user expected.
+/// A warning, not a failure: the credential in use is not the one the user
+/// expected.
 fn shadowed_credentials_check(
     in_use: &AttributedValue<AuthenticationInfo>,
-    shadowed: &[AttributedValue<AuthenticationInfo>],
+    shadowed: &[&AttributedValue<AuthenticationInfo>],
 ) -> Option<Check> {
     if shadowed.is_empty() {
         return None;

@@ -202,6 +202,27 @@ snouty doctor --offline
 stderr '.*API key provided.*'
 ! stderr '(?s).*credentials.toml.*'
 
+# An empty API key in the credentials file, as an older `snouty login` could
+# write it, fails doctor: it cannot authenticate.
+isolate-home empty_api_key
+env ANTITHESIS_API_KEY=
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
+env ANTITHESIS_TENANT=testtenant
+! snouty doctor --offline
+stderr '^  ✗ the API key is empty$'
+stderr '^      NOTE: read from the \[default\] profile in .+credentials\.toml$'
+! stderr 'API key provided'
+
+# Doctor does not offer an empty key as a source to fall back on, because an
+# empty key cannot authenticate.
+env ANTITHESIS_USERNAME=envuser
+env ANTITHESIS_PASSWORD=envpass
+snouty doctor --offline
+stderr '^  ⚠ username/password for user \[envuser\] only works for `snouty launch` and `snouty debug`$'
+! stderr 'hiding your API key'
+! stderr 'more than one credential source'
+
 -- credential_conflict/.config/snouty/credentials.toml --
 [default]
 type = "ApiKey"
@@ -217,6 +238,11 @@ password = "stored-pass"
 type = "Password"
 username = "prod-user"
 password = "stored-pass"
+
+-- empty_api_key/.config/snouty/credentials.toml --
+[default]
+type = "ApiKey"
+api_key = ""
 
 -- broken_credentials/.config/snouty/credentials.toml --
 this is not valid TOML {{{

@@ -72,7 +72,7 @@ impl Display for Feature {
 /// error, and the cost of ignoring it is only that a feature stays off.
 pub fn enabled() -> Vec<Feature> {
     match env::var(UNSTABLE_FEATURES_VAR_NAME) {
-        Ok(Some(value)) => parse_list(&value),
+        Ok(Some(value)) => parse_features_list(&value),
         _ => Vec::new(),
     }
 }
@@ -80,7 +80,7 @@ pub fn enabled() -> Vec<Feature> {
 /// The known features one comma-separated list names, in order. Drops blank
 /// entries and unknown ids. Separate from [`enabled`] so tests need not set
 /// process-global state.
-fn parse_list(value: &str) -> Vec<Feature> {
+fn parse_features_list(value: &str) -> Vec<Feature> {
     value
         .split(',')
         .map(str::trim)
@@ -102,11 +102,11 @@ mod tests {
     #[test]
     fn a_list_keeps_known_ids_and_drops_the_rest() {
         assert_eq!(
-            parse_list(" from-the-future ,, example , "),
+            parse_features_list(" from-the-future ,, example , "),
             [Feature::Example]
         );
-        assert!(parse_list("from-the-future").is_empty());
-        assert!(parse_list("").is_empty());
-        assert!(parse_list(" , ").is_empty());
+        assert!(parse_features_list("from-the-future").is_empty());
+        assert!(parse_features_list("").is_empty());
+        assert!(parse_features_list(" , ").is_empty());
     }
 }

@@ -587,8 +587,8 @@ fn resolve_settings(settings: &Settings, features: &[Feature]) -> Vec<Setting> {
         ),
         Setting::new("update_channel", settings.update_channel().as_str()),
     ];
-    // Only when set: features are opt-in, so an empty row would be noise on
-    // every ordinary run.
+    // Only when a feature is on: an empty row would be noise on every
+    // ordinary run.
     if !features.is_empty() {
         let ids: Vec<String> = features.iter().map(Feature::to_string).collect();
         rows.push(Setting::new("features", ids.join(", ")));
@@ -842,8 +842,6 @@ pub async fn cmd_doctor(
 
 #[cfg(test)]
 mod tests {
-    use clap::ValueEnum;
-
     use crate::auth::{API_KEY_VAR_NAME, PASSWORD_VAR_NAME, USERNAME_VAR_NAME};
     use crate::cli::UpdateChannel;
 
@@ -1219,16 +1217,8 @@ mod tests {
         let rows = resolve_settings(&Settings::default(), &[]);
         assert!(!rows.iter().any(|r| r.name == "features"));
 
-        // Vacuous until a feature exists.
-        let all = Feature::value_variants();
-        let rows = resolve_settings(&Settings::default(), all);
-        let ids: Vec<String> = all.iter().map(Feature::to_string).collect();
-        assert_eq!(
-            rows.iter()
-                .find(|r| r.name == "features")
-                .map(Setting::render_value),
-            (!all.is_empty()).then(|| ids.join(", ")).as_deref(),
-        );
+        let rows = resolve_settings(&Settings::default(), &[Feature::Example, Feature::Example]);
+        assert_eq!(row(&rows, "features").render_value(), "example, example");
     }
 
     #[test]

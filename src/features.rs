@@ -23,6 +23,7 @@
 //! command line twice. An environment variable has no such dependency.
 
 use std::fmt::{self, Display, Formatter};
+use std::str::FromStr;
 
 use clap::ValueEnum;
 use log::debug;
@@ -36,9 +37,21 @@ pub const UNSTABLE_FEATURES_VAR_NAME: &str = "SNOUTY_UNSTABLE_FEATURES";
 /// A feature that can be turned on by id. `ValueEnum` derives the id from the
 /// variant name in kebab-case, so a `RunsExec` variant has the id `runs-exec`.
 ///
-/// No command is gated now, so there are no variants.
+/// No command is gated now, so only tests have a variant.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
-pub enum Feature {}
+pub enum Feature {
+    /// Stands in for a real feature, so tests can turn one on.
+    #[cfg(test)]
+    Example,
+}
+
+impl FromStr for Feature {
+    type Err = String;
+
+    fn from_str(id: &str) -> Result<Self, Self::Err> {
+        <Self as ValueEnum>::from_str(id, false)
+    }
+}
 
 impl Display for Feature {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -77,7 +90,7 @@ fn parse_list(value: &str) -> Vec<Feature> {
         .map(str::trim)
         .filter(|id| !id.is_empty())
         .filter_map(|id| {
-            let feature = Feature::from_str(id, false).ok();
+            let feature = id.parse().ok();
             if feature.is_none() {
                 debug!("ignoring unknown feature `{id}` in {UNSTABLE_FEATURES_VAR_NAME}");
             }
@@ -92,12 +105,11 @@ mod tests {
 
     #[test]
     fn a_list_keeps_known_ids_and_drops_the_rest() {
-        let known: Vec<String> = Feature::value_variants()
-            .iter()
-            .map(Feature::to_string)
-            .collect();
-        let list = format!(" from-the-future ,, {} , runs-exec , ", known.join(" , "));
-        assert_eq!(parse_list(&list), Feature::value_variants());
+        assert_eq!(
+            parse_list(" from-the-future ,, example , "),
+            [Feature::Example]
+        );
+        assert!(parse_list("from-the-future").is_empty());
         assert!(parse_list("").is_empty());
         assert!(parse_list(" , ").is_empty());
     }

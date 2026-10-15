@@ -22,15 +22,18 @@ publish-prereleases = true
 # Produce build provenance attestations for the released artifacts
 github-attestations = true
 
-# dist defaults to macos-14 and ubuntu-22.04, which GitHub is retiring.
-# The gnu targets built here need glibc 2.39 or newer.
+# dist defaults to macos-14, which GitHub retires on 2026-11-02.
+# The gnu binaries link against the build runner's glibc, and the dist
+# installer requires that version or newer. ubuntu-22.04 has glibc 2.35.
+# TODO: Replace ubuntu-22.04 after the 0.8 release. GitHub retires it, with
+# brownouts before 2027-04-17 (actions/runner-images#14254).
 [dist.github-custom-runners]
-global = "ubuntu-24.04"
+global = "ubuntu-22.04"
 aarch64-apple-darwin = "macos-15"
-aarch64-unknown-linux-gnu = "ubuntu-24.04-arm"
-aarch64-unknown-linux-musl = "ubuntu-24.04-arm"
-x86_64-unknown-linux-gnu = "ubuntu-24.04"
-x86_64-unknown-linux-musl = "ubuntu-24.04"
+aarch64-unknown-linux-gnu = "ubuntu-22.04-arm"
+aarch64-unknown-linux-musl = "ubuntu-22.04-arm"
+x86_64-unknown-linux-gnu = "ubuntu-22.04"
+x86_64-unknown-linux-musl = "ubuntu-22.04"
 
 [dist.dependencies.apt]
 musl-tools = { targets = ["aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"] }

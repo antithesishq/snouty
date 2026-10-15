@@ -53,12 +53,9 @@ pub(crate) fn indent_lines(text: &str, prefix: &str) -> String {
         .join("\n")
 }
 
-/// Escape one character into `out`, sharing the control-char policy between
-/// [`sanitize`] and [`sanitize_multiline`]. `newline` decides how `\n`/`\r` are
-/// handled: single-line callers escape them to visible `\n`/`\r`, multi-line
-/// callers keep `\n` as a real break and drop `\r`. Everything else — tab passes
-/// through, other C0/DEL/C1 controls become `\xNN`, printable chars pass through —
-/// is identical for both.
+/// Escape one character into `out` under the control-character policy that
+/// [`sanitize`] and [`sanitize_multiline`] share. Tab passes through, and every
+/// other Unicode control (Cc) except `\n` and `\r` becomes `\xNN`.
 fn sanitize_char(out: &mut String, ch: char, newline: NewlinePolicy) {
     match ch {
         '\n' | '\r' => match newline {

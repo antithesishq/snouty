@@ -791,8 +791,8 @@ fn html(body: Bytes) -> impl IntoResponse {
 /// Parse the callback query string (e.g. `code=…&state=…`) into the
 /// authorization code and flow token. The proxy carries the flow token in the
 /// standard OAuth `state` parameter. An IdP-reported `error` surfaces as an error.
-/// Any page that knows the port can send a callback, so `error` and
-/// `error_description` are escaped for the terminal.
+/// Any page that knows the port can send a callback, so the function escapes
+/// `error` and `error_description` for the terminal.
 fn parse_callback_params(query: &str) -> Result<CallbackParams> {
     let mut auth_code = None;
     let mut flow_token = None;

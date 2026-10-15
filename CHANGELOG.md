@@ -1,4 +1,4 @@
-# Version 0.8.0-rc.3 (2026-10-15)
+# Version 0.8.0 (2026-10-14)
 
 - **Breaking**: `snouty runs events` requires tenant release 62.2 or newer ([#309](https://github.com/antithesishq/snouty/pull/309), [#319](https://github.com/antithesishq/snouty/pull/319), [#427](https://github.com/antithesishq/snouty/pull/427))
 - **Breaking**: `snouty doctor --json` changed the structure of its JSON and human-readable output ([#309](https://github.com/antithesishq/snouty/pull/309), [#324](https://github.com/antithesishq/snouty/pull/324), [#335](https://github.com/antithesishq/snouty/pull/335), [#341](https://github.com/antithesishq/snouty/pull/341), [#347](https://github.com/antithesishq/snouty/pull/347), [#355](https://github.com/antithesishq/snouty/pull/355), [#423](https://github.com/antithesishq/snouty/pull/423), [#429](https://github.com/antithesishq/snouty/pull/429), [#431](https://github.com/antithesishq/snouty/pull/431))

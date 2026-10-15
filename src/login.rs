@@ -171,10 +171,10 @@ async fn do_cmd_login(
         )?,
     };
 
-    // The credential that a bare Enter at the key prompt keeps, and that storing
-    // a new credential replaces. A read error counts as nothing stored:
-    // `persist` backs up an unparsable credentials file before it writes one.
-    // A blank key cannot authenticate, so it also counts as nothing stored.
+    // The credential stored for the profile, which a new credential replaces.
+    // A read error counts as nothing stored, because `persist` backs up an
+    // unparsable credentials file. A blank key cannot authenticate, so it also
+    // counts as nothing stored.
     let stored = AuthenticationInfo::stored_for_profile(profile_to_use.as_deref())
         .inspect_err(|err| debug!("no stored credentials to read: {err:#}"))
         .ok()
@@ -295,7 +295,7 @@ fn print_login_summary(
     say("Run `snouty doctor` to verify your setup.");
 }
 
-/// The summary's note on `stored`. A write for the profile always replaces
+/// The summary's ", replacing your stored …" clause. Every write replaces
 /// `stored`, because login writes nothing when the user keeps it.
 fn replacing(stored: Option<&AttributedValue<AuthenticationInfo>>) -> String {
     stored
@@ -393,7 +393,7 @@ async fn prompt_for_auth(
                 _ => None,
             })
         }
-        // Ask before the browser sign-in, so that a no wastes no sign-in.
+        // Ask before the browser sign-in, so that a no costs the user no sign-in.
         Some(AuthSetupType::OAuth)
             if !confirm_replacement(prompter, stored, AuthSetupType::OAuth)? =>
         {
@@ -405,8 +405,8 @@ async fn prompt_for_auth(
     }
 }
 
-/// Asks before a new credential of kind `new` replaces `stored`, and returns
-/// whether to store it.
+/// Whether to store a new credential of kind `new` over `stored`. Asks the
+/// user unless nothing is stored.
 fn confirm_replacement(
     prompter: &dyn Prompter,
     stored: Option<&AuthenticationInfo>,
@@ -1378,7 +1378,7 @@ mod tests {
         "[default]\ntype = \"Password\"\nusername = \"puser\"\npassword = \"ppass\"\n";
 
     /// Login reads a username and password an older snouty stored, asks for an
-    /// API key, confirms, and replaces the stored credentials.
+    /// API key, asks to replace them, and replaces them on a yes.
     #[tokio::test]
     async fn login_replaces_a_stored_username_and_password_with_an_api_key() -> Result<()> {
         let env = LoginEnv::new();

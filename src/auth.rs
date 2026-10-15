@@ -430,8 +430,7 @@ impl AuthenticationInfo {
         Ok(found)
     }
 
-    /// Whether this is an API key that cannot authenticate, because it is
-    /// blank (see [`is_blank_api_key`]).
+    /// Whether this is a blank API key (see [`is_blank_api_key`]).
     pub(crate) fn has_blank_api_key(&self) -> bool {
         matches!(self, Self::ApiKey { api_key } if is_blank_api_key(api_key))
     }

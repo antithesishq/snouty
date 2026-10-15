@@ -53,12 +53,9 @@ pub(crate) fn indent_lines(text: &str, prefix: &str) -> String {
         .join("\n")
 }
 
-/// Escape one character into `out`, sharing the control-char policy between
-/// [`sanitize`] and [`sanitize_multiline`]. `newline` decides how `\n`/`\r` are
-/// handled: single-line callers escape them to visible `\n`/`\r`, multi-line
-/// callers keep `\n` as a real break and drop `\r`. Everything else — tab passes
-/// through, other C0/DEL controls become `\xNN`, printable chars pass through —
-/// is identical for both.
+/// Escape one character into `out` under the control-character policy that
+/// [`sanitize`] and [`sanitize_multiline`] share. Tab passes through, and every
+/// other Unicode control (Cc) except `\n` and `\r` becomes `\xNN`.
 fn sanitize_char(out: &mut String, ch: char, newline: NewlinePolicy) {
     match ch {
         '\n' | '\r' => match newline {
@@ -74,7 +71,7 @@ fn sanitize_char(out: &mut String, ch: char, newline: NewlinePolicy) {
             }
         },
         '\t' => out.push('\t'),
-        '\0'..='\u{08}' | '\u{0B}'..='\u{1F}' | '\u{7F}' => {
+        _ if ch.is_control() => {
             out.push_str(&format!(r"\x{:02X}", ch as u32));
         }
         _ => out.push(ch),
@@ -438,10 +435,10 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_escapes_non_printable_ascii_except_tab() {
+    fn sanitize_escapes_control_characters_except_tab() {
         assert_eq!(
-            sanitize("a\u{0001}b\u{000B}c\u{007F}d\te"),
-            r"a\x01b\x0Bc\x7Fd	e"
+            sanitize("a\u{0001}b\u{000B}c\u{007F}d\te\u{009B}f"),
+            r"a\x01b\x0Bc\x7Fd	e\x9Bf"
         );
     }
 

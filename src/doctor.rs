@@ -801,7 +801,7 @@ pub async fn cmd_doctor(
             checks: &checks,
             settings: &settings_rows,
         };
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        outln!("{}", serde_json::to_string_pretty(&report)?)?;
     } else {
         eprintln!("Checks");
         for check in &checks {

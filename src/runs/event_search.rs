@@ -12,7 +12,6 @@
 //! re-filtering that subset locally silently drops events that did match —
 //! absence from the subset is not absence from the run.
 
-use std::io::Write;
 use std::time::Duration;
 
 use color_eyre::Section;
@@ -99,11 +98,10 @@ pub(super) async fn check_query(
         api.search_run_events_query(run_id, query, SearchMode::Validate)
     })
     .await?;
-    let mut stdout = std::io::stdout().lock();
     if json {
-        writeln!(stdout, "{}", json!({"valid": true}))?;
+        outln!("{}", json!({"valid": true}))?;
     } else {
-        writeln!(stdout, "query is valid")?;
+        outln!("query is valid")?;
     }
     Ok(())
 }
@@ -119,12 +117,11 @@ pub(super) async fn count_query(
         api.count_run_events_query(run_id, query)
     })
     .await?;
-    let mut stdout = std::io::stdout().lock();
     if json {
-        writeln!(stdout, "{}", json!({"count": count}))?;
+        outln!("{}", json!({"count": count}))?;
     } else {
         let noun = if count == 1 { "event" } else { "events" };
-        writeln!(stdout, "{count} {noun} matched the query.")?;
+        outln!("{count} {noun} matched the query.")?;
     }
     Ok(())
 }

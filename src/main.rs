@@ -1,10 +1,13 @@
+// See the lint in lib.rs.
+#![deny(clippy::print_stdout)]
+
 use std::io::{self, ErrorKind, IsTerminal, Write};
 use std::path::Path;
 use std::process::Command;
 
 use clap::{CommandFactory, Parser};
-use clap_complete::Shell;
-use indoc::writedoc;
+use clap_complete::{Generator, Shell};
+use indoc::formatdoc;
 use log::info;
 
 use color_eyre::Section;
@@ -31,6 +34,7 @@ use snouty::params::{
 };
 use snouty::settings::Settings;
 use snouty::validate;
+use snouty::{StdoutError, out, outln};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -54,7 +58,7 @@ async fn main() {
     env_logger::Builder::from_default_env()
         .format(|buf, record| writeln!(buf, "{}", record.args()))
         .init();
-    if let Err(report) = run(Cli::parse()).await {
+    if let Err(report) = suppress_broken_pipe(run(Cli::parse()).await) {
         // One rendering for every error: `render_report` collapses the chain
         // index for single errors and wraps overlong prose, both printing
         // concerns that belong here rather than in the messages. User-facing
@@ -90,13 +94,13 @@ async fn run(cli: Cli) -> Result<()> {
     // here, cleanly and once, before any command runs — including commands that
     // don't read settings. That keeps dispatch a single flat match.
     let settings = Settings::resolve(settings_path, profile.clone());
-    let result = match command {
+    match command {
         Commands::Completions { shell } => cmd_completions(shell),
         Commands::Version => {
             // SNOUTY_VERSION (set by build.rs) is the crate version plus the
             // build's git sha when known — the same string clap's --version
             // prints, so the two stay consistent.
-            println!("snouty {}", env!("SNOUTY_VERSION"));
+            outln!("snouty {}", env!("SNOUTY_VERSION"))?;
             Ok(())
         }
         Commands::Update(args) => cmd_update(args, &settings?),
@@ -118,23 +122,18 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Doctor(args) => {
             snouty::doctor::cmd_doctor(&settings?, output, args.offline).await
         }
-    };
-
-    suppress_broken_pipe(result)
+    }
 }
 
-/// When our output is piped into something that exits early (e.g. `snouty
-/// runs list | head`), writes to stdout fail with BrokenPipe. That's a
-/// normal way for a pipeline to end, not an error — exit quietly. Network
-/// errors don't take this path: they surface as reqwest errors, whose
-/// underlying io::Error sits in reqwest's source chain and is not
-/// downcastable from the report (see the tests below).
+/// Turns a [`StdoutError`] for a closed pipe into success: a reader that exits
+/// early (`snouty runs list | head`) ends a pipeline normally. Every other
+/// error passes through.
 fn suppress_broken_pipe(result: Result<()>) -> Result<()> {
     match result {
         Err(err)
             if err
-                .downcast_ref::<io::Error>()
-                .is_some_and(|e| e.kind() == ErrorKind::BrokenPipe) =>
+                .downcast_ref::<StdoutError>()
+                .is_some_and(StdoutError::is_closed_pipe) =>
         {
             Ok(())
         }
@@ -307,13 +306,12 @@ async fn cmd_launch(
     let response = submit_launch(&launcher, params, settings, verbose).await?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&response)?);
+        outln!("{}", serde_json::to_string_pretty(&response)?)?;
     } else if let Some(run_id) = response.run_id.as_deref() {
-        // `writedoc!` and not `println!`: a reader that stops after the run ID
-        // line (`| head -1`) closes the pipe, and `println!` panics on that.
-        writedoc!(
-            io::stdout(),
-            r#"
+        out!(
+            "{}",
+            formatdoc!(
+                r#"
                 Test run started: run_id {run_id}
 
                 Wait for the run to finish with:
@@ -325,9 +323,10 @@ async fn cmd_launch(
                   snouty runs events {run_id} <query>
                   snouty runs exec {run_id} <input_hash> <vtime> <script>
             "#
+            )
         )?;
     } else {
-        println!("Test run started: run_id (unknown)");
+        outln!("Test run started: run_id (unknown)")?;
     }
 
     Ok(())
@@ -446,21 +445,21 @@ async fn cmd_debug(
     let response = api.launch_debugging(&params).await?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&response)?);
+        outln!("{}", serde_json::to_string_pretty(&response)?)?;
     } else if let Some(run_id) = response.run_id.as_deref() {
-        println!("Debugging session started: run_id {run_id}");
-        println!("\nThe session takes a few minutes to be ready.");
+        outln!("Debugging session started: run_id {run_id}")?;
+        outln!("\nThe session takes a few minutes to be ready.")?;
         // Both come from typed flags, so they are strings.
         if let (Some(input_hash), Some(vtime)) =
             (param(ANT_DEBUGGING_INPUT_HASH), param(ANT_DEBUGGING_VTIME))
         {
-            println!(
+            outln!(
                 "Run a script at this moment; `runs exec` waits until the session is ready:\n  \
                  snouty runs exec {run_id} {input_hash} {vtime} '<script>'"
-            );
+            )?;
         }
     } else {
-        println!("Debugging session started: run_id (unknown)");
+        outln!("Debugging session started: run_id (unknown)")?;
     }
 
     Ok(())
@@ -468,8 +467,13 @@ async fn cmd_debug(
 
 fn cmd_completions(shell: Shell) -> Result<()> {
     let mut cmd = Cli::command();
-    let bin_name = cmd.get_name().to_string();
-    clap_complete::generate(shell, &mut cmd, bin_name, &mut io::stdout());
+    cmd.set_bin_name(cmd.get_name().to_owned());
+    cmd.build();
+    // `clap_complete::generate` panics on a failed write, so set the bin name,
+    // build the command, and call `try_generate`.
+    shell
+        .try_generate(&cmd, &mut io::stdout())
+        .map_err(StdoutError)?;
     Ok(())
 }
 
@@ -549,54 +553,19 @@ mod tests {
     use color_eyre::eyre::{Report, eyre};
 
     #[test]
-    fn suppress_broken_pipe_swallows_stdout_pipe_errors() {
+    fn suppress_broken_pipe_swallows_a_closed_stdout() {
         let err = io::Error::new(ErrorKind::BrokenPipe, "stdout closed");
-        assert!(suppress_broken_pipe(Err(Report::new(err))).is_ok());
+        assert!(suppress_broken_pipe(Err(Report::new(StdoutError(err)))).is_ok());
     }
 
     #[test]
     fn suppress_broken_pipe_passes_through_other_errors() {
-        let io_err = io::Error::other("disk on fire");
-        assert!(suppress_broken_pipe(Err(Report::new(io_err))).is_err());
+        let full = StdoutError(io::Error::new(ErrorKind::StorageFull, "disk full"));
+        assert!(suppress_broken_pipe(Err(Report::new(full))).is_err());
+        // A broken pipe to a child process's stdin is a real failure.
+        let child = io::Error::new(ErrorKind::BrokenPipe, "child exited");
+        assert!(suppress_broken_pipe(Err(Report::new(child))).is_err());
         assert!(suppress_broken_pipe(Err(eyre!("plain error"))).is_err());
-    }
-
-    /// A broken connection during an API call must not be mistaken for a
-    /// closed stdout pipe. reqwest wraps the socket-level io::Error in its
-    /// own error type, whose source chain eyre's downcast does not traverse —
-    /// so no io::Error (broken pipe or otherwise) is downcastable from an
-    /// API error report, and it can never be suppressed.
-    #[tokio::test]
-    async fn suppress_broken_pipe_ignores_network_socket_errors() {
-        // Grab a port that refuses connections by binding then dropping.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-
-        let reqwest_err = reqwest::get(format!("http://{addr}/api/v0/runs"))
-            .await
-            .unwrap_err();
-
-        // Sanity check: the socket failure really is an io::Error, buried in
-        // reqwest's source chain.
-        let mut source = std::error::Error::source(&reqwest_err);
-        let mut found_io = false;
-        while let Some(err) = source {
-            found_io |= err.downcast_ref::<io::Error>().is_some();
-            source = err.source();
-        }
-        assert!(
-            found_io,
-            "expected an io::Error in the reqwest source chain"
-        );
-
-        // Wrap it the way api.rs wraps communication errors.
-        let report = eyre!(reqwest_err).wrap_err("failed to contact API");
-
-        // The io::Error is not downcastable through reqwest's error...
-        assert!(report.downcast_ref::<io::Error>().is_none());
-        // ...so the report can never be suppressed.
-        assert!(suppress_broken_pipe(Err(report)).is_err());
     }
 
     #[test]

@@ -519,81 +519,98 @@ fn validate_help_shows_keep_running() {
         .stdout(predicate::str::contains("--keep-running"));
 }
 
-// `snouty runs list | head` closes stdout before snouty finishes writing;
-// snouty must exit cleanly instead of panicking on the broken pipe (#121).
+/// Asserts that `cmd` exits cleanly, without a panic, when its stdout is a
+/// closed pipe, as in `snouty … | head` after `head` exits.
+///
+/// `cmd` must clear its environment, as [`snouty`] does. The copy cannot
+/// detect that, so it clears its own.
+fn assert_exits_cleanly_with_closed_stdout(cmd: &assert_cmd::Command) {
+    let mut closed = std::process::Command::new(cmd.get_program());
+    closed.args(cmd.get_args()).env_clear().envs(
+        cmd.get_envs()
+            .filter_map(|(key, value)| Some((key, value?))),
+    );
+    if let Some(dir) = cmd.get_current_dir() {
+        closed.current_dir(dir);
+    }
+
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let output = closed
+        .stdout(writer)
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let args: Vec<_> = cmd.get_args().collect();
+    assert!(
+        output.status.success(),
+        "{args:?}: expected clean exit on broken pipe, got {:?}; stderr:\n{stderr}",
+        output.status
+    );
+    assert!(!stderr.contains("panicked"), "{args:?}: stderr:\n{stderr}");
+}
+
 #[test]
 fn runs_list_exits_cleanly_when_stdout_closes_early() {
     let mock = start_runs_server(false);
-
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_snouty"));
-    for env_var in [
-        "ANTITHESIS_API_KEY",
-        "ANTITHESIS_USERNAME",
-        "ANTITHESIS_PASSWORD",
-        "ANTITHESIS_TENANT",
-        "ANTITHESIS_BASE_URL",
-        "ANTITHESIS_REPOSITORY",
-    ] {
-        cmd.env_remove(env_var);
-    }
-    // Hand snouty a pipe whose read end is already closed before it spawns,
-    // so its very first stdout write deterministically hits a broken pipe.
-    let (reader, writer) = std::io::pipe().unwrap();
-    drop(reader);
-
-    let child = cmd
-        .env("ANTITHESIS_API_KEY", &mock.token)
-        .env("ANTITHESIS_TENANT", "testtenant")
-        .env("ANTITHESIS_BASE_URL", &mock.url)
-        .args(["runs", "list"])
-        .stdout(writer)
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-
-    let output = child.wait_with_output().unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "expected clean exit on broken pipe, got {:?}; stderr:\n{stderr}",
-        output.status
-    );
-    assert!(!stderr.contains("panicked"), "stderr:\n{stderr}");
+    assert_exits_cleanly_with_closed_stdout(snouty_with_mock_server(&mock).args(["runs", "list"]));
 }
 
-// `snouty launch | head -1` takes the run ID line and closes stdout before the
-// next-step lines are written. snouty must exit cleanly, not panic.
 #[test]
 fn launch_exits_cleanly_when_stdout_closes_early() {
-    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
+    for json in [&[][..], &["--json"]] {
+        let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
+        assert_exits_cleanly_with_closed_stdout(
+            snouty_with_mock(&mock_url)
+                .args(json)
+                .args(["launch", "--launcher", "advanced_test", "--duration", "30"])
+                .args(["--source", "ci", "--no-vcs"]),
+        );
+    }
+}
 
-    // The read end is closed before snouty spawns, so its first stdout write
-    // hits a broken pipe.
-    let (reader, writer) = std::io::pipe().unwrap();
-    drop(reader);
+#[test]
+fn debug_exits_cleanly_when_stdout_closes_early() {
+    for json in [&[][..], &["--json"]] {
+        let mock_url = start_mock_server(r#"{"runId":"run-abc-1-1","statusCode":202}"#, 200);
+        assert_exits_cleanly_with_closed_stdout(
+            snouty_with_mock(&mock_url)
+                .args(json)
+                .args(["debug", "--session-id", "sess-456"])
+                .args(["--input-hash", "abc123", "--vtime", "1234567890"]),
+        );
+    }
+}
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_snouty"))
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1")
-        .env("ANTITHESIS_API_KEY", "testkey")
-        .env("ANTITHESIS_TENANT", "testtenant")
-        .env("ANTITHESIS_BASE_URL", &mock_url)
-        .args(["launch", "--launcher", "advanced_test", "--duration", "30"])
-        .args(["--source", "ci", "--no-vcs"])
-        .stdout(writer)
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap()
-        .wait_with_output()
-        .unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "expected clean exit on broken pipe, got {:?}; stderr:\n{stderr}",
-        output.status
-    );
-    assert!(!stderr.contains("panicked"), "stderr:\n{stderr}");
+#[test]
+fn local_commands_exit_cleanly_when_stdout_closes_early() {
+    assert_exits_cleanly_with_closed_stdout(snouty().arg("version"));
+    assert_exits_cleanly_with_closed_stdout(snouty().args(["completions", "bash"]));
+    assert_exits_cleanly_with_closed_stdout(snouty().args(["--json", "doctor", "--offline"]));
+
+    let home = tempfile::TempDir::new().unwrap();
+    assert_exits_cleanly_with_closed_stdout(snouty().env("HOME", home.path()).args([
+        "login",
+        "--tenant",
+        "acme",
+        "--repository",
+        "registry.example.com",
+    ]));
+
+    for args in [
+        &["search", "docker"][..],
+        &["search", "--list", "docker"],
+        &["search", "--json", "docker"],
+        &["search", "--json", "--list", "docker"],
+        &["show", "getting_started"],
+        &["tree"],
+        &["sqlite"],
+    ] {
+        assert_exits_cleanly_with_closed_stdout(
+            snouty_docs().args(["docs", "--offline"]).args(args),
+        );
+    }
 }
 
 /// Users copy the help examples verbatim, so every `launch` and `debug`

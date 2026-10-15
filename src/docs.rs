@@ -408,31 +408,32 @@ fn search(
     } else if results.is_empty() {
         eprintln!("No results found for '{}'", query);
     } else if list {
-        print_paths(&results);
+        print_paths(&results)?;
     } else {
-        print_results(&results);
+        print_results(&results)?;
     }
 
     Ok(())
 }
 
-fn print_paths(results: &[(String, String, String)]) {
+fn print_paths(results: &[(String, String, String)]) -> Result<()> {
     for (path, _, _) in results {
-        println!("{path}");
+        outln!("{path}")?;
     }
+    Ok(())
 }
 
 fn print_empty_json_array() -> Result<()> {
-    println!(
+    outln!(
         "{}",
         serde_json::to_string_pretty(&Vec::<serde_json::Value>::new())?
-    );
+    )?;
     Ok(())
 }
 
 fn print_path_json(results: &[(String, String, String)]) -> Result<()> {
     let items: Vec<&str> = results.iter().map(|(path, _, _)| path.as_str()).collect();
-    println!("{}", serde_json::to_string_pretty(&items)?);
+    outln!("{}", serde_json::to_string_pretty(&items)?)?;
     Ok(())
 }
 
@@ -447,7 +448,7 @@ fn print_json(results: &[(String, String, String)]) -> Result<()> {
             })
         })
         .collect();
-    println!("{}", serde_json::to_string_pretty(&items)?);
+    outln!("{}", serde_json::to_string_pretty(&items)?)?;
     Ok(())
 }
 
@@ -531,19 +532,20 @@ fn style_title(title: &str) -> String {
     render_marked(title, true)
 }
 
-fn print_results(results: &[(String, String, String)]) {
+fn print_results(results: &[(String, String, String)]) -> Result<()> {
     let width = console::Term::stdout().size().1.min(80) as usize;
 
     for (i, (path, title, snippet)) in results.iter().enumerate() {
         if i > 0 {
-            println!();
+            outln!()?;
         }
-        println!("{}  {}", console::style(path).dim(), style_title(title),);
+        outln!("{}  {}", console::style(path).dim(), style_title(title))?;
         let wrapped = wrap_snippet(snippet, width);
         for line in wrapped.lines() {
-            println!("  {}", style_line(line));
+            outln!("  {}", style_line(line))?;
         }
     }
+    Ok(())
 }
 
 fn open_db() -> Result<Connection> {
@@ -598,7 +600,7 @@ fn show(path: &str) -> Result<()> {
         .ok();
 
     if let Some((title, content)) = result {
-        println!("# {title}\n{content}");
+        outln!("# {title}\n{content}")?;
         return Ok(());
     }
 
@@ -647,7 +649,7 @@ fn show(path: &str) -> Result<()> {
 }
 
 fn sqlite_path() -> Result<()> {
-    println!("{}", db_path()?.display());
+    outln!("{}", db_path()?.display())?;
     Ok(())
 }
 
@@ -699,7 +701,7 @@ fn tree(depth: Option<usize>, filter: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    print!("{}", render_forest(&root, depth)?);
+    out!("{}", render_forest(&root, depth)?)?;
     Ok(())
 }
 

@@ -18,7 +18,7 @@ bytesize = "2"
 cacache = { version = "13", default-features = false, features = ["tokio-runtime"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "wrap_help"] }
-clap_complete = "4"
+clap_complete = "4.5.51"
 getrandom = "0.4"
 env_logger = "0.11"
 form_urlencoded = "1"

@@ -1,4 +1,4 @@
-use std::io::{IsTerminal, Read, Write};
+use std::io::{IsTerminal, Read};
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -71,11 +71,10 @@ async fn print_event_lines(
     empty_message: &str,
     limit: Option<NonZeroU64>,
 ) -> Result<()> {
-    let mut stdout = std::io::stdout().lock();
     let mut seen: usize = 0;
     while let Some(line) = lines.try_next().await? {
         seen += 1;
-        writeln!(stdout, "{line}")?;
+        outln!("{line}")?;
     }
     if output.json() {
         return Ok(());
@@ -88,18 +87,6 @@ async fn print_event_lines(
         limit_note(seen, limit, false);
     }
     Ok(())
-}
-
-/// `print!`/`println!`, but routed through `write!`/`writeln!` to stdout so a
-/// closed pipe (e.g. `snouty runs list | head`) surfaces as an `io::Error` the
-/// caller propagates with `?` — `println!` would panic instead. Each call
-/// evaluates to an `io::Result<()>`, so every use must be `?`-ed.
-macro_rules! out {
-    ($($arg:tt)*) => {{ write!(std::io::stdout(), $($arg)*) }};
-}
-macro_rules! outln {
-    () => {{ writeln!(std::io::stdout()) }};
-    ($($arg:tt)*) => {{ writeln!(std::io::stdout(), $($arg)*) }};
 }
 
 pub async fn cmd_runs(

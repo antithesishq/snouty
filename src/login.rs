@@ -217,7 +217,7 @@ async fn do_cmd_login(
         &settings_path,
         written,
         stored,
-    );
+    )?;
 
     Ok(())
 }
@@ -231,10 +231,10 @@ fn print_login_summary(
     settings_path: &Path,
     written: Option<AttributedValue<&str>>,
     stored: Option<AttributedValue<AuthenticationInfo>>,
-) {
+) -> std::result::Result<(), crate::StdoutError> {
     // Wrap each line at word boundaries on a terminal: a long settings path
     // otherwise makes the terminal cut the line mid-word.
-    let say = |line: &str| println!("{}", crate::render::wrap_stdout_if_tty(line));
+    let say = |line: &str| outln!("{}", crate::render::wrap_stdout_if_tty(line));
     let scope = match profile {
         Some(p) => format!(" under profile `{p}`"),
         None => String::new(),
@@ -249,7 +249,7 @@ fn print_login_summary(
     say(&format!(
         "\nSaved {saved}{scope} to {}.",
         settings_path.display()
-    ));
+    ))?;
     match written {
         Some(AttributedValue::Keychain {
             value: kind,
@@ -258,7 +258,7 @@ fn print_login_summary(
             say(&format!(
                 "Stored your {kind}{scope} in the system keychain{}.",
                 replacing(stored.as_ref())
-            ));
+            ))?;
         }
         Some(AttributedValue::SettingsFile {
             value: kind,
@@ -269,13 +269,13 @@ fn print_login_summary(
                 "Stored your {kind}{scope} in {}{}.",
                 path.display(),
                 replacing(stored.as_ref())
-            ));
+            ))?;
         }
         _ => match stored {
             Some(AttributedValue::Keychain { .. }) => {
                 say(&format!(
                     "Retained your previously stored credentials{scope} in the system keychain."
-                ));
+                ))?;
             }
             Some(AttributedValue::SettingsFile {
                 settings_file_path, ..
@@ -283,16 +283,16 @@ fn print_login_summary(
                 say(&format!(
                     "Retained your previously stored credentials{scope} in {}.",
                     settings_file_path.display()
-                ));
+                ))?;
             }
             _ => {
                 say(
                     "Skipped credential storage — snouty will read credentials from the environment, such as ANTITHESIS_API_KEY.",
-                );
+                )?;
             }
         },
     }
-    say("Run `snouty doctor` to verify your setup.");
+    say("Run `snouty doctor` to verify your setup.")
 }
 
 /// The summary's ", replacing your stored …" clause. Every write replaces
@@ -514,18 +514,18 @@ async fn complete_oauth_login(
 
     // A failure to open a browser is not fatal: the URL is printed either way,
     // so a headless environment can still complete the flow by hand.
-    println!();
+    outln!()?;
     match crate::browser::open_in_browser(&sign_in_url) {
         Ok(()) => {
-            println!("Opening login url in your browser");
-            println!("If your browser didn't open, manually visit: {sign_in_url}");
+            outln!("Opening login url in your browser")?;
+            outln!("If your browser didn't open, manually visit: {sign_in_url}")?;
         }
         Err(err) => {
-            println!("Failed to open login url automatically ({err}).");
-            println!("Open the following url in your browser on this machine: {sign_in_url}");
+            outln!("Failed to open login url automatically ({err}).")?;
+            outln!("Open the following url in your browser on this machine: {sign_in_url}")?;
         }
     }
-    println!("Waiting for you to complete sign-in in your browser...");
+    outln!("Waiting for you to complete sign-in in your browser...")?;
 
     let callback = wait_for_callback(listeners, &sign_in_path, &idp_url).await?;
 

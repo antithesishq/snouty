@@ -76,16 +76,17 @@ stdout '^Listening on 127\.0\.0\.1:\d+$'
 
 # --- tools/list ---
 
-# Eleven tools are listed, each marked read-only. A tool description is help
+# Twelve tools are listed, each marked read-only. A tool description is help
 # text for an agent, so it does not name CLI flags.
 mcp-rpc tools/list
-stdout -count=11 '"readOnlyHint":true'
+stdout -count=12 '"readOnlyHint":true'
 stdout '"name":"runs_list"'
 stdout '"name":"runs_show"'
 stdout '"name":"runs_properties"'
 stdout '"name":"runs_build_logs"'
 stdout '"name":"runs_logs"'
 stdout '"name":"runs_search"'
+stdout '"name":"runs_exec"'
 stdout '"name":"docs_tree"'
 stdout '"name":"docs_show"'
 stdout '"name":"docs_search"'
@@ -429,7 +430,7 @@ mcp-stdio stdio.jsonl mcp --stdio
 stdout -count=4 '^\{"jsonrpc":"2\.0","id":\d,'
 ! stdout 'Listening on'
 stdout '"id":1,"result":\{"protocolVersion"'
-stdout -count=11 '"readOnlyHint":true'
+stdout -count=12 '"readOnlyHint":true'
 ! stdout '"ttlMs"'
 [!staging] stdout '"id":3,"result":\{"content":\[\{"type":"text","text":"\{.*run_id.{3,5}run-1'
 stdout '"id":4,"result":\{"content":\[\{"type":"text","text":"invalid params: missing field `run_id`"\}\],"isError":true\}'
@@ -463,6 +464,38 @@ env SNOUTY_CONTAINER_ENGINE=
 # A client that closes stdin before it initializes is not an error.
 mcp-stdio empty.jsonl mcp --stdio
 ! stdout .
+
+# --- runs_exec ---
+
+# Every runs_exec call executes a script in a live session, so this section
+# does not run against staging.
+[staging] skip
+
+# runs_exec returns the frames of the stream as JSON lines: the output, then
+# the result. Its full help comes from tool_help.
+mock-runs-server
+mcp-server mcp --port 0
+mcp-call tool_help '{"tool":"runs_exec"}'
+stdout '^Execute a bash script'
+stdout 'source_run_id'
+mcp-call runs_exec '{"run_id":"run-2","input_hash":"-3625518438076122494","vtime":398.4898056755774,"script":"uname -a"}'
+stdout '"output_text":"Linux antithesis 6.12.0"'
+stdout '\{"status":"exited","exit_code":0,"end_moment":\{"input_hash":"-8206006569229276678","vtime":398.492\}\}'
+
+# A non-zero exit code marks the result isError. The text has every frame,
+# then the error.
+! mcp-call runs_exec '{"run_id":"run-2","input_hash":"-3625518438076122494","vtime":398.4898056755774,"script":"exit 5"}'
+stdout '"exit_code":5'
+stdout 'command exited with code 5'
+
+# The params are checked before any request.
+! mcp-call runs_exec '{"run_id":"run-2","input_hash":"-1","vtime":1,"script":" "}'
+stdout '^invalid params: script: '
+! mcp-call runs_exec '{"run_id":"run-2","input_hash":"-1","vtime":1,"script":"ls","source_run_id":"a","source_session_id":"b"}'
+stdout '^invalid params: source_run_id and source_session_id cannot both be set$'
+! mcp-call runs_exec '{"run_id":"run-2","input_hash":"-1","vtime":1,"script":"ls","container":""}'
+stdout '^invalid params: container: '
+mcp-stop
 
 -- s.toml --
 tenant = "top-tenant"

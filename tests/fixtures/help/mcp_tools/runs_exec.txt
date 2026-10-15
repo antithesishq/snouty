@@ -1,0 +1,7 @@
+Run a bash script in a run that is in progress (or a debugging session), at a moment, on a new branch that does not change the run. Use it to inspect files, processes or state at that moment. Get moments from runs_properties examples, runs_search events or runs_logs.
+
+Params: input_hash (a string), vtime, script (bash). container: execute in that container, not on the host. A moment from another run is cold: set source_run_id to load it first, which can take minutes. timeout: seconds to wait for the script (default the server's, 600). The call first waits until the run is ready.
+
+Returns JSONL frames: output frames with output_text and source.stream ("info" is stdout, "error" is stderr), then one result frame: {"status": "exited", "exit_code", "end_moment"} or {"status": "timed_out"}. To run a follow-up script, use end_moment. A non-zero exit, a timeout or no result frame sets isError.
+
+More: tool_help {"tool": "runs_exec"}

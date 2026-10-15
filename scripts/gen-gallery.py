@@ -3578,8 +3578,8 @@ def build_tty_stories() -> list[Story]:
         _tty_story(
             "login-verbose",
             "See the requests login sends",
-            "Sign-in fails behind my company proxy. I re-ran login with --verbose to see which "
-            "requests it sends to the tenant and what comes back.",
+            "I want to see which requests login sends to the tenant and what comes back, to "
+            "debug a sign-in problem.",
             ["--verbose", "login"],
             (
                 (_ASK_TENANT, ENTER),
@@ -3587,8 +3587,10 @@ def build_tty_stories() -> list[Story]:
                 (_ASK_KEY, _FAKE_KEY + ENTER),
             ),
             tty_persisted(
-                # The probe for the tenant's OAuth configuration, and its answer.
-                prompts=("> GET ", "/auth/cli/config", "< "),
+                # The probe for the tenant's OAuth configuration. Its outcome
+                # (a `< ` status or a `* request failed` line) is the live
+                # tenant's, so it is not checked.
+                prompts=(f"> GET https://{_TENANT}.antithesis.com/auth/cli/config",),
                 files=((_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_KEY}"')),),
                 secrets_absent=(_FAKE_KEY,),
             ),

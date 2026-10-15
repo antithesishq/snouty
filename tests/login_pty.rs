@@ -91,6 +91,9 @@ const STDOUT_FILE: &str = "stdout.txt";
 struct Login<'a> {
     /// Each `(path, contents)` is written under the temp `$HOME` first.
     seed: &'a [(&'a str, &'a str)],
+    /// The tenant's base URL. Without it, a mock backend answers the
+    /// `/auth/cli/config` probe with [`OAUTH_DISABLED`].
+    base_url: Option<&'a str>,
     /// Each `(name, value)` is set for the child.
     env: &'a [(&'a str, &'a str)],
     stdout: Stdout,
@@ -125,7 +128,10 @@ fn spawn_login(login: Login) -> (tempfile::TempDir, OsSession) {
         .env("TERM", "xterm-256color")
         .env(
             "ANTITHESIS_BASE_URL",
-            support::start_mock_server(OAUTH_DISABLED, 200),
+            login.base_url.map_or_else(
+                || support::start_mock_server(OAUTH_DISABLED, 200),
+                str::to_owned,
+            ),
         )
         // Force file-based credential storage so a macOS run doesn't touch
         // the real keychain.
@@ -477,6 +483,27 @@ fn esc_at_the_api_key_prompt_skips_credential_storage() {
     );
 }
 
+/// When the OAuth configuration probe gets no response, login offers only an
+/// API key, and `--verbose` says why the probe failed.
+#[test]
+fn verbose_logs_why_the_oauth_probe_failed() {
+    // A port that refuses connections: bound, then released.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a port");
+    let refused = format!("http://{}", listener.local_addr().expect("local address"));
+    drop(listener);
+    let (_home, mut session) = spawn_login(Login {
+        base_url: Some(&refused),
+        args: &["--verbose"],
+        ..Login::default()
+    });
+
+    expect(&mut session, &format!("> GET {refused}/auth/cli/config"));
+    expect(&mut session, "* request failed: ");
+    expect(&mut session, "Please enter your API Key");
+    send(&mut session, "\x1b");
+    finish(session);
+}
+
 /// `--verbose` logs the three OAuth requests of a single sign-on to stderr,
 /// and no token, code, verifier, or state reaches the log or stdout.
 ///
@@ -545,7 +572,8 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
     let no_opener = tempfile::TempDir::new().expect("an empty PATH directory");
     let no_opener = no_opener.path().to_str().expect("a UTF-8 temp path");
     let (home, mut session) = spawn_login(Login {
-        env: &[("ANTITHESIS_BASE_URL", &url), ("PATH", no_opener)],
+        base_url: Some(&url),
+        env: &[("PATH", no_opener)],
         stdout: Stdout::File,
         args: &["--verbose"],
         ..Login::default()
@@ -572,11 +600,9 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
          Host: localhost\r\nConnection: close\r\n\r\n"
     )
     .expect("send the callback");
-    let mut page = String::new();
-    callback
-        .read_to_string(&mut page)
-        .expect("read the callback page");
-    assert!(page.starts_with("HTTP/1.1 200 "), "{page}");
+    // snouty can exit before it writes the whole result page, so the page
+    // itself is not checked.
+    let _ = callback.read_to_end(&mut Vec::new());
 
     let rest = Expect::expect(&mut session, expectrl::Eof).expect("read the PTY to its end");
     stderr += &String::from_utf8_lossy(rest.as_bytes());

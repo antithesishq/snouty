@@ -25,7 +25,7 @@ use crate::render::{indent_lines, sanitize_multiline};
 use crate::settings::Settings;
 use crate::tag::{Tag, Tagged};
 use crate::user_agent::user_agent;
-use crate::util::source_error;
+use crate::util::{root_cause, source_error};
 use crate::vtime::VTime;
 use snouty_macros::cached;
 
@@ -760,18 +760,7 @@ impl AntithesisApi {
                     ClientError::InvalidResponsePayload(_, err) => {
                         VersionError::BadResponse(err.to_string())
                     }
-                    err => {
-                        // The top-level display ("Communication Error: error
-                        // sending request for url (...)") only restates that
-                        // the request failed; the actionable cause —
-                        // connection refused, DNS failure, timeout — is the
-                        // last error in the source chain.
-                        let mut cause: &dyn std::error::Error = &err;
-                        while let Some(source) = cause.source() {
-                            cause = source;
-                        }
-                        VersionError::Unreachable(cause.to_string())
-                    }
+                    err => VersionError::Unreachable(root_cause(&err).to_string()),
                 },
             }),
         }
@@ -1370,13 +1359,19 @@ impl HttpClient {
         eprint!("{out}");
     }
 
+    /// Logs the response, or why none arrived: a caller can drop the error,
+    /// as login does when the OAuth configuration probe fails.
     fn log_response(&self, result: &reqwest::Result<reqwest::Response>) {
-        if self.verbose
-            && let Ok(response) = result
-        {
-            let mut out = String::new();
-            format_response(response, &mut out);
-            eprint!("{out}");
+        if !self.verbose {
+            return;
+        }
+        match result {
+            Ok(response) => {
+                let mut out = String::new();
+                format_response(response, &mut out);
+                eprint!("{out}");
+            }
+            Err(err) => eprintln!("* request failed: {}", root_cause(err)),
         }
     }
 

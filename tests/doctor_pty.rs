@@ -4,15 +4,14 @@
 
 #![cfg(unix)]
 
-use std::process::Command;
+mod support;
+
 use std::time::Duration;
 
 use expectrl::Expect;
-use expectrl::session::OsSession;
+use support::pty::PtyCommand;
 
-/// The PTY's column count. `stty` sets it in the child before snouty starts,
-/// so no read of the terminal size can race the resize.
-const PTY_COLS: usize = 80;
+const PTY_COLS: u16 = 80;
 
 /// A note too long for the terminal wraps at a word boundary, with its
 /// continuation lines hung under the note's text, never wider than the
@@ -20,13 +19,8 @@ const PTY_COLS: usize = 80;
 #[test]
 fn long_notes_wrap_under_their_text() {
     let home = tempfile::TempDir::new().expect("temp HOME");
-    let mut command = Command::new("sh");
+    let mut command = PtyCommand::new(r#"exec "$0" doctor --offline"#);
     command
-        .args([
-            "-c",
-            &format!("stty cols {PTY_COLS} rows 40; exec \"$0\" doctor --offline"),
-            env!("CARGO_BIN_EXE_snouty"),
-        ])
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", home.path())
@@ -37,7 +31,7 @@ fn long_notes_wrap_under_their_text() {
         .env("ANTITHESIS_USERNAME", "pty-user")
         .env("ANTITHESIS_PASSWORD", "pty-password");
 
-    let mut session = OsSession::spawn(command).expect("spawn snouty doctor on a PTY");
+    let mut session = command.spawn(PTY_COLS, 40);
     session.set_expect_timeout(Some(Duration::from_secs(30)));
     let captures = session
         .expect("Resolved settings")
@@ -48,7 +42,7 @@ fn long_notes_wrap_under_their_text() {
     let lines: Vec<&str> = screen.lines().collect();
     for line in &lines {
         assert!(
-            line.chars().count() <= PTY_COLS,
+            line.chars().count() <= usize::from(PTY_COLS),
             "line wider than the terminal: {line:?}\n{screen}"
         );
     }

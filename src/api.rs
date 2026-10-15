@@ -1359,8 +1359,8 @@ impl HttpClient {
         eprint!("{out}");
     }
 
-    /// Logs the response, or why none arrived: a caller can drop the error,
-    /// as login does when the OAuth configuration probe fails.
+    /// Logs the response, or the error when none arrived, because a caller can
+    /// drop that error.
     fn log_response(&self, result: &reqwest::Result<reqwest::Response>) {
         if !self.verbose {
             return;

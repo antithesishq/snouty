@@ -3587,9 +3587,8 @@ def build_tty_stories() -> list[Story]:
                 (_ASK_KEY, _FAKE_KEY + ENTER),
             ),
             tty_persisted(
-                # The probe for the tenant's OAuth configuration. Its outcome
-                # (a `< ` status or a `* request failed` line) is the live
-                # tenant's, so it is not checked.
+                # The live tenant decides the probe's outcome, so only the
+                # request is checked.
                 prompts=(f"> GET https://{_TENANT}.antithesis.com/auth/cli/config",),
                 files=((_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_KEY}"')),),
                 secrets_absent=(_FAKE_KEY,),

@@ -128,7 +128,7 @@ impl Prompter for InquirePrompter {
     }
 }
 
-/// `output.verbose` logs the OAuth requests to stderr.
+/// With `output.verbose`, login logs its OAuth requests to stderr.
 pub async fn cmd_login(
     tenant: Option<String>,
     repository: Option<String>,

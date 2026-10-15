@@ -91,13 +91,12 @@ const STDOUT_FILE: &str = "stdout.txt";
 struct Login<'a> {
     /// Each `(path, contents)` is written under the temp `$HOME` first.
     seed: &'a [(&'a str, &'a str)],
-    /// The tenant's base URL. Without it, a mock backend answers the
-    /// `/auth/cli/config` probe with [`OAUTH_DISABLED`].
+    /// Without it, a mock backend answers the `/auth/cli/config` probe with
+    /// [`OAUTH_DISABLED`].
     base_url: Option<&'a str>,
     /// Each `(name, value)` is set for the child.
     env: &'a [(&'a str, &'a str)],
     stdout: Stdout,
-    /// Added to the command line.
     args: &'a [&'a str],
 }
 

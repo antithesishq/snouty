@@ -18,9 +18,8 @@ pub fn source_error<'a, T: std::error::Error + 'static>(
     None
 }
 
-/// The last error in `err`'s source chain. For a failed request this is the
-/// actionable cause — connection refused, DNS failure, timeout — where the
-/// top-level error only restates that the request failed.
+/// The last error in `err`'s source chain. For a failed request, this is the
+/// actionable cause: connection refused, DNS failure, or timeout.
 pub fn root_cause<'a>(
     err: &'a (dyn std::error::Error + 'static),
 ) -> &'a (dyn std::error::Error + 'static) {

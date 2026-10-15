@@ -1,0 +1,61 @@
+---
+source: tests/help_snapshots.rs
+---
+Interact with test runs
+
+List, inspect, wait on, cancel, run commands in, and read the logs of Antithesis
+test runs.
+
+When no subcommand is given, lists recent runs (same as `snouty runs list`).
+
+Examples:
+  snouty runs
+  snouty runs list --status completed --launcher nightly
+  snouty runs show <run_id>
+  snouty runs wait <run_id>
+  snouty runs cancel <run_id>
+  snouty runs properties <run_id>
+  snouty runs properties --failing <run_id>
+  snouty runs properties <run_id> --name <substring> --detail
+  snouty runs build-logs <run_id>
+  snouty runs logs <run_id> <input_hash> [vtime]
+  snouty runs events <run_id> -m <query>
+  snouty runs search <run_id> 'contains({output_text: "error"})'
+  snouty runs exec <run_id> <input_hash> <vtime> 'uname -a'
+
+Add --json for machine-readable output. Every subcommand prints JSON in place of
+its table or its rendered events:
+  snouty --json runs list | jq -r .run_id
+
+Usage: snouty runs [OPTIONS] [COMMAND]
+
+Commands:
+  list        List recent runs
+  show        Show details of a specific run
+  wait        Wait until a run is ready or complete
+  cancel      Cancel a run that has not finished
+  properties  List property results for a run
+  build-logs  Stream build logs for a run
+  logs        Stream moment logs for a run
+  exec        Execute a command in a run that is in progress
+  events      Search events in a run
+  search      Query events with the event-set DSL
+  help        Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --json
+          Output JSON where supported (NDJSON for list/stream commands, pretty
+          JSON otherwise)
+
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

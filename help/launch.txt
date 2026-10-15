@@ -1,0 +1,48 @@
+Launch a test run
+
+Example:
+  snouty launch --launcher basic_test --config ./config \
+    --test-name "my-test" \
+    --description "nightly test run" \
+    --duration 30 \
+    --recipients "team@example.com"
+
+The -c/--config flag points at a local directory containing docker-compose.yaml (this is the config image source, unrelated to snouty's own settings file). By default, every image that the run needs must be in the local image store, and snouty pushes them automatically. Add --allow-remote-images to skip this check for images that are not on this machine.
+
+Alternatively, pass a pre-built config image directly:
+  snouty launch --launcher basic_test \
+    --config-image us-central1-docker.pkg.dev/proj/repo/config:latest \
+    --duration 30
+
+Extra parameters can be passed with --param:
+  snouty launch --launcher basic_test --config ./config --duration 30 \
+    --param antithesis.integrations.github.token=TOKEN \
+    --param my.custom.property=value
+
+User-defined attributes are params with an `attrs.` prefix. The server records them on the run and `snouty runs show` lists them:
+  snouty launch --launcher basic_test --config ./config --duration 30 \
+    --param attrs.team=payments \
+    --param attrs.branch=main \
+    --param attrs.build=12345
+
+When the config dir (or the current directory, without --config) is in a git checkout, the launch records the checked-out commit and branch in run metadata. For a github.com `origin` remote, it also records the repository and a link to the commit. `snouty runs show` lists them under Version Control. A pre-built config image (--config-image or --param antithesis.config_image) turns this off.
+
+Additional container images that the config parser can't discover (e.g. an image referenced only in a Kubernetes CRD field) can be registered with the antithesis.images param, a semicolon-delimited [REGISTRY/]NAME(:TAG|@DIGEST) list:
+  snouty launch --launcher basic_k8s_test --config ./config --duration 30 \
+    --param 'antithesis.images=app@sha256:...;db:latest'
+
+Add --json for machine-readable output. The launch response prints as one JSON object:
+  snouty launch --json --launcher basic_test --config ./config --duration 30 |
+    jq -r .runId
+
+Next, wait for the run to finish with `snouty runs wait <run_id>`. The run ID is the `run_id` value in the launch output, or `.runId` in the --json output. To watch its events live, use `snouty runs search <run_id> --follow <query>`.
+
+Credentials come from `snouty login` or from the environment variables below. Tenant and repository may be set via the environment variables below, or in a settings file (./.snouty.toml by default; see the global --settings/--profile flags and the README). Environment variables take precedence.
+
+Environment variables (override any settings file):
+  ANTITHESIS_TENANT       Your Antithesis tenant name.
+  ANTITHESIS_API_KEY      API key authentication.
+  ANTITHESIS_USERNAME     Username (deprecated).
+  ANTITHESIS_PASSWORD     Password (deprecated).
+  ANTITHESIS_REPOSITORY   Container registry for pushing images.
+  SNOUTY_CONTAINER_ENGINE Force "docker" or "podman" (auto-detected by default).

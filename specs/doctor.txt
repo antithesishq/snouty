@@ -2,13 +2,6 @@
 #
 # Check environment configuration for Antithesis testing.
 
-# Shows help text.
-snouty doctor --help
-stdout '.*Check environment configuration.*'
-stdout '.*container runtime.*'
-stdout '(?s)environment\s+variables'
-stdout '.*--json.*'
-
 # With nothing configured, doctor names the ways to get a credential the API
 # commands accept — it must not suggest username/password, which is legacy auth
 # (issue #145). The headline states the bare problem; the notes explain it.

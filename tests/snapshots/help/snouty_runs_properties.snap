@@ -1,0 +1,62 @@
+---
+source: tests/help_snapshots.rs
+---
+List a run's property (assertion) results, one table per group.
+
+Each table is headed by its group; columns are STATUS, EXAMPLES (✓/✗), NAME
+(failing first). EXAMPLES is the example count (✓), followed by the
+counterexample count (✗) when a property has counterexamples: 0/186k is 0
+examples and 186k counterexamples.
+
+Narrow with --name and/or --group. Both are case-insensitive substring matches
+against the relevant fields. Add --detail to expand the matches into their
+examples and counter-example moments instead of the table.
+
+Examples:
+  snouty runs properties <run_id> --failing
+  snouty runs properties <run_id> --name eventually_validate --detail
+  snouty runs properties <run_id> --group Unreachable --detail
+
+Add --json for machine-readable output. Each property prints as one JSON object
+on its own line. --json is mutually exclusive with --detail:
+  snouty --json runs properties <run_id> --failing | jq -r .name
+
+Usage: snouty runs properties [OPTIONS] <RUN_ID>
+
+Arguments:
+  <RUN_ID>
+          Run ID
+
+Options:
+      --passing
+          Show only passing properties
+
+      --failing
+          Show only failing properties
+
+      --name <NAME>
+          Filter properties by name (matched by substring, case-insensitive)
+
+      --group <GROUP>
+          Only properties whose group contains this substring (case-insensitive)
+
+  -d, --detail
+          Expand each matching property into its examples / counter-example
+          moments, instead of the summary table
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --json
+          Output JSON where supported (NDJSON for list/stream commands, pretty
+          JSON otherwise)
+
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

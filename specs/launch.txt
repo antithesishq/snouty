@@ -10,33 +10,6 @@
 # checks above the skip (arg parsing, schema validation) fail before any API
 # call and run in both modes.
 
-# Environment variables are optional sources for settings and credentials.
-snouty launch --help
-stdout '^  ANTITHESIS_TENANT +Your Antithesis tenant name\.$'
-stdout '^  ANTITHESIS_API_KEY +API key authentication\.$'
-stdout '^  ANTITHESIS_USERNAME +Username \(deprecated\)\.$'
-stdout '^  ANTITHESIS_PASSWORD +Password \(deprecated\)\.$'
-stdout '^  ANTITHESIS_REPOSITORY +Container registry for pushing images\.$'
-! stdout 'required when API key is not set'
-
-# The help says where credentials come from and names the next step.
-snouty launch --help
-stdout '^Credentials come from `snouty login` or from the environment variables below\.$'
-stdout 'wait for the run to finish with `snouty runs wait <run_id>`'
-stdout '`snouty runs search <run_id> --follow <query>`'
-stdout 'A pre-built\s+config image \(--config-image or --param antithesis\.config_image\) turns this\s+off'
-
-# The help documents user-defined `attrs.*` params, which `runs show` lists.
-snouty launch --help
-stdout 'params with an `attrs\.` prefix'
-stdout '--param attrs\.team=payments'
-
-# The user specifies a launcher name via -l / --launcher. It defaults to
-#    basic_test.
-snouty launch --help
-stdout '^  -l, --launcher <LAUNCHER>$'
-stdout '\[default: basic_test\]'
-
 # -w / --webhook is a deprecated alias for --launcher. Help hides it, and it
 #    conflicts with --launcher.
 ! stdout 'webhook'
@@ -88,14 +61,10 @@ stderr 'antithesis\.filter_source_matching matches the empty string, which would
 ! snouty launch --launcher basic_test --duration 30 --param antithesis.filter_source_matching=' '
 stderr 'antithesis\.filter_source_matching is empty'
 
-# --performance-tier accepts only the tiers in the vendored OpenAPI spec, and
-#    its help points at --param for any other tier.
+# --performance-tier accepts only the tiers in the vendored OpenAPI spec.
 ! snouty launch --launcher basic_test --duration 30 --performance-tier ultra
 stderr 'invalid value .ultra. for .--performance-tier'
 stderr 'possible values: standard, fast, turbo'
-snouty launch --help
-stdout 'possible values: standard, fast, turbo\]'
-stdout '`--param=antithesis\.performance_tier=TIER`'
 
 # `launch` does not accept --stdin.
 ! snouty launch --launcher basic_test --stdin --duration 30

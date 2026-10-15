@@ -1,0 +1,11 @@
+Print a tree of documentation paths
+
+Builds a directory-like tree from all page paths stored in the documentation database.
+
+Examples:
+  snouty docs tree
+  snouty docs tree --depth 2
+  snouty docs tree -d 2
+  snouty docs tree sdk
+
+This command prints text only. --json has no effect on it.

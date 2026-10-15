@@ -1,0 +1,49 @@
+---
+source: tests/help_snapshots.rs
+---
+Search Antithesis documentation
+
+Full-text search over a local copy of the Antithesis docs, auto-updated before
+each use unless --offline.
+
+Search for a page, browse the tree to find one, then show it. `sqlite` prints
+the path to the local database for querying it directly.
+
+Examples:
+  snouty docs search fault injection
+  snouty docs tree sdk
+  snouty docs show getting_started
+
+Add --json for machine-readable output. Only `search` prints JSON; the other
+subcommands print text either way:
+  snouty --json docs search fault injection | jq -r '.[].path'
+
+Usage: snouty docs [OPTIONS] <COMMAND>
+
+Commands:
+  search  Search the documentation
+  tree    Print a tree of documentation paths
+  show    Show full contents of a documentation page
+  sqlite  Print the path to the cached SQLite database
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --offline
+          Don't check for documentation updates
+
+      --json
+          Output JSON where supported (NDJSON for list/stream commands, pretty
+          JSON otherwise)
+
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

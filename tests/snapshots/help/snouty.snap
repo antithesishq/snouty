@@ -1,0 +1,31 @@
+---
+source: tests/help_snapshots.rs
+---
+CLI for the Antithesis API
+
+Usage: snouty [OPTIONS] <COMMAND>
+
+Commands:
+  launch       Launch a test run
+  runs         Interact with test runs
+  debug        Launch a debugging session
+  completions  Output shell completions
+  validate     Validate local Antithesis setup
+  doctor       Check environment configuration
+  version      Print version information
+  update       Check for and install updates
+  docs         Search Antithesis documentation
+  login        Sign in and store your snouty configuration
+  help         Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help                 Print help
+  -V, --version              Print version
+      --json                 Output JSON where supported (NDJSON for list/stream
+                             commands, pretty JSON otherwise)
+      --verbose              Log API requests to stderr (authentication tokens
+                             redacted)
+      --settings <SETTINGS>  Path to the snouty settings file (default:
+                             ./.snouty.toml; overrides SNOUTY_SETTINGS_PATH)
+      --profile <PROFILE>    Settings profile to select (overrides
+                             ANTITHESIS_PROFILE)

@@ -1,0 +1,70 @@
+---
+source: tests/help_snapshots.rs
+---
+Launch a debugging session
+
+Identify the target run with exactly one of --run-id (preferred) or
+--session-id.
+
+Example:
+  snouty debug \
+    --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 \
+    --input-hash 6057726200491963783 \
+    --vtime 329.8037810830865 \
+    --title "stalled leader election" \
+    --description "debug this moment" \
+    --recipients "team@example.com"
+
+Extra parameters can be passed with --param, as for `snouty launch`. A --param
+cannot replace the value of a dedicated flag, such as --title:
+  snouty debug --run-id <run_id> --input-hash <hash> --vtime <vtime> \
+    --param attrs.team=payments
+
+Add --json for machine-readable output. The response prints as one JSON object:
+  snouty debug --json --run-id <run_id> --input-hash <hash> --vtime <vtime> |
+    jq -r .runId
+
+Usage: snouty debug [OPTIONS] --input-hash <INPUT_HASH> --vtime <VTIME> <--run-id <RUN_ID>|--session-id <SESSION_ID>>
+
+Options:
+      --run-id <RUN_ID>
+          Run ID of the test run to debug (preferred; mutually exclusive with
+          --session-id)
+
+      --session-id <SESSION_ID>
+          Session ID of the test run to debug (mutually exclusive with --run-id)
+
+      --input-hash <INPUT_HASH>
+          Input hash identifying the moment to debug
+
+      --vtime <VTIME>
+          Virtual time identifying the moment to debug
+
+      --title <TITLE>
+          Debugging session title, shown as the test name in `snouty runs list`
+
+      --description <DESCRIPTION>
+          Debugging session description
+
+      --recipients <RECIPIENTS>
+          Report recipients (semicolon-delimited email addresses)
+
+      --param <PARAMS>
+          Extra parameters as key=value pairs (repeatable)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --json
+          Output JSON where supported (NDJSON for list/stream commands, pretty
+          JSON otherwise)
+
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

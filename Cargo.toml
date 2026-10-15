@@ -86,6 +86,8 @@ name = "mock_api"
 path = "examples/mock_api.rs"
 
 [build-dependencies]
+# Renders the help/*.txt templates into OUT_DIR at build time.
+minijinja = { version = "3", default-features = false, features = ["multi_template"] }
 # Same openapiv3 version progenitor resolves; build.rs preprocesses the spec
 # through this type before handing it to the generator.
 openapiv3 = "2"
@@ -99,6 +101,8 @@ serde_json = "1"
 syn = "3.0.6"
 
 [dev-dependencies]
+# Snapshot tests of the rendered help pages (tests/help_snapshots.rs).
+insta = "1"
 assert_cmd = "2"
 predicates = "3"
 serde_json = "1"

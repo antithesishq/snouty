@@ -1,0 +1,73 @@
+---
+source: tests/help_snapshots.rs
+---
+Wait until a run is ready or complete.
+
+--until sets the status to wait for:
+  ready     The run is ready to use, or it is already complete.
+  complete  The run is complete: completed, cancelled, or incomplete. This
+            is the default.
+
+The status is a minimum. A run can only move forward, and a complete run never
+starts again. Thus `--until ready` on a complete run returns at once.
+
+When the run reaches the status, the command prints the run's current status and
+exits 0, whatever that status is. A run that reports status `unknown` fails the
+command: snouty cannot tell whether such a run will still make progress.
+
+The wait is unbounded unless --timeout is given. The command is safe to
+interrupt and re-run: it holds no state beyond the run id.
+
+Examples:
+  snouty runs wait <run_id>
+  snouty runs wait <run_id> --timeout 2h
+  snouty runs wait <run_id> --until ready
+  snouty launch --json --config ./config ... | jq -r .runId | xargs snouty runs
+  wait
+
+Add --json for machine-readable output. The final status prints as one JSON
+object:
+  snouty --json runs wait <run_id> | jq -r .status
+
+Usage: snouty runs wait [OPTIONS] <RUN_ID>
+
+Arguments:
+  <RUN_ID>
+          Run ID
+
+Options:
+      --poll-interval <POLL_INTERVAL>
+          Time between status checks, in minutes or h/m/s units (e.g. 90s;
+          minimum 1 minute)
+          
+          [default: 1m]
+
+      --timeout <TIMEOUT>
+          Give up after this long (minutes, or h/m/s units, e.g. 2h); without it
+          the wait is unbounded
+
+      --until <UNTIL>
+          The status to wait for; a later status also ends the wait
+
+          Possible values:
+          - ready:    The run is ready to use, or already complete
+          - complete: The run is completed, cancelled, or incomplete
+          
+          [default: complete]
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --json
+          Output JSON where supported (NDJSON for list/stream commands, pretty
+          JSON otherwise)
+
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

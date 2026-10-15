@@ -1,0 +1,54 @@
+---
+source: tests/help_snapshots.rs
+---
+List recent runs (the default when `snouty runs` runs with no subcommand).
+
+Columns: RUN ID, STATUS, CREATED, LAUNCHER, RUN. RUN is the test name. For a run
+with no test name, RUN is the first line of its description, or `-` when it has
+none. Use --detail for the full description.
+
+Add --json for machine-readable output. Each run prints as one JSON object on
+its own line, in the order the server returns them:
+  snouty --json runs list | jq -r .run_id
+
+Usage: snouty runs list [OPTIONS]
+
+Options:
+  -s, --status <STATUS>
+          Filter by status (starting, in_progress, completed, cancelled,
+          incomplete, unknown)
+
+  -l, --launcher <LAUNCHER>
+          Filter by launcher name
+
+      --created-after <CREATED_AFTER>
+          Only show runs created after this timestamp (ISO 8601)
+
+      --created-before <CREATED_BEFORE>
+          Only show runs created before this timestamp (ISO 8601)
+
+  -n, --limit <LIMIT>
+          Maximum number of runs to display
+          
+          [default: 10]
+
+  -d, --detail
+          Show a detailed key-value block per run, including the full
+          description
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --json
+          Output JSON where supported (NDJSON for list/stream commands, pretty
+          JSON otherwise)
+
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

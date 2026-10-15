@@ -1,0 +1,25 @@
+Stream the logs of one timeline of a run.
+
+How a run is structured: An Antithesis run is a tree of timelines, not one
+history. A timeline is a series of input_hashes. An input_hash is a hash of
+every input Antithesis sent up to that point. Antithesis branches a timeline
+by sending an input from some moment, which creates a new input_hash. Every
+event has an input_hash and a vtime, and one input_hash can have zero or more
+events. Events that share an input_hash are on the same timeline. vtime is
+the virtual time at which the event was emitted on its timeline. Antithesis
+virtualizes the clock, so vtime can jump forward by any amount, but it never
+goes backward. vtime orders events only within one timeline.
+
+input_hash identifies the timeline: the hash of every input Antithesis sent
+from the root to that point. Give it as a string, exactly as other tools
+return it. Logs start at the root (or at begin_vtime) and end at the
+timeline's current end; a run in progress can extend the timeline, so the
+same input_hash can return more logs later. Give vtime to end the logs at
+that moment instead.
+
+Returns one JSON object per event, one per line. Each event has a moment
+object with input_hash and vtime, and vtime is an exact JSON number. Log
+output is in output_text, and source tells which container and stream
+emitted it. Other event shapes (SDK assertions in antithesis_assert, faults
+in fault) have their own keys. active_faults lists the faults that are
+active at the event.

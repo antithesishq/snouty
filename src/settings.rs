@@ -83,6 +83,7 @@ pub fn cache_dir() -> Option<PathBuf> {
 /// `Default` is every setting unset (with the `stable` update channel and the
 /// default cache size cap) — handy when a caller needs a `Settings` without
 /// resolving anything.
+#[derive(Clone)]
 pub struct Settings {
     profile: Option<String>,
     tenant: Option<String>,

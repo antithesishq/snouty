@@ -1,0 +1,5 @@
+Search the Antithesis documentation. Use it first for questions about Antithesis concepts, the SDKs, or test setup. Then read the matches with docs_show.
+
+query is literal text. Set match to true to use SQLite FTS5 syntax: AND, OR, NOT, NEAR, "phrases", title:word, prefix*. limit: the maximum number of results (default 10).
+
+Returns a JSON array of {path, title, snippet}, best match first.

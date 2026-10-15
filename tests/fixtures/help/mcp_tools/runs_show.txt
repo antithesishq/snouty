@@ -1,0 +1,5 @@
+Show the metadata of one run. Use it to check a run's status, get its triage report URL, or get the failure moment of an incomplete run.
+
+Returns one JSON object: run_id, status, created_at, started_at, completed_at, launcher, description, links.triage_report, and parameters (the launch params; "attrs.*" keys are user attributes). An incomplete run has failure_moment {input_hash, vtime}: pass it to runs_logs. input_hash "0" with vtime 0 is a placeholder that has no logs.
+
+More: tool_help {"tool": "runs_show"}

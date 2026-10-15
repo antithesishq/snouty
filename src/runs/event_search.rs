@@ -94,16 +94,16 @@ pub(super) async fn check_query(
     run_id: &str,
     query: &str,
     json: bool,
+    out: &mut (dyn Write + Send),
 ) -> Result<()> {
     let _ = search_when_ready(api, run_id, READY_POLL, || {
         api.search_run_events_query(run_id, query, SearchMode::Validate)
     })
     .await?;
-    let mut stdout = std::io::stdout().lock();
     if json {
-        writeln!(stdout, "{}", json!({"valid": true}))?;
+        writeln!(out, "{}", json!({"valid": true}))?;
     } else {
-        writeln!(stdout, "query is valid")?;
+        writeln!(out, "query is valid")?;
     }
     Ok(())
 }
@@ -114,17 +114,17 @@ pub(super) async fn count_query(
     run_id: &str,
     query: &str,
     json: bool,
+    out: &mut (dyn Write + Send),
 ) -> Result<()> {
     let count = search_when_ready(api, run_id, READY_POLL, || {
         api.count_run_events_query(run_id, query)
     })
     .await?;
-    let mut stdout = std::io::stdout().lock();
     if json {
-        writeln!(stdout, "{}", json!({"count": count}))?;
+        writeln!(out, "{}", json!({"count": count}))?;
     } else {
         let noun = if count == 1 { "event" } else { "events" };
-        writeln!(stdout, "{count} {noun} matched the query.")?;
+        writeln!(out, "{count} {noun} matched the query.")?;
     }
     Ok(())
 }

@@ -70,12 +70,12 @@ async fn print_event_lines(
     output: EventOutput,
     empty_message: &str,
     limit: Option<NonZeroU64>,
+    out: &mut (dyn Write + Send),
 ) -> Result<()> {
-    let mut stdout = std::io::stdout().lock();
     let mut seen: usize = 0;
     while let Some(line) = lines.try_next().await? {
         seen += 1;
-        writeln!(stdout, "{line}")?;
+        writeln!(out, "{line}")?;
     }
     if output.json() {
         return Ok(());
@@ -90,22 +90,11 @@ async fn print_event_lines(
     Ok(())
 }
 
-/// `print!`/`println!`, but routed through `write!`/`writeln!` to stdout so a
-/// closed pipe (e.g. `snouty runs list | head`) surfaces as an `io::Error` the
-/// caller propagates with `?` — `println!` would panic instead. Each call
-/// evaluates to an `io::Result<()>`, so every use must be `?`-ed.
-macro_rules! out {
-    ($($arg:tt)*) => {{ write!(std::io::stdout(), $($arg)*) }};
-}
-macro_rules! outln {
-    () => {{ writeln!(std::io::stdout()) }};
-    ($($arg:tt)*) => {{ writeln!(std::io::stdout(), $($arg)*) }};
-}
-
 pub async fn cmd_runs(
     command: Option<RunsCommands>,
     settings: &Settings,
     output: OutputOptions,
+    out: &mut (dyn Write + Send),
 ) -> Result<()> {
     // `--detail` produces human formatting, so it can't combine with
     // `--json`; `--raw` is a JSON output shape, so it requires `--json`.
@@ -141,10 +130,10 @@ pub async fn cmd_runs(
     };
 
     match command {
-        None => cmd_runs_list(RunsListArgs::default(), settings, output).await,
-        Some(RunsCommands::List(args)) => cmd_runs_list(args, settings, output).await,
+        None => cmd_runs_list(RunsListArgs::default(), settings, output, out).await,
+        Some(RunsCommands::List(args)) => cmd_runs_list(args, settings, output, out).await,
         Some(RunsCommands::Show { run_id, web }) => {
-            cmd_runs_show(&run_id, web, settings, output).await
+            cmd_runs_show(&run_id, web, settings, output, out).await
         }
         Some(RunsCommands::Wait {
             run_id,
@@ -159,10 +148,13 @@ pub async fn cmd_runs(
                 until,
                 settings,
                 output,
+                out,
             )
             .await
         }
-        Some(RunsCommands::Cancel { run_id }) => cmd_runs_cancel(&run_id, settings, output).await,
+        Some(RunsCommands::Cancel { run_id }) => {
+            cmd_runs_cancel(&run_id, settings, output, out).await
+        }
         Some(RunsCommands::Properties {
             run_id,
             passing,
@@ -183,7 +175,7 @@ pub async fn cmd_runs(
                 name: name.as_deref(),
                 group: group.as_deref(),
             };
-            cmd_runs_properties(&run_id, filter, detail, settings, output).await
+            cmd_runs_properties(&run_id, filter, detail, settings, output, out).await
         }
         Some(RunsCommands::BuildLogs { run_id }) => {
             // `--json` on build-logs is the raw passthrough: the records
@@ -196,7 +188,7 @@ pub async fn cmd_runs(
             } else {
                 EventOutput::Human { detail: false }
             };
-            cmd_runs_build_logs(&run_id, settings, output.verbose, mode).await
+            cmd_runs_build_logs(&run_id, settings, output.verbose, mode, out).await
         }
         Some(RunsCommands::Logs {
             run_id,
@@ -211,7 +203,16 @@ pub async fn cmd_runs(
                 input_hash,
                 vtime: vtime.unwrap_or(VTime::ZERO),
             };
-            cmd_runs_logs(&run_id, moment, begin_vtime, settings, output.verbose, mode).await
+            cmd_runs_logs(
+                &run_id,
+                moment,
+                begin_vtime,
+                settings,
+                output.verbose,
+                mode,
+                out,
+            )
+            .await
         }
         Some(RunsCommands::Exec {
             run_id,
@@ -236,7 +237,7 @@ pub async fn cmd_runs(
                 events,
                 rewarm,
             };
-            cmd_runs_exec(&run_id, exec, settings, output).await
+            cmd_runs_exec(&run_id, exec, settings, output, out).await
         }
         Some(RunsCommands::Events {
             run_id,
@@ -249,10 +250,19 @@ pub async fn cmd_runs(
             // `query` is a backward-compatible alias whose terms are additional
             // needles. Merge both into a single needle list.
             matches.extend(query);
-            cmd_runs_events(&run_id, &matches, limit, settings, output.verbose, mode).await
+            cmd_runs_events(
+                &run_id,
+                &matches,
+                limit,
+                settings,
+                output.verbose,
+                mode,
+                out,
+            )
+            .await
         }
         Some(RunsCommands::Search(args)) => {
-            cmd_runs_search(args, settings, output.verbose, mode).await
+            cmd_runs_search(args, settings, output.verbose, mode, out).await
         }
     }
 }
@@ -261,6 +271,7 @@ async fn cmd_runs_list(
     args: RunsListArgs,
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
+    out: &mut (dyn Write + Send),
 ) -> Result<()> {
     debug!("listing runs");
 
@@ -282,7 +293,7 @@ async fn cmd_runs_list(
 
     if json {
         while let Some(run) = stream.try_next().await? {
-            outln!("{}", serde_json::to_string(&run)?)?;
+            writeln!(out, "{}", serde_json::to_string(&run)?)?;
         }
         return Ok(());
     }
@@ -295,15 +306,15 @@ async fn cmd_runs_list(
     }
 
     if runs.is_empty() {
-        outln!("No runs found.")?;
+        writeln!(out, "No runs found.")?;
         return Ok(());
     }
 
     if args.detail {
-        out!("{}", render_runs_detail(&runs))?;
+        write!(out, "{}", render_runs_detail(&runs))?;
     } else {
         let width = terminal_width();
-        outln!("{}", render_runs_table(&runs, width))?;
+        writeln!(out, "{}", render_runs_table(&runs, width))?;
     }
     limit_note(runs.len(), args.limit, args.detail);
     Ok(())
@@ -363,6 +374,7 @@ async fn cmd_runs_show(
     web: bool,
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
+    out: &mut (dyn Write + Send),
 ) -> Result<()> {
     debug!("showing run: {}", run_id);
 
@@ -375,13 +387,13 @@ async fn cmd_runs_show(
     };
 
     if web {
-        return open_run_report(&run, json);
+        return open_run_report(&run, json, out);
     }
 
     if json {
-        outln!("{}", serde_json::to_string_pretty(&run)?)?;
+        writeln!(out, "{}", serde_json::to_string_pretty(&run)?)?;
     } else {
-        print_run_detail(&run)?;
+        print_run_detail(&run, out)?;
     }
 
     Ok(())
@@ -389,7 +401,7 @@ async fn cmd_runs_show(
 
 /// `runs show --web`: open the run's triage report in a browser. With `--json`,
 /// emit the URL instead of launching anything so scripts can capture it.
-fn open_run_report(run: &RunDetail, json: bool) -> Result<()> {
+fn open_run_report(run: &RunDetail, json: bool, out: &mut (dyn Write + Send)) -> Result<()> {
     let url = run
         .links
         .as_ref()
@@ -402,18 +414,18 @@ fn open_run_report(run: &RunDetail, json: bool) -> Result<()> {
         })?;
 
     if json {
-        outln!("{}", serde_json::json!({ "url": url }))?;
+        writeln!(out, "{}", serde_json::json!({ "url": url }))?;
         return Ok(());
     }
 
     let launched = crate::browser::open_in_browser(url).is_ok();
     if launched {
-        outln!("Opening report for run {}…", run.run_id)?;
-        outln!("If your browser didn't open, manually visit:")?;
-        outln!("  {url}")?;
+        writeln!(out, "Opening report for run {}…", run.run_id)?;
+        writeln!(out, "If your browser didn't open, manually visit:")?;
+        writeln!(out, "  {url}")?;
     } else {
-        outln!("Open this URL to view the report:")?;
-        outln!("  {url}")?;
+        writeln!(out, "Open this URL to view the report:")?;
+        writeln!(out, "  {url}")?;
     }
     Ok(())
 }
@@ -429,6 +441,7 @@ async fn cmd_runs_wait(
     until: WaitUntil,
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
+    out: &mut (dyn Write + Send),
 ) -> Result<()> {
     debug!("waiting for run: {}", run_id);
 
@@ -459,17 +472,17 @@ async fn cmd_runs_wait(
     };
 
     if json {
-        let mut out = json!({
+        let mut report = json!({
             "run_id": run.run_id,
             "status": run.status,
         });
         // Absent, as in the run's detail, when the run has no sub-status.
         if let Some(sub_status) = &run.sub_status {
-            out["sub_status"] = json!(sub_status);
+            report["sub_status"] = json!(sub_status);
         }
-        outln!("{}", serde_json::to_string_pretty(&out)?)?;
+        writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
     } else {
-        outln!("run {} is {}", run.run_id, run.status_label())?;
+        writeln!(out, "run {} is {}", run.run_id, run.status_label())?;
     }
 
     Ok(())
@@ -479,6 +492,7 @@ async fn cmd_runs_cancel(
     run_id: &str,
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
+    out: &mut (dyn Write + Send),
 ) -> Result<()> {
     debug!("cancelling run: {}", run_id);
 
@@ -497,9 +511,9 @@ async fn cmd_runs_cancel(
     }
 
     if json {
-        outln!("{}", json!({ "run_id": run_id }))?;
+        writeln!(out, "{}", json!({ "run_id": run_id }))?;
     } else {
-        outln!("cancelled run {run_id}")?;
+        writeln!(out, "cancelled run {run_id}")?;
     }
     Ok(())
 }
@@ -598,6 +612,7 @@ async fn cmd_runs_properties(
     detail: bool,
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
+    out: &mut (dyn Write + Send),
 ) -> Result<()> {
     debug!("listing properties for run: {}", run_id);
 
@@ -627,24 +642,25 @@ async fn cmd_runs_properties(
 
     if json {
         for property in &properties {
-            outln!("{}", serde_json::to_string(property)?)?;
+            writeln!(out, "{}", serde_json::to_string(property)?)?;
         }
     } else if properties.is_empty() {
-        outln!("{}", no_properties_message(&filter))?;
+        writeln!(out, "{}", no_properties_message(&filter))?;
     } else if detail {
-        outln!("{}", render_properties_detail(&properties))?;
+        writeln!(out, "{}", render_properties_detail(&properties))?;
         // One next step for the whole listing: every HASH/VTIME row above feeds it.
         let has_moments = properties.iter().any(|p| match p {
             Property::EventProperty(p) => !p.examples.is_empty() || !p.counterexamples.is_empty(),
             Property::NonEventProperty(_) => false,
         });
         if has_moments {
-            outln!(
+            writeln!(
+                out,
                 "\nview logs leading up to an example:\n  snouty runs logs {run_id} <hash> <vtime>"
             )?;
         }
     } else {
-        outln!("{}", render_properties_table(&properties))?;
+        writeln!(out, "{}", render_properties_table(&properties))?;
     }
 
     Ok(())
@@ -1287,15 +1303,20 @@ fn render_properties_table(properties: &[Property]) -> String {
 fn print_kv_block<'a>(
     title: &str,
     rows: impl IntoIterator<Item = (&'a str, &'a str)>,
+    out: &mut (dyn Write + Send),
 ) -> Result<()> {
     let rows: Vec<_> = rows.into_iter().collect();
     if !rows.is_empty() {
-        out!("\n{title}\n{}\n", indent_lines(&render_kv(&rows, 0), "  "))?;
+        write!(
+            out,
+            "\n{title}\n{}\n",
+            indent_lines(&render_kv(&rows, 0), "  ")
+        )?;
     }
     Ok(())
 }
 
-fn print_run_detail(run: &RunDetail) -> Result<()> {
+fn print_run_detail(run: &RunDetail, out: &mut (dyn Write + Send)) -> Result<()> {
     // Bound once and reused for both the Failure Hash/VTime rows and the deferred
     // "view logs" hint below, so the two can't drift apart (a placeholder 0/0
     // moment is treated as no moment — see `RunDetail::real_failure_moment`).
@@ -1351,12 +1372,12 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         rows.push(("Creator", name.clone()));
     }
 
-    out!("{}", render_kv(&rows, 0))?;
+    write!(out, "{}", render_kv(&rows, 0))?;
 
     // Each block aligns its own labels, so these rows do not widen the metadata
     // labels above.
-    print_kv_block("Attributes", run.attrs())?;
-    print_kv_block("Version Control", run.vcs())?;
+    print_kv_block("Attributes", run.attrs(), out)?;
+    print_kv_block("Version Control", run.vcs(), out)?;
 
     // The description can be an enormous multi-paragraph blob, so it goes as its
     // own block — wrapped to the terminal, with the label on its own line —
@@ -1365,7 +1386,7 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
     if let Some(desc) = run.display_description() {
         let block = render_prose_block("Description", desc, ProseLayout::OwnLine);
         if !block.is_empty() {
-            out!("\n{block}")?;
+            write!(out, "\n{block}")?;
         }
     }
 
@@ -1373,18 +1394,18 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
     // same way the `--web` hint below hands over the report link. Both can fire
     // when an incomplete run still has a report — they're complementary.
     if let Some(moment) = failure {
-        outln!(
+        writeln!(
+            out,
             "\nview logs at the failure moment:\n  snouty runs logs {} {} {}",
-            run.run_id,
-            moment.input_hash,
-            moment.vtime
+            run.run_id, moment.input_hash, moment.vtime
         )?;
     }
 
     // Only a completed run has property results: the properties endpoint gives
     // none for an incomplete or in-progress run, even one with a report link.
     if run.status == RunStatus::Completed {
-        outln!(
+        writeln!(
+            out,
             "\nsee property results:\n  snouty runs properties {}",
             run.run_id
         )?;
@@ -1399,7 +1420,8 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         .and_then(|l| l.triage_report.as_deref())
         .is_some();
     if has_report {
-        outln!(
+        writeln!(
+            out,
             "\nview the report in your browser:\n  snouty runs show {} --web",
             run.run_id
         )?;
@@ -1475,6 +1497,7 @@ async fn cmd_runs_build_logs(
     settings: &Settings,
     verbose: bool,
     mode: EventOutput,
+    out: &mut (dyn Write + Send),
 ) -> Result<()> {
     debug!("streaming build logs for run: {}", run_id);
 
@@ -1484,7 +1507,7 @@ async fn cmd_runs_build_logs(
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
     };
     let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode);
-    print_event_lines(lines, mode, "No build logs for this run.", None).await
+    print_event_lines(lines, mode, "No build logs for this run.", None, out).await
 }
 
 async fn cmd_runs_search(
@@ -1492,15 +1515,16 @@ async fn cmd_runs_search(
     settings: &Settings,
     verbose: bool,
     mode: EventOutput,
+    out: &mut (dyn Write + Send),
 ) -> Result<()> {
     debug!("querying events for run: {}", args.run_id);
 
     let api = AntithesisApi::new(settings, verbose)?;
     if args.check {
-        return event_search::check_query(&api, &args.run_id, &args.query, mode.json()).await;
+        return event_search::check_query(&api, &args.run_id, &args.query, mode.json(), out).await;
     }
     if args.count {
-        return event_search::count_query(&api, &args.run_id, &args.query, mode.json()).await;
+        return event_search::count_query(&api, &args.run_id, &args.query, mode.json(), out).await;
     }
     // `--follow` with no limit is the one unbounded case: the caller asked to
     // watch an in-progress run, so the stream stays open.
@@ -1520,7 +1544,7 @@ async fn cmd_runs_search(
     // `{"error": ...}` included, so this stream must not guess that such a
     // row is the server's Stream_Error signal.
     let lines = event_search::render_event_stream(stream, ErrorRows::Data, mode);
-    print_event_lines(lines, mode, "No events matched the query.", limit).await
+    print_event_lines(lines, mode, "No events matched the query.", limit, out).await
 }
 
 async fn cmd_runs_events(
@@ -1530,6 +1554,7 @@ async fn cmd_runs_events(
     settings: &Settings,
     verbose: bool,
     mode: EventOutput,
+    out: &mut (dyn Write + Send),
 ) -> Result<()> {
     debug!("searching events for run: {}", run_id);
 
@@ -1561,6 +1586,7 @@ async fn cmd_runs_events(
         mode,
         &format!("No events matched \"{}\".", matches.join(" ")),
         Some(limit),
+        out,
     )
     .await
 }
@@ -1572,6 +1598,7 @@ async fn cmd_runs_logs(
     settings: &Settings,
     verbose: bool,
     mode: EventOutput,
+    out: &mut (dyn Write + Send),
 ) -> Result<()> {
     debug!("streaming logs for run: {}", run_id);
 
@@ -1587,7 +1614,7 @@ async fn cmd_runs_logs(
     let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode)
         .inspect_ok(|_| any_lines.store(true, Ordering::Relaxed))
         .boxed();
-    print_event_lines(lines, mode, "No log lines at this moment.", None).await?;
+    print_event_lines(lines, mode, "No log lines at this moment.", None, out).await?;
     // The footer marks the end of the stream, so a quiet timeline doesn't
     // read as one cut short.
     if !mode.json() && any_lines.into_inner() {
@@ -1814,16 +1841,17 @@ fn render_exec_event(
     entry: &Value,
     json: bool,
     renderer: Option<&mut EventStreamRenderer>,
+    out: &mut (dyn Write + Send),
 ) -> Result<()> {
     if json {
-        outln!("{entry}")?;
+        writeln!(out, "{entry}")?;
     } else if let Some(renderer) = renderer {
-        outln!("{}", renderer.render_entry(entry))?;
+        writeln!(out, "{}", renderer.render_entry(entry))?;
     } else if let Some(text) = entry["output_text"].as_str() {
         let text = normalize_terminal_text(text);
         match ExecStream::deserialize(&entry["source"]["stream"]) {
             Ok(ExecStream::Error) => eprintln!("{text}"),
-            Ok(ExecStream::Info) | Err(_) => outln!("{text}")?,
+            Ok(ExecStream::Info) | Err(_) => writeln!(out, "{text}")?,
         }
     } else {
         eprintln!("{entry}");
@@ -1896,10 +1924,11 @@ async fn cmd_runs_exec(
     exec: ExecRequest,
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
+    out: &mut (dyn Write + Send),
 ) -> Result<()> {
     debug!("executing command in run: {}", run_id);
     let api = AntithesisApi::new(settings, verbose)?;
-    exec_when_ready(&api, run_id, exec, READY_POLL, json).await
+    exec_when_ready(&api, run_id, exec, READY_POLL, json, out).await
 }
 
 /// How often a command that needs a ready run polls a run that is not ready.
@@ -1930,6 +1959,7 @@ async fn exec_when_ready(
     exec: ExecRequest,
     poll: Duration,
     json: bool,
+    out: &mut (dyn Write + Send),
 ) -> Result<()> {
     let timeout = exec.timeout;
     let mut renderer = exec.events.then(|| EventStreamRenderer::new(false));
@@ -1961,7 +1991,7 @@ async fn exec_when_ready(
     let mut lines = event_lines(stream, ErrorRows::Abort);
     while let Some(mut entry) = lines.try_next().await? {
         if let Some((line, _)) = held.take() {
-            render_exec_event(&line, json, renderer.as_mut())?;
+            render_exec_event(&line, json, renderer.as_mut(), out)?;
         }
         if !json
             && let Ok(ExecProgress::Rewarming { percent_complete }) =
@@ -1980,12 +2010,12 @@ async fn exec_when_ready(
                 normalize_vtime_field(&mut entry, "last_moment");
                 held = Some((entry, result));
             }
-            Err(_) => render_exec_event(&entry, json, renderer.as_mut())?,
+            Err(_) => render_exec_event(&entry, json, renderer.as_mut(), out)?,
         }
     }
     // Without --json, the trailer and the exit code below show the result.
     if json && let Some((line, _)) = &held {
-        outln!("{line}")?;
+        writeln!(out, "{line}")?;
     }
     let terminal = held.map(|(_, result)| result);
 
@@ -5042,7 +5072,7 @@ mod tests {
                 rewarm: None,
             };
 
-            exec_when_ready(&api, "run-w", exec, FAST_POLL, true)
+            exec_when_ready(&api, "run-w", exec, FAST_POLL, true, &mut std::io::sink())
                 .await
                 .unwrap();
 

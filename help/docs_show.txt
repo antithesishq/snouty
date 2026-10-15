@@ -1,0 +1,15 @@
+Show full contents of a documentation page
+
+{% if cli %}Displays{% else %}Returns{% endif %} the full markdown content of a page by its path.
+If the exact path is not found, suggests similar pages.
+
+{% if cli %}
+This command prints text only. --json has no effect on it.
+{% else %}
+path takes a path from the docs_tree or docs_search tool, a page path such
+as "getting_started/overview", or a full https://antithesis.com/docs/ URL.
+A "docs/" prefix, a ".md" suffix, a query and a fragment are ignored.
+
+Returns the page's markdown, not JSON. The first line is "# " and the page
+title.
+{% endif %}

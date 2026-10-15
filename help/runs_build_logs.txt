@@ -1,0 +1,23 @@
+Stream a run's build and setup logs: everything the platform did
+before the test started.
+
+{% if cli %}
+Output: each line is `timestamp [stream] line`, where stream is `stdout` or
+`stderr`. The whole build is streamed, so expect thousands of lines on a real
+run. Grep the stream tag to narrow it, and read `[stderr]` first when a
+launch failed.
+
+Examples:
+  snouty runs build-logs <run_id>
+  snouty runs build-logs <run_id> | grep '\[stderr\]'
+  snouty runs build-logs <run_id> | grep -i 'error\|denied'
+
+Add --json for machine-readable output. Each log line prints as one JSON
+object on its own line:
+  snouty --json runs build-logs <run_id> | jq -r .text
+{% else %}
+Returns one JSON object per log line, one per line, with the keys timestamp,
+stream and text. stream is "stdout" or "stderr". The result holds the whole
+build, so expect thousands of lines on a real run. When a launch failed,
+read the lines whose stream is "stderr" first.
+{% endif %}

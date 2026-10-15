@@ -1,0 +1,3 @@
+Get the build and setup logs of a run: everything before the test started. Use it when a run did not start or its setup failed. For logs during the test, use runs_logs or runs_search.
+
+Returns JSONL, one log line per line: timestamp, stream ("stdout" or "stderr"), text. A real run has thousands of lines. When a launch failed, read the "stderr" lines first.

@@ -13,12 +13,15 @@ use semver::Version;
 use snouty::OutputOptions;
 use snouty::api::AntithesisApi;
 use snouty::auth::initialize_credential_store;
-use snouty::cli::{Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs, UpdateChannel};
+use snouty::cli::{
+    Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs, UpdateChannel, gated_command_error,
+};
 use snouty::compose;
 use snouty::config;
 use snouty::container;
 use snouty::docs;
 use snouty::error::user_error;
+use snouty::features;
 use snouty::git::{self, GitHubRepo};
 use snouty::login::cmd_login;
 use snouty::params::{
@@ -32,8 +35,7 @@ use snouty::params::{
 use snouty::settings::Settings;
 use snouty::validate;
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() {
+fn main() {
     // Drop the "Backtrace omitted. Run with RUST_BACKTRACE=1…" footer: it's noise
     // on every error, and outright misleading on user errors built with
     // `suppress_backtrace` (where RUST_BACKTRACE does nothing). A genuine fault
@@ -54,7 +56,31 @@ async fn main() {
     env_logger::Builder::from_default_env()
         .format(|buf, record| writeln!(buf, "{}", record.args()))
         .init();
-    if let Err(report) = run(Cli::parse()).await {
+    let cli = Cli::parse();
+    // The MCP server serves calls at the same time, so it gets worker
+    // threads. A CLI command does one thing at a time.
+    let mut runtime = match cli.command {
+        Commands::Mcp(_) => {
+            let mut builder = tokio::runtime::Builder::new_multi_thread();
+            builder.worker_threads(snouty::mcp::WORKER_THREADS);
+            builder
+        }
+        _ => tokio::runtime::Builder::new_current_thread(),
+    };
+    let runtime = runtime
+        .enable_all()
+        .build()
+        .expect("failed to start the tokio runtime");
+    let result = runtime.block_on(run(cli));
+    // Dropping the runtime waits with no limit for its blocking tasks, such
+    // as a DNS lookup that does not end, so a stopped MCP server could hang.
+    // Every task that a command needs has finished by now.
+    runtime.shutdown_background();
+    if let Err(report) = result {
+        // doctor already wrote its report, which says what failed.
+        if report.downcast_ref::<ChecksFailed>().is_some() {
+            std::process::exit(1);
+        }
         // One rendering for every error: `render_report` collapses the chain
         // index for single errors and wraps overlong prose, both printing
         // concerns that belong here rather than in the messages. User-facing
@@ -66,6 +92,19 @@ async fn main() {
         std::process::exit(1);
     }
 }
+
+/// `snouty doctor` found a failed required check. The command already wrote
+/// its report, so `main` exits 1 and prints nothing more.
+#[derive(Debug)]
+struct ChecksFailed;
+
+impl std::fmt::Display for ChecksFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("required checks failed")
+    }
+}
+
+impl std::error::Error for ChecksFailed {}
 
 async fn run(cli: Cli) -> Result<()> {
     let Cli {
@@ -81,6 +120,12 @@ async fn run(cli: Cli) -> Result<()> {
     // The global output flags travel together from here on; every command
     // takes them as one value instead of a swappable positional bool pair.
     let output = OutputOptions { json, verbose };
+
+    // A gated command hides itself as the parser is built, but a hidden
+    // subcommand is still callable, so refuse it here too.
+    if let Some(report) = gated_command_error(&command, &features::enabled()) {
+        return Err(report);
+    }
 
     if let Err(err) = initialize_credential_store() {
         eprintln!("warning: Could not initialize system keychain credential storage: {err:?}");
@@ -100,7 +145,14 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::Update(args) => cmd_update(args, &settings?),
-        Commands::Docs { offline, command } => docs::cmd_docs(command, offline, output).await,
+        Commands::Docs { offline, command } => {
+            let refresh = if offline {
+                docs::Refresh::Offline
+            } else {
+                docs::Refresh::Online
+            };
+            docs::cmd_docs(command, refresh, output, &mut io::stdout()).await
+        }
         Commands::Login { tenant, repository } => {
             cmd_login(tenant, repository, profile.as_deref(), &settings?, output).await
         }
@@ -109,15 +161,25 @@ async fn run(cli: Cli) -> Result<()> {
             eprintln!("warning: `snouty run` is deprecated, use `snouty launch` instead");
             cmd_launch(args, &settings?, output).await
         }
-        Commands::Runs { command } => snouty::runs::cmd_runs(command, &settings?, output).await,
+        Commands::Runs { command } => {
+            snouty::runs::cmd_runs(command, &settings?, output, &mut io::stdout()).await
+        }
         Commands::Debug(args) => {
             info!("starting debug session");
             cmd_debug(args, &settings?, output).await
         }
         Commands::Validate(args) => validate::cmd_validate(args, &settings?).await,
         Commands::Doctor(args) => {
-            snouty::doctor::cmd_doctor(&settings?, output, args.offline).await
+            let passed =
+                snouty::doctor::cmd_doctor(&settings?, output, args.offline, &mut io::stdout())
+                    .await?;
+            if passed {
+                Ok(())
+            } else {
+                Err(ChecksFailed.into())
+            }
         }
+        Commands::Mcp(args) => snouty::mcp::cmd_mcp(args, settings?, verbose).await,
     };
 
     suppress_broken_pipe(result)
@@ -155,6 +217,7 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
         Commands::Version => Some("version"),
         Commands::Update(_) => Some("update"),
         Commands::Login { .. } => Some("login"),
+        Commands::Mcp(_) => Some("mcp"),
     }
 }
 

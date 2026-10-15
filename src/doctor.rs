@@ -92,7 +92,7 @@ fn print_notes(notes: &[Note]) {
 
 /// One health check: local tooling, settings validity, authentication, and
 /// API connectivity. The headline `message` states the bare fact; the `notes`
-/// carry explanations and how-tos. `name` is a stable machine key for `--json`.
+/// carry explanations and how-tos. `name` is a stable snake_case key for `--json`.
 /// Checks own all of doctor's pass/warn/fail semantics — the settings table is
 /// purely informational.
 #[derive(Serialize)]
@@ -597,7 +597,7 @@ fn print_settings(settings: &[Setting]) {
 /// An API that some commands assume the tenant serves, from a minimum tenant
 /// release, instead of probing for it.
 struct ReleaseFloor {
-    id: &'static str,
+    name: &'static str,
     serves: &'static str,
     min: (u64, u64),
     consequence: &'static str,
@@ -605,19 +605,19 @@ struct ReleaseFloor {
 
 const RELEASE_FLOORS: [ReleaseFloor; 3] = [
     ReleaseFloor {
-        id: "events_search",
+        name: "events_search",
         serves: "the events-search API",
         min: MIN_SEARCH_RELEASE,
         consequence: "`runs search` and `runs events` with several terms can fail or hang",
     },
     ReleaseFloor {
-        id: "execute_command",
+        name: "execute_command",
         serves: "the execute-command `container` field",
         min: MIN_EXEC_RELEASE,
         consequence: "`runs exec` fails",
     },
     ReleaseFloor {
-        id: "cancel_run",
+        name: "cancel_run",
         serves: "the cancel-run API",
         min: MIN_CANCEL_RELEASE,
         consequence: "`runs cancel` fails",
@@ -641,7 +641,7 @@ fn release_floor_check(version: &ApiVersion, floor: &ReleaseFloor) -> Option<Che
     let (major, minor) = floor.min;
     Some(
         Check::warn(
-            floor.id,
+            floor.name,
             format!("tenant release is too old for {}", floor.serves),
         )
         .note(
@@ -760,11 +760,11 @@ pub async fn cmd_doctor(
                 Ok(CliOAuthConfig::Disabled) => checks.push(
                     Check::warn(
                         "oauth_configured",
-                        "OAuth login is not enabled for this tenant",
+                        "CLI OAuth login is not enabled for this tenant",
                     )
                     .note(
                         Level::Note,
-                        "request that your tenant administrator configure and enable OAuth login",
+                        "request that your tenant administrator enable OAuth login for the CLI",
                     ),
                 ),
                 Ok(CliOAuthConfig::Fixed { .. } | CliOAuthConfig::Ephemeral) => {}
@@ -1277,15 +1277,15 @@ mod tests {
 
     #[test]
     fn exec_release_floor_warns_below_64() {
-        let ids = |release: String| -> Vec<&str> {
+        let names = |release: String| -> Vec<&str> {
             release_floor_checks(&ApiVersion::new("v1".into(), release))
                 .into_iter()
                 .map(|check| check.name)
                 .collect()
         };
         let (major, minor) = MIN_EXEC_RELEASE;
-        assert_eq!(ids(format!("{}.99", major - 1)), ["execute_command"]);
-        assert!(ids(format!("{major}.{minor}")).is_empty());
+        assert_eq!(names(format!("{}.99", major - 1)), ["execute_command"]);
+        assert!(names(format!("{major}.{minor}")).is_empty());
     }
 
     #[test]

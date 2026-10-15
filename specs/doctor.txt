@@ -125,13 +125,13 @@ env ANTITHESIS_API_KEY=
 [!staging] mock-server 200 '{"port_strategy":"disabled"}'
 [!staging] snouty --verbose doctor
 [!staging] stderr '^> GET http://127\.0\.0\.1:\d+/auth/cli/config$'
-[!staging] stderr '^  ⚠ OAuth login is not enabled for this tenant$'
-[!staging] stderr '^      NOTE: request that your tenant administrator configure and enable OAuth login$'
+[!staging] stderr '^  ⚠ CLI OAuth login is not enabled for this tenant$'
+[!staging] stderr '^      NOTE: request that your tenant administrator enable OAuth login for the CLI$'
 
 # 403: the tenant has not enabled CLI OAuth.
 [!staging] mock-server 403 '{"message":"CLI OAuth login is not enabled for this tenant"}'
 [!staging] snouty doctor
-[!staging] stderr '^  ⚠ OAuth login is not enabled for this tenant$'
+[!staging] stderr '^  ⚠ CLI OAuth login is not enabled for this tenant$'
 [!staging] snouty doctor --json
 [!staging] stdout '"name": "oauth_configured",\s*"status": "warn"'
 

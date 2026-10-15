@@ -470,6 +470,10 @@ pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
 /// - `POST /api/v1/launch/{launcher_name}` — returns a mock launch response
 /// - `POST /api/v0/runs/{run_id}/cancel` — 200 for an in-progress run, 409
 ///   for any other known run, 404 for an unknown run
+/// - `GET  /auth/cli/config` — `{"port_strategy":"disabled"}`
+///
+/// Every route but the OAuth routes (`/auth/cli/`) requires the bearer token.
+/// The OAuth routes take none, as on the real server.
 pub struct MockApiServer {
     url: String,
     token: String,
@@ -517,6 +521,7 @@ impl MockApiServer {
                     continue;
                 };
 
+                let (method, path) = mock_parse_request_line(&request);
                 let (status, body, content_type, cache_control) =
                     if !mock_check_user_agent(&request) {
                         (
@@ -525,7 +530,9 @@ impl MockApiServer {
                             "application/json",
                             NO_CACHE_CACHE_CONTROL,
                         )
-                    } else if !mock_check_auth(&request, &expected_token) {
+                    } else if !path.starts_with("/auth/cli/")
+                        && !mock_check_auth(&request, &expected_token)
+                    {
                         (
                             401,
                             r#"{"message":"Invalid or expired bearer token."}"#.to_string(),
@@ -533,7 +540,6 @@ impl MockApiServer {
                             NO_CACHE_CACHE_CONTROL,
                         )
                     } else {
-                        let (method, path) = mock_parse_request_line(&request);
                         let req_body = mock_request_body(&request);
                         mock_route(&method, &path, req_body, empty)
                     };
@@ -666,6 +672,12 @@ fn mock_route(
     let ndjson = "application/x-ndjson";
 
     match (method, path_part) {
+        ("GET", "/auth/cli/config") => (
+            200,
+            r#"{"port_strategy":"disabled"}"#.to_string(),
+            json,
+            NO_CACHE_CACHE_CONTROL,
+        ),
         ("GET", "/api/v0/runs") => {
             let (s, b) = mock_route_list_runs(query, empty);
             (s, b, json, NO_CACHE_CACHE_CONTROL)

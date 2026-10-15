@@ -275,10 +275,14 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty run --launcher basic_test --config-image config:latest --duration 30
 stderr 'snouty run.*is deprecated.*snouty launch'
 
-# Without --launcher, the run goes to the basic_test launcher.
+# Without --launcher, the run goes to the basic_test launcher. The --verbose
+# log names the auth scheme, but no part of the username and password.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty --verbose launch --config-image config:latest --duration 30
 stderr '^> POST .*/api/v1/launch/basic_test$'
+stderr '^> authorization: Basic \[redacted\]$'
+! stderr 'dGVz'
+! stderr 'testpass'
 stdout 'Test run started: run_id run-123'
 
 # --launcher selects the launcher.

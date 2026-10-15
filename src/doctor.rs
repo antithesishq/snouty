@@ -1,16 +1,17 @@
 use color_eyre::eyre::Result;
+use log::debug;
 use serde::{Serialize, Serializer};
 
 use crate::api::{
-    AntithesisApi, ApiVersion, MIN_CANCEL_RELEASE, MIN_EXEC_RELEASE, MIN_SEARCH_RELEASE,
-    VersionError,
+    AntithesisApi, ApiVersion, HttpClient, MIN_CANCEL_RELEASE, MIN_EXEC_RELEASE,
+    MIN_SEARCH_RELEASE, VersionError, normalize_base_url,
 };
 use crate::attributed_value::AttributedValue;
 use crate::auth::AuthenticationInfo;
 use crate::compose;
 use crate::container;
 use crate::features;
-use crate::login::{CliOAuthConfig, query_oauth_configuration};
+use crate::login::{CliOAuthConfig, fetch_cli_config};
 use crate::render::{OutputOptions, render_kv};
 use crate::settings::Settings;
 
@@ -734,24 +735,35 @@ pub async fn cmd_doctor(
         // unauthenticated users to set a key. The client is built from the
         // resolved settings (base url / tenant), and `verbose` logs the
         // request/response.
+        let mut api_unreachable = false;
         if let Ok(api) = AntithesisApi::new(settings, verbose) {
             let host = api.host();
             let version = api.get_version().await;
             if let Ok(version) = &version {
                 checks.extend(release_floor_checks(version));
             }
+            api_unreachable = matches!(version, Err(VersionError::Unreachable(_)));
             checks.push(version_check(&host, version));
         }
 
-        if let Some(base_url) = settings.base_url()
-            && let Ok(CliOAuthConfig::Disabled) = query_oauth_configuration(base_url).await
+        // A client that fails to build (bad proxy URL or extra header) skips
+        // the API check too. Skip the probe when the API check could not reach
+        // the tenant: the probe would only wait out its timeout.
+        if !api_unreachable
+            && let Some(base_url) = settings.base_url()
+            && let Ok(client) = HttpClient::new(settings, verbose)
         {
-            checks.push(
-                Check::warn("oauth-configured", "OAuth is configured for this tenant").note(
-                    Level::Note,
-                    "Request that your tenant administrator configure and enable OAuth login",
+            match fetch_cli_config(&client, &normalize_base_url(base_url)).await {
+                Ok(CliOAuthConfig::Disabled) => checks.push(
+                    Check::warn("oauth-configured", "OAuth is configured for this tenant").note(
+                        Level::Note,
+                        "Request that your tenant administrator configure and enable OAuth login",
+                    ),
                 ),
-            );
+                Ok(CliOAuthConfig::Fixed { .. } | CliOAuthConfig::Ephemeral) => {}
+                // An error does not tell whether OAuth is enabled.
+                Err(err) => debug!("could not read the tenant's OAuth configuration: {err:#}"),
+            }
         }
     }
 

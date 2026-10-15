@@ -112,11 +112,36 @@ env ANTITHESIS_BASE_URL=http://127.0.0.1:1
 stderr '.*Antithesis API unreachable.*'
 stderr '.*could not connect to 127.0.0.1.*'
 
+# --- CLI OAuth probe ---
+# The probe needs no credentials. No API key is set, so doctor skips the API
+# check. mock-server answers every request with the same response.
+env ANTITHESIS_API_KEY=
+
+# `port_strategy: disabled`: the tenant has OAuth, but not for the CLI.
+[!staging] mock-server 200 '{"port_strategy":"disabled"}'
+[!staging] snouty --verbose doctor
+[!staging] stderr '^> GET http://127\.0\.0\.1:\d+/auth/cli/config$'
+[!staging] stderr '^  ⚠ OAuth is configured for this tenant$'
+[!staging] stderr '^      NOTE: Request that your tenant administrator configure and enable OAuth login$'
+
+# 403: the tenant has not enabled CLI OAuth.
+[!staging] mock-server 403 '{"message":"CLI OAuth login is not enabled for this tenant"}'
+[!staging] snouty doctor
+[!staging] stderr '^  ⚠ OAuth is configured for this tenant$'
+
+# doctor does not warn on an answer it cannot read: it cannot tell whether
+# OAuth is enabled.
+[!staging] mock-server 200 '{"latest_api_version":"v1","release_version":"56.0"}'
+[!staging] snouty doctor
+[!staging] ! stderr '^  ⚠ .*OAuth'
+
 # --- conflicting credential sources (issue #292) ---
 # A credential exported in the environment hides one that `snouty login` stored
 # in the credentials file. The scan reads no network, and without an API key
-# doctor makes no API call, so this block needs no mock and no `--offline`.
+# doctor makes no API call. The OAuth probe still sends a request, so the base
+# URL points where nothing listens, and these blocks need no mock.
 isolate-home credential_conflict
+env ANTITHESIS_BASE_URL=http://127.0.0.1:1
 env ANTITHESIS_API_KEY=
 env ANTITHESIS_USERNAME=testuser
 env ANTITHESIS_PASSWORD=testpass

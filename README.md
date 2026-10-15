@@ -11,7 +11,7 @@ Snouty provides the following subcommands. Invoke `snouty <command> --help` to f
 - `snouty runs`: list and inspect Antithesis test runs and their results.
   - `snouty runs list`: list runs, with status/launcher/date filters.
   - `snouty runs show <run_id>`: show details for a single run.
-  - `snouty runs wait <run_id>`: poll a run until it is complete (the default) or, with `--until ready`, until it is ready to use.
+  - `snouty runs wait [--until ready|complete] <run_id>`: poll a run until it is ready to use or complete.
   - `snouty runs cancel <run_id>`: cancel a run that is starting or in progress.
   - `snouty runs properties <run_id>`: list property (assertion) results.
   - `snouty runs build-logs <run_id>`: stream a run's build logs.

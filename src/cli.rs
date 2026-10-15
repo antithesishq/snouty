@@ -947,8 +947,7 @@ pub enum RunsCommands {
 
 Columns: RUN ID, STATUS, CREATED, LAUNCHER, RUN. RUN is the test name. For a
 run with no test name, RUN is the first line of its description, or `-` when
-it has none. On a narrow terminal, LAUNCHER and RUN are cut with `…` to fit.
-Piped output is never cut. Use --detail for the full description.
+it has none. Use --detail for the full description.
 
 Add --json for machine-readable output. Each run prints as one JSON object on
 its own line, in the order the server returns them:

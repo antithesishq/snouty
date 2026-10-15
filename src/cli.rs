@@ -794,8 +794,8 @@ is ready, as `snouty runs exec` does, and shows a line on stderr."#
     };
 }
 
-/// The tenant release `runs search` and `runs events` need, as `runs exec`
-/// and `runs cancel` state theirs. Keep the number in step with
+/// The tenant release `runs search` and `runs events` need. The
+/// `events_search_help_names_min_release` test keeps the number in step with
 /// [`crate::api::MIN_SEARCH_RELEASE`].
 macro_rules! events_search_release_help {
     () => {
@@ -945,9 +945,9 @@ pub enum RunsCommands {
     #[command(
         long_about = r#"List recent runs (the default when `snouty runs` runs with no subcommand).
 
-Columns: RUN ID, STATUS, CREATED, LAUNCHER, RUN. RUN is the test name. For a run
-with no test name, RUN is the first line of its description, or `-` when it
-has none. On a narrow terminal, LAUNCHER and RUN are cut with `…` to fit.
+Columns: RUN ID, STATUS, CREATED, LAUNCHER, RUN. RUN is the test name. For a
+run with no test name, RUN is the first line of its description, or `-` when
+it has none. On a narrow terminal, LAUNCHER and RUN are cut with `…` to fit.
 Piped output is never cut. Use --detail for the full description.
 
 Add --json for machine-readable output. Each run prints as one JSON object on
@@ -1741,6 +1741,13 @@ mod tests {
     // ([`event_set_dsl::VERBS`]); it must name every verb and stay wrapped —
     // clap prints long_about verbatim, so an over-long line would stick out
     // of the ~78-column help text.
+    #[test]
+    fn events_search_help_names_min_release() {
+        let (major, minor) = crate::api::MIN_SEARCH_RELEASE;
+        let sentence = format!("tenant release {major}.{minor} or newer");
+        assert!(events_search_release_help!().contains(&sentence));
+    }
+
     #[test]
     fn search_long_about_names_every_verb_and_wraps() {
         let about = SEARCH_LONG_ABOUT;

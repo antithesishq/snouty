@@ -740,7 +740,7 @@ def _pick_logs_moment(
     stories must return at least one line at the moment, and its logs must give
     a needle (see _pick_needles). All the moments share one NEEDLE_PROBES budget.
     Returns (moment, needle, second needle), or None when no moment fits."""
-    by_name = {p["name"]: p for p in props}
+    by_name = {_shown_name(p): p for p in props}
     moments = [
         v["moment"]
         for values in (
@@ -901,9 +901,16 @@ def _pick_second_needle(event: dict, keyword: str) -> str | None:
     return None
 
 
+def _shown_name(prop: dict) -> str:
+    """The name that snouty shows, and that `--name` matches: the API name
+    without its `<group>: ` prefix."""
+    return prop["name"].removeprefix(f"{prop.get('group') or ''}: ")
+
+
 def _render_property(sn: Snouty, run: str, name: str) -> str:
-    # `--name` is a substring filter; passing the exact name selects it (plus any
-    # other name it's a substring of, which is fine for these render probes).
+    # `--name` is a substring filter; passing the exact shown name selects it
+    # (plus any other name it's a substring of, which is fine for these render
+    # probes).
     return sn.run(["runs", "properties", run, "--name", name, "--detail"]).combined
 
 
@@ -938,8 +945,8 @@ def _pick_property_with_moments(sn: Snouty, run: str, props: list[dict], status:
     ]
     candidates.sort(key=lambda c: len(c[1]), reverse=True)
     for p, _ in candidates:
-        if _has_moment_rows(_render_property(sn, run, p["name"])):
-            return p["name"]
+        if _has_moment_rows(_render_property(sn, run, _shown_name(p))):
+            return _shown_name(p)
         break  # the array said it has moments but the render disagreed — bail
     raise GalleryError(
         f"no {status} property on {run} renders example moments — cannot build "
@@ -973,12 +980,12 @@ def _pick_nonevent_property(sn: Snouty, run: str, props: list[dict]) -> str:
     # of any *other* property's name — otherwise the --detail probe would also
     # expand that other property, and an event sibling's moment rows would make us
     # think we'd misclassified. Require the name to match only itself.
-    lower_names = [p["name"].lower() for p in props]
+    lower_names = [_shown_name(p).lower() for p in props]
     candidates = []
     for p in props:
         if p.get("is_event") is not False:
             continue
-        if sum(p["name"].lower() in n for n in lower_names) != 1:
+        if sum(_shown_name(p).lower() in n for n in lower_names) != 1:
             continue
         values = (p.get("examples") or []) + (p.get("counterexamples") or [])
         if any(_has_real_value(v) for v in values):
@@ -989,21 +996,19 @@ def _pick_nonevent_property(sn: Snouty, run: str, props: list[dict]) -> str:
     # we misclassified an event property). Try several rather than bailing on the
     # first miss, so one oddly-rendering top candidate can't sink the whole story.
     for p in candidates[:8]:
-        rendered = _render_property(sn, run, p["name"])
+        rendered = _render_property(sn, run, _shown_name(p))
         if _NONEVENT_RESULT.search(rendered) and not _has_moment_rows(rendered):
-            return p["name"]
+            return _shown_name(p)
     raise GalleryError(f"no non-event property on {run} renders a usable value")
 
 
 def _pick_name_filter(props: list[dict]) -> str:
-    """A case-insensitive word contained in exactly one property name — so the
-    `--name` filter story narrows the list to a single, predictable property.
-    `--name` matches the API name, but snouty shows it without its `<group>: `
-    prefix, so the word comes from the shown name."""
-    lower = [p["name"].lower() for p in props]
+    """A case-insensitive word contained in exactly one shown property name —
+    so the `--name` filter story narrows the list to a single, predictable
+    property."""
+    lower = [_shown_name(p).lower() for p in props]
     for p in props:
-        shown = p["name"].removeprefix(f"{p.get('group') or ''}: ")
-        for word in re.findall(r"[A-Za-z]{4,}", shown):
+        for word in re.findall(r"[A-Za-z]{4,}", _shown_name(p)):
             w = word.lower()
             if sum(w in n for n in lower) == 1:
                 return word

@@ -267,12 +267,18 @@ snouty runs properties $R_run_id --name 'Counter value' --detail
 # Group. A property that has no ID has no ID line.
 [!staging] stdout '(?s)^Name +Counter value stays below limit\nID +97cf5fcafa500ed62bf109d81834c5b881a2c854\nGroup +Safety\nStatus +failing$'
 
-# --name is a case-insensitive substring filter over property names; without
+# --name is a case-insensitive substring filter over the NAME column; without
 # --detail it just narrows the (grouped) table.
 mock-runs-server
 snouty runs properties $R_run_id --name counter
 [!staging] stdout 'failing.*Counter value stays below limit'
 [!staging] ! stdout 'Setup completes'
+
+# The API sends the name as `Safety: Counter value…`, but NAME drops the group
+# prefix, so --name does not match the prefix. --group matches the group.
+mock-runs-server
+snouty runs properties $R_run_id --name 'safety:'
+[!staging] stdout 'No properties match.*safety:'
 
 # --group is a case-insensitive substring group filter ('safety' matches 'Safety').
 mock-runs-server

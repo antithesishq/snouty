@@ -127,6 +127,13 @@ uv sync                             # so ./.venv holds the dependencies
 uvx pyright scripts/gen-gallery.py  # `[tool.pyright]` points it at ./.venv
 ```
 
+Each `scripts/test_*.py` module tests the script it is named after. CI runs
+them all, and so can you:
+
+```
+cd scripts && uv run python -m unittest discover -p 'test_*.py'
+```
+
 ## AI Coding Workflow
 
 1. Follow the Rust coding conventions in this file at all times

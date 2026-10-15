@@ -20,13 +20,9 @@
 
 mod support;
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
 use expectrl::Expect;
 use expectrl::process::unix::WaitStatus;
 use expectrl::session::OsSession;
@@ -72,18 +68,8 @@ fn start_login() -> (tempfile::TempDir, OsSession) {
 /// As [`start_login`], with each `(path, contents)` in `seed` written under the
 /// temp `$HOME` first — the pre-existing state a fresh login would not have.
 fn start_login_with(seed: &[(&str, &str)]) -> (tempfile::TempDir, OsSession) {
-    start_login_with_env(seed, &[])
-}
-
-/// As [`start_login_with`], with each `(name, value)` in `env` also set for
-/// the child.
-fn start_login_with_env(
-    seed: &[(&str, &str)],
-    env: &[(&str, &str)],
-) -> (tempfile::TempDir, OsSession) {
     spawn_login(Login {
         seed,
-        env,
         ..Login::default()
     })
 }
@@ -105,9 +91,7 @@ const STDOUT_FILE: &str = "stdout.txt";
 struct Login<'a> {
     /// Each `(path, contents)` is written under the temp `$HOME` first.
     seed: &'a [(&'a str, &'a str)],
-    /// Each `(name, value)` is set for the child. Without `ANTITHESIS_BASE_URL`
-    /// here, a mock backend answers the `/auth/cli/config` probe with
-    /// [`OAUTH_DISABLED`].
+    /// Each `(name, value)` is set for the child.
     env: &'a [(&'a str, &'a str)],
     stdout: Stdout,
     /// Added to the command line.
@@ -139,20 +123,14 @@ fn spawn_login(login: Login) -> (tempfile::TempDir, OsSession) {
         .env_clear()
         .env("HOME", home.path())
         .env("TERM", "xterm-256color")
+        .env(
+            "ANTITHESIS_BASE_URL",
+            support::start_mock_server(OAUTH_DISABLED, 200),
+        )
         // Force file-based credential storage so a macOS run doesn't touch
         // the real keychain.
         .env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1")
         .envs(login.env.iter().copied());
-    if !login
-        .env
-        .iter()
-        .any(|&(name, _)| name == "ANTITHESIS_BASE_URL")
-    {
-        command.env(
-            "ANTITHESIS_BASE_URL",
-            support::start_mock_server(OAUTH_DISABLED, 200),
-        );
-    }
 
     let mut session = command.spawn(PTY_COLS, 24);
     session.set_expect_timeout(Some(EXPECT_TIMEOUT));
@@ -434,13 +412,13 @@ fn an_api_key_that_replaces_a_stored_password_says_so() {
 /// so the summary does not claim to replace it.
 #[test]
 fn an_api_key_does_not_claim_to_replace_a_password_from_the_environment() {
-    let (_home, mut session) = start_login_with_env(
-        &[],
-        &[
+    let (_home, mut session) = spawn_login(Login {
+        env: &[
             ("ANTITHESIS_USERNAME", "puser"),
             ("ANTITHESIS_PASSWORD", "pty-pass"),
         ],
-    );
+        ..Login::default()
+    });
     expect(&mut session, "Please enter your API Key");
     send(&mut session, "sk-pty-key-123\r");
     let seen = finish(session);
@@ -499,96 +477,6 @@ fn esc_at_the_api_key_prompt_skips_credential_storage() {
     );
 }
 
-/// The tokens the mock tenant issues for the OAuth sign-in.
-const ACCESS_TOKEN: &str = "pty-access-token";
-const REFRESH_TOKEN: &str = "pty-refresh-token";
-
-/// The `code` and `state` the test's callback request hands snouty.
-const AUTH_CODE: &str = "pty-auth-code";
-const FLOW_TOKEN: &str = "pty-flow-token";
-
-/// What snouty sent the mock tenant of [`start_oauth_tenant`].
-#[derive(Default)]
-struct OAuthRequests {
-    /// The `POST /auth/cli/login` body.
-    login: Option<serde_json::Value>,
-    /// The `Authorization` header of `POST /auth/cli/token`.
-    token_authorization: Option<String>,
-}
-
-/// Start a mock tenant that offers OAuth on an ephemeral port and completes
-/// each step of the flow. Returns its base URL and the requests it records.
-fn start_oauth_tenant() -> (String, Arc<Mutex<OAuthRequests>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind the mock tenant");
-    let url = format!(
-        "http://{}",
-        listener.local_addr().expect("mock tenant address")
-    );
-    let requests = Arc::new(Mutex::new(OAuthRequests::default()));
-    let recorded = Arc::clone(&requests);
-    std::thread::spawn(move || {
-        for mut stream in listener.incoming().flatten() {
-            let (head, body) = read_request(&mut stream);
-            let request_line = head.lines().next().unwrap_or_default();
-            let response = if request_line.starts_with("GET /auth/cli/config ") {
-                r#"{"port_strategy":"ephemeral"}"#.to_owned()
-            } else if request_line.starts_with("POST /auth/cli/login ") {
-                recorded.lock().unwrap().login =
-                    Some(serde_json::from_slice(&body).expect("a JSON login body"));
-                r#"{"location":"https://idp.example.com/authorize"}"#.to_owned()
-            } else if request_line.starts_with("POST /auth/cli/token ") {
-                recorded.lock().unwrap().token_authorization = head.lines().find_map(|line| {
-                    let (name, value) = line.split_once(':')?;
-                    name.eq_ignore_ascii_case("authorization")
-                        .then(|| value.trim().to_owned())
-                });
-                format!(
-                    r#"{{"antithesis_token":"{ACCESS_TOKEN}","refresh_token":"{REFRESH_TOKEN}"}}"#
-                )
-            } else {
-                panic!("unexpected request to the mock tenant: {request_line}");
-            };
-            let _ = write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-                 Connection: close\r\n\r\n{response}",
-                response.len()
-            );
-        }
-    });
-    (url, requests)
-}
-
-/// Read one HTTP request: its head as text, and its `Content-Length` body.
-fn read_request(stream: &mut TcpStream) -> (String, Vec<u8>) {
-    let mut buf = Vec::new();
-    let mut chunk = [0u8; 4096];
-    let head_end = loop {
-        if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-            break end;
-        }
-        let n = stream.read(&mut chunk).expect("read the request");
-        assert!(n > 0, "the request ended before its head did");
-        buf.extend(&chunk[..n]);
-    };
-    let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
-    let length: usize = head
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse().expect("a numeric Content-Length"))
-        })
-        .unwrap_or(0);
-    let mut body = buf.split_off(head_end + 4);
-    while body.len() < length {
-        let n = stream.read(&mut chunk).expect("read the request body");
-        assert!(n > 0, "the request ended before its body did");
-        body.extend(&chunk[..n]);
-    }
-    (head, body)
-}
-
 /// `--verbose` logs the three OAuth requests of a single sign-on to stderr,
 /// and no token, code, verifier, or state reaches the log or stdout.
 ///
@@ -597,7 +485,63 @@ fn read_request(stream: &mut TcpStream) -> (String, Vec<u8>) {
 #[cfg(target_os = "linux")]
 #[test]
 fn verbose_logs_the_oauth_requests_without_secrets() {
-    let (url, requests) = start_oauth_tenant();
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
+    use serde_json::{Value, json};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // The tokens the mock tenant issues, and the `code` and `state` the
+    // test's callback request hands snouty.
+    const ACCESS_TOKEN: &str = "pty-access-token";
+    const REFRESH_TOKEN: &str = "pty-refresh-token";
+    const AUTH_CODE: &str = "pty-auth-code";
+    const FLOW_TOKEN: &str = "pty-flow-token";
+
+    // wiremock serves from its own thread; the runtime only drives the setup
+    // and the reads of what the tenant received.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a tokio runtime");
+    let tenant = rt.block_on(async {
+        let tenant = MockServer::start().await;
+        for (verb, route, body) in [
+            (
+                "GET",
+                "/auth/cli/config",
+                json!({"port_strategy": "ephemeral"}),
+            ),
+            (
+                "POST",
+                "/auth/cli/login",
+                json!({"location": "https://idp.example.com/authorize"}),
+            ),
+            (
+                "POST",
+                "/auth/cli/token",
+                json!({"antithesis_token": ACCESS_TOKEN, "refresh_token": REFRESH_TOKEN}),
+            ),
+        ] {
+            Mock::given(method(verb))
+                .and(path(route))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .mount(&tenant)
+                .await;
+        }
+        tenant
+    });
+    let received = |route: &str| {
+        rt.block_on(tenant.received_requests())
+            .expect("wiremock records requests")
+            .into_iter()
+            .find(|request| request.url.path() == route)
+            .unwrap_or_else(|| panic!("no request to {route}"))
+    };
+
+    let url = tenant.uri();
     let no_opener = tempfile::TempDir::new().expect("an empty PATH directory");
     let no_opener = no_opener.path().to_str().expect("a UTF-8 temp path");
     let (home, mut session) = spawn_login(Login {
@@ -611,14 +555,12 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
     // Single sign-on is the default.
     send(&mut session, "\r");
     stderr += &expect(&mut session, &format!("> POST {url}/auth/cli/login"));
-    // The mock records the login request before it answers.
+    // The tenant records the login request before it answers.
     stderr += &expect(&mut session, "< 200 OK");
-    let port = requests
-        .lock()
-        .unwrap()
-        .login
-        .as_ref()
-        .expect("a login request")["port"]
+    let login: Value = received("/auth/cli/login")
+        .body_json()
+        .expect("a JSON login body");
+    let port = login["port"]
         .as_u64()
         .and_then(|port| u16::try_from(port).ok())
         .expect("a port number");
@@ -647,7 +589,6 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
 
     for request in [
         format!("> GET {url}/auth/cli/config"),
-        format!("> POST {url}/auth/cli/login"),
         format!("> POST {url}/auth/cli/token"),
         "> authorization: Bearer [redacted]".to_owned(),
     ] {
@@ -655,14 +596,12 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
     }
     assert_eq!(stderr.matches("> <body withheld>").count(), 2, "{stderr}");
 
-    let requests = requests.lock().unwrap();
-    let cli_state = requests.login.as_ref().unwrap()["cli_state"]
-        .as_str()
-        .expect("a cli_state")
-        .to_owned();
-    let bearer = requests
-        .token_authorization
-        .as_deref()
+    let cli_state = login["cli_state"].as_str().expect("a cli_state");
+    let token_request = received("/auth/cli/token");
+    let bearer = token_request
+        .headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
         .expect("a bearer token exchange");
     let decoded = BASE64_URL_SAFE_NO_PAD.decode(bearer).expect("base64url");
@@ -676,7 +615,7 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
         REFRESH_TOKEN,
         AUTH_CODE,
         FLOW_TOKEN,
-        cli_state.as_str(),
+        cli_state,
         code_verifier.as_str(),
         bearer,
     ] {

@@ -62,10 +62,14 @@ stderr '^      NOTE: run `snouty login` to store an API key, then `unset ANTITHE
 [!staging] stderr '.*latest API version: v1.*'
 [!staging] stderr '.*tenant release version: 56.0.*'
 # The mock reports 56.0, below every release floor, so doctor warns for each one.
-[!staging] stderr 'tenant serves the events-search API'
-[!staging] stderr 'tenant serves the cancel-run API'
-[!staging] stderr 'tenant serves the execute-command .container. field'
+[!staging] stderr 'tenant release is too old for the events-search API'
+[!staging] stderr 'tenant release is too old for the cancel-run API'
+[!staging] stderr 'tenant release is too old for the execute-command .container. field'
 [!staging] stderr 'release 64.0\) — .runs exec. fails'
+[!staging] snouty doctor --json
+[!staging] stdout '"name": "events_search",\s*"status": "warn"'
+[!staging] stdout '"name": "cancel_run",\s*"status": "warn"'
+[!staging] stdout '"name": "execute_command",\s*"status": "warn"'
 
 # 404: typically an older tenant predating the version endpoint, but possibly a
 # proxy/route intercepting the request — either way it's still reachable and
@@ -121,13 +125,15 @@ env ANTITHESIS_API_KEY=
 [!staging] mock-server 200 '{"port_strategy":"disabled"}'
 [!staging] snouty --verbose doctor
 [!staging] stderr '^> GET http://127\.0\.0\.1:\d+/auth/cli/config$'
-[!staging] stderr '^  ⚠ OAuth is configured for this tenant$'
-[!staging] stderr '^      NOTE: Request that your tenant administrator configure and enable OAuth login$'
+[!staging] stderr '^  ⚠ OAuth login is not enabled for this tenant$'
+[!staging] stderr '^      NOTE: request that your tenant administrator configure and enable OAuth login$'
 
 # 403: the tenant has not enabled CLI OAuth.
 [!staging] mock-server 403 '{"message":"CLI OAuth login is not enabled for this tenant"}'
 [!staging] snouty doctor
-[!staging] stderr '^  ⚠ OAuth is configured for this tenant$'
+[!staging] stderr '^  ⚠ OAuth login is not enabled for this tenant$'
+[!staging] snouty doctor --json
+[!staging] stdout '"name": "oauth_configured",\s*"status": "warn"'
 
 # doctor does not warn on an answer it cannot read: it cannot tell whether
 # OAuth is enabled.

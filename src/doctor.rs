@@ -605,19 +605,19 @@ struct ReleaseFloor {
 
 const RELEASE_FLOORS: [ReleaseFloor; 3] = [
     ReleaseFloor {
-        id: "events-search",
+        id: "events_search",
         serves: "the events-search API",
         min: MIN_SEARCH_RELEASE,
         consequence: "`runs search` and `runs events` with several terms can fail or hang",
     },
     ReleaseFloor {
-        id: "execute-command",
+        id: "execute_command",
         serves: "the execute-command `container` field",
         min: MIN_EXEC_RELEASE,
         consequence: "`runs exec` fails",
     },
     ReleaseFloor {
-        id: "cancel-run",
+        id: "cancel_run",
         serves: "the cancel-run API",
         min: MIN_CANCEL_RELEASE,
         consequence: "`runs cancel` fails",
@@ -640,18 +640,21 @@ fn release_floor_check(version: &ApiVersion, floor: &ReleaseFloor) -> Option<Che
     }
     let (major, minor) = floor.min;
     Some(
-        Check::warn(floor.id, format!("tenant serves {}", floor.serves))
-            .note(
-                Level::Warning,
-                format!(
-                    "tenant release {} predates {} (release {major}.{minor}) — {}",
-                    version.release_version, floor.serves, floor.consequence
-                ),
-            )
-            .note(
-                Level::Note,
-                "request that your Antithesis tenant is upgraded",
+        Check::warn(
+            floor.id,
+            format!("tenant release is too old for {}", floor.serves),
+        )
+        .note(
+            Level::Warning,
+            format!(
+                "tenant release {} predates {} (release {major}.{minor}) — {}",
+                version.release_version, floor.serves, floor.consequence
             ),
+        )
+        .note(
+            Level::Note,
+            "request that your Antithesis tenant is upgraded",
+        ),
     )
 }
 
@@ -755,9 +758,13 @@ pub async fn cmd_doctor(
         {
             match fetch_cli_config(&client, &normalize_base_url(base_url)).await {
                 Ok(CliOAuthConfig::Disabled) => checks.push(
-                    Check::warn("oauth-configured", "OAuth is configured for this tenant").note(
+                    Check::warn(
+                        "oauth_configured",
+                        "OAuth login is not enabled for this tenant",
+                    )
+                    .note(
                         Level::Note,
-                        "Request that your tenant administrator configure and enable OAuth login",
+                        "request that your tenant administrator configure and enable OAuth login",
                     ),
                 ),
                 Ok(CliOAuthConfig::Fixed { .. } | CliOAuthConfig::Ephemeral) => {}
@@ -1277,7 +1284,7 @@ mod tests {
                 .collect()
         };
         let (major, minor) = MIN_EXEC_RELEASE;
-        assert_eq!(ids(format!("{}.99", major - 1)), ["execute-command"]);
+        assert_eq!(ids(format!("{}.99", major - 1)), ["execute_command"]);
         assert!(ids(format!("{major}.{minor}")).is_empty());
     }
 

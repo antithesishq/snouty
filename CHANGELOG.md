@@ -1,4 +1,4 @@
-# Version 0.8.0-rc.2 (2026-10-15)
+# Version 0.8.0-rc.3 (2026-10-15)
 
 - **Breaking**: `snouty runs events` requires tenant release 62.2 or newer ([#309](https://github.com/antithesishq/snouty/pull/309), [#319](https://github.com/antithesishq/snouty/pull/319), [#427](https://github.com/antithesishq/snouty/pull/427))
 - **Breaking**: `snouty doctor --json` changed the structure of its JSON and human-readable output ([#309](https://github.com/antithesishq/snouty/pull/309), [#324](https://github.com/antithesishq/snouty/pull/324), [#335](https://github.com/antithesishq/snouty/pull/335), [#341](https://github.com/antithesishq/snouty/pull/341), [#347](https://github.com/antithesishq/snouty/pull/347), [#355](https://github.com/antithesishq/snouty/pull/355), [#423](https://github.com/antithesishq/snouty/pull/423), [#429](https://github.com/antithesishq/snouty/pull/429), [#431](https://github.com/antithesishq/snouty/pull/431))
@@ -9,6 +9,7 @@
 - **Breaking**: `snouty runs logs --begin-input-hash` is removed. ([#334](https://github.com/antithesishq/snouty/pull/334))
 - **Breaking**: `snouty runs properties` no longer outputs property descriptions ([#327](https://github.com/antithesishq/snouty/pull/327))
 - **Breaking**: `snouty login` no longer offers to store a username and password. To keep using a username and password with `launch` and `debug`, set `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` ([#325](https://github.com/antithesishq/snouty/pull/325))
+- **Breaking**: `snouty runs properties --name` matches the property name only, not its group ([#438](https://github.com/antithesishq/snouty/pull/438))
 - `snouty runs search` is stabilized ([#309](https://github.com/antithesishq/snouty/pull/309), [#420](https://github.com/antithesishq/snouty/pull/420), [#421](https://github.com/antithesishq/snouty/pull/421), [#427](https://github.com/antithesishq/snouty/pull/427))
 - `snouty runs exec` is stabilized ([#341](https://github.com/antithesishq/snouty/pull/341), [#351](https://github.com/antithesishq/snouty/pull/351), [#365](https://github.com/antithesishq/snouty/pull/365), [#368](https://github.com/antithesishq/snouty/pull/368), [#370](https://github.com/antithesishq/snouty/pull/370), [#383](https://github.com/antithesishq/snouty/pull/383), [#385](https://github.com/antithesishq/snouty/pull/385), [#408](https://github.com/antithesishq/snouty/pull/408), [#418](https://github.com/antithesishq/snouty/pull/418))
 - `snouty launch` changes:
@@ -22,6 +23,8 @@
 - `snouty login` refuses an empty API key, and asks before a new credential replaces a different stored one. Single sign-on serves branded sign-in pages, and its requests go through `ANTITHESIS_HTTPS_PROXY` and `ANTITHESIS_EXTRA_HEADERS` ([#356](https://github.com/antithesishq/snouty/pull/356), [#371](https://github.com/antithesishq/snouty/pull/371), [#375](https://github.com/antithesishq/snouty/pull/375), [#423](https://github.com/antithesishq/snouty/pull/423), [#429](https://github.com/antithesishq/snouty/pull/429))
 - `--raw` on `runs logs`, `runs events`, and `runs search` is deprecated and hidden from help. It still works, and prints a warning on stderr. Use `--json` alone ([#362](https://github.com/antithesishq/snouty/pull/362))
 - The `--verbose` request log no longer prints any part of a credential ([#429](https://github.com/antithesishq/snouty/pull/429), [#441](https://github.com/antithesishq/snouty/pull/441))
+- `snouty doctor` lists only the unstable features this build recognizes ([#437](https://github.com/antithesishq/snouty/pull/437))
+- `snouty login` escapes control characters in the OAuth callback's error text ([#436](https://github.com/antithesishq/snouty/pull/436))
 - The shell installer, now from cargo-dist 0.33, writes the env script that adds snouty to `PATH` to `~/.config/snouty/env.sh` (under `$XDG_CONFIG_HOME` when it is set) instead of `~/.local/bin/env`, and moves an existing one ([#338](https://github.com/antithesishq/snouty/pull/338))
 - Building snouty from source needs Rust 1.89 or newer ([#442](https://github.com/antithesishq/snouty/pull/442))
 - The cookbook has a recipe that copies private images into your Antithesis repository ([#316](https://github.com/antithesishq/snouty/pull/316))

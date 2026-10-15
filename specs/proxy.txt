@@ -51,4 +51,4 @@ stdout 'run-1.*completed'
 # doctor's OAuth probe also goes through the proxy. The mock answers
 # `port_strategy: disabled`.
 snouty doctor
-stderr '^  ⚠ OAuth is configured for this tenant$'
+stderr '^  ⚠ CLI OAuth login is not enabled for this tenant$'

@@ -263,6 +263,12 @@ impl RunDetail {
         }
     }
 
+    /// Whether the run's tenant release serves the events-search API: a run
+    /// ID that names no release counts as one that does.
+    pub(crate) fn serves_events_search(&self) -> bool {
+        run_release(&self.run_id).is_none_or(|release| release >= MIN_SEARCH_RELEASE)
+    }
+
     /// The status, and the sub-status after a colon when the run has one:
     /// `in_progress:ready`.
     pub(crate) fn status_label(&self) -> String {
@@ -476,9 +482,9 @@ pub(crate) enum ResponseCache {
     /// `$XDG_RUNTIME_DIR/snouty/api-cache-v3`, falling back to a per-user
     /// directory under the system temp dir — the default for every command.
     Default,
-    /// No response cache: every request hits the server. The handlers
-    /// already keep mutable resources out of the cache, so this exists for
-    /// callers that want no cache I/O at all (status polls, tests).
+    /// No response cache: every request reaches the server. Code outside tests
+    /// uses [`AntithesisApi::uncached`].
+    #[cfg(test)]
     Disabled,
     /// Cache under this directory.
     #[cfg(test)]
@@ -560,17 +566,14 @@ impl AntithesisApi {
         )
     }
 
-    /// Like [`AntithesisApi::new`], but with [`ResponseCache::Disabled`].
-    pub fn new_uncached(settings: &Settings, verbose: bool) -> Result<Self> {
-        Self::build(
-            settings,
-            AuthenticationInfo::for_ambient_configuration(
-                settings.profile(),
-                PasswordPolicy::Reject,
-            )?,
-            verbose,
-            ResponseCache::Disabled,
-        )
+    /// A copy of this client with its response cache disabled: every request
+    /// reaches the server.
+    pub fn uncached(&self) -> Self {
+        Self {
+            client: self.client.clone(),
+            base_url: self.base_url.clone(),
+            cache: self.cache.disabled(),
+        }
     }
 
     /// Like [`AntithesisApi::new`], but accepts the deprecated
@@ -605,6 +608,7 @@ impl AntithesisApi {
         let http = HttpClient::new(settings, verbose)?;
         let cache_dir = match cache {
             ResponseCache::Default => api_cache::default_dir(),
+            #[cfg(test)]
             ResponseCache::Disabled => None,
             #[cfg(test)]
             ResponseCache::Dir(dir) => Some(dir),

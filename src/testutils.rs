@@ -869,16 +869,22 @@ fn mock_run_not_found(run_id: &str) -> (u16, String) {
     (404, format!(r#"{{"message":"run not found: {run_id}"}}"#))
 }
 
-/// Debugging sessions kept out of MOCK_RUNS so the list-oriented specs do
-/// not see them: (run_id, status, sub_status). A loading session reports
-/// `in_progress` without the `Ready` sub-status, as a new session does on
-/// release 64.0. `run-stream-error` is ready, because `runs exec` reads the
-/// run before it executes.
+/// Debugging sessions, and runs that only some specs read, kept out of
+/// MOCK_RUNS so the list-oriented specs do not see them: (run_id, status,
+/// sub_status). A loading session reports `in_progress` without the `Ready`
+/// sub-status, as a new session does on release 64.0. `run-stream-error` is
+/// ready, because `runs exec` reads the run before it executes.
 const MOCK_HIDDEN_SESSIONS: &[(&str, &str, Option<&str>)] = &[
     ("session-starting", "starting", None),
     ("session-loading", "in_progress", None),
     ("run-stream-error", "in_progress", Some("Ready")),
+    (MOCK_OLD_RELEASE_RUN, "in_progress", None),
 ];
+
+/// An in-progress run from a release before `MIN_SEARCH_RELEASE`, whose
+/// events search answers 404. A run from before release 64.0 has no
+/// sub-status, so it is ready.
+pub(crate) const MOCK_OLD_RELEASE_RUN: &str = "0df9ac1f5155c14f88ea41f5ad503e07-61-1";
 
 fn mock_route_get_run(run_id: &str) -> (u16, String) {
     if let Some(&(_, status, sub_status)) =
@@ -970,7 +976,7 @@ fn mock_route_cancel_run(run_id: &str) -> (u16, String) {
 
 /// The bare 404 body the live API sends for an unknown resource. It never
 /// names the resource.
-const MOCK_BARE_404_BODY: &str = r#"{"message":"Resource not found"}"#;
+pub(crate) const MOCK_BARE_404_BODY: &str = r#"{"message":"Resource not found"}"#;
 
 /// The bare 404 body the live cancel endpoint sends for an unknown run. Its
 /// shape differs from [`MOCK_BARE_404_BODY`].
@@ -1396,6 +1402,11 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
     if run_id == "run-stream-error" {
         let (status, body) = mock_route_get_run_logs(run_id);
         return (status, body, ndjson);
+    }
+    // A release before `MIN_SEARCH_RELEASE` does not serve the endpoint, and
+    // answers with the live server's bare 404.
+    if run_id == MOCK_OLD_RELEASE_RUN {
+        return (404, MOCK_BARE_404_BODY.to_string(), json);
     }
     if !mock_run_known(run_id) {
         let (status, body) = mock_run_not_found(run_id);

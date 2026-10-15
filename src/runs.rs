@@ -419,9 +419,7 @@ fn open_run_report(run: &RunDetail, json: bool) -> Result<()> {
 }
 
 /// `runs wait`: poll the run until it reaches a terminal state, then report
-/// the final status. The client is uncached (see
-/// [`crate::api::ResponseCache::Disabled`]) so every poll observes fresh
-/// state, and `timeout` bounds the whole wait — including any in-flight
+/// the final status. `timeout` bounds the whole wait — including any in-flight
 /// request, since the HTTP client has no read timeout (see `CONNECT_TIMEOUT`
 /// in api.rs) — so a hung request cannot outlive it.
 async fn cmd_runs_wait(
@@ -434,7 +432,7 @@ async fn cmd_runs_wait(
 ) -> Result<()> {
     debug!("waiting for run: {}", run_id);
 
-    let api = AntithesisApi::new_uncached(settings, verbose)?;
+    let api = AntithesisApi::new(settings, verbose)?;
     let mut last_status = None;
     let mut warned_over_schedule = false;
     let wait = wait_for_run(&api, run_id, poll_interval, until, |run| {
@@ -509,7 +507,8 @@ async fn cmd_runs_cancel(
 /// Poll `get_run` every `poll_interval` until the run reaches the `until`
 /// point, and call `on_wait` with each poll that has not reached it. The first
 /// poll is at once. A run that reports `unknown` fails the wait (see
-/// [`RunStatus::is_terminal`]).
+/// [`RunStatus::is_terminal`]). The polls bypass the response cache, so each
+/// one observes fresh state.
 ///
 /// Never returns on its own — the caller bounds it with `tokio::time::timeout`.
 async fn wait_for_run(
@@ -523,6 +522,7 @@ async fn wait_for_run(
     // A poll delayed by a slow response schedules the next one a full
     // interval later, instead of firing early to catch up.
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let api = api.uncached();
 
     loop {
         poll.tick().await;
@@ -1516,15 +1516,10 @@ async fn cmd_runs_search(
         stream: args.follow,
         limit,
     };
-    let stream = match api
-        .search_run_events_query(&args.run_id, &args.query, search)
-        .await
-    {
-        Ok(stream) => stream,
-        Err(err) => {
-            return Err(event_search::explain_search_error(&api, &args.run_id, err).await);
-        }
-    };
+    let stream = event_search::search_when_ready(&api, &args.run_id, READY_POLL, || {
+        api.search_run_events_query(&args.run_id, &args.query, search)
+    })
+    .await?;
     // A user-written DSL pipeline can reshape rows into any object,
     // `{"error": ...}` included, so this stream must not guess that such a
     // row is the server's Stream_Error signal.
@@ -1559,13 +1554,11 @@ async fn cmd_runs_events(
         stream: false,
         limit: Some(limit),
     };
-    let stream = match api
-        .search_run_events_query(run_id, &event_set_dsl::substring_filter(matches), search)
-        .await
-    {
-        Ok(stream) => stream,
-        Err(err) => return Err(event_search::explain_search_error(&api, run_id, err).await),
-    };
+    let query = event_set_dsl::substring_filter(matches);
+    let stream = event_search::search_when_ready(&api, run_id, READY_POLL, || {
+        api.search_run_events_query(run_id, &query, search)
+    })
+    .await?;
     let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode);
     print_event_lines(
         lines,
@@ -1698,8 +1691,8 @@ impl RewarmDisplay {
     }
 }
 
-/// What `runs exec` shows on stderr while it waits for the run to be ready:
-/// a spinner on a terminal, else a line at once and a line each whole minute.
+/// What a command shows on stderr while it waits for the run to be ready: a
+/// spinner on a terminal, else a line at once and a line each whole minute.
 enum ReadyDisplay {
     Spinner(ProgressBar),
     Lines {
@@ -1909,15 +1902,28 @@ async fn cmd_runs_exec(
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
     debug!("executing command in run: {}", run_id);
-    // Uncached, so each poll of the wait observes fresh state.
-    let api = AntithesisApi::new_uncached(settings, verbose)?;
-    exec_when_ready(&api, run_id, exec, EXEC_READY_POLL, json).await
+    let api = AntithesisApi::new(settings, verbose)?;
+    exec_when_ready(&api, run_id, exec, READY_POLL, json).await
 }
 
-/// How often `runs exec` reads a run that is not ready. A debugging session
-/// becomes ready minutes after it starts, so a poll each minute (the `runs
-/// wait` floor) could delay its first command by most of a minute.
-const EXEC_READY_POLL: Duration = Duration::from_secs(10);
+/// How often a command that needs a ready run polls a run that is not ready.
+/// A debugging session becomes ready minutes after it starts, so a one-minute
+/// poll (the `runs wait` floor) could delay the command by most of a minute.
+const READY_POLL: Duration = Duration::from_secs(10);
+
+/// Wait until the run is ready or terminal, and show a [`ReadyDisplay`] on
+/// stderr while it is not. The wait has no time limit.
+async fn wait_until_ready(api: &AntithesisApi, run_id: &str, poll: Duration) -> Result<RunDetail> {
+    let mut waiting: Option<ReadyDisplay> = None;
+    let run = wait_for_run(api, run_id, poll, WaitUntil::Ready, |_| {
+        waiting.get_or_insert_with(ReadyDisplay::new).show();
+    })
+    .await?;
+    if let Some(waiting) = waiting {
+        waiting.finish(&run);
+    }
+    Ok(run)
+}
 
 /// Wait until the run is ready or complete, then execute. The wait has no
 /// time limit. A complete run executes at once, and the server answers with
@@ -1945,14 +1951,7 @@ async fn exec_when_ready(
         "snouty debug {debug_target} --input-hash {} --vtime {}",
         exec.moment.input_hash, exec.moment.vtime
     );
-    let mut waiting: Option<ReadyDisplay> = None;
-    let run = wait_for_run(api, run_id, poll, WaitUntil::Ready, |_| {
-        waiting.get_or_insert_with(ReadyDisplay::new).show();
-    })
-    .await?;
-    if let Some(waiting) = waiting {
-        waiting.finish(&run);
-    }
+    let run = wait_until_ready(api, run_id, poll).await?;
     let stream = api
         .execute_command(run_id, exec)
         .await
@@ -4946,14 +4945,15 @@ mod tests {
             mount_get_run_bodies(server, statuses.iter().map(|s| run_body(s)).collect()).await;
         }
 
-        /// As [`mount_get_run_statuses`], with a whole run body per poll.
-        /// Wiremock matches in mount order and skips a mock whose
-        /// `up_to_n_times` budget is spent.
+        /// As [`mount_get_run_statuses`], with a whole run body per poll, each
+        /// served at its own `run_id`. Wiremock matches in mount order and
+        /// skips a mock whose `up_to_n_times` budget is spent.
         async fn mount_get_run_bodies(server: &MockServer, bodies: Vec<serde_json::Value>) {
             let count = bodies.len();
             for (i, body) in bodies.into_iter().enumerate() {
+                let route = format!("/api/v0/runs/{}", body["run_id"].as_str().unwrap());
                 let mock = Mock::given(method("GET"))
-                    .and(path("/api/v0/runs/run-w"))
+                    .and(path(route))
                     .respond_with(ResponseTemplate::new(200).set_body_json(body));
                 let mock = if i + 1 < count {
                     mock.up_to_n_times(1)
@@ -5164,6 +5164,133 @@ mod tests {
                 .await
                 .unwrap_err();
             assert_eq!(api_error_status(&err), Some(500));
+        }
+
+        /// Answer the count endpoint of `run_id` with `{"count": 3}`, or with
+        /// the live endpoint's bare 404.
+        async fn mount_count(server: &MockServer, run_id: &str, found: bool) {
+            let response = if found {
+                ResponseTemplate::new(200).set_body_json(json!({"count": 3}))
+            } else {
+                ResponseTemplate::new(404)
+                    .set_body_raw(crate::testutils::MOCK_BARE_404_BODY, "application/json")
+            };
+            Mock::given(method("POST"))
+                .and(path(format!("/api/v0/runs/{run_id}/events/search/count")))
+                .respond_with(response)
+                .mount(server)
+                .await;
+        }
+
+        async fn request_methods(server: &MockServer) -> Vec<String> {
+            let requests = server.received_requests().await.unwrap();
+            requests.iter().map(|r| r.method.to_string()).collect()
+        }
+
+        async fn count_when_ready(api: &AntithesisApi, run_id: &str) -> Result<u64> {
+            event_search::search_when_ready(api, run_id, FAST_POLL, || {
+                api.count_run_events_query(run_id, "filter(ev => true)")
+            })
+            .await
+        }
+
+        #[tokio::test]
+        async fn search_waits_until_the_run_is_ready() {
+            let server = MockServer::start().await;
+            let bodies = vec![
+                run_body("starting"),
+                run_body("in_progress"),
+                ready_run_body(),
+            ];
+            mount_get_run_bodies(&server, bodies).await;
+            mount_count(&server, "run-w", true).await;
+            let api = test_api(&server.uri());
+
+            let count = count_when_ready(&api, "run-w").await.unwrap();
+
+            assert_eq!(count, 3);
+            assert_eq!(
+                request_methods(&server).await,
+                ["GET", "GET", "GET", "POST"]
+            );
+        }
+
+        #[tokio::test]
+        async fn search_404_names_the_release_only_for_an_old_run() {
+            let old = crate::testutils::MOCK_OLD_RELEASE_RUN;
+            let new = "0df9ac1f5155c14f88ea41f5ad503e07-64-0";
+            for (run_id, hint) in [(old, true), (new, false)] {
+                let server = MockServer::start().await;
+                // A run from before release 64.0 has no sub-status, so it is
+                // ready while in progress.
+                let mut body = if hint {
+                    run_body("in_progress")
+                } else {
+                    ready_run_body()
+                };
+                body["run_id"] = json!(run_id);
+                mount_get_run_bodies(&server, vec![body]).await;
+                mount_count(&server, run_id, false).await;
+                let api = test_api(&server.uri());
+
+                let err = count_when_ready(&api, run_id).await.unwrap_err();
+
+                assert_eq!(api_error_status(&err), Some(404));
+                let report = format!("{err:?}");
+                assert_eq!(
+                    report.contains("tenant releases before 62.2 do not serve the events-search"),
+                    hint,
+                    "got: {report}"
+                );
+                assert_eq!(request_methods(&server).await, ["GET", "POST"]);
+            }
+        }
+
+        #[tokio::test]
+        async fn ready_wait_bypasses_the_cache_and_the_search_does_not() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v0/runs/run-w"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .insert_header("cache-control", crate::testutils::CACHEABLE_CACHE_CONTROL)
+                        .set_body_json(run_body("completed")),
+                )
+                .mount(&server)
+                .await;
+            let cache_dir = tempfile::tempdir().unwrap();
+            let api = AntithesisApi::build(
+                &Settings::for_test_base_url(server.uri()),
+                AuthenticationInfo::ApiKey {
+                    api_key: "test-key".to_owned(),
+                },
+                false,
+                crate::api::ResponseCache::Dir(cache_dir.path().to_path_buf()),
+            )
+            .unwrap();
+
+            // The search stand-in is a cacheable read, so the test can see
+            // which client sends it.
+            for _ in 0..2 {
+                event_search::search_when_ready(&api, "run-w", FAST_POLL, || api.get_run("run-w"))
+                    .await
+                    .unwrap();
+            }
+
+            // Both waits reach the server. The second search reads the cache.
+            assert_eq!(request_methods(&server).await, ["GET", "GET", "GET"]);
+        }
+
+        #[tokio::test]
+        async fn search_of_an_unknown_run_says_run_not_found() {
+            let server = MockServer::start().await;
+            mount_count(&server, "BAD-ID", false).await;
+            let api = test_api(&server.uri());
+
+            let err = count_when_ready(&api, "BAD-ID").await.unwrap_err();
+
+            assert_eq!(format!("{err:#}"), "run not found: BAD-ID");
+            assert_eq!(request_methods(&server).await, ["GET"]);
         }
 
         const STARTED_AT: &str = "2025-03-20T02:00:00Z";

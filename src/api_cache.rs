@@ -152,6 +152,15 @@ impl ApiCache {
         }
     }
 
+    /// The same cache, disabled: every lookup misses and every store is a
+    /// no-op.
+    pub fn disabled(&self) -> Self {
+        Self {
+            dir: None,
+            ..self.clone()
+        }
+    }
+
     /// The header half of admission: [`CachePolicy::from_headers`] on the
     /// response, for handlers to [`CachePolicy::and`] with their own logical
     /// verdict. A disabled cache short-circuits to

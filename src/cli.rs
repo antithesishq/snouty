@@ -803,6 +803,14 @@ lifecycle, test composer — each in their own concise form."#
     };
 }
 
+/// How `runs search` and `runs events` behave on a run that is not ready.
+macro_rules! ready_wait_search_help {
+    () => {
+        r#"The run must be ready or complete. If it is not, the command waits until it
+is ready, as `snouty runs exec` does, and shows a line on stderr."#
+    };
+}
+
 /// `runs search`'s long help. Static text: the `search_long_about` test
 /// keeps it in sync with [`event_set_dsl::VERBS`] (every verb must appear)
 /// and holds every line to 78 columns, since clap prints long_about
@@ -921,6 +929,10 @@ Rows reshaped by map/narrow/fold print as raw JSON.
 
 Add --count to print how many events in the whole run match the query,
 instead of a sample. No limit applies.
+
+"#,
+    ready_wait_search_help!(),
+    r#"
 
 Add --json for machine-readable output. Each event prints as one JSON
 object on its own line:
@@ -1280,6 +1292,10 @@ Matching runs server-side through the events-search API, the same route
 result is a sample of the matching events in no fixed order, capped at
 --limit. Read `snouty runs search --help` to learn how to read a sample
 and how the run's timelines relate the events.
+
+"#,
+            ready_wait_search_help!(),
+            r#"
 
 For log output, the equivalent search is:
   snouty runs search <run_id> \

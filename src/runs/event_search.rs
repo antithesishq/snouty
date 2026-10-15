@@ -13,6 +13,7 @@
 //! absence from the subset is not absence from the run.
 
 use std::io::Write;
+use std::time::Duration;
 
 use color_eyre::Section;
 use color_eyre::eyre::Result;
@@ -21,12 +22,12 @@ use serde_json::json;
 use futures_util::stream::BoxStream;
 use futures_util::{StreamExt, TryStreamExt};
 
-use crate::api::{AntithesisApi, MIN_SEARCH_RELEASE, RunStatus, SearchMode};
-use crate::error::{api_error_status, user_error};
+use crate::api::{AntithesisApi, MIN_SEARCH_RELEASE, SearchMode};
+use crate::error::api_error_status;
 use crate::event_render::EventStreamRenderer;
 use crate::jsonl::JsonStream;
 
-use super::{ErrorRows, FaultAnnotator, RunProbe, event_lines, probe_run, raw_lines};
+use super::{ErrorRows, FaultAnnotator, READY_POLL, event_lines, raw_lines, wait_until_ready};
 
 /// How an event-stream command prints its rows. The illegal flag
 /// combinations (`--raw` without `--json`, `--detail` with `--json`) are
@@ -94,12 +95,10 @@ pub(super) async fn check_query(
     query: &str,
     json: bool,
 ) -> Result<()> {
-    if let Err(err) = api
-        .search_run_events_query(run_id, query, SearchMode::Validate)
-        .await
-    {
-        return Err(explain_search_error(api, run_id, err).await);
-    }
+    let _ = search_when_ready(api, run_id, READY_POLL, || {
+        api.search_run_events_query(run_id, query, SearchMode::Validate)
+    })
+    .await?;
     let mut stdout = std::io::stdout().lock();
     if json {
         writeln!(stdout, "{}", json!({"valid": true}))?;
@@ -116,10 +115,10 @@ pub(super) async fn count_query(
     query: &str,
     json: bool,
 ) -> Result<()> {
-    let count = match api.count_run_events_query(run_id, query).await {
-        Ok(count) => count,
-        Err(err) => return Err(explain_search_error(api, run_id, err).await),
-    };
+    let count = search_when_ready(api, run_id, READY_POLL, || {
+        api.count_run_events_query(run_id, query)
+    })
+    .await?;
     let mut stdout = std::io::stdout().lock();
     if json {
         writeln!(stdout, "{}", json!({"count": count}))?;
@@ -130,41 +129,37 @@ pub(super) async fn count_query(
     Ok(())
 }
 
-/// Classify an events-search failure. On a 404, the run is probed to say
-/// why: the run does not exist, the run is still starting and has no
-/// searchable events, or the tenant release does not serve the endpoint
-/// (`snouty doctor` reports it). The endpoint's own 404 body is an unhelpful
-/// "Resource not found". A 400 is the server rejecting the
-/// request — usually the query, but an out-of-range `limit` answers 400 too,
-/// so the note must not blame the query alone (the server's own message,
-/// shown above the note, says which it was).
-pub(super) async fn explain_search_error(
+/// Wait until the run is ready or terminal, then send one events-search
+/// request with `send`. The wait bypasses the response cache by itself, so
+/// pass the cached client.
+///
+/// The wait reads the run, so the run exists when the request goes out. A 404
+/// on a run from a release before [`MIN_SEARCH_RELEASE`] gets a suggestion
+/// about the release: those releases do not serve the endpoint, and its 404
+/// body is an unhelpful "Resource not found". A 400 comes from the query or
+/// from an out-of-range `limit`, so its note does not blame the query alone.
+pub(super) async fn search_when_ready<T, Fut>(
     api: &AntithesisApi,
     run_id: &str,
-    err: color_eyre::eyre::Report,
-) -> color_eyre::eyre::Report {
-    match api_error_status(&err) {
-        Some(404) => match probe_run(api, run_id).await {
-            RunProbe::NotFound => user_error(format!("run not found: {run_id}")),
-            RunProbe::Exists(run) if run.status == RunStatus::Starting => user_error(format!(
-                "run {run_id} is still starting and has no searchable events yet"
+    poll: Duration,
+    send: impl FnOnce() -> Fut,
+) -> Result<T>
+where
+    Fut: Future<Output = Result<T>>,
+{
+    let run = wait_until_ready(api, run_id, poll).await?;
+    send().await.map_err(|err| match api_error_status(&err) {
+        Some(404) if !run.serves_events_search() => {
+            let (major, minor) = MIN_SEARCH_RELEASE;
+            err.suggestion(format!(
+                "tenant releases before {major}.{minor} do not serve the events-search \
+                 API as documented; `snouty doctor` reports the tenant release"
             ))
-            .suggestion(format!(
-                "wait for it with `snouty runs wait {run_id} --until ready`, then try again"
-            )),
-            RunProbe::Exists(_) => {
-                let (major, minor) = MIN_SEARCH_RELEASE;
-                err.suggestion(format!(
-                    "tenant releases before {major}.{minor} do not serve the events-search \
-                     API as documented; `snouty doctor` reports the tenant release"
-                ))
-            }
-            RunProbe::ProbeFailed(probe_err) => probe_err,
-        },
+        }
         Some(400) => err.note(
             "the server rejected the request; its message above says which part \
              — for a query, check the event-set DSL syntax",
         ),
         _ => err,
-    }
+    })
 }

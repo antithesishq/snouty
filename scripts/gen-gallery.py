@@ -3575,6 +3575,25 @@ def build_tty_stories() -> list[Story]:
                 _CREDS: _SEED_PASSWORD_CREDS_TOML,
             },
         ),
+        _tty_story(
+            "login-verbose",
+            "See the requests login sends",
+            "Sign-in fails behind my company proxy. I re-ran login with --verbose to see which "
+            "requests it sends to the tenant and what comes back.",
+            ["--verbose", "login"],
+            (
+                (_ASK_TENANT, ENTER),
+                (_ASK_REPO, ENTER),
+                (_ASK_KEY, _FAKE_KEY + ENTER),
+            ),
+            tty_persisted(
+                # The probe for the tenant's OAuth configuration, and its answer.
+                prompts=("> GET ", "/auth/cli/config", "< "),
+                files=((_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_KEY}"')),),
+                secrets_absent=(_FAKE_KEY,),
+            ),
+            seed_files={_SETTINGS: _SEED_SETTINGS_TOML},
+        ),
     ]
 
 

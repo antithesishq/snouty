@@ -428,8 +428,8 @@ Examples:
   snouty docs tree sdk
   snouty docs show getting_started
 
-Add --json for machine-readable output. Only `search` prints JSON; the other
-subcommands print text either way:
+Add --json for machine-readable output. `search` and `tree` print JSON; the
+other subcommands print text either way:
   snouty --json docs search fault injection | jq -r '.[].path'"#)]
     Docs {
         /// Don't check for documentation updates
@@ -529,7 +529,12 @@ Examples:
   snouty docs tree -d 2
   snouty docs tree sdk
 
-This command prints text only. --json has no effect on it."#)]
+Add --json for machine-readable output. The tree prints as one JSON object,
+{"children": [node, ...]}. Each node has name, the last segment of its path,
+and path, the value to pass to `snouty docs show`. A node has title when it is
+a page, and children, sorted by name, when it has child nodes that --depth did
+not remove. When no page matches, the output is {"children": []}:
+  snouty --json docs tree sdk | jq -r '.. | .path? // empty'"#)]
     Tree {
         /// Limit output to nodes at this depth or shallower
         #[arg(short = 'd', long)]

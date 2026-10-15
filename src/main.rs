@@ -55,6 +55,10 @@ async fn main() {
         .format(|buf, record| writeln!(buf, "{}", record.args()))
         .init();
     if let Err(report) = run(Cli::parse()).await {
+        // doctor already wrote its report, which says what failed.
+        if report.downcast_ref::<ChecksFailed>().is_some() {
+            std::process::exit(1);
+        }
         // One rendering for every error: `render_report` collapses the chain
         // index for single errors and wraps overlong prose, both printing
         // concerns that belong here rather than in the messages. User-facing
@@ -66,6 +70,19 @@ async fn main() {
         std::process::exit(1);
     }
 }
+
+/// `snouty doctor` found a failed required check. The command already wrote
+/// its report, so `main` exits 1 and prints nothing more.
+#[derive(Debug)]
+struct ChecksFailed;
+
+impl std::fmt::Display for ChecksFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("required checks failed")
+    }
+}
+
+impl std::error::Error for ChecksFailed {}
 
 async fn run(cli: Cli) -> Result<()> {
     let Cli {
@@ -100,7 +117,14 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::Update(args) => cmd_update(args, &settings?),
-        Commands::Docs { offline, command } => docs::cmd_docs(command, offline, output).await,
+        Commands::Docs { offline, command } => {
+            let refresh = if offline {
+                docs::Refresh::Offline
+            } else {
+                docs::Refresh::Online
+            };
+            docs::cmd_docs(command, refresh, output, &mut io::stdout()).await
+        }
         Commands::Login { tenant, repository } => {
             cmd_login(tenant, repository, profile.as_deref(), &settings?, output).await
         }
@@ -109,14 +133,23 @@ async fn run(cli: Cli) -> Result<()> {
             eprintln!("warning: `snouty run` is deprecated, use `snouty launch` instead");
             cmd_launch(args, &settings?, output).await
         }
-        Commands::Runs { command } => snouty::runs::cmd_runs(command, &settings?, output).await,
+        Commands::Runs { command } => {
+            snouty::runs::cmd_runs(command, &settings?, output, &mut io::stdout()).await
+        }
         Commands::Debug(args) => {
             info!("starting debug session");
             cmd_debug(args, &settings?, output).await
         }
         Commands::Validate(args) => validate::cmd_validate(args, &settings?).await,
         Commands::Doctor(args) => {
-            snouty::doctor::cmd_doctor(&settings?, output, args.offline).await
+            let passed =
+                snouty::doctor::cmd_doctor(&settings?, output, args.offline, &mut io::stdout())
+                    .await?;
+            if passed {
+                Ok(())
+            } else {
+                Err(ChecksFailed.into())
+            }
         }
     };
 

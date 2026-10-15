@@ -1067,8 +1067,7 @@ Each table is headed by its group; columns are STATUS, EXAMPLES (✓/✗), NAME
 counterexample count (✗) when a property has counterexamples: 0/186k is 0
 examples and 186k counterexamples.
 
-Narrow with --name, which matches the NAME column, and/or --group, which
-matches the group. Both are case-insensitive substring matches. Add --detail
+Narrow with --name and/or --group. Both are case-insensitive substring matches against the relevant fields. Add --detail
 to expand the matches into their examples and counter-example moments instead
 of the table.
 
@@ -1078,8 +1077,7 @@ Examples:
   snouty runs properties <run_id> --group Unreachable --detail
 
 Add --json for machine-readable output. Each property prints as one JSON
-object on its own line. Its `name` field can start with a `<group>: ` prefix
-that the NAME column does not show. --json is mutually exclusive with --detail:
+object on its own line. --json is mutually exclusive with --detail:
   snouty --json runs properties <run_id> --failing | jq -r .name"#
     )]
     Properties {
@@ -1094,8 +1092,7 @@ that the NAME column does not show. --json is mutually exclusive with --detail:
         #[arg(long)]
         failing: bool,
 
-        /// Only properties whose NAME column contains this substring
-        /// (case-insensitive)
+        /// Filter properties by name (matched by substring, case-insensitive)
         #[arg(long)]
         name: Option<String>,
 

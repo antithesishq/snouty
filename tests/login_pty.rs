@@ -519,15 +519,13 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    // The tokens the mock tenant issues, and the `code` and `state` the
-    // test's callback request hands snouty.
     const ACCESS_TOKEN: &str = "pty-access-token";
     const REFRESH_TOKEN: &str = "pty-refresh-token";
     const AUTH_CODE: &str = "pty-auth-code";
     const FLOW_TOKEN: &str = "pty-flow-token";
 
-    // wiremock serves from its own thread; the runtime only drives the setup
-    // and the reads of what the tenant received.
+    // wiremock serves from its own thread. The runtime only mounts the mocks
+    // and reads the received requests.
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -581,7 +579,8 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
     // Single sign-on is the default.
     send(&mut session, "\r");
     stderr += &expect(&mut session, &format!("> POST {url}/auth/cli/login"));
-    // The tenant records the login request before it answers.
+    // wiremock records a request before it answers, so the login request is
+    // readable once "< 200 OK" shows.
     stderr += &expect(&mut session, "< 200 OK");
     let login: Value = received("/auth/cli/login")
         .expect("a login request")
@@ -608,8 +607,7 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
     let status = session.get_process().wait().expect("wait for snouty login");
     let stdout = std::fs::read_to_string(home.path().join(STDOUT_FILE)).expect("read stdout");
 
-    // Check for leaks before the messages below print stderr or stdout. A leak
-    // message names the value by its label only.
+    // Check for leaks first, because the assertions below print stderr.
     let cli_state = login["cli_state"].as_str().expect("a cli_state");
     let mut checked = vec![
         ("access token", ACCESS_TOKEN.to_owned()),
@@ -625,6 +623,8 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
     });
     if let Some(bearer) = bearer {
         let decoded = BASE64_URL_SAFE_NO_PAD.decode(&bearer).expect("base64url");
+        // A `FromUtf8Error` prints its bytes, so drop it to keep the verifier
+        // out of the panic.
         let code_verifier = String::from_utf8(decoded)
             .ok()
             .and_then(|decoded| Some(decoded.strip_prefix(&format!("{AUTH_CODE}:"))?.to_owned()))

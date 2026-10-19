@@ -720,14 +720,13 @@ impl AntithesisApi {
 
     /// Request cancellation of a run.
     ///
-    /// Observed on orbitinghail, release 64.0:
+    /// Observed on orbitinghail, release 65.0:
     /// - A starting run answers 200 `{}` and is cancelled at once.
     /// - A completed or already cancelled run answers 409 "Conflict: Run <id>
     ///   has already finished and cannot be cancelled".
     /// - A malformed run id answers 404 `{"error":"404 Not Found"}`.
-    /// - A well-formed run id that names no run answers 500
-    ///   `{"error":"AssertionError [ERR_ASSERTION]: Unknown experiment id <id>"}`.
-    ///   This is a server bug, so the 500 passes through to the user unchanged.
+    /// - A well-formed run id that names no run answers 404
+    ///   `{"error":"User Input Error: Unknown experiment id <id>"}`.
     pub async fn cancel_run(&self, run_id: &str) -> Result<()> {
         match self.client.cancel_run().run_id(run_id).send().await {
             Ok(_) => Ok(()),
@@ -1502,7 +1501,7 @@ fn ensure_resource_supported(run_id: &str, min_version: u32, resource: &str) -> 
 /// `{hash}-{version}-{tenant_version}`, where the hash is a 32-character hex
 /// string. Returns `None` when the ID doesn't match that structure (e.g. test
 /// fixtures or future formats), so callers don't act on a misread version.
-fn run_version(run_id: &str) -> Option<u32> {
+pub(crate) fn run_version(run_id: &str) -> Option<u32> {
     let parts: Vec<&str> = run_id.split('-').collect();
     let [hash, version, _tenant_version] = parts.as_slice() else {
         return None;

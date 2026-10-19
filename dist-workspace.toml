@@ -21,19 +21,29 @@ publish-jobs = ["./publish-crates"]
 publish-prereleases = true
 # Produce build provenance attestations for the released artifacts
 github-attestations = true
+# Extra build-local-artifacts steps, relative to .github/workflows
+github-build-setup = "../build-setup.yml"
 
 # dist defaults to macos-14, which GitHub retires on 2026-11-02.
-# The gnu binaries link against the build runner's glibc, and the dist
-# installer requires that version or newer. ubuntu-22.04 has glibc 2.35.
-# TODO: Replace ubuntu-22.04 after the 0.8 release. GitHub retires it, with
-# brownouts before 2027-04-17 (actions/runner-images#14254).
+# The gnu binaries link against the build glibc, and the dist installer
+# requires that version or newer. Building them on the runner would tie the
+# floor to the runner image, so they build in manylinux_2_28 containers
+# (glibc 2.28). dist runs inside the container, so it uses its musl build.
+# The images lack perl modules that the vendored OpenSSL build needs, so
+# .github/build-setup.yml installs it.
 [dist.github-custom-runners]
-global = "ubuntu-22.04"
+global = "ubuntu-24.04"
 aarch64-apple-darwin = "macos-15"
-aarch64-unknown-linux-gnu = "ubuntu-22.04-arm"
-aarch64-unknown-linux-musl = "ubuntu-22.04-arm"
-x86_64-unknown-linux-gnu = "ubuntu-22.04"
-x86_64-unknown-linux-musl = "ubuntu-22.04"
+aarch64-unknown-linux-musl = "ubuntu-24.04-arm"
+x86_64-unknown-linux-musl = "ubuntu-24.04"
+
+[dist.github-custom-runners.aarch64-unknown-linux-gnu]
+runner = "ubuntu-24.04-arm"
+container = { image = "quay.io/pypa/manylinux_2_28_aarch64", host = "aarch64-unknown-linux-musl" }
+
+[dist.github-custom-runners.x86_64-unknown-linux-gnu]
+runner = "ubuntu-24.04"
+container = { image = "quay.io/pypa/manylinux_2_28_x86_64", host = "x86_64-unknown-linux-musl" }
 
 [dist.dependencies.apt]
 musl-tools = { targets = ["aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"] }

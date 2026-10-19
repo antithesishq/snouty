@@ -1,0 +1,5 @@
+# Steps that dist's release.yml runs in build-local-artifacts, before it
+# installs dist. See github-build-setup in dist-workspace.toml.
+- name: Install the perl modules for the vendored OpenSSL build
+  if: ${{ matrix.container }}
+  run: dnf install -y perl-IPC-Cmd perl-Time-Piece

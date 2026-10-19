@@ -47,7 +47,7 @@ Find the most recent stable tag `vPREV` (not an `-rc.N` tag) with `git tag -l 'v
 - The commands, flags, defaults, and help text: `git diff vPREV..HEAD -- src/cli.rs`.
 - The specs, which record the behavior that the user sees: `git diff vPREV..HEAD -- specs/ specs_engine/`. A changed or removed assertion in an existing spec often marks a breaking change.
 - The user docs: `git diff vPREV..HEAD -- README.md COOKBOOK.md`.
-- The release packaging: `git diff vPREV..HEAD -- dist-workspace.toml .github/workflows/release.yml`. A newer build runner can raise the minimum glibc of the Linux binaries. A new `cargo-dist-version` can change the installers. Read the cargo-dist release notes for each version in that range with `gh release view vN -R axodotdev/cargo-dist`.
+- The release packaging: `git diff vPREV..HEAD -- dist-workspace.toml .github/workflows/release.yml`. A newer manylinux image for the gnu targets can raise the minimum glibc of the Linux binaries. A new `cargo-dist-version` can change the installers. Read the cargo-dist release notes for each version in that range with `gh release view vN -R axodotdev/cargo-dist`.
 
 Then list the commits with `git log --oneline vPREV..HEAD`. Each squash-merge subject ends in `(#N)`. When the diffs above do not explain a change, read its commit with `git show <sha>`. Use the PR number only to link the entry. Do not skip a commit because of its title: a dependency or CI commit can change the platforms or the installers.
 

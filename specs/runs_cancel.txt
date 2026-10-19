@@ -63,9 +63,7 @@ mock-runs-server
 stderr '.*run not found: no-such-run.*'
 ! stderr '.*API error.*'
 
-# A well-formed run id that names no run gets the same message. Since release
-# 65.0 the server answers it with a 404 (release 64.0 sent a 500), and the CLI
-# keys on that status, not on the body.
+# A well-formed run id that names no run gets the same message.
 mock-runs-server
 ! snouty runs cancel 00000000000000000000000000000000-65-0
 stderr '.*run not found: 00000000000000000000000000000000-65-0.*'

@@ -720,16 +720,19 @@ impl AntithesisApi {
 
     /// Request cancellation of a run.
     ///
-    /// Observed on orbitinghail, release 65.0:
-    /// - A starting run answers 200 `{}` and is cancelled at once (seen on
-    ///   release 64.0).
+    /// Observed on orbitinghail:
+    /// - A starting run answers 200 `{}` and is cancelled at once (release
+    ///   64.0).
     /// - A completed or already cancelled run answers 409 "Conflict: Run <id>
-    ///   has already finished and cannot be cancelled".
-    /// - A malformed run id answers 404 `{"error":"404 Not Found"}`.
+    ///   has already finished and cannot be cancelled" (releases 64.0 and
+    ///   65.0).
+    /// - A malformed run id answers 404 `{"error":"404 Not Found"}` (releases
+    ///   64.0 and 65.0).
     /// - A well-formed run id that names no run answers 404
-    ///   `{"error":"User Input Error: Unknown experiment id <id>"}`. Release
-    ///   64.0 answered 500 `{"error":"AssertionError [ERR_ASSERTION]: Unknown
-    ///   experiment id <id>"}` instead, which reaches the user unchanged.
+    ///   `{"error":"User Input Error: Unknown experiment id <id>"}` (release
+    ///   65.0). Release 64.0 answers 500 `{"error":"AssertionError
+    ///   [ERR_ASSERTION]: Unknown experiment id <id>"}`, and that 500 reaches
+    ///   the user unchanged.
     pub async fn cancel_run(&self, run_id: &str) -> Result<()> {
         match self.client.cancel_run().run_id(run_id).send().await {
             Ok(_) => Ok(()),

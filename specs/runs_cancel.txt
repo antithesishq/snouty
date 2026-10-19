@@ -63,7 +63,8 @@ mock-runs-server
 stderr '.*run not found: no-such-run.*'
 ! stderr '.*API error.*'
 
-# A well-formed run id that names no run gets the same message.
+# A well-formed run id that names no run gets the same message. The message
+# comes from the follow-up run lookup, not from the cancel 404's body.
 mock-runs-server
 ! snouty runs cancel 00000000000000000000000000000000-65-0
 stderr '.*run not found: 00000000000000000000000000000000-65-0.*'

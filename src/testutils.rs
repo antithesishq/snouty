@@ -1700,6 +1700,24 @@ mod tests {
         assert_eq!(out, MOCK_BARE_404_BODY);
     }
 
+    // The CLI reads only the cancel 404's status, so the spec cannot tell the
+    // two bodies apart.
+    #[test]
+    fn mock_cancel_run_404_body_depends_on_the_id_shape() {
+        let id = "00000000000000000000000000000000-65-0";
+        assert_eq!(
+            mock_route_cancel_run(id),
+            (
+                404,
+                format!(r#"{{"error":"User Input Error: Unknown experiment id {id}"}}"#)
+            )
+        );
+        assert_eq!(
+            mock_route_cancel_run("no-such-run"),
+            (404, MOCK_CANCEL_404_BODY.to_string())
+        );
+    }
+
     #[test]
     fn mock_request_body_splits_after_headers() {
         let request = "POST /x HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}";

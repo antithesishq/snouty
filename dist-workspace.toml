@@ -21,16 +21,15 @@ publish-jobs = ["./publish-crates"]
 publish-prereleases = true
 # Produce build provenance attestations for the released artifacts
 github-attestations = true
-# Extra build-local-artifacts steps, relative to .github/workflows
+# Extra build-local-artifacts steps. The path is relative to .github/workflows.
 github-build-setup = "../build-setup.yml"
 
 # dist defaults to macos-14, which GitHub retires on 2026-11-02.
 # The gnu binaries link against the build glibc, and the dist installer
-# requires that version or newer. Building them on the runner would tie the
-# floor to the runner image, so they build in manylinux_2_28 containers
-# (glibc 2.28). dist runs inside the container, so it uses its musl build.
-# The images lack perl modules that the vendored OpenSSL build needs, so
-# .github/build-setup.yml installs them.
+# requires that version or newer. The manylinux_2_28 containers hold that
+# floor at 2.28 on any runner image. dist runs inside the container, and its
+# gnu build may need a newer glibc than the image has, so host selects its
+# musl build.
 [dist.github-custom-runners]
 global = "ubuntu-24.04"
 aarch64-apple-darwin = "macos-15"

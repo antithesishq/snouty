@@ -1766,8 +1766,8 @@ const MOMENT_NOT_WARM: &str = "Moment not warm";
 /// debugging session at the request's moment, and `rewarm_flag` names the
 /// rewarm source's flag, if one was given.
 ///
-/// A run that has stopped cannot accept a command: on orbitinghail, release
-/// 65.0, a completed test run answers 400 `Run <id> has ended. Commands
+/// A run that has stopped cannot accept a command: on orbitinghail (release
+/// 65.0), a completed test run answers 400 `Run <id> has ended. Commands
 /// require an active run.` Otherwise, the server's responses on orbitinghail
 /// (release 64.0) mean:
 ///

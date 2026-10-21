@@ -422,17 +422,16 @@ fn retry_backoff(retry: u32) -> Duration {
     UNIT * (1 << retry)
 }
 
-/// Add up to 50% to `wait`, so that clients that the server rate-limited at
-/// the same time do not all retry at the same time.
+/// Add up to 50% to `wait`, so that rate-limited clients do not all retry at once.
 fn with_jitter(wait: Duration) -> Duration {
-    // Without randomness the wait is still correct, only not spread out.
+    // If getrandom fails, the wait has no jitter, which is still correct.
     let random = getrandom::u32().unwrap_or(0);
     wait + wait.mul_f64(f64::from(random) / f64::from(u32::MAX) / 2.0)
 }
 
 /// The wait before re-sending a request that the server answered with 429,
 /// or `None` when the server asks for a wait longer than [`MAX_RETRY_AFTER`].
-/// The API documents `Retry-After` in seconds; a value in any other form
+/// The API documents `Retry-After` in seconds. A value in any other form
 /// falls back to [`retry_backoff`].
 fn rate_limit_wait(headers: &HeaderMap, retry: u32) -> Option<Duration> {
     let retry_after = headers
@@ -483,7 +482,7 @@ fn is_transient_transport_error(error: &reqwest::Error) -> bool {
 ///   re-send, because a mutation can have reached the server.
 /// - A request of any method that the server answered with 429 Too Many
 ///   Requests: up to [`MAX_RATE_LIMIT_RETRIES`] extra attempts, after the
-///   wait that [`rate_limit_wait`] gives. A 429 tells that the server did not
+///   wait that [`rate_limit_wait`] gives. A 429 shows that the server did not
 ///   process the request, so a mutation is also safe to re-send.
 async fn execute_with_retry(
     client: &Client,
@@ -2558,7 +2557,6 @@ mod tests {
     /// ignore it (#180).
     const LAUNCH_OK_BODY: &str = r#"{"runId":"run-123","statusCode":202}"#;
 
-    /// The `GET /api/version` success body.
     const VERSION_OK_BODY: &str = r#"{"latest_api_version":"v1","release_version":"60"}"#;
 
     /// The launch success body that tenant release 63.3 sends (#336).
@@ -2762,7 +2760,7 @@ mod tests {
         }
     }
 
-    /// A server that answers `method path` with 429 and `retry_after` for the
+    /// A server that answers `http_method route` with 429 and `retry_after` for the
     /// first `limited` requests, and with 200 and `body` after them.
     async fn rate_limit_then_serve(
         http_method: &str,
@@ -2803,8 +2801,7 @@ mod tests {
         }
     }
 
-    // A 429 tells that the server did not process the request, so a mutation
-    // is re-sent too, with the same body.
+    // A rate-limited POST is re-sent with the same body.
     #[tokio::test]
     async fn launch_post_retries_a_rate_limited_request() {
         let mock_server =
@@ -2839,8 +2836,6 @@ mod tests {
         );
     }
 
-    // A Retry-After longer than MAX_RETRY_AFTER surfaces the 429 at once,
-    // rather than a wait that makes the command look hung.
     #[tokio::test]
     async fn get_surfaces_a_rate_limit_with_a_long_retry_after() {
         let retry_after = (MAX_RETRY_AFTER.as_secs() + 1).to_string();
@@ -2855,8 +2850,8 @@ mod tests {
         assert_eq!(mock_server.received_requests().await.unwrap().len(), 1);
     }
 
-    // The wait honors Retry-After and adds at most 50% jitter to it. A
-    // missing or non-numeric Retry-After falls back to the backoff schedule.
+    // The wait adds at most 50% jitter to Retry-After. A missing or
+    // non-numeric Retry-After falls back to the backoff schedule.
     #[hegel::test]
     fn rate_limit_wait_honors_retry_after(tc: hegel::TestCase) {
         let retry = tc.draw(generators::integers::<u32>().max_value(5));
@@ -2985,8 +2980,7 @@ mod tests {
         assert_eq!(connections.load(Ordering::SeqCst), 1);
     }
 
-    // Mutations are never replayed: a launch POST that dies to a transport
-    // failure is sent exactly once.
+    // A launch POST that dies to a transport failure is sent exactly once.
     #[tokio::test]
     async fn launch_post_is_not_retried_on_transport_failure() {
         let (base_url, connections) = reset_then_serve_version(usize::MAX).await;

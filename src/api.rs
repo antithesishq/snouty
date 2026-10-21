@@ -440,11 +440,12 @@ fn rate_limit_wait(headers: &HeaderMap, retry: u32) -> Option<Duration> {
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.trim().parse().ok())
         .map(Duration::from_secs);
-    match retry_after {
-        Some(wait) if wait > MAX_RETRY_AFTER => None,
-        Some(wait) => Some(with_jitter(wait)),
-        None => Some(with_jitter(retry_backoff(retry))),
-    }
+    let wait = match retry_after {
+        Some(wait) if wait > MAX_RETRY_AFTER => return None,
+        Some(wait) => wait,
+        None => retry_backoff(retry),
+    };
+    Some(with_jitter(wait))
 }
 
 /// Whether a failed request is safe to re-send: true only for transport-level
@@ -498,7 +499,7 @@ async fn execute_with_retry(
             return client.execute(request).await;
         };
         let result = client.execute(request).await;
-        let wait = match &result {
+        let (wait, reason, retry, max) = match &result {
             Err(err)
                 if is_get
                     && transient_retries < MAX_TRANSIENT_RETRIES
@@ -506,14 +507,8 @@ async fn execute_with_retry(
             {
                 let wait = retry_backoff(transient_retries);
                 transient_retries += 1;
-                debug!(
-                    "transient network error, retry {transient_retries} of \
-                     {MAX_TRANSIENT_RETRIES} in {wait:?}: {err}"
-                );
-                if verbose {
-                    eprintln!("* transient network error, retrying in {wait:?}: {err}");
-                }
-                wait
+                let reason = format!("transient network error ({err})");
+                (wait, reason, transient_retries, MAX_TRANSIENT_RETRIES)
             }
             Ok(response)
                 if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
@@ -524,17 +519,17 @@ async fn execute_with_retry(
                     return result;
                 };
                 rate_limit_retries += 1;
-                debug!(
-                    "rate limited, retry {rate_limit_retries} of {MAX_RATE_LIMIT_RETRIES} \
-                     in {wait:?}"
-                );
-                if verbose {
-                    eprintln!("* rate limited (429), retrying in {wait:.1?}");
-                }
-                wait
+                let reason = "rate limited (429)".to_string();
+                (wait, reason, rate_limit_retries, MAX_RATE_LIMIT_RETRIES)
             }
             _ => return result,
         };
+        debug!("{reason}, retry {retry} of {max} in {wait:?}");
+        if verbose {
+            eprintln!("* {reason}, retrying in {wait:.1?}");
+        }
+        // Free the connection now rather than hold it through the wait.
+        drop(result);
         tokio::time::sleep(wait).await;
         request = clone;
     }
@@ -2563,6 +2558,9 @@ mod tests {
     /// ignore it (#180).
     const LAUNCH_OK_BODY: &str = r#"{"runId":"run-123","statusCode":202}"#;
 
+    /// The `GET /api/version` success body.
+    const VERSION_OK_BODY: &str = r#"{"latest_api_version":"v1","release_version":"60"}"#;
+
     /// The launch success body that tenant release 63.3 sends (#336).
     const LAUNCH_OK_BODY_63_3: &str = r#"{"message":"Success","runId":"run-63-3"}"#;
 
@@ -2767,29 +2765,27 @@ mod tests {
     /// A server that answers `method path` with 429 and `retry_after` for the
     /// first `limited` requests, and with 200 and `body` after them.
     async fn rate_limit_then_serve(
-        method: &str,
-        path: &str,
+        http_method: &str,
+        route: &str,
         limited: u64,
         retry_after: &str,
         body: &str,
     ) -> MockServer {
         let mock_server = MockServer::start().await;
-        Mock::given(wiremock::matchers::method(method))
-            .and(wiremock::matchers::path(path))
+        Mock::given(method(http_method))
+            .and(path(route.to_owned()))
             .respond_with(ResponseTemplate::new(429).insert_header("retry-after", retry_after))
             .up_to_n_times(limited)
             .with_priority(1)
             .mount(&mock_server)
             .await;
-        Mock::given(wiremock::matchers::method(method))
-            .and(wiremock::matchers::path(path))
+        Mock::given(method(http_method))
+            .and(path(route.to_owned()))
             .respond_with(ResponseTemplate::new(200).set_body_string(body))
             .mount(&mock_server)
             .await;
         mock_server
     }
-
-    const VERSION_OK_BODY: &str = r#"{"latest_api_version":"v1","release_version":"60"}"#;
 
     // A 429 is re-sent, whether or not its Retry-After is a number of
     // seconds, and the caller sees only the response that follows it.
@@ -2924,11 +2920,10 @@ mod tests {
     /// A server whose first `resets` connections reset and whose later ones
     /// answer `GET /api/version` completely.
     async fn reset_then_serve_version(resets: usize) -> (String, Arc<AtomicUsize>) {
-        let body = r#"{"latest_api_version":"v1","release_version":"60"}"#;
         let response = format!(
             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
-            body.len(),
-            body
+            VERSION_OK_BODY.len(),
+            VERSION_OK_BODY
         );
         raw_server(resets, response).await
     }

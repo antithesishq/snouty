@@ -12,8 +12,9 @@
 # Caching is internal and must not change command output or required arguments.
 # GET requests that fail at the transport level (connect errors, resets, DNS
 # failures) are retried up to 3 times with backoff; mutations (launch, debug,
-# exec, and cancel) are not retried on a transport failure (#249). A request
-# of any method that the server answers with 429 Too Many Requests is retried
+# exec, and cancel) are not retried on a transport failure (#249). An API
+# request of any method, other than the OAuth login and token refresh, that
+# the server answers with 429 Too Many Requests is retried
 # up to 5 times, after the wait that its Retry-After header gives in seconds,
 # or with backoff when it gives none (#458). Each wait has up to 50% jitter.
 # A Retry-After longer than 60 seconds surfaces the 429 at once. A served HTTP

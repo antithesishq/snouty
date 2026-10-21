@@ -254,10 +254,16 @@ fn cmd_mock_server(
     env: &mut testscript_rs::TestEnvironment,
     args: &[String],
 ) -> testscript_rs::Result<()> {
-    // Usage: mock-server <status> <body>
+    // Usage: mock-server [-header '<name>: <value>'] <status> <body>
     // Starts a TCP mock HTTP server, sets ANTITHESIS_BASE_URL and auth env vars.
+    let (header, args) = match args {
+        [flag, header, rest @ ..] if flag == "-header" => (format!("{header}\r\n"), rest),
+        _ => (String::new(), args),
+    };
     if args.len() < 2 {
-        return Err(err("mock-server requires <status> <body>".to_string()));
+        return Err(err(
+            "mock-server requires [-header '<name>: <value>'] <status> <body>".to_string(),
+        ));
     }
 
     if is_staging() {
@@ -284,7 +290,7 @@ fn cmd_mock_server(
             let _ = Read::read(&mut stream, &mut buf);
 
             let response = format!(
-                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                "HTTP/1.1 {status}\r\n{header}Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
                 body.len(),
             );
             let _ = stream.write_all(response.as_bytes());

@@ -32,8 +32,7 @@ use snouty::params::{
 use snouty::settings::Settings;
 use snouty::validate;
 
-// The release binaries for Linux are static musl builds, and musl's malloc
-// is slow.
+// musl's malloc is slow, and the Linux release binaries are static musl builds.
 #[cfg(target_env = "musl")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;

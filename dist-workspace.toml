@@ -23,8 +23,7 @@ publish-prereleases = true
 github-attestations = true
 
 # dist defaults to macos-14, which GitHub retires on 2026-11-02.
-# Linux ships only static musl binaries, so no runner image sets a glibc
-# floor for them.
+# dist defaults Linux to ubuntu-22.04, which GitHub retires before 2027-04-17.
 [dist.github-custom-runners]
 global = "ubuntu-24.04"
 aarch64-apple-darwin = "macos-15"

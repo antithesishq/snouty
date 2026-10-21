@@ -14,10 +14,11 @@
 # failures) are retried up to 3 times with backoff. Mutations (launch, debug,
 # exec, and cancel) are not retried on a transport failure (#249). A 429 Too
 # Many Requests answer to any API request, except OAuth login and token
-# refresh, is retried up to 5 times (#458). Each wait is the Retry-After
-# seconds, or the backoff when Retry-After is missing or not a number, plus up
-# to 50% jitter. A wait that takes the total past 60 seconds surfaces the 429
-# at once. A served HTTP response of any other status is never retried.
+# refresh, is retried up to 5 times (#458). Each wait is the longer of the
+# Retry-After seconds and the backoff, plus up to 50% jitter. A wait that takes
+# the total for the request past 60 seconds surfaces the 429 at once. The
+# limits cover the resend after a token refresh too. A served HTTP response of
+# any other status is never retried.
 
 # The command authenticates with the Antithesis API using
 #    ANTITHESIS_API_KEY and ANTITHESIS_TENANT env vars. Every endpoint other
@@ -513,14 +514,6 @@ stderr '^Error: API error: 400.*'
 [!staging] mock-server -header 'Retry-After: 3600' 429 ''
 [!staging] env ANTITHESIS_API_KEY=test-api-key
 [!staging] ! snouty runs
-[!staging] stderr 'API error: 429 Too Many Requests.*'
-
-# A Retry-After that snouty can wait out is retried. --verbose logs each
-# retry. A server that always answers 429 surfaces it when the retries end.
-[!staging] mock-server -header 'Retry-After: 0' 429 ''
-[!staging] env ANTITHESIS_API_KEY=test-api-key
-[!staging] ! snouty --verbose runs
-[!staging] stderr -count=5 '^\* rate limited \(429\), retrying in'
 [!staging] stderr 'API error: 429 Too Many Requests.*'
 
 # An unfiltered empty result succeeds with a short note.

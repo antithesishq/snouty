@@ -435,18 +435,32 @@ fn with_jitter(wait: Duration) -> Duration {
 
 /// The wait before re-sending a request that the server answered with 429,
 /// after `waited` in earlier 429 retries. `None` when the wait would take the
-/// total past [`MAX_RATE_LIMIT_WAIT`]. The API documents `Retry-After` in
-/// seconds. A value in any other form falls back to [`retry_backoff`].
+/// total past [`MAX_RATE_LIMIT_WAIT`]. The wait is the longer of
+/// `Retry-After` and [`retry_backoff`], so a short `Retry-After` still spreads
+/// the retries out. The API documents `Retry-After` in seconds, and a value in
+/// any other form is ignored.
 fn rate_limit_wait(headers: &HeaderMap, retry: u32, waited: Duration) -> Option<Duration> {
     let retry_after = headers
         .get(reqwest::header::RETRY_AFTER)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.trim().parse::<u32>().ok())
         .map(|seconds| RETRY_SECOND.saturating_mul(seconds));
-    let wait = retry_after.unwrap_or_else(|| retry_backoff(retry));
+    let wait = retry_after.map_or(retry_backoff(retry), |retry_after| {
+        retry_after.max(retry_backoff(retry))
+    });
     let remaining = MAX_RATE_LIMIT_WAIT.checked_sub(waited + wait)?;
     // The jitter never shortens the wait that the server asked for.
     Some(with_jitter(wait).min(wait + remaining))
+}
+
+/// The retries that [`execute_with_retry`] has already spent on one API call.
+/// The call shares it across the resend after a token refresh, so that the
+/// limits apply to the whole call.
+#[derive(Default)]
+struct RetryBudget {
+    transient_retries: u32,
+    rate_limit_retries: u32,
+    rate_limit_waited: Duration,
 }
 
 /// Why [`execute_with_retry`] re-sends a request.
@@ -504,12 +518,10 @@ fn is_transient_transport_error(error: &reqwest::Error) -> bool {
 async fn execute_with_retry(
     client: &Client,
     verbose: bool,
+    budget: &mut RetryBudget,
     mut request: reqwest::Request,
 ) -> reqwest::Result<reqwest::Response> {
     let is_get = request.method() == reqwest::Method::GET;
-    let mut transient_retries = 0;
-    let mut rate_limit_retries = 0;
-    let mut rate_limit_waited = Duration::ZERO;
     loop {
         // A request with a streamed body cannot be cloned, and is sent once.
         let Some(clone) = request.try_clone() else {
@@ -519,34 +531,36 @@ async fn execute_with_retry(
         let (wait, reason, retry, max) = match &result {
             Err(err)
                 if is_get
-                    && transient_retries < MAX_TRANSIENT_RETRIES
+                    && budget.transient_retries < MAX_TRANSIENT_RETRIES
                     && is_transient_transport_error(err) =>
             {
-                let wait = retry_backoff(transient_retries);
-                transient_retries += 1;
+                let wait = retry_backoff(budget.transient_retries);
+                budget.transient_retries += 1;
                 (
                     wait,
                     RetryReason::Transport(err),
-                    transient_retries,
+                    budget.transient_retries,
                     MAX_TRANSIENT_RETRIES,
                 )
             }
             Ok(response)
                 if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
-                    && rate_limit_retries < MAX_RATE_LIMIT_RETRIES =>
+                    && budget.rate_limit_retries < MAX_RATE_LIMIT_RETRIES =>
             {
-                let Some(wait) =
-                    rate_limit_wait(response.headers(), rate_limit_retries, rate_limit_waited)
-                else {
+                let Some(wait) = rate_limit_wait(
+                    response.headers(),
+                    budget.rate_limit_retries,
+                    budget.rate_limit_waited,
+                ) else {
                     debug!("rate limited, the wait would pass {MAX_RATE_LIMIT_WAIT:?} in total");
                     return result;
                 };
-                rate_limit_retries += 1;
-                rate_limit_waited += wait;
+                budget.rate_limit_retries += 1;
+                budget.rate_limit_waited += wait;
                 (
                     wait,
                     RetryReason::RateLimited,
-                    rate_limit_retries,
+                    budget.rate_limit_retries,
                     MAX_RATE_LIMIT_RETRIES,
                 )
             }
@@ -1134,7 +1148,8 @@ impl ClientHooks<ClientState> for generated::Client {
         };
 
         http.log_request(&request, LoggedBody::Shown);
-        let result = execute_with_retry(self.client(), http.verbose, request).await;
+        let mut budget = RetryBudget::default();
+        let result = execute_with_retry(self.client(), http.verbose, &mut budget, request).await;
 
         let result = match (result, retry_request) {
             (Ok(response), Some(mut retry_request))
@@ -1150,7 +1165,8 @@ impl ClientHooks<ClientState> for generated::Client {
                             .headers_mut()
                             .insert(reqwest::header::AUTHORIZATION, header);
                         http.log_request(&retry_request, LoggedBody::Shown);
-                        execute_with_retry(self.client(), http.verbose, retry_request).await
+                        execute_with_retry(self.client(), http.verbose, &mut budget, retry_request)
+                            .await
                     }
                     Ok(None) => Ok(response),
                     Err(err) => {
@@ -2876,9 +2892,9 @@ mod tests {
         expect_rate_limited(&api, &mock_server, 2).await;
     }
 
-    // The wait is at least the Retry-After, adds at most 50% jitter to it,
-    // and keeps the total within MAX_RATE_LIMIT_WAIT. A missing or
-    // non-numeric Retry-After falls back to the backoff schedule.
+    // The wait is at least the longer of Retry-After and the backoff, adds at
+    // most 50% jitter to it, and keeps the total within MAX_RATE_LIMIT_WAIT.
+    // A missing or non-numeric Retry-After falls back to the backoff.
     #[hegel::test]
     fn rate_limit_wait_honors_retry_after(tc: hegel::TestCase) {
         let retry = tc.draw(generators::integers::<u32>().max_value(5));
@@ -2886,7 +2902,7 @@ mod tests {
         let waited = RETRY_SECOND * tc.draw(generators::integers::<u32>().max_value(90));
         let mut headers = HeaderMap::new();
         headers.insert(reqwest::header::RETRY_AFTER, seconds.into());
-        let requested = RETRY_SECOND * seconds;
+        let requested = (RETRY_SECOND * seconds).max(retry_backoff(retry));
         match rate_limit_wait(&headers, retry, waited) {
             None => assert!(waited + requested > MAX_RATE_LIMIT_WAIT),
             Some(wait) => {
@@ -3977,6 +3993,68 @@ mod tests {
         let persisted = std::fs::read_to_string(&creds_path).unwrap();
         assert!(persisted.contains("new-access-token"), "got:\n{persisted}");
         assert!(persisted.contains("new-refresh-token"), "got:\n{persisted}");
+    }
+
+    // The 429 limits cover the whole API call: the resend after a token
+    // refresh gets no fresh budget. The stale token spends every 429 retry,
+    // so the first 429 to the refreshed token surfaces.
+    #[tokio::test]
+    async fn oauth_refresh_shares_the_rate_limit_budget() {
+        use wiremock::matchers::header;
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/cli/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "antithesis_token": "new-access-token",
+                "refresh_token": "new-refresh-token",
+                "expires_in": 3600
+            })))
+            .mount(&mock_server)
+            .await;
+        Mock::given(header("authorization", "Bearer old-access-token"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(u64::from(MAX_RATE_LIMIT_RETRIES))
+            .with_priority(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(header("authorization", "Bearer old-access-token"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&mock_server)
+            .await;
+        Mock::given(header("authorization", "Bearer new-access-token"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&mock_server)
+            .await;
+        let creds_dir = TempDir::new().unwrap();
+        let auth = AuthenticationInfo::oauth_for_test(
+            "old-access-token",
+            Some("old-refresh-token"),
+            crate::auth::OAuthRefreshInfo::CredentialsFile {
+                path: creds_dir.path().join("credentials.toml"),
+                profile: None,
+            },
+        );
+        let api = AntithesisApi::build(
+            &Settings::for_test_base_url(mock_server.uri()),
+            auth,
+            false,
+            ResponseCache::Disabled,
+        )
+        .unwrap();
+
+        let report = api.get_run("run-1").await.unwrap_err();
+
+        assert_eq!(crate::error::api_error_status(&report), Some(429));
+        let run_requests = mock_server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|request| request.url.path() == "/api/v0/runs/run-1")
+            .count();
+        // Every stale-token 429, the 401, and one refreshed-token 429.
+        assert_eq!(run_requests, MAX_RATE_LIMIT_RETRIES as usize + 2);
     }
 
     #[tokio::test]

@@ -244,6 +244,13 @@ mock-server 401 ''
 ! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
 stderr 'API error: 401 Unauthorized.*'
 
+# A 429 is retried, a mutation such as a debugging launch too, and --verbose
+# logs each retry. With no Retry-After, the first wait is the 1-second backoff.
+mock-server -rate-limit 1 200 '{"message":"Success","runId":"run-123"}'
+snouty --verbose debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
+stderr -count=1 '^\* rate limited \(429\), retrying in 1\.[0-5]s$'
+stdout 'run-123'
+
 # An error body snouty cannot make sense of (here an intermediary's HTML page)
 # never masks the status either: it is reported with the body shown for
 # debugging.

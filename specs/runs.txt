@@ -16,8 +16,8 @@
 # Many Requests answer to any API request, except OAuth login and token
 # refresh, is retried up to 5 times (#458). Each wait is the Retry-After
 # seconds, or the backoff when Retry-After is missing or not a number, plus up
-# to 50% jitter. A Retry-After longer than 60 seconds surfaces the 429 at once.
-# A served HTTP response of any other status is never retried.
+# to 50% jitter. A wait that takes the total past 60 seconds surfaces the 429
+# at once. A served HTTP response of any other status is never retried.
 
 # The command authenticates with the Antithesis API using
 #    ANTITHESIS_API_KEY and ANTITHESIS_TENANT env vars. Every endpoint other

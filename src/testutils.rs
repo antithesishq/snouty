@@ -970,6 +970,10 @@ fn mock_route_cancel_run(run_id: &str) -> (u16, String) {
                 r#"{{"message":"Conflict: Run {run_id} has already finished and cannot be cancelled"}}"#
             ),
         ),
+        None if crate::api::run_version(run_id).is_some() => (
+            404,
+            format!(r#"{{"error":"User Input Error: Unknown experiment id {run_id}"}}"#),
+        ),
         None => (404, MOCK_CANCEL_404_BODY.to_string()),
     }
 }
@@ -978,7 +982,7 @@ fn mock_route_cancel_run(run_id: &str) -> (u16, String) {
 /// names the resource.
 pub(crate) const MOCK_BARE_404_BODY: &str = r#"{"message":"Resource not found"}"#;
 
-/// The bare 404 body the live cancel endpoint sends for an unknown run. Its
+/// The bare 404 body the live cancel endpoint sends for a malformed run id. Its
 /// shape differs from [`MOCK_BARE_404_BODY`].
 const MOCK_CANCEL_404_BODY: &str = r#"{"error":"404 Not Found"}"#;
 
@@ -1694,6 +1698,24 @@ mod tests {
         let (status, out) = mock_route_execute_command("no-such-run", body);
         assert_eq!(status, 404);
         assert_eq!(out, MOCK_BARE_404_BODY);
+    }
+
+    // The CLI reads only the cancel 404's status, so the spec cannot tell the
+    // two bodies apart.
+    #[test]
+    fn mock_cancel_run_404_body_depends_on_the_id_shape() {
+        let id = "00000000000000000000000000000000-65-0";
+        assert_eq!(
+            mock_route_cancel_run(id),
+            (
+                404,
+                format!(r#"{{"error":"User Input Error: Unknown experiment id {id}"}}"#)
+            )
+        );
+        assert_eq!(
+            mock_route_cancel_run("no-such-run"),
+            (404, MOCK_CANCEL_404_BODY.to_string())
+        );
     }
 
     #[test]

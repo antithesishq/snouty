@@ -10,7 +10,7 @@ ci = "github"
 # The installers to generate for each app
 installers = ["shell"]
 # Target platforms to build apps for (Rust target-triple syntax)
-targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-unknown-linux-musl", "x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"]
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]
 # Path that installers should place binaries in
 install-path = "~/.local/bin"
 # Whether to install an updater program
@@ -21,28 +21,15 @@ publish-jobs = ["./publish-crates"]
 publish-prereleases = true
 # Produce build provenance attestations for the released artifacts
 github-attestations = true
-# Extra build-local-artifacts steps. The path is relative to .github/workflows.
-github-build-setup = "../build-setup.yml"
 
 # dist defaults to macos-14, which GitHub retires on 2026-11-02.
-# The gnu binaries link against the build glibc, and the dist installer
-# requires that version or newer. The manylinux_2_28 containers hold that
-# floor at 2.28 on any runner image. dist runs inside the container, and its
-# gnu build may need a newer glibc than the image has, so host selects its
-# musl build.
+# Linux ships only static musl binaries, so no runner image sets a glibc
+# floor for them.
 [dist.github-custom-runners]
 global = "ubuntu-24.04"
 aarch64-apple-darwin = "macos-15"
 aarch64-unknown-linux-musl = "ubuntu-24.04-arm"
 x86_64-unknown-linux-musl = "ubuntu-24.04"
-
-[dist.github-custom-runners.aarch64-unknown-linux-gnu]
-runner = "ubuntu-24.04-arm"
-container = { image = "quay.io/pypa/manylinux_2_28_aarch64", host = "aarch64-unknown-linux-musl" }
-
-[dist.github-custom-runners.x86_64-unknown-linux-gnu]
-runner = "ubuntu-24.04"
-container = { image = "quay.io/pypa/manylinux_2_28_x86_64", host = "x86_64-unknown-linux-musl" }
 
 [dist.dependencies.apt]
 musl-tools = { targets = ["aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"] }

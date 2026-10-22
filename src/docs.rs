@@ -686,8 +686,7 @@ impl TreeNode {
     }
 }
 
-/// Load documentation pages from SQLite, optionally filter the tree, and print
-/// the remaining paths as a Unicode-rendered view, or as JSON when `json` is set.
+/// Print the documentation tree as text, or as JSON when `json` is set.
 fn tree(depth: Option<usize>, filter: Option<&str>, json: bool) -> Result<()> {
     let conn = open_db()?;
     let mut stmt = conn.prepare("SELECT path, title FROM pages ORDER BY path")?;
@@ -728,8 +727,7 @@ fn tree(depth: Option<usize>, filter: Option<&str>, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// The `docs tree --json` output. The synthetic `docs` root is omitted, as in
-/// the text output.
+/// The `docs tree --json` output. It omits the synthetic `docs` root.
 #[derive(Serialize)]
 struct TreeJson<'a> {
     children: Vec<NodeJson<'a>>,
@@ -784,7 +782,6 @@ fn render_forest(root: &TreeNode) -> Result<String> {
     Ok(String::from_utf8(rendered)?)
 }
 
-/// Convert a `TreeNode` into a printable tree item.
 fn render_tree(name: &str, node: &TreeNode) -> ptree::item::StringItem {
     ptree::item::StringItem {
         text: node_label(name, node),
@@ -834,8 +831,7 @@ fn filter_tree(node: TreeNode, path_prefix: &str, filter: &str) -> Option<TreeNo
     }
 }
 
-/// Join a tree node's path with a child segment. The top-level nodes have an
-/// empty prefix.
+/// Top-level nodes have an empty `path_prefix`.
 fn child_path(path_prefix: &str, name: &str) -> String {
     if path_prefix.is_empty() {
         name.to_string()

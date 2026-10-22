@@ -12,6 +12,7 @@ use tempfile::NamedTempFile;
 
 mod snippet;
 
+use crate::api::CONNECT_TIMEOUT;
 use crate::cli::DocsCommands;
 use crate::error::user_error;
 use crate::render::OutputOptions;
@@ -94,7 +95,7 @@ pub async fn cmd_docs(
 async fn update_with_fallback() -> Result<()> {
     if let Err(e) = download_and_cache_db().await {
         if db_path()?.exists() {
-            eprintln!("Warning: failed to update docs, falling back to cached docs\n    {e}\n");
+            eprintln!("Warning: failed to update docs, falling back to cached docs\n    {e:#}\n");
         } else {
             return Err(e);
         }
@@ -131,8 +132,10 @@ async fn download_and_cache_db() -> Result<()> {
 /// fetch_db_if_changed returns Ok(None) if the server indicates the database
 /// has not changed (304 Not Modified).
 async fn fetch_db_if_changed() -> Result<Option<(Vec<u8>, String)>> {
+    // No read timeout: the database is several MB, and a slow download must finish.
     let client = reqwest::Client::builder()
         .user_agent(user_agent())
+        .connect_timeout(CONNECT_TIMEOUT)
         .build()?;
     let mut request = client.get(format!("{}/sqlite.db", docs_url()));
 

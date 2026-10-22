@@ -1,5 +1,8 @@
 mod support;
 
+use std::net::TcpListener;
+use std::time::{Duration, Instant};
+
 use predicates::prelude::*;
 use snouty::user_agent::user_agent_with;
 use support::*;
@@ -69,6 +72,36 @@ fn docs_update_failure_with_cached_db_warns_and_uses_cache() {
         .stderr(predicate::str::contains(
             "Warning: failed to update docs, falling back to cached docs",
         ));
+}
+
+#[test]
+fn docs_update_that_never_connects_times_out_and_uses_cache() {
+    let cache_dir = TempDir::new().unwrap();
+    let mock_server = MockDocsServer::start();
+
+    set_docs_cache_env(&mut snouty(), &cache_dir)
+        .env("ANTITHESIS_DOCS_URL", mock_server.url())
+        .args(["docs", "search", "docker"])
+        .assert()
+        .success();
+
+    // The kernel accepts the TCP connection into the listener's backlog, and
+    // nothing ever answers the TLS handshake, so the connect never completes.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let start = Instant::now();
+    set_docs_cache_env(&mut snouty(), &cache_dir)
+        .env("ANTITHESIS_DOCS_URL", format!("https://127.0.0.1:{port}"))
+        .args(["docs", "search", "docker"])
+        .timeout(Duration::from_secs(60))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("/docs/guides/docker_basics/"))
+        .stderr(predicate::str::contains(
+            "Warning: failed to update docs, falling back to cached docs",
+        ));
+    assert!(start.elapsed() >= Duration::from_secs(10));
 }
 
 #[test]

@@ -8,8 +8,8 @@ name: slow tests
 # roughly two minutes. They run here instead, after merge.
 #
 # What still gates a pull request lives in build.yml: both Ubuntu legs run the
-# whole suite against a real engine, and the arm64 macOS leg runs every test that
-# does not need one. This workflow adds the two environments that costs the most
+# whole suite against a real engine, built for musl like the Linux release
+# binaries, and the arm64 macOS leg runs every test that does not need one. This workflow adds the two environments that costs the most
 # to reach — macOS with a working podman, and nix — on top of that.
 #
 # A release branch is the exception: it runs these legs before the merge, not

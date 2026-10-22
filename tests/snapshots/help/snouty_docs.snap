@@ -14,8 +14,8 @@ Examples:
   snouty docs tree sdk
   snouty docs show getting_started
 
-Add --json for machine-readable output. Only `search` prints JSON; the other
-subcommands print text either way:
+Add --json for machine-readable output. `search` and `tree` print JSON; the
+other subcommands print text either way:
   snouty --json docs search fault injection | jq -r '.[].path'
 
 Usage: snouty docs [OPTIONS] <COMMAND>

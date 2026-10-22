@@ -8,6 +8,7 @@ use color_eyre::eyre::{OptionExt, Result, bail};
 use ptree::print_config::UTF_CHARS_BOLD;
 use ptree::{PrintConfig, write_tree_with};
 use rusqlite::{Connection, OpenFlags};
+use serde::Serialize;
 use tempfile::NamedTempFile;
 
 mod snippet;
@@ -86,7 +87,9 @@ pub async fn cmd_docs(
             )
         }
         DocsCommands::Sqlite => sqlite_path(),
-        DocsCommands::Tree { depth, filter } => tree(depth.map(|d| d.get()), filter.as_deref()),
+        DocsCommands::Tree { depth, filter } => {
+            tree(depth.map(|d| d.get()), filter.as_deref(), json)
+        }
         DocsCommands::Show { path } => show(&path),
     }
 }
@@ -670,11 +673,22 @@ impl TreeNode {
         }
         node.page_title = Some(title);
     }
+
+    /// Remove the nodes deeper than `depth` below this node.
+    fn truncate(&mut self, depth: usize) {
+        if depth == 0 {
+            self.children.clear();
+        } else {
+            for child in self.children.values_mut() {
+                child.truncate(depth - 1);
+            }
+        }
+    }
 }
 
 /// Load documentation pages from SQLite, optionally filter the tree, and print
-/// a Unicode-rendered view of the remaining paths.
-fn tree(depth: Option<usize>, filter: Option<&str>) -> Result<()> {
+/// the remaining paths as a Unicode-rendered view, or as JSON when `json` is set.
+fn tree(depth: Option<usize>, filter: Option<&str>, json: bool) -> Result<()> {
     let conn = open_db()?;
     let mut stmt = conn.prepare("SELECT path, title FROM pages ORDER BY path")?;
     let mut root = TreeNode::default();
@@ -689,6 +703,17 @@ fn tree(depth: Option<usize>, filter: Option<&str>) -> Result<()> {
     if let Some(filter) = &filter {
         root = filter_tree(root, "", filter).unwrap_or_default();
     }
+    if let Some(depth) = depth {
+        root.truncate(depth);
+    }
+
+    if json {
+        let tree = TreeJson {
+            children: json_children(&root, ""),
+        };
+        println!("{}", serde_json::to_string_pretty(&tree)?);
+        return Ok(());
+    }
 
     if root.children.is_empty() {
         if let Some(label) = filter.as_deref() {
@@ -699,13 +724,51 @@ fn tree(depth: Option<usize>, filter: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    print!("{}", render_forest(&root, depth)?);
+    print!("{}", render_forest(&root)?);
     Ok(())
+}
+
+/// The `docs tree --json` output. The synthetic `docs` root is omitted, as in
+/// the text output.
+#[derive(Serialize)]
+struct TreeJson<'a> {
+    children: Vec<NodeJson<'a>>,
+}
+
+#[derive(Serialize)]
+struct NodeJson<'a> {
+    name: &'a str,
+    /// The segments from the top-level node to this node, joined with `/`.
+    /// For a page node, [`show`] accepts it.
+    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<&'a str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    children: Vec<NodeJson<'a>>,
+}
+
+fn json_children<'a>(node: &'a TreeNode, path_prefix: &str) -> Vec<NodeJson<'a>> {
+    node.children
+        .iter()
+        .map(|(name, child)| {
+            let path = if path_prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{path_prefix}/{name}")
+            };
+            NodeJson {
+                name,
+                children: json_children(child, &path),
+                path,
+                title: child.page_title.as_deref(),
+            }
+        })
+        .collect()
 }
 
 /// Render each top-level node as its own tree so the synthetic `docs` root is
 /// omitted from the user-facing output.
-fn render_forest(root: &TreeNode, max_depth: Option<usize>) -> Result<String> {
+fn render_forest(root: &TreeNode) -> Result<String> {
     if root.children.is_empty() {
         return Ok(String::new());
     }
@@ -719,7 +782,7 @@ fn render_forest(root: &TreeNode, max_depth: Option<usize>) -> Result<String> {
     let child_count = root.children.len();
 
     for (index, (name, child)) in root.children.iter().enumerate() {
-        let tree = render_tree(name, child, 1, max_depth);
+        let tree = render_tree(name, child);
         write_tree_with(&tree, &mut rendered, &settings)?;
         if index + 1 != child_count {
             rendered.write_all(b"\n")?;
@@ -729,24 +792,15 @@ fn render_forest(root: &TreeNode, max_depth: Option<usize>) -> Result<String> {
     Ok(String::from_utf8(rendered)?)
 }
 
-/// Convert a `TreeNode` into a printable tree item, stopping recursion once
-/// the requested depth limit is reached.
-fn render_tree(
-    name: &str,
-    node: &TreeNode,
-    current_depth: usize,
-    max_depth: Option<usize>,
-) -> ptree::item::StringItem {
-    let mut children = Vec::new();
-    if max_depth.is_none_or(|limit| current_depth < limit) {
-        for (child_name, child) in &node.children {
-            children.push(render_tree(child_name, child, current_depth + 1, max_depth));
-        }
-    }
-
+/// Convert a `TreeNode` into a printable tree item.
+fn render_tree(name: &str, node: &TreeNode) -> ptree::item::StringItem {
     ptree::item::StringItem {
         text: node_label(name, node),
-        children,
+        children: node
+            .children
+            .iter()
+            .map(|(child_name, child)| render_tree(child_name, child))
+            .collect(),
     }
 }
 
@@ -812,9 +866,10 @@ fn normalized_path(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        fts5_literal, generated_sdk_index, is_fts5_query_error, literal_match_query,
-        literal_query_terms, literal_title_query, normalized_path,
+        NodeJson, TreeNode, fts5_literal, generated_sdk_index, is_fts5_query_error, json_children,
+        literal_match_query, literal_query_terms, literal_title_query, normalized_path,
     };
+    use hegel::generators;
 
     #[test]
     fn literal_query_terms_drops_stopwords() {
@@ -935,5 +990,38 @@ mod tests {
             normalized_path("https://antithesis.com/docs/getting_started/?utm=1#overview"),
             "getting_started"
         );
+    }
+
+    /// Checks each node below `ancestors` and returns how deep the nodes go.
+    fn check_json_nodes(nodes: &[NodeJson], ancestors: &mut Vec<String>) -> usize {
+        let mut deepest = 0;
+        for node in nodes {
+            ancestors.push(node.name.to_string());
+            assert_eq!(node.path.split('/').collect::<Vec<_>>(), *ancestors);
+            deepest = deepest.max(1 + check_json_nodes(&node.children, ancestors));
+            ancestors.pop();
+        }
+        deepest
+    }
+
+    /// Every JSON node's path is the names from the top-level node down to it,
+    /// and no node is deeper than the depth limit.
+    #[hegel::test]
+    fn tree_json_paths_follow_ancestor_names(tc: hegel::TestCase) {
+        let paths = tc.draw(generators::vecs(
+            generators::text().alphabet("ab/").max_size(8),
+        ));
+        let depth = tc.draw(generators::optional(
+            generators::integers::<usize>().min_value(1).max_value(4),
+        ));
+        let mut root = TreeNode::default();
+        for path in &paths {
+            root.insert_page(path, path.clone());
+        }
+        if let Some(depth) = depth {
+            root.truncate(depth);
+        }
+        let deepest = check_json_nodes(&json_children(&root, ""), &mut Vec::new());
+        assert!(depth.is_none_or(|limit| deepest <= limit));
     }
 }

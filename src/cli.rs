@@ -7,6 +7,11 @@ use crate::api::{
     PerformanceTier, RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SourceRunId,
     SourceSessionId,
 };
+use color_eyre::Section;
+use color_eyre::eyre::Report;
+
+use crate::error::user_error;
+use crate::features::{self, Feature};
 use crate::help::HelpPage;
 use crate::time::{BareUnit, HumanDuration, ParseDurationError};
 use crate::vtime::VTime;
@@ -235,6 +240,58 @@ pub enum Commands {
         #[arg(long, value_parser = validate_non_empty)]
         repository: Option<String>,
     },
+
+    /// Serve snouty's run, docs and doctor commands to AI agents over MCP
+    #[command(
+        hide = !features::is_enabled(Feature::Mcp),
+        long_about = HelpPage::Mcp.cli()
+    )]
+    Mcp(McpArgs),
+}
+
+/// Refuses a gated command while its feature is off. A hidden subcommand is
+/// still callable, so dispatch checks this first.
+pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Report> {
+    let feature = match command {
+        Commands::Mcp(_) => Feature::Mcp,
+        Commands::Launch(_)
+        | Commands::Run(_)
+        | Commands::Runs { .. }
+        | Commands::Debug(_)
+        | Commands::Docs { .. }
+        | Commands::Validate(_)
+        | Commands::Completions { .. }
+        | Commands::Version
+        | Commands::Update(_)
+        | Commands::Doctor(_)
+        | Commands::Login { .. } => return None,
+    };
+    if enabled.contains(&feature) {
+        return None;
+    }
+    let path = format!("snouty {}", feature.gated_command());
+    Some(
+        user_error(format!(
+            "`{path}` is an unstable feature and is not enabled"
+        ))
+        .note(format!(
+            "enable it by setting {}={}",
+            features::UNSTABLE_FEATURES_VAR_NAME,
+            feature
+        ))
+        .note("an unstable feature can change or go away in any release")
+        .suggestion(format!("run `{path} --help` for what it does")),
+    )
+}
+
+/// clap value parser for a run ID. The ID is one segment of an API path, and
+/// a URL parser removes an empty, `.` or `..` segment, so the request would go
+/// to a different endpoint.
+fn parse_run_id(value: &str) -> Result<String, String> {
+    match value {
+        "" | "." | ".." => Err(format!("invalid run ID: '{value}'")),
+        _ => Ok(value.to_owned()),
+    }
 }
 
 fn validate_non_empty(value: &str) -> Result<String, String> {
@@ -260,7 +317,7 @@ pub enum DocsCommands {
 
         /// Treat the query as a raw FTS5 expression (AND/OR/NOT/NEAR, "phrases",
         /// title: filters, prefix*) instead of literal text
-        #[arg(short = 'm', long = "match")]
+        #[arg(id = "match", short = 'm', long = "match")]
         match_mode: bool,
 
         /// Search query
@@ -280,7 +337,7 @@ pub enum DocsCommands {
     /// Show full contents of a documentation page
     #[command(long_about = HelpPage::DocsShow.cli())]
     Show {
-        /// Page path (e.g. "getting_started/overview")
+        /// Page path (e.g. "product/writing_tests/controlling_faults")
         path: String,
     },
 
@@ -466,6 +523,14 @@ pub struct LaunchArgs {
 }
 
 #[derive(Args)]
+pub struct McpArgs {
+    /// The most tool calls that run at the same time; a call waits for a free
+    /// slot
+    #[arg(long, default_value = "8")]
+    pub max_concurrent_calls: std::num::NonZeroUsize,
+}
+
+#[derive(Args)]
 #[command(group(ArgGroup::new("target").args(["run_id", "session_id"]).required(true)))]
 pub struct DebugArgs {
     /// Run ID of the test run to debug (preferred; mutually exclusive with --session-id)
@@ -515,6 +580,7 @@ pub enum RunsCommands {
     )]
     Show {
         /// Run ID
+        #[arg(value_parser = parse_run_id)]
         run_id: String,
 
         /// Open the run's triage report in a browser instead of printing details
@@ -526,6 +592,7 @@ pub enum RunsCommands {
     #[command(long_about = HelpPage::RunsWait.cli())]
     Wait {
         /// Run ID
+        #[arg(value_parser = parse_run_id)]
         run_id: String,
 
         /// Time between status checks, in minutes or h/m/s units (e.g. 90s;
@@ -547,6 +614,7 @@ pub enum RunsCommands {
     #[command(long_about = HelpPage::RunsCancel.cli())]
     Cancel {
         /// Run ID
+        #[arg(value_parser = parse_run_id)]
         run_id: String,
     },
 
@@ -556,6 +624,7 @@ pub enum RunsCommands {
     )]
     Properties {
         /// Run ID
+        #[arg(value_parser = parse_run_id)]
         run_id: String,
 
         /// Show only passing properties
@@ -586,6 +655,7 @@ pub enum RunsCommands {
     )]
     BuildLogs {
         /// Run ID
+        #[arg(value_parser = parse_run_id)]
         run_id: String,
     },
 
@@ -595,6 +665,7 @@ pub enum RunsCommands {
     )]
     Logs {
         /// Run ID
+        #[arg(value_parser = parse_run_id)]
         run_id: String,
 
         /// Input hash identifying the timeline to stream
@@ -622,6 +693,7 @@ pub enum RunsCommands {
     )]
     Exec {
         /// Run ID
+        #[arg(value_parser = parse_run_id)]
         run_id: String,
 
         /// Input hash of the moment to execute at (with VTIME, picks the timeline)
@@ -671,6 +743,7 @@ pub enum RunsCommands {
     )]
     Events {
         /// Run ID
+        #[arg(value_parser = parse_run_id)]
         run_id: String,
 
         /// Substring to search for (repeatable; all matches must be present)
@@ -698,6 +771,7 @@ pub enum RunsCommands {
 #[derive(Args)]
 pub struct RunsSearchArgs {
     /// Run ID
+    #[arg(value_parser = parse_run_id)]
     pub run_id: String,
 
     /// Event-set DSL query
@@ -1115,7 +1189,14 @@ mod tests {
     /// never raises the subject.
     #[test]
     fn every_long_help_says_what_json_does() {
-        const NO_JSON: [&str; 5] = ["validate", "completions", "version", "update", "login"];
+        const NO_JSON: [&str; 6] = [
+            "validate",
+            "completions",
+            "version",
+            "update",
+            "login",
+            "mcp",
+        ];
 
         fn walk(command: &clap::Command) {
             for sub in command.get_subcommands() {

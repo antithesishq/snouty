@@ -19,6 +19,7 @@ pub mod git;
 pub mod help;
 pub mod jsonl;
 pub mod login;
+pub mod mcp;
 pub mod params;
 pub mod process;
 pub(crate) mod render;

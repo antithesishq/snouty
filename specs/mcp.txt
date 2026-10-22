@@ -1,0 +1,34 @@
+# snouty mcp
+#
+# An MCP server on the stdio transport, gated behind the `mcp` unstable
+# feature. tests/mcp.rs drives the server with an MCP client. This spec
+# covers the gate.
+
+# 1. With the feature off, snouty refuses the command, names the variable
+#    that enables it, and points to its help.
+! snouty mcp
+stderr '`snouty mcp` is an unstable feature and is not enabled'
+stderr 'enable it by setting SNOUTY_UNSTABLE_FEATURES=mcp'
+stderr 'run `snouty mcp --help` for what it does'
+
+# 2. An unknown id does not enable it.
+env SNOUTY_UNSTABLE_FEATURES=runs-exec
+! snouty mcp
+stderr 'SNOUTY_UNSTABLE_FEATURES=mcp'
+
+# 3. With the feature on, doctor lists it in its features row.
+env SNOUTY_UNSTABLE_FEATURES=mcp
+! snouty doctor
+stderr '^\s*features\s+mcp$'
+
+# 4. At least one tool call must be able to run.
+! snouty mcp --max-concurrent-calls 0
+stderr 'invalid value .0. for .--max-concurrent-calls'
+
+# 5. A client that closes stdin before it sends a request stops the server,
+#    which exits 0.
+stdin empty.txt
+snouty mcp
+! stdout .
+
+-- empty.txt --

@@ -1021,4 +1021,34 @@ mod tests {
         let deepest = check_json_nodes(&json_children(&root, ""), &mut Vec::new());
         assert!(depth.is_none_or(|limit| deepest <= limit));
     }
+
+    /// Checks that `cut` keeps every child of `full` above the depth limit and
+    /// no child at it. `depth_left` is the number of levels `cut` may keep.
+    fn check_truncated(full: &TreeNode, cut: &TreeNode, depth_left: usize) {
+        if depth_left == 0 {
+            assert!(cut.children.is_empty());
+            return;
+        }
+        assert!(full.children.keys().eq(cut.children.keys()));
+        for (full_child, cut_child) in full.children.values().zip(cut.children.values()) {
+            assert_eq!(full_child.page_title, cut_child.page_title);
+            check_truncated(full_child, cut_child, depth_left - 1);
+        }
+    }
+
+    #[hegel::test]
+    fn truncate_keeps_exactly_the_nodes_within_the_depth(tc: hegel::TestCase) {
+        let paths = tc.draw(generators::vecs(
+            generators::text().alphabet("ab/").max_size(8),
+        ));
+        let depth = tc.draw(generators::integers::<usize>().min_value(1).max_value(4));
+        let mut full = TreeNode::default();
+        let mut cut = TreeNode::default();
+        for path in &paths {
+            full.insert_page(path, path.clone());
+            cut.insert_page(path, path.clone());
+        }
+        cut.truncate(depth);
+        check_truncated(&full, &cut, depth);
+    }
 }

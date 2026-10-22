@@ -57,8 +57,9 @@ stderr 'No results found.*'
 # With --json, the command prints the tree as one pretty-printed JSON object,
 #    {"children": [node, ...]}. The synthetic docs root is omitted. Each node
 #    has "name", the last path segment, and "path", the segments from the
-#    top-level node joined with "/". A page node also has "title". A node
-#    that has child nodes also has "children", sorted by name.
+#    top-level node joined with "/". A page node also has "title", and
+#    `snouty docs show` accepts its "path". A node that has child nodes also
+#    has "children", sorted by name.
 snouty --json docs --offline tree
 stdout '^\{\n  "children": \['
 stdout '"name": "docker_basics",\n\s*"path": "guides/docker_basics",\n\s*"title": "Docker basics"\n'

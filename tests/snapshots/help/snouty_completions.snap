@@ -1,0 +1,44 @@
+---
+source: tests/help_snapshots.rs
+---
+Output shell completions
+
+Writes a completion script for SHELL to stdout.
+
+If your shell already initializes completion, add only the source line after
+that initialization. Completions are generated at shell startup. Open a new
+shell to load the setup.
+
+For zsh, add this to ~/.zshrc:
+  autoload -Uz compinit
+  compinit
+  source <(snouty completions zsh)
+
+For bash:
+  snouty completions bash | sudo tee /etc/bash_completion.d/snouty
+
+Usage: snouty completions [OPTIONS] <SHELL>
+
+Arguments:
+  <SHELL>
+          Shell to generate completions for
+          
+          [possible values: bash, elvish, fish, powershell, zsh]
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --json
+          Output JSON where supported (NDJSON for list/stream commands, pretty
+          JSON otherwise)
+
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

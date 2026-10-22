@@ -115,13 +115,3 @@ stderr 'unexpected argument.*'
 snouty docs search --offline --list fault injection
 stdout '/docs/environment/fault_injection/.*'
 ! stderr .+
-
-# docs search --help shows --offline in its options and says that it stops
-#    the update before each search.
-snouty docs search --help
-stdout '^ +--offline$'
-stdout 'updated before each search unless you pass --offline'
-
-# --offline comes after the search flags and before the global flags.
-snouty docs search --help
-stdout '(?s)^ +-m, --match$.*^ +--offline$.*^ +--json$'

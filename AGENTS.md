@@ -6,6 +6,7 @@ CLI tool for the Antithesis API. Written in Rust.
 
 - `specs/` — feature specs
 - `src/` — all source code
+- `help/` — long-help templates (see Help text)
 - `tests/` — integration tests
 - `scripts/` — maintenance/dev scripts (Python, run via `uv`)
 - `.github/workflows/` — CI/CD
@@ -18,6 +19,34 @@ for all features in the project.
 Any new subcommands or flags must have a spec accompanying them. Having to change
 an existing spec is a good sign of backward-incompatible breakage, which will
 be subject to extra review.
+
+## Help text
+
+Each command's long help (`--help`) is a template in `help/`, one file per
+command, named for its path below `snouty` with `_` between the parts:
+`help/runs_build_logs.txt`. Do not write a long help as a string in Rust code.
+
+- Write each paragraph on one line. `HelpPage::cli` wraps the paragraphs when
+  the help prints: to the terminal width, up to 100 columns, and to 80
+  columns off a terminal. Indent a line that must keep its layout, such as an
+  example command or a table row; an indented line never wraps.
+- `build.rs` renders each template with [minijinja](https://docs.rs/minijinja),
+  and `src/help.rs` embeds the renders. A `HelpPage` variant names each page.
+- A template error or an undefined variable fails `cargo build`, and the
+  error names the file.
+- Put text that two or more pages share in `help/fragments/`, and add it with
+  `{% include "fragments/<name>.txt" %}`. An `{% include %}` line becomes the
+  lines of the included file. The final newline of a page is removed.
+- `tests/help_snapshots.rs` keeps an [insta](https://insta.rs) snapshot of
+  every command's `--help` as it prints off a terminal, in
+  `tests/snapshots/help/`. After you change a template, a flag or a
+  subcommand, review the snapshot diff with `cargo insta review`, or accept
+  every change and read the diff in git:
+
+  ```
+  INSTA_UPDATE=always cargo nextest run --test help_snapshots
+  ```
+- Specs do not test `--help`. The snapshots cover it.
 
 ## Cookbook
 

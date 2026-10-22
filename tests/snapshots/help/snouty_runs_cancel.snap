@@ -1,0 +1,43 @@
+---
+source: tests/help_snapshots.rs
+---
+Cancel a run that is starting or in progress.
+
+Cancellation is asynchronous. When the command succeeds, the server has marked
+the run as cancelled, but it can still be stopping. A run that has already
+completed or is incomplete cannot be cancelled: the command fails and the run
+does not change.
+
+The command needs tenant release 63.0 or newer; `snouty doctor` reports the
+tenant release.
+
+Examples:
+  snouty runs cancel <run_id>
+
+Add --json for machine-readable output. The cancelled run id prints as one JSON
+object:
+  snouty --json runs cancel <run_id> | jq -r .run_id
+
+Usage: snouty runs cancel [OPTIONS] <RUN_ID>
+
+Arguments:
+  <RUN_ID>
+          Run ID
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --json
+          Output JSON where supported (NDJSON for list/stream commands, pretty
+          JSON otherwise)
+
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

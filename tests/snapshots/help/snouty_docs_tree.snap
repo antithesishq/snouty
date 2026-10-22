@@ -1,0 +1,45 @@
+---
+source: tests/help_snapshots.rs
+---
+Print a tree of documentation paths
+
+Builds a directory-like tree from all page paths stored in the documentation
+database.
+
+Examples:
+  snouty docs tree
+  snouty docs tree --depth 2
+  snouty docs tree -d 2
+  snouty docs tree sdk
+
+This command prints text only. --json has no effect on it.
+
+Usage: snouty docs tree [OPTIONS] [FILTER]
+
+Arguments:
+  [FILTER]
+          Optional case-insensitive filter applied to page paths and titles
+
+Options:
+  -d, --depth <DEPTH>
+          Limit output to nodes at this depth or shallower
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --offline
+          Don't check for documentation updates
+
+      --json
+          Output JSON where supported (NDJSON for list/stream commands, pretty
+          JSON otherwise)
+
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

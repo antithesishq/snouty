@@ -1,0 +1,48 @@
+---
+source: tests/help_snapshots.rs
+---
+Check environment configuration
+
+Verifies that your environment is properly configured for Antithesis testing.
+Runs health checks — container runtime, docker compose, your credentials (stored
+by `snouty login`, or set in the ANTITHESIS_* environment variables), and API
+connectivity — then prints the resolved settings (tenant, repository, container
+engine) so you can confirm what snouty will use.
+
+snouty prefers an API key (full API access); a username and password is
+deprecated auth, accepted only by `snouty launch` and `snouty debug`.
+
+When credentials are configured, doctor also contacts the Antithesis API to
+report the API and tenant versions and confirm connectivity. Pass --offline to
+skip that network call.
+
+Exits non-zero if any required check fails. Pass --json for a machine-readable
+report (e.g. to gate CI).
+
+Examples:
+  snouty doctor
+  snouty doctor --json | jq -r .settings.tenant
+  snouty doctor --offline
+
+Usage: snouty doctor [OPTIONS]
+
+Options:
+      --offline
+          Skip the network check (don't contact the Antithesis API for versions)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --json
+          Output JSON where supported (NDJSON for list/stream commands, pretty
+          JSON otherwise)
+
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

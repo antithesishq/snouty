@@ -1,0 +1,13 @@
+List a run's property (assertion) results, one table per group.
+
+Each table is headed by its group; columns are STATUS, EXAMPLES (✓/✗), NAME (failing first). EXAMPLES is the example count (✓), followed by the counterexample count (✗) when a property has counterexamples: 0/186k is 0 examples and 186k counterexamples.
+
+Narrow with --name and/or --group. Both are case-insensitive substring matches against the relevant fields. Add --detail to expand the matches into their examples and counter-example moments instead of the table.
+
+Examples:
+  snouty runs properties <run_id> --failing
+  snouty runs properties <run_id> --name eventually_validate --detail
+  snouty runs properties <run_id> --group Unreachable --detail
+
+Add --json for machine-readable output. Each property prints as one JSON object on its own line. --json is mutually exclusive with --detail:
+  snouty --json runs properties <run_id> --failing | jq -r .name

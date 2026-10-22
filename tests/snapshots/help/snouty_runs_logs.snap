@@ -1,0 +1,67 @@
+---
+source: tests/help_snapshots.rs
+---
+Stream the logs of one timeline of a run.
+
+How a run is structured: An Antithesis run is a tree of timelines, not one
+history. A timeline is a series of input_hashes. An input_hash is a hash of
+every input Antithesis sent up to that point. Antithesis branches a timeline by
+sending an input from some moment, which creates a new input_hash. Every event
+has an input_hash and a vtime, and one input_hash can have zero or more events.
+Events that share an input_hash are on the same timeline. vtime is the virtual
+time at which the event was emitted on its timeline. Antithesis virtualizes the
+clock, so vtime can jump forward by any amount, but it never goes backward.
+vtime orders events only within one timeline.
+
+INPUT_HASH identifies the timeline: the hash of every input Antithesis sent from
+the root to that point. Logs stream from the root (or --begin-vtime) to the
+timeline's current end; a run in progress can extend the timeline, so the same
+INPUT_HASH can return more logs later. Give VTIME to end the stream at that
+moment instead.
+
+Output: a `moment HASH` divider opens each timeline segment, and each event
+under it renders on one line as `VTIME [source] payload` — Antithesis event
+shapes (SDK assertions, faults, container lifecycle, test composer) each in
+their own concise form.
+
+Add --json for machine-readable output. Each event prints as one JSON object on
+its own line:
+  snouty --json runs logs <run_id> <hash> | jq -r .moment.vtime
+
+Usage: snouty runs logs [OPTIONS] <RUN_ID> <INPUT_HASH> [VTIME]
+
+Arguments:
+  <RUN_ID>
+          Run ID
+
+  <INPUT_HASH>
+          Input hash identifying the timeline to stream
+
+  [VTIME]
+          Virtual time of the moment to end the stream at; omit it to stream to
+          the timeline's current end
+
+Options:
+      --begin-vtime <BEGIN_VTIME>
+          Start from this virtual time instead of the root
+
+  -d, --detail
+          Detailed rendering: a full-width vtime on every line, source
+          locations, and each event's attached details JSON
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --json
+          Output JSON where supported (NDJSON for list/stream commands, pretty
+          JSON otherwise)
+
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

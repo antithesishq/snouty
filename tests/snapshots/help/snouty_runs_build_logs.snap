@@ -1,0 +1,43 @@
+---
+source: tests/help_snapshots.rs
+---
+Stream a run's build and setup logs: everything the platform did before the test
+started.
+
+Output: each line is `timestamp [stream] line`, where stream is `stdout` or
+`stderr`. The whole build is streamed, so expect thousands of lines on a real
+run. Grep the stream tag to narrow it, and read `[stderr]` first when a launch
+failed.
+
+Examples:
+  snouty runs build-logs <run_id>
+  snouty runs build-logs <run_id> | grep '\[stderr\]'
+  snouty runs build-logs <run_id> | grep -i 'error\|denied'
+
+Add --json for machine-readable output. Each log line prints as one JSON object
+on its own line:
+  snouty --json runs build-logs <run_id> | jq -r .text
+
+Usage: snouty runs build-logs [OPTIONS] <RUN_ID>
+
+Arguments:
+  <RUN_ID>
+          Run ID
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --json
+          Output JSON where supported (NDJSON for list/stream commands, pretty
+          JSON otherwise)
+
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

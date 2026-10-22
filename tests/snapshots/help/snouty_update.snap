@@ -1,0 +1,60 @@
+---
+source: tests/help_snapshots.rs
+---
+Check for and install updates
+
+Runs the bundled `snouty-update` helper, which checks for a newer release and
+replaces the snouty binary in place. Does nothing if `snouty-update` is not
+installed alongside snouty.
+
+Pass a version to install a specific release instead of the latest, including
+pre-releases:
+  snouty update 0.6.0
+  snouty update 0.6.0-rc.1
+
+The update channel decides what "latest" means: `stable` (the default) installs
+the latest release, `unstable` also considers pre-releases but still installs
+the latest release when it is newer than every pre-release. Set the channel with
+the `update_channel` setting (or SNOUTY_UPDATE_CHANNEL), and override it for one
+run with --channel:
+  snouty update --channel unstable
+
+Installing a version older than the one you're running is a downgrade and
+requires --force.
+
+Usage: snouty update [OPTIONS] [VERSION]
+
+Arguments:
+  [VERSION]
+          Release to install (e.g. 0.6.0 or 0.6.0-rc.1). Defaults to the latest
+          release
+
+Options:
+      --force
+          Install the requested version even if it is older than the current one
+          (a downgrade)
+
+      --channel <CHANNEL>
+          Update channel to use, overriding the `update_channel` setting
+
+          Possible values:
+          - stable:   Install the latest release
+          - unstable: Also consider pre-releases, but prefer the latest release
+            when it is newer
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --json
+          Output JSON where supported (NDJSON for list/stream commands, pretty
+          JSON otherwise)
+
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

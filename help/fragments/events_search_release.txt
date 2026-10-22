@@ -1,0 +1,1 @@
+The command needs tenant release 62.2 or newer; `snouty doctor` reports the tenant release.

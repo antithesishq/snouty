@@ -349,32 +349,6 @@ stdout '^moment -?[0-9]+$'
 [!staging] stdout '^moment -456$'
 [!staging] stdout '^2\.0       \[app\] \{"level":"warn","msg":"slow request"\}$'
 
-# The divider supplies the hash for a log stream to the timeline's current end.
-snouty runs events --help
-stdout 'a `moment HASH` divider'
-stdout 'snouty runs logs <run_id> <hash>'
-stdout 'current end'
-! stdout 'moment HASH VTIME'
-snouty runs search --help
-stdout 'a `moment HASH` divider'
-stdout 'snouty runs logs <run_id> <hash>'
-! stdout 'moment HASH VTIME'
-snouty runs logs --help
-stdout 'a `moment HASH` divider'
-! stdout 'moment HASH VTIME'
-
-# `--raw` (`-r`) is deprecated, so help on the three event-stream commands
-# does not show it.
-snouty runs logs --help
-! stdout 'raw'
-! stdout '^ +-r,'
-snouty runs events --help
-! stdout 'raw'
-! stdout '^ +-r,'
-snouty runs search --help
-! stdout '[-]-raw'
-! stdout '^ +-r,'
-
 # Several needles are matched server-side, every one of them. The old behavior
 # (match one needle server-side, filter the rest client-side) silently
 # second-guessed the server's own filter and is gone.
@@ -806,12 +780,6 @@ stderr 'run not found: no-such-run'
 # `runs events` and `runs search` wait until the run is ready, as `runs exec`
 #    does. The Rust tests in src/runs.rs cover the wait, because their mock
 #    server can change the run's status between polls.
-snouty runs events --help
-stdout '^The run must be ready or complete\. If it is not, the command waits until it$'
-stdout '^is ready, as `snouty runs exec` does, and shows a line on stderr\.$'
-snouty runs search --help
-stdout '^The run must be ready or complete\. If it is not, the command waits until it$'
-stdout '^is ready, as `snouty runs exec` does, and shows a line on stderr\.$'
 # A ready run searches at once in every mode, with no waiting line.
 mock-runs-server
 [!staging] snouty runs events run-2 --match parallel_driver_fetch
@@ -963,11 +931,6 @@ stderr 'cannot be used with'
 stderr 'cannot be used with'
 ! snouty --json runs search run-1 'contains({output_text: "x"})' --count --raw
 stderr 'cannot be used with'
-
-# The help names --count and says that it counts the whole run.
-snouty runs search --help
-stdout '--count'
-stdout 'Add --count to print how many events in the whole run match the query'
 
 # An unknown run reports "run not found", like every run-scoped command.
 mock-runs-server

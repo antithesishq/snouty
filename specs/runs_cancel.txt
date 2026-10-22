@@ -12,22 +12,6 @@ stderr 'No Antithesis credentials found.*'
 ! snouty runs cancel
 stderr '.*RUN_ID.*'
 
-# `snouty runs --help` lists the cancel subcommand.
-snouty runs --help
-stdout 'cancel.*Cancel a run'
-
-# The `snouty runs --help` intro and examples also cover cancel.
-snouty runs --help
-stdout 'wait on, cancel, run commands in'
-stdout -literal 'snouty runs cancel <run_id>'
-
-# `snouty runs cancel --help` explains that cancellation is asynchronous, that
-# a completed run cannot be cancelled, and the tenant release it needs.
-snouty runs cancel --help
-stdout 'asynchronous'
-stdout 'already completed'
-stdout 'release 63\.0 or newer'
-
 # Every case below sends a cancel request, so none of them run against
 # staging.
 [staging] skip

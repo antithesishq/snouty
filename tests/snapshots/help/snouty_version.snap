@@ -1,0 +1,17 @@
+---
+source: tests/help_snapshots.rs
+---
+Print version information
+
+Usage: snouty version [OPTIONS]
+
+Options:
+  -h, --help                 Print help
+      --json                 Output JSON where supported (NDJSON for list/stream
+                             commands, pretty JSON otherwise)
+      --verbose              Log API requests to stderr (authentication tokens
+                             redacted)
+      --settings <SETTINGS>  Path to the snouty settings file (default:
+                             ./.snouty.toml; overrides SNOUTY_SETTINGS_PATH)
+      --profile <PROFILE>    Settings profile to select (overrides
+                             ANTITHESIS_PROFILE)

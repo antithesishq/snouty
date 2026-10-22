@@ -1,0 +1,31 @@
+---
+source: tests/help_snapshots.rs
+---
+Print the path to the cached SQLite database
+
+Useful for directly querying the documentation database with external tools.
+
+This command prints the path only. --json has no effect on it.
+
+Usage: snouty docs sqlite [OPTIONS]
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --offline
+          Don't check for documentation updates
+
+      --json
+          Output JSON where supported (NDJSON for list/stream commands, pretty
+          JSON otherwise)
+
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

@@ -20,17 +20,9 @@
 ! snouty debug --input-hash abc --run-id run-123 --vtime 123
 stderr 'No Antithesis credentials found.*'
 
-# The help names the flags that identify the moment. The flags are the
-#    only input: there is no --stdin.
-snouty debug --help
-stdout -literal 'Usage: snouty debug [OPTIONS] --input-hash <INPUT_HASH> --vtime <VTIME> <--run-id <RUN_ID>|--session-id <SESSION_ID>>'
-! stdout 'stdin'
+# The flags are the only input: there is no --stdin.
 ! snouty debug --stdin --input-hash abc --run-id run-123 --vtime 123
 stderr "unexpected argument '--stdin' found"
-
-# The help documents --param for custom parameters.
-snouty debug --help
-stdout '--param attrs\.team=payments'
 
 # A --param value must be a key=value pair. snouty rejects any other form
 #    before any API call.

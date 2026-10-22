@@ -1,0 +1,72 @@
+---
+source: tests/help_snapshots.rs
+---
+Deprecated: use `launch` instead
+
+Usage: snouty run [OPTIONS]
+
+Options:
+  -l, --launcher <LAUNCHER>
+          Launcher name (e.g., basic_test, basic_k8s_test) [default: basic_test]
+  -c, --config <CONFIG>
+          Local config dir (docker-compose.yaml or a manifests/ subdir),
+          auto-built and pushed as the config image
+      --config-image <CONFIG_IMAGE>
+          Pre-built config image reference (e.g.,
+          us-central1-docker.pkg.dev/proj/repo/config:latest)
+      --allow-remote-images
+          Launch a compose config even when some of its images are not in the
+          local image store. snouty will be unable to validate the image and pin
+          it to an exact digest. Has no effect on a Kubernetes config
+      --test-name <TEST_NAME>
+          Test name
+      --description <DESCRIPTION>
+          Test description
+      --duration <DURATION>
+          Test duration in minutes, or h/m units (e.g. 90m, 2h, 1h30m); at least
+          1 minute
+      --ephemeral
+          Mark the test run as ephemeral. Ephemeral runs will not appear in
+          future reports as a historic result
+      --source <SOURCE>
+          Identifier that groups property history in reports — runs sharing a
+          --source share history (e.g. per-branch)
+      --recipients <RECIPIENTS>
+          Report recipients (semicolon-delimited email addresses)
+      --filter-logs-matching <FILTER_LOGS_MATCHING>
+          Suppress log lines matching this RE2 pattern during fuzzing. Matching
+          is unanchored and case-sensitive by default (use `(?i)` for
+          case-insensitive). Suppressed lines stay available in multiverse
+          debugging. RE2 syntax: no lookahead/lookbehind or backreferences. Max
+          1023 bytes. Requires tenant release 59 or newer
+      --filter-source-matching <FILTER_SOURCE_MATCHING>
+          Suppress all output from log sources matching this RE2 pattern during
+          fuzzing. A source is usually the name of the process that wrote the
+          line, as shown in its `source` field. Matching is unanchored and
+          case-sensitive (use `^name$` to match one source exactly). Suppressed
+          output stays available in multiverse debugging. RE2 syntax: no
+          lookahead/lookbehind or backreferences. Max 1023 bytes
+      --performance-tier <PERFORMANCE_TIER>
+          Performance tier for the run. Higher tiers explore system states
+          faster through more parallelism. They also consume core hours faster.
+          The server default is `standard`. To send a tier that is not listed,
+          use `--param=antithesis.performance_tier=TIER` [possible values:
+          standard, fast, turbo]
+      --no-vcs
+          Do not record the commit, branch, and repository of the local git
+          checkout in run metadata. A pre-built config image (--config-image)
+          also turns the detection off
+      --param <PARAMS>
+          Extra parameters as key=value pairs (repeatable)
+  -h, --help
+          Print help
+      --json
+          Output JSON where supported (NDJSON for list/stream commands, pretty
+          JSON otherwise)
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

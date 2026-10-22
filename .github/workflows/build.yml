@@ -88,14 +88,15 @@ jobs:
             runtime: podman
     env:
       SNOUTY_TEST_RUNTIME: ${{ matrix.runtime }}
-    steps:
       # The Linux release binaries are static musl builds, so the tests run
       # against that target. The checks job still builds for glibc, which
       # `cargo install` and the Nix package use.
+      CARGO_BUILD_TARGET: x86_64-unknown-linux-musl
+    steps:
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: stable
-          targets: x86_64-unknown-linux-musl
+          targets: ${{ env.CARGO_BUILD_TARGET }}
 
       - name: Install musl-tools
         run: sudo apt-get update && sudo apt-get install -y musl-tools
@@ -151,7 +152,7 @@ jobs:
         run: scripts/setup-test-images.sh "${{ matrix.runtime }}"
 
       - name: Test
-        run: cargo nextest run --target x86_64-unknown-linux-musl
+        run: cargo nextest run
 
   # The macOS leg a pull request gets. arm64 macOS cannot run `podman machine`,
   # so the engine-backed tests run after merge in slow-tests.yml and every other

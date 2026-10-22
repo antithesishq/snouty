@@ -1748,16 +1748,16 @@ async fn format_api_client_error(err: ClientError<()>) -> Report {
         ApiFailure::Response {
             status,
             message,
-            retry_at: Some(retry_at),
-        } => format_api_error(status, &message).suggestion(format!(
-            "retry after {}, the time that the server's Retry-After asks for",
-            retry_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-        )),
-        ApiFailure::Response {
-            status,
-            message,
-            retry_at: None,
-        } => format_api_error(status, &message),
+            retry_after,
+        } => {
+            let report = format_api_error(status, &message);
+            match retry_after {
+                Some(retry_after) => report.suggestion(format!(
+                    "retry after {retry_after} to respect the server's rate limit"
+                )),
+                None => report,
+            }
+        }
         ApiFailure::Other(report) => report,
     }
 }
@@ -1796,15 +1796,38 @@ enum ApiFailure {
     /// The server answered. `status` is the transport status — the only
     /// authority on success or failure, per the API team's confirmation on
     /// #180 — and `message` the human-readable text of the body it came with.
-    /// `retry_at` is the time that the response's `Retry-After` names.
     Response {
         status: u16,
         message: String,
-        retry_at: Option<chrono::DateTime<chrono::Utc>>,
+        retry_after: Option<RetryAfter>,
     },
     /// No usable response: a transport failure, or a success body snouty could
     /// not parse.
     Other(Report),
+}
+
+/// The `Retry-After` of an error response, and the time that it names.
+struct RetryAfter {
+    seconds: u32,
+    at: chrono::DateTime<chrono::Utc>,
+}
+
+impl RetryAfter {
+    fn from_headers(headers: &HeaderMap) -> Option<Self> {
+        let seconds = retry_after_seconds(headers)?;
+        Some(Self {
+            seconds,
+            at: chrono::Utc::now() + chrono::TimeDelta::seconds(seconds.into()),
+        })
+    }
+}
+
+/// `30s (2026-10-22T03:47:27Z)`: the wait, and the time in RFC 3339 UTC.
+impl std::fmt::Display for RetryAfter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let at = self.at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        write!(f, "{}s ({at})", self.seconds)
+    }
 }
 
 /// Classify a client error. Anything the server answered keeps its HTTP status:
@@ -1817,12 +1840,11 @@ async fn classify_client_error(err: ClientError<()>) -> ApiFailure {
         // exactly as the server sent them.
         ClientError::UnexpectedResponse(response) => {
             let status = response.status().as_u16();
-            let retry_at = retry_after_seconds(response.headers())
-                .map(|seconds| chrono::Utc::now() + chrono::TimeDelta::seconds(seconds.into()));
+            let retry_after = RetryAfter::from_headers(response.headers());
             ApiFailure::Response {
                 status,
                 message: error_body_message(&read_error_body(response).await),
-                retry_at,
+                retry_after,
             }
         }
         // Unreachable: progenitor only emits this arm for a *documented* error
@@ -2937,8 +2959,8 @@ mod tests {
         expect_rate_limited(&api, &mock_server, 2).await;
     }
 
-    // When the 429 surfaces, the error names the time that its Retry-After
-    // asks for, so that the user or a wrapping script can wait until then.
+    // When the 429 surfaces, the error names the wait and the time that its
+    // Retry-After asks for, so that the user or a wrapping script can wait.
     #[tokio::test]
     async fn a_surfaced_rate_limit_names_the_retry_time() {
         let mock_server = MockServer::start().await;
@@ -2952,8 +2974,8 @@ mod tests {
         assert_eq!(crate::error::api_error_status(&report), Some(429));
         let rendered = format!("{report:?}");
         let retry_at = rendered
-            .split_once("retry after ")
-            .and_then(|(_, rest)| rest.split_once(','))
+            .split_once("retry after 3600s (")
+            .and_then(|(_, rest)| rest.split_once(") to respect the server's rate limit"))
             .map(|(at, _)| chrono::DateTime::parse_from_rfc3339(at).unwrap())
             .unwrap_or_else(|| panic!("no retry time in: {rendered}"));
         let hour = chrono::TimeDelta::hours(1);

@@ -514,13 +514,13 @@ stderr '^Error: API error: 400.*'
 # the server said, so it is all snouty reports — the point of issue #180 is that
 # the status survives an unparsable body rather than being lost with it. The
 # Retry-After is longer than snouty waits, so the 429 surfaces at once. The
-# error names the time that the Retry-After asks for, in RFC 3339 UTC, so that
-# the user or a wrapping script can wait until then.
+# error names the wait and the time that the Retry-After asks for, in RFC 3339
+# UTC, so that the user or a wrapping script can wait until then.
 [!staging] mock-server -header 'Retry-After: 3600' 429 ''
 [!staging] env ANTITHESIS_API_KEY=test-api-key
 [!staging] ! snouty runs
 [!staging] stderr 'API error: 429 Too Many Requests.*'
-[!staging] stderr '^Suggestion: retry after \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ, the time that the server.s Retry-After asks for$'
+[!staging] stderr '^Suggestion: retry after 3600s \(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\) to respect the server.s rate limit$'
 
 # An unfiltered empty result succeeds with a short note.
 [!staging] mock-runs-server

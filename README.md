@@ -166,9 +166,49 @@ For any one setting, snouty uses the first value it finds, highest precedence fi
 
 ### Unstable features
 
-When a subcommand depends on an Antithesis API that is still changing shape, snouty can keep it behind a gate, turned on by naming its feature in `SNOUTY_UNSTABLE_FEATURES` (a comma-separated list). Anything behind this gate can change its behavior, its flags, or its id, or go away, in any release.
+When a subcommand, or the Antithesis API it calls, is still changing shape, snouty can keep it behind a gate, turned on by naming its feature in `SNOUTY_UNSTABLE_FEATURES` (a comma-separated list). Anything behind this gate can change its behavior, its flags, or its id, or go away, in any release.
 
-No subcommand is gated. An id that snouty does not know, such as the retired `runs-exec`, has no effect.
+| Feature | Enables                                                                    |
+| ------- | -------------------------------------------------------------------------- |
+| `mcp`   | `snouty mcp`, the MCP server. Its tools and their output can still change. |
+
+An id that snouty does not know, such as the retired `runs-exec`, has no effect.
+
+## MCP server
+
+`snouty mcp` serves snouty's run, docs, and doctor commands to AI agents as [Model Context Protocol](https://modelcontextprotocol.io) tools, over the stdio transport. It is an unstable feature: set `SNOUTY_UNSTABLE_FEATURES=mcp` to turn it on. The agent starts the server itself. For example, in Claude Code:
+
+```sh
+claude mcp add snouty -e SNOUTY_UNSTABLE_FEATURES=mcp -- snouty mcp
+```
+
+A JSON config for a stdio server looks like this one. The key names can be different in your client, so refer to its documentation:
+
+```json
+{
+  "mcpServers": {
+    "snouty": {
+      "command": "snouty",
+      "args": ["mcp"],
+      "env": { "SNOUTY_UNSTABLE_FEATURES": "mcp" }
+    }
+  }
+}
+```
+
+The tools are `runs_list`, `runs_show`, `runs_wait`, `runs_properties`, `runs_build_logs`, `runs_logs`, `runs_search`, `runs_exec`, `debug`, `docs_tree`, `docs_show`, `docs_search`, and `doctor`. Each tool runs its snouty command with `--json` and returns what the command prints: stdout, then stderr in a second block when there is any. The params of a tool are the arguments of its command, by name: `runs_logs` takes `run_id`, `input_hash`, `vtime`, and `begin_vtime`. A few arguments that open a browser, stream with no end, or print human output only are left out. A command that fails marks the result `isError`.
+
+All tools but `debug` are marked read-only. `debug` starts a debugging session, which uses your tenant's resources. `runs_exec` runs a bash script from the client in a branch of a run that is in progress, and cannot change the run. `doctor` runs the local container runtime to check it.
+
+The server sets no time limit and no output limit on a tool call. The client sets them: when it cancels a call or closes stdin, the server kills the call's command. A command also exits when its server is gone. Up to 8 tool calls run at the same time, and `--max-concurrent-calls` changes that number.
+
+The server reads settings, profiles, and credentials as the other commands do, so `--settings`, `--profile`, `--verbose`, and the `ANTITHESIS_*` environment variables apply to every tool call. A client cannot set them.
+
+### Debugging the MCP server
+
+1. Set `RUST_LOG=debug` in the server's environment, and add `--verbose` to its args. For example: `claude mcp add snouty -e SNOUTY_UNSTABLE_FEATURES=mcp -e RUST_LOG=debug -- snouty --verbose mcp`.
+2. Read the server's stderr in the client. In Claude Code, start `claude --debug` and use `/mcp` to see the server's state. The server logs each command line that it runs, as `running: snouty --json …`.
+3. Run the logged command yourself, in a terminal. It prints what the tool call returned.
 
 ## Authentication
 

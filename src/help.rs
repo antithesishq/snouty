@@ -57,6 +57,7 @@ help_pages! {
     Update => "update",
     Docs => "docs",
     Login => "login",
+    Mcp => "mcp",
     DocsSearch => "docs_search",
     DocsTree => "docs_tree",
     DocsShow => "docs_show",

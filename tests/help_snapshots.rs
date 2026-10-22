@@ -3,12 +3,24 @@
 //! change with `cargo insta review`, or accept every change with
 //! `INSTA_UPDATE=always`.
 
-use clap::CommandFactory;
+use clap::{CommandFactory, ValueEnum};
 use snouty::cli::Cli;
+use snouty::features::Feature;
 use snouty::help::HelpPage;
 
 /// The width of `--help` off a terminal, where the layout is fixed.
 const PIPE_WIDTH: usize = 80;
+
+/// `snouty` as a user sees it with no unstable feature on. Whether a gated
+/// command is listed depends on `SNOUTY_UNSTABLE_FEATURES`, which a
+/// developer's shell can set.
+fn features_off() -> clap::Command {
+    Feature::value_variants()
+        .iter()
+        .fold(Cli::command(), |cli, feature| {
+            cli.mut_subcommand(feature.gated_command(), |command| command.hide(true))
+        })
+}
 
 /// Lays `command` and its subcommands out at [`PIPE_WIDTH`], as `--help`
 /// prints off a terminal. The long help wraps when the command is built, to
@@ -61,7 +73,7 @@ fn help() {
             let args = std::iter::once("snouty")
                 .chain(path.iter().map(String::as_str))
                 .chain(["--help"]);
-            let err = at_pipe_width(Cli::command())
+            let err = at_pipe_width(features_off())
                 .try_get_matches_from(args)
                 .expect_err("--help prints the help");
             assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);

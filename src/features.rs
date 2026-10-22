@@ -37,6 +37,9 @@ pub const UNSTABLE_FEATURES_VAR_NAME: &str = "SNOUTY_UNSTABLE_FEATURES";
 /// The id of a feature is its variant name in kebab-case.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
 pub enum Feature {
+    /// `snouty mcp`, the MCP server. Its tools and their output can still
+    /// change.
+    Mcp,
     /// Stands in for a real feature in tests.
     #[cfg(test)]
     Example,
@@ -57,6 +60,22 @@ impl Display for Feature {
             .expect("no Feature variant is skipped");
         f.write_str(value.get_name())
     }
+}
+
+impl Feature {
+    /// The subcommand of `snouty` that the feature gates.
+    pub fn gated_command(self) -> &'static str {
+        match self {
+            Feature::Mcp => "mcp",
+            #[cfg(test)]
+            Feature::Example => "example",
+        }
+    }
+}
+
+/// Whether `feature` is enabled. Cheap enough for a clap `hide` attribute.
+pub fn is_enabled(feature: Feature) -> bool {
+    enabled().contains(&feature)
 }
 
 /// The features `SNOUTY_UNSTABLE_FEATURES` enables, in the order listed.

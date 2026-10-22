@@ -402,12 +402,20 @@ fn normalize_property(property: Property) -> Result<Property> {
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How many times one API call is re-sent before its failure surfaces.
-const MAX_RETRIES: u32 = 5;
+const MAX_RETRIES: u32 = 10;
+
+/// How many retries one API call can have spent and still re-send after a
+/// transport failure. It is lower than [`MAX_RETRIES`] because an unreachable
+/// host must fail fast.
+const MAX_TRANSPORT_RETRIES: u32 = 3;
 
 /// The longest total wait across the retries of one API call. A wait that
-/// goes past it surfaces the failure at once, because a command that hangs
-/// for minutes looks broken.
-const MAX_RETRY_WAIT: Duration = RETRY_SECOND.saturating_mul(60);
+/// goes past it surfaces the failure at once.
+const MAX_RETRY_WAIT: Duration = RETRY_SECOND.saturating_mul(300);
+
+/// The longest single [`retry_backoff`]. With it, [`MAX_RETRIES`] backoffs
+/// and their jitter fit in [`MAX_RETRY_WAIT`].
+const MAX_BACKOFF: Duration = RETRY_SECOND.saturating_mul(30);
 
 /// The unit of every retry wait: a second, but a millisecond in unit tests,
 /// so that they run fast.
@@ -416,9 +424,12 @@ const RETRY_SECOND: Duration = Duration::from_secs(1);
 #[cfg(test)]
 const RETRY_SECOND: Duration = Duration::from_millis(1);
 
-/// The wait before retry attempt `retry` (0-based): 1, 2, 4, ... seconds
+/// The wait before retry attempt `retry` (0-based): 1, 2, 4, ... seconds, at
+/// most [`MAX_BACKOFF`]
 fn retry_backoff(retry: u32) -> Duration {
-    RETRY_SECOND * (1 << retry)
+    RETRY_SECOND
+        .saturating_mul(1u32.checked_shl(retry).unwrap_or(u32::MAX))
+        .min(MAX_BACKOFF)
 }
 
 /// Add up to 50% to `wait`, so that clients that failed together do not all
@@ -439,14 +450,15 @@ struct RetryBudget {
 }
 
 impl RetryBudget {
-    /// Spend one retry, and return its wait: the longer of `min_wait` and
-    /// [`retry_backoff`], plus jitter. `None`, with nothing spent, when the
-    /// budget has no retry left or cannot pay for the wait.
-    fn spend(&mut self, min_wait: Duration) -> Option<Duration> {
-        if self.retries >= MAX_RETRIES {
+    /// Spend one retry for `reason`, and return its wait: the longer of the
+    /// reason's minimum wait and [`retry_backoff`], plus jitter. `None`, with
+    /// nothing spent, when the budget has no retry left for the reason or
+    /// cannot pay for the wait.
+    fn spend(&mut self, reason: &RetryReason) -> Option<Duration> {
+        if self.retries >= reason.max_retries() {
             return None;
         }
-        let wait = min_wait.max(retry_backoff(self.retries));
+        let wait = reason.min_wait().max(retry_backoff(self.retries));
         let remaining = MAX_RETRY_WAIT.checked_sub(self.waited + wait)?;
         // The jitter never shortens the wait, nor takes the total past the limit.
         let wait = with_jitter(wait).min(wait + remaining);
@@ -486,6 +498,15 @@ impl<'a> RetryReason<'a> {
             Self::RateLimited { retry_after } => *retry_after,
         }
     }
+
+    /// How many retries the call can have spent and still retry for this
+    /// reason.
+    fn max_retries(&self) -> u32 {
+        match self {
+            Self::Transport(_) => MAX_TRANSPORT_RETRIES,
+            Self::RateLimited { .. } => MAX_RETRIES,
+        }
+    }
 }
 
 impl std::fmt::Display for RetryReason<'_> {
@@ -497,16 +518,20 @@ impl std::fmt::Display for RetryReason<'_> {
     }
 }
 
-/// The `Retry-After` of a 429, or zero when there is none. The API documents
-/// it in seconds, and a value in any other form is ignored.
-fn retry_after(headers: &HeaderMap) -> Duration {
+/// The `Retry-After` of a response in seconds. The API documents it in
+/// seconds, and a value in any other form is ignored.
+fn retry_after_seconds(headers: &HeaderMap) -> Option<u32> {
     headers
         .get(reqwest::header::RETRY_AFTER)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().parse::<u32>().ok())
-        .map_or(Duration::ZERO, |seconds| {
-            RETRY_SECOND.saturating_mul(seconds)
-        })
+        .and_then(|value| value.trim().parse().ok())
+}
+
+/// The `Retry-After` of a 429, or zero when there is none.
+fn retry_after(headers: &HeaderMap) -> Duration {
+    retry_after_seconds(headers).map_or(Duration::ZERO, |seconds| {
+        RETRY_SECOND.saturating_mul(seconds)
+    })
 }
 
 /// Whether a failed request is safe to re-send: true only for transport-level
@@ -555,13 +580,17 @@ async fn execute_with_retry(
         let Some(reason) = RetryReason::of(&result, is_get) else {
             return result;
         };
-        let Some(wait) = budget.spend(reason.min_wait()) else {
-            debug!("{reason}, no retry left within {MAX_RETRIES} retries and {MAX_RETRY_WAIT:?}");
+        let Some(wait) = budget.spend(&reason) else {
+            debug!(
+                "{reason}, no retry left within {} retries and {MAX_RETRY_WAIT:?}",
+                reason.max_retries()
+            );
             return result;
         };
         debug!(
-            "{reason}, retry {} of {MAX_RETRIES} in {wait:?}",
-            budget.retries
+            "{reason}, retry {} of {} in {wait:?}",
+            budget.retries,
+            reason.max_retries()
         );
         if verbose {
             eprintln!("* {reason}, retrying in {:.1}s", wait.as_secs_f64());
@@ -1716,7 +1745,19 @@ fn char_pos_to_byte_offset(body: &str, line: usize, column: usize) -> usize {
 /// Render a failed API call for the user, status first.
 async fn format_api_client_error(err: ClientError<()>) -> Report {
     match classify_client_error(err).await {
-        ApiFailure::Response { status, message } => format_api_error(status, &message),
+        ApiFailure::Response {
+            status,
+            message,
+            retry_at: Some(retry_at),
+        } => format_api_error(status, &message).suggestion(format!(
+            "retry after {}, the time that the server's Retry-After asks for",
+            retry_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        )),
+        ApiFailure::Response {
+            status,
+            message,
+            retry_at: None,
+        } => format_api_error(status, &message),
         ApiFailure::Other(report) => report,
     }
 }
@@ -1755,7 +1796,12 @@ enum ApiFailure {
     /// The server answered. `status` is the transport status — the only
     /// authority on success or failure, per the API team's confirmation on
     /// #180 — and `message` the human-readable text of the body it came with.
-    Response { status: u16, message: String },
+    /// `retry_at` is the time that the response's `Retry-After` names.
+    Response {
+        status: u16,
+        message: String,
+        retry_at: Option<chrono::DateTime<chrono::Utc>>,
+    },
     /// No usable response: a transport failure, or a success body snouty could
     /// not parse.
     Other(Report),
@@ -1771,9 +1817,12 @@ async fn classify_client_error(err: ClientError<()>) -> ApiFailure {
         // exactly as the server sent them.
         ClientError::UnexpectedResponse(response) => {
             let status = response.status().as_u16();
+            let retry_at = retry_after_seconds(response.headers())
+                .map(|seconds| chrono::Utc::now() + chrono::TimeDelta::seconds(seconds.into()));
             ApiFailure::Response {
                 status,
                 message: error_body_message(&read_error_body(response).await),
+                retry_at,
             }
         }
         // Unreachable: progenitor only emits this arm for a *documented* error
@@ -2871,21 +2920,45 @@ mod tests {
     #[tokio::test]
     async fn get_surfaces_a_rate_limit_with_a_long_retry_after() {
         let mock_server = MockServer::start().await;
-        rate_limit(&mock_server, 1, "61").await;
+        rate_limit(&mock_server, 1, "301").await;
         let api = test_api_optionally_with_cache(&mock_server, None);
 
         expect_rate_limited(&api, &mock_server, 1).await;
     }
 
-    // The limit is on the total wait: two 40-second waits pass the 60-second
-    // limit, so the 429 surfaces after one retry.
+    // The limit is on the total wait: two 200-second waits pass the
+    // 300-second limit, so the 429 surfaces after one retry.
     #[tokio::test]
     async fn get_surfaces_a_rate_limit_when_the_total_wait_is_too_long() {
         let mock_server = MockServer::start().await;
-        rate_limit(&mock_server, u64::MAX, "40").await;
+        rate_limit(&mock_server, u64::MAX, "200").await;
         let api = test_api_optionally_with_cache(&mock_server, None);
 
         expect_rate_limited(&api, &mock_server, 2).await;
+    }
+
+    // When the 429 surfaces, the error names the time that its Retry-After
+    // asks for, so that the user or a wrapping script can wait until then.
+    #[tokio::test]
+    async fn a_surfaced_rate_limit_names_the_retry_time() {
+        let mock_server = MockServer::start().await;
+        rate_limit(&mock_server, u64::MAX, "3600").await;
+        let api = test_api_optionally_with_cache(&mock_server, None);
+
+        let before = chrono::Utc::now();
+        let report = api.get_run("run-1").await.unwrap_err();
+        let after = chrono::Utc::now();
+
+        assert_eq!(crate::error::api_error_status(&report), Some(429));
+        let rendered = format!("{report:?}");
+        let retry_at = rendered
+            .split_once("retry after ")
+            .and_then(|(_, rest)| rest.split_once(','))
+            .map(|(at, _)| chrono::DateTime::parse_from_rfc3339(at).unwrap())
+            .unwrap_or_else(|| panic!("no retry time in: {rendered}"));
+        let hour = chrono::TimeDelta::hours(1);
+        let second = chrono::TimeDelta::seconds(1);
+        assert!(before + hour - second <= retry_at && retry_at <= after + hour);
     }
 
     // Each wait is at least the longer of its minimum and the backoff, and
@@ -2894,12 +2967,15 @@ mod tests {
     #[hegel::test]
     fn retry_budget_spends_within_its_limits(tc: hegel::TestCase) {
         let min_waits =
-            tc.draw(generators::vecs(generators::integers::<u32>().max_value(70)).max_size(8));
+            tc.draw(generators::vecs(generators::integers::<u32>().max_value(400)).max_size(12));
         let mut budget = RetryBudget::default();
         for seconds in min_waits {
             let (retries, waited) = (budget.retries, budget.waited);
             let floor = (RETRY_SECOND * seconds).max(retry_backoff(retries));
-            match budget.spend(RETRY_SECOND * seconds) {
+            let reason = RetryReason::RateLimited {
+                retry_after: RETRY_SECOND * seconds,
+            };
+            match budget.spend(&reason) {
                 Some(wait) => {
                     assert!(floor <= wait && wait <= floor.mul_f64(1.5));
                     assert_eq!(budget.retries, retries + 1);
@@ -2912,6 +2988,14 @@ mod tests {
             }
             assert!(budget.retries <= MAX_RETRIES && budget.waited <= MAX_RETRY_WAIT);
         }
+    }
+
+    // Without a Retry-After, every one of the MAX_RETRIES retries fits in
+    // MAX_RETRY_WAIT, even with the most jitter.
+    #[test]
+    fn every_backoff_fits_in_the_total_wait() {
+        let backoffs: Duration = (0..MAX_RETRIES).map(retry_backoff).sum();
+        assert!(backoffs.mul_f64(1.5) <= MAX_RETRY_WAIT);
     }
 
     // Retry-After is a number of seconds. A missing or non-numeric one is zero.
@@ -3003,7 +3087,7 @@ mod tests {
     }
 
     // Retries are bounded: when every attempt fails at the transport level the
-    // error surfaces after 1 + MAX_RETRIES attempts, classified as
+    // error surfaces after 1 + MAX_TRANSPORT_RETRIES attempts, classified as
     // unreachable (no HTTP status), not swallowed.
     #[tokio::test]
     async fn get_surfaces_a_transport_failure_after_bounded_retries() {
@@ -3011,7 +3095,10 @@ mod tests {
         let api = test_api_at_url(base_url, None);
 
         expect_unreachable(&api).await;
-        assert_eq!(connections.load(Ordering::SeqCst), 1 + MAX_RETRIES as usize);
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            1 + MAX_TRANSPORT_RETRIES as usize
+        );
     }
 
     // A connection dropped while the body downloads is not retried: the

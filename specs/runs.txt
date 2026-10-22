@@ -15,9 +15,11 @@
 # cancel) are not retried on a transport failure (#249). The other is a 429
 # Too Many Requests answer to any API request, except OAuth login and token
 # refresh (#458). One request, the resend after a token refresh included, gets
-# at most 5 retries and 60 seconds of waits in total. Each wait is the longer
-# of the backoff (1, 2, 4, ... seconds) and a 429's Retry-After seconds, plus
-# up to 50% jitter. When the next wait would go past the total, the failure
+# at most 10 retries and 300 seconds of waits in total. A transport failure is
+# retried only while fewer than 3 retries are spent, so that an unreachable
+# host fails fast. Each wait is the longer
+# of the backoff (1, 2, 4, ... seconds, at most 30) and a 429's Retry-After
+# seconds, plus up to 50% jitter. When the next wait would go past the total, the failure
 # surfaces at once. A served HTTP response of any other status is never
 # retried.
 
@@ -511,11 +513,14 @@ stderr '^Error: API error: 400.*'
 # rate-limit failures (content-type: text/plain, zero length). The status is all
 # the server said, so it is all snouty reports — the point of issue #180 is that
 # the status survives an unparsable body rather than being lost with it. The
-# Retry-After is longer than snouty waits, so the 429 surfaces at once.
+# Retry-After is longer than snouty waits, so the 429 surfaces at once. The
+# error names the time that the Retry-After asks for, in RFC 3339 UTC, so that
+# the user or a wrapping script can wait until then.
 [!staging] mock-server -header 'Retry-After: 3600' 429 ''
 [!staging] env ANTITHESIS_API_KEY=test-api-key
 [!staging] ! snouty runs
 [!staging] stderr 'API error: 429 Too Many Requests.*'
+[!staging] stderr '^Suggestion: retry after \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ, the time that the server.s Retry-After asks for$'
 
 # An unfiltered empty result succeeds with a short note.
 [!staging] mock-runs-server

@@ -10,15 +10,16 @@
 # Run-id scoped read responses may be cached under
 # $XDG_RUNTIME_DIR/snouty/api-cache-v3 (under the user temp dir on macOS).
 # Caching is internal and must not change command output or required arguments.
-# GET requests that fail at the transport level (connect errors, resets, DNS
-# failures) are retried up to 3 times with backoff. Mutations (launch, debug,
-# exec, and cancel) are not retried on a transport failure (#249). A 429 Too
-# Many Requests answer to any API request, except OAuth login and token
-# refresh, is retried up to 5 times (#458). Each wait is the longer of the
-# Retry-After seconds and the backoff, plus up to 50% jitter. A wait that takes
-# the total for the request past 60 seconds surfaces the 429 at once. The
-# limits cover the resend after a token refresh too. A served HTTP response of
-# any other status is never retried.
+# Two failures are retried. One is a GET that fails at the transport level
+# (connect errors, resets, DNS failures). Mutations (launch, debug, exec, and
+# cancel) are not retried on a transport failure (#249). The other is a 429
+# Too Many Requests answer to any API request, except OAuth login and token
+# refresh (#458). One request, the resend after a token refresh included, gets
+# at most 5 retries and 60 seconds of waits in total. Each wait is the longer
+# of the backoff (1, 2, 4, ... seconds) and a 429's Retry-After seconds, plus
+# up to 50% jitter. When the next wait would go past the total, the failure
+# surfaces at once. A served HTTP response of any other status is never
+# retried.
 
 # The command authenticates with the Antithesis API using
 #    ANTITHESIS_API_KEY and ANTITHESIS_TENANT env vars. Every endpoint other

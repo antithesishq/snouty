@@ -401,18 +401,13 @@ fn normalize_property(property: Property) -> Result<Property> {
 /// to return (e.g. massive log files) and must not be aborted — the user can ctrl-c.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How many times a GET whose transport failed is re-sent before the failure
-/// surfaces, with [`retry_backoff`] between attempts.
-const MAX_TRANSIENT_RETRIES: u32 = 3;
+/// How many times one API call is re-sent before its failure surfaces.
+const MAX_RETRIES: u32 = 5;
 
-/// How many times a request answered with 429 Too Many Requests is re-sent
-/// before the 429 surfaces.
-const MAX_RATE_LIMIT_RETRIES: u32 = 5;
-
-/// The longest total wait across the 429 retries of one request. A wait
-/// that goes past it surfaces the 429 at once, because a command that hangs
+/// The longest total wait across the retries of one API call. A wait that
+/// goes past it surfaces the failure at once, because a command that hangs
 /// for minutes looks broken.
-const MAX_RATE_LIMIT_WAIT: Duration = RETRY_SECOND.saturating_mul(60);
+const MAX_RETRY_WAIT: Duration = RETRY_SECOND.saturating_mul(60);
 
 /// The unit of every retry wait: a second, but a millisecond in unit tests,
 /// so that they run fast.
@@ -426,56 +421,92 @@ fn retry_backoff(retry: u32) -> Duration {
     RETRY_SECOND * (1 << retry)
 }
 
-/// Add up to 50% to `wait`, so that rate-limited clients do not all retry at once.
+/// Add up to 50% to `wait`, so that clients that failed together do not all
+/// retry at once.
 fn with_jitter(wait: Duration) -> Duration {
     // If getrandom fails, the wait has no jitter, which is still correct.
     let random = getrandom::u32().unwrap_or(0);
     wait + wait.mul_f64(f64::from(random) / f64::from(u32::MAX) / 2.0)
 }
 
-/// The wait before re-sending a request that the server answered with 429,
-/// after `waited` in earlier 429 retries. `None` when the wait would take the
-/// total past [`MAX_RATE_LIMIT_WAIT`]. The wait is the longer of
-/// `Retry-After` and [`retry_backoff`], so a short `Retry-After` still spreads
-/// the retries out. The API documents `Retry-After` in seconds, and a value in
-/// any other form is ignored.
-fn rate_limit_wait(headers: &HeaderMap, retry: u32, waited: Duration) -> Option<Duration> {
-    let retry_after = headers
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().parse::<u32>().ok())
-        .map(|seconds| RETRY_SECOND.saturating_mul(seconds));
-    let wait = retry_after.map_or(retry_backoff(retry), |retry_after| {
-        retry_after.max(retry_backoff(retry))
-    });
-    let remaining = MAX_RATE_LIMIT_WAIT.checked_sub(waited + wait)?;
-    // The jitter never shortens the wait that the server asked for.
-    Some(with_jitter(wait).min(wait + remaining))
-}
-
-/// The retries that [`execute_with_retry`] has already spent on one API call.
-/// The call shares it across the resend after a token refresh, so that the
-/// limits apply to the whole call.
+/// The retries that [`execute_with_retry`] has spent on one API call. The
+/// call shares one budget across the resend after a token refresh, so that
+/// the limits cover the whole call.
 #[derive(Default)]
 struct RetryBudget {
-    transient_retries: u32,
-    rate_limit_retries: u32,
-    rate_limit_waited: Duration,
+    retries: u32,
+    waited: Duration,
+}
+
+impl RetryBudget {
+    /// Spend one retry, and return its wait: the longer of `min_wait` and
+    /// [`retry_backoff`], plus jitter. `None`, with nothing spent, when the
+    /// budget has no retry left or cannot pay for the wait.
+    fn spend(&mut self, min_wait: Duration) -> Option<Duration> {
+        if self.retries >= MAX_RETRIES {
+            return None;
+        }
+        let wait = min_wait.max(retry_backoff(self.retries));
+        let remaining = MAX_RETRY_WAIT.checked_sub(self.waited + wait)?;
+        // The jitter never shortens the wait, nor takes the total past the limit.
+        let wait = with_jitter(wait).min(wait + remaining);
+        self.retries += 1;
+        self.waited += wait;
+        Some(wait)
+    }
 }
 
 /// Why [`execute_with_retry`] re-sends a request.
 enum RetryReason<'a> {
     Transport(&'a reqwest::Error),
-    RateLimited,
+    RateLimited { retry_after: Duration },
+}
+
+impl<'a> RetryReason<'a> {
+    /// Why `result` is safe to re-send, or `None` when it is final. Only a GET
+    /// is re-sent after a transport failure, because a mutation can have
+    /// reached the server. The API documents a 429 on every operation,
+    /// mutations included, and recommends that clients retry it.
+    fn of(result: &'a reqwest::Result<reqwest::Response>, is_get: bool) -> Option<Self> {
+        match result {
+            Err(err) if is_get && is_transient_transport_error(err) => Some(Self::Transport(err)),
+            Ok(response) if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
+                Some(Self::RateLimited {
+                    retry_after: retry_after(response.headers()),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// The shortest wait that the server allows before the retry.
+    fn min_wait(&self) -> Duration {
+        match self {
+            Self::Transport(_) => Duration::ZERO,
+            Self::RateLimited { retry_after } => *retry_after,
+        }
+    }
 }
 
 impl std::fmt::Display for RetryReason<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Transport(err) => write!(f, "transient network error ({err})"),
-            Self::RateLimited => f.write_str("rate limited (429)"),
+            Self::RateLimited { .. } => f.write_str("rate limited (429)"),
         }
     }
+}
+
+/// The `Retry-After` of a 429, or zero when there is none. The API documents
+/// it in seconds, and a value in any other form is ignored.
+fn retry_after(headers: &HeaderMap) -> Duration {
+    headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .map_or(Duration::ZERO, |seconds| {
+            RETRY_SECOND.saturating_mul(seconds)
+        })
 }
 
 /// Whether a failed request is safe to re-send: true only for transport-level
@@ -506,15 +537,8 @@ fn is_transient_transport_error(error: &reqwest::Error) -> bool {
     }
 }
 
-/// Send `request`, and re-send it in two cases:
-///
-/// - A GET whose transport failed: up to [`MAX_TRANSIENT_RETRIES`] extra
-///   attempts with [`retry_backoff`] between them. Only a GET is safe to
-///   re-send, because a mutation can have reached the server.
-/// - A request of any method that the server answered with 429 Too Many
-///   Requests: up to [`MAX_RATE_LIMIT_RETRIES`] extra attempts, after the
-///   wait that [`rate_limit_wait`] gives. The API documents a 429 on every
-///   operation, mutations included, and recommends that clients retry it.
+/// Send `request`, and re-send it while [`RetryReason::of`] gives a reason
+/// and `budget` can pay for the wait.
 async fn execute_with_retry(
     client: &Client,
     verbose: bool,
@@ -528,45 +552,17 @@ async fn execute_with_retry(
             return client.execute(request).await;
         };
         let result = client.execute(request).await;
-        let (wait, reason, retry, max) = match &result {
-            Err(err)
-                if is_get
-                    && budget.transient_retries < MAX_TRANSIENT_RETRIES
-                    && is_transient_transport_error(err) =>
-            {
-                let wait = retry_backoff(budget.transient_retries);
-                budget.transient_retries += 1;
-                (
-                    wait,
-                    RetryReason::Transport(err),
-                    budget.transient_retries,
-                    MAX_TRANSIENT_RETRIES,
-                )
-            }
-            Ok(response)
-                if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
-                    && budget.rate_limit_retries < MAX_RATE_LIMIT_RETRIES =>
-            {
-                let Some(wait) = rate_limit_wait(
-                    response.headers(),
-                    budget.rate_limit_retries,
-                    budget.rate_limit_waited,
-                ) else {
-                    debug!("rate limited, the wait would pass {MAX_RATE_LIMIT_WAIT:?} in total");
-                    return result;
-                };
-                budget.rate_limit_retries += 1;
-                budget.rate_limit_waited += wait;
-                (
-                    wait,
-                    RetryReason::RateLimited,
-                    budget.rate_limit_retries,
-                    MAX_RATE_LIMIT_RETRIES,
-                )
-            }
-            _ => return result,
+        let Some(reason) = RetryReason::of(&result, is_get) else {
+            return result;
         };
-        debug!("{reason}, retry {retry} of {max} in {wait:?}");
+        let Some(wait) = budget.spend(reason.min_wait()) else {
+            debug!("{reason}, no retry left within {MAX_RETRIES} retries and {MAX_RETRY_WAIT:?}");
+            return result;
+        };
+        debug!(
+            "{reason}, retry {} of {MAX_RETRIES} in {wait:?}",
+            budget.retries
+        );
         if verbose {
             eprintln!("* {reason}, retrying in {:.1}s", wait.as_secs_f64());
         }
@@ -2862,14 +2858,14 @@ mod tests {
     }
 
     // Rate-limit retries are bounded: a server that always answers 429
-    // surfaces the 429 after 1 + MAX_RATE_LIMIT_RETRIES attempts.
+    // surfaces the 429 after 1 + MAX_RETRIES attempts.
     #[tokio::test]
     async fn get_surfaces_a_rate_limit_after_bounded_retries() {
         let mock_server = MockServer::start().await;
         rate_limit(&mock_server, u64::MAX, "0").await;
         let api = test_api_optionally_with_cache(&mock_server, None);
 
-        expect_rate_limited(&api, &mock_server, 1 + MAX_RATE_LIMIT_RETRIES as usize).await;
+        expect_rate_limited(&api, &mock_server, 1 + MAX_RETRIES as usize).await;
     }
 
     #[tokio::test]
@@ -2892,34 +2888,47 @@ mod tests {
         expect_rate_limited(&api, &mock_server, 2).await;
     }
 
-    // The wait is at least the longer of Retry-After and the backoff, adds at
-    // most 50% jitter to it, and keeps the total within MAX_RATE_LIMIT_WAIT.
-    // A missing or non-numeric Retry-After falls back to the backoff.
+    // Each wait is at least the longer of its minimum and the backoff, and
+    // adds at most 50% jitter to it. The budget pays for at most MAX_RETRIES
+    // retries and MAX_RETRY_WAIT in total, and a refusal spends nothing.
     #[hegel::test]
-    fn rate_limit_wait_honors_retry_after(tc: hegel::TestCase) {
-        let retry = tc.draw(generators::integers::<u32>().max_value(5));
-        let seconds = tc.draw(generators::integers::<u32>().max_value(120));
-        let waited = RETRY_SECOND * tc.draw(generators::integers::<u32>().max_value(90));
-        let mut headers = HeaderMap::new();
-        headers.insert(reqwest::header::RETRY_AFTER, seconds.into());
-        let requested = (RETRY_SECOND * seconds).max(retry_backoff(retry));
-        match rate_limit_wait(&headers, retry, waited) {
-            None => assert!(waited + requested > MAX_RATE_LIMIT_WAIT),
-            Some(wait) => {
-                assert!(requested <= wait && wait <= requested.mul_f64(1.5));
-                assert!(waited + wait <= MAX_RATE_LIMIT_WAIT);
+    fn retry_budget_spends_within_its_limits(tc: hegel::TestCase) {
+        let min_waits =
+            tc.draw(generators::vecs(generators::integers::<u32>().max_value(70)).max_size(8));
+        let mut budget = RetryBudget::default();
+        for seconds in min_waits {
+            let (retries, waited) = (budget.retries, budget.waited);
+            let floor = (RETRY_SECOND * seconds).max(retry_backoff(retries));
+            match budget.spend(RETRY_SECOND * seconds) {
+                Some(wait) => {
+                    assert!(floor <= wait && wait <= floor.mul_f64(1.5));
+                    assert_eq!(budget.retries, retries + 1);
+                    assert_eq!(budget.waited, waited + wait);
+                }
+                None => {
+                    assert!(retries == MAX_RETRIES || waited + floor > MAX_RETRY_WAIT);
+                    assert_eq!((budget.retries, budget.waited), (retries, waited));
+                }
             }
+            assert!(budget.retries <= MAX_RETRIES && budget.waited <= MAX_RETRY_WAIT);
         }
+    }
 
-        headers.insert(
-            reqwest::header::RETRY_AFTER,
-            HeaderValue::from_static("Wed, 21 Oct 2026 07:28:00 GMT"),
+    // Retry-After is a number of seconds. A missing or non-numeric one is zero.
+    #[test]
+    fn retry_after_reads_seconds() {
+        let headers = |value: &'static str| {
+            HeaderMap::from_iter([(
+                reqwest::header::RETRY_AFTER,
+                HeaderValue::from_static(value),
+            )])
+        };
+        assert_eq!(retry_after(&headers(" 3 ")), RETRY_SECOND * 3);
+        assert_eq!(
+            retry_after(&headers("Wed, 21 Oct 2026 07:28:00 GMT")),
+            Duration::ZERO
         );
-        for headers in [headers, HeaderMap::new()] {
-            let backoff = retry_backoff(retry);
-            let wait = rate_limit_wait(&headers, retry, Duration::ZERO).unwrap();
-            assert!(backoff <= wait && wait <= backoff.mul_f64(1.5));
-        }
+        assert_eq!(retry_after(&HeaderMap::new()), Duration::ZERO);
     }
 
     /// A raw TCP server for transport-fault tests. It resets its first
@@ -2994,7 +3003,7 @@ mod tests {
     }
 
     // Retries are bounded: when every attempt fails at the transport level the
-    // error surfaces after 1 + MAX_TRANSIENT_RETRIES attempts, classified as
+    // error surfaces after 1 + MAX_RETRIES attempts, classified as
     // unreachable (no HTTP status), not swallowed.
     #[tokio::test]
     async fn get_surfaces_a_transport_failure_after_bounded_retries() {
@@ -3002,10 +3011,7 @@ mod tests {
         let api = test_api_at_url(base_url, None);
 
         expect_unreachable(&api).await;
-        assert_eq!(
-            connections.load(Ordering::SeqCst),
-            1 + MAX_TRANSIENT_RETRIES as usize
-        );
+        assert_eq!(connections.load(Ordering::SeqCst), 1 + MAX_RETRIES as usize);
     }
 
     // A connection dropped while the body downloads is not retried: the
@@ -3995,8 +4001,8 @@ mod tests {
         assert!(persisted.contains("new-refresh-token"), "got:\n{persisted}");
     }
 
-    // The 429 limits cover the whole API call: the resend after a token
-    // refresh gets no fresh budget. The stale token spends every 429 retry,
+    // The retry budget covers the whole API call: the resend after a token
+    // refresh gets no fresh budget. The stale token spends every retry,
     // so the first 429 to the refreshed token surfaces.
     #[tokio::test]
     async fn oauth_refresh_shares_the_rate_limit_budget() {
@@ -4014,7 +4020,7 @@ mod tests {
             .await;
         Mock::given(header("authorization", "Bearer old-access-token"))
             .respond_with(ResponseTemplate::new(429))
-            .up_to_n_times(u64::from(MAX_RATE_LIMIT_RETRIES))
+            .up_to_n_times(u64::from(MAX_RETRIES))
             .with_priority(1)
             .mount(&mock_server)
             .await;
@@ -4054,7 +4060,7 @@ mod tests {
             .filter(|request| request.url.path() == "/api/v0/runs/run-1")
             .count();
         // Every stale-token 429, the 401, and one refreshed-token 429.
-        assert_eq!(run_requests, MAX_RATE_LIMIT_RETRIES as usize + 2);
+        assert_eq!(run_requests, MAX_RETRIES as usize + 2);
     }
 
     #[tokio::test]

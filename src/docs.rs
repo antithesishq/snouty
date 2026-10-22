@@ -751,11 +751,7 @@ fn json_children<'a>(node: &'a TreeNode, path_prefix: &str) -> Vec<NodeJson<'a>>
     node.children
         .iter()
         .map(|(name, child)| {
-            let path = if path_prefix.is_empty() {
-                name.clone()
-            } else {
-                format!("{path_prefix}/{name}")
-            };
+            let path = child_path(path_prefix, name);
             NodeJson {
                 name,
                 children: json_children(child, &path),
@@ -769,10 +765,6 @@ fn json_children<'a>(node: &'a TreeNode, path_prefix: &str) -> Vec<NodeJson<'a>>
 /// Render each top-level node as its own tree so the synthetic `docs` root is
 /// omitted from the user-facing output.
 fn render_forest(root: &TreeNode) -> Result<String> {
-    if root.children.is_empty() {
-        return Ok(String::new());
-    }
-
     let settings = PrintConfig {
         indent: 4,
         characters: UTF_CHARS_BOLD.into(),
@@ -822,12 +814,7 @@ fn page_label(name: &str, title: &str) -> String {
 fn filter_tree(node: TreeNode, path_prefix: &str, filter: &str) -> Option<TreeNode> {
     let mut kept_children = BTreeMap::new();
     for (name, child) in node.children {
-        let child_path = if path_prefix.is_empty() {
-            name.clone()
-        } else {
-            format!("{path_prefix}/{name}")
-        };
-        if let Some(filtered_child) = filter_tree(child, &child_path, filter) {
+        if let Some(filtered_child) = filter_tree(child, &child_path(path_prefix, &name), filter) {
             kept_children.insert(name, filtered_child);
         }
     }
@@ -844,6 +831,16 @@ fn filter_tree(node: TreeNode, path_prefix: &str, filter: &str) -> Option<TreeNo
         })
     } else {
         None
+    }
+}
+
+/// Join a tree node's path with a child segment. The top-level nodes have an
+/// empty prefix.
+fn child_path(path_prefix: &str, name: &str) -> String {
+    if path_prefix.is_empty() {
+        name.to_string()
+    } else {
+        format!("{path_prefix}/{name}")
     }
 }
 

@@ -32,6 +32,11 @@ use snouty::params::{
 use snouty::settings::Settings;
 use snouty::validate;
 
+// musl's malloc is slow, and the Linux release binaries are static musl builds.
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     // Drop the "Backtrace omitted. Run with RUST_BACKTRACE=1…" footer: it's noise

@@ -74,6 +74,10 @@ askama = { version = "0.16.1", default-features = false, features = ["derive", "
 axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1"] }
 gix = { version = "0.89", default-features = false, features = ["sha1"] }
 
+# See the global_allocator in main.rs.
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = "0.1.52"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1.0.0", features = [ "keychain" ] }
 

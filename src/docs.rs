@@ -95,7 +95,7 @@ pub async fn cmd_docs(
 async fn update_with_fallback() -> Result<()> {
     if let Err(e) = download_and_cache_db().await {
         if db_path()?.exists() {
-            eprintln!("Warning: failed to update docs, falling back to cached docs\n    {e}\n");
+            eprintln!("Warning: failed to update docs, falling back to cached docs\n    {e:#}\n");
         } else {
             return Err(e);
         }

@@ -100,8 +100,13 @@ fn docs_update_that_never_connects_times_out_and_uses_cache() {
         .stdout(predicate::str::contains("/docs/guides/docker_basics/"))
         .stderr(predicate::str::contains(
             "Warning: failed to update docs, falling back to cached docs",
-        ));
-    assert!(start.elapsed() >= Duration::from_secs(10));
+        ))
+        .stderr(predicate::str::contains("operation timed out"));
+    let elapsed = start.elapsed();
+    assert!(
+        (Duration::from_secs(10)..Duration::from_secs(20)).contains(&elapsed),
+        "the refresh gave up after {elapsed:?}, not after the 10 s connect timeout"
+    );
 }
 
 #[test]

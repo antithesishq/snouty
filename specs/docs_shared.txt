@@ -21,7 +21,7 @@
 #     command prints a warning to stderr and continues with the cached
 #     database. If no database exists yet, the command fails.
 #   - A docs update gives up on a host that does not complete the connection
-#     (TCP and TLS) within 10 seconds, and then falls back as above. Once
+#     (DNS, TCP and TLS) within 10 seconds, and then falls back as above. Once
 #     connected, the download has no time limit.
 
 # When --offline is passed and no database exists, the command tells the user

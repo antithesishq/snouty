@@ -132,8 +132,7 @@ async fn download_and_cache_db() -> Result<()> {
 /// fetch_db_if_changed returns Ok(None) if the server indicates the database
 /// has not changed (304 Not Modified).
 async fn fetch_db_if_changed() -> Result<Option<(Vec<u8>, String)>> {
-    // Only a connect timeout, as the API client has: the database is several
-    // MB, and a slow but live download must finish.
+    // No read timeout: the database is several MB, and a slow download must finish.
     let client = reqwest::Client::builder()
         .user_agent(user_agent())
         .connect_timeout(CONNECT_TIMEOUT)

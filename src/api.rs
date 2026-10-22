@@ -395,10 +395,8 @@ fn normalize_property(property: Property) -> Result<Property> {
     }
 }
 
-/// Connect-phase cap (DNS + TCP + TLS). Bounds connection setup so no command
-/// hangs on a black-holed or unresolvable host. There is deliberately no read or
-/// total timeout: once connected, an Antithesis request may take a truly long time
-/// to return (e.g. massive log files) and must not be aborted — the user can ctrl-c.
+/// Caps connection setup (DNS, TCP, TLS) so no command hangs on an unreachable host.
+/// Callers set no read or total timeout: a connected request may run for a long time.
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How many times a GET whose transport failed is re-sent before the failure

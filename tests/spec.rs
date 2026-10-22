@@ -254,10 +254,31 @@ fn cmd_mock_server(
     env: &mut testscript_rs::TestEnvironment,
     args: &[String],
 ) -> testscript_rs::Result<()> {
-    // Usage: mock-server <status> <body>
+    // Usage: mock-server [-header '<name>: <value>'] [-rate-limit <n>] <status> <body>
     // Starts a TCP mock HTTP server, sets ANTITHESIS_BASE_URL and auth env vars.
+    // `-rate-limit <n>` answers the first n requests with a bare 429.
+    let usage =
+        "mock-server requires [-header '<name>: <value>'] [-rate-limit <n>] <status> <body>";
+    let mut header = String::new();
+    let mut rate_limited = 0usize;
+    let mut args = args;
+    loop {
+        match args {
+            [flag, value, rest @ ..] if flag == "-header" => {
+                header = format!("{value}\r\n");
+                args = rest;
+            }
+            [flag, value, rest @ ..] if flag == "-rate-limit" => {
+                rate_limited = value
+                    .parse()
+                    .map_err(|e| err(format!("invalid -rate-limit count: {e}")))?;
+                args = rest;
+            }
+            _ => break,
+        }
+    }
     if args.len() < 2 {
-        return Err(err("mock-server requires <status> <body>".to_string()));
+        return Err(err(usage.to_string()));
     }
 
     if is_staging() {
@@ -278,15 +299,19 @@ fn cmd_mock_server(
     let url = format!("http://{addr}");
 
     thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
+        for (n, stream) in listener.incoming().flatten().enumerate() {
             let mut stream = stream;
             let mut buf = [0u8; 4096];
             let _ = Read::read(&mut stream, &mut buf);
 
-            let response = format!(
-                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-                body.len(),
-            );
+            let response = if n < rate_limited {
+                "HTTP/1.1 429\r\nContent-Length: 0\r\n\r\n".to_owned()
+            } else {
+                format!(
+                    "HTTP/1.1 {status}\r\n{header}Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len(),
+                )
+            };
             let _ = stream.write_all(response.as_bytes());
         }
     });

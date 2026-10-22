@@ -401,17 +401,137 @@ fn normalize_property(property: Property) -> Result<Property> {
 /// to return (e.g. massive log files) and must not be aborted — the user can ctrl-c.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How many times a GET whose transport failed is re-sent before the failure
-/// surfaces, with [`transient_retry_backoff`] between attempts.
-const MAX_TRANSIENT_RETRIES: u32 = 3;
+/// How many times one API call is re-sent before its failure surfaces.
+const MAX_RETRIES: u32 = 10;
 
-/// The wait before transient-retry attempt `retry` (0-based): 1, 2, 4, ... seconds
-fn transient_retry_backoff(retry: u32) -> Duration {
-    #[cfg(not(test))]
-    const UNIT: Duration = Duration::from_secs(1);
-    #[cfg(test)]
-    const UNIT: Duration = Duration::from_millis(1);
-    UNIT * (1 << retry)
+/// How many retries one API call can have spent and still re-send after a
+/// transport failure. It is lower than [`MAX_RETRIES`] because an unreachable
+/// host must fail fast.
+const MAX_TRANSPORT_RETRIES: u32 = 3;
+
+/// The longest total wait across the retries of one API call. A wait that
+/// goes past it surfaces the failure at once.
+const MAX_RETRY_WAIT: Duration = RETRY_SECOND.saturating_mul(300);
+
+/// The longest single [`retry_backoff`]. With it, [`MAX_RETRIES`] backoffs
+/// and their jitter fit in [`MAX_RETRY_WAIT`].
+const MAX_BACKOFF: Duration = RETRY_SECOND.saturating_mul(30);
+
+/// The unit of every retry wait: a second, but a millisecond in unit tests,
+/// so that they run fast.
+#[cfg(not(test))]
+const RETRY_SECOND: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const RETRY_SECOND: Duration = Duration::from_millis(1);
+
+/// The wait before retry attempt `retry` (0-based): 1, 2, 4, ... seconds, at
+/// most [`MAX_BACKOFF`]
+fn retry_backoff(retry: u32) -> Duration {
+    RETRY_SECOND
+        .saturating_mul(1u32.checked_shl(retry).unwrap_or(u32::MAX))
+        .min(MAX_BACKOFF)
+}
+
+/// Add up to 50% to `wait`, so that clients that failed together do not all
+/// retry at once.
+fn with_jitter(wait: Duration) -> Duration {
+    // If getrandom fails, the wait has no jitter, which is still correct.
+    let random = getrandom::u32().unwrap_or(0);
+    wait + wait.mul_f64(f64::from(random) / f64::from(u32::MAX) / 2.0)
+}
+
+/// The retries that [`execute_with_retry`] has spent on one API call. The
+/// call shares one budget across the resend after a token refresh, so that
+/// the limits cover the whole call.
+#[derive(Default)]
+struct RetryBudget {
+    retries: u32,
+    waited: Duration,
+}
+
+impl RetryBudget {
+    /// Spend one retry for `reason`, and return its wait: the longer of the
+    /// reason's minimum wait and [`retry_backoff`], plus jitter. `None`, with
+    /// nothing spent, when the budget has no retry left for the reason or
+    /// cannot pay for the wait.
+    fn spend(&mut self, reason: &RetryReason) -> Option<Duration> {
+        if self.retries >= reason.max_retries() {
+            return None;
+        }
+        let wait = reason.min_wait().max(retry_backoff(self.retries));
+        let remaining = MAX_RETRY_WAIT.checked_sub(self.waited + wait)?;
+        // The jitter never shortens the wait, nor takes the total past the limit.
+        let wait = with_jitter(wait).min(wait + remaining);
+        self.retries += 1;
+        self.waited += wait;
+        Some(wait)
+    }
+}
+
+/// Why [`execute_with_retry`] re-sends a request.
+enum RetryReason<'a> {
+    Transport(&'a reqwest::Error),
+    RateLimited { retry_after: Duration },
+}
+
+impl<'a> RetryReason<'a> {
+    /// Why `result` is safe to re-send, or `None` when it is final. Only a GET
+    /// is re-sent after a transport failure, because a mutation can have
+    /// reached the server. The API documents a 429 on every operation,
+    /// mutations included, and recommends that clients retry it.
+    fn of(result: &'a reqwest::Result<reqwest::Response>, is_get: bool) -> Option<Self> {
+        match result {
+            Err(err) if is_get && is_transient_transport_error(err) => Some(Self::Transport(err)),
+            Ok(response) if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
+                Some(Self::RateLimited {
+                    retry_after: retry_after(response.headers()),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// The shortest wait that the server allows before the retry.
+    fn min_wait(&self) -> Duration {
+        match self {
+            Self::Transport(_) => Duration::ZERO,
+            Self::RateLimited { retry_after } => *retry_after,
+        }
+    }
+
+    /// How many retries the call can have spent and still retry for this
+    /// reason.
+    fn max_retries(&self) -> u32 {
+        match self {
+            Self::Transport(_) => MAX_TRANSPORT_RETRIES,
+            Self::RateLimited { .. } => MAX_RETRIES,
+        }
+    }
+}
+
+impl std::fmt::Display for RetryReason<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transport(err) => write!(f, "transient network error ({err})"),
+            Self::RateLimited { .. } => f.write_str("rate limited (429)"),
+        }
+    }
+}
+
+/// The `Retry-After` of a response in seconds. The API documents it in
+/// seconds, and a value in any other form is ignored.
+fn retry_after_seconds(headers: &HeaderMap) -> Option<u32> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse().ok())
+}
+
+/// The `Retry-After` of a 429, or zero when there is none.
+fn retry_after(headers: &HeaderMap) -> Duration {
+    retry_after_seconds(headers).map_or(Duration::ZERO, |seconds| {
+        RETRY_SECOND.saturating_mul(seconds)
+    })
 }
 
 /// Whether a failed request is safe to re-send: true only for transport-level
@@ -442,39 +562,43 @@ fn is_transient_transport_error(error: &reqwest::Error) -> bool {
     }
 }
 
-/// Send `request`, re-sending a GET whose transport failed: up to
-/// [`MAX_TRANSIENT_RETRIES`] extra attempts with [`transient_retry_backoff`]
-/// between them. [`MAX_TRANSIENT_RETRIES`] has the retry contract.
-async fn execute_with_transient_retry(
+/// Send `request`, and re-send it while [`RetryReason::of`] gives a reason
+/// and `budget` can pay for the wait.
+async fn execute_with_retry(
     client: &Client,
     verbose: bool,
+    budget: &mut RetryBudget,
     mut request: reqwest::Request,
 ) -> reqwest::Result<reqwest::Response> {
-    if request.method() != reqwest::Method::GET {
-        return client.execute(request).await;
-    }
-    let mut retries = 0;
+    let is_get = request.method() == reqwest::Method::GET;
     loop {
-        // GETs carry no body, so try_clone always succeeds.
-        let retry_clone = (retries < MAX_TRANSIENT_RETRIES)
-            .then(|| request.try_clone())
-            .flatten();
-        match (client.execute(request).await, retry_clone) {
-            (Err(err), Some(clone)) if is_transient_transport_error(&err) => {
-                let wait = transient_retry_backoff(retries);
-                retries += 1;
-                debug!(
-                    "transient network error, retry {retries} of {MAX_TRANSIENT_RETRIES} \
-                     in {wait:?}: {err}"
-                );
-                if verbose {
-                    eprintln!("* transient network error, retrying in {wait:?}: {err}");
-                }
-                tokio::time::sleep(wait).await;
-                request = clone;
-            }
-            (result, _) => return result,
+        // A request with a streamed body cannot be cloned, and is sent once.
+        let Some(clone) = request.try_clone() else {
+            return client.execute(request).await;
+        };
+        let result = client.execute(request).await;
+        let Some(reason) = RetryReason::of(&result, is_get) else {
+            return result;
+        };
+        let Some(wait) = budget.spend(&reason) else {
+            debug!(
+                "{reason}, no retry left within {} retries and {MAX_RETRY_WAIT:?}",
+                reason.max_retries()
+            );
+            return result;
+        };
+        debug!(
+            "{reason}, retry {} of {} in {wait:?}",
+            budget.retries,
+            reason.max_retries()
+        );
+        if verbose {
+            eprintln!("* {reason}, retrying in {:.1}s", wait.as_secs_f64());
         }
+        // Free the connection now rather than hold it through the wait.
+        drop(result);
+        tokio::time::sleep(wait).await;
+        request = clone;
     }
 }
 
@@ -1054,7 +1178,8 @@ impl ClientHooks<ClientState> for generated::Client {
         };
 
         http.log_request(&request, LoggedBody::Shown);
-        let result = execute_with_transient_retry(self.client(), http.verbose, request).await;
+        let mut budget = RetryBudget::default();
+        let result = execute_with_retry(self.client(), http.verbose, &mut budget, request).await;
 
         let result = match (result, retry_request) {
             (Ok(response), Some(mut retry_request))
@@ -1070,7 +1195,7 @@ impl ClientHooks<ClientState> for generated::Client {
                             .headers_mut()
                             .insert(reqwest::header::AUTHORIZATION, header);
                         http.log_request(&retry_request, LoggedBody::Shown);
-                        execute_with_transient_retry(self.client(), http.verbose, retry_request)
+                        execute_with_retry(self.client(), http.verbose, &mut budget, retry_request)
                             .await
                     }
                     Ok(None) => Ok(response),
@@ -1625,7 +1750,19 @@ fn char_pos_to_byte_offset(body: &str, line: usize, column: usize) -> usize {
 /// Render a failed API call for the user, status first.
 async fn format_api_client_error(err: ClientError<()>) -> Report {
     match classify_client_error(err).await {
-        ApiFailure::Response { status, message } => format_api_error(status, &message),
+        ApiFailure::Response {
+            status,
+            message,
+            retry_after,
+        } => {
+            let report = format_api_error(status, &message);
+            match retry_after {
+                Some(retry_after) => report.suggestion(format!(
+                    "retry after {retry_after} to respect the server's rate limit"
+                )),
+                None => report,
+            }
+        }
         ApiFailure::Other(report) => report,
     }
 }
@@ -1664,10 +1801,38 @@ enum ApiFailure {
     /// The server answered. `status` is the transport status — the only
     /// authority on success or failure, per the API team's confirmation on
     /// #180 — and `message` the human-readable text of the body it came with.
-    Response { status: u16, message: String },
+    Response {
+        status: u16,
+        message: String,
+        retry_after: Option<RetryAfter>,
+    },
     /// No usable response: a transport failure, or a success body snouty could
     /// not parse.
     Other(Report),
+}
+
+/// The `Retry-After` of an error response, and the time that it names.
+struct RetryAfter {
+    seconds: u32,
+    at: chrono::DateTime<chrono::Utc>,
+}
+
+impl RetryAfter {
+    fn from_headers(headers: &HeaderMap) -> Option<Self> {
+        let seconds = retry_after_seconds(headers)?;
+        Some(Self {
+            seconds,
+            at: chrono::Utc::now() + chrono::TimeDelta::seconds(seconds.into()),
+        })
+    }
+}
+
+/// `30s (2026-10-22T03:47:27Z)`: the wait, and the time in RFC 3339 UTC.
+impl std::fmt::Display for RetryAfter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let at = self.at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        write!(f, "{}s ({at})", self.seconds)
+    }
 }
 
 /// Classify a client error. Anything the server answered keeps its HTTP status:
@@ -1680,9 +1845,11 @@ async fn classify_client_error(err: ClientError<()>) -> ApiFailure {
         // exactly as the server sent them.
         ClientError::UnexpectedResponse(response) => {
             let status = response.status().as_u16();
+            let retry_after = RetryAfter::from_headers(response.headers());
             ApiFailure::Response {
                 status,
                 message: error_body_message(&read_error_body(response).await),
+                retry_after,
             }
         }
         // Unreachable: progenitor only emits this arm for a *documented* error
@@ -2507,6 +2674,8 @@ mod tests {
     /// ignore it (#180).
     const LAUNCH_OK_BODY: &str = r#"{"runId":"run-123","statusCode":202}"#;
 
+    const VERSION_OK_BODY: &str = r#"{"latest_api_version":"v1","release_version":"60"}"#;
+
     /// The launch success body that tenant release 63.3 sends (#336).
     const LAUNCH_OK_BODY_63_3: &str = r#"{"message":"Success","runId":"run-63-3"}"#;
 
@@ -2675,14 +2844,13 @@ mod tests {
     // empty, an intermediary's HTML page, or an unexpected JSON shape.
     //
     // The mocks' `.expect(1)` also pins the retry contract: a served error
-    // status — including 429 and 5xx — is final and never re-sent.
+    // status other than 429 — 5xx included — is final and never re-sent.
     #[tokio::test]
     async fn get_version_keeps_the_status_for_non_conforming_error_bodies() {
         let cases = [
             (401, ""),
             (401, "<html><body>Unauthorized</body></html>"),
             (406, r#"{"statusCode":406}"#),
-            (429, ""),
             (500, "<html><body>502 upstream</body></html>"),
         ];
         for (status, body) in cases {
@@ -2707,6 +2875,171 @@ mod tests {
             Err(VersionError::Http(404)) => {}
             other => panic!("expected Http(404), got {other:?}"),
         }
+    }
+
+    /// Answer the first `limited` requests to `mock_server` with 429 and
+    /// `retry_after`, ahead of the mocks already mounted on it.
+    async fn rate_limit(mock_server: &MockServer, limited: u64, retry_after: &str) {
+        Mock::given(wiremock::matchers::any())
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", retry_after))
+            .up_to_n_times(limited)
+            .with_priority(1)
+            .mount(mock_server)
+            .await;
+    }
+
+    // A 429 is re-sent, whether or not its Retry-After is a number of
+    // seconds, and the caller sees only the response that follows it.
+    #[tokio::test]
+    async fn get_retries_a_rate_limited_request() {
+        for retry_after in ["0", "not-a-number"] {
+            let mock_server = mock_version(200, VERSION_OK_BODY).await;
+            rate_limit(&mock_server, 2, retry_after).await;
+            let api = test_api_optionally_with_cache(&mock_server, None);
+
+            let version = api.get_version().await.unwrap();
+
+            assert_eq!(version.release_version, "60");
+            assert_eq!(mock_server.received_requests().await.unwrap().len(), 3);
+        }
+    }
+
+    // A rate-limited POST is re-sent with the same body.
+    #[tokio::test]
+    async fn launch_post_retries_a_rate_limited_request() {
+        let mock_server = mock_launch_test(200, LAUNCH_OK_BODY).await;
+        rate_limit(&mock_server, 1, "0").await;
+        let api = test_api_optionally_with_cache(&mock_server, None);
+        let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
+
+        let response = api.launch_test("basic_test", &params).await.unwrap();
+
+        assert_eq!(response.run_id.as_deref(), Some("run-123"));
+        let requests = mock_server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].body, requests[1].body);
+    }
+
+    /// Assert the version probe surfaced the 429, and that `attempts`
+    /// requests reached `mock_server`.
+    async fn expect_rate_limited(api: &AntithesisApi, mock_server: &MockServer, attempts: usize) {
+        match api.get_version().await {
+            Err(VersionError::Http(429)) => {}
+            other => panic!("expected Http(429), got {other:?}"),
+        }
+        assert_eq!(
+            mock_server.received_requests().await.unwrap().len(),
+            attempts
+        );
+    }
+
+    // Rate-limit retries are bounded: a server that always answers 429
+    // surfaces the 429 after 1 + MAX_RETRIES attempts.
+    #[tokio::test]
+    async fn get_surfaces_a_rate_limit_after_bounded_retries() {
+        let mock_server = MockServer::start().await;
+        rate_limit(&mock_server, u64::MAX, "0").await;
+        let api = test_api_optionally_with_cache(&mock_server, None);
+
+        expect_rate_limited(&api, &mock_server, 1 + MAX_RETRIES as usize).await;
+    }
+
+    #[tokio::test]
+    async fn get_surfaces_a_rate_limit_with_a_long_retry_after() {
+        let mock_server = MockServer::start().await;
+        rate_limit(&mock_server, 1, "301").await;
+        let api = test_api_optionally_with_cache(&mock_server, None);
+
+        expect_rate_limited(&api, &mock_server, 1).await;
+    }
+
+    // The limit is on the total wait: two 200-second waits pass the
+    // 300-second limit, so the 429 surfaces after one retry.
+    #[tokio::test]
+    async fn get_surfaces_a_rate_limit_when_the_total_wait_is_too_long() {
+        let mock_server = MockServer::start().await;
+        rate_limit(&mock_server, u64::MAX, "200").await;
+        let api = test_api_optionally_with_cache(&mock_server, None);
+
+        expect_rate_limited(&api, &mock_server, 2).await;
+    }
+
+    // When the 429 surfaces, the error names the wait and the time that its
+    // Retry-After asks for, so that the user or a wrapping script can wait.
+    #[tokio::test]
+    async fn a_surfaced_rate_limit_names_the_retry_time() {
+        let mock_server = MockServer::start().await;
+        rate_limit(&mock_server, u64::MAX, "3600").await;
+        let api = test_api_optionally_with_cache(&mock_server, None);
+
+        let before = chrono::Utc::now();
+        let report = api.get_run("run-1").await.unwrap_err();
+        let after = chrono::Utc::now();
+
+        assert_eq!(crate::error::api_error_status(&report), Some(429));
+        let rendered = format!("{report:?}");
+        let retry_at = rendered
+            .split_once("retry after 3600s (")
+            .and_then(|(_, rest)| rest.split_once(") to respect the server's rate limit"))
+            .map(|(at, _)| chrono::DateTime::parse_from_rfc3339(at).unwrap())
+            .unwrap_or_else(|| panic!("no retry time in: {rendered}"));
+        let hour = chrono::TimeDelta::hours(1);
+        let second = chrono::TimeDelta::seconds(1);
+        assert!(before + hour - second <= retry_at && retry_at <= after + hour);
+    }
+
+    // Each wait is at least the longer of its minimum and the backoff, and
+    // adds at most 50% jitter to it. The budget pays for at most MAX_RETRIES
+    // retries and MAX_RETRY_WAIT in total, and a refusal spends nothing.
+    #[hegel::test]
+    fn retry_budget_spends_within_its_limits(tc: hegel::TestCase) {
+        let min_waits =
+            tc.draw(generators::vecs(generators::integers::<u32>().max_value(400)).max_size(12));
+        let mut budget = RetryBudget::default();
+        for seconds in min_waits {
+            let (retries, waited) = (budget.retries, budget.waited);
+            let floor = (RETRY_SECOND * seconds).max(retry_backoff(retries));
+            let reason = RetryReason::RateLimited {
+                retry_after: RETRY_SECOND * seconds,
+            };
+            match budget.spend(&reason) {
+                Some(wait) => {
+                    assert!(floor <= wait && wait <= floor.mul_f64(1.5));
+                    assert_eq!(budget.retries, retries + 1);
+                    assert_eq!(budget.waited, waited + wait);
+                }
+                None => {
+                    assert!(retries == MAX_RETRIES || waited + floor > MAX_RETRY_WAIT);
+                    assert_eq!((budget.retries, budget.waited), (retries, waited));
+                }
+            }
+            assert!(budget.retries <= MAX_RETRIES && budget.waited <= MAX_RETRY_WAIT);
+        }
+    }
+
+    // Without a Retry-After, every one of the MAX_RETRIES retries fits in
+    // MAX_RETRY_WAIT, even with the most jitter.
+    #[test]
+    fn every_backoff_fits_in_the_total_wait() {
+        let backoffs: Duration = (0..MAX_RETRIES).map(retry_backoff).sum();
+        assert!(backoffs.mul_f64(1.5) <= MAX_RETRY_WAIT);
+    }
+
+    // Retry-After is a number of seconds. A missing or non-numeric one is zero.
+    #[test]
+    fn retry_after_reads_seconds() {
+        let headers = |value: &'static str| {
+            HeaderMap::from_iter([(
+                reqwest::header::RETRY_AFTER,
+                HeaderValue::from_static(value),
+            )])
+        };
+        assert_eq!(retry_after(&headers(" 3 ")), RETRY_SECOND * 3);
+        assert_eq!(
+            retry_after(&headers("Wed, 21 Oct 2026 07:28:00 GMT")),
+            Duration::ZERO
+        );
+        assert_eq!(retry_after(&HeaderMap::new()), Duration::ZERO);
     }
 
     /// A raw TCP server for transport-fault tests. It resets its first
@@ -2746,11 +3079,10 @@ mod tests {
     /// A server whose first `resets` connections reset and whose later ones
     /// answer `GET /api/version` completely.
     async fn reset_then_serve_version(resets: usize) -> (String, Arc<AtomicUsize>) {
-        let body = r#"{"latest_api_version":"v1","release_version":"60"}"#;
         let response = format!(
             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
-            body.len(),
-            body
+            VERSION_OK_BODY.len(),
+            VERSION_OK_BODY
         );
         raw_server(resets, response).await
     }
@@ -2782,7 +3114,7 @@ mod tests {
     }
 
     // Retries are bounded: when every attempt fails at the transport level the
-    // error surfaces after 1 + MAX_TRANSIENT_RETRIES attempts, classified as
+    // error surfaces after 1 + MAX_TRANSPORT_RETRIES attempts, classified as
     // unreachable (no HTTP status), not swallowed.
     #[tokio::test]
     async fn get_surfaces_a_transport_failure_after_bounded_retries() {
@@ -2792,7 +3124,7 @@ mod tests {
         expect_unreachable(&api).await;
         assert_eq!(
             connections.load(Ordering::SeqCst),
-            1 + MAX_TRANSIENT_RETRIES as usize
+            1 + MAX_TRANSPORT_RETRIES as usize
         );
     }
 
@@ -2812,8 +3144,7 @@ mod tests {
         assert_eq!(connections.load(Ordering::SeqCst), 1);
     }
 
-    // Mutations are never replayed: a launch POST that dies to a transport
-    // failure is sent exactly once.
+    // A launch POST that dies to a transport failure is sent exactly once.
     #[tokio::test]
     async fn launch_post_is_not_retried_on_transport_failure() {
         let (base_url, connections) = reset_then_serve_version(usize::MAX).await;
@@ -3782,6 +4113,68 @@ mod tests {
         let persisted = std::fs::read_to_string(&creds_path).unwrap();
         assert!(persisted.contains("new-access-token"), "got:\n{persisted}");
         assert!(persisted.contains("new-refresh-token"), "got:\n{persisted}");
+    }
+
+    // The retry budget covers the whole API call: the resend after a token
+    // refresh gets no fresh budget. The stale token spends every retry,
+    // so the first 429 to the refreshed token surfaces.
+    #[tokio::test]
+    async fn oauth_refresh_shares_the_rate_limit_budget() {
+        use wiremock::matchers::header;
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/cli/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "antithesis_token": "new-access-token",
+                "refresh_token": "new-refresh-token",
+                "expires_in": 3600
+            })))
+            .mount(&mock_server)
+            .await;
+        Mock::given(header("authorization", "Bearer old-access-token"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(u64::from(MAX_RETRIES))
+            .with_priority(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(header("authorization", "Bearer old-access-token"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&mock_server)
+            .await;
+        Mock::given(header("authorization", "Bearer new-access-token"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&mock_server)
+            .await;
+        let creds_dir = TempDir::new().unwrap();
+        let auth = AuthenticationInfo::oauth_for_test(
+            "old-access-token",
+            Some("old-refresh-token"),
+            crate::auth::OAuthRefreshInfo::CredentialsFile {
+                path: creds_dir.path().join("credentials.toml"),
+                profile: None,
+            },
+        );
+        let api = AntithesisApi::build(
+            &Settings::for_test_base_url(mock_server.uri()),
+            auth,
+            false,
+            ResponseCache::Disabled,
+        )
+        .unwrap();
+
+        let report = api.get_run("run-1").await.unwrap_err();
+
+        assert_eq!(crate::error::api_error_status(&report), Some(429));
+        let run_requests = mock_server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|request| request.url.path() == "/api/v0/runs/run-1")
+            .count();
+        // Every stale-token 429, the 401, and one refreshed-token 429.
+        assert_eq!(run_requests, MAX_RETRIES as usize + 2);
     }
 
     #[tokio::test]

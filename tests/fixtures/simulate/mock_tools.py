@@ -80,10 +80,18 @@ elif name == 'ssh':
                 sys.exit('unexpected shell input: ' + repr(command))
         sys.exit(0)
     assert args[2] == 'guest_vm', args
-    command = args[3]
+    options = args[3:-1]
+    command = args[-1]
     if command == 'true':
+        record('readiness_options', json.dumps(options))
         if not (root / 'ssh_ready').exists():
             sys.exit(255)
+        if mode == 'ssh-retry':
+            first_attempt = root / 'first_ssh_attempt'
+            if not first_attempt.exists():
+                record('first_ssh_attempt', time.monotonic())
+                sys.exit(255)
+            record('ssh_retry_delay', time.monotonic() - float(first_attempt.read_text()))
         if mode == 'auth-failure':
             sys.exit('root@127.0.0.1: Permission denied (publickey).')
     elif command == 'bash -s':

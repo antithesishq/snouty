@@ -16,6 +16,7 @@ use super::SimulatePlatform;
 use super::firmware::platform_firmware;
 
 const AUTHORIZED_KEY_FW_CFG: &str = "opt/antithesis/authorized_key";
+const SSH_READY_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 pub(super) const SCRATCH_DISK_SIZE: &str = "16G";
 #[cfg(target_os = "linux")]
 const QEMU_ACCELERATOR: &str = "kvm:tcg";
@@ -305,12 +306,12 @@ impl Vm {
                 bail!("QEMU exited before SSH became ready");
             }
             let mut command = self.ssh();
-            command.arg("true");
+            command.args(["-o", "ConnectTimeout=1", "true"]);
             let output = match output_async(command, Duration::from_secs(5)).await {
                 Ok(output) => output,
                 Err(error) => {
                     log::debug!("guest SSH readiness check failed: {error:#}");
-                    sleep(Duration::from_secs(1)).await;
+                    sleep(SSH_READY_RETRY_INTERVAL).await;
                     continue;
                 }
             };
@@ -322,7 +323,7 @@ impl Vm {
             if error.contains("Permission denied") || error.contains("no such identity") {
                 bail!("guest SSH authentication failed: {}", error.trim());
             }
-            sleep(Duration::from_secs(1)).await;
+            sleep(SSH_READY_RETRY_INTERVAL).await;
         }
     }
 

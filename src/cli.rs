@@ -562,7 +562,7 @@ pub struct DebugArgs {
     pub recipients: Option<String>,
 
     /// Extra parameters as key=value pairs (repeatable)
-    #[arg(long = "param")]
+    #[arg(long = "param", id = "param", value_name = "PARAMS")]
     pub params: Vec<KVPair>,
 }
 

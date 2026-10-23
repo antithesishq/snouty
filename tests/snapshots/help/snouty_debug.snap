@@ -3,8 +3,8 @@ source: tests/help_snapshots.rs
 ---
 Launch a debugging session
 
-Identify the target run with exactly one of --run-id (preferred) or
---session-id.
+Identify the target run with exactly one of `run_id` (preferred) or
+`session_id`. `input_hash` and `vtime` identify the moment to debug.
 
 Example:
   snouty debug \
@@ -15,8 +15,8 @@ Example:
     --description "debug this moment" \
     --recipients "team@example.com"
 
-Extra parameters can be passed with --param, as for `snouty launch`. A --param
-cannot replace the value of a dedicated flag, such as --title:
+Extra parameters can be passed with `param`, as for `snouty launch`. A `param`
+cannot replace the value of a dedicated arg, such as `title`:
   snouty debug --run-id <run_id> --input-hash <hash> --vtime <vtime> \
     --param attrs.team=payments
 

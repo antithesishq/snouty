@@ -10,28 +10,29 @@ The script executes on a fresh branch of the multiverse, so it does not interact
 with other work happening in the session, like fuzzing or other executing
 commands.
 
-INPUT_HASH and VTIME identify the moment to execute at, and the moment must be
-warm. A warm moment is a moment that is loaded into the run. Every moment
+`input_hash` and `vtime` identify the moment to execute at, and the moment must
+be warm. A warm moment is a moment that is loaded into the run. Every moment
 generated in the run is warm: by fuzzing, and by an earlier `runs exec`, so the
 end moment of one command is warm for the next. A moment from another run is
-cold. Use --source-run-id to load a moment from a different run. Rewarming a
-moment can take minutes and depends on the magnitude of the vtime. The
-`--timeout` flag does not apply to the time it takes to rewarm a moment. Find a
-moment with `runs properties --detail`, `runs search`, or `runs events`.
+cold. Use `source_run_id` (or `source_session_id`) to load a moment from a
+different run. Rewarming a moment can take minutes and depends on the magnitude
+of the vtime. `timeout` does not apply to the time it takes to rewarm a moment.
+Find a moment with `runs properties` and `detail`, `runs search`, or
+`runs events`.
 
-The script executes on the host, or in the container that --container names. The
+The script executes on the host, or in the container that `container` names. The
 command needs tenant release 64.0 or newer; `snouty doctor` reports the tenant
 release.
 
-Without --events, the script's stdout and stderr stream to snouty's stdout and
-stderr. With --events, snouty prints every event of the timeline to stdout while
+Without `events`, the script's stdout and stderr stream to snouty's stdout and
+stderr. With `events`, snouty prints every event of the timeline to stdout while
 the script executes, as `runs logs` prints them: the script's output, the
 workload's logs and assertions, and Antithesis events. On exit, a trailer on
 stderr documents the branch's end moment, to chain a follow-up command from. A
 non-zero exit code, a timeout, or a truncated stream fails snouty with exit code
 1.
 
-Omit SCRIPT to read the script from stdin — a pipe, a redirect, or a heredoc.
+Omit `script` to read the script from stdin — a pipe, a redirect, or a heredoc.
 
 Examples:
   snouty runs exec <run_id> <hash> <vtime> 'uname -a'

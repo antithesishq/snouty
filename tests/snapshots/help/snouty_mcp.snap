@@ -18,7 +18,8 @@ runs_logs, runs_search, runs_exec, debug, docs_tree, docs_show, docs_search and
 doctor. Each tool runs its snouty command in JSON mode and returns what the
 command prints: stdout, then stderr in a second block when there is any. The
 params of a tool are the arguments of its command, by name. A command that fails
-marks the result isError.
+marks the result isError. One more tool, tool_help, returns the full help of a
+tool, which names its params.
 
 All tools but debug are marked read-only. debug starts a debugging session,
 which uses your tenant's resources. runs_exec runs a bash script from the client

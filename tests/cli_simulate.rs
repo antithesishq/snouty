@@ -854,6 +854,17 @@ fn catastrophic_startup_reports_hidden_boot_console() {
 }
 
 #[test]
+fn ssh_readiness_retries_promptly_after_a_failed_connection() {
+    let mut simulation = Simulation::start("ssh-retry");
+    simulation.wait_for("rollout_started", "yes");
+    let delay: f64 = simulation.read("ssh_retry_delay").parse().unwrap();
+    assert!(delay < 0.8, "SSH retry took {delay} seconds");
+    let options: Vec<String> = serde_json::from_str(&simulation.read("readiness_options")).unwrap();
+    assert_eq!(options, ["-o", "ConnectTimeout=1"]);
+    assert!(simulation.read("ssh_config").contains("ConnectTimeout 2"));
+}
+
+#[test]
 fn ssh_authentication_failure_stops_qemu_without_waiting_for_timeout() {
     let mut simulation = Simulation::start("auth-failure");
     let output = simulation.finish();

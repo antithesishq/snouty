@@ -90,6 +90,7 @@ async fn tools_run_their_commands_in_json_mode() {
             "docs_show",
             "docs_search",
             "doctor",
+            "tool_help",
         ]
     );
 
@@ -118,6 +119,11 @@ async fn tools_run_their_commands_in_json_mode() {
     .await;
     assert_eq!(result.is_error, Some(true));
     assert_eq!(text(&result), "invalid params: unknown param: web");
+
+    // tool_help returns a tool's help page without running a command.
+    let result = call(&client, "tool_help", json!({ "tool": "runs_logs" })).await;
+    assert_eq!(result.is_error, Some(false));
+    assert!(text(&result).contains("`begin_vtime`"), "{}", text(&result));
 
     // A docs tool reads the cached database.
     let result = call(

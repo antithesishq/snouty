@@ -3,11 +3,11 @@ source: tests/help_snapshots.rs
 ---
 Run an event-set DSL query against a run's events.
 
-For how a run is structured (timelines, input_hash, vtime), read
-`snouty runs logs --help`.
+For how a run is structured (timelines, input_hash, vtime), read the help of
+`runs logs`.
 
 How to read the results: The output is a sample of the matching events, and they
-can come from different timelines. The server returns at most --limit events
+can come from different timelines. The server returns at most `limit` events
 (default 50, maximum 999) in no fixed order. When the output reaches the limit,
 stderr says "Additional results may be available". Then any count or pattern in
 the output holds for the sample, not for the run: if all 50 events come from
@@ -19,7 +19,7 @@ relate an event to others on its own timeline, use fold, with_last, or with_next
 in the query. To read the whole timeline up to one event, run
 `snouty runs logs <run_id> <input_hash> <vtime>` with that event's moment.
 
-QUERY is a pipeline of dot-separated verbs. The first verb reads all events in
+`query` is a pipeline of dot-separated verbs. The first verb reads all events in
 the run. Each later verb reads the output of the verb before it.
 
 Verbs:
@@ -68,7 +68,7 @@ fold, with_last, and with_next cause the API to scan a lot of data before
 returning. On a large run, the scan can take more than 10 minutes. Use simpler
 operations when possible.
 
-Query snippets (each is a complete QUERY, ready to paste):
+Query snippets (each is a complete `query`, ready to paste):
 
   # log text contains a substring
   contains({output_text: "connection refused"})
@@ -111,8 +111,8 @@ the Antithesis event shapes — SDK assertions, faults, container lifecycle, tes
 composer — each in their own concise form.
 Rows reshaped by map/narrow/fold print as raw JSON.
 
-Add --count to print how many events in the whole run match the query, instead
-of a sample. No limit applies.
+`count` prints how many events in the whole run match the query, instead of a
+sample. No limit applies.
 
 The run must be ready or complete. If it is not, the command waits until it is
 ready, as `snouty runs exec` does, and shows a line on stderr.
@@ -124,7 +124,7 @@ Add --json for machine-readable output. Each event prints as one JSON object on
 its own line:
   snouty --json runs search <run_id> 'contains({output_text: "err"})' \
     | jq -r .moment.vtime
-With --count, the count prints as one JSON object:
+With `count`, the count prints as one JSON object:
   snouty --json runs search <run_id> 'contains({output_text: "err"})' \
     --count | jq .count
 

@@ -1,6 +1,6 @@
 List recent runs (the default when `snouty runs` runs with no subcommand).
 
-Columns: RUN ID, STATUS, CREATED, LAUNCHER, RUN. RUN is the test name. For a run with no test name, RUN is the first line of its description, or `-` when it has none. Use --detail for the full description.
+Columns: RUN ID, STATUS, CREATED, LAUNCHER, RUN. RUN is the test name. For a run with no test name, RUN is the first line of its description, or `-` when it has none. `detail` prints the full description.
 
 Add --json for machine-readable output. Each run prints as one JSON object on its own line, in the order the server returns them:
   snouty --json runs list | jq -r .run_id

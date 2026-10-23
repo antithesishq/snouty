@@ -13,12 +13,15 @@ use semver::Version;
 use snouty::OutputOptions;
 use snouty::api::AntithesisApi;
 use snouty::auth::initialize_credential_store;
-use snouty::cli::{Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs, UpdateChannel};
+use snouty::cli::{
+    Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs, UpdateChannel, gated_command_error,
+};
 use snouty::compose;
 use snouty::config;
 use snouty::container;
 use snouty::docs;
 use snouty::error::user_error;
+use snouty::features;
 use snouty::git::{self, GitHubRepo};
 use snouty::login::cmd_login;
 use snouty::params::{
@@ -59,6 +62,7 @@ async fn main() {
     env_logger::Builder::from_default_env()
         .format(|buf, record| writeln!(buf, "{}", record.args()))
         .init();
+    snouty::mcp::exit_with_server();
     if let Err(report) = run(Cli::parse()).await {
         // One rendering for every error: `render_report` collapses the chain
         // index for single errors and wraps overlong prose, both printing
@@ -87,6 +91,10 @@ async fn run(cli: Cli) -> Result<()> {
     // takes them as one value instead of a swappable positional bool pair.
     let output = OutputOptions { json, verbose };
 
+    if let Some(report) = gated_command_error(&command, &features::enabled()) {
+        return Err(report);
+    }
+
     if let Err(err) = initialize_credential_store() {
         eprintln!("warning: Could not initialize system keychain credential storage: {err:?}");
     }
@@ -94,7 +102,7 @@ async fn run(cli: Cli) -> Result<()> {
     // Resolve all settings up front. A broken/unreadable settings file fails
     // here, cleanly and once, before any command runs — including commands that
     // don't read settings. That keeps dispatch a single flat match.
-    let settings = Settings::resolve(settings_path, profile.clone());
+    let settings = Settings::resolve(settings_path.clone(), profile.clone());
     let result = match command {
         Commands::Completions { shell } => cmd_completions(shell),
         Commands::Version => {
@@ -122,6 +130,22 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Validate(args) => validate::cmd_validate(args, &settings?).await,
         Commands::Doctor(args) => {
             snouty::doctor::cmd_doctor(&settings?, output, args.offline).await
+        }
+        Commands::Mcp(args) => {
+            // The tool calls resolve the settings again, in each child.
+            settings?;
+            snouty::mcp::cmd_mcp(snouty::mcp::Globals {
+                settings: settings_path,
+                profile,
+                verbose,
+                max_concurrent_calls: args.max_concurrent_calls,
+            })
+            .await?;
+            // rmcp reads stdin on a blocking thread, and the runtime waits for
+            // that thread as it shuts down. After a stop signal, stdin can
+            // still be open, so exit here. The tool calls' children are
+            // already killed.
+            std::process::exit(0)
         }
     };
 
@@ -160,6 +184,7 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
         Commands::Version => Some("version"),
         Commands::Update(_) => Some("update"),
         Commands::Login { .. } => Some("login"),
+        Commands::Mcp(_) => Some("mcp"),
     }
 }
 

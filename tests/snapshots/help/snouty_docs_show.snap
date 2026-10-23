@@ -12,7 +12,7 @@ Usage: snouty docs show [OPTIONS] <PATH>
 
 Arguments:
   <PATH>
-          Page path (e.g. "getting_started/overview")
+          Page path (e.g. "product/writing_tests/controlling_faults")
 
 Options:
   -h, --help

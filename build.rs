@@ -20,7 +20,7 @@ fn main() {
 
 /// How many `"additionalProperties": false` occurrences the vendored spec
 /// carries (tenant release 64.0: none).
-const EXPECTED_ADDITIONAL_PROPERTIES_FALSE: usize = 0;
+const EXPECTED_ADDITIONAL_PROPERTIES_FALSE: usize = 1;
 
 fn generate_api_client(out_dir: &Path) {
     let file = std::fs::File::open("src/openapi.json").unwrap();
@@ -59,6 +59,7 @@ fn generate_api_client(out_dir: &Path) {
     mark_vtime_schema(&mut spec_value);
     open_performance_tier(&mut spec_value);
     open_sub_status(&mut spec_value);
+    dedupe_property_status_filter(&mut spec_value);
     unrequire_search_limit_default(&mut spec_value);
     unrequire_search_count_validate_only_default(&mut spec_value);
     add_mvd_test_name(&mut spec_value);
@@ -393,6 +394,23 @@ fn open_sub_status(spec: &mut serde_json::Value) {
          src/api.rs and `open_sub_status` in build.rs"
     );
     spec.pointer_mut(POINTER).unwrap()["format"] = serde_json::json!(SUB_STATUS_FORMAT);
+}
+
+/// Point the `/properties` status filter at `Property_Status`. The spec
+/// lists each status twice, once in lowercase, and typify cannot give the
+/// two spellings distinct variant names.
+fn dedupe_property_status_filter(spec: &mut serde_json::Value) {
+    const POINTER: &str = "/paths/~1api~1v0~1runs~1{run_id}~1properties/get/parameters/3/schema";
+    let items = remove_schema_key(spec, POINTER, "items", "dedupe_property_status_filter");
+    assert!(
+        items["enum"]
+            .as_array()
+            .is_some_and(|values| values.contains(&serde_json::json!("passing"))),
+        "the /properties status filter no longer lists lowercase statuses; delete \
+         `dedupe_property_status_filter` in build.rs"
+    );
+    spec.pointer_mut(POINTER).unwrap()["items"] =
+        serde_json::json!({"$ref": "#/components/schemas/Property_Status"});
 }
 
 /// The format `open_sub_status` marks the schema with, for `with_conversion`.

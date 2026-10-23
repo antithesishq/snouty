@@ -379,8 +379,10 @@ fn normalize_property(property: Property) -> Result<Property> {
                 .collect::<Result<Vec<_>, _>>()
                 .wrap_err("re-serializing property examples")?;
             Ok(Property::NonEventProperty(NonEventProperty {
+                category: p.category,
                 counterexample_count: p.counterexample_count,
                 counterexamples,
+                event_set: p.event_set,
                 example_count: p.example_count,
                 examples,
                 group: p.group,
@@ -388,7 +390,9 @@ fn normalize_property(property: Property) -> Result<Property> {
                 is_event: p.is_event,
                 is_group: p.is_group,
                 name: p.name,
+                passing_predicate: p.passing_predicate,
                 status: p.status,
+                team: p.team,
             }))
         }
         other => Ok(other),
@@ -1001,12 +1005,12 @@ impl AntithesisApi {
                     .fetch_run_properties_page(&run_id, after.as_deref(), status, MAX_PAGE_LIMIT)
                     .await?
                     .untag();
-                let generated::types::PropertyListResponse { data, next_cursor } = page;
-                let normalized = data
+                let normalized = page
+                    .data
                     .into_iter()
                     .map(normalize_property)
                     .collect::<Result<Vec<_>>>()?;
-                Ok((normalized, next_cursor))
+                Ok((normalized, page.next_cursor))
             }
         })
     }
@@ -1126,7 +1130,7 @@ impl AntithesisApi {
             request = request.after(cursor);
         }
         if let Some(status) = status {
-            request = request.status(status);
+            request = request.status(vec![status]);
         }
 
         match request.send().await {
@@ -3186,10 +3190,11 @@ mod tests {
                 "get getRunBuildLogs",
                 "get getRunLogs",
                 "get getRunModule",
+                "get getRunProperty",
                 "get getUsage",
+                "get getUsageCap",
                 "get getUsageSummary",
                 "get getVersion",
-                "get listEntitlements",
                 "get listRunModuleInstances",
                 "get listRunModules",
                 "get listRunProperties",
@@ -3202,6 +3207,7 @@ mod tests {
                 "post launchTest",
                 "post search",
                 "post searchCount",
+                "post streamRunStatus",
             ],
             "openapi.json changed its method↔operation mapping; re-verify \
              that every GET is a pure read before trusting the retry gating"

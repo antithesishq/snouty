@@ -14,15 +14,12 @@ pkgs.mkShell {
   # a developer runs by hand.
   packages = with pkgs; [
     rustToolchain
+    # The nix CI leg runs `cargo nextest` inside this shell.
     cargo-nextest
-    uv
-    zizmor
-    actionlint
-    shellcheck
-    taplo
-    cargo-shear
-    cargo-deny
+    # mise installs the lint tools at the versions in mise.toml.
+    mise
     npins
+    # mise has nixfmt for Linux only.
     nixfmt
     # snouty drives Docker Compose v2 via the `docker-compose` binary.
     docker-compose

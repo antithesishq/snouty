@@ -1,0 +1,18 @@
+# Tools for the checks in AGENTS.md, the Stop hooks and CI. Run `mise install`.
+# CI installs the same versions from mise.lock, which records each checksum.
+# Rust comes from rustup, through rust-toolchain.toml.
+[tools]
+uv = "0.13.5"
+typos = "1.50.3"
+shellcheck = "0.11.0"
+taplo = "0.10.0"
+actionlint = "1.7.12"
+zizmor = "1.31.1"
+cargo-deny = "0.20.2"
+"github:Boshen/cargo-shear" = "1.14.0"
+"github:nextest-rs/nextest" = { version = "0.9.149", version_prefix = "cargo-nextest-" }
+# nixfmt releases only a Linux x86_64 binary. On macOS, use the nix shell.
+"github:NixOS/nixfmt" = { version = "1.5.0", os = ["linux"] }
+
+[settings]
+lockfile = true

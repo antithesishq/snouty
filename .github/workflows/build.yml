@@ -67,7 +67,9 @@ jobs:
           check-args: --all-targets
           args: -D warnings
 
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          install_args: uv
 
       - name: Ruff format
         run: uv run --locked ruff format --check scripts
@@ -90,144 +92,70 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          install_args: typos
+
       - name: Spell Check Repo
-        uses: crate-ci/typos@00f422f3b19c57bc6338715ebfe3316d38768461 # v1.50.3
-  zizmor:
+        run: typos
+  # Each step runs even when an earlier one fails, so one run reports every
+  # finding.
+  lint:
     runs-on: ubuntu-latest
     needs: skip-check
     if: needs.skip-check.outputs.should_skip != 'true'
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          persist-credentials: false
-
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
-
-      # Offline: the online audits ask the GitHub API about upstream tags and
-      # advisories, so their result can change with no change here. For
-      # example, dtolnay/rust-toolchain moves its v1 tag on each Rust release.
-      - name: Audit the workflows
-        run: uvx zizmor==1.31.1 --offline .
-  actionlint:
-    runs-on: ubuntu-latest
-    needs: skip-check
-    if: needs.skip-check.outputs.should_skip != 'true'
-    env:
-      ACTIONLINT_VERSION: 1.7.12
-      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          persist-credentials: false
-
-      # The runner image has shellcheck, so actionlint also checks `run:` scripts.
-      - name: Install actionlint
-        run: |
-          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          curl -sSfLO "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
-          echo "${ACTIONLINT_SHA256}  ${tarball}" | sha256sum -c -
-          tar -xzf "$tarball" -C "$RUNNER_TEMP" actionlint
-
-      - name: actionlint
-        run: |
-          "$RUNNER_TEMP/actionlint"
-  shellcheck:
-    runs-on: ubuntu-latest
-    needs: skip-check
-    if: needs.skip-check.outputs.should_skip != 'true'
-    env:
-      SHELLCHECK_VERSION: v0.11.0
-      SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          persist-credentials: false
-
-      # Pin a release instead of the runner's older preinstalled shellcheck.
-      - name: Install shellcheck
-        run: |
-          tarball="shellcheck-$SHELLCHECK_VERSION.linux.x86_64.tar.xz"
-          curl -fsSLO "https://github.com/koalaman/shellcheck/releases/download/$SHELLCHECK_VERSION/$tarball"
-          echo "$SHELLCHECK_SHA256  $tarball" | sha256sum -c -
-          tar -xJf "$tarball"
-          mkdir -p "$HOME/.local/bin"
-          mv "shellcheck-$SHELLCHECK_VERSION/shellcheck" "$HOME/.local/bin/"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Shellcheck
-        run: shellcheck --version && scripts/check-shell.sh
-  taplo:
-    runs-on: ubuntu-latest
-    needs: skip-check
-    if: needs.skip-check.outputs.should_skip != 'true'
-    env:
-      TAPLO_VERSION: 0.10.0
-      TAPLO_SHA256: dad2faf6377d2daa4f4fabf459fe7ccfb98a5448f0d4bca8270ca9acb0409bfe
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          token: ${{secrets.GITHUB_TOKEN}}
-          persist-credentials: false
-
-      # The release binary is static. The checksum is of the unpacked binary.
-      - name: Install taplo
-        run: |
-          bin="$RUNNER_TEMP/bin"
-          mkdir -p "$bin"
-          curl -fsSL "https://github.com/tamasfe/taplo/releases/download/$TAPLO_VERSION/taplo-linux-x86_64.gz" | gunzip > "$bin/taplo"
-          echo "$TAPLO_SHA256  $bin/taplo" | sha256sum -c -
-          chmod +x "$bin/taplo"
-          echo "$bin" >> "$GITHUB_PATH"
-
-      - name: TOML format
-        run: taplo fmt --check
-  nixfmt:
-    runs-on: ubuntu-latest
-    needs: skip-check
-    if: needs.skip-check.outputs.should_skip != 'true'
-    env:
-      NIXFMT_VERSION: 1.5.0
-      NIXFMT_SHA256: aa029247ab89c897e2f3948463967553f902f86e86e3402fa28cb29c4a44f745
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          token: ${{secrets.GITHUB_TOKEN}}
-          persist-credentials: false
-
-      # The release binary is static, so the job needs no Nix install.
-      - name: Install nixfmt
-        run: |
-          bin="$RUNNER_TEMP/bin"
-          mkdir -p "$bin"
-          curl -fsSL -o "$bin/nixfmt" "https://github.com/NixOS/nixfmt/releases/download/v$NIXFMT_VERSION/nixfmt"
-          echo "$NIXFMT_SHA256  $bin/nixfmt" | sha256sum -c -
-          chmod +x "$bin/nixfmt"
-          echo "$bin" >> "$GITHUB_PATH"
-
-      # npins generates npins/default.nix, so its format is not ours to keep.
-      - name: Nix format
-        run: git ls-files -z '*.nix' ':!:npins/*' | xargs -0 nixfmt --check
-  # Finds dependencies in Cargo.toml that no code uses.
-  cargo-shear:
-    runs-on: ubuntu-latest
-    needs: skip-check
-    if: needs.skip-check.outputs.should_skip != 'true'
-    steps:
+      # cargo-shear and cargo-deny read `cargo metadata`.
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: stable
 
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          token: ${{secrets.GITHUB_TOKEN}}
           persist-credentials: false
 
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          tool: cargo-shear@1.14.0
+          install_args: zizmor actionlint shellcheck taplo github:NixOS/nixfmt github:Boshen/cargo-shear cargo-deny
 
-      - name: Cargo shear
+      # Offline: the online audits ask the GitHub API about upstream tags and
+      # advisories, so their result can change with no change here. For
+      # example, dtolnay/rust-toolchain moves its v1 tag on each Rust release.
+      - name: zizmor
+        run: zizmor --offline .
+
+      # actionlint also runs shellcheck on each `run:` script.
+      - name: actionlint
+        if: ${{ !cancelled() }}
+        run: actionlint
+
+      - name: shellcheck
+        if: ${{ !cancelled() }}
+        run: shellcheck --version && scripts/check-shell.sh
+
+      - name: taplo
+        if: ${{ !cancelled() }}
+        run: taplo fmt --check
+
+      # npins generates npins/default.nix, so its format is not ours to keep.
+      - name: nixfmt
+        if: ${{ !cancelled() }}
+        run: git ls-files -z '*.nix' ':!:npins/*' | xargs -0 nixfmt --check
+
+      # Finds dependencies in Cargo.toml that no code uses.
+      - name: cargo-shear
+        if: ${{ !cancelled() }}
         run: cargo shear --locked
+
+      - name: cargo-deny licenses, bans and sources
+        if: ${{ !cancelled() }}
+        run: cargo deny --all-features check bans licenses sources
+
+      # A new advisory can appear with no change here, so it fails only the
+      # nightly and manual runs, not a pull request.
+      - name: cargo-deny advisories
+        if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+        run: cargo deny --all-features check advisories
   # Checks the workspace on the exact `rust-version` in Cargo.toml, so a bump
   # there is the only edit this job needs.
   msrv:
@@ -265,29 +193,6 @@ jobs:
       # The Linux release binaries are musl builds, with musl-only dependencies.
       - name: Check on MSRV for musl
         run: cargo check --workspace --all-targets --locked --target x86_64-unknown-linux-musl
-  cargo-deny:
-    runs-on: ubuntu-latest
-    needs: skip-check
-    if: needs.skip-check.outputs.should_skip != 'true'
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          token: ${{secrets.GITHUB_TOKEN}}
-          persist-credentials: false
-
-      # v2.1.1 runs cargo-deny 0.20.2.
-      - name: Check licenses, bans and sources
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check bans licenses sources
-
-      # A new advisory can appear with no change here, so it fails only the
-      # nightly and manual runs, not a pull request.
-      - name: Check advisories
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check advisories
   test:
     runs-on: ${{ matrix.os }}
     needs: skip-check
@@ -323,10 +228,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      - name: Install Nextest
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          tool: cargo-nextest
+          install_args: github:nextest-rs/nextest
 
       # snouty always drives Docker Compose v2 via the `docker-compose` binary,
       # independent of the image runtime. The matrix exercises that binary
@@ -395,10 +299,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      - name: Install Nextest
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          tool: cargo-nextest
+          install_args: github:nextest-rs/nextest
 
       # `specs/doctor.txt` asserts that `snouty doctor` exits zero while testing
       # API connectivity, and doctor fails when it finds no container runtime.
@@ -440,10 +343,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      - name: Install Nextest
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
-          tool: cargo-nextest
+          install_args: github:nextest-rs/nextest
 
       # This job gates merges. A missing secret must fail the job, because a
       # check that does not run is worse than a check that fails.
@@ -479,14 +381,8 @@ jobs:
       - test
       - test-macos-arm
       - staging
-      - zizmor
-      - actionlint
-      - shellcheck
-      - taplo
-      - nixfmt
-      - cargo-shear
       - msrv
-      - cargo-deny
+      - lint
     if: always()
     steps:
       - name: Verify every needed job

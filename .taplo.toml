@@ -1,0 +1,15 @@
+# TOML formatter config (https://taplo.tamasfe.dev).
+
+# taplo does not read .gitignore. Skip build output, the uv virtualenv, and
+# agent worktrees, which hold copies of this repository.
+exclude = ["target/**", ".venv/**", ".claude/**"]
+
+[formatting]
+# Keep a long array on one line. The default breaks each long `features = [...]`
+# in Cargo.toml into one entry per line.
+array_auto_expand = false
+# Keep a multi-line array on many lines. `uv add` writes the dependency arrays
+# in pyproject.toml that way.
+array_auto_collapse = false
+# pyproject.toml indents its array entries with four spaces.
+indent_string = "    "

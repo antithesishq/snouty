@@ -156,6 +156,31 @@ jobs:
 
       - name: Shellcheck
         run: shellcheck --version && scripts/check-shell.sh
+  taplo:
+    runs-on: ubuntu-latest
+    needs: skip-check
+    if: needs.skip-check.outputs.should_skip != 'true'
+    env:
+      TAPLO_VERSION: 0.10.0
+      TAPLO_SHA256: dad2faf6377d2daa4f4fabf459fe7ccfb98a5448f0d4bca8270ca9acb0409bfe
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          token: ${{secrets.GITHUB_TOKEN}}
+          persist-credentials: false
+
+      # The release binary is static. The checksum is of the unpacked binary.
+      - name: Install taplo
+        run: |
+          bin="$RUNNER_TEMP/bin"
+          mkdir -p "$bin"
+          curl -fsSL "https://github.com/tamasfe/taplo/releases/download/$TAPLO_VERSION/taplo-linux-x86_64.gz" | gunzip > "$bin/taplo"
+          echo "$TAPLO_SHA256  $bin/taplo" | sha256sum -c -
+          chmod +x "$bin/taplo"
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: TOML format
+        run: taplo fmt --check
   test:
     runs-on: ${{ matrix.os }}
     needs: skip-check
@@ -350,6 +375,7 @@ jobs:
       - zizmor
       - actionlint
       - shellcheck
+      - taplo
     if: always()
     steps:
       - name: Verify every needed job

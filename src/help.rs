@@ -66,6 +66,7 @@ help_pages! {
     RunsWait => "runs_wait",
     RunsCancel => "runs_cancel",
     RunsProperties => "runs_properties",
+    RunsStream => "runs_stream",
     RunsBuildLogs => "runs_build_logs",
     RunsLogs => "runs_logs",
     RunsExec => "runs_exec",

@@ -17,9 +17,10 @@ use serde_json::{Map, Value, json};
 use chrono::{DateTime, Utc};
 
 use crate::api::{
-    AntithesisApi, Event, EventProperty, ExecRequest, Moment, NonEventProperty, Property,
-    PropertyStatus, RewarmSource, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
-    SEARCH_DEFAULT_LIMIT, SearchMode,
+    AntithesisApi, DEFAULT_RUN_STREAM_NOTIFICATIONS, Event, EventProperty, ExecRequest, Moment,
+    NonEventProperty, Property, PropertyStatus, RewarmSource, RunDetail, RunStatus,
+    RunStreamFilter, RunStreamNotification, RunSummary, RunsFilterOptions, SEARCH_DEFAULT_LIMIT,
+    SearchMode,
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs, WaitUntil};
 use crate::error::{api_error_message, api_error_status, user_error};
@@ -35,6 +36,7 @@ use crate::time::{HumanDuration, format_local_with_offset};
 use crate::vtime::VTime;
 
 mod event_search;
+mod run_stream;
 
 use event_search::EventOutput;
 
@@ -194,6 +196,24 @@ pub async fn cmd_runs(
                 group: group.as_deref(),
             };
             cmd_runs_properties(&run_id, filter, detail, settings, output).await
+        }
+        Some(RunsCommands::Stream {
+            run_id,
+            examples,
+            property_ids,
+            detail,
+        }) => {
+            reject_detail_with_json(output.json, detail)?;
+            let notification_types = examples.then(|| {
+                let mut types = DEFAULT_RUN_STREAM_NOTIFICATIONS.to_vec();
+                types.push(RunStreamNotification::NewExamplesFound);
+                types
+            });
+            let filter = RunStreamFilter {
+                notification_types,
+                property_ids,
+            };
+            cmd_runs_stream(&run_id, filter, detail, settings, output).await
         }
         Some(RunsCommands::BuildLogs { run_id }) => {
             // `--json` on build-logs is the raw passthrough: the records
@@ -592,8 +612,8 @@ struct PropertyFilter<'a> {
 
 /// `--detail` formats human output, so it conflicts with `--json` (which always
 /// emits the full structured data). Reject the combination with a clear error
-/// rather than silently ignoring one. Called once from [`cmd_runs`] for whichever
-/// subcommand carries `--detail` (`runs list`, `runs properties`).
+/// rather than silently ignoring one. Called from [`cmd_runs`] for whichever
+/// subcommand carries `--detail` (`runs list`, `runs properties`, `runs stream`).
 fn reject_detail_with_json(json: bool, detail: bool) -> Result<()> {
     if json && detail {
         return Err(user_error("--detail and --json cannot be combined")
@@ -1525,6 +1545,45 @@ fn raw_requires_json_error() -> color_eyre::eyre::Report {
         .suggestion("add --json, or drop --raw for the rendered output")
 }
 
+async fn cmd_runs_stream(
+    run_id: &str,
+    filter: RunStreamFilter,
+    detail: bool,
+    settings: &Settings,
+    OutputOptions { json, verbose }: OutputOptions,
+) -> Result<()> {
+    debug!("streaming status for run: {run_id}");
+
+    let api = AntithesisApi::new(settings, verbose)?;
+    let mut stream = match api.stream_run_status(run_id, filter).await {
+        Ok(stream) => stream,
+        Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
+    };
+    if !json {
+        // The stream sends nothing while no property changes, so say that it
+        // is open.
+        eprintln!("Streaming property changes for run {run_id} until the run is final.");
+    }
+    let mut stdout = std::io::stdout().lock();
+    while let Some(line) = stream.try_next().await? {
+        let record = run_stream::Record::parse(&line)?;
+        if json {
+            writeln!(stdout, "{}", run_stream::json_line(&record, line))?;
+        } else {
+            write!(stdout, "{}", run_stream::render_record(&record, detail))?;
+        }
+        if let run_stream::Record::Finalized = record {
+            return Ok(());
+        }
+    }
+    // Without RUN_FINALIZED, the run can still change.
+    Err(eyre!("the stream ended before the run was final")
+        .note("later changes are missing")
+        .suggestion(format!(
+            "read the current results with `snouty runs properties {run_id}`, or stream again with `snouty runs stream {run_id}`"
+        )))
+}
+
 async fn cmd_runs_build_logs(
     run_id: &str,
     settings: &Settings,
@@ -2093,7 +2152,7 @@ fn normalize_vtime_field(entry: &mut Value, key: &str) -> Option<VTime> {
 }
 
 /// Extract the message from a `Stream_Error` record, the shape every
-/// streaming endpoint (logs, events, build logs) uses to report a
+/// streaming endpoint (logs, events, build logs, run status) uses to report a
 /// server-side failure that happens after the `200 OK` is already committed:
 /// `{"error": "..."}` as its own NDJSON line, usually ending the stream.
 ///
@@ -2106,7 +2165,8 @@ fn normalize_vtime_field(entry: &mut Value, key: &str) -> Option<VTime> {
 /// own (an event's payload is arbitrary workload JSON), but data records
 /// always carry their schema's required envelope — `moment` for log/event
 /// records, `timestamp` for build log lines — which `Stream_Error` never has,
-/// so the envelope's absence disambiguates.
+/// so the envelope's absence disambiguates. The run status stream checks its
+/// own `type` envelope before it calls this.
 fn stream_error_message(entry: &Value) -> Option<&str> {
     let obj = entry.as_object()?;
     if obj.contains_key("moment") || obj.contains_key("timestamp") {

@@ -39,7 +39,9 @@ pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
     BuildLogLine, Event, EventProperty, ExecuteCommandRequestSourceRunId as SourceRunId,
     ExecuteCommandRequestSourceSessionId as SourceSessionId, Moment, NonEventProperty,
-    PerformanceTier, Property, PropertyStatus, RunDetail, RunStatus, RunSummary,
+    PerformanceTier, Property, PropertyStatus, RunDetail, RunStatus,
+    RunStatusStreamRequestNotificationTypeFilterItem as RunStreamNotification,
+    RunStreamNotificationType, RunSummary,
 };
 
 /// The outcome of a launch or debugging-launch request, and the `--json` output
@@ -397,6 +399,35 @@ fn normalize_property(property: Property) -> Result<Property> {
         }
         other => Ok(other),
     }
+}
+
+/// Decode a JSON array of properties, as a stream notification's `data`
+/// carries it, each coerced into its `is_event` variant.
+pub(crate) fn decode_properties(data: &serde_json::Value) -> Result<Vec<Property>> {
+    <Vec<Property> as serde::Deserialize>::deserialize(data)?
+        .into_iter()
+        .map(normalize_property)
+        .collect()
+}
+
+/// The notification types the run status stream sends when the request
+/// names none: discovery and verdict changes, and RUN_FINALIZED, which the
+/// server always sends. NEW_EXAMPLES_FOUND is opt-in, and a request that
+/// names types replaces this set, so asking for it names this set too.
+pub const DEFAULT_RUN_STREAM_NOTIFICATIONS: [RunStreamNotification; 3] = [
+    RunStreamNotification::NewPropertiesAdded,
+    RunStreamNotification::PropertiesPassed,
+    RunStreamNotification::PropertiesFailed,
+];
+
+/// The notifications [`AntithesisApi::stream_run_status`] asks for.
+#[derive(Debug, Default)]
+pub struct RunStreamFilter {
+    /// Only these notification types; `None` asks for the server's default
+    /// set, [`DEFAULT_RUN_STREAM_NOTIFICATIONS`].
+    pub notification_types: Option<Vec<RunStreamNotification>>,
+    /// Stream only these properties. An empty list streams every property.
+    pub property_ids: Vec<String>,
 }
 
 /// Caps connection setup (DNS, TCP, TLS) so no command hangs on an unreachable host.
@@ -1013,6 +1044,25 @@ impl AntithesisApi {
                 Ok((normalized, page.next_cursor))
             }
         })
+    }
+
+    /// Open the run's status stream. It yields NDJSON notifications until
+    /// the run is final.
+    pub async fn stream_run_status(
+        &self,
+        run_id: &str,
+        filter: RunStreamFilter,
+    ) -> Result<JsonStream> {
+        let property_filter = (!filter.property_ids.is_empty()).then_some(filter.property_ids);
+        let body = generated::types::RunStatusStreamRequest {
+            notification_type_filter: filter.notification_types,
+            property_filter,
+        };
+        let request = self.client.stream_run_status().run_id(run_id).body(body);
+        match request.send().await {
+            Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
+            Err(err) => Err(format_api_client_error(err).await),
+        }
     }
 
     /// Fetch one property by its ID.

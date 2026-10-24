@@ -18,9 +18,10 @@ use serde_json::{Map, Value, json};
 use chrono::{DateTime, Utc};
 
 use crate::api::{
-    AntithesisApi, Event, EventProperty, ExecRequest, Moment, NonEventProperty, Property,
-    PropertyStatus, RewarmSource, RunDetail, RunStatus, RunStreamFilter, RunSummary,
-    RunsFilterOptions, SEARCH_DEFAULT_LIMIT, SearchMode,
+    AntithesisApi, DEFAULT_RUN_STREAM_NOTIFICATIONS, Event, EventProperty, ExecRequest, Moment,
+    NonEventProperty, Property, PropertyStatus, RewarmSource, RunDetail, RunStatus,
+    RunStreamFilter, RunStreamNotification, RunSummary, RunsFilterOptions, SEARCH_DEFAULT_LIMIT,
+    SearchMode,
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs, WaitUntil};
 use crate::error::{api_error_message, api_error_status, user_error};
@@ -203,8 +204,13 @@ pub async fn cmd_runs(
             detail,
         }) => {
             reject_detail_with_json(output.json, detail)?;
+            let notification_types = examples.then(|| {
+                let mut types = DEFAULT_RUN_STREAM_NOTIFICATIONS.to_vec();
+                types.push(RunStreamNotification::NewExamplesFound);
+                types
+            });
             let filter = RunStreamFilter {
-                examples,
+                notification_types,
                 property_ids,
             };
             cmd_runs_stream(&run_id, filter, detail, settings, output).await
@@ -1584,12 +1590,11 @@ async fn cmd_runs_stream(
     let mut stdout = std::io::stdout().lock();
     while let Some(line) = stream.try_next().await? {
         let record = run_stream::Record::parse(&line)?;
-        let text = if json {
-            run_stream::json_line(&record, line)
+        if json {
+            writeln!(stdout, "{}", run_stream::json_line(&record, line))?;
         } else {
-            run_stream::render_record(&record, detail)
-        };
-        writeln!(stdout, "{text}")?;
+            write!(stdout, "{}", run_stream::render_record(&record, detail))?;
+        }
         if let run_stream::Record::Finalized = record {
             return Ok(());
         }
@@ -2171,7 +2176,7 @@ fn normalize_vtime_field(entry: &mut Value, key: &str) -> Option<VTime> {
 }
 
 /// Extract the message from a `Stream_Error` record, the shape every
-/// streaming endpoint (logs, events, build logs) uses to report a
+/// streaming endpoint (logs, events, build logs, run status) uses to report a
 /// server-side failure that happens after the `200 OK` is already committed:
 /// `{"error": "..."}` as its own NDJSON line, usually ending the stream.
 ///
@@ -2183,11 +2188,15 @@ fn normalize_vtime_field(entry: &mut Value, key: &str) -> Option<VTime> {
 /// A *data* record can legitimately carry a top-level `error` field of its
 /// own (an event's payload is arbitrary workload JSON), but data records
 /// always carry their schema's required envelope — `moment` for log/event
-/// records, `timestamp` for build log lines — which `Stream_Error` never has,
-/// so the envelope's absence disambiguates.
+/// records, `timestamp` for build log lines, `type` for run status
+/// notifications — which `Stream_Error` never has, so the envelope's absence
+/// disambiguates.
 fn stream_error_message(entry: &Value) -> Option<&str> {
     let obj = entry.as_object()?;
-    if obj.contains_key("moment") || obj.contains_key("timestamp") {
+    if ["moment", "timestamp", "type"]
+        .iter()
+        .any(|key| obj.contains_key(*key))
+    {
         return None;
     }
     obj.get("error")?.as_str()

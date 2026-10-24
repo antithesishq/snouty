@@ -953,6 +953,14 @@ fn mock_run_known(run_id: &str) -> bool {
     MOCK_RUNS.iter().any(|(id, ..)| *id == run_id)
 }
 
+/// Whether `run_id` is a `completed` run in MOCK_RUNS, the only kind with
+/// properties.
+fn mock_run_completed(run_id: &str) -> bool {
+    MOCK_RUNS
+        .iter()
+        .any(|&(id, status, ..)| id == run_id && status == "completed")
+}
+
 fn mock_run_not_found(run_id: &str) -> (u16, String) {
     (404, format!(r#"{{"message":"run not found: {run_id}"}}"#))
 }
@@ -1216,9 +1224,7 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
 /// run has them; any other run or property gets the bare 404 that orbitinghail
 /// sends on release 65.3.
 fn mock_route_get_run_property(run_id: &str, property_id: &str) -> (u16, String) {
-    let completed = MOCK_RUNS
-        .iter()
-        .any(|&(id, status, ..)| id == run_id && status == "completed");
+    let completed = mock_run_completed(run_id);
     let property = MOCK_COMPLETED_PROPERTIES.into_iter().find(|property| {
         serde_json::from_str::<serde_json::Value>(property).unwrap()["id"] == property_id
     });
@@ -1245,10 +1251,7 @@ fn mock_route_stream_run_status(run_id: &str, req_body: &str) -> (u16, String) {
         );
     }
     let finalized = json!({"type": "RUN_FINALIZED", "data": []});
-    if MOCK_RUNS
-        .iter()
-        .any(|&(id, status, ..)| id == run_id && status == "completed")
-    {
+    if mock_run_completed(run_id) {
         return (200, format!("{finalized}\n"));
     }
     if !matches!(run_id, "run-2" | "run-stream-error" | "run-stream-cut") {

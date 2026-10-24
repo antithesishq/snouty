@@ -123,10 +123,12 @@ pub(super) enum Line {
 
 /// Turns records into lines. A status notification repeats the samples that
 /// the server keeps for a property, so a sample prints only the first time it
-/// arrives.
+/// arrives. A verdict prints once per property and outcome: as a sample of
+/// that outcome in the verdict notification, or else as the property alone.
 #[derive(Default)]
 pub(super) struct Denormalizer {
-    seen: HashSet<(String, Outcome, String)>,
+    samples: HashSet<(String, Outcome, String)>,
+    verdicts: HashSet<(String, Outcome)>,
 }
 
 impl Denormalizer {
@@ -139,40 +141,39 @@ impl Denormalizer {
                         property_id: property_id(&property),
                         name: property.name().to_string(),
                     };
-                    std::iter::once(catalogued).chain(samples(property))
+                    std::iter::once(catalogued).chain(self.new_samples(property))
                 })
-                .filter(|line| self.first_time(line))
                 .collect(),
             Record::Samples {
-                verdict,
+                verdict: None,
+                properties,
+            } => properties
+                .into_iter()
+                .flat_map(|property| self.new_samples(property))
+                .collect(),
+            Record::Samples {
+                verdict: Some(verdict),
                 properties,
             } => properties
                 .into_iter()
                 .flat_map(|property| {
                     let id = property_id(&property);
-                    let mut lines: Vec<Line> = samples(property)
-                        .into_iter()
-                        .filter(|line| self.first_time(line))
-                        .collect();
+                    let mut lines = self.new_samples(property);
                     // The final PROPERTIES_PASSED lists many properties with
                     // no sample, or only repeated ones (observed on the
                     // antithesis-orbitinghail tenant, release 65.3), and the
-                    // verdict is the news.
-                    // A new sample of the other outcome does not show it:
-                    // a passing property can carry a counterexample.
-                    if let Some(outcome) = verdict
-                        && !lines.iter().any(
-                            |line| matches!(line, Line::Sample { outcome: o, .. } if *o == outcome),
-                        )
-                    {
-                        let line = Line::Sample {
-                            outcome,
+                    // verdict is the news. A sample of the other outcome does
+                    // not show it: a passing property can carry a
+                    // counterexample.
+                    let shown = lines.iter().any(
+                        |line| matches!(line, Line::Sample { outcome, .. } if *outcome == verdict),
+                    );
+                    if self.verdicts.insert((id.clone(), verdict)) && !shown {
+                        lines.push(Line::Sample {
+                            outcome: verdict,
                             property_id: id,
                             sample: Sample::None,
-                        };
-                        if self.first_time(&line) {
-                            lines.push(line);
-                        }
+                        });
                     }
                     lines
                 })
@@ -184,25 +185,27 @@ impl Denormalizer {
         }
     }
 
-    fn first_time(&mut self, line: &Line) -> bool {
-        let Line::Sample {
-            outcome,
-            property_id,
-            sample,
-        } = line
-        else {
-            return true;
-        };
-        // The empty key stands for the verdict alone. A sample also shows its
-        // verdict, so it claims that key too.
-        let verdict = (property_id.clone(), *outcome, String::new());
-        let key = match sample {
-            Sample::Moment { input_hash, vtime } => format!("{input_hash} {vtime}"),
-            Sample::Value(value) => value.to_string(),
-            Sample::None => return self.seen.insert(verdict),
-        };
-        self.seen.insert(verdict);
-        self.seen.insert((property_id.clone(), *outcome, key))
+    /// The property's samples that have not printed yet.
+    fn new_samples(&mut self, property: Property) -> Vec<Line> {
+        samples(property)
+            .into_iter()
+            .filter(|line| {
+                let Line::Sample {
+                    outcome,
+                    property_id,
+                    sample,
+                } = line
+                else {
+                    return true;
+                };
+                let key = match sample {
+                    Sample::Moment { input_hash, vtime } => format!("{input_hash} {vtime}"),
+                    Sample::Value(value) => value.to_string(),
+                    Sample::None => String::new(),
+                };
+                self.samples.insert((property_id.clone(), *outcome, key))
+            })
+            .collect()
     }
 }
 
@@ -450,9 +453,21 @@ mod tests {
         );
         assert_eq!(
             rendered(&mut denormalizer, passed.clone()),
-            ["passed      b2"]
+            ["passed      a1", "passed      b2"]
         );
         assert!(rendered(&mut denormalizer, passed).is_empty());
+    }
+
+    #[test]
+    fn a_new_sample_of_the_verdict_shows_the_verdict() {
+        let mut denormalizer = Denormalizer::default();
+        let p = property("a1", "Failing", json!([]), json!([moment("-1", "1.5")]));
+        let failed = json!({"type": "PROPERTIES_FAILED", "data": [p]});
+        assert_eq!(
+            rendered(&mut denormalizer, failed.clone()),
+            ["failed      a1  -1  1.5"]
+        );
+        assert!(rendered(&mut denormalizer, failed).is_empty());
     }
 
     #[test]

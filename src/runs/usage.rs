@@ -145,8 +145,9 @@ async fn total_by_period(
     limit: NonZeroU64,
 ) -> Result<Vec<PeriodUsage>> {
     let mut entries = std::pin::pin!(entries);
-    // A map, not a run of adjacent entries: the endpoint documents its order
-    // as creation time, and only its cursor shows that it is start time.
+    // The early stop needs the entries in start-time order, which only the
+    // cursor of the endpoint shows. The map keeps a small disorder inside the
+    // periods it reads from printing one date twice.
     let mut totals: BTreeMap<NaiveDate, (u64, f64)> = BTreeMap::new();
     while let Some(entry) = entries.try_next().await? {
         let date = rollup.period_end(entry.start_time.with_timezone(&Local).date_naive());
@@ -181,8 +182,8 @@ fn render_usage_table(entries: &[LocalUsageEntry], width: usize) -> String {
             vec![
                 sanitize(&entry.run_id),
                 format_hours(entry.hours),
-                format_local(entry.start_time.to_utc()),
-                format_local(entry.end_time.to_utc()),
+                format_local(entry.start_time),
+                format_local(entry.end_time),
             ]
         })
         .collect();

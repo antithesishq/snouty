@@ -210,7 +210,7 @@ fn split_unit(s: &str, unit: char) -> Option<(u64, &str)> {
 /// Format an absolute timestamp in the user's local timezone, without a
 /// timezone suffix, for dense output such as build-log lines. Example:
 /// `2026-05-27 08:25:13`.
-pub(crate) fn format_local(dt: DateTime<Utc>) -> String {
+pub(crate) fn format_local<Tz: TimeZone>(dt: DateTime<Tz>) -> String {
     dt.with_timezone(&Local)
         .format("%Y-%m-%d %H:%M:%S")
         .to_string()

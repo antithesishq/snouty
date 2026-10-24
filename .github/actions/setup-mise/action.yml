@@ -1,0 +1,22 @@
+name: Set up mise
+description: >-
+  Install mise, checked against a SHA-256 for the runner platform, then install
+  the given tools at the versions in mise.lock.
+inputs:
+  tools:
+    description: The mise.toml tools to install, separated by spaces.
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      with:
+        version: "2026.10.7"
+        # The SHA-256 of the mise binary of that release, per runner platform.
+        sha256: >-
+          ${{ fromJSON('{
+            "Linux-X64": "6eb1b890e90818417ca34c90dbbd47881917d5cd199f31b63b062ea9c6b18d85",
+            "macOS-ARM64": "f5171e341518a57e8c4e9280e28443e35d66212c51164c83be76794e0a78b014",
+            "macOS-X64": "c3355f0c56d1b9fe73a2ba30e034b4e483541b25b1ad812a87440abfaeec8baa"
+          }')[format('{0}-{1}', runner.os, runner.arch)] }}
+        install_args: ${{ inputs.tools }}

@@ -110,6 +110,10 @@ contributors use:
 mise lock --platform linux-x64,macos-arm64,macos-x64
 ```
 
+CI installs mise itself through `.github/actions/setup-mise`. To bump mise,
+change its version there, and the SHA-256 of its binary for each platform:
+the `digest` that GitHub shows for each `mise-v<version>-<platform>` asset.
+
 On a system that cannot run mise's prebuilt binaries, such as NixOS, use the
 nix shell (`nix-shell`, or direnv with `.envrc`) instead. It has the same
 tools from nixpkgs, whose versions can differ from CI's. In a nix shell, the

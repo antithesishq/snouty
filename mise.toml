@@ -64,8 +64,12 @@ run = "actionlint"
 run = "taplo fmt --check"
 
 [tasks."lint:nixfmt"]
-# npins generates npins/default.nix, so its format is not ours to keep.
-run = "git ls-files -z '*.nix' ':!:npins/*' | xargs -0 nixfmt --check"
+# npins generates npins/default.nix, so its format is not ours to keep. mise
+# has nixfmt for Linux only, so elsewhere the task skips without nixfmt.
+run = """
+if ! command -v nixfmt >/dev/null; then echo 'nixfmt not installed; skipped'; exit 0; fi
+git ls-files -z '*.nix' ':!:npins/*' | xargs -0 nixfmt --check
+"""
 
 [tasks."lint:shear"]
 description = "Find unused dependencies"
@@ -83,7 +87,7 @@ run = "cargo deny --all-features check advisories"
 description = "Format the TOML, Nix and Python files"
 run = [
     "taplo fmt",
-    "git ls-files -z '*.nix' ':!:npins/*' | xargs -0 nixfmt",
+    "if command -v nixfmt >/dev/null; then git ls-files -z '*.nix' ':!:npins/*' | xargs -0 nixfmt; fi",
     "uv run --locked ruff format scripts",
 ]
 

@@ -2,7 +2,9 @@
 # `cargo-deny` job of .github/workflows/build.yml, including the nightly run.
 
 [advisories]
-# Defaults: vulnerable, unmaintained, unsound and yanked crates all fail.
+# Vulnerable, unmaintained, unsound and yanked crates all fail. yanked defaults
+# to a warning, so it is set here.
+yanked = "deny"
 ignore = [
     # unsafe-libyaml is archived. serde_yaml pulls it in, and even the latest
     # progenitor-macro (0.15.1) depends on serde_yaml, so dropping serde_yaml

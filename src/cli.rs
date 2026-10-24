@@ -558,6 +558,10 @@ pub enum RunsCommands {
         /// Run ID
         run_id: String,
 
+        /// Show only the property with this ID
+        #[arg(conflicts_with_all = ["passing", "failing", "undetermined", "name", "group"])]
+        property_id: Option<String>,
+
         /// Show passing properties; combine with --failing and --undetermined
         #[arg(long)]
         passing: bool,

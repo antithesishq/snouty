@@ -1017,6 +1017,19 @@ impl AntithesisApi {
         })
     }
 
+    /// Fetch one property by its ID. The read is live, so it is never cached.
+    pub async fn get_run_property(&self, run_id: &str, property_id: &str) -> Result<Property> {
+        let request = self
+            .client
+            .get_run_property()
+            .run_id(run_id)
+            .property_id(property_id);
+        match request.send().await {
+            Ok(response) => normalize_property(response.into_inner()),
+            Err(err) => Err(format_api_client_error(err).await),
+        }
+    }
+
     /// POST an event-set DSL query to the events-search endpoint and return
     /// the response stream. Every mode's answer arrives through the stream
     /// (see [`SearchMode`]): matching events as JSONL, the `Validate` answer

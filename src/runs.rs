@@ -165,6 +165,12 @@ pub async fn cmd_runs(
         Some(RunsCommands::Cancel { run_id }) => cmd_runs_cancel(&run_id, settings, output).await,
         Some(RunsCommands::Properties {
             run_id,
+            property_id: Some(property_id),
+            ..
+        }) => cmd_runs_property(&run_id, &property_id, settings, output).await,
+        Some(RunsCommands::Properties {
+            run_id,
+            property_id: None,
             passing,
             failing,
             undetermined,
@@ -635,21 +641,49 @@ async fn cmd_runs_properties(
     } else if properties.is_empty() {
         outln!("{}", no_properties_message(&filter))?;
     } else if detail {
-        outln!("{}", render_properties_detail(&properties))?;
-        // One next step for the whole listing: every HASH/VTIME row above feeds it.
-        let has_moments = properties.iter().any(|p| match p {
-            Property::EventProperty(p) => !p.examples.is_empty() || !p.counterexamples.is_empty(),
-            Property::NonEventProperty(_) => false,
-        });
-        if has_moments {
-            outln!(
-                "\nview logs leading up to an example:\n  snouty runs logs {run_id} <hash> <vtime>"
-            )?;
-        }
+        print_properties_detail(run_id, &properties)?;
     } else {
         outln!("{}", render_properties_table(&properties))?;
     }
 
+    Ok(())
+}
+
+/// One property is always shown in full: the summary table is for scanning
+/// many.
+async fn cmd_runs_property(
+    run_id: &str,
+    property_id: &str,
+    settings: &Settings,
+    OutputOptions { json, verbose }: OutputOptions,
+) -> Result<()> {
+    debug!("fetching property {property_id} for run: {run_id}");
+
+    let api = AntithesisApi::new(settings, verbose)?;
+    let property = match api.get_run_property(run_id, property_id).await {
+        Ok(property) => property,
+        Err(err) => return Err(explain_property_error(&api, run_id, property_id, err).await),
+    };
+
+    if json {
+        outln!("{}", serde_json::to_string(&property)?)?;
+        return Ok(());
+    }
+    print_properties_detail(run_id, std::slice::from_ref(&property))
+}
+
+fn print_properties_detail(run_id: &str, properties: &[Property]) -> Result<()> {
+    outln!("{}", render_properties_detail(properties))?;
+    // One next step for the whole listing: every HASH/VTIME row above feeds it.
+    let has_moments = properties.iter().any(|p| match p {
+        Property::EventProperty(p) => !p.examples.is_empty() || !p.counterexamples.is_empty(),
+        Property::NonEventProperty(_) => false,
+    });
+    if has_moments {
+        outln!(
+            "\nview logs leading up to an example:\n  snouty runs logs {run_id} <hash> <vtime>"
+        )?;
+    }
     Ok(())
 }
 
@@ -805,6 +839,25 @@ async fn explain_logs_error(
             .suggestion(format!(
                 "search for a moment using `snouty runs events {run_id} <search query>`"
             ))
+    } else {
+        err
+    }
+}
+
+/// Like [`explain_run_scoped_error`], for the property endpoint. A 404 that
+/// survives the probe means the run exists and has no property with this ID.
+/// orbitinghail sends a bare `Resource not found` for it on release 65.3.
+async fn explain_property_error(
+    api: &AntithesisApi,
+    run_id: &str,
+    property_id: &str,
+    err: color_eyre::eyre::Report,
+) -> color_eyre::eyre::Report {
+    let err = explain_run_scoped_error(api, run_id, err).await;
+    if api_error_status(&err) == Some(404) {
+        user_error(format!("property not found: {property_id}")).suggestion(format!(
+            "list the run's property IDs with `snouty --json runs properties {run_id} | jq -r .id`"
+        ))
     } else {
         err
     }

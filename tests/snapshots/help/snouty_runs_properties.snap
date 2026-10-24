@@ -12,6 +12,10 @@ examples and 186k counterexamples.
 Filter by status with --passing, --failing, and --undetermined. Give more than
 one to show each of those statuses.
 
+Pass a property ID after the run ID to show only that property, in full. The ID
+is in the JSON output and in --detail. Property lookup needs a run created on
+release 65.3 or later.
+
 Narrow with --name and/or --group. Both are case-insensitive substring matches
 against the relevant fields. Add --detail to expand the matches into their
 examples and counter-example moments instead of the table.
@@ -21,16 +25,20 @@ Examples:
   snouty runs properties <run_id> --failing --undetermined
   snouty runs properties <run_id> --name eventually_validate --detail
   snouty runs properties <run_id> --group Unreachable --detail
+  snouty runs properties <run_id> <property_id>
 
 Add --json for machine-readable output. Each property prints as one JSON object
 on its own line. --json is mutually exclusive with --detail:
   snouty --json runs properties <run_id> --failing | jq -r .name
 
-Usage: snouty runs properties [OPTIONS] <RUN_ID>
+Usage: snouty runs properties [OPTIONS] <RUN_ID> [PROPERTY_ID]
 
 Arguments:
   <RUN_ID>
           Run ID
+
+  [PROPERTY_ID]
+          Show only the property with this ID
 
 Options:
       --passing

@@ -700,6 +700,9 @@ fn mock_route(
             } else if let Some(run_id) = rest.strip_suffix("/properties") {
                 let (s, b) = mock_route_list_run_properties(run_id, query);
                 (s, b, json)
+            } else if let Some((run_id, property_id)) = rest.split_once("/properties/") {
+                let (s, b) = mock_route_get_run_property(run_id, property_id);
+                (s, b, json)
             } else {
                 let (s, b) = mock_route_get_run(rest);
                 (s, b, json)
@@ -1115,6 +1118,29 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
         200,
         format!(r#"{{"data":[{data_json}],"next_cursor":{cursor_json}}}"#),
     )
+}
+
+/// One property from the completed runs' fixture list, by ID. An unknown run
+/// or property gets the bare 404 that orbitinghail sends on release 65.3.
+fn mock_route_get_run_property(run_id: &str, property_id: &str) -> (u16, String) {
+    if !mock_run_known(run_id) {
+        return (404, MOCK_BARE_404_BODY.to_string());
+    }
+    let (_, page) = mock_route_list_run_properties(run_id, None);
+    let (_, rest) = mock_route_list_run_properties(run_id, Some("after=props-cursor-1"));
+    let property = [page, rest]
+        .iter()
+        .flat_map(|body| {
+            serde_json::from_str::<serde_json::Value>(body).unwrap()["data"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .find(|property| property["id"] == property_id);
+    match property {
+        Some(property) => (200, property.to_string()),
+        None => (404, MOCK_BARE_404_BODY.to_string()),
+    }
 }
 
 /// The text the search route matches a needle against: an event's log text,

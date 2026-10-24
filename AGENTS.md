@@ -169,6 +169,17 @@ line. To do the check yourself, put that version in place of `<rust-version>`:
 cargo +<rust-version> check --workspace --all-targets --locked
 ```
 
+`cargo deny` checks the dependencies against `deny.toml`. It finds security
+advisories, licenses that are not on the allow list, and crates from unknown
+sources. Fix an advisory with an upgrade. Ignore it only if no upgrade exists,
+and give a reason and a link. A pull request fails on licenses, bans and
+sources. Only the nightly run fails on advisories, because a new advisory can
+appear with no change in the repository.
+
+```
+cargo deny check
+```
+
 ### Checks that the Stop hooks run
 
 The Stop hooks in `.claude/settings.json` run these checks each time the agent

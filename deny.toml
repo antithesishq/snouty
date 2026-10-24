@@ -1,0 +1,47 @@
+# cargo-deny configuration. Run `cargo deny check` locally; CI runs it in the
+# `cargo-deny` job of .github/workflows/build.yml, including the nightly run.
+
+[advisories]
+# Vulnerable, unmaintained, unsound and yanked crates all fail. yanked defaults
+# to a warning, so it is set here.
+yanked = "deny"
+ignore = [
+    # unsafe-libyaml is archived. serde_yaml pulls it in, and even the latest
+    # progenitor-macro (0.15.1) depends on serde_yaml, so dropping serde_yaml
+    # from snouty would not remove it.
+    # https://rustsec.org/advisories/RUSTSEC-2024-0449
+    { id = "RUSTSEC-2024-0449", reason = "unmaintained, no upgrade available; progenitor-macro still requires serde_yaml" },
+]
+
+[licenses]
+# Every license here is permissive and compatible with snouty's Apache-2.0,
+# except MPL-2.0. That one is weak, file-level copyleft: it covers only
+# progenitor's own files, which snouty uses unmodified, so it is compatible
+# too. Keep the list to what the dependency tree uses.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[bans]
+# The tree has several duplicate versions that upstream crates pull in. Report
+# them, but do not fail on them.
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# allow-registry defaults to crates.io only.
+# testscript-rs, a dev-dependency, comes from antithesishq's own repository.
+allow-git = ["https://github.com/antithesishq/testscript-rs.git"]

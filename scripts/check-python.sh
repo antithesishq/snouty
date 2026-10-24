@@ -7,3 +7,4 @@ cd "$(dirname "$0")/.." || exit 1
 uv run --quiet ruff --version >/dev/null 2>&1 || exit 0
 uv run --quiet ruff format scripts >/dev/null
 out=$(uv run --quiet ruff check --output-format concise scripts 2>&1) || { echo "$out"; exit 2; }
+out=$(uv run --quiet pyright 2>&1) || { echo "$out"; exit 2; }

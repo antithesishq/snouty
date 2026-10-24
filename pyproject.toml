@@ -22,6 +22,10 @@ dependencies = [
 package = false
 
 [tool.pyright]
+include = ["scripts"]
+# "strict" reports hundreds of unknown types from the untyped JSON the scripts
+# handle, so use "standard".
+typeCheckingMode = "standard"
 # `uv run` installs the dependencies above into `./.venv`. Name it here so
 # `uvx pyright scripts/…` — which runs pyright in an environment of its own —
 # resolves those imports rather than reporting every one as missing.
@@ -30,6 +34,7 @@ venv = ".venv"
 
 [dependency-groups]
 dev = [
+    "pyright>=1.1.414",
     "ruff>=0.17.2",
 ]
 

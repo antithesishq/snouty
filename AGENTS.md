@@ -102,8 +102,9 @@ cargo clippy
 If `cargo nextest` is not available, you may use `cargo test`.
 
 The Python scripts in `scripts/` use [ruff](https://docs.astral.sh/ruff/) for
-formatting and linting. `pyproject.toml` holds the configuration, and `uv.lock`
-pins the version. After you change a script, run the script tests:
+formatting and linting, and [pyright](https://microsoft.github.io/pyright/)
+for type checking. `pyproject.toml` holds the configuration, and `uv.lock`
+pins the versions. After you change a script, run the script tests:
 
 ```
 uv run --directory scripts python -m unittest discover -p 'test_*.py'
@@ -118,7 +119,8 @@ until the agent stops, so run the checks before a `git push` in the same turn.
 
 - `scripts/check-cargo.sh`: `cargo fmt`, then `cargo check --all-targets`.
 - `scripts/check-typos.sh`: `typos`.
-- `scripts/check-python.sh`: `ruff format scripts`, then `ruff check scripts`.
+- `scripts/check-python.sh`: `ruff format scripts`, then `ruff check scripts`,
+  then `pyright`.
 
 When you add a check to a hook, add it to this list.
 

@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "grep -qx 'name = \"snouty\"' \"$(git rev-parse --show-toplevel 2>/dev/null)/Cargo.toml\" 2>/dev/null || exit 0; cargo fmt; out=$(cargo check --all-targets --quiet --color never 2>&1) || { echo \"$out\"; exit 2; }",
+            "command": "grep -qsx 'name = \"snouty\"' \"$(git rev-parse --show-toplevel 2>/dev/null)/Cargo.toml\" || exit 0; cargo fmt; out=$(cargo check --all-targets --quiet --color never 2>&1) || { echo \"$out\"; exit 2; }",
             "asyncRewake": true,
             "timeout": 600,
             "statusMessage": "cargo fmt + check",

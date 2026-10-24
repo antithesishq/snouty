@@ -27,3 +27,21 @@ package = false
 # resolves those imports rather than reporting every one as missing.
 venvPath = "."
 venv = ".venv"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.17.2",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors: whitespace, indentation, statement layout
+    "F",  # Pyflakes: unused imports and names, undefined names
+    "W",  # pycodestyle warnings: trailing whitespace, blank lines
+    "I",  # isort: import order
+    "B",  # flake8-bugbear: likely bugs, such as mutable default arguments
+    "UP", # pyupgrade: syntax that the minimum Python version makes obsolete
+]
+# `ruff format` sets the line length. E501 reports only the long strings and
+# comments that the formatter leaves.
+ignore = ["E501"]

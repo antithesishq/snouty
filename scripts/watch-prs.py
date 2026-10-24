@@ -97,7 +97,9 @@ ALLOWED_ACCOUNT_IDS = {
 }
 
 
-def trusted(slug: str, user: dict[str, Any], write_access: dict[int, bool]) -> bool | None:
+def trusted(
+    slug: str, user: dict[str, Any], write_access: dict[int, bool]
+) -> bool | None:
     """Whether an account is allowlisted or can write to the repo. None
     means the lookup failed: the caller retries on the next poll.
     `write_access` caches lookups by account id for one poll only, so a
@@ -111,12 +113,19 @@ def trusted(slug: str, user: dict[str, Any], write_access: dict[int, bool]) -> b
     if uid is None or user.get("type") == "Bot":
         return False
     if uid not in write_access:
-        perm = gh_json(["api", f"repos/{slug}/collaborators/{quote(user.get('login', ''), safe='')}/permission"])
+        perm = gh_json(
+            [
+                "api",
+                f"repos/{slug}/collaborators/{quote(user.get('login', ''), safe='')}/permission",
+            ]
+        )
         if perm is None:
             return None
         # The lookup goes by login; the id check proves the login still
         # names the same account.
-        write_access[uid] = (perm.get("user") or {}).get("id") == uid and perm.get("permission") in {"admin", "write"}
+        write_access[uid] = (perm.get("user") or {}).get("id") == uid and perm.get(
+            "permission"
+        ) in {"admin", "write"}
     return write_access[uid]
 
 
@@ -170,48 +179,70 @@ def poll_pr(
     if view is None:
         return True
     if view["state"] != "OPEN":
-        emit(f"PR #{pr} merged" if view["state"] == "MERGED" else f"PR #{pr} closed without merge")
+        emit(
+            f"PR #{pr} merged"
+            if view["state"] == "MERGED"
+            else f"PR #{pr} closed without merge"
+        )
         return False
     # Compare the author's exact REST login, not a norm_login fold: an
     # app's "app/name" is "name[bot]" over REST, and no user can take a
     # login with brackets.
     author = view["author"]["login"]
-    ignore = f"{author.removeprefix('app/')}[bot]" if author.startswith("app/") else author
+    ignore = (
+        f"{author.removeprefix('app/')}[bot]" if author.startswith("app/") else author
+    )
 
     if changed(seen, "base", view["baseRefName"]):
         emit(f"PR #{pr} base changed to {view['baseRefName']}")
     # The PR's own baseRefOid freezes at PR creation, so the live tip must
     # come from the branch itself. Seeding with baseRefOid makes a PR that
     # is already behind its base emit a moved event on the first poll.
-    tip = ((gh_json(["api", f"repos/{slug}/branches/{quote(view['baseRefName'], safe='')}"]) or {}).get("commit") or {}).get("sha")
+    tip = (
+        (
+            gh_json(
+                ["api", f"repos/{slug}/branches/{quote(view['baseRefName'], safe='')}"]
+            )
+            or {}
+        ).get("commit")
+        or {}
+    ).get("sha")
     if tip and changed(seen, "baseoid", tip, baseline=view["baseRefOid"]):
         emit(f"PR #{pr} base {view['baseRefName']} moved to {tip[:7]}")
 
     # Comments and reviews come over REST, which carries each author's
     # numeric account id.
-    events = [
-        (f"comment:{c['id']}", c, f"PR #{pr} comment by {login_of(c)} (id {c['id']})")
-        for c in paginate(f"repos/{slug}/issues/{pr}/comments")
-    ] + [
-        # Every submitted review emits, an empty COMMENTED one too, with its
-        # REST id: the list of review comments below can lag a review's
-        # submission by minutes, and the id lets the reader fetch the
-        # review's own inline comments.
-        (
-            f"review:{r['id']}",
-            r,
-            f"PR #{pr} review by {login_of(r)}: {r['state']} (id {r['id']})",
-        )
-        for r in paginate(f"repos/{slug}/pulls/{pr}/reviews")
-        if r["state"] != "PENDING"
-    ] + [
-        (
-            f"rc:{rc['id']}",
-            rc,
-            f"PR #{pr} review comment by {login_of(rc)} on {rc['path']} (id {rc['id']})",
-        )
-        for rc in paginate(f"repos/{slug}/pulls/{pr}/comments")
-    ]
+    events = (
+        [
+            (
+                f"comment:{c['id']}",
+                c,
+                f"PR #{pr} comment by {login_of(c)} (id {c['id']})",
+            )
+            for c in paginate(f"repos/{slug}/issues/{pr}/comments")
+        ]
+        + [
+            # Every submitted review emits, an empty COMMENTED one too, with its
+            # REST id: the list of review comments below can lag a review's
+            # submission by minutes, and the id lets the reader fetch the
+            # review's own inline comments.
+            (
+                f"review:{r['id']}",
+                r,
+                f"PR #{pr} review by {login_of(r)}: {r['state']} (id {r['id']})",
+            )
+            for r in paginate(f"repos/{slug}/pulls/{pr}/reviews")
+            if r["state"] != "PENDING"
+        ]
+        + [
+            (
+                f"rc:{rc['id']}",
+                rc,
+                f"PR #{pr} review comment by {login_of(rc)} on {rc['path']} (id {rc['id']})",
+            )
+            for rc in paginate(f"repos/{slug}/pulls/{pr}/comments")
+        ]
+    )
     write_access: dict[int, bool] = {}
     for key, item, line in events:
         if key in seen:
@@ -225,9 +256,19 @@ def poll_pr(
         seen.add(key)
         emit(line if ok else f"{line} [no write access]")
 
-    failure_results = {"failure", "timed_out", "action_required", "cancelled", "error", "startup_failure"}
+    failure_results = {
+        "failure",
+        "timed_out",
+        "action_required",
+        "cancelled",
+        "error",
+        "startup_failure",
+    }
     results = [
-        (c.get("name") or c.get("context") or "?", (c.get("conclusion") or c.get("state") or "").lower())
+        (
+            c.get("name") or c.get("context") or "?",
+            (c.get("conclusion") or c.get("state") or "").lower(),
+        )
         for c in view["statusCheckRollup"]
     ]
     cur = {f"{name}: {result}" for name, result in results if result in failure_results}
@@ -262,8 +303,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description="Poll pull requests and print one line per new event."
     )
-    ap.add_argument("-i", "--interval", type=int, default=45, help="poll interval in seconds")
-    ap.add_argument("-R", "--repo", help="owner/repo (default: the current directory's repo)")
+    ap.add_argument(
+        "-i", "--interval", type=int, default=45, help="poll interval in seconds"
+    )
+    ap.add_argument(
+        "-R", "--repo", help="owner/repo (default: the current directory's repo)"
+    )
     ap.add_argument("prs", nargs="+", type=int, metavar="PR")
     args = ap.parse_args()
 

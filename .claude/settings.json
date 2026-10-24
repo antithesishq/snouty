@@ -26,6 +26,19 @@
             "rewakeMessage": "typos found spelling mistakes. Fix them, or add legitimate words to _typos.toml, before finishing:"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/check-python.sh",
+            "asyncRewake": true,
+            "timeout": 120,
+            "statusMessage": "ruff format + check",
+            "rewakeSummary": "ruff found lint errors",
+            "rewakeMessage": "ruff check reported errors in the Python scripts. Fix them before finishing:"
+          }
+        ]
       }
     ]
   }

@@ -1,10 +1,9 @@
 import importlib
-from pathlib import Path
 import subprocess
 import tempfile
 import textwrap
 import unittest
-
+from pathlib import Path
 
 collect_todos = importlib.import_module("collect-todos")
 
@@ -22,7 +21,9 @@ class Collect(unittest.TestCase):
         subprocess.run(["git", "add", path], cwd=self.root, check=True)
 
     def test_one_entry_per_comment_block(self):
-        self.write("src/api.rs", """\
+        self.write(
+            "src/api.rs",
+            """\
             fn a() {}
 
             /// Request cancellation of a run.
@@ -32,7 +33,8 @@ class Collect(unittest.TestCase):
             /// follows the spec.
             fn cancel() {}
             // FIXME: a separate block
-            """)
+            """,
+        )
         items = collect_todos.collect(self.root)
         self.assertEqual(
             [(i["line"], i["end_line"], i["kinds"]) for i in items],
@@ -45,7 +47,9 @@ class Collect(unittest.TestCase):
         )
 
     def test_matches_wrapped_phrases_and_trailing_comments_only(self):
-        self.write("src/lib.rs", """\
+        self.write(
+            "src/lib.rs",
+            """\
             /// The server rejects it (observed
             /// on tenant `orbitinghail`).
             #[derive(Debug)]
@@ -54,21 +58,35 @@ class Collect(unittest.TestCase):
             /// Seen live on orbitinghail.
             fn f() {}
             /// Shaped as (orbitinghail, release 64.0) sends it.
-            """)
+            """,
+        )
         self.assertEqual(
-            [(i["line"], i["end_line"], i["kinds"], i["text"])
-             for i in collect_todos.collect(self.root)],
             [
-                (1, 2, ["observed-on"],
-                 "The server rejects it (observed on tenant `orbitinghail`)."),
+                (i["line"], i["end_line"], i["kinds"], i["text"])
+                for i in collect_todos.collect(self.root)
+            ],
+            [
+                (
+                    1,
+                    2,
+                    ["observed-on"],
+                    "The server rejects it (observed on tenant `orbitinghail`).",
+                ),
                 (4, 4, ["todo"], "TODO: drop once unused"),
                 (6, 6, ["observed-on"], "Seen live on orbitinghail."),
-                (8, 8, ["observed-on"], "Shaped as (orbitinghail, release 64.0) sends it."),
+                (
+                    8,
+                    8,
+                    ["observed-on"],
+                    "Shaped as (orbitinghail, release 64.0) sends it.",
+                ),
             ],
         )
 
     def test_matches_release_citations_and_upstream_issues(self):
-        self.write("src/lib.rs", """\
+        self.write(
+            "src/lib.rs",
+            """\
             /// Releases 58.11 through 60.1 ignore the field.
             fn a() {}
             /// Under the tenant-58.6 schema.
@@ -78,7 +96,8 @@ class Collect(unittest.TestCase):
             /// Ignores --format json (docker/compose#11627).
             fn d() {}
             /// Fixed in #136, and reads the release notes.
-            """)
+            """,
+        )
         self.assertEqual(
             [(i["line"], i["kinds"]) for i in collect_todos.collect(self.root)],
             [

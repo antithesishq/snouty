@@ -2,12 +2,11 @@ import copy
 import importlib
 import json
 import os
-from pathlib import Path
 import sys
 import tempfile
 import textwrap
 import unittest
-
+from pathlib import Path
 
 gallery = importlib.import_module("gen-gallery")
 
@@ -18,7 +17,10 @@ class TerminalCapture(unittest.TestCase):
         self.addCleanup(self.snouty.cleanup)
 
     def test_human_capture_uses_terminal_dimensions_and_preserves_wrapping(self):
-        result = self.snouty.run(["-c", textwrap.dedent('''
+        result = self.snouty.run(
+            [
+                "-c",
+                textwrap.dedent("""
             import os
             import textwrap
             print('tty:', *(os.isatty(fd) for fd in (0, 1, 2)))
@@ -26,7 +28,9 @@ class TerminalCapture(unittest.TestCase):
             print(f'size: {columns} {rows}')
             print(textwrap.fill('A long description with many words. ' * 12,
                   width=columns, initial_indent='Details   ', subsequent_indent=' ' * 10))
-        ''')])
+        """),
+            ]
+        )
         lines = result.combined.splitlines()
         self.assertEqual(lines[0], "tty: True True True")
         self.assertEqual(lines[1], f"size: {gallery.TTY_COLS} {gallery.TTY_ROWS}")
@@ -36,7 +40,10 @@ class TerminalCapture(unittest.TestCase):
         self.assertTrue(all(len(line) <= gallery.TTY_COLS for line in lines))
 
     def test_terminal_redraw_unicode_stream_order_and_scrollback(self):
-        result = self.snouty.run(["-c", textwrap.dedent('''
+        result = self.snouty.run(
+            [
+                "-c",
+                textwrap.dedent("""
             import os
             import sys
             os.write(1, b'old progress\\r\\x1b[2K')
@@ -48,7 +55,9 @@ class TerminalCapture(unittest.TestCase):
                 os.write(1 if i % 2 == 0 else 2, f'row {i:04}\\n'.encode())
             os.write(1, b'X' * (os.get_terminal_size().columns + 5) + b'\\n')
             sys.exit(7)
-        ''')])
+        """),
+            ]
+        )
         lines = result.combined.splitlines()
         self.assertEqual(lines[:2], ["完成 é", "↑"])
         self.assertEqual(lines[2:1202], [f"row {i:04}" for i in range(1200)])
@@ -58,7 +67,9 @@ class TerminalCapture(unittest.TestCase):
         self.assertNotIn("\x1b", result.combined)
         self.assertNotIn("old progress", result.combined)
         cast = [json.loads(line) for line in result.cast.splitlines()]
-        self.assertEqual((cast[0]["width"], cast[0]["height"]), (gallery.TTY_COLS, gallery.TTY_ROWS))
+        self.assertEqual(
+            (cast[0]["width"], cast[0]["height"]), (gallery.TTY_COLS, gallery.TTY_ROWS)
+        )
         raw = "".join(event[2] for event in cast[1:])
         self.assertIn("\x1b[32m", raw)
         self.assertIn("old progress", raw)
@@ -66,22 +77,39 @@ class TerminalCapture(unittest.TestCase):
         self.assertNotIn("�", raw)
 
     def test_json_remains_exact_and_separate_from_stderr(self):
-        result = self.snouty.run(["-c", textwrap.dedent('''
+        result = self.snouty.run(
+            [
+                "-c",
+                textwrap.dedent("""
             import json
             import os
             print(json.dumps({'tty': [os.isatty(1), os.isatty(2)], 'value': 'x' * 250}))
             os.write(2, b'diagnostic\\n')
-        '''), "--json"])
+        """),
+                "--json",
+            ]
+        )
         self.assertTrue(result.ok)
-        self.assertEqual(result.stdout, json.dumps({"tty": [False, False], "value": "x" * 250}) + "\n")
+        self.assertEqual(
+            result.stdout,
+            json.dumps({"tty": [False, False], "value": "x" * 250}) + "\n",
+        )
         self.assertEqual(result.stderr, "diagnostic\n")
         self.assertIsNone(result.cast)
 
     def test_limit_note_is_checked_in_the_merged_terminal_output(self):
-        result = self.snouty.run(["-c", "import os; os.write(2, b'Showing up to 2 results.\\n')"])
-        story = next(s for s in gallery.build_stories(gallery.Discovery()) if s.slug == "runs-list--limit")
+        result = self.snouty.run(
+            ["-c", "import os; os.write(2, b'Showing up to 2 results.\\n')"]
+        )
+        story = next(
+            s
+            for s in gallery.build_stories(gallery.Discovery())
+            if s.slug == "runs-list--limit"
+        )
         run = gallery.StoryRun(story, result, [{}, {}])
-        self.assertTrue(gallery.rows_at_most_with_limit_note(2)(run, gallery.Registry())[0])
+        self.assertTrue(
+            gallery.rows_at_most_with_limit_note(2)(run, gallery.Registry())[0]
+        )
 
     def test_stalled_dialogue_fails_and_closes_the_child(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -95,7 +123,12 @@ class TerminalCapture(unittest.TestCase):
                 os.kill(int(pidfile.read_text()), 0)
 
     def test_signal_exit_keeps_the_output_and_failure_status(self):
-        result = self.snouty.run(["-c", "import os, signal; os.write(1, b'before signal\\n'); os.kill(os.getpid(), signal.SIGTERM)"])
+        result = self.snouty.run(
+            [
+                "-c",
+                "import os, signal; os.write(1, b'before signal\\n'); os.kill(os.getpid(), signal.SIGTERM)",
+            ]
+        )
         self.assertEqual(result.returncode, -15)
         self.assertEqual(result.combined, "before signal")
         self.assertFalse(result.ok)
@@ -103,8 +136,13 @@ class TerminalCapture(unittest.TestCase):
     def test_story_writes_capture_mode_and_recordings_for_each_help_sample(self):
         result = self.snouty.run(["-c", "print('Usage: sample')"])
         story = gallery.Story(
-            "sample", "Sample", "Read help", "Readable output", result.args,
-            gallery.non_empty_table, help_cmd=["sample"],
+            "sample",
+            "Sample",
+            "Read help",
+            "Readable output",
+            result.args,
+            gallery.non_empty_table,
+            help_cmd=["sample"],
         )
         run = gallery.StoryRun(story, result, None, result, [("variant", result)])
         with tempfile.TemporaryDirectory() as directory:
@@ -120,12 +158,16 @@ class TerminalCapture(unittest.TestCase):
             gallery.write_story(out, story, run, True, "ok", "snouty 0.0.0")
             self.assertIn("asciinema play sample.cast", (out / "sample.md").read_text())
             self.assertEqual((out / "sample.cast").read_text(), result.cast)
-            run.result = gallery.Result(["doctor", "--json"], '{}\n', "", 0)
+            run.result = gallery.Result(["doctor", "--json"], "{}\n", "", 0)
             gallery.write_story(out, story, run, True, "ok", "snouty 0.0.0")
             self.assertIn("Capture: pipes (JSON)", (out / "sample.md").read_text())
 
     def test_wording_checks_accept_wrapping_but_require_the_text_and_exit(self):
-        story = next(s for s in gallery.build_stories(gallery.Discovery(fail="run-1")) if s.slug == "runs-properties-incomplete")
+        story = next(
+            s
+            for s in gallery.build_stories(gallery.Discovery(fail="run-1"))
+            if s.slug == "runs-properties-incomplete"
+        )
         output = "No properties\nfound."
         run = gallery.StoryRun(story, gallery.Result(story.args, output, "", 0), None)
         self.assertTrue(story.check(run, gallery.Registry())[0])
@@ -196,7 +238,9 @@ class DoctorGalleryChecks(unittest.TestCase):
                 self.assertFalse(passed, "ok must match the expected configuration")
 
         passed, _ = self.check("doctor-json", json.dumps(self.ready), 0)
-        self.assertFalse(passed, "a healthy report does not exercise missing configuration")
+        self.assertFalse(
+            passed, "a healthy report does not exercise missing configuration"
+        )
         passed, _ = self.check("doctor-json-ready", json.dumps(self.missing), 1)
         self.assertFalse(passed, "an error report does not exercise a ready setup")
 
@@ -216,7 +260,9 @@ class DoctorGalleryChecks(unittest.TestCase):
                         else:
                             changed["checks"][index]["status"] = "warn"
                         passed, _ = self.check(slug, json.dumps(changed), returncode)
-                        self.assertFalse(passed, "an unrelated check must not satisfy this story")
+                        self.assertFalse(
+                            passed, "an unrelated check must not satisfy this story"
+                        )
 
         self.ready["checks"].append(
             {"name": "container_runtime", "status": "error", "message": "no runtime"}
@@ -225,7 +271,9 @@ class DoctorGalleryChecks(unittest.TestCase):
         self.assertFalse(passed, "an error check must make the overall report fail")
         self.ready["ok"] = False
         passed, _ = self.check("doctor-json-ready", json.dumps(self.ready), 1)
-        self.assertFalse(passed, "a failed runtime check must fail the ready-setup story")
+        self.assertFalse(
+            passed, "a failed runtime check must fail the ready-setup story"
+        )
 
     def test_json_rejects_malformed_reports_without_raising(self):
         invalid = [
@@ -266,7 +314,9 @@ or set ANTITHESIS_API_KEY; ask Antithesis support for an API key if you don't ha
         for variable in ("ANTITHESIS_USERNAME", "ANTITHESIS_PASSWORD"):
             with self.subTest(variable=variable):
                 passed, _ = self.check("doctor-no-auth", output + variable, 1)
-                self.assertFalse(passed, "fresh setup must not recommend legacy credentials")
+                self.assertFalse(
+                    passed, "fresh setup must not recommend legacy credentials"
+                )
         passed, _ = self.check("doctor-no-auth", output, 0)
         self.assertFalse(passed)
 
@@ -287,7 +337,9 @@ or set ANTITHESIS_API_KEY; ask Antithesis support for an API key if you don't ha
             "unset ANTITHESIS_USERNAME",
         ):
             with self.subTest(action=action):
-                passed, _ = self.check("doctor-legacy-auth", output.replace(action, ""), 0)
+                passed, _ = self.check(
+                    "doctor-legacy-auth", output.replace(action, ""), 0
+                )
                 self.assertFalse(passed)
 
 

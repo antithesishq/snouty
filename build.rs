@@ -397,16 +397,19 @@ fn open_sub_status(spec: &mut serde_json::Value) {
 }
 
 /// Point the `/properties` status filter at `Property_Status`. The spec
-/// lists each status twice, once in lowercase, and typify cannot give the
-/// two spellings distinct variant names.
+/// lists each status twice, capitalized and lowercase, and typify cannot give
+/// the two spellings distinct variant names. TODO: delete this transform once
+/// the filter's enum lists each status once.
 fn dedupe_property_status_filter(spec: &mut serde_json::Value) {
     const POINTER: &str = "/paths/~1api~1v0~1runs~1{run_id}~1properties/get/parameters/3/schema";
     let items = remove_schema_key(spec, POINTER, "items", "dedupe_property_status_filter");
+    let values = items["enum"].as_array();
     assert!(
-        items["enum"]
-            .as_array()
-            .is_some_and(|values| values.contains(&serde_json::json!("passing"))),
-        "the /properties status filter no longer lists lowercase statuses; delete \
+        values.is_some_and(|values| {
+            values.contains(&serde_json::json!("Passing"))
+                && values.contains(&serde_json::json!("passing"))
+        }),
+        "the /properties status filter no longer lists both `Passing` and `passing`; delete \
          `dedupe_property_status_filter` in build.rs"
     );
     spec.pointer_mut(POINTER).unwrap()["items"] =

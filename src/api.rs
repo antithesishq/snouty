@@ -357,6 +357,20 @@ impl Property {
             Self::NonEventProperty(p) => p.id.as_deref(),
         }
     }
+
+    pub fn category(&self) -> Option<&str> {
+        match self {
+            Self::EventProperty(p) => p.category.as_deref(),
+            Self::NonEventProperty(p) => p.category.as_deref(),
+        }
+    }
+
+    pub fn team(&self) -> Option<&str> {
+        match self {
+            Self::EventProperty(p) => p.team.as_deref(),
+            Self::NonEventProperty(p) => p.team.as_deref(),
+        }
+    }
 }
 
 /// `Property` is an untagged `oneOf` whose variants are structurally similar:

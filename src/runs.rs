@@ -1048,6 +1048,11 @@ fn render_property_detail(property: &Property) -> String {
     if let Some(group) = property_group(property) {
         out.push_str(&render_prose_block("Group", &sanitize(group), hanging));
     }
+    for (label, value) in [("Category", property.category()), ("Team", property.team())] {
+        if let Some(value) = value.filter(|v| !v.trim().is_empty()) {
+            out.push_str(&render_prose_block(label, &sanitize(value), hanging));
+        }
+    }
     out.push_str(&render_field(
         "Status",
         &property_status_label(property.status()),

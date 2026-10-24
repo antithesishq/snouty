@@ -12,6 +12,9 @@ cargo-deny = "0.20.2"
 "github:Boshen/cargo-shear" = "1.14.0"
 "github:nextest-rs/nextest" = { version = "0.9.149", version_prefix = "cargo-nextest-" }
 # nixfmt releases only a Linux x86_64 binary. On macOS, use the nix shell.
+# snouty drives Docker Compose v2 through the `docker-compose` binary; the
+# container tests need it.
+"github:docker/compose" = "5.6.0"
 "github:NixOS/nixfmt" = { version = "1.5.0", os = ["linux"] }
 
 [settings]

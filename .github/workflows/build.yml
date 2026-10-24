@@ -214,14 +214,17 @@ jobs:
       # snouty always drives Docker Compose v2 via the `docker-compose` binary,
       # independent of the image runtime. The matrix exercises that binary
       # against both runtimes: docker, and podman (which docker-compose reaches
-      # over podman's API socket via DOCKER_HOST). Each configure step pins the
-      # runtime and ensures `docker-compose` is on PATH.
+      # over podman's API socket via DOCKER_HOST). mise installs docker-compose,
+      # and each configure step removes the other runtime. The tests run
+      # docker-compose from temporary directories, where a mise shim finds no
+      # mise.toml, so put the binary itself on PATH.
+      - name: Put docker-compose on PATH
+        run: dirname "$(mise which docker-compose)" >> "$GITHUB_PATH"
+
       - name: Configure Docker
         if: matrix.runtime == 'docker'
         run: |
           sudo rm -v -f "$(which podman)"
-          sudo curl -fsSL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 -o /usr/local/bin/docker-compose
-          sudo chmod +x /usr/local/bin/docker-compose
 
       - name: Configure Podman
         if: matrix.runtime == 'podman'
@@ -229,8 +232,6 @@ jobs:
           # Remove docker so snouty auto-detects podman; docker-compose then
           # reaches podman over its API socket via DOCKER_HOST.
           sudo rm -v -f "$(which docker)"
-          sudo curl -fsSL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 -o /usr/local/bin/docker-compose
-          sudo chmod +x /usr/local/bin/docker-compose
           systemctl --user start podman.socket
 
       - name: Runtime Info

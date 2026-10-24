@@ -82,6 +82,26 @@ checksum = "sha256:aa029247ab89c897e2f3948463967553f902f86e86e3402fa28cb29c4a44f
 url = "https://github.com/NixOS/nixfmt/releases/download/v1.5.0/nixfmt"
 url_api = "https://api.github.com/repos/NixOS/nixfmt/releases/assets/556098499"
 
+[[tools."github:docker/compose"]]
+version = "5.6.0"
+backend = "github:docker/compose"
+specifiers = ["5.6.0"]
+
+[tools."github:docker/compose"."platforms.linux-x64"]
+checksum = "sha256:40343e21ca777173e69cff5dbafeb37c6f81f3b0d57d9e597f036e95eb63e76a"
+url = "https://github.com/docker/compose/releases/download/v5.6.0/docker-compose-linux-x86_64"
+url_api = "https://api.github.com/repos/docker/compose/releases/assets/605922749"
+
+[tools."github:docker/compose"."platforms.macos-arm64"]
+checksum = "sha256:bd714a42b46e51757fc1121085b3096b9064e3f80d3ca5a991e33f44df4f43c9"
+url = "https://github.com/docker/compose/releases/download/v5.6.0/docker-compose-darwin-aarch64"
+url_api = "https://api.github.com/repos/docker/compose/releases/assets/605922795"
+
+[tools."github:docker/compose"."platforms.macos-x64"]
+checksum = "sha256:c76e3abf5fde1aeb3bd7c7306ff15bef2246afc1f9e54832a0a050dd7cdfb2f8"
+url = "https://github.com/docker/compose/releases/download/v5.6.0/docker-compose-darwin-x86_64"
+url_api = "https://api.github.com/repos/docker/compose/releases/assets/605922764"
+
 [[tools."github:nextest-rs/nextest"]]
 version = "0.9.149"
 backend = "github:nextest-rs/nextest"

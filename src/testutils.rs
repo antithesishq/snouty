@@ -865,7 +865,8 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
 
 // (run_id, hours, start_time, end_time), newest first. In a timezone of
 // UTC+9, usage-1 starts a day later than in UTC, and usage-3 starts a month
-// later. The hours of usage-2 and usage-3 have a sum that is not exact in
+// later. In UTC+9, usage-4 starts on 2026-02-27 and ends on 2026-02-28. The
+// hours of usage-2 and usage-3 have a sum that is not exact in
 // binary.
 const MOCK_USAGE: &[(&str, f64, &str, &str)] = &[
     (
@@ -889,8 +890,8 @@ const MOCK_USAGE: &[(&str, f64, &str, &str)] = &[
     (
         "usage-4",
         4.0,
-        "2026-02-27T12:00:00Z",
-        "2026-02-27T13:00:00Z",
+        "2026-02-27T14:30:00Z",
+        "2026-02-27T15:30:00Z",
     ),
     (
         "usage-5",
@@ -901,7 +902,8 @@ const MOCK_USAGE: &[(&str, f64, &str, &str)] = &[
 ];
 
 /// Pages of at most 2 entries, so that a period can span two pages. The
-/// cursor is the offset of the next page.
+/// cursor is the offset of the next page. `start_time` and `end_time` select
+/// on the end time of a run, `[start_time, end_time)`, as release 65.3 does.
 fn mock_route_list_usage(query: Option<&str>, empty: bool) -> String {
     if empty {
         return r#"{"data":[],"next_cursor":null}"#.to_string();
@@ -913,9 +915,9 @@ fn mock_route_list_usage(query: Option<&str>, empty: bool) -> String {
     let (after, before) = (time_param("start_time"), time_param("end_time"));
     let entries: Vec<_> = MOCK_USAGE
         .iter()
-        .filter(|(_, _, start, _)| {
-            let start = chrono::DateTime::parse_from_rfc3339(start).unwrap();
-            after.is_none_or(|t| start > t) && before.is_none_or(|t| start < t)
+        .filter(|(_, _, _, end)| {
+            let end = chrono::DateTime::parse_from_rfc3339(end).unwrap();
+            after.is_none_or(|t| end >= t) && before.is_none_or(|t| end < t)
         })
         .collect();
     let offset: usize = mock_query_param(query, "after").map_or(0, |c| c.parse().unwrap());

@@ -211,9 +211,15 @@ fn split_unit(s: &str, unit: char) -> Option<(u64, &str)> {
 /// timezone suffix, for dense output such as build-log lines. Example:
 /// `2026-05-27 08:25:13`.
 pub(crate) fn format_local<Tz: TimeZone>(dt: DateTime<Tz>) -> String {
-    dt.with_timezone(&Local)
-        .format("%Y-%m-%d %H:%M:%S")
-        .to_string()
+    format_dense(dt.with_timezone(&Local))
+}
+
+/// [`format_local`] for a timestamp already in the time zone to show.
+pub(crate) fn format_dense<Tz: TimeZone>(dt: DateTime<Tz>) -> String
+where
+    Tz::Offset: fmt::Display,
+{
+    dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
 /// Format an absolute timestamp in the user's local timezone with its UTC

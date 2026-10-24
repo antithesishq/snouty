@@ -5,7 +5,10 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::num::NonZeroU64;
 
-use chrono::{DateTime, Datelike, Days, Local, Months, NaiveDate, NaiveTime};
+use chrono::{
+    DateTime, Datelike, Days, FixedOffset, Local, Months, NaiveDate, NaiveTime, TimeDelta,
+    TimeZone, Utc,
+};
 use clap::ValueEnum;
 use color_eyre::eyre::Result;
 use futures_util::TryStreamExt;
@@ -18,7 +21,7 @@ use crate::cli::RunsUsageArgs;
 use crate::render::{OutputOptions, sanitize};
 use crate::settings::Settings;
 use crate::table::{Align, Column, Table};
-use crate::time::format_local;
+use crate::time::format_dense;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Rollup {
@@ -27,21 +30,82 @@ pub enum Rollup {
     Month,
 }
 
-#[derive(Serialize)]
-struct LocalUsageEntry {
-    run_id: String,
-    hours: f64,
-    start_time: DateTime<Local>,
-    end_time: DateTime<Local>,
+/// The time zone of the output: of the times, and of the periods that runs
+/// are totaled in.
+#[derive(Clone, Copy)]
+enum Zone {
+    Local,
+    Utc,
 }
 
-impl From<UsageEntry> for LocalUsageEntry {
-    fn from(entry: UsageEntry) -> Self {
+impl Zone {
+    fn time(self, time: DateTime<Utc>) -> DateTime<FixedOffset> {
+        match self {
+            Zone::Local => time.with_timezone(&Local).fixed_offset(),
+            Zone::Utc => time.fixed_offset(),
+        }
+    }
+
+    /// The start of `date`. Where a clock change skips local midnight, this
+    /// is UTC midnight, which is off by at most the size of the change.
+    fn midnight(self, date: NaiveDate) -> DateTime<Utc> {
+        let midnight = date.and_time(NaiveTime::MIN);
+        match self {
+            Zone::Local => Local.from_local_datetime(&midnight).earliest(),
+            Zone::Utc => None,
+        }
+        .map_or(midnight.and_utc(), |time| time.to_utc())
+    }
+}
+
+/// A `--after` or `--before` value: a date, which means the start of that
+/// day in the output time zone, or an RFC 3339 time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TimeBound {
+    Date(NaiveDate),
+    Time(DateTime<Utc>),
+}
+
+impl std::str::FromStr for TimeBound {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        if let Ok(date) = NaiveDate::parse_from_str(text, "%Y-%m-%d") {
+            return Ok(TimeBound::Date(date));
+        }
+        text.parse().map(TimeBound::Time).map_err(|_| {
+            "expected a date such as 2026-10-01, or an RFC 3339 time such as \
+             2026-10-01T12:00:00Z"
+                .to_string()
+        })
+    }
+}
+
+impl TimeBound {
+    fn resolve(self, zone: Zone) -> DateTime<Utc> {
+        match self {
+            TimeBound::Date(date) => zone.midnight(date),
+            TimeBound::Time(time) => time,
+        }
+    }
+}
+
+/// The usage entry of a run, with its times in the output time zone.
+#[derive(Serialize)]
+struct ZonedUsageEntry {
+    run_id: String,
+    hours: f64,
+    start_time: DateTime<FixedOffset>,
+    end_time: DateTime<FixedOffset>,
+}
+
+impl ZonedUsageEntry {
+    fn new(entry: UsageEntry, zone: Zone) -> Self {
         Self {
             run_id: entry.run_id,
             hours: entry.hours,
-            start_time: entry.start_time.with_timezone(&Local),
-            end_time: entry.end_time.with_timezone(&Local),
+            start_time: zone.time(entry.start_time),
+            end_time: zone.time(entry.end_time),
         }
     }
 }
@@ -96,58 +160,58 @@ pub(super) async fn cmd_runs_usage(
     let api = AntithesisApi::new(settings, verbose)?;
     let RunsUsageArgs {
         rollup,
-        started_after,
-        started_before,
+        after,
+        before,
+        utc,
         limit,
     } = args;
+    let zone = if utc { Zone::Utc } else { Zone::Local };
+    let after = after.map(|bound| bound.resolve(zone));
+    let before = before.map(|bound| bound.resolve(zone));
 
-    match rollup {
-        None => {
-            let entries: Vec<LocalUsageEntry> = api
-                .stream_usage(started_after, started_before, Some(limit))
-                .map_ok(LocalUsageEntry::from)
-                .try_collect()
-                .await?;
-            print_rows(&entries, json, Some(limit), render_usage_table)
-        }
-        Some(rollup) => {
-            let anchor = started_before.map_or_else(Local::now, |t| t.with_timezone(&Local));
-            let floor = started_after.map_or(FIRST_DAY, |t| {
-                t.with_timezone(&Local).date_naive().max(FIRST_DAY)
-            });
-            let ends = window(rollup, anchor.date_naive(), floor, limit);
-            // The endpoint documents its order as creation time, not start
-            // time, so every page of the window is read and the order does not
-            // matter. The bound is a day early, because the start of the oldest
-            // period is local midnight; entries outside the window are dropped.
-            let oldest = ends.last().map_or(floor, |end| rollup.period_start(*end));
-            let bound = (oldest - Days::new(1)).and_time(NaiveTime::MIN).and_utc();
-            let after = started_after.map_or(bound, |t| t.max(bound));
-            let mut totals: BTreeMap<NaiveDate, (u64, f64)> =
-                ends.iter().map(|end| (*end, (0, 0.0))).collect();
-            let entries = api.stream_usage(Some(after), started_before, None);
-            let mut entries = std::pin::pin!(entries);
-            while let Some(entry) = entries.try_next().await? {
-                let date = entry.start_time.with_timezone(&Local).date_naive();
-                if let Some((runs, hours)) = totals.get_mut(&rollup.period_end(date)) {
-                    *runs += 1;
-                    *hours += entry.hours;
-                }
-            }
-            let periods: Vec<PeriodUsage> = totals
-                .into_iter()
-                .rev()
-                .map(|(date, (runs, hours))| PeriodUsage {
-                    date,
-                    runs,
-                    hours: (hours * 100.0).round() / 100.0,
-                })
-                .collect();
-            // The window always has `limit` periods, or reaches the floor, so
-            // there is no limit note.
-            print_rows(&periods, json, None, render_periods_table)
+    let Some(rollup) = rollup else {
+        let entries: Vec<ZonedUsageEntry> = api
+            .stream_usage(after, before, Some(limit))
+            .map_ok(|entry| ZonedUsageEntry::new(entry, zone))
+            .try_collect()
+            .await?;
+        return print_rows(&entries, json, limit, "results", render_usage_table);
+    };
+
+    // A run counts in the period in which it ended, as the usage summary and
+    // the usage cap count it. `before` is exclusive, so the newest period is
+    // the one that holds the instant before it.
+    let anchor = before.map_or_else(Utc::now, |time| time - TimeDelta::nanoseconds(1));
+    let floor = after.map_or(FIRST_DAY, |time| {
+        zone.time(time).date_naive().max(FIRST_DAY)
+    });
+    let ends = window(rollup, zone.time(anchor).date_naive(), floor, limit);
+    let oldest = ends.last().map_or(floor, |end| rollup.period_start(*end));
+    let start = zone.midnight(oldest);
+    let after = after.map_or(start, |time| time.max(start));
+    let mut totals: BTreeMap<NaiveDate, (u64, f64)> =
+        ends.iter().map(|end| (*end, (0, 0.0))).collect();
+    let entries = api.stream_usage(Some(after), before, None);
+    let mut entries = std::pin::pin!(entries);
+    while let Some(entry) = entries.try_next().await? {
+        let date = rollup.period_end(zone.time(entry.end_time).date_naive());
+        // The midnight of a skipped clock change can let in a run from just
+        // outside the window, which has no period here.
+        if let Some((runs, hours)) = totals.get_mut(&date) {
+            *runs += 1;
+            *hours += entry.hours;
         }
     }
+    let periods: Vec<PeriodUsage> = totals
+        .into_iter()
+        .rev()
+        .map(|(date, (runs, hours))| PeriodUsage {
+            date,
+            runs,
+            hours: (hours * 100.0).round() / 100.0,
+        })
+        .collect();
+    print_rows(&periods, json, limit, "periods", render_periods_table)
 }
 
 /// The last days of the `limit` periods that end with the period that holds
@@ -171,10 +235,12 @@ fn window(
     }
 }
 
+/// `noun` names the rows in the limit note.
 fn print_rows<T: Serialize>(
     rows: &[T],
     json: bool,
-    limit: Option<NonZeroU64>,
+    limit: NonZeroU64,
+    noun: &str,
     render: fn(&[T], usize) -> String,
 ) -> Result<()> {
     if json {
@@ -188,9 +254,7 @@ fn print_rows<T: Serialize>(
         return Ok(());
     }
     outln!("{}", render(rows, terminal_width()))?;
-    if let Some(limit) = limit {
-        limit_note(rows.len(), limit, false);
-    }
+    limit_note(rows.len(), limit, noun, false);
     Ok(())
 }
 
@@ -200,23 +264,23 @@ fn format_hours(hours: f64) -> String {
     format!("{}h {}m", minutes / 60, minutes % 60)
 }
 
-fn render_usage_table(entries: &[LocalUsageEntry], width: usize) -> String {
+fn render_usage_table(entries: &[ZonedUsageEntry], width: usize) -> String {
     let rows = entries
         .iter()
         .map(|entry| {
             vec![
                 sanitize(&entry.run_id),
+                format_dense(entry.start_time),
+                format_dense(entry.end_time),
                 format_hours(entry.hours),
-                format_local(entry.start_time),
-                format_local(entry.end_time),
             ]
         })
         .collect();
     Table::builder()
         .column(Column::new("RUN ID"))
-        .column(Column::new("HOURS").align(Align::Right))
         .column(Column::new("STARTED"))
         .column(Column::new("ENDED"))
+        .column(Column::new("HOURS").align(Align::Right))
         .render(rows, width)
 }
 
@@ -261,6 +325,26 @@ mod tests {
             Rollup::Week.period_end(date("2026-10-25")),
             date("2026-10-25")
         );
+    }
+
+    /// A date parses as a date, and an RFC 3339 time as the same instant.
+    #[hegel::test]
+    fn time_bound_parses_dates_and_times(tc: hegel::TestCase) {
+        let days = tc.draw(generators::integers::<u64>().max_value(3_000_000));
+        let date = date("0001-01-01") + Days::new(days);
+        let text = date.format("%Y-%m-%d").to_string();
+        assert_eq!(text.parse::<TimeBound>(), Ok(TimeBound::Date(date)));
+        let seconds = tc.draw(
+            generators::integers::<i64>()
+                .min_value(0)
+                .max_value(250_000_000_000),
+        );
+        let time = DateTime::from_timestamp(seconds, 0).unwrap();
+        assert_eq!(
+            time.to_rfc3339().parse::<TimeBound>(),
+            Ok(TimeBound::Time(time))
+        );
+        assert!("2026-10-01 12:00".parse::<TimeBound>().is_err());
     }
 
     #[test]

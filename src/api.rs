@@ -1147,27 +1147,27 @@ impl AntithesisApi {
     }
 
     /// Streams usage entries newest first by start time, at most `limit` of
-    /// them, or all with `None`. A page holds at most 100 entries, the maximum
-    /// of the endpoint. The order was observed on orbitinghail, release 65:
-    /// the cursor encodes the start time of the last entry.
+    /// them, or all with `None`. The filters select on the end time of a run:
+    /// `[ended_after, ended_before)`. A page holds at most 1000 entries, the
+    /// maximum of the endpoint.
     pub fn stream_usage(
         &self,
-        started_after: Option<chrono::DateTime<chrono::Utc>>,
-        started_before: Option<chrono::DateTime<chrono::Utc>>,
+        ended_after: Option<chrono::DateTime<chrono::Utc>>,
+        ended_before: Option<chrono::DateTime<chrono::Utc>>,
         limit: Option<NonZeroU64>,
     ) -> impl futures_util::Stream<Item = Result<UsageEntry>> + '_ {
         paginate_limited(
             limit.map_or(u64::MAX, NonZeroU64::get),
-            100,
+            1000,
             move |after, page_limit| async move {
                 let mut request = self.client.list_usage().limit(page_limit);
                 if let Some(cursor) = after {
                     request = request.after(cursor);
                 }
-                if let Some(ts) = started_after {
+                if let Some(ts) = ended_after {
                     request = request.start_time(ts);
                 }
-                if let Some(ts) = started_before {
+                if let Some(ts) = ended_before {
                     request = request.end_time(ts);
                 }
                 match request.send().await {

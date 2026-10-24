@@ -2194,9 +2194,9 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-usage",
             "See how many hours recent runs used",
             "I want to know which recent runs used the most hours.",
-            "Up to 10 runs, newest first, with RUN ID/HOURS/STARTED/ENDED columns; HOURS "
-            "is right-aligned with two decimals, and STARTED/ENDED are local times; when "
-            "more runs exist, a stderr note says the output stopped at the limit.",
+            "Up to 10 runs, newest first, with RUN ID/STARTED/ENDED/HOURS columns; "
+            "STARTED/ENDED are local times, and HOURS is last, right-aligned, as `Xh Ym`; "
+            "when more runs exist, a stderr note says the output stopped at the limit.",
             ["runs", "usage"],
             rows_at_most(10),
         ),
@@ -2204,8 +2204,9 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-usage--rollup-week",
             "Track usage hours week by week",
             "I want the total runs and hours of each of the last few weeks.",
-            "At most 4 rows, newest week first, with DATE/RUNS/HOURS columns; DATE is the "
-            "Sunday that ends each week, and RUNS/HOURS are right-aligned totals.",
+            "Exactly 4 rows: the current week and the 3 before it, newest first, with "
+            "DATE/RUNS/HOURS columns; DATE is the Sunday that ends each week, a week with "
+            "no runs shows 0, and HOURS is `Xh Ym`; a stderr note says it shows up to 4 periods.",
             ["runs", "usage", "--rollup", "week", "-n", "4"],
             rows_at_most(4),
         ),
@@ -2216,6 +2217,23 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "At most 6 rows, newest month first; DATE is the last day of each month.",
             ["runs", "usage", "--rollup", "month", "-n", "6"],
             rows_at_most(6),
+        ),
+        Story(
+            "runs-usage--utc",
+            "Report usage in UTC",
+            "I share usage numbers with a team in other timezones, so I want UTC times.",
+            "Up to 5 runs; STARTED/ENDED are UTC times, and the --json times end in `Z`.",
+            ["runs", "usage", "--utc", "-n", "5"],
+            rows_at_most(5),
+        ),
+        Story(
+            "runs-usage--window",
+            "Total the usage of one month",
+            "I want the daily usage of the runs that ended in a given month.",
+            "One row per day of the window, newest first, from the day before --before back "
+            "to the --after day; days with no runs show 0.",
+            ["runs", "usage", "--rollup", "day", "-n", "31", "--after", "2026-09-01", "--before", "2026-10-01"],
+            rows_at_most(31),
         ),
         Story(
             "runs-verbose",

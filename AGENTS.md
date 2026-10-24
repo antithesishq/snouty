@@ -102,6 +102,11 @@ mise trust
 mise install
 ```
 
+On a system that cannot run mise's prebuilt binaries, such as NixOS, use the
+nix shell (`nix-shell`, or direnv with `.envrc`) instead. It has the same
+tools from nixpkgs, whose versions can differ from CI's. In a nix shell, the
+Stop hooks use the nix tools and do not activate mise.
+
 Run the tests, and the script tests after you change a Python script:
 
 ```

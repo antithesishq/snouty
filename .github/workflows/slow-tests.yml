@@ -37,6 +37,13 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # The mise release that mise-action installs, and the SHA-256 of its binary
+  # for each runner platform that a job uses.
+  MISE_VERSION: "2026.10.7"
+  MISE_SHA256: >-
+    {"Linux-X64": "6eb1b890e90818417ca34c90dbbd47881917d5cd199f31b63b062ea9c6b18d85",
+    "macOS-ARM64": "f5171e341518a57e8c4e9280e28443e35d66212c51164c83be76794e0a78b014",
+    "macOS-X64": "c3355f0c56d1b9fe73a2ba30e034b4e483541b25b1ad812a87440abfaeec8baa"}
   CARGO_TERM_COLOR: never
   CLICOLOR: 0
   NO_COLOR: "1"
@@ -90,6 +97,8 @@ jobs:
 
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
+          version: ${{ env.MISE_VERSION }}
+          sha256: ${{ fromJSON(env.MISE_SHA256)[format('{0}-{1}', runner.os, runner.arch)] }}
           install_args: github:nextest-rs/nextest
 
       # snouty always drives Docker Compose v2 via the `docker-compose` binary,

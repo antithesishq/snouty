@@ -47,7 +47,7 @@ jobs:
           token: ${{secrets.GITHUB_TOKEN}}
           persist-credentials: false
 
-      - uses: ./.github/actions/setup-rust
+      - uses: ./.github/actions/setup-tools
         with:
           components: clippy, rustfmt
 
@@ -78,7 +78,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: ./.github/actions/setup-mise
+      # typos needs no compiled code, only the mise tools.
+      - uses: ./.github/actions/setup-tools
+        with:
+          cache: "false"
 
       - name: Spell Check Repo
         run: mise run lint:typos
@@ -94,7 +97,7 @@ jobs:
           persist-credentials: false
 
       # cargo-shear and cargo-deny read `cargo metadata`, and compile nothing.
-      - uses: ./.github/actions/setup-rust
+      - uses: ./.github/actions/setup-tools
         with:
           cache: "false"
 
@@ -195,7 +198,7 @@ jobs:
           token: ${{secrets.GITHUB_TOKEN}}
           persist-credentials: false
 
-      - uses: ./.github/actions/setup-rust
+      - uses: ./.github/actions/setup-tools
         with:
           targets: ${{ env.CARGO_BUILD_TARGET }}
 
@@ -256,7 +259,7 @@ jobs:
           token: ${{secrets.GITHUB_TOKEN}}
           persist-credentials: false
 
-      - uses: ./.github/actions/setup-rust
+      - uses: ./.github/actions/setup-tools
 
       # `specs/doctor.txt` asserts that `snouty doctor` exits zero while testing
       # API connectivity, and doctor fails when it finds no container runtime.
@@ -292,7 +295,7 @@ jobs:
           token: ${{secrets.GITHUB_TOKEN}}
           persist-credentials: false
 
-      - uses: ./.github/actions/setup-rust
+      - uses: ./.github/actions/setup-tools
 
       # This job gates merges. A missing secret must fail the job, because a
       # check that does not run is worse than a check that fails.

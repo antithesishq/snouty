@@ -82,7 +82,7 @@ jobs:
           token: ${{secrets.GITHUB_TOKEN}}
           persist-credentials: false
 
-      - uses: ./.github/actions/setup-rust
+      - uses: ./.github/actions/setup-tools
 
       # snouty always drives Docker Compose v2 via the `docker-compose` binary,
       # independent of the image runtime. Here that binary reaches podman over

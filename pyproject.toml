@@ -27,3 +27,14 @@ package = false
 # resolves those imports rather than reporting every one as missing.
 venvPath = "."
 venv = ".venv"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.17.2",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+# `ruff format` sets the line length. It leaves long strings and comments, and
+# E501 would only report those.
+ignore = ["E501"]

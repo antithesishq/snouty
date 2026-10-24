@@ -1,11 +1,15 @@
 [workspace]
 members = ["snouty-macros"]
 
+# Both crates inherit this. CI checks the workspace on exactly this version.
+[workspace.package]
+rust-version = "1.89"
+
 [package]
 name = "snouty"
 version = "0.8.0"
 edition = "2024"
-rust-version = "1.89"
+rust-version.workspace = true
 description = "A CLI tool for using the Antithesis API"
 license = "Apache-2.0"
 repository = "https://github.com/antithesishq/snouty"

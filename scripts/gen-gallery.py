@@ -603,7 +603,7 @@ class Discovery:
     # the API byte-identically.
     logs_vtime: str = "0"
     fail_prop: str = ""  # failing event property whose detail shows counter-examples
-    fail_prop_id: str = ""  # fail_prop's ID, which `runs properties <run> <id>` looks up
+    fail_prop_id: str = ""  # fail_prop's ID, for the lookup-by-ID story
     pass_event_prop: str = ""  # passing event property whose detail shows examples
     nonevent_prop: str = ""  # non-event property whose detail shows a real value
     name_filter: str = ""  # substring matching exactly one property name
@@ -789,11 +789,11 @@ def _pick_completed_run(sn: Snouty) -> CompletedPick:
         # catch it and move on rather than committing to a run that fails
         # downstream.
         try:
-            fail_prop = _pick_property_with_moments(sn, run, props, "Failing")
-            fail_prop_id = _pick_property_id(sn, run, props, fail_prop)
-            pass_prop = _pick_property_with_moments(sn, run, props, "Passing")
-            nonevent_prop = _pick_nonevent_property(sn, run, props)
             name_filter = _pick_name_filter(props)
+            fail = _pick_property_with_moments(sn, run, props, "Failing")
+            fail_prop, fail_prop_id = fail["name"], _pick_property_id(sn, run, fail)
+            pass_prop = _pick_property_with_moments(sn, run, props, "Passing")["name"]
+            nonevent_prop = _pick_nonevent_property(sn, run, props)
         except GalleryError as e:
             print(f"  skip {run}: {e}", file=sys.stderr)
             last_reason = str(e)
@@ -810,7 +810,15 @@ def _pick_completed_run(sn: Snouty) -> CompletedPick:
             file=sys.stderr,
         )
         return CompletedPick(
-            run, moment, kw, kw2, fail_prop, fail_prop_id, pass_prop, nonevent_prop, name_filter
+            run,
+            moment,
+            kw,
+            kw2,
+            fail_prop,
+            fail_prop_id,
+            pass_prop,
+            nonevent_prop,
+            name_filter,
         )
     raise _no_usable_run(
         "completed",
@@ -939,7 +947,7 @@ def _moments(values: list) -> list:
     return out
 
 
-def _pick_property_with_moments(sn: Snouty, run: str, props: list[dict], status: str) -> str:
+def _pick_property_with_moments(sn: Snouty, run: str, props: list[dict], status: str) -> dict:
     """Pick a property of the given status that has example/counter-example moment
     rows. The properties JSON already carries the full `examples`/`counterexamples`
     arrays snouty renders, so we select straight from it (most moments first) and
@@ -955,7 +963,7 @@ def _pick_property_with_moments(sn: Snouty, run: str, props: list[dict], status:
     candidates.sort(key=lambda c: len(c[1]), reverse=True)
     for p, _ in candidates:
         if _has_moment_rows(_render_property(sn, run, p["name"])):
-            return p["name"]
+            return p
         break  # the array said it has moments but the render disagreed — bail
     raise GalleryError(
         f"no {status} property on {run} renders example moments — cannot build "
@@ -1006,12 +1014,12 @@ def _pick_nonevent_property(sn: Snouty, run: str, props: list[dict]) -> str:
     raise GalleryError(f"no non-event property on {run} renders a usable value")
 
 
-def _pick_property_id(sn: Snouty, run: str, props: list[dict], name: str) -> str:
-    """The ID of the property named `name`, once a lookup by that ID succeeds.
-    Runs created before release 65.3 reject the lookup."""
-    prop_id = next((p.get("id") for p in props if p["name"] == name), None)
+def _pick_property_id(sn: Snouty, run: str, prop: dict) -> str:
+    """`prop`'s ID, once a lookup by that ID succeeds. Runs created before
+    release 65.3 reject the lookup."""
+    prop_id = prop.get("id")
     if not prop_id:
-        raise GalleryError(f"property {name!r} has no ID")
+        raise GalleryError(f"property {prop['name']!r} has no ID")
     if not sn.run(["runs", "properties", run, prop_id]).ok:
         raise GalleryError(f"looking up property {prop_id} fails")
     return prop_id

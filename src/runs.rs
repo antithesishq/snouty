@@ -166,8 +166,12 @@ pub async fn cmd_runs(
         Some(RunsCommands::Properties {
             run_id,
             property_id: Some(property_id),
+            detail,
             ..
-        }) => cmd_runs_property(&run_id, &property_id, settings, output).await,
+        }) => {
+            reject_detail_with_json(output.json, detail)?;
+            cmd_runs_property(&run_id, &property_id, settings, output).await
+        }
         Some(RunsCommands::Properties {
             run_id,
             property_id: None,
@@ -646,8 +650,8 @@ async fn cmd_runs_properties(
     Ok(())
 }
 
-/// One property is always shown in full: the summary table is for scanning
-/// many.
+/// Show one property in full. The summary table is for scanning many
+/// properties.
 async fn cmd_runs_property(
     run_id: &str,
     property_id: &str,
@@ -837,8 +841,9 @@ async fn explain_logs_error(
 }
 
 /// Like [`explain_run_scoped_error`], for the property endpoint. A 404 that
-/// survives the probe means the run exists and has no property with this ID.
-/// orbitinghail sends a bare `Resource not found` for it on release 65.3.
+/// survives the run probe means the run has no property with this ID. On
+/// release 65.3, orbitinghail sends a bare `Resource not found` for an unknown
+/// property ID.
 async fn explain_property_error(
     api: &AntithesisApi,
     run_id: &str,

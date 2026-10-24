@@ -345,6 +345,10 @@ mock-runs-server
 ! snouty runs properties run-does-not-exist 97cf5fcafa500ed62bf109d81834c5b881a2c854
 stderr 'run not found: run-does-not-exist'
 
+# --detail formats human output, so it conflicts with --json here too.
+! snouty --json runs properties $R_run_id 97cf5fcafa500ed62bf109d81834c5b881a2c854 --detail
+stderr '--detail and --json cannot be combined'
+
 # A property ID names one property, so the filters are rejected with it.
 ! snouty runs properties $R_run_id 97cf5fcafa500ed62bf109d81834c5b881a2c854 --failing
 stderr 'cannot be used with'

@@ -82,12 +82,12 @@ mock-runs-server
 [!staging] stderr 'Showing up to 2 results'
 
 # No usage prints a message, or no rows with --json.
-mock-runs-server empty
+[!staging] mock-runs-server empty
 [!staging] snouty runs usage
 [!staging] stdout '^No usage found.$'
-mock-runs-server empty
+[!staging] mock-runs-server empty
 [!staging] snouty runs usage --rollup week
 [!staging] stdout '^No usage found.$'
-mock-runs-server empty
+[!staging] mock-runs-server empty
 [!staging] snouty --json runs usage --rollup week
 [!staging] ! stdout .

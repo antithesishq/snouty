@@ -8,7 +8,7 @@ CLI tool for the Antithesis API. Written in Rust.
 - `src/` — all source code
 - `help/` — long-help templates (see Help text)
 - `tests/` — integration tests
-- `scripts/` — maintenance/dev scripts (Python, run via `uv`)
+- `scripts/` — maintenance/dev scripts (Python run via `uv`, plus a few bash scripts such as the Stop hooks `check-cargo.sh` and `check-typos.sh`)
 - `.github/workflows/` — CI/CD
 
 ## Specs

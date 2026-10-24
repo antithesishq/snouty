@@ -304,16 +304,15 @@ fn command_args(spec: &ToolSpec, globals: &Globals, params: JsonObject) -> Resul
                 .collect::<Result<_>>()?,
             value => vec![scalar(&key, value)?],
         };
-        match arg.get_index() {
-            Some(index) => positionals.push((index, values)),
-            None => {
-                let long = long(arg);
-                options.extend(
-                    values
-                        .iter()
-                        .map(|value| format!("--{long}={value}").into()),
-                );
-            }
+        if let Some(index) = arg.get_index() {
+            positionals.push((index, values));
+        } else {
+            let long = long(arg);
+            options.extend(
+                values
+                    .iter()
+                    .map(|value| format!("--{long}={value}").into()),
+            );
         }
     }
     positionals.sort_by_key(|(index, _)| *index);
@@ -473,11 +472,11 @@ impl ServerHandler for Snouty {
             .with_instructions(INSTRUCTIONS)
     }
 
-    async fn list_tools(
+    fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
         ctx: RequestContext<RoleServer>,
-    ) -> Result<ListToolsResult, ErrorData> {
+    ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + Send + '_ {
         let result = ListToolsResult::with_all_items(
             self.tools.iter().map(|spec| spec.tool.clone()).collect(),
         );
@@ -487,11 +486,11 @@ impl ServerHandler for Snouty {
         let cache_hints = ctx
             .protocol_version()
             .is_some_and(|version| version >= ProtocolVersion::V_2026_07_28);
-        Ok(if cache_hints {
+        std::future::ready(Ok(if cache_hints {
             result.with_ttl_ms(0).with_cache_scope(CacheScope::Public)
         } else {
             result
-        })
+        }))
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
@@ -534,7 +533,7 @@ impl ServerHandler for Snouty {
         // stdin. Either drops `call`, which kills the child.
         tokio::select! {
             result = call => result,
-            _ = ctx.ct.cancelled() => Err(ErrorData::internal_error("cancelled", None)),
+            () = ctx.ct.cancelled() => Err(ErrorData::internal_error("cancelled", None)),
         }
     }
 }
@@ -657,8 +656,8 @@ mod tests {
 
     /// Parses a tool call's command line as snouty would.
     fn parse(argv: Vec<OsString>) -> Cli {
-        let args = std::iter::once(OsString::from("snouty")).chain(argv);
-        Cli::try_parse_from(args).expect("the command line parses")
+        Cli::try_parse_from(std::iter::once(OsString::from("snouty")).chain(argv))
+            .expect("the command line parses")
     }
 
     fn params(value: Value) -> JsonObject {
@@ -884,12 +883,12 @@ mod tests {
         }));
         let argv = command_args(spec(&snouty, ToolName::Debug), &snouty.globals, call);
         let cli = parse(argv.unwrap());
-        let Commands::Debug(args) = cli.command else {
+        let Commands::Debug(debug) = cli.command else {
             panic!("not debug");
         };
-        assert_eq!(args.run_id.as_deref(), Some("r"));
-        assert_eq!(args.input_hash, "-5");
-        assert_eq!(args.params.len(), 2);
+        assert_eq!(debug.run_id.as_deref(), Some("r"));
+        assert_eq!(debug.input_hash, "-5");
+        assert_eq!(debug.params.len(), 2);
     }
 
     #[test]

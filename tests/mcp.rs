@@ -351,7 +351,7 @@ async fn tools_work_after_the_executable_is_replaced() {
     client.cancel().await.expect("close snouty mcp");
 }
 
-/// The server's RUST_LOG stays out of the tool calls, so a debug log does not
+/// The server's `RUST_LOG` stays out of the tool calls, so a debug log does not
 /// reach a tool result.
 #[tokio::test]
 async fn the_server_debug_log_stays_out_of_tool_results() {

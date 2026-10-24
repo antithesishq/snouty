@@ -1573,9 +1573,10 @@ async fn cmd_runs_stream(
         Ok(stream) => stream,
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
     };
-    // The stream is silent until a property changes, so a terminal shows that
-    // it is open.
-    let spinner = std::io::stderr().is_terminal().then(|| {
+    // The stream is silent between events, so a terminal shows that it is
+    // open. Output piped to another program shares the terminal with the
+    // spinner and would interleave with its frames.
+    let spinner = (std::io::stdout().is_terminal() && std::io::stderr().is_terminal()).then(|| {
         let style = ProgressStyle::with_template("{spinner} streaming run {msg} ({elapsed})")
             .expect("the template is valid");
         let spinner = ProgressBar::new_spinner()

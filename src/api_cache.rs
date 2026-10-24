@@ -161,6 +161,12 @@ impl ApiCache {
         }
     }
 
+    /// Whether a store can succeed. A handler checks it before it spends a
+    /// request on its logical verdict.
+    pub fn enabled(&self) -> bool {
+        self.dir.is_some()
+    }
+
     /// The header half of admission: [`CachePolicy::from_headers`] on the
     /// response, for handlers to [`CachePolicy::and`] with their own logical
     /// verdict. A disabled cache short-circuits to

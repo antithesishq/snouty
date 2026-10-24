@@ -379,8 +379,10 @@ fn normalize_property(property: Property) -> Result<Property> {
                 .collect::<Result<Vec<_>, _>>()
                 .wrap_err("re-serializing property examples")?;
             Ok(Property::NonEventProperty(NonEventProperty {
+                category: p.category,
                 counterexample_count: p.counterexample_count,
                 counterexamples,
+                event_set: p.event_set,
                 example_count: p.example_count,
                 examples,
                 group: p.group,
@@ -388,7 +390,9 @@ fn normalize_property(property: Property) -> Result<Property> {
                 is_event: p.is_event,
                 is_group: p.is_group,
                 name: p.name,
+                passing_predicate: p.passing_predicate,
                 status: p.status,
+                team: p.team,
             }))
         }
         other => Ok(other),
@@ -1001,12 +1005,12 @@ impl AntithesisApi {
                     .fetch_run_properties_page(&run_id, after.as_deref(), status, MAX_PAGE_LIMIT)
                     .await?
                     .untag();
-                let generated::types::PropertyListResponse { data, next_cursor } = page;
-                let normalized = data
+                let normalized = page
+                    .data
                     .into_iter()
                     .map(normalize_property)
                     .collect::<Result<Vec<_>>>()?;
-                Ok((normalized, next_cursor))
+                Ok((normalized, page.next_cursor))
             }
         })
     }
@@ -1126,13 +1130,25 @@ impl AntithesisApi {
             request = request.after(cursor);
         }
         if let Some(status) = status {
-            request = request.status(status);
+            request = request.status(vec![status]);
         }
+        // Runs from release 65.3 report properties while they are in
+        // progress, so a page is immutable only once the run reaches a
+        // terminal status. The status is read before the page, so a run that
+        // ends between the two requests cannot admit a stale page. A failed
+        // run lookup only costs the cache entry, so its error is dropped.
+        let terminal = self.cache.enabled()
+            && self
+                .get_run(run_id)
+                .await
+                .is_ok_and(|detail| detail.untag().status.is_terminal());
 
         match request.send().await {
             Ok(response) => {
                 let policy = self.cache.headers_policy(response.headers());
-                Ok(response.into_inner().with_tag(policy))
+                Ok(response
+                    .into_inner()
+                    .with_tag(policy.and(CachePolicy::cache_if(terminal))))
             }
             Err(err) => Err(format_api_client_error(err).await),
         }
@@ -3186,10 +3202,11 @@ mod tests {
                 "get getRunBuildLogs",
                 "get getRunLogs",
                 "get getRunModule",
+                "get getRunProperty",
                 "get getUsage",
+                "get getUsageCap",
                 "get getUsageSummary",
                 "get getVersion",
-                "get listEntitlements",
                 "get listRunModuleInstances",
                 "get listRunModules",
                 "get listRunProperties",
@@ -3202,6 +3219,7 @@ mod tests {
                 "post launchTest",
                 "post search",
                 "post searchCount",
+                "post streamRunStatus",
             ],
             "openapi.json changed its method↔operation mapping; re-verify \
              that every GET is a pure read before trusting the retry gating"
@@ -3433,6 +3451,17 @@ mod tests {
             serde_json::from_value(serde_json::json!({"antithesis.performance_tier": "ultra"}))
                 .unwrap();
         assert_eq!(params.antithesis_performance_tier.as_deref(), Some("ultra"));
+    }
+
+    #[test]
+    fn run_params_accept_any_fault_tolerance() {
+        let params: RunParams =
+            serde_json::from_value(serde_json::json!({"antithesis.fault_tolerance": "extreme"}))
+                .unwrap();
+        assert_eq!(
+            params.antithesis_fault_tolerance.as_deref(),
+            Some("extreme")
+        );
     }
 
     #[tokio::test]
@@ -3913,34 +3942,52 @@ mod tests {
         }
     }
 
+    fn property_page(name: &str, cursor: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "data": [{
+                "name": name,
+                "status": "Passing",
+                "is_event": false
+            }],
+            "next_cursor": cursor
+        })
+    }
+
+    async fn mount_run_detail(mock_server: &MockServer, status: &str) {
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1"))
+            .respond_with(cacheable().set_body_json(run_detail_body(status)))
+            .mount(mock_server)
+            .await;
+    }
+
+    async fn property_names(api: &AntithesisApi) -> Vec<String> {
+        api.stream_run_properties("run-1", None)
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .iter()
+            .map(|p| p.name().to_owned())
+            .collect()
+    }
+
     // Properties cache page by page: the second listing replays both
     // pages, cursor chaining included.
     #[tokio::test]
     async fn run_properties_replay_from_the_cache_per_page() {
         let mock_server = MockServer::start().await;
-        let page = |name: &str, cursor: Option<&str>| {
-            serde_json::json!({
-                "data": [{
-                    "name": name,
-                    "status": "Passing",
-                    "is_event": false,
-                    "is_existential": true,
-                    "is_universal": false
-                }],
-                "next_cursor": cursor
-            })
-        };
+        mount_run_detail(&mock_server, "completed").await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/properties"))
             .and(query_param_is_missing("after"))
-            .respond_with(cacheable().set_body_json(page("first", Some("c1"))))
+            .respond_with(cacheable().set_body_json(property_page("first", Some("c1"))))
             .expect(1)
             .mount(&mock_server)
             .await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/properties"))
             .and(query_param("after", "c1"))
-            .respond_with(cacheable().set_body_json(page("second", None)))
+            .respond_with(cacheable().set_body_json(property_page("second", None)))
             .expect(1)
             .mount(&mock_server)
             .await;
@@ -3949,15 +3996,26 @@ mod tests {
         let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
 
         for _ in 0..2 {
-            let names: Vec<String> = api
-                .stream_run_properties("run-1", None)
-                .try_collect::<Vec<_>>()
-                .await
-                .unwrap()
-                .iter()
-                .map(|p| p.name().to_owned())
-                .collect();
-            assert_eq!(names, ["first", "second"]);
+            assert_eq!(property_names(&api).await, ["first", "second"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn live_run_properties_are_not_cached() {
+        let mock_server = MockServer::start().await;
+        mount_run_detail(&mock_server, "in_progress").await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1/properties"))
+            .respond_with(cacheable().set_body_json(property_page("first", None)))
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
+
+        for _ in 0..2 {
+            assert_eq!(property_names(&api).await, ["first"]);
         }
     }
 

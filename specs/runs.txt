@@ -229,6 +229,7 @@ snouty runs properties $R_run_id
 # group, so NAME drops the `Safety: ` prefix.
 [!staging] ! stdout 'Safety: Counter'
 [!staging] stdout 'passing.*Setup completes'
+[!staging] stdout 'undetermined.*Balance stays nonnegative'
 
 # `snouty runs properties --failing` shows only failing properties.
 mock-runs-server
@@ -293,6 +294,12 @@ mock-runs-server
 snouty runs properties $R_run_id --group safety
 [!staging] stdout 'failing.*Counter value stays below limit'
 [!staging] ! stdout 'Setup completes'
+
+# An undetermined property's --detail reports no examples yet.
+mock-runs-server
+snouty runs properties $R_run_id --name 'Balance stays' --detail
+[!staging] stdout '^Status +undetermined$'
+[!staging] stdout '^Examples +none yet$'
 
 # A non-event ("system") property's --detail shows its value under a `Result`
 # label (no `:`, like the other labels). A small object inlines as compact JSON

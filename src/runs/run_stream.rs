@@ -158,8 +158,12 @@ impl Denormalizer {
                     // no sample, or only repeated ones (observed on the
                     // antithesis-orbitinghail tenant, release 65.3), and the
                     // verdict is the news.
+                    // A new sample of the other outcome does not show it:
+                    // a passing property can carry a counterexample.
                     if let Some(outcome) = verdict
-                        && lines.is_empty()
+                        && !lines.iter().any(
+                            |line| matches!(line, Line::Sample { outcome: o, .. } if *o == outcome),
+                        )
                     {
                         let line = Line::Sample {
                             outcome,
@@ -449,6 +453,16 @@ mod tests {
             ["passed      b2"]
         );
         assert!(rendered(&mut denormalizer, passed).is_empty());
+    }
+
+    #[test]
+    fn a_verdict_prints_beside_a_sample_of_the_other_outcome() {
+        let mut p = property("a1", "Passing", json!([]), json!(["old image"]));
+        p["is_event"] = json!(false);
+        assert_eq!(
+            render(json!({"type": "PROPERTIES_PASSED", "data": [p]})),
+            [r#"failed      a1  "old image""#, "passed      a1"]
+        );
     }
 
     #[test]

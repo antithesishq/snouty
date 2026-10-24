@@ -1146,36 +1146,40 @@ impl AntithesisApi {
         }
     }
 
-    /// Stream at most `limit` usage entries, newest first, in pages of at most
-    /// 100, the maximum of the endpoint. The pages are ordered by start time:
-    /// the cursor encodes the start time of the last entry (observed on
-    /// orbitinghail, release 65).
+    /// Stream usage entries, newest first, at most `limit` of them or all
+    /// with `None`, in pages of at most 100, the maximum of the endpoint. The
+    /// pages are ordered by start time: the cursor encodes the start time of
+    /// the last entry (observed on orbitinghail, release 65).
     pub fn stream_usage(
         &self,
         started_after: Option<chrono::DateTime<chrono::Utc>>,
         started_before: Option<chrono::DateTime<chrono::Utc>>,
-        limit: u64,
+        limit: Option<NonZeroU64>,
     ) -> impl futures_util::Stream<Item = Result<UsageEntry>> + '_ {
-        paginate_limited(limit, 100, move |after, page_limit| async move {
-            let mut request = self.client.list_usage().limit(page_limit);
-            if let Some(cursor) = after {
-                request = request.after(cursor);
-            }
-            if let Some(ts) = started_after {
-                request = request.start_time(ts);
-            }
-            if let Some(ts) = started_before {
-                request = request.end_time(ts);
-            }
-            match request.send().await {
-                Ok(response) => {
-                    let generated::types::UsageListResponse { data, next_cursor } =
-                        response.into_inner();
-                    Ok((data, next_cursor))
+        paginate_limited(
+            limit.map_or(u64::MAX, NonZeroU64::get),
+            100,
+            move |after, page_limit| async move {
+                let mut request = self.client.list_usage().limit(page_limit);
+                if let Some(cursor) = after {
+                    request = request.after(cursor);
                 }
-                Err(err) => Err(format_api_client_error(err).await),
-            }
-        })
+                if let Some(ts) = started_after {
+                    request = request.start_time(ts);
+                }
+                if let Some(ts) = started_before {
+                    request = request.end_time(ts);
+                }
+                match request.send().await {
+                    Ok(response) => {
+                        let generated::types::UsageListResponse { data, next_cursor } =
+                            response.into_inner();
+                        Ok((data, next_cursor))
+                    }
+                    Err(err) => Err(format_api_client_error(err).await),
+                }
+            },
+        )
     }
 
     #[cached(value)]

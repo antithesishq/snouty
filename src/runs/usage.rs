@@ -10,6 +10,7 @@ use std::io::Write;
 use std::num::NonZeroU64;
 
 use chrono::{DateTime, Datelike, Days, Local, Months, NaiveDate};
+use clap::ValueEnum;
 use color_eyre::eyre::Result;
 use futures_util::{Stream, TryStreamExt};
 use log::debug;
@@ -17,11 +18,19 @@ use serde::Serialize;
 
 use super::{limit_note, terminal_width};
 use crate::api::{AntithesisApi, UsageEntry};
-use crate::cli::{Rollup, RunsUsageArgs};
+use crate::cli::RunsUsageArgs;
 use crate::render::{OutputOptions, sanitize};
 use crate::settings::Settings;
 use crate::table::{Align, Column, Table};
 use crate::time::format_local;
+
+/// The period that `runs usage --rollup` totals runs over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum Rollup {
+    Day,
+    Week,
+    Month,
+}
 
 /// The `--json` row of a run: the usage entry, with its times in the local
 /// timezone.
@@ -85,44 +94,44 @@ pub(super) async fn cmd_runs_usage(
         limit,
     } = args;
 
-    let Some(rollup) = rollup else {
-        let entries = api.stream_usage(started_after, started_before, limit.get());
-        let mut entries = std::pin::pin!(entries);
-        let mut stdout = std::io::stdout().lock();
-        if json {
-            while let Some(entry) = entries.try_next().await? {
-                let entry = LocalUsageEntry::from(entry);
-                writeln!(stdout, "{}", serde_json::to_string(&entry)?)?;
-            }
-            return Ok(());
+    match rollup {
+        None => {
+            let entries: Vec<LocalUsageEntry> = api
+                .stream_usage(started_after, started_before, Some(limit))
+                .map_ok(LocalUsageEntry::from)
+                .try_collect()
+                .await?;
+            print_rows(&entries, json, limit, render_usage_table)
         }
-        let entries: Vec<UsageEntry> = entries.try_collect().await?;
-        if entries.is_empty() {
-            writeln!(stdout, "No usage found.")?;
-            return Ok(());
+        Some(rollup) => {
+            // A period is complete only when an older period starts, so the
+            // stream has no limit, and the limit applies to periods here.
+            let entries = api.stream_usage(started_after, started_before, None);
+            let periods = total_by_period(entries, rollup, limit).await?;
+            print_rows(&periods, json, limit, render_periods_table)
         }
-        writeln!(stdout, "{}", render_usage_table(&entries, terminal_width()))?;
-        limit_note(entries.len(), limit, false);
-        return Ok(());
-    };
+    }
+}
 
-    // A period is complete only when an older period starts, so the stream
-    // reads every entry it needs, and the limit applies to periods here.
-    let entries = api.stream_usage(started_after, started_before, u64::MAX);
-    let periods = total_by_period(entries, rollup, limit).await?;
-    let mut stdout = std::io::stdout().lock();
+/// Print `rows` as JSON lines, or as the table that `render` makes.
+fn print_rows<T: Serialize>(
+    rows: &[T],
+    json: bool,
+    limit: NonZeroU64,
+    render: fn(&[T], usize) -> String,
+) -> Result<()> {
     if json {
-        for period in &periods {
-            writeln!(stdout, "{}", serde_json::to_string(period)?)?;
+        for row in rows {
+            outln!("{}", serde_json::to_string(row)?)?;
         }
         return Ok(());
     }
-    if periods.is_empty() {
-        writeln!(stdout, "No usage found.")?;
+    if rows.is_empty() {
+        outln!("No usage found.")?;
         return Ok(());
     }
-    writeln!(stdout, "{}", render_periods_table(&periods))?;
-    limit_note(periods.len(), limit, false);
+    outln!("{}", render(rows, terminal_width()))?;
+    limit_note(rows.len(), limit, false);
     Ok(())
 }
 
@@ -136,6 +145,8 @@ async fn total_by_period(
     limit: NonZeroU64,
 ) -> Result<Vec<PeriodUsage>> {
     let mut entries = std::pin::pin!(entries);
+    // A map, not a run of adjacent entries: the endpoint documents its order
+    // as creation time, and only its cursor shows that it is start time.
     let mut totals: BTreeMap<NaiveDate, (u64, f64)> = BTreeMap::new();
     while let Some(entry) = entries.try_next().await? {
         let date = rollup.period_end(entry.start_time.with_timezone(&Local).date_naive());
@@ -163,15 +174,15 @@ fn format_hours(hours: f64) -> String {
     format!("{hours:.2}")
 }
 
-fn render_usage_table(entries: &[UsageEntry], width: usize) -> String {
+fn render_usage_table(entries: &[LocalUsageEntry], width: usize) -> String {
     let rows = entries
         .iter()
         .map(|entry| {
             vec![
                 sanitize(&entry.run_id),
                 format_hours(entry.hours),
-                format_local(entry.start_time),
-                format_local(entry.end_time),
+                format_local(entry.start_time.to_utc()),
+                format_local(entry.end_time.to_utc()),
             ]
         })
         .collect();
@@ -183,7 +194,7 @@ fn render_usage_table(entries: &[UsageEntry], width: usize) -> String {
         .render(rows, width)
 }
 
-fn render_periods_table(periods: &[PeriodUsage]) -> String {
+fn render_periods_table(periods: &[PeriodUsage], width: usize) -> String {
     let rows = periods
         .iter()
         .map(|period| {
@@ -198,13 +209,12 @@ fn render_periods_table(periods: &[PeriodUsage]) -> String {
         .column(Column::new("DATE"))
         .column(Column::new("RUNS").align(Align::Right))
         .column(Column::new("HOURS").align(Align::Right))
-        .render(rows, usize::MAX)
+        .render(rows, width)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::ValueEnum;
     use hegel::generators::{self, Generator};
 
     fn date(text: &str) -> NaiveDate {

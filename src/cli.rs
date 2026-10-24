@@ -11,6 +11,7 @@ use crate::api::{
     SourceSessionId,
 };
 use crate::help::HelpPage;
+use crate::runs::usage::Rollup;
 use crate::time::{BareUnit, HumanDuration, ParseDurationError};
 use crate::vtime::VTime;
 
@@ -714,14 +715,6 @@ pub enum RunsCommands {
     /// Show the usage hours of recent runs
     #[command(long_about = HelpPage::RunsUsage.cli())]
     Usage(RunsUsageArgs),
-}
-
-/// The period that `runs usage --rollup` totals runs over.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub enum Rollup {
-    Day,
-    Week,
-    Month,
 }
 
 #[derive(Args)]

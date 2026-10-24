@@ -36,7 +36,6 @@ use crate::time::{HumanDuration, format_local_with_offset};
 use crate::vtime::VTime;
 
 mod event_search;
-mod usage;
 
 use event_search::EventOutput;
 
@@ -103,6 +102,9 @@ macro_rules! outln {
     () => {{ writeln!(std::io::stdout()) }};
     ($($arg:tt)*) => {{ writeln!(std::io::stdout(), $($arg)*) }};
 }
+
+// Declared after the macros above, so that the module can use them.
+pub mod usage;
 
 pub async fn cmd_runs(
     command: Option<RunsCommands>,

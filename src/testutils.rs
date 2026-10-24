@@ -902,6 +902,9 @@ const MOCK_USAGE: &[(&str, f64, &str, &str)] = &[
 /// Pages of at most 2 entries, so that a period can span two pages. The
 /// cursor is the offset of the next page.
 fn mock_route_list_usage(query: Option<&str>, empty: bool) -> String {
+    if empty {
+        return r#"{"data":[],"next_cursor":null}"#.to_string();
+    }
     let time_param = |key| {
         mock_query_param(query, key)
             .map(|t| chrono::DateTime::parse_from_rfc3339(&t).expect("an RFC 3339 time"))
@@ -909,7 +912,6 @@ fn mock_route_list_usage(query: Option<&str>, empty: bool) -> String {
     let (after, before) = (time_param("start_time"), time_param("end_time"));
     let entries: Vec<_> = MOCK_USAGE
         .iter()
-        .filter(|_| !empty)
         .filter(|(_, _, start, _)| {
             let start = chrono::DateTime::parse_from_rfc3339(start).unwrap();
             after.is_none_or(|t| start > t) && before.is_none_or(|t| start < t)

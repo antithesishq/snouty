@@ -2482,7 +2482,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "I start the property stream on a completed run; I want it to end at once, not hang.",
             "stderr says that the stream is open, and stdout is one `finalized` line. Exit 0.",
             ["runs", "stream", d.success],
-            expect_message("finalized"),
+            succeeds_with("finalized"),
             json_capable=False,
         ),
         Story(
@@ -2491,8 +2491,9 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "I pass a run id that doesn't exist; I want a clean error.",
             "A clean `run not found` error, not a crash or a stream that hangs. Exit 1.",
             ["runs", "stream", UNKNOWN_RUN],
-            expect_message("not found"),
+            fails_with("run not found"),
             json_capable=False,
+            expect_ok=False,
         ),
         Story(
             "runs-build-logs-unknown",

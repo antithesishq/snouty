@@ -738,8 +738,9 @@ pub struct RunsUsageArgs {
     pub utc: bool,
 
     /// Maximum number of rows to display: runs, or periods with --rollup
-    #[arg(short = 'n', long, default_value_t = DEFAULT_RUNS_LIMIT)]
-    pub limit: NonZeroU64,
+    /// [default: 10; not allowed with both --after and --before]
+    #[arg(short = 'n', long)]
+    pub limit: Option<NonZeroU64>,
 }
 
 #[derive(Args)]

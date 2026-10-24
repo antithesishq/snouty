@@ -17,7 +17,8 @@ use serde::Serialize;
 
 use super::{limit_note, terminal_width};
 use crate::api::{AntithesisApi, UsageEntry};
-use crate::cli::RunsUsageArgs;
+use crate::cli::{DEFAULT_RUNS_LIMIT, RunsUsageArgs};
+use crate::error::user_error;
 use crate::render::{OutputOptions, sanitize};
 use crate::settings::Settings;
 use crate::table::{Align, Column, Table};
@@ -151,13 +152,35 @@ impl Rollup {
     }
 }
 
+/// Which rows the output holds. The usage endpoint sends the newest runs
+/// first, so only `Newest` can stop at the first `limit` runs that it reads.
+// TODO: when the endpoint can sort the oldest runs first, read `Oldest` from
+// one request at `--after` instead of from windows of end times.
+#[derive(Clone, Copy)]
+enum Selection {
+    /// The `limit` newest rows, before `--before` when it is set.
+    Newest(NonZeroU64),
+    /// The `limit` oldest rows from `--after`.
+    Oldest(DateTime<Utc>, NonZeroU64),
+    /// Every row between `--after` and `--before`.
+    All(DateTime<Utc>),
+}
+
+impl Selection {
+    fn limit(self) -> Option<NonZeroU64> {
+        match self {
+            Selection::Newest(limit) | Selection::Oldest(_, limit) => Some(limit),
+            Selection::All(_) => None,
+        }
+    }
+}
+
 pub(super) async fn cmd_runs_usage(
     args: RunsUsageArgs,
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
     debug!("listing usage");
-    let api = AntithesisApi::new(settings, verbose)?;
     let RunsUsageArgs {
         rollup,
         after,
@@ -168,38 +191,75 @@ pub(super) async fn cmd_runs_usage(
     let zone = if utc { Zone::Utc } else { Zone::Local };
     let after = after.map(|bound| bound.resolve(zone));
     let before = before.map(|bound| bound.resolve(zone));
+    let selection = match (after, before, limit) {
+        (Some(_), Some(_), Some(_)) => {
+            return Err(user_error(
+                "--limit cannot be used with both --after and --before, which select every \
+                 row between them",
+            ));
+        }
+        (Some(after), Some(_), None) => Selection::All(after),
+        (Some(after), None, limit) => Selection::Oldest(after, limit.unwrap_or(DEFAULT_RUNS_LIMIT)),
+        (None, _, limit) => Selection::Newest(limit.unwrap_or(DEFAULT_RUNS_LIMIT)),
+    };
+    let api = AntithesisApi::new(settings, verbose)?;
 
     let Some(rollup) = rollup else {
-        let entries: Vec<ZonedUsageEntry> = api
-            .stream_usage(after, before, Some(limit))
-            .map_ok(|entry| ZonedUsageEntry::new(entry, zone))
-            .try_collect()
-            .await?;
-        return print_rows(&entries, json, limit, "results", render_usage_table);
+        let entries = match selection {
+            Selection::Newest(limit) => {
+                api.stream_usage(None, before, Some(limit))
+                    .try_collect()
+                    .await?
+            }
+            Selection::Oldest(after, limit) => oldest_entries(&api, after, limit).await?,
+            Selection::All(after) => {
+                api.stream_usage(Some(after), before, None)
+                    .try_collect()
+                    .await?
+            }
+        };
+        let entries: Vec<ZonedUsageEntry> = entries
+            .into_iter()
+            .map(|entry| ZonedUsageEntry::new(entry, zone))
+            .collect();
+        return print_rows(
+            &entries,
+            json,
+            selection.limit(),
+            "results",
+            render_usage_table,
+        );
     };
 
     // A run counts in the period in which it ended, as the usage summary and
     // the usage cap count it. `before` is exclusive, so the newest period is
     // the one that holds the instant before it.
-    let anchor = before.map_or_else(Utc::now, |time| time - TimeDelta::nanoseconds(1));
-    let floor = after.map_or(FIRST_DAY, |time| {
-        zone.time(time).date_naive().max(FIRST_DAY)
-    });
-    let ends = window(rollup, zone.time(anchor).date_naive(), floor, limit);
-    let oldest = ends.last().map_or(floor, |end| rollup.period_start(*end));
-    let start = zone.midnight(oldest);
-    let after = after.map_or(start, |time| time.max(start));
+    let date = |time: DateTime<Utc>| zone.time(time).date_naive();
+    let newest = date(before.map_or_else(Utc::now, |time| time - TimeDelta::nanoseconds(1)));
+    let ends = match selection {
+        Selection::Newest(limit) => periods_back(rollup, newest, FIRST_DAY, Some(limit)),
+        Selection::Oldest(after, limit) => periods_forward(rollup, date(after), newest, limit),
+        Selection::All(after) => periods_back(rollup, newest, date(after), None),
+    };
     let mut totals: BTreeMap<NaiveDate, (u64, f64)> =
         ends.iter().map(|end| (*end, (0, 0.0))).collect();
-    let entries = api.stream_usage(Some(after), before, None);
-    let mut entries = std::pin::pin!(entries);
-    while let Some(entry) = entries.try_next().await? {
-        let date = rollup.period_end(zone.time(entry.end_time).date_naive());
-        // The midnight of a skipped clock change can let in a run from just
-        // outside the window, which has no period here.
-        if let Some((runs, hours)) = totals.get_mut(&date) {
-            *runs += 1;
-            *hours += entry.hours;
+    // One window of end times holds every period, so the page order does not
+    // matter.
+    if let (Some(newest_end), Some(oldest_end)) = (ends.first(), ends.last()) {
+        let start = zone.midnight(rollup.period_start(*oldest_end));
+        let end = zone.midnight(*newest_end + Days::new(1));
+        let after = after.map_or(start, |time| time.max(start));
+        let before = before.map_or(end, |time| time.min(end));
+        let entries = api.stream_usage(Some(after), Some(before), None);
+        let mut entries = std::pin::pin!(entries);
+        while let Some(entry) = entries.try_next().await? {
+            let date = rollup.period_end(date(entry.end_time));
+            // The midnight of a skipped clock change can let in a run from
+            // just outside the window, which has no period here.
+            if let Some((runs, hours)) = totals.get_mut(&date) {
+                *runs += 1;
+                *hours += entry.hours;
+            }
         }
     }
     let periods: Vec<PeriodUsage> = totals
@@ -211,35 +271,84 @@ pub(super) async fn cmd_runs_usage(
             hours: (hours * 100.0).round() / 100.0,
         })
         .collect();
-    print_rows(&periods, json, limit, "periods", render_periods_table)
+    print_rows(
+        &periods,
+        json,
+        selection.limit(),
+        "periods",
+        render_periods_table,
+    )
 }
 
-/// The last days of the `limit` periods that end with the period that holds
-/// `anchor`, newest first. The window stops early at the period that holds
-/// `floor`.
-fn window(
+/// The `limit` runs that ended first at or after `after`, newest first. The
+/// endpoint sends the newest runs first, so this reads windows of end times
+/// forward from `after`, each twice as long as the one before, until they hold
+/// `limit` runs or pass the present.
+async fn oldest_entries(
+    api: &AntithesisApi,
+    after: DateTime<Utc>,
+    limit: NonZeroU64,
+) -> Result<Vec<UsageEntry>> {
+    let now = Utc::now();
+    let mut entries: Vec<UsageEntry> = Vec::new();
+    let (mut start, mut length) = (after, TimeDelta::days(1));
+    while (entries.len() as u64) < limit.get() && start <= now {
+        let end = start + length;
+        let window: Vec<UsageEntry> = api
+            .stream_usage(Some(start), Some(end), None)
+            .try_collect()
+            .await?;
+        entries.extend(window);
+        (start, length) = (end, length * 2);
+    }
+    entries.sort_by_key(|entry| entry.end_time);
+    entries.truncate(usize::try_from(limit.get()).unwrap_or(usize::MAX));
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.start_time));
+    Ok(entries)
+}
+
+/// The last days of the periods from the one that holds `newest` back to the
+/// one that holds `oldest`, newest first, and at most `limit` of them.
+fn periods_back(
     rollup: Rollup,
-    anchor: NaiveDate,
-    floor: NaiveDate,
+    newest: NaiveDate,
+    oldest: NaiveDate,
+    limit: Option<NonZeroU64>,
+) -> Vec<NaiveDate> {
+    let last = rollup.period_end(oldest.max(FIRST_DAY));
+    let mut ends = Vec::new();
+    let mut end = rollup.period_end(newest);
+    while end >= last && limit.is_none_or(|limit| (ends.len() as u64) < limit.get()) {
+        ends.push(end);
+        end = rollup.period_start(end) - Days::new(1);
+    }
+    ends
+}
+
+/// The last days of the `limit` periods from the one that holds `oldest`
+/// forward, but not past the one that holds `newest`, newest first.
+fn periods_forward(
+    rollup: Rollup,
+    oldest: NaiveDate,
+    newest: NaiveDate,
     limit: NonZeroU64,
 ) -> Vec<NaiveDate> {
+    let last = rollup.period_end(newest);
     let mut ends = Vec::new();
-    let mut end = rollup.period_end(anchor);
-    loop {
+    let mut end = rollup.period_end(oldest.max(FIRST_DAY));
+    while end <= last && (ends.len() as u64) < limit.get() {
         ends.push(end);
-        let start = rollup.period_start(end);
-        if start <= floor || ends.len() as u64 == limit.get() {
-            return ends;
-        }
-        end = start - Days::new(1);
+        end = rollup.period_end(end + Days::new(1));
     }
+    ends.reverse();
+    ends
 }
 
 /// `noun` names the rows in the limit note.
 fn print_rows<T: Serialize>(
     rows: &[T],
     json: bool,
-    limit: NonZeroU64,
+    limit: Option<NonZeroU64>,
     noun: &str,
     render: fn(&[T], usize) -> String,
 ) -> Result<()> {
@@ -254,7 +363,9 @@ fn print_rows<T: Serialize>(
         return Ok(());
     }
     outln!("{}", render(rows, terminal_width()))?;
-    limit_note(rows.len(), limit, noun, false);
+    if let Some(limit) = limit {
+        limit_note(rows.len(), limit, noun, false);
+    }
     Ok(())
 }
 
@@ -347,29 +458,55 @@ mod tests {
         assert!("2026-10-01 12:00".parse::<TimeBound>().is_err());
     }
 
+    fn dates(texts: &[&str]) -> Vec<NaiveDate> {
+        texts.iter().map(|text| date(text)).collect()
+    }
+
     #[test]
-    fn window_counts_back_from_the_anchor_to_the_floor() {
-        let limit = NonZeroU64::new(3).unwrap();
-        let ends = |rollup, floor| window(rollup, date("2026-03-03"), date(floor), limit);
-        let dates = |texts: &[&str]| texts.iter().map(|t| date(t)).collect::<Vec<_>>();
+    fn periods_back_counts_back_from_newest_to_oldest() {
+        let three = NonZeroU64::new(3);
+        let back =
+            |rollup, oldest, limit| periods_back(rollup, date("2026-03-03"), date(oldest), limit);
         assert_eq!(
-            ends(Rollup::Day, "1970-01-01"),
+            back(Rollup::Day, "1970-01-01", three),
             dates(&["2026-03-03", "2026-03-02", "2026-03-01"])
         );
         assert_eq!(
-            ends(Rollup::Week, "1970-01-01"),
+            back(Rollup::Week, "1970-01-01", three),
             dates(&["2026-03-08", "2026-03-01", "2026-02-22"])
         );
         assert_eq!(
-            ends(Rollup::Month, "1970-01-01"),
+            back(Rollup::Month, "1970-01-01", three),
             dates(&["2026-03-31", "2026-02-28", "2026-01-31"])
         );
-        // The period that holds the floor is the last one.
+        // The period that holds `oldest` is the last one.
         assert_eq!(
-            ends(Rollup::Month, "2026-02-14"),
+            back(Rollup::Month, "2026-02-14", None),
             dates(&["2026-03-31", "2026-02-28"])
         );
-        assert_eq!(ends(Rollup::Day, "2026-03-03"), dates(&["2026-03-03"]));
+        assert_eq!(
+            back(Rollup::Day, "2026-03-03", None),
+            dates(&["2026-03-03"])
+        );
+        assert_eq!(back(Rollup::Day, "2026-03-04", None), dates(&[]));
+    }
+
+    #[test]
+    fn periods_forward_counts_forward_from_oldest_to_newest() {
+        let two = NonZeroU64::new(2).unwrap();
+        let forward =
+            |rollup, newest| periods_forward(rollup, date("2026-02-14"), date(newest), two);
+        assert_eq!(
+            forward(Rollup::Day, "2026-03-03"),
+            dates(&["2026-02-15", "2026-02-14"])
+        );
+        assert_eq!(
+            forward(Rollup::Month, "2026-03-03"),
+            dates(&["2026-03-31", "2026-02-28"])
+        );
+        // No period after the one that holds `newest`.
+        assert_eq!(forward(Rollup::Month, "2026-02-20"), dates(&["2026-02-28"]));
+        assert_eq!(forward(Rollup::Day, "2026-02-13"), dates(&[]));
     }
 
     /// The period from `start` to `end` holds `date`, and the days before

@@ -2230,10 +2230,20 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-usage--window",
             "Total the usage of one month",
             "I want the daily usage of the runs that ended in a given month.",
-            "One row per day of the window, newest first, from the day before --before back "
-            "to the --after day; days with no runs show 0.",
-            ["runs", "usage", "--rollup", "day", "-n", "31", "--after", "2026-09-01", "--before", "2026-10-01"],
-            rows_at_most(31),
+            "One row per day of September, newest first, with no limit note; days with no "
+            "runs show 0.",
+            ["runs", "usage", "--rollup", "day", "--after", "2026-09-01", "--before", "2026-10-01"],
+            rows_at_most(30),
+        ),
+        Story(
+            "runs-usage--after",
+            "See the first runs after a date",
+            "I want the first few runs that finished after the start of October.",
+            "At most 5 rows: the 5 runs that ended first on or after 2026-10-01 (local time), "
+            "shown newest first; when more runs exist, a stderr note says the output stopped "
+            "at the limit.",
+            ["runs", "usage", "--after", "2026-10-01", "-n", "5"],
+            rows_at_most(5),
         ),
         Story(
             "runs-verbose",

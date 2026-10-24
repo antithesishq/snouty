@@ -6,7 +6,13 @@ With --rollup, each row is the total of one day, week, or month. A run counts in
 
 Times and periods are in the local timezone. Add --utc to show them in UTC.
 
---after and --before select runs by the time that they ended: --after includes a run that ended at that time, and --before does not. Each takes a date, which is the start of that day, or an RFC 3339 time. With --rollup, --before sets the newest period, and --after ends the rows at the period that holds it. When a filter cuts a period, the total of that period includes only the runs inside the filter. --limit counts rows: runs, or periods with --rollup.
+--after and --before select runs by the time that they ended: --after includes a run that ended at that time, and --before does not. Each takes a date, which is the start of that day, or an RFC 3339 time. With --rollup, a period is in the output when it holds a selected time. When a filter cuts a period, the total of that period includes only the runs inside the filter.
+
+--limit counts rows: runs, or periods with --rollup. The default is 10. The filters select which rows the limit keeps:
+  no filter or --before    the newest rows (before --before)
+  --after                  the oldest rows from --after
+  --after and --before     every row between them; --limit is not allowed
+The rows always show newest first.
 
 Examples:
   snouty runs usage

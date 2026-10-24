@@ -21,6 +21,7 @@ pkgs.mkShell {
     shellcheck
     taplo
     cargo-shear
+    cargo-deny
     npins
     nixfmt
     # snouty drives Docker Compose v2 via the `docker-compose` binary.

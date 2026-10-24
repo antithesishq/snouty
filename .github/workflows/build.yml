@@ -265,6 +265,29 @@ jobs:
       # The Linux release binaries are musl builds, with musl-only dependencies.
       - name: Check on MSRV for musl
         run: cargo check --workspace --all-targets --locked --target x86_64-unknown-linux-musl
+  cargo-deny:
+    runs-on: ubuntu-latest
+    needs: skip-check
+    if: needs.skip-check.outputs.should_skip != 'true'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          token: ${{secrets.GITHUB_TOKEN}}
+          persist-credentials: false
+
+      # v2.1.1 runs cargo-deny 0.20.2.
+      - name: Check licenses, bans and sources
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check bans licenses sources
+
+      # A new advisory can appear with no change here, so it fails only the
+      # nightly and manual runs, not a pull request.
+      - name: Check advisories
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories
   test:
     runs-on: ${{ matrix.os }}
     needs: skip-check
@@ -463,6 +486,7 @@ jobs:
       - nixfmt
       - cargo-shear
       - msrv
+      - cargo-deny
     if: always()
     steps:
       - name: Verify every needed job

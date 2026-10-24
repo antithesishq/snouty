@@ -2187,15 +2187,12 @@ fn normalize_vtime_field(entry: &mut Value, key: &str) -> Option<VTime> {
 /// A *data* record can legitimately carry a top-level `error` field of its
 /// own (an event's payload is arbitrary workload JSON), but data records
 /// always carry their schema's required envelope — `moment` for log/event
-/// records, `timestamp` for build log lines, `type` for run status
-/// notifications — which `Stream_Error` never has, so the envelope's absence
-/// disambiguates.
+/// records, `timestamp` for build log lines — which `Stream_Error` never has,
+/// so the envelope's absence disambiguates. The run status stream checks its
+/// own `type` envelope before it calls this.
 fn stream_error_message(entry: &Value) -> Option<&str> {
     let obj = entry.as_object()?;
-    if ["moment", "timestamp", "type"]
-        .iter()
-        .any(|key| obj.contains_key(*key))
-    {
+    if obj.contains_key("moment") || obj.contains_key("timestamp") {
         return None;
     }
     obj.get("error")?.as_str()

@@ -62,7 +62,11 @@ impl Record {
     /// A `Stream_Error` line returns an error: the server ended the stream
     /// before the run was final.
     pub(super) fn parse(line: &Value) -> Result<Self> {
-        if let Some(message) = stream_error_message(line) {
+        // A notification's `type` marks it as data, even if it also carries
+        // an `error` key.
+        if line.get("type").is_none()
+            && let Some(message) = stream_error_message(line)
+        {
             return Err(mid_stream_error(message));
         }
         let Ok(kind) = RunStreamNotificationType::deserialize(&line["type"]) else {
@@ -267,6 +271,12 @@ mod tests {
         let record = Record::parse(&line).unwrap();
         assert!(matches!(record, Record::Unknown(_)));
         assert_eq!(render(line, false), r#"{"type":"RUN_PAUSED","data":[]}"#);
+    }
+
+    #[test]
+    fn a_notification_with_an_error_key_is_data() {
+        let line = json!({"type": "RUN_FINALIZED", "data": [], "error": "none"});
+        assert!(matches!(Record::parse(&line).unwrap(), Record::Finalized));
     }
 
     #[test]

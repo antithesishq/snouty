@@ -1136,7 +1136,17 @@ impl AntithesisApi {
         match request.send().await {
             Ok(response) => {
                 let policy = self.cache.headers_policy(response.headers());
-                Ok(response.into_inner().with_tag(policy))
+                // Runs from release 65.3 report properties while they are in
+                // progress, so a page is immutable only once the run reaches
+                // a terminal status. A failed run lookup only costs the cache
+                // entry, so its error is dropped.
+                let terminal = self
+                    .get_run(run_id)
+                    .await
+                    .is_ok_and(|detail| detail.untag().status.is_terminal());
+                Ok(response
+                    .into_inner()
+                    .with_tag(policy.and(CachePolicy::cache_if(terminal))))
             }
             Err(err) => Err(format_api_client_error(err).await),
         }
@@ -3919,34 +3929,52 @@ mod tests {
         }
     }
 
+    fn property_page(name: &str, cursor: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "data": [{
+                "name": name,
+                "status": "Passing",
+                "is_event": false
+            }],
+            "next_cursor": cursor
+        })
+    }
+
+    async fn mount_run_detail(mock_server: &MockServer, status: &str) {
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1"))
+            .respond_with(cacheable().set_body_json(run_detail_body(status)))
+            .mount(mock_server)
+            .await;
+    }
+
+    async fn property_names(api: &AntithesisApi) -> Vec<String> {
+        api.stream_run_properties("run-1", None)
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .iter()
+            .map(|p| p.name().to_owned())
+            .collect()
+    }
+
     // Properties cache page by page: the second listing replays both
     // pages, cursor chaining included.
     #[tokio::test]
     async fn run_properties_replay_from_the_cache_per_page() {
         let mock_server = MockServer::start().await;
-        let page = |name: &str, cursor: Option<&str>| {
-            serde_json::json!({
-                "data": [{
-                    "name": name,
-                    "status": "Passing",
-                    "is_event": false,
-                    "is_existential": true,
-                    "is_universal": false
-                }],
-                "next_cursor": cursor
-            })
-        };
+        mount_run_detail(&mock_server, "completed").await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/properties"))
             .and(query_param_is_missing("after"))
-            .respond_with(cacheable().set_body_json(page("first", Some("c1"))))
+            .respond_with(cacheable().set_body_json(property_page("first", Some("c1"))))
             .expect(1)
             .mount(&mock_server)
             .await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/properties"))
             .and(query_param("after", "c1"))
-            .respond_with(cacheable().set_body_json(page("second", None)))
+            .respond_with(cacheable().set_body_json(property_page("second", None)))
             .expect(1)
             .mount(&mock_server)
             .await;
@@ -3955,15 +3983,26 @@ mod tests {
         let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
 
         for _ in 0..2 {
-            let names: Vec<String> = api
-                .stream_run_properties("run-1", None)
-                .try_collect::<Vec<_>>()
-                .await
-                .unwrap()
-                .iter()
-                .map(|p| p.name().to_owned())
-                .collect();
-            assert_eq!(names, ["first", "second"]);
+            assert_eq!(property_names(&api).await, ["first", "second"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn live_run_properties_are_not_cached() {
+        let mock_server = MockServer::start().await;
+        mount_run_detail(&mock_server, "in_progress").await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1/properties"))
+            .respond_with(cacheable().set_body_json(property_page("first", None)))
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
+
+        for _ in 0..2 {
+            assert_eq!(property_names(&api).await, ["first"]);
         }
     }
 

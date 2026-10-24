@@ -295,8 +295,7 @@ snouty runs properties $R_run_id --group safety
 [!staging] stdout 'failing.*Counter value stays below limit'
 [!staging] ! stdout 'Setup completes'
 
-# An undetermined property has not resolved yet. Its --detail says that it
-# has no examples yet.
+# An undetermined property's --detail reports no examples yet.
 mock-runs-server
 snouty runs properties $R_run_id --name 'Balance stays' --detail
 [!staging] stdout '^Status +undetermined$'

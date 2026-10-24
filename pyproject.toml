@@ -35,6 +35,6 @@ dev = [
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
-# `ruff format` sets the line length. It leaves long strings and comments, and
-# E501 would only report those.
+# `ruff format` sets the line length. E501 reports only the long strings and
+# comments that the formatter leaves.
 ignore = ["E501"]

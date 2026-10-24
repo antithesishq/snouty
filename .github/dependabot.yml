@@ -12,8 +12,8 @@ updates:
     cooldown:
       default-days: 7
   # The workflows pin every action to a commit. This keeps those pins current,
-  # in one grouped pull request a week. install-action also takes the tool
-  # versions it installs, such as cargo-nextest, from its pinned commit.
+  # in one grouped pull request a week. It does not update the tools in
+  # mise.toml; AGENTS.md says how to bump those.
   - package-ecosystem: "github-actions"
     directory: "/"
     # Generated workflows. Update their pins through `dist init` and

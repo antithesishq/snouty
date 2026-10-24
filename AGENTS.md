@@ -102,6 +102,18 @@ mise trust
 mise install
 ```
 
+Dependabot does not update `mise.toml`. To bump a tool, change its version
+in `mise.toml`, then regenerate the lockfile for the platforms that CI and
+contributors use:
+
+```
+mise lock --platform linux-x64,macos-arm64,macos-x64
+```
+
+taplo publishes no checksums, so `mise lock` leaves its entries without one.
+Add a `checksum` for each taplo entry by hand: the SHA-256 of the `.gz` file
+at its `url`.
+
 On a system that cannot run mise's prebuilt binaries, such as NixOS, use the
 nix shell (`nix-shell`, or direnv with `.envrc`) instead. It has the same
 tools from nixpkgs, whose versions can differ from CI's. In a nix shell, the

@@ -1,15 +1,15 @@
 Show the usage hours of recent runs, newest first.
 
-Columns: RUN ID, HOURS, STARTED, ENDED. STARTED and ENDED are the start and end of the billable usage of the run, in the local timezone.
+Columns: RUN ID, HOURS, STARTED, ENDED. HOURS is rounded to the minute, as `Xh Ym`. STARTED and ENDED are the start and end of the billable usage of the run, in the local timezone.
 
-With --rollup, each row is the total of one day, week, or month, in the local timezone. A week starts on Monday. Columns: DATE, RUNS, HOURS. DATE is the last day of the period. A period with no runs does not show. When --started-after or --started-before cuts a period, the total of that period includes only the runs inside the filter.
+With --rollup, each row is the total of one day, week, or month, in the local timezone. A week starts on Monday. Columns: DATE, RUNS, HOURS. DATE is the last day of the period. The rows are the --limit periods that end with the current period, and a period with no runs shows 0.
 
---started-after and --started-before filter on the time that the usage of a run started. --limit counts rows: runs, or periods with --rollup.
+--started-after and --started-before filter on the time that the usage of a run started. --limit counts rows: runs, or periods with --rollup. With --rollup, --started-before sets the newest period, and --started-after ends the rows at the period that holds it. When a filter cuts a period, the total of that period includes only the runs inside the filter.
 
 Examples:
   snouty runs usage
   snouty runs usage --rollup week -n 4
   snouty runs usage --rollup month --started-after 2026-01-01T00:00:00Z
 
-Add --json for machine-readable output. Each row prints as one JSON object on its own line. A run has the fields run_id, hours, start_time, and end_time; the times are RFC 3339 in the local timezone. A period has the fields date, runs, and hours:
+Add --json for machine-readable output. Each row prints as one JSON object on its own line. A run has the fields run_id, hours, start_time, and end_time; the times are RFC 3339 in the local timezone. A period has the fields date, runs, and hours, with hours rounded to hundredths:
   snouty --json runs usage --rollup month | jq -r '"\(.date) \(.hours)"'

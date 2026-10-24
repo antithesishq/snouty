@@ -215,12 +215,7 @@ jobs:
       # independent of the image runtime. The matrix exercises that binary
       # against both runtimes: docker, and podman (which docker-compose reaches
       # over podman's API socket via DOCKER_HOST). mise installs docker-compose,
-      # and each configure step removes the other runtime. The tests run
-      # docker-compose from temporary directories, where a mise shim finds no
-      # mise.toml, so put the binary itself on PATH.
-      - name: Put docker-compose on PATH
-        run: dirname "$(mise which docker-compose)" >> "$GITHUB_PATH"
-
+      # and each configure step removes the other runtime.
       - name: Configure Docker
         if: matrix.runtime == 'docker'
         run: |

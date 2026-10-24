@@ -2,6 +2,7 @@ name: Set up mise
 description: >-
   Install mise, checked against a SHA-256 for the runner platform, then install
   the mise.toml tools at the versions in mise.lock. mise-action caches them.
+  Every later step finds the tools on PATH, from any directory.
 runs:
   using: composite
   steps:
@@ -15,3 +16,12 @@ runs:
             "macOS-ARM64": "f5171e341518a57e8c4e9280e28443e35d66212c51164c83be76794e0a78b014",
             "macOS-X64": "c3355f0c56d1b9fe73a2ba30e034b4e483541b25b1ad812a87440abfaeec8baa"
           }')[format('{0}-{1}', runner.os, runner.arch)] }}
+        # A shim works only below mise.toml, and tests run tools from
+        # temporary directories. The next step puts the tools on PATH instead.
+        add_shims_to_path: false
+
+    # The paths are mise's install directories for the tools that mise.toml
+    # pins, so they are only as trusted as the checked-out repository.
+    - name: Put the mise tools on PATH
+      shell: bash
+      run: mise bin-paths >> "$GITHUB_PATH" # zizmor: ignore[github-env]

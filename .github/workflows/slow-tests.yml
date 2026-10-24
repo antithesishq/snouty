@@ -104,9 +104,6 @@ jobs:
           # 5.x release from its macOS pkg instead (5.x still ships an amd64
           # pkg). mise installs docker-compose. TODO: drop the pinned 5.x pkg
           # when this Intel macOS leg retires.
-          # The tests run docker-compose from temporary directories, where a
-          # mise shim finds no mise.toml, so put the binary itself on PATH.
-          dirname "$(mise which docker-compose)" >> "$GITHUB_PATH"
           curl -fsSL -o /tmp/podman-installer.pkg \
             https://github.com/podman-container-tools/podman/releases/download/v5.8.8/podman-installer-macos-amd64.pkg
           sudo installer -pkg /tmp/podman-installer.pkg -target /

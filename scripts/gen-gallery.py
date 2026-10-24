@@ -2232,7 +2232,16 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "I want the daily usage of the runs that ended in a given month.",
             "One row per day of September, newest first, with no limit note; days with no "
             "runs show 0.",
-            ["runs", "usage", "--rollup", "day", "--after", "2026-09-01", "--before", "2026-10-01"],
+            [
+                "runs",
+                "usage",
+                "--rollup",
+                "day",
+                "--after",
+                "2026-09-01",
+                "--before",
+                "2026-10-01",
+            ],
             rows_at_most(30),
         ),
         Story(
@@ -3200,7 +3209,9 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "I want to know what the usage columns mean and how --rollup groups runs.",
             ["runs", "usage"],
             ["runs", "usage", "-n", "5"],
-            samples=[("with --rollup week", ["runs", "usage", "--rollup", "week", "-n", "4"])],
+            samples=[
+                ("with --rollup week", ["runs", "usage", "--rollup", "week", "-n", "4"])
+            ],
             align=("RUN ID", "HOURS", "STARTED", "ENDED"),
         ),
         _help_story(

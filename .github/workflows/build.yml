@@ -245,33 +245,35 @@ jobs:
 
   # The check the main ruleset requires. It covers what a pull request gates on;
   # the macOS Intel and nix legs are too slow for that and run after merge, in
-  # slow-tests.yml.
+  # slow-tests.yml. Add each job that a pull request must pass to `needs`. The
+  # script reads every job in `needs`, so it needs no edit.
   tests-passed:
     runs-on: ubuntu-latest
     needs:
       - skip-check
+      - checks
       - test
       - test-macos-arm
       - staging
     if: always()
     steps:
-      - name: Verify test matrix
+      - name: Verify every needed job
+        env:
+          SHOULD_SKIP: ${{ needs.skip-check.outputs.should_skip }}
+          NEEDS: ${{ toJSON(needs) }}
         run: |
-          if [ "${{ needs.skip-check.outputs.should_skip }}" = "true" ]; then
+          if [ "$SHOULD_SKIP" = "true" ]; then
             exit 0
           fi
 
           # `staging` skips on a fork's pull request. This gate accepts that
           # one result. A failure or a cancellation still blocks the merge.
-          staging="${{ needs.staging.result }}"
+          failed=$(jq -r 'to_entries[]
+            | select(.value.result != "success")
+            | select(.key != "staging" or .value.result != "skipped")
+            | "\(.key): \(.value.result)"' <<<"$NEEDS")
 
-          if [ "${{ needs.test.result }}" = "success" ] \
-            && [ "${{ needs.test-macos-arm.result }}" = "success" ] \
-            && { [ "$staging" = "success" ] || [ "$staging" = "skipped" ]; }; then
-            exit 0
+          if [ -n "$failed" ]; then
+            echo "$failed"
+            exit 1
           fi
-
-          echo "test matrix result: ${{ needs.test.result }}"
-          echo "test-macos-arm result: ${{ needs.test-macos-arm.result }}"
-          echo "staging result: $staging"
-          exit 1

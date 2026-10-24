@@ -2163,7 +2163,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-properties",
             "See all properties — pass and fail",
             "I want the full property list for a completed run.",
-            "A table with both passing and failing properties present. "
+            "A table with green passing and red failing labels on a terminal. "
             "The --json rows carry no `description` field.",
             ["runs", "properties", d.success],
             properties_pass_and_fail,

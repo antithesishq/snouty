@@ -864,10 +864,10 @@ fn format_count_si(n: u64) -> String {
     }
 }
 
-fn property_status_label(status: PropertyStatus) -> &'static str {
+fn property_status_label(status: PropertyStatus) -> String {
     match status {
-        PropertyStatus::Passing => "passing",
-        PropertyStatus::Failing => "failing",
+        PropertyStatus::Passing => console::style("passing").green().to_string(),
+        PropertyStatus::Failing => console::style("failing").red().to_string(),
     }
 }
 
@@ -974,7 +974,7 @@ fn render_property_detail(property: &Property) -> String {
     }
     out.push_str(&render_field(
         "Status",
-        property_status_label(property.status()),
+        &property_status_label(property.status()),
     ));
     out.push('\n');
     match property {
@@ -1267,7 +1267,7 @@ fn render_properties_table(properties: &[Property]) -> String {
                 .iter()
                 .map(|p| {
                     vec![
-                        property_status_label(p.status()).to_string(),
+                        property_status_label(p.status()),
                         property_examples_cell(p),
                         sanitize(property_display_name(p)),
                     ]

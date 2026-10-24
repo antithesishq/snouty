@@ -95,9 +95,10 @@ is worth.
 [mise](https://mise.jdx.dev) installs the tools that the checks use.
 `mise.toml` pins each version, and `mise.lock` records each checksum. CI
 installs the same versions. rustup installs Rust, through `rust-toolchain.toml`.
-To install the tools, run:
+To install the tools, trust the config once, then install:
 
 ```
+mise trust
 mise install
 ```
 

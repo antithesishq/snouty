@@ -97,23 +97,30 @@ Run the following commands to validate that the code meets required standards:
 ```
 cargo nextest run
 cargo clippy
-cargo fmt
 ```
 
 If `cargo nextest` is not available, you may use `cargo test`.
 
 The Python scripts in `scripts/` use [ruff](https://docs.astral.sh/ruff/) for
 formatting and linting. `pyproject.toml` holds the configuration, and `uv.lock`
-pins the version. After you change a script, run:
+pins the version. After you change a script, run the script tests:
 
 ```
-uv run ruff format scripts
-uv run ruff check scripts
 uv run --directory scripts python -m unittest discover -p 'test_*.py'
 ```
 
-CI runs `ruff format --check` and `ruff check`. The Stop hook
-`scripts/check-python.sh` formats the scripts and reports lint errors.
+### Checks that the Stop hooks run
+
+The Stop hooks in `.claude/settings.json` run these checks each time the agent
+stops, and wake the agent with the errors when a check fails. Do not run them
+yourself while you work. The one exception is a push: a hook does not run
+until the agent stops, so run the checks before a `git push` in the same turn.
+
+- `scripts/check-cargo.sh`: `cargo fmt`, then `cargo check --all-targets`.
+- `scripts/check-typos.sh`: `typos`.
+- `scripts/check-python.sh`: `ruff format scripts`, then `ruff check scripts`.
+
+When you add a check to a hook, add it to this list.
 
 ### Running spec tests against a staging backend
 

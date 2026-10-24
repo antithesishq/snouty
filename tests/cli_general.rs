@@ -311,7 +311,7 @@ fn launch_no_trailing_raw_args() {
 
 #[test]
 fn launch_fails_without_parameters() {
-    let mock_url = start_mock_server(r#"{}"#, 200);
+    let mock_url = start_mock_server(r"{}", 200);
 
     snouty_with_mock(&mock_url)
         .args(["launch", "--launcher", "basic_test"])
@@ -446,7 +446,7 @@ fn debug_with_json_flag() {
 
 #[test]
 fn debug_fails_missing_required_fields() {
-    let mock_url = start_mock_server(r#"{}"#, 200);
+    let mock_url = start_mock_server(r"{}", 200);
 
     snouty_with_mock(&mock_url)
         .args(["debug", "--input-hash", "abc", "--run-id", "run-1"])

@@ -176,6 +176,8 @@ impl FromIterator<KVPair> for Params {
     }
 }
 
+// A key suffix, not a file extension.
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
 fn is_sensitive_key(key: &str) -> bool {
     key.ends_with(".token") || key == ANT_REPORT_RECIPIENTS
 }
@@ -219,7 +221,7 @@ fn validate_against_def(params: &Map<String, Value>, def_name: &str) -> Result<(
     // The message states the failure; each schema violation is its own note.
     let mut report = user_error("validation failed");
     for note in notes {
-        debug!("  - {}", note);
+        debug!("  - {note}");
         report = report.note(note);
     }
     Err(report)
@@ -554,6 +556,8 @@ mod tests {
     /// Redaction preserves the exact key set and leaves every value either
     /// untouched or replaced by the marker — it never drops, adds, or reorders
     /// keys, and only the documented sensitive keys are masked.
+    // A key suffix, not a file extension.
+    #[allow(clippy::case_sensitive_file_extension_comparisons)]
     #[hegel::test]
     fn redaction_preserves_keys_and_masks_only_sensitive(tc: hegel::TestCase) {
         let model = tc.draw(

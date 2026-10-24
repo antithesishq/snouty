@@ -70,7 +70,7 @@ mod tests {
 
     #[test]
     fn injected_command_renders_as_one_line() {
-        let block = render_one(injected());
+        let block = render_one(&injected());
         assert_eq!(
             block.lines().nth(1).unwrap(),
             "15.69     [guest_command_service] command injected (input 15)"
@@ -80,7 +80,7 @@ mod tests {
 
     #[test]
     fn injected_command_keeps_every_field_under_detail() {
-        let block = render_one_detailed(injected());
+        let block = render_one_detailed(&injected());
         let lines: Vec<&str> = block.lines().skip(1).collect();
         assert!(
             lines[0].ends_with("[guest_command_service] command injected (input 15)"),
@@ -106,7 +106,7 @@ mod tests {
     fn a_record_without_input_count_keeps_the_raw_json() {
         let mut entry = injected();
         entry.as_object_mut().unwrap().remove("input_count");
-        let block = render_one(entry);
+        let block = render_one(&entry);
         assert!(
             block.contains(r#"[guest_command_service] {"tags":"#),
             "got: {block}"

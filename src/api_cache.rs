@@ -506,7 +506,14 @@ mod tests {
     // evicted so the fresh response can replace it.
     #[tokio::test]
     async fn an_unparsable_entry_degrades_to_a_miss() {
+        #[derive(serde::Deserialize)]
+        struct Object {
+            #[allow(dead_code)]
+            run_id: String,
+        }
+
         let dir = TempDir::new().unwrap();
+
         let cache = test_cache(&dir);
         let key = CacheKey::new("http://t", "get_run", &("run-1"));
 
@@ -516,11 +523,6 @@ mod tests {
                 &Tagged::new(serde_json::json!("a string"), CachePolicy::Cacheable),
             )
             .await;
-        #[derive(serde::Deserialize)]
-        struct Object {
-            #[allow(dead_code)]
-            run_id: String,
-        }
         assert!(cache.lookup_value::<Object>(&key).await.is_none());
         assert!(cache.lookup_value::<Value>(&key).await.is_none());
     }

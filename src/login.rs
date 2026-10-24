@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::io::{self, IsTerminal};
 use std::path::Path;
 use std::time::Duration;
@@ -156,7 +157,7 @@ async fn do_cmd_login(
     prompter: &dyn Prompter,
 ) -> Result<()> {
     let profile_to_use = profile
-        .map(|p| p.to_owned())
+        .map(str::to_owned)
         .or_else(|| env::var(ANTITHESIS_PROFILE_ENV_VAR_NAME).ok().flatten());
 
     let tenant_to_use = match tenant {
@@ -250,7 +251,7 @@ fn print_login_summary(
     // we saved one.
     let mut saved = format!("tenant `{tenant}`");
     if !repository.is_empty() {
-        saved.push_str(&format!(" and repository `{repository}`"));
+        let _ = write!(saved, " and repository `{repository}`");
     }
     say(&format!(
         "\nSaved {saved}{scope} to {}.",
@@ -417,9 +418,8 @@ fn confirm_replacement(
     new: AuthSetupType,
 ) -> Result<bool> {
     match (stored, new) {
-        (None, _) => Ok(true),
         // Signing in again only renews the session that the stored tokens hold.
-        (Some(AuthenticationInfo::OAuth { .. }), AuthSetupType::OAuth) => Ok(true),
+        (None, _) | (Some(AuthenticationInfo::OAuth { .. }), AuthSetupType::OAuth) => Ok(true),
         (Some(stored), _) => prompter.confirm(&format!("Replace your stored {stored}?")),
     }
 }
@@ -1264,7 +1264,9 @@ mod tests {
 
         /// Isolated env whose `/auth/cli/config` returns `config_body`.
         fn with_oauth_config(config_body: &'static str) -> Self {
-            let guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+            let guard = ENV_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let home = tempfile::TempDir::new().expect("create temp HOME");
             let base_url = spawn_mock_server(200, config_body);
 
@@ -1322,6 +1324,8 @@ mod tests {
         }
 
         /// Resolve settings the way `main` does, under this test's isolated `$HOME`.
+        // `&self` keeps the call inside the environment's lifetime.
+        #[allow(clippy::unused_self)]
         fn resolve_settings(&self, profile: Option<&str>) -> Result<Settings> {
             Settings::resolve(None, profile.map(str::to_owned))
         }

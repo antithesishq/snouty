@@ -113,7 +113,7 @@ impl ProcessGroupChild {
 
     /// Delegate to the inner [`Child::id()`].
     pub fn id(&self) -> Option<u32> {
-        self.inner.as_ref().and_then(|c| c.id())
+        self.inner.as_ref().and_then(tokio::process::Child::id)
     }
 }
 

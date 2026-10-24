@@ -65,7 +65,7 @@ mod tests {
         // Through the renderer: a record with no moment but a wall-clock
         // timestamp/stream/text triple is a build-log line — no divider, and
         // an empty text leaves no trailing space.
-        let line = render_one(json!({
+        let line = render_one(&json!({
             "timestamp": "2025-03-20T02:01:12Z", "stream": "err", "text": ""
         }));
         assert!(line.ends_with("[err]"), "got: {line}");
@@ -73,7 +73,7 @@ mod tests {
 
         // `stream` is optional in the build-log schema: a record without it
         // still renders as a log line, defaulting to [out].
-        let streamless = render_one(json!({
+        let streamless = render_one(&json!({
             "timestamp": "2025-03-20T02:01:12Z", "text": "compiling"
         }));
         assert!(streamless.ends_with("[out] compiling"), "got: {streamless}");
@@ -85,7 +85,7 @@ mod tests {
         // to the raw string — the sanitize here is what keeps the carried
         // escape bytes from reaching the terminal.
         console::set_colors_enabled(false);
-        let line = render_one(json!({
+        let line = render_one(&json!({
             "timestamp": "2025-03-20\u{1b}[2J", "stream": "out", "text": "hi"
         }));
         assert_eq!(line, r"2025-03-20\x1B[2J [out] hi");

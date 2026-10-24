@@ -104,7 +104,7 @@ pub trait ContainerRuntime: Send + Sync {
             .args(["image", "inspect", image_ref])
             .output()
             .wrap_err(format!("failed to run '{runtime} image inspect'"))?;
-        image_exists_from_inspect_output(runtime, image_ref, output)
+        image_exists_from_inspect_output(runtime, image_ref, &output)
     }
 
     /// Return the local image architecture (for example `amd64` or `arm64`).
@@ -287,10 +287,10 @@ pub trait ContainerRuntime: Send + Sync {
     /// The image is always built for `linux/amd64` (x86-64) because Antithesis
     /// does not support arm64, and the host may well be an arm machine.
     fn build_and_push_config_image(&self, config_dir: &Path, image_ref: &str) -> Result<String> {
-        eprintln!("Building config image: {}", image_ref);
+        eprintln!("Building config image: {image_ref}");
         self.build_image(config_dir, image_ref, None, Some(AMD64_PLATFORM))?;
 
-        eprintln!("Pushing config image: {}", image_ref);
+        eprintln!("Pushing config image: {image_ref}");
         // image_push pins to `name:tag@digest`, but Antithesis's config-image
         // validator rejects a reference carrying both a :tag and an @digest
         // (a bug in the validator), so identify the image by digest alone.
@@ -319,13 +319,11 @@ pub trait ContainerRuntime: Send + Sync {
     ) -> Result<TestTemplates> {
         if running {
             match self.container_path_kind(container_id, TEST_TEMPLATES_PATH)? {
-                PathKind::Directory => {}
                 PathKind::Missing => return Ok(TestTemplates::Absent),
-                PathKind::OtherOrUnknown => {
-                    // exec succeeded but path isn't a directory, or the
-                    // pre-flight is inconclusive. Fall through to cp and let
-                    // it produce the diagnostic.
-                }
+                // For OtherOrUnknown, exec succeeded but the path isn't a
+                // directory, or the pre-flight is inconclusive. Fall through
+                // to cp and let it produce the diagnostic.
+                PathKind::Directory | PathKind::OtherOrUnknown => {}
             }
         }
 
@@ -351,7 +349,7 @@ pub trait ContainerRuntime: Send + Sync {
     /// Probe whether `path` exists inside `container_id` (must be running).
     /// Runs `runtime exec <id> test -d <path>`; exit 0 → Directory, exit 1 →
     /// Missing, any other failure (no shell, container died, etc.) →
-    /// OtherOrUnknown so callers fall back to cp.
+    /// `OtherOrUnknown` so callers fall back to cp.
     fn container_path_kind(&self, container_id: &str, path: &str) -> Result<PathKind> {
         let runtime = self.name();
         let mut exec_cmd = Command::new(runtime);
@@ -1001,7 +999,7 @@ fn parse_docker_push_digest(stdout: &str) -> Result<String> {
 fn image_exists_from_inspect_output(
     runtime: &str,
     image_ref: &str,
-    output: std::process::Output,
+    output: &std::process::Output,
 ) -> Result<bool> {
     if output.status.success() {
         return Ok(true);
@@ -1149,9 +1147,8 @@ mod tests {
 
         for rt in &runtimes {
             eprintln!("testing with runtime: {}", rt.name());
-            let registry = match OCIRegistry::start(rt.as_ref()) {
-                Some(r) => r,
-                None => continue,
+            let Some(registry) = OCIRegistry::start(rt.as_ref()) else {
+                continue;
             };
             let addr = registry.host_port();
 
@@ -1551,7 +1548,7 @@ tag2: digest: sha256:bbb222 size: 200
         let result = image_exists_from_inspect_output(
             "docker",
             "app:latest",
-            std::process::Output {
+            &std::process::Output {
                 status: std::process::ExitStatus::from_raw(0),
                 stdout: Vec::new(),
                 stderr: Vec::new(),
@@ -1567,7 +1564,7 @@ tag2: digest: sha256:bbb222 size: 200
         let result = image_exists_from_inspect_output(
             "docker",
             "missing:latest",
-            std::process::Output {
+            &std::process::Output {
                 status: std::process::ExitStatus::from_raw(1 << 8),
                 stdout: Vec::new(),
                 stderr: b"Error response from daemon: No such image: missing:latest".to_vec(),
@@ -1583,7 +1580,7 @@ tag2: digest: sha256:bbb222 size: 200
         let err = image_exists_from_inspect_output(
             "docker",
             "app:latest",
-            std::process::Output {
+            &std::process::Output {
                 status: std::process::ExitStatus::from_raw(1 << 8),
                 stdout: Vec::new(),
                 stderr: b"Cannot connect to the Docker daemon at unix:///var/run/docker.sock"

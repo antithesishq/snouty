@@ -95,6 +95,8 @@ mod tests {
         GitHubRepo::try_from(&gix::url::parse(url)?)
     }
 
+    // `.git` ends a URL path, and the parser strips it case-sensitively.
+    #[allow(clippy::case_sensitive_file_extension_comparisons)]
     #[hegel::test]
     fn github_remote_urls_parse_in_every_form(tc: hegel::TestCase) {
         let owner = tc.draw(generators::from_regex("[A-Za-z0-9-]{1,39}").fullmatch(true));

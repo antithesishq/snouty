@@ -95,8 +95,8 @@ impl HumanDuration {
     /// clean instead of turning into a long repeating decimal: e.g. 7s is
     /// `0.12`, not `0.11666…`.
     pub fn minutes(&self) -> f64 {
-        let per_min = SECS_PER_MINUTE as u128;
-        let hundredths = (self.seconds() as u128 * 100 + per_min / 2) / per_min;
+        let per_min = u128::from(SECS_PER_MINUTE);
+        let hundredths = (u128::from(self.seconds()) * 100 + per_min / 2) / per_min;
         hundredths as f64 / 100.0
     }
 
@@ -220,11 +220,11 @@ pub(crate) fn format_local(dt: DateTime<Utc>) -> String {
 /// offset, a form `--created-after`/`--created-before` read back as the same
 /// instant. Example: `2026-05-27 08:25:13 -07:00`.
 pub(crate) fn format_local_with_offset(dt: DateTime<Utc>) -> String {
-    format_with_offset(dt.with_timezone(&Local))
+    format_with_offset(&dt.with_timezone(&Local))
 }
 
 /// [`format_local_with_offset`] for a timestamp already in its timezone.
-fn format_with_offset<Tz: TimeZone>(dt: DateTime<Tz>) -> String
+fn format_with_offset<Tz: TimeZone>(dt: &DateTime<Tz>) -> String
 where
     Tz::Offset: fmt::Display,
 {
@@ -415,7 +415,7 @@ mod tests {
         );
         let offset = FixedOffset::east_opt(minutes * 60).expect("in range");
         let dt = DateTime::from_timestamp(seconds, 0).expect("in range");
-        let printed = format_with_offset(dt.with_timezone(&offset));
+        let printed = format_with_offset(&dt.with_timezone(&offset));
         let parsed: DateTime<Utc> = printed.parse().expect("the printed form must parse");
         assert_eq!(parsed, dt, "{printed:?}");
     }
@@ -454,9 +454,9 @@ mod tests {
     /// mirrors is what actually runs in production.
     #[hegel::test]
     fn minutes_is_integer_space_rounding(tc: hegel::TestCase) {
-        let seconds = tc.draw(generators::integers::<u32>()) as u64;
+        let seconds = u64::from(tc.draw(generators::integers::<u32>()));
         let d = HumanDuration::from_seconds(seconds);
-        let expected_hundredths = (seconds as u128 * 100 + 30) / 60;
+        let expected_hundredths = (u128::from(seconds) * 100 + 30) / 60;
         assert_eq!((d.minutes() * 100.0).round() as u128, expected_hundredths);
     }
 }

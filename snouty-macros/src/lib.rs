@@ -64,13 +64,13 @@ impl Parse for Args {
 pub fn cached(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as Args);
     let func = parse_macro_input!(item as ItemFn);
-    match expand(args, func) {
+    match expand(&args, func) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
 }
 
-fn expand(args: Args, func: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
+fn expand(args: &Args, func: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
     let ItemFn {
         attrs,
         vis,

@@ -2,7 +2,7 @@
 //!
 //! Most failures snouty hits are the user's to fix: a bad flag, a missing
 //! environment variable, a 4xx from the API. Those should print as a clean
-//! message, not a color_eyre report with a backtrace footer. We mark such
+//! message, not a `color_eyre` report with a backtrace footer. We mark such
 //! errors with [`Report::suppress_backtrace`] at the point they're built, so
 //! `main` can render every error the same way and the report itself carries
 //! whether it's worth a backtrace — no out-of-band classification needed.
@@ -56,13 +56,13 @@ impl std::error::Error for ApiError {}
 /// concerns live here and not in the messages. Wrapping is the caller's call —
 /// it depends on whether stderr is a terminal, which the print site knows.
 ///
-/// color_eyre renders every report as a numbered chain, so a single error —
+/// `color_eyre` renders every report as a numbered chain, so a single error —
 /// the common case — arrives as `\n   0: <message>`. The `0:` numbers nothing
 /// and reads like a stack frame. For a one-element chain the message comes
 /// from the report itself instead, onto the `Error:` line. The sections a
 /// report carries (`Suggestion:`, `Note:`, payload snippets) render only
 /// through the handler, as the text after the first blank line; that tail is
-/// kept verbatim. A chain of two or more keeps color_eyre's numbering, which
+/// kept verbatim. A chain of two or more keeps `color_eyre`'s numbering, which
 /// is genuinely enumerating causes there.
 pub fn render_report(report: &Report) -> String {
     let rendered = format!("{report:?}");
@@ -76,7 +76,7 @@ pub fn render_report(report: &Report) -> String {
     }
 }
 
-/// The report's message, painted the way color_eyre's dark theme paints an
+/// The report's message, painted the way `color_eyre`'s dark theme paints an
 /// error — bright red — when stderr is a terminal, and plain otherwise. The
 /// terminal check lives here for the same reason it lives in `wrap_if_tty`:
 /// color is a property of printing, and piped output must stay byte-exact.

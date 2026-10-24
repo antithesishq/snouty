@@ -1,5 +1,5 @@
 //! `runs exec` draws its rewarm bar only on a terminal, so these tests run it
-//! on a pseudo-terminal. specs/runs_exec.txt covers the line-per-record
+//! on a pseudo-terminal. `specs/runs_exec.txt` covers the line-per-record
 //! output.
 
 #![cfg(unix)]

@@ -60,7 +60,7 @@ mod tests {
 
     #[test]
     fn renders_container_lifecycle_with_dim_health_probes() {
-        let create = render_one(json!({
+        let create = render_one(&json!({
             "event": "create", "name": "sqlite-init", "id": "3babcd",
             "image": "pkg.dev/repo/sqlite-antithesis@sha256:45abbf",
             "source": {"name": "containers_meta"},
@@ -77,7 +77,7 @@ mod tests {
             "          image pkg.dev/repo/sqlite-antithesis"
         );
 
-        let died = render_one(json!({
+        let died = render_one(&json!({
             "event": "died", "name": "sqlite-init", "container_exit_code": 0,
             "image": "pkg.dev/repo/sqlite-antithesis@sha256:45abbf",
             "source": {"name": "containers_meta"},
@@ -90,7 +90,7 @@ mod tests {
 
         // Health probes carry no verdict and recede as dim chatter (the text
         // survives; only the styling changes, invisible with colors off).
-        let health = render_one(json!({
+        let health = render_one(&json!({
             "event": "health_status", "name": "sqlite-init",
             "source": {"name": "containers_meta"},
             "moment": {"input_hash": "-1", "vtime": "12.8"}

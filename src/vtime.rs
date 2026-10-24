@@ -65,6 +65,7 @@ impl VTime {
     /// projected from its start and `max_duration`. Adding two finite values
     /// can overflow to infinity but can never produce a NaN, so the `Ord`
     /// invariant holds.
+    #[must_use]
     pub fn plus_seconds(self, seconds: f64) -> VTime {
         VTime(self.0 + seconds)
     }

@@ -129,7 +129,7 @@ thread_local! {
 /// from it on every invocation, so dropping it makes `podman machine inspect`
 /// report a `/tmp` fallback path the socket was never bound at.
 ///
-/// DBus configuration is deliberately omitted from FORWARDED_ENV_VARS since
+/// DBus configuration is deliberately omitted from `FORWARDED_ENV_VARS` since
 /// it represents a global state that might leak into or out of tests.
 const FORWARDED_ENV_VARS: &[&str] = &["PATH", "HOME", "LLVM_PROFILE_FILE", "TMPDIR"];
 
@@ -611,9 +611,7 @@ fn proxy_rewrite_request_line(head: &str) -> String {
 }
 
 fn is_staging() -> bool {
-    std::env::var("SNOUTY_STAGING")
-        .ok()
-        .is_some_and(|v| !v.is_empty() && v != "0")
+    std::env::var("SNOUTY_STAGING").is_ok_and(|v| !v.is_empty() && v != "0")
 }
 
 fn propagate_antithesis_env(env: &mut testscript_rs::TestEnvironment) -> testscript_rs::Result<()> {
@@ -666,12 +664,10 @@ fn cmd_build_image(
     // containing the directory contents is built.
     // Registry and engine come from the ENGINE_CTX thread-local.
     let (platform, image_ref, dir_arg) = match args {
-        [image_ref, dir_arg] => (None, image_ref.to_string(), dir_arg.to_string()),
-        [flag, platform, image_ref, dir_arg] if flag == "--platform" => (
-            Some(platform.to_string()),
-            image_ref.to_string(),
-            dir_arg.to_string(),
-        ),
+        [image_ref, dir_arg] => (None, image_ref.clone(), dir_arg.clone()),
+        [flag, platform, image_ref, dir_arg] if flag == "--platform" => {
+            (Some(platform.clone()), image_ref.clone(), dir_arg.clone())
+        }
         _ => {
             return Err(err(
                 "build-image requires [--platform <platform>] <name:tag> <dir>".to_string(),
@@ -733,8 +729,7 @@ fn cleanup_engine_images(runtime_name: &str, built_images: &[String], registry_a
     // build` no longer races `rmi` (#136).
     if std::env::var_os("CI").is_some() {
         eprintln!(
-            "CI is set: skipping {} image cleanup (ephemeral runner; avoids racing concurrent builds, issue #136)",
-            runtime_name
+            "CI is set: skipping {runtime_name} image cleanup (ephemeral runner; avoids racing concurrent builds, issue #136)"
         );
         return;
     }
@@ -758,12 +753,9 @@ fn run_engine_spec_case(runtime_name: &'static str, case: EngineSpecCase) {
         return;
     }
 
-    let engine = match find_runtime(runtime_name) {
-        Some(engine) => engine,
-        None => {
-            skip_or_fail(&format!("{runtime_name}: no container runtime available"));
-            return;
-        }
+    let Some(engine) = find_runtime(runtime_name) else {
+        skip_or_fail(&format!("{runtime_name}: no container runtime available"));
+        return;
     };
 
     eprintln!("=== engine specs with: {runtime_name} ({}) ===", case.file);
@@ -823,7 +815,7 @@ fn spec_tests() {
     let specs_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("specs");
     let mut files: Vec<String> = std::fs::read_dir(&specs_dir)
         .expect("read specs/")
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .filter(|e| e.path().extension().is_some_and(|ext| ext == "txt"))
         .filter_map(|e| e.file_name().into_string().ok())
         .collect();
@@ -868,7 +860,7 @@ fn spec_tests() {
                 // Each <name> gives a section of the spec its own home, keeping its
                 // writes isolated from sibling sections and from the developer's
                 // real ~/.config.
-                let name = args.first().map(String::as_str).unwrap_or("home");
+                let name = args.first().map_or("home", String::as_str);
                 let home = env.work_dir.join(name);
                 std::fs::create_dir_all(&home)
                     .map_err(|e| err(format!("failed to create isolated HOME: {e}")))?;

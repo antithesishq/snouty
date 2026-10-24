@@ -1,3 +1,6 @@
+// The doc comments here are clap help text, where backticks print literally.
+#![allow(clippy::doc_markdown)]
+
 use std::num::NonZeroU64;
 
 use chrono::{DateTime, Utc};

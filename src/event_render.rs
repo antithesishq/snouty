@@ -178,9 +178,8 @@ impl Block<'_> {
     }
 
     /// Close the block: trim the headline if nothing did yet.
-    fn finish(mut self) -> fmt::Result {
+    fn finish(mut self) {
         self.end_headline();
-        Ok(())
     }
 
     /// Trim the headline's trailing whitespace, exactly once. Detail lines
@@ -430,10 +429,10 @@ fn render_source(entry: &Value, detail: bool) -> String {
     let container = entry["source"]["container"].as_str().unwrap_or("");
     let name = entry["source"]["name"].as_str().unwrap_or("");
 
-    let label = if !container.trim().is_empty() {
-        sanitize(container)
-    } else {
+    let label = if container.trim().is_empty() {
         sanitize(name.trim().strip_prefix("antithesis_").unwrap_or(name))
+    } else {
+        sanitize(container)
     };
     if detail {
         return format!("[{label}]");
@@ -537,7 +536,8 @@ impl EventStreamRenderer {
             headline_done: false,
         };
         render_payload(entry, &mut block)?;
-        block.finish()
+        block.finish();
+        Ok(())
     }
 }
 
@@ -561,12 +561,12 @@ pub(super) mod testkit {
         EventStreamRenderer::new(detail)
     }
 
-    pub(crate) fn render_one(entry: Value) -> String {
-        renderer(false).render_entry(&entry)
+    pub(crate) fn render_one(entry: &Value) -> String {
+        renderer(false).render_entry(entry)
     }
 
-    pub(crate) fn render_one_detailed(entry: Value) -> String {
-        renderer(true).render_entry(&entry)
+    pub(crate) fn render_one_detailed(entry: &Value) -> String {
+        renderer(true).render_entry(entry)
     }
 }
 
@@ -605,7 +605,7 @@ mod tests {
 
     #[test]
     fn detail_mode_shows_the_full_vtime_on_every_line() {
-        let block = render_one_detailed(json!({
+        let block = render_one_detailed(&json!({
             "moment": {"input_hash": "-123", "vtime": "311.8487535319291"},
             "source": {"container": "app", "name": "app"},
             "output_text": "starting"
@@ -632,7 +632,7 @@ mod tests {
     #[test]
     fn renders_unknown_payloads_and_reshaped_rows_as_json() {
         // Unknown structured payload under a moment: envelope stripped, JSON shown.
-        let block = render_one(json!({
+        let block = render_one(&json!({
             "mystery": {"a": 1},
             "source": {"container": "app", "name": "app"},
             "moment": {"input_hash": "-1", "vtime": "1.0"}
@@ -715,7 +715,7 @@ mod tests {
         // A vtime the stream could not normalize is never displayed as the
         // server's own text: the cell holds a placeholder, so escape bytes
         // carried in the value have no path to the terminal.
-        let block = render_one(json!({
+        let block = render_one(&json!({
             "moment": {"input_hash": "-1", "vtime": "1.0\u{1b}[2J"},
             "source": {"container": "app"},
             "output_text": "hi"

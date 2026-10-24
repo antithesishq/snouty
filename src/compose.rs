@@ -5,6 +5,7 @@
 //! everything that reads or manipulates a `docker-compose.yaml`.
 
 use std::collections::{BTreeMap, HashSet};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -227,7 +228,7 @@ fn compose_version_parts(version: &str) -> Option<(u64, u64, u64)> {
 /// `orbitinghail` (release 62.2, run `af47ad2e140c441e4a3fc795aa4b41c4-62-2`),
 /// with a compose file that interpolated a list of common variable names.
 /// Antithesis also sets platform-internal variables, which are left out.
-/// DOCKER_CONFIG has its own handling, and compose sets `PWD` and
+/// `DOCKER_CONFIG` has its own handling, and compose sets `PWD` and
 /// `COMPOSE_PROJECT_NAME` itself.
 const ANTITHESIS_COMPOSE_ENV: &[&str] = &[
     "ANTITHESIS_OUTPUT_DIR",
@@ -321,7 +322,7 @@ impl DockerCompose {
         let compose_file = abs(&self.config.dir().join("docker-compose.yaml"));
         let mut hint = format!("{host}{} -f {}", self.cli, compose_file.display());
         if let Some(overlay) = overlay {
-            hint.push_str(&format!(" -f {}", abs(overlay).display()));
+            let _ = write!(hint, " -f {}", abs(overlay).display());
         }
         hint.push_str(" down");
         hint
@@ -609,7 +610,7 @@ fn warn_remote_images(rt: &dyn ContainerRuntime, contents: &ComposeContents, abs
 
     // An image in the store of another engine was likely built for this
     // launch, so Antithesis cannot pull it.
-    let absent_refs: Vec<String> = absent.iter().map(|image| image.to_string()).collect();
+    let absent_refs: Vec<String> = absent.iter().map(ToString::to_string).collect();
     let elsewhere = images_available_in_other_engines(rt, &absent_refs);
     if let Some((warnings, suggestion)) = cross_engine_guidance(rt.name(), &elsewhere) {
         for warning in warnings {
@@ -921,7 +922,7 @@ pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
             if let Some(name) = name.as_str() {
                 let is_external = value
                     .get("external")
-                    .and_then(|v| v.as_bool())
+                    .and_then(serde_yaml::Value::as_bool)
                     .unwrap_or(false);
                 if is_external {
                     return Err(user_error(format!(
@@ -987,7 +988,7 @@ fn missing_images_error(
     // separate image stores. Surface that instead of leaving the generic
     // "build it first" note to mislead someone who already built the image.
     // Best-effort: any probe failure counts as "not there".
-    let absent_refs: Vec<String> = absent.iter().map(|image| image.to_string()).collect();
+    let absent_refs: Vec<String> = absent.iter().map(ToString::to_string).collect();
     let elsewhere = images_available_in_other_engines(runtime, &absent_refs);
     if let Some((warnings, suggestion)) = cross_engine_guidance(runtime.name(), &elsewhere) {
         for warning in warnings {
@@ -1401,7 +1402,9 @@ services:
 
             let config = match crate::config::detect_config(dir.path()).unwrap() {
                 crate::config::Config::Compose(c) => c,
-                other => panic!("expected Compose, got {other:?}"),
+                other @ crate::config::Config::Kubernetes(_) => {
+                    panic!("expected Compose, got {other:?}")
+                }
             };
             let compose = DockerCompose::resolve(rt.as_ref(), config).unwrap();
             let contents = compose.contents(None).unwrap();
@@ -1453,7 +1456,9 @@ services:
 
             let config = match crate::config::detect_config(dir.path()).unwrap() {
                 crate::config::Config::Compose(c) => c,
-                other => panic!("expected Compose, got {other:?}"),
+                other @ crate::config::Config::Kubernetes(_) => {
+                    panic!("expected Compose, got {other:?}")
+                }
             };
             let compose = DockerCompose::resolve(rt.as_ref(), config).unwrap();
             let yaml = compose.config(Some(&overlay), &[]).unwrap();
@@ -1532,14 +1537,16 @@ services:
         assert_eq!(doc["services"]["app"]["image"], "app:latest@sha256:aaa");
         assert_eq!(doc["services"]["remote"]["image"], "ghcr.io/org/remote:v1");
     }
-    /// Run pin_images over `yaml` with a [`FakeRuntime`] (real docker-compose
+    /// Run `pin_images` over `yaml` with a [`FakeRuntime`] (real docker-compose
     /// binary for config resolution, fake image/registry operations).
     fn pin_with_fake(rt: &FakeRuntime, yaml: &str, registry: &str) -> Result<String> {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("docker-compose.yaml"), yaml).unwrap();
         let config = match crate::config::detect_config(dir.path()).unwrap() {
             crate::config::Config::Compose(c) => c,
-            other => panic!("expected Compose, got {other:?}"),
+            other @ crate::config::Config::Kubernetes(_) => {
+                panic!("expected Compose, got {other:?}")
+            }
         };
         let compose = DockerCompose::resolve(rt, config).unwrap();
         compose.pin_images(rt, registry, MissingImages::Reject)
@@ -1978,9 +1985,8 @@ services:
 
         for rt in &runtimes {
             eprintln!("testing with runtime: {}", rt.name());
-            let registry = match OCIRegistry::start(rt.as_ref()) {
-                Some(r) => r,
-                None => continue,
+            let Some(registry) = OCIRegistry::start(rt.as_ref()) else {
+                continue;
             };
             let addr = registry.host_port();
 
@@ -2016,7 +2022,9 @@ services:
                 std::fs::write(dir.path().join("docker-compose.yaml"), yaml).unwrap();
                 let config = match crate::config::detect_config(dir.path()).unwrap() {
                     crate::config::Config::Compose(c) => c,
-                    other => panic!("expected Compose, got {other:?}"),
+                    other @ crate::config::Config::Kubernetes(_) => {
+                        panic!("expected Compose, got {other:?}")
+                    }
                 };
                 let compose = DockerCompose::resolve(rt.as_ref(), config)
                     .unwrap_or_else(|e| panic!("{}: DockerCompose::resolve: {e:?}", rt.name()));
@@ -2101,7 +2109,7 @@ services:
         pushed: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     }
     impl ContainerRuntime for FakeRuntime {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "fake"
         }
 
@@ -2202,7 +2210,7 @@ services:
                 })
                 .collect(),
             services_without_image: Vec::new(),
-            build_services: build_services.iter().map(|s| s.to_string()).collect(),
+            build_services: build_services.iter().map(ToString::to_string).collect(),
             networks: Vec::new(),
         }
     }
@@ -2560,7 +2568,9 @@ services:
         std::fs::write(dir.path().join("docker-compose.yaml"), "services: {}\n").unwrap();
         let config = match crate::config::detect_config(dir.path()).unwrap() {
             crate::config::Config::Compose(c) => c,
-            other => panic!("expected Compose, got {other:?}"),
+            other @ crate::config::Config::Kubernetes(_) => {
+                panic!("expected Compose, got {other:?}")
+            }
         };
 
         // Plugin form, an engine override, and an overlay all appear.
@@ -2622,7 +2632,9 @@ services:
         .unwrap();
         let config = match crate::config::detect_config(dir.path()).unwrap() {
             crate::config::Config::Compose(config) => config,
-            other => panic!("expected Compose config, got {other:?}"),
+            other @ crate::config::Config::Kubernetes(_) => {
+                panic!("expected Compose config, got {other:?}")
+            }
         };
         let compose = DockerCompose {
             cli: ComposeCli::resolve().unwrap(),

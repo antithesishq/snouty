@@ -19,17 +19,17 @@ pub(crate) enum AttributedValue<T> {
 impl<T> AttributedValue<T> {
     pub(crate) fn value(&self) -> &T {
         match self {
-            Self::EnvironmentVariable { value, .. } => value,
-            Self::SettingsFile { value, .. } => value,
-            Self::Keychain { value, .. } => value,
+            Self::EnvironmentVariable { value, .. }
+            | Self::SettingsFile { value, .. }
+            | Self::Keychain { value, .. } => value,
         }
     }
 
     pub(crate) fn extract(self) -> T {
         match self {
-            Self::EnvironmentVariable { value, .. } => value,
-            Self::SettingsFile { value, .. } => value,
-            Self::Keychain { value, .. } => value,
+            Self::EnvironmentVariable { value, .. }
+            | Self::SettingsFile { value, .. }
+            | Self::Keychain { value, .. } => value,
         }
     }
 

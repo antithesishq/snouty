@@ -10,4 +10,21 @@ updates:
     schedule:
       interval: "weekly"
     cooldown:
-      default-days: 3
+      default-days: 7
+  # The workflows pin every action to a commit. This keeps those pins current,
+  # in one grouped pull request a week. install-action also takes the tool
+  # versions it installs, such as cargo-nextest, from its pinned commit.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    # Generated workflows. Update their pins through `dist init` and
+    # `gh aw compile`; a hand edit breaks dist's check or is overwritten.
+    exclude-paths:
+      - ".github/workflows/release.yml"
+      - ".github/workflows/weekly-audit.lock.yml"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]

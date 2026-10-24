@@ -22,7 +22,6 @@ env:
 
 permissions:
   contents: read
-  checks: write
 
 jobs:
   skip-check:
@@ -38,6 +37,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: skip-check
     if: needs.skip-check.outputs.should_skip != 'true'
+    # The clippy action reports its findings as a check run.
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
@@ -89,6 +92,22 @@ jobs:
 
       - name: Spell Check Repo
         uses: crate-ci/typos@00f422f3b19c57bc6338715ebfe3316d38768461 # v1.50.3
+  zizmor:
+    runs-on: ubuntu-latest
+    needs: skip-check
+    if: needs.skip-check.outputs.should_skip != 'true'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+
+      # Offline: the online audits ask the GitHub API about upstream tags and
+      # advisories, so their result can change with no change here. For
+      # example, dtolnay/rust-toolchain moves its v1 tag on each Rust release.
+      - name: Audit the workflows
+        run: uvx zizmor==1.31.1 --offline .
   test:
     runs-on: ${{ matrix.os }}
     needs: skip-check
@@ -125,7 +144,9 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install Nextest
-        uses: taiki-e/install-action@cargo-nextest
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: cargo-nextest
 
       # snouty always drives Docker Compose v2 via the `docker-compose` binary,
       # independent of the image runtime. The matrix exercises that binary
@@ -195,7 +216,9 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install Nextest
-        uses: taiki-e/install-action@cargo-nextest
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: cargo-nextest
 
       # `specs/doctor.txt` asserts that `snouty doctor` exits zero while testing
       # API connectivity, and doctor fails when it finds no container runtime.
@@ -217,12 +240,13 @@ jobs:
   staging:
     runs-on: ubuntu-latest
     needs: skip-check
-    # GitHub does not pass secrets to a workflow that a fork's pull request
-    # triggers, so this job skips there.
+    # GitHub does not pass Actions secrets to a workflow that a fork's pull
+    # request triggers, or that Dependabot triggers, so this job skips there.
     if: |
       needs.skip-check.outputs.should_skip != 'true' &&
       (github.event_name != 'pull_request' ||
-       github.event.pull_request.head.repo.full_name == github.repository)
+       (github.event.pull_request.head.repo.full_name == github.repository &&
+        github.actor != 'dependabot[bot]'))
     timeout-minutes: 15
     steps:
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
@@ -237,7 +261,9 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install Nextest
-        uses: taiki-e/install-action@cargo-nextest
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: cargo-nextest
 
       # This job gates merges. A missing secret must fail the job, because a
       # check that does not run is worse than a check that fails.
@@ -273,6 +299,7 @@ jobs:
       - test
       - test-macos-arm
       - staging
+      - zizmor
     if: always()
     steps:
       - name: Verify every needed job

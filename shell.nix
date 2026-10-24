@@ -16,6 +16,7 @@ pkgs.mkShell {
     rustToolchain
     cargo-nextest
     uv
+    zizmor
     npins
     nixfmt
     # snouty drives Docker Compose v2 via the `docker-compose` binary.

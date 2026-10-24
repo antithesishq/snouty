@@ -98,7 +98,7 @@ sha2 = "0.10"
 inquire = { version = "0.9", default-features = false, features = ["crossterm"] }
 askama = { version = "0.16.1", default-features = false, features = ["derive", "std"] }
 axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1"] }
-gix = { version = "0.89", default-features = false, features = ["sha1"] }
+gix = { version = "0.90", default-features = false, features = ["sha1"] }
 
 # See the global_allocator in main.rs.
 [target.'cfg(target_env = "musl")'.dependencies]

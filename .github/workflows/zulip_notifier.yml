@@ -10,6 +10,9 @@ permissions:
 
 jobs:
   post-to-zulip:
+    # A run that Dependabot triggers gets no Actions secrets, so the send step
+    # has no API key, and its branch pushes are not worth a message.
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
 
     steps:

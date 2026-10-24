@@ -2477,6 +2477,24 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             logs_non_empty,
         ),
         Story(
+            "runs-stream-final",
+            "Stream a run that is already final",
+            "I start the property stream on a completed run; I want it to end at once, not hang.",
+            "stderr says that the stream is open, and stdout is one `finalized` line. Exit 0.",
+            ["runs", "stream", d.success],
+            expect_message("finalized"),
+            json_capable=False,
+        ),
+        Story(
+            "runs-stream-unknown",
+            "Wrong run ID — stream reports a clean error",
+            "I pass a run id that doesn't exist; I want a clean error.",
+            "A clean `run not found` error, not a crash or a stream that hangs. Exit 1.",
+            ["runs", "stream", UNKNOWN_RUN],
+            expect_message("not found"),
+            json_capable=False,
+        ),
+        Story(
             "runs-build-logs-unknown",
             "Wrong run ID — build-logs reports a clean error",
             "I pass a run id that doesn't exist; I want a clean error.",
@@ -3081,6 +3099,14 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "I want the help to tell me this is the build/setup log and the line format.",
             ["runs", "build-logs"],
             ["runs", "build-logs", s],
+        ),
+        _help_story(
+            "help-runs-stream",
+            "Learn what the property stream shows",
+            "I want the help to tell me what each line means, when the stream ends, and how to "
+            "get the current state as well as the changes.",
+            ["runs", "stream"],
+            ["runs", "stream", s],
         ),
         _help_story(
             "help-runs-exec",

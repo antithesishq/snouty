@@ -35,6 +35,7 @@ Commands:
   wait        Wait until a run is ready or complete
   cancel      Cancel a run that has not finished
   properties  List a run's property results, or show one property by ID
+  stream      Stream a run's property changes until the run is final
   build-logs  Stream build logs for a run
   logs        Stream moment logs for a run
   exec        Execute a command in a run that is in progress

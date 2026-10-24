@@ -1,0 +1,68 @@
+---
+source: tests/help_snapshots.rs
+---
+Stream a run's property changes as they happen, until the run is final.
+
+Each change prints one line per property: the change, the property's status, its
+example counts, and its name. EXAMPLES is the example count (✓), followed by the
+counterexample count (✗) when the property has counterexamples, as in
+`snouty runs properties`.
+
+  added      a property was found
+  passed     a property passed
+  failed     a property failed
+  examples   new examples or counterexamples were found (with --examples)
+  finalized  the run is final, and the stream ends
+
+The stream starts with no snapshot of the current results, and it sends nothing
+while no property changes. To get the current state and then follow it, start
+the stream, then read `snouty runs properties <run_id>`. A stream for a run that
+is already final prints `finalized` and ends at once.
+
+If the stream ends before the run is final, snouty exits with an error. Start
+the stream again and read the current results.
+
+Streaming needs a run created on release 65.3 or later.
+
+Examples:
+  snouty runs stream <run_id>
+  snouty runs stream <run_id> --examples --detail
+  snouty runs stream <run_id> --property <property_id>
+
+Add --json for machine-readable output. Each notification prints as the server
+sends it, one JSON object per line, with each moment's vtime as a JSON number.
+--json is mutually exclusive with --detail:
+  snouty --json runs stream <run_id> | jq -r '.data[].name'
+
+Usage: snouty runs stream [OPTIONS] <RUN_ID>
+
+Arguments:
+  <RUN_ID>
+          Run ID
+
+Options:
+      --examples
+          Also stream the examples and counterexamples as they are found
+
+      --property <PROPERTY_ID>
+          Stream only the changes to this property (repeatable)
+
+  -d, --detail
+          Show each property's ID and the samples that each change carries
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --json
+          Output JSON where supported (NDJSON for list/stream commands, pretty
+          JSON otherwise)
+
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

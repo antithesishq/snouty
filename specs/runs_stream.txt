@@ -1,0 +1,97 @@
+# snouty runs stream
+#
+# Stream a run's property changes (`POST /api/v0/runs/{run_id}/stream`) until
+# the run is final. Each change prints one line per property: the change,
+# the property's status, its example counts, and its name.
+
+# Like every runs command, stream requires an API key.
+! snouty runs stream some-run
+stderr 'No Antithesis credentials found.*'
+
+# A run ID is required.
+! snouty runs stream
+stderr '.*RUN_ID.*'
+
+# An unknown run reports the run.
+mock-runs-server
+! snouty runs stream run-does-not-exist
+stderr 'run not found: run-does-not-exist'
+
+# The cases below read the mock's fixtures.
+[staging] skip
+
+# A run in progress streams each change until the run is final. run-2 is the
+# mock's in-progress fixture. stderr says that the stream is open, because it
+# sends nothing while no property changes.
+mock-runs-server
+snouty runs stream run-2
+stderr '^Streaming property changes for run run-2 until the run is final\.$'
+stdout '^added +undetermined +0 +Balance stays nonnegative$'
+stdout '^failed +failing +12/3 +Safety: Counter value stays below limit$'
+stdout '^passed +passing +1 +Setup completes$'
+stdout '^finalized +the run is final$'
+! stdout 'examples'
+
+# The finalized line is the last line.
+mock-runs-server
+snouty runs stream run-2
+stdout '(?s)Setup completes\nfinalized +the run is final\n?\z'
+
+# --examples also streams the examples and counterexamples as they are found.
+mock-runs-server
+snouty runs stream run-2 --examples
+stdout '^examples +failing +12/3 +Safety: Counter value stays below limit$'
+
+# --detail adds each property's ID and the samples that the change carries,
+# counterexamples first.
+mock-runs-server
+snouty runs stream run-2 --examples --detail
+stdout '(?s)^examples +failing +12/3 +Safety: Counter value stays below limit\n +id 97cf5fcafa500ed62bf109d81834c5b881a2c854\n +failing  -100  45\.334635781589895$'
+stdout '(?s)^failed +failing +12/3 +Safety: Counter value stays below limit\n +id 97cf5fcafa500ed62bf109d81834c5b881a2c854\n +failing  -200  313\.15126806590706\n +failing  -100  45\.334635781589895\n +passing  -300  398\.4898056755774$'
+
+# --property streams only the changes to that property.
+mock-runs-server
+snouty runs stream run-2 --property 27a7cb0b311c8481c4ce12f3347fadbf
+stdout 'Balance stays nonnegative'
+! stdout 'Counter value'
+stdout '^finalized'
+
+# A run that is already final sends only RUN_FINALIZED.
+mock-runs-server
+snouty runs stream run-1
+stdout '\Afinalized +the run is final\n?\z'
+
+# --json prints each notification as the server sends it, one JSON object per
+# line, with each moment's vtime as a JSON number, and no banner on stderr.
+mock-runs-server
+snouty --json runs stream run-2 --examples
+stdout '^\{"type":"NEW_PROPERTIES_ADDED","data":\[\{"id":"27a7cb0b311c8481c4ce12f3347fadbf"'
+stdout '"vtime":45\.334635781589895'
+stdout '^\{"type":"RUN_FINALIZED","data":\[\]\}$'
+! stderr 'Streaming property changes'
+
+# --detail formats human output, so it conflicts with --json.
+! snouty --json runs stream run-2 --detail
+stderr '--detail and --json cannot be combined'
+
+# A server error after the stream opens fails the command, after the changes
+# that came first.
+mock-runs-server
+! snouty runs stream run-stream-error
+stdout '^added +undetermined'
+stderr 'the server reported an error mid-stream: mock stream failure'
+
+# A stream that ends before RUN_FINALIZED fails, because the run may still
+# change. The error says how to read the current results.
+mock-runs-server
+! snouty runs stream run-stream-cut
+stdout '^added +undetermined'
+stderr 'the stream ended before the run was final'
+stderr 'snouty runs properties run-stream-cut'
+
+# A run created before release 65.3 cannot stream. The server's message says
+# why.
+mock-runs-server
+! snouty runs stream 0df9ac1f5155c14f88ea41f5ad503e07-61-1
+stderr '409 Conflict'
+stderr 'Streaming requires a run created with Antithesis version 65.3 or later'

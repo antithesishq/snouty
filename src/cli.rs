@@ -584,6 +584,25 @@ pub enum RunsCommands {
         detail: bool,
     },
 
+    /// Stream a run's property changes until the run is final
+    #[command(long_about = HelpPage::RunsStream.cli())]
+    Stream {
+        /// Run ID
+        run_id: String,
+
+        /// Also stream the examples and counterexamples as they are found
+        #[arg(long)]
+        examples: bool,
+
+        /// Stream only the changes to this property (repeatable)
+        #[arg(long = "property", value_name = "PROPERTY_ID")]
+        property_ids: Vec<String>,
+
+        /// Show each property's ID and the samples that each change carries
+        #[arg(short = 'd', long)]
+        detail: bool,
+    },
+
     /// Stream build logs for a run
     #[command(
         long_about = HelpPage::RunsBuildLogs.cli()

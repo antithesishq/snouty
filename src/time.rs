@@ -12,7 +12,7 @@
 //! whole-number components (`h`/`m`/`s`, in that order); fractional components
 //! like `1.5h` are rejected, since the bare-minutes form already covers that.
 
-use chrono::{DateTime, Local, TimeZone, Utc};
+use chrono::{DateTime, FixedOffset, Local, TimeZone, Utc};
 
 use std::error::Error;
 use std::fmt;
@@ -210,15 +210,12 @@ fn split_unit(s: &str, unit: char) -> Option<(u64, &str)> {
 /// Format an absolute timestamp in the user's local timezone, without a
 /// timezone suffix, for dense output such as build-log lines. Example:
 /// `2026-05-27 08:25:13`.
-pub(crate) fn format_local<Tz: TimeZone>(dt: DateTime<Tz>) -> String {
-    format_dense(dt.with_timezone(&Local))
+pub(crate) fn format_local(dt: DateTime<Utc>) -> String {
+    format_dense(dt.with_timezone(&Local).fixed_offset())
 }
 
 /// [`format_local`] for a timestamp already in the time zone to show.
-pub(crate) fn format_dense<Tz: TimeZone>(dt: DateTime<Tz>) -> String
-where
-    Tz::Offset: fmt::Display,
-{
+pub(crate) fn format_dense(dt: DateTime<FixedOffset>) -> String {
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 

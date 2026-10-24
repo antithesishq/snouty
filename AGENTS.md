@@ -92,15 +92,37 @@ is worth.
 
 ## Checks and lints
 
-[mise](https://mise.jdx.dev) installs the tools that the checks use.
-`mise.toml` pins each version, and `mise.lock` records each checksum. CI
-installs the same versions. rustup installs Rust, through `rust-toolchain.toml`.
-To install the tools, trust the config once, then install:
+[mise](https://mise.jdx.dev) runs the checks. `mise.toml` pins the version of
+each tool and defines a task for each check, and `mise.lock` records each
+tool's checksum. CI runs the same tasks. rustup installs Rust, through
+`rust-toolchain.toml`. Trust the config once in each checkout:
 
 ```
 mise trust
-mise install
 ```
+
+`mise run` installs any missing tool before it runs a task:
+
+```
+cargo nextest run
+mise run lint           # every lint that CI runs
+mise run fmt            # format the TOML, Nix and Python files
+mise run test:scripts   # unit tests for the Python scripts
+mise tasks              # list the tasks, such as lint:zizmor
+```
+
+The `msrv` CI job checks the workspace on the MSRV. To do that check yourself,
+put the `rust-version` from `Cargo.toml` in place of `<rust-version>`:
+
+```
+cargo +<rust-version> check --workspace --all-targets --locked
+```
+
+On a system that cannot run mise's prebuilt binaries, such as NixOS, use the
+nix shell (`nix-shell`, or direnv with `.envrc`) instead. It has the same
+tools from nixpkgs, whose versions can differ from CI's. Run the command of a
+task from `mise.toml` directly. In a nix shell, the Stop hooks use the nix
+tools and do not use mise.
 
 Dependabot does not update `mise.toml`. To bump a tool, change its version
 in `mise.toml`, then regenerate the lockfile for the platforms that CI and
@@ -113,33 +135,6 @@ mise lock --platform linux-x64,macos-arm64,macos-x64
 CI installs mise itself through `.github/actions/setup-mise`. To bump mise,
 change its version there, and the SHA-256 of its binary for each platform:
 the `digest` that GitHub shows for each `mise-v<version>-<platform>` asset.
-
-On a system that cannot run mise's prebuilt binaries, such as NixOS, use the
-nix shell (`nix-shell`, or direnv with `.envrc`) instead. It has the same
-tools from nixpkgs, whose versions can differ from CI's. In a nix shell, the
-Stop hooks use the nix tools and do not activate mise.
-
-Run the tests, and the script tests after you change a Python script:
-
-```
-cargo nextest run
-uv run --directory scripts python -m unittest discover -p 'test_*.py'
-```
-
-CI also runs the checks below, in the `lint` and `msrv` jobs of `build.yml`.
-Run a check when you change the files that it covers:
-
-```
-zizmor --offline .                                    # .github/
-actionlint                                            # .github/workflows/
-taplo fmt --check                                     # *.toml
-git ls-files -z '*.nix' ':!:npins/*' | xargs -0 nixfmt --check
-cargo shear                                           # Cargo.toml
-cargo deny check                                      # Cargo.toml, Cargo.lock
-cargo +<rust-version> check --workspace --all-targets --locked
-```
-
-To format the files, remove `--check` from the taplo and nixfmt commands.
 
 - **Python scripts:** ruff formats and lints them, and pyright checks their
   types. `pyproject.toml` holds the configuration, and `uv.lock` pins the
@@ -183,8 +178,8 @@ until the agent stops, so run the checks before a `git push` in the same turn.
 - `scripts/check-shell.sh`: `shellcheck` on each `*.sh` file and each script
   with a `sh` or `bash` shebang, tracked or new.
 
-When you add a check to a hook, add it to this list. A hook skips a check when
-its tool is not installed, so run `mise install` first.
+When you add a check to a hook, add it to this list. A hook runs its tool
+through `mise exec`, which installs the tool on first use.
 
 ### Running spec tests against a staging backend
 

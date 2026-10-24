@@ -68,21 +68,12 @@ jobs:
           args: -D warnings
 
       - uses: ./.github/actions/setup-mise
-        with:
-          tools: uv
 
-      - name: Ruff format
-        run: uv run --locked ruff format --check scripts
-
-      - name: Ruff check
-        run: uv run --locked ruff check scripts
-
-      - name: Pyright
-        run: uv run --locked pyright
+      - name: Python lint
+        run: mise run lint:python
 
       - name: Script tests
-        working-directory: scripts
-        run: uv run --locked python -m unittest discover -p 'test_*.py'
+        run: mise run test:scripts
   # No skip-check condition: typos also checks the .md files that a docs-only
   # change edits, and skip-check skips such a change.
   typos:
@@ -93,11 +84,9 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/setup-mise
-        with:
-          tools: typos
 
       - name: Spell Check Repo
-        run: typos
+        run: mise run lint:typos
   # Each step runs even when an earlier one fails, so one run reports every
   # finding.
   lint:
@@ -115,47 +104,39 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/setup-mise
-        with:
-          tools: zizmor actionlint shellcheck taplo github:NixOS/nixfmt github:Boshen/cargo-shear cargo-deny
 
-      # Offline: the online audits ask the GitHub API about upstream tags and
-      # advisories, so their result can change with no change here. For
-      # example, dtolnay/rust-toolchain moves its v1 tag on each Rust release.
       - name: zizmor
-        run: zizmor --offline .
+        run: mise run lint:zizmor
 
-      # actionlint also runs shellcheck on each `run:` script.
       - name: actionlint
         if: ${{ !cancelled() }}
-        run: actionlint
+        run: mise run lint:actionlint
 
       - name: shellcheck
         if: ${{ !cancelled() }}
-        run: shellcheck --version && scripts/check-shell.sh
+        run: mise run lint:shellcheck
 
       - name: taplo
         if: ${{ !cancelled() }}
-        run: taplo fmt --check
+        run: mise run lint:taplo
 
-      # npins generates npins/default.nix, so its format is not ours to keep.
       - name: nixfmt
         if: ${{ !cancelled() }}
-        run: git ls-files -z '*.nix' ':!:npins/*' | xargs -0 nixfmt --check
+        run: mise run lint:nixfmt
 
-      # Finds dependencies in Cargo.toml that no code uses.
       - name: cargo-shear
         if: ${{ !cancelled() }}
-        run: cargo shear --locked
+        run: mise run lint:shear
 
       - name: cargo-deny licenses, bans and sources
         if: ${{ !cancelled() }}
-        run: cargo deny --all-features check bans licenses sources
+        run: mise run lint:deny
 
       # A new advisory can appear with no change here, so it fails only the
       # nightly and manual runs, not a pull request.
       - name: cargo-deny advisories
         if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
-        run: cargo deny --all-features check advisories
+        run: mise run lint:advisories
   # Checks the workspace on the exact `rust-version` in Cargo.toml, so a bump
   # there is the only edit this job needs.
   msrv:
@@ -229,8 +210,6 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - uses: ./.github/actions/setup-mise
-        with:
-          tools: github:nextest-rs/nextest
 
       # snouty always drives Docker Compose v2 via the `docker-compose` binary,
       # independent of the image runtime. The matrix exercises that binary
@@ -300,8 +279,6 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - uses: ./.github/actions/setup-mise
-        with:
-          tools: github:nextest-rs/nextest
 
       # `specs/doctor.txt` asserts that `snouty doctor` exits zero while testing
       # API connectivity, and doctor fails when it finds no container runtime.
@@ -344,8 +321,6 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - uses: ./.github/actions/setup-mise
-        with:
-          tools: github:nextest-rs/nextest
 
       # This job gates merges. A missing secret must fail the job, because a
       # check that does not run is worse than a check that fails.

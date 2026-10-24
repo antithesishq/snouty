@@ -181,6 +181,32 @@ jobs:
 
       - name: TOML format
         run: taplo fmt --check
+  nixfmt:
+    runs-on: ubuntu-latest
+    needs: skip-check
+    if: needs.skip-check.outputs.should_skip != 'true'
+    env:
+      NIXFMT_VERSION: 1.5.0
+      NIXFMT_SHA256: aa029247ab89c897e2f3948463967553f902f86e86e3402fa28cb29c4a44f745
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          token: ${{secrets.GITHUB_TOKEN}}
+          persist-credentials: false
+
+      # The release binary is static, so the job needs no Nix install.
+      - name: Install nixfmt
+        run: |
+          bin="$RUNNER_TEMP/bin"
+          mkdir -p "$bin"
+          curl -fsSL -o "$bin/nixfmt" "https://github.com/NixOS/nixfmt/releases/download/v$NIXFMT_VERSION/nixfmt"
+          echo "$NIXFMT_SHA256  $bin/nixfmt" | sha256sum -c -
+          chmod +x "$bin/nixfmt"
+          echo "$bin" >> "$GITHUB_PATH"
+
+      # npins generates npins/default.nix, so its format is not ours to keep.
+      - name: Nix format
+        run: git ls-files -z '*.nix' ':!:npins/*' | xargs -0 nixfmt --check
   test:
     runs-on: ${{ matrix.os }}
     needs: skip-check
@@ -376,6 +402,7 @@ jobs:
       - actionlint
       - shellcheck
       - taplo
+      - nixfmt
     if: always()
     steps:
       - name: Verify every needed job

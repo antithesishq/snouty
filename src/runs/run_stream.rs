@@ -1,17 +1,21 @@
-//! `runs stream`: the run status stream, rendered one line per change.
+//! `runs stream`: the run status stream, one line per changed property.
 //!
-//! Each NDJSON line decodes into a [`Record`]. To support a new notification
-//! shape, add a `Record` variant, decode it in [`Record::parse`], and render
-//! it in [`render_record`], and decide in [`json_line`] whether `--json`
-//! normalizes its line; the exhaustive matches fail the build until all
-//! three are done. A `type` that this snouty does not know yet decodes as
+//! Each NDJSON line decodes into a [`Record`]. A line that snouty cannot
+//! decode, an unknown `type` or data of an unexpected shape, decodes as
 //! [`Record::Unknown`] and prints as its JSON, so a server that adds a shape
-//! does not break an older snouty.
+//! does not break an older snouty, and the stream continues.
+//!
+//! To support a new notification shape, add its type to the match in
+//! [`Record::parse`] (the generated type enum fails the build until it is
+//! there), add a `Record` variant for it, and handle that variant in
+//! [`render_record`] and [`json_line`] (their exhaustive matches fail the build
+//! until it is handled).
 
 use std::fmt::Write;
 
-use color_eyre::eyre::{Result, WrapErr};
+use color_eyre::eyre::Result;
 use console::style;
+use log::debug;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -23,7 +27,6 @@ use super::{
     sorted_by_vtime, stream_error_message, value_token,
 };
 
-/// One line of the run status stream.
 #[derive(Debug)]
 pub(super) enum Record {
     /// A notification whose data lists the properties that changed.
@@ -33,11 +36,9 @@ pub(super) enum Record {
     },
     /// RUN_FINALIZED: the run is final, and the stream ends successfully.
     Finalized,
-    /// A notification `type` that this snouty does not know.
     Unknown(Value),
 }
 
-/// What happened to the properties of a [`Record::Properties`].
 #[derive(Debug, Clone, Copy)]
 pub(super) enum PropertyChange {
     Added,
@@ -58,8 +59,8 @@ impl PropertyChange {
 }
 
 impl Record {
-    /// Decode one stream line. A `Stream_Error` line fails: the server ended
-    /// the stream before the run finalized.
+    /// A `Stream_Error` line returns an error: the server ended the stream
+    /// before the run was final.
     pub(super) fn parse(line: &Value) -> Result<Self> {
         if let Some(message) = stream_error_message(line) {
             return Err(mid_stream_error(message));
@@ -74,15 +75,17 @@ impl Record {
             RunStreamNotificationType::PropertiesFailed => PropertyChange::Failed,
             RunStreamNotificationType::NewExamplesFound => PropertyChange::NewExamples,
         };
-        let properties = decode_properties(&line["data"])
-            .wrap_err_with(|| format!("decoding a {kind} notification"))?;
-        Ok(Self::Properties { change, properties })
+        match decode_properties(&line["data"]) {
+            Ok(properties) => Ok(Self::Properties { change, properties }),
+            Err(err) => {
+                debug!("decoding a {kind} notification: {err:#}");
+                Ok(Self::Unknown(line.clone()))
+            }
+        }
     }
 }
 
-/// The line `--json` prints for `record`: the server's line, with each event
-/// sample's vtime normalized to an exact JSON number, as `runs properties
-/// --json` prints it.
+/// The server's line, with each event sample's vtime as an exact JSON number.
 pub(super) fn json_line(record: &Record, mut line: Value) -> String {
     match record {
         Record::Properties { .. } => {
@@ -107,10 +110,8 @@ const STATUS_WIDTH: usize = 12;
 /// The width of the right-aligned example count column (`186k/12k`).
 const EXAMPLES_WIDTH: usize = 8;
 
-/// Render one record for the terminal, each line newline-terminated. A property
-/// change is one line per property: the change, the property's status, its
-/// example counts (✓ or ✓/✗), and its name. `detail` adds the property's ID
-/// and the samples the notification carries, one dim line each.
+/// Render one record for the terminal, each line newline-terminated. A
+/// notification with no properties renders as nothing.
 pub(super) fn render_record(record: &Record, detail: bool) -> String {
     let mut out = String::new();
     match record {
@@ -153,9 +154,7 @@ fn write_property(out: &mut String, change: PropertyChange, property: &Property,
     }
 }
 
-/// The samples a property carries, counterexamples first, each as the text
-/// `--detail` prints, as `runs properties --detail` prints it: an event's
-/// moment hash and vtime, ascending by vtime, or a non-event property's value.
+/// In the order that `runs properties --detail` shows them.
 fn samples(property: &Property) -> Vec<(&'static str, String)> {
     fn tagged<T>(
         counterexamples: impl IntoIterator<Item = T>,
@@ -280,10 +279,16 @@ mod tests {
     }
 
     #[test]
-    fn a_known_type_with_malformed_data_fails_the_parse() {
-        let line = json!({"type": "PROPERTIES_FAILED", "data": [{"status": "Failing"}]});
-        let err = Record::parse(&line).unwrap_err();
-        assert!(format!("{err}").contains("PROPERTIES_FAILED"), "got: {err}");
+    fn a_known_type_with_malformed_data_renders_its_json() {
+        let line = json!({"type": "PROPERTIES_FAILED", "data": [{"status": "Skipped"}]});
+        let record = Record::parse(&line).unwrap();
+        assert!(matches!(record, Record::Unknown(_)));
+    }
+
+    #[test]
+    fn a_notification_with_no_properties_renders_nothing() {
+        let line = json!({"type": "PROPERTIES_PASSED", "data": []});
+        assert_eq!(render(line, false), "");
     }
 
     #[test]

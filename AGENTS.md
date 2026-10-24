@@ -8,7 +8,7 @@ CLI tool for the Antithesis API. Written in Rust.
 - `src/` — all source code
 - `help/` — long-help templates (see Help text)
 - `tests/` — integration tests
-- `scripts/` — maintenance/dev scripts (Python run via `uv`, plus a few bash scripts such as the Stop hooks `check-cargo.sh`, `check-typos.sh` and `check-python.sh`)
+- `scripts/` — maintenance/dev scripts (Python run via `uv`, plus a few bash scripts such as the Stop hooks `check-cargo.sh`, `check-typos.sh`, `check-python.sh` and `check-shell.sh`)
 - `.github/workflows/` — CI/CD
 
 ## Specs
@@ -129,6 +129,10 @@ version.
 actionlint
 ```
 
+shellcheck checks each tracked or new `*.sh` file and each script with a `sh`
+or `bash` shebang. CI uses shellcheck v0.11.0. Fix each finding. Do not
+disable a check without a comment that tells why.
+
 ### Checks that the Stop hooks run
 
 The Stop hooks in `.claude/settings.json` run these checks each time the agent
@@ -140,6 +144,7 @@ until the agent stops, so run the checks before a `git push` in the same turn.
 - `scripts/check-typos.sh`: `typos`.
 - `scripts/check-python.sh`: `ruff format scripts`, then `ruff check scripts`,
   then `pyright`.
+- `scripts/check-shell.sh`: `shellcheck` on the shell scripts.
 
 When you add a check to a hook, add it to this list.
 

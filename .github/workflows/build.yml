@@ -131,6 +131,31 @@ jobs:
       - name: actionlint
         run: |
           "$RUNNER_TEMP/actionlint"
+  shellcheck:
+    runs-on: ubuntu-latest
+    needs: skip-check
+    if: needs.skip-check.outputs.should_skip != 'true'
+    env:
+      SHELLCHECK_VERSION: v0.11.0
+      SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      # Pin a release instead of the runner's older preinstalled shellcheck.
+      - name: Install shellcheck
+        run: |
+          tarball="shellcheck-$SHELLCHECK_VERSION.linux.x86_64.tar.xz"
+          curl -fsSLO "https://github.com/koalaman/shellcheck/releases/download/$SHELLCHECK_VERSION/$tarball"
+          echo "$SHELLCHECK_SHA256  $tarball" | sha256sum -c -
+          tar -xJf "$tarball"
+          mkdir -p "$HOME/.local/bin"
+          mv "shellcheck-$SHELLCHECK_VERSION/shellcheck" "$HOME/.local/bin/"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Shellcheck
+        run: shellcheck --version && scripts/check-shell.sh
   test:
     runs-on: ${{ matrix.os }}
     needs: skip-check
@@ -324,6 +349,7 @@ jobs:
       - staging
       - zizmor
       - actionlint
+      - shellcheck
     if: always()
     steps:
       - name: Verify every needed job

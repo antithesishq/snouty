@@ -13,3 +13,6 @@ __pycache__/
 
 # nix build artifacts
 /result
+
+# Agent worktrees that Claude Code creates.
+/.claude/worktrees/

@@ -357,6 +357,20 @@ impl Property {
             Self::NonEventProperty(p) => p.id.as_deref(),
         }
     }
+
+    pub fn category(&self) -> Option<&str> {
+        match self {
+            Self::EventProperty(p) => p.category.as_deref(),
+            Self::NonEventProperty(p) => p.category.as_deref(),
+        }
+    }
+
+    pub fn team(&self) -> Option<&str> {
+        match self {
+            Self::EventProperty(p) => p.team.as_deref(),
+            Self::NonEventProperty(p) => p.team.as_deref(),
+        }
+    }
 }
 
 /// `Property` is an untagged `oneOf` whose variants are structurally similar:
@@ -1015,6 +1029,19 @@ impl AntithesisApi {
                 Ok((normalized, page.next_cursor))
             }
         })
+    }
+
+    /// Fetch one property by its ID.
+    pub async fn get_run_property(&self, run_id: &str, property_id: &str) -> Result<Property> {
+        let request = self
+            .client
+            .get_run_property()
+            .run_id(run_id)
+            .property_id(property_id);
+        match request.send().await {
+            Ok(response) => normalize_property(response.into_inner()),
+            Err(err) => Err(format_api_client_error(err).await),
+        }
     }
 
     /// POST an event-set DSL query to the events-search endpoint and return

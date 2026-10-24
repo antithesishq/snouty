@@ -288,8 +288,8 @@ snouty runs properties $R_run_id --name 'Counter value' --detail
 [!staging] stdout '^view logs leading up to an example:$'
 [!staging] stdout '^  snouty runs logs \S+ <hash> <vtime>$'
 # Name drops the group prefix. The property's stable ID follows it, then
-# Group. A property that has no ID has no ID line.
-[!staging] stdout '(?s)^Name +Counter value stays below limit\nID +97cf5fcafa500ed62bf109d81834c5b881a2c854\nGroup +Safety\nStatus +failing$'
+# Group, Category, and Team. A property that has no ID has no ID line.
+[!staging] stdout '(?s)^Name +Counter value stays below limit\nID +97cf5fcafa500ed62bf109d81834c5b881a2c854\nGroup +Safety\nCategory +Antithesis SDK\nTeam +Storage\nStatus +failing$'
 
 # --name is a case-insensitive substring filter over the NAME column; without
 # --detail it just narrows the (grouped) table.
@@ -332,6 +332,40 @@ snouty runs properties $R_run_id --name 'Setup completes' --detail
 mock-runs-server
 snouty runs properties $R_run_id --name 'Peak memory' --detail
 [!staging] stdout '(?s)Counter-examples.*1340.*Examples.*820'
+# An empty category prints no Category line, and an absent team no Team line.
+[!staging] ! stdout '^Category'
+[!staging] ! stdout '^Team'
+
+# `snouty runs property <run_id> <property_id>` fetches one property by its
+# ID and always shows it in full, as `runs properties --detail` does.
+mock-runs-server
+[!staging] snouty runs property $R_run_id 97cf5fcafa500ed62bf109d81834c5b881a2c854
+[!staging] stdout '(?s)^Safety\n\nName +Counter value stays below limit\nID +97cf5fcafa500ed62bf109d81834c5b881a2c854\nGroup +Safety\nCategory +Antithesis SDK\nTeam +Storage\nStatus +failing$'
+[!staging] stdout 'STATUS.*HASH.*VTIME'
+[!staging] stdout '^  snouty runs logs \S+ <hash> <vtime>$'
+[!staging] ! stdout 'Setup completes'
+
+# With --json, the property prints as one JSON object.
+mock-runs-server
+[!staging] snouty --json runs property $R_run_id 97cf5fcafa500ed62bf109d81834c5b881a2c854
+[!staging] stdout -count=1 '"id":"97cf5fcafa500ed62bf109d81834c5b881a2c854"'
+[!staging] stdout '"vtime":45\.334635781589895'
+
+# An unknown property ID in a run that exists says which ID is missing, and
+# how to list the run's properties.
+mock-runs-server
+[!staging] ! snouty runs property $R_run_id no-such-property
+[!staging] stderr 'property not found: no-such-property'
+[!staging] stderr 'list the run.s properties with `snouty runs properties \S+`'
+
+# An unknown run reports the run, not the property.
+mock-runs-server
+! snouty runs property run-does-not-exist 97cf5fcafa500ed62bf109d81834c5b881a2c854
+stderr 'run not found: run-does-not-exist'
+
+# The property ID is required.
+! snouty runs property $R_run_id
+stderr '.*PROPERTY_ID.*'
 
 # A filter that matches nothing prints a friendly empty-state, not an error.
 mock-runs-server

@@ -163,6 +163,10 @@ pub async fn cmd_runs(
             .await
         }
         Some(RunsCommands::Cancel { run_id }) => cmd_runs_cancel(&run_id, settings, output).await,
+        Some(RunsCommands::Property {
+            run_id,
+            property_id,
+        }) => cmd_runs_property(&run_id, &property_id, settings, output).await,
         Some(RunsCommands::Properties {
             run_id,
             passing,
@@ -635,21 +639,49 @@ async fn cmd_runs_properties(
     } else if properties.is_empty() {
         outln!("{}", no_properties_message(&filter))?;
     } else if detail {
-        outln!("{}", render_properties_detail(&properties))?;
-        // One next step for the whole listing: every HASH/VTIME row above feeds it.
-        let has_moments = properties.iter().any(|p| match p {
-            Property::EventProperty(p) => !p.examples.is_empty() || !p.counterexamples.is_empty(),
-            Property::NonEventProperty(_) => false,
-        });
-        if has_moments {
-            outln!(
-                "\nview logs leading up to an example:\n  snouty runs logs {run_id} <hash> <vtime>"
-            )?;
-        }
+        print_properties_detail(run_id, &properties)?;
     } else {
         outln!("{}", render_properties_table(&properties))?;
     }
 
+    Ok(())
+}
+
+/// Show one property in full. The summary table is for scanning many
+/// properties.
+async fn cmd_runs_property(
+    run_id: &str,
+    property_id: &str,
+    settings: &Settings,
+    OutputOptions { json, verbose }: OutputOptions,
+) -> Result<()> {
+    debug!("fetching property {property_id} for run: {run_id}");
+
+    let api = AntithesisApi::new(settings, verbose)?;
+    let property = match api.get_run_property(run_id, property_id).await {
+        Ok(property) => property,
+        Err(err) => return Err(explain_property_error(&api, run_id, property_id, err).await),
+    };
+
+    if json {
+        outln!("{}", serde_json::to_string(&property)?)?;
+        return Ok(());
+    }
+    print_properties_detail(run_id, std::slice::from_ref(&property))
+}
+
+fn print_properties_detail(run_id: &str, properties: &[Property]) -> Result<()> {
+    outln!("{}", render_properties_detail(properties))?;
+    // One next step for the whole listing: every HASH/VTIME row above feeds it.
+    let has_moments = properties.iter().any(|p| match p {
+        Property::EventProperty(p) => !p.examples.is_empty() || !p.counterexamples.is_empty(),
+        Property::NonEventProperty(_) => false,
+    });
+    if has_moments {
+        outln!(
+            "\nview logs leading up to an example:\n  snouty runs logs {run_id} <hash> <vtime>"
+        )?;
+    }
     Ok(())
 }
 
@@ -805,6 +837,26 @@ async fn explain_logs_error(
             .suggestion(format!(
                 "search for a moment using `snouty runs events {run_id} <search query>`"
             ))
+    } else {
+        err
+    }
+}
+
+/// Like [`explain_run_scoped_error`], for the property endpoint. A 404 that
+/// survives the run probe means the run has no property with this ID. On
+/// release 65.3, orbitinghail sends a bare `Resource not found` for an unknown
+/// property ID.
+async fn explain_property_error(
+    api: &AntithesisApi,
+    run_id: &str,
+    property_id: &str,
+    err: color_eyre::eyre::Report,
+) -> color_eyre::eyre::Report {
+    let err = explain_run_scoped_error(api, run_id, err).await;
+    if api_error_status(&err) == Some(404) {
+        user_error(format!("property not found: {property_id}")).suggestion(format!(
+            "list the run's properties with `snouty runs properties {run_id}`"
+        ))
     } else {
         err
     }
@@ -989,6 +1041,11 @@ fn render_property_detail(property: &Property) -> String {
     }
     if let Some(group) = property_group(property) {
         out.push_str(&render_prose_block("Group", &sanitize(group), hanging));
+    }
+    for (label, value) in [("Category", property.category()), ("Team", property.team())] {
+        if let Some(value) = value.filter(|v| !v.trim().is_empty()) {
+            out.push_str(&render_prose_block(label, &sanitize(value), hanging));
+        }
     }
     out.push_str(&render_field(
         "Status",

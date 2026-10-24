@@ -584,6 +584,16 @@ pub enum RunsCommands {
         detail: bool,
     },
 
+    /// Show one property of a run, by its ID
+    #[command(long_about = HelpPage::RunsProperty.cli())]
+    Property {
+        /// Run ID
+        run_id: String,
+
+        /// Property ID, from `snouty --json runs properties` or --detail
+        property_id: String,
+    },
+
     /// Stream build logs for a run
     #[command(
         long_about = HelpPage::RunsBuildLogs.cli()

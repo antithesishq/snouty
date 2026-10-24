@@ -469,6 +469,7 @@ pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
 /// - `POST /api/v1/launch/{launcher_name}` — returns a mock launch response
 /// - `POST /api/v0/runs/{run_id}/cancel` — 200 for an in-progress run, 409
 ///   for any other known run, 404 for an unknown run
+/// - `GET  /api/v0/usage` — paginated usage entries
 /// - `GET  /auth/cli/config` — `{"port_strategy":"disabled"}`
 ///
 /// Every route but the OAuth routes (`/auth/cli/`) requires the bearer token.
@@ -681,6 +682,12 @@ fn mock_route(
             let (s, b) = mock_route_list_runs(query, empty);
             (s, b, json, NO_CACHE_CACHE_CONTROL)
         }
+        ("GET", "/api/v0/usage") => (
+            200,
+            mock_route_list_usage(query, empty),
+            json,
+            NO_CACHE_CACHE_CONTROL,
+        ),
         ("GET", p) if p.starts_with("/api/v0/runs/") => {
             let rest = &p["/api/v0/runs/".len()..];
             let (s, b, ct) = if let Some(run_id) = rest.strip_suffix("/build_logs") {
@@ -854,6 +861,81 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
         200,
         format!(r#"{{"data":[{data_json}],"next_cursor":{cursor_json}}}"#),
     )
+}
+
+// (run_id, hours, start_time, end_time), newest first. In a timezone of
+// UTC+9, usage-1 starts a day later than in UTC, and usage-3 starts a month
+// later. In UTC+9, usage-4 starts on 2026-02-27 and ends on 2026-02-28. The
+// hours of usage-2 and usage-3 have a sum that is not exact in
+// binary.
+const MOCK_USAGE: &[(&str, f64, &str, &str)] = &[
+    (
+        "usage-1",
+        10.5,
+        "2026-03-02T16:00:00Z",
+        "2026-03-02T17:30:00Z",
+    ),
+    (
+        "usage-2",
+        2.1,
+        "2026-03-01T10:00:00Z",
+        "2026-03-01T10:45:00Z",
+    ),
+    (
+        "usage-3",
+        1.2,
+        "2026-02-28T20:00:00.5Z",
+        "2026-02-28T20:15:00Z",
+    ),
+    (
+        "usage-4",
+        4.0,
+        "2026-02-27T14:30:00Z",
+        "2026-02-27T15:30:00Z",
+    ),
+    (
+        "usage-5",
+        100.0,
+        "2026-01-15T00:00:00Z",
+        "2026-01-15T06:00:00Z",
+    ),
+];
+
+/// Pages of at most 2 entries, so that a period can span two pages. The
+/// cursor is the offset of the next page. `start_time` and `end_time` select
+/// on the end time of a run, `[start_time, end_time)`, as release 65.3 does.
+fn mock_route_list_usage(query: Option<&str>, empty: bool) -> String {
+    if empty {
+        return r#"{"data":[],"next_cursor":null}"#.to_string();
+    }
+    let time_param = |key| {
+        mock_query_param(query, key)
+            .map(|t| chrono::DateTime::parse_from_rfc3339(&t).expect("an RFC 3339 time"))
+    };
+    let (after, before) = (time_param("start_time"), time_param("end_time"));
+    let entries: Vec<_> = MOCK_USAGE
+        .iter()
+        .filter(|(_, _, _, end)| {
+            let end = chrono::DateTime::parse_from_rfc3339(end).unwrap();
+            after.is_none_or(|t| end >= t) && before.is_none_or(|t| end < t)
+        })
+        .collect();
+    let offset: usize = mock_query_param(query, "after").map_or(0, |c| c.parse().unwrap());
+    let limit: usize = mock_query_param(query, "limit").map_or(50, |l| l.parse().unwrap());
+    let end = entries.len().min(offset + limit.min(2));
+    let data: Vec<_> = entries[offset..end]
+        .iter()
+        .map(|(run_id, hours, start_time, end_time)| {
+            serde_json::json!({
+                "run_id": run_id,
+                "hours": hours,
+                "start_time": start_time,
+                "end_time": end_time,
+            })
+        })
+        .collect();
+    let next_cursor = (end < entries.len()).then(|| end.to_string());
+    serde_json::json!({ "data": data, "next_cursor": next_cursor }).to_string()
 }
 
 /// Run ids that exist on the mock server. Nested endpoints (properties, logs,

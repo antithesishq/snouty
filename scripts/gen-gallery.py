@@ -2189,6 +2189,71 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             ],
             all_created_within(d.window_after, d.window_before),
         ),
+        # -- usage ----------------------------------------------------------
+        Story(
+            "runs-usage",
+            "See how many hours recent runs used",
+            "I want to know which recent runs used the most hours.",
+            "Up to 10 runs, newest first, with RUN ID/STARTED/ENDED/HOURS columns; "
+            "STARTED/ENDED are local times, and HOURS is last, right-aligned, as `Xh Ym`; "
+            "when more runs exist, a stderr note says the output stopped at the limit.",
+            ["runs", "usage"],
+            rows_at_most(10),
+        ),
+        Story(
+            "runs-usage--rollup-week",
+            "Track usage hours week by week",
+            "I want the total runs and hours of each of the last few weeks.",
+            "Exactly 4 rows: the current week and the 3 before it, newest first, with "
+            "START/END/RUNS/HOURS columns; START is a Monday and END the Sunday after it, a week with "
+            "no runs shows 0, and HOURS is `Xh Ym`; a stderr note says it shows up to 4 periods.",
+            ["runs", "usage", "--rollup", "week", "-n", "4"],
+            rows_at_most(4),
+        ),
+        Story(
+            "runs-usage--rollup-month",
+            "Compare usage hours across months",
+            "I want to see how our usage changed from month to month.",
+            "At most 6 rows, newest month first; START and END are the first and last days of each month.",
+            ["runs", "usage", "--rollup", "month", "-n", "6"],
+            rows_at_most(6),
+        ),
+        Story(
+            "runs-usage--utc",
+            "Report usage in UTC",
+            "I share usage numbers with a team in other timezones, so I want UTC times.",
+            "Up to 5 runs; STARTED/ENDED are UTC times, and the --json times end in `Z`.",
+            ["runs", "usage", "--utc", "-n", "5"],
+            rows_at_most(5),
+        ),
+        Story(
+            "runs-usage--window",
+            "Total the usage of one month",
+            "I want the daily usage of the runs that ended in a given month.",
+            "One row per day of September, newest first, with no limit note; days with no "
+            "runs show 0.",
+            [
+                "runs",
+                "usage",
+                "--rollup",
+                "day",
+                "--after",
+                "2026-09-01",
+                "--before",
+                "2026-10-01",
+            ],
+            rows_at_most(30),
+        ),
+        Story(
+            "runs-usage--after",
+            "See the first runs after a date",
+            "I want the first few runs that finished after the start of October.",
+            "At most 5 rows: the 5 runs that ended first on or after 2026-10-01 (local time), "
+            "shown newest first; when more runs exist, a stderr note says the output stopped "
+            "at the limit.",
+            ["runs", "usage", "--after", "2026-10-01", "-n", "5"],
+            rows_at_most(5),
+        ),
         Story(
             "runs-verbose",
             "See the API calls printed while you list runs",
@@ -3137,6 +3202,17 @@ def build_help_stories(d: Discovery) -> list[Story]:
             ["runs", "list", "-n", "6"],
             samples=[("with --detail", ["runs", "list", "-n", "3", "--detail"])],
             align=("RUN ID", "STATUS", "CREATED", "LAUNCHER", "RUN"),
+        ),
+        _help_story(
+            "help-runs-usage",
+            "Learn what `runs usage` reports",
+            "I want to know what the usage columns mean and how --rollup groups runs.",
+            ["runs", "usage"],
+            ["runs", "usage", "-n", "5"],
+            samples=[
+                ("with --rollup week", ["runs", "usage", "--rollup", "week", "-n", "4"])
+            ],
+            align=("RUN ID", "HOURS", "STARTED", "ENDED"),
         ),
         _help_story(
             "help-runs-show",

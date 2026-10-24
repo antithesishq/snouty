@@ -11,6 +11,7 @@ use crate::api::{
     SourceSessionId,
 };
 use crate::help::HelpPage;
+use crate::runs::usage::{Rollup, TimeBound};
 use crate::time::{BareUnit, HumanDuration, ParseDurationError};
 use crate::vtime::VTime;
 
@@ -710,6 +711,36 @@ pub enum RunsCommands {
     /// Query events with the event-set DSL
     #[command(long_about = HelpPage::RunsSearch.cli())]
     Search(RunsSearchArgs),
+
+    /// Show the usage hours of recent runs
+    #[command(long_about = HelpPage::RunsUsage.cli())]
+    Usage(RunsUsageArgs),
+}
+
+#[derive(Args)]
+pub struct RunsUsageArgs {
+    /// Total the runs of each day, week, or month
+    #[arg(long, value_enum)]
+    pub rollup: Option<Rollup>,
+
+    /// Only show runs that ended at or after this date (e.g. 2026-10-01) or
+    /// RFC 3339 time
+    #[arg(long)]
+    pub after: Option<TimeBound>,
+
+    /// Only show runs that ended before this date (e.g. 2026-11-01) or RFC
+    /// 3339 time
+    #[arg(long)]
+    pub before: Option<TimeBound>,
+
+    /// Show times and periods in UTC instead of the local timezone
+    #[arg(long)]
+    pub utc: bool,
+
+    /// Maximum number of rows to display: runs, or periods with --rollup
+    /// [default: 10; not allowed with both --after and --before]
+    #[arg(short = 'n', long)]
+    pub limit: Option<NonZeroU64>,
 }
 
 #[derive(Args)]

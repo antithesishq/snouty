@@ -48,14 +48,14 @@ use event_search::EventOutput;
 /// rows that do not exist, so `shown` below `limit` prints nothing. Callers
 /// print it in human mode only. `blank_line_before` sets the note apart from
 /// output whose blocks are separated by blank lines.
-fn limit_note(shown: usize, limit: NonZeroU64, blank_line_before: bool) {
+fn limit_note(shown: usize, limit: NonZeroU64, noun: &str, blank_line_before: bool) {
     if (shown as u64) < limit.get() {
         return;
     }
     if blank_line_before {
         eprintln!();
     }
-    eprintln!("Showing up to {limit} results. Additional results may be available.");
+    eprintln!("Showing up to {limit} {noun}. Additional {noun} may be available.");
 }
 
 /// Print a rendered event stream, then the human-mode commentary under it.
@@ -86,7 +86,7 @@ async fn print_event_lines(
     if seen == 0 {
         eprintln!("{empty_message}");
     } else if let Some(limit) = limit {
-        limit_note(seen, limit, false);
+        limit_note(seen, limit, "results", false);
     }
     Ok(())
 }
@@ -102,6 +102,9 @@ macro_rules! outln {
     () => {{ writeln!(std::io::stdout()) }};
     ($($arg:tt)*) => {{ writeln!(std::io::stdout(), $($arg)*) }};
 }
+
+// Declared after the macros above, so that the module can use them.
+pub mod usage;
 
 pub async fn cmd_runs(
     command: Option<RunsCommands>,
@@ -261,6 +264,7 @@ pub async fn cmd_runs(
         Some(RunsCommands::Search(args)) => {
             cmd_runs_search(args, settings, output.verbose, mode).await
         }
+        Some(RunsCommands::Usage(args)) => usage::cmd_runs_usage(args, settings, output).await,
     }
 }
 
@@ -312,7 +316,7 @@ async fn cmd_runs_list(
         let width = terminal_width();
         outln!("{}", render_runs_table(&runs, width))?;
     }
-    limit_note(runs.len(), args.limit, args.detail);
+    limit_note(runs.len(), args.limit, "results", args.detail);
     Ok(())
 }
 

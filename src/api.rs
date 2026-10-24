@@ -40,7 +40,7 @@ pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
     BuildLogLine, Event, EventProperty, ExecuteCommandRequestSourceRunId as SourceRunId,
     ExecuteCommandRequestSourceSessionId as SourceSessionId, Moment, NonEventProperty,
-    PerformanceTier, Property, PropertyStatus, RunDetail, RunStatus, RunSummary,
+    PerformanceTier, Property, PropertyStatus, RunDetail, RunStatus, RunSummary, UsageEntry,
 };
 
 /// The outcome of a launch or debugging-launch request, and the `--json` output
@@ -1144,6 +1144,42 @@ impl AntithesisApi {
             Ok(response) => Ok(response.into_inner()),
             Err(err) => Err(format_api_client_error(err).await),
         }
+    }
+
+    /// Streams usage entries newest first by start time, at most `limit` of
+    /// them, or all with `None`. The filters select on the end time of a run:
+    /// `[ended_after, ended_before)`. A page holds at most 1000 entries, the
+    /// maximum of the endpoint.
+    pub fn stream_usage(
+        &self,
+        ended_after: Option<chrono::DateTime<chrono::Utc>>,
+        ended_before: Option<chrono::DateTime<chrono::Utc>>,
+        limit: Option<NonZeroU64>,
+    ) -> impl futures_util::Stream<Item = Result<UsageEntry>> + '_ {
+        paginate_limited(
+            limit.map_or(u64::MAX, NonZeroU64::get),
+            1000,
+            move |after, page_limit| async move {
+                let mut request = self.client.list_usage().limit(page_limit);
+                if let Some(cursor) = after {
+                    request = request.after(cursor);
+                }
+                if let Some(ts) = ended_after {
+                    request = request.start_time(ts);
+                }
+                if let Some(ts) = ended_before {
+                    request = request.end_time(ts);
+                }
+                match request.send().await {
+                    Ok(response) => {
+                        let generated::types::UsageListResponse { data, next_cursor } =
+                            response.into_inner();
+                        Ok((data, next_cursor))
+                    }
+                    Err(err) => Err(format_api_client_error(err).await),
+                }
+            },
+        )
     }
 
     #[cached(value)]

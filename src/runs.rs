@@ -652,11 +652,8 @@ async fn cmd_runs_properties(
 
 fn no_properties_message(filter: &PropertyFilter) -> String {
     let mut parts = Vec::new();
-    match filter.status {
-        Some(PropertyStatus::Passing) => parts.push("passing".to_string()),
-        Some(PropertyStatus::Failing) => parts.push("failing".to_string()),
-        Some(PropertyStatus::Undetermined) => parts.push("undetermined".to_string()),
-        None => {}
+    if let Some(status) = filter.status {
+        parts.push(property_status_label(status).to_string());
     }
     if let Some(name) = filter.name {
         parts.push(format!("name containing '{name}'"));

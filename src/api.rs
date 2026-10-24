@@ -426,8 +426,8 @@ pub(crate) fn decode_properties(data: &serde_json::Value) -> Result<Vec<Property
 }
 
 /// The notification types `runs stream` asks for: all of them.
-/// NEW_EXAMPLES_FOUND is opt-in, so the request has to name the types.
-/// RUN_FINALIZED always comes, whatever the request names.
+/// `NEW_EXAMPLES_FOUND` is opt-in, so the request has to name the types.
+/// `RUN_FINALIZED` always comes, whatever the request names.
 const RUN_STREAM_NOTIFICATIONS: [RunStreamNotification; 4] = [
     RunStreamNotification::NewPropertiesAdded,
     RunStreamNotification::PropertiesPassed,

@@ -953,7 +953,7 @@ fn mock_run_known(run_id: &str) -> bool {
     MOCK_RUNS.iter().any(|(id, ..)| *id == run_id)
 }
 
-/// Whether `run_id` is a `completed` run in MOCK_RUNS, the only kind with
+/// Whether `run_id` is a `completed` run in `MOCK_RUNS`, the only kind with
 /// properties.
 fn mock_run_completed(run_id: &str) -> bool {
     MOCK_RUNS
@@ -1237,9 +1237,9 @@ fn mock_route_get_run_property(run_id: &str, property_id: &str) -> (u16, String)
 }
 
 /// The run status stream. As observed on the antithesis-orbitinghail tenant
-/// (release 65.3), a run that is already final sends only RUN_FINALIZED, and a
-/// run created before 65.3 gets a 409. `run-stream-error` fails after its first
-/// change, and `run-stream-cut` ends without RUN_FINALIZED.
+/// (release 65.3), a run that is already final sends only `RUN_FINALIZED`, and
+/// a run created before 65.3 gets a 409. `run-stream-error` fails after its
+/// first change, and `run-stream-cut` ends without `RUN_FINALIZED`.
 fn mock_route_stream_run_status(run_id: &str, req_body: &str) -> (u16, String) {
     use serde_json::{Value, json};
 

@@ -38,16 +38,16 @@ use super::{mid_stream_error, stream_error_message};
 
 #[derive(Debug)]
 pub(super) enum Record {
-    /// NEW_PROPERTIES_ADDED. A new property can already carry samples
+    /// `NEW_PROPERTIES_ADDED`. A new property can already carry samples
     /// (observed on the antithesis-orbitinghail tenant, release 65.3).
     Catalogued(Vec<Property>),
-    /// PROPERTIES_PASSED or PROPERTIES_FAILED (`Some` verdict), or
-    /// NEW_EXAMPLES_FOUND (`None`): the properties carry their samples.
+    /// `PROPERTIES_PASSED` or `PROPERTIES_FAILED` (`Some` verdict), or
+    /// `NEW_EXAMPLES_FOUND` (`None`): the properties carry their samples.
     Samples {
         verdict: Option<Outcome>,
         properties: Vec<Property>,
     },
-    /// RUN_FINALIZED: the run is final, and the stream ends successfully.
+    /// `RUN_FINALIZED`: the run is final, and the stream ends successfully.
     Finalized,
     Unknown(Value),
 }
@@ -336,7 +336,7 @@ mod tests {
 
     const RUN: &str = "run-1";
 
-    fn property(id: &str, status: &str, examples: Value, counterexamples: Value) -> Value {
+    fn property(id: &str, status: &str, examples: &Value, counterexamples: &Value) -> Value {
         json!({
             "id": id,
             "name": format!("Property {id}"),
@@ -353,9 +353,9 @@ mod tests {
         json!({"moment": {"input_hash": hash, "vtime": vtime}})
     }
 
-    fn rendered(denormalizer: &mut Denormalizer, line: Value) -> Vec<String> {
+    fn rendered(denormalizer: &mut Denormalizer, line: &Value) -> Vec<String> {
         console::set_colors_enabled(false);
-        let record = Record::parse(&line).unwrap();
+        let record = Record::parse(line).unwrap();
         denormalizer
             .lines(record, RUN)
             .iter()
@@ -363,27 +363,27 @@ mod tests {
             .collect()
     }
 
-    fn render(line: Value) -> Vec<String> {
+    fn render(line: &Value) -> Vec<String> {
         rendered(&mut Denormalizer::default(), line)
     }
 
     #[test]
     fn a_new_property_is_catalogued() {
         let line = json!({"type": "NEW_PROPERTIES_ADDED", "data": [
-            property("a1", "Undetermined", json!([]), json!([])),
-            property("b2", "Undetermined", json!([]), json!([])),
+            property("a1", "Undetermined", &json!([]), &json!([])),
+            property("b2", "Undetermined", &json!([]), &json!([])),
         ]});
         assert_eq!(
-            render(line),
+            render(&line),
             ["catalogued  a1  Property a1", "catalogued  b2  Property b2"]
         );
     }
 
     #[test]
     fn a_new_property_lists_the_samples_it_carries() {
-        let p = property("a1", "Failing", json!([]), json!([moment("-1", "1.5")]));
+        let p = property("a1", "Failing", &json!([]), &json!([moment("-1", "1.5")]));
         assert_eq!(
-            render(json!({"type": "NEW_PROPERTIES_ADDED", "data": [p]})),
+            render(&json!({"type": "NEW_PROPERTIES_ADDED", "data": [p]})),
             ["catalogued  a1  Property a1", "failed      a1  -1  1.5"]
         );
     }
@@ -398,11 +398,11 @@ mod tests {
             let p = property(
                 "a1",
                 "Failing",
-                json!([moment("-300", "398.4898056755774")]),
-                json!([moment("-100", "401.25"), moment("-200", "402.5")]),
+                &json!([moment("-300", "398.4898056755774")]),
+                &json!([moment("-100", "401.25"), moment("-200", "402.5")]),
             );
             assert_eq!(
-                render(json!({"type": kind, "data": [p]})),
+                render(&json!({"type": kind, "data": [p]})),
                 [
                     "failed      a1  -100  401.25",
                     "failed      a1  -200  402.5",
@@ -419,23 +419,23 @@ mod tests {
         let first = property(
             "a1",
             "Undetermined",
-            json!([]),
-            json!([moment("-1", "1.5")]),
+            &json!([]),
+            &json!([moment("-1", "1.5")]),
         );
         let again = property(
             "a1",
             "Failing",
-            json!([]),
-            json!([moment("-1", "1.5"), moment("-2", "2.5")]),
+            &json!([]),
+            &json!([moment("-1", "1.5"), moment("-2", "2.5")]),
         );
         let found = json!({"type": "NEW_EXAMPLES_FOUND", "data": [first]});
         let failed = json!({"type": "PROPERTIES_FAILED", "data": [again]});
         assert_eq!(
-            rendered(&mut denormalizer, found),
+            rendered(&mut denormalizer, &found),
             ["failed      a1  -1  1.5"]
         );
         assert_eq!(
-            rendered(&mut denormalizer, failed),
+            rendered(&mut denormalizer, &failed),
             ["failed      a1  -2  2.5"]
         );
     }
@@ -443,55 +443,55 @@ mod tests {
     #[test]
     fn a_verdict_without_a_new_sample_prints_the_property() {
         let mut denormalizer = Denormalizer::default();
-        let seen = property("a1", "Passing", json!([moment("-1", "1.5")]), json!([]));
-        let empty = property("b2", "Passing", json!([]), json!([]));
+        let seen = property("a1", "Passing", &json!([moment("-1", "1.5")]), &json!([]));
+        let empty = property("b2", "Passing", &json!([]), &json!([]));
         let found = json!({"type": "NEW_EXAMPLES_FOUND", "data": [seen.clone()]});
         let passed = json!({"type": "PROPERTIES_PASSED", "data": [seen, empty]});
         assert_eq!(
-            rendered(&mut denormalizer, found),
+            rendered(&mut denormalizer, &found),
             ["passed      a1  -1  1.5"]
         );
         assert_eq!(
-            rendered(&mut denormalizer, passed.clone()),
+            rendered(&mut denormalizer, &passed.clone()),
             ["passed      a1", "passed      b2"]
         );
-        assert!(rendered(&mut denormalizer, passed).is_empty());
+        assert!(rendered(&mut denormalizer, &passed).is_empty());
     }
 
     #[test]
     fn a_new_sample_of_the_verdict_shows_the_verdict() {
         let mut denormalizer = Denormalizer::default();
-        let p = property("a1", "Failing", json!([]), json!([moment("-1", "1.5")]));
+        let p = property("a1", "Failing", &json!([]), &json!([moment("-1", "1.5")]));
         let failed = json!({"type": "PROPERTIES_FAILED", "data": [p]});
         assert_eq!(
-            rendered(&mut denormalizer, failed.clone()),
+            rendered(&mut denormalizer, &failed.clone()),
             ["failed      a1  -1  1.5"]
         );
-        assert!(rendered(&mut denormalizer, failed).is_empty());
+        assert!(rendered(&mut denormalizer, &failed).is_empty());
     }
 
     #[test]
     fn a_verdict_prints_beside_a_sample_of_the_other_outcome() {
-        let mut p = property("a1", "Passing", json!([]), json!(["old image"]));
+        let mut p = property("a1", "Passing", &json!([]), &json!(["old image"]));
         p["is_event"] = json!(false);
         assert_eq!(
-            render(json!({"type": "PROPERTIES_PASSED", "data": [p]})),
+            render(&json!({"type": "PROPERTIES_PASSED", "data": [p]})),
             [r#"failed      a1  "old image""#, "passed      a1"]
         );
     }
 
     #[test]
     fn new_examples_without_samples_print_nothing() {
-        let p = property("a1", "Undetermined", json!([]), json!([]));
-        assert!(render(json!({"type": "NEW_EXAMPLES_FOUND", "data": [p]})).is_empty());
+        let p = property("a1", "Undetermined", &json!([]), &json!([]));
+        assert!(render(&json!({"type": "NEW_EXAMPLES_FOUND", "data": [p]})).is_empty());
     }
 
     #[test]
     fn a_non_event_sample_renders_as_json() {
-        let mut p = property("a1", "Failing", json!([820]), json!([{"peak": 1340}]));
+        let mut p = property("a1", "Failing", &json!([820]), &json!([{"peak": 1340}]));
         p["is_event"] = json!(false);
         assert_eq!(
-            render(json!({"type": "PROPERTIES_FAILED", "data": [p]})),
+            render(&json!({"type": "PROPERTIES_FAILED", "data": [p]})),
             [r#"failed      a1  {"peak":1340}"#, "passed      a1  820"]
         );
     }
@@ -500,7 +500,7 @@ mod tests {
     fn run_finalized_completes_the_run() {
         let line = json!({"type": "RUN_FINALIZED", "data": []});
         assert!(matches!(Record::parse(&line).unwrap(), Record::Finalized));
-        assert_eq!(render(line), ["completed   run-1"]);
+        assert_eq!(render(&line), ["completed   run-1"]);
     }
 
     #[test]
@@ -518,7 +518,7 @@ mod tests {
     fn an_unknown_type_renders_its_json() {
         let line = json!({"type": "RUN_PAUSED", "data": []});
         assert!(matches!(Record::parse(&line).unwrap(), Record::Unknown(_)));
-        assert_eq!(render(line), [r#"{"type":"RUN_PAUSED","data":[]}"#]);
+        assert_eq!(render(&line), [r#"{"type":"RUN_PAUSED","data":[]}"#]);
     }
 
     #[test]
@@ -529,7 +529,7 @@ mod tests {
 
     #[test]
     fn a_notification_with_no_properties_prints_nothing() {
-        assert!(render(json!({"type": "PROPERTIES_PASSED", "data": []})).is_empty());
+        assert!(render(&json!({"type": "PROPERTIES_PASSED", "data": []})).is_empty());
     }
 
     #[test]
@@ -552,8 +552,8 @@ mod tests {
         let p = property(
             "a1",
             "Failing",
-            json!([]),
-            json!([moment("-100", "401.25")]),
+            &json!([]),
+            &json!([moment("-100", "401.25")]),
         );
         let record = Record::parse(&json!({"type": "PROPERTIES_FAILED", "data": [p]})).unwrap();
         let lines = Denormalizer::default().lines(record, RUN);

@@ -133,6 +133,14 @@ shellcheck checks each tracked or new `*.sh` file and each script with a `sh`
 or `bash` shebang. CI uses shellcheck v0.11.0. Fix each finding. Do not
 disable a check without a comment that tells why.
 
+[taplo](https://taplo.tamasfe.dev) 0.10.0 checks the format of the TOML files.
+CI fails when a file is not formatted. `.taplo.toml` holds the settings. Run
+`taplo fmt` without `--check` to format the files:
+
+```
+taplo fmt --check
+```
+
 ### Checks that the Stop hooks run
 
 The Stop hooks in `.claude/settings.json` run these checks each time the agent

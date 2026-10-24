@@ -149,6 +149,16 @@ npins generates it. Remove `--check` to format the files:
 git ls-files -z '*.nix' ':!:npins/*' | xargs -0 nixfmt --check
 ```
 
+Run [cargo-shear](https://github.com/Boshen/cargo-shear) to find unused
+dependencies in the workspace. CI runs it in the `cargo-shear` job. If it
+reports a dependency that the code uses (for example, only through a macro),
+add the dependency to `[package.metadata.cargo-shear] ignored` and write the
+reason in a comment.
+
+```
+cargo shear
+```
+
 ### Checks that the Stop hooks run
 
 The Stop hooks in `.claude/settings.json` run these checks each time the agent

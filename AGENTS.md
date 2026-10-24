@@ -8,7 +8,7 @@ CLI tool for the Antithesis API. Written in Rust.
 - `src/` — all source code
 - `help/` — long-help templates (see Help text)
 - `tests/` — integration tests
-- `scripts/` — maintenance/dev scripts (Python run via `uv`, plus a few bash scripts such as the Stop hooks `check-cargo.sh` and `check-typos.sh`)
+- `scripts/` — maintenance/dev scripts (Python run via `uv`, plus a few bash scripts such as the Stop hooks `check-cargo.sh`, `check-typos.sh` and `check-python.sh`)
 - `.github/workflows/` — CI/CD
 
 ## Specs
@@ -101,6 +101,19 @@ cargo fmt
 ```
 
 If `cargo nextest` is not available, you may use `cargo test`.
+
+The Python scripts in `scripts/` use [ruff](https://docs.astral.sh/ruff/) for
+formatting and linting. `pyproject.toml` holds the configuration, and `uv.lock`
+pins the version. After you change a script, run:
+
+```
+uv run ruff format scripts
+uv run ruff check scripts
+uv run --directory scripts python -m unittest discover -p 'test_*.py'
+```
+
+CI runs `ruff format --check` and `ruff check`. The Stop hook
+`scripts/check-python.sh` formats the scripts and reports lint errors.
 
 ### Running spec tests against a staging backend
 

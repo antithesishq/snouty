@@ -7,6 +7,8 @@
 //! - `catalogued <property id> <name>`: a property appeared.
 //! - `failed|passed <property id> <input hash> <vtime>`: one counterexample
 //!   or example. A non-event property's sample is its value, as JSON.
+//! - `failed|passed <property id>`: the property failed or passed, and no
+//!   line has shown that yet.
 //! - `completed <run id>`: the run is final, and the stream ends.
 //!
 //! A line that snouty cannot decode, an unknown `type` or data of an
@@ -39,9 +41,12 @@ pub(super) enum Record {
     /// NEW_PROPERTIES_ADDED. A new property can already carry samples
     /// (observed on the antithesis-orbitinghail tenant, release 65.3).
     Catalogued(Vec<Property>),
-    /// PROPERTIES_PASSED, PROPERTIES_FAILED, or NEW_EXAMPLES_FOUND: the
-    /// properties carry their samples.
-    Samples(Vec<Property>),
+    /// PROPERTIES_PASSED or PROPERTIES_FAILED (`Some` verdict), or
+    /// NEW_EXAMPLES_FOUND (`None`): the properties carry their samples.
+    Samples {
+        verdict: Option<Outcome>,
+        properties: Vec<Property>,
+    },
     /// RUN_FINALIZED: the run is final, and the stream ends successfully.
     Finalized,
     Unknown(Value),
@@ -61,17 +66,21 @@ impl Record {
         let Ok(kind) = RunStreamNotificationType::deserialize(&line["type"]) else {
             return Ok(Self::Unknown(line.clone()));
         };
-        let catalogued = match kind {
+        // `None` for NEW_PROPERTIES_ADDED; the verdict for the others.
+        let verdict = match kind {
             RunStreamNotificationType::RunFinalized => return Ok(Self::Finalized),
-            RunStreamNotificationType::NewPropertiesAdded => true,
-            RunStreamNotificationType::PropertiesPassed
-            | RunStreamNotificationType::PropertiesFailed
-            | RunStreamNotificationType::NewExamplesFound => false,
+            RunStreamNotificationType::NewPropertiesAdded => None,
+            RunStreamNotificationType::PropertiesPassed => Some(Some(Outcome::Passed)),
+            RunStreamNotificationType::PropertiesFailed => Some(Some(Outcome::Failed)),
+            RunStreamNotificationType::NewExamplesFound => Some(None),
         };
-        match decode_properties(&line["data"]) {
-            Ok(properties) if catalogued => Ok(Self::Catalogued(properties)),
-            Ok(properties) => Ok(Self::Samples(properties)),
-            Err(err) => {
+        match (decode_properties(&line["data"]), verdict) {
+            (Ok(properties), None) => Ok(Self::Catalogued(properties)),
+            (Ok(properties), Some(verdict)) => Ok(Self::Samples {
+                verdict,
+                properties,
+            }),
+            (Err(err), _) => {
                 debug!("decoding a {kind} notification: {err:#}");
                 Ok(Self::Unknown(line.clone()))
             }
@@ -86,11 +95,12 @@ pub(super) enum Outcome {
 }
 
 /// One sample of a property: an event property's moment, or a non-event
-/// property's value.
+/// property's value. `None` is a verdict that came with no new sample.
 #[derive(Debug, PartialEq)]
 pub(super) enum Sample {
     Moment { input_hash: String, vtime: VTime },
     Value(Value),
+    None,
 }
 
 /// One output line of `runs stream`.
@@ -133,10 +143,35 @@ impl Denormalizer {
                 })
                 .filter(|line| self.first_time(line))
                 .collect(),
-            Record::Samples(properties) => properties
+            Record::Samples {
+                verdict,
+                properties,
+            } => properties
                 .into_iter()
-                .flat_map(samples)
-                .filter(|line| self.first_time(line))
+                .flat_map(|property| {
+                    let id = property_id(&property);
+                    let mut lines: Vec<Line> = samples(property)
+                        .into_iter()
+                        .filter(|line| self.first_time(line))
+                        .collect();
+                    // The final PROPERTIES_PASSED lists many properties with
+                    // no sample, or only repeated ones (observed on the
+                    // antithesis-orbitinghail tenant, release 65.3), and the
+                    // verdict is the news.
+                    if let Some(outcome) = verdict
+                        && lines.is_empty()
+                    {
+                        let line = Line::Sample {
+                            outcome,
+                            property_id: id,
+                            sample: Sample::None,
+                        };
+                        if self.first_time(&line) {
+                            lines.push(line);
+                        }
+                    }
+                    lines
+                })
                 .collect(),
             Record::Finalized => vec![Line::Completed {
                 run_id: run_id.to_string(),
@@ -154,10 +189,15 @@ impl Denormalizer {
         else {
             return true;
         };
+        // The empty key stands for the verdict alone. A sample also shows its
+        // verdict, so it claims that key too.
+        let verdict = (property_id.clone(), *outcome, String::new());
         let key = match sample {
             Sample::Moment { input_hash, vtime } => format!("{input_hash} {vtime}"),
             Sample::Value(value) => value.to_string(),
+            Sample::None => return self.seen.insert(verdict),
         };
+        self.seen.insert(verdict);
         self.seen.insert((property_id.clone(), *outcome, key))
     }
 }
@@ -233,6 +273,9 @@ impl Line {
                         format!("{}  {vtime}", sanitize(input_hash))
                     }
                     Sample::Value(value) => sanitize(&value.to_string()),
+                    Sample::None => {
+                        return format!("{event:<EVENT_WIDTH$}  {}", sanitize(property_id));
+                    }
                 };
                 format!("{event:<EVENT_WIDTH$}  {}  {sample}", sanitize(property_id))
             }
@@ -271,6 +314,7 @@ impl Line {
                     Sample::Value(value) => {
                         json!({"event": event, "property_id": property_id, "value": value})
                     }
+                    Sample::None => json!({"event": event, "property_id": property_id}),
                 }
             }
             Self::Completed { run_id } => json!({"event": "completed", "run_id": run_id}),
@@ -387,6 +431,30 @@ mod tests {
             rendered(&mut denormalizer, failed),
             ["failed      a1  -2  2.5"]
         );
+    }
+
+    #[test]
+    fn a_verdict_without_a_new_sample_prints_the_property() {
+        let mut denormalizer = Denormalizer::default();
+        let seen = property("a1", "Passing", json!([moment("-1", "1.5")]), json!([]));
+        let empty = property("b2", "Passing", json!([]), json!([]));
+        let found = json!({"type": "NEW_EXAMPLES_FOUND", "data": [seen.clone()]});
+        let passed = json!({"type": "PROPERTIES_PASSED", "data": [seen, empty]});
+        assert_eq!(
+            rendered(&mut denormalizer, found),
+            ["passed      a1  -1  1.5"]
+        );
+        assert_eq!(
+            rendered(&mut denormalizer, passed.clone()),
+            ["passed      b2"]
+        );
+        assert!(rendered(&mut denormalizer, passed).is_empty());
+    }
+
+    #[test]
+    fn new_examples_without_samples_print_nothing() {
+        let p = property("a1", "Undetermined", json!([]), json!([]));
+        assert!(render(json!({"type": "NEW_EXAMPLES_FOUND", "data": [p]})).is_empty());
     }
 
     #[test]

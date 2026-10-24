@@ -50,10 +50,15 @@ mock-runs-server
 snouty runs stream run-2
 stdout '(?s)^catalogued +d2558d97fabac81ba7eb4676e47a0cba558263f8 +Peak memory stays below cap\nfailed +d2558d97fabac81ba7eb4676e47a0cba558263f8 +1340$'
 
+# A verdict that brings no new sample prints the property alone.
+mock-runs-server
+snouty runs stream run-2
+stdout '^passed +27a7cb0b311c8481c4ce12f3347fadbf$'
+
 # completed is the last line.
 mock-runs-server
 snouty runs stream run-2
-stdout '(?s)\{"final_counter":42\}\ncompleted +run-2\n?\z'
+stdout '(?s)passed +27a7cb0b311c8481c4ce12f3347fadbf\ncompleted +run-2\n?\z'
 
 # --property streams only the events of that property.
 mock-runs-server

@@ -1262,6 +1262,8 @@ fn mock_route_stream_run_status(run_id: &str, req_body: &str) -> (u16, String) {
     let types = request["notification_type_filter"].as_array();
     let [failing, failing_nonevent, undetermined, passing] =
         MOCK_COMPLETED_PROPERTIES.map(|p| serde_json::from_str::<Value>(p).unwrap());
+    let mut resolved = undetermined.clone();
+    resolved["status"] = json!("Passing");
     let mut new_examples = failing.clone();
     new_examples["examples"] = json!([]);
     new_examples["counterexamples"] =
@@ -1275,6 +1277,8 @@ fn mock_route_stream_run_status(run_id: &str, req_body: &str) -> (u16, String) {
         ("NEW_EXAMPLES_FOUND", new_examples),
         ("PROPERTIES_FAILED", failing),
         ("PROPERTIES_PASSED", passing),
+        // A verdict with no sample, as the final PROPERTIES_PASSED sends.
+        ("PROPERTIES_PASSED", resolved),
     ];
     let mut lines: Vec<String> = changes
         .into_iter()

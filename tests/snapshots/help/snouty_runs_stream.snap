@@ -8,6 +8,8 @@ Each event prints as one line:
   catalogued <property id> <name>             a new property appears
   failed <property id> <input hash> <vtime>   a counterexample of the property
   passed <property id> <input hash> <vtime>   an example of the property
+  failed|passed <property id>                 the property failed or passed,
+  with no new sample
   completed <run id>                          the run is final, and the stream
   ends
 

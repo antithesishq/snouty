@@ -5,6 +5,7 @@ Each event prints as one line:
   catalogued <property id> <name>             a new property appears
   failed <property id> <input hash> <vtime>   a counterexample of the property
   passed <property id> <input hash> <vtime>   an example of the property
+  failed|passed <property id>                 the property failed or passed, with no new sample
   completed <run id>                          the run is final, and the stream ends
 
 A non-event property has no moments, so its failed and passed lines show the sample value as JSON. A sample prints only the first time the server sends it. Look up a property with `snouty runs property <run_id> <property_id>`, and read the logs at a moment with `snouty runs logs <run_id> <input hash> <vtime>`.

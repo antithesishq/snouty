@@ -119,6 +119,16 @@ Change its generator, as the config describes.
 uvx zizmor==1.31.1 --offline .
 ```
 
+When you change a file in `.github/workflows/`, run
+[actionlint](https://github.com/rhysd/actionlint). It also runs shellcheck on
+each `run:` script when shellcheck is on your `PATH`. Its configuration is in
+`.github/actionlint.yaml`. The `actionlint` job in `build.yml` sets the
+version.
+
+```
+actionlint
+```
+
 ### Checks that the Stop hooks run
 
 The Stop hooks in `.claude/settings.json` run these checks each time the agent

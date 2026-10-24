@@ -17,6 +17,7 @@ pkgs.mkShell {
     cargo-nextest
     uv
     zizmor
+    actionlint
     npins
     nixfmt
     # snouty drives Docker Compose v2 via the `docker-compose` binary.

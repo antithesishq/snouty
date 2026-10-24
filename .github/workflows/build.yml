@@ -108,6 +108,29 @@ jobs:
       # example, dtolnay/rust-toolchain moves its v1 tag on each Rust release.
       - name: Audit the workflows
         run: uvx zizmor==1.31.1 --offline .
+  actionlint:
+    runs-on: ubuntu-latest
+    needs: skip-check
+    if: needs.skip-check.outputs.should_skip != 'true'
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      # The runner image has shellcheck, so actionlint also checks `run:` scripts.
+      - name: Install actionlint
+        run: |
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -sSfLO "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
+          echo "${ACTIONLINT_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" -C "$RUNNER_TEMP" actionlint
+
+      - name: actionlint
+        run: |
+          "$RUNNER_TEMP/actionlint"
   test:
     runs-on: ${{ matrix.os }}
     needs: skip-check
@@ -300,6 +323,7 @@ jobs:
       - test-macos-arm
       - staging
       - zizmor
+      - actionlint
     if: always()
     steps:
       - name: Verify every needed job

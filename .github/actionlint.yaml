@@ -1,0 +1,14 @@
+# actionlint (https://github.com/rhysd/actionlint) checks every workflow in
+# .github/workflows. Two of them are generated: an edit there is lost or
+# rejected when the generator runs, so this file silences what we cannot fix.
+paths:
+  # gh-aw compiles this file from weekly-audit.md. It also uses keys that
+  # actionlint does not know, such as `concurrency.queue`. Skip it all.
+  .github/workflows/weekly-audit.lock.yml:
+    ignore:
+      - ".+"
+  # dist generates this file, and `dist plan` fails the release when the file
+  # differs from its output. Keep every check except the shellcheck findings.
+  .github/workflows/release.yml:
+    ignore:
+      - "shellcheck reported issue in this script"

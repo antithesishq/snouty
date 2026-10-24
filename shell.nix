@@ -15,6 +15,7 @@ pkgs.mkShell {
   packages = with pkgs; [
     rustToolchain
     cargo-nextest
+    cargo-semver-checks
     npins
     nixfmt
     # snouty drives Docker Compose v2 via the `docker-compose` binary.

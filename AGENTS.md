@@ -102,6 +102,15 @@ cargo fmt
 
 If `cargo nextest` is not available, you may use `cargo test`.
 
+On a release PR, run `cargo-semver-checks` after you bump the version. It
+compares the public API of the snouty library with the latest stable release on
+crates.io. snouty is 0.x, so a breaking API change needs a minor bump (0.8 to
+0.9). A patch bump fails the check. CI runs it only on `release/` branches.
+
+```
+cargo semver-checks -p snouty
+```
+
 ### Running spec tests against a staging backend
 
 By default `spec_tests` runs against an in-process mock server. To exercise

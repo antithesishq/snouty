@@ -993,16 +993,18 @@ impl AntithesisApi {
     pub fn stream_run_properties(
         &self,
         run_id: &str,
-        status: Option<PropertyStatus>,
+        statuses: &[PropertyStatus],
     ) -> impl futures_util::Stream<Item = Result<Property>> + '_ {
         const MAX_PAGE_LIMIT: NonZeroU64 = NonZeroU64::new(100).unwrap();
         let run_id = run_id.to_string();
+        let statuses = statuses.to_vec();
         paginate_exhaust(move |after| {
             let run_id = run_id.clone();
+            let statuses = statuses.clone();
             async move {
                 ensure_resource_supported(&run_id, MIN_PROPERTIES_VERSION, "run properties")?;
                 let page = self
-                    .fetch_run_properties_page(&run_id, after.as_deref(), status, MAX_PAGE_LIMIT)
+                    .fetch_run_properties_page(&run_id, after.as_deref(), &statuses, MAX_PAGE_LIMIT)
                     .await?
                     .untag();
                 let normalized = page
@@ -1118,7 +1120,7 @@ impl AntithesisApi {
         &self,
         run_id: &str,
         after: Option<&str>,
-        status: Option<PropertyStatus>,
+        statuses: &[PropertyStatus],
         limit: NonZeroU64,
     ) -> Result<Tagged<generated::types::PropertyListResponse, CachePolicy>> {
         let mut request = self
@@ -1129,26 +1131,13 @@ impl AntithesisApi {
         if let Some(cursor) = after {
             request = request.after(cursor);
         }
-        if let Some(status) = status {
-            request = request.status(vec![status]);
+        if !statuses.is_empty() {
+            request = request.status(statuses.to_vec());
         }
-        // Runs from release 65.3 report properties while they are in
-        // progress, so a page is immutable only once the run reaches a
-        // terminal status. The status is read before the page, so a run that
-        // ends between the two requests cannot admit a stale page. A failed
-        // run lookup only costs the cache entry, so its error is dropped.
-        let terminal = self.cache.enabled()
-            && self
-                .get_run(run_id)
-                .await
-                .is_ok_and(|detail| detail.untag().status.is_terminal());
-
         match request.send().await {
             Ok(response) => {
                 let policy = self.cache.headers_policy(response.headers());
-                Ok(response
-                    .into_inner()
-                    .with_tag(policy.and(CachePolicy::cache_if(terminal))))
+                Ok(response.into_inner().with_tag(policy))
             }
             Err(err) => Err(format_api_client_error(err).await),
         }
@@ -3953,16 +3942,8 @@ mod tests {
         })
     }
 
-    async fn mount_run_detail(mock_server: &MockServer, status: &str) {
-        Mock::given(method("GET"))
-            .and(path("/api/v0/runs/run-1"))
-            .respond_with(cacheable().set_body_json(run_detail_body(status)))
-            .mount(mock_server)
-            .await;
-    }
-
     async fn property_names(api: &AntithesisApi) -> Vec<String> {
-        api.stream_run_properties("run-1", None)
+        api.stream_run_properties("run-1", &[])
             .try_collect::<Vec<_>>()
             .await
             .unwrap()
@@ -3976,7 +3957,6 @@ mod tests {
     #[tokio::test]
     async fn run_properties_replay_from_the_cache_per_page() {
         let mock_server = MockServer::start().await;
-        mount_run_detail(&mock_server, "completed").await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/properties"))
             .and(query_param_is_missing("after"))
@@ -3997,25 +3977,6 @@ mod tests {
 
         for _ in 0..2 {
             assert_eq!(property_names(&api).await, ["first", "second"]);
-        }
-    }
-
-    #[tokio::test]
-    async fn live_run_properties_are_not_cached() {
-        let mock_server = MockServer::start().await;
-        mount_run_detail(&mock_server, "in_progress").await;
-        Mock::given(method("GET"))
-            .and(path("/api/v0/runs/run-1/properties"))
-            .respond_with(cacheable().set_body_json(property_page("first", None)))
-            .expect(2)
-            .mount(&mock_server)
-            .await;
-
-        let cache_dir = TempDir::new().unwrap();
-        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
-
-        for _ in 0..2 {
-            assert_eq!(property_names(&api).await, ["first"]);
         }
     }
 
@@ -4357,7 +4318,7 @@ mod tests {
         let api = test_api_optionally_with_cache(&mock_server, None);
 
         let properties = api
-            .stream_run_properties("run-1", None)
+            .stream_run_properties("run-1", &[])
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
@@ -4383,6 +4344,7 @@ mod tests {
             .and(path("/api/v0/runs/run-1/properties"))
             .and(query_param("limit", "100"))
             .and(query_param("status", "Failing"))
+            .and(query_param("status", "Undetermined"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "data": [],
                 "next_cursor": null
@@ -4394,7 +4356,10 @@ mod tests {
         let api = test_api_optionally_with_cache(&mock_server, None);
 
         let properties = api
-            .stream_run_properties("run-1", Some(PropertyStatus::Failing))
+            .stream_run_properties(
+                "run-1",
+                &[PropertyStatus::Failing, PropertyStatus::Undetermined],
+            )
             .try_collect::<Vec<_>>()
             .await
             .unwrap();

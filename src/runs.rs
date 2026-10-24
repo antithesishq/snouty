@@ -167,19 +167,21 @@ pub async fn cmd_runs(
             run_id,
             passing,
             failing,
+            undetermined,
             name,
             group,
             detail,
         }) => {
-            let status = if passing {
-                Some(PropertyStatus::Passing)
-            } else if failing {
-                Some(PropertyStatus::Failing)
-            } else {
-                None
-            };
+            let statuses = [
+                (passing, PropertyStatus::Passing),
+                (failing, PropertyStatus::Failing),
+                (undetermined, PropertyStatus::Undetermined),
+            ]
+            .into_iter()
+            .filter_map(|(on, status)| on.then_some(status))
+            .collect();
             let filter = PropertyFilter {
-                status,
+                statuses,
                 name: name.as_deref(),
                 group: group.as_deref(),
             };
@@ -571,11 +573,12 @@ fn over_schedule_warning(run: &RunDetail, now: DateTime<Utc>) -> Option<String> 
     }
 }
 
-/// Filters applied to `runs properties`. `status` is served by the API; `name`
+/// Filters applied to `runs properties`. `statuses` is served by the API, and
+/// an empty list means every status; `name`
 /// and `group` are case-insensitive substring matches applied client-side.
 /// `name` matches [`property_display_name`].
 struct PropertyFilter<'a> {
-    status: Option<PropertyStatus>,
+    statuses: Vec<PropertyStatus>,
     name: Option<&'a str>,
     group: Option<&'a str>,
 }
@@ -603,7 +606,7 @@ async fn cmd_runs_properties(
 
     let api = AntithesisApi::new(settings, verbose)?;
     let mut properties = api
-        .stream_run_properties(run_id, filter.status)
+        .stream_run_properties(run_id, &filter.statuses)
         .try_collect::<Vec<_>>()
         .await
         .map_err(|err| explain_run_not_found(run_id, err))?;
@@ -652,8 +655,13 @@ async fn cmd_runs_properties(
 
 fn no_properties_message(filter: &PropertyFilter) -> String {
     let mut parts = Vec::new();
-    if let Some(status) = filter.status {
-        parts.push(property_status_label(status).to_string());
+    if !filter.statuses.is_empty() {
+        let labels: Vec<&str> = filter
+            .statuses
+            .iter()
+            .map(|&status| property_status_word(status))
+            .collect();
+        parts.push(labels.join(" or "));
     }
     if let Some(name) = filter.name {
         parts.push(format!("name containing '{name}'"));
@@ -862,12 +870,23 @@ fn format_count_si(n: u64) -> String {
     }
 }
 
-fn property_status_label(status: PropertyStatus) -> String {
+/// The status as an uncolored word, for prose.
+fn property_status_word(status: PropertyStatus) -> &'static str {
     match status {
-        PropertyStatus::Passing => console::style("passing").green().to_string(),
-        PropertyStatus::Failing => console::style("failing").red().to_string(),
-        PropertyStatus::Undetermined => console::style("undetermined").yellow().to_string(),
+        PropertyStatus::Passing => "passing",
+        PropertyStatus::Failing => "failing",
+        PropertyStatus::Undetermined => "undetermined",
     }
+}
+
+fn property_status_label(status: PropertyStatus) -> String {
+    let word = console::style(property_status_word(status));
+    match status {
+        PropertyStatus::Passing => word.green(),
+        PropertyStatus::Failing => word.red(),
+        PropertyStatus::Undetermined => word.yellow(),
+    }
+    .to_string()
 }
 
 /// How a wrapped free-text block lays its label out (see [`render_prose_block`]).

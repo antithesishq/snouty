@@ -4,5 +4,6 @@
 cd "$(dirname "$0")/.." || exit 1
 # Put the mise.toml tools on PATH when mise is installed.
 command -v mise >/dev/null 2>&1 && eval "$(mise env -s bash 2>/dev/null)"
-command -v typos >/dev/null 2>&1 || exit 0
+# A mise shim exists even where mise.toml sets no version, so run the tool.
+typos --version >/dev/null 2>&1 || exit 0
 out=$(typos --color never 2>&1) || { echo "$out"; exit 2; }

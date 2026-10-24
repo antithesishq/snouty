@@ -39,6 +39,19 @@
             "rewakeMessage": "ruff check reported errors in the Python scripts. Fix them before finishing:"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/check-shell.sh",
+            "asyncRewake": true,
+            "timeout": 60,
+            "statusMessage": "shellcheck",
+            "rewakeSummary": "shellcheck found problems",
+            "rewakeMessage": "shellcheck found problems in shell scripts. Fix them before finishing:"
+          }
+        ]
       }
     ]
   }

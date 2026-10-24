@@ -13,3 +13,9 @@ __pycache__/
 
 # nix build artifacts
 /result
+
+# Agent worktrees that Claude Code creates.
+/.claude/worktrees/
+
+# nix-direnv state, written by the .envrc.
+/.direnv/

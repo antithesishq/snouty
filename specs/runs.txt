@@ -318,6 +318,37 @@ mock-runs-server
 snouty runs properties $R_run_id --name 'Peak memory' --detail
 [!staging] stdout '(?s)Counter-examples.*1340.*Examples.*820'
 
+# `snouty runs properties <run_id> <property_id>` fetches one property by its
+# ID and always shows it in full, as --detail does.
+mock-runs-server
+[!staging] snouty runs properties $R_run_id 97cf5fcafa500ed62bf109d81834c5b881a2c854
+[!staging] stdout '(?s)^Safety\n\nName +Counter value stays below limit\nID +97cf5fcafa500ed62bf109d81834c5b881a2c854\nGroup +Safety\nStatus +failing$'
+[!staging] stdout 'STATUS.*HASH.*VTIME'
+[!staging] stdout '^  snouty runs logs \S+ <hash> <vtime>$'
+[!staging] ! stdout 'Setup completes'
+
+# With --json, the property prints as one JSON object.
+mock-runs-server
+[!staging] snouty --json runs properties $R_run_id 97cf5fcafa500ed62bf109d81834c5b881a2c854
+[!staging] stdout -count=1 '"id":"97cf5fcafa500ed62bf109d81834c5b881a2c854"'
+[!staging] stdout '"vtime":45\.334635781589895'
+
+# An unknown property ID in a run that exists says which ID is missing, and
+# how to list the IDs.
+mock-runs-server
+[!staging] ! snouty runs properties $R_run_id no-such-property
+[!staging] stderr 'property not found: no-such-property'
+[!staging] stderr 'snouty --json runs properties \S+ \| jq -r \.id'
+
+# An unknown run reports the run, not the property.
+mock-runs-server
+! snouty runs properties run-does-not-exist 97cf5fcafa500ed62bf109d81834c5b881a2c854
+stderr 'run not found: run-does-not-exist'
+
+# A property ID names one property, so the filters are rejected with it.
+! snouty runs properties $R_run_id 97cf5fcafa500ed62bf109d81834c5b881a2c854 --failing
+stderr 'cannot be used with'
+
 # A filter that matches nothing prints a friendly empty-state, not an error.
 mock-runs-server
 snouty runs properties $R_run_id --name no-such-property

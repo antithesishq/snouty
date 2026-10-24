@@ -82,6 +82,8 @@ import pyte
 UNKNOWN_RUN = "ffffffffffffffffffffffffffffffff-54-5"
 # An input hash that no run reaches, for the `snouty debug` error stories.
 UNKNOWN_HASH = "1234567890123456789"
+# A property ID that no run has, for the property lookup error story.
+UNKNOWN_PROPERTY = "ffffffffffffffffffffffffffffffff"
 
 # Stories are captured concurrently (each is one or two snouty subprocesses that
 # can each block on snouty's 60s timeout); checks are then evaluated serially.
@@ -601,6 +603,7 @@ class Discovery:
     # the API byte-identically.
     logs_vtime: str = "0"
     fail_prop: str = ""  # failing event property whose detail shows counter-examples
+    fail_prop_id: str = ""  # fail_prop's ID, which `runs properties <run> <id>` looks up
     pass_event_prop: str = ""  # passing event property whose detail shows examples
     nonevent_prop: str = ""  # non-event property whose detail shows a real value
     name_filter: str = ""  # substring matching exactly one property name
@@ -725,6 +728,7 @@ class CompletedPick:
     keyword: str
     keyword2: str
     fail_prop: str
+    fail_prop_id: str
     pass_prop: str
     nonevent_prop: str
     name_filter: str
@@ -786,6 +790,7 @@ def _pick_completed_run(sn: Snouty) -> CompletedPick:
         # downstream.
         try:
             fail_prop = _pick_property_with_moments(sn, run, props, "Failing")
+            fail_prop_id = _pick_property_id(sn, run, props, fail_prop)
             pass_prop = _pick_property_with_moments(sn, run, props, "Passing")
             nonevent_prop = _pick_nonevent_property(sn, run, props)
             name_filter = _pick_name_filter(props)
@@ -805,7 +810,7 @@ def _pick_completed_run(sn: Snouty) -> CompletedPick:
             file=sys.stderr,
         )
         return CompletedPick(
-            run, moment, kw, kw2, fail_prop, pass_prop, nonevent_prop, name_filter
+            run, moment, kw, kw2, fail_prop, fail_prop_id, pass_prop, nonevent_prop, name_filter
         )
     raise _no_usable_run(
         "completed",
@@ -1001,6 +1006,17 @@ def _pick_nonevent_property(sn: Snouty, run: str, props: list[dict]) -> str:
     raise GalleryError(f"no non-event property on {run} renders a usable value")
 
 
+def _pick_property_id(sn: Snouty, run: str, props: list[dict], name: str) -> str:
+    """The ID of the property named `name`, once a lookup by that ID succeeds.
+    Runs created before release 65.3 reject the lookup."""
+    prop_id = next((p.get("id") for p in props if p["name"] == name), None)
+    if not prop_id:
+        raise GalleryError(f"property {name!r} has no ID")
+    if not sn.run(["runs", "properties", run, prop_id]).ok:
+        raise GalleryError(f"looking up property {prop_id} fails")
+    return prop_id
+
+
 def _pick_name_filter(props: list[dict]) -> str:
     """A case-insensitive word contained in exactly one property name — so the
     `--name` filter story narrows the list to a single, predictable property."""
@@ -1056,6 +1072,7 @@ def discover(sn: Snouty) -> Discovery:
         # Property-story selections were derived against `success` during the
         # holistic run pick, so reuse them rather than re-probing the API.
         fail_prop=pick.fail_prop,
+        fail_prop_id=pick.fail_prop_id,
         pass_event_prop=pick.pass_prop,
         nonevent_prop=pick.nonevent_prop,
         name_filter=pick.name_filter,
@@ -2222,6 +2239,25 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "and no `Details` row.",
             ["runs", "properties", d.success, "--name", d.nonevent_prop, "--detail"],
             property_non_event_result,
+            json_capable=False,
+        ),
+        Story(
+            "runs-properties-by-id",
+            "Look up one property by its ID",
+            "I have a property ID from the JSON output, and I want that property alone.",
+            "Shows only that property, in full as --detail does: its ID, totals, and at least one "
+            "moment (hash/vtime), then one `snouty runs logs` next step.",
+            ["runs", "properties", d.success, d.fail_prop_id],
+            property_has_examples,
+            json_capable=False,
+        ),
+        Story(
+            "runs-properties-by-id-unknown",
+            "Look up a property ID that the run does not have",
+            "I mistype a property ID; I want to know which ID is wrong and how to find the right one.",
+            "A clean `property not found: <id>` error that suggests how to list the IDs. Exit 1.",
+            ["runs", "properties", d.success, UNKNOWN_PROPERTY],
+            expect_message("property not found"),
             json_capable=False,
         ),
         Story(

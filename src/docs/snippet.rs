@@ -25,7 +25,7 @@ fn is_inline(tag: &Tag) -> bool {
 
 // Mirror `is_inline` for end tags so block-level transitions can still add
 // separator spaces when we flatten markdown into plain text.
-fn is_inline_end(tag: &TagEnd) -> bool {
+fn is_inline_end(tag: TagEnd) -> bool {
     matches!(
         tag,
         TagEnd::Emphasis
@@ -118,7 +118,7 @@ fn flatten_markdown(content: &str) -> String {
                     result.push(' ');
                 }
             }
-            Event::End(ref tag) if !is_inline_end(tag) => {
+            Event::End(tag) if !is_inline_end(tag) => {
                 depth = depth.saturating_sub(1);
                 if !result.is_empty() && !result.ends_with(' ') {
                     result.push(' ');
@@ -411,7 +411,7 @@ mod tests {
 
     /// Build an owned term slice, the way `extract_snippet` expects it.
     fn terms(words: &[&str]) -> Vec<String> {
-        words.iter().map(|w| w.to_string()).collect()
+        words.iter().map(ToString::to_string).collect()
     }
 
     #[test]

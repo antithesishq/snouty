@@ -102,22 +102,19 @@ pub fn scan_scripts(base: &Path, service: &str) -> Result<ScanResult> {
             }
 
             let command_name = cmd_entry.file_name().to_string_lossy().into_owned();
-            let script_type = match ScriptType::from_prefix(&command_name) {
-                Some(t) => t,
-                None => {
-                    if command_name.starts_with(HELPER_PREFIX) {
-                        debug!("skipping helper: {}", command_name);
-                    } else {
-                        unrecognized.push(format!("{}/{}", test_name, command_name));
-                    }
-                    continue;
+            let Some(script_type) = ScriptType::from_prefix(&command_name) else {
+                if command_name.starts_with(HELPER_PREFIX) {
+                    debug!("skipping helper: {command_name}");
+                } else {
+                    unrecognized.push(format!("{test_name}/{command_name}"));
                 }
+                continue;
             };
 
             let metadata =
                 fs::metadata(&cmd_path).wrap_err_with(|| format!("stat {}", cmd_path.display()))?;
             if metadata.permissions().mode() & 0o111 == 0 {
-                not_executable.push(format!("{}/{}", test_name, command_name));
+                not_executable.push(format!("{test_name}/{command_name}"));
             }
 
             scripts.push(TestScript {

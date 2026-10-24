@@ -201,7 +201,7 @@ mod tests {
             "moment": {"input_hash": "-1", "vtime": "16.1"}
         });
         // Default: the one-line summary only.
-        let block = render_one(entry.clone());
+        let block = render_one(&entry.clone());
         assert_eq!(
             block.lines().nth(1).unwrap(),
             "16.1      [test_composer] task finished git_walk/parallel_driver_walk exit=1 in 0.0s"
@@ -210,7 +210,7 @@ mod tests {
 
         // Detail: stderr lines surface as indented details; empty stdout is
         // omitted.
-        let block = render_one_detailed(entry);
+        let block = render_one_detailed(&entry);
         let mut lines = block.lines().skip(2);
         assert_eq!(lines.next().unwrap(), "                    err| boom");
         assert_eq!(
@@ -218,7 +218,7 @@ mod tests {
             "                    err| second line"
         );
 
-        let started = render_one(json!({
+        let started = render_one(&json!({
             "task_status": "started", "command": "git_walk/parallel_driver_walk",
             "source": {"name": "antithesis_test_composer"},
             "moment": {"input_hash": "-1", "vtime": "15.3"}
@@ -232,7 +232,7 @@ mod tests {
     #[test]
     fn a_missing_or_numeric_return_code_never_renders_as_failure() {
         // A JSON-number 0 is a passing exit, not a wire-form accident.
-        let numeric = render_one(json!({
+        let numeric = render_one(&json!({
             "task_status": "finished", "command": "ok.sh",
             "command_return_code": 0,
             "source": {"name": "antithesis_test_composer"},
@@ -246,7 +246,7 @@ mod tests {
         // No return code at all: neutral (the text carries no exit=), never
         // styled as a failure. Colors are off in tests, so the invariant
         // that matters here is the missing exit= suffix.
-        let absent = render_one(json!({
+        let absent = render_one(&json!({
             "task_status": "finished", "command": "ok.sh",
             "source": {"name": "antithesis_test_composer"},
             "moment": {"input_hash": "-1", "vtime": "1.0"}
@@ -263,7 +263,7 @@ mod tests {
             "moment": {"input_hash": "-1", "vtime": "13.3"}
         });
         // A path keeps its last directory and file name.
-        let block = render_one(entry.clone());
+        let block = render_one(&entry.clone());
         assert!(
             block.contains("composer new_command_path=git_walk/anytime_invariants "),
             "got: {block}"
@@ -272,7 +272,7 @@ mod tests {
         assert!(block.ends_with("container_id=22453394531a"), "got: {block}");
 
         // --detail: one pair per line, untruncated.
-        let block = render_one_detailed(entry);
+        let block = render_one_detailed(&entry);
         let mut lines = block.lines().skip(1);
         assert!(
             lines.next().unwrap().ends_with("[test_composer] composer"),
@@ -301,7 +301,7 @@ mod tests {
 
         // The wire form is a string; a long command keeps its last
         // directory and file name.
-        let block = render_one(chatter(json!("0.037937902697115555"), long));
+        let block = render_one(&chatter(json!("0.037937902697115555"), long));
         assert!(
             block.ends_with(
                 "composer weight_type=configured weight=0.038 command=wellnest/parallel_driver_check_ins.py"
@@ -312,19 +312,19 @@ mod tests {
         // A numeric weight rounds the same. The same script reads the same
         // from an absolute path and from a relative one.
         for command in ["/opt/antithesis/test/v1/rqlite/a.sh", "rqlite/a.sh"] {
-            let block = render_one(chatter(json!(0.0555555), command));
+            let block = render_one(&chatter(json!(0.0555555), command));
             assert!(
                 block.ends_with("weight=0.056 command=rqlite/a.sh"),
                 "got: {block}"
             );
         }
-        let block = render_one(chatter(json!(0.0555555), "a.py"));
+        let block = render_one(&chatter(json!(0.0555555), "a.py"));
         assert!(block.ends_with("weight=0.056 command=a.py"), "got: {block}");
 
         // When the last directory and file name do not fit, the file name
         // stays.
         let dir = "d".repeat(40);
-        let block = render_one(chatter(json!(0.0555555), &format!("/opt/{dir}/a.py")));
+        let block = render_one(&chatter(json!(0.0555555), &format!("/opt/{dir}/a.py")));
         assert!(
             block.ends_with("weight=0.056 command=…/a.py"),
             "got: {block}"
@@ -332,16 +332,16 @@ mod tests {
 
         // An unparsable weight is not rounded, and is truncated as other
         // values are.
-        let block = render_one(chatter(json!("high"), "/opt/t/a.py"));
+        let block = render_one(&chatter(json!("high"), "/opt/t/a.py"));
         assert!(block.contains(" weight=high "), "got: {block}");
-        let block = render_one(chatter(json!("x".repeat(50)), "/opt/t/a.py"));
+        let block = render_one(&chatter(json!("x".repeat(50)), "/opt/t/a.py"));
         assert!(
             block.contains(&format!(" weight={}… ", "x".repeat(39))),
             "got: {block}"
         );
 
         // --detail: full values.
-        let block = render_one_detailed(chatter(json!("0.037937902697115555"), long));
+        let block = render_one_detailed(&chatter(json!("0.037937902697115555"), long));
         assert!(
             block.contains("\n                    weight=0.037937902697115555\n"),
             "got: {block}"
@@ -364,7 +364,7 @@ mod tests {
 
         // Shapes observed in release 64.0 run
         // cf98800188c5d337790acd0a0e00e9d1-64-0.
-        let block = render_one(chatter(json!({
+        let block = render_one(&chatter(json!({
             "removed_command": "/opt/antithesis/test/v1/wellnest/parallel_driver_journal.py"
         })));
         assert!(
@@ -378,7 +378,7 @@ mod tests {
         }));
         // container_id and new_command_path say what new_command says, so
         // new_command is left out.
-        let block = render_one(record.clone());
+        let block = render_one(&record.clone());
         assert!(
             block.ends_with(
                 "composer new_command_path=wellnest/parallel_driver_check_ins.py \
@@ -387,7 +387,7 @@ mod tests {
             "got: {block}"
         );
         // --detail shows every pair.
-        let block = render_one_detailed(record);
+        let block = render_one_detailed(&record);
         assert!(
             block.ends_with(&format!(
                 "[test_composer] composer\n                    \
@@ -401,7 +401,9 @@ mod tests {
         // A new_command with no new_command_path is truncated as other
         // values are.
         let command = format!("{id}_parallel_driver_check_ins.py");
-        let block = render_one(chatter(json!({"container_id": id, "new_command": command})));
+        let block = render_one(&chatter(
+            json!({"container_id": id, "new_command": command}),
+        ));
         assert!(
             block.ends_with(&format!(
                 "composer container_id=89e64f6a3e9f new_command={}…",
@@ -412,14 +414,14 @@ mod tests {
 
         // A final segment wider than the budget keeps its end.
         let name = format!("{}.py", "n".repeat(50));
-        let block = render_one(chatter(json!({"command": format!("/opt/t/{name}")})));
+        let block = render_one(&chatter(json!({"command": format!("/opt/t/{name}")})));
         assert!(
             block.ends_with(&format!("command=…{}", &name[name.len() - 39..])),
             "got: {block}"
         );
 
         // --detail: full values.
-        let block = render_one_detailed(chatter(json!({
+        let block = render_one_detailed(&chatter(json!({
             "container_id": id,
             "new_command": format!("{id}_parallel_driver_check_ins.py"),
         })));

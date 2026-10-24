@@ -287,8 +287,8 @@ impl Settings {
     /// unset, for driving [`crate::api::AntithesisApi`] against a mock server
     /// without touching the environment.
     #[cfg(test)]
-    pub(crate) fn for_test_base_url(base_url: String) -> Self {
-        Self::builder().base_url(&base_url).build()
+    pub(crate) fn for_test_base_url(base_url: &str) -> Self {
+        Self::builder().base_url(base_url).build()
     }
 }
 
@@ -310,46 +310,55 @@ pub struct SettingsBuilder {
 }
 
 impl SettingsBuilder {
+    #[must_use]
     pub fn profile(mut self, value: &str) -> Self {
         self.profile = Some(value.to_string());
         self
     }
 
+    #[must_use]
     pub fn tenant(mut self, value: &str) -> Self {
         self.tenant = Some(value.to_string());
         self
     }
 
+    #[must_use]
     pub fn repository(mut self, value: &str) -> Self {
         self.repository = Some(value.to_string());
         self
     }
 
+    #[must_use]
     pub fn base_url(mut self, value: &str) -> Self {
         self.base_url = Some(value.to_string());
         self
     }
 
+    #[must_use]
     pub fn https_proxy(mut self, value: &str) -> Self {
         self.https_proxy = Some(value.to_string());
         self
     }
 
+    #[must_use]
     pub fn container_engine(mut self, value: &str) -> Self {
         self.container_engine = Some(value.to_string());
         self
     }
 
+    #[must_use]
     pub fn update_channel(mut self, value: UpdateChannel) -> Self {
         self.update_channel = value;
         self
     }
 
+    #[must_use]
     pub fn api_cache_max_file_size(mut self, value: u64) -> Self {
         self.api_cache_max_file_size = Some(value);
         self
     }
 
+    #[must_use]
     pub fn api_cache_respect_headers(mut self, value: bool) -> Self {
         self.api_cache_respect_headers = Some(value);
         self
@@ -394,9 +403,10 @@ pub(crate) fn update_settings_in_global_file(
     let settings_dir = global_settings_dir().ok_or_eyre("Could not determine global settings directory. Ensure either $XDG_CONFIG_HOME or $HOME is set.")?;
     let path = settings_dir.join(GLOBAL_SETTINGS_FILENAME);
     let mut contents = match read_to_string_if_file_exists(&path)? {
-        Some(contents) => match parse_settings(&contents, &path) {
-            Ok(table) => table,
-            Err(_) => {
+        Some(contents) => {
+            if let Ok(table) = parse_settings(&contents, &path) {
+                table
+            } else {
                 let backup = back_up_unparsable_file(&path)?;
                 // Paths go on their own lines: they are the two things the
                 // user may need to copy, and they are what made the one-line
@@ -408,7 +418,7 @@ pub(crate) fn update_settings_in_global_file(
                 );
                 Table::new()
             }
-        },
+        }
         None => Table::new(),
     };
 
@@ -745,8 +755,13 @@ pub(crate) fn back_up_unparsable_file(path: &Path) -> Result<PathBuf> {
         .and_then(|name| name.to_str())
         .ok_or_else(|| eyre!("Cannot back up file with no name: {:?}", path))?;
     let backup = path.with_file_name(format!("{file_name}.bak"));
-    fs::rename(path, &backup)
-        .wrap_err_with(|| format!("Failed to back up {:?} to {:?}", path, backup))?;
+    fs::rename(path, &backup).wrap_err_with(|| {
+        format!(
+            "Failed to back up \"{}\" to \"{}\"",
+            path.display(),
+            backup.display()
+        )
+    })?;
     Ok(backup)
 }
 

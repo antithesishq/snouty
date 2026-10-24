@@ -96,7 +96,6 @@ Run the following commands to validate that the code meets required standards:
 
 ```
 cargo nextest run
-cargo clippy
 ```
 
 If `cargo nextest` is not available, you may use `cargo test`.
@@ -180,6 +179,16 @@ appear with no change in the repository.
 cargo deny check
 ```
 
+Clippy runs with the `pedantic` lint group. The `[workspace.lints.clippy]`
+table in `Cargo.toml` sets it, and it lists the pedantic lints that are off,
+with a reason for each. Fix a new finding in the code. If a fix is wrong, add
+an `#[allow(clippy::<lint>)]` on the item, with a comment that tells why.
+CI denies all warnings:
+
+```
+cargo clippy --all-targets -- -D warnings
+```
+
 ### Checks that the Stop hooks run
 
 The Stop hooks in `.claude/settings.json` run these checks each time the agent
@@ -187,7 +196,8 @@ stops, and wake the agent with the errors when a check fails. Do not run them
 yourself while you work. The one exception is a push: a hook does not run
 until the agent stops, so run the checks before a `git push` in the same turn.
 
-- `scripts/check-cargo.sh`: `cargo fmt`, then `cargo check --all-targets`.
+- `scripts/check-cargo.sh`: `cargo fmt`, then
+  `cargo clippy --all-targets -- -D warnings`.
 - `scripts/check-typos.sh`: `typos`.
 - `scripts/check-python.sh`: `ruff format scripts`, then `ruff check scripts`,
   then `pyright`.

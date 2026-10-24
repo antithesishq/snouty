@@ -5,6 +5,28 @@ members = ["snouty-macros"]
 [workspace.package]
 rust-version = "1.89"
 
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# The snouty library serves only its own binary and tests: #[must_use] on
+# every getter is noise, and no one reads its rustdoc.
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# Long functions such as the clap dispatch in main read best in one piece.
+too_many_lines = "allow"
+# The fix, assert_eq!(x, [] as [T; 0]), is harder to read than the assert.
+assert_is_empty = "allow"
+# Most long literals are copied from real API payloads; separators hide that.
+unreadable_literal = "allow"
+# The numeric casts convert vtimes, durations and sizes, whose values stay far
+# inside the range of both types.
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+
+[lints]
+workspace = true
+
 [package]
 name = "snouty"
 version = "0.8.0"

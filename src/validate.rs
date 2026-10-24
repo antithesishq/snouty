@@ -176,19 +176,16 @@ pub async fn cmd_validate(args: ValidateArgs, settings: &Settings) -> Result<()>
     // the working directory so validate output can be inspected across runs.
     // Unset (or exported-but-empty / non-Unicode, all collapsed by
     // `crate::env::var`/`.ok().flatten()`), we use a fresh system temp dir.
-    match crate::env::var("SNOUTY_TEMP_DIR").ok().flatten() {
-        Some(out_dir) => {
-            let temp_dir = Path::new(&out_dir);
-            // To avoid conflating results of subsequent runs, we require that the provided
-            // SNOUTY_TEMP_DIR is empty or non-existent
-            mkdir_or_require_empty(temp_dir)?;
-            validate_with_temp_dir(args, settings, temp_dir).await
-        }
-        None => {
-            let mut temp_dir = tempfile::tempdir()?;
-            temp_dir.disable_cleanup(args.keep_running);
-            validate_with_temp_dir(args, settings, temp_dir.path()).await
-        }
+    if let Some(out_dir) = crate::env::var("SNOUTY_TEMP_DIR").ok().flatten() {
+        let temp_dir = Path::new(&out_dir);
+        // To avoid conflating results of subsequent runs, we require that the provided
+        // SNOUTY_TEMP_DIR is empty or non-existent
+        mkdir_or_require_empty(temp_dir)?;
+        validate_with_temp_dir(args, settings, temp_dir).await
+    } else {
+        let mut temp_dir = tempfile::tempdir()?;
+        temp_dir.disable_cleanup(args.keep_running);
+        validate_with_temp_dir(args, settings, temp_dir.path()).await
     }
 }
 
@@ -306,7 +303,7 @@ async fn validate_compose(
         // came up, so every container exists and discovery reads settled
         // filesystems instead of racing container startup.
         discover_scripts(rt, &compose, overlay, temp_dir)
-            .and_then(|scripts| validate_test_scripts(&scripts))
+            .map(|scripts| validate_test_scripts(&scripts))
     });
 
     if test_result.is_ok() {
@@ -741,7 +738,7 @@ fn discover_scripts(
     // Genuine misconfigurations — unknown command prefixes or non-executable
     // commands — remain hard errors: those scripts can never run.
     if !unrecognized.is_empty() || !not_executable.is_empty() {
-        return Err(combined_discovery_error(unrecognized, not_executable));
+        return Err(combined_discovery_error(&unrecognized, &not_executable));
     }
 
     Ok(all_scripts)
@@ -753,12 +750,12 @@ fn discover_scripts(
 /// (A test-bearing container that merely exited is handled separately as a
 /// warning; see [`stranded_scripts_warning`].)
 fn combined_discovery_error(
-    unrecognized: BTreeMap<String, BTreeSet<String>>,
-    not_executable: BTreeMap<String, BTreeSet<String>>,
+    unrecognized: &BTreeMap<String, BTreeSet<String>>,
+    not_executable: &BTreeMap<String, BTreeSet<String>>,
 ) -> color_eyre::Report {
     let mut err = user_error("test command discovery failed");
 
-    for (service, commands) in &unrecognized {
+    for (service, commands) in unrecognized {
         let listing = commands
             .iter()
             .map(|c| format!("  {}/{c}", container::TEST_TEMPLATES_PATH))
@@ -771,7 +768,7 @@ fn combined_discovery_error(
         });
     }
 
-    for (service, commands) in &not_executable {
+    for (service, commands) in not_executable {
         let listing = commands
             .iter()
             .map(|c| format!("  {}/{c}", container::TEST_TEMPLATES_PATH))
@@ -825,7 +822,7 @@ fn stranded_scripts_warning(stopped_with_scripts: &BTreeSet<String>) -> String {
 }
 
 /// Validate the structure of discovered test commands without executing them.
-fn validate_test_scripts(scripts: &[TestScript]) -> Result<()> {
+fn validate_test_scripts(scripts: &[TestScript]) {
     let first = scripts
         .iter()
         .filter(|s| s.script_type == ScriptType::First)
@@ -845,16 +842,12 @@ fn validate_test_scripts(scripts: &[TestScript]) -> Result<()> {
         .count();
 
     eprintln!(
-        "Found {} first, {} driver, {} anytime, {} eventually, {} finally test commands",
-        first, drivers, anytime, eventually, finally,
+        "Found {first} first, {drivers} driver, {anytime} anytime, {eventually} eventually, {finally} finally test commands",
     );
 
     if scripts.is_empty() {
         debug!("no services contained test commands");
-        return Ok(());
     }
-
-    Ok(())
 }
 
 /// Return all `.jsonl` files recursively under `root`.
@@ -918,7 +911,7 @@ const MAX_READ_BYTES: u64 = 1024 * 1024;
 /// inside the window would have caught it.
 ///
 /// Uses blocking `std::fs` calls intentionally — reads are small and infrequent,
-/// and this avoids pulling in tokio::fs for a simple poll loop.
+/// and this avoids pulling in `tokio::fs` for a simple poll loop.
 async fn watch_for_setup_complete(output_dir: &Path, timeout: HumanDuration) -> Result<()> {
     let deadline = tokio::time::Instant::now() + Duration::from(timeout);
     loop {
@@ -1602,7 +1595,7 @@ services:
         let mut unrecognized = BTreeMap::new();
         unrecognized.insert("app".to_string(), BTreeSet::from(["bogus_cmd".to_string()]));
         let not_executable = BTreeMap::new();
-        let err = combined_discovery_error(unrecognized, not_executable);
+        let err = combined_discovery_error(&unrecognized, &not_executable);
         let rendered = format!("{err:?}");
         assert!(rendered.contains("test command discovery failed"));
         // Test commands are referenced by their full in-container path.

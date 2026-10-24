@@ -356,7 +356,7 @@ fn open_fault_tolerance(spec: &mut serde_json::Value) {
     assert!(
         levels
             .as_array()
-            .is_some_and(|levels| levels.iter().all(|l| l.is_string())),
+            .is_some_and(|levels| levels.iter().all(serde_json::Value::is_string)),
         "Params.antithesis.fault_tolerance's enum is not a list of strings; update \
          `open_fault_tolerance` in build.rs"
     );
@@ -375,9 +375,9 @@ fn open_performance_tier(spec: &mut serde_json::Value) {
         "open_performance_tier",
     );
     assert!(
-        tiers
-            .as_array()
-            .is_some_and(|tiers| !tiers.is_empty() && tiers.iter().all(|t| t.is_string())),
+        tiers.as_array().is_some_and(
+            |tiers| !tiers.is_empty() && tiers.iter().all(serde_json::Value::is_string)
+        ),
         "Params.antithesis.performance_tier's enum is not a list of strings; update \
          `open_performance_tier` in build.rs"
     );
@@ -525,12 +525,12 @@ fn strip_additional_properties_false(value: &mut serde_json::Value) -> usize {
 fn patch_lenient_booleans(content: String) -> String {
     let replacements = [
         (
-            r##"#[serde(rename = "true")]"##,
-            r##"#[serde(rename = "true", alias = "on")]"##,
+            r#"#[serde(rename = "true")]"#,
+            r#"#[serde(rename = "true", alias = "on")]"#,
         ),
         (
-            r##"#[serde(rename = "false")]"##,
-            r##"#[serde(rename = "false", alias = "off")]"##,
+            r#"#[serde(rename = "false")]"#,
+            r#"#[serde(rename = "false", alias = "off")]"#,
         ),
     ];
 
@@ -594,8 +594,7 @@ fn git_sha() -> Option<String> {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| !o.stdout.is_empty())
-        .unwrap_or(false);
+        .is_some_and(|o| !o.stdout.is_empty());
 
     Some(if dirty { format!("{sha}-dirty") } else { sha })
 }

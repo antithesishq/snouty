@@ -96,7 +96,10 @@ async fn run(cli: Cli) -> Result<()> {
     // don't read settings. That keeps dispatch a single flat match.
     let settings = Settings::resolve(settings_path, profile.clone());
     let result = match command {
-        Commands::Completions { shell } => cmd_completions(shell),
+        Commands::Completions { shell } => {
+            cmd_completions(shell);
+            Ok(())
+        }
         Commands::Version => {
             // SNOUTY_VERSION (set by build.rs) is the crate version plus the
             // build's git sha when known — the same string clap's --version
@@ -104,7 +107,7 @@ async fn run(cli: Cli) -> Result<()> {
             println!("snouty {}", env!("SNOUTY_VERSION"));
             Ok(())
         }
-        Commands::Update(args) => cmd_update(args, &settings?),
+        Commands::Update(args) => cmd_update(&args, &settings?),
         Commands::Docs { offline, command } => docs::cmd_docs(command, offline, output).await,
         Commands::Login { tenant, repository } => {
             cmd_login(tenant, repository, profile.as_deref(), &settings?, output).await
@@ -129,10 +132,10 @@ async fn run(cli: Cli) -> Result<()> {
 }
 
 /// When our output is piped into something that exits early (e.g. `snouty
-/// runs list | head`), writes to stdout fail with BrokenPipe. That's a
+/// runs list | head`), writes to stdout fail with `BrokenPipe`. That's a
 /// normal way for a pipeline to end, not an error — exit quietly. Network
 /// errors don't take this path: they surface as reqwest errors, whose
-/// underlying io::Error sits in reqwest's source chain and is not
+/// underlying `io::Error` sits in reqwest's source chain and is not
 /// downcastable from the report (see the tests below).
 fn suppress_broken_pipe(result: Result<()>) -> Result<()> {
     match result {
@@ -318,7 +321,7 @@ async fn cmd_launch(
         // line (`| head -1`) closes the pipe, and `println!` panics on that.
         writedoc!(
             io::stdout(),
-            r#"
+            r"
                 Test run started: run_id {run_id}
 
                 Wait for the run to finish with:
@@ -329,7 +332,7 @@ async fn cmd_launch(
                   snouty runs search {run_id} --follow <query>
                   snouty runs events {run_id} <query>
                   snouty runs exec {run_id} <input_hash> <vtime> <script>
-            "#
+            "
         )?;
     } else {
         println!("Test run started: run_id (unknown)");
@@ -471,11 +474,10 @@ async fn cmd_debug(
     Ok(())
 }
 
-fn cmd_completions(shell: Shell) -> Result<()> {
+fn cmd_completions(shell: Shell) {
     let mut cmd = Cli::command();
     let bin_name = cmd.get_name().to_string();
     clap_complete::generate(shell, &mut cmd, bin_name, &mut io::stdout());
-    Ok(())
 }
 
 /// Validate a requested update target against the running version.
@@ -500,7 +502,7 @@ fn check_update_target(requested: &str, current: &str, force: bool) -> Result<()
     Ok(())
 }
 
-fn cmd_update(args: UpdateArgs, settings: &Settings) -> Result<()> {
+fn cmd_update(args: &UpdateArgs, settings: &Settings) -> Result<()> {
     // When a specific version is requested, validate it and refuse an unforced
     // downgrade up front, before bothering to spawn the helper.
     if let Some(version) = &args.version {
@@ -527,13 +529,13 @@ fn cmd_update(args: UpdateArgs, settings: &Settings) -> Result<()> {
             std::process::exit(0);
         }
         Ok(status) => {
-            log::error!("snouty-update failed with exit code {}\n", status);
+            log::error!("snouty-update failed with exit code {status}\n");
         }
         Err(err) => {
             if err.kind() == ErrorKind::NotFound {
                 log::warn!("snouty-update command not found\n");
             } else {
-                log::error!("failed to run snouty-update: {}\n", err);
+                log::error!("failed to run snouty-update: {err}\n");
             }
         }
     }
@@ -567,9 +569,9 @@ mod tests {
     }
 
     /// A broken connection during an API call must not be mistaken for a
-    /// closed stdout pipe. reqwest wraps the socket-level io::Error in its
+    /// closed stdout pipe. reqwest wraps the socket-level `io::Error` in its
     /// own error type, whose source chain eyre's downcast does not traverse —
-    /// so no io::Error (broken pipe or otherwise) is downcastable from an
+    /// so no `io::Error` (broken pipe or otherwise) is downcastable from an
     /// API error report, and it can never be suppressed.
     #[tokio::test]
     async fn suppress_broken_pipe_ignores_network_socket_errors() {

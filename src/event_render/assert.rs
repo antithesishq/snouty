@@ -60,6 +60,7 @@ enum AssertVerdict {
 
 /// The payload's two type strings, named so a call site cannot swap them
 /// silently.
+#[derive(Clone, Copy)]
 struct AssertTypes<'a> {
     assert_type: &'a str,
     display_type: &'a str,
@@ -200,30 +201,30 @@ mod tests {
             })
         };
         // hit:false is a catalog registration, whatever the family.
-        let block = render_one(entry("always", "AlwaysOrUnreachable", false, false));
+        let block = render_one(&entry("always", "AlwaysOrUnreachable", false, false));
         assert!(
             block.ends_with(r#"[app] CATALOG AlwaysOrUnreachable "m""#),
             "got: {block}"
         );
         // A failing always is the FAIL badge; a passing one says HIT.
-        let block = render_one(entry("always", "Always", true, false));
+        let block = render_one(&entry("always", "Always", true, false));
         assert!(block.ends_with(r#"[app] FAIL Always "m""#), "got: {block}");
-        let block = render_one(entry("always", "Always", true, true));
+        let block = render_one(&entry("always", "Always", true, true));
         assert!(block.ends_with(r#"[app] HIT Always "m""#), "got: {block}");
         // A hit unreachable is a failure regardless of condition.
-        let block = render_one(entry("reachability", "Unreachable", true, true));
+        let block = render_one(&entry("reachability", "Unreachable", true, true));
         assert!(
             block.ends_with(r#"[app] FAIL Unreachable "m""#),
             "got: {block}"
         );
         // sometimes/reachable evaluations are informational HITs — never FAIL,
         // whatever the condition.
-        let block = render_one(entry("sometimes", "Sometimes", true, false));
+        let block = render_one(&entry("sometimes", "Sometimes", true, false));
         assert!(
             block.ends_with(r#"[app] HIT Sometimes "m""#),
             "got: {block}"
         );
-        let block = render_one(entry("reachability", "Reachable", true, true));
+        let block = render_one(&entry("reachability", "Reachable", true, true));
         assert!(
             block.ends_with(r#"[app] HIT Reachable "m""#),
             "got: {block}"
@@ -244,7 +245,7 @@ mod tests {
             "moment": {"input_hash": "-1", "vtime": "311.8487535319291"}
         });
         // Default: one line, no location, no details, no must-hit.
-        let block = render_one(entry.clone());
+        let block = render_one(&entry.clone());
         assert_eq!(
             block.lines().nth(1).unwrap(),
             "311.8487  [control] FAIL Always \"Counter's value retrieved\""
@@ -252,7 +253,7 @@ mod tests {
         assert_eq!(block.lines().count(), 2, "got: {block}");
 
         // Detail: location line and the attached details JSON.
-        let block = render_one_detailed(entry);
+        let block = render_one_detailed(&entry);
         let mut lines = block.lines().skip(2);
         assert_eq!(
             lines.next().unwrap(),
@@ -268,7 +269,7 @@ mod tests {
     fn an_incomplete_assertion_falls_back_to_the_log_text() {
         // Schema-valid but incomplete assertion payload: not classifiable as
         // an assert, so the record's log text wins.
-        let block = render_one(json!({
+        let block = render_one(&json!({
             "antithesis_assert": {},
             "output_text": "raw log line",
             "source": {"container": "control"},
@@ -282,7 +283,7 @@ mod tests {
         // A registration (`hit: false`) carries no meaningful condition, and
         // some payloads carry only `id`; neither gap may knock the event down
         // to the raw-JSON fallback.
-        let block = render_one(json!({
+        let block = render_one(&json!({
             "antithesis_assert": {
                 "assert_type": "sometimes", "display_type": "Sometimes",
                 "hit": false, "id": "precept fault: before prepare"
@@ -321,7 +322,7 @@ mod tests {
         assert_eq!(summary.verdict, AssertVerdict::Catalog);
         assert_eq!(summary.label, "SetupReached");
         // A location without a file still renders from the fields it has.
-        let block = render_one_detailed(entry);
+        let block = render_one_detailed(&entry);
         assert!(block.ends_with("@ run_setup:42"), "got: {block}");
 
         // Empty display_type falls back to assert_type.

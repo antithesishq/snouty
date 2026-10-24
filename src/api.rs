@@ -29,7 +29,8 @@ use crate::util::{root_cause, source_error};
 use crate::vtime::VTime;
 use snouty_macros::cached;
 
-#[allow(dead_code, unused_imports, private_interfaces)]
+// Progenitor writes this code, so the pedantic lints do not apply to it.
+#[allow(dead_code, unused_imports, private_interfaces, clippy::pedantic)]
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/antithesis_api.rs"));
 }
@@ -712,6 +713,7 @@ impl AntithesisApi {
 
     /// A copy of this client with its response cache disabled: every request
     /// reaches the server.
+    #[must_use]
     pub fn uncached(&self) -> Self {
         Self {
             client: self.client.clone(),
@@ -737,6 +739,8 @@ impl AntithesisApi {
         )
     }
 
+    // Outside tests, the only `ResponseCache` variant carries no data to move.
+    #[allow(clippy::needless_pass_by_value)]
     pub(crate) fn build(
         settings: &Settings,
         authn_info: AuthenticationInfo,
@@ -747,7 +751,7 @@ impl AntithesisApi {
         // tenant resolved; surface the tenant diagnostic, since that's what a
         // user normally sets.
         let base_url = normalize_base_url(crate::settings::require(settings.base_url(), "tenant")?);
-        debug!("initializing API client for {}", base_url);
+        debug!("initializing API client for {base_url}");
 
         let http = HttpClient::new(settings, verbose)?;
         let cache_dir = match cache {
@@ -1962,6 +1966,13 @@ async fn read_error_body(mut response: reqwest::Response) -> String {
 fn error_body_message(body: &str) -> String {
     const MAX_LEN: usize = 200;
 
+    fn truncate(line: &str) -> String {
+        match line.char_indices().nth(MAX_LEN) {
+            Some((offset, _)) => format!("{}…", &line[..offset]),
+            None => line.to_string(),
+        }
+    }
+
     let text = serde_json::from_str::<serde_json::Value>(body)
         .ok()
         .and_then(|value| {
@@ -1971,13 +1982,6 @@ fn error_body_message(body: &str) -> String {
                 .map(str::to_owned)
         })
         .unwrap_or_else(|| body.split_whitespace().collect::<Vec<_>>().join(" "));
-
-    fn truncate(line: &str) -> String {
-        match line.char_indices().nth(MAX_LEN) {
-            Some((offset, _)) => format!("{}…", &line[..offset]),
-            None => line.to_string(),
-        }
-    }
 
     // Before the per-line cut, so the query gets a line of its own.
     let text = lay_out_dsl_error(&text);
@@ -2051,12 +2055,12 @@ mod tests {
         mock_server: &MockServer,
         cache_dir: Option<&TempDir>,
     ) -> AntithesisApi {
-        test_api_at_url(mock_server.uri(), cache_dir)
+        test_api_at_url(&mock_server.uri(), cache_dir)
     }
 
     /// Like [`test_api_optionally_with_cache`], but against a raw base URL —
     /// the transport-fault tests serve from a raw TCP listener, not wiremock.
-    fn test_api_at_url(base_url: String, cache_dir: Option<&TempDir>) -> AntithesisApi {
+    fn test_api_at_url(base_url: &str, cache_dir: Option<&TempDir>) -> AntithesisApi {
         test_api_with_settings(&Settings::for_test_base_url(base_url), cache_dir)
     }
 
@@ -2194,7 +2198,7 @@ mod tests {
     #[tokio::test]
     async fn format_api_client_error_describes_empty_invalid_payload() {
         let parse_err = serde_json::from_slice::<serde_json::Value>(b"").unwrap_err();
-        let err = ClientError::<()>::InvalidResponsePayload(Default::default(), parse_err);
+        let err = ClientError::<()>::InvalidResponsePayload(bytes::Bytes::new(), parse_err);
 
         let report = format_api_client_error(err).await;
         let message = format!("{report}");
@@ -2515,7 +2519,7 @@ mod tests {
     #[test]
     fn with_base_url_trims_trailing_slash() {
         let api = AntithesisApi::build(
-            &Settings::for_test_base_url("http://example.com/".to_owned()),
+            &Settings::for_test_base_url("http://example.com/"),
             AuthenticationInfo::Password {
                 username: "user".to_owned(),
                 password: "pass".to_owned(),
@@ -2530,7 +2534,7 @@ mod tests {
     #[test]
     fn with_base_url_strips_legacy_api_suffix() {
         let api = AntithesisApi::build(
-            &Settings::for_test_base_url("http://example.com/api/v1/".to_owned()),
+            &Settings::for_test_base_url("http://example.com/api/v1/"),
             AuthenticationInfo::Password {
                 username: "user".to_owned(),
                 password: "pass".to_owned(),
@@ -3011,8 +3015,10 @@ mod tests {
         let retry_at = rendered
             .split_once("retry after 3600s (")
             .and_then(|(_, rest)| rest.split_once(") to respect the server's rate limit"))
-            .map(|(at, _)| chrono::DateTime::parse_from_rfc3339(at).unwrap())
-            .unwrap_or_else(|| panic!("no retry time in: {rendered}"));
+            .map_or_else(
+                || panic!("no retry time in: {rendered}"),
+                |(at, _)| chrono::DateTime::parse_from_rfc3339(at).unwrap(),
+            );
         let hour = chrono::TimeDelta::hours(1);
         let second = chrono::TimeDelta::seconds(1);
         assert!(before + hour - second <= retry_at && retry_at <= after + hour);
@@ -3032,16 +3038,13 @@ mod tests {
             let reason = RetryReason::RateLimited {
                 retry_after: RETRY_SECOND * seconds,
             };
-            match budget.spend(&reason) {
-                Some(wait) => {
-                    assert!(floor <= wait && wait <= floor.mul_f64(1.5));
-                    assert_eq!(budget.retries, retries + 1);
-                    assert_eq!(budget.waited, waited + wait);
-                }
-                None => {
-                    assert!(retries == MAX_RETRIES || waited + floor > MAX_RETRY_WAIT);
-                    assert_eq!((budget.retries, budget.waited), (retries, waited));
-                }
+            if let Some(wait) = budget.spend(&reason) {
+                assert!(floor <= wait && wait <= floor.mul_f64(1.5));
+                assert_eq!(budget.retries, retries + 1);
+                assert_eq!(budget.waited, waited + wait);
+            } else {
+                assert!(retries == MAX_RETRIES || waited + floor > MAX_RETRY_WAIT);
+                assert_eq!((budget.retries, budget.waited), (retries, waited));
             }
             assert!(budget.retries <= MAX_RETRIES && budget.waited <= MAX_RETRY_WAIT);
         }
@@ -3134,7 +3137,7 @@ mod tests {
         let cache_dir = TempDir::new().unwrap();
         for cache_dir in [None, Some(&cache_dir)] {
             let (base_url, connections) = reset_then_serve_version(1).await;
-            let api = test_api_at_url(base_url, cache_dir);
+            let api = test_api_at_url(&base_url, cache_dir);
 
             let version = api.get_version().await.unwrap();
 
@@ -3149,7 +3152,7 @@ mod tests {
     #[tokio::test]
     async fn get_surfaces_a_transport_failure_after_bounded_retries() {
         let (base_url, connections) = reset_then_serve_version(usize::MAX).await;
-        let api = test_api_at_url(base_url, None);
+        let api = test_api_at_url(&base_url, None);
 
         expect_unreachable(&api).await;
         assert_eq!(
@@ -3168,7 +3171,7 @@ mod tests {
             "HTTP/1.1 200 OK\r\ncontent-length: 4096\r\n\r\n{\"latest".to_owned(),
         )
         .await;
-        let api = test_api_at_url(base_url, None);
+        let api = test_api_at_url(&base_url, None);
 
         expect_unreachable(&api).await;
         assert_eq!(connections.load(Ordering::SeqCst), 1);
@@ -3178,7 +3181,7 @@ mod tests {
     #[tokio::test]
     async fn launch_post_is_not_retried_on_transport_failure() {
         let (base_url, connections) = reset_then_serve_version(usize::MAX).await;
-        let api = test_api_at_url(base_url, None);
+        let api = test_api_at_url(&base_url, None);
         let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
 
         let report = api.launch_test("basic_test", &params).await.unwrap_err();
@@ -4053,7 +4056,7 @@ mod tests {
         let bogus = dir.path().join("not-a-dir");
         std::fs::write(&bogus, b"").unwrap();
         let api = AntithesisApi::build(
-            &Settings::for_test_base_url(mock_server.uri()),
+            &Settings::for_test_base_url(&mock_server.uri()),
             AuthenticationInfo::Password {
                 username: "user".to_owned(),
                 password: "pass".to_owned(),
@@ -4124,7 +4127,7 @@ mod tests {
         );
 
         let api = AntithesisApi::build(
-            &Settings::for_test_base_url(mock_server.uri()),
+            &Settings::for_test_base_url(&mock_server.uri()),
             auth,
             false,
             ResponseCache::Disabled,
@@ -4200,7 +4203,7 @@ mod tests {
             },
         );
         let api = AntithesisApi::build(
-            &Settings::for_test_base_url(mock_server.uri()),
+            &Settings::for_test_base_url(&mock_server.uri()),
             auth,
             false,
             ResponseCache::Disabled,
@@ -4243,7 +4246,7 @@ mod tests {
             },
         );
         let api = AntithesisApi::build(
-            &Settings::for_test_base_url(mock_server.uri()),
+            &Settings::for_test_base_url(&mock_server.uri()),
             auth,
             false,
             ResponseCache::Disabled,
@@ -4279,7 +4282,7 @@ mod tests {
         // An API key can't refresh, so `can_refresh()` is false: no clone, no
         // retry, no refresh call.
         let api = AntithesisApi::build(
-            &Settings::for_test_base_url(mock_server.uri()),
+            &Settings::for_test_base_url(&mock_server.uri()),
             AuthenticationInfo::ApiKey {
                 api_key: "some-key".to_owned(),
             },
@@ -4400,6 +4403,8 @@ mod tests {
     // build.rs's `unrequire_search_limit_default`).
     #[tokio::test]
     async fn search_run_events_query_posts_full_body() {
+        use futures_util::TryStreamExt;
+
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
@@ -4429,7 +4434,6 @@ mod tests {
             .await
             .unwrap();
         // The stream arrives parsed: the one response line is a Value.
-        use futures_util::TryStreamExt;
         let value = stream.try_next().await.unwrap().expect("one parsed line");
         assert_eq!(value["output_text"], "raft");
         assert!(stream.try_next().await.unwrap().is_none());

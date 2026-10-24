@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::io::{IsTerminal, Read, Write};
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -115,7 +116,7 @@ pub async fn cmd_runs(
     let (raw, detail) = match &command {
         Some(RunsCommands::List(args)) => (false, args.detail),
         Some(RunsCommands::Properties { detail, .. }) => (false, *detail),
-        Some(RunsCommands::Logs { render, .. }) | Some(RunsCommands::Events { render, .. }) => {
+        Some(RunsCommands::Logs { render, .. } | RunsCommands::Events { render, .. }) => {
             (render.raw, render.detail)
         }
         Some(RunsCommands::Search(args)) => (args.render.raw, args.render.detail),
@@ -370,7 +371,7 @@ async fn cmd_runs_show(
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
-    debug!("showing run: {}", run_id);
+    debug!("showing run: {run_id}");
 
     let api = AntithesisApi::new(settings, verbose)?;
     let run = match api.get_run(run_id).await {
@@ -436,7 +437,7 @@ async fn cmd_runs_wait(
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
-    debug!("waiting for run: {}", run_id);
+    debug!("waiting for run: {run_id}");
 
     let api = AntithesisApi::new(settings, verbose)?;
     let mut last_status = None;
@@ -486,7 +487,7 @@ async fn cmd_runs_cancel(
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
-    debug!("cancelling run: {}", run_id);
+    debug!("cancelling run: {run_id}");
 
     let api = AntithesisApi::new(settings, verbose)?;
     if let Err(err) = api.cancel_run(run_id).await {
@@ -606,7 +607,7 @@ async fn cmd_runs_properties(
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
-    debug!("listing properties for run: {}", run_id);
+    debug!("listing properties for run: {run_id}");
 
     let api = AntithesisApi::new(settings, verbose)?;
     let mut properties = api
@@ -892,10 +893,10 @@ fn property_example_counts(p: &Property) -> (u64, u64) {
 /// and scannable: values under 1000 print exactly (`0`, `20`, `885`); larger
 /// ones use ~3 significant figures with a k/M/G/T suffix (`2.3k`, `13k`, `18M`).
 fn format_count_si(n: u64) -> String {
+    const UNITS: [&str; 4] = ["k", "M", "G", "T"];
     if n < 1000 {
         return n.to_string();
     }
-    const UNITS: [&str; 4] = ["k", "M", "G", "T"];
     let mut value = n as f64;
     let mut unit = 0;
     while value >= 1000.0 && unit < UNITS.len() {
@@ -984,9 +985,9 @@ fn render_prose_block(label: &str, text: &str, layout: ProseLayout) -> String {
                 if line.is_empty() {
                     out.push('\n');
                 } else if index == 0 {
-                    out.push_str(&format!("{label:<label_col$}{line}\n"));
+                    let _ = writeln!(out, "{label:<label_col$}{line}");
                 } else {
-                    out.push_str(&format!("{:<label_col$}{line}\n", ""));
+                    let _ = writeln!(out, "{:<label_col$}{line}", "");
                 }
             }
         }
@@ -1214,7 +1215,7 @@ fn render_json_field<T: serde::Serialize>(label: &str, value: &T) -> String {
 /// every other field.
 fn render_field(label: &str, value: &str) -> String {
     if fits_inline(label, value) {
-        format!("{label:<width$}{value}", width = PROPERTY_LABEL_WIDTH)
+        format!("{label:<PROPERTY_LABEL_WIDTH$}{value}")
     } else {
         format!("{label}\n{}", indent_lines(value, "  "))
     }
@@ -1290,7 +1291,7 @@ fn group_property_sections(properties: &[Property]) -> Vec<(Option<String>, Vec<
     }
 
     // BTreeMap keeps named groups alphabetical before the failing-first re-sort.
-    let mut grouped: std::collections::BTreeMap<&str, Vec<&Property>> = Default::default();
+    let mut grouped = std::collections::BTreeMap::<&str, Vec<&Property>>::new();
     let mut ungrouped: Vec<&Property> = Vec::new();
     for p in properties {
         match property_group(p) {
@@ -1549,7 +1550,7 @@ async fn cmd_runs_build_logs(
     verbose: bool,
     mode: EventOutput,
 ) -> Result<()> {
-    debug!("streaming build logs for run: {}", run_id);
+    debug!("streaming build logs for run: {run_id}");
 
     let api = AntithesisApi::new(settings, verbose)?;
     let stream = match api.get_run_build_logs(run_id).await {
@@ -1604,7 +1605,7 @@ async fn cmd_runs_events(
     verbose: bool,
     mode: EventOutput,
 ) -> Result<()> {
-    debug!("searching events for run: {}", run_id);
+    debug!("searching events for run: {run_id}");
 
     if matches.is_empty() {
         return Err(user_error("no search term given")
@@ -1613,7 +1614,7 @@ async fn cmd_runs_events(
     // An empty needle matches every event (`contains("")` is always true),
     // which would silently disable filtering, so reject it rather than dump
     // the whole stream as if no filter were given.
-    if matches.iter().any(|m| m.is_empty()) {
+    if matches.iter().any(String::is_empty) {
         return Err(user_error("empty search term")
             .suggestion("each `-m/--match` needle must be a non-empty substring"));
     }
@@ -1646,7 +1647,7 @@ async fn cmd_runs_logs(
     verbose: bool,
     mode: EventOutput,
 ) -> Result<()> {
-    debug!("streaming logs for run: {}", run_id);
+    debug!("streaming logs for run: {run_id}");
 
     let api = AntithesisApi::new(settings, verbose)?;
     let stream = match api.get_run_logs(run_id, moment, begin_vtime).await {
@@ -1970,7 +1971,7 @@ async fn cmd_runs_exec(
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
-    debug!("executing command in run: {}", run_id);
+    debug!("executing command in run: {run_id}");
     let api = AntithesisApi::new(settings, verbose)?;
     exec_when_ready(&api, run_id, exec, READY_POLL, json).await
 }
@@ -2174,7 +2175,7 @@ fn event_lines(
 }
 
 /// Raw lines: each parsed value serialized back out unmodified (no vtime
-/// normalization — serde_json's `float_roundtrip` keeps the round-trip
+/// normalization — `serde_json`'s `float_roundtrip` keeps the round-trip
 /// faithful). A `Stream_Error` record still fails the command per
 /// `error_rows`: it is the server aborting the stream, so even raw modes
 /// must not present it (and whatever follows it never arrives) as data.
@@ -2224,15 +2225,13 @@ impl FaultAnnotator {
         let fault_name = entry["fault"]["name"].as_str();
         let is_fault_injector = entry["source"]["name"]
             .as_str()
-            .map(|source| source.eq("fault_injector"))
-            .unwrap_or(false);
+            .is_some_and(|source| source.eq("fault_injector"));
 
         // Clear network and node faults if the fault injector was paused
         if is_fault_injector
             && entry["info"]["message"]
                 .as_str()
-                .map(|message| message.eq("status"))
-                .unwrap_or(false)
+                .is_some_and(|message| message.eq("status"))
             && entry["info"]["details"]["paused"]
                 .as_bool()
                 .unwrap_or(false)
@@ -2242,7 +2241,7 @@ impl FaultAnnotator {
         }
 
         // Clear network faults if the network was restored
-        if is_fault_injector && fault_name.map(|n| n.eq("restore")).unwrap_or(false) {
+        if is_fault_injector && fault_name.is_some_and(|n| n.eq("restore")) {
             update_faults = self.active_fault_windows.clear_network_faults() || update_faults;
         }
 
@@ -2320,6 +2319,7 @@ fn json_f64(value: &Value) -> Option<f64> {
     }
 }
 
+#[derive(Clone, Copy)]
 struct FaultWindowBounds {
     start_vtime: VTime,
     end_vtime: Option<VTime>,
@@ -2327,9 +2327,7 @@ struct FaultWindowBounds {
 
 impl FaultWindowBounds {
     fn is_expired(&self, latest_vtime: VTime) -> bool {
-        self.end_vtime
-            .map(|expiry| expiry < latest_vtime)
-            .unwrap_or(false)
+        self.end_vtime.is_some_and(|expiry| expiry < latest_vtime)
     }
 }
 
@@ -2452,8 +2450,7 @@ impl ActiveFaultWindows {
         for entry in &self.node {
             let mut node_fault_starts_by_container = Map::new();
             for entry in entry.1 {
-                node_fault_starts_by_container
-                    .insert(entry.0.to_string(), json!(entry.1.start_vtime));
+                node_fault_starts_by_container.insert(entry.0.clone(), json!(entry.1.start_vtime));
             }
 
             result.insert(
@@ -2718,7 +2715,7 @@ mod tests {
             .find(|l| l.contains("Setup completes"))
             .unwrap();
         assert!(setup_row.contains("passing"));
-        assert!(setup_row.contains("1"));
+        assert!(setup_row.contains('1'));
     }
 
     #[test]
@@ -2798,7 +2795,7 @@ mod tests {
     ) -> EventProperty {
         match event_property("Counter", status, None, examples, counterexamples) {
             Property::EventProperty(p) => p,
-            _ => unreachable!(),
+            Property::NonEventProperty(_) => unreachable!(),
         }
     }
 
@@ -3072,7 +3069,7 @@ mod tests {
         }
 
         for line in [
-            r#"{}"#,
+            "{}",
             r#"{"status":"heartbeat"}"#,
             r#"{"status":"exited","exit_code":0}"#,
             r#"{"status":"exited","exit_code":"not-a-number","end_moment":{"input_hash":"-1","vtime":"1.0"}}"#,
@@ -4847,7 +4844,7 @@ mod tests {
 
         fn test_api(base_url: &str) -> AntithesisApi {
             AntithesisApi::build(
-                &Settings::for_test_base_url(base_url.to_owned()),
+                &Settings::for_test_base_url(base_url),
                 AuthenticationInfo::Password {
                     username: "user".to_string(),
                     password: "pass".to_string(),
@@ -4993,7 +4990,7 @@ mod tests {
 
         fn test_api(base_url: &str) -> AntithesisApi {
             AntithesisApi::build(
-                &Settings::for_test_base_url(base_url.to_owned()),
+                &Settings::for_test_base_url(base_url),
                 AuthenticationInfo::ApiKey {
                     api_key: "test-key".to_owned(),
                 },
@@ -5338,7 +5335,7 @@ mod tests {
                 .await;
             let cache_dir = tempfile::tempdir().unwrap();
             let api = AntithesisApi::build(
-                &Settings::for_test_base_url(server.uri()),
+                &Settings::for_test_base_url(&server.uri()),
                 AuthenticationInfo::ApiKey {
                     api_key: "test-key".to_owned(),
                 },

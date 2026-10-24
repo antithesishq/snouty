@@ -89,7 +89,7 @@ pub async fn cmd_docs(
         }
         DocsCommands::Sqlite => sqlite_path(),
         DocsCommands::Tree { depth, filter } => {
-            tree(depth.map(|d| d.get()), filter.as_deref(), json)
+            tree(depth.map(std::num::NonZero::get), filter.as_deref(), json)
         }
         DocsCommands::Show { path } => show(&path),
     }
@@ -132,7 +132,7 @@ async fn download_and_cache_db() -> Result<()> {
     Ok(())
 }
 
-/// fetch_db_if_changed returns Ok(None) if the server indicates the database
+/// `fetch_db_if_changed` returns Ok(None) if the server indicates the database
 /// has not changed (304 Not Modified).
 async fn fetch_db_if_changed() -> Result<Option<(Vec<u8>, String)>> {
     // No read timeout: the database is several MB, and a slow download must finish.
@@ -164,7 +164,7 @@ async fn fetch_db_if_changed() -> Result<Option<(Vec<u8>, String)>> {
         .headers()
         .get("etag")
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
+        .map(ToString::to_string)
         .ok_or_eyre("server did not include an ETag header in the response")?;
 
     let bytes = response.bytes().await?.to_vec();
@@ -412,7 +412,7 @@ fn search(
             print_json(&results)?;
         }
     } else if results.is_empty() {
-        eprintln!("No results found for '{}'", query);
+        eprintln!("No results found for '{query}'");
     } else if list {
         print_paths(&results);
     } else {
@@ -506,7 +506,7 @@ fn render_marked(text: &str, bold_plain: bool) -> String {
     rendered
 }
 
-/// Word-wrap text that may contain MATCH_START/MATCH_END markers,
+/// Word-wrap text that may contain `MATCH_START`/`MATCH_END` markers,
 /// counting only visible characters toward the width.
 fn wrap_snippet(snippet: &str, width: usize) -> String {
     let mut result = String::new();
@@ -544,7 +544,7 @@ fn print_results(results: &[(String, String, String)]) {
         if i > 0 {
             println!();
         }
-        println!("{}  {}", console::style(path).dim(), style_title(title),);
+        println!("{}  {}", console::style(path).dim(), style_title(title));
         let wrapped = wrap_snippet(snippet, width);
         for line in wrapped.lines() {
             println!("  {}", style_line(line));
@@ -592,7 +592,7 @@ fn show(path: &str) -> Result<()> {
     let conn = open_db()?;
 
     let path = normalized_path(path);
-    let db_path = format!("docs/{}", path);
+    let db_path = format!("docs/{path}");
 
     // Try exact match (normalize DB paths the same way)
     let result: Option<(String, String)> = conn

@@ -92,7 +92,7 @@ fn print_notes(notes: &[Note]) {
 
 /// One health check: local tooling, settings validity, authentication, and
 /// API connectivity. The headline `message` states the bare fact; the `notes`
-/// carry explanations and how-tos. `name` is a stable snake_case `--json` key.
+/// carry explanations and how-tos. `name` is a stable `snake_case` `--json` key.
 /// Checks own all of doctor's pass/warn/fail semantics — the settings table is
 /// purely informational.
 #[derive(Serialize)]
@@ -165,7 +165,7 @@ impl Check {
 /// resolved for it. Purely informational — it carries no status; whether a value
 /// is required or optional is a [`Check`] concern.
 ///
-/// `name` is snake_case: `--json` emits it as a key, so
+/// `name` is `snake_case`: `--json` emits it as a key, so
 /// `jq .settings.https_proxy` needs no quoting. The human table prints the
 /// same string.
 struct Setting {
@@ -549,7 +549,7 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
     // which one was picked.
     match compose::DockerCompose::probe() {
         Ok((name, version)) => {
-            checks.push(Check::ok("docker_compose", format!("{name}: {version}")))
+            checks.push(Check::ok("docker_compose", format!("{name}: {version}")));
         }
         Err(e) => checks.push(
             Check::fail("docker_compose", "no usable Docker Compose")

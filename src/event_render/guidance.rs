@@ -161,7 +161,7 @@ mod tests {
             "source": {"container": "w", "name": "w"},
             "moment": {"input_hash": "-1", "vtime": "1.0"}
         });
-        let block = render_one(entry.clone());
+        let block = render_one(&entry.clone());
         assert!(
             block.ends_with(r#"[w] CATALOG GUIDANCE "wal grew long""#),
             "got: {block}"
@@ -169,7 +169,7 @@ mod tests {
         assert_eq!(block.lines().count(), 2, "got: {block}");
 
         // --detail adds the location; there is no data on a registration.
-        let block = render_one_detailed(entry);
+        let block = render_one_detailed(&entry);
         assert!(
             block.ends_with("                    @ actions.rs:checkpoint:439"),
             "got: {block}"
@@ -179,7 +179,7 @@ mod tests {
     #[test]
     fn numeric_guidance_renders_the_drive_direction() {
         let guidance = |maximize: Value| {
-            render_one(json!({
+            render_one(&json!({
                 "antithesis_guidance": {
                     "guidance_type": "numeric", "maximize": maximize, "hit": true,
                     "message": "Positive x", "id": "Positive x",
@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn boolean_guidance_renders_propositions_with_the_connective() {
         let guidance = |maximize: bool, data: Value| {
-            render_one(json!({
+            render_one(&json!({
                 "antithesis_guidance": {
                     "guidance_type": "boolean", "maximize": maximize, "hit": true,
                     "message": "m", "guidance_data": data
@@ -239,7 +239,7 @@ mod tests {
     fn boolean_guidance_degrades_instead_of_dropping() {
         // A non-bool proposition value renders as itself rather than erasing
         // every proposition alongside it.
-        let mixed = render_one(json!({
+        let mixed = render_one(&json!({
             "antithesis_guidance": {
                 "guidance_type": "boolean", "hit": true, "maximize": true,
                 "message": "m",
@@ -255,7 +255,7 @@ mod tests {
 
         // A missing `maximize` shows the propositions without claiming a
         // connective.
-        let no_direction = render_one(json!({
+        let no_direction = render_one(&json!({
             "antithesis_guidance": {
                 "guidance_type": "boolean", "hit": true,
                 "message": "m",

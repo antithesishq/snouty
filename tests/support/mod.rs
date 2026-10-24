@@ -108,7 +108,7 @@ impl MockDocsServer {
         });
 
         Self {
-            url: format!("http://{}", addr),
+            url: format!("http://{addr}"),
             state,
         }
     }
@@ -143,7 +143,7 @@ impl MockDocsServer {
 /// `PATH` lets the binary find `podman`/`docker`; `TMPDIR`/`LLVM_PROFILE_FILE`
 /// keep macOS temp handling and coverage instrumentation working.
 ///
-/// DBus configuration is deliberately omitted from FORWARDED_ENV_VARS since
+/// DBus configuration is deliberately omitted from `FORWARDED_ENV_VARS` since
 /// it represents a global state that might leak into or out of tests.
 const FORWARDED_ENV_VARS: &[&str] = &["PATH", "TMPDIR", "LLVM_PROFILE_FILE"];
 
@@ -181,7 +181,7 @@ pub(crate) fn snouty() -> Command {
 pub(crate) fn start_mock_server(response_body: &'static str, status: u16) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
-    let url = format!("http://{}", addr);
+    let url = format!("http://{addr}");
 
     thread::spawn(move || {
         if let Some(mut stream) = listener.incoming().flatten().next() {

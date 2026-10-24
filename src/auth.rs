@@ -110,7 +110,7 @@ fn parse_exp_claim(exp: &serde_json::Value) -> Option<DateTime<Utc>> {
         return Some(DateTime::parse_from_rfc3339(text).ok()?.with_timezone(&Utc));
     }
     if let Some(secs) = exp.as_u64() {
-        return DateTime::from_timestamp(secs as i64, 0);
+        return DateTime::from_timestamp(i64::try_from(secs).ok()?, 0);
     }
     None
 }
@@ -194,7 +194,7 @@ impl OAuthRefreshInfo {
                 let Some(contents) = read_to_string_if_file_exists(path)? else {
                     return Ok(None);
                 };
-                let parsed = parse_credentials_file_toml(contents, path)?;
+                let parsed = parse_credentials_file_toml(&contents, path)?;
                 Ok(parsed.for_profile(profile.as_deref()))
             }
         }
@@ -512,8 +512,7 @@ impl AuthenticationInfo {
                 active_credential, ..
             } => active_credential
                 .read()
-                .map(|credential| credential.refresh_token.is_some())
-                .unwrap_or(false),
+                .is_ok_and(|credential| credential.refresh_token.is_some()),
             _ => false,
         }
     }
@@ -725,8 +724,8 @@ async fn refresh_and_store(
         let mut writer = active_credential
             .write()
             .map_err(|err| eyre!("the OAuth credential lock is poisoned: {err}"))?;
-        writer.antithesis_token = new_access_token.clone();
-        writer.refresh_token = new_refresh_token.clone();
+        writer.antithesis_token.clone_from(&new_access_token);
+        writer.refresh_token.clone_from(&new_refresh_token);
     }
 
     // Persist back to the origin so the refreshed tokens survive across runs
@@ -771,7 +770,7 @@ fn try_load_credentials_file() -> Result<Option<(PathBuf, CredentialsFile)>> {
     if let Some((_dir, path)) = try_get_credentials_file_path()
         && let Some(contents) = read_to_string_if_file_exists(&path)?
     {
-        let parsed = parse_credentials_file_toml(contents, &path)?;
+        let parsed = parse_credentials_file_toml(&contents, &path)?;
         return Ok(Some((path, parsed)));
     }
 
@@ -924,7 +923,7 @@ pub(crate) fn persist(
             persist_to_file(credentials, profile, None).map(|path| AttributedValue::SettingsFile {
                 value: (),
                 settings_file_path: path,
-                profile: profile.map(|p| p.to_owned()),
+                profile: profile.map(str::to_owned),
             })
         }
     }
@@ -951,9 +950,7 @@ fn try_persist_to_keychain(
 }
 
 fn construct_keychain_credential_name(profile: Option<&str>) -> String {
-    profile
-        .map(|p| format!("profile_{p}"))
-        .unwrap_or_else(|| "_default_".to_owned())
+    profile.map_or_else(|| "_default_".to_owned(), |p| format!("profile_{p}"))
 }
 
 fn clear_from_file_if_present(profile: Option<&str>) {
@@ -962,7 +959,7 @@ fn clear_from_file_if_present(profile: Option<&str>) {
     };
 
     if let Ok(Some(contents)) = read_to_string_if_file_exists(&path)
-        && let Ok(mut creds_file) = parse_credentials_file_toml(contents, &path)
+        && let Ok(mut creds_file) = parse_credentials_file_toml(&contents, &path)
     {
         let mut changed = false;
         if let Some(profile) = profile {
@@ -1013,16 +1010,17 @@ fn persist_to_file(
         )?,
         Some(explicit_path) => match explicit_path.parent() {
             None => return Err(eyre!("Unable to determine parent directory of {}", explicit_path.to_str().unwrap_or("[invalid path]"))),
-            Some(parent_dir) => (parent_dir.to_path_buf(), explicit_path.to_path_buf()),
+            Some(parent_dir) => (parent_dir.to_path_buf(), explicit_path.clone()),
         }
     };
 
     mkdir(&settings_dir, true, 0o700)?;
 
     let mut current_contents = match read_to_string_if_file_exists(&path)? {
-        Some(contents) => match parse_credentials_file_toml(contents, &path) {
-            Ok(file) => file,
-            Err(_) => {
+        Some(contents) => {
+            if let Ok(file) = parse_credentials_file_toml(&contents, &path) {
+                file
+            } else {
                 let backup = back_up_unparsable_file(&path)?;
                 // Same shape as the settings repair note: paths on their own
                 // lines, since they are what the user may copy and what made
@@ -1037,7 +1035,7 @@ fn persist_to_file(
                     profile: None,
                 }
             }
-        },
+        }
         None => CredentialsFile {
             default: None,
             profile: None,
@@ -1075,10 +1073,10 @@ fn path_lock_token(path: &Path) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-fn parse_credentials_file_toml(contents: String, path: &Path) -> Result<CredentialsFile> {
-    toml::from_str::<CredentialsFile>(&contents).wrap_err(format!(
-        "{:?} is not valid TOML or cannot be parsed as a Snouty credentials file.",
-        path
+fn parse_credentials_file_toml(contents: &str, path: &Path) -> Result<CredentialsFile> {
+    toml::from_str::<CredentialsFile>(contents).wrap_err(format!(
+        "\"{}\" is not valid TOML or cannot be parsed as a Snouty credentials file.",
+        path.display()
     ))
 }
 
@@ -1312,7 +1310,7 @@ mod tests {
 
     // 2019-01-01T00:00:00+00:00, the `exp` claim in the canonical PASETO
     // v2.public test vectors below.
-    const CANONICAL_VECTOR_EXP_UNIX: u64 = 1_546_300_800;
+    const CANONICAL_VECTOR_EXP_UNIX: i64 = 1_546_300_800;
 
     #[test]
     fn expiry_parsed_from_canonical_v2_public_vector() {
@@ -1323,7 +1321,7 @@ mod tests {
         let token = "v2.public.eyJkYXRhIjoidGhpcyBpcyBhIHNpZ25lZCBtZXNzYWdlIiwiZXhwIjoiMjAxOS0wMS0wMVQwMDowMDowMCswMDowMCJ9HQr8URrGntTu7Dz9J2IF23d1M7-9lH9xiqdGyJNvzp4angPW5Esc7C5huy_M8I8_DjJK2ZXC2SUYuOFM-Q_5Cw";
         assert_eq!(
             try_get_expiry_from_token(token),
-            DateTime::from_timestamp(CANONICAL_VECTOR_EXP_UNIX as i64, 0)
+            DateTime::from_timestamp(CANONICAL_VECTOR_EXP_UNIX, 0)
         );
     }
 
@@ -1335,7 +1333,7 @@ mod tests {
         let token = "v2.public.eyJkYXRhIjoidGhpcyBpcyBhIHNpZ25lZCBtZXNzYWdlIiwiZXhwIjoiMjAxOS0wMS0wMVQwMDowMDowMCswMDowMCJ9flsZsx_gYCR0N_Ec2QxJFFpvQAs7h9HtKwbVK2n1MJ3Rz-hwe8KUqjnd8FAnIJZ601tp7lGkguU63oGbomhoBw.UGFyYWdvbiBJbml0aWF0aXZlIEVudGVycHJpc2Vz";
         assert_eq!(
             try_get_expiry_from_token(token),
-            DateTime::from_timestamp(CANONICAL_VECTOR_EXP_UNIX as i64, 0)
+            DateTime::from_timestamp(CANONICAL_VECTOR_EXP_UNIX, 0)
         );
     }
 

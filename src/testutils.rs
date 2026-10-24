@@ -193,9 +193,10 @@ impl OCIRegistry {
         }
         Err(format!(
             "timed out waiting for the registry to answer{}: {}",
-            host_port
-                .map(|a| format!(" on {a}"))
-                .unwrap_or_else(|| " (it never published a port)".to_string()),
+            host_port.map_or_else(
+                || " (it never published a port)".to_string(),
+                |a| format!(" on {a}")
+            ),
             container_log_tail(&owned.log)
         ))
     }
@@ -295,9 +296,7 @@ pub fn is_ci() -> bool {
 /// Locally it prints a message and returns so the test can exit early.
 #[track_caller]
 pub fn skip_or_fail(msg: &str) {
-    if is_ci() {
-        panic!("{msg}");
-    }
+    assert!(!is_ci(), "{msg}");
     eprintln!("skipping: {msg}");
 }
 
@@ -511,7 +510,7 @@ impl MockApiServer {
     fn start_inner(empty: bool) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        let url = format!("http://{}", addr);
+        let url = format!("http://{addr}");
         let token = MOCK_API_TOKEN.to_string();
         let expected_token = MOCK_API_TOKEN.to_string();
 
@@ -873,8 +872,8 @@ fn mock_run_not_found(run_id: &str) -> (u16, String) {
 }
 
 /// Debugging sessions, and runs that only some specs read, kept out of
-/// MOCK_RUNS so the list-oriented specs do not see them: (run_id, status,
-/// sub_status). A loading session reports `in_progress` without the `Ready`
+/// `MOCK_RUNS` so the list-oriented specs do not see them: (`run_id`, status,
+/// `sub_status`). A loading session reports `in_progress` without the `Ready`
 /// sub-status, as a new session does on release 64.0. `run-stream-error` is
 /// ready, because `runs exec` reads the run before it executes.
 const MOCK_HIDDEN_SESSIONS: &[(&str, &str, Option<&str>)] = &[
@@ -1495,8 +1494,8 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
     // pass for the wrong reason. Refuse them loudly instead. Validation
     // above stays permissive: query VALIDITY spans the full verb list;
     // execution is what the mock only partially models.
-    const EXECUTABLE_VERBS: &[&str] = &["contains", "filter", "matches"];
-    let executable = EXECUTABLE_VERBS
+    let executable_verbs = ["contains", "filter", "matches"];
+    let executable = executable_verbs
         .iter()
         .any(|verb| query.trim_start().starts_with(&format!("{verb}(")));
     if !executable {
@@ -1538,7 +1537,7 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
                 event["moment"]["input_hash"] == input_hash
             })
             .take(limit)
-            .map(|line| format!("{line}\n"))
+            .flat_map(|line| [line, "\n"])
             .collect();
         return (200, found, ndjson);
     }
@@ -1704,7 +1703,7 @@ mod tests {
         let (status, out) = mock_route_execute_command("run-2", &body("uname -a", 30));
         assert_eq!(status, 200);
         assert!(out.contains(r#""stream":"error""#), "got: {out}");
-        assert!(out.ends_with("\n"));
+        assert!(out.ends_with('\n'));
         assert!(out.contains(MOCK_EXEC_BRANCH_HASH));
         assert!(!out.contains(r#""input_hash":"-1""#), "got: {out}");
 

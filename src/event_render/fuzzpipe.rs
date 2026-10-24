@@ -46,7 +46,7 @@ mod tests {
     use crate::event_render::testkit::*;
     use serde_json::{Value, json};
 
-    fn record(fuzzpipe: Value) -> Value {
+    fn record(fuzzpipe: &Value) -> Value {
         json!({
             "fuzzpipe": fuzzpipe,
             "source": {"meta_for": "echidna-cmd-1", "name": "bash_command"},
@@ -56,13 +56,15 @@ mod tests {
 
     #[test]
     fn renders_the_event_type_and_its_fields_on_one_line() {
-        let received = render_one(record(json!({"event_type": "Command received"})));
+        let received = render_one(&record(&json!({"event_type": "Command received"})));
         assert!(
             received.ends_with("[bash_command] fuzzpipe Command received"),
             "got: {received}"
         );
 
-        let started = render_one(record(json!({"event_type": "Child started", "pid": 2103})));
+        let started = render_one(&record(
+            &json!({"event_type": "Child started", "pid": 2103}),
+        ));
         assert!(
             started.ends_with("[bash_command] fuzzpipe Child started pid=2103"),
             "got: {started}"
@@ -71,7 +73,7 @@ mod tests {
 
     #[test]
     fn a_record_without_an_event_type_keeps_the_raw_json() {
-        let block = render_one(record(json!({"pid": 2103})));
+        let block = render_one(&record(&json!({"pid": 2103})));
         assert!(
             block.ends_with(r#"[bash_command] {"fuzzpipe":{"pid":2103}}"#),
             "got: {block}"

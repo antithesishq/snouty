@@ -177,7 +177,7 @@ mod tests {
     use hegel::generators;
 
     fn row(cells: &[&str]) -> Vec<String> {
-        cells.iter().map(|cell| cell.to_string()).collect()
+        cells.iter().map(ToString::to_string).collect()
     }
 
     #[test]

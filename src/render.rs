@@ -1,5 +1,6 @@
 //! Terminal-safe rendering helpers shared across human-facing output: aligned
 //! key/value blocks and control-character sanitization.
+use std::fmt::Write as _;
 
 /// The global output flags (`--json`, `--verbose`), resolved once at the
 /// dispatch boundary in main.rs and passed by value through the command
@@ -33,7 +34,7 @@ pub(crate) fn render_kv<L: AsRef<str>, V: AsRef<str>>(
         .unwrap_or(0);
     let mut out = String::new();
     for (label, value) in rows {
-        out.push_str(&format!("{label:label_width$}  {value}\n"));
+        let _ = writeln!(out, "{label:label_width$}  {value}");
     }
     out
 }
@@ -72,7 +73,7 @@ fn sanitize_char(out: &mut String, ch: char, newline: NewlinePolicy) {
         },
         '\t' => out.push('\t'),
         _ if ch.is_control() => {
-            out.push_str(&format!(r"\x{:02X}", ch as u32));
+            let _ = write!(out, r"\x{:02X}", ch as u32);
         }
         _ => out.push(ch),
     }

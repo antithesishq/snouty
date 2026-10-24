@@ -14,7 +14,7 @@
 //!
 //! A gated command needs a [`Feature`] variant, a clap `hide` attribute, and a
 //! check before dispatch: a hidden subcommand is still callable, and
-//! clap_complete still lists it.
+//! `clap_complete` still lists it.
 //!
 //! Deliberately an environment variable and not a setting. The gate has to be
 //! known before the command line is parsed, because it decides which

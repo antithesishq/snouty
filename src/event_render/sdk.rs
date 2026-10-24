@@ -63,7 +63,7 @@ mod tests {
 
     #[test]
     fn renders_sdk_and_setup_events() {
-        let sdk = render_one(json!({
+        let sdk = render_one(&json!({
             "antithesis_sdk": {"language": {"name": "Rust", "version": "1.97.1"}, "protocol_version": "1.1.0", "sdk_version": "0.2.9"},
             "source": {"container": "w", "name": "w"},
             "moment": {"input_hash": "-1", "vtime": "1.0"}
@@ -80,9 +80,9 @@ mod tests {
             "source": {"container": "w", "name": "w"},
             "moment": {"input_hash": "-1", "vtime": "1.0"}
         });
-        let setup = render_one(entry.clone());
+        let setup = render_one(&entry.clone());
         assert!(setup.ends_with("SETUP complete"), "got: {setup}");
-        let setup = render_one_detailed(entry);
+        let setup = render_one_detailed(&entry);
         assert!(
             setup.ends_with(
                 r#"                    details {"db":"/data/test.db","nested":{"a":1}}"#

@@ -104,8 +104,7 @@ pub fn detect_config(config_dir: &Path) -> Result<Config> {
     if has_manifests_dir {
         let is_non_empty = std::fs::read_dir(&manifests_dir)
             .wrap_err_with(|| format!("failed to read {}", manifests_dir.display()))?
-            .filter_map(Result::ok)
-            .next()
+            .find_map(Result::ok)
             .is_some();
         if !is_non_empty {
             return Err(user_error(format!(
@@ -134,7 +133,7 @@ mod tests {
         std::fs::write(dir.path().join("docker-compose.yaml"), "services: {}\n").unwrap();
         match detect_config(dir.path()).unwrap() {
             Config::Compose(c) => assert_eq!(c.dir(), dir.path()),
-            other => panic!("expected Compose, got {other:?}"),
+            other @ Config::Kubernetes(_) => panic!("expected Compose, got {other:?}"),
         }
     }
 
@@ -149,7 +148,7 @@ mod tests {
                 assert_eq!(c.dir(), dir.path());
                 assert_eq!(c.manifests_dir(), manifests);
             }
-            other => panic!("expected Kubernetes, got {other:?}"),
+            other @ Config::Compose(_) => panic!("expected Kubernetes, got {other:?}"),
         }
     }
 
@@ -163,7 +162,7 @@ mod tests {
         std::fs::create_dir(manifests.join("overlays")).unwrap();
         match detect_config(dir.path()).unwrap() {
             Config::Kubernetes(c) => assert_eq!(c.dir(), dir.path()),
-            other => panic!("expected Kubernetes, got {other:?}"),
+            other @ Config::Compose(_) => panic!("expected Kubernetes, got {other:?}"),
         }
     }
 

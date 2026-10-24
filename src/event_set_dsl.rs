@@ -69,12 +69,10 @@ const fn one_line<const N: usize>(src: &str) -> [u8; N] {
 macro_rules! query_fragment {
     ($text:expr) => {{
         const SRC: &str = $text.trim_ascii();
-        const {
-            assert!(
-                !has_comment(SRC),
-                "a query fragment holds a comment; move it into the Rust source"
-            )
-        };
+        const _: () = assert!(
+            !has_comment(SRC),
+            "a query fragment holds a comment; move it into the Rust source"
+        );
         const LINE: [u8; SRC.len()] = one_line(SRC);
         const TEXT: &str = match core::str::from_utf8(&LINE) {
             Ok(text) => text,

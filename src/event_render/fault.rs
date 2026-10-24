@@ -26,11 +26,6 @@ impl<'a> Event<'a> for Fault<'a> {
     }
 
     fn render(&self, block: &mut Block<'_>) -> fmt::Result {
-        let fault = self.0;
-        let name = fault["name"].as_str().unwrap_or("");
-        let kind = fault["type"].as_str().unwrap_or("");
-        // `restore` ends the disruption; everything else starts one.
-        let restore = name == "restore";
         fn tint<D>(restore: bool, d: D) -> console::StyledObject<D> {
             if restore {
                 style(d).green()
@@ -38,6 +33,12 @@ impl<'a> Event<'a> for Fault<'a> {
                 style(d).red()
             }
         }
+
+        let fault = self.0;
+        let name = fault["name"].as_str().unwrap_or("");
+        let kind = fault["type"].as_str().unwrap_or("");
+        // `restore` ends the disruption; everything else starts one.
+        let restore = name == "restore";
 
         let fault_details = &fault["details"];
         write!(
@@ -176,7 +177,7 @@ mod tests {
 
     #[test]
     fn renders_faults_with_their_details() {
-        let partition = render_one(json!({
+        let partition = render_one(&json!({
             "fault": {
                 "name": "partition", "type": "network",
                 "details": {"asymmetric": true, "disruption_type": "Jammed", "partitions": [[], []]},
@@ -190,7 +191,7 @@ mod tests {
             "got: {partition}"
         );
 
-        let clog = render_one(json!({
+        let clog = render_one(&json!({
             "fault": {
                 "name": "clog", "type": "network",
                 "details": {"disruption_type": "Slowed", "drop_rate": 0, "latency": {"deviation": 910, "mean": 513.154606}},
@@ -205,7 +206,7 @@ mod tests {
             "got: {clog}"
         );
 
-        let skip = render_one(json!({
+        let skip = render_one(&json!({
             "fault": {
                 "name": "skip", "type": "clock",
                 "details": {"offset": -1.318698262234826},
@@ -220,7 +221,7 @@ mod tests {
         );
 
         // A stringified max_duration (seen live) still renders.
-        let stop = render_one(json!({
+        let stop = render_one(&json!({
             "fault": {"name": "stop", "type": "node", "affected_nodes": ["prefill-1"], "max_duration": "0"},
             "source": {"name": "fault_injector"},
             "moment": {"input_hash": "-1", "vtime": "349.0"}
@@ -231,7 +232,7 @@ mod tests {
         );
 
         // --detail adds the fault's raw details JSON.
-        let detailed = render_one_detailed(json!({
+        let detailed = render_one_detailed(&json!({
             "fault": {
                 "name": "skip", "type": "clock",
                 "details": {"offset": -1.5},
@@ -264,7 +265,7 @@ mod tests {
 
     #[test]
     fn settings_render_as_one_line() {
-        let block = render_one(settings());
+        let block = render_one(&settings());
         assert_eq!(
             block.lines().nth(1).unwrap(),
             "15.79     [fault_injector] fault-injector settings (3 keys; --detail to show)"
@@ -274,7 +275,7 @@ mod tests {
 
     #[test]
     fn settings_show_every_key_under_detail() {
-        let block = render_one_detailed(settings());
+        let block = render_one_detailed(&settings());
         let lines: Vec<&str> = block.lines().skip(1).collect();
         assert!(
             lines[0].ends_with("[fault_injector] fault-injector settings (3 keys)"),
@@ -296,7 +297,7 @@ mod tests {
 
     #[test]
     fn settings_that_are_not_an_object_keep_the_raw_json() {
-        let block = render_one(json!({
+        let block = render_one(&json!({
             "settings": "verbose",
             "source": {"name": "fault_injector"},
             "moment": {"input_hash": "-1", "vtime": "15.79"}
@@ -309,7 +310,7 @@ mod tests {
         // The same shape from another source is not the injector's.
         let mut other = settings();
         other["source"]["name"] = json!("app");
-        let block = render_one(other);
+        let block = render_one(&other);
         assert!(block.contains(r#"[app] {"settings":{"#), "got: {block}");
     }
 }

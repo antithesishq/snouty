@@ -68,7 +68,7 @@ fn start_login() -> (tempfile::TempDir, OsSession) {
 /// As [`start_login`], with each `(path, contents)` in `seed` written under the
 /// temp `$HOME` first — the pre-existing state a fresh login would not have.
 fn start_login_with(seed: &[(&str, &str)]) -> (tempfile::TempDir, OsSession) {
-    spawn_login(Login {
+    spawn_login(&Login {
         seed,
         ..Login::default()
     })
@@ -100,7 +100,7 @@ struct Login<'a> {
     args: &'a [&'a str],
 }
 
-fn spawn_login(login: Login) -> (tempfile::TempDir, OsSession) {
+fn spawn_login(login: &Login) -> (tempfile::TempDir, OsSession) {
     let home = tempfile::TempDir::new().expect("temp HOME");
     for (path, contents) in login.seed {
         let path = home.path().join(path);
@@ -417,7 +417,7 @@ fn an_api_key_that_replaces_a_stored_password_says_so() {
 /// so the summary does not claim to replace it.
 #[test]
 fn an_api_key_does_not_claim_to_replace_a_password_from_the_environment() {
-    let (_home, mut session) = spawn_login(Login {
+    let (_home, mut session) = spawn_login(&Login {
         env: &[
             ("ANTITHESIS_USERNAME", "puser"),
             ("ANTITHESIS_PASSWORD", "pty-pass"),
@@ -436,7 +436,7 @@ fn an_api_key_does_not_claim_to_replace_a_password_from_the_environment() {
 /// lines, because stdout is not a terminal.
 #[test]
 fn a_redirected_summary_keeps_whole_lines() {
-    let (home, mut session) = spawn_login(Login {
+    let (home, mut session) = spawn_login(&Login {
         seed: &[(CREDENTIALS_FILE, STORED_PASSWORD)],
         stdout: Stdout::File,
         ..Login::default()
@@ -490,7 +490,7 @@ fn verbose_logs_why_the_oauth_probe_failed() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a port");
     let refused = format!("http://{}", listener.local_addr().expect("local address"));
     drop(listener);
-    let (_home, mut session) = spawn_login(Login {
+    let (_home, mut session) = spawn_login(&Login {
         base_url: Some(&refused),
         args: &["--verbose"],
         ..Login::default()
@@ -567,7 +567,7 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
     let url = tenant.uri();
     let no_opener = tempfile::TempDir::new().expect("an empty PATH directory");
     let no_opener = no_opener.path().to_str().expect("a UTF-8 temp path");
-    let (home, mut session) = spawn_login(Login {
+    let (home, mut session) = spawn_login(&Login {
         base_url: Some(&url),
         env: &[("PATH", no_opener)],
         stdout: Stdout::File,

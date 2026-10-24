@@ -64,14 +64,22 @@ jobs:
           check-args: --all-targets
           args: -D warnings
 
-      - name: Spell Check Repo
-        uses: crate-ci/typos@00f422f3b19c57bc6338715ebfe3316d38768461 # v1.50.3
-
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
 
       - name: Script tests
         working-directory: scripts
         run: uv run python -m unittest discover -p 'test_*.py'
+  # No skip-check condition: typos also checks the .md files that a docs-only
+  # change edits, and skip-check skips such a change.
+  typos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Spell Check Repo
+        uses: crate-ci/typos@00f422f3b19c57bc6338715ebfe3316d38768461 # v1.50.3
   test:
     runs-on: ${{ matrix.os }}
     needs: skip-check
@@ -252,6 +260,7 @@ jobs:
     needs:
       - skip-check
       - checks
+      - typos
       - test
       - test-macos-arm
       - staging
@@ -262,15 +271,13 @@ jobs:
           SHOULD_SKIP: ${{ needs.skip-check.outputs.should_skip }}
           NEEDS: ${{ toJSON(needs) }}
         run: |
-          if [ "$SHOULD_SKIP" = "true" ]; then
-            exit 0
-          fi
-
-          # `staging` skips on a fork's pull request. This gate accepts that
-          # one result. A failure or a cancellation still blocks the merge.
-          failed=$(jq -r 'to_entries[]
+          # A job may skip only when skip-check skips the change, or when it is
+          # `staging` on a fork's pull request. A failure or a cancellation
+          # still blocks the merge.
+          failed=$(jq -r --arg skip "$SHOULD_SKIP" 'to_entries[]
             | select(.value.result != "success")
-            | select(.key != "staging" or .value.result != "skipped")
+            | select(.value.result != "skipped"
+                or ($skip != "true" and .key != "staging"))
             | "\(.key): \(.value.result)"' <<<"$NEEDS")
 
           if [ -n "$failed" ]; then

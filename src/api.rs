@@ -39,8 +39,9 @@ pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
     BuildLogLine, Event, EventProperty, ExecuteCommandRequestSourceRunId as SourceRunId,
     ExecuteCommandRequestSourceSessionId as SourceSessionId, Moment, NonEventProperty,
-    PerformanceTier, Property, PropertyStatus, RunDetail, RunStatus, RunStreamNotificationType,
-    RunSummary,
+    PerformanceTier, Property, PropertyStatus, RunDetail, RunStatus,
+    RunStatusStreamRequestNotificationTypeFilterItem as RunStreamNotification,
+    RunStreamNotificationType, RunSummary,
 };
 
 /// The outcome of a launch or debugging-launch request, and the `--json` output
@@ -364,7 +365,7 @@ impl Property {
 /// a `NonEventProperty` whose examples happen to fit `Event`'s shape (or that
 /// has no examples at all) silently deserializes as `EventProperty`. Coerce
 /// each property into the variant indicated by its `is_event` flag.
-pub(crate) fn normalize_property(property: Property) -> Result<Property> {
+fn normalize_property(property: Property) -> Result<Property> {
     match property {
         Property::EventProperty(p) if !p.is_event => {
             let counterexamples = p
@@ -400,11 +401,31 @@ pub(crate) fn normalize_property(property: Property) -> Result<Property> {
     }
 }
 
+/// Decode a JSON array of properties, as a stream notification's `data`
+/// carries it, each coerced into its `is_event` variant.
+pub(crate) fn decode_properties(data: &serde_json::Value) -> Result<Vec<Property>> {
+    <Vec<Property> as serde::Deserialize>::deserialize(data)?
+        .into_iter()
+        .map(normalize_property)
+        .collect()
+}
+
+/// The notification types the run status stream sends when the request
+/// names none: discovery and verdict changes, and RUN_FINALIZED, which the
+/// server always sends. NEW_EXAMPLES_FOUND is opt-in, and a request that
+/// names types replaces this set, so asking for it names this set too.
+pub const DEFAULT_RUN_STREAM_NOTIFICATIONS: [RunStreamNotification; 3] = [
+    RunStreamNotification::NewPropertiesAdded,
+    RunStreamNotification::PropertiesPassed,
+    RunStreamNotification::PropertiesFailed,
+];
+
 /// The notifications [`AntithesisApi::stream_run_status`] asks for.
 #[derive(Debug, Default)]
 pub struct RunStreamFilter {
-    /// Also stream NEW_EXAMPLES_FOUND, which the server leaves out by default.
-    pub examples: bool,
+    /// Only these notification types; `None` asks for the server's default
+    /// set, [`DEFAULT_RUN_STREAM_NOTIFICATIONS`].
+    pub notification_types: Option<Vec<RunStreamNotification>>,
     /// Only these properties; empty streams every property.
     pub property_ids: Vec<String>,
 }
@@ -1032,20 +1053,9 @@ impl AntithesisApi {
         run_id: &str,
         filter: RunStreamFilter,
     ) -> Result<JsonStream> {
-        use generated::types::RunStatusStreamRequestNotificationTypeFilterItem as Notification;
-        // NEW_EXAMPLES_FOUND is opt-in, and the filter replaces the server's
-        // default set, so asking for it names the default set too.
-        let notification_type_filter = filter.examples.then(|| {
-            vec![
-                Notification::NewPropertiesAdded,
-                Notification::PropertiesPassed,
-                Notification::PropertiesFailed,
-                Notification::NewExamplesFound,
-            ]
-        });
         let property_filter = (!filter.property_ids.is_empty()).then_some(filter.property_ids);
         let body = generated::types::RunStatusStreamRequest {
-            notification_type_filter,
+            notification_type_filter: filter.notification_types,
             property_filter,
         };
         let request = self.client.stream_run_status().run_id(run_id).body(body);

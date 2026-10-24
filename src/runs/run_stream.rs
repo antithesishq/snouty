@@ -2,8 +2,9 @@
 //!
 //! Each NDJSON line decodes into a [`Record`]. To support a new notification
 //! shape, add a `Record` variant, decode it in [`Record::parse`], and render
-//! it in [`render_record`]; the exhaustive matches fail the build until both
-//! are done. A `type` that this snouty does not know yet decodes as
+//! it in [`render_record`], and decide in [`json_line`] whether `--json`
+//! normalizes its line; the exhaustive matches fail the build until all
+//! three are done. A `type` that this snouty does not know yet decodes as
 //! [`Record::Unknown`] and prints as its JSON, so a server that adds a shape
 //! does not break an older snouty.
 
@@ -14,12 +15,12 @@ use console::style;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::api::{Event, Property, RunStreamNotificationType, normalize_property};
+use crate::api::{Event, Property, RunStreamNotificationType, decode_properties};
 use crate::render::sanitize;
 
 use super::{
     mid_stream_error, normalize_vtime_field, property_examples_cell, property_status_label,
-    stream_error_message,
+    sorted_by_vtime, stream_error_message, value_token,
 };
 
 /// One line of the run status stream.
@@ -37,7 +38,7 @@ pub(super) enum Record {
 }
 
 /// What happened to the properties of a [`Record::Properties`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub(super) enum PropertyChange {
     Added,
     Passed,
@@ -73,11 +74,8 @@ impl Record {
             RunStreamNotificationType::PropertiesFailed => PropertyChange::Failed,
             RunStreamNotificationType::NewExamplesFound => PropertyChange::NewExamples,
         };
-        let properties = Vec::<Property>::deserialize(&line["data"])
-            .wrap_err_with(|| format!("decoding a {kind} notification"))?
-            .into_iter()
-            .map(normalize_property)
-            .collect::<Result<_>>()?;
+        let properties = decode_properties(&line["data"])
+            .wrap_err_with(|| format!("decoding a {kind} notification"))?;
         Ok(Self::Properties { change, properties })
     }
 }
@@ -86,15 +84,18 @@ impl Record {
 /// sample's vtime normalized to an exact JSON number, as `runs properties
 /// --json` prints it.
 pub(super) fn json_line(record: &Record, mut line: Value) -> String {
-    if let Record::Properties { .. } = record {
-        let properties = line["data"].as_array_mut().into_iter().flatten();
-        for property in properties.filter(|p| p["is_event"] == true) {
-            for key in ["examples", "counterexamples"] {
-                for sample in property[key].as_array_mut().into_iter().flatten() {
-                    normalize_vtime_field(sample, "moment");
+    match record {
+        Record::Properties { .. } => {
+            let properties = line["data"].as_array_mut().into_iter().flatten();
+            for property in properties.filter(|p| p["is_event"] == true) {
+                for key in ["examples", "counterexamples"] {
+                    for sample in property[key].as_array_mut().into_iter().flatten() {
+                        normalize_vtime_field(sample, "moment");
+                    }
                 }
             }
         }
+        Record::Finalized | Record::Unknown(_) => {}
     }
     line.to_string()
 }
@@ -106,7 +107,7 @@ const STATUS_WIDTH: usize = 12;
 /// The width of the right-aligned example count column (`186k/12k`).
 const EXAMPLES_WIDTH: usize = 8;
 
-/// Render one record for the terminal, without a trailing newline. A property
+/// Render one record for the terminal, each line newline-terminated. A property
 /// change is one line per property: the change, the property's status, its
 /// example counts (✓ or ✓/✗), and its name. `detail` adds the property's ID
 /// and the samples the notification carries, one dim line each.
@@ -126,7 +127,6 @@ pub(super) fn render_record(record: &Record, detail: bool) -> String {
             writeln!(out, "{}", style(sanitize(&line.to_string())).dim()).unwrap();
         }
     }
-    out.truncate(out.trim_end().len());
     out
 }
 
@@ -144,49 +144,41 @@ fn write_property(out: &mut String, change: PropertyChange, property: &Property,
         return;
     }
     let indent = LABEL_WIDTH + 2;
-    if let Some(id) = property.id() {
-        writeln!(
-            out,
-            "{:indent$}{}",
-            "",
-            style(format!("id {}", sanitize(id))).dim()
-        )
-        .unwrap();
-    }
-    for (kind, sample) in samples(property) {
-        writeln!(
-            out,
-            "{:indent$}{}",
-            "",
-            style(format!("{kind:<7}  {sample}")).dim()
-        )
-        .unwrap();
+    let id = property.id().map(|id| format!("id {}", sanitize(id)));
+    let samples = samples(property)
+        .into_iter()
+        .map(|(kind, sample)| format!("{kind:<7}  {sample}"));
+    for line in id.into_iter().chain(samples) {
+        writeln!(out, "{:indent$}{}", "", style(line).dim()).unwrap();
     }
 }
 
 /// The samples a property carries, counterexamples first, each as the text
-/// `--detail` prints: an event's moment hash and vtime, or a non-event
-/// property's value as JSON.
+/// `--detail` prints, as `runs properties --detail` prints it: an event's
+/// moment hash and vtime, ascending by vtime, or a non-event property's value.
 fn samples(property: &Property) -> Vec<(&'static str, String)> {
+    fn tagged<T>(
+        counterexamples: impl IntoIterator<Item = T>,
+        examples: impl IntoIterator<Item = T>,
+        text: impl Fn(T) -> String,
+    ) -> Vec<(&'static str, String)> {
+        let failing = counterexamples.into_iter().map(|s| ("failing", text(s)));
+        let passing = examples.into_iter().map(|s| ("passing", text(s)));
+        failing.chain(passing).collect()
+    }
     match property {
-        Property::EventProperty(p) => {
-            let moment = |event: &Event| {
+        Property::EventProperty(p) => tagged(
+            sorted_by_vtime(&p.counterexamples),
+            sorted_by_vtime(&p.examples),
+            |event: &Event| {
                 format!(
                     "{}  {}",
                     sanitize(&event.moment.input_hash),
                     event.moment.vtime
                 )
-            };
-            let failing = p.counterexamples.iter().map(|e| ("failing", moment(e)));
-            let passing = p.examples.iter().map(|e| ("passing", moment(e)));
-            failing.chain(passing).collect()
-        }
-        Property::NonEventProperty(p) => {
-            let value = |v: &Value| sanitize(&v.to_string());
-            let failing = p.counterexamples.iter().map(|v| ("failing", value(v)));
-            let passing = p.examples.iter().map(|v| ("passing", value(v)));
-            failing.chain(passing).collect()
-        }
+            },
+        ),
+        Property::NonEventProperty(p) => tagged(&p.counterexamples, &p.examples, value_token),
     }
 }
 
@@ -197,7 +189,8 @@ mod tests {
 
     fn render(line: Value, detail: bool) -> String {
         console::set_colors_enabled(false);
-        render_record(&Record::parse(&line).unwrap(), detail)
+        let out = render_record(&Record::parse(&line).unwrap(), detail);
+        out.strip_suffix('\n').unwrap_or(&out).to_string()
     }
 
     fn property(status: &str) -> Value {

@@ -43,11 +43,11 @@ snouty runs stream run-2 --examples
 stdout '^examples +failing +12/3 +Safety: Counter value stays below limit$'
 
 # --detail adds each property's ID and the samples that the change carries,
-# counterexamples first.
+# counterexamples first, each group ascending by vtime.
 mock-runs-server
 snouty runs stream run-2 --examples --detail
 stdout '(?s)^examples +failing +12/3 +Safety: Counter value stays below limit\n +id 97cf5fcafa500ed62bf109d81834c5b881a2c854\n +failing  -100  45\.334635781589895$'
-stdout '(?s)^failed +failing +12/3 +Safety: Counter value stays below limit\n +id 97cf5fcafa500ed62bf109d81834c5b881a2c854\n +failing  -200  313\.15126806590706\n +failing  -100  45\.334635781589895\n +passing  -300  398\.4898056755774$'
+stdout '(?s)^failed +failing +12/3 +Safety: Counter value stays below limit\n +id 97cf5fcafa500ed62bf109d81834c5b881a2c854\n +failing  -100  45\.334635781589895\n +failing  -200  313\.15126806590706\n +passing  -300  398\.4898056755774$'
 
 # --property streams only the changes to that property.
 mock-runs-server

@@ -1,6 +1,3 @@
-//! `snouty runs usage`: the usage hours of recent runs, one row per run, or
-//! one row per period with `--rollup`.
-//!
 //! TODO: when the server adds the usage of a run to the `runs list` response,
 //! read it from there, add the run metadata, and drop the usage endpoint.
 
@@ -24,7 +21,6 @@ use crate::settings::Settings;
 use crate::table::{Align, Column, Table};
 use crate::time::format_local;
 
-/// The period that `runs usage --rollup` totals runs over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Rollup {
     Day,
@@ -32,8 +28,6 @@ pub enum Rollup {
     Month,
 }
 
-/// The `--json` row of a run: the usage entry, with its times in the local
-/// timezone.
 #[derive(Serialize)]
 struct LocalUsageEntry {
     run_id: String,
@@ -104,8 +98,8 @@ pub(super) async fn cmd_runs_usage(
             print_rows(&entries, json, limit, render_usage_table)
         }
         Some(rollup) => {
-            // A period is complete only when an older period starts, so the
-            // stream has no limit, and the limit applies to periods here.
+            // The limit counts periods, and a period is complete only when an
+            // older one starts, so the stream has no limit.
             let entries = api.stream_usage(started_after, started_before, None);
             let periods = total_by_period(entries, rollup, limit).await?;
             print_rows(&periods, json, limit, render_periods_table)
@@ -113,7 +107,6 @@ pub(super) async fn cmd_runs_usage(
     }
 }
 
-/// Print `rows` as JSON lines, or as the table that `render` makes.
 fn print_rows<T: Serialize>(
     rows: &[T],
     json: bool,
@@ -135,19 +128,18 @@ fn print_rows<T: Serialize>(
     Ok(())
 }
 
-/// Totals `entries` by the period, in the local timezone, in which each one
-/// started, newest period first. Reading stops at the first entry of a period
-/// past the `limit` newest, so that no page past it is fetched. That needs the
-/// entries newest first, as the usage endpoint sends them.
+/// Totals `entries` by the local-timezone period in which each one started,
+/// newest period first. `entries` must arrive newest first. Reading stops at
+/// the first entry of a period older than the `limit` newest, so no later page
+/// is fetched.
 async fn total_by_period(
     entries: impl Stream<Item = Result<UsageEntry>>,
     rollup: Rollup,
     limit: NonZeroU64,
 ) -> Result<Vec<PeriodUsage>> {
     let mut entries = std::pin::pin!(entries);
-    // The early stop needs the entries in start-time order, which only the
-    // cursor of the endpoint shows. The map keeps a small disorder inside the
-    // periods it reads from printing one date twice.
+    // The map merges entries of one period that arrive out of order, so no
+    // date prints twice.
     let mut totals: BTreeMap<NaiveDate, (u64, f64)> = BTreeMap::new();
     while let Some(entry) = entries.try_next().await? {
         let date = rollup.period_end(entry.start_time.with_timezone(&Local).date_naive());
@@ -224,7 +216,6 @@ mod tests {
 
     #[test]
     fn period_end_is_the_last_day_of_the_period() {
-        // 2026-10-21 is a Wednesday.
         let wednesday = date("2026-10-21");
         assert_eq!(Rollup::Day.period_end(wednesday), wednesday);
         assert_eq!(Rollup::Week.period_end(wednesday), date("2026-10-25"));

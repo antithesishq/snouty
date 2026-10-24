@@ -1146,10 +1146,10 @@ impl AntithesisApi {
         }
     }
 
-    /// Stream usage entries, newest first, at most `limit` of them or all
-    /// with `None`, in pages of at most 100, the maximum of the endpoint. The
-    /// pages are ordered by start time: the cursor encodes the start time of
-    /// the last entry (observed on orbitinghail, release 65).
+    /// Streams usage entries newest first by start time, at most `limit` of
+    /// them, or all with `None`. A page holds at most 100 entries, the maximum
+    /// of the endpoint. The order was observed on orbitinghail, release 65:
+    /// the cursor encodes the start time of the last entry.
     pub fn stream_usage(
         &self,
         started_after: Option<chrono::DateTime<chrono::Utc>>,

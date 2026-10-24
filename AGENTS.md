@@ -159,6 +159,16 @@ reason in a comment.
 cargo shear
 ```
 
+The minimum supported Rust version (MSRV) is `rust-version` in the
+`[workspace.package]` table of `Cargo.toml`. Both crates use it. The `msrv` CI
+job checks the workspace on that version, for the linux-gnu and linux-musl
+targets. It does not check macOS. To change the MSRV, change only that
+line. To do the check yourself, put that version in place of `<rust-version>`:
+
+```
+cargo +<rust-version> check --workspace --all-targets --locked
+```
+
 ### Checks that the Stop hooks run
 
 The Stop hooks in `.claude/settings.json` run these checks each time the agent

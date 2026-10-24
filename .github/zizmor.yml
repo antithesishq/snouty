@@ -1,5 +1,5 @@
 # zizmor (https://docs.zizmor.sh) audits the GitHub Actions workflows. CI runs
-# it in the `zizmor` job of build.yml.
+# it in the `lint` job of build.yml.
 #
 # zizmor has no setting that skips a whole file, so the two generated workflows
 # are listed under every audit that zizmor 1.31.1 knows. Fix a finding in
@@ -74,8 +74,10 @@ rules:
     ignore: *generated
   self-hosted-runner:
     ignore: *generated
+  # The `$/...` syntax that this audit asks for is newer than actionlint 1.7.12,
+  # which rejects it. The workflows use the local action as `./...`.
   self-repository:
-    ignore: *generated
+    disable: true
   stale-action-refs:
     ignore: *generated
   superfluous-actions:

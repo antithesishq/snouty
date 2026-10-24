@@ -15,11 +15,15 @@ pkgs.mkShell {
   packages = with pkgs; [
     rustToolchain
     cargo-nextest
+    # The tools that mise.toml pins, from nixpkgs, for a system such as NixOS
+    # that cannot run mise's prebuilt binaries. nixpkgs sets these versions,
+    # so they can differ from the versions CI uses.
     uv
-    zizmor
-    actionlint
+    typos
     shellcheck
     taplo
+    actionlint
+    zizmor
     cargo-shear
     cargo-deny
     npins

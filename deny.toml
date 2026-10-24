@@ -1,5 +1,5 @@
 # cargo-deny configuration. Run `cargo deny check` locally; CI runs it in the
-# `cargo-deny` job of .github/workflows/build.yml, including the nightly run.
+# `lint` job of .github/workflows/build.yml, including the nightly run.
 
 [advisories]
 # Vulnerable, unmaintained, unsound and yanked crates all fail. yanked defaults

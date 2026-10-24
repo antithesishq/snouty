@@ -88,15 +88,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      - name: Install Nextest
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
-        with:
-          tool: cargo-nextest
+      - uses: ./.github/actions/setup-mise
 
       # snouty always drives Docker Compose v2 via the `docker-compose` binary,
       # independent of the image runtime. Here that binary reaches podman over
       # its API socket via DOCKER_HOST.
-      - name: Install Podman + docker-compose
+      - name: Install Podman
         shell: bash
         timeout-minutes: 8
         run: |
@@ -105,9 +102,8 @@ jobs:
           # podman 6.0.0 dropped Intel macOS support, so `brew install podman`
           # no longer yields a working amd64 binary on this runner. Install a
           # 5.x release from its macOS pkg instead (5.x still ships an amd64
-          # pkg); still get docker-compose from brew. TODO: drop the pinned
-          # 5.x pkg when this Intel macOS leg retires.
-          brew install docker-compose
+          # pkg). mise installs docker-compose. TODO: drop the pinned 5.x pkg
+          # when this Intel macOS leg retires.
           curl -fsSL -o /tmp/podman-installer.pkg \
             https://github.com/podman-container-tools/podman/releases/download/v5.8.8/podman-installer-macos-amd64.pkg
           sudo installer -pkg /tmp/podman-installer.pkg -target /

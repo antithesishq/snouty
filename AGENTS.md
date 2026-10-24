@@ -92,102 +92,76 @@ is worth.
 
 ## Checks and lints
 
-Run the following commands to validate that the code meets required standards:
+[mise](https://mise.jdx.dev) runs the checks. `mise.toml` pins the version of
+each tool and defines a task for each check, and `mise.lock` records each
+tool's checksum. CI runs the same tasks. rustup installs Rust, through
+`rust-toolchain.toml`. Trust the config once in each checkout:
+
+```
+mise trust
+```
+
+`mise run` installs any missing tool before it runs a task:
 
 ```
 cargo nextest run
+mise run lint           # every lint that CI runs
+mise run fmt            # format the TOML, Nix and Python files
+mise run test:scripts   # unit tests for the Python scripts
+mise tasks              # list the tasks, such as lint:zizmor
 ```
 
-If `cargo nextest` is not available, you may use `cargo test`.
-
-The Python scripts in `scripts/` use [ruff](https://docs.astral.sh/ruff/) for
-formatting and linting, and [pyright](https://microsoft.github.io/pyright/)
-for type checking. `pyproject.toml` holds the configuration, and `uv.lock`
-pins the versions. After you change a script, run the script tests:
-
-```
-uv run --directory scripts python -m unittest discover -p 'test_*.py'
-```
-
-zizmor audits the GitHub Actions workflows and `dependabot.yml` for security
-problems. Run it after you change a file in `.github/`. Its config is
-`.github/zizmor.yml`. Do not fix a finding in a generated workflow by hand.
-Change its generator, as the config describes.
-
-```
-uvx zizmor==1.31.1 --offline .
-```
-
-When you change a file in `.github/workflows/`, run
-[actionlint](https://github.com/rhysd/actionlint). It also runs shellcheck on
-each `run:` script when shellcheck is on your `PATH`. Its configuration is in
-`.github/actionlint.yaml`. The `actionlint` job in `build.yml` sets the
-version.
-
-```
-actionlint
-```
-
-shellcheck checks each tracked or new `*.sh` file and each script with a `sh`
-or `bash` shebang. CI uses shellcheck v0.11.0. Fix each finding. Do not
-disable a check without a comment that tells why.
-
-[taplo](https://taplo.tamasfe.dev) 0.10.0 checks the format of the TOML files.
-CI fails when a file is not formatted. `.taplo.toml` holds the settings. Run
-`taplo fmt` without `--check` to format the files:
-
-```
-taplo fmt --check
-```
-
-[nixfmt](https://github.com/NixOS/nixfmt) 1.5.0 checks the format of the Nix
-files. CI fails when a file is not formatted. The check skips `npins/`, because
-npins generates it. Remove `--check` to format the files:
-
-```
-git ls-files -z '*.nix' ':!:npins/*' | xargs -0 nixfmt --check
-```
-
-Run [cargo-shear](https://github.com/Boshen/cargo-shear) to find unused
-dependencies in the workspace. CI runs it in the `cargo-shear` job. If it
-reports a dependency that the code uses (for example, only through a macro),
-add the dependency to `[package.metadata.cargo-shear] ignored` and write the
-reason in a comment.
-
-```
-cargo shear
-```
-
-The minimum supported Rust version (MSRV) is `rust-version` in the
-`[workspace.package]` table of `Cargo.toml`. Both crates use it. The `msrv` CI
-job checks the workspace on that version, for the linux-gnu and linux-musl
-targets. It does not check macOS. To change the MSRV, change only that
-line. To do the check yourself, put that version in place of `<rust-version>`:
+The `msrv` CI job checks the workspace on the MSRV. To do that check yourself,
+put the `rust-version` from `Cargo.toml` in place of `<rust-version>`:
 
 ```
 cargo +<rust-version> check --workspace --all-targets --locked
 ```
 
-`cargo deny` checks the dependencies against `deny.toml`. It finds security
-advisories, licenses that are not on the allow list, and crates from unknown
-sources. Fix an advisory with an upgrade. Ignore it only if no upgrade exists,
-and give a reason and a link. A pull request fails on licenses, bans and
-sources. Only the nightly run fails on advisories, because a new advisory can
-appear with no change in the repository.
+On a system that cannot run mise's prebuilt binaries, such as NixOS, use the
+nix shell (`nix-shell`, or direnv with `.envrc`) instead. It has the same
+tools from nixpkgs, whose versions can differ from CI's. Run the command of a
+task from `mise.toml` directly. In a nix shell, the Stop hooks use the nix
+tools and do not use mise.
+
+Dependabot does not update `mise.toml`. To bump a tool, change its version
+in `mise.toml`, then regenerate the lockfile for the platforms that CI and
+contributors use:
 
 ```
-cargo deny check
+mise lock --platform linux-x64,macos-arm64,macos-x64
 ```
 
-Clippy runs with the `pedantic` lint group. The `[workspace.lints.clippy]`
-table in `Cargo.toml` sets it, and it lists the pedantic lints that are off,
-with a reason for each. Fix a new finding in the code. If a fix is wrong, add
-an `#[allow(clippy::<lint>)]` on the item, with a comment that tells why.
-CI denies all warnings:
+CI installs mise itself through `.github/actions/setup-mise`. To bump mise,
+change its version there, and the SHA-256 of its binary for each platform:
+the `digest` that GitHub shows for each `mise-v<version>-<platform>` asset.
 
-```
-cargo clippy --all-targets -- -D warnings
-```
+- **Python scripts:** ruff formats and lints them, and pyright checks their
+  types. `pyproject.toml` holds the configuration, and `uv.lock` pins the
+  versions.
+- **zizmor:** `.github/zizmor.yml` holds its configuration. Do not fix a
+  finding in a generated workflow by hand. Change its generator, as the
+  configuration describes.
+- **actionlint:** `.github/actionlint.yaml` holds its configuration. It also
+  runs shellcheck on each `run:` script.
+- **shellcheck:** fix each finding. Do not disable a check without a comment
+  that tells why.
+- **cargo-shear:** if it reports a dependency that the code uses (for example,
+  only through a macro), add the dependency to
+  `[package.metadata.cargo-shear] ignored` and write the reason in a comment.
+- **cargo-deny:** `deny.toml` holds its configuration. Fix an advisory with an
+  upgrade. Ignore it only if no upgrade exists, and give a reason and a link.
+  A pull request fails on licenses, bans and sources. Only the nightly run
+  fails on advisories, because a new advisory can appear with no change in the
+  repository.
+- **MSRV:** `rust-version` in the `[workspace.package]` table of `Cargo.toml`.
+  Both crates use it. To change the MSRV, change only that line. CI checks the
+  linux-gnu and linux-musl targets on that version, but not macOS.
+- **Clippy:** runs with the `pedantic` lint group. The
+  `[workspace.lints.clippy]` table in `Cargo.toml` sets it, and lists the
+  pedantic lints that are off, with a reason for each. Fix a new finding in the
+  code. If a fix is wrong, add an `#[allow(clippy::<lint>)]` on the item, with
+  a comment that tells why. CI denies all warnings.
 
 ### Checks that the Stop hooks run
 
@@ -201,9 +175,11 @@ until the agent stops, so run the checks before a `git push` in the same turn.
 - `scripts/check-typos.sh`: `typos`.
 - `scripts/check-python.sh`: `ruff format scripts`, then `ruff check scripts`,
   then `pyright`.
-- `scripts/check-shell.sh`: `shellcheck` on the shell scripts.
+- `scripts/check-shell.sh`: `shellcheck` on each `*.sh` file and each script
+  with a `sh` or `bash` shebang, tracked or new.
 
-When you add a check to a hook, add it to this list.
+When you add a check to a hook, add it to this list. A hook runs its tool
+through `mise exec`, which installs the tool on first use.
 
 ### Running spec tests against a staging backend
 

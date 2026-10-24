@@ -1,0 +1,97 @@
+# Tools for the checks in AGENTS.md, the Stop hooks and CI. Run `mise install`.
+# CI installs the same versions from mise.lock, which records each checksum.
+# Rust comes from rustup, through rust-toolchain.toml.
+[tools]
+uv = "0.13.5"
+typos = "1.50.3"
+shellcheck = "0.11.0"
+taplo = "0.10.0"
+actionlint = "1.7.12"
+zizmor = "1.31.1"
+cargo-deny = "0.20.2"
+"github:Boshen/cargo-shear" = "1.14.0"
+"github:nextest-rs/nextest" = { version = "0.9.149", version_prefix = "cargo-nextest-" }
+# nixfmt releases only a Linux x86_64 binary. On macOS, use the nix shell.
+# snouty drives Docker Compose v2 through the `docker-compose` binary; the
+# container tests need it.
+"github:docker/compose" = "5.6.0"
+"github:NixOS/nixfmt" = { version = "1.5.0", os = ["linux"] }
+
+[settings]
+lockfile = true
+
+# `mise run <task>` installs any missing tool first. `mise tasks` lists them.
+# CI runs each task as a step of its own; `mise run lint` runs them all.
+[tasks.lint]
+description = "Run every lint that CI runs"
+depends = [
+    "lint:typos",
+    "lint:python",
+    "lint:shellcheck",
+    "lint:zizmor",
+    "lint:actionlint",
+    "lint:taplo",
+    "lint:nixfmt",
+    "lint:shear",
+    "lint:deny",
+]
+
+[tasks."lint:typos"]
+run = "typos"
+
+[tasks."lint:python"]
+description = "ruff and pyright on scripts/"
+run = [
+    "uv run --locked ruff format --check scripts",
+    "uv run --locked ruff check scripts",
+    "uv run --locked pyright",
+]
+
+[tasks."lint:shellcheck"]
+description = "shellcheck on every shell script, tracked or new"
+run = "scripts/check-shell.sh"
+
+[tasks."lint:zizmor"]
+description = "Audit the workflows for security problems"
+# Offline: the online audits ask the GitHub API about upstream tags, so their
+# result can change with no change here.
+run = "zizmor --offline ."
+
+[tasks."lint:actionlint"]
+run = "actionlint"
+
+[tasks."lint:taplo"]
+run = "taplo fmt --check"
+
+[tasks."lint:nixfmt"]
+# npins generates npins/default.nix, so its format is not ours to keep. mise
+# has nixfmt for Linux only, so elsewhere the task skips without nixfmt.
+run = """
+if ! command -v nixfmt >/dev/null; then echo 'nixfmt not installed; skipped'; exit 0; fi
+git ls-files -z '*.nix' ':!:npins/*' | xargs -0 nixfmt --check
+"""
+
+[tasks."lint:shear"]
+description = "Find unused dependencies"
+run = "cargo shear --locked"
+
+[tasks."lint:deny"]
+description = "Check dependency licenses, bans and sources"
+run = "cargo deny --all-features check bans licenses sources"
+
+[tasks."lint:advisories"]
+description = "Check dependencies for security advisories"
+run = "cargo deny --all-features check advisories"
+
+[tasks.fmt]
+description = "Format the TOML, Nix and Python files"
+run = [
+    "taplo fmt",
+    "if command -v nixfmt >/dev/null; then git ls-files -z '*.nix' ':!:npins/*' | xargs -0 nixfmt; fi",
+    "uv run --locked ruff format scripts",
+]
+
+[tasks."test:scripts"]
+description = "Unit tests for the Python scripts"
+dir = "scripts"
+run = "uv run --locked python -m unittest discover -p 'test_*.py'"

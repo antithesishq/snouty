@@ -968,12 +968,14 @@ fn mock_run_not_found(run_id: &str) -> (u16, String) {
 /// Debugging sessions, and runs that only some specs read, kept out of
 /// `MOCK_RUNS` so the list-oriented specs do not see them: (`run_id`, status,
 /// `sub_status`). A loading session reports `in_progress` without the `Ready`
-/// sub-status, as a new session does on release 64.0. `run-stream-error` is
-/// ready, because `runs exec` reads the run before it executes.
+/// sub-status, as a new session does on release 64.0. `run-stream-error` and
+/// `run-stream-cut` are ready, because `runs exec` and `runs stream` wait for a
+/// ready run.
 const MOCK_HIDDEN_SESSIONS: &[(&str, &str, Option<&str>)] = &[
     ("session-starting", "starting", None),
     ("session-loading", "in_progress", None),
     ("run-stream-error", "in_progress", Some("Ready")),
+    ("run-stream-cut", "in_progress", Some("Ready")),
     (MOCK_OLD_RELEASE_RUN, "in_progress", None),
 ];
 
@@ -1264,10 +1266,12 @@ fn mock_route_stream_run_status(run_id: &str, req_body: &str) -> (u16, String) {
     new_examples["examples"] = json!([]);
     new_examples["counterexamples"] =
         json!([{"moment": {"input_hash": "-100", "vtime": "45.334635781589895"}}]);
+    // NEW_EXAMPLES_FOUND carries a new sample, and the PROPERTIES_FAILED
+    // after it repeats the samples the server keeps, that one included.
     let changes = [
         ("NEW_PROPERTIES_ADDED", undetermined),
-        ("PROPERTIES_FAILED", failing),
         ("NEW_EXAMPLES_FOUND", new_examples),
+        ("PROPERTIES_FAILED", failing),
         ("PROPERTIES_PASSED", passing),
     ];
     let mut lines: Vec<String> = changes

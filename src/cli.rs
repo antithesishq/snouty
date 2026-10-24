@@ -604,17 +604,9 @@ pub enum RunsCommands {
         /// Run ID
         run_id: String,
 
-        /// Also stream the examples and counterexamples as they are found
-        #[arg(long)]
-        examples: bool,
-
-        /// Stream only the changes to this property (repeatable)
+        /// Stream only the events of this property (repeatable)
         #[arg(long = "property", value_name = "PROPERTY_ID")]
         property_ids: Vec<String>,
-
-        /// Show each property's ID and the samples that each change carries
-        #[arg(short = 'd', long)]
-        detail: bool,
     },
 
     /// Stream build logs for a run

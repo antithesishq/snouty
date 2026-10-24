@@ -1,14 +1,15 @@
-Stream a run's property changes as they happen, until the run is final.
+Stream a run's property events as they happen, until the run is final.
 
-For each change, snouty prints one line per property: the change, the property's status, its example counts, and its name. The example counts are the number of examples, then the number of counterexamples if the property has counterexamples, as in `snouty runs properties`: 12/3 is 12 examples and 3 counterexamples.
+Each event prints as one line:
 
-  added      a new property appears
-  passed     a property passed
-  failed     a property failed
-  examples   a property has new examples or counterexamples (only with --examples)
-  finalized  the run is final, and the stream ends
+  catalogued <property id> <name>             a new property appears
+  failed <property id> <input hash> <vtime>   a counterexample of the property
+  passed <property id> <input hash> <vtime>   an example of the property
+  completed <run id>                          the run is final, and the stream ends
 
-The stream does not show the current results. It shows only changes, and it is silent until a property changes. To get the current results and then follow them, start the stream first, then read `snouty runs properties <run_id>`. If you start the stream first, you do not miss a change. A stream for a run that is already final prints `finalized` and ends immediately.
+A non-event property has no moments, so its failed and passed lines show the sample value as JSON. A sample prints only the first time the server sends it. Look up a property with `snouty runs property <run_id> <property_id>`, and read the logs at a moment with `snouty runs logs <run_id> <input hash> <vtime>`.
+
+The stream does not show the current results. It shows only events, and it is silent until one happens. To get the current results and then follow them, start the stream first, then read `snouty runs properties <run_id>`. If you start the stream first, you do not miss an event. A stream for a run that is already final prints `completed` and ends immediately. A run that is starting has no stream yet, so snouty waits until the run is ready.
 
 If the stream ends before the run is final, snouty exits with an error. Start the stream again, then read the current results.
 
@@ -16,8 +17,7 @@ Streaming needs a run created on release 65.3 or later.
 
 Examples:
   snouty runs stream <run_id>
-  snouty runs stream <run_id> --examples --detail
   snouty runs stream <run_id> --property <property_id>
 
-Add --json for machine-readable output. snouty prints each notification as one JSON object per line. Each vtime is a JSON number. --json is mutually exclusive with --detail:
-  snouty --json runs stream <run_id> | jq -r '.data[].name'
+Add --json for machine-readable output. Each event prints as one JSON object, with an `event` key and the fields above. Each vtime is a JSON number:
+  snouty --json runs stream <run_id> | jq -r 'select(.event == "failed") | .property_id'

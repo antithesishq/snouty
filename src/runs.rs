@@ -18,10 +18,9 @@ use serde_json::{Map, Value, json};
 use chrono::{DateTime, Utc};
 
 use crate::api::{
-    AntithesisApi, DEFAULT_RUN_STREAM_NOTIFICATIONS, Event, EventProperty, ExecRequest, Moment,
-    NonEventProperty, Property, PropertyStatus, RewarmSource, RunDetail, RunStatus,
-    RunStreamFilter, RunStreamNotification, RunSummary, RunsFilterOptions, SEARCH_DEFAULT_LIMIT,
-    SearchMode,
+    AntithesisApi, Event, EventProperty, ExecRequest, Moment, NonEventProperty, Property,
+    PropertyStatus, RewarmSource, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
+    SEARCH_DEFAULT_LIMIT, SearchMode,
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs, WaitUntil};
 use crate::error::{api_error_message, api_error_status, user_error};
@@ -199,22 +198,8 @@ pub async fn cmd_runs(
         }
         Some(RunsCommands::Stream {
             run_id,
-            examples,
             property_ids,
-            detail,
-        }) => {
-            reject_detail_with_json(output.json, detail)?;
-            let notification_types = examples.then(|| {
-                let mut types = DEFAULT_RUN_STREAM_NOTIFICATIONS.to_vec();
-                types.push(RunStreamNotification::NewExamplesFound);
-                types
-            });
-            let filter = RunStreamFilter {
-                notification_types,
-                property_ids,
-            };
-            cmd_runs_stream(&run_id, filter, detail, settings, output).await
-        }
+        }) => cmd_runs_stream(&run_id, property_ids, settings, output).await,
         Some(RunsCommands::BuildLogs { run_id }) => {
             // `--json` on build-logs is the raw passthrough: the records
             // carry no vtime to normalize and no faults to annotate.
@@ -1575,41 +1560,61 @@ fn raw_requires_json_error() -> color_eyre::eyre::Report {
 
 async fn cmd_runs_stream(
     run_id: &str,
-    filter: RunStreamFilter,
-    detail: bool,
+    property_ids: Vec<String>,
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
     debug!("streaming status for run: {run_id}");
 
     let api = AntithesisApi::new(settings, verbose)?;
-    let mut stream = match api.stream_run_status(run_id, filter).await {
+    // A run that is starting has no stream yet: the server answers 404.
+    wait_until_ready(&api, run_id, READY_POLL).await?;
+    let mut stream = match api.stream_run_status(run_id, property_ids).await {
         Ok(stream) => stream,
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
     };
-    if !json {
-        // The stream sends nothing while no property changes, so say that it
-        // is open.
-        eprintln!("Streaming property changes for run {run_id} until the run is final.");
-    }
-    let mut stdout = std::io::stdout().lock();
-    while let Some(line) = stream.try_next().await? {
-        let record = run_stream::Record::parse(&line)?;
-        if json {
-            writeln!(stdout, "{}", run_stream::json_line(&record, line))?;
-        } else {
-            write!(stdout, "{}", run_stream::render_record(&record, detail))?;
+    // The stream is silent until a property changes, so a terminal shows that
+    // it is open.
+    let spinner = std::io::stderr().is_terminal().then(|| {
+        let style = ProgressStyle::with_template("{spinner} streaming run {msg} ({elapsed})")
+            .expect("the template is valid");
+        let spinner = ProgressBar::new_spinner()
+            .with_style(style)
+            .with_message(run_id.to_string());
+        spinner.enable_steady_tick(Duration::from_millis(120));
+        spinner
+    });
+    let print = |text: String| -> std::io::Result<()> {
+        let write = || writeln!(std::io::stdout().lock(), "{text}");
+        match &spinner {
+            Some(spinner) => spinner.suspend(write),
+            None => write(),
         }
-        if let run_stream::Record::Finalized = record {
-            return Ok(());
+    };
+    let mut denormalizer = run_stream::Denormalizer::default();
+    let result = async {
+        while let Some(line) = stream.try_next().await? {
+            let record = run_stream::Record::parse(&line)?;
+            let finalized = matches!(record, run_stream::Record::Finalized);
+            for line in denormalizer.lines(record, run_id) {
+                print(if json { line.json().to_string() } else { line.render() })?;
+            }
+            if finalized {
+                return Ok(());
+            }
         }
+        // Without RUN_FINALIZED, the run can still change.
+        Err(eyre!("the stream ended before the run was final")
+            .note("later events are missing")
+            .suggestion(format!(
+                "read the current results with `snouty runs properties {run_id}`, or stream again with `snouty runs stream {run_id}`"
+            )))
     }
-    // Without RUN_FINALIZED, the run can still change.
-    Err(eyre!("the stream ended before the run was final")
-        .note("later changes are missing")
-        .suggestion(format!(
-            "read the current results with `snouty runs properties {run_id}`, or stream again with `snouty runs stream {run_id}`"
-        )))
+    .await;
+    if let Some(spinner) = spinner {
+        spinner.finish_and_clear();
+    }
+    result
 }
 
 async fn cmd_runs_build_logs(

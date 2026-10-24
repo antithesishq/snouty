@@ -425,25 +425,15 @@ pub(crate) fn decode_properties(data: &serde_json::Value) -> Result<Vec<Property
         .collect()
 }
 
-/// The notification types the run status stream sends when the request
-/// names none: discovery and verdict changes, and RUN_FINALIZED, which the
-/// server always sends. NEW_EXAMPLES_FOUND is opt-in, and a request that
-/// names types replaces this set, so asking for it names this set too.
-pub const DEFAULT_RUN_STREAM_NOTIFICATIONS: [RunStreamNotification; 3] = [
+/// The notification types `runs stream` asks for: all of them.
+/// NEW_EXAMPLES_FOUND is opt-in, so the request has to name the types.
+/// RUN_FINALIZED always comes, whatever the request names.
+const RUN_STREAM_NOTIFICATIONS: [RunStreamNotification; 4] = [
     RunStreamNotification::NewPropertiesAdded,
     RunStreamNotification::PropertiesPassed,
     RunStreamNotification::PropertiesFailed,
+    RunStreamNotification::NewExamplesFound,
 ];
-
-/// The notifications [`AntithesisApi::stream_run_status`] asks for.
-#[derive(Debug, Default)]
-pub struct RunStreamFilter {
-    /// Only these notification types; `None` asks for the server's default
-    /// set, [`DEFAULT_RUN_STREAM_NOTIFICATIONS`].
-    pub notification_types: Option<Vec<RunStreamNotification>>,
-    /// Stream only these properties. An empty list streams every property.
-    pub property_ids: Vec<String>,
-}
 
 /// Caps connection setup (DNS, TCP, TLS) so no command hangs on an unreachable host.
 /// Callers set no read or total timeout: a connected request may run for a long time.
@@ -1071,11 +1061,12 @@ impl AntithesisApi {
     pub async fn stream_run_status(
         &self,
         run_id: &str,
-        filter: RunStreamFilter,
+        property_ids: Vec<String>,
     ) -> Result<JsonStream> {
-        let property_filter = (!filter.property_ids.is_empty()).then_some(filter.property_ids);
+        // An empty list would stream no properties at all.
+        let property_filter = (!property_ids.is_empty()).then_some(property_ids);
         let body = generated::types::RunStatusStreamRequest {
-            notification_type_filter: filter.notification_types,
+            notification_type_filter: Some(RUN_STREAM_NOTIFICATIONS.to_vec()),
             property_filter,
         };
         let request = self.client.stream_run_status().run_id(run_id).body(body);

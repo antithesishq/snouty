@@ -2647,9 +2647,9 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-stream-final",
             "Stream a run that is already final",
             "I start the property stream on a completed run; I want it to end at once, not hang.",
-            "stderr says that the stream is open, and stdout is one `finalized` line. Exit 0.",
+            "stdout is one `completed <run id>` line. Exit 0.",
             ["runs", "stream", d.success],
-            succeeds_with("finalized"),
+            succeeds_with(f"completed  {d.success}"),
             json_capable=False,
         ),
         Story(

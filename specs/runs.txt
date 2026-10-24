@@ -352,11 +352,11 @@ mock-runs-server
 [!staging] stdout '"vtime":45\.334635781589895'
 
 # An unknown property ID in a run that exists says which ID is missing, and
-# how to list the IDs.
+# how to list the run's properties.
 mock-runs-server
 [!staging] ! snouty runs property $R_run_id no-such-property
 [!staging] stderr 'property not found: no-such-property'
-[!staging] stderr 'snouty --json runs properties \S+ \| jq -r \.id'
+[!staging] stderr 'list the run.s properties with `snouty runs properties \S+`'
 
 # An unknown run reports the run, not the property.
 mock-runs-server

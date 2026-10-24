@@ -855,7 +855,7 @@ async fn explain_property_error(
     let err = explain_run_scoped_error(api, run_id, err).await;
     if api_error_status(&err) == Some(404) {
         user_error(format!("property not found: {property_id}")).suggestion(format!(
-            "list the run's property IDs with `snouty --json runs properties {run_id} | jq -r .id`"
+            "list the run's properties with `snouty runs properties {run_id}`"
         ))
     } else {
         err

@@ -58,6 +58,7 @@ fn generate_api_client(out_dir: &Path) {
     drop_launch_status_code(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
     open_performance_tier(&mut spec_value);
+    open_fault_tolerance(&mut spec_value);
     open_sub_status(&mut spec_value);
     dedupe_property_status_filter(&mut spec_value);
     unrequire_search_limit_default(&mut spec_value);
@@ -340,6 +341,25 @@ fn mvd_params_variants<'a>(
         .unwrap_or_else(|| {
             panic!("openapi spec has no MVD_Params.oneOf; update `{transform}` in build.rs")
         })
+}
+
+/// Decode `Params.antithesis.fault_tolerance` as a plain string, for the same
+/// reason as [`open_performance_tier`]: one run with a level this build does
+/// not know must not fail a whole listing.
+fn open_fault_tolerance(spec: &mut serde_json::Value) {
+    let levels = remove_schema_key(
+        spec,
+        "/components/schemas/Params/properties/antithesis.fault_tolerance",
+        "enum",
+        "open_fault_tolerance",
+    );
+    assert!(
+        levels
+            .as_array()
+            .is_some_and(|levels| levels.iter().all(|l| l.is_string())),
+        "Params.antithesis.fault_tolerance's enum is not a list of strings; update \
+         `open_fault_tolerance` in build.rs"
+    );
 }
 
 /// Decode `Params.antithesis.performance_tier` as a plain string. `runs list`

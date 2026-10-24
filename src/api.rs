@@ -3453,6 +3453,17 @@ mod tests {
         assert_eq!(params.antithesis_performance_tier.as_deref(), Some("ultra"));
     }
 
+    #[test]
+    fn run_params_accept_any_fault_tolerance() {
+        let params: RunParams =
+            serde_json::from_value(serde_json::json!({"antithesis.fault_tolerance": "extreme"}))
+                .unwrap();
+        assert_eq!(
+            params.antithesis_fault_tolerance.as_deref(),
+            Some("extreme")
+        );
+    }
+
     #[tokio::test]
     async fn stream_runs_returns_empty_when_no_runs_exist() {
         let mock_server = MockServer::start().await;

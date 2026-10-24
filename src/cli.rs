@@ -550,13 +550,17 @@ pub enum RunsCommands {
         run_id: String,
     },
 
-    /// List property results for a run
+    /// List a run's property results, or show one property by ID
     #[command(
         long_about = HelpPage::RunsProperties.cli()
     )]
     Properties {
         /// Run ID
         run_id: String,
+
+        /// Show only the property with this ID
+        #[arg(conflicts_with_all = ["passing", "failing", "name", "group"])]
+        property_id: Option<String>,
 
         /// Show only passing properties
         #[arg(long, conflicts_with = "failing")]

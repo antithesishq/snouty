@@ -163,18 +163,12 @@ pub async fn cmd_runs(
             .await
         }
         Some(RunsCommands::Cancel { run_id }) => cmd_runs_cancel(&run_id, settings, output).await,
+        Some(RunsCommands::Property {
+            run_id,
+            property_id,
+        }) => cmd_runs_property(&run_id, &property_id, settings, output).await,
         Some(RunsCommands::Properties {
             run_id,
-            property_id: Some(property_id),
-            detail,
-            ..
-        }) => {
-            reject_detail_with_json(output.json, detail)?;
-            cmd_runs_property(&run_id, &property_id, settings, output).await
-        }
-        Some(RunsCommands::Properties {
-            run_id,
-            property_id: None,
             passing,
             failing,
             undetermined,

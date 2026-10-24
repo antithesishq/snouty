@@ -550,17 +550,13 @@ pub enum RunsCommands {
         run_id: String,
     },
 
-    /// List a run's property results, or show one property by ID
+    /// List property results for a run
     #[command(
         long_about = HelpPage::RunsProperties.cli()
     )]
     Properties {
         /// Run ID
         run_id: String,
-
-        /// Show only the property with this ID
-        #[arg(conflicts_with_all = ["passing", "failing", "undetermined", "name", "group"])]
-        property_id: Option<String>,
 
         /// Show passing properties; combine with --failing and --undetermined
         #[arg(long)]
@@ -586,6 +582,16 @@ pub enum RunsCommands {
         /// moments, instead of the summary table
         #[arg(short = 'd', long)]
         detail: bool,
+    },
+
+    /// Show one property of a run, by its ID
+    #[command(long_about = HelpPage::RunsProperty.cli())]
+    Property {
+        /// Run ID
+        run_id: String,
+
+        /// Property ID, from `snouty --json runs properties` or --detail
+        property_id: String,
     },
 
     /// Stream build logs for a run

@@ -1,0 +1,10 @@
+Show one property of a run, in full: its name, ID, group, category, team, status, example totals, and sample moments, as `snouty runs properties --detail` shows them.
+
+The property ID is in the JSON output of `snouty runs properties`, and in its --detail output. Property lookup needs a run created on release 65.3 or later.
+
+Examples:
+  snouty --json runs properties <run_id> --failing | jq -r .id
+  snouty runs property <run_id> <property_id>
+
+Add --json for machine-readable output. The property prints as one JSON object:
+  snouty --json runs property <run_id> <property_id> | jq .counterexample_count

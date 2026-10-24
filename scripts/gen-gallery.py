@@ -1020,7 +1020,7 @@ def _pick_property_id(sn: Snouty, run: str, prop: dict) -> str:
     prop_id = prop.get("id")
     if not prop_id:
         raise GalleryError(f"property {prop['name']!r} has no ID")
-    if not sn.run(["runs", "properties", run, prop_id]).ok:
+    if not sn.run(["runs", "property", run, prop_id]).ok:
         raise GalleryError(f"looking up property {prop_id} fails")
     return prop_id
 
@@ -2250,21 +2250,21 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             json_capable=False,
         ),
         Story(
-            "runs-properties-by-id",
+            "runs-property",
             "Look up one property by its ID",
             "I have a property ID from the JSON output, and I want that property alone.",
             "Shows only that property, in full as --detail does: its ID, totals, and at least one "
             "moment (hash/vtime), then one `snouty runs logs` next step.",
-            ["runs", "properties", d.success, d.fail_prop_id],
+            ["runs", "property", d.success, d.fail_prop_id],
             property_has_examples,
             json_capable=False,
         ),
         Story(
-            "runs-properties-by-id-unknown",
+            "runs-property-unknown",
             "Look up a property ID that the run does not have",
             "I mistype a property ID; I want to know which ID is wrong and how to find the right one.",
             "A clean `property not found: <id>` error that suggests how to list the IDs. Exit 1.",
-            ["runs", "properties", d.success, UNKNOWN_PROPERTY],
+            ["runs", "property", d.success, UNKNOWN_PROPERTY],
             expect_message("property not found"),
             json_capable=False,
         ),
@@ -3074,6 +3074,13 @@ def build_help_stories(d: Discovery) -> list[Story]:
             ["runs", "logs"],
             ["runs", "logs", s, d.logs_hash],
             samples=[("with an explicit end vtime", ["runs", "logs", s, d.logs_hash, d.logs_vtime])],
+        ),
+        _help_story(
+            "help-runs-property",
+            "Learn how to look up one property",
+            "I want the help to tell me where a property ID comes from and what the lookup shows.",
+            ["runs", "property"],
+            ["runs", "property", s, d.fail_prop_id],
         ),
         _help_story(
             "help-runs-build-logs",

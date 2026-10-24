@@ -1,0 +1,43 @@
+---
+source: tests/help_snapshots.rs
+---
+Show one property of a run, in full: its name, ID, group, category, team,
+status, example totals, and sample moments, as `snouty runs properties --detail`
+shows them.
+
+The property ID is in the JSON output of `snouty runs properties`, and in its
+--detail output. Property lookup needs a run created on release 65.3 or later.
+
+Examples:
+  snouty --json runs properties <run_id> --failing | jq -r .id
+  snouty runs property <run_id> <property_id>
+
+Add --json for machine-readable output. The property prints as one JSON object:
+  snouty --json runs property <run_id> <property_id> | jq .counterexample_count
+
+Usage: snouty runs property [OPTIONS] <RUN_ID> <PROPERTY_ID>
+
+Arguments:
+  <RUN_ID>
+          Run ID
+
+  <PROPERTY_ID>
+          Property ID, from `snouty --json runs properties` or --detail
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --json
+          Output JSON where supported (NDJSON for list/stream commands, pretty
+          JSON otherwise)
+
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

@@ -19,8 +19,8 @@ fn main() {
 }
 
 /// How many `"additionalProperties": false` occurrences the vendored spec
-/// carries (tenant release 64.0: none).
-const EXPECTED_ADDITIONAL_PROPERTIES_FALSE: usize = 0;
+/// carries (tenant release 65.3: one).
+const EXPECTED_ADDITIONAL_PROPERTIES_FALSE: usize = 1;
 
 fn generate_api_client(out_dir: &Path) {
     let file = std::fs::File::open("src/openapi.json").unwrap();
@@ -58,7 +58,9 @@ fn generate_api_client(out_dir: &Path) {
     drop_launch_status_code(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
     open_performance_tier(&mut spec_value);
+    open_fault_tolerance(&mut spec_value);
     open_sub_status(&mut spec_value);
+    dedupe_property_status_filter(&mut spec_value);
     unrequire_search_limit_default(&mut spec_value);
     unrequire_search_count_validate_only_default(&mut spec_value);
     add_mvd_test_name(&mut spec_value);
@@ -341,6 +343,25 @@ fn mvd_params_variants<'a>(
         })
 }
 
+/// Decode `Params.antithesis.fault_tolerance` as a plain string, for the same
+/// reason as [`open_performance_tier`]: one run with a level this build does
+/// not know must not fail a whole listing.
+fn open_fault_tolerance(spec: &mut serde_json::Value) {
+    let levels = remove_schema_key(
+        spec,
+        "/components/schemas/Params/properties/antithesis.fault_tolerance",
+        "enum",
+        "open_fault_tolerance",
+    );
+    assert!(
+        levels
+            .as_array()
+            .is_some_and(|levels| levels.iter().all(|l| l.is_string())),
+        "Params.antithesis.fault_tolerance's enum is not a list of strings; update \
+         `open_fault_tolerance` in build.rs"
+    );
+}
+
 /// Decode `Params.antithesis.performance_tier` as a plain string. `runs list`
 /// and `runs show` decode every run's parameters through `Params`, so a closed
 /// enum would fail a whole listing on one tier this build does not know. The
@@ -393,6 +414,38 @@ fn open_sub_status(spec: &mut serde_json::Value) {
          src/api.rs and `open_sub_status` in build.rs"
     );
     spec.pointer_mut(POINTER).unwrap()["format"] = serde_json::json!(SUB_STATUS_FORMAT);
+}
+
+/// Point the `/properties` status filter at `Property_Status`. The spec lists
+/// each status twice, capitalized and lowercase, and typify cannot give the
+/// two spellings distinct variant names.
+/// TODO: delete this transform when the filter's enum lists each status once.
+fn dedupe_property_status_filter(spec: &mut serde_json::Value) {
+    const POINTER: &str = "/paths/~1api~1v0~1runs~1{run_id}~1properties/get/parameters/3/schema";
+    let items = remove_schema_key(spec, POINTER, "items", "dedupe_property_status_filter");
+    let statuses = spec["components"]["schemas"]["Property_Status"]["enum"]
+        .as_array()
+        .expect("openapi spec has no Property_Status enum");
+    let mut expected: Vec<String> = statuses
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .flat_map(|status| [status.to_string(), status.to_lowercase()])
+        .collect();
+    let mut actual: Vec<String> = items["enum"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str().map(str::to_string))
+        .collect();
+    expected.sort_unstable();
+    actual.sort_unstable();
+    assert_eq!(
+        actual, expected,
+        "the /properties status filter no longer lists each Property_Status value capitalized \
+         and lowercase; update or delete `dedupe_property_status_filter` in build.rs"
+    );
+    spec.pointer_mut(POINTER).unwrap()["items"] =
+        serde_json::json!({"$ref": "#/components/schemas/Property_Status"});
 }
 
 /// The format `open_sub_status` marks the schema with, for `with_conversion`.

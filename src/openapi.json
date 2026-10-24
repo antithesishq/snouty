@@ -289,6 +289,10 @@
                           "created": "2026-05-13T18:42:07Z"
                         }
                       ]
+                    },
+                    "fault_settings": {
+                      "fault_tolerance": "resilient",
+                      "custom_fault_settings": false
                     }
                   }
                 }
@@ -322,66 +326,61 @@
         }
       }
     },
-    "/api/v0/runs/{run_id}/command": {
+    "/api/v0/runs/{run_id}/stream": {
       "post": {
-        "operationId": "executeCommand",
-        "summary": "Execute a command in a test run",
-        "description": "Executes a bash command in the live run associated with the test run, starting at the requested moment. When `include_system_logs` is `true`, every event observed during the command's execution is included, not just the command's own stdout and stderr. Output is streamed as newline-delimited JSON (NDJSON). Command output uses the same `Event` shape returned by the run logs endpoint, without an additional wrapper. A successful stream ends with exactly one command result whose `status` is `exited` or `timed_out`; a stream that fails after the response begins ends with a `Stream_Error`. If the requested moment is not warm in the live run and a source run is available, the server rewarms it before running the command and emits `Rewarm_Progress` records ahead of the command output. For Kubernetes-orchestrated runs, set `_ANTITHESIS_HOST` as the container parameter and drive the cluster with `kubectl` commands. For example, `kubectl get pods -A` to list the pods and `kubectl exec <pod> -n <namespace> -c <container> -- <command>` to run a command inside a pod.",
-        "tags": ["Test runs"],
+        "operationId": "streamRunStatus",
+        "tags": [
+          "Test runs"
+        ],
+        "summary": "Stream property updates for a run",
+        "description": "Streams newline-delimited JSON (application/x-ndjson), one object per line. Subscribe before fetching /properties to collect updates while loading the initial state. There is no initial snapshot, replay cursor, or resume support. Reconnect and reload the current properties after a failed stream. A quiet stream can remain open without emitting heartbeat records.\n\nEvery notification uses the same type/data envelope. Data contains complete Event_Property or Non_Event_Property objects, including metadata, status, counts, and samples. NEW_EXAMPLES_FOUND includes only newly delivered samples, with cumulative counts; status notifications include retained samples. Arrays are always present, including empty sample arrays.\n\nRUN_FINALIZED has an empty data array, bypasses all filters and ends the stream successfully. An already-finalized view emits RUN_FINALIZED immediately. If the source fails or the subscriber falls behind after HTTP 200, the stream ends with an error object instead; EOF without RUN_FINALIZED does not establish finalization.\n\nRuns created before Antithesis 65.3 do not support streaming and return 409. Their saved results remain available from /properties.",
         "parameters": [
           {
             "name": "run_id",
             "in": "path",
-            "description": "Unique identifier of the test run whose live session should execute the command.",
             "required": true,
+            "description": "Unique identifier of the test run.",
             "schema": {
-              "type": "string",
-              "example": "9325f006ffd3a399a8497bc888878b97-50-1"
+              "type": "string"
             }
           }
         ],
         "requestBody": {
-          "required": true,
+          "required": false,
+          "description": "Optional filters. An empty body is equivalent to {}. Unknown fields and unknown notification types are rejected with 400.",
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/Execute_Command_Request"
+                "$ref": "#/components/schemas/Run_Status_Stream_Request"
               },
               "examples": {
-                "docker_compose": {
-                  "summary": "Run a command in a Docker Compose service container",
+                "default": {
+                  "summary": "Default discovery and terminal notifications",
+                  "value": {}
+                },
+                "with_examples": {
+                  "summary": "Include sample notifications",
                   "value": {
-                    "moment": {
-                      "input_hash": "-3625518438076122494",
-                      "vtime": "398.4898056755774"
-                    },
-                    "script": "cat /etc/hostname",
-                    "timeout_seconds": 30,
-                    "container": "my-service"
+                    "notification_type_filter": [
+                      "NEW_PROPERTIES_ADDED",
+                      "PROPERTIES_PASSED",
+                      "PROPERTIES_FAILED",
+                      "NEW_EXAMPLES_FOUND"
+                    ]
                   }
                 },
-                "host": {
-                  "summary": "Run a command on the host",
+                "selected_properties": {
+                  "summary": "Watch selected properties",
                   "value": {
-                    "moment": {
-                      "input_hash": "-3625518438076122494",
-                      "vtime": "398.4898056755774"
-                    },
-                    "script": "uname -a",
-                    "timeout_seconds": 30,
-                    "container": "_ANTITHESIS_HOST"
+                    "property_filter": [
+                      "27a7cb0b311c8481c4ce12f3347fadbf"
+                    ]
                   }
                 },
-                "kubernetes": {
-                  "summary": "Inspect pods in a Kubernetes run",
+                "finalization_only": {
+                  "summary": "Only wait for finalization",
                   "value": {
-                    "moment": {
-                      "input_hash": "-3625518438076122494",
-                      "vtime": "398.4898056755774"
-                    },
-                    "script": "kubectl get pods -A && kubectl exec deploy/my-service -- cat /etc/hostname",
-                    "timeout_seconds": 30,
-                    "container": "_ANTITHESIS_HOST"
+                    "notification_type_filter": []
                   }
                 }
               }
@@ -390,71 +389,279 @@
         },
         "responses": {
           "200": {
-            "description": "An NDJSON stream containing zero or more command-output `Event` records followed by exactly one terminal `Command_Termination_Result`. If an error occurs after the response begins, the stream instead ends with a `Stream_Error`. Each line is a self-contained JSON object. When a cold moment has to be rewarmed first, the stream begins with `Rewarm_Progress` records. Clients should classify lines by `status`: `rewarming` is a progress record, `exited` or `timed_out` is the terminal result, and a line without `status` is an event.",
+            "description": "An NDJSON stream. The schema and examples describe individual lines, not a JSON array containing the entire response.",
             "content": {
               "application/x-ndjson": {
                 "schema": {
                   "oneOf": [
-                    { "$ref": "#/components/schemas/Event" },
-                    { "$ref": "#/components/schemas/Command_Termination_Result" },
-                    { "$ref": "#/components/schemas/Rewarm_Progress" },
-                    { "$ref": "#/components/schemas/Stream_Error" }
+                    {
+                      "$ref": "#/components/schemas/Run_Stream_Notification"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Stream_Error"
+                    }
                   ]
                 },
                 "examples": {
-                  "output": {
-                    "summary": "A line written to stdout",
+                  "discovered": {
+                    "summary": "A newly discovered property",
                     "value": {
-                      "moment": {
-                        "input_hash": "-3625518438076122494",
-                        "vtime": "398.491"
-                      },
-                      "output_text": "Linux antithesis 6.12.0",
-                      "source": {
-                        "stream": "info"
-                      }
+                      "type": "NEW_PROPERTIES_ADDED",
+                      "data": [
+                        {
+                          "id": "27a7cb0b311c8481c4ce12f3347fadbf",
+                          "name": "Balance stays nonnegative",
+                          "description": null,
+                          "status": "Undetermined",
+                          "is_event": true,
+                          "is_group": false,
+                          "example_count": 0,
+                          "counterexample_count": 0,
+                          "examples": [],
+                          "counterexamples": []
+                        }
+                      ]
                     }
                   },
-                  "exited": {
-                    "summary": "The command exited",
+                  "passed_with_example": {
+                    "summary": "Passing with a retained passing event",
                     "value": {
-                      "status": "exited",
-                      "exit_code": 0,
-                      "end_moment": {
-                        "input_hash": "-3625518438076122494",
-                        "vtime": "398.492"
-                      }
+                      "type": "PROPERTIES_PASSED",
+                      "data": [
+                        {
+                          "id": "27a7cb0b311c8481c4ce12f3347fadbf",
+                          "name": "Balance stays nonnegative",
+                          "status": "Passing",
+                          "examples": [
+                            {
+                              "moment": {
+                                "input_hash": "-3625518438076122494",
+                                "vtime": "398.4898056755774"
+                              },
+                              "message": "Balance stays nonnegative",
+                              "details": {
+                                "balance": 12
+                              }
+                            }
+                          ],
+                          "counterexamples": [],
+                          "description": null,
+                          "is_event": true,
+                          "is_group": false,
+                          "example_count": 1,
+                          "counterexample_count": 0
+                        }
+                      ]
                     }
                   },
-                  "timed_out": {
-                    "summary": "The command timed out",
+                  "passed_with_both": {
+                    "summary": "Passing with both kinds of observations",
                     "value": {
-                      "status": "timed_out",
-                      "last_moment": {
-                        "input_hash": "-3625518438076122494",
-                        "vtime": "398.491"
-                      }
+                      "type": "PROPERTIES_PASSED",
+                      "data": [
+                        {
+                          "id": "27a7cb0b311c8481c4ce12f3347fadbf",
+                          "name": "Balance stays nonnegative",
+                          "status": "Passing",
+                          "examples": [
+                            {
+                              "moment": {
+                                "input_hash": "-3625518438076122494",
+                                "vtime": "398.4898056755774"
+                              },
+                              "message": "Balance stays nonnegative",
+                              "details": {
+                                "balance": 12
+                              }
+                            }
+                          ],
+                          "counterexamples": [
+                            {
+                              "moment": {
+                                "input_hash": "-3625518438076122494",
+                                "vtime": "401.25"
+                              },
+                              "message": "Balance stays nonnegative",
+                              "details": {
+                                "balance": -1
+                              }
+                            }
+                          ],
+                          "description": null,
+                          "is_event": true,
+                          "is_group": false,
+                          "example_count": 1,
+                          "counterexample_count": 1
+                        }
+                      ]
                     }
                   },
-                  "rewarm_started": {
-                    "summary": "The requested moment was not warm; rewarming has begun",
+                  "passed_without_samples": {
+                    "summary": "Passing without retained event samples",
                     "value": {
-                      "status": "rewarming",
-                      "percent_complete": 0
+                      "type": "PROPERTIES_PASSED",
+                      "data": [
+                        {
+                          "id": "27a7cb0b311c8481c4ce12f3347fadbf",
+                          "name": "Balance stays nonnegative",
+                          "status": "Passing",
+                          "examples": [],
+                          "counterexamples": [],
+                          "description": null,
+                          "is_event": true,
+                          "is_group": false,
+                          "example_count": 0,
+                          "counterexample_count": 0
+                        }
+                      ]
                     }
                   },
-                  "rewarm_progress": {
-                    "summary": "Rewarming is partway through replaying inputs",
+                  "failed_with_counterexample": {
+                    "summary": "Failing with a counterexample",
                     "value": {
-                      "status": "rewarming",
-                      "percent_complete": 40
+                      "type": "PROPERTIES_FAILED",
+                      "data": [
+                        {
+                          "id": "27a7cb0b311c8481c4ce12f3347fadbf",
+                          "name": "Balance stays nonnegative",
+                          "status": "Failing",
+                          "examples": [],
+                          "counterexamples": [
+                            {
+                              "moment": {
+                                "input_hash": "-3625518438076122494",
+                                "vtime": "401.25"
+                              },
+                              "message": "Balance stays nonnegative",
+                              "details": {
+                                "balance": -1
+                              }
+                            }
+                          ],
+                          "description": null,
+                          "is_event": true,
+                          "is_group": false,
+                          "example_count": 0,
+                          "counterexample_count": 1
+                        }
+                      ]
                     }
                   },
-                  "rewarm_complete": {
-                    "summary": "The moment is warm; the command is now executing",
+                  "failed_with_both": {
+                    "summary": "Failing with passing and failing observations",
                     "value": {
-                      "status": "rewarming",
-                      "percent_complete": 100
+                      "type": "PROPERTIES_FAILED",
+                      "data": [
+                        {
+                          "id": "27a7cb0b311c8481c4ce12f3347fadbf",
+                          "name": "Balance stays nonnegative",
+                          "status": "Failing",
+                          "examples": [
+                            {
+                              "moment": {
+                                "input_hash": "-3625518438076122494",
+                                "vtime": "398.4898056755774"
+                              },
+                              "message": "Balance stays nonnegative",
+                              "details": {
+                                "balance": 12
+                              }
+                            }
+                          ],
+                          "counterexamples": [
+                            {
+                              "moment": {
+                                "input_hash": "-3625518438076122494",
+                                "vtime": "401.25"
+                              },
+                              "message": "Balance stays nonnegative",
+                              "details": {
+                                "balance": -1
+                              }
+                            }
+                          ],
+                          "description": null,
+                          "is_event": true,
+                          "is_group": false,
+                          "example_count": 1,
+                          "counterexample_count": 1
+                        }
+                      ]
+                    }
+                  },
+                  "failed_without_samples": {
+                    "summary": "Failing without retained event samples",
+                    "value": {
+                      "type": "PROPERTIES_FAILED",
+                      "data": [
+                        {
+                          "id": "27a7cb0b311c8481c4ce12f3347fadbf",
+                          "name": "Balance stays nonnegative",
+                          "status": "Failing",
+                          "examples": [],
+                          "counterexamples": [],
+                          "description": null,
+                          "is_event": true,
+                          "is_group": false,
+                          "example_count": 0,
+                          "counterexample_count": 0
+                        }
+                      ]
+                    }
+                  },
+                  "new_examples": {
+                    "summary": "Opt-in samples with cumulative counts",
+                    "value": {
+                      "type": "NEW_EXAMPLES_FOUND",
+                      "data": [
+                        {
+                          "id": "27a7cb0b311c8481c4ce12f3347fadbf",
+                          "name": "Balance stays nonnegative",
+                          "example_count": 24,
+                          "counterexample_count": 2,
+                          "examples": [
+                            {
+                              "moment": {
+                                "input_hash": "-3625518438076122494",
+                                "vtime": "398.4898056755774"
+                              },
+                              "message": "Balance stays nonnegative",
+                              "details": {
+                                "balance": 12
+                              }
+                            }
+                          ],
+                          "counterexamples": [
+                            {
+                              "moment": {
+                                "input_hash": "-3625518438076122494",
+                                "vtime": "401.25"
+                              },
+                              "message": "Balance stays nonnegative",
+                              "details": {
+                                "balance": -1
+                              }
+                            }
+                          ],
+                          "description": null,
+                          "status": "Undetermined",
+                          "is_event": true,
+                          "is_group": false
+                        }
+                      ]
+                    }
+                  },
+                  "finalized": {
+                    "summary": "Successful end of the stream",
+                    "value": {
+                      "type": "RUN_FINALIZED",
+                      "data": []
+                    }
+                  },
+                  "error": {
+                    "summary": "Stream closed before finalization",
+                    "value": {
+                      "error": "This endpoint is temporarily unavailable. Please retry with backoff."
                     }
                   }
                 }
@@ -464,26 +671,30 @@
           "400": {
             "$ref": "#/components/responses/BadRequest"
           },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          },
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
-          "405": {
-            "$ref": "#/components/responses/MethodNotAllowed"
-          },
-          "406": {
-            "$ref": "#/components/responses/NotAcceptable"
+          "409": {
+            "description": "The run was created before Antithesis 65.3 and does not support streaming. List its saved results with /properties instead.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error_Response"
+                },
+                "example": {
+                  "message": "Conflict: Streaming is not available for this run. Streaming requires a run created with Antithesis version 65.3 or later. You can still view this run's saved property results."
+                }
+              }
+            }
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
           }
         }
       }
@@ -700,14 +911,35 @@
       "get": {
         "operationId": "listRunProperties",
         "summary": "List test run properties",
-        "description": "Returns a paginated list of property results for a test run, including both passing and failing properties by default. Use the `status` parameter to filter by a specific status.\n\n**Known limitation:** Property results are not available for test runs created before Antithesis version 54.5. Requests for such runs return `404 Not Found`.",
-        "tags": ["Test runs"],
+        "description": "Returns a paginated list of a test run's current properties, including Undetermined properties, with retained event samples. Keep the same run and status filters when following next_cursor. Pages are live reads, not a frozen snapshot; properties can change between reads. A stale cursor returns 400 and requires restarting pagination. Unknown query parameters are ignored.\n\n**Runs created before Antithesis version 65.3** return their saved property results instead. Those results are only Passing or Failing, so filtering on Undetermined returns no properties, and the response omits `total_count` and `response_count`. An `after` cursor issued by the previous version of this endpoint continues paging the saved results, so pagination started before an upgrade can finish.\n\n**Known limitation:** Property results are not available for test runs created before Antithesis version 54.5. Requests for such runs return `404 Not Found`.",
+        "tags": [
+          "Test runs"
+        ],
         "parameters": [
           {
             "name": "run_id",
             "in": "path",
-            "description": "Unique identifier of the test run to retrieve properties for.",
             "required": true,
+            "description": "Unique identifier of the test run to retrieve properties for.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum page size.",
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 5000
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Opaque next_cursor from a previous page.",
             "schema": {
               "type": "string"
             }
@@ -715,37 +947,28 @@
           {
             "name": "status",
             "in": "query",
-            "description": "Filter properties by status. When omitted, properties of all statuses are returned.",
-            "required": false,
+            "description": "Filter by one or more statuses. Repeat the parameter, for example status=Passing&status=Undetermined. Lowercase equivalents are also accepted. Omit for all statuses.",
+            "style": "form",
+            "explode": true,
             "schema": {
-              "$ref": "#/components/schemas/Property_Status"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "Maximum number of results to return. Must be between 1 and 100; values outside this range return 400 Bad Request.",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "default": 50,
-              "minimum": 1,
-              "maximum": 100
-            }
-          },
-          {
-            "name": "after",
-            "in": "query",
-            "description": "Cursor for pagination. Pass the `next_cursor` value from a previous response to fetch the next page.",
-            "required": false,
-            "schema": {
-              "type": "string"
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "Passing",
+                  "Failing",
+                  "Undetermined",
+                  "passing",
+                  "failing",
+                  "undetermined"
+                ]
+              }
             }
           }
         ],
         "responses": {
           "200": {
-            "description": "A paginated list of property results.",
+            "description": "A page of property results.",
             "content": {
               "application/json": {
                 "schema": {
@@ -754,41 +977,21 @@
                 "example": {
                   "data": [
                     {
-                      "name": "Sometimes: Root moments",
+                      "id": "27a7cb0b311c8481c4ce12f3347fadbf",
+                      "name": "Balance stays nonnegative",
                       "description": null,
-                      "status": "Passing",
+                      "status": "Undetermined",
                       "is_event": true,
                       "is_group": false,
-                      "example_count": 1,
+                      "example_count": 0,
                       "counterexample_count": 0,
-                      "examples": [
-                        {
-                          "env_setup": "complete",
-                          "source": {
-                            "name": "env_root"
-                          },
-                          "moment": {
-                            "input_hash": "-363173456058459333",
-                            "vtime": "22.475549569819123"
-                          }
-                        }
-                      ],
+                      "examples": [],
                       "counterexamples": []
-                    },
-                    {
-                        "name": "Input count",
-                        "description": null,
-                        "status": "Passing",
-                        "is_event": false,
-                        "is_group": false,
-                        "example_count": 1,
-                        "counterexample_count": 0,
-                        "examples": [
-                            318446
-                        ],
-                        "counterexamples": []
                     }
-                  ]
+                  ],
+                  "total_count": 1,
+                  "response_count": 1,
+                  "next_cursor": null
                 }
               }
             }
@@ -810,6 +1013,101 @@
           },
           "406": {
             "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v0/runs/{run_id}/properties/{property_id}": {
+      "get": {
+        "operationId": "getRunProperty",
+        "tags": [
+          "Test runs"
+        ],
+        "summary": "Get a test run property",
+        "description": "Returns one property exactly as /properties lists it. The read is live, not a frozen snapshot; the property can change between reads. The endpoint takes no query parameters; any supplied parameter returns 400. Runs created before Antithesis 65.3 return 409; list their saved results with /properties.",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "description": "Unique identifier of the test run.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "property_id",
+            "in": "path",
+            "required": true,
+            "description": "Opaque property identifier, as returned in id by /properties and the run stream.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The current property snapshot.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Property"
+                },
+                "example": {
+                  "id": "27a7cb0b311c8481c4ce12f3347fadbf",
+                  "name": "Balance stays nonnegative",
+                  "description": null,
+                  "status": "Undetermined",
+                  "is_event": true,
+                  "is_group": false,
+                  "example_count": 0,
+                  "counterexample_count": 0,
+                  "examples": [],
+                  "counterexamples": []
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "The run or the property was not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error_Response"
+                },
+                "example": {
+                  "message": "Property 27a7cb0b311c8481c4ce12f3347fadbf not found"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The run was created before Antithesis 65.3 and does not support property lookup. List its saved results with /properties instead.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error_Response"
+                },
+                "example": {
+                  "message": "Conflict: Property lookup is not available for this run. Property lookup requires a run created with Antithesis version 65.3 or later. You can still view this run's saved property results."
+                }
+              }
+            }
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
@@ -1102,6 +1400,172 @@
         }
       }
     },
+    "/api/v0/runs/{run_id}/command": {
+      "post": {
+        "operationId": "executeCommand",
+        "summary": "Execute a command in a test run",
+        "description": "Executes a bash command in a test run, starting at a given moment.\n\nThe moment can come from any test run, including one that has already completed. The command executes in the in-progress run given by `run_id`:\n\n- If the moment is from that run, the command runs on it directly.\n- If the moment is from a different run, pass that run's ID as `source_run_id` (or its debugging session ID as `source_session_id`). If you launched the in-progress run with [Launch a debugging session](/docs/reference/rest_api/#op-launchMvd), you can leave both out, and the server uses the run you launched it from. The server \"rewarms\" the moment from the source run, emitting `Rewarm_Progress` records ahead of the command output. The source run must be on the same [performance tier](/docs/product/launching_tests/#choose-a-performance-tier) as `run_id`.\n\nIf you don't have an in-progress run, start one with [Launch a debugging session](/docs/reference/rest_api/#op-launchMvd).\n\nSet `container` to the container you want the script to run in. To run it on the host machine instead, set `container` to `_ANTITHESIS_HOST`.\n\nIf you're using Kubernetes, set `container` to `_ANTITHESIS_HOST`, and manage the cluster with `kubectl` commands. For example, use `kubectl get pods -A` to list the pods, and `kubectl exec <pod> -n <namespace> -c <container> -- <command>` to run a command inside a pod.\n\nReturns the command's stdout and stderr. Set `include_system_logs` to `true` to also include every event observed during the command's execution.\n\nOutput is streamed as newline-delimited JSON (NDJSON). Command output uses the same `Event` shape returned by the [Get logs for a specific moment](/docs/reference/rest_api/#op-getRunLogs) endpoint.\n\nA successful stream ends with exactly one command result with a status of `exited` or `timed_out`. A stream that fails after the response begins ends with a `Stream_Error`.\n\nThe command times out after 600 seconds by default; set `timeout_seconds` to change this. Rewarming time doesn't count toward the timeout.",
+        "tags": ["Test runs"],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "description": "Unique identifier of the test run whose in-progress session should execute the command.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "9325f006ffd3a399a8497bc888878b97-50-1"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Execute_Command_Request"
+              },
+              "examples": {
+                "docker_compose": {
+                  "summary": "Run a command in a Docker Compose service container",
+                  "value": {
+                    "moment": {
+                      "input_hash": "-3625518438076122494",
+                      "vtime": "398.4898056755774"
+                    },
+                    "script": "cat /etc/hostname",
+                    "timeout_seconds": 30,
+                    "container": "my-service"
+                  }
+                },
+                "host": {
+                  "summary": "Run a command on the host",
+                  "value": {
+                    "moment": {
+                      "input_hash": "-3625518438076122494",
+                      "vtime": "398.4898056755774"
+                    },
+                    "script": "uname -a",
+                    "timeout_seconds": 30,
+                    "container": "_ANTITHESIS_HOST"
+                  }
+                },
+                "kubernetes": {
+                  "summary": "Inspect pods in a Kubernetes run",
+                  "value": {
+                    "moment": {
+                      "input_hash": "-3625518438076122494",
+                      "vtime": "398.4898056755774"
+                    },
+                    "script": "kubectl get pods -A && kubectl exec deploy/my-service -- cat /etc/hostname",
+                    "timeout_seconds": 30,
+                    "container": "_ANTITHESIS_HOST"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "An NDJSON stream containing zero or more command-output `Event` records followed by exactly one terminal `Command_Termination_Result`. If an error occurs after the response begins, the stream instead ends with a `Stream_Error`. Each line is a self-contained JSON object. When a cold moment has to be rewarmed first, the stream begins with `Rewarm_Progress` records. Clients should classify lines by `status`: `rewarming` is a progress record, `exited` or `timed_out` is the terminal result, and a line without `status` is an event.",
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/Event" },
+                    { "$ref": "#/components/schemas/Command_Termination_Result" },
+                    { "$ref": "#/components/schemas/Rewarm_Progress" },
+                    { "$ref": "#/components/schemas/Stream_Error" }
+                  ]
+                },
+                "examples": {
+                  "output": {
+                    "summary": "A line written to stdout",
+                    "value": {
+                      "moment": {
+                        "input_hash": "-3625518438076122494",
+                        "vtime": "398.491"
+                      },
+                      "output_text": "Linux antithesis 6.12.0",
+                      "source": {
+                        "stream": "info"
+                      }
+                    }
+                  },
+                  "exited": {
+                    "summary": "The command exited",
+                    "value": {
+                      "status": "exited",
+                      "exit_code": 0,
+                      "end_moment": {
+                        "input_hash": "-3625518438076122494",
+                        "vtime": "398.492"
+                      }
+                    }
+                  },
+                  "timed_out": {
+                    "summary": "The command timed out",
+                    "value": {
+                      "status": "timed_out",
+                      "last_moment": {
+                        "input_hash": "-3625518438076122494",
+                        "vtime": "398.491"
+                      }
+                    }
+                  },
+                  "rewarm_started": {
+                    "summary": "The requested moment was not warm; rewarming has begun",
+                    "value": {
+                      "status": "rewarming",
+                      "percent_complete": 0
+                    }
+                  },
+                  "rewarm_progress": {
+                    "summary": "Rewarming is partway through replaying inputs",
+                    "value": {
+                      "status": "rewarming",
+                      "percent_complete": 40
+                    }
+                  },
+                  "rewarm_complete": {
+                    "summary": "The moment is warm; the command is now executing",
+                    "value": {
+                      "status": "rewarming",
+                      "percent_complete": 100
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
     "/api/v0/runs/{run_id}/cancel": {
       "post": {
         "operationId": "cancelRun",
@@ -1178,7 +1642,7 @@
       "post": {
         "operationId": "launchTest",
         "summary": "Launch a test",
-        "description": "Kicks off a test using the specified launcher (e.g. `basic_test` or `basic_k8s_test`). Fetches the relevant container images specified in configuration files and in `antithesis.images`, builds the test environment, and runs the test for the duration set in `antithesis.duration`. Returns an HTTP status code indicating whether the test was successfully started (not the test result itself).",
+        "description": "Kicks off a test using the specified launcher (e.g. `basic_test` or `basic_k8s_test`). Fetches the relevant container images specified in configuration files and in `antithesis.images`, builds the test environment, and runs the test for the duration set in `antithesis.duration`. Returns an HTTP status code indicating whether the test was successfully started (not the test result itself). New tests are rejected with a `402` while the tenant's usage for the current entitlement period, as reported by `/api/v0/usage/summary` over that period, is at or above the usage cap (see `/api/v0/usage/cap`). While no entitlement period is in force, the most recent period is treated as continuing. Tenants with no cap are not limited. Tests that are already running are not affected.",
         "tags": ["Launch"],
         "parameters": [
           {
@@ -1213,6 +1677,20 @@
                 "example": {
                   "statusCode": 202,
                   "runId": "0e62aa320a60967967096401ce826bd5-54-1"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Usage cap reached — the tenant's usage for the current entitlement period is at or above its usage cap, so no new tests can be launched until the next period begins or the cap is raised.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Launch_Error_Response"
+                },
+                "example": {
+                  "statusCode": 402,
+                  "message": "usage for the current period (5000 hours) has reached the usage cap (5000 hours)"
                 }
               }
             }
@@ -1603,13 +2081,13 @@
       "get": {
         "operationId": "listUsage",
         "summary": "Lists all usage entries",
-        "description": "Returns a paginated list of usage line items. Results are ordered by creation time, newest first",
+        "description": "Returns a paginated list of usage line items for runs whose billed end time falls in the half-open window `[start_time, end_time)`. If either time is not provided, the window is unbounded in that direction. Results are ordered by run start time, newest first.",
         "tags": ["Usage"],
         "parameters": [
           {
             "name": "start_time",
             "in": "query",
-            "description": "Only return usage from runs started after this timestamp (ISO 8601).",
+            "description": "Only return runs that ended at or after this timestamp (ISO 8601). Must be before `end_time` when both are provided.",
             "required": false,
             "schema": {
               "type": "string",
@@ -1619,7 +2097,7 @@
           {
             "name": "end_time",
             "in": "query",
-            "description": "Only return usage from runs started before this timestamp (ISO 8601).",
+            "description": "Only return runs that ended strictly before this timestamp (ISO 8601). Must be after `start_time` when both are given.",
             "required": false,
             "schema": {
               "type": "string",
@@ -1629,13 +2107,13 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Maximum number of results to return. Server-capped at 100.",
+            "description": "Maximum number of results to return. Server-capped at 1000.",
             "required": false,
             "schema": {
               "type": "integer",
               "default": 50,
               "minimum": 1,
-              "maximum": 100
+              "maximum": 1000
             }
           },
           {
@@ -1713,13 +2191,13 @@
       "get": {
         "operationId": "getUsageSummary",
         "summary": "Gets a total of usage hours used",
-        "description": "Gets the total number of runs and usage hours used by all runs, bounded by the optional start and end limits",
+        "description": "Gets the total number of runs and usage hours for runs whose billed end time falls in the half-open window `[start_time, end_time)`. If either time is omitted, the window is unbounded in that direction",
         "tags": ["Usage"],
         "parameters": [
           {
             "name": "start_time",
             "in": "query",
-            "description": "Only return usage from runs started after this timestamp (ISO 8601).",
+            "description": "Only count runs that ended at or after this timestamp (ISO 8901). Must be before `end_time` when both are given.",
             "required": false,
             "schema": {
               "type": "string",
@@ -1729,7 +2207,7 @@
           {
             "name": "end_time",
             "in": "query",
-            "description": "Only return usage from runs started before this timestamp (ISO 8601).",
+            "description": "Only count runs that ended strictly before this timestamp (ISO 8901). Must be after `start_time` when both are given.",
             "required": false,
             "schema": {
               "type": "string",
@@ -1739,7 +2217,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The total number of runs and usage hours for the requested period",
+            "description": "The total number of runs and usage hours for the requested `[start_time, end_time)` window",
             "content": {
               "application/json": {
                 "schema": {
@@ -1779,37 +2257,24 @@
         }
       }
     },
-    "/api/v0/usage/entitlements": {
+    "/api/v0/usage/cap": {
       "get": {
-        "operationId": "listEntitlements",
-        "summary": "Lists the tenant's entitlements",
-        "description": "Returns the entitlements from the tenant's contract, as recorded in the entitlement registry, keyed by SKU. Each SKU has its own entitlement shape; currently the only SKU is `core_hours`. `core_hours` entitlements are prepaid usage hours per entitlement period: each period is a half-open `[start, end)` interval with its prepaid quantity. When the contract has been amended, a period is taken from the latest contract version effective at or before the period's start. Periods are ordered by `start`, oldest first. Tenants on legacy pricing have no entitlements and receive an empty object.",
+        "operationId": "getUsageCap",
+        "summary": "Gets the tenant's usage cap",
+        "description": "Returns the usage cap set on the tenant: the maximum usage hours usable per entitlement period. Once the tenant's usage for the current entitlement period (as reported by `/api/v0/usage/summary` over that period) reaches the cap, new tests are rejected. The cap is never less than the current period's prepaid quantity; a cap that falls below it, for example after a new period begins or the contract is amended, is raised to the prepaid quantity. While no entitlement period is in force, the most recent period is treated as continuing, both for measuring usage and for the prepaid quantity. Tenants with no cap set receive a null `cap`.",
         "tags": [
           "Usage"
         ],
         "responses": {
           "200": {
-            "description": "The tenant's entitlements",
+            "description": "The tenant's usage cap",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Entitlements_Response"
+                  "$ref": "#/components/schemas/Usage_Cap"
                 },
                 "example": {
-                  "core_hours": {
-                    "periods": [
-                      {
-                        "start": "2026-05-01T00:00:00Z",
-                        "end": "2026-06-01T00:00:00Z",
-                        "prepaid_quantity": 4166.67
-                      },
-                      {
-                        "start": "2026-06-01T00:00:00Z",
-                        "end": "2026-07-01T00:00:00Z",
-                        "prepaid_quantity": null
-                      }
-                    ]
-                  }
+                  "cap": 5000
                 }
               }
             }
@@ -1819,9 +2284,6 @@
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
-          },
-          "404": {
-            "$ref": "#/components/responses/NotFound"
           },
           "405": {
             "$ref": "#/components/responses/MethodNotAllowed"
@@ -2337,7 +2799,7 @@
       },
       "Execute_Command_Request": {
         "type": "object",
-        "description": "Request body for executing a command in a test run's live session.",
+        "description": "Request body for executing a command in a test run's in-progress session.",
         "required": ["moment", "script", "container"],
         "properties": {
           "moment": {
@@ -2368,13 +2830,13 @@
           "source_session_id": {
             "type": "string",
             "minLength": 1,
-            "description": "Session id to replay input history from when the requested `moment` is not warm in the run's live session. When the moment is cold, the server rewarms it by replaying this source session's inputs before running the command. Mutually exclusive with `source_run_id`: specifying both is rejected. When omitted and the moment is cold, the request fails.",
+            "description": "Debugging session ID of the run the moment comes from, if it's different from `run_id`. The server rewarms the moment from this run. Specify either this or `source_run_id`, but not both. If neither is given, the server falls back to the source the run was launched with: for a run launched by the multiverse debugging webhook, `antithesis.debugging.session_id` if set, otherwise `antithesis.debugging.run_id`. If no source is available and the moment is cold, the request is rejected.",
             "example": "9c69eff4f842f988a0fea0acfc2d6195-61-2"
           },
           "source_run_id": {
             "type": "string",
             "minLength": 1,
-            "description": "Test run id whose live session supplies the input history for rewarming a cold `moment`; the server resolves it to that run's session id. Mutually exclusive with `source_session_id`: specifying both is rejected.",
+            "description": "ID of the run the moment comes from, if it's different from `run_id`. The server rewarms the moment from this run. Specify either this or `source_session_id`, but not both. If neither is given, the server falls back to the multiverse debugging launch parameters; see `source_session_id`.",
             "example": "9c69eff4f842f988a0fea0acfc2d6195-61-2"
           }
         },
@@ -2459,7 +2921,7 @@
         "properties": {
           "query": {
             "type": "string",
-            "description": "An event set query. A pipeline of dot-separated verbs (`matches`, `contains`, `not_matches`, `excludes`, `map`, `filter`, `flatmap`, `fold`, `narrow`, `union`, `intersect`, `difference`, `distinct_by_moment`, `with_last`, `with_next`) applied to the underlying event stream. See the [event sets reference](/docs/reference/event-set-reference/) for the full grammar.",
+            "description": "An event set query. A pipeline of dot-separated verbs (`matches`, `contains`, `not_matches`, `excludes`, `map`, `filter`, `flatmap`, `fold`, `narrow`, `as_base_for`, `union`, `intersect`, `difference`, `distinct_by_moment`, `with_last`, `with_next`) applied to the underlying event stream. See the [event sets reference](/docs/reference/event-set-reference/) for the full grammar.",
             "example": "matches({container: \"etcd0\", stream: \"error\"}).filter(ev => ev.output_text.includes(\"raft\"))"
           },
           "is_streaming": {
@@ -2489,7 +2951,7 @@
         "properties": {
           "query": {
             "type": "string",
-            "description": "An event set query. A pipeline of dot-separated verbs (`matches`, `contains`, `not_matches`, `excludes`, `map`, `filter`, `flatmap`, `fold`, `narrow`, `union`, `intersect`, `difference`, `distinct_by_moment`, `with_last`, `with_next`) applied to the underlying event stream. See the [event sets reference](/docs/reference/event-set-reference/) for the full grammar.",
+            "description": "An event set query. A pipeline of dot-separated verbs (`matches`, `contains`, `not_matches`, `excludes`, `map`, `filter`, `flatmap`, `fold`, `narrow`, `as_base_for`, `union`, `intersect`, `difference`, `distinct_by_moment`, `with_last`, `with_next`) applied to the underlying event stream. See the [event sets reference](/docs/reference/event-set-reference/) for the full grammar.",
             "example": "matches({container: \"etcd0\", stream: \"error\"}).filter(ev => ev.output_text.includes(\"raft\"))"
           },
           "validate_only": {
@@ -2532,6 +2994,17 @@
             "type": "string",
             "description": "Desired duration of the test run in minutes.",
             "example": "30"
+          },
+          "antithesis.fault_exclusions": {
+            "type": "string",
+            "description": "A regular expression matching the containers (or pods, on Kubernetes) that faults must leave alone: network faults, container pauses, kills and stops, CPU throttling and clock faults all skip a matching container. Matched against the container name. Uses the [Rust regex](https://docs.rs/regex/latest/regex/#syntax) syntax: no lookaround and no backreferences. At most 1024 characters. Thread pausing is machine-wide and has no container to match, so it is not affected. Defaults to no exclusions.",
+            "example": "^(raft-client|raft-monitor)$"
+          },
+          "antithesis.fault_tolerance": {
+            "type": "string",
+            "enum": ["none", "resilient", "high_availability", "legacy"],
+            "description": "Which faults Antithesis injects, by how much disruption the system is expected to survive. `none`: no faults. `resilient`: slow, lossy and paused: degraded network links, bad nodes, thread pauses, container pauses of up to 10 seconds, CPU throttling and clock jitter. `high_availability`: everything in `resilient` plus the faults that take things down: network partitions, stopped links, killed and stopped containers or pods. `legacy`: all network faults and thread pausing are enabled by default. Not recommended except for backwards compatibility with a custom notebook.",
+            "example": "resilient"
           },
           "antithesis.filter_logs_matching": {
             "type": "string",
@@ -2709,13 +3182,25 @@
       "Property_List_Response": {
         "type": "object",
         "description": "A page of property results returned by the properties endpoint. Use `next_cursor` to iterate through all available results.",
-        "required": ["data"],
+        "required": [
+          "data"
+        ],
         "properties": {
           "data": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Property"
             }
+          },
+          "total_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Total properties matching the status filter at the time of the read. Omitted for runs created before Antithesis version 65.3."
+          },
+          "response_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of properties in this page. Omitted for runs created before Antithesis version 65.3."
           },
           "next_cursor": {
             "type": "string",
@@ -2731,16 +3216,32 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "A unique, stable identifier for the property."
+            "description": "An opaque, unique, stable identifier for the property within its run."
           },
           "name": {
             "type": "string",
-            "description": "The name of the property."
+            "description": "Display name of the property; names need not be unique."
           },
           "description": {
             "type": "string",
             "nullable": true,
             "description": "A human-readable description of the property."
+          },
+          "category": {
+            "type": "string",
+            "description": "Property category, omitted when unavailable."
+          },
+          "team": {
+            "type": "string",
+            "description": "Owning team, omitted when unavailable."
+          },
+          "event_set": {
+            "type": "string",
+            "description": "Serialized event-set definition, omitted when unavailable. Included in property responses and stream notifications when available."
+          },
+          "passing_predicate": {
+            "type": "string",
+            "description": "Serialized passing predicate, omitted when unavailable. Included in property responses and stream notifications when available."
           },
           "status": {
             "$ref": "#/components/schemas/Property_Status"
@@ -2843,8 +3344,12 @@
       },
       "Property_Status": {
         "type": "string",
-        "enum": ["Passing", "Failing"],
-        "description": "Whether the property is currently passing or failing."
+        "enum": [
+          "Passing",
+          "Failing",
+          "Undetermined"
+        ],
+        "description": "Current property status. Undetermined means the property has not resolved. Runs created before Antithesis version 65.3 report only Passing or Failing."
       },
       "Run_Status": {
         "type": "string",
@@ -2928,57 +3433,18 @@
           }
         }
       },
-      "Entitlements_Response": {
+      "Usage_Cap": {
         "type": "object",
-        "description": "Entitlements according to the tenant's contract, keyed by SKU. Each SKU has its own entitlement shape, and a SKU is absent if the contract does not entitle it. Currently the only SKU is `core_hours`.",
-        "properties": {
-          "core_hours": {
-            "$ref": "#/components/schemas/Core_Hours_Entitlement"
-          }
-        }
-      },
-      "Core_Hours_Entitlement": {
-        "type": "object",
-        "description": "The tenant's `core_hours` entitlement: prepaid usage hours per entitlement period.",
+        "description": "The usage cap set on the tenant.",
         "required": [
-          "periods"
+          "cap"
         ],
         "properties": {
-          "periods": {
-            "type": "array",
-            "description": "The `core_hours` entitlement periods, ordered by `start`, oldest first.",
-            "items": {
-              "$ref": "#/components/schemas/Usage_Period"
-            }
-          }
-        }
-      },
-      "Usage_Period": {
-        "type": "object",
-        "description": "One `core_hours` entitlement period of the tenant's contract: a half-open `[start, end)` interval with the associated prepaid usage hours.",
-        "required": [
-          "start",
-          "end",
-          "prepaid_quantity"
-        ],
-        "properties": {
-          "start": {
-            "type": "string",
-            "format": "date-time",
-            "description": "Timestamp when the period begins, inclusive (ISO 8601).",
-            "example": "2026-05-01T00:00:00Z"
-          },
-          "end": {
-            "type": "string",
-            "format": "date-time",
-            "description": "Timestamp when the period ends, exclusive (ISO 8601).",
-            "example": "2026-06-01T00:00:00Z"
-          },
-          "prepaid_quantity": {
+          "cap": {
             "type": "number",
             "nullable": true,
-            "description": "The usage hours prepaid for the period. Null if the period has no prepaid quantity.",
-            "example": 4166.67
+            "description": "The maximum usage hours usable per entitlement period. At least the current period's prepaid quantity. Null if no cap is set.",
+            "example": 5000
           }
         }
       },
@@ -2995,6 +3461,69 @@
           "run_count": {
             "type": "integer",
             "description": "The total number of billable runs for the requested period."
+          }
+        }
+      },
+      "Run_Stream_Notification": {
+        "type": "object",
+        "description": "A run stream notification. Each data entry is a complete event or non-event property. NEW_EXAMPLES_FOUND includes only newly delivered samples, with cumulative counts; status notifications include retained samples and may repeat samples delivered earlier. RUN_FINALIZED always has an empty data array, bypasses filters, and ends the stream.",
+        "required": [
+          "type",
+          "data"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "NEW_PROPERTIES_ADDED",
+              "PROPERTIES_PASSED",
+              "PROPERTIES_FAILED",
+              "NEW_EXAMPLES_FOUND",
+              "RUN_FINALIZED"
+            ]
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/Event_Property"
+                },
+                {
+                  "$ref": "#/components/schemas/Non_Event_Property"
+                }
+              ]
+            },
+            "description": "Properties associated with this notification. Empty for RUN_FINALIZED."
+          }
+        }
+      },
+      "Run_Status_Stream_Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "notification_type_filter": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "NEW_PROPERTIES_ADDED",
+                "PROPERTIES_PASSED",
+                "PROPERTIES_FAILED",
+                "NEW_EXAMPLES_FOUND",
+                "RUN_FINALIZED"
+              ]
+            },
+            "description": "Omit or use null for discovery and terminal property notifications. NEW_EXAMPLES_FOUND is opt-in and must be explicitly listed. An empty array suppresses all property notifications. RUN_FINALIZED is always delivered, irrespective of this filter."
+          },
+          "property_filter": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "string"
+            },
+            "description": "Only deliver entries for these property IDs. Omit or use null for all IDs; an empty array suppresses all property entries. RUN_FINALIZED is unaffected."
           }
         }
       }

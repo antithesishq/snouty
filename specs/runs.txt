@@ -229,6 +229,7 @@ snouty runs properties $R_run_id
 # group, so NAME drops the `Safety: ` prefix.
 [!staging] ! stdout 'Safety: Counter'
 [!staging] stdout 'passing.*Setup completes'
+[!staging] stdout 'undetermined.*Balance stays nonnegative'
 
 # `snouty runs properties --failing` shows only failing properties.
 mock-runs-server
@@ -242,9 +243,24 @@ snouty runs properties --passing $R_run_id
 [!staging] stdout 'passing.*Setup completes'
 [!staging] ! stdout 'Counter value stays below limit'
 
-# `snouty runs properties --passing --failing` is rejected.
-! snouty runs properties --passing --failing $R_run_id
-stderr '.*cannot be used with.*'
+# `snouty runs properties --undetermined` shows only undetermined properties.
+mock-runs-server
+snouty runs properties --undetermined $R_run_id
+[!staging] stdout 'undetermined.*Balance stays nonnegative'
+[!staging] ! stdout 'Setup completes'
+[!staging] ! stdout 'Counter value stays below limit'
+
+# The status flags combine: each one adds its status.
+mock-runs-server
+snouty runs properties --passing --undetermined $R_run_id
+[!staging] stdout 'passing.*Setup completes'
+[!staging] stdout 'undetermined.*Balance stays nonnegative'
+[!staging] ! stdout 'Counter value stays below limit'
+
+# A status filter that matches nothing names every status it asked for.
+mock-runs-server
+snouty runs properties --failing --undetermined $R_run_id --name no-such-property
+[!staging] stdout 'No properties match \(failing or undetermined, name containing .no-such-property.\)'
 
 # `snouty --json runs properties` outputs JSON. A moment's vtime is an exact
 # JSON number — the full-precision value survives byte-identically (see
@@ -293,6 +309,12 @@ mock-runs-server
 snouty runs properties $R_run_id --group safety
 [!staging] stdout 'failing.*Counter value stays below limit'
 [!staging] ! stdout 'Setup completes'
+
+# An undetermined property's --detail reports no examples yet.
+mock-runs-server
+snouty runs properties $R_run_id --name 'Balance stays' --detail
+[!staging] stdout '^Status +undetermined$'
+[!staging] stdout '^Examples +none yet$'
 
 # A non-event ("system") property's --detail shows its value under a `Result`
 # label (no `:`, like the other labels). A small object inlines as compact JSON

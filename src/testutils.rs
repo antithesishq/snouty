@@ -1067,7 +1067,11 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
         return (200, r#"{"data":[],"next_cursor":null}"#.to_string());
     }
 
-    let status = mock_query_param(query, "status");
+    // The status filter repeats: `status=Passing&status=Failing`.
+    let statuses: Vec<String> = form_urlencoded::parse(query.unwrap_or_default().as_bytes())
+        .filter(|(k, _)| k == "status")
+        .map(|(_, v)| v.into_owned())
+        .collect();
     let after = mock_query_param(query, "after");
 
     // Full-precision vtimes so a precision fault fails a spec (see specs/runs.txt).
@@ -1079,15 +1083,27 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
     // `counterexamples`, so `--detail` must label it apart from the satisfying
     // `examples`.
     let failing_nonevent = r#"{"id":"d2558d97fabac81ba7eb4676e47a0cba558263f8","name":"Peak memory stays below cap","description":"Peak memory never exceeds the configured limit","status":"Failing","is_event":false,"group":"Resources","example_count":2,"counterexample_count":1,"examples":[820,910],"counterexamples":[1340]}"#.to_string();
+    // Runs created on release 65.3 or later report `Undetermined` until a
+    // property resolves (observed on the antithesis-orbitinghail tenant).
+    let undetermined = r#"{"id":"27a7cb0b311c8481c4ce12f3347fadbf","name":"Balance stays nonnegative","status":"Undetermined","is_event":true,"example_count":0,"counterexample_count":0,"examples":[],"counterexamples":[]}"#.to_string();
     let passing = r#"{"name":"Setup completes","description":"Setup eventually succeeds","status":"Passing","is_event":false,"example_count":1,"counterexample_count":0,"examples":[{"final_counter":42}]}"#.to_string();
 
-    let (data, next_cursor) = match (status.as_deref(), after.as_deref()) {
-        (Some("Failing"), _) => (vec![failing, failing_nonevent], None),
-        (Some("Passing"), _) => (vec![passing], None),
-        (None, None) => (vec![failing, failing_nonevent], Some("props-cursor-1")),
-        (None, Some("props-cursor-1")) => (vec![passing], None),
-        (None, _) => (vec![], None),
-        _ => (vec![], None),
+    let (data, next_cursor) = match after.as_deref() {
+        _ if !statuses.is_empty() => {
+            let all = [failing, failing_nonevent, undetermined, passing];
+            let data = all
+                .into_iter()
+                .filter(|p| {
+                    statuses
+                        .iter()
+                        .any(|s| p.contains(&format!(r#""status":"{s}""#)))
+                })
+                .collect();
+            (data, None)
+        }
+        None => (vec![failing, failing_nonevent], Some("props-cursor-1")),
+        Some("props-cursor-1") => (vec![passing, undetermined], None),
+        Some(_) => (vec![], None),
     };
 
     let data_json = data.join(",");

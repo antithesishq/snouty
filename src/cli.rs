@@ -538,7 +538,7 @@ pub struct McpArgs {
 #[command(group(ArgGroup::new("target").args(["run_id", "session_id"]).required(true)))]
 pub struct DebugArgs {
     /// Run ID of the test run to debug (preferred; mutually exclusive with --session-id)
-    #[arg(long)]
+    #[arg(long, value_parser = parse_run_id)]
     pub run_id: Option<String>,
 
     /// Session ID of the test run to debug (mutually exclusive with --run-id)

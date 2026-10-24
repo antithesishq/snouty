@@ -350,3 +350,19 @@ async fn tools_work_after_the_executable_is_replaced() {
     assert_ne!(text(&result).trim(), "replaced");
     client.cancel().await.expect("close snouty mcp");
 }
+
+/// The server's RUST_LOG stays out of the tool calls, so a debug log does not
+/// reach a tool result.
+#[tokio::test]
+async fn the_server_debug_log_stays_out_of_tool_results() {
+    let server = MockApiServer::start();
+    let home = TempDir::new().unwrap();
+    let mut command = snouty_mcp(&server, home.path());
+    command.env("RUST_LOG", "debug");
+    let client = connect(command).await;
+    let result = call(&client, "runs_list", json!({ "limit": 1 })).await;
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    // One block: stdout, and no stderr.
+    text(&result);
+    client.cancel().await.expect("close snouty mcp");
+}

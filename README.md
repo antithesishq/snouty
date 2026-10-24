@@ -208,7 +208,7 @@ The server reads settings, profiles, and credentials as the other commands do, s
 
 1. Set `RUST_LOG=debug` in the server's environment, and add `--verbose` to its args. For example: `claude mcp add snouty -e SNOUTY_UNSTABLE_FEATURES=mcp -e RUST_LOG=debug -- snouty --verbose mcp`.
 2. Read the server's stderr in the client. In Claude Code, start `claude --debug` and use `/mcp` to see the server's state. The server logs each command line that it runs, as `running: snouty --json …`.
-3. Run the logged command yourself, in a terminal. It prints what the tool call returned.
+3. Run the logged command yourself, in a terminal. It prints what the tool call returned. Set `RUST_LOG=debug` on it too, to see its own debug log: the server does not pass `RUST_LOG` to its tool calls.
 
 ## Authentication
 

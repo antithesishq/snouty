@@ -443,6 +443,8 @@ impl Snouty {
             .arg0("snouty")
             .args(argv)
             .env(SERVER_PID_ENV, std::process::id().to_string())
+            // The server's own debug log would flood the tool result.
+            .env_remove("RUST_LOG")
             .stdin(Stdio::null())
             // A cancelled call drops the future, and with it the child.
             .kill_on_drop(true)

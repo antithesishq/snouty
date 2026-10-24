@@ -72,6 +72,9 @@ jobs:
       - name: Ruff check
         run: uv run --locked ruff check scripts
 
+      - name: Pyright
+        run: uv run --locked pyright
+
       - name: Script tests
         working-directory: scripts
         run: uv run --locked python -m unittest discover -p 'test_*.py'

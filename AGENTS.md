@@ -110,6 +110,15 @@ pins the versions. After you change a script, run the script tests:
 uv run --directory scripts python -m unittest discover -p 'test_*.py'
 ```
 
+zizmor audits the GitHub Actions workflows and `dependabot.yml` for security
+problems. Run it after you change a file in `.github/`. Its config is
+`.github/zizmor.yml`. Do not fix a finding in a generated workflow by hand.
+Change its generator, as the config describes.
+
+```
+uvx zizmor==1.31.1 --offline .
+```
+
 ### Checks that the Stop hooks run
 
 The Stop hooks in `.claude/settings.json` run these checks each time the agent

@@ -89,7 +89,9 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install Nextest
-        uses: taiki-e/install-action@cargo-nextest
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: cargo-nextest
 
       # snouty always drives Docker Compose v2 via the `docker-compose` binary,
       # independent of the image runtime. Here that binary reaches podman over

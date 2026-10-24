@@ -114,6 +114,10 @@ impl ZonedUsageEntry {
 /// The total usage of the runs that started in one period.
 #[derive(Serialize)]
 struct PeriodUsage {
+    /// The first day of the period. The table shows it; the JSON leaves it
+    /// out, because `date` with the rollup names the period.
+    #[serde(skip)]
+    start: NaiveDate,
     /// The last day of the period.
     date: NaiveDate,
     runs: u64,
@@ -266,6 +270,7 @@ pub(super) async fn cmd_runs_usage(
         .into_iter()
         .rev()
         .map(|(date, (runs, hours))| PeriodUsage {
+            start: rollup.period_start(date),
             date,
             runs,
             hours: (hours * 100.0).round() / 100.0,
@@ -369,10 +374,11 @@ fn print_rows<T: Serialize>(
     Ok(())
 }
 
-/// `hours` to the nearest minute, as `Xh Ym`.
+/// `hours` to the nearest minute, as `Xh Ym`. The minutes are padded to two
+/// places, so that the `h` and the `m` of a right-aligned column line up.
 fn format_hours(hours: f64) -> String {
     let minutes = (hours * 60.0).round() as u64;
-    format!("{}h {}m", minutes / 60, minutes % 60)
+    format!("{}h {:>2}m", minutes / 60, minutes % 60)
 }
 
 fn render_usage_table(entries: &[ZonedUsageEntry], width: usize) -> String {
@@ -400,6 +406,7 @@ fn render_periods_table(periods: &[PeriodUsage], width: usize) -> String {
         .iter()
         .map(|period| {
             vec![
+                period.start.to_string(),
                 period.date.to_string(),
                 period.runs.to_string(),
                 format_hours(period.hours),
@@ -407,7 +414,8 @@ fn render_periods_table(periods: &[PeriodUsage], width: usize) -> String {
         })
         .collect();
     Table::builder()
-        .column(Column::new("DATE"))
+        .column(Column::new("START"))
+        .column(Column::new("END"))
         .column(Column::new("RUNS").align(Align::Right))
         .column(Column::new("HOURS").align(Align::Right))
         .render(rows, width)

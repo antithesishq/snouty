@@ -2205,7 +2205,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "Track usage hours week by week",
             "I want the total runs and hours of each of the last few weeks.",
             "Exactly 4 rows: the current week and the 3 before it, newest first, with "
-            "DATE/RUNS/HOURS columns; DATE is the Sunday that ends each week, a week with "
+            "START/END/RUNS/HOURS columns; START is a Monday and END the Sunday after it, a week with "
             "no runs shows 0, and HOURS is `Xh Ym`; a stderr note says it shows up to 4 periods.",
             ["runs", "usage", "--rollup", "week", "-n", "4"],
             rows_at_most(4),
@@ -2214,7 +2214,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-usage--rollup-month",
             "Compare usage hours across months",
             "I want to see how our usage changed from month to month.",
-            "At most 6 rows, newest month first; DATE is the last day of each month.",
+            "At most 6 rows, newest month first; START and END are the first and last days of each month.",
             ["runs", "usage", "--rollup", "month", "-n", "6"],
             rows_at_most(6),
         ),

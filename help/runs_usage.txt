@@ -2,7 +2,7 @@ Show the usage hours of recent runs, newest first.
 
 Columns: RUN ID, STARTED, ENDED, HOURS. STARTED and ENDED are the start and end of the billable usage of the run. HOURS is rounded to the minute, as `Xh Ym`.
 
-With --rollup, each row is the total of one day, week, or month. A run counts in the period in which it ended. A week starts on Monday. Columns: DATE, RUNS, HOURS. DATE is the last day of the period. The rows are the --limit periods that end with the current period, and a period with no runs shows 0.
+With --rollup, each row is the total of one day, week, or month. A run counts in the period in which it ended. A week starts on Monday. Columns: START, END, RUNS, HOURS. START and END are the first and last days of the period. The rows are the --limit periods that end with the current period, and a period with no runs shows 0.
 
 Times and periods are in the local timezone. Add --utc to show them in UTC.
 

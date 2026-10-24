@@ -21,14 +21,15 @@ stderr 'expected a date such as 2026-10-01, or an RFC 3339 time'
 env TZ=Asia/Tokyo
 
 # Without --rollup, each run is one row: its run id, the start and end of its
-# usage in the local timezone, and its hours to the minute, as `Xh Ym`. The
+# usage in the local timezone, and its hours to the minute, as `Xh Ym`, with
+# the minutes padded to two places so that the columns line up. The
 # command reads every page until the limit.
 mock-runs-server
 snouty runs usage
 stdout '^(RUN ID +STARTED +ENDED +HOURS|No usage found\.)$'
 [!staging] stdout '^usage-1 +2026-03-03 01:00:00 +2026-03-03 02:30:00 +10h 30m$'
 [!staging] stdout '^usage-3 +2026-03-01 05:00:00 +2026-03-01 05:15:00 +1h 12m$'
-[!staging] stdout '^usage-5 +2026-01-15 09:00:00 +2026-01-15 15:00:00 +100h 0m$'
+[!staging] stdout '^usage-5 +2026-01-15 09:00:00 +2026-01-15 15:00:00 +100h  0m$'
 [!staging] stdout -count=6 '^.+$'
 
 # The --json rows have the fields of the usage endpoint, with the times in
@@ -98,13 +99,13 @@ mock-runs-server
 [!staging] snouty runs usage --utc --before 2026-03-01
 [!staging] stdout '^usage-3 '
 
-# With --rollup, each row is one period: its last day, the number of runs
-# that ended in it, and the sum of their hours. Newest period first. The rows
+# With --rollup, each row is one period: its first and last days, the number
+# of runs that ended in it, and the sum of their hours. Newest period first. The rows
 # are the --limit periods that end with the current period, and a period with
 # no runs shows 0.
 mock-runs-server
 snouty runs usage --rollup day
-stdout '^DATE +RUNS +HOURS$'
+stdout '^START +END +RUNS +HOURS$'
 stdout -count=11 '^.+$'
 stderr '^Showing up to 10 periods\. Additional periods may be available\.$'
 
@@ -113,14 +114,14 @@ stderr '^Showing up to 10 periods\. Additional periods may be available\.$'
 # minute: 2.1 + 1.2 hours shows as 3h 18m.
 mock-runs-server
 [!staging] snouty runs usage --rollup day -n 5 --before 2026-03-04
-[!staging] stdout '(?s)^DATE +RUNS +HOURS\n2026-03-03 +1 +10h 30m\n2026-03-02 +0 +0h 0m\n2026-03-01 +2 +3h 18m\n2026-02-28 +1 +4h 0m\n2026-02-27 +0 +0h 0m$'
+[!staging] stdout '(?s)^START +END +RUNS +HOURS\n2026-03-03 +2026-03-03 +1 +10h 30m\n2026-03-02 +2026-03-02 +0 +0h  0m\n2026-03-01 +2026-03-01 +2 +3h 18m\n2026-02-28 +2026-02-28 +1 +4h  0m\n2026-02-27 +2026-02-27 +0 +0h  0m$'
 [!staging] stdout -count=6 '^.+$'
 [!staging] stderr 'Showing up to 5 periods'
 
 # A week starts on Monday and ends on Sunday.
 mock-runs-server
 [!staging] snouty runs usage --rollup week -n 3 --before 2026-03-04
-[!staging] stdout '(?s)^DATE +RUNS +HOURS\n2026-03-08 +1 +10h 30m\n2026-03-01 +3 +7h 18m\n2026-02-22 +0 +0h 0m$'
+[!staging] stdout '(?s)^START +END +RUNS +HOURS\n2026-03-02 +2026-03-08 +1 +10h 30m\n2026-02-23 +2026-03-01 +3 +7h 18m\n2026-02-16 +2026-02-22 +0 +0h  0m$'
 [!staging] stdout -count=4 '^.+$'
 
 # usage-3 ended in February in UTC, but in March in the local timezone. The
@@ -137,7 +138,7 @@ mock-runs-server
 # With --utc, the periods are UTC days, weeks, or months.
 mock-runs-server
 [!staging] snouty runs usage --rollup month -n 3 --utc --before 2026-03-04
-[!staging] stdout '(?s)^DATE +RUNS +HOURS\n2026-03-31 +2 +12h 36m\n2026-02-28 +2 +5h 12m\n2026-01-31 +1 +100h 0m$'
+[!staging] stdout '(?s)^START +END +RUNS +HOURS\n2026-03-01 +2026-03-31 +2 +12h 36m\n2026-02-01 +2026-02-28 +2 +5h 12m\n2026-01-01 +2026-01-31 +1 +100h  0m$'
 
 # With both --after and --before, the rows are every period from the one that
 # holds --after to the one before --before, with no limit note. The first
@@ -146,7 +147,7 @@ mock-runs-server
 # shown periods, so the old history is not read.
 mock-runs-server
 [!staging] snouty --verbose runs usage --rollup month --after 2026-02-28 --before 2026-03-04
-[!staging] stdout '(?s)^DATE +RUNS +HOURS\n2026-03-31 +3 +13h 48m\n2026-02-28 +1 +4h 0m$'
+[!staging] stdout '(?s)^START +END +RUNS +HOURS\n2026-03-01 +2026-03-31 +3 +13h 48m\n2026-02-01 +2026-02-28 +1 +4h  0m$'
 [!staging] stdout -count=3 '^.+$'
 [!staging] stderr '^> GET .*/api/v0/usage\?.*start_time=2026-02-27T15%3A00%3A00Z'
 [!staging] ! stderr 'Showing up to'
@@ -158,7 +159,7 @@ mock-runs-server
 # --after forward, newest first. One window of end times covers them all.
 mock-runs-server
 [!staging] snouty --verbose runs usage --rollup day --after 2026-02-27 -n 3
-[!staging] stdout '(?s)^DATE +RUNS +HOURS\n2026-03-01 +2 +3h 18m\n2026-02-28 +1 +4h 0m\n2026-02-27 +0 +0h 0m$'
+[!staging] stdout '(?s)^START +END +RUNS +HOURS\n2026-03-01 +2026-03-01 +2 +3h 18m\n2026-02-28 +2026-02-28 +1 +4h  0m\n2026-02-27 +2026-02-27 +0 +0h  0m$'
 [!staging] stderr 'Showing up to 3 periods'
 [!staging] stderr '^> GET .*/api/v0/usage\?.*end_time=2026-03-01T15%3A00%3A00Z.*start_time=2026-02-26T15%3A00%3A00Z'
 
@@ -169,7 +170,7 @@ mock-runs-server
 [!staging] stdout '^No usage found.$'
 [!staging] mock-runs-server empty
 [!staging] snouty runs usage --rollup week -n 2 --before 2026-03-04
-[!staging] stdout '(?s)^DATE +RUNS +HOURS\n2026-03-08 +0 +0h 0m\n2026-03-01 +0 +0h 0m$'
+[!staging] stdout '(?s)^START +END +RUNS +HOURS\n2026-03-02 +2026-03-08 +0 +0h  0m\n2026-02-23 +2026-03-01 +0 +0h  0m$'
 [!staging] mock-runs-server empty
 [!staging] snouty --json runs usage
 [!staging] ! stdout .

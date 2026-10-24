@@ -23,8 +23,8 @@ use crate::api::{Event, Property, RunStreamNotificationType, decode_properties};
 use crate::render::sanitize;
 
 use super::{
-    mid_stream_error, normalize_vtime_field, property_examples_cell, property_status_label,
-    sorted_by_vtime, stream_error_message, value_token,
+    mid_stream_error, normalize_vtime_field, property_examples_cell, property_status_style,
+    property_status_word, sorted_by_vtime, stream_error_message, value_token,
 };
 
 #[derive(Debug)]
@@ -137,12 +137,16 @@ pub(super) fn render_record(record: &Record, detail: bool) -> String {
 
 fn write_property(out: &mut String, change: PropertyChange, property: &Property, detail: bool) {
     let label = change.label();
-    let status = property_status_label(property.status());
+    // Pad the plain word before coloring it: the color codes have no width.
+    let status = property_status_style(property.status()).apply_to(format!(
+        "{:<STATUS_WIDTH$}",
+        property_status_word(property.status())
+    ));
     let examples = property_examples_cell(property);
     let name = sanitize(property.name());
     writeln!(
         out,
-        "{label:<LABEL_WIDTH$}  {status:<STATUS_WIDTH$}  {examples:>EXAMPLES_WIDTH$}  {name}"
+        "{label:<LABEL_WIDTH$}  {status}  {examples:>EXAMPLES_WIDTH$}  {name}"
     )
     .unwrap();
     if !detail {
@@ -224,6 +228,20 @@ mod tests {
                 format!("{label:<9}  {status:<12}      24/2  Balance stays nonnegative"),
             );
         }
+    }
+
+    #[test]
+    fn colors_do_not_change_the_column_widths() {
+        let line = json!({"type": "PROPERTIES_PASSED", "data": [property("Passing")]});
+        let record = Record::parse(&line).unwrap();
+        console::set_colors_enabled(true);
+        let colored = render_record(&record, false);
+        console::set_colors_enabled(false);
+        assert_ne!(colored, render_record(&record, false));
+        assert_eq!(
+            console::strip_ansi_codes(&colored),
+            "passed     passing           24/2  Balance stays nonnegative\n"
+        );
     }
 
     #[test]

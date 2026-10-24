@@ -956,14 +956,19 @@ fn property_status_word(status: PropertyStatus) -> &'static str {
     }
 }
 
-fn property_status_label(status: PropertyStatus) -> String {
-    let word = console::style(property_status_word(status));
+fn property_status_style(status: PropertyStatus) -> console::Style {
+    let style = console::Style::new();
     match status {
-        PropertyStatus::Passing => word.green(),
-        PropertyStatus::Failing => word.red(),
-        PropertyStatus::Undetermined => word.yellow(),
+        PropertyStatus::Passing => style.green(),
+        PropertyStatus::Failing => style.red(),
+        PropertyStatus::Undetermined => style.yellow(),
     }
-    .to_string()
+}
+
+fn property_status_label(status: PropertyStatus) -> String {
+    property_status_style(status)
+        .apply_to(property_status_word(status))
+        .to_string()
 }
 
 /// How a wrapped free-text block lays its label out (see [`render_prose_block`]).

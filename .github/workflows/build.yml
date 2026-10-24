@@ -210,8 +210,6 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - uses: ./.github/actions/setup-mise
-        with:
-          tools: github:nextest-rs/nextest github:docker/compose
 
       # snouty always drives Docker Compose v2 via the `docker-compose` binary,
       # independent of the image runtime. The matrix exercises that binary
@@ -277,8 +275,6 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - uses: ./.github/actions/setup-mise
-        with:
-          tools: github:nextest-rs/nextest
 
       # `specs/doctor.txt` asserts that `snouty doctor` exits zero while testing
       # API connectivity, and doctor fails when it finds no container runtime.
@@ -321,8 +317,6 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - uses: ./.github/actions/setup-mise
-        with:
-          tools: github:nextest-rs/nextest
 
       # This job gates merges. A missing secret must fail the job, because a
       # check that does not run is worse than a check that fails.

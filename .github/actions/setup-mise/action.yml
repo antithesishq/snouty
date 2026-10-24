@@ -3,13 +3,6 @@ description: >-
   Install mise, checked against a SHA-256 for the runner platform, then install
   the mise.toml tools at the versions in mise.lock. mise-action caches them.
   Every later step finds the tools on PATH, from any directory.
-inputs:
-  tools:
-    description: >-
-      The mise.toml tools to install, separated by spaces. Empty installs them
-      all; `mise run` installs any missing tool anyway, so give a list only to
-      a job that runs tools without `mise run`.
-    default: ""
 runs:
   using: composite
   steps:
@@ -26,7 +19,6 @@ runs:
         # A shim works only below mise.toml, and tests run tools from
         # temporary directories. The next step puts the tools on PATH instead.
         add_shims_to_path: false
-        install_args: ${{ inputs.tools }}
 
     # The paths are mise's install directories for the tools that mise.toml
     # pins, so they are only as trusted as the checked-out repository.

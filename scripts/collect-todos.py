@@ -17,10 +17,10 @@ Usage: scripts/collect-todos.py [ROOT]
 
 import hashlib
 import json
-from pathlib import Path
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 PATTERNS = {
     "todo": re.compile(r"\bTODO\b"),
@@ -54,7 +54,10 @@ COMMENT = re.compile(r"^\s*(//[/!]?|#(?![!\[]))\s?")
 
 def tracked_files(root: Path) -> list[str]:
     out = subprocess.run(
-        ["git", "ls-files", "-z", "--", *EXCLUDE], cwd=root, check=True, capture_output=True
+        ["git", "ls-files", "-z", "--", *EXCLUDE],
+        cwd=root,
+        check=True,
+        capture_output=True,
     ).stdout
     return [p for p in out.decode().split("\0") if p]
 

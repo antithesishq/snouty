@@ -77,8 +77,7 @@ def resolve_api_key() -> str:
     if entry.get("type") == "ApiKey" and (key := entry.get("api_key")):
         return key
     raise fail(
-        "no API key: set ANTITHESIS_API_KEY, or log in with an ApiKey profile "
-        f"({credentials_path})"
+        f"no API key: set ANTITHESIS_API_KEY, or log in with an ApiKey profile ({credentials_path})"
     )
 
 
@@ -86,7 +85,9 @@ def resolve_base_url() -> str:
     if base_url := os.environ.get("ANTITHESIS_BASE_URL"):
         return base_url.rstrip("/")
     settings_path = snouty_config_dir() / "settings.toml"
-    tenant = os.environ.get("ANTITHESIS_TENANT") or load_toml(settings_path).get("tenant")
+    tenant = os.environ.get("ANTITHESIS_TENANT") or load_toml(settings_path).get(
+        "tenant"
+    )
     if not tenant:
         raise fail(
             "no tenant: set ANTITHESIS_TENANT or ANTITHESIS_BASE_URL, or set "
@@ -96,7 +97,9 @@ def resolve_base_url() -> str:
 
 
 def fetch_json(url: str, api_key: str) -> dict:
-    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
+    request = urllib.request.Request(
+        url, headers={"Authorization": f"Bearer {api_key}"}
+    )
     # urlopen's built-in default context offers ALPN `http/1.1`, which some
     # HTTPS-intercepting proxies mishandle (the connection dies with an SSL
     # EOF). A plain default context sends no ALPN and works everywhere.
@@ -105,13 +108,13 @@ def fetch_json(url: str, api_key: str) -> dict:
         with urllib.request.urlopen(request, context=context) as response:
             body = response.read()
     except urllib.error.HTTPError as e:
-        raise fail(f"GET {url} failed: {e.code} {e.reason}")
+        raise fail(f"GET {url} failed: {e.code} {e.reason}") from None
     except urllib.error.URLError as e:
-        raise fail(f"GET {url} failed: {e.reason}")
+        raise fail(f"GET {url} failed: {e.reason}") from None
     try:
         return json.loads(body)
     except json.JSONDecodeError as e:
-        raise fail(f"response from {url} is not JSON: {e}")
+        raise fail(f"response from {url} is not JSON: {e}") from None
 
 
 def write_via_jq(document: dict, path: Path) -> None:

@@ -68,12 +68,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from itertools import islice
 from pathlib import Path
-from typing import Callable, Iterator
 
 import pexpect
 import pyte
@@ -213,7 +214,10 @@ class Snouty:
             program, argv = self.binary, args
             if stdin is not None:
                 feed = 'stdin=$1; shift; printf %s "$stdin" | "$@"'
-                program, argv = Path("/bin/sh"), ["-c", feed, "sh", stdin, str(self.binary), *args]
+                program, argv = (
+                    Path("/bin/sh"),
+                    ["-c", feed, "sh", stdin, str(self.binary), *args],
+                )
             session = TtySession(
                 program,
                 argv,
@@ -237,9 +241,13 @@ class Snouty:
             text=True,
             env=self._env if env is None else self.env_with(env),
         )
-        return Result(args, proc.stdout, proc.stderr or "", proc.returncode, stdin=stdin)
+        return Result(
+            args, proc.stdout, proc.stderr or "", proc.returncode, stdin=stdin
+        )
 
-    def json_lines(self, args: list[str], env: dict[str, str | None] | None = None) -> list[dict]:
+    def json_lines(
+        self, args: list[str], env: dict[str, str | None] | None = None
+    ) -> list[dict]:
         """Run `snouty --json <args>` and parse NDJSON rows.
 
         A non-zero exit is a hard error (timeout, 5xx, auth, DNS, ...) and raises
@@ -303,12 +311,20 @@ class LaunchGuard:
                 if not (runs or path == _GUARD_VERSION_PATH):
                     text = body.decode(errors="replace")
                     guard.refused.append((f"{self.command} {self.path}", text))
-                    self.reply(403, {}, b'{"error": "the gallery launch guard refuses this path"}')
+                    self.reply(
+                        403,
+                        {},
+                        b'{"error": "the gallery launch guard refuses this path"}',
+                    )
                     return
                 request = urllib.request.Request(
                     guard.upstream + self.path,
                     data=body or None,
-                    headers={k: v for k, v in self.headers.items() if k.lower() not in _HOP_HEADERS},
+                    headers={
+                        k: v
+                        for k, v in self.headers.items()
+                        if k.lower() not in _HOP_HEADERS
+                    },
                     method=self.command,
                 )
                 try:
@@ -396,6 +412,7 @@ PROMPT_TIMEOUT = 30
 # How long the output must stay quiet before a frame is taken. A prompt matches
 # mid-stream, so without this the frame would catch a half-drawn screen.
 SETTLE = 0.2
+
 
 class _Recorder:
     """Sink for everything the child writes.
@@ -555,7 +572,9 @@ def drive_tty(
             session.wait_for(prompt)
         except (pexpect.TIMEOUT, pexpect.EOF) as e:
             stalled = "no output" if isinstance(e, pexpect.TIMEOUT) else "snouty exited"
-            frames.append((f"[gallery] waiting for {prompt!r}: {stalled}", session.frame()))
+            frames.append(
+                (f"[gallery] waiting for {prompt!r}: {stalled}", session.frame())
+            )
             completed = False
             break
         frames.append((prompt, session.frame()))
@@ -684,7 +703,11 @@ def _begin_vtime(vtime: str) -> str:
 
 
 def _pick_needles(
-    sn: Snouty, run: str, logs: list[dict], min_matches: int, probed: set[str] | None = None
+    sn: Snouty,
+    run: str,
+    logs: list[dict],
+    min_matches: int,
+    probed: set[str] | None = None,
 ) -> tuple[str, str] | None:
     """A needle and a second needle for the events/search stories, taken from
     the text of `logs`. The last lines come first, because they are nearest to
@@ -710,7 +733,9 @@ def _pick_needles(
             # times also passes in `runs events`.
             query = f'contains({{output_text: "{token}"}})'
             try:
-                found = sn.json_lines(["runs", "search", run, query, "-n", str(min_matches)])
+                found = sn.json_lines(
+                    ["runs", "search", run, query, "-n", str(min_matches)]
+                )
             except GalleryError:
                 return None
             if len(found) >= min_matches:
@@ -782,7 +807,9 @@ def _pick_completed_run(sn: Snouty) -> CompletedPick:
         run = r["run_id"]
         # `--name` matches the shown name, which drops the `<group>: ` prefix.
         props = [
-            {**p, "name": p["name"].removeprefix(f"{g}: ")} if (g := p.get("group")) else p
+            {**p, "name": p["name"].removeprefix(f"{g}: ")}
+            if (g := p.get("group"))
+            else p
             for p in sn.json_lines(["runs", "properties", run])
         ]
         # Each picker raises GalleryError if this run can't satisfy its story —
@@ -857,7 +884,9 @@ def _pick_incomplete_run(sn: Snouty) -> tuple[str, dict, str]:
         run = r["run_id"]
         moment = sn.json_obj(["runs", "show", run]).get("failure_moment") or {}
         if not _real_failure_moment(moment):
-            print(f"  skip {run}: no real failure moment (0/0 sentinel)", file=sys.stderr)
+            print(
+                f"  skip {run}: no real failure moment (0/0 sentinel)", file=sys.stderr
+            )
             continue
         h, v = str(moment["input_hash"]), str(moment["vtime"])
         logs = _logs(sn, [run, h, v])
@@ -947,7 +976,9 @@ def _moments(values: list) -> list:
     return out
 
 
-def _pick_property_with_moments(sn: Snouty, run: str, props: list[dict], status: str) -> dict:
+def _pick_property_with_moments(
+    sn: Snouty, run: str, props: list[dict], status: str
+) -> dict:
     """Pick a property of the given status that has example/counter-example moment
     rows. The properties JSON already carries the full `examples`/`counterexamples`
     arrays snouty renders, so we select straight from it (most moments first) and
@@ -1052,7 +1083,7 @@ def discover(sn: Snouty) -> Discovery:
 
     # Dynamic listing params from the newest 30 runs, so listing stories aren't
     # empty.
-    recent = [r for _, r in zip(range(30), RunScan(sn))]
+    recent = list(islice(RunScan(sn), 30))
     if not recent:
         raise GalleryError("no runs found at all")
     launcher = next((r["launcher"] for r in recent if r.get("launcher")), "")
@@ -1173,7 +1204,9 @@ def _launch_session(sn: Snouty, base_run: str) -> tuple[dict, Result]:
             " event, the test composer's first_randomizer_new_input event, and the fault"
             " injector's unpause event)"
         )
-    h, v = _moment_strs(min((r["moment"] for r in found), key=lambda m: float(m["vtime"])))
+    h, v = _moment_strs(
+        min((r["moment"] for r in found), key=lambda m: float(m["vtime"]))
+    )
     # A unique description finds the new session in `runs list` without
     # parsing the launch's human-facing output.
     description = f"{EXEC_SESSION_DESCRIPTION} {datetime.now().isoformat()}"
@@ -1195,13 +1228,18 @@ def _launch_session(sn: Snouty, base_run: str) -> tuple[dict, Result]:
         ]
     )
     if not launch.ok:
-        raise GalleryError(f"`snouty debug` failed (exit {launch.returncode}): {launch.combined}")
+        raise GalleryError(
+            f"`snouty debug` failed (exit {launch.returncode}): {launch.combined}"
+        )
     deadline = time.monotonic() + SESSION_LIST_DEADLINE
     while time.monotonic() < deadline:
         for r in _debugging_sessions(sn):
             if (r.get("parameters") or {}).get(_DESCRIPTION) == description:
                 return r, launch
-        print(f"  waiting for the session {description!r} to list its parameters", file=sys.stderr)
+        print(
+            f"  waiting for the session {description!r} to list its parameters",
+            file=sys.stderr,
+        )
         time.sleep(SESSION_LIST_POLL)
     raise GalleryError(
         f"the debugging session {description!r} listed no parameters within {SESSION_LIST_DEADLINE}s"
@@ -1212,7 +1250,9 @@ def _container(sn: Snouty, run: str, h: str, v: str) -> str:
     """The container that logs most often up to a moment. A one-shot setup
     container can log last and then exit, and `--container` fails on it."""
     names = Counter(
-        name for row in _logs(sn, [run, h, v]) if (name := (row.get("source") or {}).get("container"))
+        name
+        for row in _logs(sn, [run, h, v])
+        if (name := (row.get("source") or {}).get("container"))
     )
     if not names:
         raise GalleryError(f"no log line of {run} up to {h} {v} names a container")
@@ -1237,7 +1277,9 @@ def _rewarm_moments(sn: Snouty, run: str, after: float) -> tuple[dict, dict]:
         for m in moments:
             picked.setdefault(_moment_strs(m), m)
     if len(picked) < 2:
-        raise GalleryError(f"{run} has fewer than two property moments after vtime {after} to rewarm")
+        raise GalleryError(
+            f"{run} has fewer than two property moments after vtime {after} to rewarm"
+        )
     first, second, *_ = picked.values()
     return first, second
 
@@ -1261,18 +1303,27 @@ def discover_exec_session(sn: Snouty, d: Discovery, reuse: bool) -> ExecSession:
 def _ready_exec_session(sn: Snouty, row: dict, launch: Result | None) -> ExecSession:
     params = row["parameters"]
     base, h, v = params[_DEBUG_RUN], params[_DEBUG_HASH], params[_DEBUG_VTIME]
-    x = ExecSession(session=row["run_id"], base_run=base, hash=h, vtime=v, launch=launch)
+    x = ExecSession(
+        session=row["run_id"], base_run=base, hash=h, vtime=v, launch=launch
+    )
     # The follow-up story chains from this exec. `runs exec` waits until the
     # session is ready, so a failure is final.
     first = _exec_json(sn, x, f'echo "{EXEC_MARKER_TEXT}" > {EXEC_MARKER_PATH}')
     if not first.ok:
-        raise GalleryError(f"`runs exec` failed in debugging session {x.session}: {first.stderr.strip()}")
-    x.follow_hash, x.follow_vtime = _moment_strs(_ndjson(first.stdout)[-1]["end_moment"])
+        raise GalleryError(
+            f"`runs exec` failed in debugging session {x.session}: {first.stderr.strip()}"
+        )
+    x.follow_hash, x.follow_vtime = _moment_strs(
+        _ndjson(first.stdout)[-1]["end_moment"]
+    )
     tty, pipe = _rewarm_moments(sn, base, float(v))
     x.rewarm_hash, x.rewarm_vtime = _moment_strs(tty)
     x.rewarm_pipe_hash, x.rewarm_pipe_vtime = _moment_strs(pipe)
     x.container = _container(sn, base, h, v)
-    print(f"  exec session  : {x.session} (base {base}; container {x.container})", file=sys.stderr)
+    print(
+        f"  exec session  : {x.session} (base {base}; container {x.container})",
+        file=sys.stderr,
+    )
     return x
 
 
@@ -1289,7 +1340,7 @@ class Story:
     goal: str
     judge: str
     args: list[str]
-    check: Callable[["StoryRun", "Registry"], tuple[bool, str]]
+    check: Callable[[StoryRun, Registry], tuple[bool, str]]
     json_capable: bool = True  # can we re-run with --json for structured rows?
     # -- help stories ------------------------------------------------------
     # When `help_cmd` is set the story is a "help story": it captures
@@ -1505,7 +1556,9 @@ def all_created_within(after: str, before: str):
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         rows = sr.rows or []
         lo, hi = datetime.fromisoformat(after), datetime.fromisoformat(before)
-        bad = [r for r in rows if not (lo <= datetime.fromisoformat(r["created_at"]) <= hi)]
+        bad = [
+            r for r in rows if not (lo <= datetime.fromisoformat(r["created_at"]) <= hi)
+        ]
         return (bool(rows) and not bad, f"{len(rows)} rows, all in [{after}, {before}]")
 
     return chk
@@ -1520,7 +1573,10 @@ def expect_message(*needles: str):
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         text = sr.result.combined.lower()
         hit = [n for n in needles if contains_text(text, n.lower())]
-        return (bool(hit), f"matched {hit!r}" if hit else f"expected one of {needles!r}")
+        return (
+            bool(hit),
+            f"matched {hit!r}" if hit else f"expected one of {needles!r}",
+        )
 
     return chk
 
@@ -1542,7 +1598,10 @@ def caret_under(query: str, segment: str):
                 return (False, f"no caret line under the query: {caret!r}")
             col = caret.index("^") - indent
             ok = start <= col <= end
-            return (ok, f"caret at query column {col}, failing segment spans {start}..{end}")
+            return (
+                ok,
+                f"caret at query column {col}, failing segment spans {start}..{end}",
+            )
         return (False, "the query is not on a line of its own")
 
     return chk
@@ -1628,7 +1687,10 @@ def tty_persisted(
         if leaked:
             problems.append(f"secret reached the screen={leaked!r}")
 
-        return (not problems, "; ".join(problems) or "prompts + persisted state as expected")
+        return (
+            not problems,
+            "; ".join(problems) or "prompts + persisted state as expected",
+        )
 
     return chk
 
@@ -1687,7 +1749,11 @@ def doctor_json_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     if not isinstance(data, dict):
         return (False, "report is not a JSON object")
     checks = data.get("checks")
-    if not isinstance(data.get("ok"), bool) or not isinstance(checks, list) or not checks:
+    if (
+        not isinstance(data.get("ok"), bool)
+        or not isinstance(checks, list)
+        or not checks
+    ):
         return (False, "report needs a boolean ok and a non-empty checks array")
     well_formed = all(
         isinstance(c, dict)
@@ -1704,7 +1770,9 @@ def doctor_json_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         else {"tenant": "error", "credentials": "error"}
     )
     statuses = {c["name"]: c["status"] for c in checks}
-    required_match = all(statuses.get(name) == status for name, status in expected.items())
+    required_match = all(
+        statuses.get(name) == status for name, status in expected.items()
+    )
     consistent = data["ok"] == all(c["status"] != "error" for c in checks)
     passed = (
         data["ok"] == sr.result.ok == sr.story.expect_ok
@@ -1731,7 +1799,11 @@ def event_multi_match(needle: str, second: str):
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         rows = sr.rows or []
         n1, n2 = needle.lower(), second.lower()
-        bad = [r for r in rows if not (n1 in json.dumps(r).lower() and n2 in json.dumps(r).lower())]
+        bad = [
+            r
+            for r in rows
+            if not (n1 in json.dumps(r).lower() and n2 in json.dumps(r).lower())
+        ]
         ok = bool(rows) and not bad
         return (ok, f"{len(rows)} rows, all contain both needles={not bad}")
 
@@ -1761,7 +1833,10 @@ def _sample_note_ok(text: str) -> bool:
     m = _EXAMPLE_TOTALS.search(text)
     if m is None:
         return False
-    rows = {s: len(re.findall(rf"^  {s}\s+-?\d+\s", text, re.M)) for s in ("passing", "failing")}
+    rows = {
+        s: len(re.findall(rf"^  {s}\s+-?\d+\s", text, re.M))
+        for s in ("passing", "failing")
+    }
     groups = {"passing": (m[2], int(m[3])), "failing": (m[4], int(m[5]))}
     sampled = any(rows[s] < total for s, (_, total) in groups.items())
     for status, (shown, total) in groups.items():
@@ -1794,7 +1869,10 @@ def property_non_event_result(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     no_moments = not _has_moment_rows(text)
     no_details = _DETAILS_ROW.search(text) is None
     ok = has_result and no_moments and no_details
-    return (ok, f"result={has_result}, no moments={no_moments}, no Details row={no_details}")
+    return (
+        ok,
+        f"result={has_result}, no moments={no_moments}, no Details row={no_details}",
+    )
 
 
 def _exit_with(*needles: str, want_ok: bool):
@@ -1843,7 +1921,9 @@ def fails_before_launch(guard: LaunchGuard | None, run: str, *needles: str):
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         ok, detail = failed(sr, reg)
         refused = [
-            line for line, body in (guard.refused if guard is not None else []) if run in line + body
+            line
+            for line, body in (guard.refused if guard is not None else [])
+            if run in line + body
         ]
         return (ok and not refused, f"{detail}, launches refused={refused!r}")
 
@@ -1950,7 +2030,10 @@ def help_story_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         miss_help = [t for t in story.align_tokens if not contains_text(help_text, t)]
         miss_out = [t for t in story.align_tokens if not contains_text(out, t)]
         if miss_help or miss_out:
-            return (False, f"misaligned — absent from help={miss_help} output={miss_out}")
+            return (
+                False,
+                f"misaligned — absent from help={miss_help} output={miss_out}",
+            )
         return (True, f"help + output aligned on {list(story.align_tokens)}")
     return (True, "help + default output present")
 
@@ -2317,7 +2400,13 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "Search events that don't match anything",
             "I search for a string that doesn't occur; I want a friendly empty result.",
             "A clear 'No events matched' message — not an error or a crash.",
-            ["runs", "events", d.success, "--match", "this string will not appear anywhere"],
+            [
+                "runs",
+                "events",
+                d.success,
+                "--match",
+                "this string will not appear anywhere",
+            ],
             expect_message("No events matched"),
             json_capable=False,
         ),
@@ -2349,7 +2438,14 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "know whether the first few are all of them.",
             "Exactly at most 3 event lines, then the command exits promptly; a stderr "
             "note names the limit and says more results may be available.",
-            ["runs", "search", d.success, f'contains({{output_text: "{kw}"}})', "-n", "3"],
+            [
+                "runs",
+                "search",
+                d.success,
+                f'contains({{output_text: "{kw}"}})',
+                "-n",
+                "3",
+            ],
             rows_at_most_with_limit_note(3),
         ),
         Story(
@@ -2396,7 +2492,13 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "events in the whole run match my query.",
             "One line that states the number of matching events, and exit 0. No "
             "event lines, and no note about a limit.",
-            ["runs", "search", d.success, f'contains({{output_text: "{kw}"}})', "--count"],
+            [
+                "runs",
+                "search",
+                d.success,
+                f'contains({{output_text: "{kw}"}})',
+                "--count",
+            ],
             expect_message("matched the query"),
             json_capable=False,
         ),
@@ -2492,7 +2594,15 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "I mistype the run ID when I open a debugging session.",
             "snouty fails with `run not found: <id>` and starts no session, so nothing "
             "is billed. Exit 1.",
-            ["debug", "--run-id", UNKNOWN_RUN, "--input-hash", UNKNOWN_HASH, "--vtime", "100"],
+            [
+                "debug",
+                "--run-id",
+                UNKNOWN_RUN,
+                "--input-hash",
+                UNKNOWN_HASH,
+                "--vtime",
+                "100",
+            ],
             fails_before_launch(guard, UNKNOWN_RUN, f"run not found: {UNKNOWN_RUN}"),
             json_capable=False,
             env=guarded,
@@ -2504,8 +2614,18 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "snouty fails, says that no moment of the run matches the input hash, and "
             "tells me how to find a moment with `snouty runs events`. It starts no "
             "session. Exit 1.",
-            ["debug", "--run-id", d.success, "--input-hash", UNKNOWN_HASH, "--vtime", "100"],
-            fails_before_launch(guard, d.success, f"no moment matches input hash {UNKNOWN_HASH}"),
+            [
+                "debug",
+                "--run-id",
+                d.success,
+                "--input-hash",
+                UNKNOWN_HASH,
+                "--vtime",
+                "100",
+            ],
+            fails_before_launch(
+                guard, d.success, f"no moment matches input hash {UNKNOWN_HASH}"
+            ),
             json_capable=False,
             env=guarded,
         ),
@@ -2537,7 +2657,9 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                 absent=("Antithesis API",),
             ),
             json_capable=False,
-            env=_doctor_env(api_key=True, username=False, password=False, tenant=True, repo=True),
+            env=_doctor_env(
+                api_key=True, username=False, password=False, tenant=True, repo=True
+            ),
         ),
         Story(
             "doctor-api-unreachable",
@@ -2553,7 +2675,9 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             # Point the client at a reserved, unroutable address (RFC 5737
             # TEST-NET-1) so the connect attempt is black-holed.
             env={
-                **_doctor_env(api_key=True, username=False, password=False, tenant=True, repo=True),
+                **_doctor_env(
+                    api_key=True, username=False, password=False, tenant=True, repo=True
+                ),
                 "ANTITHESIS_BASE_URL": "http://192.0.2.1",
             },
         ),
@@ -2584,7 +2708,9 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                 absent=("ANTITHESIS_USERNAME", "ANTITHESIS_PASSWORD"),
             ),
             json_capable=False,
-            env=_doctor_env(api_key=True, username=True, password=True, tenant=True, repo=True),
+            env=_doctor_env(
+                api_key=True, username=True, password=True, tenant=True, repo=True
+            ),
         ),
         Story(
             "doctor-no-auth",
@@ -2638,7 +2764,9 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                 ),
             ),
             json_capable=False,
-            env=_doctor_env(api_key=False, username=True, password=True, tenant=True, repo=True),
+            env=_doctor_env(
+                api_key=False, username=True, password=True, tenant=True, repo=True
+            ),
         ),
         Story(
             "doctor-shadowed-credentials",
@@ -2665,7 +2793,9 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                 ),
             ),
             json_capable=False,
-            env=_doctor_env(api_key=False, username=True, password=True, tenant=True, repo=True),
+            env=_doctor_env(
+                api_key=False, username=True, password=True, tenant=True, repo=True
+            ),
             isolate_config=True,
             seed_files={_CREDS: _SEED_CREDS_TOML},
         ),
@@ -2697,7 +2827,9 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             ["doctor", "--json", "--offline"],
             doctor_json_check,
             json_capable=False,
-            env=_doctor_env(api_key=True, username=False, password=False, tenant=True, repo=True),
+            env=_doctor_env(
+                api_key=True, username=False, password=False, tenant=True, repo=True
+            ),
             isolate_config=True,
         ),
     ]
@@ -2710,7 +2842,9 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
     exec_at = ["runs", "exec", x.session, x.hash, x.vtime]
     script = 'echo "hello from $(uname -n)"; echo "a warning on stderr" >&2'
 
-    def exec_story(slug: str, title: str, goal: str, judge: str, args: list[str], check, **kw):
+    def exec_story(
+        slug: str, title: str, goal: str, judge: str, args: list[str], check, **kw
+    ):
         return Story(slug, title, goal, judge, args, check, json_capable=False, **kw)
 
     stories = []
@@ -2729,7 +2863,9 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
                 "to run at the moment, which waits until the session is ready. Exit 0.",
                 x.launch.args,
                 succeeds_with(
-                    "Debugging session started", "waits until the session is ready", "snouty runs exec"
+                    "Debugging session started",
+                    "waits until the session is ready",
+                    "snouty runs exec",
                 ),
                 json_capable=False,
                 precaptured=x.launch,
@@ -2770,7 +2906,12 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
             f"I want to look around inside the `{x.container}` container rather than on the host.",
             "The script executes in the named container: its hostname and process list "
             "belong to the container, not the host. Exit 0, with the end-moment trailer.",
-            [*exec_at, "--container", x.container, "uname -n; ps -eo pid,comm | head -5"],
+            [
+                *exec_at,
+                "--container",
+                x.container,
+                "uname -n; ps -eo pid,comm | head -5",
+            ],
             succeeds_with("PID", "end moment:"),
         ),
         # TODO: update the expected code if the server stops reporting 125 for a
@@ -2820,7 +2961,7 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
             "end-moment trailer. Exit 0.",
             exec_at,
             succeeds_with("line 1", "line 3", "end moment:"),
-            stdin="for i in 1 2 3; do\n  echo \"line $i\"\ndone\n",
+            stdin='for i in 1 2 3; do\n  echo "line $i"\ndone\n',
         ),
         exec_story(
             "runs-exec--timeout",
@@ -2841,7 +2982,14 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
             "command at that moment, to build on what the first one did.",
             "The command executes at the earlier command's end moment, so the file it wrote "
             "is there. Exit 0, with a new end-moment trailer.",
-            ["runs", "exec", x.session, x.follow_hash, x.follow_vtime, f"cat {EXEC_MARKER_PATH}"],
+            [
+                "runs",
+                "exec",
+                x.session,
+                x.follow_hash,
+                x.follow_vtime,
+                f"cat {EXEC_MARKER_PATH}",
+            ],
             succeeds_with(EXEC_MARKER_TEXT, "end moment:"),
         ),
         exec_story(
@@ -2925,9 +3073,7 @@ HELP_RUBRIC = (
     "must actually appear, and nothing in the output should be unexplained."
 )
 
-_OUTPUT_RUBRIC = (
-    " Compare the help against the default output shown below it."
-)
+_OUTPUT_RUBRIC = " Compare the help against the default output shown below it."
 _HELP_ONLY_RUBRIC = (
     " This command mutates state or needs an interactive argument, so only its "
     "help is shown — judge the help text on its own merits and for consistency "
@@ -2999,7 +3145,12 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "moment shown for incomplete runs.",
             ["runs", "show"],
             ["runs", "show", s],
-            samples=[("an incomplete run (shows the failure moment)", ["runs", "show", d.fail])],
+            samples=[
+                (
+                    "an incomplete run (shows the failure moment)",
+                    ["runs", "show", d.fail],
+                )
+            ],
             # show prints a key/value card (prose help vs Title-Case labels), not a
             # columnar table — no strict token alignment; the reviewer compares the
             # prose field list and the failure-moment claim against the two samples.
@@ -3073,7 +3224,12 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "an optional vtime sets an earlier end, and --begin-vtime sets the start.",
             ["runs", "logs"],
             ["runs", "logs", s, d.logs_hash],
-            samples=[("with an explicit end vtime", ["runs", "logs", s, d.logs_hash, d.logs_vtime])],
+            samples=[
+                (
+                    "with an explicit end vtime",
+                    ["runs", "logs", s, d.logs_hash, d.logs_vtime],
+                )
+            ],
         ),
         _help_story(
             "help-runs-property",
@@ -3295,7 +3451,9 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
             "I point validate at a directory with no compose file or manifests/.",
             "The error says no docker-compose.yaml or manifests/ was found, so I know what's missing.",
             [str(s / "neither")],
-            fails_with("does not contain a docker-compose.yaml file or a manifests/ subdirectory"),
+            fails_with(
+                "does not contain a docker-compose.yaml file or a manifests/ subdirectory"
+            ),
         ),
         v(
             "validate-missing-dir",
@@ -3311,7 +3469,10 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
             "My compose file is named docker-compose.yml instead of .yaml.",
             "The error names the wrong filename and suggests the exact rename.",
             [str(s / "wrong-extension")],
-            fails_with("not the required docker-compose.yaml", "rename it to docker-compose.yaml"),
+            fails_with(
+                "not the required docker-compose.yaml",
+                "rename it to docker-compose.yaml",
+            ),
         ),
         v(
             "validate-ambiguous",
@@ -3319,7 +3480,9 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
             "My directory has both a docker-compose.yaml and a manifests/ subdirectory.",
             "The error explains the ambiguity and says to provide one or the other.",
             [str(s / "ambiguous")],
-            fails_with("contains both docker-compose.yaml and a manifests/ subdirectory"),
+            fails_with(
+                "contains both docker-compose.yaml and a manifests/ subdirectory"
+            ),
         ),
         v(
             "validate-empty-manifests",
@@ -3384,7 +3547,9 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
             "I validate a well-formed harness before launching it.",
             "Setup-complete is detected and the discovered test commands are summarized; exit is clean.",
             [str(s / "valid")],
-            succeeds_with("Setup-complete event detected", "Setup validation successful"),
+            succeeds_with(
+                "Setup-complete event detected", "Setup validation successful"
+            ),
             needs_docker=True,
         ),
         v(
@@ -3684,7 +3849,9 @@ def snouty_build(binary: Path, repo_root: Path) -> str:
         raise GalleryError(f"cannot parse `snouty --version` output: {line!r}")
     version, sha, dirty = m.groups()
     if sha is None:
-        return f"{version}, commit unknown, release unknown (the binary records no commit)"
+        return (
+            f"{version}, commit unknown, release unknown (the binary records no commit)"
+        )
     tag = f"v{version}"
     try:
         tagged = subprocess.run(
@@ -3750,7 +3917,9 @@ def _shell_block(
 def _captured_block(
     out_dir: Path, name: str, result: Result, *, cap: int | None = None
 ) -> str:
-    block = _shell_block(result.args, result.combined, result.returncode, cap, result.stdin)
+    block = _shell_block(
+        result.args, result.combined, result.returncode, cap, result.stdin
+    )
     if result.cast is None:
         if "--json" not in result.args:
             return block + (
@@ -3760,8 +3929,7 @@ def _captured_block(
     cast_name = f"{name}.cast"
     (out_dir / cast_name).write_text(result.cast)
     return (
-        block
-        + f"\n\n_Capture: terminal, {TTY_COLS} columns × {TTY_ROWS} rows; "
+        block + f"\n\n_Capture: terminal, {TTY_COLS} columns × {TTY_ROWS} rows; "
         "plain-text screen and scrollback._"
         + f"\n\n_Replay colors and redraws: `asciinema play {cast_name}`_"
         + f"\n\n[Download recording]({cast_name})"
@@ -3789,7 +3957,14 @@ def _write_help_story(
         )
         for index, (label, res) in enumerate(sr.sample_results or [], 1):
             parts.append(f"### Variant: {label}")
-            parts.append(_captured_block(out_dir, f"{story.slug}-variant-{index}", res, cap=HELP_SAMPLE_MAX_LINES))
+            parts.append(
+                _captured_block(
+                    out_dir,
+                    f"{story.slug}-variant-{index}",
+                    res,
+                    cap=HELP_SAMPLE_MAX_LINES,
+                )
+            )
     parts.append(f"_Automated check: {verdict} — {detail}_")
     (out_dir / f"{story.slug}.md").write_text("\n\n".join(parts) + "\n")
 
@@ -3894,7 +4069,9 @@ def run_tty_story(sn: Snouty, story: Story) -> StoryRun:
                 **(story.env or {}),
             }
         )
-        result, frames, cast = drive_tty(sn.binary, story.args, env, story.dialogue or ())
+        result, frames, cast = drive_tty(
+            sn.binary, story.args, env, story.dialogue or ()
+        )
 
         captured: list[tuple[str, str | None]] = []
         for rel_path in story.post_capture:
@@ -3958,14 +4135,18 @@ def run_story(sn: Snouty, story: Story) -> StoryRun:
 def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(description="Regenerate the snouty gallery.")
-    parser.add_argument("--snouty", type=Path, help="snouty binary (default: target/debug/snouty)")
+    parser.add_argument(
+        "--snouty", type=Path, help="snouty binary (default: target/debug/snouty)"
+    )
     parser.add_argument(
         "--build",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="cargo build before running (default: yes)",
     )
-    parser.add_argument("--out", type=Path, help="output dir (default: a fresh tempdir)")
+    parser.add_argument(
+        "--out", type=Path, help="output dir (default: a fresh tempdir)"
+    )
     parser.add_argument(
         "--only",
         nargs="+",
@@ -3980,7 +4161,9 @@ def main() -> int:
         "launch one (default: yes)",
     )
     parser.add_argument("--list", action="store_true", help="list story slugs and exit")
-    parser.add_argument("--fail-fast", action="store_true", help="stop at the first failing story")
+    parser.add_argument(
+        "--fail-fast", action="store_true", help="stop at the first failing story"
+    )
     args = parser.parse_args()
 
     if args.list:
@@ -4043,7 +4226,9 @@ def main() -> int:
 
     if args.only:
         known = api_slugs | exec_slugs | validate_slugs | tty_slugs
-        unmatched = [p for p in args.only if not any(fnmatch.fnmatch(s, p) for s in known)]
+        unmatched = [
+            p for p in args.only if not any(fnmatch.fnmatch(s, p) for s in known)
+        ]
         if unmatched:
             print(f"error: --only matched no stories: {unmatched}", file=sys.stderr)
             return 1
@@ -4063,7 +4248,10 @@ def main() -> int:
                 reuse = not (args.only and selected("debug"))
                 exec_session = discover_exec_session(sn, disc, reuse)
                 if exec_session.launch is None and selected("debug"):
-                    print("  no debug story: discovery reused a live session", file=sys.stderr)
+                    print(
+                        "  no debug story: discovery reused a live session",
+                        file=sys.stderr,
+                    )
                 stories += build_exec_stories(disc, exec_session)
 
         if need_validate:

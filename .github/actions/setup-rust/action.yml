@@ -1,0 +1,27 @@
+name: Set up Rust and mise
+description: >-
+  Install the stable Rust toolchain, restore the cargo cache, and set up mise
+  with the mise.toml tools. Check out the repository first.
+inputs:
+  targets:
+    description: Extra Rust targets to install, separated by commas.
+    default: ""
+  components:
+    description: Extra Rust components to install, separated by commas.
+    default: ""
+  cache:
+    description: Set to "false" for a job that compiles nothing.
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      with:
+        toolchain: stable
+        targets: ${{ inputs.targets }}
+        components: ${{ inputs.components }}
+
+    - if: inputs.cache == 'true'
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+    - uses: ./.github/actions/setup-mise

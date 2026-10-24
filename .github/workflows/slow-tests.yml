@@ -77,18 +77,12 @@ jobs:
     env:
       SNOUTY_TEST_RUNTIME: podman
     steps:
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
-        with:
-          toolchain: stable
-
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           token: ${{secrets.GITHUB_TOKEN}}
           persist-credentials: false
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-
-      - uses: ./.github/actions/setup-mise
+      - uses: ./.github/actions/setup-rust
 
       # snouty always drives Docker Compose v2 via the `docker-compose` binary,
       # independent of the image runtime. Here that binary reaches podman over

@@ -42,17 +42,14 @@ jobs:
       contents: read
       checks: write
     steps:
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
-        with:
-          toolchain: stable
-          components: clippy, rustfmt
-
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           token: ${{secrets.GITHUB_TOKEN}}
           persist-credentials: false
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: clippy, rustfmt
 
       - name: Cargo fmt
         run: cargo fmt --check
@@ -66,8 +63,6 @@ jobs:
           token: ${{secrets.GITHUB_TOKEN}}
           check-args: --all-targets
           args: -D warnings
-
-      - uses: ./.github/actions/setup-mise
 
       - name: Python lint
         run: mise run lint:python
@@ -94,16 +89,14 @@ jobs:
     needs: skip-check
     if: needs.skip-check.outputs.should_skip != 'true'
     steps:
-      # cargo-shear and cargo-deny read `cargo metadata`.
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
-        with:
-          toolchain: stable
-
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
 
-      - uses: ./.github/actions/setup-mise
+      # cargo-shear and cargo-deny read `cargo metadata`, and compile nothing.
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache: "false"
 
       - name: zizmor
         run: mise run lint:zizmor
@@ -193,11 +186,6 @@ jobs:
       # The Linux release binaries are static musl builds, so test that target.
       CARGO_BUILD_TARGET: x86_64-unknown-linux-musl
     steps:
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
-        with:
-          toolchain: stable
-          targets: ${{ env.CARGO_BUILD_TARGET }}
-
       # musl-gcc compiles the vendored OpenSSL and mimalloc C sources.
       - name: Install musl-tools
         run: sudo apt-get update && sudo apt-get install -y musl-tools
@@ -207,9 +195,9 @@ jobs:
           token: ${{secrets.GITHUB_TOKEN}}
           persist-credentials: false
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-
-      - uses: ./.github/actions/setup-mise
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: ${{ env.CARGO_BUILD_TARGET }}
 
       # snouty always drives Docker Compose v2 via the `docker-compose` binary,
       # independent of the image runtime. The matrix exercises that binary
@@ -263,18 +251,12 @@ jobs:
     # for a new target with a cold cache. This is a safety net, not a budget.
     timeout-minutes: 25
     steps:
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
-        with:
-          toolchain: stable
-
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           token: ${{secrets.GITHUB_TOKEN}}
           persist-credentials: false
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-
-      - uses: ./.github/actions/setup-mise
+      - uses: ./.github/actions/setup-rust
 
       # `specs/doctor.txt` asserts that `snouty doctor` exits zero while testing
       # API connectivity, and doctor fails when it finds no container runtime.
@@ -305,18 +287,12 @@ jobs:
         github.actor != 'dependabot[bot]'))
     timeout-minutes: 15
     steps:
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
-        with:
-          toolchain: stable
-
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           token: ${{secrets.GITHUB_TOKEN}}
           persist-credentials: false
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-
-      - uses: ./.github/actions/setup-mise
+      - uses: ./.github/actions/setup-rust
 
       # This job gates merges. A missing secret must fail the job, because a
       # check that does not run is worse than a check that fails.

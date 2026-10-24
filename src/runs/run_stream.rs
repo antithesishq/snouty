@@ -36,7 +36,8 @@ use super::{mid_stream_error, stream_error_message};
 
 #[derive(Debug)]
 pub(super) enum Record {
-    /// NEW_PROPERTIES_ADDED.
+    /// NEW_PROPERTIES_ADDED. A new property can already carry samples
+    /// (observed on the antithesis-orbitinghail tenant, release 65.3).
     Catalogued(Vec<Property>),
     /// PROPERTIES_PASSED, PROPERTIES_FAILED, or NEW_EXAMPLES_FOUND: the
     /// properties carry their samples.
@@ -123,10 +124,14 @@ impl Denormalizer {
         match record {
             Record::Catalogued(properties) => properties
                 .into_iter()
-                .map(|property| Line::Catalogued {
-                    property_id: property_id(&property),
-                    name: property.name().to_string(),
+                .flat_map(|property| {
+                    let catalogued = Line::Catalogued {
+                        property_id: property_id(&property),
+                        name: property.name().to_string(),
+                    };
+                    std::iter::once(catalogued).chain(samples(property))
                 })
+                .filter(|line| self.first_time(line))
                 .collect(),
             Record::Samples(properties) => properties
                 .into_iter()
@@ -320,6 +325,15 @@ mod tests {
         assert_eq!(
             render(line),
             ["catalogued  a1  Property a1", "catalogued  b2  Property b2"]
+        );
+    }
+
+    #[test]
+    fn a_new_property_lists_the_samples_it_carries() {
+        let p = property("a1", "Failing", json!([]), json!([moment("-1", "1.5")]));
+        assert_eq!(
+            render(json!({"type": "NEW_PROPERTIES_ADDED", "data": [p]})),
+            ["catalogued  a1  Property a1", "failed      a1  -1  1.5"]
         );
     }
 

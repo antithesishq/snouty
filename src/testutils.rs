@@ -1260,16 +1260,18 @@ fn mock_route_stream_run_status(run_id: &str, req_body: &str) -> (u16, String) {
     let request: Value = serde_json::from_str(req_body).unwrap_or_default();
     let ids = request["property_filter"].as_array();
     let types = request["notification_type_filter"].as_array();
-    let [failing, _, undetermined, passing] =
+    let [failing, failing_nonevent, undetermined, passing] =
         MOCK_COMPLETED_PROPERTIES.map(|p| serde_json::from_str::<Value>(p).unwrap());
     let mut new_examples = failing.clone();
     new_examples["examples"] = json!([]);
     new_examples["counterexamples"] =
         json!([{"moment": {"input_hash": "-100", "vtime": "45.334635781589895"}}]);
+    // A property can be added already failing, with its counterexample.
     // NEW_EXAMPLES_FOUND carries a new sample, and the PROPERTIES_FAILED
     // after it repeats the samples the server keeps, that one included.
     let changes = [
         ("NEW_PROPERTIES_ADDED", undetermined),
+        ("NEW_PROPERTIES_ADDED", failing_nonevent),
         ("NEW_EXAMPLES_FOUND", new_examples),
         ("PROPERTIES_FAILED", failing),
         ("PROPERTIES_PASSED", passing),

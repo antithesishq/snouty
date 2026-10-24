@@ -44,6 +44,12 @@ mock-runs-server
 snouty runs stream run-2
 stdout '^passed +- +\{"final_counter":42\}$'
 
+# A property can be catalogued already failing. Its counterexample follows
+# the catalogued line.
+mock-runs-server
+snouty runs stream run-2
+stdout '(?s)^catalogued +d2558d97fabac81ba7eb4676e47a0cba558263f8 +Peak memory stays below cap\nfailed +d2558d97fabac81ba7eb4676e47a0cba558263f8 +1340$'
+
 # completed is the last line.
 mock-runs-server
 snouty runs stream run-2

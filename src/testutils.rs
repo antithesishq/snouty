@@ -1051,6 +1051,25 @@ fn mock_route_get_run_logs(run_id: &str) -> (u16, String) {
     (200, lines.join("\n") + "\n")
 }
 
+/// The properties a completed run reports, in the order `[failing,
+/// failing_nonevent, undetermined, passing]`. The list route pages over them
+/// and the lookup route finds one by ID.
+///
+/// Full-precision vtimes so a precision fault fails a spec (see specs/runs.txt).
+/// The API prefixes a grouped property's name with `<group>: `, as observed on
+/// the antithesis-orbitinghail tenant; "Peak memory" keeps the bare name that
+/// older runs send. The failing non-event ("system") property keeps its
+/// violating value in `counterexamples`, so `--detail` must label it apart from
+/// the satisfying `examples`. Runs created on release 65.3 or later report
+/// `Undetermined` until a property resolves (observed on the
+/// antithesis-orbitinghail tenant).
+const MOCK_COMPLETED_PROPERTIES: [&str; 4] = [
+    r#"{"id":"97cf5fcafa500ed62bf109d81834c5b881a2c854","name":"Safety: Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"group":"Safety","example_count":12,"counterexample_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"398.4898056755774"}}],"counterexamples":[{"moment":{"input_hash":"-200","vtime":"313.15126806590706"}},{"moment":{"input_hash":"-100","vtime":"45.334635781589895"}}]}"#,
+    r#"{"id":"d2558d97fabac81ba7eb4676e47a0cba558263f8","name":"Peak memory stays below cap","description":"Peak memory never exceeds the configured limit","status":"Failing","is_event":false,"group":"Resources","example_count":2,"counterexample_count":1,"examples":[820,910],"counterexamples":[1340]}"#,
+    r#"{"id":"27a7cb0b311c8481c4ce12f3347fadbf","name":"Balance stays nonnegative","status":"Undetermined","is_event":true,"example_count":0,"counterexample_count":0,"examples":[],"counterexamples":[]}"#,
+    r#"{"name":"Setup completes","description":"Setup eventually succeeds","status":"Passing","is_event":false,"example_count":1,"counterexample_count":0,"examples":[{"final_counter":42}]}"#,
+];
+
 fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, String) {
     if run_id == "run-no-events" {
         return (
@@ -1077,19 +1096,7 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
         .collect();
     let after = mock_query_param(query, "after");
 
-    // Full-precision vtimes so a precision fault fails a spec (see specs/runs.txt).
-    // The API prefixes a grouped property's name with `<group>: `, as observed on
-    // the antithesis-orbitinghail tenant; "Peak memory" keeps the bare name that
-    // older runs send.
-    let failing = r#"{"id":"97cf5fcafa500ed62bf109d81834c5b881a2c854","name":"Safety: Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"group":"Safety","example_count":12,"counterexample_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"398.4898056755774"}}],"counterexamples":[{"moment":{"input_hash":"-200","vtime":"313.15126806590706"}},{"moment":{"input_hash":"-100","vtime":"45.334635781589895"}}]}"#.to_string();
-    // A failing non-event ("system") property: the violating value lives in
-    // `counterexamples`, so `--detail` must label it apart from the satisfying
-    // `examples`.
-    let failing_nonevent = r#"{"id":"d2558d97fabac81ba7eb4676e47a0cba558263f8","name":"Peak memory stays below cap","description":"Peak memory never exceeds the configured limit","status":"Failing","is_event":false,"group":"Resources","example_count":2,"counterexample_count":1,"examples":[820,910],"counterexamples":[1340]}"#.to_string();
-    // Runs created on release 65.3 or later report `Undetermined` until a
-    // property resolves (observed on the antithesis-orbitinghail tenant).
-    let undetermined = r#"{"id":"27a7cb0b311c8481c4ce12f3347fadbf","name":"Balance stays nonnegative","status":"Undetermined","is_event":true,"example_count":0,"counterexample_count":0,"examples":[],"counterexamples":[]}"#.to_string();
-    let passing = r#"{"name":"Setup completes","description":"Setup eventually succeeds","status":"Passing","is_event":false,"example_count":1,"counterexample_count":0,"examples":[{"final_counter":42}]}"#.to_string();
+    let [failing, failing_nonevent, undetermined, passing] = MOCK_COMPLETED_PROPERTIES;
 
     let (data, next_cursor) = match after.as_deref() {
         _ if !statuses.is_empty() => {
@@ -1120,26 +1127,19 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
     )
 }
 
-/// One property from the completed runs' fixture list, by ID. An unknown run
-/// or property gets the bare 404 that orbitinghail sends on release 65.3.
+/// One property from [`MOCK_COMPLETED_PROPERTIES`], by ID. Only a completed
+/// run has them; any other run or property gets the bare 404 that orbitinghail
+/// sends on release 65.3.
 fn mock_route_get_run_property(run_id: &str, property_id: &str) -> (u16, String) {
-    if !mock_run_known(run_id) {
-        return (404, MOCK_BARE_404_BODY.to_string());
-    }
-    let (_, page) = mock_route_list_run_properties(run_id, None);
-    let (_, rest) = mock_route_list_run_properties(run_id, Some("after=props-cursor-1"));
-    let property = [page, rest]
+    let completed = MOCK_RUNS
         .iter()
-        .flat_map(|body| {
-            serde_json::from_str::<serde_json::Value>(body).unwrap()["data"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default()
-        })
-        .find(|property| property["id"] == property_id);
+        .any(|&(id, status, ..)| id == run_id && status == "completed");
+    let property = MOCK_COMPLETED_PROPERTIES.into_iter().find(|property| {
+        serde_json::from_str::<serde_json::Value>(property).unwrap()["id"] == property_id
+    });
     match property {
-        Some(property) => (200, property.to_string()),
-        None => (404, MOCK_BARE_404_BODY.to_string()),
+        Some(property) if completed => (200, property.to_string()),
+        _ => (404, MOCK_BARE_404_BODY.to_string()),
     }
 }
 

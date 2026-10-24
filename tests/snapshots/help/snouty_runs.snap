@@ -34,7 +34,7 @@ Commands:
   show        Show details of a specific run
   wait        Wait until a run is ready or complete
   cancel      Cancel a run that has not finished
-  properties  List property results for a run
+  properties  List a run's property results, or show one property by ID
   build-logs  Stream build logs for a run
   logs        Stream moment logs for a run
   exec        Execute a command in a run that is in progress

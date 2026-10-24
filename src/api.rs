@@ -1017,7 +1017,7 @@ impl AntithesisApi {
         })
     }
 
-    /// Fetch one property by its ID. The read is live, so it is never cached.
+    /// Fetch one property by its ID.
     pub async fn get_run_property(&self, run_id: &str, property_id: &str) -> Result<Property> {
         let request = self
             .client

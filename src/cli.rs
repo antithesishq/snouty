@@ -550,7 +550,7 @@ pub enum RunsCommands {
         run_id: String,
     },
 
-    /// List property results for a run
+    /// List a run's property results, or show one property by ID
     #[command(
         long_about = HelpPage::RunsProperties.cli()
     )]

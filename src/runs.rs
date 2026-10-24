@@ -612,8 +612,8 @@ struct PropertyFilter<'a> {
 
 /// `--detail` formats human output, so it conflicts with `--json` (which always
 /// emits the full structured data). Reject the combination with a clear error
-/// rather than silently ignoring one. Called once from [`cmd_runs`] for whichever
-/// subcommand carries `--detail` (`runs list`, `runs properties`).
+/// rather than silently ignoring one. Called from [`cmd_runs`] for whichever
+/// subcommand carries `--detail` (`runs list`, `runs properties`, `runs stream`).
 fn reject_detail_with_json(json: bool, detail: bool) -> Result<()> {
     if json && detail {
         return Err(user_error("--detail and --json cannot be combined")
@@ -1576,10 +1576,9 @@ async fn cmd_runs_stream(
             return Ok(());
         }
     }
-    // The server ends a failed stream without RUN_FINALIZED, and the stream
-    // cannot resume.
+    // Without RUN_FINALIZED, the run can still change.
     Err(eyre!("the stream ended before the run was final")
-        .note("output produced before the end may be incomplete")
+        .note("later changes are missing")
         .suggestion(format!(
             "read the current results with `snouty runs properties {run_id}`, or stream again with `snouty runs stream {run_id}`"
         )))

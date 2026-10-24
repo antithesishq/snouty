@@ -74,8 +74,8 @@ stdout '^\{"type":"RUN_FINALIZED","data":\[\]\}$'
 ! snouty --json runs stream run-2 --detail
 stderr '--detail and --json cannot be combined'
 
-# A server error after the stream opens fails the command, after the changes
-# that came first.
+# A server error after the stream opens fails the command. The changes before
+# the error still print.
 mock-runs-server
 ! snouty runs stream run-stream-error
 stdout '^added +undetermined'

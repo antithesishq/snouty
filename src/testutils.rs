@@ -865,9 +865,9 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
 /// events, build logs) 404 for any other id, matching the real API and letting
 /// run-scoped commands disambiguate "run not found" from an empty resource.
 /// `run-empty` and `run-no-events` are recognised separately by their own
-/// routes; `run-stream-error`
-/// is recognised separately by the streaming routes, whose response ends with
-/// a `Stream_Error` line.
+/// routes; `run-stream-error` is recognised separately by the streaming
+/// routes, whose response ends with a `Stream_Error` line, and `run-stream-cut`
+/// by the run status stream route.
 fn mock_run_known(run_id: &str) -> bool {
     MOCK_RUNS.iter().any(|(id, ..)| *id == run_id)
 }
@@ -897,7 +897,7 @@ const MOCK_HIDDEN_SESSIONS: &[(&str, &str, Option<&str>)] = &[
 ];
 
 /// An in-progress run from a release before `MIN_SEARCH_RELEASE`, whose
-/// events search answers 404. A run from before release 64.0 has no
+/// events search answers 404 and whose run status stream answers 409. A run from before release 64.0 has no
 /// sub-status, so it is ready.
 pub(crate) const MOCK_OLD_RELEASE_RUN: &str = "0df9ac1f5155c14f88ea41f5ad503e07-61-1";
 
@@ -1003,7 +1003,7 @@ const MOCK_CANCEL_404_BODY: &str = r#"{"error":"404 Not Found"}"#;
 
 /// The `Stream_Error` line the `run-stream-error` fixture ends its streams
 /// with: the server's shape for a failure that happens after the `200 OK` is
-/// already committed (see `parse_stream_error` in runs.rs).
+/// already committed (see `stream_error_message` in runs.rs).
 const MOCK_STREAM_ERROR_LINE: &str = r#"{"error":"mock stream failure"}"#;
 
 fn mock_route_get_run_build_logs(run_id: &str) -> (u16, String) {
@@ -1140,13 +1140,10 @@ fn mock_route_get_run_property(run_id: &str, property_id: &str) -> (u16, String)
     }
 }
 
-/// The run status stream. As observed on orbitinghail (release 65.3), a run
-/// that is already final sends only RUN_FINALIZED, and a run created before
-/// 65.3 gets a 409. The in-progress `run-2` sends one change of each kind
-/// from [`MOCK_COMPLETED_PROPERTIES`], then RUN_FINALIZED, so the stream
-/// ends. NEW_EXAMPLES_FOUND comes only when the request names it, and
-/// `property_filter` keeps only the listed IDs. `run-stream-error` fails
-/// after its first change, and `run-stream-cut` ends without RUN_FINALIZED.
+/// The run status stream. As observed on the antithesis-orbitinghail tenant
+/// (release 65.3), a run that is already final sends only RUN_FINALIZED, and a
+/// run created before 65.3 gets a 409. `run-stream-error` fails after its first
+/// change, and `run-stream-cut` ends without RUN_FINALIZED.
 fn mock_route_stream_run_status(run_id: &str, req_body: &str) -> (u16, String) {
     use serde_json::{Value, json};
 

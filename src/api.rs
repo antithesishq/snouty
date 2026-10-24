@@ -426,7 +426,7 @@ pub struct RunStreamFilter {
     /// Only these notification types; `None` asks for the server's default
     /// set, [`DEFAULT_RUN_STREAM_NOTIFICATIONS`].
     pub notification_types: Option<Vec<RunStreamNotification>>,
-    /// Only these properties; empty streams every property.
+    /// Stream only these properties. An empty list streams every property.
     pub property_ids: Vec<String>,
 }
 
@@ -1046,8 +1046,8 @@ impl AntithesisApi {
         })
     }
 
-    /// Open the run's status stream: NDJSON notifications until the run
-    /// finalizes. The body sends only the filters the caller set.
+    /// Open the run's status stream. It yields NDJSON notifications until
+    /// the run is final.
     pub async fn stream_run_status(
         &self,
         run_id: &str,

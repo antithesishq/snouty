@@ -1,11 +1,31 @@
-name: Set up mise
+name: Set up tools
 description: >-
-  Install mise, checked against a SHA-256 for the runner platform, then install
-  the mise.toml tools at the versions in mise.lock. mise-action caches them.
-  Every later step finds the tools on PATH, from any directory.
+  Install the stable Rust toolchain and restore the cargo cache. Install mise,
+  checked against a SHA-256 for the runner platform, and the mise.toml tools at
+  the versions in mise.lock, which mise-action caches. Every later step finds
+  the tools on PATH, from any directory. Check out the repository first.
+inputs:
+  targets:
+    description: Extra Rust targets to install, separated by commas.
+    default: ""
+  components:
+    description: Extra Rust components to install, separated by commas.
+    default: ""
+  cache:
+    description: Set to "false" for a job that compiles nothing.
+    default: "true"
 runs:
   using: composite
   steps:
+    - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      with:
+        toolchain: stable
+        targets: ${{ inputs.targets }}
+        components: ${{ inputs.components }}
+
+    - if: inputs.cache == 'true'
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
     - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
       with:
         version: "2026.10.7"

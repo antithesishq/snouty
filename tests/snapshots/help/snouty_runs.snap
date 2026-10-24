@@ -37,6 +37,7 @@ Commands:
   cancel      Cancel a run that has not finished
   properties  List property results for a run
   property    Show one property of a run, by its ID
+  stream      Stream a run's property changes until the run is final
   build-logs  Stream build logs for a run
   logs        Stream moment logs for a run
   exec        Execute a command in a run that is in progress

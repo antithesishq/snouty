@@ -738,6 +738,10 @@ fn mock_route(
             } else if let Some(run_id) = rest.strip_suffix("/command") {
                 let (s, b) = mock_route_execute_command(run_id, req_body);
                 (s, b, ndjson, NO_CACHE_CACHE_CONTROL)
+            } else if let Some(run_id) = rest.strip_suffix("/stream") {
+                let (s, b) = mock_route_stream_run_status(run_id, req_body);
+                let ct = if s == 200 { ndjson } else { json };
+                (s, b, ct, NO_CACHE_CACHE_CONTROL)
             } else if let Some(run_id) = rest.strip_suffix("/cancel") {
                 let (s, b) = mock_route_cancel_run(run_id);
                 (s, b, json, NO_CACHE_CACHE_CONTROL)
@@ -1222,6 +1226,68 @@ fn mock_route_get_run_property(run_id: &str, property_id: &str) -> (u16, String)
         Some(property) if completed => (200, property.to_string()),
         _ => (404, MOCK_BARE_404_BODY.to_string()),
     }
+}
+
+/// The run status stream. As observed on orbitinghail (release 65.3), a run
+/// that is already final sends only RUN_FINALIZED, and a run created before
+/// 65.3 gets a 409. The in-progress `run-2` sends one change of each kind
+/// from [`MOCK_COMPLETED_PROPERTIES`], then RUN_FINALIZED, so the stream
+/// ends. NEW_EXAMPLES_FOUND comes only when the request names it, and
+/// `property_filter` keeps only the listed IDs. `run-stream-error` fails
+/// after its first change, and `run-stream-cut` ends without RUN_FINALIZED.
+fn mock_route_stream_run_status(run_id: &str, req_body: &str) -> (u16, String) {
+    use serde_json::{Value, json};
+
+    if run_id == MOCK_OLD_RELEASE_RUN {
+        return (
+            409,
+            r#"{"message":"Conflict: Streaming is not available for this run. Streaming requires a run created with Antithesis version 65.3 or later. You can still view this run's saved property results."}"#.to_string(),
+        );
+    }
+    let finalized = json!({"type": "RUN_FINALIZED", "data": []});
+    if MOCK_RUNS
+        .iter()
+        .any(|&(id, status, ..)| id == run_id && status == "completed")
+    {
+        return (200, format!("{finalized}\n"));
+    }
+    if !matches!(run_id, "run-2" | "run-stream-error" | "run-stream-cut") {
+        return (404, MOCK_BARE_404_BODY.to_string());
+    }
+
+    let request: Value = serde_json::from_str(req_body).unwrap_or_default();
+    let ids = request["property_filter"].as_array();
+    let types = request["notification_type_filter"].as_array();
+    let [failing, _, undetermined, passing] =
+        MOCK_COMPLETED_PROPERTIES.map(|p| serde_json::from_str::<Value>(p).unwrap());
+    let mut new_examples = failing.clone();
+    new_examples["examples"] = json!([]);
+    new_examples["counterexamples"] =
+        json!([{"moment": {"input_hash": "-100", "vtime": "45.334635781589895"}}]);
+    let changes = [
+        ("NEW_PROPERTIES_ADDED", undetermined),
+        ("PROPERTIES_FAILED", failing),
+        ("NEW_EXAMPLES_FOUND", new_examples),
+        ("PROPERTIES_PASSED", passing),
+    ];
+    let mut lines: Vec<String> = changes
+        .into_iter()
+        .filter(|(kind, _)| match types {
+            Some(types) => types.iter().any(|t| t == kind),
+            None => *kind != "NEW_EXAMPLES_FOUND",
+        })
+        .filter(|(_, property)| ids.is_none_or(|ids| ids.contains(&property["id"])))
+        .map(|(kind, property)| json!({"type": kind, "data": [property]}).to_string())
+        .collect();
+    match run_id {
+        "run-stream-error" => {
+            lines.truncate(1);
+            lines.push(MOCK_STREAM_ERROR_LINE.to_string());
+        }
+        "run-stream-cut" => lines.truncate(1),
+        _ => lines.push(finalized.to_string()),
+    }
+    (200, lines.join("\n") + "\n")
 }
 
 /// The text the search route matches a needle against: an event's log text,

@@ -19,8 +19,8 @@ use chrono::{DateTime, Utc};
 
 use crate::api::{
     AntithesisApi, Event, EventProperty, ExecRequest, Moment, NonEventProperty, Property,
-    PropertyStatus, RewarmSource, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
-    SEARCH_DEFAULT_LIMIT, SearchMode,
+    PropertyStatus, RewarmSource, RunDetail, RunStatus, RunStreamFilter, RunSummary,
+    RunsFilterOptions, SEARCH_DEFAULT_LIMIT, SearchMode,
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs, WaitUntil};
 use crate::error::{api_error_message, api_error_status, user_error};
@@ -36,6 +36,7 @@ use crate::time::{HumanDuration, format_local_with_offset};
 use crate::vtime::VTime;
 
 mod event_search;
+mod run_stream;
 
 use event_search::EventOutput;
 
@@ -194,6 +195,19 @@ pub async fn cmd_runs(
                 group: group.as_deref(),
             };
             cmd_runs_properties(&run_id, filter, detail, settings, output).await
+        }
+        Some(RunsCommands::Stream {
+            run_id,
+            examples,
+            property_ids,
+            detail,
+        }) => {
+            reject_detail_with_json(output.json, detail)?;
+            let filter = RunStreamFilter {
+                examples,
+                property_ids,
+            };
+            cmd_runs_stream(&run_id, filter, detail, settings, output).await
         }
         Some(RunsCommands::BuildLogs { run_id }) => {
             // `--json` on build-logs is the raw passthrough: the records
@@ -1546,6 +1560,47 @@ fn raw_requires_json_error() -> color_eyre::eyre::Report {
     user_error("--raw requires --json")
         .note("--raw prints the server's events untouched, one JSON object per line")
         .suggestion("add --json, or drop --raw for the rendered output")
+}
+
+async fn cmd_runs_stream(
+    run_id: &str,
+    filter: RunStreamFilter,
+    detail: bool,
+    settings: &Settings,
+    OutputOptions { json, verbose }: OutputOptions,
+) -> Result<()> {
+    debug!("streaming status for run: {run_id}");
+
+    let api = AntithesisApi::new(settings, verbose)?;
+    let mut stream = match api.stream_run_status(run_id, filter).await {
+        Ok(stream) => stream,
+        Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
+    };
+    if !json {
+        // The stream sends nothing while no property changes, so say that it
+        // is open.
+        eprintln!("Streaming property changes for run {run_id} until the run is final.");
+    }
+    let mut stdout = std::io::stdout().lock();
+    while let Some(line) = stream.try_next().await? {
+        let record = run_stream::Record::parse(&line)?;
+        let text = if json {
+            run_stream::json_line(&record, line)
+        } else {
+            run_stream::render_record(&record, detail)
+        };
+        writeln!(stdout, "{text}")?;
+        if let run_stream::Record::Finalized = record {
+            return Ok(());
+        }
+    }
+    // The server ends a failed stream without RUN_FINALIZED, and the stream
+    // cannot resume.
+    Err(eyre!("the stream ended before the run was final")
+        .note("output produced before the end may be incomplete")
+        .suggestion(format!(
+            "read the current results with `snouty runs properties {run_id}`, or stream again with `snouty runs stream {run_id}`"
+        )))
 }
 
 async fn cmd_runs_build_logs(

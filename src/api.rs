@@ -40,7 +40,8 @@ pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
     BuildLogLine, Event, EventProperty, ExecuteCommandRequestSourceRunId as SourceRunId,
     ExecuteCommandRequestSourceSessionId as SourceSessionId, Moment, NonEventProperty,
-    PerformanceTier, Property, PropertyStatus, RunDetail, RunStatus, RunSummary, UsageEntry,
+    PerformanceTier, Property, PropertyStatus, RunDetail, RunStatus, RunStreamNotificationType,
+    RunSummary, UsageEntry,
 };
 
 /// The outcome of a launch or debugging-launch request, and the `--json` output
@@ -378,7 +379,7 @@ impl Property {
 /// a `NonEventProperty` whose examples happen to fit `Event`'s shape (or that
 /// has no examples at all) silently deserializes as `EventProperty`. Coerce
 /// each property into the variant indicated by its `is_event` flag.
-fn normalize_property(property: Property) -> Result<Property> {
+pub(crate) fn normalize_property(property: Property) -> Result<Property> {
     match property {
         Property::EventProperty(p) if !p.is_event => {
             let counterexamples = p
@@ -412,6 +413,15 @@ fn normalize_property(property: Property) -> Result<Property> {
         }
         other => Ok(other),
     }
+}
+
+/// The notifications [`AntithesisApi::stream_run_status`] asks for.
+#[derive(Debug, Default)]
+pub struct RunStreamFilter {
+    /// Also stream NEW_EXAMPLES_FOUND, which the server leaves out by default.
+    pub examples: bool,
+    /// Only these properties; empty streams every property.
+    pub property_ids: Vec<String>,
 }
 
 /// Caps connection setup (DNS, TCP, TLS) so no command hangs on an unreachable host.
@@ -1033,6 +1043,36 @@ impl AntithesisApi {
                 Ok((normalized, page.next_cursor))
             }
         })
+    }
+
+    /// Open the run's status stream: NDJSON notifications until the run
+    /// finalizes. The body sends only the filters the caller set.
+    pub async fn stream_run_status(
+        &self,
+        run_id: &str,
+        filter: RunStreamFilter,
+    ) -> Result<JsonStream> {
+        use generated::types::RunStatusStreamRequestNotificationTypeFilterItem as Notification;
+        // NEW_EXAMPLES_FOUND is opt-in, and the filter replaces the server's
+        // default set, so asking for it names the default set too.
+        let notification_type_filter = filter.examples.then(|| {
+            vec![
+                Notification::NewPropertiesAdded,
+                Notification::PropertiesPassed,
+                Notification::PropertiesFailed,
+                Notification::NewExamplesFound,
+            ]
+        });
+        let property_filter = (!filter.property_ids.is_empty()).then_some(filter.property_ids);
+        let body = generated::types::RunStatusStreamRequest {
+            notification_type_filter,
+            property_filter,
+        };
+        let request = self.client.stream_run_status().run_id(run_id).body(body);
+        match request.send().await {
+            Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
+            Err(err) => Err(format_api_client_error(err).await),
+        }
     }
 
     /// Fetch one property by its ID.

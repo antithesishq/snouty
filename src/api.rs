@@ -1132,18 +1132,20 @@ impl AntithesisApi {
         if let Some(status) = status {
             request = request.status(vec![status]);
         }
+        // Runs from release 65.3 report properties while they are in
+        // progress, so a page is immutable only once the run reaches a
+        // terminal status. The status is read before the page, so a run that
+        // ends between the two requests cannot admit a stale page. A failed
+        // run lookup only costs the cache entry, so its error is dropped.
+        let terminal = self.cache.enabled()
+            && self
+                .get_run(run_id)
+                .await
+                .is_ok_and(|detail| detail.untag().status.is_terminal());
 
         match request.send().await {
             Ok(response) => {
                 let policy = self.cache.headers_policy(response.headers());
-                // Runs from release 65.3 report properties while they are in
-                // progress, so a page is immutable only once the run reaches
-                // a terminal status. A failed run lookup only costs the cache
-                // entry, so its error is dropped.
-                let terminal = self
-                    .get_run(run_id)
-                    .await
-                    .is_ok_and(|detail| detail.untag().status.is_terminal());
                 Ok(response
                     .into_inner()
                     .with_tag(policy.and(CachePolicy::cache_if(terminal))))

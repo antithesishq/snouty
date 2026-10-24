@@ -72,6 +72,7 @@ help_pages! {
     RunsExec => "runs_exec",
     RunsEvents => "runs_events",
     RunsSearch => "runs_search",
+    RunsUsage => "runs_usage",
 }
 
 impl HelpPage {

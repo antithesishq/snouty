@@ -1,0 +1,63 @@
+---
+source: tests/help_snapshots.rs
+---
+Show the usage hours of recent runs, newest first.
+
+Columns: RUN ID, HOURS, STARTED, ENDED. STARTED and ENDED are the start and end
+of the billable usage of the run, in the local timezone.
+
+With --rollup, each row is the total of one day, week, or month, in the local
+timezone. A week starts on Monday. Columns: DATE, RUNS, HOURS. DATE is the last
+day of the period. A period with no runs does not show. When --started-after or
+--started-before cuts a period, the total of that period includes only the runs
+inside the filter.
+
+--started-after and --started-before filter on the time that the usage of a run
+started. --limit counts rows: runs, or periods with --rollup.
+
+Examples:
+  snouty runs usage
+  snouty runs usage --rollup week -n 4
+  snouty runs usage --rollup month --started-after 2026-01-01T00:00:00Z
+
+Add --json for machine-readable output. Each row prints as one JSON object on
+its own line. A run has the fields run_id, hours, start_time, and end_time; the
+times are RFC 3339 in the local timezone. A period has the fields date, runs,
+and hours:
+  snouty --json runs usage --rollup month | jq -r '"\(.date) \(.hours)"'
+
+Usage: snouty runs usage [OPTIONS]
+
+Options:
+      --rollup <ROLLUP>
+          Total the runs of each day, week, or month, in the local timezone
+          
+          [possible values: day, week, month]
+
+      --started-after <STARTED_AFTER>
+          Only show runs started after this timestamp (ISO 8601)
+
+      --started-before <STARTED_BEFORE>
+          Only show runs started before this timestamp (ISO 8601)
+
+  -n, --limit <LIMIT>
+          Maximum number of rows to display: runs, or periods with --rollup
+          
+          [default: 10]
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --json
+          Output JSON where supported (NDJSON for list/stream commands, pretty
+          JSON otherwise)
+
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

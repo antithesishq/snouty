@@ -40,7 +40,7 @@ pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
     BuildLogLine, Event, EventProperty, ExecuteCommandRequestSourceRunId as SourceRunId,
     ExecuteCommandRequestSourceSessionId as SourceSessionId, Moment, NonEventProperty,
-    PerformanceTier, Property, PropertyStatus, RunDetail, RunStatus, RunSummary,
+    PerformanceTier, Property, PropertyStatus, RunDetail, RunStatus, RunSummary, UsageEntry,
 };
 
 /// The outcome of a launch or debugging-launch request, and the `--json` output
@@ -1144,6 +1144,38 @@ impl AntithesisApi {
             Ok(response) => Ok(response.into_inner()),
             Err(err) => Err(format_api_client_error(err).await),
         }
+    }
+
+    /// Stream at most `limit` usage entries, newest first, in pages of at most
+    /// 100, the maximum of the endpoint. The pages are ordered by start time:
+    /// the cursor encodes the start time of the last entry (observed on
+    /// orbitinghail, release 65).
+    pub fn stream_usage(
+        &self,
+        started_after: Option<chrono::DateTime<chrono::Utc>>,
+        started_before: Option<chrono::DateTime<chrono::Utc>>,
+        limit: u64,
+    ) -> impl futures_util::Stream<Item = Result<UsageEntry>> + '_ {
+        paginate_limited(limit, 100, move |after, page_limit| async move {
+            let mut request = self.client.list_usage().limit(page_limit);
+            if let Some(cursor) = after {
+                request = request.after(cursor);
+            }
+            if let Some(ts) = started_after {
+                request = request.start_time(ts);
+            }
+            if let Some(ts) = started_before {
+                request = request.end_time(ts);
+            }
+            match request.send().await {
+                Ok(response) => {
+                    let generated::types::UsageListResponse { data, next_cursor } =
+                        response.into_inner();
+                    Ok((data, next_cursor))
+                }
+                Err(err) => Err(format_api_client_error(err).await),
+            }
+        })
     }
 
     #[cached(value)]

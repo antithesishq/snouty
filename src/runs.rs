@@ -36,6 +36,7 @@ use crate::time::{HumanDuration, format_local_with_offset};
 use crate::vtime::VTime;
 
 mod event_search;
+mod usage;
 
 use event_search::EventOutput;
 
@@ -261,6 +262,7 @@ pub async fn cmd_runs(
         Some(RunsCommands::Search(args)) => {
             cmd_runs_search(args, settings, output.verbose, mode).await
         }
+        Some(RunsCommands::Usage(args)) => usage::cmd_runs_usage(args, settings, output).await,
     }
 }
 

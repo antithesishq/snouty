@@ -710,6 +710,37 @@ pub enum RunsCommands {
     /// Query events with the event-set DSL
     #[command(long_about = HelpPage::RunsSearch.cli())]
     Search(RunsSearchArgs),
+
+    /// Show the usage hours of recent runs
+    #[command(long_about = HelpPage::RunsUsage.cli())]
+    Usage(RunsUsageArgs),
+}
+
+/// The period that `runs usage --rollup` totals runs over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum Rollup {
+    Day,
+    Week,
+    Month,
+}
+
+#[derive(Args)]
+pub struct RunsUsageArgs {
+    /// Total the runs of each day, week, or month, in the local timezone
+    #[arg(long, value_enum)]
+    pub rollup: Option<Rollup>,
+
+    /// Only show runs started after this timestamp (ISO 8601)
+    #[arg(long)]
+    pub started_after: Option<DateTime<Utc>>,
+
+    /// Only show runs started before this timestamp (ISO 8601)
+    #[arg(long)]
+    pub started_before: Option<DateTime<Utc>>,
+
+    /// Maximum number of rows to display: runs, or periods with --rollup
+    #[arg(short = 'n', long, default_value_t = DEFAULT_RUNS_LIMIT)]
+    pub limit: NonZeroU64,
 }
 
 #[derive(Args)]

@@ -2189,6 +2189,34 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             ],
             all_created_within(d.window_after, d.window_before),
         ),
+        # -- usage ----------------------------------------------------------
+        Story(
+            "runs-usage",
+            "See how many hours recent runs used",
+            "I want to know which recent runs used the most hours.",
+            "Up to 10 runs, newest first, with RUN ID/HOURS/STARTED/ENDED columns; HOURS "
+            "is right-aligned with two decimals, and STARTED/ENDED are local times; when "
+            "more runs exist, a stderr note says the output stopped at the limit.",
+            ["runs", "usage"],
+            rows_at_most(10),
+        ),
+        Story(
+            "runs-usage--rollup-week",
+            "Track usage hours week by week",
+            "I want the total runs and hours of each of the last few weeks.",
+            "At most 4 rows, newest week first, with DATE/RUNS/HOURS columns; DATE is the "
+            "Sunday that ends each week, and RUNS/HOURS are right-aligned totals.",
+            ["runs", "usage", "--rollup", "week", "-n", "4"],
+            rows_at_most(4),
+        ),
+        Story(
+            "runs-usage--rollup-month",
+            "Compare usage hours across months",
+            "I want to see how our usage changed from month to month.",
+            "At most 6 rows, newest month first; DATE is the last day of each month.",
+            ["runs", "usage", "--rollup", "month", "-n", "6"],
+            rows_at_most(6),
+        ),
         Story(
             "runs-verbose",
             "See the API calls printed while you list runs",
@@ -3137,6 +3165,15 @@ def build_help_stories(d: Discovery) -> list[Story]:
             ["runs", "list", "-n", "6"],
             samples=[("with --detail", ["runs", "list", "-n", "3", "--detail"])],
             align=("RUN ID", "STATUS", "CREATED", "LAUNCHER", "RUN"),
+        ),
+        _help_story(
+            "help-runs-usage",
+            "Learn what `runs usage` reports",
+            "I want to know what the usage columns mean and how --rollup groups runs.",
+            ["runs", "usage"],
+            ["runs", "usage", "-n", "5"],
+            samples=[("with --rollup week", ["runs", "usage", "--rollup", "week", "-n", "4"])],
+            align=("RUN ID", "HOURS", "STARTED", "ENDED"),
         ),
         _help_story(
             "help-runs-show",

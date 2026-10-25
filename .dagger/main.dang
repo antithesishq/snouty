@@ -176,8 +176,19 @@ type Snouty {
   "docker" or "podman". Like CI, it builds and tests the musl target.
   """
   pub test(runtime: String! = "docker"): Void {
+    # Debian's docker.io is too old for the specs that build images, so take
+    # Docker CE with buildx, as on the GitHub runners.
+    let addRepos = if (runtime == "docker") {
+      [
+        "install -m 0755 -d /etc/apt/keyrings",
+        "curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc",
+        "echo 'deb [signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable' > /etc/apt/sources.list.d/docker.list",
+      ].join(" && ")
+    } else {
+      "true"
+    }
     let packages = if (runtime == "docker") {
-      "docker.io iptables"
+      "docker-ce docker-ce-cli containerd.io docker-buildx-plugin iptables"
     } else {
       "podman"
     }
@@ -196,6 +207,7 @@ type Snouty {
       "cargo nextest run",
     ].join("\n")
     tools
+      .withExec(["sh", "-c", addRepos])
       .withExec(aptInstall(packages))
       .withExec(["rustup", "target", "add", "x86_64-unknown-linux-musl"])
       .withEnvVariable("SNOUTY_TEST_RUNTIME", runtime)

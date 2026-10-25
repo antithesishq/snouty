@@ -1,0 +1,246 @@
+pub description = "The checks from snouty's GitHub Actions workflows, as Dagger checks"
+
+type Snouty {
+  """
+  The repository. .git is left out so that a new commit does not invalidate
+  the cache; the checks that read `git ls-files` make a new index instead.
+  """
+  pub source: Directory! @defaultPath(path: "/") @ignorePatterns(patterns: [
+    ".git",
+    "target",
+    "result",
+    ".venv",
+    ".hegel",
+    ".direnv",
+    ".claude/worktrees",
+    "**/__pycache__",
+  ])
+
+  # The version and Linux x64 SHA-256 that .github/actions/setup-tools pins.
+  let miseVersion = "2026.10.7"
+  let miseSha256 = "6eb1b890e90818417ca34c90dbbd47881917d5cd199f31b63b062ea9c6b18d85"
+
+  # A shell command that installs Debian packages. It fetches over HTTPS, so
+  # that it works behind a proxy that takes only HTTPS.
+  let aptInstall(packages: String!): [String!]! {
+    ["sh", "-c", [
+      "sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources",
+      "apt-get update",
+      "apt-get install -y --no-install-recommends " + packages,
+      "rm -rf /var/lib/apt/lists/*",
+    ].join(" && ")]
+  }
+
+  """
+  Rust from rust-toolchain.toml, and the mise tools at the versions in
+  mise.lock. It holds no other source, so a code change keeps this layer.
+  """
+  pub tools: Container! {
+    container
+      .from("rust:1-bookworm")
+      .withEnvVariable("CARGO_TERM_COLOR", "never")
+      .withEnvVariable("CLICOLOR", "0")
+      .withEnvVariable("NO_COLOR", "1")
+      .withEnvVariable("RUST_BACKTRACE", "1")
+      .withEnvVariable("CI", "true")
+      .withExec(aptInstall("musl-tools"))
+      .withFile(
+        "/usr/local/bin/mise",
+        http("https://github.com/jdx/mise/releases/download/v" + miseVersion + "/mise-v" + miseVersion + "-linux-x64"),
+        permissions: 493,
+      )
+      .withExec(["sh", "-c", "echo '" + miseSha256 + "  /usr/local/bin/mise' | sha256sum -c -"])
+      .withWorkdir("/src")
+      .withFile("rust-toolchain.toml", source.file("rust-toolchain.toml"))
+      .withExec(["rustup", "toolchain", "install"])
+      .withFile("mise.toml", source.file("mise.toml"))
+      .withFile("mise.lock", source.file("mise.lock"))
+      .withExec(["mise", "trust"])
+      .withExec(["mise", "install", "--locked"])
+      .withMountedCache("/usr/local/cargo/registry", cacheVolume("snouty-cargo-registry"))
+      .withMountedCache("/usr/local/cargo/git", cacheVolume("snouty-cargo-git"))
+      .withMountedCache("/root/.cache/uv", cacheVolume("snouty-uv"))
+  }
+
+  """
+  The tools with the repository at /src. Each kind of build gets its own
+  target cache, so that they do not rebuild each other's artifacts.
+  """
+  pub dev(targetCache: String! = "stable"): Container! {
+    tools
+      .withMountedCache("/src/target", cacheVolume("snouty-target-" + targetCache))
+      .withDirectory("/src", source)
+      # A new index stands in for the .git that `source` leaves out, so that
+      # `git ls-files` lists the files of the checkout.
+      .withExec(["sh", "-c", "git init -q && git add -A"])
+  }
+
+  let run(cmd: [String!]!, targetCache: String! = "stable"): Void {
+    dev(targetCache: targetCache).withExec(cmd).sync
+    null
+  }
+
+  let mise(task: String!): Void {
+    run(["mise", "run", task])
+  }
+
+  # build.yml: checks
+
+  pub fmt: Void @check {
+    run(["cargo", "fmt", "--check"])
+  }
+
+  pub build: Void @check {
+    run(["cargo", "build", "--all-targets"])
+  }
+
+  pub clippy: Void @check {
+    run(["cargo", "clippy", "--all-targets", "--", "-D", "warnings"])
+  }
+
+  pub lintPython: Void @check {
+    mise("lint:python")
+  }
+
+  pub testScripts: Void @check {
+    mise("test:scripts")
+  }
+
+  # build.yml: typos
+
+  pub typos: Void @check {
+    mise("lint:typos")
+  }
+
+  # build.yml: lint
+
+  pub zizmor: Void @check {
+    mise("lint:zizmor")
+  }
+
+  pub actionlint: Void @check {
+    mise("lint:actionlint")
+  }
+
+  pub shellcheck: Void @check {
+    mise("lint:shellcheck")
+  }
+
+  pub taplo: Void @check {
+    mise("lint:taplo")
+  }
+
+  pub nixfmt: Void @check {
+    mise("lint:nixfmt")
+  }
+
+  pub cargoShear: Void @check {
+    mise("lint:shear")
+  }
+
+  pub cargoDeny: Void @check {
+    mise("lint:deny")
+  }
+
+  """
+  cargo-deny advisories. Not a check: a new advisory can appear with no change
+  here, so CI runs it only nightly and on a manual run.
+  """
+  pub advisories: Void {
+    mise("lint:advisories")
+  }
+
+  # build.yml: msrv
+
+  """
+  Check the workspace on the `rust-version` in Cargo.toml, for linux-gnu and
+  linux-musl.
+  """
+  pub msrv: Void @check {
+    let script = [
+      "set -eu",
+      "export RUSTUP_TOOLCHAIN=$(sed -n 's/^rust-version = \"\\(.*\\)\"$/\\1/p' Cargo.toml)",
+      "rustup toolchain install \"$RUSTUP_TOOLCHAIN\" --profile minimal --target x86_64-unknown-linux-musl",
+      "cargo check --workspace --all-targets --locked",
+      "cargo check --workspace --all-targets --locked --target x86_64-unknown-linux-musl",
+    ].join("\n")
+    run(["sh", "-c", script], targetCache: "msrv")
+  }
+
+  # build.yml: test
+
+  """
+  The test suite against a container runtime that runs in the test container:
+  "docker" or "podman". Like CI, it builds and tests the musl target.
+  """
+  pub test(runtime: String! = "docker"): Void {
+    let packages = if (runtime == "docker") {
+      "docker.io iptables"
+    } else {
+      "podman"
+    }
+    let start = if (runtime == "docker") {
+      "dockerd >/tmp/dockerd.log 2>&1 &\nuntil docker info >/dev/null 2>&1; do sleep 1; done"
+    } else {
+      "podman system service --time=0 unix:///run/podman/podman.sock &\nexport DOCKER_HOST=unix:///run/podman/podman.sock\nuntil podman info >/dev/null 2>&1 && [ -S /run/podman/podman.sock ]; do sleep 1; done"
+    }
+    let script = [
+      "set -eu",
+      start,
+      runtime + " info",
+      "docker-compose version",
+      "scripts/setup-test-images.sh " + runtime,
+      "export SNOUTY_TEST_REGISTRY=127.0.0.1:5000",
+      "cargo nextest run",
+    ].join("\n")
+    tools
+      .withExec(aptInstall(packages))
+      .withExec(["rustup", "target", "add", "x86_64-unknown-linux-musl"])
+      .withEnvVariable("SNOUTY_TEST_RUNTIME", runtime)
+      .withEnvVariable("CARGO_BUILD_TARGET", "x86_64-unknown-linux-musl")
+      .withMountedCache("/src/target", cacheVolume("snouty-target-musl"))
+      .withMountedCache("/var/lib/" + runtime, cacheVolume("snouty-" + runtime + "-data"))
+      .withDirectory("/src", source)
+      .withExec(["mise", "exec", "--", "sh", "-c", script], insecureRootCapabilities: true)
+      .sync
+    null
+  }
+
+  pub testDocker: Void @check {
+    test(runtime: "docker")
+  }
+
+  pub testPodman: Void @check {
+    test(runtime: "podman")
+  }
+
+  """
+  The spec tests against a real tenant, as the staging job runs them. Not a
+  check, because it needs the tenant's credentials.
+  """
+  pub staging(tenant: Secret!, apiKey: Secret!): Void {
+    dev
+      .withEnvVariable("SNOUTY_STAGING", "1")
+      .withSecretVariable("ANTITHESIS_TENANT", tenant)
+      .withSecretVariable("ANTITHESIS_API_KEY", apiKey)
+      .withExec(["mise", "exec", "--", "cargo", "nextest", "run", "--test", "spec", "spec_tests"])
+      .sync
+    null
+  }
+
+  # slow-tests.yml: build-nix
+
+  """
+  Build the package with nix-build. The nix leg's test step is not here: it
+  needs both container runtimes inside the nix shell.
+  """
+  pub buildNix: Void @check {
+    container
+      .from("nixos/nix:latest")
+      .withDirectory("/src", source)
+      .withWorkdir("/src")
+      .withExec(["nix-build"])
+      .sync
+    null
+  }
+}

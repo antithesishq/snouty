@@ -57,8 +57,10 @@ type Snouty {
       .withFile("mise.lock", source.file("mise.lock"))
       .withExec(["mise", "trust"])
       .withExec(["mise", "install", "--locked"])
-      .withMountedCache("/usr/local/cargo/registry", cacheVolume("snouty-cargo-registry"))
-      .withMountedCache("/usr/local/cargo/git", cacheVolume("snouty-cargo-git"))
+      # Cargo locks these through a file outside them, so concurrent checks
+      # that shared them would race to unpack the same crates.
+      .withMountedCache("/usr/local/cargo/registry", cacheVolume("snouty-cargo-registry"), sharing: CacheSharingMode.PRIVATE)
+      .withMountedCache("/usr/local/cargo/git", cacheVolume("snouty-cargo-git"), sharing: CacheSharingMode.PRIVATE)
       .withMountedCache("/root/.cache/uv", cacheVolume("snouty-uv"))
   }
 
@@ -235,8 +237,18 @@ type Snouty {
   needs both container runtimes inside the nix shell.
   """
   pub buildNix: Void @check {
+    # Nix reads only its own CA bundle, so it misses the custom CAs that the
+    # engine installs into Debian containers. debian:bookworm-slim has no CAs
+    # of its own, so its bundle holds only those custom CAs, if any.
+    let customCas = container
+      .from("debian:bookworm-slim")
+      .withExec(["sh", "-c", "cat /etc/ssl/certs/ca-certificates.crt > /custom-cas.crt 2>/dev/null || true"])
+      .file("/custom-cas.crt")
     container
       .from("nixos/nix:latest")
+      .withFile("/etc/custom-cas.crt", customCas)
+      .withExec(["sh", "-c", "cat \"$NIX_SSL_CERT_FILE\" /etc/custom-cas.crt > /etc/nix-ca-bundle.crt"])
+      .withEnvVariable("NIX_SSL_CERT_FILE", "/etc/nix-ca-bundle.crt")
       .withDirectory("/src", source)
       .withWorkdir("/src")
       .withExec(["nix-build"])

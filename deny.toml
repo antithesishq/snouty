@@ -35,9 +35,30 @@ allow = [
 ]
 
 [bans]
-# The tree has several duplicate versions that upstream crates pull in. Report
-# them, but do not fail on them.
-multiple-versions = "warn"
+# A second version of a crate fails, unless it is listed in `skip` below. Each
+# entry names the older version, which an upstream crate still requires; none
+# has a newer release that would remove it. When an upgrade removes one,
+# cargo-deny reports the entry as an unmatched skip, so delete it then.
+multiple-versions = "deny"
+skip = [
+    # cacache 13.1 and ssri 9.2, both the latest, are on miette 5, thiserror 1
+    # and base64 0.21.
+    { crate = "base64@0.21", reason = "ssri, under cacache" },
+    { crate = "thiserror@1", reason = "cacache, ssri and miette 5" },
+    { crate = "thiserror-impl@1", reason = "thiserror 1" },
+    { crate = "unicode-width@0.1", reason = "miette 5, under cacache" },
+    # headers 0.4 and wiremock 0.6 are on base64 0.22; snouty and reqwest are
+    # on 0.23.
+    { crate = "base64@0.22", reason = "headers and wiremock" },
+    # jsonschema, up to 0.60, depends on ahash 0.8, which is on getrandom 0.3.
+    # r-efi is getrandom's UEFI backend, so it splits with it.
+    { crate = "getrandom@0.3", reason = "ahash 0.8, under jsonschema" },
+    { crate = "r-efi@5", reason = "getrandom 0.3" },
+    { crate = "hashbrown@0.16", reason = "clru 0.6, under gix-pack" },
+    # Proc-macro crates are moving from syn 2 to 3. Both run only at build
+    # time, so neither reaches the binary.
+    { crate = "syn@2", reason = "proc macros not yet on syn 3" },
+]
 
 [sources]
 unknown-registry = "deny"

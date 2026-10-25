@@ -104,10 +104,9 @@ mise trust
 `mise run` installs any missing tool before it runs a task:
 
 ```
-cargo nextest run
+mise run test           # the Rust tests (test:rust) and Python tests (test:scripts)
 mise run lint           # every lint that CI runs
-mise run fmt            # format the TOML, Nix and Python files
-mise run test:scripts   # unit tests for the Python scripts
+mise run fmt            # format the Rust, TOML, Nix and Python files
 mise tasks              # list the tasks, such as lint:zizmor
 ```
 

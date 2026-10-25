@@ -190,7 +190,7 @@ type Snouty {
     let packages = if (runtime == "docker") {
       "docker-ce docker-ce-cli containerd.io docker-buildx-plugin iptables"
     } else {
-      "podman"
+      "podman nftables"
     }
     let storage = if (runtime == "docker") {
       "/var/lib/docker"

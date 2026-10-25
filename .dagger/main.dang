@@ -39,6 +39,7 @@ type Snouty {
     container
       .from("rust:1-trixie")
       .withEnvVariable("CARGO_TERM_COLOR", "never")
+      .withEnvVariable("MISE_TASK_OUTPUT", "interleave")
       .withEnvVariable("CLICOLOR", "0")
       .withEnvVariable("NO_COLOR", "1")
       .withEnvVariable("RUST_BACKTRACE", "1")
@@ -100,8 +101,14 @@ type Snouty {
     run(["cargo", "clippy", "--all-targets", "--", "-D", "warnings"])
   }
 
-  pub lintPython: Void @check {
-    mise("lint:python")
+  pub ruff: Void @check {
+    mise("lint:ruff")
+  }
+
+  # CI runs pyright through pyright-action instead, at the same version from
+  # uv.lock.
+  pub pyright: Void @check {
+    mise("lint:pyright")
   }
 
   pub testScripts: Void @check {

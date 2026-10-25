@@ -1,0 +1,9 @@
+# Throwaway: exists only to test lint annotations. Never triggered on a PR.
+name: zz-annotation-test
+on: workflow_dispatch
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: echo "${{ github.event.inputs.title }}"

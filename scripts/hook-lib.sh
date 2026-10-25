@@ -12,3 +12,25 @@ run() {
     "$@"
   fi
 }
+
+# Run a command that proves a tool works, such as `typos --version`, and fail
+# the hook when it does not. Exit 1 shows the error to the user without waking
+# the agent.
+require() {
+  local out
+  out=$(run "$@" 2>&1) && return
+  {
+    echo "${0##*/}: cannot run '$*'"
+    echo "$out"
+  } >&2
+  exit 1
+}
+
+# Fail the hook, as `require` does, with a tool's output.
+fail() {
+  {
+    echo "${0##*/}: $1"
+    echo "$2"
+  } >&2
+  exit 1
+}

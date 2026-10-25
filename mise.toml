@@ -19,14 +19,22 @@ cargo-deny = "0.20.2"
 
 [settings]
 lockfile = true
+# Tasks print each tool's output and their own result line, not the commands.
+task.quiet = true
 
 # `mise run <task>` installs any missing tool first. `mise tasks` lists them.
 # CI runs each task as a step of its own; `mise run lint` runs them all.
+# Under GitHub Actions, the lints print their findings in a form that GitHub
+# shows on the lines of the pull request: workflow commands where the tool can
+# write them, and otherwise a problem matcher from .github/problem-matchers.
+# Each task ends by printing that it passed, since most tools are silent on
+# success. A failing command stops the task, and mise reports the failure.
 [tasks.lint]
 description = "Run every lint that CI runs"
 depends = [
     "lint:typos",
-    "lint:python",
+    "lint:ruff",
+    "lint:pyright",
     "lint:shellcheck",
     "lint:zizmor",
     "lint:actionlint",
@@ -35,63 +43,127 @@ depends = [
     "lint:shear",
     "lint:deny",
 ]
+run = "echo '✓ lint: all checks passed'"
 
 [tasks."lint:typos"]
-run = "typos"
-
-[tasks."lint:python"]
-description = "ruff and pyright on scripts/"
 run = [
-    "uv run --locked ruff format --check scripts",
-    "uv run --locked ruff check scripts",
-    "uv run --locked pyright",
+    "[ -z \"${GITHUB_ACTIONS:-}\" ] || echo '::add-matcher::.github/problem-matchers/typos.json'",
+    "typos ${GITHUB_ACTIONS:+--format brief}",
+    "echo '✓ lint:typos passed'",
 ]
+
+[tasks."lint:ruff"]
+description = "ruff format and check on scripts/"
+run = [
+    "uv run --locked ruff format --check ${GITHUB_ACTIONS:+--output-format github} scripts",
+    "uv run --locked ruff check ${GITHUB_ACTIONS:+--output-format github} scripts",
+    "echo '✓ lint:ruff passed'",
+]
+
+[tasks."lint:pyright"]
+description = "pyright on scripts/"
+# CI runs pyright through pyright-action instead, which annotates the pull
+# request with its findings. See the checks job in build.yml.
+run = ["uv run --locked pyright", "echo '✓ lint:pyright passed'"]
 
 [tasks."lint:shellcheck"]
 description = "shellcheck on every shell script, tracked or new"
-run = "scripts/check-shell.sh"
+run = [
+    "[ -z \"${GITHUB_ACTIONS:-}\" ] || echo '::add-matcher::.github/problem-matchers/shellcheck.json'",
+    "scripts/check-shell.sh",
+    "echo '✓ lint:shellcheck passed'",
+]
 
 [tasks."lint:zizmor"]
 description = "Audit the workflows for security problems"
 # Offline: the online audits ask the GitHub API about upstream tags, so their
-# result can change with no change here.
-run = "zizmor --offline ."
+# result can change with no change here. -q drops the INFO line for each file,
+# and its progress bar would cut across the other tasks' output.
+run = [
+    "zizmor --offline --no-progress -q ${GITHUB_ACTIONS:+--format github} .",
+    "echo '✓ lint:zizmor passed'",
+]
 
 [tasks."lint:actionlint"]
-run = "actionlint"
+# The format is a workflow command for each error. mise renders a task script
+# as a Tera template, so the raw block keeps actionlint's {{ }} from it.
+run = [
+    '''
+if [ -n "${GITHUB_ACTIONS:-}" ]; then
+  {% raw %}actionlint -format '{{range $err := .}}::error file={{$err.Filepath}},line={{$err.Line}},col={{$err.Column}},title=actionlint {{$err.Kind}}::{{$err.Message}}\n{{end}}'{% endraw %}
+else
+  actionlint
+fi
+''',
+    "echo '✓ lint:actionlint passed'",
+]
 
 [tasks."lint:taplo"]
-run = "taplo fmt --check"
+# taplo logs every file it checks at INFO; its errors still print.
+env = { RUST_LOG = "warn" }
+run = ["taplo fmt --check", "echo '✓ lint:taplo passed'"]
 
 [tasks."lint:nixfmt"]
 # npins generates npins/default.nix, so its format is not ours to keep. mise
-# has nixfmt for Linux only, so elsewhere the task skips without nixfmt.
-run = """
-if ! command -v nixfmt >/dev/null; then echo 'nixfmt not installed; skipped'; exit 0; fi
-git ls-files -z '*.nix' ':!:npins/*' | xargs -0 nixfmt --check
-"""
+# has nixfmt for Linux only, so on macOS run this task from the nix shell.
+run = [
+    "git ls-files -z '*.nix' ':!:npins/*' | xargs -0 nixfmt --check",
+    "echo '✓ lint:nixfmt passed'",
+]
 
 [tasks."lint:shear"]
 description = "Find unused dependencies"
-run = "cargo shear --locked"
+run = ["cargo shear --locked", "echo '✓ lint:shear passed'"]
 
 [tasks."lint:deny"]
 description = "Check dependency licenses, bans and sources"
-run = "cargo deny --all-features check bans licenses sources"
+run = [
+    "cargo deny --all-features check bans licenses sources",
+    "echo '✓ lint:deny passed'",
+]
 
 [tasks."lint:advisories"]
 description = "Check dependencies for security advisories"
-run = "cargo deny --all-features check advisories"
+run = [
+    "cargo deny --all-features check advisories",
+    "echo '✓ lint:advisories passed'",
+]
 
 [tasks.fmt]
-description = "Format the TOML, Nix and Python files"
+description = "Format the Rust, TOML, Nix and Python files"
+depends = ["fmt:rust", "fmt:toml", "fmt:nix", "fmt:python"]
+run = "echo '✓ fmt: all files formatted'"
+
+[tasks."fmt:rust"]
+run = ["cargo fmt --all", "echo '✓ fmt:rust done'"]
+
+[tasks."fmt:toml"]
+env = { RUST_LOG = "warn" }
+run = ["taplo fmt", "echo '✓ fmt:toml done'"]
+
+[tasks."fmt:nix"]
+# npins generates npins/default.nix, so its format is not ours to keep.
 run = [
-    "taplo fmt",
-    "if command -v nixfmt >/dev/null; then git ls-files -z '*.nix' ':!:npins/*' | xargs -0 nixfmt; fi",
-    "uv run --locked ruff format scripts",
+    "git ls-files -z '*.nix' ':!:npins/*' | xargs -0 nixfmt",
+    "echo '✓ fmt:nix done'",
 ]
+
+[tasks."fmt:python"]
+run = ["uv run --locked ruff format scripts", "echo '✓ fmt:python done'"]
+
+[tasks.test]
+description = "Run the Rust and Python tests"
+depends = ["test:rust", "test:scripts"]
+run = "echo '✓ test: all tests passed'"
+
+[tasks."test:rust"]
+description = "The Rust test suite, under nextest"
+run = ["cargo nextest run", "echo '✓ test:rust passed'"]
 
 [tasks."test:scripts"]
 description = "Unit tests for the Python scripts"
 dir = "scripts"
-run = "uv run --locked python -m unittest discover -p 'test_*.py'"
+run = [
+    "uv run --locked python -m unittest discover -p 'test_*.py'",
+    "echo '✓ test:scripts passed'",
+]

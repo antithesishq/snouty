@@ -4,8 +4,7 @@
 cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=scripts/hook-lib.sh
 . scripts/hook-lib.sh
-# Skip the check when the tool cannot run.
-run shellcheck --version >/dev/null 2>&1 || exit 0
+require shellcheck --version
 # Check *.sh files and extensionless scripts with a sh or bash shebang,
 # tracked or new.
 files=()
@@ -16,4 +15,6 @@ while IFS= read -r -d '' f; do
   fi
 done < <(git ls-files -z --cached --others --exclude-standard)
 (( ${#files[@]} )) || exit 0
-out=$(run shellcheck --external-sources "${files[@]}" 2>&1) || { echo "$out"; exit 2; }
+# Under GitHub Actions, one line per finding, for the problem matcher that the
+# lint:shellcheck mise task adds.
+out=$(run shellcheck --external-sources ${GITHUB_ACTIONS:+--format=gcc} "${files[@]}" 2>&1) || { echo "$out"; exit 2; }

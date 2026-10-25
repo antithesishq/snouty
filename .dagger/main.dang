@@ -200,7 +200,10 @@ type Snouty {
     let start = if (runtime == "docker") {
       "dockerd >/tmp/dockerd.log 2>&1 &\ntimeout 60 sh -c 'until docker info >/dev/null 2>&1; do sleep 1; done' || { cat /tmp/dockerd.log; exit 1; }"
     } else {
-      "mkdir -p /run/podman\npodman system service --time=0 unix:///run/podman/podman.sock >/tmp/podman.log 2>&1 &\nexport DOCKER_HOST=unix:///run/podman/podman.sock\ntimeout 60 sh -c 'until [ -S /run/podman/podman.sock ]; do sleep 1; done' || { cat /tmp/podman.log; exit 1; }"
+      # Podman asks for higher nofile and nproc limits than the container
+      # allows, and crun then fails to start any container. Ask for the
+      # container's own hard limits instead.
+      "mkdir -p /etc/containers /run/podman\nprintf '[containers]\\ndefault_ulimits = [\"nofile=%s:%s\", \"nproc=%s:%s\"]\\n' \"$(ulimit -Hn)\" \"$(ulimit -Hn)\" \"$(ulimit -Hu)\" \"$(ulimit -Hu)\" > /etc/containers/containers.conf\npodman system service --time=0 unix:///run/podman/podman.sock >/tmp/podman.log 2>&1 &\nexport DOCKER_HOST=unix:///run/podman/podman.sock\ntimeout 60 sh -c 'until [ -S /run/podman/podman.sock ]; do sleep 1; done' || { cat /tmp/podman.log; exit 1; }"
     }
     let script = [
       "set -eu",
@@ -220,7 +223,7 @@ type Snouty {
       .withMountedCache("/src/target", cacheVolume("snouty-target-musl"))
       .withMountedCache(storage, cacheVolume("snouty-" + runtime + "-data"))
       .withDirectory("/src", source)
-      .withExec(["mise", "exec", "--", "sh", "-c", script], insecureRootCapabilities: true)
+      .withExec(["mise", "exec", "--", "bash", "-c", script], insecureRootCapabilities: true)
       .sync
     null
   }

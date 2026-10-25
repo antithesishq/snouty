@@ -32,3 +32,13 @@ mkdir -p "$XDG_CACHE_HOME/snouty"
 cp tests/fixtures/docs.db "$XDG_CACHE_HOME/snouty/docs.db"
 snouty docs --offline search ...
 ```
+
+## `run_stream/`
+
+`rqlite-15m.jsonl` is the raw run status stream of one 15-minute rqlite run
+on orbitinghail (release 65.3), captured with `scripts/capture-run-stream.py`.
+Each line is one record: a connection attempt, an HTTP status, one NDJSON
+message from the server, or the end of the stream, with `t`, the seconds since
+the capture began. A unit test in `src/runs/run_stream.rs` renders it, and
+`scripts/replay-run-stream.py` serves it to `snouty runs stream` with the
+captured timing.

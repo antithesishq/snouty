@@ -567,4 +567,28 @@ mod tests {
             json!({"event": "completed", "run_id": "run-1"})
         );
     }
+
+    /// The whole stream of a real 15-minute run (see tests/fixtures/README.md),
+    /// rendered as `runs stream` prints it.
+    #[test]
+    fn a_captured_run_renders() {
+        console::set_colors_enabled(false);
+        let capture = include_str!("../../tests/fixtures/run_stream/rqlite-15m.jsonl");
+        let mut denormalizer = Denormalizer::default();
+        let mut out = String::new();
+        for record in capture
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        {
+            if record["kind"] != "message" {
+                continue;
+            }
+            let line: Value = serde_json::from_str(record["line"].as_str().unwrap()).unwrap();
+            for line in denormalizer.lines(Record::parse(&line).unwrap(), RUN) {
+                out.push_str(&line.render());
+                out.push('\n');
+            }
+        }
+        insta::assert_snapshot!(out);
+    }
 }

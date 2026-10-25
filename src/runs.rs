@@ -1567,12 +1567,7 @@ async fn cmd_runs_stream(
     debug!("streaming status for run: {run_id}");
 
     let api = AntithesisApi::new(settings, verbose)?;
-    // A run that is starting has no stream yet: the server answers 404.
-    wait_until_ready(&api, run_id, READY_POLL).await?;
-    let mut stream = match api.stream_run_status(run_id, property_ids).await {
-        Ok(stream) => stream,
-        Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
-    };
+    let mut stream = open_run_stream(&api, run_id, &property_ids, READY_POLL).await?;
     // The stream is silent between events, so a terminal shows that it is
     // open. Output piped to another program shares the terminal with the
     // spinner and would interleave with its frames.
@@ -1616,6 +1611,44 @@ async fn cmd_runs_stream(
         spinner.finish_and_clear();
     }
     result
+}
+
+/// Open the run's status stream, and wait while the run has none yet. The
+/// server answers 404 until the run's stream opens, minutes after the run
+/// reports that it is ready (observed on the antithesis-orbitinghail tenant,
+/// release 65.3: ready at 73 s, stream at 241 s). A 404 for a run that does
+/// not exist, or that has finished, is an error.
+async fn open_run_stream(
+    api: &AntithesisApi,
+    run_id: &str,
+    property_ids: &[String],
+    poll: Duration,
+) -> Result<JsonStream> {
+    let mut waiting: Option<ReadyDisplay> = None;
+    loop {
+        let err = match api.stream_run_status(run_id, property_ids.to_vec()).await {
+            Ok(stream) => {
+                if let Some(waiting) = waiting {
+                    waiting.clear();
+                }
+                return Ok(stream);
+            }
+            Err(err) => err,
+        };
+        if api_error_status(&err) != Some(404) {
+            return Err(err);
+        }
+        match probe_run(api, run_id).await {
+            RunProbe::NotFound => return Err(user_error(format!("run not found: {run_id}"))),
+            RunProbe::ProbeFailed(probe_err) => return Err(probe_err),
+            RunProbe::Exists(run) if run.status.is_terminal() => return Err(err),
+            RunProbe::Exists(_) => {}
+        }
+        waiting
+            .get_or_insert_with(|| ReadyDisplay::new("waiting for the run's stream to open"))
+            .show();
+        tokio::time::sleep(poll).await;
+    }
 }
 
 async fn cmd_runs_build_logs(
@@ -1835,11 +1868,14 @@ impl RewarmDisplay {
     }
 }
 
-/// What a command shows on stderr while it waits for the run to be ready: a
-/// spinner on a terminal, else a line at once and a line each whole minute.
+/// What a command shows on stderr while it waits, for example for the run
+/// to be ready: a spinner on a terminal, else a line at once and a line each
+/// whole minute. `waiting` names the wait, as in "waiting for the run to be
+/// ready".
 enum ReadyDisplay {
     Spinner(ProgressBar),
     Lines {
+        waiting: &'static str,
         start: Instant,
         /// The whole minutes waited at the last line.
         last_minutes: Option<u64>,
@@ -1847,23 +1883,26 @@ enum ReadyDisplay {
 }
 
 impl ReadyDisplay {
-    fn new() -> Self {
+    fn new(waiting: &'static str) -> Self {
         if !std::io::stderr().is_terminal() {
             return Self::Lines {
+                waiting,
                 start: Instant::now(),
                 last_minutes: None,
             };
         }
-        let style =
-            ProgressStyle::with_template("{spinner} waiting for the run to be ready ({elapsed})")
-                .expect("the template is valid");
-        let spinner = ProgressBar::new_spinner().with_style(style);
+        let style = ProgressStyle::with_template("{spinner} {msg} ({elapsed})")
+            .expect("the template is valid");
+        let spinner = ProgressBar::new_spinner()
+            .with_style(style)
+            .with_message(waiting);
         spinner.enable_steady_tick(Duration::from_millis(120));
         Self::Spinner(spinner)
     }
 
     fn show(&mut self) {
         if let Self::Lines {
+            waiting,
             start,
             last_minutes,
         } = self
@@ -1872,7 +1911,7 @@ impl ReadyDisplay {
             let minutes = waited / 60;
             if last_minutes.is_none_or(|last| minutes > last) {
                 let waited = HumanDuration::from_seconds(waited);
-                eprintln!("waiting for the run to be ready ({waited})");
+                eprintln!("{waiting} ({waited})");
                 *last_minutes = Some(minutes);
             }
         }
@@ -1881,11 +1920,16 @@ impl ReadyDisplay {
     /// End the display. A run that stopped instead of becoming ready gets no
     /// line: the error that follows names its status.
     fn finish(self, run: &RunDetail) {
-        if let Self::Spinner(spinner) = &self {
-            spinner.finish_and_clear();
-        }
+        self.clear();
         if run.is_ready() {
             eprintln!("run {} is ready", run.run_id);
+        }
+    }
+
+    /// End the display, and print nothing.
+    fn clear(&self) {
+        if let Self::Spinner(spinner) = self {
+            spinner.finish_and_clear();
         }
     }
 }
@@ -2060,7 +2104,9 @@ const READY_POLL: Duration = Duration::from_secs(10);
 async fn wait_until_ready(api: &AntithesisApi, run_id: &str, poll: Duration) -> Result<RunDetail> {
     let mut waiting: Option<ReadyDisplay> = None;
     let run = wait_for_run(api, run_id, poll, WaitUntil::Ready, |_| {
-        waiting.get_or_insert_with(ReadyDisplay::new).show();
+        waiting
+            .get_or_insert_with(|| ReadyDisplay::new("waiting for the run to be ready"))
+            .show();
     })
     .await?;
     if let Some(waiting) = waiting {
@@ -5117,6 +5163,61 @@ mod tests {
         /// Sub-minute polling is fine below the CLI: the 1-minute floor is
         /// clap's, `wait_for_run` takes any interval.
         const FAST_POLL: Duration = Duration::from_millis(10);
+
+        /// The stream answers `404 Resource not found` `misses` times, then
+        /// opens with one `RUN_FINALIZED` line.
+        async fn mount_stream(server: &MockServer, misses: u64) {
+            let route = "/api/v0/runs/run-w/stream";
+            if misses > 0 {
+                Mock::given(method("POST"))
+                    .and(path(route))
+                    .respond_with(
+                        ResponseTemplate::new(404)
+                            .set_body_json(json!({"message": "Resource not found"})),
+                    )
+                    .up_to_n_times(misses)
+                    .mount(server)
+                    .await;
+            }
+            Mock::given(method("POST"))
+                .and(path(route))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string("{\"type\":\"RUN_FINALIZED\",\"data\":[]}\n"),
+                )
+                .mount(server)
+                .await;
+        }
+
+        #[tokio::test]
+        async fn the_stream_opens_after_a_ready_run_answers_404() {
+            let server = MockServer::start().await;
+            mount_get_run_statuses(&server, &["in_progress"]).await;
+            mount_stream(&server, 2).await;
+            let api = test_api(&server.uri());
+
+            let mut stream = open_run_stream(&api, "run-w", &[], FAST_POLL)
+                .await
+                .unwrap();
+            let line = stream.try_next().await.unwrap().unwrap();
+
+            assert_eq!(line["type"], "RUN_FINALIZED");
+        }
+
+        #[tokio::test]
+        async fn a_finished_run_without_a_stream_is_an_error() {
+            let server = MockServer::start().await;
+            mount_get_run_statuses(&server, &["completed"]).await;
+            mount_stream(&server, u64::MAX).await;
+            let api = test_api(&server.uri());
+
+            let err = open_run_stream(&api, "run-w", &[], FAST_POLL)
+                .await
+                .err()
+                .unwrap();
+
+            assert_eq!(api_error_status(&err), Some(404));
+        }
 
         #[tokio::test]
         async fn wait_polls_until_the_run_completes() {

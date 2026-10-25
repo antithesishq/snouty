@@ -22,8 +22,8 @@ The stream does not show the current results. It shows only events, and it is
 silent until one happens. To get the current results and then follow them, start
 the stream first, then read `snouty runs properties <run_id>`. If you start the
 stream first, you do not miss an event. A stream for a run that is already final
-prints `completed` and ends immediately. A run that is starting has no stream
-yet, so snouty waits until the run is ready.
+prints `completed` and ends immediately. The stream of a new run opens a few
+minutes after the run starts, and snouty waits until it does.
 
 If the stream ends before the run is final, snouty exits with an error. Start
 the stream again, then read the current results.

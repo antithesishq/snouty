@@ -80,6 +80,10 @@ pub struct ApiVersion {
 /// meets this; `snouty doctor` checks it.
 pub const MIN_SEARCH_RELEASE: (u64, u64) = (62, 2);
 
+/// The first release that serves the run status stream, for runs created on
+/// it or later.
+pub const MIN_STREAM_RELEASE: (u64, u64) = (65, 3);
+
 /// The first tenant release whose execute-command API takes `container`.
 /// Earlier releases reject the field, and this release requires it. `runs exec`
 /// assumes the tenant meets this; `snouty doctor` checks it. TODO: drop this
@@ -270,6 +274,12 @@ impl RunDetail {
     /// ID that names no release counts as one that does.
     pub(crate) fn serves_events_search(&self) -> bool {
         run_release(&self.run_id).is_none_or(|release| release >= MIN_SEARCH_RELEASE)
+    }
+
+    /// Whether the run was created on a release that serves the run status
+    /// stream: a run ID that names no release counts as one that does.
+    pub(crate) fn serves_run_stream(&self) -> bool {
+        run_release(&self.run_id).is_none_or(|release| release >= MIN_STREAM_RELEASE)
     }
 
     pub(crate) fn is_ready_or_terminal(&self) -> bool {

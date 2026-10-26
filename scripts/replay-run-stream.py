@@ -36,7 +36,8 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-records = [json.loads(line) for line in open(args.capture)]
+with open(args.capture) as capture:
+    records = [json.loads(line) for line in capture]
 # The messages after the last 200 status: the connection that ran to the end.
 last_ok = max(
     i for i, r in enumerate(records) if r["kind"] == "status" and r["status"] == 200

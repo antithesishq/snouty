@@ -37,47 +37,50 @@ body = json.dumps(
     }
 ).encode()
 start = time.monotonic()
-out = open(out_path, "a", buffering=1)
 
 
-def record(kind, **fields):
+def record(out, kind, **fields):
     out.write(
         json.dumps({"t": round(time.monotonic() - start, 3), "kind": kind, **fields})
         + "\n"
     )
 
 
-finalized = False
-attempt = 0
-while not finalized:
-    attempt += 1
-    record("connect", attempt=attempt)
-    request = urllib.request.Request(
-        url,
-        data=body,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {os.environ['ANTITHESIS_API_KEY']}",
-            "Content-Type": "application/json",
-        },
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=3600) as response:
-            record("status", status=response.status)
-            for raw in response:
-                line = raw.decode("utf-8", "replace").rstrip("\n")
-                if not line:
-                    continue
-                record("message", line=line)
-                if '"RUN_FINALIZED"' in line:
-                    finalized = True
-        record("eof")
-    except urllib.error.HTTPError as err:
-        record(
-            "status", status=err.code, body=err.read().decode("utf-8", "replace")[:500]
+with open(out_path, "a", buffering=1) as out:
+    finalized = False
+    attempt = 0
+    while not finalized:
+        attempt += 1
+        record(out, "connect", attempt=attempt)
+        request = urllib.request.Request(
+            url,
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {os.environ['ANTITHESIS_API_KEY']}",
+                "Content-Type": "application/json",
+            },
         )
-    except (OSError, ValueError) as err:  # a dropped connection, a timeout
-        record("error", error=repr(err)[:500])
-    if not finalized:
-        time.sleep(15)
+        try:
+            with urllib.request.urlopen(request, timeout=3600) as response:
+                record(out, "status", status=response.status)
+                for raw in response:
+                    line = raw.decode("utf-8", "replace").rstrip("\n")
+                    if not line:
+                        continue
+                    record(out, "message", line=line)
+                    if '"RUN_FINALIZED"' in line:
+                        finalized = True
+            record(out, "eof")
+        except urllib.error.HTTPError as err:
+            record(
+                out,
+                "status",
+                status=err.code,
+                body=err.read().decode("utf-8", "replace")[:500],
+            )
+        except (OSError, ValueError) as err:  # a dropped connection, a timeout
+            record(out, "error", error=repr(err)[:500])
+        if not finalized:
+            time.sleep(15)
 print(f"captured {out_path}", file=sys.stderr)

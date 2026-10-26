@@ -18,8 +18,8 @@ use serde_json::{Map, Value, json};
 use chrono::{DateTime, Utc};
 
 use crate::api::{
-    AntithesisApi, Event, EventProperty, ExecRequest, Moment, NonEventProperty, Property,
-    PropertyStatus, RewarmSource, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
+    AntithesisApi, Event, EventProperty, ExecRequest, MIN_STREAM_RELEASE, Moment, NonEventProperty,
+    Property, PropertyStatus, RewarmSource, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
     SEARCH_DEFAULT_LIMIT, SearchMode,
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs, WaitUntil};
@@ -1641,6 +1641,20 @@ async fn open_run_stream(
         match probe_run(api, run_id).await {
             RunProbe::NotFound => return Err(user_error(format!("run not found: {run_id}"))),
             RunProbe::ProbeFailed(probe_err) => return Err(probe_err),
+            // An older tenant has no stream route and answers 404 forever.
+            RunProbe::Exists(run) if !run.serves_run_stream() => {
+                let (major, minor) = MIN_STREAM_RELEASE;
+                return Err(
+                    user_error(format!("run {run_id} has no status stream")).note(format!(
+                        "streaming needs a run created on release {major}.{minor} or later"
+                    )),
+                );
+            }
+            RunProbe::Exists(run) if run.status == RunStatus::Unknown => {
+                return Err(user_error(format!(
+                    "run {run_id} reported status \"unknown\""
+                )));
+            }
             RunProbe::Exists(run) if run.status.is_terminal() => return Err(err),
             RunProbe::Exists(_) => {}
         }
@@ -5202,6 +5216,49 @@ mod tests {
             let line = stream.try_next().await.unwrap().unwrap();
 
             assert_eq!(line["type"], "RUN_FINALIZED");
+        }
+
+        #[tokio::test]
+        async fn a_run_with_status_unknown_is_an_error() {
+            let server = MockServer::start().await;
+            mount_get_run_statuses(&server, &["unknown"]).await;
+            mount_stream(&server, u64::MAX).await;
+            let api = test_api(&server.uri());
+
+            let err = open_run_stream(&api, "run-w", &[], FAST_POLL)
+                .await
+                .err()
+                .unwrap();
+
+            assert_eq!(err.to_string(), "run run-w reported status \"unknown\"");
+        }
+
+        #[tokio::test]
+        async fn a_run_from_before_the_stream_release_is_an_error() {
+            let server = MockServer::start().await;
+            let run_id = "0df9ac1f5155c14f88ea41f5ad503e07-64-0";
+            let mut body = run_body("in_progress");
+            body["run_id"] = json!(run_id);
+            mount_get_run_bodies(&server, vec![body]).await;
+            Mock::given(method("POST"))
+                .and(path(format!("/api/v0/runs/{run_id}/stream")))
+                .respond_with(
+                    ResponseTemplate::new(404)
+                        .set_body_json(json!({"message": "Resource not found"})),
+                )
+                .mount(&server)
+                .await;
+            let api = test_api(&server.uri());
+
+            let err = open_run_stream(&api, run_id, &[], FAST_POLL)
+                .await
+                .err()
+                .unwrap();
+
+            assert_eq!(
+                err.to_string(),
+                format!("run {run_id} has no status stream")
+            );
         }
 
         #[tokio::test]

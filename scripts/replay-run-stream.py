@@ -1,7 +1,8 @@
 #!/usr/bin/env -S uv run
 """Replay a capture from capture-run-stream.py to snouty, with its timing.
 
-usage: uv run scripts/replay-run-stream.py CAPTURE.jsonl RUN_ID [--port 8931] [--speed 10] [--startup]
+usage: uv run scripts/replay-run-stream.py CAPTURE.jsonl RUN_ID [--port 8931] [--speed 10]
+       [--startup] [--from SECONDS]
 
 GET /api/v0/runs/<id> answers that the run is ready. POST
 /api/v0/runs/<id>/stream replays the messages of the last 200 connection in
@@ -22,6 +23,13 @@ parser.add_argument("run_id")
 parser.add_argument("--port", type=int, default=8931)
 parser.add_argument("--speed", type=float, default=10.0)
 parser.add_argument(
+    "--from",
+    dest="start",
+    type=float,
+    default=0.0,
+    help="join the capture at this second: send only the messages after it",
+)
+parser.add_argument(
     "--startup",
     action="store_true",
     help="answer the stream with 404 until the captured time of the first 200, scaled by --speed",
@@ -33,7 +41,9 @@ records = [json.loads(line) for line in open(args.capture)]
 last_ok = max(
     i for i, r in enumerate(records) if r["kind"] == "status" and r["status"] == 200
 )
-messages = [r for r in records[last_ok:] if r["kind"] == "message"]
+messages = [
+    r for r in records[last_ok:] if r["kind"] == "message" and r["t"] >= args.start
+]
 opens_at = (
     records[last_ok]["t"] / args.speed if args.startup and args.speed > 0 else 0.0
 )
@@ -58,7 +68,10 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        request = json.loads(
+            self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}"
+        )
+        ids = request.get("property_filter")
         if time.monotonic() - started < opens_at:
             body = b'{"message":"Resource not found"}'
             self.send_response(404)
@@ -70,12 +83,25 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson")
         self.end_headers()
-        previous = records[last_ok]["t"]
+        previous = max(records[last_ok]["t"], args.start)
         for message in messages:
             if args.speed > 0:
                 time.sleep(max(0.0, message["t"] - previous) / args.speed)
             previous = message["t"]
-            self.wfile.write((message["line"] + "\n").encode())
+            line = message["line"]
+            if ids is not None:
+                notification = json.loads(line)
+                if (
+                    "data" in notification
+                    and notification.get("type") != "RUN_FINALIZED"
+                ):
+                    notification["data"] = [
+                        p for p in notification["data"] if p.get("id") in ids
+                    ]
+                    if not notification["data"]:
+                        continue
+                line = json.dumps(notification)
+            self.wfile.write((line + "\n").encode())
             self.wfile.flush()
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002

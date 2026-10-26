@@ -155,8 +155,12 @@ pub(crate) enum CodeSpans {
 /// zero columns and wide glyphs count as two.
 pub(crate) fn wrap_text(text: &str, width: usize, spans: CodeSpans) -> Vec<String> {
     let mut lines = Vec::new();
-    for paragraph in text.split('\n') {
-        if textwrap::core::display_width(paragraph) <= width {
+    let paragraphs: Vec<&str> = text.split('\n').collect();
+    for (i, paragraph) in paragraphs.iter().copied().enumerate() {
+        // A caret marker points at a column of the line above it, so that line
+        // keeps its layout even when it overflows.
+        let marked = paragraphs.get(i + 1).is_some_and(|next| next.trim() == "^");
+        if marked || textwrap::core::display_width(paragraph) <= width {
             lines.push(paragraph.to_string());
             continue;
         }
@@ -300,6 +304,17 @@ mod tests {
         assert_eq!(
             wrap_text("aaaa\tbbbb", 5, CodeSpans::Keep),
             vec!["aaaa", "bbbb"]
+        );
+    }
+
+    #[test]
+    fn wrap_text_keeps_the_line_a_caret_points_into() {
+        let query = format!("  {}", "word ".repeat(30).trim_end());
+        let caret = format!("{}^", " ".repeat(100));
+        let text = format!("{query}\n{caret}\ninvalid word");
+        assert_eq!(
+            wrap_text(&text, 80, CodeSpans::Keep),
+            [query.as_str(), caret.as_str(), "invalid word"]
         );
     }
 

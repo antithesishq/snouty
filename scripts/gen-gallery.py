@@ -2083,6 +2083,18 @@ def _exit_with(*needles: str, want_ok: bool):
     return chk
 
 
+def properties_or_none(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+    """A run that stopped early lists the properties it reported (a run from
+    release 65.3 on reports them while it runs), or says it has none."""
+    text = sr.result.combined
+    table = contains_text(text, "STATUS") and contains_text(text, "NAME")
+    empty = contains_text(text, "No properties found.")
+    return (
+        sr.result.ok and table != empty,
+        f"exit={sr.result.returncode}, table={table}, empty message={empty}",
+    )
+
+
 def succeeds_with(*needles: str):
     """A clean-success story: exit zero AND every needle appears in the output."""
     return _exit_with(*needles, want_ok=True)
@@ -2410,9 +2422,11 @@ def _reachable_doctor_env() -> dict[str, str | None]:
 # A long query whose third verb names an invalid field, so the server's caret lands
 # in the middle of the query rather than at its start.
 INVALID_QUERY_SEGMENT = 'not_matches({host: "setup"})'
+# Short enough that the query, indented under the error, fits on one line of
+# the gallery's TTY_COLS terminal: a wrapped query moves the caret's column.
 INVALID_QUERY = (
     'contains({output_text: "error"}).filter(ev => ev.moment.vtime > 10)'
-    f'.{INVALID_QUERY_SEGMENT}.narrow(["output_text"])'
+    f'.{INVALID_QUERY_SEGMENT}.narrow(["source"])'
 )
 
 
@@ -2691,9 +2705,10 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-properties-incomplete",
             "Properties for a run that never finished",
             "I try to view properties on an incomplete run.",
-            "An empty property set exits zero and says `No properties found.`",
+            "Exits zero with the properties the run reported before it stopped, "
+            "or says `No properties found.` when it reported none.",
             ["runs", "properties", d.fail],
-            succeeds_with("No properties found."),
+            properties_or_none,
             json_capable=False,
         ),
         # -- property detail (`properties --name <x> --detail`) -------------

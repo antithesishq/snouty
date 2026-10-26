@@ -1270,8 +1270,9 @@ def _live_gallery_run(sn: Snouty) -> dict | None:
     """The newest run that the gallery launched and that is in progress on
     RUN_TIER, or None. A run that the gallery did not launch is never reused:
     the stories would execute in it. Only an in-progress run is reused: a
-    starting run can list no description or tier, so the gallery cannot tell
-    that it launched the run, and a rerun soon after a launch launches a
+    starting run lists no description and no parameters (orbitinghail,
+    release 66.0, about a minute after the launch), so the gallery cannot
+    tell that it launched the run, and a rerun soon after a launch launches a
     second run."""
     rows = sn.json_lines(
         [

@@ -2,14 +2,24 @@ Stream the property events of a run as they happen, until the run is final.
 
 Each event prints as one line:
 
-  property <property id> <name>                             a property appears for the first time
-  sample <property id> example <input hash> <vtime>         an example of the property
-  sample <property id> counterexample <input hash> <vtime>  a counterexample of the property
-  verdict <property id> passed|failed                       the property passed or failed
-  completed <run id>                                        the run is final, and the stream ends
-  unknown <type> <json>                                     a notification that snouty cannot read
+  property <property id> <name>
+      A property appears for the first time.
 
-A non-event property has no moments, so its samples show the sample value as JSON. A sample prints only the first time the server sends it. The samples are a selection: the server does not send every example and counterexample that it counts. Look up a property, with its totals, with `snouty runs property <run_id> <property_id>`, and read the logs at a moment with `snouty runs logs <run_id> <input hash> <vtime>`.
+  sample <property id> example <input hash> <vtime>
+  sample <property id> counterexample <input hash> <vtime>
+      An example or a counterexample of the property, the first time it
+      arrives. A non-event property's sample is its value, as JSON.
+
+  verdict <property id> passed|failed
+      The property passed or failed.
+
+  completed <run id>
+      The run is final, and the stream ends.
+
+  unknown <type> <json>
+      A notification that snouty cannot read, printed as its JSON.
+
+The samples are a selection: the server does not send every example and counterexample that it counts. Look up a property, with its totals, with `snouty runs property <run_id> <property_id>`, and read the logs at a moment with `snouty runs logs <run_id> <input hash> <vtime>`.
 
 The stream shows only the events that happen after it starts. It does not show the current results, and a property that passed or failed before the stream started gets no verdict line. To get the current results and then follow them, start the stream first, then read `snouty runs properties <run_id>` and merge the two. If you start the stream first, you do not miss an event. The stream is silent between events. A stream for a run that is already final prints `completed` and ends immediately. The stream of a new run opens a few minutes after the run starts, and snouty waits until it does.
 

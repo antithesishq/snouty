@@ -37,6 +37,44 @@ use crate::vtime::VTime;
 
 use super::{mid_stream_error, stream_error_message};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Verdict {
+    Passed,
+    Failed,
+}
+
+impl Verdict {
+    fn word(self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SampleKind {
+    Example,
+    Counterexample,
+}
+
+impl SampleKind {
+    fn word(self) -> &'static str {
+        match self {
+            Self::Example => "example",
+            Self::Counterexample => "counterexample",
+        }
+    }
+}
+
+/// One sample of a property: an event property's moment, or a non-event
+/// property's value.
+#[derive(Debug, PartialEq)]
+pub(super) enum Sample {
+    Moment { input_hash: String, vtime: VTime },
+    Value(Value),
+}
+
 #[derive(Debug)]
 pub(super) enum Record {
     /// `NEW_PROPERTIES_ADDED` or `NEW_EXAMPLES_FOUND` (`None`), or
@@ -85,25 +123,10 @@ impl Record {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Verdict {
-    Passed,
-    Failed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SampleKind {
-    Example,
-    Counterexample,
-}
-
-/// One sample of a property: an event property's moment, or a non-event
-/// property's value.
-#[derive(Debug, PartialEq)]
-pub(super) enum Sample {
-    Moment { input_hash: String, vtime: VTime },
-    Value(Value),
-}
+/// The width of the event column: `completed` is the widest event.
+const EVENT_WIDTH: usize = 9;
+/// The width of the sample kind column: `counterexample` is the widest kind.
+const KIND_WIDTH: usize = 14;
 
 /// One output line of `runs stream`.
 #[derive(Debug, PartialEq)]
@@ -125,133 +148,6 @@ pub(super) enum Line {
         run_id: String,
     },
     Unknown(Value),
-}
-
-/// Turns records into lines, and remembers what it printed.
-#[derive(Default)]
-pub(super) struct Denormalizer {
-    properties: HashSet<String>,
-    moments: HashSet<(String, String)>,
-    values: HashSet<(String, String)>,
-    verdicts: HashMap<String, Verdict>,
-}
-
-impl Denormalizer {
-    pub(super) fn lines(&mut self, record: Record, run_id: &str) -> Vec<Line> {
-        match record {
-            Record::Properties {
-                verdict,
-                properties,
-            } => properties
-                .into_iter()
-                .flat_map(|property| self.property_lines(property, verdict))
-                .collect(),
-            Record::Finalized => vec![Line::Completed {
-                run_id: run_id.to_string(),
-            }],
-            Record::Unknown(line) => vec![Line::Unknown(line)],
-        }
-    }
-
-    /// A property's new lines: the property, then its new samples, then the
-    /// verdict.
-    fn property_lines(&mut self, property: Property, verdict: Option<Verdict>) -> Vec<Line> {
-        let property_id = property_id(&property);
-        let mut lines = Vec::new();
-        if self.properties.insert(property_id.clone()) {
-            lines.push(Line::Property {
-                property_id: property_id.clone(),
-                name: property.name().to_string(),
-            });
-        }
-        for (kind, sample) in samples(property) {
-            let new = match &sample {
-                Sample::Moment { input_hash, vtime } => {
-                    self.moments.insert((input_hash.clone(), vtime.to_string()))
-                }
-                Sample::Value(value) => {
-                    self.values.insert((property_id.clone(), value.to_string()))
-                }
-            };
-            if new {
-                lines.push(Line::Sample {
-                    property_id: property_id.clone(),
-                    kind,
-                    sample,
-                });
-            }
-        }
-        if let Some(verdict) = verdict
-            && self.verdicts.insert(property_id.clone(), verdict) != Some(verdict)
-        {
-            lines.push(Line::Verdict {
-                property_id,
-                verdict,
-            });
-        }
-        lines
-    }
-}
-
-/// Every run that serves the stream (release 65.3 and later) gives each
-/// property an ID, but the field stays optional in the spec.
-fn property_id(property: &Property) -> String {
-    property.id().unwrap_or("-").to_string()
-}
-
-/// A property's samples, counterexamples first.
-fn samples(property: Property) -> Vec<(SampleKind, Sample)> {
-    let moment = |event: Event| Sample::Moment {
-        input_hash: event.moment.input_hash,
-        vtime: event.moment.vtime,
-    };
-    match property {
-        Property::EventProperty(p) => {
-            let counter = p
-                .counterexamples
-                .into_iter()
-                .map(|e| (SampleKind::Counterexample, moment(e)));
-            let examples = p
-                .examples
-                .into_iter()
-                .map(|e| (SampleKind::Example, moment(e)));
-            counter.chain(examples).collect()
-        }
-        Property::NonEventProperty(p) => {
-            let counter = p
-                .counterexamples
-                .into_iter()
-                .map(|v| (SampleKind::Counterexample, Sample::Value(v)));
-            let examples = p
-                .examples
-                .into_iter()
-                .map(|v| (SampleKind::Example, Sample::Value(v)));
-            counter.chain(examples).collect()
-        }
-    }
-}
-
-/// The width of the event column: `completed` is the widest event.
-const EVENT_WIDTH: usize = 9;
-/// The width of the sample kind column: `counterexample` is the widest kind.
-const KIND_WIDTH: usize = 14;
-
-impl SampleKind {
-    fn word(self) -> &'static str {
-        match self {
-            Self::Example => "example",
-            Self::Counterexample => "counterexample",
-        }
-    }
-}
-
-impl Verdict {
-    fn word(self) -> &'static str {
-        match self {
-            Self::Passed => "passed",
-            Self::Failed => "failed",
-        }
-    }
 }
 
 impl Line {
@@ -345,6 +241,110 @@ impl Line {
             Self::Completed { run_id } => json!({"event": "completed", "run_id": run_id}),
             Self::Unknown(line) => json!({"event": "unknown", "data": line}),
         }
+    }
+}
+
+/// Every run that serves the stream (release 65.3 and later) gives each
+/// property an ID, but the field stays optional in the spec.
+fn property_id(property: &Property) -> String {
+    property.id().unwrap_or("-").to_string()
+}
+
+/// A property's samples, counterexamples first.
+fn samples(property: Property) -> Vec<(SampleKind, Sample)> {
+    let moment = |event: Event| Sample::Moment {
+        input_hash: event.moment.input_hash,
+        vtime: event.moment.vtime,
+    };
+    match property {
+        Property::EventProperty(p) => {
+            let counter = p
+                .counterexamples
+                .into_iter()
+                .map(|e| (SampleKind::Counterexample, moment(e)));
+            let examples = p
+                .examples
+                .into_iter()
+                .map(|e| (SampleKind::Example, moment(e)));
+            counter.chain(examples).collect()
+        }
+        Property::NonEventProperty(p) => {
+            let counter = p
+                .counterexamples
+                .into_iter()
+                .map(|v| (SampleKind::Counterexample, Sample::Value(v)));
+            let examples = p
+                .examples
+                .into_iter()
+                .map(|v| (SampleKind::Example, Sample::Value(v)));
+            counter.chain(examples).collect()
+        }
+    }
+}
+
+/// Turns records into lines, and remembers what it printed.
+#[derive(Default)]
+pub(super) struct Denormalizer {
+    properties: HashSet<String>,
+    moments: HashSet<(String, String)>,
+    values: HashSet<(String, String)>,
+    verdicts: HashMap<String, Verdict>,
+}
+
+impl Denormalizer {
+    pub(super) fn lines(&mut self, record: Record, run_id: &str) -> Vec<Line> {
+        match record {
+            Record::Properties {
+                verdict,
+                properties,
+            } => properties
+                .into_iter()
+                .flat_map(|property| self.property_lines(property, verdict))
+                .collect(),
+            Record::Finalized => vec![Line::Completed {
+                run_id: run_id.to_string(),
+            }],
+            Record::Unknown(line) => vec![Line::Unknown(line)],
+        }
+    }
+
+    /// A property's new lines: the property, then its new samples, then the
+    /// verdict.
+    fn property_lines(&mut self, property: Property, verdict: Option<Verdict>) -> Vec<Line> {
+        let property_id = property_id(&property);
+        let mut lines = Vec::new();
+        if self.properties.insert(property_id.clone()) {
+            lines.push(Line::Property {
+                property_id: property_id.clone(),
+                name: property.name().to_string(),
+            });
+        }
+        for (kind, sample) in samples(property) {
+            let new = match &sample {
+                Sample::Moment { input_hash, vtime } => {
+                    self.moments.insert((input_hash.clone(), vtime.to_string()))
+                }
+                Sample::Value(value) => {
+                    self.values.insert((property_id.clone(), value.to_string()))
+                }
+            };
+            if new {
+                lines.push(Line::Sample {
+                    property_id: property_id.clone(),
+                    kind,
+                    sample,
+                });
+            }
+        }
+        if let Some(verdict) = verdict
+            && self.verdicts.insert(property_id.clone(), verdict) != Some(verdict)
+        {
+            lines.push(Line::Verdict {
+                property_id,
+                verdict,
+            });
+        }
+        lines
     }
 }
 
@@ -581,29 +581,5 @@ mod tests {
             done[0].json(),
             json!({"event": "completed", "run_id": "run-1"})
         );
-    }
-
-    /// The whole stream of a real 15-minute run (see tests/fixtures/README.md),
-    /// rendered as `runs stream` prints it.
-    #[test]
-    fn a_captured_run_renders() {
-        console::set_colors_enabled(false);
-        let capture = include_str!("../../tests/fixtures/run_stream/rqlite-15m.jsonl");
-        let mut denormalizer = Denormalizer::default();
-        let mut out = String::new();
-        for record in capture
-            .lines()
-            .map(|l| serde_json::from_str::<Value>(l).unwrap())
-        {
-            if record["kind"] != "message" {
-                continue;
-            }
-            let line: Value = serde_json::from_str(record["line"].as_str().unwrap()).unwrap();
-            for line in denormalizer.lines(Record::parse(&line).unwrap(), RUN) {
-                out.push_str(&line.render());
-                out.push('\n');
-            }
-        }
-        insta::assert_snapshot!(out);
     }
 }

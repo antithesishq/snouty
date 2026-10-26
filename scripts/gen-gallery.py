@@ -57,6 +57,7 @@ from __future__ import annotations
 import argparse
 import codecs
 import fnmatch
+import functools
 import json
 import os
 import random
@@ -74,12 +75,13 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 from collections.abc import Callable, Iterator
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import islice
 from pathlib import Path
+from typing import TypeVar
 
 import pexpect
 import pyte
@@ -1152,8 +1154,6 @@ class GalleryRun:
     # The launch, or None when the gallery reused a live run that an earlier
     # gallery launched.
     launch: Result | None = None
-    # `runs wait --until ready`, which the exec stories wait on.
-    wait_ready: Result | None = None
     hash: str = ""  # a moment just after the run's setup, which is warm
     vtime: str = "0"
     container: str = ""  # a container name from the run's logs
@@ -1176,8 +1176,8 @@ class FinalCaptures:
     """What the gallery captures once its run is final."""
 
     wait: Result
-    # The streams that started right after the launch, or None when no
-    # selected story records them.
+    # The streams that started right after the launch, or None when their
+    # story is not selected.
     stream: Result | None = None
     stream_json: Result | None = None
     # The ID of EXAMPLE_BUG_PROPERTY in the run, or "" when it has none.
@@ -1292,7 +1292,13 @@ def launched_run_id(stdout: str) -> str | None:
     return run if isinstance(run, str) and run else None
 
 
-def _launch_gallery_run(sn: Snouty) -> GalleryRun:
+def gallery_run(sn: Snouty, reuse: bool) -> GalleryRun:
+    """The gallery's run. With `reuse`, prefer a live run that the gallery
+    launched; otherwise launch one."""
+    row = _live_gallery_run(sn) if reuse else None
+    if row is not None:
+        print(f"  reusing gallery run {row['run_id']}", file=sys.stderr)
+        return GalleryRun(run=row["run_id"])
     ensure_example_images()
     # A unique description tells this run apart from earlier gallery runs.
     description = f"{GALLERY_RUN_DESCRIPTION} {datetime.now().isoformat()}"
@@ -1302,19 +1308,8 @@ def _launch_gallery_run(sn: Snouty) -> GalleryRun:
         raise GalleryError(
             f"`snouty launch` failed (exit {launch.returncode}): {launch.combined}"
         )
+    print(f"  launched gallery run {run}", file=sys.stderr)
     return GalleryRun(run=run, launch=launch)
-
-
-def gallery_run(sn: Snouty, reuse: bool) -> GalleryRun:
-    """The gallery's run. With `reuse`, prefer a live run that the gallery
-    launched; otherwise launch one."""
-    row = _live_gallery_run(sn) if reuse else None
-    if row is not None:
-        print(f"  reusing gallery run {row['run_id']}", file=sys.stderr)
-        return GalleryRun(run=row["run_id"])
-    x = _launch_gallery_run(sn)
-    print(f"  launched gallery run {x.run}", file=sys.stderr)
-    return x
 
 
 def earliest_moments(rows: list[dict], n: int) -> list[dict]:
@@ -1372,18 +1367,17 @@ def _container(sn: Snouty, run: str, h: str, v: str) -> str:
 def _rewarm_moments(sn: Snouty, target: str) -> tuple[str, dict, dict]:
     """A completed run on RUN_TIER other than `target`, and two different
     shallow moments of it: moments just after its setup, which load quickly."""
-    candidates = [
-        r["run_id"]
-        for r in islice(
+    candidates = list(
+        islice(
             (
-                r
+                r["run_id"]
                 for r in RunScan(sn, "--status", "completed")
                 if (r.get("parameters") or {}).get(_TIER) == RUN_TIER
                 and r["run_id"] != target
             ),
             REWARM_SOURCE_PROBES,
         )
-    ]
+    )
     random.shuffle(candidates)
     for run in candidates:
         try:
@@ -1401,9 +1395,9 @@ def _rewarm_moments(sn: Snouty, target: str) -> tuple[str, dict, dict]:
     )
 
 
-def prepare_exec(sn: Snouty, x: GalleryRun) -> None:
-    """Fill in the moments that the exec stories execute at. The run must be
-    ready."""
+def prepare_exec(sn: Snouty, x: GalleryRun, rewarm: tuple[str, dict, dict]) -> None:
+    """Fill in the moments that the exec stories execute at, with `rewarm`
+    from `_rewarm_moments`. The run must be ready."""
     x.hash, x.vtime = _moment_strs(_first_post_setup_moment(sn, x.run))
     # The follow-up story chains from this exec, so a failure is final.
     first = _exec_json(sn, x, f'echo "{EXEC_MARKER_TEXT}" > {EXEC_MARKER_PATH}')
@@ -1413,7 +1407,7 @@ def prepare_exec(sn: Snouty, x: GalleryRun) -> None:
         _ndjson(first.stdout)[-1]["end_moment"]
     )
     x.container = _container(sn, x.run, x.hash, x.vtime)
-    x.rewarm_source, tty, pipe = _rewarm_moments(sn, x.run)
+    x.rewarm_source, tty, pipe = rewarm
     x.rewarm_hash, x.rewarm_vtime = _moment_strs(tty)
     x.rewarm_pipe_hash, x.rewarm_pipe_vtime = _moment_strs(pipe)
     print(
@@ -1429,31 +1423,23 @@ def property_id_named(rows: list[dict], name: str) -> str:
     return next((r.get("id") or "" for r in rows if name in r.get("name", "")), "")
 
 
-class Background:
-    """A capture that runs in a daemon thread, such as a stream that lasts as
-    long as the run. A daemon thread does not keep the gallery alive when it
-    fails early."""
+_T = TypeVar("_T")
 
-    def __init__(self, work: Callable[[], Result]) -> None:
-        self._done = threading.Event()
-        self._result: Result | None = None
-        self._error: BaseException | None = None
-        threading.Thread(target=self._run, args=(work,), daemon=True).start()
 
-    def _run(self, work: Callable[[], Result]) -> None:
+def in_background(work: Callable[[], _T]) -> Future[_T]:
+    """Run `work` in a daemon thread, such as a stream that lasts as long as
+    the run. A daemon thread does not keep the gallery alive when it fails
+    early."""
+    future: Future[_T] = Future()
+
+    def run() -> None:
         try:
-            self._result = work()
+            future.set_result(work())
         except BaseException as e:
-            self._error = e
-        finally:
-            self._done.set()
+            future.set_exception(e)
 
-    def result(self) -> Result:
-        self._done.wait()
-        if self._error is not None:
-            raise self._error
-        assert self._result is not None
-        return self._result
+    threading.Thread(target=run, daemon=True).start()
+    return future
 
 
 # ---------------------------------------------------------------------------
@@ -1583,7 +1569,7 @@ def expected_run_cell(row: dict) -> str:
     params = row.get("parameters") or {}
     candidates = [
         params.get("antithesis.test_name"),
-        _first_line(row.get("description") or params.get("antithesis.description")),
+        _first_line(_run_description(row)),
         _first_line(params.get("antithesis.event_description")),
     ]
     return next((c for c in candidates if isinstance(c, str) and c), "-")
@@ -2090,6 +2076,8 @@ def launched_run(run: str):
 
 
 _STREAM_EVENTS = frozenset({"property", "sample", "verdict", "completed", "unknown"})
+# The `--json` key of the field after the property ID in a stream line.
+_STREAM_SECOND_KEY = {"sample": "kind", "verdict": "verdict"}
 
 # What `runs stream` shows while the run has no stream yet.
 STREAM_WAITING = "waiting for the run's stream to open"
@@ -2109,13 +2097,10 @@ def stream_events(text: str) -> list[dict]:
             rows.append({"event": event, "run_id": first})
         elif event == "property":
             rows.append({"event": event, "property_id": first, "name": " ".join(rest)})
-        elif event == "sample":
+        elif event in _STREAM_SECOND_KEY:
+            key = _STREAM_SECOND_KEY[event]
             rows.append(
-                {"event": event, "property_id": first, "kind": next(iter(rest), "")}
-            )
-        elif event == "verdict":
-            rows.append(
-                {"event": event, "property_id": first, "verdict": next(iter(rest), "")}
+                {"event": event, "property_id": first, key: next(iter(rest), "")}
             )
         else:
             rows.append({"event": event})
@@ -2191,19 +2176,18 @@ def stream_run(run: str, launched: bool, *, json_output: bool):
     return chk
 
 
-def run_properties(bug: str):
+def run_properties(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     """`runs properties` on the finished gallery run: passing and failing
-    properties, and `bug` among the failing."""
-
-    def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-        ok, detail = properties_pass_and_fail(sr, reg)
-        bug_failing = any(
-            bug in r.get("name", "") and r.get("status") == "Failing"
-            for r in sr.rows or []
-        )
-        return (ok and bug_failing, f"{detail}, {bug!r} failing={bug_failing}")
-
-    return chk
+    properties, and EXAMPLE_BUG_PROPERTY among the failing."""
+    ok, detail = properties_pass_and_fail(sr, reg)
+    bug_failing = any(
+        EXAMPLE_BUG_PROPERTY in r.get("name", "") and r.get("status") == "Failing"
+        for r in sr.rows or []
+    )
+    return (
+        ok and bug_failing,
+        f"{detail}, {EXAMPLE_BUG_PROPERTY!r} failing={bug_failing}",
+    )
 
 
 def bug_property(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
@@ -3208,14 +3192,12 @@ def build_launch_stories(x: GalleryRun) -> list[Story]:
     ]
 
 
-def build_ready_stories(d: Discovery, x: GalleryRun) -> list[Story]:
+def build_ready_stories(d: Discovery, x: GalleryRun, wait_ready: Result) -> list[Story]:
     """Stories that need the gallery's run to be ready, most of which execute
-    in it. No story is JSON-capable, so each script executes once."""
+    in it, after `wait_ready` waited for it. No story is JSON-capable, so each
+    script executes once."""
     exec_at = ["runs", "exec", x.run, x.hash, x.vtime]
     script = 'echo "hello from $(uname -n)"; echo "a warning on stderr" >&2'
-    wait_ready = x.wait_ready or Result(
-        ["runs", "wait", x.run, "--until", "ready"], "", "", 0
-    )
 
     def exec_story(
         slug: str, title: str, goal: str, judge: str, args: list[str], check, **kw
@@ -3416,6 +3398,10 @@ def build_ready_stories(d: Discovery, x: GalleryRun) -> list[Story]:
     return stories
 
 
+def stream_args(run: str) -> list[str]:
+    return ["runs", "stream", run]
+
+
 def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
     """Stories about the gallery's run once it is final: the streams that
     followed it from its launch, and its results."""
@@ -3432,41 +3418,35 @@ def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
             precaptured=f.wait,
         ),
     ]
-    if f.stream is not None:
-        stories.append(
-            Story(
-                "runs-stream-run",
-                "Follow my run's properties as they happen",
-                "I just launched a run, and I want to watch its properties pass and fail "
-                "live, from the start of the run to its end.",
-                "snouty waits for the run's stream to open, then prints one line per event "
-                "as it happens: a `property` line when a property appears, `sample` lines "
-                "with moments, and `verdict` lines, including the failed verdict of "
-                f"{EXAMPLE_BUG_PROPERTY!r}, the example's deliberate bug. It ends with "
-                "`completed <run id>` once the run is final. Exit 0.",
-                f.stream.args,
-                stream_run(x.run, x.launch is not None, json_output=False),
-                json_capable=False,
-                precaptured=f.stream,
-            )
-        )
-    if f.stream_json is not None:
-        stories.append(
-            Story(
-                "runs-stream-run--json",
-                "Follow my run's properties from a script",
-                "My script follows a run's property events as JSON, from its launch to its "
-                "end, to react to a failed verdict.",
-                "One JSON object per event, with an `event` key: property, sample, and "
-                "verdict events, including a failed verdict, then a `completed` event with "
-                "the run ID. The wait for the stream to open is on stderr. Exit 0.",
-                f.stream_json.args,
-                stream_run(x.run, x.launch is not None, json_output=True),
-                json_capable=False,
-                precaptured=f.stream_json,
-            )
-        )
     stories += [
+        Story(
+            "runs-stream-run",
+            "Follow my run's properties as they happen",
+            "I just launched a run, and I want to watch its properties pass and fail "
+            "live, from the start of the run to its end.",
+            "snouty waits for the run's stream to open, then prints one line per event "
+            "as it happens: a `property` line when a property appears, `sample` lines "
+            "with moments, and `verdict` lines, including the failed verdict of "
+            f"{EXAMPLE_BUG_PROPERTY!r}, the example's deliberate bug. It ends with "
+            "`completed <run id>` once the run is final. Exit 0.",
+            stream_args(x.run),
+            stream_run(x.run, x.launch is not None, json_output=False),
+            json_capable=False,
+            precaptured=f.stream,
+        ),
+        Story(
+            "runs-stream-run--json",
+            "Follow my run's properties from a script",
+            "My script follows a run's property events as JSON, from its launch to its "
+            "end, to react to a failed verdict.",
+            "One JSON object per event, with an `event` key: property, sample, and "
+            "verdict events, including a failed verdict, then a `completed` event with "
+            "the run ID. The wait for the stream to open is on stderr. Exit 0.",
+            ["--json", *stream_args(x.run)],
+            stream_run(x.run, x.launch is not None, json_output=True),
+            json_capable=False,
+            precaptured=f.stream_json,
+        ),
         Story(
             "runs-properties-run",
             "See which properties my run passed and failed",
@@ -3474,7 +3454,7 @@ def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
             "A table of the example's properties: the passing ones, and "
             f"{EXAMPLE_BUG_PROPERTY!r} failing because of the deliberate bug.",
             ["runs", "properties", x.run],
-            run_properties(EXAMPLE_BUG_PROPERTY),
+            run_properties,
         ),
         Story(
             "runs-property-run",
@@ -3502,19 +3482,16 @@ def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
 # Placeholders that enumerate every run story's slug, for `--list` and
 # `--only`.
 _LISTED_RUN = GalleryRun(launch=Result(["launch"], "", "", 0))
-_LISTED_FINAL = FinalCaptures(
-    wait=Result([], "", "", 0),
-    stream=Result([], "", "", 0),
-    stream_json=Result([], "", "", 0),
-)
+_LISTED_RESULT = Result([], "", "", 0)
+_LISTED_FINAL = FinalCaptures(wait=_LISTED_RESULT)
 
 
-def listed_run_slugs() -> tuple[set[str], set[str], set[str]]:
+def listed_run_slugs() -> tuple[list[str], list[str], list[str]]:
     """The slugs of the launch, ready, and final run stories."""
     return (
-        {s.slug for s in build_launch_stories(_LISTED_RUN)},
-        {s.slug for s in build_ready_stories(Discovery(), _LISTED_RUN)},
-        {s.slug for s in build_final_stories(_LISTED_RUN, _LISTED_FINAL)},
+        [s.slug for s in build_launch_stories(_LISTED_RUN)],
+        [s.slug for s in build_ready_stories(Discovery(), _LISTED_RUN, _LISTED_RESULT)],
+        [s.slug for s in build_final_stories(_LISTED_RUN, _LISTED_FINAL)],
     )
 
 
@@ -3903,9 +3880,11 @@ def ensure_validate_runtime() -> None:
         raise GalleryError(f"validate sample image build failed:\n{tail}")
 
 
+@functools.cache
 def ensure_example_images() -> None:
     """Build the example project's images, which `snouty validate` and
-    `snouty launch` need in the local image store."""
+    `snouty launch` need in the local image store. Both call this, and the
+    build runs once."""
     compose = resolve_compose_command()
     if compose is None:
         raise GalleryError("Docker Compose v2 is needed to build the example's images")
@@ -4701,12 +4680,9 @@ def main() -> int:
             print(s.slug)
         for s in build_tty_stories():
             print(s.slug)
-        for s in [
-            *build_launch_stories(_LISTED_RUN),
-            *build_ready_stories(Discovery(), _LISTED_RUN),
-            *build_final_stories(_LISTED_RUN, _LISTED_FINAL),
-        ]:
-            print(s.slug)
+        for slugs in listed_run_slugs():
+            for slug in slugs:
+                print(slug)
         return 0
 
     snouty_bin = args.snouty
@@ -4744,7 +4720,7 @@ def main() -> int:
 
     api_slugs = {s.slug for s in build_stories(Discovery())}
     launch_slugs, ready_slugs, final_slugs = (
-        listed_run_slugs() if args.run else (set(), set(), set())
+        listed_run_slugs() if args.run else ([], [], [])
     )
     validate_slugs = {s.slug for s in build_validate_stories(None)}
     tty_slugs = {s.slug for s in build_tty_stories()}
@@ -4757,14 +4733,14 @@ def main() -> int:
     need_validate = any(selected(s) for s in validate_slugs)
 
     if args.only:
-        known = (
-            api_slugs
-            | launch_slugs
-            | ready_slugs
-            | final_slugs
-            | validate_slugs
-            | tty_slugs
-        )
+        known = [
+            *api_slugs,
+            *launch_slugs,
+            *ready_slugs,
+            *final_slugs,
+            *validate_slugs,
+            *tty_slugs,
+        ]
         unmatched = [
             p for p in args.only if not any(fnmatch.fnmatch(s, p) for s in known)
         ]
@@ -4792,7 +4768,8 @@ def main() -> int:
             # and hard-fail if it isn't available, rather than silently dropping
             # stories.
             ensure_validate_runtime()
-            ensure_example_images()
+            if selected("validate-example"):
+                ensure_example_images()
             validate_stories = build_validate_stories(fixtures_dir)
             n_live = sum(s.needs_docker for s in validate_stories)
             print(
@@ -4809,8 +4786,9 @@ def main() -> int:
         captured = [run_story(sn, s) for s in early]
 
         run: GalleryRun | None = None
-        stream: Background | None = None
-        stream_json: Background | None = None
+        stream: Future[Result] | None = None
+        stream_json: Future[Result] | None = None
+        rewarm: Future[tuple[str, dict, dict]] | None = None
         if need_run:
             # When `--only` selects `launch`, launch a new run so the story has
             # a launch to show.
@@ -4822,13 +4800,20 @@ def main() -> int:
                 )
             # The stream shows only the events after it starts, so it starts
             # right after the launch.
-            stream_args = ["runs", "stream", run.run]
+            args_stream = stream_args(run.run)
             if selected("runs-stream-run"):
-                stream = Background(lambda: sn.run(stream_args, timeout=STREAM_TIMEOUT))
-            if selected("runs-stream-run--json"):
-                stream_json = Background(
-                    lambda: sn.run(["--json", *stream_args], timeout=STREAM_TIMEOUT)
+                stream = in_background(
+                    lambda: sn.run(args_stream, timeout=STREAM_TIMEOUT)
                 )
+            if selected("runs-stream-run--json"):
+                stream_json = in_background(
+                    lambda: sn.run(["--json", *args_stream], timeout=STREAM_TIMEOUT)
+                )
+            if need_ready:
+                # The rewarm source is another run, so it is found while the
+                # gallery's run starts.
+                target = run.run
+                rewarm = in_background(lambda: _rewarm_moments(sn, target))
 
         regular: list[Story] = []
         disc = Discovery()
@@ -4860,10 +4845,10 @@ def main() -> int:
                     for s in build_launch_stories(run)
                     if selected(s.slug)
                 ]
-            if run is not None and need_ready:
+            if run is not None and rewarm is not None:
                 # The run must accept commands before the exec stories.
                 print(f"waiting until {run.run} is ready…", file=sys.stderr)
-                run.wait_ready = sn.run(
+                wait_ready = sn.run(
                     [
                         "runs",
                         "wait",
@@ -4874,12 +4859,16 @@ def main() -> int:
                         RUN_READY_TIMEOUT,
                     ]
                 )
-                if not run.wait_ready.ok:
+                if not wait_ready.ok:
                     raise GalleryError(
-                        f"run {run.run} did not become ready: {run.wait_ready.combined}"
+                        f"run {run.run} did not become ready: {wait_ready.combined}"
                     )
-                prepare_exec(sn, run)
-                ready = [s for s in build_ready_stories(disc, run) if selected(s.slug)]
+                prepare_exec(sn, run, rewarm.result())
+                ready = [
+                    s
+                    for s in build_ready_stories(disc, run, wait_ready)
+                    if selected(s.slug)
+                ]
                 print(f"capturing {len(ready)} stories in {run.run}…", file=sys.stderr)
                 pending += [run_pool.submit(run_story, sn, s) for s in ready]
             captured += [f.result() for f in pending]

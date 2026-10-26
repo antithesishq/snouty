@@ -449,15 +449,10 @@ class GalleryRunHelpers(unittest.TestCase):
                 )
 
     def story(self, slug, launched=True):
-        x = gallery.GalleryRun(run=self.RUN, launch=gallery.Result([], "", "", 0))
-        if not launched:
-            x.launch = None
-        final = gallery.FinalCaptures(
-            wait=gallery.Result([], "", "", 0),
-            stream=gallery.Result([], "", "", 0),
-            stream_json=gallery.Result([], "", "", 0),
-        )
-        return next(s for s in gallery.build_final_stories(x, final) if s.slug == slug)
+        launch = gallery.Result([], "", "", 0) if launched else None
+        x = gallery.GalleryRun(run=self.RUN, launch=launch)
+        stories = gallery.build_final_stories(x, gallery._LISTED_FINAL)
+        return next(s for s in stories if s.slug == slug)
 
     def test_terminal_stream_story_needs_the_wait_in_the_recording(self):
         cast = "\n".join(

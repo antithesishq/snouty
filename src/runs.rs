@@ -1989,7 +1989,8 @@ const MOMENT_NOT_WARM: [&str; 2] = ["Moment not warm", "moment is unavailable in
 /// (release 64.0) mean:
 ///
 /// - 404 `Resource not found`: the source does not exist.
-/// - 400 `Moment not warm…`: the moment is cold and there is no source.
+/// - A 400 that `MOMENT_NOT_WARM` matches: the moment is cold and there is
+///   no source.
 /// - Any other 400: a rewarm did not finish, or the source is not the
 ///   moment's run.
 fn explain_exec_error(

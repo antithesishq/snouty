@@ -59,12 +59,12 @@ enum Effect {
 
 impl Effect {
     fn annotations(self) -> ToolAnnotations {
+        // The MCP default for openWorldHint is true. Every tool reaches only
+        // the tenant, the docs or the local setup, which is a closed world.
+        let annotations = ToolAnnotations::new().open_world(false);
         match self {
-            Effect::Reads => ToolAnnotations::new().read_only(true),
-            Effect::StartsSessions => ToolAnnotations::new()
-                .read_only(false)
-                .destructive(false)
-                .open_world(true),
+            Effect::Reads => annotations.read_only(true),
+            Effect::StartsSessions => annotations.read_only(false).destructive(false),
         }
     }
 }
@@ -703,6 +703,7 @@ mod tests {
             let annotations = spec.tool.annotations.as_ref().unwrap();
             let read_only = spec.name != ToolName::Debug;
             assert_eq!(annotations.read_only_hint, Some(read_only), "{}", spec.name);
+            assert_eq!(annotations.open_world_hint, Some(false), "{}", spec.name);
         }
     }
 

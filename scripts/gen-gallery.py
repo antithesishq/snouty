@@ -25,9 +25,11 @@ There are three kinds of story:
     property stream from the launch to the end. Once the run is ready, the
     `runs exec` stories (`runs-exec*`) execute in it, and the rewarm stories
     load shallow moments of another completed run into it. Once it is final,
-    the `*-run` stories read its results. The gallery reuses a starting or
-    in-progress run that an earlier gallery launched, or launches one, so the
-    run stories take about 25 minutes. `--no-run` leaves them out.
+    the result stories (`runs-wait-run`, `runs-properties-run`, …) read its
+    results. The gallery reuses a live run that an earlier gallery launched,
+    or launches one. The run stories take about 25 minutes. `--no-run` leaves
+    them out. When the gallery fails after it launched a run, it cancels the
+    run.
   * help stories — capture `snouty <cmd> --help` next to that command's default
     output (slugs like `help-runs-properties`) and judge whether the help is
     informative, clear, concise, consistent, and *aligned* with what the command
@@ -64,7 +66,6 @@ import random
 import re
 import shlex
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -126,7 +127,6 @@ DISCOVERY_MAX_PAGES = 10
 DEBUGGING_LAUNCHER = "debugging"
 
 # A run that is `starting` or `in_progress` is live.
-RUN_STARTING = "starting"
 RUN_IN_PROGRESS = "in_progress"
 
 
@@ -141,13 +141,6 @@ class GalleryError(Exception):
 
 def _ndjson(text: str) -> list[dict]:
     return [json.loads(line) for line in text.splitlines() if line.strip()]
-
-
-def _text(output: str | bytes | None) -> str:
-    """The output that a timed-out child wrote, which can arrive as bytes."""
-    if isinstance(output, bytes):
-        return output.decode(errors="replace")
-    return output or ""
 
 
 def _moment_strs(moment: dict) -> tuple[str, str]:
@@ -192,9 +185,31 @@ class Snouty:
         self._env = dict(os.environ)
         self._env["PATH"] = f"{self._shim}{os.pathsep}{self._env.get('PATH', '')}"
         self._env["BROWSER"] = str(self._shim / "xdg-open")
+        # The snouty children that are running, so that `kill_children` can
+        # end the long ones, such as a `runs stream` in the background.
+        self._children: set[pexpect.spawn | subprocess.Popen[str]] = set()
+        self._children_lock = threading.Lock()
 
     def cleanup(self) -> None:
         shutil.rmtree(self._shim, ignore_errors=True)
+
+    def kill_children(self) -> None:
+        """Kill every snouty child that is still running. Each `run` that
+        waits on a killed child returns the output that arrived before."""
+        with self._children_lock:
+            children = list(self._children)
+        for child in children:
+            if isinstance(child, subprocess.Popen):
+                child.kill()
+            else:
+                child.terminate(force=True)
+
+    def _track(self, child: pexpect.spawn | subprocess.Popen[str], live: bool) -> None:
+        with self._children_lock:
+            if live:
+                self._children.add(child)
+            else:
+                self._children.discard(child)
 
     def env_with(self, overrides: dict[str, str | None]) -> dict[str, str]:
         """The environment a snouty child inherits, with `overrides` applied: a
@@ -219,9 +234,9 @@ class Snouty:
     ) -> Result:
         """Run snouty on a terminal, or on pipes for `--json` or with `pipe`.
         A `pipe` run without `--json` sends stderr into the stdout pipe, so the
-        lines keep the order that a log file would show. `timeout` bounds a
-        command that can run for a long time: snouty is killed when it runs
-        out, and the result keeps the output that arrived before."""
+        lines keep the order that a log file would show. When `timeout`
+        seconds elapse, the method kills snouty and returns the output that
+        arrived before."""
         if "--json" not in args and not pipe:
             screen = pyte.HistoryScreen(TTY_COLS, TTY_ROWS, history=sys.maxsize)
             # A shell pipes `stdin` to snouty, as a heredoc does, so stdin is a
@@ -239,7 +254,11 @@ class Snouty:
                 self.env_with({**(env or {}), "TERM": "xterm-256color"}),
                 screen=screen,
             )
-            returncode = session.finish(timeout=timeout)
+            self._track(session.child, live=True)
+            try:
+                returncode = session.finish(timeout=timeout)
+            finally:
+                self._track(session.child, live=False)
             return Result(
                 args,
                 _terminal_transcript(screen),
@@ -248,23 +267,24 @@ class Snouty:
                 session.cast(_command_line(args)),
                 stdin=stdin,
             )
-        try:
-            proc = subprocess.run(
-                [str(self.binary), *args],
-                input=stdin,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE if "--json" in args else subprocess.STDOUT,
-                text=True,
-                env=self._env if env is None else self.env_with(env),
-                timeout=timeout,
-            )
-        except subprocess.TimeoutExpired as e:
-            return Result(
-                args, _text(e.stdout), _text(e.stderr), -signal.SIGKILL, stdin=stdin
-            )
-        return Result(
-            args, proc.stdout, proc.stderr or "", proc.returncode, stdin=stdin
+        proc = subprocess.Popen(
+            [str(self.binary), *args],
+            stdin=subprocess.PIPE if stdin is not None else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE if "--json" in args else subprocess.STDOUT,
+            text=True,
+            env=self._env if env is None else self.env_with(env),
         )
+        self._track(proc, live=True)
+        try:
+            try:
+                stdout, stderr = proc.communicate(stdin, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                stdout, stderr = proc.communicate()
+        finally:
+            self._track(proc, live=False)
+        return Result(args, stdout, stderr or "", proc.returncode, stdin=stdin)
 
     def json_lines(
         self, args: list[str], env: dict[str, str | None] | None = None
@@ -525,17 +545,14 @@ class TtySession:
         return "\n".join(rows)
 
     def finish(self, timeout: float | None) -> int:
-        """Wait for the child to exit and return its status.
-
-        Ordinary commands use no capture timeout, as with pipe capture. The CLI
-        controls API and validation timeouts. Interactive dialogues use a short
-        timeout because an unanswered prompt cannot finish by itself."""
+        """Wait for the child to exit and return its status. When `timeout`
+        seconds elapse, kill the child. An interactive dialogue uses a short
+        timeout, because an unanswered prompt does not end by itself."""
         try:
             self.child.expect(pexpect.EOF, timeout=timeout)
         except pexpect.TIMEOUT:
-            # The child is still up after a dialogue that should have ended it —
-            # a stalled story, already recorded as a marker frame. Fall through
-            # to the forced close, which is what ends it.
+            # The child is still up: a dialogue stalled or a long command ran
+            # out of time. The forced close below ends it.
             pass
         finally:
             self.child.close(force=True)
@@ -1161,9 +1178,9 @@ class GalleryRun:
     # EXEC_MARKER_PATH.
     follow_hash: str = ""
     follow_vtime: str = "0"
-    # Two shallow moments of another completed run on the same performance
-    # tier: one for the terminal story and one for the pipe story, so each
-    # loads a moment.
+    # Two different shallow moments of `rewarm_source`, a completed run on
+    # RUN_TIER: one for the terminal story and one for the pipe story, so that
+    # each story loads a cold moment.
     rewarm_source: str = ""
     rewarm_hash: str = ""
     rewarm_vtime: str = "0"
@@ -1186,8 +1203,10 @@ class FinalCaptures:
 
 EXAMPLE_DIR = Path(__file__).resolve().parent.parent / "examples" / "antithesis"
 
-# How the gallery launches its run. The run is ephemeral (no --source) and on
-# the default performance tier, RUN_TIER.
+# How the gallery launches its run. The launch passes no --source and no tier,
+# so the run is ephemeral and gets the tenant's default tier, which must equal
+# RUN_TIER. A rewarm source must be on the same tier as the run that loads its
+# moment: the API spec says so for the exec endpoint (src/openapi.json).
 GALLERY_RUN_LAUNCHER = "basic_test"
 GALLERY_RUN_MINUTES = 15
 GALLERY_RUN_TEST_NAME = "snouty-gallery"
@@ -1199,15 +1218,19 @@ _TIER = "antithesis.performance_tier"
 # The example's property that fails, because of its deliberate bug.
 EXAMPLE_BUG_PROPERTY = "Account balances never go negative"
 
-# Bounds on the waits for the gallery run, so a run that never becomes ready
-# or never ends fails the gallery instead of hanging it. The streams get the
-# whole life of the run, and some slack.
-RUN_READY_TIMEOUT = "60m"
-RUN_FINAL_TIMEOUT = "90m"
-STREAM_TIMEOUT = 2 * 60 * 60
+# Bounds on the waits for the gallery run, in minutes, so a run that never
+# becomes ready or never ends fails the gallery instead of hanging it.
+RUN_READY_MINUTES = 60
+RUN_FINAL_MINUTES = 90
+RUN_READY_TIMEOUT = f"{RUN_READY_MINUTES}m"
+RUN_FINAL_TIMEOUT = f"{RUN_FINAL_MINUTES}m"
+# The streams start at the launch and must outlast both waits, and the stories
+# that the gallery captures between them, so that a stream is never killed
+# while `runs wait` still succeeds.
+STREAM_SLACK_MINUTES = 60
+STREAM_TIMEOUT = (RUN_READY_MINUTES + RUN_FINAL_MINUTES + STREAM_SLACK_MINUTES) * 60
 
-# Search in a new run fails, then finds nothing, for minutes after the run is
-# ready, so the search for the run's post-setup moment polls.
+# Bounds on the polls in `_first_post_setup_moment` and `_container`.
 MOMENT_SEARCH_DEADLINE = 600
 MOMENT_SEARCH_POLL = 15
 
@@ -1224,7 +1247,8 @@ EXEC_MARKER_TEXT = "written by an earlier runs exec"
 # Match system events; workload log text is not a reliable marker. A run whose
 # workload never calls the SDK's setup-complete API has no setup event, so
 # also match two other events that occur just after setup. The fault injector
-# unpauses many times in a run.
+# unpauses many times in a run, so callers take the earliest matches (see
+# `earliest_moments`).
 POST_SETUP_QUERY = (
     'filter(ev => ev.antithesis_setup?.status == "complete"'
     ' || ev.composer_lifecycle == "first_randomizer_new_input"'
@@ -1243,18 +1267,28 @@ def _run_description(row: dict) -> str:
 
 
 def _live_gallery_run(sn: Snouty) -> dict | None:
-    """The newest run that the gallery launched and that is starting or in
-    progress on RUN_TIER, or None. A run that the gallery did not launch is
-    never reused: the stories would execute in it. A run lists its
-    description only once it has started, about a minute after its launch."""
+    """The newest run that the gallery launched and that is in progress on
+    RUN_TIER, or None. A run that the gallery did not launch is never reused:
+    the stories would execute in it. Only an in-progress run is reused: a
+    starting run can list no description or tier, so the gallery cannot tell
+    that it launched the run, and a rerun soon after a launch launches a
+    second run."""
     rows = sn.json_lines(
-        ["runs", "list", "--launcher", GALLERY_RUN_LAUNCHER, "-n", "50"]
+        [
+            "runs",
+            "list",
+            "--launcher",
+            GALLERY_RUN_LAUNCHER,
+            "--status",
+            RUN_IN_PROGRESS,
+            "-n",
+            "50",
+        ]
     )
     for r in rows:
-        live = r.get("status") in (RUN_STARTING, RUN_IN_PROGRESS)
         tier = (r.get("parameters") or {}).get(_TIER)
         if (
-            live
+            r.get("status") == RUN_IN_PROGRESS
             and tier == RUN_TIER
             and _run_description(r).startswith(GALLERY_RUN_DESCRIPTION)
         ):
@@ -1300,7 +1334,7 @@ def gallery_run(sn: Snouty, reuse: bool) -> GalleryRun:
         print(f"  reusing gallery run {row['run_id']}", file=sys.stderr)
         return GalleryRun(run=row["run_id"])
     ensure_example_images()
-    # A unique description tells this run apart from earlier gallery runs.
+    # The timestamp helps a person tell the gallery's runs apart in the web UI.
     description = f"{GALLERY_RUN_DESCRIPTION} {datetime.now().isoformat()}"
     launch = sn.run(gallery_launch_args(description))
     run = launched_run_id(launch.stdout)
@@ -1310,6 +1344,21 @@ def gallery_run(sn: Snouty, reuse: bool) -> GalleryRun:
         )
     print(f"  launched gallery run {run}", file=sys.stderr)
     return GalleryRun(run=run, launch=launch)
+
+
+def abandon_run(sn: Snouty, run: str) -> None:
+    """Cancel `run`, which the gallery launched and can no longer use, and kill
+    the snouty children that follow it."""
+    cancel = sn.run(["--json", "runs", "cancel", run])
+    if cancel.ok:
+        print(f"  cancelled gallery run {run}", file=sys.stderr)
+    else:
+        print(
+            f"  cannot cancel gallery run {run} (exit {cancel.returncode}): "
+            f"{cancel.stderr.strip() or '<no stderr>'}",
+            file=sys.stderr,
+        )
+    sn.kill_children()
 
 
 def earliest_moments(rows: list[dict], n: int) -> list[dict]:
@@ -1327,18 +1376,23 @@ def _post_setup_moments(sn: Snouty, run: str) -> list[dict]:
 
 
 def _first_post_setup_moment(sn: Snouty, run: str) -> dict:
-    """The earliest moment after `run` completes its setup. The run is in
-    progress, so its search index can lag: poll until the moment appears."""
+    """The earliest moment after `run` completes its setup. Poll until the
+    moment appears."""
     deadline = time.monotonic() + MOMENT_SEARCH_DEADLINE
+    args = ["--json", "runs", "search", run, POST_SETUP_QUERY, "-n", "100"]
     while True:
         # Search answers 404 for a minute or two after the run is ready
         # (orbitinghail, release 66.0), and then finds nothing for a while.
-        try:
-            moments = _post_setup_moments(sn, run)
-        except GalleryError as e:
-            reason = str(e).rpartition("` failed ")[2]
-            print(f"  search in {run} failed {reason}", file=sys.stderr)
-            moments = []
+        res = sn.run(args)
+        moments: list[dict] = []
+        if res.ok:
+            moments = earliest_moments(_ndjson(res.stdout), SHALLOW_MOMENTS)
+        else:
+            reason = res.stderr.strip() or "<no stderr>"
+            print(
+                f"  search in {run} failed (exit {res.returncode}): {reason}",
+                file=sys.stderr,
+            )
         if moments:
             return moments[0]
         if time.monotonic() > deadline:
@@ -1353,15 +1407,25 @@ def _first_post_setup_moment(sn: Snouty, run: str) -> dict:
 
 def _container(sn: Snouty, run: str, h: str, v: str) -> str:
     """The container that logs most often up to a moment. A one-shot setup
-    container can log last and then exit, and `--container` fails on it."""
-    names = Counter(
-        name
-        for row in _logs(sn, [run, h, v])
-        if (name := (row.get("source") or {}).get("container"))
-    )
-    if not names:
-        raise GalleryError(f"no log line of {run} up to {h} {v} names a container")
-    return names.most_common(1)[0][0]
+    container can log last and then exit, and `--container` fails on it. The
+    logs of an in-progress run can lag its search, so poll until a log line
+    names a container."""
+    deadline = time.monotonic() + MOMENT_SEARCH_DEADLINE
+    while True:
+        names = Counter(
+            name
+            for row in _logs(sn, [run, h, v])
+            if (name := (row.get("source") or {}).get("container"))
+        )
+        if names:
+            return names.most_common(1)[0][0]
+        if time.monotonic() > deadline:
+            raise GalleryError(
+                f"no log line of {run} up to {h} {v} names a container after "
+                f"{MOMENT_SEARCH_DEADLINE}s"
+            )
+        print(f"  waiting for the logs of {run} up to {h} {v}", file=sys.stderr)
+        time.sleep(MOMENT_SEARCH_POLL)
 
 
 def _rewarm_moments(sn: Snouty, target: str) -> tuple[str, dict, dict]:
@@ -1399,7 +1463,8 @@ def prepare_exec(sn: Snouty, x: GalleryRun, rewarm: tuple[str, dict, dict]) -> N
     """Fill in the moments that the exec stories execute at, with `rewarm`
     from `_rewarm_moments`. The run must be ready."""
     x.hash, x.vtime = _moment_strs(_first_post_setup_moment(sn, x.run))
-    # The follow-up story chains from this exec, so a failure is final.
+    # The follow-up story starts at this exec's end moment, so the gallery
+    # cannot continue when the exec fails.
     first = _exec_json(sn, x, f'echo "{EXEC_MARKER_TEXT}" > {EXEC_MARKER_PATH}')
     if not first.ok:
         raise GalleryError(f"`runs exec` failed in run {x.run}: {first.stderr.strip()}")
@@ -1427,9 +1492,9 @@ _T = TypeVar("_T")
 
 
 def in_background(work: Callable[[], _T]) -> Future[_T]:
-    """Run `work` in a daemon thread, such as a stream that lasts as long as
-    the run. A daemon thread does not keep the gallery alive when it fails
-    early."""
+    """Run `work` in a daemon thread and return a future of its result. Use
+    it for work that can last as long as the run, such as a stream: a daemon
+    thread does not keep the gallery alive after it fails."""
     future: Future[_T] = Future()
 
     def run() -> None:
@@ -2142,16 +2207,18 @@ def stream_verdict(
 
 
 def _cast_text(cast: str | None) -> str:
-    """Everything a recording's terminal received, redraws included."""
+    """Everything a recording's terminal received, redraws included. Line 1
+    of an asciicast is its header, and each other line is `[time, type,
+    data]`."""
     lines = (cast or "").splitlines()[1:]
     return "".join(json.loads(line)[2] for line in lines if line.strip())
 
 
 def stream_run(run: str, launched: bool, *, json_output: bool):
-    """A `runs stream` story that lasted the whole run. On a run that the
-    gallery launched, the stream must wait for the run's stream to open. On a
-    reused run, which can be past that wait, the line that says the stream is
-    open (off a terminal) or a property line shows that the stream opened."""
+    """A `runs stream` story that lasts the whole run. On a run that the
+    gallery launched, the output must show the wait for the stream to open. A
+    reused run can be past that wait, so on it a property line, or the
+    "stream … is open" line on stderr with `--json`, is sufficient."""
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         if json_output:
@@ -4751,6 +4818,8 @@ def main() -> int:
     sn = Snouty(snouty_bin)
     failures: list[tuple[str, str]] = []
     guard: LaunchGuard | None = None
+    run: GalleryRun | None = None
+    finished = False
     try:
         # The phases, in order:
         #   1. validate the example, then launch the gallery's run (or reuse a
@@ -4785,7 +4854,6 @@ def main() -> int:
         ]
         captured = [run_story(sn, s) for s in early]
 
-        run: GalleryRun | None = None
         stream: Future[Result] | None = None
         stream_json: Future[Result] | None = None
         rewarm: Future[tuple[str, dict, dict]] | None = None
@@ -4882,6 +4950,10 @@ def main() -> int:
             )
             props = sn.json_lines(["runs", "properties", run.run])
             final.bug_prop_id = property_id_named(props, EXAMPLE_BUG_PROPERTY)
+            if not final.bug_prop_id:
+                raise GalleryError(
+                    f"run {run.run} has no property named {EXAMPLE_BUG_PROPERTY!r}"
+                )
             captured += [
                 run_story(sn, s)
                 for s in build_final_stories(run, final)
@@ -4902,12 +4974,18 @@ def main() -> int:
                 if args.fail_fast:
                     # Everything was already captured; just stop reporting here.
                     break
+        finished = True
     except GalleryError as e:
         # A precondition could not be met. Fail loudly and clearly rather than
         # emitting a partial gallery or dumping a traceback.
         print(f"\nerror: {e}", file=sys.stderr)
         return 1
     finally:
+        if not finished and run is not None and run.launch is not None:
+            # A run that the gallery launched would go on for its full
+            # duration, and the streams with it. A reused run is not the
+            # gallery's to cancel.
+            abandon_run(sn, run.run)
         if guard is not None:
             guard.close()
         sn.cleanup()

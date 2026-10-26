@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -121,6 +122,26 @@ class TerminalCapture(unittest.TestCase):
             self.assertNotEqual(session.finish(timeout=0.5), 0)
             with self.assertRaises(ProcessLookupError):
                 os.kill(int(pidfile.read_text()), 0)
+
+    def test_pipe_timeout_kills_the_child_and_keeps_its_output(self):
+        code = "import sys, time; print('before', flush=True); time.sleep(30)"
+        result = self.snouty.run(["-c", code, "--json"], timeout=0.5)
+        self.assertEqual(result.returncode, -9)
+        self.assertEqual(result.stdout, "before\n")
+
+    def test_kill_children_ends_running_commands_on_both_captures(self):
+        code = "import sys, time; print('before', flush=True); time.sleep(30)"
+        terminal = gallery.in_background(lambda: self.snouty.run(["-c", code]))
+        pipe = gallery.in_background(lambda: self.snouty.run(["-c", code, "--json"]))
+        deadline = time.monotonic() + 10
+        while len(self.snouty._children) < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        time.sleep(0.5)
+        self.snouty.kill_children()
+        self.assertEqual(pipe.result(timeout=10).stdout, "before\n")
+        self.assertIn("before", terminal.result(timeout=10).combined)
+        self.assertFalse(terminal.result().ok)
+        self.assertEqual(self.snouty._children, set())
 
     def test_signal_exit_keeps_the_output_and_failure_status(self):
         result = self.snouty.run(

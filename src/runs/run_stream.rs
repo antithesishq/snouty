@@ -5,7 +5,7 @@
 //! server repeats properties and samples across notifications, so the
 //! denormalizer remembers what it printed:
 //!
-//! - `catalogued <property id> <name>`: the first time a property appears.
+//! - `property <property id> <name>`: the first time a property appears.
 //! - `sample <property id> example|counterexample <moment|value>`: the first
 //!   time a sample appears. An event property's sample is a moment, which is
 //!   unique across the run; a non-event property's sample is a JSON value,
@@ -108,7 +108,7 @@ pub(super) enum Sample {
 /// One output line of `runs stream`.
 #[derive(Debug, PartialEq)]
 pub(super) enum Line {
-    Catalogued {
+    Property {
         property_id: String,
         name: String,
     },
@@ -153,13 +153,13 @@ impl Denormalizer {
         }
     }
 
-    /// A property's new lines: catalogued, then its new samples, then the
+    /// A property's new lines: the property, then its new samples, then the
     /// verdict.
     fn property_lines(&mut self, property: Property, verdict: Option<Verdict>) -> Vec<Line> {
         let property_id = property_id(&property);
         let mut lines = Vec::new();
         if self.properties.insert(property_id.clone()) {
-            lines.push(Line::Catalogued {
+            lines.push(Line::Property {
                 property_id: property_id.clone(),
                 name: property.name().to_string(),
             });
@@ -231,8 +231,8 @@ fn samples(property: Property) -> Vec<(SampleKind, Sample)> {
     }
 }
 
-/// The width of the event column: `catalogued` is the widest event.
-const EVENT_WIDTH: usize = 10;
+/// The width of the event column: `completed` is the widest event.
+const EVENT_WIDTH: usize = 9;
 /// The width of the sample kind column: `counterexample` is the widest kind.
 const KIND_WIDTH: usize = 14;
 
@@ -258,9 +258,9 @@ impl Line {
     /// The line for the terminal, without a trailing newline.
     pub(super) fn render(&self) -> String {
         match self {
-            Self::Catalogued { property_id, name } => format!(
+            Self::Property { property_id, name } => format!(
                 "{:<EVENT_WIDTH$}  {}  {}",
-                style("catalogued").cyan(),
+                style("property").cyan(),
                 sanitize(property_id),
                 sanitize(name)
             ),
@@ -316,8 +316,8 @@ impl Line {
     /// The line for `--json`.
     pub(super) fn json(&self) -> Value {
         match self {
-            Self::Catalogued { property_id, name } => {
-                json!({"event": "catalogued", "property_id": property_id, "name": name})
+            Self::Property { property_id, name } => {
+                json!({"event": "property", "property_id": property_id, "name": name})
             }
             Self::Sample {
                 property_id,
@@ -386,19 +386,19 @@ mod tests {
     }
 
     #[test]
-    fn a_property_is_catalogued_the_first_time_it_appears() {
+    fn a_property_prints_the_first_time_it_appears() {
         let mut denormalizer = Denormalizer::default();
         let p = property("a1", "Undetermined", &json!([]), &json!([]));
         let added = json!({"type": "NEW_PROPERTIES_ADDED", "data": [p]});
         assert_eq!(
             rendered(&mut denormalizer, &added),
-            ["catalogued  a1  Property a1"]
+            ["property   a1  Property a1"]
         );
         assert!(rendered(&mut denormalizer, &added).is_empty());
     }
 
     #[test]
-    fn a_property_first_seen_in_a_sample_notification_is_catalogued() {
+    fn a_property_first_seen_in_a_sample_notification_prints() {
         let p = property(
             "a1",
             "Undetermined",
@@ -408,8 +408,8 @@ mod tests {
         assert_eq!(
             render(&json!({"type": "NEW_EXAMPLES_FOUND", "data": [p]})),
             [
-                "catalogued  a1  Property a1",
-                "sample      a1  example         -1  1.5",
+                "property   a1  Property a1",
+                "sample     a1  example         -1  1.5",
             ]
         );
     }
@@ -425,11 +425,11 @@ mod tests {
         assert_eq!(
             render(&json!({"type": "PROPERTIES_FAILED", "data": [p]})),
             [
-                "catalogued  a1  Property a1",
-                "sample      a1  counterexample  -100  401.25",
-                "sample      a1  counterexample  -200  402.5",
-                "sample      a1  example         -300  398.4898056755774",
-                "verdict     a1  failed",
+                "property   a1  Property a1",
+                "sample     a1  counterexample  -100  401.25",
+                "sample     a1  counterexample  -200  402.5",
+                "sample     a1  example         -300  398.4898056755774",
+                "verdict    a1  failed",
             ]
         );
     }
@@ -444,7 +444,7 @@ mod tests {
         rendered(&mut denormalizer, &found);
         assert_eq!(
             rendered(&mut denormalizer, &passed),
-            ["verdict     a1  passed"]
+            ["verdict    a1  passed"]
         );
     }
 
@@ -468,8 +468,8 @@ mod tests {
         assert_eq!(
             samples,
             [
-                "sample      a1  example         true",
-                "sample      b2  example         true",
+                "sample     a1  example         true",
+                "sample     b2  example         true",
             ]
         );
     }
@@ -481,9 +481,9 @@ mod tests {
         assert_eq!(
             render(&json!({"type": "PROPERTIES_PASSED", "data": [p]})),
             [
-                "catalogued  a1  Property a1",
-                r#"sample      a1  counterexample  "old image""#,
-                "verdict     a1  passed",
+                "property   a1  Property a1",
+                r#"sample     a1  counterexample  "old image""#,
+                "verdict    a1  passed",
             ]
         );
     }
@@ -492,7 +492,7 @@ mod tests {
     fn run_finalized_completes_the_run() {
         let line = json!({"type": "RUN_FINALIZED", "data": []});
         assert!(matches!(Record::parse(&line).unwrap(), Record::Finalized));
-        assert_eq!(render(&line), ["completed   run-1"]);
+        assert_eq!(render(&line), ["completed  run-1"]);
     }
 
     #[test]
@@ -518,7 +518,7 @@ mod tests {
         assert!(matches!(Record::parse(&line).unwrap(), Record::Unknown(_)));
         assert_eq!(
             render(&line),
-            [r#"unknown     RUN_PAUSED  {"type":"RUN_PAUSED","data":[]}"#]
+            [r#"unknown    RUN_PAUSED  {"type":"RUN_PAUSED","data":[]}"#]
         );
     }
 
@@ -565,7 +565,7 @@ mod tests {
         assert_eq!(
             lines,
             [
-                json!({"event": "catalogued", "property_id": "a1", "name": "Property a1"}),
+                json!({"event": "property", "property_id": "a1", "name": "Property a1"}),
                 json!({"event": "sample", "property_id": "a1", "kind": "counterexample", "input_hash": "-100", "vtime": 401.25}),
                 json!({"event": "verdict", "property_id": "a1", "verdict": "failed"}),
             ]

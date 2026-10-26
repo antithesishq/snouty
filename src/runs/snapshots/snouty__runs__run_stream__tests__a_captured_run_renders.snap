@@ -2,196 +2,196 @@
 source: src/runs/run_stream.rs
 expression: out
 ---
-catalogued  0ea965871c38db44eca77687fe7f23ef  Sometimes: Total fault events: node - pause
-catalogued  15bfadf2bef5ae454551ee4f45b5dae0  Sometimes: Total fault events: node - kill
-catalogued  1aa30e9503840cc8fee8a464aae36f1b  Sometimes: Total fault events: node - stop
-catalogued  2d982f4183fa0fcd2ba895ba7c62d15f  Sometimes: Total fault events: node - throttle
-catalogued  6750851d34b50b199c37729273f8346e  Sometimes: Total fault events: network - restore
-catalogued  6ad53834f947987233e63b9e849422c0  Sometimes: Total fault events: clock - skip
-catalogued  6c38c544751d2bce1864921aaff34c2b  Sometimes: Total fault events: network - partition
-catalogued  dfab2bd4bac5a466737b065d8a9bbf0c  Sometimes: Total fault events: network - clog
-catalogued  1ea488bbfbf3331fc8687430e90262fb  No Antithesis errors
-catalogued  28e629aa202556c5e394a122a4feda29  Always: Parsed composer config.json successfully
-catalogued  5cf23a8f786b12dc1d6599a002509fa9  Never: There are events with very high output that will fail to materialize & artifact from.
-catalogued  7b0742317b22d173e73633cf341e645a  Never: Invalid commands found
-catalogued  c4386cb75c3a5407227cac7868a1249d  Peak memory usage
-sample      c4386cb75c3a5407227cac7868a1249d  example         -89892378911088042  7.916927485493943
-catalogued  7f0adf4bbe69afad501005d1b2477715  Antithesis SDK version is supported: Language name: Go, sdk version: 0.7.0
-sample      7f0adf4bbe69afad501005d1b2477715  example         -6819678175197251508  13.179779487894848
-catalogued  07e010c0007b972ddf55235971a42483  Reachability assertions: snapshot initiated
-catalogued  2ed069c3e5b4a386d05677830d992d86  Reachability assertions: init_coverage_module() invoked
-sample      2ed069c3e5b4a386d05677830d992d86  example         -6819678175197251508  13.179783773375675
-catalogued  5c59a22b9402942392769db97fada8ba  Reachability assertions: SQL parser panic caught by recovery
-catalogued  6900958b8028b703f252508a11936f83  Reachability assertions: rqlite store opened successfully
-sample      6900958b8028b703f252508a11936f83  example         -6819678175197251508  13.187461908441037
-catalogued  71283dfbd7017f37b57580d80e18ca1f  Reachability assertions: follower installed snapshot from leader
-catalogued  8bbf627a9ca1e0b2997fbdae6277b615  Reachability assertions: leader election observed
-verdict     2ed069c3e5b4a386d05677830d992d86  passed
-verdict     6900958b8028b703f252508a11936f83  passed
-sample      8bbf627a9ca1e0b2997fbdae6277b615  example         1645777377224201664  14.507067993748933
-verdict     8bbf627a9ca1e0b2997fbdae6277b615  passed
-sample      28e629aa202556c5e394a122a4feda29  example         -6091944431447614605  16.922332391608506
-sample      6750851d34b50b199c37729273f8346e  example         -6091944431447614605  16.923843765165657
-verdict     6750851d34b50b199c37729273f8346e  passed
-catalogued  536aa069de956e9238be2afb0c605563  Always: Commands finish with zero exit code: rqlite/first_create_tables
-sample      536aa069de956e9238be2afb0c605563  example         1379034322793243599  18.93115723808296
-sample      6c38c544751d2bce1864921aaff34c2b  example         8187153810545893171  21.37347552808933
-verdict     6c38c544751d2bce1864921aaff34c2b  passed
-sample      dfab2bd4bac5a466737b065d8a9bbf0c  example         3589337244598424391  19.491925849812105
-verdict     dfab2bd4bac5a466737b065d8a9bbf0c  passed
-catalogued  d4afce363dc26eba1b99090080aa9152  Always: Commands finish with zero exit code: rqlite/anytime_check_convergence
-sample      d4afce363dc26eba1b99090080aa9152  example         -194106635611452624  18.980908720754087
-catalogued  3ba4b1f717d497cc5700f5ba195c17a5  Always: Commands finish with zero exit code: rqlite/parallel_driver_write_read
-sample      3ba4b1f717d497cc5700f5ba195c17a5  example         7415504124312814750  20.15888321190141
-catalogued  413db7d46d31ed9f7d97c24efdf1ceda  Always: Commands finish with zero exit code: rqlite/parallel_driver_strong_read
-sample      413db7d46d31ed9f7d97c24efdf1ceda  example         -1543617890218508101  19.414161587832496
-catalogued  a22ffb0a31bebcab24cdd919f81639e9  Always: Commands finish with zero exit code: rqlite/anytime_check_leader
-sample      a22ffb0a31bebcab24cdd919f81639e9  example         8756837448911759942  19.558918103342876
-catalogued  64838f385ea99f5ec476eaf5c084cd73  Always: Commands finish with zero exit code: rqlite/anytime_leader_safety
-sample      64838f385ea99f5ec476eaf5c084cd73  example         2917157675037142750  21.35429898207076
-catalogued  3f7b3d0b8cc32543fca32cf84bb17e7a  Always: Commands finish with zero exit code: rqlite/parallel_driver_nondeterministic
-sample      3f7b3d0b8cc32543fca32cf84bb17e7a  example         -3552293747339134752  24.055908661801368
-catalogued  c8f6ea1698bbe16449e1e52a367ae7bb  Always: Commands finish with zero exit code: rqlite/parallel_driver_follower_ops
-sample      c8f6ea1698bbe16449e1e52a367ae7bb  example         -7371321166964898782  23.040643736952916
-catalogued  e6a9ae8e4092e323b461535a24d30516  Always: Commands finish with zero exit code: rqlite/eventually_data_integrity
-sample      e6a9ae8e4092e323b461535a24d30516  example         8724046706016842882  25.00125114666298
-catalogued  41bb662fd1dcafabafb9e1c3cd5d74dd  Always: Commands finish with zero exit code: rqlite/eventually_convergence
-sample      41bb662fd1dcafabafb9e1c3cd5d74dd  example         7292505774787199422  28.01614375738427
-catalogued  fc201f002beacd7a46fb20817c72c35a  Always: Commands finish with zero exit code: rqlite/finally_validate
-sample      fc201f002beacd7a46fb20817c72c35a  example         9216413340078998444  29.92086299532093
-catalogued  31ac1117b495c500b543b7dd0b7fd8a3  Always: Commands finish with zero exit code: rqlite/eventually_check_writes
-sample      31ac1117b495c500b543b7dd0b7fd8a3  example         4152979523802707558  28.964615964330733
-catalogued  4bce5a43d8f2a87d861e1739d817cc11  Always: Commands finish with zero exit code: rqlite/singleton_driver_backup
-sample      4bce5a43d8f2a87d861e1739d817cc11  example         6304274420589724798  41.0575314280577
-catalogued  fc20b8d511c3b637ffbb32d1f487d1a8  Always: Commands finish with zero exit code: rqlite/first_init
-sample      fc20b8d511c3b637ffbb32d1f487d1a8  counterexample  -8234105526522905506  76.9746708178427
-verdict     fc20b8d511c3b637ffbb32d1f487d1a8  failed
-catalogued  87475a36c14ff0d8e6d55fcee9b06e06  Always: Commands finish with zero exit code: rqlite/parallel_driver_read
-sample      87475a36c14ff0d8e6d55fcee9b06e06  example         3714056763971070286  49.8255979870446
-catalogued  e9bba6cac11abf6a27978d9c922b83b5  Always: Commands finish with zero exit code: rqlite/parallel_driver_queued_write
-sample      e9bba6cac11abf6a27978d9c922b83b5  example         -5425708366424446007  35.895782380597666
-catalogued  c77b949b8e16498413fd571b85100411  Always: Commands finish with zero exit code: rqlite/parallel_driver_write
-sample      c77b949b8e16498413fd571b85100411  example         -5411508993609944994  48.08797712926753
-sample      3f7b3d0b8cc32543fca32cf84bb17e7a  counterexample  -2496996048507459374  26.129295266699046
-sample      3f7b3d0b8cc32543fca32cf84bb17e7a  example         -7565261839481874921  19.689376120688394
-verdict     3f7b3d0b8cc32543fca32cf84bb17e7a  failed
-catalogued  1a6f52995ca1179f6864f8d35f2ed895  Paths found for Antithesis instrumentation
-sample      1a6f52995ca1179f6864f8d35f2ed895  example         []
-catalogued  2c9044cb39a45e6b53f14c8430e114ff  Containers joined the Antithesis network
-sample      2c9044cb39a45e6b53f14c8430e114ff  example         "rqlite-2"
-sample      2c9044cb39a45e6b53f14c8430e114ff  example         "workload"
-sample      2c9044cb39a45e6b53f14c8430e114ff  example         "rqlite-3"
-sample      2c9044cb39a45e6b53f14c8430e114ff  example         "rqlite-1"
-catalogued  3a9598c22ec346435a7f35bbd569aeec  The Antithesis Fault Injector was started
-sample      3a9598c22ec346435a7f35bbd569aeec  example         true
-catalogued  3d0eb23834f0c3276561ea5763a0e033  Thread pausing was enabled
-sample      3d0eb23834f0c3276561ea5763a0e033  example         "rqlited (rqlite-1)"
-sample      3d0eb23834f0c3276561ea5763a0e033  example         "rqlited (rqlite-2)"
-sample      3d0eb23834f0c3276561ea5763a0e033  example         "rqlited (rqlite-3)"
-catalogued  3e7ce211fb0cd5a4ce5df908f47245f8  Virtual time per wall time
-sample      3e7ce211fb0cd5a4ce5df908f47245f8  example         8.828601298528707
-catalogued  3e8a079a9d3ef900149c4f004868e9ac  No Antithesis session errors
-catalogued  4a1d9c2abd2d220454711f2a31559b9b  Customer output volume
-sample      4a1d9c2abd2d220454711f2a31559b9b  example         {"session_id":"5b0d1af6d5a7171c6173078c923befff-65-3","total_output_mb":1511.15979,"total_output_rate":116.79459078125336,"total_test_hours":12.938611111111111}
-catalogued  4c9aaffcf8fb719faa38c184f68d6b03  Software images match expected platform
-sample      4c9aaffcf8fb719faa38c184f68d6b03  example         {"Image":"snouty-config","Platform":"amd64","metadata":{"Architecture":"amd64","Created":"2026-10-25T12:51:13.280457593-07:00","Digest":"sha256:9462043656e8a858ed5e49aa9883df0e8bff1b6cdfa4a8d3e54dd26da21e3380","Os":"linux"},"valid":true}
-sample      4c9aaffcf8fb719faa38c184f68d6b03  example         {"Image":"rqlite-antithesis","Platform":"amd64","metadata":{"Architecture":"amd64","Created":"2026-10-25T12:50:29.195465005-07:00","Digest":"sha256:b09840bde13dbe166098a5c2277574a54160946caf32a1b12b553e9819bdb79e","Os":"linux"},"valid":true}
-sample      4c9aaffcf8fb719faa38c184f68d6b03  example         {"Image":"rqlite-workload","Platform":"amd64","metadata":{"Architecture":"amd64","Created":"2026-10-25T12:47:57.476762253-07:00","Digest":"sha256:2990d595a13920210f1c7bec0275ba6d7f81707272599540fe62ce180d9f579f","Os":"linux"},"valid":true}
-catalogued  5912690369f1a87d5d98715ebfd35b82  All commands were started at least once
-sample      5912690369f1a87d5d98715ebfd35b82  example         []
-catalogued  81269b2cac0314b8bdb15ab87070b525  Test ran with full parallelism
-sample      81269b2cac0314b8bdb15ab87070b525  example         true
-catalogued  86f873d5b9d2327f6acff660eca52133  Unique commands found
-sample      86f873d5b9d2327f6acff660eca52133  example         {"commands":["rqlite/parallel_driver_follower_ops","rqlite/parallel_driver_nondeterministic","rqlite/parallel_driver_queued_write","rqlite/parallel_driver_read","rqlite/parallel_driver_strong_read","rqlite/parallel_driver_write","rqlite/parallel_driver_write_read","rqlite/singleton_driver_backup","rqlite/anytime_check_convergence","rqlite/anytime_check_leader","rqlite/anytime_leader_safety","rqlite/finally_validate","rqlite/eventually_check_writes","rqlite/eventually_convergence","rqlite/eventually_data_integrity","rqlite/first_create_tables","rqlite/first_init"]}
-catalogued  8c2e02f59afe8e14a1f3813df3a2fdb1  Every instrumented module has symbols
-sample      8c2e02f59afe8e14a1f3813df3a2fdb1  example         []
-catalogued  91a5a2c13baf1a0247b2a256c24090c2  Recent software version provided
-sample      91a5a2c13baf1a0247b2a256c24090c2  example         "{\"container\":\"snouty-config\",\"container_age\":{\"absolute_time_interval\":\"1m 6s\"},\"days_old\":0}"
-catalogued  9937dabdf298c0d140e1001d83a95bd2  No Antithesis build warnings
-sample      9937dabdf298c0d140e1001d83a95bd2  example         null
-catalogued  c1892c3ec6df9c69ec5ff7e52e4ae97d  Invalid paths found during Antithesis instrumention
-sample      c1892c3ec6df9c69ec5ff7e52e4ae97d  example         []
-catalogued  d315543d7c2bf749225f148b1a4af3f2  Software was instrumented
-sample      d315543d7c2bf749225f148b1a4af3f2  example         {"has_catalog":true,"instrumentor":"/tmp/go-build2707347736/b001/exe/antithesis-go-instrumentor","language":"Go","module":"/usr/bin/rqlited","total_locations":35468}
-catalogued  e1fb32a9983ea150a19565d2e361f9eb  No Antithesis build errors
-sample      e1fb32a9983ea150a19565d2e361f9eb  example         null
-catalogued  ff0bd9d8c4dfb26b0098dd727dda20da  All commands were run to completion at least once
-sample      ff0bd9d8c4dfb26b0098dd727dda20da  example         []
-verdict     1a6f52995ca1179f6864f8d35f2ed895  passed
-verdict     2c9044cb39a45e6b53f14c8430e114ff  passed
-verdict     3a9598c22ec346435a7f35bbd569aeec  passed
-verdict     3d0eb23834f0c3276561ea5763a0e033  passed
-verdict     3e7ce211fb0cd5a4ce5df908f47245f8  passed
-verdict     3e8a079a9d3ef900149c4f004868e9ac  passed
-verdict     4a1d9c2abd2d220454711f2a31559b9b  passed
-verdict     4c9aaffcf8fb719faa38c184f68d6b03  passed
-verdict     5912690369f1a87d5d98715ebfd35b82  passed
-verdict     81269b2cac0314b8bdb15ab87070b525  passed
-verdict     86f873d5b9d2327f6acff660eca52133  passed
-verdict     8c2e02f59afe8e14a1f3813df3a2fdb1  passed
-verdict     91a5a2c13baf1a0247b2a256c24090c2  passed
-verdict     9937dabdf298c0d140e1001d83a95bd2  passed
-verdict     c1892c3ec6df9c69ec5ff7e52e4ae97d  passed
-verdict     d315543d7c2bf749225f148b1a4af3f2  passed
-verdict     e1fb32a9983ea150a19565d2e361f9eb  passed
-verdict     ff0bd9d8c4dfb26b0098dd727dda20da  passed
-catalogued  0eccc338a31d4eac4f12938fa053ea2b  No unexpected crashes
-catalogued  60ad27437d4f4c76d95d00033a3aa097  Always assertions
-catalogued  8b71998a195da5ac069c47f89bbd0514  Sometimes assertions
-catalogued  8fa3e3ee43abe13729401baa5e492a15  No Internal crashes
-catalogued  e53149ec615815960c9792a18191c9e1  AlwaysOrUnreachable assertions
-catalogued  e7d20adf1e32cdff9c00db806f587344  No unexpected container exits
-catalogued  f89befe7485e292c126e186e67446416  Unreachability assertions
-verdict     0eccc338a31d4eac4f12938fa053ea2b  passed
-verdict     1ea488bbfbf3331fc8687430e90262fb  passed
-sample      28e629aa202556c5e394a122a4feda29  example         2976897782188381029  16.918756727827713
-verdict     28e629aa202556c5e394a122a4feda29  passed
-sample      31ac1117b495c500b543b7dd0b7fd8a3  example         6694959843885379390  18.997944382485002
-verdict     31ac1117b495c500b543b7dd0b7fd8a3  passed
-sample      3ba4b1f717d497cc5700f5ba195c17a5  example         6212899611307357902  19.124466091394424
-verdict     3ba4b1f717d497cc5700f5ba195c17a5  passed
-sample      413db7d46d31ed9f7d97c24efdf1ceda  example         1472426702541424755  19.176146999932826
-verdict     413db7d46d31ed9f7d97c24efdf1ceda  passed
-sample      41bb662fd1dcafabafb9e1c3cd5d74dd  example         5252986201413911536  23.98999665514566
-verdict     41bb662fd1dcafabafb9e1c3cd5d74dd  passed
-sample      4bce5a43d8f2a87d861e1739d817cc11  example         6734402809520561396  38.168076327536255
-verdict     4bce5a43d8f2a87d861e1739d817cc11  passed
-sample      536aa069de956e9238be2afb0c605563  example         4191642135199165997  18.92758667911403
-verdict     536aa069de956e9238be2afb0c605563  passed
-verdict     5cf23a8f786b12dc1d6599a002509fa9  passed
-verdict     60ad27437d4f4c76d95d00033a3aa097  passed
-sample      64838f385ea99f5ec476eaf5c084cd73  example         -7919530699327318399  19.043877395801246
-verdict     64838f385ea99f5ec476eaf5c084cd73  passed
-verdict     7b0742317b22d173e73633cf341e645a  passed
-verdict     7f0adf4bbe69afad501005d1b2477715  passed
-sample      87475a36c14ff0d8e6d55fcee9b06e06  example         3533705967788509201  46.91926324274391
-verdict     87475a36c14ff0d8e6d55fcee9b06e06  passed
-verdict     8b71998a195da5ac069c47f89bbd0514  passed
-verdict     8fa3e3ee43abe13729401baa5e492a15  passed
-sample      a22ffb0a31bebcab24cdd919f81639e9  example         6959248905164156562  18.954921481432393
-verdict     a22ffb0a31bebcab24cdd919f81639e9  passed
-verdict     c4386cb75c3a5407227cac7868a1249d  passed
-sample      c77b949b8e16498413fd571b85100411  example         1269482631752464219  47.565756319789216
-verdict     c77b949b8e16498413fd571b85100411  passed
-sample      c8f6ea1698bbe16449e1e52a367ae7bb  example         6517639196689130197  20.616608559852466
-verdict     c8f6ea1698bbe16449e1e52a367ae7bb  passed
-sample      d4afce363dc26eba1b99090080aa9152  example         -107677733701571899  18.94940610555932
-verdict     d4afce363dc26eba1b99090080aa9152  passed
-verdict     e53149ec615815960c9792a18191c9e1  passed
-sample      e6a9ae8e4092e323b461535a24d30516  example         2189383041361397452  24.04359550937079
-verdict     e6a9ae8e4092e323b461535a24d30516  passed
-verdict     e7d20adf1e32cdff9c00db806f587344  passed
-sample      e9bba6cac11abf6a27978d9c922b83b5  example         9126082596861798471  33.912793058436364
-verdict     e9bba6cac11abf6a27978d9c922b83b5  passed
-verdict     f89befe7485e292c126e186e67446416  passed
-sample      fc201f002beacd7a46fb20817c72c35a  example         -5876887819016397906  29.097306582378224
-verdict     fc201f002beacd7a46fb20817c72c35a  passed
-verdict     07e010c0007b972ddf55235971a42483  failed
-verdict     0ea965871c38db44eca77687fe7f23ef  failed
-verdict     15bfadf2bef5ae454551ee4f45b5dae0  failed
-verdict     1aa30e9503840cc8fee8a464aae36f1b  failed
-verdict     2d982f4183fa0fcd2ba895ba7c62d15f  failed
-verdict     5c59a22b9402942392769db97fada8ba  failed
-verdict     6ad53834f947987233e63b9e849422c0  failed
-verdict     71283dfbd7017f37b57580d80e18ca1f  failed
-completed   run-1
+property   0ea965871c38db44eca77687fe7f23ef  Sometimes: Total fault events: node - pause
+property   15bfadf2bef5ae454551ee4f45b5dae0  Sometimes: Total fault events: node - kill
+property   1aa30e9503840cc8fee8a464aae36f1b  Sometimes: Total fault events: node - stop
+property   2d982f4183fa0fcd2ba895ba7c62d15f  Sometimes: Total fault events: node - throttle
+property   6750851d34b50b199c37729273f8346e  Sometimes: Total fault events: network - restore
+property   6ad53834f947987233e63b9e849422c0  Sometimes: Total fault events: clock - skip
+property   6c38c544751d2bce1864921aaff34c2b  Sometimes: Total fault events: network - partition
+property   dfab2bd4bac5a466737b065d8a9bbf0c  Sometimes: Total fault events: network - clog
+property   1ea488bbfbf3331fc8687430e90262fb  No Antithesis errors
+property   28e629aa202556c5e394a122a4feda29  Always: Parsed composer config.json successfully
+property   5cf23a8f786b12dc1d6599a002509fa9  Never: There are events with very high output that will fail to materialize & artifact from.
+property   7b0742317b22d173e73633cf341e645a  Never: Invalid commands found
+property   c4386cb75c3a5407227cac7868a1249d  Peak memory usage
+sample     c4386cb75c3a5407227cac7868a1249d  example         -89892378911088042  7.916927485493943
+property   7f0adf4bbe69afad501005d1b2477715  Antithesis SDK version is supported: Language name: Go, sdk version: 0.7.0
+sample     7f0adf4bbe69afad501005d1b2477715  example         -6819678175197251508  13.179779487894848
+property   07e010c0007b972ddf55235971a42483  Reachability assertions: snapshot initiated
+property   2ed069c3e5b4a386d05677830d992d86  Reachability assertions: init_coverage_module() invoked
+sample     2ed069c3e5b4a386d05677830d992d86  example         -6819678175197251508  13.179783773375675
+property   5c59a22b9402942392769db97fada8ba  Reachability assertions: SQL parser panic caught by recovery
+property   6900958b8028b703f252508a11936f83  Reachability assertions: rqlite store opened successfully
+sample     6900958b8028b703f252508a11936f83  example         -6819678175197251508  13.187461908441037
+property   71283dfbd7017f37b57580d80e18ca1f  Reachability assertions: follower installed snapshot from leader
+property   8bbf627a9ca1e0b2997fbdae6277b615  Reachability assertions: leader election observed
+verdict    2ed069c3e5b4a386d05677830d992d86  passed
+verdict    6900958b8028b703f252508a11936f83  passed
+sample     8bbf627a9ca1e0b2997fbdae6277b615  example         1645777377224201664  14.507067993748933
+verdict    8bbf627a9ca1e0b2997fbdae6277b615  passed
+sample     28e629aa202556c5e394a122a4feda29  example         -6091944431447614605  16.922332391608506
+sample     6750851d34b50b199c37729273f8346e  example         -6091944431447614605  16.923843765165657
+verdict    6750851d34b50b199c37729273f8346e  passed
+property   536aa069de956e9238be2afb0c605563  Always: Commands finish with zero exit code: rqlite/first_create_tables
+sample     536aa069de956e9238be2afb0c605563  example         1379034322793243599  18.93115723808296
+sample     6c38c544751d2bce1864921aaff34c2b  example         8187153810545893171  21.37347552808933
+verdict    6c38c544751d2bce1864921aaff34c2b  passed
+sample     dfab2bd4bac5a466737b065d8a9bbf0c  example         3589337244598424391  19.491925849812105
+verdict    dfab2bd4bac5a466737b065d8a9bbf0c  passed
+property   d4afce363dc26eba1b99090080aa9152  Always: Commands finish with zero exit code: rqlite/anytime_check_convergence
+sample     d4afce363dc26eba1b99090080aa9152  example         -194106635611452624  18.980908720754087
+property   3ba4b1f717d497cc5700f5ba195c17a5  Always: Commands finish with zero exit code: rqlite/parallel_driver_write_read
+sample     3ba4b1f717d497cc5700f5ba195c17a5  example         7415504124312814750  20.15888321190141
+property   413db7d46d31ed9f7d97c24efdf1ceda  Always: Commands finish with zero exit code: rqlite/parallel_driver_strong_read
+sample     413db7d46d31ed9f7d97c24efdf1ceda  example         -1543617890218508101  19.414161587832496
+property   a22ffb0a31bebcab24cdd919f81639e9  Always: Commands finish with zero exit code: rqlite/anytime_check_leader
+sample     a22ffb0a31bebcab24cdd919f81639e9  example         8756837448911759942  19.558918103342876
+property   64838f385ea99f5ec476eaf5c084cd73  Always: Commands finish with zero exit code: rqlite/anytime_leader_safety
+sample     64838f385ea99f5ec476eaf5c084cd73  example         2917157675037142750  21.35429898207076
+property   3f7b3d0b8cc32543fca32cf84bb17e7a  Always: Commands finish with zero exit code: rqlite/parallel_driver_nondeterministic
+sample     3f7b3d0b8cc32543fca32cf84bb17e7a  example         -3552293747339134752  24.055908661801368
+property   c8f6ea1698bbe16449e1e52a367ae7bb  Always: Commands finish with zero exit code: rqlite/parallel_driver_follower_ops
+sample     c8f6ea1698bbe16449e1e52a367ae7bb  example         -7371321166964898782  23.040643736952916
+property   e6a9ae8e4092e323b461535a24d30516  Always: Commands finish with zero exit code: rqlite/eventually_data_integrity
+sample     e6a9ae8e4092e323b461535a24d30516  example         8724046706016842882  25.00125114666298
+property   41bb662fd1dcafabafb9e1c3cd5d74dd  Always: Commands finish with zero exit code: rqlite/eventually_convergence
+sample     41bb662fd1dcafabafb9e1c3cd5d74dd  example         7292505774787199422  28.01614375738427
+property   fc201f002beacd7a46fb20817c72c35a  Always: Commands finish with zero exit code: rqlite/finally_validate
+sample     fc201f002beacd7a46fb20817c72c35a  example         9216413340078998444  29.92086299532093
+property   31ac1117b495c500b543b7dd0b7fd8a3  Always: Commands finish with zero exit code: rqlite/eventually_check_writes
+sample     31ac1117b495c500b543b7dd0b7fd8a3  example         4152979523802707558  28.964615964330733
+property   4bce5a43d8f2a87d861e1739d817cc11  Always: Commands finish with zero exit code: rqlite/singleton_driver_backup
+sample     4bce5a43d8f2a87d861e1739d817cc11  example         6304274420589724798  41.0575314280577
+property   fc20b8d511c3b637ffbb32d1f487d1a8  Always: Commands finish with zero exit code: rqlite/first_init
+sample     fc20b8d511c3b637ffbb32d1f487d1a8  counterexample  -8234105526522905506  76.9746708178427
+verdict    fc20b8d511c3b637ffbb32d1f487d1a8  failed
+property   87475a36c14ff0d8e6d55fcee9b06e06  Always: Commands finish with zero exit code: rqlite/parallel_driver_read
+sample     87475a36c14ff0d8e6d55fcee9b06e06  example         3714056763971070286  49.8255979870446
+property   e9bba6cac11abf6a27978d9c922b83b5  Always: Commands finish with zero exit code: rqlite/parallel_driver_queued_write
+sample     e9bba6cac11abf6a27978d9c922b83b5  example         -5425708366424446007  35.895782380597666
+property   c77b949b8e16498413fd571b85100411  Always: Commands finish with zero exit code: rqlite/parallel_driver_write
+sample     c77b949b8e16498413fd571b85100411  example         -5411508993609944994  48.08797712926753
+sample     3f7b3d0b8cc32543fca32cf84bb17e7a  counterexample  -2496996048507459374  26.129295266699046
+sample     3f7b3d0b8cc32543fca32cf84bb17e7a  example         -7565261839481874921  19.689376120688394
+verdict    3f7b3d0b8cc32543fca32cf84bb17e7a  failed
+property   1a6f52995ca1179f6864f8d35f2ed895  Paths found for Antithesis instrumentation
+sample     1a6f52995ca1179f6864f8d35f2ed895  example         []
+property   2c9044cb39a45e6b53f14c8430e114ff  Containers joined the Antithesis network
+sample     2c9044cb39a45e6b53f14c8430e114ff  example         "rqlite-2"
+sample     2c9044cb39a45e6b53f14c8430e114ff  example         "workload"
+sample     2c9044cb39a45e6b53f14c8430e114ff  example         "rqlite-3"
+sample     2c9044cb39a45e6b53f14c8430e114ff  example         "rqlite-1"
+property   3a9598c22ec346435a7f35bbd569aeec  The Antithesis Fault Injector was started
+sample     3a9598c22ec346435a7f35bbd569aeec  example         true
+property   3d0eb23834f0c3276561ea5763a0e033  Thread pausing was enabled
+sample     3d0eb23834f0c3276561ea5763a0e033  example         "rqlited (rqlite-1)"
+sample     3d0eb23834f0c3276561ea5763a0e033  example         "rqlited (rqlite-2)"
+sample     3d0eb23834f0c3276561ea5763a0e033  example         "rqlited (rqlite-3)"
+property   3e7ce211fb0cd5a4ce5df908f47245f8  Virtual time per wall time
+sample     3e7ce211fb0cd5a4ce5df908f47245f8  example         8.828601298528707
+property   3e8a079a9d3ef900149c4f004868e9ac  No Antithesis session errors
+property   4a1d9c2abd2d220454711f2a31559b9b  Customer output volume
+sample     4a1d9c2abd2d220454711f2a31559b9b  example         {"session_id":"5b0d1af6d5a7171c6173078c923befff-65-3","total_output_mb":1511.15979,"total_output_rate":116.79459078125336,"total_test_hours":12.938611111111111}
+property   4c9aaffcf8fb719faa38c184f68d6b03  Software images match expected platform
+sample     4c9aaffcf8fb719faa38c184f68d6b03  example         {"Image":"snouty-config","Platform":"amd64","metadata":{"Architecture":"amd64","Created":"2026-10-25T12:51:13.280457593-07:00","Digest":"sha256:9462043656e8a858ed5e49aa9883df0e8bff1b6cdfa4a8d3e54dd26da21e3380","Os":"linux"},"valid":true}
+sample     4c9aaffcf8fb719faa38c184f68d6b03  example         {"Image":"rqlite-antithesis","Platform":"amd64","metadata":{"Architecture":"amd64","Created":"2026-10-25T12:50:29.195465005-07:00","Digest":"sha256:b09840bde13dbe166098a5c2277574a54160946caf32a1b12b553e9819bdb79e","Os":"linux"},"valid":true}
+sample     4c9aaffcf8fb719faa38c184f68d6b03  example         {"Image":"rqlite-workload","Platform":"amd64","metadata":{"Architecture":"amd64","Created":"2026-10-25T12:47:57.476762253-07:00","Digest":"sha256:2990d595a13920210f1c7bec0275ba6d7f81707272599540fe62ce180d9f579f","Os":"linux"},"valid":true}
+property   5912690369f1a87d5d98715ebfd35b82  All commands were started at least once
+sample     5912690369f1a87d5d98715ebfd35b82  example         []
+property   81269b2cac0314b8bdb15ab87070b525  Test ran with full parallelism
+sample     81269b2cac0314b8bdb15ab87070b525  example         true
+property   86f873d5b9d2327f6acff660eca52133  Unique commands found
+sample     86f873d5b9d2327f6acff660eca52133  example         {"commands":["rqlite/parallel_driver_follower_ops","rqlite/parallel_driver_nondeterministic","rqlite/parallel_driver_queued_write","rqlite/parallel_driver_read","rqlite/parallel_driver_strong_read","rqlite/parallel_driver_write","rqlite/parallel_driver_write_read","rqlite/singleton_driver_backup","rqlite/anytime_check_convergence","rqlite/anytime_check_leader","rqlite/anytime_leader_safety","rqlite/finally_validate","rqlite/eventually_check_writes","rqlite/eventually_convergence","rqlite/eventually_data_integrity","rqlite/first_create_tables","rqlite/first_init"]}
+property   8c2e02f59afe8e14a1f3813df3a2fdb1  Every instrumented module has symbols
+sample     8c2e02f59afe8e14a1f3813df3a2fdb1  example         []
+property   91a5a2c13baf1a0247b2a256c24090c2  Recent software version provided
+sample     91a5a2c13baf1a0247b2a256c24090c2  example         "{\"container\":\"snouty-config\",\"container_age\":{\"absolute_time_interval\":\"1m 6s\"},\"days_old\":0}"
+property   9937dabdf298c0d140e1001d83a95bd2  No Antithesis build warnings
+sample     9937dabdf298c0d140e1001d83a95bd2  example         null
+property   c1892c3ec6df9c69ec5ff7e52e4ae97d  Invalid paths found during Antithesis instrumention
+sample     c1892c3ec6df9c69ec5ff7e52e4ae97d  example         []
+property   d315543d7c2bf749225f148b1a4af3f2  Software was instrumented
+sample     d315543d7c2bf749225f148b1a4af3f2  example         {"has_catalog":true,"instrumentor":"/tmp/go-build2707347736/b001/exe/antithesis-go-instrumentor","language":"Go","module":"/usr/bin/rqlited","total_locations":35468}
+property   e1fb32a9983ea150a19565d2e361f9eb  No Antithesis build errors
+sample     e1fb32a9983ea150a19565d2e361f9eb  example         null
+property   ff0bd9d8c4dfb26b0098dd727dda20da  All commands were run to completion at least once
+sample     ff0bd9d8c4dfb26b0098dd727dda20da  example         []
+verdict    1a6f52995ca1179f6864f8d35f2ed895  passed
+verdict    2c9044cb39a45e6b53f14c8430e114ff  passed
+verdict    3a9598c22ec346435a7f35bbd569aeec  passed
+verdict    3d0eb23834f0c3276561ea5763a0e033  passed
+verdict    3e7ce211fb0cd5a4ce5df908f47245f8  passed
+verdict    3e8a079a9d3ef900149c4f004868e9ac  passed
+verdict    4a1d9c2abd2d220454711f2a31559b9b  passed
+verdict    4c9aaffcf8fb719faa38c184f68d6b03  passed
+verdict    5912690369f1a87d5d98715ebfd35b82  passed
+verdict    81269b2cac0314b8bdb15ab87070b525  passed
+verdict    86f873d5b9d2327f6acff660eca52133  passed
+verdict    8c2e02f59afe8e14a1f3813df3a2fdb1  passed
+verdict    91a5a2c13baf1a0247b2a256c24090c2  passed
+verdict    9937dabdf298c0d140e1001d83a95bd2  passed
+verdict    c1892c3ec6df9c69ec5ff7e52e4ae97d  passed
+verdict    d315543d7c2bf749225f148b1a4af3f2  passed
+verdict    e1fb32a9983ea150a19565d2e361f9eb  passed
+verdict    ff0bd9d8c4dfb26b0098dd727dda20da  passed
+property   0eccc338a31d4eac4f12938fa053ea2b  No unexpected crashes
+property   60ad27437d4f4c76d95d00033a3aa097  Always assertions
+property   8b71998a195da5ac069c47f89bbd0514  Sometimes assertions
+property   8fa3e3ee43abe13729401baa5e492a15  No Internal crashes
+property   e53149ec615815960c9792a18191c9e1  AlwaysOrUnreachable assertions
+property   e7d20adf1e32cdff9c00db806f587344  No unexpected container exits
+property   f89befe7485e292c126e186e67446416  Unreachability assertions
+verdict    0eccc338a31d4eac4f12938fa053ea2b  passed
+verdict    1ea488bbfbf3331fc8687430e90262fb  passed
+sample     28e629aa202556c5e394a122a4feda29  example         2976897782188381029  16.918756727827713
+verdict    28e629aa202556c5e394a122a4feda29  passed
+sample     31ac1117b495c500b543b7dd0b7fd8a3  example         6694959843885379390  18.997944382485002
+verdict    31ac1117b495c500b543b7dd0b7fd8a3  passed
+sample     3ba4b1f717d497cc5700f5ba195c17a5  example         6212899611307357902  19.124466091394424
+verdict    3ba4b1f717d497cc5700f5ba195c17a5  passed
+sample     413db7d46d31ed9f7d97c24efdf1ceda  example         1472426702541424755  19.176146999932826
+verdict    413db7d46d31ed9f7d97c24efdf1ceda  passed
+sample     41bb662fd1dcafabafb9e1c3cd5d74dd  example         5252986201413911536  23.98999665514566
+verdict    41bb662fd1dcafabafb9e1c3cd5d74dd  passed
+sample     4bce5a43d8f2a87d861e1739d817cc11  example         6734402809520561396  38.168076327536255
+verdict    4bce5a43d8f2a87d861e1739d817cc11  passed
+sample     536aa069de956e9238be2afb0c605563  example         4191642135199165997  18.92758667911403
+verdict    536aa069de956e9238be2afb0c605563  passed
+verdict    5cf23a8f786b12dc1d6599a002509fa9  passed
+verdict    60ad27437d4f4c76d95d00033a3aa097  passed
+sample     64838f385ea99f5ec476eaf5c084cd73  example         -7919530699327318399  19.043877395801246
+verdict    64838f385ea99f5ec476eaf5c084cd73  passed
+verdict    7b0742317b22d173e73633cf341e645a  passed
+verdict    7f0adf4bbe69afad501005d1b2477715  passed
+sample     87475a36c14ff0d8e6d55fcee9b06e06  example         3533705967788509201  46.91926324274391
+verdict    87475a36c14ff0d8e6d55fcee9b06e06  passed
+verdict    8b71998a195da5ac069c47f89bbd0514  passed
+verdict    8fa3e3ee43abe13729401baa5e492a15  passed
+sample     a22ffb0a31bebcab24cdd919f81639e9  example         6959248905164156562  18.954921481432393
+verdict    a22ffb0a31bebcab24cdd919f81639e9  passed
+verdict    c4386cb75c3a5407227cac7868a1249d  passed
+sample     c77b949b8e16498413fd571b85100411  example         1269482631752464219  47.565756319789216
+verdict    c77b949b8e16498413fd571b85100411  passed
+sample     c8f6ea1698bbe16449e1e52a367ae7bb  example         6517639196689130197  20.616608559852466
+verdict    c8f6ea1698bbe16449e1e52a367ae7bb  passed
+sample     d4afce363dc26eba1b99090080aa9152  example         -107677733701571899  18.94940610555932
+verdict    d4afce363dc26eba1b99090080aa9152  passed
+verdict    e53149ec615815960c9792a18191c9e1  passed
+sample     e6a9ae8e4092e323b461535a24d30516  example         2189383041361397452  24.04359550937079
+verdict    e6a9ae8e4092e323b461535a24d30516  passed
+verdict    e7d20adf1e32cdff9c00db806f587344  passed
+sample     e9bba6cac11abf6a27978d9c922b83b5  example         9126082596861798471  33.912793058436364
+verdict    e9bba6cac11abf6a27978d9c922b83b5  passed
+verdict    f89befe7485e292c126e186e67446416  passed
+sample     fc201f002beacd7a46fb20817c72c35a  example         -5876887819016397906  29.097306582378224
+verdict    fc201f002beacd7a46fb20817c72c35a  passed
+verdict    07e010c0007b972ddf55235971a42483  failed
+verdict    0ea965871c38db44eca77687fe7f23ef  failed
+verdict    15bfadf2bef5ae454551ee4f45b5dae0  failed
+verdict    1aa30e9503840cc8fee8a464aae36f1b  failed
+verdict    2d982f4183fa0fcd2ba895ba7c62d15f  failed
+verdict    5c59a22b9402942392769db97fada8ba  failed
+verdict    6ad53834f947987233e63b9e849422c0  failed
+verdict    71283dfbd7017f37b57580d80e18ca1f  failed
+completed  run-1

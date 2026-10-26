@@ -2,7 +2,7 @@ Stream the property events of a run as they happen, until the run is final.
 
 Each event prints as one line:
 
-  catalogued <property id> <name>                           a property appears for the first time
+  property <property id> <name>                             a property appears for the first time
   sample <property id> example <input hash> <vtime>         an example of the property
   sample <property id> counterexample <input hash> <vtime>  a counterexample of the property
   verdict <property id> passed|failed                       the property passed or failed

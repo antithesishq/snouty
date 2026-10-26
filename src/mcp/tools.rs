@@ -103,9 +103,11 @@ tools! {
     RunsShow => "runs_show", Reads, hidden: ["web"], required: [];
     RunsWait => "runs_wait", Reads, hidden: [], required: [];
     RunsProperties => "runs_properties", Reads, hidden: ["detail"], required: [];
+    RunsProperty => "runs_property", Reads, hidden: [], required: [];
     RunsBuildLogs => "runs_build_logs", Reads, hidden: [], required: [];
     RunsLogs => "runs_logs", Reads, hidden: ["detail"], required: [];
     RunsSearch => "runs_search", Reads, hidden: ["follow", "detail"], required: [];
+    RunsUsage => "runs_usage", Reads, hidden: [], required: [];
     // With no script, `runs exec` reads it from stdin, and a child's stdin is
     // null.
     RunsExec => "runs_exec", Reads, hidden: [], required: ["script"];
@@ -473,6 +475,16 @@ mod tests {
         let debug = schema(ToolName::Debug);
         assert_eq!(debug["required"], json!(["input_hash", "vtime"]));
         assert_eq!(debug["properties"]["param"]["type"], "array");
+        let property = schema(ToolName::RunsProperty);
+        assert_eq!(property["required"], json!(["run_id", "property_id"]));
+        let usage = schema(ToolName::RunsUsage);
+        assert_eq!(usage["properties"]["rollup"]["type"], "string");
+        assert!(
+            usage["properties"]["rollup"]["enum"].is_array(),
+            "{usage:?}"
+        );
+        assert_eq!(usage["properties"]["utc"]["type"], "boolean");
+        assert_eq!(usage["properties"]["limit"]["type"], "integer");
         let wait = schema(ToolName::RunsWait);
         assert_eq!(
             wait["properties"]["until"]["enum"],

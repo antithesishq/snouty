@@ -81,9 +81,11 @@ async fn tools_run_their_commands_in_json_mode() {
             "runs_show",
             "runs_wait",
             "runs_properties",
+            "runs_property",
             "runs_build_logs",
             "runs_logs",
             "runs_search",
+            "runs_usage",
             "runs_exec",
             "debug",
             "docs_tree",
@@ -119,6 +121,28 @@ async fn tools_run_their_commands_in_json_mode() {
     .await;
     assert_eq!(result.is_error, Some(true));
     assert_eq!(text(&result), "invalid params: unknown param: web");
+
+    // runs_property reads one property of a completed run, and runs_usage the
+    // usage hours of runs.
+    let result = call(
+        &client,
+        "runs_list",
+        json!({ "status": "completed", "limit": 1 }),
+    )
+    .await;
+    let run: Value = serde_json::from_str(text(&result).trim()).unwrap();
+    let call_args = json!({
+        "run_id": run["run_id"],
+        "property_id": "97cf5fcafa500ed62bf109d81834c5b881a2c854",
+    });
+    let result = call(&client, "runs_property", call_args).await;
+    assert_eq!(result.is_error, Some(false), "{}", text(&result));
+    let property: Value = serde_json::from_str(text(&result)).unwrap();
+    assert_eq!(property["id"], "97cf5fcafa500ed62bf109d81834c5b881a2c854");
+    let result = call(&client, "runs_usage", json!({ "limit": 1, "utc": true })).await;
+    assert_eq!(result.is_error, Some(false), "{}", text(&result));
+    let usage: Value = serde_json::from_str(text(&result).trim()).unwrap();
+    assert!(usage["hours"].is_number(), "{usage}");
 
     // tool_help returns a tool's help page without running a command.
     let result = call(&client, "tool_help", json!({ "tool": "runs_logs" })).await;

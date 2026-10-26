@@ -18,9 +18,11 @@ The tools:
   runs_show        Show details of a specific run
   runs_wait        Wait until a run is ready or complete
   runs_properties  List property results for a run
+  runs_property    Show one property of a run, by its ID
   runs_build_logs  Stream build logs for a run
   runs_logs        Stream moment logs for a run
   runs_search      Query events with the event-set DSL
+  runs_usage       Show the core-hours that recent runs used
   runs_exec        Execute a command in a run that is in progress
   debug            Launch a debugging session
   docs_tree        Print a tree of documentation paths

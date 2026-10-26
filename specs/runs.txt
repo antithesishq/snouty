@@ -32,6 +32,10 @@ stderr "invalid value '..' for '<RUN_ID>': invalid run ID"
 stderr "invalid value '.' for '<RUN_ID>': invalid run ID"
 ! snouty runs properties ''
 stderr "invalid value '' for '<RUN_ID>': invalid run ID"
+! snouty runs property .. p
+stderr "invalid value '..' for '<RUN_ID>': invalid run ID"
+! snouty runs property r .
+stderr "invalid value '.' for '<PROPERTY_ID>': invalid property ID"
 ! snouty debug --run-id=.. --input-hash=-1 --vtime=1
 stderr "invalid value '..' for '--run-id <RUN_ID>': invalid run ID"
 

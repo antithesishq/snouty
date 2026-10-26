@@ -10,7 +10,7 @@ counts its examples and its counterexamples.
 Each table is headed by its group; columns are STATUS, ✓, ✗, ID, NAME (failing
 first). STATUS is pass, fail, or unseen, for undetermined. ✓ is the example
 count and ✗ is the counterexample count; large counts are shortened, as in 186k.
-ID is the property ID, for `snouty runs property`.
+ID is the property ID.
 
 Filter by status with --passing, --failing, and --undetermined. Give more than
 one to show each of those statuses.
@@ -18,7 +18,7 @@ one to show each of those statuses.
 Narrow with --name and/or --group. Both are case-insensitive substring matches
 against the relevant fields. Add --detail to expand the matches into their
 examples and counter-example moments instead of the table. To show one property
-by its ID, use `snouty runs property <run_id> <property_id>`.
+in full, pass its ID to `snouty runs property <run_id> <property_id>`.
 
 Examples:
   snouty runs properties <run_id> --failing

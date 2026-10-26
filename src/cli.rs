@@ -295,8 +295,18 @@ pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Re
 /// a URL parser removes an empty, `.` or `..` segment, so the request would go
 /// to a different endpoint.
 fn parse_run_id(value: &str) -> Result<String, String> {
+    parse_path_segment(value, "run ID")
+}
+
+/// clap value parser for a property ID, which is a path segment too. See
+/// [`parse_run_id`].
+fn parse_property_id(value: &str) -> Result<String, String> {
+    parse_path_segment(value, "property ID")
+}
+
+fn parse_path_segment(value: &str, what: &str) -> Result<String, String> {
     match value {
-        "" | "." | ".." => Err(format!("invalid run ID: '{value}'")),
+        "" | "." | ".." => Err(format!("invalid {what}: '{value}'")),
         _ => Ok(value.to_owned()),
     }
 }
@@ -668,9 +678,11 @@ pub enum RunsCommands {
     /// Show one property of a run, by its ID
     Property {
         /// Run ID
+        #[arg(value_parser = parse_run_id)]
         run_id: String,
 
         /// Property ID, from the ID column of `snouty runs properties`
+        #[arg(value_parser = parse_property_id)]
         property_id: String,
     },
 

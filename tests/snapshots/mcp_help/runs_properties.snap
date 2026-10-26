@@ -7,7 +7,7 @@ Each property has its ID, name, group, and status: passing, failing, or undeterm
 
 Filter by status with `passing`, `failing`, and `undetermined`. Give more than one to show each of those statuses.
 
-Narrow with `name` and/or `group`. Both are case-insensitive substring matches against the relevant fields.
+Narrow with `name` and/or `group`. Both are case-insensitive substring matches against the relevant fields. To show one property in full, pass its ID to `runs_property {"run_id": "<run_id>", "property_id": "<property_id>"}`.
 
 Examples:
   runs_properties {"run_id": "<run_id>", "failing": true}

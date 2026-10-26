@@ -1970,11 +1970,13 @@ impl Drop for ReadyDisplay {
     }
 }
 
-/// The marker in a 400's message that the moment is cold. It opens both
-/// messages observed on orbitinghail (release 64.0): `Moment not warm and no
-/// provided source_run_id or source_session_id. …` at first, and `Moment not
-/// warm in the live run and no source_run_id provided.` from 2026-10-07.
-const MOMENT_NOT_WARM: &str = "Moment not warm";
+/// The markers in a 400's message that the moment is cold, as observed on
+/// orbitinghail. Release 64.0 answered `Moment not warm and no provided
+/// source_run_id or source_session_id. …`, then `Moment not warm in the live
+/// run and no source_run_id provided.` from 2026-10-07. Release 66.0 answers
+/// `The requested moment is unavailable in this run. Provide source_run_id or
+/// source_session_id…`.
+const MOMENT_NOT_WARM: [&str; 2] = ["Moment not warm", "moment is unavailable in this run"];
 
 /// Add suggestions to a failed `runs exec` request in a run with status
 /// `run_status`, which is ready or complete. `debug_command` starts a
@@ -2008,7 +2010,8 @@ fn explain_exec_error(
                 "start a debugging session at this moment with `{debug_command}`"
             ));
     }
-    let cold = api_error_message(&err).is_some_and(|m| m.contains(MOMENT_NOT_WARM));
+    let cold = api_error_message(&err)
+        .is_some_and(|m| MOMENT_NOT_WARM.iter().any(|marker| m.contains(marker)));
     match (status, rewarm_flag) {
         (404, Some(flag)) => err.suggestion(format!("check that {flag} names an existing source")),
         (400, None) if cold => {
@@ -4987,6 +4990,26 @@ mod tests {
                 status,
                 message: message.to_string(),
             })
+        }
+
+        #[test]
+        fn a_cold_moment_suggests_a_source_run() {
+            for message in [
+                "Moment not warm in the live run and no source_run_id provided.",
+                "The requested moment is unavailable in this run. Provide source_run_id or \
+                 source_session_id.",
+            ] {
+                let err = explain_exec_error(
+                    RunStatus::InProgress,
+                    "snouty debug",
+                    None,
+                    api_error(400, message),
+                );
+                assert!(
+                    format!("{err:?}").contains("use --source-run-id"),
+                    "{message}: {err:?}"
+                );
+            }
         }
 
         fn test_api(base_url: &str) -> AntithesisApi {

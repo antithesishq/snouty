@@ -343,5 +343,177 @@ or set ANTITHESIS_API_KEY; ask Antithesis support for an API key if you don't ha
                 self.assertFalse(passed)
 
 
+class GalleryRunHelpers(unittest.TestCase):
+    RUN = "0123456789abcdef0123456789abcdef-66-0"
+    BUG = gallery.EXAMPLE_BUG_PROPERTY
+
+    def setUp(self):
+        self.snouty = gallery.Snouty(Path(sys.executable))
+        self.addCleanup(self.snouty.cleanup)
+
+    def test_launched_run_id_reads_the_json_launch_output(self):
+        self.assertEqual(gallery.launched_run_id('{\n  "runId": "run-1"\n}\n'), "run-1")
+        for stdout in (
+            "",
+            "Test run started: run_id run-1",
+            "{}",
+            '{"runId": ""}',
+            "[]",
+        ):
+            with self.subTest(stdout=stdout):
+                self.assertIsNone(gallery.launched_run_id(stdout))
+
+    def test_launch_args_mark_the_run_as_the_gallery_s(self):
+        args = gallery.gallery_launch_args("snouty gen-gallery end-to-end run now")
+        self.assertEqual(args[:2], ["--json", "launch"])
+        self.assertIn("attrs.source=snouty-gallery", args)
+        self.assertEqual(args[args.index("--duration") + 1], "15")
+        self.assertTrue(
+            args[args.index("--description") + 1].startswith(
+                gallery.GALLERY_RUN_DESCRIPTION
+            )
+        )
+
+    def test_earliest_moments_sorts_by_vtime_and_drops_duplicates(self):
+        rows = [
+            {"moment": {"input_hash": "3", "vtime": 30.5}},
+            {"moment": {"input_hash": "1", "vtime": 9.25}},
+            {"moment": {"input_hash": "2", "vtime": 12.0}},
+            {"moment": {"input_hash": "1", "vtime": 9.25}},
+        ]
+        picked = gallery.earliest_moments(rows, 2)
+        self.assertEqual([m["input_hash"] for m in picked], ["1", "2"])
+        self.assertEqual(gallery.earliest_moments([], 2), [])
+
+    def test_property_id_named_matches_a_grouped_name(self):
+        rows = [
+            {"id": "a", "name": "bank: Total money in the bank is conserved"},
+            {"id": "b", "name": f"bank: {self.BUG}"},
+        ]
+        self.assertEqual(gallery.property_id_named(rows, self.BUG), "b")
+        self.assertEqual(gallery.property_id_named(rows[:1], self.BUG), "")
+
+    def transcript(self, *, verdict="failed", last=None):
+        lines = [
+            f"property   p1  {self.BUG}",
+            "property   p2  Total money in the bank is conserved",
+            "sample     p1  counterexample  -4242424242  81.5",
+            'sample     p2  example         {"total": 300}',
+            "verdict    p2  passed",
+            f"verdict    p1  {verdict}",
+            last or f"completed  {self.RUN}",
+        ]
+        return "\n".join(lines)
+
+    def test_stream_events_read_the_terminal_lines(self):
+        rows = gallery.stream_events("an unrelated line\n" + self.transcript())
+        self.assertEqual(
+            [r["event"] for r in rows],
+            [
+                "property",
+                "property",
+                "sample",
+                "sample",
+                "verdict",
+                "verdict",
+                "completed",
+            ],
+        )
+        self.assertEqual(rows[0]["name"], self.BUG)
+        self.assertEqual(rows[2]["kind"], "counterexample")
+        self.assertEqual(rows[5]["verdict"], "failed")
+        self.assertEqual(rows[-1]["run_id"], self.RUN)
+
+    def test_stream_verdict_requires_a_whole_run(self):
+        rows = gallery.stream_events(self.transcript())
+        self.assertTrue(gallery.stream_verdict(rows, self.RUN, self.BUG, True)[0])
+        self.assertFalse(gallery.stream_verdict(rows, self.RUN, self.BUG, False)[0])
+        failing = [
+            ("no failed verdict", self.transcript(verdict="passed")),
+            ("not completed", self.transcript(last="verdict    p2  failed")),
+            ("another run", self.transcript(last="completed  other-run")),
+            (
+                "no samples",
+                "\n".join(
+                    line
+                    for line in self.transcript().splitlines()
+                    if not line.startswith("sample")
+                ),
+            ),
+        ]
+        for name, text in failing:
+            with self.subTest(name):
+                rows = gallery.stream_events(text)
+                self.assertFalse(
+                    gallery.stream_verdict(rows, self.RUN, self.BUG, True)[0]
+                )
+
+    def story(self, slug, launched=True):
+        x = gallery.GalleryRun(run=self.RUN, launch=gallery.Result([], "", "", 0))
+        if not launched:
+            x.launch = None
+        final = gallery.FinalCaptures(
+            wait=gallery.Result([], "", "", 0),
+            stream=gallery.Result([], "", "", 0),
+            stream_json=gallery.Result([], "", "", 0),
+        )
+        return next(s for s in gallery.build_final_stories(x, final) if s.slug == slug)
+
+    def test_terminal_stream_story_needs_the_wait_in_the_recording(self):
+        cast = "\n".join(
+            [
+                json.dumps({"version": 2}),
+                json.dumps([0.1, "o", f"\u280b {gallery.STREAM_WAITING}\r"]),
+            ]
+        )
+        result = gallery.Result([], self.transcript(), "", 0, cast=cast)
+        story = self.story("runs-stream-run")
+        run = gallery.StoryRun(story, result, None)
+        self.assertTrue(story.check(run, gallery.Registry())[0])
+        run.result = gallery.Result([], self.transcript(), "", 0, cast=None)
+        self.assertFalse(story.check(run, gallery.Registry())[0])
+        # A reused run can be past the wait; a property line shows the stream
+        # opened.
+        reused = self.story("runs-stream-run", launched=False)
+        self.assertTrue(
+            reused.check(
+                gallery.StoryRun(reused, run.result, None), gallery.Registry()
+            )[0]
+        )
+        run.result = gallery.Result([], self.transcript(), "", 1, cast=cast)
+        self.assertFalse(story.check(run, gallery.Registry())[0])
+
+    def test_json_stream_story_reads_ndjson_and_stderr(self):
+        rows = [
+            {"event": "property", "property_id": "p1", "name": self.BUG},
+            {
+                "event": "sample",
+                "property_id": "p1",
+                "kind": "counterexample",
+                "input_hash": "-1",
+                "vtime": 2.5,
+            },
+            {"event": "verdict", "property_id": "p1", "verdict": "failed"},
+            {"event": "completed", "run_id": self.RUN},
+        ]
+        stdout = "".join(json.dumps(r) + "\n" for r in rows)
+        stderr = f"{gallery.STREAM_WAITING} (5s)\n"
+        story = self.story("runs-stream-run--json")
+        run = gallery.StoryRun(story, gallery.Result([], stdout, stderr, 0), None)
+        self.assertTrue(story.check(run, gallery.Registry())[0])
+        run.result.stderr = ""
+        self.assertFalse(story.check(run, gallery.Registry())[0])
+        run.result = gallery.Result([], "not json\n", stderr, 0)
+        self.assertFalse(story.check(run, gallery.Registry())[0])
+
+    def test_timeout_keeps_the_output_of_a_killed_command(self):
+        code = "import time; print('before the timeout', flush=True); time.sleep(30)"
+        for pipe in (True, False):
+            with self.subTest(pipe=pipe):
+                result = self.snouty.run(["-c", code], pipe=pipe, timeout=1)
+                self.assertFalse(result.ok)
+                self.assertIn("before the timeout", result.combined)
+
+
 if __name__ == "__main__":
     unittest.main()

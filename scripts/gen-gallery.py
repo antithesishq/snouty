@@ -18,12 +18,16 @@ story that models a log file uses pipes too, with stderr in the stdout pipe.
 There are three kinds of story:
 
   * goal stories — capture one command's output and judge it against a user goal
-    (the bulk of the gallery; slugs like `runs-events-single`). The `runs exec`
-    stories (`runs-exec*`, and `debug` when discovery launches a session) run
-    in a debugging session. Discovery reuses a starting or in-progress session
-    that an earlier gallery run launched, or launches one with `snouty debug`.
-    A new session takes several minutes to accept commands. `--no-exec` leaves
-    them out.
+    (the bulk of the gallery; slugs like `runs-events-single`). The run stories
+    test snouty end to end over the life of one real run: `validate-example`
+    validates the example project in examples/antithesis, `launch` starts a
+    15-minute run of it, and `runs-stream-run` (and `--json`) follow the run's
+    property stream from the launch to the end. Once the run is ready, the
+    `runs exec` stories (`runs-exec*`) execute in it, and the rewarm stories
+    load shallow moments of another completed run into it. Once it is final,
+    the `*-run` stories read its results. The gallery reuses a starting or
+    in-progress run that an earlier gallery launched, or launches one, so the
+    run stories take about 25 minutes. `--no-run` leaves them out.
   * help stories — capture `snouty <cmd> --help` next to that command's default
     output (slugs like `help-runs-properties`) and judge whether the help is
     informative, clear, concise, consistent, and *aligned* with what the command
@@ -40,7 +44,7 @@ them). Behaviour is controlled with flags, not env vars:
 
     uv run scripts/gen-gallery.py --out ./out
     uv run scripts/gen-gallery.py --only runs-events-single
-    uv run scripts/gen-gallery.py --no-exec
+    uv run scripts/gen-gallery.py --no-run
     uv run scripts/gen-gallery.py --list
 
 Nothing is written to ./gallery; output goes to a tempdir (or --out) so you
@@ -59,6 +63,7 @@ import random
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -118,11 +123,9 @@ DISCOVERY_MAX_PAGES = 10
 # `runs list` reports this launcher for a debugging session.
 DEBUGGING_LAUNCHER = "debugging"
 
-# A debugging session that is `starting` or `in_progress` is live.
-SESSION_STARTING = "starting"
-SESSION_IN_PROGRESS = "in_progress"
-SESSION_LIST_DEADLINE = 600
-SESSION_LIST_POLL = 15
+# A run that is `starting` or `in_progress` is live.
+RUN_STARTING = "starting"
+RUN_IN_PROGRESS = "in_progress"
 
 
 class GalleryError(Exception):
@@ -136,6 +139,13 @@ class GalleryError(Exception):
 
 def _ndjson(text: str) -> list[dict]:
     return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def _text(output: str | bytes | None) -> str:
+    """The output that a timed-out child wrote, which can arrive as bytes."""
+    if isinstance(output, bytes):
+        return output.decode(errors="replace")
+    return output or ""
 
 
 def _moment_strs(moment: dict) -> tuple[str, str]:
@@ -203,10 +213,13 @@ class Snouty:
         env: dict[str, str | None] | None = None,
         stdin: str | None = None,
         pipe: bool = False,
+        timeout: float | None = None,
     ) -> Result:
         """Run snouty on a terminal, or on pipes for `--json` or with `pipe`.
         A `pipe` run without `--json` sends stderr into the stdout pipe, so the
-        lines keep the order that a log file would show."""
+        lines keep the order that a log file would show. `timeout` bounds a
+        command that can run for a long time: snouty is killed when it runs
+        out, and the result keeps the output that arrived before."""
         if "--json" not in args and not pipe:
             screen = pyte.HistoryScreen(TTY_COLS, TTY_ROWS, history=sys.maxsize)
             # A shell pipes `stdin` to snouty, as a heredoc does, so stdin is a
@@ -224,7 +237,7 @@ class Snouty:
                 self.env_with({**(env or {}), "TERM": "xterm-256color"}),
                 screen=screen,
             )
-            returncode = session.finish(timeout=None)
+            returncode = session.finish(timeout=timeout)
             return Result(
                 args,
                 _terminal_transcript(screen),
@@ -233,14 +246,20 @@ class Snouty:
                 session.cast(_command_line(args)),
                 stdin=stdin,
             )
-        proc = subprocess.run(
-            [str(self.binary), *args],
-            input=stdin,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE if "--json" in args else subprocess.STDOUT,
-            text=True,
-            env=self._env if env is None else self.env_with(env),
-        )
+        try:
+            proc = subprocess.run(
+                [str(self.binary), *args],
+                input=stdin,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE if "--json" in args else subprocess.STDOUT,
+                text=True,
+                env=self._env if env is None else self.env_with(env),
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as e:
+            return Result(
+                args, _text(e.stdout), _text(e.stderr), -signal.SIGKILL, stdin=stdin
+            )
         return Result(
             args, proc.stdout, proc.stderr or "", proc.returncode, stdin=stdin
         )
@@ -1124,126 +1143,217 @@ def discover(sn: Snouty) -> Discovery:
 
 
 @dataclass
-class ExecSession:
-    """A debugging session that accepts `runs exec`, and the moments the exec
-    stories execute at."""
+class GalleryRun:
+    """The gallery's own run of the example project, which the run stories
+    follow from its launch to its final status, and the moments that the
+    `runs exec` stories execute at."""
 
-    session: str = ""  # the debugging session's run id
-    base_run: str = ""  # the run the session debugs
-    hash: str = ""  # the session's own moment, which is warm
-    vtime: str = "0"
-    container: str = ""  # a container name from the base run's logs
-    # The `snouty debug` launch, or None when discovery reused a live session.
+    run: str = ""
+    # The launch, or None when the gallery reused a live run that an earlier
+    # gallery launched.
     launch: Result | None = None
-    # The end moment of discovery's readiness exec, which wrote
-    # EXEC_MARKER_TEXT to EXEC_MARKER_PATH.
+    # `runs wait --until ready`, which the exec stories wait on.
+    wait_ready: Result | None = None
+    hash: str = ""  # a moment just after the run's setup, which is warm
+    vtime: str = "0"
+    container: str = ""  # a container name from the run's logs
+    # The end moment of the readiness exec, which wrote EXEC_MARKER_TEXT to
+    # EXEC_MARKER_PATH.
     follow_hash: str = ""
     follow_vtime: str = "0"
-    # Two property moments of the base run, after the session's moment: one
-    # for the terminal story and one for the pipe story, so each loads a moment.
+    # Two shallow moments of another completed run on the same performance
+    # tier: one for the terminal story and one for the pipe story, so each
+    # loads a moment.
+    rewarm_source: str = ""
     rewarm_hash: str = ""
     rewarm_vtime: str = "0"
     rewarm_pipe_hash: str = ""
     rewarm_pipe_vtime: str = "0"
 
 
+@dataclass
+class FinalCaptures:
+    """What the gallery captures once its run is final."""
+
+    wait: Result
+    # The streams that started right after the launch, or None when no
+    # selected story records them.
+    stream: Result | None = None
+    stream_json: Result | None = None
+    # The ID of EXAMPLE_BUG_PROPERTY in the run, or "" when it has none.
+    bug_prop_id: str = ""
+
+
+EXAMPLE_DIR = Path(__file__).resolve().parent.parent / "examples" / "antithesis"
+
+# How the gallery launches its run. The run is ephemeral (no --source) and on
+# the default performance tier, RUN_TIER.
+GALLERY_RUN_LAUNCHER = "basic_test"
+GALLERY_RUN_MINUTES = 15
+GALLERY_RUN_TEST_NAME = "snouty-gallery"
+# The description of each run that the gallery launches starts with this.
+GALLERY_RUN_DESCRIPTION = "snouty gen-gallery end-to-end run"
+RUN_TIER = "standard"
+_TIER = "antithesis.performance_tier"
+
+# The example's property that fails, because of its deliberate bug.
+EXAMPLE_BUG_PROPERTY = "Account balances never go negative"
+
+# Bounds on the waits for the gallery run, so a run that never becomes ready
+# or never ends fails the gallery instead of hanging it. The streams get the
+# whole life of the run, and some slack.
+RUN_READY_TIMEOUT = "60m"
+RUN_FINAL_TIMEOUT = "90m"
+STREAM_TIMEOUT = 2 * 60 * 60
+
+# Search in a new run fails, then finds nothing, for minutes after the run is
+# ready, so the search for the run's post-setup moment polls.
+MOMENT_SEARCH_DEADLINE = 600
+MOMENT_SEARCH_POLL = 15
+
+# Rewarm sources: the gallery picks one of the newest REWARM_SOURCE_PROBES
+# completed runs on RUN_TIER, and one of the SHALLOW_MOMENTS earliest moments
+# after its setup. The choice is random, because a reused run can already
+# hold a moment that an earlier gallery run loaded.
+REWARM_SOURCE_PROBES = 10
+SHALLOW_MOMENTS = 6
+
 EXEC_MARKER_PATH = "/tmp/snouty-gallery-marker"
 EXEC_MARKER_TEXT = "written by an earlier runs exec"
 
-# Parameter keys of a debugging session's `runs list` row.
-_DEBUG_RUN = "antithesis.debugging.run_id"
-_DEBUG_HASH = "antithesis.debugging.input_hash"
-_DEBUG_VTIME = "antithesis.debugging.vtime"
-_DESCRIPTION = "antithesis.event_description"
-
-# The description of each session the gallery launches starts with this.
-EXEC_SESSION_DESCRIPTION = "snouty gen-gallery runs exec stories"
-
-
-def _exec_json(sn: Snouty, x: ExecSession, script: str) -> Result:
-    return sn.run(["--json", "runs", "exec", x.session, x.hash, x.vtime, script])
+# Match system events; workload log text is not a reliable marker. A run whose
+# workload never calls the SDK's setup-complete API has no setup event, so
+# also match two other events that occur just after setup. The fault injector
+# unpauses many times in a run.
+POST_SETUP_QUERY = (
+    'filter(ev => ev.antithesis_setup?.status == "complete"'
+    ' || ev.composer_lifecycle == "first_randomizer_new_input"'
+    ' || (ev.source?.name == "fault_injector" && ev.info?.message == "status"'
+    " && ev.info?.details?.paused == false))"
+)
 
 
-# A session that is still `starting` has no `parameters` yet; they appeared
-# about 70s after the launch (orbitinghail, release 64.0).
-def _debugging_sessions(sn: Snouty) -> list[dict]:
-    return sn.json_lines(["runs", "list", "--launcher", DEBUGGING_LAUNCHER, "-n", "20"])
+def _exec_json(sn: Snouty, x: GalleryRun, script: str) -> Result:
+    return sn.run(["--json", "runs", "exec", x.run, x.hash, x.vtime, script])
 
 
-def _live_session(sn: Snouty) -> dict | None:
-    """The newest debugging session that the gallery launched and that is
-    starting or in progress, or None. A session that the gallery did not launch
-    is never reused: the stories would execute in it, and it can hold the cold
-    story's moment."""
-    for r in _debugging_sessions(sn):
-        description = (r.get("parameters") or {}).get(_DESCRIPTION, "")
-        live = r.get("status") in (SESSION_STARTING, SESSION_IN_PROGRESS)
-        if live and description.startswith(EXEC_SESSION_DESCRIPTION):
+def _run_description(row: dict) -> str:
+    params = row.get("parameters") or {}
+    return row.get("description") or params.get("antithesis.description") or ""
+
+
+def _live_gallery_run(sn: Snouty) -> dict | None:
+    """The newest run that the gallery launched and that is starting or in
+    progress on RUN_TIER, or None. A run that the gallery did not launch is
+    never reused: the stories would execute in it. A run lists its
+    description only once it has started, about a minute after its launch."""
+    rows = sn.json_lines(
+        ["runs", "list", "--launcher", GALLERY_RUN_LAUNCHER, "-n", "50"]
+    )
+    for r in rows:
+        live = r.get("status") in (RUN_STARTING, RUN_IN_PROGRESS)
+        tier = (r.get("parameters") or {}).get(_TIER)
+        if (
+            live
+            and tier == RUN_TIER
+            and _run_description(r).startswith(GALLERY_RUN_DESCRIPTION)
+        ):
             return r
     return None
 
 
-def _launch_session(sn: Snouty, base_run: str) -> tuple[dict, Result]:
-    """Launch a debugging session at a moment just after `base_run` completes
-    setup. Returns the session's `runs list` row and the launch's output."""
-    # Match system events; workload log text is not a reliable marker. A run
-    # whose workload never calls the SDK's setup-complete API has no setup
-    # event, so also match two other events that occur just after setup. Search
-    # returns a sample in no fixed order, and the fault injector unpauses many
-    # times in a run, so take the earliest match of the sample.
-    query = (
-        'filter(ev => ev.antithesis_setup?.status == "complete"'
-        ' || ev.composer_lifecycle == "first_randomizer_new_input"'
-        ' || (ev.source?.name == "fault_injector" && ev.info?.message == "status"'
-        " && ev.info?.details?.paused == false))"
-    )
-    found = sn.json_lines(["runs", "search", base_run, query, "-n", "100"])
-    if not found:
+def gallery_launch_args(description: str) -> list[str]:
+    """The `snouty --json launch` command for the gallery's run."""
+    return [
+        "--json",
+        "launch",
+        "--launcher",
+        GALLERY_RUN_LAUNCHER,
+        "--config",
+        str(EXAMPLE_DIR),
+        "--duration",
+        str(GALLERY_RUN_MINUTES),
+        "--test-name",
+        GALLERY_RUN_TEST_NAME,
+        "--description",
+        description,
+        "--param",
+        "attrs.source=snouty-gallery",
+    ]
+
+
+def launched_run_id(stdout: str) -> str | None:
+    """The run ID in `snouty --json launch` output, or None."""
+    try:
+        out = json.loads(stdout)
+    except json.JSONDecodeError:
+        return None
+    run = out.get("runId") if isinstance(out, dict) else None
+    return run if isinstance(run, str) and run else None
+
+
+def _launch_gallery_run(sn: Snouty) -> GalleryRun:
+    ensure_example_images()
+    # A unique description tells this run apart from earlier gallery runs.
+    description = f"{GALLERY_RUN_DESCRIPTION} {datetime.now().isoformat()}"
+    launch = sn.run(gallery_launch_args(description))
+    run = launched_run_id(launch.stdout)
+    if not launch.ok or run is None:
         raise GalleryError(
-            f"{base_run} has no post-setup event to debug from (tried the SDK setup-complete"
-            " event, the test composer's first_randomizer_new_input event, and the fault"
-            " injector's unpause event)"
+            f"`snouty launch` failed (exit {launch.returncode}): {launch.combined}"
         )
-    h, v = _moment_strs(
-        min((r["moment"] for r in found), key=lambda m: float(m["vtime"]))
-    )
-    # A unique description finds the new session in `runs list` without
-    # parsing the launch's human-facing output.
-    description = f"{EXEC_SESSION_DESCRIPTION} {datetime.now().isoformat()}"
-    launch = sn.run(
-        [
-            "debug",
-            "--run-id",
-            base_run,
-            "--input-hash",
-            h,
-            "--vtime",
-            v,
-            "--title",
-            "snouty gallery",
-            "--description",
-            description,
-            "--param",
-            "attrs.source=snouty-gallery",
-        ]
-    )
-    if not launch.ok:
-        raise GalleryError(
-            f"`snouty debug` failed (exit {launch.returncode}): {launch.combined}"
-        )
-    deadline = time.monotonic() + SESSION_LIST_DEADLINE
-    while time.monotonic() < deadline:
-        for r in _debugging_sessions(sn):
-            if (r.get("parameters") or {}).get(_DESCRIPTION) == description:
-                return r, launch
-        print(
-            f"  waiting for the session {description!r} to list its parameters",
-            file=sys.stderr,
-        )
-        time.sleep(SESSION_LIST_POLL)
-    raise GalleryError(
-        f"the debugging session {description!r} listed no parameters within {SESSION_LIST_DEADLINE}s"
-    )
+    return GalleryRun(run=run, launch=launch)
+
+
+def gallery_run(sn: Snouty, reuse: bool) -> GalleryRun:
+    """The gallery's run. With `reuse`, prefer a live run that the gallery
+    launched; otherwise launch one."""
+    row = _live_gallery_run(sn) if reuse else None
+    if row is not None:
+        print(f"  reusing gallery run {row['run_id']}", file=sys.stderr)
+        return GalleryRun(run=row["run_id"])
+    x = _launch_gallery_run(sn)
+    print(f"  launched gallery run {x.run}", file=sys.stderr)
+    return x
+
+
+def earliest_moments(rows: list[dict], n: int) -> list[dict]:
+    """The `n` earliest distinct moments of the event `rows`, earliest first.
+    Search returns a sample in no fixed order."""
+    picked: dict[tuple[str, str], dict] = {}
+    for m in sorted((r["moment"] for r in rows), key=lambda m: float(m["vtime"])):
+        picked.setdefault(_moment_strs(m), m)
+    return list(picked.values())[:n]
+
+
+def _post_setup_moments(sn: Snouty, run: str) -> list[dict]:
+    rows = sn.json_lines(["runs", "search", run, POST_SETUP_QUERY, "-n", "100"])
+    return earliest_moments(rows, SHALLOW_MOMENTS)
+
+
+def _first_post_setup_moment(sn: Snouty, run: str) -> dict:
+    """The earliest moment after `run` completes its setup. The run is in
+    progress, so its search index can lag: poll until the moment appears."""
+    deadline = time.monotonic() + MOMENT_SEARCH_DEADLINE
+    while True:
+        # Search answers 404 for a minute or two after the run is ready
+        # (orbitinghail, release 66.0), and then finds nothing for a while.
+        try:
+            moments = _post_setup_moments(sn, run)
+        except GalleryError as e:
+            reason = str(e).rpartition("` failed ")[2]
+            print(f"  search in {run} failed {reason}", file=sys.stderr)
+            moments = []
+        if moments:
+            return moments[0]
+        if time.monotonic() > deadline:
+            raise GalleryError(
+                f"{run} has no post-setup event after {MOMENT_SEARCH_DEADLINE}s (tried "
+                "the SDK setup-complete event, the test composer's "
+                "first_randomizer_new_input event, and the fault injector's unpause event)"
+            )
+        print(f"  waiting for a post-setup event in {run}", file=sys.stderr)
+        time.sleep(MOMENT_SEARCH_POLL)
 
 
 def _container(sn: Snouty, run: str, h: str, v: str) -> str:
@@ -1259,72 +1369,91 @@ def _container(sn: Snouty, run: str, h: str, v: str) -> str:
     return names.most_common(1)[0][0]
 
 
-def _rewarm_moments(sn: Snouty, run: str, after: float) -> tuple[dict, dict]:
-    """Two different property moments of `run` after vtime `after`:
-    counter-examples first, then examples. The choice is random, because a
-    reused session can already hold a moment that an earlier gallery run
-    loaded."""
-    props = sn.json_lines(["runs", "properties", run])
-    picked: dict[tuple[str, str], dict] = {}
-    for key in ("counterexamples", "examples"):
-        moments = [
-            v["moment"]
-            for p in props
-            for v in _moments(p.get(key) or [])
-            if float(v["moment"]["vtime"]) > after
-        ]
-        random.shuffle(moments)
-        for m in moments:
-            picked.setdefault(_moment_strs(m), m)
-    if len(picked) < 2:
-        raise GalleryError(
-            f"{run} has fewer than two property moments after vtime {after} to rewarm"
+def _rewarm_moments(sn: Snouty, target: str) -> tuple[str, dict, dict]:
+    """A completed run on RUN_TIER other than `target`, and two different
+    shallow moments of it: moments just after its setup, which load quickly."""
+    candidates = [
+        r["run_id"]
+        for r in islice(
+            (
+                r
+                for r in RunScan(sn, "--status", "completed")
+                if (r.get("parameters") or {}).get(_TIER) == RUN_TIER
+                and r["run_id"] != target
+            ),
+            REWARM_SOURCE_PROBES,
         )
-    first, second, *_ = picked.values()
-    return first, second
-
-
-def discover_exec_session(sn: Snouty, d: Discovery, reuse: bool) -> ExecSession:
-    """A debugging session that accepts `runs exec`. With `reuse`, prefer a live
-    session that the gallery launched; otherwise, or when that session is not
-    ready, launch one from `d.success`."""
-    row = _live_session(sn) if reuse else None
-    if row is not None:
-        print(f"  reusing debugging session {row['run_id']}", file=sys.stderr)
+    ]
+    random.shuffle(candidates)
+    for run in candidates:
         try:
-            return _ready_exec_session(sn, row, None)
+            moments = _post_setup_moments(sn, run)
         except GalleryError as e:
-            print(f"  cannot reuse {row['run_id']}: {e}", file=sys.stderr)
-    row, launch = _launch_session(sn, d.success)
-    print(f"  launched debugging session {row['run_id']}", file=sys.stderr)
-    return _ready_exec_session(sn, row, launch)
-
-
-def _ready_exec_session(sn: Snouty, row: dict, launch: Result | None) -> ExecSession:
-    params = row["parameters"]
-    base, h, v = params[_DEBUG_RUN], params[_DEBUG_HASH], params[_DEBUG_VTIME]
-    x = ExecSession(
-        session=row["run_id"], base_run=base, hash=h, vtime=v, launch=launch
+            print(f"  skip rewarm source {run}: {e}", file=sys.stderr)
+            continue
+        if len(moments) >= 2:
+            first, second = random.sample(moments, 2)
+            return run, first, second
+        print(f"  skip rewarm source {run}: fewer than two moments", file=sys.stderr)
+    raise GalleryError(
+        f"none of the {len(candidates)} newest completed {RUN_TIER} runs has two "
+        "post-setup moments to rewarm"
     )
-    # The follow-up story chains from this exec. `runs exec` waits until the
-    # session is ready, so a failure is final.
+
+
+def prepare_exec(sn: Snouty, x: GalleryRun) -> None:
+    """Fill in the moments that the exec stories execute at. The run must be
+    ready."""
+    x.hash, x.vtime = _moment_strs(_first_post_setup_moment(sn, x.run))
+    # The follow-up story chains from this exec, so a failure is final.
     first = _exec_json(sn, x, f'echo "{EXEC_MARKER_TEXT}" > {EXEC_MARKER_PATH}')
     if not first.ok:
-        raise GalleryError(
-            f"`runs exec` failed in debugging session {x.session}: {first.stderr.strip()}"
-        )
+        raise GalleryError(f"`runs exec` failed in run {x.run}: {first.stderr.strip()}")
     x.follow_hash, x.follow_vtime = _moment_strs(
         _ndjson(first.stdout)[-1]["end_moment"]
     )
-    tty, pipe = _rewarm_moments(sn, base, float(v))
+    x.container = _container(sn, x.run, x.hash, x.vtime)
+    x.rewarm_source, tty, pipe = _rewarm_moments(sn, x.run)
     x.rewarm_hash, x.rewarm_vtime = _moment_strs(tty)
     x.rewarm_pipe_hash, x.rewarm_pipe_vtime = _moment_strs(pipe)
-    x.container = _container(sn, base, h, v)
     print(
-        f"  exec session  : {x.session} (base {base}; container {x.container})",
+        f"  exec moment   : {x.hash} {x.vtime} (container {x.container}; rewarm "
+        f"from {x.rewarm_source})",
         file=sys.stderr,
     )
-    return x
+
+
+def property_id_named(rows: list[dict], name: str) -> str:
+    """The ID of the property whose name contains `name`, or "". A grouped
+    property's name can carry a `<group>: ` prefix."""
+    return next((r.get("id") or "" for r in rows if name in r.get("name", "")), "")
+
+
+class Background:
+    """A capture that runs in a daemon thread, such as a stream that lasts as
+    long as the run. A daemon thread does not keep the gallery alive when it
+    fails early."""
+
+    def __init__(self, work: Callable[[], Result]) -> None:
+        self._done = threading.Event()
+        self._result: Result | None = None
+        self._error: BaseException | None = None
+        threading.Thread(target=self._run, args=(work,), daemon=True).start()
+
+    def _run(self, work: Callable[[], Result]) -> None:
+        try:
+            self._result = work()
+        except BaseException as e:
+            self._error = e
+        finally:
+            self._done.set()
+
+    def result(self) -> Result:
+        self._done.wait()
+        if self._error is not None:
+            raise self._error
+        assert self._result is not None
+        return self._result
 
 
 # ---------------------------------------------------------------------------
@@ -1455,7 +1584,7 @@ def expected_run_cell(row: dict) -> str:
     candidates = [
         params.get("antithesis.test_name"),
         _first_line(row.get("description") or params.get("antithesis.description")),
-        _first_line(params.get(_DESCRIPTION)),
+        _first_line(params.get("antithesis.event_description")),
     ]
     return next((c for c in candidates if isinstance(c, str) and c), "-")
 
@@ -1946,6 +2075,143 @@ def rewarm_lines_once(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         f"exit={sr.result.returncode}, rewarm lines={percents!r}, repeated={repeated!r}, "
         f"trailer={trailer}",
     )
+
+
+def launched_run(run: str):
+    """The `--json launch` story: exit 0, and the output names the run that
+    the gallery follows."""
+
+    def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+        got = launched_run_id(sr.result.stdout)
+        ok = sr.result.ok and got == run
+        return (ok, f"exit={sr.result.returncode}, runId={got!r}")
+
+    return chk
+
+
+_STREAM_EVENTS = frozenset({"property", "sample", "verdict", "completed", "unknown"})
+
+# What `runs stream` shows while the run has no stream yet.
+STREAM_WAITING = "waiting for the run's stream to open"
+
+
+def stream_events(text: str) -> list[dict]:
+    """The events of `runs stream`'s terminal output, with the keys of its
+    `--json` output. A line that is no event, such as the tail of a wrapped
+    line, is skipped."""
+    rows = []
+    for line in text.splitlines():
+        event, *fields = line.split() or [""]
+        if event not in _STREAM_EVENTS or not fields:
+            continue
+        first, rest = fields[0], fields[1:]
+        if event == "completed":
+            rows.append({"event": event, "run_id": first})
+        elif event == "property":
+            rows.append({"event": event, "property_id": first, "name": " ".join(rest)})
+        elif event == "sample":
+            rows.append(
+                {"event": event, "property_id": first, "kind": next(iter(rest), "")}
+            )
+        elif event == "verdict":
+            rows.append(
+                {"event": event, "property_id": first, "verdict": next(iter(rest), "")}
+            )
+        else:
+            rows.append({"event": event})
+    return rows
+
+
+def stream_verdict(
+    rows: list[dict], run: str, bug: str, opened: bool
+) -> tuple[bool, str]:
+    """Whether the stream events `rows` cover a whole run: the stream opened,
+    at least one property, sample, and verdict, a `failed` verdict for the
+    property named `bug`, and a last event that completes `run`."""
+    counts = Counter(r.get("event") for r in rows)
+    bug_ids = {
+        r.get("property_id")
+        for r in rows
+        if r.get("event") == "property" and bug in (r.get("name") or "")
+    }
+    failed = {
+        r.get("property_id")
+        for r in rows
+        if r.get("event") == "verdict" and r.get("verdict") == "failed"
+    }
+    bug_failed = bool(bug_ids & failed)
+    last = rows[-1] if rows else {}
+    completed = last.get("event") == "completed" and last.get("run_id") == run
+    ok = (
+        opened
+        and all(counts[e] > 0 for e in ("property", "sample", "verdict"))
+        and bug_failed
+        and completed
+    )
+    return (
+        ok,
+        f"opened={opened}, {counts['property']} property, {counts['sample']} sample, "
+        f"{counts['verdict']} verdict lines, {bug!r} failed={bug_failed}, "
+        f"ends with completed={completed}",
+    )
+
+
+def _cast_text(cast: str | None) -> str:
+    """Everything a recording's terminal received, redraws included."""
+    lines = (cast or "").splitlines()[1:]
+    return "".join(json.loads(line)[2] for line in lines if line.strip())
+
+
+def stream_run(run: str, launched: bool, *, json_output: bool):
+    """A `runs stream` story that lasted the whole run. On a run that the
+    gallery launched, the stream must wait for the run's stream to open. On a
+    reused run, which can be past that wait, the line that says the stream is
+    open (off a terminal) or a property line shows that the stream opened."""
+
+    def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+        if json_output:
+            try:
+                rows = _ndjson(sr.result.stdout)
+            except json.JSONDecodeError as e:
+                return (False, f"stdout is not NDJSON: {e}")
+            waited = STREAM_WAITING in sr.result.stderr
+            open_line = f"the stream of run {run} is open" in sr.result.stderr
+        else:
+            rows = stream_events(sr.result.combined)
+            waited = STREAM_WAITING in _cast_text(sr.result.cast)
+            open_line = False
+        has_property = any(r.get("event") == "property" for r in rows)
+        opened = waited or (not launched and (open_line or has_property))
+        ok, detail = stream_verdict(rows, run, EXAMPLE_BUG_PROPERTY, opened)
+        return (
+            ok and sr.result.ok,
+            f"exit={sr.result.returncode}, waited={waited}, {detail}",
+        )
+
+    return chk
+
+
+def run_properties(bug: str):
+    """`runs properties` on the finished gallery run: passing and failing
+    properties, and `bug` among the failing."""
+
+    def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+        ok, detail = properties_pass_and_fail(sr, reg)
+        bug_failing = any(
+            bug in r.get("name", "") and r.get("status") == "Failing"
+            for r in sr.rows or []
+        )
+        return (ok and bug_failing, f"{detail}, {bug!r} failing={bug_failing}")
+
+    return chk
+
+
+def bug_property(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+    """`runs property` for the example's failing property: its name, and
+    counterexample moments as `property_has_examples` checks them."""
+    ok, detail = property_has_examples(sr, reg)
+    named = contains_text(sr.result.combined, EXAMPLE_BUG_PROPERTY)
+    return (ok and named and sr.result.ok, f"{detail}, named={named}")
 
 
 def logs_non_empty(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
@@ -2920,56 +3186,71 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
     return stories + build_help_stories(d)
 
 
-def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
-    """Stories that execute in session `x`. No story is JSON-capable, so each
-    script executes once."""
-    exec_at = ["runs", "exec", x.session, x.hash, x.vtime]
+def build_launch_stories(x: GalleryRun) -> list[Story]:
+    """The launch of the gallery's run, when the gallery launched it rather
+    than reusing a live run."""
+    if x.launch is None:
+        return []
+    return [
+        Story(
+            "launch",
+            "Launch a run of my project",
+            f"My project validates, and I want a {GALLERY_RUN_MINUTES}-minute run of it on "
+            "Antithesis, with a test name, a description, and a custom attrs.source "
+            "parameter. My script reads the run ID from the JSON output.",
+            "snouty pushes the project's images and the config image, with the progress on "
+            "stderr, and stdout is one JSON object with the new run's `runId`. Exit 0.",
+            x.launch.args,
+            launched_run(x.run),
+            json_capable=False,
+            precaptured=x.launch,
+        )
+    ]
+
+
+def build_ready_stories(d: Discovery, x: GalleryRun) -> list[Story]:
+    """Stories that need the gallery's run to be ready, most of which execute
+    in it. No story is JSON-capable, so each script executes once."""
+    exec_at = ["runs", "exec", x.run, x.hash, x.vtime]
     script = 'echo "hello from $(uname -n)"; echo "a warning on stderr" >&2'
+    wait_ready = x.wait_ready or Result(
+        ["runs", "wait", x.run, "--until", "ready"], "", "", 0
+    )
 
     def exec_story(
         slug: str, title: str, goal: str, judge: str, args: list[str], check, **kw
     ):
         return Story(slug, title, goal, judge, args, check, json_capable=False, **kw)
 
-    stories = []
-    if x.launch is not None:
-        stories.append(
-            Story(
-                "debug",
-                "Open a debugging session at a moment",
-                f"I want to debug run {x.base_run} from the moment its setup completed, "
-                "and give the session a title, a description, and a custom attrs.source "
-                "parameter.",
-                "snouty shows the parameters it sends, with the title as "
-                "antithesis.test_name and the custom attrs.source parameter, and the run ID of "
-                "the new debugging session. It says "
-                "that the session takes minutes to be ready, and gives the `runs exec` command "
-                "to run at the moment, which waits until the session is ready. Exit 0.",
-                x.launch.args,
-                succeeds_with(
-                    "Debugging session started",
-                    "waits until the session is ready",
-                    "snouty runs exec",
-                ),
-                json_capable=False,
-                precaptured=x.launch,
-            )
-        )
+    stories = [
+        Story(
+            "runs-wait-ready",
+            "Wait until my new run accepts commands",
+            "I just launched a run, and I want my script to block until I can run "
+            "commands in it.",
+            "snouty prints each status the run passes through on stderr, then one line on "
+            "stdout once the run is in_progress:ready. Exit 0.",
+            wait_ready.args,
+            succeeds_with(f"run {x.run} is in_progress:ready"),
+            json_capable=False,
+            precaptured=wait_ready,
+        ),
+    ]
     stories += [
         exec_story(
-            "runs-show-session",
-            "Check that a debugging session is ready",
-            "My debugging session accepts commands now, and I want its status.",
+            "runs-show-ready",
+            "Check that my run is ready",
+            "My run accepts commands now, and I want its status.",
             "Status is in_progress:ready: the run is in progress, and its sub-status says "
-            "that the session is ready. The launcher is debugging.",
-            ["runs", "show", x.session],
-            contains_all("in_progress:ready", DEBUGGING_LAUNCHER),
+            f"that it is ready. The launcher is {GALLERY_RUN_LAUNCHER}.",
+            ["runs", "show", x.run],
+            contains_all("in_progress:ready", GALLERY_RUN_LAUNCHER),
         ),
         exec_story(
             "runs-exec",
-            "Run a command in a live debugging session",
-            "My debugging session is ready, and I want to run a shell command at its moment "
-            "and see what it prints.",
+            "Run a command in a live run",
+            "My run is ready, and I want to run a shell command at a moment just after its "
+            "setup and see what it prints.",
             "The script's stdout and stderr appear as the script printed them, then a "
             "trailer names the end moment of the branch, to chain a follow-up from. Exit 0.",
             [*exec_at, script],
@@ -3034,7 +3315,10 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
             "I want every event of the timeline while my script executes, as JSON.",
             "One JSON object per line, including timeline events that have no output text, "
             "then the result line.",
-            ["--json", *exec_at, "--events", script],
+            # The moment is just after setup, when the run is quiet: the
+            # script sleeps, in virtual time, so that the run's own events
+            # happen while it executes.
+            ["--json", *exec_at, "--events", f"{script}; sleep 10"],
             exec_json("hello from", system_events=True),
         ),
         exec_story(
@@ -3069,7 +3353,7 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
             [
                 "runs",
                 "exec",
-                x.session,
+                x.run,
                 x.follow_hash,
                 x.follow_vtime,
                 f"cat {EXEC_MARKER_PATH}",
@@ -3079,30 +3363,29 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
         exec_story(
             "runs-exec-cold-moment",
             "Execute at a moment from another run",
-            f"I copied a moment from run {d.fail} and try to execute at it in my "
-            "debugging session.",
-            "snouty fails, says that the moment is not loaded into the session, and tells me "
+            f"I copied a moment from run {d.fail} and try to execute at it in my run.",
+            "snouty fails, says that the moment is not loaded into the run, and tells me "
             "how to load it: use --source-run-id to load a moment from a different run.",
-            # No story loads d.fail's moment, so it stays cold in a reused session.
-            ["runs", "exec", x.session, d.fail_hash, d.fail_vtime, "uname -n"],
+            # No story loads d.fail's moment, so it stays cold in a reused run.
+            ["runs", "exec", x.run, d.fail_hash, d.fail_vtime, "uname -n"],
             fails_with("--source-run-id"),
         ),
         exec_story(
             "runs-exec--source-run-id",
-            "Load a moment from the run I am debugging",
-            f"My debugging session started from run {x.base_run}. I want to execute at a "
-            "later moment of that run, one that a property reported.",
+            "Load a moment from another run",
+            f"My run is in progress, and I want to execute at a moment of the completed run "
+            f"{x.rewarm_source}, from just after its setup.",
             "With --source-run-id, the server loads the moment by replaying the run's inputs, "
             "which can take a while, and snouty shows the progress on stderr; then the script "
             "executes. Exit 0, with the end-moment trailer.",
             [
                 "runs",
                 "exec",
-                x.session,
+                x.run,
                 x.rewarm_hash,
                 x.rewarm_vtime,
                 "--source-run-id",
-                x.base_run,
+                x.rewarm_source,
                 "uname -n",
             ],
             succeeds_with("end moment:"),
@@ -3110,8 +3393,8 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
         exec_story(
             "runs-exec--source-run-id-piped",
             "Load a moment from a script, with the output in a log",
-            f"My CI job runs `snouty runs exec` at a later moment of run {x.base_run}, "
-            "and its stdout and stderr go to a log file, not a terminal.",
+            "My CI job runs `snouty runs exec` at a moment of the completed run "
+            f"{x.rewarm_source}, and its stdout and stderr go to a log file, not a terminal.",
             "Off a terminal, snouty shows the rewarm progress as `rewarming moment: N%` "
             "lines, one line for each new percentage, with no repeated line and no "
             "progress-bar redraws. Then the script's output and the end-moment trailer "
@@ -3119,11 +3402,11 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
             [
                 "runs",
                 "exec",
-                x.session,
+                x.run,
                 x.rewarm_pipe_hash,
                 x.rewarm_pipe_vtime,
                 "--source-run-id",
-                x.base_run,
+                x.rewarm_source,
                 "uname -n",
             ],
             rewarm_lines_once,
@@ -3133,8 +3416,106 @@ def build_exec_stories(d: Discovery, x: ExecSession) -> list[Story]:
     return stories
 
 
-# A placeholder with a launch, so slug enumeration includes `debug`.
-_LISTED_EXEC_SESSION = ExecSession(launch=Result(["debug"], "", "", 0))
+def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
+    """Stories about the gallery's run once it is final: the streams that
+    followed it from its launch, and its results."""
+    stories = [
+        Story(
+            "runs-wait-run",
+            "Wait for my run to finish",
+            "My script launched a run, and I want one command that blocks until it ends.",
+            "snouty prints each status the run passes through on stderr, then one line on "
+            "stdout once the run is completed. Exit 0.",
+            f.wait.args,
+            succeeds_with(f"run {x.run} is completed"),
+            json_capable=False,
+            precaptured=f.wait,
+        ),
+    ]
+    if f.stream is not None:
+        stories.append(
+            Story(
+                "runs-stream-run",
+                "Follow my run's properties as they happen",
+                "I just launched a run, and I want to watch its properties pass and fail "
+                "live, from the start of the run to its end.",
+                "snouty waits for the run's stream to open, then prints one line per event "
+                "as it happens: a `property` line when a property appears, `sample` lines "
+                "with moments, and `verdict` lines, including the failed verdict of "
+                f"{EXAMPLE_BUG_PROPERTY!r}, the example's deliberate bug. It ends with "
+                "`completed <run id>` once the run is final. Exit 0.",
+                f.stream.args,
+                stream_run(x.run, x.launch is not None, json_output=False),
+                json_capable=False,
+                precaptured=f.stream,
+            )
+        )
+    if f.stream_json is not None:
+        stories.append(
+            Story(
+                "runs-stream-run--json",
+                "Follow my run's properties from a script",
+                "My script follows a run's property events as JSON, from its launch to its "
+                "end, to react to a failed verdict.",
+                "One JSON object per event, with an `event` key: property, sample, and "
+                "verdict events, including a failed verdict, then a `completed` event with "
+                "the run ID. The wait for the stream to open is on stderr. Exit 0.",
+                f.stream_json.args,
+                stream_run(x.run, x.launch is not None, json_output=True),
+                json_capable=False,
+                precaptured=f.stream_json,
+            )
+        )
+    stories += [
+        Story(
+            "runs-properties-run",
+            "See which properties my run passed and failed",
+            "My run is finished, and I want its property results.",
+            "A table of the example's properties: the passing ones, and "
+            f"{EXAMPLE_BUG_PROPERTY!r} failing because of the deliberate bug.",
+            ["runs", "properties", x.run],
+            run_properties(EXAMPLE_BUG_PROPERTY),
+        ),
+        Story(
+            "runs-property-run",
+            "Look at the property my run failed",
+            f"My run failed {EXAMPLE_BUG_PROPERTY!r}, and I want its counterexamples.",
+            "Shows that property alone, in full: its ID, totals, and counterexample moments "
+            "(hash/vtime), then one `snouty runs logs` next step.",
+            ["runs", "property", x.run, f.bug_prop_id],
+            bug_property,
+            json_capable=False,
+        ),
+        Story(
+            "runs-stream-run-final",
+            "Stream my run after it finished",
+            "My run is finished, and I start its property stream; I want it to end at once.",
+            "stdout is one `completed <run id>` line. Exit 0.",
+            ["runs", "stream", x.run],
+            succeeds_with(f"completed  {x.run}"),
+            json_capable=False,
+        ),
+    ]
+    return stories
+
+
+# Placeholders that enumerate every run story's slug, for `--list` and
+# `--only`.
+_LISTED_RUN = GalleryRun(launch=Result(["launch"], "", "", 0))
+_LISTED_FINAL = FinalCaptures(
+    wait=Result([], "", "", 0),
+    stream=Result([], "", "", 0),
+    stream_json=Result([], "", "", 0),
+)
+
+
+def listed_run_slugs() -> tuple[set[str], set[str], set[str]]:
+    """The slugs of the launch, ready, and final run stories."""
+    return (
+        {s.slug for s in build_launch_stories(_LISTED_RUN)},
+        {s.slug for s in build_ready_stories(Discovery(), _LISTED_RUN)},
+        {s.slug for s in build_final_stories(_LISTED_RUN, _LISTED_FINAL)},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3359,7 +3740,7 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "--source-run-id or --source-session-id, where the script's output goes, "
             "what --events prints "
             "instead, and how to chain a follow-up command. Help-only: the "
-            "`runs-exec*` stories show its output in a live debugging session.",
+            "`runs-exec*` stories show its output in the gallery's live run.",
             ["runs", "exec"],
         ),
         _help_story(
@@ -3520,6 +3901,23 @@ def ensure_validate_runtime() -> None:
     if build.returncode != 0:
         tail = (build.stderr or build.stdout).strip()
         raise GalleryError(f"validate sample image build failed:\n{tail}")
+
+
+def ensure_example_images() -> None:
+    """Build the example project's images, which `snouty validate` and
+    `snouty launch` need in the local image store."""
+    compose = resolve_compose_command()
+    if compose is None:
+        raise GalleryError("Docker Compose v2 is needed to build the example's images")
+    print("building the example project's images…", file=sys.stderr)
+    build = subprocess.run(
+        [*compose, "-f", str(EXAMPLE_DIR / "docker-compose.yaml"), "build", "-q"],
+        capture_output=True,
+        text=True,
+    )
+    if build.returncode != 0:
+        tail = (build.stderr or build.stdout).strip()
+        raise GalleryError(f"the example's image build failed:\n{tail}")
 
 
 def build_validate_stories(ephemeral: Path | None) -> list[Story]:
@@ -3692,6 +4090,21 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
             "Discovery fails and the non-executable command is named.",
             [str(s / "non-executable-command")],
             fails_with("test command discovery failed", "are not executable"),
+            needs_docker=True,
+        ),
+        v(
+            "validate-example",
+            "Validate the example project before I launch it",
+            "I built the images of the example project in examples/antithesis, and I "
+            "validate it before I launch a run of it.",
+            "Setup-complete is detected, and the summary counts the example's test "
+            "commands: one driver, one anytime, and one eventually command. Exit 0.",
+            [str(EXAMPLE_DIR)],
+            succeeds_with(
+                "Setup-complete event detected",
+                "1 driver, 1 anytime, 1 eventually",
+                "Setup validation successful",
+            ),
             needs_docker=True,
         ),
         v(
@@ -4264,11 +4677,14 @@ def main() -> int:
         help="only generate stories matching these slugs (globs allowed, e.g. 'login-*')",
     )
     parser.add_argument(
-        "--exec",
+        "--run",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="record the runs exec stories, which reuse a live debugging session or "
-        "launch one (default: yes)",
+        help="record the run stories, which follow one real "
+        f"{GALLERY_RUN_MINUTES}-minute run of examples/antithesis from its launch to its "
+        "end and execute the runs exec stories in it; they reuse a live run that an "
+        "earlier gallery launched, or launch one, and take about 25 minutes "
+        "(default: yes)",
     )
     parser.add_argument("--list", action="store_true", help="list story slugs and exit")
     parser.add_argument(
@@ -4281,11 +4697,15 @@ def main() -> int:
         # only reads a few fields, and logs_vtime defaults to a real vtime).
         for s in build_stories(Discovery()):
             print(s.slug)
-        for s in build_exec_stories(Discovery(), _LISTED_EXEC_SESSION):
-            print(s.slug)
         for s in build_validate_stories(None):
             print(s.slug)
         for s in build_tty_stories():
+            print(s.slug)
+        for s in [
+            *build_launch_stories(_LISTED_RUN),
+            *build_ready_stories(Discovery(), _LISTED_RUN),
+            *build_final_stories(_LISTED_RUN, _LISTED_FINAL),
+        ]:
             print(s.slug)
         return 0
 
@@ -4323,19 +4743,28 @@ def main() -> int:
         return not args.only or any(fnmatch.fnmatch(slug, pat) for pat in args.only)
 
     api_slugs = {s.slug for s in build_stories(Discovery())}
-    exec_slugs = (
-        {s.slug for s in build_exec_stories(Discovery(), _LISTED_EXEC_SESSION)}
-        if args.exec
-        else set()
+    launch_slugs, ready_slugs, final_slugs = (
+        listed_run_slugs() if args.run else (set(), set(), set())
     )
     validate_slugs = {s.slug for s in build_validate_stories(None)}
     tty_slugs = {s.slug for s in build_tty_stories()}
-    need_exec = any(selected(s) for s in exec_slugs)
-    need_api = need_exec or any(selected(s) for s in api_slugs)
+    need_ready = any(selected(s) for s in ready_slugs)
+    need_final = any(selected(s) for s in final_slugs)
+    need_run = need_ready or need_final or any(selected(s) for s in launch_slugs)
+    # The exec stories need discovery: the cold-moment story uses a moment of
+    # the incomplete run.
+    need_api = need_ready or any(selected(s) for s in api_slugs)
     need_validate = any(selected(s) for s in validate_slugs)
 
     if args.only:
-        known = api_slugs | exec_slugs | validate_slugs | tty_slugs
+        known = (
+            api_slugs
+            | launch_slugs
+            | ready_slugs
+            | final_slugs
+            | validate_slugs
+            | tty_slugs
+        )
         unmatched = [
             p for p in args.only if not any(fnmatch.fnmatch(s, p) for s in known)
         ]
@@ -4347,23 +4776,14 @@ def main() -> int:
     failures: list[tuple[str, str]] = []
     guard: LaunchGuard | None = None
     try:
-        stories: list[Story] = []
-        if need_api:
-            disc = discover(sn)
-            guard = LaunchGuard.for_tenant(sn)
-            stories += build_stories(disc, guard)
-            if need_exec:
-                # When `--only` selects `debug`, launch a new session so the
-                # story has a launch to show.
-                reuse = not (args.only and selected("debug"))
-                exec_session = discover_exec_session(sn, disc, reuse)
-                if exec_session.launch is None and selected("debug"):
-                    print(
-                        "  no debug story: discovery reused a live session",
-                        file=sys.stderr,
-                    )
-                stories += build_exec_stories(disc, exec_session)
-
+        # The phases, in order:
+        #   1. validate the example, then launch the gallery's run (or reuse a
+        #      live one) and start following its stream in the background;
+        #   2. discovery, then capture the regular stories while the run starts;
+        #   3. once the run is ready, capture the stories that execute in it;
+        #   4. once the run is final, capture the stories about its results.
+        # Checks are evaluated at the end, in that order.
+        validate_stories: list[Story] = []
         if need_validate:
             # Validate stories run against the committed sample projects, all of
             # which require a container runtime (`snouty validate` resolves
@@ -4372,6 +4792,7 @@ def main() -> int:
             # and hard-fail if it isn't available, rather than silently dropping
             # stories.
             ensure_validate_runtime()
+            ensure_example_images()
             validate_stories = build_validate_stories(fixtures_dir)
             n_live = sum(s.needs_docker for s in validate_stories)
             print(
@@ -4379,21 +4800,104 @@ def main() -> int:
                 f"({n_live} start live containers)",
                 file=sys.stderr,
             )
-            stories += validate_stories
+        # Validate the example before it is launched, as a user would.
+        early = [
+            s
+            for s in validate_stories
+            if s.slug == "validate-example" and selected(s.slug)
+        ]
+        captured = [run_story(sn, s) for s in early]
 
+        run: GalleryRun | None = None
+        stream: Background | None = None
+        stream_json: Background | None = None
+        if need_run:
+            # When `--only` selects `launch`, launch a new run so the story has
+            # a launch to show.
+            reuse = not (args.only and selected("launch"))
+            run = gallery_run(sn, reuse)
+            if run.launch is None and selected("launch"):
+                print(
+                    "  no launch story: the gallery reused a live run", file=sys.stderr
+                )
+            # The stream shows only the events after it starts, so it starts
+            # right after the launch.
+            stream_args = ["runs", "stream", run.run]
+            if selected("runs-stream-run"):
+                stream = Background(lambda: sn.run(stream_args, timeout=STREAM_TIMEOUT))
+            if selected("runs-stream-run--json"):
+                stream_json = Background(
+                    lambda: sn.run(["--json", *stream_args], timeout=STREAM_TIMEOUT)
+                )
+
+        regular: list[Story] = []
+        disc = Discovery()
+        if need_api:
+            disc = discover(sn)
+            guard = LaunchGuard.for_tenant(sn)
+            regular += build_stories(disc, guard)
+        regular += [s for s in validate_stories if s not in early]
         # TTY stories need no external dependencies, so they always run.
-        stories += build_tty_stories()
-
-        if args.only:
-            stories = [s for s in stories if selected(s.slug)]
+        regular += build_tty_stories()
+        regular = [s for s in regular if selected(s.slug)]
 
         # Capture concurrently (subprocess + API roundtrips dominate), preserving
         # story order in the results list. Checks are then evaluated serially in
         # that order; no check currently depends on another story's registry
         # entry, but the ordered evaluation keeps that option open.
-        print(f"capturing {len(stories)} stories…", file=sys.stderr)
-        with ThreadPoolExecutor(max_workers=CAPTURE_WORKERS) as pool:
-            captured = list(pool.map(lambda s: run_story(sn, s), stories))
+        # The stories in the run get a pool of their own, so they need not wait
+        # for the regular stories while the run's minutes run out.
+        with (
+            ThreadPoolExecutor(max_workers=CAPTURE_WORKERS) as pool,
+            ThreadPoolExecutor(max_workers=CAPTURE_WORKERS) as run_pool,
+        ):
+            print(f"capturing {len(regular)} stories…", file=sys.stderr)
+            pending = [pool.submit(run_story, sn, s) for s in regular]
+
+            if run is not None:
+                captured += [
+                    run_story(sn, s)
+                    for s in build_launch_stories(run)
+                    if selected(s.slug)
+                ]
+            if run is not None and need_ready:
+                # The run must accept commands before the exec stories.
+                print(f"waiting until {run.run} is ready…", file=sys.stderr)
+                run.wait_ready = sn.run(
+                    [
+                        "runs",
+                        "wait",
+                        run.run,
+                        "--until",
+                        "ready",
+                        "--timeout",
+                        RUN_READY_TIMEOUT,
+                    ]
+                )
+                if not run.wait_ready.ok:
+                    raise GalleryError(
+                        f"run {run.run} did not become ready: {run.wait_ready.combined}"
+                    )
+                prepare_exec(sn, run)
+                ready = [s for s in build_ready_stories(disc, run) if selected(s.slug)]
+                print(f"capturing {len(ready)} stories in {run.run}…", file=sys.stderr)
+                pending += [run_pool.submit(run_story, sn, s) for s in ready]
+            captured += [f.result() for f in pending]
+
+        if run is not None and need_final:
+            print(f"waiting until {run.run} is final…", file=sys.stderr)
+            final = FinalCaptures(
+                wait=sn.run(["runs", "wait", run.run, "--timeout", RUN_FINAL_TIMEOUT]),
+                stream=stream.result() if stream is not None else None,
+                stream_json=stream_json.result() if stream_json is not None else None,
+            )
+            props = sn.json_lines(["runs", "properties", run.run])
+            final.bug_prop_id = property_id_named(props, EXAMPLE_BUG_PROPERTY)
+            captured += [
+                run_story(sn, s)
+                for s in build_final_stories(run, final)
+                if selected(s.slug)
+            ]
 
         reg = Registry()
         for sr in captured:

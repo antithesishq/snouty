@@ -29,7 +29,10 @@ and it exists and contains `*.md` files, use it directly. This is preferred —
 generation is slow and needs live API credentials.
 
 **Otherwise, generate one.** Generation hits the live Antithesis API and takes
-several minutes (~10+). Run it into a known directory so you can review the
+about 25 minutes or more: it launches a real 15-minute run of the example
+project in `examples/antithesis` (or reuses a live one that an earlier gallery
+launched) and follows it to the end. `--no-run` leaves the run stories out and
+takes about 10 minutes. Run it into a known directory so you can review the
 output regardless of exit code:
 
 ```bash

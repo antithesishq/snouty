@@ -2,8 +2,8 @@
 """Check that the bank comes back once faults stop.
 
 Antithesis stops injecting faults before it runs an `eventually_` command,
-so a bank that was partitioned, paused, or restarted should answer again
-within a short grace period, with every account still present.
+so a bank that was partitioned, paused, or restarted must answer again
+within GRACE_SECONDS, with every account present.
 """
 
 import time

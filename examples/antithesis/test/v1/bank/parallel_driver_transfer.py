@@ -4,7 +4,7 @@
 Antithesis runs several copies of this driver at once, and each copy sends
 its transfers from a few threads, so transfers out of one account overlap.
 About one transfer in ten is invalid on purpose, to check that the bank
-turns it away.
+rejects it.
 """
 
 import threading
@@ -16,7 +16,7 @@ from antithesis.random import get_random, random_choice
 INVALID_TRANSFERS = [
     ("alice", "alice", 10),  # to the same account
     ("bob", "carol", 0),  # nothing to move
-    ("carol", "alice", -5),  # a negative amount would pull money backwards
+    ("carol", "alice", -5),  # a negative amount
     ("mallory", "bob", 10),  # no such account
 ]
 

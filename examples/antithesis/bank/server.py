@@ -1,13 +1,11 @@
 """A tiny bank: three accounts and an HTTP API to move money between them.
 
-GET  /health     200 once the bank is serving
 GET  /accounts   {"accounts": {name: balance}, "total": sum of balances}
 POST /transfer   {"from": name, "to": name, "amount": int}
                  200 applied, 400 invalid, 409 insufficient funds
 
-The balances live in memory and in a JSON file, which is rewritten
-atomically after every transfer so that a killed and restarted container
-comes back with the same balances.
+The bank keeps the balances in memory, and after every transfer `save`
+writes them to a JSON file atomically, so a restarted container keeps them.
 
 The bank has one deliberate bug, in `transfer`: see the comment there.
 """
@@ -52,7 +50,8 @@ def fraud_check() -> None:
 
 
 def transfer(src: str, dst: str, amount: int) -> int:
-    """Move `amount` from `src` to `dst` and return the HTTP status."""
+    """Move `amount` from `src` to `dst`. Return 400 for an invalid transfer,
+    409 for insufficient funds, and 200 when applied."""
     if src not in accounts or dst not in accounts or src == dst or amount <= 0:
         return 400
     with lock:
@@ -88,9 +87,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self) -> None:
-        if self.path == "/health":
-            self.reply(200, {"ok": True})
-        elif self.path == "/accounts":
+        if self.path == "/accounts":
             with lock:
                 snapshot = dict(accounts)
             self.reply(200, {"accounts": snapshot, "total": sum(snapshot.values())})
@@ -112,7 +109,8 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(status, {"status": status})
 
     def log_message(self, format: str, *args: object) -> None:
-        pass  # one line per request would drown the run's logs
+        # Do not log each request: the lines fill the run's logs.
+        pass
 
 
 if __name__ == "__main__":

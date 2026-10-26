@@ -1,8 +1,8 @@
 #!/usr/bin/env -S python3 -m antithesis
 """Audit the bank at any moment, while transfers and faults are in flight.
 
-A transfer moves money; it never creates or destroys it. Whatever else goes
-wrong, the balances must add up to the money the bank opened with.
+A transfer moves money. It does not create or destroy money. The balances
+must always add up to the opening total.
 """
 
 import bank_client
@@ -12,6 +12,8 @@ try:
     body = bank_client.balances()
 except bank_client.BankUnavailable as e:
     print(f"audit: bank unavailable: {e}")
+    # Faults make the bank unreachable at times, which is no failure: this
+    # audit checks only the balances that the bank answers with.
     raise SystemExit(0) from None
 
 print(f"audit: {body}")

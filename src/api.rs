@@ -40,9 +40,8 @@ pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
     BuildLogLine, Event, EventProperty, ExecuteCommandRequestSourceRunId as SourceRunId,
     ExecuteCommandRequestSourceSessionId as SourceSessionId, Moment, NonEventProperty,
-    PerformanceTier, Property, PropertyStatus, RunDetail, RunStatus,
-    RunStatusStreamRequestNotificationTypeFilterItem as RunStreamNotification,
-    RunStreamNotificationType, RunSummary, UsageEntry,
+    PerformanceTier, Property, PropertyStatus, RunDetail, RunStatus, RunStreamNotificationType,
+    RunSummary, UsageEntry,
 };
 
 /// The outcome of a launch or debugging-launch request, and the `--json` output
@@ -270,16 +269,11 @@ impl RunDetail {
         }
     }
 
-    /// Whether the run's tenant release serves the events-search API: a run
-    /// ID that names no release counts as one that does.
-    pub(crate) fn serves_events_search(&self) -> bool {
-        run_release(&self.run_id).is_none_or(|release| release >= MIN_SEARCH_RELEASE)
-    }
-
-    /// Whether the run was created on a release that serves the run status
-    /// stream: a run ID that names no release counts as one that does.
-    pub(crate) fn serves_run_stream(&self) -> bool {
-        run_release(&self.run_id).is_none_or(|release| release >= MIN_STREAM_RELEASE)
+    /// Whether the run was created on `release` or later, as for
+    /// [`MIN_SEARCH_RELEASE`] or [`MIN_STREAM_RELEASE`]: a run ID that names no
+    /// release counts as one that was.
+    pub(crate) fn created_on_or_after(&self, release: (u64, u64)) -> bool {
+        run_release(&self.run_id).is_none_or(|run| run >= release)
     }
 
     pub(crate) fn is_ready_or_terminal(&self) -> bool {
@@ -438,12 +432,22 @@ pub(crate) fn decode_properties(data: &serde_json::Value) -> Result<Vec<Property
 /// The notification types `runs stream` asks for: all of them.
 /// `NEW_EXAMPLES_FOUND` is opt-in, so the request has to name the types.
 /// `RUN_FINALIZED` always comes, whatever the request names.
-const RUN_STREAM_NOTIFICATIONS: [RunStreamNotification; 4] = [
-    RunStreamNotification::NewPropertiesAdded,
-    RunStreamNotification::PropertiesPassed,
-    RunStreamNotification::PropertiesFailed,
-    RunStreamNotification::NewExamplesFound,
+const RUN_STREAM_NOTIFICATIONS: [RunStreamNotificationType; 4] = [
+    RunStreamNotificationType::NewPropertiesAdded,
+    RunStreamNotificationType::PropertiesPassed,
+    RunStreamNotificationType::PropertiesFailed,
+    RunStreamNotificationType::NewExamplesFound,
 ];
+
+/// A new notification type fails this match: add it to
+/// [`RUN_STREAM_NOTIFICATIONS`], then here.
+const _: fn(RunStreamNotificationType) = |kind| match kind {
+    RunStreamNotificationType::NewPropertiesAdded
+    | RunStreamNotificationType::PropertiesPassed
+    | RunStreamNotificationType::PropertiesFailed
+    | RunStreamNotificationType::NewExamplesFound
+    | RunStreamNotificationType::RunFinalized => {}
+};
 
 /// Caps connection setup (DNS, TCP, TLS) so no command hangs on an unreachable host.
 /// Callers set no read or total timeout: a connected request may run for a long time.
@@ -1071,10 +1075,10 @@ impl AntithesisApi {
     pub async fn stream_run_status(
         &self,
         run_id: &str,
-        property_ids: Vec<String>,
+        property_ids: &[String],
     ) -> Result<JsonStream> {
         // An empty list would stream no properties at all.
-        let property_filter = (!property_ids.is_empty()).then_some(property_ids);
+        let property_filter = (!property_ids.is_empty()).then(|| property_ids.to_vec());
         let body = generated::types::RunStatusStreamRequest {
             notification_type_filter: Some(RUN_STREAM_NOTIFICATIONS.to_vec()),
             property_filter,

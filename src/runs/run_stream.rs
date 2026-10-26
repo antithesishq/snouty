@@ -23,7 +23,8 @@
 //! [`Denormalizer::lines`]. A new kind of output line is a [`Line`] variant,
 //! which [`Line::render`] and [`Line::json`] must handle.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fmt;
 
 use color_eyre::eyre::Result;
 use console::style;
@@ -43,12 +44,12 @@ pub(super) enum Verdict {
     Failed,
 }
 
-impl Verdict {
-    fn word(self) -> &'static str {
-        match self {
+impl fmt::Display for Verdict {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(match self {
             Self::Passed => "passed",
             Self::Failed => "failed",
-        }
+        })
     }
 }
 
@@ -58,12 +59,12 @@ pub(super) enum SampleKind {
     Counterexample,
 }
 
-impl SampleKind {
-    fn word(self) -> &'static str {
-        match self {
+impl fmt::Display for SampleKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(match self {
             Self::Example => "example",
             Self::Counterexample => "counterexample",
-        }
+        })
     }
 }
 
@@ -92,16 +93,12 @@ pub(super) enum Record {
 impl Record {
     /// A `Stream_Error` line returns an error: the server ended the stream
     /// before the run was final.
-    pub(super) fn parse(line: &Value) -> Result<Self> {
-        // A notification's `type` marks it as data, even if it also carries
-        // an `error` key.
-        if line.get("type").is_none()
-            && let Some(message) = stream_error_message(line)
-        {
+    pub(super) fn parse(line: Value) -> Result<Self> {
+        if let Some(message) = stream_error_message(&line) {
             return Err(mid_stream_error(message));
         }
         let Ok(kind) = RunStreamNotificationType::deserialize(&line["type"]) else {
-            return Ok(Self::Unknown(line.clone()));
+            return Ok(Self::Unknown(line));
         };
         let verdict = match kind {
             RunStreamNotificationType::RunFinalized => return Ok(Self::Finalized),
@@ -117,7 +114,7 @@ impl Record {
             }),
             Err(err) => {
                 debug!("decoding a {kind} notification: {err:#}");
-                Ok(Self::Unknown(line.clone()))
+                Ok(Self::Unknown(line))
             }
         }
     }
@@ -172,10 +169,9 @@ impl Line {
                     Sample::Value(value) => sanitize(&value.to_string()),
                 };
                 format!(
-                    "{:<EVENT_WIDTH$}  {}  {:<KIND_WIDTH$}  {sample}",
+                    "{:<EVENT_WIDTH$}  {}  {kind:<KIND_WIDTH$}  {sample}",
                     "sample",
                     sanitize(property_id),
-                    kind.word()
                 )
             }
             Self::Verdict {
@@ -183,8 +179,8 @@ impl Line {
                 verdict,
             } => {
                 let word = match verdict {
-                    Verdict::Passed => style(verdict.word()).green(),
-                    Verdict::Failed => style(verdict.word()).red(),
+                    Verdict::Passed => style(verdict).green(),
+                    Verdict::Failed => style(verdict).red(),
                 };
                 format!(
                     "{:<EVENT_WIDTH$}  {}  {word}",
@@ -223,21 +219,23 @@ impl Line {
                 Sample::Moment { input_hash, vtime } => json!({
                     "event": "sample",
                     "property_id": property_id,
-                    "kind": kind.word(),
+                    "kind": kind.to_string(),
                     "input_hash": input_hash,
                     "vtime": vtime,
                 }),
                 Sample::Value(value) => json!({
                     "event": "sample",
                     "property_id": property_id,
-                    "kind": kind.word(),
+                    "kind": kind.to_string(),
                     "value": value,
                 }),
             },
             Self::Verdict {
                 property_id,
                 verdict,
-            } => json!({"event": "verdict", "property_id": property_id, "verdict": verdict.word()}),
+            } => {
+                json!({"event": "verdict", "property_id": property_id, "verdict": verdict.to_string()})
+            }
             Self::Completed { run_id } => json!({"event": "completed", "run_id": run_id}),
             Self::Unknown(line) => json!({"event": "unknown", "data": line}),
         }
@@ -251,42 +249,37 @@ fn property_id(property: &Property) -> String {
 }
 
 /// A property's samples, counterexamples first.
-fn samples(property: Property) -> Vec<(SampleKind, Sample)> {
-    let moment = |event: Event| Sample::Moment {
-        input_hash: event.moment.input_hash,
-        vtime: event.moment.vtime,
+fn samples(property: Property) -> impl Iterator<Item = (SampleKind, Sample)> {
+    let moments = |events: Vec<Event>| -> Vec<Sample> {
+        events
+            .into_iter()
+            .map(|event| Sample::Moment {
+                input_hash: event.moment.input_hash,
+                vtime: event.moment.vtime,
+            })
+            .collect()
     };
-    match property {
-        Property::EventProperty(p) => {
-            let counter = p
-                .counterexamples
-                .into_iter()
-                .map(|e| (SampleKind::Counterexample, moment(e)));
-            let examples = p
-                .examples
-                .into_iter()
-                .map(|e| (SampleKind::Example, moment(e)));
-            counter.chain(examples).collect()
-        }
-        Property::NonEventProperty(p) => {
-            let counter = p
-                .counterexamples
-                .into_iter()
-                .map(|v| (SampleKind::Counterexample, Sample::Value(v)));
-            let examples = p
-                .examples
-                .into_iter()
-                .map(|v| (SampleKind::Example, Sample::Value(v)));
-            counter.chain(examples).collect()
-        }
-    }
+    let (counterexamples, examples) = match property {
+        Property::EventProperty(p) => (moments(p.counterexamples), moments(p.examples)),
+        Property::NonEventProperty(p) => (
+            p.counterexamples.into_iter().map(Sample::Value).collect(),
+            p.examples.into_iter().map(Sample::Value).collect(),
+        ),
+    };
+    let counterexamples = counterexamples
+        .into_iter()
+        .map(|sample| (SampleKind::Counterexample, sample));
+    let examples = examples
+        .into_iter()
+        .map(|sample| (SampleKind::Example, sample));
+    counterexamples.chain(examples)
 }
 
 /// Turns records into lines, and remembers what it printed.
 #[derive(Default)]
 pub(super) struct Denormalizer {
     properties: HashSet<String>,
-    moments: HashSet<(String, String)>,
+    moments: BTreeSet<(String, VTime)>,
     values: HashSet<(String, String)>,
     verdicts: HashMap<String, Verdict>,
 }
@@ -313,7 +306,8 @@ impl Denormalizer {
     fn property_lines(&mut self, property: Property, verdict: Option<Verdict>) -> Vec<Line> {
         let property_id = property_id(&property);
         let mut lines = Vec::new();
-        if self.properties.insert(property_id.clone()) {
+        if !self.properties.contains(&property_id) {
+            self.properties.insert(property_id.clone());
             lines.push(Line::Property {
                 property_id: property_id.clone(),
                 name: property.name().to_string(),
@@ -322,7 +316,7 @@ impl Denormalizer {
         for (kind, sample) in samples(property) {
             let new = match &sample {
                 Sample::Moment { input_hash, vtime } => {
-                    self.moments.insert((input_hash.clone(), vtime.to_string()))
+                    self.moments.insert((input_hash.clone(), *vtime))
                 }
                 Sample::Value(value) => {
                     self.values.insert((property_id.clone(), value.to_string()))
@@ -354,11 +348,12 @@ mod tests {
 
     const RUN: &str = "run-1";
 
-    fn property(id: &str, status: &str, examples: &Value, counterexamples: &Value) -> Value {
+    /// An event property. The status shows in no line.
+    fn property(id: &str, examples: &Value, counterexamples: &Value) -> Value {
         json!({
             "id": id,
             "name": format!("Property {id}"),
-            "status": status,
+            "status": "Passing",
             "is_event": true,
             "example_count": 24,
             "counterexample_count": 2,
@@ -367,13 +362,19 @@ mod tests {
         })
     }
 
+    fn non_event(id: &str, examples: &Value, counterexamples: &Value) -> Value {
+        let mut property = property(id, examples, counterexamples);
+        property["is_event"] = json!(false);
+        property
+    }
+
     fn moment(hash: &str, vtime: &str) -> Value {
         json!({"moment": {"input_hash": hash, "vtime": vtime}})
     }
 
     fn rendered(denormalizer: &mut Denormalizer, line: &Value) -> Vec<String> {
         console::set_colors_enabled(false);
-        let record = Record::parse(line).unwrap();
+        let record = Record::parse(line.clone()).unwrap();
         denormalizer
             .lines(record, RUN)
             .iter()
@@ -388,7 +389,7 @@ mod tests {
     #[test]
     fn a_property_prints_the_first_time_it_appears() {
         let mut denormalizer = Denormalizer::default();
-        let p = property("a1", "Undetermined", &json!([]), &json!([]));
+        let p = property("a1", &json!([]), &json!([]));
         let added = json!({"type": "NEW_PROPERTIES_ADDED", "data": [p]});
         assert_eq!(
             rendered(&mut denormalizer, &added),
@@ -399,12 +400,7 @@ mod tests {
 
     #[test]
     fn a_property_first_seen_in_a_sample_notification_prints() {
-        let p = property(
-            "a1",
-            "Undetermined",
-            &json!([moment("-1", "1.5")]),
-            &json!([]),
-        );
+        let p = property("a1", &json!([moment("-1", "1.5")]), &json!([]));
         assert_eq!(
             render(&json!({"type": "NEW_EXAMPLES_FOUND", "data": [p]})),
             [
@@ -418,7 +414,6 @@ mod tests {
     fn samples_print_counterexamples_first_then_the_verdict() {
         let p = property(
             "a1",
-            "Failing",
             &json!([moment("-300", "398.4898056755774")]),
             &json!([moment("-100", "401.25"), moment("-200", "402.5")]),
         );
@@ -437,10 +432,9 @@ mod tests {
     #[test]
     fn a_moment_prints_once_across_notifications() {
         let mut denormalizer = Denormalizer::default();
-        let found = property("a1", "Passing", &json!([moment("-1", "1.5")]), &json!([]));
-        let passed = found.clone();
-        let found = json!({"type": "NEW_EXAMPLES_FOUND", "data": [found]});
-        let passed = json!({"type": "PROPERTIES_PASSED", "data": [passed]});
+        let p = property("a1", &json!([moment("-1", "1.5")]), &json!([]));
+        let found = json!({"type": "NEW_EXAMPLES_FOUND", "data": [p.clone()]});
+        let passed = json!({"type": "PROPERTIES_PASSED", "data": [p]});
         rendered(&mut denormalizer, &found);
         assert_eq!(
             rendered(&mut denormalizer, &passed),
@@ -451,7 +445,7 @@ mod tests {
     #[test]
     fn a_repeated_verdict_prints_once() {
         let mut denormalizer = Denormalizer::default();
-        let p = property("a1", "Passing", &json!([]), &json!([]));
+        let p = property("a1", &json!([]), &json!([]));
         let passed = json!({"type": "PROPERTIES_PASSED", "data": [p]});
         rendered(&mut denormalizer, &passed);
         assert!(rendered(&mut denormalizer, &passed).is_empty());
@@ -459,10 +453,8 @@ mod tests {
 
     #[test]
     fn a_non_event_sample_is_unique_within_its_property() {
-        let mut a = property("a1", "Passing", &json!([true]), &json!([]));
-        let mut b = property("b2", "Passing", &json!([true]), &json!([]));
-        a["is_event"] = json!(false);
-        b["is_event"] = json!(false);
+        let a = non_event("a1", &json!([true]), &json!([]));
+        let b = non_event("b2", &json!([true]), &json!([]));
         let lines = render(&json!({"type": "NEW_EXAMPLES_FOUND", "data": [a.clone(), b, a]}));
         let samples: Vec<&String> = lines.iter().filter(|l| l.starts_with("sample")).collect();
         assert_eq!(
@@ -476,8 +468,7 @@ mod tests {
 
     #[test]
     fn a_passing_property_can_carry_a_counterexample() {
-        let mut p = property("a1", "Passing", &json!([]), &json!(["old image"]));
-        p["is_event"] = json!(false);
+        let p = non_event("a1", &json!([]), &json!(["old image"]));
         assert_eq!(
             render(&json!({"type": "PROPERTIES_PASSED", "data": [p]})),
             [
@@ -491,15 +482,18 @@ mod tests {
     #[test]
     fn run_finalized_completes_the_run() {
         let line = json!({"type": "RUN_FINALIZED", "data": []});
-        assert!(matches!(Record::parse(&line).unwrap(), Record::Finalized));
+        assert!(matches!(
+            Record::parse(line.clone()).unwrap(),
+            Record::Finalized
+        ));
         assert_eq!(render(&line), ["completed  run-1"]);
     }
 
     #[test]
     fn colors_do_not_change_the_column_widths() {
-        let p = property("a1", "Failing", &json!([]), &json!([]));
+        let p = property("a1", &json!([]), &json!([]));
         let line = json!({"type": "PROPERTIES_FAILED", "data": [p]});
-        let lines = Denormalizer::default().lines(Record::parse(&line).unwrap(), RUN);
+        let lines = Denormalizer::default().lines(Record::parse(line).unwrap(), RUN);
         console::set_colors_enabled(true);
         let colored: Vec<String> = lines.iter().map(Line::render).collect();
         console::set_colors_enabled(false);
@@ -515,7 +509,10 @@ mod tests {
     #[test]
     fn an_unknown_type_prints_its_type_and_json() {
         let line = json!({"type": "RUN_PAUSED", "data": []});
-        assert!(matches!(Record::parse(&line).unwrap(), Record::Unknown(_)));
+        assert!(matches!(
+            Record::parse(line.clone()).unwrap(),
+            Record::Unknown(_)
+        ));
         assert_eq!(
             render(&line),
             [r#"unknown    RUN_PAUSED  {"type":"RUN_PAUSED","data":[]}"#]
@@ -525,7 +522,7 @@ mod tests {
     #[test]
     fn a_known_type_with_malformed_data_is_unknown() {
         let line = json!({"type": "PROPERTIES_FAILED", "data": [{"status": "Skipped"}]});
-        assert!(matches!(Record::parse(&line).unwrap(), Record::Unknown(_)));
+        assert!(matches!(Record::parse(line).unwrap(), Record::Unknown(_)));
     }
 
     #[test]
@@ -536,12 +533,12 @@ mod tests {
     #[test]
     fn a_notification_with_an_error_key_is_data() {
         let line = json!({"type": "RUN_FINALIZED", "data": [], "error": "none"});
-        assert!(matches!(Record::parse(&line).unwrap(), Record::Finalized));
+        assert!(matches!(Record::parse(line).unwrap(), Record::Finalized));
     }
 
     #[test]
     fn a_stream_error_fails_the_parse() {
-        let err = Record::parse(&json!({"error": "subscriber fell behind"})).unwrap_err();
+        let err = Record::parse(json!({"error": "subscriber fell behind"})).unwrap_err();
         assert!(
             format!("{err}").contains("subscriber fell behind"),
             "got: {err}"
@@ -550,13 +547,8 @@ mod tests {
 
     #[test]
     fn json_lines_name_the_event_and_its_fields() {
-        let p = property(
-            "a1",
-            "Failing",
-            &json!([]),
-            &json!([moment("-100", "401.25")]),
-        );
-        let record = Record::parse(&json!({"type": "PROPERTIES_FAILED", "data": [p]})).unwrap();
+        let p = property("a1", &json!([]), &json!([moment("-100", "401.25")]));
+        let record = Record::parse(json!({"type": "PROPERTIES_FAILED", "data": [p]})).unwrap();
         let lines: Vec<Value> = Denormalizer::default()
             .lines(record, RUN)
             .iter()
@@ -571,14 +563,15 @@ mod tests {
             ]
         );
         let unknown = json!({"type": "RUN_PAUSED"});
-        let lines = Denormalizer::default().lines(Record::Unknown(unknown.clone()), RUN);
         assert_eq!(
-            lines[0].json(),
+            Line::Unknown(unknown.clone()).json(),
             json!({"event": "unknown", "data": unknown})
         );
-        let done = Denormalizer::default().lines(Record::Finalized, RUN);
         assert_eq!(
-            done[0].json(),
+            Line::Completed {
+                run_id: RUN.to_string()
+            }
+            .json(),
             json!({"event": "completed", "run_id": "run-1"})
         );
     }

@@ -520,6 +520,13 @@ async fn cmd_runs_cancel(
     Ok(())
 }
 
+/// The failure for a run that reports `unknown`: it may never progress.
+fn unknown_status_error(run_id: &str) -> color_eyre::eyre::Report {
+    user_error(format!("run {run_id} reported status \"unknown\""))
+        .note("snouty cannot tell whether this run will still make progress")
+        .suggestion(format!("inspect the run with `snouty runs show {run_id}`"))
+}
+
 /// Poll `get_run` every `poll_interval` until the run reaches the `until`
 /// point, and call `on_wait` with each poll that has not reached it. The first
 /// poll is at once. A run that reports `unknown` fails the wait (see
@@ -551,11 +558,7 @@ async fn wait_for_run(
         };
 
         if run.status == RunStatus::Unknown {
-            return Err(
-                user_error(format!("run {run_id} reported status \"unknown\""))
-                    .note("snouty cannot tell whether this run will still make progress")
-                    .suggestion(format!("inspect the run with `snouty runs show {run_id}`")),
-            );
+            return Err(unknown_status_error(run_id));
         }
         let reached = match until {
             WaitUntil::Ready => run.is_ready_or_terminal(),
@@ -599,8 +602,8 @@ struct PropertyFilter<'a> {
 
 /// `--detail` formats human output, so it conflicts with `--json` (which always
 /// emits the full structured data). Reject the combination with a clear error
-/// rather than silently ignoring one. Called from [`cmd_runs`] for whichever
-/// subcommand carries `--detail` (`runs list`, `runs properties`, `runs stream`).
+/// rather than silently ignoring one. Called once from [`cmd_runs`] for whichever
+/// subcommand carries `--detail` (`runs list`, `runs properties`).
 fn reject_detail_with_json(json: bool, detail: bool) -> Result<()> {
     if json && detail {
         return Err(user_error("--detail and --json cannot be combined")
@@ -941,19 +944,14 @@ fn property_status_word(status: PropertyStatus) -> &'static str {
     }
 }
 
-fn property_status_style(status: PropertyStatus) -> console::Style {
-    let style = console::Style::new();
-    match status {
-        PropertyStatus::Passing => style.green(),
-        PropertyStatus::Failing => style.red(),
-        PropertyStatus::Undetermined => style.yellow(),
-    }
-}
-
 fn property_status_label(status: PropertyStatus) -> String {
-    property_status_style(status)
-        .apply_to(property_status_word(status))
-        .to_string()
+    let word = console::style(property_status_word(status));
+    match status {
+        PropertyStatus::Passing => word.green(),
+        PropertyStatus::Failing => word.red(),
+        PropertyStatus::Undetermined => word.yellow(),
+    }
+    .to_string()
 }
 
 /// How a wrapped free-text block lays its label out (see [`render_prose_block`]).
@@ -1571,29 +1569,24 @@ async fn cmd_runs_stream(
     // The stream is silent between events, so a terminal shows that it is
     // open. Output piped to another program shares the terminal with the
     // spinner and would interleave with its frames.
-    let spinner = (std::io::stdout().is_terminal() && std::io::stderr().is_terminal()).then(|| {
-        let style = ProgressStyle::with_template("{spinner} streaming run {msg} ({elapsed})")
-            .expect("the template is valid");
-        let spinner = ProgressBar::new_spinner()
-            .with_style(style)
-            .with_message(run_id.to_string());
-        spinner.enable_steady_tick(Duration::from_millis(120));
-        spinner
-    });
-    let print = |text: String| -> std::io::Result<()> {
-        let write = || writeln!(std::io::stdout().lock(), "{text}");
-        match &spinner {
-            Some(spinner) => spinner.suspend(write),
-            None => write(),
-        }
-    };
+    let spinner = (std::io::stdout().is_terminal() && std::io::stderr().is_terminal())
+        .then(|| spinner(format!("streaming run {run_id}")));
     let mut denormalizer = run_stream::Denormalizer::default();
     let result = async {
         while let Some(line) = stream.try_next().await? {
-            let record = run_stream::Record::parse(&line)?;
+            let record = run_stream::Record::parse(line)?;
             let finalized = matches!(record, run_stream::Record::Finalized);
+            let mut text = String::new();
             for line in denormalizer.lines(record, run_id) {
-                print(if json { line.json().to_string() } else { line.render() })?;
+                let line = if json { line.json().to_string() } else { line.render() };
+                text.push_str(&line);
+                text.push('\n');
+            }
+            // One write per notification, so the spinner redraws once.
+            let write = || std::io::stdout().lock().write_all(text.as_bytes());
+            match &spinner {
+                Some(spinner) => spinner.suspend(write)?,
+                None => write()?,
             }
             if finalized {
                 return Ok(());
@@ -1626,7 +1619,7 @@ async fn open_run_stream(
 ) -> Result<JsonStream> {
     let mut waiting: Option<ReadyDisplay> = None;
     loop {
-        let err = match api.stream_run_status(run_id, property_ids.to_vec()).await {
+        let err = match api.stream_run_status(run_id, property_ids).await {
             Ok(stream) => {
                 if let Some(waiting) = waiting {
                     waiting.clear();
@@ -1642,7 +1635,7 @@ async fn open_run_stream(
             RunProbe::NotFound => return Err(user_error(format!("run not found: {run_id}"))),
             RunProbe::ProbeFailed(probe_err) => return Err(probe_err),
             // An older tenant has no stream route and answers 404 forever.
-            RunProbe::Exists(run) if !run.serves_run_stream() => {
+            RunProbe::Exists(run) if !run.created_on_or_after(MIN_STREAM_RELEASE) => {
                 let (major, minor) = MIN_STREAM_RELEASE;
                 return Err(
                     user_error(format!("run {run_id} has no status stream")).note(format!(
@@ -1651,9 +1644,7 @@ async fn open_run_stream(
                 );
             }
             RunProbe::Exists(run) if run.status == RunStatus::Unknown => {
-                return Err(user_error(format!(
-                    "run {run_id} reported status \"unknown\""
-                )));
+                return Err(unknown_status_error(run_id));
             }
             RunProbe::Exists(run) if run.status.is_terminal() => return Err(err),
             RunProbe::Exists(_) => {}
@@ -1882,6 +1873,17 @@ impl RewarmDisplay {
     }
 }
 
+/// A spinner on stderr that shows `message` and the time since it started.
+fn spinner(message: impl Into<std::borrow::Cow<'static, str>>) -> ProgressBar {
+    let style =
+        ProgressStyle::with_template("{spinner} {msg} ({elapsed})").expect("the template is valid");
+    let spinner = ProgressBar::new_spinner()
+        .with_style(style)
+        .with_message(message);
+    spinner.enable_steady_tick(Duration::from_millis(120));
+    spinner
+}
+
 /// What a command shows on stderr while it waits, for example for the run
 /// to be ready: a spinner on a terminal, else a line at once and a line each
 /// whole minute. `waiting` names the wait, as in "waiting for the run to be
@@ -1905,13 +1907,7 @@ impl ReadyDisplay {
                 last_minutes: None,
             };
         }
-        let style = ProgressStyle::with_template("{spinner} {msg} ({elapsed})")
-            .expect("the template is valid");
-        let spinner = ProgressBar::new_spinner()
-            .with_style(style)
-            .with_message(waiting);
-        spinner.enable_steady_tick(Duration::from_millis(120));
-        Self::Spinner(spinner)
+        Self::Spinner(spinner(waiting))
     }
 
     fn show(&mut self) {
@@ -2258,12 +2254,15 @@ fn normalize_vtime_field(entry: &mut Value, key: &str) -> Option<VTime> {
 /// A *data* record can legitimately carry a top-level `error` field of its
 /// own (an event's payload is arbitrary workload JSON), but data records
 /// always carry their schema's required envelope — `moment` for log/event
-/// records, `timestamp` for build log lines — which `Stream_Error` never has,
-/// so the envelope's absence disambiguates. The run status stream checks its
-/// own `type` envelope before it calls this.
+/// records, `timestamp` for build log lines, `type` for run status
+/// notifications — which `Stream_Error` never has, so the envelope's absence
+/// disambiguates.
 fn stream_error_message(entry: &Value) -> Option<&str> {
     let obj = entry.as_object()?;
-    if obj.contains_key("moment") || obj.contains_key("timestamp") {
+    if ["moment", "timestamp", "type"]
+        .iter()
+        .any(|key| obj.contains_key(*key))
+    {
         return None;
     }
     obj.get("error")?.as_str()
@@ -5163,7 +5162,7 @@ mod tests {
             for (i, body) in bodies.into_iter().enumerate() {
                 let route = format!("/api/v0/runs/{}", body["run_id"].as_str().unwrap());
                 let mock = Mock::given(method("GET"))
-                    .and(path(route))
+                    .and(path(&route))
                     .respond_with(ResponseTemplate::new(200).set_body_json(body));
                 let mock = if i + 1 < count {
                     mock.up_to_n_times(1)
@@ -5178,13 +5177,13 @@ mod tests {
         /// clap's, `wait_for_run` takes any interval.
         const FAST_POLL: Duration = Duration::from_millis(10);
 
-        /// The stream answers `404 Resource not found` `misses` times, then
-        /// opens with one `RUN_FINALIZED` line.
-        async fn mount_stream(server: &MockServer, misses: u64) {
-            let route = "/api/v0/runs/run-w/stream";
+        /// The stream of `run_id` answers `404 Resource not found` `misses`
+        /// times, then opens with one `RUN_FINALIZED` line.
+        async fn mount_stream(server: &MockServer, run_id: &str, misses: u64) {
+            let route = format!("/api/v0/runs/{run_id}/stream");
             if misses > 0 {
                 Mock::given(method("POST"))
-                    .and(path(route))
+                    .and(path(&route))
                     .respond_with(
                         ResponseTemplate::new(404)
                             .set_body_json(json!({"message": "Resource not found"})),
@@ -5207,7 +5206,7 @@ mod tests {
         async fn the_stream_opens_after_a_ready_run_answers_404() {
             let server = MockServer::start().await;
             mount_get_run_statuses(&server, &["in_progress"]).await;
-            mount_stream(&server, 2).await;
+            mount_stream(&server, "run-w", 2).await;
             let api = test_api(&server.uri());
 
             let mut stream = open_run_stream(&api, "run-w", &[], FAST_POLL)
@@ -5222,7 +5221,7 @@ mod tests {
         async fn a_run_with_status_unknown_is_an_error() {
             let server = MockServer::start().await;
             mount_get_run_statuses(&server, &["unknown"]).await;
-            mount_stream(&server, u64::MAX).await;
+            mount_stream(&server, "run-w", u64::MAX).await;
             let api = test_api(&server.uri());
 
             let err = open_run_stream(&api, "run-w", &[], FAST_POLL)
@@ -5240,14 +5239,7 @@ mod tests {
             let mut body = run_body("in_progress");
             body["run_id"] = json!(run_id);
             mount_get_run_bodies(&server, vec![body]).await;
-            Mock::given(method("POST"))
-                .and(path(format!("/api/v0/runs/{run_id}/stream")))
-                .respond_with(
-                    ResponseTemplate::new(404)
-                        .set_body_json(json!({"message": "Resource not found"})),
-                )
-                .mount(&server)
-                .await;
+            mount_stream(&server, run_id, u64::MAX).await;
             let api = test_api(&server.uri());
 
             let err = open_run_stream(&api, run_id, &[], FAST_POLL)
@@ -5265,7 +5257,7 @@ mod tests {
         async fn a_finished_run_without_a_stream_is_an_error() {
             let server = MockServer::start().await;
             mount_get_run_statuses(&server, &["completed"]).await;
-            mount_stream(&server, u64::MAX).await;
+            mount_stream(&server, "run-w", u64::MAX).await;
             let api = test_api(&server.uri());
 
             let err = open_run_stream(&api, "run-w", &[], FAST_POLL)

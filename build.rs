@@ -61,6 +61,7 @@ fn generate_api_client(out_dir: &Path) {
     open_fault_tolerance(&mut spec_value);
     open_sub_status(&mut spec_value);
     dedupe_property_status_filter(&mut spec_value);
+    share_run_stream_notification_type(&mut spec_value);
     unrequire_search_limit_default(&mut spec_value);
     unrequire_search_count_validate_only_default(&mut spec_value);
     add_mvd_test_name(&mut spec_value);
@@ -446,6 +447,28 @@ fn dedupe_property_status_filter(spec: &mut serde_json::Value) {
     );
     spec.pointer_mut(POINTER).unwrap()["items"] =
         serde_json::json!({"$ref": "#/components/schemas/Property_Status"});
+}
+
+/// Lift the run status stream's notification type enum into one named
+/// schema. The spec repeats it inline in the request filter and in the
+/// notification, and typify would make two Rust enums of it.
+fn share_run_stream_notification_type(spec: &mut serde_json::Value) {
+    const TRANSFORM: &str = "share_run_stream_notification_type";
+    const FILTER: &str =
+        "/components/schemas/Run_Status_Stream_Request/properties/notification_type_filter";
+    const NOTIFICATION: &str = "/components/schemas/Run_Stream_Notification/properties";
+    let filter_items = remove_schema_key(spec, FILTER, "items", TRANSFORM);
+    let kind = remove_schema_key(spec, NOTIFICATION, "type", TRANSFORM);
+    assert_eq!(
+        filter_items, kind,
+        "the run stream request filter and the notification no longer list the same types; \
+         update or delete `{TRANSFORM}` in build.rs"
+    );
+    let reference =
+        serde_json::json!({"$ref": "#/components/schemas/Run_Stream_Notification_Type"});
+    spec.pointer_mut(FILTER).unwrap()["items"] = reference.clone();
+    spec.pointer_mut(NOTIFICATION).unwrap()["type"] = reference;
+    spec["components"]["schemas"]["Run_Stream_Notification_Type"] = kind;
 }
 
 /// The format `open_sub_status` marks the schema with, for `with_conversion`.

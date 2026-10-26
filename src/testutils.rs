@@ -969,8 +969,8 @@ fn mock_run_not_found(run_id: &str) -> (u16, String) {
 /// `MOCK_RUNS` so the list-oriented specs do not see them: (`run_id`, status,
 /// `sub_status`). A loading session reports `in_progress` without the `Ready`
 /// sub-status, as a new session does on release 64.0. `run-stream-error` and
-/// `run-stream-cut` are ready, because `runs exec` and `runs stream` wait for a
-/// ready run.
+/// `run-stream-cut` are ready, because `runs exec` reads the run before it
+/// executes.
 const MOCK_HIDDEN_SESSIONS: &[(&str, &str, Option<&str>)] = &[
     ("session-starting", "starting", None),
     ("session-loading", "in_progress", None),
@@ -980,8 +980,8 @@ const MOCK_HIDDEN_SESSIONS: &[(&str, &str, Option<&str>)] = &[
 ];
 
 /// An in-progress run from a release before `MIN_SEARCH_RELEASE`, whose
-/// events search answers 404 and whose run status stream answers 409. A run from before release 64.0 has no
-/// sub-status, so it is ready.
+/// events search answers 404 and whose run status stream answers 409. A run
+/// from before release 64.0 has no sub-status, so it is ready.
 pub(crate) const MOCK_OLD_RELEASE_RUN: &str = "0df9ac1f5155c14f88ea41f5ad503e07-61-1";
 
 fn mock_route_get_run(run_id: &str) -> (u16, String) {
@@ -1264,10 +1264,9 @@ fn mock_route_stream_run_status(run_id: &str, req_body: &str) -> (u16, String) {
     let request: Value = serde_json::from_str(req_body).unwrap_or_default();
     let ids = request["property_filter"].as_array();
     let types = request["notification_type_filter"].as_array();
-    let [failing, failing_nonevent, undetermined, passing] =
+    let [failing, failing_nonevent, undetermined, mut passing] =
         MOCK_COMPLETED_PROPERTIES.map(|p| serde_json::from_str::<Value>(p).unwrap());
     // Every property on the stream has an ID (release 65.3 and later).
-    let mut passing = passing;
     passing["id"] = json!(MOCK_STREAM_PASSING_ID);
     let mut resolved = undetermined.clone();
     resolved["status"] = json!("Passing");

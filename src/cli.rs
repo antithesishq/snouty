@@ -421,7 +421,8 @@ pub struct LaunchArgs {
     #[arg(long, value_parser = parse_launch_duration)]
     pub duration: Option<HumanDuration>,
 
-    /// Mark the test run as ephemeral. Ephemeral runs will not appear in future reports as a historic result.
+    /// Mark the test run as ephemeral, so it does not appear in future reports
+    /// as a historic result. A launch without --source is ephemeral already.
     #[arg(long)]
     pub ephemeral: bool,
 

@@ -26,8 +26,9 @@ Options:
           Test duration in minutes, or h/m units (e.g. 90m, 2h, 1h30m); at least
           1 minute
       --ephemeral
-          Mark the test run as ephemeral. Ephemeral runs will not appear in
-          future reports as a historic result
+          Mark the test run as ephemeral, so it does not appear in future
+          reports as a historic result. A launch without --source is ephemeral
+          already
       --source <SOURCE>
           Identifier that groups property history in reports — runs sharing a
           --source share history (e.g. per-branch)

@@ -531,5 +531,14 @@ class GalleryRunHelpers(unittest.TestCase):
                 self.assertIn("before the timeout", result.combined)
 
 
+class RunReuse(unittest.TestCase):
+    def test_only_a_young_run_is_reused(self):
+        now = gallery.datetime.fromisoformat("2026-10-26T03:20:00Z")
+        young = {"started_at": "2026-10-26T03:14:00Z"}
+        old = {"started_at": "2026-10-26T03:10:00Z"}
+        self.assertTrue(gallery.young_enough(young, now))
+        self.assertFalse(gallery.young_enough(old, now))
+
+
 if __name__ == "__main__":
     unittest.main()

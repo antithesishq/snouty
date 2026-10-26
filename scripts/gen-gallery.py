@@ -78,7 +78,7 @@ from collections import Counter
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import islice
 from pathlib import Path
@@ -1209,6 +1209,10 @@ EXAMPLE_DIR = Path(__file__).resolve().parent.parent / "examples" / "antithesis"
 # moment: the API spec says so for the exec endpoint (src/openapi.json).
 GALLERY_RUN_LAUNCHER = "basic_test"
 GALLERY_RUN_MINUTES = 15
+# The oldest gallery run that a new gallery reuses. A run reports ready a few
+# minutes after it starts, and its test then lasts GALLERY_RUN_MINUTES; an
+# older run can end before the ready stories run.
+REUSE_MAX_AGE = timedelta(minutes=8)
 GALLERY_RUN_TEST_NAME = "snouty-gallery"
 # The description of each run that the gallery launches starts with this.
 GALLERY_RUN_DESCRIPTION = "snouty gen-gallery end-to-end run"
@@ -1286,15 +1290,23 @@ def _live_gallery_run(sn: Snouty) -> dict | None:
             "50",
         ]
     )
+    now = datetime.now(UTC)
     for r in rows:
         tier = (r.get("parameters") or {}).get(_TIER)
         if (
             r.get("status") == RUN_IN_PROGRESS
             and tier == RUN_TIER
             and _run_description(r).startswith(GALLERY_RUN_DESCRIPTION)
+            and young_enough(r, now)
         ):
             return r
     return None
+
+
+def young_enough(row: dict, now: datetime) -> bool:
+    """Whether the run in `row` started less than REUSE_MAX_AGE before `now`."""
+    started = datetime.fromisoformat(row.get("started_at") or row["created_at"])
+    return now - started < REUSE_MAX_AGE
 
 
 def gallery_launch_args(description: str) -> list[str]:

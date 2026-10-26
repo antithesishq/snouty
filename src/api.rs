@@ -79,8 +79,7 @@ pub struct ApiVersion {
 /// meets this; `snouty doctor` checks it.
 pub const MIN_SEARCH_RELEASE: (u64, u64) = (62, 2);
 
-/// The first release that serves the run status stream, for runs created on
-/// it or later.
+/// Only a run created on this release or later has a run status stream.
 pub const MIN_STREAM_RELEASE: (u64, u64) = (65, 3);
 
 /// The first tenant release whose execute-command API takes `container`.
@@ -429,9 +428,9 @@ pub(crate) fn decode_properties(data: &serde_json::Value) -> Result<Vec<Property
         .collect()
 }
 
-/// The notification types `runs stream` asks for: all of them.
-/// `NEW_EXAMPLES_FOUND` is opt-in, so the request has to name the types.
-/// `RUN_FINALIZED` always comes, whatever the request names.
+/// The notification types `runs stream` asks for. `NEW_EXAMPLES_FOUND` is
+/// opt-in, so the request names each type. The server always sends
+/// `RUN_FINALIZED`, so the list leaves it out.
 const RUN_STREAM_NOTIFICATIONS: [RunStreamNotificationType; 4] = [
     RunStreamNotificationType::NewPropertiesAdded,
     RunStreamNotificationType::PropertiesPassed,
@@ -1077,7 +1076,7 @@ impl AntithesisApi {
         run_id: &str,
         property_ids: &[String],
     ) -> Result<JsonStream> {
-        // An empty list would stream no properties at all.
+        // The spec: an empty `property_filter` suppresses every property.
         let property_filter = (!property_ids.is_empty()).then(|| property_ids.to_vec());
         let body = generated::types::RunStatusStreamRequest {
             notification_type_filter: Some(RUN_STREAM_NOTIFICATIONS.to_vec()),

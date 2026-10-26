@@ -945,10 +945,9 @@ fn mock_route_list_usage(query: Option<&str>, empty: bool) -> String {
 /// Run ids that exist on the mock server. Nested endpoints (properties, logs,
 /// events, build logs) 404 for any other id, matching the real API and letting
 /// run-scoped commands disambiguate "run not found" from an empty resource.
-/// `run-empty` and `run-no-events` are recognised separately by their own
-/// routes; `run-stream-error` is recognised separately by the streaming
-/// routes, whose response ends with a `Stream_Error` line, and `run-stream-cut`
-/// by the run status stream route.
+/// The routes of `run-empty` and `run-no-events` know those IDs. The streaming
+/// routes know `run-stream-error`, whose response ends with a `Stream_Error`
+/// line, and the run status stream route also knows `run-stream-cut`.
 fn mock_run_known(run_id: &str) -> bool {
     MOCK_RUNS.iter().any(|(id, ..)| *id == run_id)
 }

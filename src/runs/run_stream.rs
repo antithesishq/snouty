@@ -78,9 +78,8 @@ pub(super) enum Sample {
 
 #[derive(Debug)]
 pub(super) enum Record {
-    /// `NEW_PROPERTIES_ADDED` or `NEW_EXAMPLES_FOUND` (`None`), or
-    /// `PROPERTIES_PASSED` or `PROPERTIES_FAILED` (`Some` verdict). Each
-    /// property carries its samples.
+    /// `NEW_PROPERTIES_ADDED` or `NEW_EXAMPLES_FOUND` (no verdict), or
+    /// `PROPERTIES_PASSED` or `PROPERTIES_FAILED` (a verdict).
     Properties {
         verdict: Option<Verdict>,
         properties: Vec<Property>,
@@ -125,7 +124,6 @@ const EVENT_WIDTH: usize = 9;
 /// The width of the sample kind column: `counterexample` is the widest kind.
 const KIND_WIDTH: usize = 14;
 
-/// One output line of `runs stream`.
 #[derive(Debug, PartialEq)]
 pub(super) enum Line {
     Property {
@@ -242,8 +240,8 @@ impl Line {
     }
 }
 
-/// Every run that serves the stream (release 65.3 and later) gives each
-/// property an ID, but the field stays optional in the spec.
+/// The spec makes the ID optional, but every run with a stream (release 65.3
+/// and later) has one.
 fn property_id(property: &Property) -> String {
     property.id().unwrap_or("-").to_string()
 }
@@ -301,8 +299,8 @@ impl Denormalizer {
         }
     }
 
-    /// A property's new lines: the property, then its new samples, then the
-    /// verdict.
+    /// A property's new lines: the property, then its new samples, then its
+    /// verdict if it changed.
     fn property_lines(&mut self, property: Property, verdict: Option<Verdict>) -> Vec<Line> {
         let property_id = property_id(&property);
         let mut lines = Vec::new();

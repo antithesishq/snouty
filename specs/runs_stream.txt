@@ -5,8 +5,10 @@
 #
 #   property <property id> <name>
 #   sample <property id> example|counterexample <input hash> <vtime>
+#   sample <property id> example|counterexample <value>
 #   verdict <property id> passed|failed
 #   completed <run id>
+#   unknown <type> <json>
 
 # Like every runs command, stream requires an API key.
 ! snouty runs stream some-run
@@ -16,7 +18,7 @@ stderr 'No Antithesis credentials found.*'
 ! snouty runs stream
 stderr '.*RUN_ID.*'
 
-# An unknown run reports the run.
+# An unknown run is an error.
 mock-runs-server
 ! snouty runs stream run-does-not-exist
 stderr 'run not found: run-does-not-exist'
@@ -62,8 +64,8 @@ mock-runs-server
 stdout '^property +27a7cb0b311c8481c4ce12f3347fadbf'
 stderr 'the server reported an error mid-stream: mock stream failure'
 
-# A stream that ends before RUN_FINALIZED fails, because the run may still
-# change. The error says how to read the current results.
+# A stream that ends before RUN_FINALIZED fails, because the run can still
+# change. The error tells how to read the current results.
 mock-runs-server
 ! snouty runs stream run-stream-cut
 stdout '^property +27a7cb0b311c8481c4ce12f3347fadbf'

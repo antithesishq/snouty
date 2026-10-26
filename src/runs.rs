@@ -1566,9 +1566,9 @@ async fn cmd_runs_stream(
 
     let api = AntithesisApi::new(settings, verbose)?;
     let mut stream = open_run_stream(&api, run_id, &property_ids, READY_POLL).await?;
-    // The stream is silent between events, so a terminal shows that it is
-    // open. Output piped to another program shares the terminal with the
-    // spinner and would interleave with its frames.
+    // The stream is silent between events, so a spinner shows that it is
+    // open. When stdout goes to a pipe, the next program writes to the same
+    // terminal, and its output would mix with the spinner frames.
     let spinner = (std::io::stdout().is_terminal() && std::io::stderr().is_terminal())
         .then(|| spinner(format!("streaming run {run_id}")));
     let mut denormalizer = run_stream::Denormalizer::default();
@@ -1609,8 +1609,9 @@ async fn cmd_runs_stream(
 /// Open the run's status stream, and wait while the run has none yet. The
 /// server answers 404 until the run's stream opens, minutes after the run
 /// reports that it is ready (observed on the antithesis-orbitinghail tenant,
-/// release 65.3: ready at 73 s, stream at 241 s). A 404 for a run that does
-/// not exist, or that has finished, is an error.
+/// release 65.3: ready at 73 s, stream at 241 s). A 404 is an error when the
+/// run does not exist, has finished, has status "unknown", or was created
+/// before release 65.3.
 async fn open_run_stream(
     api: &AntithesisApi,
     run_id: &str,
@@ -1634,7 +1635,8 @@ async fn open_run_stream(
         match probe_run(api, run_id).await {
             RunProbe::NotFound => return Err(user_error(format!("run not found: {run_id}"))),
             RunProbe::ProbeFailed(probe_err) => return Err(probe_err),
-            // An older tenant has no stream route and answers 404 forever.
+            // A tenant before release 65.3 has no stream route and answers 404
+            // for every run. The run ID names the release that created the run.
             RunProbe::Exists(run) if !run.created_on_or_after(MIN_STREAM_RELEASE) => {
                 let (major, minor) = MIN_STREAM_RELEASE;
                 return Err(
@@ -1646,7 +1648,14 @@ async fn open_run_stream(
             RunProbe::Exists(run) if run.status == RunStatus::Unknown => {
                 return Err(unknown_status_error(run_id));
             }
-            RunProbe::Exists(run) if run.status.is_terminal() => return Err(err),
+            RunProbe::Exists(run) if run.status.is_terminal() => {
+                return Err(user_error(format!(
+                    "run {run_id} has finished, and has no status stream"
+                ))
+                .suggestion(format!(
+                    "read the results with `snouty runs properties {run_id}`"
+                )));
+            }
             RunProbe::Exists(_) => {}
         }
         waiting
@@ -1884,10 +1893,8 @@ fn spinner(message: impl Into<std::borrow::Cow<'static, str>>) -> ProgressBar {
     spinner
 }
 
-/// What a command shows on stderr while it waits, for example for the run
-/// to be ready: a spinner on a terminal, else a line at once and a line each
-/// whole minute. `waiting` names the wait, as in "waiting for the run to be
-/// ready".
+/// What a command shows on stderr while it waits: a spinner on a terminal,
+/// else a line at once and a line each whole minute.
 enum ReadyDisplay {
     Spinner(ProgressBar),
     Lines {
@@ -5265,7 +5272,10 @@ mod tests {
                 .err()
                 .unwrap();
 
-            assert_eq!(api_error_status(&err), Some(404));
+            assert_eq!(
+                err.to_string(),
+                "run run-w has finished, and has no status stream"
+            );
         }
 
         #[tokio::test]

@@ -11,7 +11,8 @@ Each event prints as one line:
       arrives. A non-event property's sample is its value, as JSON.
 
   verdict <property id> passed|failed
-      The property passed or failed.
+      The property passed or failed. A verdict that repeats the last verdict
+      does not print.
 
   completed <run id>
       The run is final, and the stream ends.
@@ -19,9 +20,11 @@ Each event prints as one line:
   unknown <type> <json>
       A notification that snouty cannot read, printed as its JSON.
 
-The samples are a selection: the server does not send every example and counterexample that it counts. Look up a property, with its totals, with `snouty runs property <run_id> <property_id>`, and read the logs at a moment with `snouty runs logs <run_id> <input hash> <vtime>`.
+The samples are a selection: the server does not send every example and counterexample that it counts. To see a property and its totals, use `snouty runs property <run_id> <property_id>`. To read the logs at a moment, use `snouty runs logs <run_id> <input hash> <vtime>`.
 
-The stream shows only the events that happen after it starts. It does not show the current results, and a property that passed or failed before the stream started gets no verdict line. To get the current results and then follow them, start the stream first, then read `snouty runs properties <run_id>` and merge the two. If you start the stream first, you do not miss an event. The stream is silent between events. A stream for a run that is already final prints `completed` and ends immediately. The stream of a new run opens a few minutes after the run starts, and snouty waits until it does.
+The stream shows only the events that happen after it starts. It does not show the current results. A property that passed or failed before the stream started gets no verdict line. To get the current results and follow them, start the stream first, then read `snouty runs properties <run_id>`, and merge the two. This order makes sure that you do not miss an event.
+
+The stream is silent between events. For a run that is already final, the stream prints `completed` and ends. The stream of a new run opens a few minutes after the run starts, and snouty waits until it opens.
 
 If the stream ends before the run is final, snouty exits with an error. Start the stream again, then read the current results.
 
@@ -31,5 +34,5 @@ Examples:
   snouty runs stream <run_id>
   snouty runs stream <run_id> --property <property_id>
 
-Add --json for machine-readable output. Each event prints as one JSON object, with an `event` key and the fields above. Each vtime is a JSON number, and an unknown notification is under `data`:
+Add --json for machine-readable output. Each event prints as one JSON object, with an `event` key and the fields above. Each vtime is a JSON number. The `data` key holds the JSON of an unknown notification:
   snouty --json runs stream <run_id> | jq -r 'select(.event == "verdict" and .verdict == "failed") | .property_id'

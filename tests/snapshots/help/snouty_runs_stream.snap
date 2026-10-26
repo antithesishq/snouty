@@ -31,8 +31,10 @@ counterexample that it counts. To see a property and its totals, use
 The stream shows only the events that happen after it starts. It does not show
 the current results. A property that passed or failed before the stream started
 gets no verdict line. To get the current results and follow them, start the
-stream first, then read `snouty runs properties <run_id>`, and merge the two.
-This order makes sure that you do not miss an event.
+stream first. When stderr says `the stream of run <run_id> is open` (or, on a
+terminal, the spinner says `streaming run`), read
+`snouty runs properties <run_id>` and merge the two. This order makes sure that
+you do not miss an event.
 
 The stream is silent between events. For a run that is already final, the stream
 prints `completed` and ends. The stream of a new run opens a few minutes after

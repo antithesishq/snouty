@@ -31,6 +31,7 @@ stderr 'run not found: run-does-not-exist'
 # each sample prints once, and a verdict prints as its own event.
 mock-runs-server
 snouty runs stream run-2
+stderr '^the stream of run run-2 is open$'
 stdout '(?s)\Aproperty +27a7cb0b311c8481c4ce12f3347fadbf +Balance stays nonnegative\nproperty +d2558d97fabac81ba7eb4676e47a0cba558263f8 +Peak memory stays below cap\nsample +d2558d97fabac81ba7eb4676e47a0cba558263f8 +counterexample +1340\nsample +d2558d97fabac81ba7eb4676e47a0cba558263f8 +example +820\nsample +d2558d97fabac81ba7eb4676e47a0cba558263f8 +example +910\nproperty +97cf5fcafa500ed62bf109d81834c5b881a2c854 +Safety: Counter value stays below limit\nsample +97cf5fcafa500ed62bf109d81834c5b881a2c854 +counterexample +\-100 +45\.334635781589895\nsample +97cf5fcafa500ed62bf109d81834c5b881a2c854 +counterexample +\-200 +313\.15126806590706\nsample +97cf5fcafa500ed62bf109d81834c5b881a2c854 +example +\-300 +398\.4898056755774\nverdict +97cf5fcafa500ed62bf109d81834c5b881a2c854 +failed\nproperty +5e3a0c1b9d7f4e2a8c6b0d1f3e5a7c9b +Setup completes\nsample +5e3a0c1b9d7f4e2a8c6b0d1f3e5a7c9b +example +\{"final_counter":42\}\nverdict +5e3a0c1b9d7f4e2a8c6b0d1f3e5a7c9b +passed\nverdict +27a7cb0b311c8481c4ce12f3347fadbf +passed\ncompleted +run\-2\n?\z'
 
 # A non-event property's sample is its value, as JSON.

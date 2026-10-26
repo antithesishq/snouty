@@ -1571,6 +1571,11 @@ async fn cmd_runs_stream(
     // terminal, and its output would mix with the spinner frames.
     let spinner = (std::io::stdout().is_terminal() && std::io::stderr().is_terminal())
         .then(|| spinner(format!("streaming run {run_id}")));
+    // A script reads the current results once the stream is open, so it
+    // misses no event (see the help). Without a spinner, this line says when.
+    if spinner.is_none() {
+        eprintln!("the stream of run {run_id} is open");
+    }
     let mut denormalizer = run_stream::Denormalizer::default();
     let result = async {
         while let Some(line) = stream.try_next().await? {

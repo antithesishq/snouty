@@ -1,20 +1,21 @@
 //! `runs stream`: the run status stream, denormalized to one line per event.
 //!
 //! Each NDJSON line decodes into a [`Record`], and [`Denormalizer::lines`]
-//! flattens it into [`Line`]s: a notification lists many properties, and a
-//! property carries many samples, but every output line names one thing.
+//! flattens it into [`Line`]s. A notification lists whole properties, and the
+//! server repeats properties and samples across notifications, so the
+//! denormalizer remembers what it printed:
 //!
-//! - `catalogued <property id> <name>`: a property appeared.
-//! - `failed|passed <property id> <input hash> <vtime>`: one counterexample
-//!   or example. A non-event property's sample is its value, as JSON.
-//! - `failed|passed <property id>`: the property failed or passed, and no
-//!   line has shown that yet.
-//! - `completed <run id>`: the run is final, and the stream ends.
-//!
-//! A line that snouty cannot decode, an unknown `type` or data of an
-//! unexpected shape, decodes as [`Record::Unknown`] and prints as its JSON, so
-//! a server that adds a shape does not break an older snouty, and the stream
-//! continues.
+//! - `catalogued <property id> <name>`: the first time a property appears.
+//! - `sample <property id> example|counterexample <moment|value>`: the first
+//!   time a sample appears. An event property's sample is a moment, which is
+//!   unique across the run; a non-event property's sample is a JSON value,
+//!   unique only within its property.
+//! - `verdict <property id> passed|failed`: a `PROPERTIES_PASSED` or
+//!   `PROPERTIES_FAILED` notification, unless it repeats the last verdict.
+//! - `completed <run id>`: `RUN_FINALIZED`; the stream ends.
+//! - `unknown <type> <json>`: a notification that snouty cannot decode, an
+//!   unknown `type` or data of an unexpected shape. It prints as its JSON, so
+//!   a server that adds a shape does not break an older snouty.
 //!
 //! To support a new notification shape, add its type to the match in
 //! [`Record::parse`] (the generated type enum fails the build until it is
@@ -22,7 +23,7 @@
 //! [`Denormalizer::lines`]. A new kind of output line is a [`Line`] variant,
 //! which [`Line::render`] and [`Line::json`] must handle.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use color_eyre::eyre::Result;
 use console::style;
@@ -30,7 +31,7 @@ use log::debug;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::api::{Property, RunStreamNotificationType, decode_properties};
+use crate::api::{Event, Property, RunStreamNotificationType, decode_properties};
 use crate::render::sanitize;
 use crate::vtime::VTime;
 
@@ -38,13 +39,11 @@ use super::{mid_stream_error, stream_error_message};
 
 #[derive(Debug)]
 pub(super) enum Record {
-    /// `NEW_PROPERTIES_ADDED`. A new property can already carry samples
-    /// (observed on the antithesis-orbitinghail tenant, release 65.3).
-    Catalogued(Vec<Property>),
-    /// `PROPERTIES_PASSED` or `PROPERTIES_FAILED` (`Some` verdict), or
-    /// `NEW_EXAMPLES_FOUND` (`None`): the properties carry their samples.
-    Samples {
-        verdict: Option<Outcome>,
+    /// `NEW_PROPERTIES_ADDED` or `NEW_EXAMPLES_FOUND` (`None`), or
+    /// `PROPERTIES_PASSED` or `PROPERTIES_FAILED` (`Some` verdict). Each
+    /// property carries its samples.
+    Properties {
+        verdict: Option<Verdict>,
         properties: Vec<Property>,
     },
     /// `RUN_FINALIZED`: the run is final, and the stream ends successfully.
@@ -66,21 +65,19 @@ impl Record {
         let Ok(kind) = RunStreamNotificationType::deserialize(&line["type"]) else {
             return Ok(Self::Unknown(line.clone()));
         };
-        // `None` for NEW_PROPERTIES_ADDED; the verdict for the others.
         let verdict = match kind {
             RunStreamNotificationType::RunFinalized => return Ok(Self::Finalized),
-            RunStreamNotificationType::NewPropertiesAdded => None,
-            RunStreamNotificationType::PropertiesPassed => Some(Some(Outcome::Passed)),
-            RunStreamNotificationType::PropertiesFailed => Some(Some(Outcome::Failed)),
-            RunStreamNotificationType::NewExamplesFound => Some(None),
+            RunStreamNotificationType::NewPropertiesAdded
+            | RunStreamNotificationType::NewExamplesFound => None,
+            RunStreamNotificationType::PropertiesPassed => Some(Verdict::Passed),
+            RunStreamNotificationType::PropertiesFailed => Some(Verdict::Failed),
         };
-        match (decode_properties(&line["data"]), verdict) {
-            (Ok(properties), None) => Ok(Self::Catalogued(properties)),
-            (Ok(properties), Some(verdict)) => Ok(Self::Samples {
+        match decode_properties(&line["data"]) {
+            Ok(properties) => Ok(Self::Properties {
                 verdict,
                 properties,
             }),
-            (Err(err), _) => {
+            Err(err) => {
                 debug!("decoding a {kind} notification: {err:#}");
                 Ok(Self::Unknown(line.clone()))
             }
@@ -88,19 +85,24 @@ impl Record {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum Outcome {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Verdict {
     Passed,
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SampleKind {
+    Example,
+    Counterexample,
+}
+
 /// One sample of a property: an event property's moment, or a non-event
-/// property's value. `None` is a verdict that came with no new sample.
+/// property's value.
 #[derive(Debug, PartialEq)]
 pub(super) enum Sample {
     Moment { input_hash: String, vtime: VTime },
     Value(Value),
-    None,
 }
 
 /// One output line of `runs stream`.
@@ -111,9 +113,13 @@ pub(super) enum Line {
         name: String,
     },
     Sample {
-        outcome: Outcome,
         property_id: String,
+        kind: SampleKind,
         sample: Sample,
+    },
+    Verdict {
+        property_id: String,
+        verdict: Verdict,
     },
     Completed {
         run_id: String,
@@ -121,62 +127,24 @@ pub(super) enum Line {
     Unknown(Value),
 }
 
-/// Turns records into lines. A status notification repeats the samples that
-/// the server keeps for a property, so a sample prints only the first time it
-/// arrives. A verdict prints once per property and outcome: as a sample of
-/// that outcome in the verdict notification, or else as the property alone.
+/// Turns records into lines, and remembers what it printed.
 #[derive(Default)]
 pub(super) struct Denormalizer {
-    samples: HashSet<(String, Outcome, String)>,
-    verdicts: HashSet<(String, Outcome)>,
+    properties: HashSet<String>,
+    moments: HashSet<(String, String)>,
+    values: HashSet<(String, String)>,
+    verdicts: HashMap<String, Verdict>,
 }
 
 impl Denormalizer {
     pub(super) fn lines(&mut self, record: Record, run_id: &str) -> Vec<Line> {
         match record {
-            Record::Catalogued(properties) => properties
-                .into_iter()
-                .flat_map(|property| {
-                    let catalogued = Line::Catalogued {
-                        property_id: property_id(&property),
-                        name: property.name().to_string(),
-                    };
-                    std::iter::once(catalogued).chain(self.new_samples(property))
-                })
-                .collect(),
-            Record::Samples {
-                verdict: None,
+            Record::Properties {
+                verdict,
                 properties,
             } => properties
                 .into_iter()
-                .flat_map(|property| self.new_samples(property))
-                .collect(),
-            Record::Samples {
-                verdict: Some(verdict),
-                properties,
-            } => properties
-                .into_iter()
-                .flat_map(|property| {
-                    let id = property_id(&property);
-                    let mut lines = self.new_samples(property);
-                    // The final PROPERTIES_PASSED lists many properties with
-                    // no sample, or only repeated ones (observed on the
-                    // antithesis-orbitinghail tenant, release 65.3), and the
-                    // verdict is the news. A sample of the other outcome does
-                    // not show it: a passing property can carry a
-                    // counterexample.
-                    let shown = lines.iter().any(
-                        |line| matches!(line, Line::Sample { outcome, .. } if *outcome == verdict),
-                    );
-                    if self.verdicts.insert((id.clone(), verdict)) && !shown {
-                        lines.push(Line::Sample {
-                            outcome: verdict,
-                            property_id: id,
-                            sample: Sample::None,
-                        });
-                    }
-                    lines
-                })
+                .flat_map(|property| self.property_lines(property, verdict))
                 .collect(),
             Record::Finalized => vec![Line::Completed {
                 run_id: run_id.to_string(),
@@ -185,27 +153,43 @@ impl Denormalizer {
         }
     }
 
-    /// The property's samples that have not printed yet.
-    fn new_samples(&mut self, property: Property) -> Vec<Line> {
-        samples(property)
-            .into_iter()
-            .filter(|line| {
-                let Line::Sample {
-                    outcome,
-                    property_id,
+    /// A property's new lines: catalogued, then its new samples, then the
+    /// verdict.
+    fn property_lines(&mut self, property: Property, verdict: Option<Verdict>) -> Vec<Line> {
+        let property_id = property_id(&property);
+        let mut lines = Vec::new();
+        if self.properties.insert(property_id.clone()) {
+            lines.push(Line::Catalogued {
+                property_id: property_id.clone(),
+                name: property.name().to_string(),
+            });
+        }
+        for (kind, sample) in samples(property) {
+            let new = match &sample {
+                Sample::Moment { input_hash, vtime } => {
+                    self.moments.insert((input_hash.clone(), vtime.to_string()))
+                }
+                Sample::Value(value) => {
+                    self.values.insert((property_id.clone(), value.to_string()))
+                }
+            };
+            if new {
+                lines.push(Line::Sample {
+                    property_id: property_id.clone(),
+                    kind,
                     sample,
-                } = line
-                else {
-                    return true;
-                };
-                let key = match sample {
-                    Sample::Moment { input_hash, vtime } => format!("{input_hash} {vtime}"),
-                    Sample::Value(value) => value.to_string(),
-                    Sample::None => String::new(),
-                };
-                self.samples.insert((property_id.clone(), *outcome, key))
-            })
-            .collect()
+                });
+            }
+        }
+        if let Some(verdict) = verdict
+            && self.verdicts.insert(property_id.clone(), verdict) != Some(verdict)
+        {
+            lines.push(Line::Verdict {
+                property_id,
+                verdict,
+            });
+        }
+        lines
     }
 }
 
@@ -215,46 +199,60 @@ fn property_id(property: &Property) -> String {
     property.id().unwrap_or("-").to_string()
 }
 
-/// A property's samples as lines, counterexamples first.
-fn samples(property: Property) -> Vec<Line> {
-    let property_id = property_id(&property);
-    let line = |outcome, sample| Line::Sample {
-        outcome,
-        property_id: property_id.clone(),
-        sample,
-    };
-    let moment = |event: crate::api::Event| Sample::Moment {
+/// A property's samples, counterexamples first.
+fn samples(property: Property) -> Vec<(SampleKind, Sample)> {
+    let moment = |event: Event| Sample::Moment {
         input_hash: event.moment.input_hash,
         vtime: event.moment.vtime,
     };
     match property {
         Property::EventProperty(p) => {
-            let failed = p
+            let counter = p
                 .counterexamples
                 .into_iter()
-                .map(|e| line(Outcome::Failed, moment(e)));
-            let passed = p
+                .map(|e| (SampleKind::Counterexample, moment(e)));
+            let examples = p
                 .examples
                 .into_iter()
-                .map(|e| line(Outcome::Passed, moment(e)));
-            failed.chain(passed).collect()
+                .map(|e| (SampleKind::Example, moment(e)));
+            counter.chain(examples).collect()
         }
         Property::NonEventProperty(p) => {
-            let failed = p
+            let counter = p
                 .counterexamples
                 .into_iter()
-                .map(|v| line(Outcome::Failed, Sample::Value(v)));
-            let passed = p
+                .map(|v| (SampleKind::Counterexample, Sample::Value(v)));
+            let examples = p
                 .examples
                 .into_iter()
-                .map(|v| line(Outcome::Passed, Sample::Value(v)));
-            failed.chain(passed).collect()
+                .map(|v| (SampleKind::Example, Sample::Value(v)));
+            counter.chain(examples).collect()
         }
     }
 }
 
 /// The width of the event column: `catalogued` is the widest event.
 const EVENT_WIDTH: usize = 10;
+/// The width of the sample kind column: `counterexample` is the widest kind.
+const KIND_WIDTH: usize = 14;
+
+impl SampleKind {
+    fn word(self) -> &'static str {
+        match self {
+            Self::Example => "example",
+            Self::Counterexample => "counterexample",
+        }
+    }
+}
+
+impl Verdict {
+    fn word(self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+        }
+    }
+}
 
 impl Line {
     /// The line for the terminal, without a trailing newline.
@@ -267,65 +265,85 @@ impl Line {
                 sanitize(name)
             ),
             Self::Sample {
-                outcome,
                 property_id,
+                kind,
                 sample,
             } => {
-                let event = match outcome {
-                    Outcome::Passed => style("passed").green(),
-                    Outcome::Failed => style("failed").red(),
-                };
                 let sample = match sample {
                     Sample::Moment { input_hash, vtime } => {
                         format!("{}  {vtime}", sanitize(input_hash))
                     }
                     Sample::Value(value) => sanitize(&value.to_string()),
-                    Sample::None => {
-                        return format!("{event:<EVENT_WIDTH$}  {}", sanitize(property_id));
-                    }
                 };
-                format!("{event:<EVENT_WIDTH$}  {}  {sample}", sanitize(property_id))
+                format!(
+                    "{:<EVENT_WIDTH$}  {}  {:<KIND_WIDTH$}  {sample}",
+                    "sample",
+                    sanitize(property_id),
+                    kind.word()
+                )
+            }
+            Self::Verdict {
+                property_id,
+                verdict,
+            } => {
+                let word = match verdict {
+                    Verdict::Passed => style(verdict.word()).green(),
+                    Verdict::Failed => style(verdict.word()).red(),
+                };
+                format!(
+                    "{:<EVENT_WIDTH$}  {}  {word}",
+                    style("verdict").bold(),
+                    sanitize(property_id)
+                )
             }
             Self::Completed { run_id } => format!(
                 "{:<EVENT_WIDTH$}  {}",
                 style("completed").bold(),
                 sanitize(run_id)
             ),
-            Self::Unknown(line) => style(sanitize(&line.to_string())).dim().to_string(),
+            Self::Unknown(line) => {
+                let kind = line["type"].as_str().unwrap_or("-");
+                format!(
+                    "{:<EVENT_WIDTH$}  {}  {}",
+                    style("unknown").yellow(),
+                    sanitize(kind),
+                    style(sanitize(&line.to_string())).dim()
+                )
+            }
         }
     }
 
-    /// The line for `--json`. An unknown notification prints as the server
-    /// sent it.
+    /// The line for `--json`.
     pub(super) fn json(&self) -> Value {
         match self {
             Self::Catalogued { property_id, name } => {
                 json!({"event": "catalogued", "property_id": property_id, "name": name})
             }
             Self::Sample {
-                outcome,
                 property_id,
+                kind,
                 sample,
-            } => {
-                let event = match outcome {
-                    Outcome::Passed => "passed",
-                    Outcome::Failed => "failed",
-                };
-                match sample {
-                    Sample::Moment { input_hash, vtime } => json!({
-                        "event": event,
-                        "property_id": property_id,
-                        "input_hash": input_hash,
-                        "vtime": vtime,
-                    }),
-                    Sample::Value(value) => {
-                        json!({"event": event, "property_id": property_id, "value": value})
-                    }
-                    Sample::None => json!({"event": event, "property_id": property_id}),
-                }
-            }
+            } => match sample {
+                Sample::Moment { input_hash, vtime } => json!({
+                    "event": "sample",
+                    "property_id": property_id,
+                    "kind": kind.word(),
+                    "input_hash": input_hash,
+                    "vtime": vtime,
+                }),
+                Sample::Value(value) => json!({
+                    "event": "sample",
+                    "property_id": property_id,
+                    "kind": kind.word(),
+                    "value": value,
+                }),
+            },
+            Self::Verdict {
+                property_id,
+                verdict,
+            } => json!({"event": "verdict", "property_id": property_id, "verdict": verdict.word()}),
             Self::Completed { run_id } => json!({"event": "completed", "run_id": run_id}),
-            Self::Unknown(line) => line.clone(),
+            Self::Unknown(line) => json!({"event": "unknown", "data": line}),
         }
     }
 }
@@ -368,131 +386,105 @@ mod tests {
     }
 
     #[test]
-    fn a_new_property_is_catalogued() {
-        let line = json!({"type": "NEW_PROPERTIES_ADDED", "data": [
-            property("a1", "Undetermined", &json!([]), &json!([])),
-            property("b2", "Undetermined", &json!([]), &json!([])),
-        ]});
-        assert_eq!(
-            render(&line),
-            ["catalogued  a1  Property a1", "catalogued  b2  Property b2"]
-        );
-    }
-
-    #[test]
-    fn a_new_property_lists_the_samples_it_carries() {
-        let p = property("a1", "Failing", &json!([]), &json!([moment("-1", "1.5")]));
-        assert_eq!(
-            render(&json!({"type": "NEW_PROPERTIES_ADDED", "data": [p]})),
-            ["catalogued  a1  Property a1", "failed      a1  -1  1.5"]
-        );
-    }
-
-    #[test]
-    fn each_sample_is_one_line_counterexamples_first() {
-        for kind in [
-            "NEW_EXAMPLES_FOUND",
-            "PROPERTIES_FAILED",
-            "PROPERTIES_PASSED",
-        ] {
-            let p = property(
-                "a1",
-                "Failing",
-                &json!([moment("-300", "398.4898056755774")]),
-                &json!([moment("-100", "401.25"), moment("-200", "402.5")]),
-            );
-            assert_eq!(
-                render(&json!({"type": kind, "data": [p]})),
-                [
-                    "failed      a1  -100  401.25",
-                    "failed      a1  -200  402.5",
-                    "passed      a1  -300  398.4898056755774",
-                ],
-                "{kind}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_repeated_sample_prints_once() {
+    fn a_property_is_catalogued_the_first_time_it_appears() {
         let mut denormalizer = Denormalizer::default();
-        let first = property(
+        let p = property("a1", "Undetermined", &json!([]), &json!([]));
+        let added = json!({"type": "NEW_PROPERTIES_ADDED", "data": [p]});
+        assert_eq!(
+            rendered(&mut denormalizer, &added),
+            ["catalogued  a1  Property a1"]
+        );
+        assert!(rendered(&mut denormalizer, &added).is_empty());
+    }
+
+    #[test]
+    fn a_property_first_seen_in_a_sample_notification_is_catalogued() {
+        let p = property(
             "a1",
             "Undetermined",
-            &json!([]),
             &json!([moment("-1", "1.5")]),
-        );
-        let again = property(
-            "a1",
-            "Failing",
             &json!([]),
-            &json!([moment("-1", "1.5"), moment("-2", "2.5")]),
-        );
-        let found = json!({"type": "NEW_EXAMPLES_FOUND", "data": [first]});
-        let failed = json!({"type": "PROPERTIES_FAILED", "data": [again]});
-        assert_eq!(
-            rendered(&mut denormalizer, &found),
-            ["failed      a1  -1  1.5"]
         );
         assert_eq!(
-            rendered(&mut denormalizer, &failed),
-            ["failed      a1  -2  2.5"]
+            render(&json!({"type": "NEW_EXAMPLES_FOUND", "data": [p]})),
+            [
+                "catalogued  a1  Property a1",
+                "sample      a1  example         -1  1.5",
+            ]
         );
     }
 
     #[test]
-    fn a_verdict_without_a_new_sample_prints_the_property() {
+    fn samples_print_counterexamples_first_then_the_verdict() {
+        let p = property(
+            "a1",
+            "Failing",
+            &json!([moment("-300", "398.4898056755774")]),
+            &json!([moment("-100", "401.25"), moment("-200", "402.5")]),
+        );
+        assert_eq!(
+            render(&json!({"type": "PROPERTIES_FAILED", "data": [p]})),
+            [
+                "catalogued  a1  Property a1",
+                "sample      a1  counterexample  -100  401.25",
+                "sample      a1  counterexample  -200  402.5",
+                "sample      a1  example         -300  398.4898056755774",
+                "verdict     a1  failed",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_moment_prints_once_across_notifications() {
         let mut denormalizer = Denormalizer::default();
-        let seen = property("a1", "Passing", &json!([moment("-1", "1.5")]), &json!([]));
-        let empty = property("b2", "Passing", &json!([]), &json!([]));
-        let found = json!({"type": "NEW_EXAMPLES_FOUND", "data": [seen.clone()]});
-        let passed = json!({"type": "PROPERTIES_PASSED", "data": [seen, empty]});
+        let found = property("a1", "Passing", &json!([moment("-1", "1.5")]), &json!([]));
+        let passed = found.clone();
+        let found = json!({"type": "NEW_EXAMPLES_FOUND", "data": [found]});
+        let passed = json!({"type": "PROPERTIES_PASSED", "data": [passed]});
+        rendered(&mut denormalizer, &found);
         assert_eq!(
-            rendered(&mut denormalizer, &found),
-            ["passed      a1  -1  1.5"]
+            rendered(&mut denormalizer, &passed),
+            ["verdict     a1  passed"]
         );
-        assert_eq!(
-            rendered(&mut denormalizer, &passed.clone()),
-            ["passed      a1", "passed      b2"]
-        );
+    }
+
+    #[test]
+    fn a_repeated_verdict_prints_once() {
+        let mut denormalizer = Denormalizer::default();
+        let p = property("a1", "Passing", &json!([]), &json!([]));
+        let passed = json!({"type": "PROPERTIES_PASSED", "data": [p]});
+        rendered(&mut denormalizer, &passed);
         assert!(rendered(&mut denormalizer, &passed).is_empty());
     }
 
     #[test]
-    fn a_new_sample_of_the_verdict_shows_the_verdict() {
-        let mut denormalizer = Denormalizer::default();
-        let p = property("a1", "Failing", &json!([]), &json!([moment("-1", "1.5")]));
-        let failed = json!({"type": "PROPERTIES_FAILED", "data": [p]});
+    fn a_non_event_sample_is_unique_within_its_property() {
+        let mut a = property("a1", "Passing", &json!([true]), &json!([]));
+        let mut b = property("b2", "Passing", &json!([true]), &json!([]));
+        a["is_event"] = json!(false);
+        b["is_event"] = json!(false);
+        let lines = render(&json!({"type": "NEW_EXAMPLES_FOUND", "data": [a.clone(), b, a]}));
+        let samples: Vec<&String> = lines.iter().filter(|l| l.starts_with("sample")).collect();
         assert_eq!(
-            rendered(&mut denormalizer, &failed.clone()),
-            ["failed      a1  -1  1.5"]
+            samples,
+            [
+                "sample      a1  example         true",
+                "sample      b2  example         true",
+            ]
         );
-        assert!(rendered(&mut denormalizer, &failed).is_empty());
     }
 
     #[test]
-    fn a_verdict_prints_beside_a_sample_of_the_other_outcome() {
+    fn a_passing_property_can_carry_a_counterexample() {
         let mut p = property("a1", "Passing", &json!([]), &json!(["old image"]));
         p["is_event"] = json!(false);
         assert_eq!(
             render(&json!({"type": "PROPERTIES_PASSED", "data": [p]})),
-            [r#"failed      a1  "old image""#, "passed      a1"]
-        );
-    }
-
-    #[test]
-    fn new_examples_without_samples_print_nothing() {
-        let p = property("a1", "Undetermined", &json!([]), &json!([]));
-        assert!(render(&json!({"type": "NEW_EXAMPLES_FOUND", "data": [p]})).is_empty());
-    }
-
-    #[test]
-    fn a_non_event_sample_renders_as_json() {
-        let mut p = property("a1", "Failing", &json!([820]), &json!([{"peak": 1340}]));
-        p["is_event"] = json!(false);
-        assert_eq!(
-            render(&json!({"type": "PROPERTIES_FAILED", "data": [p]})),
-            [r#"failed      a1  {"peak":1340}"#, "passed      a1  820"]
+            [
+                "catalogued  a1  Property a1",
+                r#"sample      a1  counterexample  "old image""#,
+                "verdict     a1  passed",
+            ]
         );
     }
 
@@ -505,24 +497,33 @@ mod tests {
 
     #[test]
     fn colors_do_not_change_the_column_widths() {
-        let line = json!({"type": "RUN_FINALIZED", "data": []});
+        let p = property("a1", "Failing", &json!([]), &json!([]));
+        let line = json!({"type": "PROPERTIES_FAILED", "data": [p]});
         let lines = Denormalizer::default().lines(Record::parse(&line).unwrap(), RUN);
         console::set_colors_enabled(true);
-        let colored = lines[0].render();
+        let colored: Vec<String> = lines.iter().map(Line::render).collect();
         console::set_colors_enabled(false);
-        assert_ne!(colored, lines[0].render());
-        assert_eq!(console::strip_ansi_codes(&colored), "completed   run-1");
+        let plain: Vec<String> = lines.iter().map(Line::render).collect();
+        assert_ne!(colored, plain);
+        let stripped: Vec<String> = colored
+            .iter()
+            .map(|l| console::strip_ansi_codes(l).to_string())
+            .collect();
+        assert_eq!(stripped, plain);
     }
 
     #[test]
-    fn an_unknown_type_renders_its_json() {
+    fn an_unknown_type_prints_its_type_and_json() {
         let line = json!({"type": "RUN_PAUSED", "data": []});
         assert!(matches!(Record::parse(&line).unwrap(), Record::Unknown(_)));
-        assert_eq!(render(&line), [r#"{"type":"RUN_PAUSED","data":[]}"#]);
+        assert_eq!(
+            render(&line),
+            [r#"unknown     RUN_PAUSED  {"type":"RUN_PAUSED","data":[]}"#]
+        );
     }
 
     #[test]
-    fn a_known_type_with_malformed_data_renders_its_json() {
+    fn a_known_type_with_malformed_data_is_unknown() {
         let line = json!({"type": "PROPERTIES_FAILED", "data": [{"status": "Skipped"}]});
         assert!(matches!(Record::parse(&line).unwrap(), Record::Unknown(_)));
     }
@@ -556,10 +557,24 @@ mod tests {
             &json!([moment("-100", "401.25")]),
         );
         let record = Record::parse(&json!({"type": "PROPERTIES_FAILED", "data": [p]})).unwrap();
-        let lines = Denormalizer::default().lines(record, RUN);
+        let lines: Vec<Value> = Denormalizer::default()
+            .lines(record, RUN)
+            .iter()
+            .map(Line::json)
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                json!({"event": "catalogued", "property_id": "a1", "name": "Property a1"}),
+                json!({"event": "sample", "property_id": "a1", "kind": "counterexample", "input_hash": "-100", "vtime": 401.25}),
+                json!({"event": "verdict", "property_id": "a1", "verdict": "failed"}),
+            ]
+        );
+        let unknown = json!({"type": "RUN_PAUSED"});
+        let lines = Denormalizer::default().lines(Record::Unknown(unknown.clone()), RUN);
         assert_eq!(
             lines[0].json(),
-            json!({"event": "failed", "property_id": "a1", "input_hash": "-100", "vtime": 401.25})
+            json!({"event": "unknown", "data": unknown})
         );
         let done = Denormalizer::default().lines(Record::Finalized, RUN);
         assert_eq!(

@@ -1236,6 +1236,10 @@ fn mock_route_get_run_property(run_id: &str, property_id: &str) -> (u16, String)
     }
 }
 
+/// The ID the run status stream gives the passing fixture, which has none in
+/// the properties list.
+const MOCK_STREAM_PASSING_ID: &str = "5e3a0c1b9d7f4e2a8c6b0d1f3e5a7c9b";
+
 /// The run status stream. As observed on the antithesis-orbitinghail tenant
 /// (release 65.3), a run that is already final sends only `RUN_FINALIZED`, and
 /// a run created before 65.3 gets a 409. `run-stream-error` fails after its
@@ -1262,6 +1266,9 @@ fn mock_route_stream_run_status(run_id: &str, req_body: &str) -> (u16, String) {
     let types = request["notification_type_filter"].as_array();
     let [failing, failing_nonevent, undetermined, passing] =
         MOCK_COMPLETED_PROPERTIES.map(|p| serde_json::from_str::<Value>(p).unwrap());
+    // Every property on the stream has an ID (release 65.3 and later).
+    let mut passing = passing;
+    passing["id"] = json!(MOCK_STREAM_PASSING_ID);
     let mut resolved = undetermined.clone();
     resolved["status"] = json!("Passing");
     let mut new_examples = failing.clone();

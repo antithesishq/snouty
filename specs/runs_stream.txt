@@ -1,10 +1,11 @@
 # snouty runs stream
 #
-# Stream a run's property events (`POST /api/v0/runs/{run_id}/stream`) until
-# the run is final, one line per event:
+# Stream the property events of a run (`POST /api/v0/runs/{run_id}/stream`)
+# until the run is final, one line per event:
 #
 #   catalogued <property id> <name>
-#   failed|passed <property id> <input hash> <vtime>
+#   sample <property id> example|counterexample <input hash> <vtime>
+#   verdict <property id> passed|failed
 #   completed <run id>
 
 # Like every runs command, stream requires an API key.
@@ -24,48 +25,21 @@ stderr 'run not found: run-does-not-exist'
 [staging] skip
 
 # A run in progress streams each event until the run is final. run-2 is the
-# mock's in-progress fixture. A new property is catalogued, and each example
-# and counterexample is one line.
+# mock's in-progress fixture. A property is catalogued the first time it
+# appears, each sample prints once, and a verdict prints as its own event.
 mock-runs-server
 snouty runs stream run-2
-stdout '^catalogued +27a7cb0b311c8481c4ce12f3347fadbf +Balance stays nonnegative$'
-stdout '^failed +97cf5fcafa500ed62bf109d81834c5b881a2c854 +-200 +313\.15126806590706$'
-stdout '^passed +97cf5fcafa500ed62bf109d81834c5b881a2c854 +-300 +398\.4898056755774$'
-stdout '^completed +run-2$'
-
-# A sample that a later notification repeats prints once. The new
-# counterexample -100 arrives first, then the failure repeats it.
-mock-runs-server
-snouty runs stream run-2
-stdout -count=1 '^failed +97cf5fcafa500ed62bf109d81834c5b881a2c854 +-100 +45\.334635781589895$'
+stdout '(?s)\Acatalogued +27a7cb0b311c8481c4ce12f3347fadbf +Balance stays nonnegative\ncatalogued +d2558d97fabac81ba7eb4676e47a0cba558263f8 +Peak memory stays below cap\nsample +d2558d97fabac81ba7eb4676e47a0cba558263f8 +counterexample +1340\nsample +d2558d97fabac81ba7eb4676e47a0cba558263f8 +example +820\nsample +d2558d97fabac81ba7eb4676e47a0cba558263f8 +example +910\ncatalogued +97cf5fcafa500ed62bf109d81834c5b881a2c854 +Safety: Counter value stays below limit\nsample +97cf5fcafa500ed62bf109d81834c5b881a2c854 +counterexample +\-100 +45\.334635781589895\nsample +97cf5fcafa500ed62bf109d81834c5b881a2c854 +counterexample +\-200 +313\.15126806590706\nsample +97cf5fcafa500ed62bf109d81834c5b881a2c854 +example +\-300 +398\.4898056755774\nverdict +97cf5fcafa500ed62bf109d81834c5b881a2c854 +failed\ncatalogued +5e3a0c1b9d7f4e2a8c6b0d1f3e5a7c9b +Setup completes\nsample +5e3a0c1b9d7f4e2a8c6b0d1f3e5a7c9b +example +\{"final_counter":42\}\nverdict +5e3a0c1b9d7f4e2a8c6b0d1f3e5a7c9b +passed\nverdict +27a7cb0b311c8481c4ce12f3347fadbf +passed\ncompleted +run\-2\n?\z'
 
 # A non-event property's sample is its value, as JSON.
 mock-runs-server
 snouty runs stream run-2
-stdout '^passed +- +\{"final_counter":42\}$'
-
-# A property can be catalogued already failing. Its counterexample follows
-# the catalogued line.
-mock-runs-server
-snouty runs stream run-2
-stdout '(?s)^catalogued +d2558d97fabac81ba7eb4676e47a0cba558263f8 +Peak memory stays below cap\nfailed +d2558d97fabac81ba7eb4676e47a0cba558263f8 +1340$'
-
-# A verdict that brings no new sample prints the property alone.
-mock-runs-server
-snouty runs stream run-2
-stdout '^passed +27a7cb0b311c8481c4ce12f3347fadbf$'
-
-# completed is the last line.
-mock-runs-server
-snouty runs stream run-2
-stdout '(?s)passed +27a7cb0b311c8481c4ce12f3347fadbf\ncompleted +run-2\n?\z'
+stdout '^sample +d2558d97fabac81ba7eb4676e47a0cba558263f8 +counterexample +1340$'
 
 # --property streams only the events of that property.
 mock-runs-server
 snouty runs stream run-2 --property 27a7cb0b311c8481c4ce12f3347fadbf
-stdout 'Balance stays nonnegative'
-! stdout '97cf5fcafa500ed62bf109d81834c5b881a2c854'
-stdout '^completed'
+stdout '(?s)\Acatalogued +27a7cb0b311c8481c4ce12f3347fadbf +Balance stays nonnegative\nverdict +27a7cb0b311c8481c4ce12f3347fadbf +passed\ncompleted +run\-2\n?\z'
 
 # A run that is already final sends only RUN_FINALIZED.
 mock-runs-server
@@ -77,7 +51,8 @@ stdout '\Acompleted +run-1\n?\z'
 mock-runs-server
 snouty --json runs stream run-2
 stdout '^\{"event":"catalogued","property_id":"27a7cb0b311c8481c4ce12f3347fadbf","name":"Balance stays nonnegative"\}$'
-stdout '^\{"event":"failed","property_id":"97cf5fcafa500ed62bf109d81834c5b881a2c854","input_hash":"-100","vtime":45\.334635781589895\}$'
+stdout '^\{"event":"sample","property_id":"97cf5fcafa500ed62bf109d81834c5b881a2c854","kind":"counterexample","input_hash":"-100","vtime":45\.334635781589895\}$'
+stdout '^\{"event":"verdict","property_id":"97cf5fcafa500ed62bf109d81834c5b881a2c854","verdict":"failed"\}$'
 stdout '^\{"event":"completed","run_id":"run-2"\}$'
 
 # A server error after the stream opens fails the command. The events before

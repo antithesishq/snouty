@@ -16,7 +16,7 @@ generated in the run is warm: by fuzzing, and by an earlier `runs exec`, so the
 end moment of one command is warm for the next. A moment from another run is
 cold, and the server must rewarm it: load it by replaying the inputs of the run
 it comes from. A debugging session rewarms a moment of the run it was launched
-from without any flag. For a moment of any other run, name that run with
+from without a source. For a moment of any other run, name that run with
 --source-run-id. Rewarming a moment can take minutes and depends on the
 magnitude of the vtime. The `--timeout` flag does not apply to the time it takes
 to rewarm a moment. Find a moment with `runs properties --detail`,
@@ -28,11 +28,14 @@ release.
 
 Without --events, the script's stdout and stderr stream to snouty's stdout and
 stderr. With --events, snouty prints every event of the timeline to stdout while
-the script executes, as `runs logs` prints them: the script's output, the
+the script executes, as `snouty runs logs` prints them: the script's output, the
 workload's logs and assertions, and Antithesis events. On exit, a trailer on
-stderr documents the branch's end moment, to chain a follow-up command from. A
-non-zero exit code, a timeout, or a truncated stream fails snouty with exit code
-1.
+stderr documents the branch's end moment, to chain a follow-up command from. The
+command fails when the script fails, times out, or its stream ends early.
+
+To run more at the moment that a script left, pass its end moment as the next
+call's input_hash and vtime:
+  snouty runs exec <run_id> <end_hash> <end_vtime> 'cat /tmp/state'
 
 Omit SCRIPT to read the script from stdin — a pipe, a redirect, or a heredoc.
 
@@ -57,14 +60,14 @@ Arguments:
           Run ID
 
   <INPUT_HASH>
-          Input hash of the moment to execute at (with VTIME, picks the
+          Input hash of the moment to execute at (with the vtime, picks the
           timeline)
 
   <VTIME>
           Virtual time of the moment to execute at
 
   [SCRIPT]
-          Bash script to execute; omit it to read the script from stdin
+          Bash script to execute
 
 Options:
       --container <CONTAINER>
@@ -80,7 +83,7 @@ Options:
           the debugging session was launched from
 
       --source-session-id <SOURCE_SESSION_ID>
-          Session ID that a cold moment comes from, in place of --source-run-id.
+          Session ID that a cold moment comes from, in place of the source run.
           Use it only for a moment that names a session ID rather than a run ID
 
       --timeout <TIMEOUT>

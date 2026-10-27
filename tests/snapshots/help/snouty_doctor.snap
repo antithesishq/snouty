@@ -16,8 +16,8 @@ When credentials are configured, doctor also contacts the Antithesis API to
 report the API and tenant versions and confirm connectivity. Pass --offline to
 skip that network call.
 
-Exits non-zero if any required check fails. Pass --json for a machine-readable
-report (e.g. to gate CI).
+The command fails if any required check fails. Pass --json for a
+machine-readable report (e.g. to gate CI).
 
 Examples:
   snouty doctor

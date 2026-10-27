@@ -14,8 +14,6 @@ fn main() {
     let out_dir = std::env::var_os("OUT_DIR").unwrap();
     fs::create_dir_all(&out_dir).unwrap();
     generate_api_client(Path::new(&out_dir));
-    println!("cargo:rerun-if-changed={HELP_DIR}");
-    render_help(Path::new(&out_dir));
 }
 
 /// How many `"additionalProperties": false` occurrences the vendored spec
@@ -57,8 +55,9 @@ fn generate_api_client(out_dir: &Path) {
     drop_property_description(&mut spec_value);
     drop_launch_status_code(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
-    open_performance_tier(&mut spec_value);
-    open_fault_tolerance(&mut spec_value);
+    for &(param, schema) in LAUNCH_ENUM_PARAMS {
+        open_param_enum(&mut spec_value, param, schema);
+    }
     open_sub_status(&mut spec_value);
     dedupe_property_status_filter(&mut spec_value);
     share_run_stream_notification_type(&mut spec_value);
@@ -90,10 +89,17 @@ fn generate_api_client(out_dir: &Path) {
         "crate::api::RunSubStatus",
         std::iter::empty::<progenitor::TypeImpl>(),
     );
-    settings.with_patch(
-        PERFORMANCE_TIER_SCHEMA,
-        progenitor::TypePatch::default().with_derive("clap::ValueEnum"),
-    );
+    // `launch` sends each value's `Display` form, the snake_case wire value, so
+    // clap must name each value the same way. typify puts patch attributes
+    // before derives, and `#[value]` must follow its derive, so the derive goes
+    // here too.
+    for &(_, schema) in LAUNCH_ENUM_PARAMS {
+        settings.with_patch(
+            schema,
+            progenitor::TypePatch::default()
+                .with_attr(r#"#[derive(clap::ValueEnum)] #[value(rename_all = "snake_case")]"#),
+        );
+    }
     let mut generator = progenitor::Generator::new(&settings);
     let tokens = generator.generate_tokens(&spec).unwrap();
     let ast = syn::parse2(tokens).unwrap();
@@ -344,46 +350,28 @@ fn mvd_params_variants<'a>(
         })
 }
 
-/// Decode `Params.antithesis.fault_tolerance` as a plain string, for the same
-/// reason as [`open_performance_tier`]: one run with a level this build does
-/// not know must not fail a whole listing.
-fn open_fault_tolerance(spec: &mut serde_json::Value) {
-    let levels = remove_schema_key(
-        spec,
-        "/components/schemas/Params/properties/antithesis.fault_tolerance",
-        "enum",
-        "open_fault_tolerance",
-    );
-    assert!(
-        levels
-            .as_array()
-            .is_some_and(|levels| levels.iter().all(serde_json::Value::is_string)),
-        "Params.antithesis.fault_tolerance's enum is not a list of strings; update \
-         `open_fault_tolerance` in build.rs"
-    );
-}
+/// The enum-valued `Params` that a `launch` flag sets, and the schema that
+/// [`open_param_enum`] moves each enum to.
+const LAUNCH_ENUM_PARAMS: &[(&str, &str)] = &[
+    ("antithesis.performance_tier", "PerformanceTier"),
+    ("antithesis.fault_tolerance", "FaultTolerance"),
+];
 
-/// Decode `Params.antithesis.performance_tier` as a plain string. `runs list`
-/// and `runs show` decode every run's parameters through `Params`, so a closed
-/// enum would fail a whole listing on one tier this build does not know. The
-/// enum moves to a `PerformanceTier` schema, which `--performance-tier` parses
-/// into.
-fn open_performance_tier(spec: &mut serde_json::Value) {
-    let tiers = remove_schema_key(
-        spec,
-        "/components/schemas/Params/properties/antithesis.performance_tier",
-        "enum",
-        "open_performance_tier",
-    );
+/// Decode `Params.<param>` as a plain string. `runs list` and `runs show`
+/// decode every run's parameters through `Params`, so a closed enum would fail
+/// a whole listing on one value this build does not know. The enum moves to
+/// `schema`, which the `launch` flag parses into.
+fn open_param_enum(spec: &mut serde_json::Value, param: &str, schema: &str) {
+    let pointer = format!("/components/schemas/Params/properties/{param}");
+    let values = remove_schema_key(spec, &pointer, "enum", "open_param_enum");
     assert!(
-        tiers.as_array().is_some_and(
-            |tiers| !tiers.is_empty() && tiers.iter().all(serde_json::Value::is_string)
+        values.as_array().is_some_and(
+            |values| !values.is_empty() && values.iter().all(serde_json::Value::is_string)
         ),
-        "Params.antithesis.performance_tier's enum is not a list of strings; update \
-         `open_performance_tier` in build.rs"
+        "Params.{param}'s enum is not a list of strings; update `open_param_enum` in build.rs"
     );
     let description = spec
-        .pointer("/components/schemas/Params/properties/antithesis.performance_tier/description")
+        .pointer(&format!("{pointer}/description"))
         .cloned()
         .unwrap_or_default();
     let schemas = spec
@@ -393,12 +381,11 @@ fn open_performance_tier(spec: &mut serde_json::Value) {
     assert!(
         schemas
             .insert(
-                PERFORMANCE_TIER_SCHEMA.to_owned(),
-                serde_json::json!({"type": "string", "enum": tiers, "description": description}),
+                schema.to_owned(),
+                serde_json::json!({"type": "string", "enum": values, "description": description}),
             )
             .is_none(),
-        "openapi spec now defines {PERFORMANCE_TIER_SCHEMA}; delete `open_performance_tier`'s \
-         copy in build.rs"
+        "openapi spec now defines {schema}; remove it from LAUNCH_ENUM_PARAMS in build.rs"
     );
 }
 
@@ -473,9 +460,6 @@ fn share_run_stream_notification_type(spec: &mut serde_json::Value) {
 
 /// The format `open_sub_status` marks the schema with, for `with_conversion`.
 const SUB_STATUS_FORMAT: &str = "run-sub-status";
-
-/// The schema `open_performance_tier` adds.
-const PERFORMANCE_TIER_SCHEMA: &str = "PerformanceTier";
 
 /// Remove `key` from the object at `pointer`, and return its value. Both must
 /// exist, so a spec refresh that makes `transform` a no-op fails the build.
@@ -632,69 +616,4 @@ fn rustc_version() -> Result<String, Box<dyn std::error::Error>> {
         .nth(1)
         .map(ToOwned::to_owned)
         .ok_or_else(|| "rustc -V did not return a parseable version".into())
-}
-
-/// Long-help templates. Each top-level `.txt` file is one page. `fragments/`
-/// holds text that pages include.
-const HELP_DIR: &str = "help";
-
-/// Renders every help page into `OUT_DIR/help/`. A template error fails the
-/// build with the file name.
-fn render_help(out_dir: &Path) {
-    let mut env = minijinja::Environment::new();
-    env.set_loader(
-        |name| match fs::read_to_string(Path::new(HELP_DIR).join(name)) {
-            Ok(text) => Ok(Some(text)),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(err) => Err(minijinja::Error::new(
-                minijinja::ErrorKind::InvalidOperation,
-                format!("cannot read {HELP_DIR}/{name}: {err}"),
-            )),
-        },
-    );
-    // With these settings, a line that holds only a block tag disappears, and
-    // an `{% include %}` line becomes the lines of the included file.
-    env.set_syntax(
-        minijinja::syntax::SyntaxConfig::builder()
-            .trim_blocks(true)
-            .lstrip_blocks(true)
-            .keep_trailing_newline(true)
-            .build()
-            .unwrap(),
-    );
-    env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
-
-    let pages = txt_files(Path::new(HELP_DIR));
-
-    // Remove the renders of an earlier build. Otherwise a page whose template
-    // was deleted stays in OUT_DIR, and its `include_str!` does not fail.
-    let help_out = out_dir.join(HELP_DIR);
-    if help_out.exists() {
-        fs::remove_dir_all(&help_out).unwrap();
-    }
-    fs::create_dir_all(&help_out).unwrap();
-    for name in &pages {
-        render_page(&env, name, &help_out.join(name));
-    }
-}
-
-/// The names of the `.txt` files in `dir`. The extension filter also skips
-/// editor swap and backup files, and subdirectories.
-fn txt_files(dir: &Path) -> Vec<String> {
-    fs::read_dir(dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "txt"))
-        .map(|path| path.file_name().unwrap().to_str().unwrap().to_owned())
-        .collect()
-}
-
-fn render_page(env: &minijinja::Environment, name: &str, out: &Path) {
-    let text = env
-        .get_template(name)
-        .and_then(|template| template.render(()))
-        .unwrap_or_else(|err| panic!("{HELP_DIR}/{name}: {err:#}"));
-    // A file ends in a newline; the page text does not.
-    let text = text.strip_suffix('\n').unwrap_or(&text);
-    fs::write(out, text).unwrap();
 }

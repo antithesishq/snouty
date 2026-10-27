@@ -1753,6 +1753,14 @@ fn init_test_eyre() {
     let _ = color_eyre::install();
 }
 
+/// Whether `text` names a `--flag` or a `` `snouty …` `` command: text that
+/// MCP readers see names args by param and commands by tool.
+pub fn names_a_flag_or_command(text: &str) -> bool {
+    static FLAG: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(^|[\s(`])--[a-z]").unwrap());
+    FLAG.is_match(text) || text.contains("`snouty ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

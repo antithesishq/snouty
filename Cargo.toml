@@ -99,7 +99,8 @@ sha2 = "0.10"
 # Only the crossterm backend: the default `fuzzy` filter (fuzzy-matcher) is
 # pointless for a three-entry menu, and the `macros`/`one-liners` sugar is unused.
 inquire = { version = "0.9", default-features = false, features = ["crossterm"] }
-askama = { version = "0.16.1", default-features = false, features = ["derive", "std"] }
+# `config` reads askama.toml, at build time only.
+askama = { version = "0.16.1", default-features = false, features = ["config", "derive", "std"] }
 axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1"] }
 gix = { version = "0.90", default-features = false, features = ["sha1"] }
 
@@ -115,8 +116,6 @@ name = "mock_api"
 path = "examples/mock_api.rs"
 
 [build-dependencies]
-# Renders the help/*.txt templates into OUT_DIR at build time.
-minijinja = { version = "3", default-features = false, features = ["multi_template"] }
 # Same openapiv3 version progenitor resolves; build.rs preprocesses the spec
 # through this type before handing it to the generator.
 openapiv3 = "2"

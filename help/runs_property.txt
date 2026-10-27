@@ -3,8 +3,8 @@ Show one property of a run, in full: its name, ID, group, category, team, status
 The property ID is in the ID column of `snouty runs properties`, in its --detail output, and in its JSON output. Property lookup needs a run created on release 65.3 or later.
 
 Examples:
-  snouty --json runs properties <run_id> --failing | jq -r .id
-  snouty runs property <run_id> <property_id>
+  {{ t("snouty --json runs properties <run_id> --failing | jq -r .id")? }}
+  {{ t("snouty runs property <run_id> <property_id>")? }}
 
 Add --json for machine-readable output. The property prints as one JSON object:
-  snouty --json runs property <run_id> <property_id> | jq .counterexample_count
+  {{ t("snouty --json runs property <run_id> <property_id> | jq .counterexample_count")? }}

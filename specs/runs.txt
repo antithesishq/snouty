@@ -24,8 +24,8 @@
 # retried.
 
 # A run ID is one segment of an API path. An empty, `.` or `..` ID would
-# send the request to a different endpoint, so the parser refuses it before
-# any request.
+# send the request to a different endpoint, and so would a `\`, which a URL
+# parser reads as `/`. The parser refuses each before any request.
 ! snouty runs show ..
 stderr "invalid value '..' for '<RUN_ID>': invalid run ID"
 ! snouty runs logs . -1
@@ -36,6 +36,10 @@ stderr "invalid value '' for '<RUN_ID>': invalid run ID"
 stderr "invalid value '..' for '<RUN_ID>': invalid run ID"
 ! snouty runs property r .
 stderr "invalid value '.' for '<PROPERTY_ID>': invalid property ID"
+! snouty runs show '..\\..\\x'
+stderr 'invalid run ID'
+! snouty runs property r 'a\\..\\..\\b'
+stderr 'invalid property ID'
 ! snouty debug --run-id=.. --input-hash=-1 --vtime=1
 stderr "invalid value '..' for '--run-id <RUN_ID>': invalid run ID"
 

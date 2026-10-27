@@ -304,11 +304,13 @@ fn parse_property_id(value: &str) -> Result<String, String> {
     parse_path_segment(value, "property ID")
 }
 
+/// The client percent-encodes `/` in a path segment, but not `\`, which a URL
+/// parser reads as `/`. So `..\x` would also leave the segment.
 fn parse_path_segment(value: &str, what: &str) -> Result<String, String> {
-    match value {
-        "" | "." | ".." => Err(format!("invalid {what}: '{value}'")),
-        _ => Ok(value.to_owned()),
+    if matches!(value, "" | "." | "..") || value.contains('\\') {
+        return Err(format!("invalid {what}: '{value}'"));
     }
+    Ok(value.to_owned())
 }
 
 fn validate_non_empty(value: &str) -> Result<String, String> {

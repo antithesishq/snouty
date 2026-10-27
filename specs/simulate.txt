@@ -21,9 +21,14 @@ stdout 'Requires Linux or macOS and QEMU'
 stdout 'antithesis-guest:v<RELEASE>'
 stdout 'disable-restart'
 stdout 'disable-faults'
-stdout 'node-kills'
-! stdout 'disable-node-kills'
-stdout 'Use --node-kills to make the classic fault injector attempt a node kill every'
+stdout '\-\-fault-tolerance <FAULT_TOLERANCE>'
+stdout 'legacy, none, resilient, high_availability'
+stdout '\-\-fault-exclusions <FAULT_EXCLUSIONS>'
+stdout '\-\-notebook-flag <NAME>'
+stdout '\-\-custom-scripts <JSON_ARRAY>'
+stdout '\-\-reset-custom-scripts'
+stdout 'membership only; they do not set live fault values'
+! stdout '\-\-node-kills'
 stdout 'Pause fault injection before Compose starts'
 stdout 'Unpauses fault injection after setup_complete unless --disable-faults is set.'
 stdout 'Waits for setup_complete before starting test composer'
@@ -51,6 +56,28 @@ stderr 'unexpected argument'
 ! snouty simulate empty --guest-image guest:latest --platform other
 stderr 'invalid value'
 
+# Fault settings are parsed before booting a guest.
+! snouty simulate empty --node-kills
+stderr 'unexpected argument'
+! snouty simulate empty --fault-tolerance unknown
+stderr 'invalid value'
+! snouty simulate empty --custom-scripts '{}'
+stderr 'custom scripts must be a JSON array'
+! snouty simulate empty --custom-scripts '[{"command":"echo hi"}]'
+stderr 'string command and a numeric interval'
+! snouty simulate empty --custom-scripts '[{"command":42,"interval":1}]'
+stderr 'string command and a numeric interval'
+! snouty simulate empty --custom-scripts '[{"command":"echo hi","interval":"1"}]'
+stderr 'string command and a numeric interval'
+! snouty simulate empty --custom-scripts 'invalid'
+stderr 'invalid value'
+! snouty simulate empty --fault-tolerance none --fault-exclusions '' --notebook-flag unpause --custom-scripts '[]' --reset-custom-scripts
+stderr 'does not contain.*docker-compose.yaml'
+! snouty simulate --attach simulate-abc --fault-exclusions ''
+stderr 'cannot be used with'
+! snouty simulate --shell --reset-custom-scripts
+stderr 'cannot be used with'
+
 snouty completions bash
 ! stdout '\-\-shell'
 snouty completions zsh
@@ -77,7 +104,7 @@ stderr 'cannot be used with'
 stderr 'cannot be used with'
 ! snouty simulate --shell --disable-faults --guest-image guest:latest
 stderr 'cannot be used with'
-! snouty simulate --shell --node-kills --guest-image guest:latest
+! snouty simulate --shell --fault-tolerance none --guest-image guest:latest
 stderr 'cannot be used with'
 ! snouty simulate --attach ../other
 stderr 'invalid simulation ID'

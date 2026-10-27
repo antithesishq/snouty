@@ -101,9 +101,18 @@ elif name == 'ssh':
             record('scratch_setup_script', script)
         elif 'shmctl --thread_pause_enable' in script:
             record('thread_pause_enabled', 'yes')
-        elif "cat > /opt/antithesis/fault_config.json <<'CONFIG'\n" in script:
-            config = script.split("<<'CONFIG'\n", 1)[1].rsplit('CONFIG\n', 1)[0]
-            record('node_kills_config', json.dumps(json.loads(config)))
+        elif '/opt/antithesis/bin/fault_scripts/randomization/configure.py' in script:
+            assert not (root / 'compose_started').exists()
+            configure_path = '/opt/antithesis/bin/fault_scripts/randomization/configure.py'
+            capture = 'capture() { if [ "$#" -gt 0 ]; then printf "%s\\0" "$@"; fi; }\n'
+            result = subprocess.run(
+                ['bash', '-s'],
+                input=capture + script.replace(configure_path, 'capture'),
+                text=True, capture_output=True, check=True,
+            )
+            record('configure_args', json.dumps([configure_path] + result.stdout.split('\0')[:-1]))
+            if mode == 'configure-failure':
+                sys.exit('configure.py rejected configuration')
         elif 'fault_injector_update --pause' in script:
             record('faults_paused', 'yes')
             if mode == 'fault-pause-failure':

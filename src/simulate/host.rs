@@ -27,7 +27,6 @@ use crate::{
 
 const PREPARE: &str = include_str!("assets/prepare.sh");
 const DISABLE_FAULTS: &str = include_str!("assets/disable-faults.sh");
-const NODE_KILLS_CONFIG: &str = include_str!("assets/fault_config.json");
 const START: &str = include_str!("assets/start.sh");
 const STOP: &str = include_str!("assets/stop.sh");
 const STATUS: &str = include_str!("assets/status.sh");
@@ -340,13 +339,32 @@ pub(super) async fn run(
         let guest = vm.as_mut().expect("guest booted");
         guest.run_script(SCRATCH_SETUP).await?;
         guest.run_script(PREPARE).await?;
-        if args.node_kills {
-            guest
-                .run_script(&format!(
-                    "set -euo pipefail\nmkdir -p /opt/antithesis\ncat > /opt/antithesis/fault_config.json <<'CONFIG'\n{NODE_KILLS_CONFIG}CONFIG\n"
-                ))
-                .await?;
+        let mut configure = String::from(
+            "set -euo pipefail\n/opt/antithesis/bin/fault_scripts/randomization/configure.py",
+        );
+        if let Some(tolerance) = args.fault_tolerance {
+            configure.push_str(&format!(
+                " --fault-tolerance {}",
+                shell_quote(&tolerance.to_string())
+            ));
         }
+        if let Some(exclusions) = &args.fault_exclusions {
+            configure.push_str(&format!(" --fault-exclusions={}", shell_quote(exclusions)));
+        }
+        for flag in &args.notebook_flag {
+            configure.push_str(&format!(" --notebook-flag={}", shell_quote(flag)));
+        }
+        if let Some(scripts) = &args.custom_scripts {
+            configure.push_str(&format!(
+                " --custom-scripts={}",
+                shell_quote(&scripts.to_string())
+            ));
+        }
+        if args.reset_custom_scripts {
+            configure.push_str(" --reset-custom-scripts");
+        }
+        configure.push('\n');
+        guest.run_script(&configure).await?;
         if args.disable_faults {
             guest.run_script(DISABLE_FAULTS).await?;
         }

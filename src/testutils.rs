@@ -124,6 +124,18 @@ impl OCIRegistry {
             return None;
         }
 
+        Self::start_container(runtime, None)
+    }
+
+    /// A fresh registry container that takes HTTP basic auth for every
+    /// request. `htpasswd` is one `user:bcrypt-hash` line. It never uses the
+    /// [`TEST_REGISTRY_VAR`] registry, which takes no auth. Returns `None` when
+    /// the container cannot start.
+    pub fn start_with_basic_auth(runtime: &dyn ContainerRuntime, htpasswd: &str) -> Option<Self> {
+        Self::start_container(runtime, Some(htpasswd))
+    }
+
+    fn start_container(runtime: &dyn ContainerRuntime, htpasswd: Option<&str>) -> Option<Self> {
         if !runtime_supports_linux_registry_image(runtime.name()) {
             eprintln!(
                 "skipping: OCI registry image requires Linux containers for {}",
@@ -149,17 +161,34 @@ impl OCIRegistry {
 
         // Let the engine pick the host port. Asking the kernel for a free port
         // first and publishing it by number leaves a window where another test
-        // takes it before the engine binds.
-        let child = Command::new(&runtime_name)
-            .args([
-                "run",
-                "--rm",
-                "-p",
-                "127.0.0.1:0:5000",
-                "--name",
-                &container_name,
-                "registry:2",
-            ])
+        // takes it before the engine binds. The host port is empty, not 0,
+        // because podman 4 rejects port 0.
+        let mut command = Command::new(&runtime_name);
+        command.args([
+            "run",
+            "--rm",
+            "-p",
+            "127.0.0.1::5000",
+            "--name",
+            &container_name,
+        ]);
+        if let Some(htpasswd) = htpasswd {
+            // The image reads htpasswd only from a file. Writing it in the
+            // container avoids a bind mount, which a podman machine only
+            // supports for some host directories.
+            command
+                .args(["-e", &format!("HTPASSWD={htpasswd}")])
+                .args(["-e", "REGISTRY_AUTH=htpasswd"])
+                .args(["-e", "REGISTRY_AUTH_HTPASSWD_REALM=snouty-test"])
+                .args(["-e", "REGISTRY_AUTH_HTPASSWD_PATH=/tmp/htpasswd"])
+                .args(["--entrypoint", "/bin/sh", "registry:2", "-c"])
+                .arg(
+                    r#"printf '%s\n' "$HTPASSWD" > /tmp/htpasswd && exec registry serve /etc/docker/registry/config.yml"#,
+                );
+        } else {
+            command.arg("registry:2");
+        }
+        let child = command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(
@@ -370,9 +399,10 @@ pub fn require_runtimes_with_compose() -> Vec<Box<dyn ContainerRuntime>> {
     runtimes
 }
 
-/// Whether an OCI registry answers `/v2/` at `addr` (a `host:port`).
+/// Whether an OCI registry answers `/v2/` at `addr` (a `host:port`). A
+/// registry that takes auth answers 401.
 fn registry_v2_ping_addr(addr: &str) -> bool {
-    registry_v2_get_status(addr, "/v2/") == Some(200)
+    matches!(registry_v2_get_status(addr, "/v2/"), Some(200 | 401))
 }
 
 /// The status code the registry answers for `path`, or `None` when the request

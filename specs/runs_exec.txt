@@ -214,8 +214,7 @@ stdout '"status":"exited"'
 # the moment by replaying that run's inputs. Verified against release 66.0
 # (orbitinghail): without either, a moment from another run answers 400. A
 # debugging session rewarms a moment of its own source run without either.
-# Release 64.0 answered 400 "Moment not warm" for any moment off the session's
-# own timeline. --timeout does not count the rewarm.
+# --timeout does not count the rewarm.
 # Without the flags, neither field is sent.
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request
 stdout 'source_run_id=absent source_session_id=absent'

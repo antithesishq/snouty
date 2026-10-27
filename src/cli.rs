@@ -797,7 +797,7 @@ pub enum RunsCommands {
     #[command(long_about = HelpPage::RunsSearch.cli())]
     Search(RunsSearchArgs),
 
-    /// Show the usage hours of recent runs
+    /// Show the core-hours that recent runs used
     #[command(long_about = HelpPage::RunsUsage.cli())]
     Usage(RunsUsageArgs),
 }

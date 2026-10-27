@@ -374,11 +374,10 @@ fn print_rows<T: Serialize>(
     Ok(())
 }
 
-/// `hours` to the nearest minute, as `Xh Ym`. The minutes are padded to two
-/// places, so that the `h` and the `m` of a right-aligned column line up.
+/// Core-hours to one decimal place. A core-hour is a billing unit, not a
+/// duration, so it does not print as hours and minutes.
 fn format_hours(hours: f64) -> String {
-    let minutes = (hours * 60.0).round() as u64;
-    format!("{}h {:>2}m", minutes / 60, minutes % 60)
+    format!("{hours:.1}")
 }
 
 fn render_usage_table(entries: &[ZonedUsageEntry], width: usize) -> String {
@@ -397,7 +396,7 @@ fn render_usage_table(entries: &[ZonedUsageEntry], width: usize) -> String {
         .column(Column::new("RUN ID"))
         .column(Column::new("STARTED"))
         .column(Column::new("ENDED"))
-        .column(Column::new("HOURS").align(Align::Right))
+        .column(Column::new("CORE-HOURS").align(Align::Right))
         .render(rows, width)
 }
 
@@ -417,7 +416,7 @@ fn render_periods_table(periods: &[PeriodUsage], width: usize) -> String {
         .column(Column::new("START"))
         .column(Column::new("END"))
         .column(Column::new("RUNS").align(Align::Right))
-        .column(Column::new("HOURS").align(Align::Right))
+        .column(Column::new("CORE-HOURS").align(Align::Right))
         .render(rows, width)
 }
 

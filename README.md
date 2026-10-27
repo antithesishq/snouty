@@ -91,6 +91,8 @@ cargo install snouty
 cargo uninstall snouty || rm -f "$(which snouty)" "$(which snouty-update)"
 ```
 
+If you set up [shell completions](#shell-completions), also remove the snouty line from your shell's startup file.
+
 ## Configuration
 
 Using the API requires at least a **tenant** and a credential. `snouty launch` also needs a **repository** — the container registry it pushes the config image to. Docs commands need no configuration at all.
@@ -311,7 +313,7 @@ Snouty supports tab completions for bash, zsh, fish, elvish, and PowerShell. Hav
 
 ```sh
 # Add to ~/.bashrc
-source <(snouty completions bash)
+eval "$(snouty completions bash)"
 ```
 
 ### Zsh
@@ -334,7 +336,7 @@ snouty completions fish | source
 
 ```elvish
 # Add to ~/.config/elvish/rc.elv
-eval (snouty completions elvish | slurp)
+if (has-external snouty) { eval (snouty completions elvish | slurp) }
 ```
 
 ### PowerShell

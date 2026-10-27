@@ -10,13 +10,13 @@ For zsh, add this to ~/.zshrc:
   source <(snouty completions zsh)
 
 For bash, add this to ~/.bashrc:
-  source <(snouty completions bash)
+  eval "$(snouty completions bash)"
 
 For fish, put this line in ~/.config/fish/completions/snouty.fish:
   snouty completions fish | source
 
 For elvish, add this to ~/.config/elvish/rc.elv:
-  eval (snouty completions elvish | slurp)
+  if (has-external snouty) { eval (snouty completions elvish | slurp) }
 
 For PowerShell, add this to $PROFILE:
   snouty completions powershell | Out-String | Invoke-Expression

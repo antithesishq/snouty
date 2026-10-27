@@ -121,8 +121,19 @@ struct PeriodUsage {
     /// The last day of the period.
     date: NaiveDate,
     runs: u64,
-    /// Rounded to hundredths, so that a sum shows no floating-point noise.
+    /// The exact sum. The JSON rounds it to hundredths, so that it shows no
+    /// floating-point noise; the table rounds it once, to one decimal.
+    #[serde(serialize_with = "serialize_hundredths")]
     hours: f64,
+}
+
+// `serialize_with` passes the field by reference.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn serialize_hundredths<S: serde::Serializer>(
+    hours: &f64,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_f64((hours * 100.0).round() / 100.0)
 }
 
 /// No usage predates the Unix epoch, so no window reaches past it. This also
@@ -273,7 +284,7 @@ pub(super) async fn cmd_runs_usage(
             start: rollup.period_start(date),
             date,
             runs,
-            hours: (hours * 100.0).round() / 100.0,
+            hours,
         })
         .collect();
     print_rows(
@@ -374,11 +385,10 @@ fn print_rows<T: Serialize>(
     Ok(())
 }
 
-/// `hours` to the nearest minute, as `Xh Ym`. The minutes are padded to two
-/// places, so that the `h` and the `m` of a right-aligned column line up.
+/// Core-hours to one decimal place. A core-hour is a billing unit, not a
+/// duration, so it does not print as hours and minutes.
 fn format_hours(hours: f64) -> String {
-    let minutes = (hours * 60.0).round() as u64;
-    format!("{}h {:>2}m", minutes / 60, minutes % 60)
+    format!("{hours:.1}")
 }
 
 fn render_usage_table(entries: &[ZonedUsageEntry], width: usize) -> String {
@@ -397,7 +407,7 @@ fn render_usage_table(entries: &[ZonedUsageEntry], width: usize) -> String {
         .column(Column::new("RUN ID"))
         .column(Column::new("STARTED"))
         .column(Column::new("ENDED"))
-        .column(Column::new("HOURS").align(Align::Right))
+        .column(Column::new("CORE HOURS").align(Align::Right))
         .render(rows, width)
 }
 
@@ -417,7 +427,7 @@ fn render_periods_table(periods: &[PeriodUsage], width: usize) -> String {
         .column(Column::new("START"))
         .column(Column::new("END"))
         .column(Column::new("RUNS").align(Align::Right))
-        .column(Column::new("HOURS").align(Align::Right))
+        .column(Column::new("CORE HOURS").align(Align::Right))
         .render(rows, width)
 }
 
@@ -428,6 +438,22 @@ mod tests {
 
     fn date(text: &str) -> NaiveDate {
         text.parse().unwrap()
+    }
+
+    #[test]
+    fn a_period_total_rounds_once() {
+        let period = PeriodUsage {
+            start: date("2026-10-19"),
+            date: date("2026-10-25"),
+            runs: 2,
+            hours: 0.446,
+        };
+        // Rounded to hundredths first, 0.446 would become 0.45 and print 0.5.
+        assert_eq!(format_hours(period.hours), "0.4");
+        assert_eq!(
+            serde_json::to_value(&period).unwrap()["hours"],
+            serde_json::json!(0.45)
+        );
     }
 
     #[test]

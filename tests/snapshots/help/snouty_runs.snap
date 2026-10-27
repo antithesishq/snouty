@@ -3,8 +3,8 @@ source: tests/help_snapshots.rs
 ---
 Interact with test runs
 
-List, inspect, wait on, cancel, run commands in, and read the logs and usage
-hours of Antithesis test runs.
+List, inspect, wait on, cancel, run commands in, and read the logs and core-hour
+usage of Antithesis test runs.
 
 When no subcommand is given, lists recent runs (same as `snouty runs list`).
 
@@ -45,7 +45,7 @@ Commands:
   exec        Execute a command in a run that is in progress
   events      Search events in a run
   search      Query events with the event-set DSL
-  usage       Show the usage hours of recent runs
+  usage       Show the core-hours that recent runs used
   help        Print this message or the help of the given subcommand(s)
 
 Options:

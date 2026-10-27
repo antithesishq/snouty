@@ -1,6 +1,6 @@
 Interact with test runs
 
-List, inspect, wait on, cancel, run commands in, and read the logs and usage hours of Antithesis test runs.
+List, inspect, wait on, cancel, run commands in, and read the logs and core-hour usage of Antithesis test runs.
 
 When no subcommand is given, lists recent runs (same as `snouty runs list`).
 

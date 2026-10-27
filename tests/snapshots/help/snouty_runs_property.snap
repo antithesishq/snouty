@@ -23,7 +23,7 @@ Arguments:
           Run ID
 
   <PROPERTY_ID>
-          Property ID, from the ID column of `snouty runs properties`
+          Property ID, as the run's property list shows it
 
 Options:
   -h, --help

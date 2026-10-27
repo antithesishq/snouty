@@ -683,7 +683,7 @@ pub enum RunsCommands {
         #[arg(value_parser = parse_run_id)]
         run_id: String,
 
-        /// Property ID, from the ID column of `snouty runs properties`
+        /// Property ID, as the run's property list shows it
         #[arg(value_parser = parse_property_id)]
         property_id: String,
     },
@@ -828,8 +828,8 @@ pub struct RunsUsageArgs {
     #[arg(long)]
     pub utc: bool,
 
-    /// Maximum number of rows to display: runs, or periods with --rollup
-    /// [default: 10; not allowed with both --after and --before]
+    /// Maximum number of rows to display: runs, or periods with a rollup
+    /// [default: 10; not allowed with both an after and a before time]
     #[arg(short = 'n', long)]
     pub limit: Option<NonZeroU64>,
 }

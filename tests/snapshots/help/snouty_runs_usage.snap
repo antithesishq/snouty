@@ -67,8 +67,8 @@ Options:
           Show times and periods in UTC instead of the local timezone
 
   -n, --limit <LIMIT>
-          Maximum number of rows to display: runs, or periods with --rollup
-          [default: 10; not allowed with both --after and --before]
+          Maximum number of rows to display: runs, or periods with a rollup
+          [default: 10; not allowed with both an after and a before time]
 
   -h, --help
           Print help (see a summary with '-h')

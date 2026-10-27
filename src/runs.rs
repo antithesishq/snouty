@@ -1269,8 +1269,7 @@ fn is_failing(p: &Property) -> bool {
     matches!(p.status(), PropertyStatus::Failing)
 }
 
-/// The STAT cell: a short colored word, blank for an undetermined property so
-/// the decided rows stand out.
+/// Blank for an undetermined property, so the decided rows stand out.
 fn property_stat_cell(status: PropertyStatus) -> String {
     match status {
         PropertyStatus::Passing => console::style("pass").green().to_string(),
@@ -2829,8 +2828,7 @@ mod tests {
         let table = render_properties_table(&properties);
         let lines: Vec<&str> = table.lines().collect();
 
-        // One table per group: the failing "Safety" group leads with its name as
-        // a heading, followed by a STAT/✓/✗/ID/NAME table.
+        // Named groups come before the "(ungrouped)" section.
         assert_eq!(lines[0], "Safety");
         assert_eq!(
             lines[1].split_whitespace().collect::<Vec<_>>(),
@@ -2842,7 +2840,6 @@ mod tests {
             "group should not be folded into NAME\n{table}"
         );
 
-        // Counter property: 1 example + 2 counterexamples, its ID, name only.
         let counter_row = lines.iter().find(|l| l.contains("Counter value")).unwrap();
         assert_eq!(
             counter_row.split_whitespace().take(4).collect::<Vec<_>>(),

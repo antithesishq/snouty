@@ -3447,7 +3447,7 @@ def build_ready_stories(d: Discovery, x: GalleryRun, wait_ready: Result) -> list
             "from a different run.",
             # No story loads d.fail's moment, so it stays cold in a reused run.
             ["runs", "exec", x.run, d.fail_hash, d.fail_vtime, "uname -n"],
-            fails_with("--source-run-id"),
+            fails_with("--source-run-id or --source-session-id"),
         ),
         exec_story(
             "runs-exec--source-run-id",

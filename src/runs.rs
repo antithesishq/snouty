@@ -1999,13 +1999,13 @@ const MOMENT_NOT_WARM: [&str; 3] = [
 /// A run that has stopped cannot accept a command: on orbitinghail (release
 /// 65.0), a completed test run answers 400 `Run <id> has ended. Commands
 /// require an active run.` Otherwise, the server's responses on orbitinghail
-/// (release 64.0) mean:
+/// mean:
 ///
-/// - 404 `Resource not found`: the source does not exist.
-/// - A 400 that `MOMENT_NOT_WARM` matches: the moment is cold and there is
-///   no source.
-/// - Any other 400: a rewarm did not finish, or the source is not the
-///   moment's run.
+/// - 404 `Resource not found` (release 64.0): the source does not exist.
+/// - A 400 that `MOMENT_NOT_WARM` matches (releases 64.0 and 66.0): the
+///   moment is cold and there is no source.
+/// - Any other 400 (release 64.0): a rewarm did not finish, or the source is
+///   not the moment's run.
 fn explain_exec_error(
     run_status: RunStatus,
     debug_command: &str,

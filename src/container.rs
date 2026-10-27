@@ -258,9 +258,8 @@ pub trait ContainerRuntime: Send + Sync {
             .spawn()
             .wrap_err(format!("failed to start '{runtime} build'"))?;
 
-        if scratch && let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(b"FROM scratch\nCOPY . /\n")
+        if scratch && let Some(stdin) = child.stdin.take() {
+            write_build_stdin(stdin, b"FROM scratch\nCOPY . /\n")
                 .wrap_err("failed to write Dockerfile to stdin")?;
         }
 
@@ -361,6 +360,18 @@ pub trait ContainerRuntime: Send + Sync {
             Some(1) => Ok(PathKind::Missing),
             _ => Ok(PathKind::OtherOrUnknown),
         }
+    }
+}
+
+/// Write `data` to the stdin of a build. A build that exits before it reads
+/// stdin breaks the pipe, and that is not an error here: its exit status and
+/// stderr say why it stopped. Passing the `BrokenPipe` on would be worse than
+/// losing the reason, because `main` reads a `BrokenPipe` as a closed stdout
+/// and exits 0.
+fn write_build_stdin(mut stdin: impl Write, data: &[u8]) -> std::io::Result<()> {
+    match stdin.write_all(data) {
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        other => other,
     }
 }
 
@@ -1180,6 +1191,16 @@ mod tests {
             // Clean up the local image.
             let _ = Command::new(rt.name()).args(["rmi", &image_ref]).output();
         }
+    }
+
+    /// A build that exits before it reads its stdin breaks the pipe. The write
+    /// must not fail with `BrokenPipe`, which `main` reads as a closed stdout and
+    /// exits 0 on, so that the build's own failure is what the user sees.
+    #[test]
+    fn write_build_stdin_ignores_a_build_that_exited() {
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        write_build_stdin(writer, b"FROM scratch\n").unwrap();
     }
 
     #[test]

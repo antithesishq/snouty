@@ -3,7 +3,7 @@
 
 use std::sync::OnceLock;
 
-use clap::{Arg, Command, CommandFactory};
+use clap::{Command, CommandFactory};
 
 use super::Cli;
 
@@ -36,16 +36,4 @@ pub(crate) fn mut_at(
         None => change(command),
         Some((name, rest)) => command.mut_subcommand(name, |sub| mut_at(sub, rest, change)),
     }
-}
-
-/// Parses `value` with the value parser of `arg`, alone, so that the arg's
-/// relations to other args do not apply.
-pub(crate) fn check_value(arg: &Arg, value: &str) -> Result<(), clap::Error> {
-    let check = Arg::new(arg.get_id())
-        .value_parser(arg.get_value_parser().clone())
-        .allow_hyphen_values(true);
-    Command::new("check")
-        .arg(check)
-        .try_get_matches_from(["check", value])
-        .map(drop)
 }

@@ -1,11 +1,13 @@
 //! An example command line in a help page: snouty commands, perhaps in a
 //! shell pipeline, whose values can be `<placeholders>`.
 
+use std::ffi::OsStr;
 use std::fmt;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
+use clap::builder::{TypedValueParser, ValueParser};
 use clap::parser::ValueSource;
-use clap::{ArgMatches, Command, CommandFactory};
+use clap::{Arg, ArgMatches, Command, CommandFactory};
 use serde_json::Value;
 
 use super::error;
@@ -174,47 +176,68 @@ fn snouty_argv(words: &[String]) -> Option<Vec<String>> {
     }
 }
 
-/// `snouty`'s clap definition with every value parsed as a string, so that
-/// an example can hold a placeholder such as `<vtime>`. A parse borrows it
-/// mutably, because cloning it for each example would cost a millisecond on
-/// a page.
+/// A value parser that takes a `<placeholder>` as any value, and checks
+/// each other value with the arg's own parser.
+#[derive(Clone)]
+struct OrPlaceholder(ValueParser);
+
+impl TypedValueParser for OrPlaceholder {
+    type Value = String;
+
+    fn parse_ref(
+        &self,
+        _command: &Command,
+        arg: Option<&Arg>,
+        value: &OsStr,
+    ) -> Result<String, clap::Error> {
+        let text = value.to_string_lossy().into_owned();
+        if !is_placeholder(&text) {
+            // clap's `ValueParser::parse_ref` is private, so the value goes
+            // through a command that has only this arg, alone, so that the
+            // arg's relations to other args do not apply.
+            let id = arg.map_or_else(|| clap::Id::from("value"), |arg| arg.get_id().clone());
+            let check = Arg::new(id)
+                .value_parser(self.0.clone())
+                .allow_hyphen_values(true);
+            Command::new("check")
+                .arg(check)
+                .try_get_matches_from([OsStr::new("check"), value])?;
+        }
+        Ok(text)
+    }
+}
+
+/// `snouty`'s clap definition, in which each arg also takes a placeholder
+/// such as `<vtime>`. A parse borrows it mutably, because cloning it for
+/// each example would cost a millisecond on a page.
 fn placeholder_root() -> MutexGuard<'static, Command> {
-    fn any_value(command: Command) -> Command {
+    fn or_placeholder(command: Command) -> Command {
         command
             .mut_args(|arg| {
                 if arg.get_action().takes_values() {
-                    arg.value_parser(clap::builder::ValueParser::string())
+                    let parser = OrPlaceholder(arg.get_value_parser().clone());
+                    arg.value_parser(parser)
                 } else {
                     arg
                 }
             })
-            .mut_subcommands(any_value)
+            .mut_subcommands(or_placeholder)
     }
     static ROOT: OnceLock<Mutex<Command>> = OnceLock::new();
-    ROOT.get_or_init(|| Mutex::new(any_value(Cli::command())))
+    ROOT.get_or_init(|| Mutex::new(or_placeholder(Cli::command())))
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Parses `argv` as snouty would, and checks each literal value with the
-/// real value parser. Returns the command path and its matches.
+/// Parses `argv` as snouty would. Returns the command path and its matches.
 fn parse_argv(text: &str, argv: &[String]) -> askama::Result<(Vec<String>, ArgMatches)> {
-    let clap_error =
-        |err: clap::Error| error(format!("{text}: {}", err.render().to_string().trim()));
     let mut leaf = placeholder_root()
         .try_get_matches_from_mut(argv)
-        .map_err(clap_error)?;
+        .map_err(|err| error(format!("{text}: {}", err.render().to_string().trim())))?;
     let mut path = Vec::new();
     while let Some((name, sub)) = leaf.remove_subcommand() {
         path.push(name);
         leaf = sub;
-    }
-    let command = tree::find(&path).expect("clap parsed the path");
-    for arg in command.get_arguments() {
-        let values = from_command_line(&leaf, arg.get_id().as_str()).unwrap_or_default();
-        for value in values.iter().filter(|value| !is_placeholder(value)) {
-            tree::check_value(arg, value).map_err(clap_error)?;
-        }
     }
     Ok((path, leaf))
 }

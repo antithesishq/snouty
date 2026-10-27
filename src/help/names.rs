@@ -167,6 +167,29 @@ mod tests {
         }
     }
 
+    /// A literal value must parse, and a placeholder can stand for any
+    /// value.
+    #[test]
+    fn a_literal_value_must_parse() {
+        for text in [
+            "snouty runs wait <run_id> --until never",
+            "snouty runs list --limit five",
+            "snouty runs logs <run_id> <hash> soon",
+        ] {
+            let result = t(HelpPage::RunsLogs, Reader::Cli, text);
+            assert!(
+                result.is_err_and(|err| err.contains("invalid value")),
+                "{text}"
+            );
+        }
+        let call = t(
+            HelpPage::RunsList,
+            Reader::Mcp,
+            "snouty runs list --limit <limit>",
+        );
+        assert_eq!(call.as_deref(), Ok(r#"runs_list {"limit": <limit>}"#));
+    }
+
     #[test]
     fn names_are_written_for_the_reader() {
         let cases = [

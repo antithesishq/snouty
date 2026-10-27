@@ -1,6 +1,6 @@
 use std::io::{self, ErrorKind, Write};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, ExitCode};
 
 use clap::CommandFactory;
 use clap_complete::Shell;
@@ -20,7 +20,6 @@ use snouty::cli::{
 use snouty::compose;
 use snouty::config;
 use snouty::container;
-use snouty::docker_credential::CredentialsNotFound;
 use snouty::docs;
 use snouty::error::user_error;
 use snouty::features;
@@ -44,29 +43,20 @@ use snouty::validate;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() {
-    // Drop the "Backtrace omitted. Run with RUST_BACKTRACE=1…" footer: it's noise
-    // on every error, and outright misleading on user errors built with
-    // `suppress_backtrace` (where RUST_BACKTRACE does nothing). A genuine fault
-    // still prints its backtrace when RUST_BACKTRACE is set.
-    //
-    // Color the report only on a real terminal — piped/redirected stderr (and the
-    // test/gallery captures) gets plain text, not ANSI escapes.
-    let theme = if stdio::stderr().is_terminal() {
-        color_eyre::config::Theme::dark()
-    } else {
-        color_eyre::config::Theme::new()
-    };
-    color_eyre::config::HookBuilder::default()
-        .theme(theme)
-        .display_env_section(false)
-        .install()
-        .unwrap();
-    env_logger::Builder::from_default_env()
-        .format(|buf, record| writeln!(buf, "{}", record.args()))
-        .init();
+async fn main() -> ExitCode {
+    snouty::install_hooks();
     snouty::mcp::exit_with_server();
     let cli = snouty::cli::parse();
+    if cli.json
+        && let Some(name) = json_unaware_command_name(&cli.command)
+    {
+        eprintln!("warning: --json has no effect for `snouty {name}`");
+    }
+    // Before `run`, which reads the `./.snouty.toml` that the helper must not
+    // read.
+    if let Commands::DockerCredential { action } = cli.command {
+        return snouty::docker_credential::run(action, cli.settings, cli.profile).await;
+    }
     if let Err(report) = run(cli).await {
         // One rendering for every error: `render_report` collapses the chain
         // index for single errors and wraps overlong prose, both printing
@@ -74,10 +64,10 @@ async fn main() {
         // failures are built with `user_error`/4xx `suppress_backtrace`, so they
         // print message + any `.note()`/`.suggestion()` hints with no backtrace;
         // genuine internal faults keep theirs.
-        let rendered = snouty::error::render_report(&report);
-        eprintln!("{}", snouty::wrap_if_tty(&rendered));
+        snouty::error::print_report(&report);
         std::process::exit(1);
     }
+    ExitCode::SUCCESS
 }
 
 async fn run(cli: Cli) -> Result<()> {
@@ -88,9 +78,6 @@ async fn run(cli: Cli) -> Result<()> {
         profile,
         command,
     } = cli;
-    if json && let Some(name) = json_unaware_command_name(&command) {
-        eprintln!("warning: --json has no effect for `snouty {name}`");
-    }
     // The global output flags travel together from here on; every command
     // takes them as one value instead of a swappable positional bool pair.
     let output = OutputOptions { json, verbose };
@@ -99,20 +86,15 @@ async fn run(cli: Cli) -> Result<()> {
         return Err(report);
     }
 
-    if let Err(err) = initialize_credential_store() {
-        eprintln!("warning: Could not initialize system keychain credential storage: {err:?}");
-    }
+    initialize_credential_store();
 
     // Resolve settings once, up front. Each command that reads settings
     // unwraps the result, so a bad settings file stops only those commands.
-    let default_project_file = match command {
-        // Docker starts the helper in any directory, such as a cloned
-        // repository, and its `./.snouty.toml` could send the credential to
-        // another host.
-        Commands::DockerCredential { .. } => DefaultProjectFile::None,
-        _ => DefaultProjectFile::WorkingDirectory,
-    };
-    let settings = Settings::resolve(settings_path.clone(), default_project_file, profile.clone());
+    let settings = Settings::resolve(
+        settings_path.clone(),
+        DefaultProjectFile::WorkingDirectory,
+        profile.clone(),
+    );
     let result = match command {
         Commands::Completions { shell } => cmd_completions(shell).map_err(Report::new),
         Commands::Version => {
@@ -150,23 +132,7 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Doctor(args) => {
             snouty::doctor::cmd_doctor(&settings?, output, args.offline).await
         }
-        Commands::DockerCredential { action } => {
-            // The search skips a profile that fails to resolve, so drop the
-            // error. A settings file that fails to load still fails the search.
-            let active = settings.ok();
-            let result =
-                snouty::docker_credential::cmd_docker_credential(action, active, settings_path)
-                    .await;
-            if let Err(report) = &result {
-                // The protocol reads the error from stdout. Docker reads
-                // "not found" as an answer, so it must not go to stderr.
-                println!("{report}");
-                if report.is::<CredentialsNotFound>() {
-                    std::process::exit(1);
-                }
-            }
-            result
-        }
+        Commands::DockerCredential { .. } => unreachable!("main runs the helper"),
         Commands::Mcp(args) => {
             // The tool calls resolve the settings again, in each child.
             settings?;

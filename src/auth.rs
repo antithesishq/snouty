@@ -953,8 +953,16 @@ impl PersistableCredentials {
     }
 }
 
+/// Sets the system keychain as the credential store, and warns on stderr when
+/// that fails.
+pub fn initialize_credential_store() {
+    if let Err(err) = try_initialize_credential_store() {
+        eprintln!("warning: Could not initialize system keychain credential storage: {err:?}");
+    }
+}
+
 #[cfg(target_os = "macos")]
-pub fn initialize_credential_store() -> Result<()> {
+fn try_initialize_credential_store() -> Result<()> {
     if env::var("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE").is_ok_and(|v| v.is_some()) {
         return Ok(());
     }
@@ -965,7 +973,8 @@ pub fn initialize_credential_store() -> Result<()> {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn initialize_credential_store() -> Result<()> {
+#[allow(clippy::unnecessary_wraps)] // The macOS version can fail.
+fn try_initialize_credential_store() -> Result<()> {
     // pass
     Ok(())
 }
@@ -1004,7 +1013,7 @@ fn try_persist_to_keychain(
 
     let credential = match Entry::new("snouty", credential_name.as_str()) {
         Ok(cred) => Ok(cred),
-        // A NoDefaultStore error indicates that the version of initialize_credential_store() selected by the compiler was a no-op
+        // A NoDefaultStore error indicates that the version of try_initialize_credential_store() selected by the compiler was a no-op
         Err(keyring_core::Error::NoDefaultStore) => return Ok(None),
         Err(other) => Err(other),
     }?;

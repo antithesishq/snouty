@@ -58,7 +58,7 @@ There are two fixes:
 
 ## Install snouty
 
-Each install method puts two binaries in the same directory: `snouty`, and `docker-credential-snouty`, the small [Docker credential helper](#docker-credential-helper) that runs `snouty docker-credential`.
+Each install method puts two binaries in the same directory: `snouty`, and `docker-credential-snouty`, the [Docker credential helper](#docker-credential-helper).
 
 ### Install prebuilt binaries via shell script
 
@@ -317,7 +317,7 @@ export ANTITHESIS_EXTRA_HEADERS="X-Proxy-Token: abc123"
 
 ### Docker credential helper
 
-Your tenant has a container registry at `registry.<tenant>.antithesis.com`. Docker and Podman can sign in to it with your snouty credential, through the `docker-credential-snouty` helper. `docker-credential-snouty` must be on your `PATH`, next to `snouty`. To use the helper, add the registry to `credHelpers` in the file that your engine reads:
+Your tenant has a container registry at `registry.<tenant>.antithesis.com`. Docker and Podman can sign in to it with your snouty credential, through the `docker-credential-snouty` helper. `docker-credential-snouty` must be on your `PATH`. It contains the helper code of snouty, and does not run `snouty` or another program. To use the helper, add the registry to `credHelpers` in the file that your engine reads:
 
 ```json
 {
@@ -338,6 +338,12 @@ The username is `snouty-token`. The password is your API key, or the OAuth acces
 Snouty owns the credential, so `docker login`, and a `podman login` with a username, fail with a message that tells you to run `snouty login` or to set `ANTITHESIS_API_KEY`. A `podman login` with no username succeeds, because it gets the credential from snouty. `docker logout` and `podman logout` succeed and change nothing: the engine continues to get the credential from snouty.
 
 The engine gives the helper no profile, so snouty uses the profile whose `repository` is on the requested registry, and whose `tenant` is the tenant of that registry. The selected profile wins when it agrees, then the top-level defaults, then the one named profile that agrees. If more than one named profile agrees, set `ANTITHESIS_PROFILE` to select one. The engine starts the helper in any working directory, such as a cloned repository, so the helper does not read a `./.snouty.toml`. Put the registry settings in the global `settings.toml`, or name a settings file with `SNOUTY_SETTINGS_PATH`.
+
+To debug the helper, run `snouty docker-credential`. It runs the same code as `docker-credential-snouty`, and it also takes `--profile` and `--settings`:
+
+```sh
+echo registry.<tenant>.antithesis.com | snouty docker-credential get
+```
 
 ### Username and password (deprecated)
 

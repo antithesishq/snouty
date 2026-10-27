@@ -40,3 +40,29 @@ pub mod user_agent;
 pub mod util;
 pub mod validate;
 pub mod vtime;
+
+/// Installs the error report hook and the `RUST_LOG` logger. Each binary calls
+/// it first.
+pub fn install_hooks() {
+    use std::io::Write;
+    // Drop the "Backtrace omitted. Run with RUST_BACKTRACE=1…" footer: it's noise
+    // on every error, and outright misleading on user errors built with
+    // `suppress_backtrace` (where RUST_BACKTRACE does nothing). A genuine fault
+    // still prints its backtrace when RUST_BACKTRACE is set.
+    //
+    // Color the report only on a real terminal — piped/redirected stderr (and the
+    // test/gallery captures) gets plain text, not ANSI escapes.
+    let theme = if stdio::stderr().is_terminal() {
+        color_eyre::config::Theme::dark()
+    } else {
+        color_eyre::config::Theme::new()
+    };
+    color_eyre::config::HookBuilder::default()
+        .theme(theme)
+        .display_env_section(false)
+        .install()
+        .unwrap();
+    env_logger::Builder::from_default_env()
+        .format(|buf, record| writeln!(buf, "{}", record.args()))
+        .init();
+}

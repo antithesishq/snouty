@@ -127,6 +127,8 @@ fn generate_api_client(out_dir: &Path) {
 
 /// Give every string enum the server sends an `Other(String)` variant, so a
 /// value this build does not know decodes as `Other` and keeps its spelling.
+/// `Display` escapes an `Other` value, because the server controls its text
+/// and every format site prints it to the terminal.
 /// typify makes each enum closed, and a closed enum fails the whole response:
 /// one new run status would fail `runs list`. `FromStr` stays strict, because
 /// it parses user input. The `LAUNCH_ENUM_PARAMS` enums stay closed: snouty only
@@ -201,8 +203,9 @@ fn open_string_enums(file: &mut syn::File) {
             panic!("a generated fmt is not a match; update `open_string_enums` in build.rs");
         };
         *body.expr = syn::parse_quote!(self);
-        body.arms
-            .push(syn::parse_quote!(Self::Other(value) => f.write_str(value),));
+        body.arms.push(
+            syn::parse_quote!(Self::Other(value) => f.write_str(&crate::render::sanitize(value)),),
+        );
         displays += 1;
     }
     assert!(
@@ -432,10 +435,9 @@ const LAUNCH_ENUM_PARAMS: &[(&str, &str)] = &[
     ("antithesis.fault_tolerance", "FaultTolerance"),
 ];
 
-/// Decode `Params.<param>` as a plain string. `runs list` and `runs show`
-/// decode every run's parameters through `Params`, so a closed enum would fail
-/// a whole listing on one value this build does not know. The enum moves to
-/// `schema`, which the `launch` flag parses into.
+/// Decode `Params.<param>` as a plain string, and move the enum to `schema`,
+/// which the `launch` flag parses into. `open_string_enums` skips `schema`,
+/// because `clap::ValueEnum` needs a closed enum.
 fn open_param_enum(spec: &mut serde_json::Value, param: &str, schema: &str) {
     let pointer = format!("/components/schemas/Params/properties/{param}");
     let values = remove_schema_key(spec, &pointer, "enum", "open_param_enum");

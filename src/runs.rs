@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::io::{IsTerminal, Read, Write};
 use std::num::NonZeroU64;
@@ -520,8 +521,9 @@ async fn cmd_runs_cancel(
     Ok(())
 }
 
-/// The failure for a run that reports `unknown`: it may never progress.
-fn unknown_status_error(run_id: &str, status: &RunStatus) -> color_eyre::eyre::Report {
+/// The failure for a run whose status is unclassified (see
+/// [`RunStatus::is_unclassified`]): it may never progress.
+fn unclassified_status_error(run_id: &str, status: &RunStatus) -> color_eyre::eyre::Report {
     user_error(format!("run {run_id} reported status \"{status}\""))
         .note("snouty cannot tell whether this run will still make progress")
         .suggestion(format!("inspect the run with `snouty runs show {run_id}`"))
@@ -530,8 +532,8 @@ fn unknown_status_error(run_id: &str, status: &RunStatus) -> color_eyre::eyre::R
 /// Poll `get_run` every `poll_interval` until the run reaches the `until`
 /// point, and call `on_wait` with each poll that has not reached it. The first
 /// poll is at once. A run that reports `unknown`, or a status this build does
-/// not know, fails the wait (see [`RunStatus::is_unclassified`]). The polls bypass the response cache, so each
-/// one observes fresh state.
+/// not know, fails the wait (see [`RunStatus::is_unclassified`]). The polls
+/// bypass the response cache, so each one observes fresh state.
 ///
 /// Never returns on its own — the caller bounds it with `tokio::time::timeout`.
 async fn wait_for_run(
@@ -558,7 +560,7 @@ async fn wait_for_run(
         };
 
         if run.status.is_unclassified() {
-            return Err(unknown_status_error(run_id, &run.status));
+            return Err(unclassified_status_error(run_id, &run.status));
         }
         let reached = match until {
             WaitUntil::Ready => run.is_ready_or_terminal(),
@@ -701,7 +703,7 @@ fn print_properties_detail(run_id: &str, properties: &[Property]) -> Result<()> 
 fn no_properties_message(filter: &PropertyFilter) -> String {
     let mut parts = Vec::new();
     if !filter.statuses.is_empty() {
-        let labels: Vec<&str> = filter.statuses.iter().map(property_status_word).collect();
+        let labels: Vec<_> = filter.statuses.iter().map(property_status_word).collect();
         parts.push(labels.join(" or "));
     }
     if let Some(name) = filter.name {
@@ -933,17 +935,22 @@ fn format_count_si(n: u64) -> String {
 }
 
 /// The status as an uncolored word, for prose.
-fn property_status_word(status: &PropertyStatus) -> &str {
+fn property_status_word(status: &PropertyStatus) -> Cow<'static, str> {
     match status {
-        PropertyStatus::Passing => "passing",
-        PropertyStatus::Failing => "failing",
-        PropertyStatus::Undetermined => "undetermined",
-        PropertyStatus::Other(status) => status,
+        PropertyStatus::Passing => "passing".into(),
+        PropertyStatus::Failing => "failing".into(),
+        PropertyStatus::Undetermined => "undetermined".into(),
+        PropertyStatus::Other(_) => status.to_string().into(),
     }
 }
 
 fn property_status_label(status: &PropertyStatus) -> String {
-    let word = console::style(sanitize(property_status_word(status)));
+    style_property_status(status, property_status_word(status))
+}
+
+/// `word` in the color of `status`.
+fn style_property_status(status: &PropertyStatus, word: Cow<'_, str>) -> String {
+    let word = console::style(word);
     match status {
         PropertyStatus::Passing => word.green(),
         PropertyStatus::Failing => word.red(),
@@ -1271,19 +1278,13 @@ fn is_failing(p: &Property) -> bool {
 /// A known status is a word of at most six characters, so the column is no
 /// wider than its STATUS header.
 fn property_status_cell(status: &PropertyStatus) -> String {
-    let word = console::style(sanitize(match status {
-        PropertyStatus::Passing => "pass",
-        PropertyStatus::Failing => "fail",
-        PropertyStatus::Undetermined => "unseen",
-        PropertyStatus::Other(status) => status,
-    }));
-    match status {
-        PropertyStatus::Passing => word.green(),
-        PropertyStatus::Failing => word.red(),
-        PropertyStatus::Undetermined => word.yellow(),
-        PropertyStatus::Other(_) => word,
-    }
-    .to_string()
+    let word = match status {
+        PropertyStatus::Passing => "pass".into(),
+        PropertyStatus::Failing => "fail".into(),
+        PropertyStatus::Undetermined => "unseen".into(),
+        PropertyStatus::Other(_) => status.to_string().into(),
+    };
+    style_property_status(status, word)
 }
 
 /// Order properties into display sections shared by the table and `--detail`
@@ -1657,7 +1658,7 @@ async fn open_run_stream(
                 );
             }
             RunProbe::Exists(run) if run.status.is_unclassified() => {
-                return Err(unknown_status_error(run_id, &run.status));
+                return Err(unclassified_status_error(run_id, &run.status));
             }
             RunProbe::Exists(run) if run.status.is_terminal() => {
                 return Err(user_error(format!(
@@ -2699,7 +2700,7 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
             .map_or_else(|| "-".to_string(), sanitize);
             vec![
                 sanitize(&run.run_id),
-                sanitize(&run.status.to_string()),
+                run.status.to_string(),
                 relative_time(run.created_at),
                 match run.launcher.as_str() {
                     "" => "-".to_string(),

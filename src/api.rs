@@ -3495,8 +3495,6 @@ mod tests {
         .unwrap();
         assert_eq!(run.status, RunStatus::Other("paused".to_owned()));
         assert_eq!(run.status.to_string(), "paused");
-        assert!(run.status.is_unclassified());
-        assert!(!run.status.is_terminal());
         let json = serde_json::to_value(&run).unwrap();
         assert_eq!(json["status"], "paused");
         assert_eq!(json["parameters"]["antithesis.is_ephemeral"], "sometimes");

@@ -752,7 +752,7 @@ pub enum RunsCommands {
 
         /// Run that a cold moment comes from; the server loads the moment
         /// into the run. Omit it in a debugging session for a moment of the
-        /// run the session was launched from
+        /// run or session the session was launched from
         #[arg(long, conflicts_with = "source_session_id")]
         source_run_id: Option<SourceRunId>,
 

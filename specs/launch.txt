@@ -78,6 +78,8 @@ stderr 'possible values: none, resilient, high_availability, legacy'
 stderr 'antithesis\.fault_exclusions is not a valid regular expression.*'
 ! snouty launch --launcher basic_test --duration 30 --param antithesis.fault_exclusions='('
 stderr 'antithesis\.fault_exclusions is not a valid regular expression.*'
+! snouty launch --launcher basic_test --duration 30 --fault-exclusions ''
+stderr 'antithesis\.fault_exclusions is empty'
 
 # `launch` does not accept --stdin.
 ! snouty launch --launcher basic_test --stdin --duration 30

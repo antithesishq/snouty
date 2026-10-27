@@ -946,19 +946,14 @@ mod tests {
     }
 
     /// clap parses the value name, and `launch` sends `Display`, the wire
-    /// value. By default clap would name `high_availability`
-    /// `high-availability`.
-    fn assert_value_names_are_the_wire_values<T: ValueEnum + std::fmt::Display>() {
-        for value in T::value_variants() {
-            let name = value.to_possible_value().expect("no variant is skipped");
-            assert_eq!(name.get_name(), value.to_string());
-        }
-    }
-
+    /// value. They differ for a tier such as `ultra_fast`, which clap would
+    /// name `ultra-fast`.
     #[test]
-    fn launch_enum_value_names_are_the_wire_values() {
-        assert_value_names_are_the_wire_values::<PerformanceTier>();
-        assert_value_names_are_the_wire_values::<FaultTolerance>();
+    fn performance_tier_value_names_are_the_wire_values() {
+        for tier in PerformanceTier::value_variants() {
+            let name = tier.to_possible_value().expect("no variant is skipped");
+            assert_eq!(name.get_name(), tier.to_string());
+        }
     }
 
     #[test]

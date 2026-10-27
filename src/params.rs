@@ -106,10 +106,8 @@ impl Params {
                 validate_filter_pattern(key, value, suppressed)?;
             }
         }
-        // The OpenAPI spec gives this pattern the `regex` crate's syntax, so
-        // unlike the filter pattern check, this check is exact.
         if let Some(value) = self.inner.get(ANT_FAULT_EXCLUSIONS).and_then(Value::as_str) {
-            compile_pattern(ANT_FAULT_EXCLUSIONS, value)?;
+            validate_fault_exclusions(value)?;
         }
         Ok(())
     }
@@ -213,6 +211,19 @@ fn validate_filter_pattern(key: &str, value: &str, suppressed: &str) -> Result<(
             "{key} matches the empty string, which would suppress {suppressed}"
         )));
     }
+    Ok(())
+}
+
+/// The OpenAPI spec gives the pattern the `regex` crate's syntax, but the
+/// server can run another version of the crate, so this is a pre-check only.
+fn validate_fault_exclusions(value: &str) -> Result<()> {
+    // A blank pattern is most likely an unset shell variable, and it would
+    // exclude every container from faults.
+    if value.trim().is_empty() {
+        return Err(user_error(format!("{ANT_FAULT_EXCLUSIONS} is empty"))
+            .suggestion("provide a pattern or drop the flag"));
+    }
+    compile_pattern(ANT_FAULT_EXCLUSIONS, value)?;
     Ok(())
 }
 
@@ -674,6 +685,7 @@ mod tests {
     fn filter_validation_never_panics(tc: hegel::TestCase) {
         let pattern = tc.draw(generators::text());
         let _ = validate_filter(&pattern);
+        let _ = validate_fault_exclusions(&pattern);
     }
 
     #[test]

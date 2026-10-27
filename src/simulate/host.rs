@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use color_eyre::eyre::{OptionExt, Result, bail};
+use color_eyre::eyre::{Context, OptionExt, Result, bail};
 use futures_util::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::signal::unix::{Signal, SignalKind, signal};
@@ -32,6 +32,7 @@ const STOP: &str = include_str!("assets/stop.sh");
 const STATUS: &str = include_str!("assets/status.sh");
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 const ATTACH_READY: &str = "attach-ready";
+const GUEST_ISO_ENV: &str = "SNOUTY_SIMULATE_GUEST_ISO";
 
 fn session_root() -> Result<PathBuf> {
     let base = crate::settings::cache_dir()
@@ -275,7 +276,7 @@ pub(super) async fn run(
     settings: &Settings,
     options: OutputOptions,
 ) -> Result<ExitCode> {
-    let guest_image = resolve_guest_image(args.guest_image, settings, options.verbose).await?;
+    let guest = resolve_guest(args.guest_image, settings, options.verbose).await?;
     let runtime = container::runtime(settings)?;
     container::warn_ambiguous_engine(settings, runtime.as_ref(), options.json);
     let compose = compose::DockerCompose::resolve(runtime.as_ref(), config.clone())?;
@@ -319,9 +320,7 @@ pub(super) async fn run(
     let mut instrumentation = None;
     let execution = async {
         eprintln!("Preparing guest image...");
-        let iso = images
-            .guest_iso(&guest_image, run_dir.path(), args.platform)
-            .await?;
+        let iso = guest.iso(&images, run_dir.path(), args.platform).await?;
         eprintln!("Booting guest...");
         let scratch_disk = create_scratch_disk(run_dir.path()).await?;
         vm = Some(
@@ -569,12 +568,36 @@ async fn create_scratch_disk(run_dir: &Path) -> Result<PathBuf> {
     Ok(disk)
 }
 
-async fn resolve_guest_image(
-    image: Option<String>,
-    settings: &Settings,
-    verbose: bool,
-) -> Result<String> {
-    Ok(match image {
+enum Guest {
+    Iso(PathBuf),
+    Image(String),
+}
+
+impl Guest {
+    async fn iso(
+        self,
+        images: &Images,
+        run_dir: &Path,
+        platform: super::SimulatePlatform,
+    ) -> Result<PathBuf> {
+        match self {
+            Self::Iso(path) => Ok(path),
+            Self::Image(image) => images.guest_iso(&image, run_dir, platform).await,
+        }
+    }
+}
+
+async fn resolve_guest(image: Option<String>, settings: &Settings, verbose: bool) -> Result<Guest> {
+    if let Some(path) = std::env::var_os(GUEST_ISO_ENV) {
+        let path = PathBuf::from(path);
+        let iso = std::fs::canonicalize(&path)
+            .wrap_err_with(|| format!("cannot use {GUEST_ISO_ENV} path {}", path.display()))?;
+        if !iso.is_file() {
+            bail!("{GUEST_ISO_ENV} path is not a file: {}", path.display());
+        }
+        return Ok(Guest::Iso(iso));
+    }
+    Ok(Guest::Image(match image {
         Some(image) => image,
         None => {
             let repository = crate::settings::require(settings.repository(), "repository")?;
@@ -593,7 +616,7 @@ async fn resolve_guest_image(
                 version.release_version
             )
         }
-    })
+    }))
 }
 
 pub(super) async fn shell(
@@ -602,7 +625,7 @@ pub(super) async fn shell(
     verbose: bool,
 ) -> Result<ExitCode> {
     interactive_terminal("--shell")?;
-    let guest_image = resolve_guest_image(args.guest_image, settings, verbose).await?;
+    let guest = resolve_guest(args.guest_image, settings, verbose).await?;
     let runtime = container::runtime(settings)?;
     container::warn_ambiguous_engine(settings, runtime.as_ref(), false);
     let images = Images::from_runtime(runtime.as_ref());
@@ -610,9 +633,7 @@ pub(super) async fn shell(
         .prefix("snouty-simulate-")
         .tempdir()?;
     eprintln!("Preparing guest image...");
-    let iso = images
-        .guest_iso(&guest_image, run_dir.path(), args.platform)
-        .await?;
+    let iso = guest.iso(&images, run_dir.path(), args.platform).await?;
     let scratch_disk = create_scratch_disk(run_dir.path()).await?;
     eprintln!("Booting guest...");
     let mut signals = Signals::install()?;

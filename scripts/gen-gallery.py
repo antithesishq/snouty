@@ -2216,7 +2216,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "custom scripts and reset; notebook flags do not set live values, "
             "interruption, failure status, the runs-compatible human log rendering, and "
             "active-fault annotations in JSON output. It should also show how to attach "
-            "a second terminal to a running guest, with the ID printed after boot.",
+            "a second terminal to a running guest, with the ID printed after boot. "
+            "Internal testing overrides must stay out of help.",
             ["simulate"],
         ),
         _help_story(

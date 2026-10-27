@@ -15,6 +15,7 @@ snouty --help
 stdout 'simulate +Run a Compose setup'
 snouty simulate --help
 stdout 'guest-image'
+! stdout 'SNOUTY_SIMULATE_GUEST_ISO'
 stdout '\-\-platform <PLATFORM>'
 stdout 'native host platform'
 stdout 'Requires Linux or macOS and QEMU'

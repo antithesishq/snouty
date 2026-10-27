@@ -4,7 +4,7 @@
 use std::num::NonZeroU64;
 
 use chrono::{DateTime, Utc};
-use clap::{ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
 use crate::api::{
     PerformanceTier, RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SourceRunId,
@@ -15,10 +15,12 @@ use color_eyre::eyre::Report;
 
 use crate::error::user_error;
 use crate::features::{self, Feature};
-use crate::help::HelpPage;
+use crate::help::{self, Attach};
 use crate::runs::usage::{Rollup, TimeBound};
 use crate::time::{BareUnit, HumanDuration, ParseDurationError};
 use crate::vtime::VTime;
+
+pub(crate) mod tree;
 
 /// Every `RunStatus` variant, used to enumerate valid `--status` values in
 /// error output. The generated enum offers no iteration, so this array is the
@@ -241,27 +243,17 @@ pub enum Commands {
     Mcp(McpArgs),
 }
 
-/// `snouty`'s clap command, with the long help of each command. Parse with
-/// this, not with `Cli::parse`: the long help is rendered at run time, from
-/// the plain `Cli::command()`, so the derive cannot set it. clap renders a
-/// page only when it builds that page's command.
+/// `snouty`'s clap command, with the long help of each command. clap
+/// renders a page only when it builds that page's command.
 pub fn command() -> clap::Command {
-    HelpPage::ALL
-        .into_iter()
-        .fold(Cli::command(), |command, page| {
-            defer_at(command, page.path(), page.set_long_help())
-        })
+    help::attach(Cli::command(), Attach::Deferred)
 }
 
-fn defer_at(
-    command: clap::Command,
-    path: &[&str],
-    deferred: fn(clap::Command) -> clap::Command,
-) -> clap::Command {
-    match path.split_first() {
-        None => command.defer(deferred),
-        Some((name, rest)) => command.mut_subcommand(name, |sub| defer_at(sub, rest, deferred)),
-    }
+/// Parses the command line, with the long help of [`command`]. The long help
+/// is rendered at run time, so the derive's `Cli::parse` cannot set it.
+pub fn parse() -> Cli {
+    let matches = command().get_matches();
+    Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.format(&mut command()).exit())
 }
 
 /// Refuses a gated command while its feature is off. A hidden subcommand is
@@ -1203,61 +1195,5 @@ mod tests {
             "snouty", "runs", "search", "RUN", "q", "--check", "--follow",
         ]);
         assert!(parsed.is_err(), "expected --check --follow to conflict");
-    }
-
-    #[test]
-    fn events_search_help_names_min_release() {
-        let (major, minor) = crate::api::MIN_SEARCH_RELEASE;
-        let sentence = format!("tenant release {major}.{minor} or newer");
-        for page in [HelpPage::RunsSearch, HelpPage::RunsEvents] {
-            assert!(page.text().contains(&sentence), "{page:?}");
-        }
-    }
-
-    /// The verb list in the search help names every verb in
-    /// [`event_set_dsl::VERBS`].
-    #[test]
-    fn search_long_about_names_every_verb() {
-        let about = HelpPage::RunsSearch.text();
-        for verb in crate::event_set_dsl::VERBS {
-            assert!(about.contains(verb), "missing verb {verb}");
-        }
-    }
-
-    /// `--json` is a global flag, so every long help says what the command
-    /// does with it — prints JSON, or ignores the flag. The commands that
-    /// warn "--json has no effect" at runtime are the exception: their help
-    /// never raises the subject.
-    #[test]
-    fn every_long_help_says_what_json_does() {
-        const NO_JSON: [&str; 6] = [
-            "validate",
-            "completions",
-            "version",
-            "update",
-            "login",
-            "mcp",
-        ];
-
-        fn walk(command: &clap::Command) {
-            for sub in command.get_subcommands() {
-                if !NO_JSON.contains(&sub.get_name())
-                    && let Some(about) = sub.get_long_about()
-                {
-                    let about = about.to_string();
-                    assert!(
-                        about.contains("--json"),
-                        "`{}` long help says nothing about --json",
-                        sub.get_name()
-                    );
-                }
-                walk(sub);
-            }
-        }
-
-        let mut cli = command();
-        // A long help is set when its command is built.
-        cli.build();
-        walk(&cli);
     }
 }

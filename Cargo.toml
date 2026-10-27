@@ -116,7 +116,6 @@ name = "mock_api"
 path = "examples/mock_api.rs"
 
 [build-dependencies]
-# Renders the help/*.txt templates into OUT_DIR at build time.
 # Same openapiv3 version progenitor resolves; build.rs preprocesses the spec
 # through this type before handing it to the generator.
 openapiv3 = "2"

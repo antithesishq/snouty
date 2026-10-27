@@ -2,7 +2,7 @@ use std::io::{self, ErrorKind, IsTerminal, Write};
 use std::path::Path;
 use std::process::Command;
 
-use clap::{CommandFactory, FromArgMatches};
+use clap::CommandFactory;
 use clap_complete::Shell;
 use indoc::writedoc;
 use log::info;
@@ -63,9 +63,7 @@ async fn main() {
         .format(|buf, record| writeln!(buf, "{}", record.args()))
         .init();
     snouty::mcp::exit_with_server();
-    let matches = snouty::cli::command().get_matches();
-    let cli = Cli::from_arg_matches(&matches)
-        .unwrap_or_else(|err| err.format(&mut snouty::cli::command()).exit());
+    let cli = snouty::cli::parse();
     if let Err(report) = run(cli).await {
         // One rendering for every error: `render_report` collapses the chain
         // index for single errors and wraps overlong prose, both printing

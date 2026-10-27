@@ -144,7 +144,9 @@ pub(crate) enum CodeSpans {
 ///
 /// Each `\n` starts a new paragraph and blank lines are kept. A paragraph that
 /// already fits passes through byte-identical, which keeps aligned content
-/// (tables, caret markers, indented listings) exactly as built. An overlong
+/// (tables, caret markers, indented listings) exactly as built. So does a
+/// paragraph directly above a caret line (one that trims to `^`), whatever its
+/// width: the caret points at one of its columns. An overlong
 /// paragraph keeps its leading-space indent on every wrapped line, has tabs
 /// normalized to spaces (textwrap's separator only breaks on spaces), and
 /// never splits a word — an overlong token overflows instead. With
@@ -263,8 +265,9 @@ mod tests {
 
     /// Every wrapped line fits within `width` display columns (ANSI escapes
     /// and control characters count as zero width, wide glyphs as two), with
-    /// the one documented exception: a single word longer than the remaining
-    /// width is kept intact rather than split mid-token. After the preserved
+    /// two documented exceptions: a single word longer than the remaining
+    /// width is kept intact rather than split mid-token, and a line directly
+    /// above a caret line is kept whole. After the preserved
     /// leading-space indent, such a line is one word or one code span.
     #[hegel::test]
     fn wrap_text_respects_width(tc: hegel::TestCase) {
@@ -272,9 +275,13 @@ mod tests {
         // Include 0 to exercise the `width.max(1)` clamp.
         let width = tc.draw(generators::integers::<usize>().max_value(40));
         let effective = width.max(1);
-        for line in wrap_text(&text, width, CodeSpans::Keep) {
+        let lines = wrap_text(&text, width, CodeSpans::Keep);
+        for (i, line) in lines.iter().enumerate() {
+            // A caret line below keeps the line whole, at any width.
+            let marked = lines.get(i + 1).is_some_and(|next| next.trim() == "^");
             assert!(
-                textwrap::core::display_width(&line) <= effective
+                marked
+                    || textwrap::core::display_width(line) <= effective
                     || find_words_keeping_code_spans(line.trim_start()).count() == 1,
                 "line {line:?} exceeds width {effective} but holds more than one word",
             );

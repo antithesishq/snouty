@@ -57,6 +57,12 @@ mock-runs-server
 [!staging] stderr 'run run-unknown-status reported status "unknown"'
 [!staging] stderr 'snouty runs show run-unknown-status'
 
+# A run that reports a status this build does not know also fails the wait,
+# for the same reason.
+mock-runs-server
+[!staging] ! snouty runs wait run-new-status
+[!staging] stderr 'run run-new-status reported status "paused"'
+
 # A bad run id gives the same friendly "run not found" message as every other
 # run-scoped subcommand.
 mock-runs-server

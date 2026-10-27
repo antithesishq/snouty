@@ -105,6 +105,7 @@ impl Record {
             | RunStreamNotificationType::NewExamplesFound => None,
             RunStreamNotificationType::PropertiesPassed => Some(Verdict::Passed),
             RunStreamNotificationType::PropertiesFailed => Some(Verdict::Failed),
+            RunStreamNotificationType::Other(_) => return Ok(Self::Unknown(line)),
         };
         match decode_properties(&line["data"]) {
             Ok(properties) => Ok(Self::Properties {

@@ -521,16 +521,16 @@ async fn cmd_runs_cancel(
 }
 
 /// The failure for a run that reports `unknown`: it may never progress.
-fn unknown_status_error(run_id: &str) -> color_eyre::eyre::Report {
-    user_error(format!("run {run_id} reported status \"unknown\""))
+fn unknown_status_error(run_id: &str, status: &RunStatus) -> color_eyre::eyre::Report {
+    user_error(format!("run {run_id} reported status \"{status}\""))
         .note("snouty cannot tell whether this run will still make progress")
         .suggestion(format!("inspect the run with `snouty runs show {run_id}`"))
 }
 
 /// Poll `get_run` every `poll_interval` until the run reaches the `until`
 /// point, and call `on_wait` with each poll that has not reached it. The first
-/// poll is at once. A run that reports `unknown` fails the wait (see
-/// [`RunStatus::is_terminal`]). The polls bypass the response cache, so each
+/// poll is at once. A run that reports `unknown`, or a status this build does
+/// not know, fails the wait (see [`RunStatus::is_unclassified`]). The polls bypass the response cache, so each
 /// one observes fresh state.
 ///
 /// Never returns on its own — the caller bounds it with `tokio::time::timeout`.
@@ -557,8 +557,8 @@ async fn wait_for_run(
             Err(err) => return Err(explain_run_not_found(run_id, err)),
         };
 
-        if run.status == RunStatus::Unknown {
-            return Err(unknown_status_error(run_id));
+        if run.status.is_unclassified() {
+            return Err(unknown_status_error(run_id, &run.status));
         }
         let reached = match until {
             WaitUntil::Ready => run.is_ready_or_terminal(),
@@ -701,11 +701,7 @@ fn print_properties_detail(run_id: &str, properties: &[Property]) -> Result<()> 
 fn no_properties_message(filter: &PropertyFilter) -> String {
     let mut parts = Vec::new();
     if !filter.statuses.is_empty() {
-        let labels: Vec<&str> = filter
-            .statuses
-            .iter()
-            .map(|&status| property_status_word(status))
-            .collect();
+        let labels: Vec<&str> = filter.statuses.iter().map(property_status_word).collect();
         parts.push(labels.join(" or "));
     }
     if let Some(name) = filter.name {
@@ -937,20 +933,22 @@ fn format_count_si(n: u64) -> String {
 }
 
 /// The status as an uncolored word, for prose.
-fn property_status_word(status: PropertyStatus) -> &'static str {
+fn property_status_word(status: &PropertyStatus) -> &str {
     match status {
         PropertyStatus::Passing => "passing",
         PropertyStatus::Failing => "failing",
         PropertyStatus::Undetermined => "undetermined",
+        PropertyStatus::Other(status) => status,
     }
 }
 
-fn property_status_label(status: PropertyStatus) -> String {
-    let word = console::style(property_status_word(status));
+fn property_status_label(status: &PropertyStatus) -> String {
+    let word = console::style(sanitize(property_status_word(status)));
     match status {
         PropertyStatus::Passing => word.green(),
         PropertyStatus::Failing => word.red(),
         PropertyStatus::Undetermined => word.yellow(),
+        PropertyStatus::Other(_) => word,
     }
     .to_string()
 }
@@ -1077,6 +1075,7 @@ fn render_property_detail(property: &Property) -> String {
                     PropertyStatus::Passing => "passed with no examples",
                     PropertyStatus::Failing => "failed with no examples",
                     PropertyStatus::Undetermined => "none yet",
+                    PropertyStatus::Other(_) => "none",
                 };
                 out.push_str(&render_field("Examples", examples));
             } else {
@@ -1269,18 +1268,20 @@ fn is_failing(p: &Property) -> bool {
     matches!(p.status(), PropertyStatus::Failing)
 }
 
-/// A word of at most six characters, so the column is no wider than its
-/// STATUS header.
-fn property_status_cell(status: PropertyStatus) -> String {
-    let word = console::style(match status {
+/// A known status is a word of at most six characters, so the column is no
+/// wider than its STATUS header.
+fn property_status_cell(status: &PropertyStatus) -> String {
+    let word = console::style(sanitize(match status {
         PropertyStatus::Passing => "pass",
         PropertyStatus::Failing => "fail",
         PropertyStatus::Undetermined => "unseen",
-    });
+        PropertyStatus::Other(status) => status,
+    }));
     match status {
         PropertyStatus::Passing => word.green(),
         PropertyStatus::Failing => word.red(),
         PropertyStatus::Undetermined => word.yellow(),
+        PropertyStatus::Other(_) => word,
     }
     .to_string()
 }
@@ -1655,8 +1656,8 @@ async fn open_run_stream(
                     )),
                 );
             }
-            RunProbe::Exists(run) if run.status == RunStatus::Unknown => {
-                return Err(unknown_status_error(run_id));
+            RunProbe::Exists(run) if run.status.is_unclassified() => {
+                return Err(unknown_status_error(run_id, &run.status));
             }
             RunProbe::Exists(run) if run.status.is_terminal() => {
                 return Err(user_error(format!(
@@ -2698,7 +2699,7 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
             .map_or_else(|| "-".to_string(), sanitize);
             vec![
                 sanitize(&run.run_id),
-                run.status.to_string(),
+                sanitize(&run.status.to_string()),
                 relative_time(run.created_at),
                 match run.launcher.as_str() {
                     "" => "-".to_string(),
@@ -2931,6 +2932,24 @@ mod tests {
             ),
         ];
         assert!(render_properties_table(&mixed).contains("(ungrouped)"));
+    }
+
+    #[test]
+    fn properties_show_an_unknown_status_as_the_server_sent_it() {
+        let status: PropertyStatus = serde_json::from_value(json!("Flaky\u{1b}[2J")).unwrap();
+        let properties = vec![event_property(
+            "Setup completes",
+            status,
+            None,
+            vec![],
+            vec![],
+        )];
+
+        let table = render_properties_table(&properties);
+        assert!(table.contains("Flaky\\x1B[2J"), "{table}");
+        let detail = render_property_detail(&properties[0]);
+        assert!(detail.contains("Flaky\\x1B[2J"), "{detail}");
+        assert!(detail.ends_with("Examples  none"), "{detail}");
     }
 
     #[test]

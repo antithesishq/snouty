@@ -58,7 +58,6 @@ fn generate_api_client(out_dir: &Path) {
     for &(param, schema) in LAUNCH_ENUM_PARAMS {
         open_param_enum(&mut spec_value, param, schema);
     }
-    open_sub_status(&mut spec_value);
     dedupe_property_status_filter(&mut spec_value);
     share_run_stream_notification_type(&mut spec_value);
     unrequire_search_limit_default(&mut spec_value);
@@ -81,14 +80,6 @@ fn generate_api_client(out_dir: &Path) {
         "crate::vtime::VTime",
         std::iter::empty::<progenitor::TypeImpl>(),
     );
-    let sub_status_schema: schemars::schema::SchemaObject =
-        serde_json::from_value(serde_json::json!({"type": "string", "format": SUB_STATUS_FORMAT}))
-            .unwrap();
-    settings.with_conversion(
-        sub_status_schema,
-        "crate::api::RunSubStatus",
-        std::iter::empty::<progenitor::TypeImpl>(),
-    );
     // `launch` sends each value's `Display` form, the snake_case wire value, so
     // clap must name each value the same way. typify puts patch attributes
     // before derives, and `#[value]` must follow its derive, so the derive goes
@@ -102,7 +93,8 @@ fn generate_api_client(out_dir: &Path) {
     }
     let mut generator = progenitor::Generator::new(&settings);
     let tokens = generator.generate_tokens(&spec).unwrap();
-    let ast = syn::parse2(tokens).unwrap();
+    let mut ast = syn::parse2(tokens).unwrap();
+    open_string_enums(&mut ast);
     let content = prettyplease::unparse(&ast);
     let content = patch_lenient_booleans(content);
     assert_no_typed_error_responses(&content);
@@ -114,11 +106,6 @@ fn generate_api_client(out_dir: &Path) {
     assert!(
         content.contains("pub vtime: crate::vtime::VTime"),
         "generated client does not use crate::vtime::VTime for Moment.vtime; \
-         the with_conversion schema match no longer applies"
-    );
-    assert!(
-        content.contains("pub sub_status: ::std::option::Option<crate::api::RunSubStatus>"),
-        "generated client does not use crate::api::RunSubStatus for Run_Detail.sub_status; \
          the with_conversion schema match no longer applies"
     );
 
@@ -136,6 +123,94 @@ fn generate_api_client(out_dir: &Path) {
     println!("cargo:rustc-env=SNOUTY_GENERATED_API_HASH={client_hash:016x}");
 
     fs::write(out_dir.join("antithesis_api.rs"), content).unwrap();
+}
+
+/// Give every string enum the server sends an `Other(String)` variant, so a
+/// value this build does not know decodes as `Other` and keeps its spelling.
+/// typify makes each enum closed, and a closed enum fails the whole response:
+/// one new run status would fail `runs list`. `FromStr` stays strict, because
+/// it parses user input. The `LAUNCH_ENUM_PARAMS` enums stay closed: snouty only
+/// sends them, and `clap::ValueEnum` needs unit variants.
+fn open_string_enums(file: &mut syn::File) {
+    let types = file
+        .items
+        .iter_mut()
+        .find_map(|item| match item {
+            syn::Item::Mod(module) if module.ident == "types" => module.content.as_mut(),
+            _ => None,
+        })
+        .map(|(_, items)| items)
+        .expect("generated client has no `types` module; update `open_string_enums` in build.rs");
+
+    let mut opened = Vec::new();
+    for item in types.iter_mut() {
+        let syn::Item::Enum(item) = item else {
+            continue;
+        };
+        let is_string_enum = item
+            .variants
+            .iter()
+            .all(|variant| matches!(variant.fields, syn::Fields::Unit));
+        if !is_string_enum
+            || LAUNCH_ENUM_PARAMS
+                .iter()
+                .any(|&(_, schema)| item.ident == schema)
+        {
+            continue;
+        }
+        for attr in &mut item.attrs {
+            if !attr.path().is_ident("derive") {
+                continue;
+            }
+            let derives: syn::punctuated::Punctuated<syn::Path, syn::Token![,]> = attr
+                .parse_args_with(
+                    syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
+                )
+                .unwrap()
+                .into_iter()
+                .filter(|path| !path.is_ident("Copy"))
+                .collect();
+            *attr = syn::parse_quote!(#[derive(#derives)]);
+        }
+        item.variants.push(syn::parse_quote!(
+            #[serde(untagged)]
+            Other(::std::string::String)
+        ));
+        opened.push(item.ident.clone());
+    }
+
+    let mut displays = 0;
+    for item in types.iter_mut() {
+        let syn::Item::Impl(item) = item else {
+            continue;
+        };
+        let is_opened_display = item
+            .trait_
+            .as_ref()
+            .is_some_and(|(path, _)| path.segments.last().unwrap().ident == "Display")
+            && matches!(&*item.self_ty, syn::Type::Path(ty)
+                if opened.iter().any(|name| ty.path.is_ident(name)));
+        if !is_opened_display {
+            continue;
+        }
+        let Some(syn::ImplItem::Fn(fmt)) = item.items.first_mut() else {
+            panic!("a generated Display impl has no fmt; update `open_string_enums` in build.rs");
+        };
+        let Some(syn::Stmt::Expr(syn::Expr::Match(body), None)) = fmt.block.stmts.first_mut()
+        else {
+            panic!("a generated fmt is not a match; update `open_string_enums` in build.rs");
+        };
+        *body.expr = syn::parse_quote!(self);
+        body.arms
+            .push(syn::parse_quote!(Self::Other(value) => f.write_str(value),));
+        displays += 1;
+    }
+    assert!(
+        opened.iter().any(|name| name == "RunStatus") && displays == opened.len(),
+        "`open_string_enums` in build.rs opened {} enum(s) but patched {displays} Display \
+         impl(s), or did not open RunStatus; update it for the generated client",
+        opened.len()
+    );
 }
 
 /// Hold `untype_error_responses` to its promise: with no error response
@@ -389,21 +464,6 @@ fn open_param_enum(spec: &mut serde_json::Value, param: &str, schema: &str) {
     );
 }
 
-/// Decode `Run_Detail.sub_status` into the handwritten `RunSubStatus`, so that
-/// `runs show` and `runs wait` do not fail when the server adds a value.
-fn open_sub_status(spec: &mut serde_json::Value) {
-    const POINTER: &str = "/components/schemas/Run_Detail/allOf/1/properties/sub_status";
-    let values = remove_schema_key(spec, POINTER, "enum", "open_sub_status");
-    assert!(
-        values
-            .as_array()
-            .is_some_and(|values| values.contains(&serde_json::json!("Ready"))),
-        "Run_Detail.sub_status's enum no longer lists `Ready`; update `RunSubStatus` in \
-         src/api.rs and `open_sub_status` in build.rs"
-    );
-    spec.pointer_mut(POINTER).unwrap()["format"] = serde_json::json!(SUB_STATUS_FORMAT);
-}
-
 /// Point the `/properties` status filter at `Property_Status`. The spec lists
 /// each status twice, capitalized and lowercase, and typify cannot give the
 /// two spellings distinct variant names.
@@ -457,9 +517,6 @@ fn share_run_stream_notification_type(spec: &mut serde_json::Value) {
     spec.pointer_mut(NOTIFICATION).unwrap()["type"] = reference;
     spec["components"]["schemas"]["Run_Stream_Notification_Type"] = kind;
 }
-
-/// The format `open_sub_status` marks the schema with, for `with_conversion`.
-const SUB_STATUS_FORMAT: &str = "run-sub-status";
 
 /// Remove `key` from the object at `pointer`, and return its value. Both must
 /// exist, so a spec refresh that makes `transform` a no-op fails the build.

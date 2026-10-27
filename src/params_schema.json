@@ -80,6 +80,7 @@
         },
         "antithesis.fault_exclusions": {
           "type": "string",
+          "maxLength": 1024,
           "description": "Rust regex matching the containers (or pods) that faults must not touch, matched against the container name. Max 1024 characters."
         }
       }

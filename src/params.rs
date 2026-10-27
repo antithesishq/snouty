@@ -106,8 +106,10 @@ impl Params {
                 validate_filter_pattern(key, value, suppressed)?;
             }
         }
+        // The OpenAPI spec gives this pattern the `regex` crate's syntax, so
+        // unlike the filter pattern check, this check is exact.
         if let Some(value) = self.inner.get(ANT_FAULT_EXCLUSIONS).and_then(Value::as_str) {
-            validate_fault_exclusions(value)?;
+            compile_pattern(ANT_FAULT_EXCLUSIONS, value)?;
         }
         Ok(())
     }
@@ -206,9 +208,7 @@ fn validate_filter_pattern(key: &str, value: &str, suppressed: &str) -> Result<(
             value.len()
         )));
     }
-    let re = regex::Regex::new(value)
-        .map_err(|err| user_error(format!("{key} is not a valid regular expression: {err}")))?;
-    if re.is_match("") {
+    if compile_pattern(key, value)?.is_match("") {
         return Err(user_error(format!(
             "{key} matches the empty string, which would suppress {suppressed}"
         )));
@@ -216,23 +216,9 @@ fn validate_filter_pattern(key: &str, value: &str, suppressed: &str) -> Result<(
     Ok(())
 }
 
-/// The longest `antithesis.fault_exclusions` the API accepts, per the OpenAPI
-/// spec.
-const MAX_FAULT_EXCLUSIONS_CHARS: usize = 1024;
-
-/// The OpenAPI spec gives the pattern the `regex` crate's syntax, so unlike
-/// the filter pattern check, this check is exact.
-fn validate_fault_exclusions(value: &str) -> Result<()> {
-    let key = ANT_FAULT_EXCLUSIONS;
-    let chars = value.chars().count();
-    if chars > MAX_FAULT_EXCLUSIONS_CHARS {
-        return Err(user_error(format!(
-            "{key} is too long: {chars} characters (max {MAX_FAULT_EXCLUSIONS_CHARS})"
-        )));
-    }
+fn compile_pattern(key: &str, value: &str) -> Result<regex::Regex> {
     regex::Regex::new(value)
-        .map_err(|err| user_error(format!("{key} is not a valid regular expression: {err}")))?;
-    Ok(())
+        .map_err(|err| user_error(format!("{key} is not a valid regular expression: {err}")))
 }
 
 fn validate_against_def(params: &Map<String, Value>, def_name: &str) -> Result<()> {
@@ -673,13 +659,13 @@ mod tests {
     }
 
     #[test]
-    fn validate_fault_exclusions_limits_chars_not_bytes() {
-        assert!(validate_fault_exclusions(&"é".repeat(1024)).is_ok());
-        let err = validate_fault_exclusions(&"é".repeat(1025)).unwrap_err();
-        assert!(
-            err.to_string().contains("1025 characters (max 1024)"),
-            "unexpected error: {err}"
-        );
+    fn validate_test_params_limits_fault_exclusions_to_1024_chars() {
+        let params = |len| {
+            Params::from_key_value_pairs([format!("{ANT_FAULT_EXCLUSIONS}={}", "é".repeat(len))])
+                .unwrap()
+        };
+        assert!(params(1024).validate_test_params().is_ok());
+        assert!(params(1025).validate_test_params().is_err());
     }
 
     /// For *any* input — however far from a regex — validation returns

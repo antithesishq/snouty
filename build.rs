@@ -91,10 +91,16 @@ fn generate_api_client(out_dir: &Path) {
         "crate::api::RunSubStatus",
         std::iter::empty::<progenitor::TypeImpl>(),
     );
+    // clap names a `ValueEnum` value in kebab-case, but `launch` sends its
+    // `Display` form, the snake_case wire value. Name each value as it is
+    // sent, so `--fault-tolerance high_availability` parses. typify puts a
+    // patch's attributes before its derives, and a derive helper must follow
+    // its derive, so the derive goes in the same attribute string.
     for &(_, schema) in LAUNCH_ENUM_PARAMS {
         settings.with_patch(
             schema,
-            progenitor::TypePatch::default().with_derive("clap::ValueEnum"),
+            progenitor::TypePatch::default()
+                .with_attr(r#"#[derive(clap::ValueEnum)] #[value(rename_all = "snake_case")]"#),
         );
     }
     let mut generator = progenitor::Generator::new(&settings);
@@ -102,7 +108,6 @@ fn generate_api_client(out_dir: &Path) {
     let ast = syn::parse2(tokens).unwrap();
     let content = prettyplease::unparse(&ast);
     let content = patch_lenient_booleans(content);
-    let content = patch_value_enum_names(content);
     assert_no_typed_error_responses(&content);
 
     // The conversion fails open: an unmatched schema silently falls back to a
@@ -548,26 +553,6 @@ fn patch_lenient_booleans(content: String) -> String {
              progenitor output may have changed"
         );
         content = content.replace(from, to);
-    }
-    content
-}
-
-// clap names a `ValueEnum` value in kebab-case, but `launch` sends its
-// `Display` form, the snake_case wire value. Name each value as it is sent, so
-// `--fault-tolerance high_availability` parses.
-fn patch_value_enum_names(mut content: String) -> String {
-    for &(_, schema) in LAUNCH_ENUM_PARAMS {
-        let from = format!("pub enum {schema} {{");
-        assert_eq!(
-            content.matches(&from).count(),
-            1,
-            "expected generated API client to contain `{from}` exactly once; \
-             progenitor output may have changed"
-        );
-        content = content.replace(
-            &from,
-            &format!("#[value(rename_all = \"snake_case\")]\n{from}"),
-        );
     }
     content
 }

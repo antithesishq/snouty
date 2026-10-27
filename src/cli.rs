@@ -7,8 +7,8 @@ use chrono::{DateTime, Utc};
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 use crate::api::{
-    PerformanceTier, RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SourceRunId,
-    SourceSessionId,
+    FaultTolerance, PerformanceTier, RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT,
+    SourceRunId, SourceSessionId,
 };
 use color_eyre::Section;
 use color_eyre::eyre::Report;
@@ -516,6 +516,24 @@ pub struct LaunchArgs {
     #[arg(long, value_enum)]
     pub performance_tier: Option<PerformanceTier>,
 
+    /// Which faults to inject, by how much disruption the system must survive.
+    /// `none`: no faults. `resilient`: degraded network links, thread pauses,
+    /// container pauses of up to 10 seconds, CPU throttling and clock jitter.
+    /// `high_availability`: everything in `resilient`, plus network
+    /// partitions and killed or stopped containers or pods. `legacy`: all
+    /// network faults and thread pausing, for a custom notebook only. To send
+    /// a level that is not listed, use
+    /// `--param=antithesis.fault_tolerance=LEVEL`.
+    #[arg(long, value_enum)]
+    pub fault_tolerance: Option<FaultTolerance>,
+
+    /// Regular expression for the containers (or pods, on Kubernetes) that
+    /// faults must not touch, matched against the container name. Thread
+    /// pausing is machine-wide, so it still applies. Rust regex syntax: no
+    /// lookaround or backreferences. Max 1024 characters.
+    #[arg(long)]
+    pub fault_exclusions: Option<String>,
+
     /// Do not record the commit, branch, and repository of the local git
     /// checkout in run metadata. A pre-built config image (--config-image)
     /// also turns the detection off
@@ -928,14 +946,19 @@ mod tests {
     }
 
     /// clap parses the value name, and `launch` sends `Display`, the wire
-    /// value. They differ for a tier such as `ultra_fast`, which clap would
-    /// name `ultra-fast`.
-    #[test]
-    fn performance_tier_value_names_are_the_wire_values() {
-        for tier in PerformanceTier::value_variants() {
-            let name = tier.to_possible_value().expect("no variant is skipped");
-            assert_eq!(name.get_name(), tier.to_string());
+    /// value. By default clap would name `high_availability`
+    /// `high-availability`.
+    fn assert_value_names_are_the_wire_values<T: ValueEnum + std::fmt::Display>() {
+        for value in T::value_variants() {
+            let name = value.to_possible_value().expect("no variant is skipped");
+            assert_eq!(name.get_name(), value.to_string());
         }
+    }
+
+    #[test]
+    fn launch_enum_value_names_are_the_wire_values() {
+        assert_value_names_are_the_wire_values::<PerformanceTier>();
+        assert_value_names_are_the_wire_values::<FaultTolerance>();
     }
 
     #[test]

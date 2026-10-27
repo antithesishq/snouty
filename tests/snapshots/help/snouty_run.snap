@@ -53,6 +53,21 @@ Options:
           The server default is `standard`. To send a tier that is not listed,
           use `--param=antithesis.performance_tier=TIER` [possible values:
           standard, fast, turbo]
+      --fault-tolerance <FAULT_TOLERANCE>
+          Which faults to inject, by how much disruption the system must
+          survive. `none`: no faults. `resilient`: degraded network links,
+          thread pauses, container pauses of up to 10 seconds, CPU throttling
+          and clock jitter. `high_availability`: everything in `resilient`, plus
+          network partitions and killed or stopped containers or pods. `legacy`:
+          all network faults and thread pausing, for a custom notebook only. To
+          send a level that is not listed, use
+          `--param=antithesis.fault_tolerance=LEVEL` [possible values: none,
+          resilient, high_availability, legacy]
+      --fault-exclusions <FAULT_EXCLUSIONS>
+          Regular expression for the containers (or pods, on Kubernetes) that
+          faults must not touch, matched against the container name. Thread
+          pausing is machine-wide, so it still applies. Rust regex syntax: no
+          lookaround or backreferences. Max 1024 characters
       --no-vcs
           Do not record the commit, branch, and repository of the local git
           checkout in run metadata. A pre-built config image (--config-image)

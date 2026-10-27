@@ -27,6 +27,8 @@ pub const ANT_EVENT_DESCRIPTION: &str = "antithesis.event_description";
 pub const ANT_FILTER_LOGS_MATCHING: &str = "antithesis.filter_logs_matching";
 pub const ANT_FILTER_SOURCE_MATCHING: &str = "antithesis.filter_source_matching";
 pub const ANT_PERFORMANCE_TIER: &str = "antithesis.performance_tier";
+pub const ANT_FAULT_TOLERANCE: &str = "antithesis.fault_tolerance";
+pub const ANT_FAULT_EXCLUSIONS: &str = "antithesis.fault_exclusions";
 /// The kind of tool that launched a run. The server shows it as the creator's
 /// type. Observed on `GET /api/v0/runs/{run_id}` (tenant version 64): a run
 /// launched with `run.caller_type=snouty` reports `creator.type` `snouty`.
@@ -86,8 +88,9 @@ impl Params {
             .collect::<std::result::Result<_, crate::cli::ParseKVPairError>>()?)
     }
 
-    /// Validate params against the test params schema and the log filter
-    /// patterns. The pattern check runs here so no launch path can skip it.
+    /// Validate params against the test params schema, the log filter
+    /// patterns and the fault exclusions. The pattern checks run here so no
+    /// launch path can skip them.
     ///
     /// The platform checks the patterns only after the run starts,
     /// so a bad pattern fails the run minutes later. The local check uses the
@@ -102,6 +105,9 @@ impl Params {
             if let Some(value) = self.inner.get(key).and_then(Value::as_str) {
                 validate_filter_pattern(key, value, suppressed)?;
             }
+        }
+        if let Some(value) = self.inner.get(ANT_FAULT_EXCLUSIONS).and_then(Value::as_str) {
+            validate_fault_exclusions(value)?;
         }
         Ok(())
     }
@@ -207,6 +213,25 @@ fn validate_filter_pattern(key: &str, value: &str, suppressed: &str) -> Result<(
             "{key} matches the empty string, which would suppress {suppressed}"
         )));
     }
+    Ok(())
+}
+
+/// The longest `antithesis.fault_exclusions` the API accepts, per the OpenAPI
+/// spec.
+const MAX_FAULT_EXCLUSIONS_CHARS: usize = 1024;
+
+/// The OpenAPI spec gives the pattern the `regex` crate's syntax, so unlike
+/// the filter pattern check, this check is exact.
+fn validate_fault_exclusions(value: &str) -> Result<()> {
+    let key = ANT_FAULT_EXCLUSIONS;
+    let chars = value.chars().count();
+    if chars > MAX_FAULT_EXCLUSIONS_CHARS {
+        return Err(user_error(format!(
+            "{key} is too long: {chars} characters (max {MAX_FAULT_EXCLUSIONS_CHARS})"
+        )));
+    }
+    regex::Regex::new(value)
+        .map_err(|err| user_error(format!("{key} is not a valid regular expression: {err}")))?;
     Ok(())
 }
 
@@ -645,6 +670,16 @@ mod tests {
                 "unexpected error for {pattern}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn validate_fault_exclusions_limits_chars_not_bytes() {
+        assert!(validate_fault_exclusions(&"é".repeat(1024)).is_ok());
+        let err = validate_fault_exclusions(&"é".repeat(1025)).unwrap_err();
+        assert!(
+            err.to_string().contains("1025 characters (max 1024)"),
+            "unexpected error: {err}"
+        );
     }
 
     /// For *any* input — however far from a regex — validation returns

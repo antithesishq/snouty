@@ -57,8 +57,9 @@ fn generate_api_client(out_dir: &Path) {
     drop_property_description(&mut spec_value);
     drop_launch_status_code(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
-    open_performance_tier(&mut spec_value);
-    open_fault_tolerance(&mut spec_value);
+    for &(param, schema) in LAUNCH_ENUM_PARAMS {
+        open_param_enum(&mut spec_value, param, schema);
+    }
     open_sub_status(&mut spec_value);
     dedupe_property_status_filter(&mut spec_value);
     share_run_stream_notification_type(&mut spec_value);
@@ -90,15 +91,18 @@ fn generate_api_client(out_dir: &Path) {
         "crate::api::RunSubStatus",
         std::iter::empty::<progenitor::TypeImpl>(),
     );
-    settings.with_patch(
-        PERFORMANCE_TIER_SCHEMA,
-        progenitor::TypePatch::default().with_derive("clap::ValueEnum"),
-    );
+    for &(_, schema) in LAUNCH_ENUM_PARAMS {
+        settings.with_patch(
+            schema,
+            progenitor::TypePatch::default().with_derive("clap::ValueEnum"),
+        );
+    }
     let mut generator = progenitor::Generator::new(&settings);
     let tokens = generator.generate_tokens(&spec).unwrap();
     let ast = syn::parse2(tokens).unwrap();
     let content = prettyplease::unparse(&ast);
     let content = patch_lenient_booleans(content);
+    let content = patch_value_enum_names(content);
     assert_no_typed_error_responses(&content);
 
     // The conversion fails open: an unmatched schema silently falls back to a
@@ -344,46 +348,28 @@ fn mvd_params_variants<'a>(
         })
 }
 
-/// Decode `Params.antithesis.fault_tolerance` as a plain string, for the same
-/// reason as [`open_performance_tier`]: one run with a level this build does
-/// not know must not fail a whole listing.
-fn open_fault_tolerance(spec: &mut serde_json::Value) {
-    let levels = remove_schema_key(
-        spec,
-        "/components/schemas/Params/properties/antithesis.fault_tolerance",
-        "enum",
-        "open_fault_tolerance",
-    );
-    assert!(
-        levels
-            .as_array()
-            .is_some_and(|levels| levels.iter().all(serde_json::Value::is_string)),
-        "Params.antithesis.fault_tolerance's enum is not a list of strings; update \
-         `open_fault_tolerance` in build.rs"
-    );
-}
+/// The enum-valued `Params` that a `launch` flag sets, and the schema that
+/// [`open_param_enum`] moves each enum to.
+const LAUNCH_ENUM_PARAMS: &[(&str, &str)] = &[
+    ("antithesis.performance_tier", "PerformanceTier"),
+    ("antithesis.fault_tolerance", "FaultTolerance"),
+];
 
-/// Decode `Params.antithesis.performance_tier` as a plain string. `runs list`
-/// and `runs show` decode every run's parameters through `Params`, so a closed
-/// enum would fail a whole listing on one tier this build does not know. The
-/// enum moves to a `PerformanceTier` schema, which `--performance-tier` parses
-/// into.
-fn open_performance_tier(spec: &mut serde_json::Value) {
-    let tiers = remove_schema_key(
-        spec,
-        "/components/schemas/Params/properties/antithesis.performance_tier",
-        "enum",
-        "open_performance_tier",
-    );
+/// Decode `Params.<param>` as a plain string. `runs list` and `runs show`
+/// decode every run's parameters through `Params`, so a closed enum would fail
+/// a whole listing on one value this build does not know. The enum moves to
+/// `schema`, which the `launch` flag parses into.
+fn open_param_enum(spec: &mut serde_json::Value, param: &str, schema: &str) {
+    let pointer = format!("/components/schemas/Params/properties/{param}");
+    let values = remove_schema_key(spec, &pointer, "enum", "open_param_enum");
     assert!(
-        tiers.as_array().is_some_and(
-            |tiers| !tiers.is_empty() && tiers.iter().all(serde_json::Value::is_string)
+        values.as_array().is_some_and(
+            |values| !values.is_empty() && values.iter().all(serde_json::Value::is_string)
         ),
-        "Params.antithesis.performance_tier's enum is not a list of strings; update \
-         `open_performance_tier` in build.rs"
+        "Params.{param}'s enum is not a list of strings; update `open_param_enum` in build.rs"
     );
     let description = spec
-        .pointer("/components/schemas/Params/properties/antithesis.performance_tier/description")
+        .pointer(&format!("{pointer}/description"))
         .cloned()
         .unwrap_or_default();
     let schemas = spec
@@ -393,12 +379,11 @@ fn open_performance_tier(spec: &mut serde_json::Value) {
     assert!(
         schemas
             .insert(
-                PERFORMANCE_TIER_SCHEMA.to_owned(),
-                serde_json::json!({"type": "string", "enum": tiers, "description": description}),
+                schema.to_owned(),
+                serde_json::json!({"type": "string", "enum": values, "description": description}),
             )
             .is_none(),
-        "openapi spec now defines {PERFORMANCE_TIER_SCHEMA}; delete `open_performance_tier`'s \
-         copy in build.rs"
+        "openapi spec now defines {schema}; remove it from LAUNCH_ENUM_PARAMS in build.rs"
     );
 }
 
@@ -473,9 +458,6 @@ fn share_run_stream_notification_type(spec: &mut serde_json::Value) {
 
 /// The format `open_sub_status` marks the schema with, for `with_conversion`.
 const SUB_STATUS_FORMAT: &str = "run-sub-status";
-
-/// The schema `open_performance_tier` adds.
-const PERFORMANCE_TIER_SCHEMA: &str = "PerformanceTier";
 
 /// Remove `key` from the object at `pointer`, and return its value. Both must
 /// exist, so a spec refresh that makes `transform` a no-op fails the build.
@@ -566,6 +548,26 @@ fn patch_lenient_booleans(content: String) -> String {
              progenitor output may have changed"
         );
         content = content.replace(from, to);
+    }
+    content
+}
+
+// clap names a `ValueEnum` value in kebab-case, but `launch` sends its
+// `Display` form, the snake_case wire value. Name each value as it is sent, so
+// `--fault-tolerance high_availability` parses.
+fn patch_value_enum_names(mut content: String) -> String {
+    for &(_, schema) in LAUNCH_ENUM_PARAMS {
+        let from = format!("pub enum {schema} {{");
+        assert_eq!(
+            content.matches(&from).count(),
+            1,
+            "expected generated API client to contain `{from}` exactly once; \
+             progenitor output may have changed"
+        );
+        content = content.replace(
+            &from,
+            &format!("#[value(rename_all = \"snake_case\")]\n{from}"),
+        );
     }
     content
 }

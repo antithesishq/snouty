@@ -3844,7 +3844,10 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "step, `snouty runs wait <run_id>`, and how to watch the run live with "
             "`snouty runs stream <run_id>`. It should say that a pre-built config "
             "image turns off the `vcs.*` detection. `--performance-tier` should list the "
-            "three tiers: standard, fast, and turbo. No code span in a flag's help should "
+            "three tiers: standard, fast, and turbo. `--fault-tolerance` should list the four "
+            "levels: none, resilient, high_availability, and legacy, and say what each one "
+            "injects. `--fault-exclusions` should say that the pattern is a Rust regex, "
+            "matched against the container name. No code span in a flag's help should "
             "split across two lines. Each example for a launcher that needs a config image "
             "should pass one, so that I can copy it as written.",
             ["launch"],

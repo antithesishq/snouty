@@ -5,17 +5,28 @@ Output shell completions
 
 Writes a completion script for SHELL to stdout.
 
-If your shell already initializes completion, add only the source line after
-that initialization. Completions are generated at shell startup. Open a new
-shell to load the setup.
+Have your shell run this command at startup rather than saving its output to a
+file. A saved script describes the snouty that wrote it, and goes stale when
+`snouty update` installs a new version. If your shell already initializes
+completion, add only the snouty line after that initialization. Open a new shell
+to load the setup, and again after each update.
 
 For zsh, add this to ~/.zshrc:
   autoload -Uz compinit
   compinit
   source <(snouty completions zsh)
 
-For bash:
-  snouty completions bash | sudo tee /etc/bash_completion.d/snouty
+For bash, add this to ~/.bashrc:
+  eval "$(snouty completions bash)"
+
+For fish, put this line in ~/.config/fish/completions/snouty.fish:
+  snouty completions fish | source
+
+For elvish, add this to ~/.config/elvish/rc.elv:
+  if (has-external snouty) { eval (snouty completions elvish | slurp) }
+
+For PowerShell, add this to $PROFILE:
+  snouty completions powershell | Out-String | Invoke-Expression
 
 Usage: snouty completions [OPTIONS] <SHELL>
 

@@ -13,7 +13,7 @@ use crate::api::AntithesisApi;
 use crate::cli::DockerCredentialAction;
 use crate::error::user_error;
 use crate::registry::{self, RegistryHost};
-use crate::settings::Settings;
+use crate::settings::{DefaultProjectFile, Settings};
 
 /// No profile uses the requested registry as its tenant registry.
 #[derive(Debug)]
@@ -40,7 +40,9 @@ struct Credential<'a> {
 
 /// `active` is the settings of the selected profile, or `None` when they fail
 /// to resolve. `project_settings_path` is the `--settings` path, which finds
-/// the other profiles.
+/// the other profiles. Docker starts the helper in a directory the user did
+/// not choose, so `active` must not come from a `./.snouty.toml`, and the
+/// search does not read one.
 ///
 /// The caller must print an error on stdout, because the protocol reads it
 /// there (see [`CredentialsNotFound`]).
@@ -56,7 +58,8 @@ pub async fn cmd_docker_credential(
             let host: RegistryHost = server_url
                 .parse()
                 .map_err(|err| user_error(format!("invalid server URL on stdin: {err}")))?;
-            let every = || Settings::resolve_every_profile(project_settings_path);
+            let every =
+                || Settings::resolve_every_profile(project_settings_path, DefaultProjectFile::None);
             let Some(settings) = registry::select_profile(active, every, &host)? else {
                 return Err(Report::new(CredentialsNotFound));
             };
@@ -80,7 +83,10 @@ pub async fn cmd_docker_credential(
         DockerCredentialAction::List => {
             let hosts: BTreeMap<String, &str> = active
                 .into_iter()
-                .chain(Settings::resolve_every_profile(project_settings_path)?)
+                .chain(Settings::resolve_every_profile(
+                    project_settings_path,
+                    DefaultProjectFile::None,
+                )?)
                 .filter_map(|settings| registry::tenant_registry(&settings))
                 .map(|host| (host.to_string(), registry::USERNAME))
                 .collect();

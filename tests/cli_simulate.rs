@@ -147,6 +147,9 @@ impl Simulation {
         }
         let mut paths = vec![bin];
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+        if matches!(mode, "local-iso" | "local-iso-default-image") {
+            fs::write(root.join("local guest.iso"), b"local ISO fixture").unwrap();
+        }
         let child = Command::new(assert_cmd::cargo::cargo_bin!("snouty"))
             .env_clear()
             .env("PATH", std::env::join_paths(paths).unwrap())
@@ -163,17 +166,28 @@ impl Simulation {
             .env("ANTITHESIS_BASE_URL", api_url)
             .env("ANTITHESIS_API_KEY", "test-key")
             .env("ANTITHESIS_REPOSITORY", "registry.example/team/")
+            .envs(match mode {
+                "local-iso" | "local-iso-default-image" => {
+                    vec![("SNOUTY_SIMULATE_GUEST_ISO", "local guest.iso")]
+                }
+                "missing-local-iso" => vec![("SNOUTY_SIMULATE_GUEST_ISO", "missing.iso")],
+                "directory-local-iso" => vec![("SNOUTY_SIMULATE_GUEST_ISO", "config")],
+                "empty-local-iso" => vec![("SNOUTY_SIMULATE_GUEST_ISO", "")],
+                _ => vec![],
+            })
             .args(if mode == "human" || mode == "human-blocked-upload" {
                 vec!["simulate"]
             } else {
                 vec!["--json", "simulate"]
             })
             .arg(config)
-            .args(if mode == "default-image" {
-                vec![]
-            } else {
-                vec!["--guest-image", "guest:test"]
-            })
+            .args(
+                if matches!(mode, "default-image" | "local-iso-default-image") {
+                    vec![]
+                } else {
+                    vec!["--guest-image", "guest:test"]
+                },
+            )
             .args([
                 "--platform",
                 if mode.starts_with("arm64") {
@@ -510,6 +524,11 @@ fn start_shell_simulation(mode: &str) -> (TempDir, OsSession) {
             "--timeout",
             "10s",
         ]);
+    if mode == "shell-local-iso" {
+        let iso = root.join("local guest.iso");
+        fs::write(&iso, b"local ISO fixture").unwrap();
+        command.env("SNOUTY_SIMULATE_GUEST_ISO", iso);
+    }
     let mut session = OsSession::spawn(command).expect("spawn shell simulation on a PTY");
     session.set_expect_timeout(Some(Duration::from_secs(15)));
     (directory, session)
@@ -532,6 +551,30 @@ fn attach_command(root: &Path, id: &str) -> Command {
         .current_dir(root)
         .args(["simulate", "--attach", id]);
     command
+}
+
+#[test]
+fn hidden_shell_uses_local_guest_iso() {
+    let (directory, mut session) = start_shell_simulation("shell-local-iso");
+    let root = directory.path();
+    Expect::expect(&mut session, "guest shell ready").unwrap();
+    let args: Vec<String> =
+        serde_json::from_str(&fs::read_to_string(root.join("qemu_args")).unwrap()).unwrap();
+    let iso = fs::canonicalize(root.join("local guest.iso")).unwrap();
+    assert!(
+        args.windows(2)
+            .any(|args| args[0] == "-cdrom" && Path::new(&args[1]) == iso)
+    );
+    for marker in ["guest_image", "pull_args", "create_args"] {
+        assert!(!root.join(marker).exists(), "{marker}");
+    }
+    Expect::send_line(&mut session, "exit").unwrap();
+    Expect::expect(&mut session, expectrl::Eof).unwrap();
+    assert!(matches!(
+        session.get_process().wait().unwrap(),
+        WaitStatus::Exited(_, 0)
+    ));
+    assert_eq!(fs::read(iso).unwrap(), b"local ISO fixture");
 }
 
 #[test]
@@ -976,6 +1019,47 @@ fn assertion_written_at_shutdown_is_included_in_final_status() {
         .find(|event| event["type"] == "summary")
         .unwrap();
     assert_eq!(summary["failures"]["assertion_failures"], 1);
+}
+
+#[test]
+fn local_guest_iso_bypasses_image_resolution_and_download() {
+    for mode in ["local-iso", "local-iso-default-image"] {
+        let mut simulation = Simulation::start(mode);
+        simulation.wait_for("compose_started", "yes");
+        let args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
+        let iso = fs::canonicalize(simulation.root().join("local guest.iso")).unwrap();
+        assert!(
+            args.windows(2)
+                .any(|args| args[0] == "-cdrom" && Path::new(&args[1]) == iso)
+        );
+        for marker in ["guest_image", "pull_args", "create_args"] {
+            assert!(!simulation.root().join(marker).exists(), "{marker}");
+        }
+        assert!(simulation.root().join("save_args").exists());
+        kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+        simulation.finish();
+        assert_eq!(fs::read(iso).unwrap(), b"local ISO fixture");
+    }
+}
+
+#[test]
+fn invalid_local_guest_iso_aborts_without_falling_back_to_an_image() {
+    for mode in [
+        "missing-local-iso",
+        "directory-local-iso",
+        "empty-local-iso",
+    ] {
+        let mut simulation = Simulation::start(mode);
+        let output = simulation.finish();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8(output.stderr)
+                .unwrap()
+                .contains("SNOUTY_SIMULATE_GUEST_ISO")
+        );
+        assert!(!simulation.root().join("qemu_pid").exists());
+        assert!(!simulation.root().join("guest_image").exists());
+    }
 }
 
 #[test]

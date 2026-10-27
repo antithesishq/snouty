@@ -1,6 +1,6 @@
 List a run's property (assertion) results, one table per group.
 
-Each table is headed by its group; columns are STATUS, EXAMPLES (✓/✗), NAME (failing first). STATUS is passing, failing, or undetermined. A property is undetermined until it triggers. EXAMPLES is the example count (✓), followed by the counterexample count (✗) when a property has counterexamples: 0/186k is 0 examples and 186k counterexamples.
+Each table is headed by its group; columns are STATUS, ✓, ✗, ID, NAME (failing first). STATUS is pass, fail, or unseen. An unseen property is undetermined: it has not triggered yet, and --undetermined selects it. ✓ is the example count and ✗ is the counterexample count; large counts are shortened, as in 186k. ID is the property ID, for `snouty runs property`.
 
 Filter by status with --passing, --failing, and --undetermined. Give more than one to show each of those statuses.
 

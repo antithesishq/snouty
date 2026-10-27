@@ -664,7 +664,7 @@ pub enum RunsCommands {
         /// Run ID
         run_id: String,
 
-        /// Property ID, from `snouty --json runs properties` or --detail
+        /// Property ID, from the ID column of `snouty runs properties`
         property_id: String,
     },
 

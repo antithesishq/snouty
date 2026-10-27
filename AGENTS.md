@@ -33,11 +33,11 @@ command, named for its path below `snouty` with `_` between the parts:
 - Each template is an [askama](https://askama.rs) template, which the build
   compiles: a syntax error or a missing include fails `cargo build`. A page
   renders at run time, for two readers: `--help`, and the `tool_help` MCP
-  tool. A `HelpPage` variant in `src/help.rs` names each page and its
+  tool. A `HelpPage` row in `src/help/pages.rs` names each page and its
   command.
-  `cli::command()` sets each page as its command's long help; parse with it,
-  not with `Cli::parse`. clap renders a page only when it builds that
-  command, so a run renders only the pages on its command path.
+  `cli::command()` sets each page as its command's long help; parse with
+  `cli::parse()`, not with `Cli::parse`. clap renders a page only when it
+  builds that command, so a run renders only the pages on its command path.
 - Name each flag, positional arg, command and example with `t()`, never as
   literal text. `t()` looks the name up in the clap definition of the page's
   command, and writes it for the reader:
@@ -68,28 +68,27 @@ command, named for its path below `snouty` with `_` between the parts:
   value that its parser refuses is an error. A `<placeholder>` can stand for
   any value. A command with flags but not its required args, such as
   `runs properties --detail`, names the command, and over MCP its flags drop
-  out. Over MCP, `t()` refuses a
-  command with no tool, an arg that the tool leaves out, and a shell pipeline
-  or redirect.
+  out. Over MCP, `t()` refuses a command with no tool, an arg that the tool
+  leaves out, and a shell pipeline or redirect.
 - Put text that only one reader needs, such as the `--json` paragraph or a
   pipeline example, in `{% if cli %}…{% else %}…{% endif %}`. The other
   reader's branch is not rendered, so `t()` does not check it for that
   reader. `{{ tool_table() }}` is the list of MCP tools.
 - Describe what a command reports in words that suit both readers, and put
   only the terminal layout (columns, dividers, the `--json` paragraph) in a
-  `{% if cli %}` block. A paragraph that only one reader sees keeps its blank
-  line inside the block, so that the other render has no double blank line:
-  `text.` then `{%- if cli %}`, a blank line, the paragraph, `{%- endif %}`.
-  Say that a command succeeds or fails; name exit codes, stdout and stderr
-  only in a CLI block.
-- A line that holds only a block tag (`if`, `else`, `endif`) must not print.
-  Start the tag at the start of the line, and mark it by the line before it:
-  `{%- if cli %}` after a line of text, and `{%~ if cli %}` after a blank
-  line. A tag inside a line of text takes no mark.
+  `{% if cli %}` block. Say that a command succeeds or fails; name exit
+  codes, stdout and stderr only in a CLI block.
+- A line that holds only a block tag (`if`, `else`, `endif`) prints as a
+  blank line, and the render collapses each run of blank lines into one. So
+  put a block that holds whole paragraphs on lines of its own, with blank
+  lines around it as you like. In a run of lines that must stay together,
+  such as a list of examples, write `{%- if cli %}`, `{%- else %}` and
+  `{%- endif %}`: the mark drops the tag's line. A tag inside a line of text
+  takes no mark.
 - A `t()` error is a test failure: `tests/help_snapshots.rs` renders every
   page for both readers, and the error names the page.
 - Put text that two or more pages share in `help/fragments/`, and add it with
-  `{% include "fragments/<name>.txt" %}` on a line of its own, with no mark.
+  `{% include "fragments/<name>.txt" %}` on a line of its own.
   askama drops the final newline of each template file, so the line becomes
   the lines of the included file.
 - `tests/help_snapshots.rs` keeps an [insta](https://insta.rs) snapshot of

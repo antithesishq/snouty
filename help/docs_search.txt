@@ -13,9 +13,9 @@ Examples:
   {{ t("snouty docs search sdk setup")? }}
   {{ t("snouty docs search --match 'sdk NOT java'")? }}
 
-{%~ if cli %}
+{% if cli %}
 Add --json for machine-readable output. The matches print as one JSON array of {path, title, snippet} objects, or of paths with --list:
   {{ t("snouty --json docs search fault injection | jq -r '.[].path'")? }}
-{%- else %}
+{% else %}
 The matches print as one JSON array of {path, title, snippet} objects, or of paths with `list`.
-{%- endif %}
+{% endif %}

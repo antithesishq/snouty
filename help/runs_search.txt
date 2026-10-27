@@ -77,9 +77,10 @@ Query snippets (each is a complete {{ t("query")? }}, ready to paste):
     .fold((s, ev) => [[ev.add_fields({n: s.n + 1})], {n: s.n + 1}], {"n": 0})
 
 {% include "fragments/classified_blocks.txt" %}
-{%- if cli %}
+
+{% if cli %}
 Rows reshaped by map/narrow/fold print as raw JSON.
-{%- endif %}
+{% endif %}
 
 Add {{ t("--count")? }} to print how many events in the whole run match the query, instead of a sample. No limit applies.
 
@@ -87,7 +88,7 @@ Add {{ t("--count")? }} to print how many events in the whole run match the quer
 
 {% include "fragments/events_search_release.txt" %}
 
-{%~ if cli %}
+{% if cli %}
 Add --json for machine-readable output. Each event prints as one JSON object on its own line:
   {% filter cmd %}
   snouty --json runs search <run_id> 'contains({output_text: "err"})' \
@@ -98,6 +99,6 @@ With --count, the count prints as one JSON object:
   snouty --json runs search <run_id> 'contains({output_text: "err"})' \
     --count | jq .count
   {% endfilter %}
-{%- else %}
+{% else %}
 Each event prints as one JSON object on its own line. With `count`, the count prints as one JSON object.
-{%- endif %}
+{% endif %}

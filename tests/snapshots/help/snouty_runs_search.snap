@@ -112,6 +112,7 @@ Matching events print as classified blocks: a `moment HASH` divider opens each
 timeline segment, and each event below it renders on one line in the Antithesis
 event shapes — SDK assertions, faults, container lifecycle, test composer — each
 in their own concise form.
+
 Rows reshaped by map/narrow/fold print as raw JSON.
 
 Add --count to print how many events in the whole run match the query, instead

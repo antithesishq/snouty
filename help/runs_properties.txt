@@ -1,10 +1,10 @@
 List a run's property (assertion) results{% if cli %}, one table per group{% endif %}.
 
 Each property has its ID, name, group, and status: passing, failing, or undetermined. An undetermined property has not triggered yet. Each property also counts its examples and its counterexamples.
-{%- if cli %}
 
+{% if cli %}
 Each table is headed by its group; columns are STATUS, ✓, ✗, ID, NAME (failing first). STATUS is pass, fail, or unseen, for undetermined. ✓ is the example count and ✗ is the counterexample count; large counts are shortened, as in 186k. ID is the property ID, for `snouty runs property`.
-{%- endif %}
+{% endif %}
 
 Filter by status with {{ t("--passing")? }}, {{ t("--failing")? }}, and {{ t("--undetermined")? }}. Give more than one to show each of those statuses.
 
@@ -18,9 +18,9 @@ Examples:
   {{ t("snouty runs properties <run_id> --group Unreachable --detail")? }}
 {%- endif %}
 
-{%~ if cli %}
+{% if cli %}
 Add --json for machine-readable output. Each property prints as one JSON object on its own line. --json is mutually exclusive with --detail:
   {{ t("snouty --json runs properties <run_id> --failing | jq -r .name")? }}
-{%- else %}
+{% else %}
 Each property prints as one JSON object on its own line.
-{%- endif %}
+{% endif %}

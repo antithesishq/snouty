@@ -5,14 +5,14 @@ How a run is structured: An Antithesis run is a tree of timelines, not one histo
 {{ t("input_hash")? }} identifies the timeline: the hash of every input Antithesis sent from the root to that point. Logs stream from the root (or {{ t("--begin-vtime")? }}) to the timeline's current end; a run in progress can extend the timeline, so the same {{ t("input_hash")? }} can return more logs later. Give {{ t("vtime")? }} to end the stream at that moment instead.
 
 Each event has its moment (an input_hash and a vtime), its source, and its payload: log output, an SDK assertion, a fault, a container lifecycle change, or a test composer command.
-{%- if cli %}
 
+{% if cli %}
 Output: a `moment HASH` divider opens each timeline segment, and each event under it renders on one line as `VTIME [source] payload`, each event shape in its own concise form.
-{%- endif %}
+{% endif %}
 
-{%~ if cli %}
+{% if cli %}
 Add --json for machine-readable output. Each event prints as one JSON object on its own line:
   {{ t("snouty --json runs logs <run_id> <hash> | jq -r .moment.vtime")? }}
-{%- else %}
+{% else %}
 Each event prints as one JSON object on its own line.
-{%- endif %}
+{% endif %}

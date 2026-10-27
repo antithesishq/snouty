@@ -23,12 +23,12 @@ The response holds the new session's run ID in `runId`. The session starts at th
   {{ t("snouty runs wait <session_run_id> --until ready")? }}
   {{ t("snouty runs exec <session_run_id> <hash> <vtime> 'ps aux'")? }}
 
-{%~ if cli %}
+{% if cli %}
 Add --json for machine-readable output. The response prints as one JSON object:
   {% filter cmd %}
   snouty debug --json --run-id <run_id> --input-hash <hash> --vtime <vtime> |
     jq -r .runId
   {% endfilter %}
-{%- else %}
+{% else %}
 The response prints as one JSON object.
-{%- endif %}
+{% endif %}

@@ -10,9 +10,9 @@ Examples:
 {%- endif %}
   {{ t("snouty docs tree sdk")? }}
 
-{%~ if cli %}
+{% if cli %}
 Add --json for machine-readable output. The tree prints as one JSON object, {"children": [node, ...]}. Each node has name, the last segment of its path, and path. A node has title when it is a page, and then `{{ t("snouty docs show")? }}` accepts its path. A node has children, sorted by name, when it has child nodes that --depth did not remove. When no page matches, the output is {"children": []}:
   {{ t("snouty --json docs tree sdk | jq -r '.. | .path? // empty'")? }}
-{%- else %}
+{% else %}
 The tree prints as one JSON object, {"children": [node, ...]}. Each node has name, the last segment of its path, and path. A node has title when it is a page, and then `{{ t("snouty docs show")? }}` accepts its path. A node has children, sorted by name, when it has child nodes that `depth` did not remove. When no page matches, the output is {"children": []}.
-{%- endif %}
+{% endif %}

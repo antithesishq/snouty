@@ -19,9 +19,9 @@ Examples:
   snouty launch --json --config ./config ... | jq -r .runId | xargs snouty runs wait
 {%- endif %}
 
-{%~ if cli %}
+{% if cli %}
 Add --json for machine-readable output. The final status prints as one JSON object:
   {{ t("snouty --json runs wait <run_id> | jq -r .status")? }}
-{%- else %}
+{% else %}
 The final status prints as one JSON object.
-{%- endif %}
+{% endif %}

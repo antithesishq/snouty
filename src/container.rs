@@ -365,8 +365,8 @@ pub trait ContainerRuntime: Send + Sync {
 
 /// Write `data` to the stdin of a build. A build that exits before it reads
 /// stdin breaks the pipe. Ignore `BrokenPipe`: the build's exit status and
-/// stderr report the failure, and `main` reads `BrokenPipe` as a closed
-/// stdout and exits 0.
+/// stderr then report the failure, which tells the user more than a broken
+/// pipe does.
 fn write_build_stdin(mut stdin: impl Write, data: &[u8]) -> std::io::Result<()> {
     match stdin.write_all(data) {
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),

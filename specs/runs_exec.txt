@@ -209,11 +209,11 @@ stdout '"fuzzpipe":\{"event_type":"Command received"\}'
 stdout '"output_text":"workload says hi"'
 stdout '"status":"exited"'
 
-# --source-run-id and --source-session-id name the run, or that run's session, that a cold
-# moment comes from (source_run_id and source_session_id). The server rewarms
-# the moment by replaying that run's inputs. Verified against release 64.0
-# (orbitinghail): without either, a moment off the session's own timeline
-# answers 400 "Moment not warm". --timeout does not count the rewarm.
+# --source-run-id and --source-session-id name the run, or that run's session,
+# that a cold moment comes from (source_run_id and source_session_id). The
+# server rewarms the moment by replaying that run's inputs. Verified against
+# release 66.0 (orbitinghail): without either, a moment from another run
+# answers 400. --timeout does not count the rewarm.
 # Without the flags, neither field is sent.
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request
 stdout 'source_run_id=absent source_session_id=absent'
@@ -224,11 +224,11 @@ stdout 'source_run_id=1f1211ea49946d4f63a92d65ee42476d-64-0 source_session_id=ab
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --source-session-id ba4ebf3181dd342334b86c58941813c6-64-0
 stdout 'source_run_id=absent source_session_id=ba4ebf3181dd342334b86c58941813c6-64-0'
 
-# A cold moment without a source fails with the server's 400 ("Moment not
-# warm"), and snouty points at --source-run-id.
+# A cold moment without a source fails with the server's 400, and snouty
+# points at the source flags.
 ! snouty runs exec run-2 1002528785118888238 278.1311443040613 'true'
-stderr 'Moment not warm'
-stderr 'use --source-run-id to load a moment from a different run$'
+stderr 'The requested moment is unavailable in this run'
+stderr 'use --source-run-id or --source-session-id to load a moment from a different run$'
 ! stderr 'not ready'
 
 # A ready run executes at once, with no waiting line. Rust tests in src/runs.rs

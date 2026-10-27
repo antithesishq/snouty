@@ -1974,13 +1974,22 @@ impl Drop for ReadyDisplay {
     }
 }
 
-/// The markers in a 400's message that the moment is cold, as observed on
-/// orbitinghail. Release 64.0 answered `Moment not warm and no provided
-/// source_run_id or source_session_id. …`, then `Moment not warm in the live
-/// run and no source_run_id provided.` from 2026-10-07. Release 66.0 answers
-/// `The requested moment is unavailable in this run. Provide source_run_id or
-/// source_session_id…`.
-const MOMENT_NOT_WARM: [&str; 2] = ["Moment not warm", "moment is unavailable in this run"];
+/// The markers in a 400's message that the moment is cold and no source was
+/// given, as observed on orbitinghail:
+///
+/// - Release 64.0, any run: `Moment not warm and no provided source_run_id or
+///   source_session_id. …`, then `Moment not warm in the live run and no
+///   source_run_id provided.` from 2026-10-07.
+/// - Release 66.0, a test run: `The requested moment is unavailable in this
+///   run. Provide source_run_id or source_session_id to restore it.`
+/// - Release 66.0, a debugging session: `The requested moment is not valid in
+///   the original run.` A session rewarms a moment of its own source run, so
+///   only a moment of another run gets this answer.
+const MOMENT_NOT_WARM: [&str; 3] = [
+    "Moment not warm",
+    "moment is unavailable in this run",
+    "moment is not valid in the original run",
+];
 
 /// Add suggestions to a failed `runs exec` request in a run with status
 /// `run_status`, which is ready or complete. `debug_command` starts a
@@ -1990,13 +1999,13 @@ const MOMENT_NOT_WARM: [&str; 2] = ["Moment not warm", "moment is unavailable in
 /// A run that has stopped cannot accept a command: on orbitinghail (release
 /// 65.0), a completed test run answers 400 `Run <id> has ended. Commands
 /// require an active run.` Otherwise, the server's responses on orbitinghail
-/// (release 64.0) mean:
+/// mean:
 ///
-/// - 404 `Resource not found`: the source does not exist.
+/// - 404 `Resource not found` (release 64.0): the source does not exist.
 /// - A 400 that `MOMENT_NOT_WARM` matches: the moment is cold and there is
 ///   no source.
-/// - Any other 400: a rewarm did not finish, or the source is not the
-///   moment's run.
+/// - Any other 400 (release 64.0): a rewarm did not finish, or the source is
+///   not the moment's run.
 fn explain_exec_error(
     run_status: RunStatus,
     debug_command: &str,
@@ -2019,9 +2028,9 @@ fn explain_exec_error(
         .is_some_and(|m| MOMENT_NOT_WARM.iter().any(|marker| m.contains(marker)));
     match (status, rewarm_flag) {
         (404, Some(flag)) => err.suggestion(format!("check that {flag} names an existing source")),
-        (400, None) if cold => {
-            err.suggestion("use --source-run-id to load a moment from a different run")
-        }
+        (400, None) if cold => err.suggestion(
+            "use --source-run-id or --source-session-id to load a moment from a different run",
+        ),
         (400, Some(flag)) => err.suggestion(format!(
             "check that {flag} names the run the moment comes from"
         )),
@@ -5002,7 +5011,8 @@ mod tests {
             for message in [
                 "Moment not warm in the live run and no source_run_id provided.",
                 "The requested moment is unavailable in this run. Provide source_run_id or \
-                 source_session_id.",
+                 source_session_id to restore it.",
+                "The requested moment is not valid in the original run.",
             ] {
                 let err = explain_exec_error(
                     RunStatus::InProgress,
@@ -5011,7 +5021,7 @@ mod tests {
                     api_error(400, message),
                 );
                 assert!(
-                    format!("{err:?}").contains("use --source-run-id"),
+                    format!("{err:?}").contains("use --source-run-id or --source-session-id"),
                     "{message}: {err:?}"
                 );
             }

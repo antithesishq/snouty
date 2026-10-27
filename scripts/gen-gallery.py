@@ -3443,10 +3443,11 @@ def build_ready_stories(d: Discovery, x: GalleryRun, wait_ready: Result) -> list
             "Execute at a moment from another run",
             f"I copied a moment from run {d.fail} and try to execute at it in my run.",
             "snouty fails, says that the moment is not loaded into the run, and tells me "
-            "how to load it: use --source-run-id to load a moment from a different run.",
+            "how to load it: use --source-run-id or --source-session-id to load a moment "
+            "from a different run.",
             # No story loads d.fail's moment, so it stays cold in a reused run.
             ["runs", "exec", x.run, d.fail_hash, d.fail_vtime, "uname -n"],
-            fails_with("--source-run-id"),
+            fails_with("--source-run-id or --source-session-id"),
         ),
         exec_story(
             "runs-exec--source-run-id",

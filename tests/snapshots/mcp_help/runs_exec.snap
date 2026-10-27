@@ -1,0 +1,25 @@
+---
+source: tests/help_snapshots.rs
+---
+Execute a bash script in a run that is in progress, at a moment.
+
+The run must be ready. It can be a test run or a debugging session. The exec command will wait until the run is ready before running the script.
+
+The script executes on a fresh branch of the multiverse, so it does not interact with other work happening in the session, like fuzzing or other executing commands.
+
+`input_hash` and `vtime` identify the moment to execute at, and the moment must be warm. A warm moment is a moment that is loaded into the run. Every moment generated in the run is warm: by fuzzing, and by an earlier `runs_exec`, so the end moment of one command is warm for the next. A moment from another run is cold. Use `source_run_id` to load a moment from a different run. Rewarming a moment can take minutes and depends on the magnitude of the vtime. `timeout` does not apply to the time it takes to rewarm a moment. Find a moment with `runs_properties` or `runs_search`.
+
+The script executes on the host, or in the container that `container` names. The command needs tenant release 64.0 or newer; `doctor` reports the tenant release.
+
+The result's first content block is the stream, one JSON object per line. Without `events`, the stream is the script's output. With `events`, it is every event of the timeline while the script executes, as `runs_logs` returns them: the script's output, the workload's logs and assertions, and Antithesis events. The last line is the exit result, and its `end_moment` is the moment to chain a follow-up call from. When the command fails, a second block says why. The command fails when the script fails, times out, or its stream ends early.
+
+To run more at the moment that a script left, pass its end moment as the next call's input_hash and vtime:
+  runs_exec {"run_id": "<run_id>", "input_hash": "<end_hash>", "vtime": <end_vtime>, "script": "cat /tmp/state"}
+
+Examples:
+  runs_exec {"run_id": "<run_id>", "input_hash": "<hash>", "vtime": <vtime>, "script": "uname -a"}
+  runs_exec {"run_id": "<run_id>", "input_hash": "<hash>", "vtime": <vtime>, "script": "ps aux", "container": "<name>"}
+  runs_exec {"run_id": "<run_id>", "input_hash": "<hash>", "vtime": <vtime>, "script": "sleep 5", "events": true}
+  runs_exec {"run_id": "<run_id>", "input_hash": "<hash>", "vtime": <vtime>, "script": "ls", "source_run_id": "<id>", "timeout": "5m"}
+
+Each frame of the stream prints as one JSON object on its own line.

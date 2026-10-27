@@ -17,10 +17,10 @@ Times and periods are in the local timezone. Add --utc to show them in UTC.
 The rows always show newest first.
 
 Examples:
-  snouty runs usage
-  snouty runs usage --rollup week -n 4
-  snouty runs usage --rollup month --after 2026-01-01
-  snouty runs usage --after 2026-10-01 --before 2026-11-01 --utc
+  {{ t("snouty runs usage")? }}
+  {{ t("snouty runs usage --rollup week -n 4")? }}
+  {{ t("snouty runs usage --rollup month --after 2026-01-01")? }}
+  {{ t("snouty runs usage --after 2026-10-01 --before 2026-11-01 --utc")? }}
 
 Add --json for machine-readable output. Each row prints as one JSON object on its own line. The hours field holds core-hours. A run has the fields run_id, hours, start_time, and end_time; the times are RFC 3339 with the offset of the timezone. A period has the fields date, runs, and hours, with hours rounded to hundredths:
-  snouty --json runs usage --rollup month | jq -r '"\(.date) \(.hours)"'
+  {{ t("snouty --json runs usage --rollup month | jq -r '\"\\(.date) \\(.hours)\"'")? }}

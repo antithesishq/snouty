@@ -6,11 +6,14 @@ Search a run's events for one or more substrings (all must match).
 A term is matched against the text an event carries: log output, an assertion's
 message and source function, and a test-composer command.
 
+Each matching event has its moment (an input_hash and a vtime), its source, and
+its payload. To stream the logs of an event's timeline to its current end, pass
+its run ID and input_hash to `snouty runs logs <run_id> <hash>`.
+
 Matching events print as classified blocks: a `moment HASH` divider opens each
-timeline segment. Use `snouty runs logs <run_id> <hash>` to stream logs to the
-timeline's current end. Each event below the divider renders on one line with
-the Antithesis event shapes — SDK assertions, faults, container lifecycle, test
-composer — each in their own concise form.
+timeline segment, and each event below it renders on one line in the Antithesis
+event shapes — SDK assertions, faults, container lifecycle, test composer — each
+in their own concise form.
 
 Matching runs server-side through the events-search API, the same route
 `snouty runs search` takes. Every term must match, case-insensitively. The
@@ -19,7 +22,7 @@ Read `snouty runs search --help` to learn how to read a sample and how the run's
 timelines relate the events.
 
 The run must be ready or complete. If it is not, the command waits until it is
-ready, as `snouty runs exec` does, and shows a line on stderr.
+ready, as `snouty runs exec` does, and says that it waits.
 
 The command needs tenant release 62.2 or newer; `snouty doctor` reports the
 tenant release.

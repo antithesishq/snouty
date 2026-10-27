@@ -123,6 +123,11 @@ pub(crate) fn prose_width() -> Option<usize> {
     prose_width_of(&console::Term::stderr())
 }
 
+/// As [`prose_width`], for stdout.
+pub(crate) fn stdout_prose_width() -> Option<usize> {
+    prose_width_of(&console::Term::stdout())
+}
+
 fn prose_width_of(term: &console::Term) -> Option<usize> {
     term.is_term()
         .then(|| PROSE_WIDTH.min(term.size().1 as usize))

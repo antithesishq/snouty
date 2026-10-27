@@ -1,0 +1,18 @@
+---
+source: tests/help_snapshots.rs
+---
+Launch a debugging session
+
+Identify the target run with exactly one of `run_id` (preferred) or `session_id`.
+
+Example:
+  debug {"run_id": "9043254f65c9c65d63fe043a0abfc7fc-53-1", "input_hash": "6057726200491963783", "vtime": 329.8037810830865, "title": "stalled leader election", "description": "debug this moment", "recipients": "team@example.com"}
+
+Extra parameters can be passed with `param`. A `param` cannot replace the value of a dedicated param, such as `title`:
+  debug {"run_id": "<run_id>", "input_hash": "<hash>", "vtime": <vtime>, "param": ["attrs.team=payments"]}
+
+The response holds the new session's run ID in `runId`. The session starts at the moment that it debugs. Wait until it is ready, then run commands at that moment:
+  runs_wait {"run_id": "<session_run_id>", "until": "ready"}
+  runs_exec {"run_id": "<session_run_id>", "input_hash": "<hash>", "vtime": <vtime>, "script": "ps aux"}
+
+The response prints as one JSON object.

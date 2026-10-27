@@ -36,6 +36,10 @@ There are three kinds of story:
     prints. Commands that mutate state or need an interactive arg (launch,
     debug, validate, update, completions) are help-only. An automated check
     verifies any column/field the help names actually appears in the output.
+  * MCP tool help stories — start `snouty mcp`, read one tool's entry in the
+    tool list, and call `tool_help` for it (slugs like `mcp-help-runs-logs`),
+    to judge whether an AI agent could call the tool from that text alone.
+    The tools come from the server's own tool list. They need no API.
   * TTY stories — drive an interactive command (today only `snouty login`) on a
     real pseudo-terminal and record the conversation: one *frame* per prompt,
     an asciinema recording to replay, and the files the command persisted. See
@@ -97,6 +101,10 @@ UNKNOWN_PROPERTY = "ffffffffffffffffffffffffffffffff"
 # Stories are captured concurrently (each is one or two snouty subprocesses that
 # can each block on snouty's 60s timeout); checks are then evaluated serially.
 CAPTURE_WORKERS = 6
+# The MCP protocol version that the gallery's client asks for, and how long one
+# `snouty mcp` session may take.
+MCP_PROTOCOL_VERSION = "2025-06-18"
+MCP_TIMEOUT = 60
 
 # Committed `snouty validate` sample projects (their goal is documented in the
 # comment atop each docker-compose.yaml). The validate stories run `snouty
@@ -285,6 +293,54 @@ class Snouty:
         finally:
             self._track(proc, live=False)
         return Result(args, stdout, stderr or "", proc.returncode, stdin=stdin)
+
+    def mcp(self, requests: list[tuple[str, dict]]) -> list[dict]:
+        """Start `snouty mcp`, initialize a session, send each `(method,
+        params)` request, and return each response's `result`, in order. The
+        server stops when its stdin closes."""
+        env = self.env_with({"SNOUTY_UNSTABLE_FEATURES": "mcp"})
+        messages = [
+            {
+                "jsonrpc": "2.0",
+                "id": 0,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {"name": "gen-gallery", "version": "1"},
+                },
+            },
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        ]
+        for id_, (method, params) in enumerate(requests, 1):
+            messages.append(
+                {"jsonrpc": "2.0", "id": id_, "method": method, "params": params}
+            )
+        # The server answers each request before stdin closes, as rmcp handles
+        # each one as it reads it, and the requests here take no time.
+        proc = subprocess.run(
+            [str(self.binary), "mcp"],
+            input="".join(json.dumps(m) + "\n" for m in messages),
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=MCP_TIMEOUT,
+        )
+        responses = {}
+        for line in proc.stdout.splitlines():
+            message = json.loads(line)
+            if "id" in message:
+                responses[message["id"]] = message
+        results = []
+        for id_, (method, _) in enumerate(requests, 1):
+            response = responses.get(id_)
+            if response is None or "result" not in response:
+                raise GalleryError(
+                    f"`snouty mcp` gave no result for {method}: {response!r}\n"
+                    f"stderr: {proc.stderr.strip()}"
+                )
+            results.append(response["result"])
+        return results
 
     def json_lines(
         self, args: list[str], env: dict[str, str | None] | None = None
@@ -1565,6 +1621,9 @@ class Story:
     # story that models an unconfigured machine (e.g. the no-auth doctor stories).
     isolate_config: bool = False
     stdin: str | None = None
+    # -- MCP tool help stories ---------------------------------------------
+    # The MCP tool whose tool list entry and `tool_help` the story shows.
+    mcp_tool: str | None = None
     # Capture on pipes rather than a terminal, with stderr in the stdout pipe,
     # as a CI log or `2>&1 | tee` shows the output.
     pipe: bool = False
@@ -1598,6 +1657,7 @@ class StoryRun:
     rows: list[dict] | None  # structured rows from the --json variant, if any
     help_result: Result | None = None  # `<help_cmd> --help` capture, for help stories
     sample_results: list[tuple[str, Result]] | None = None  # extra labelled captures
+    mcp_entry: dict | None = None  # the tool's entry in the MCP tool list
     # (rel_path, contents|None) for each `post_capture` file, in order; None means
     # the file was not written (which some TTY stories assert on).
     captured_files: list[tuple[str, str | None]] | None = None
@@ -3620,6 +3680,70 @@ _HELP_ONLY_RUBRIC = (
 )
 
 
+MCP_HELP_RUBRIC = (
+    "The reader is an AI agent, not a person at a terminal. It sees the tool's "
+    "entry in the tool list (description, annotations, input schema) and the "
+    "`tool_help` text, and nothing else. Judge whether it could **call the tool "
+    "correctly** from these alone: the help names each arg by its param in the "
+    "schema, never by a CLI flag; it says what the tool returns, in what shape; "
+    "each example is a valid call; and nothing tells the agent to do what a "
+    "tool call cannot (open a browser, pipe to `jq`, read stdin, run a command "
+    "that has no tool). It should also be **concise** and **consistent** with "
+    "the schema's own param descriptions, and say which tool to call next with "
+    "the fields that it returns."
+)
+
+
+def mcp_tool_names(sn: Snouty) -> list[str]:
+    """The tools that `snouty mcp` lists, in its order."""
+    (listing,) = sn.mcp([("tools/list", {})])
+    return [tool["name"] for tool in listing["tools"]]
+
+
+def _mcp_slug(tool: str) -> str:
+    return "mcp-help-" + tool.replace("_", "-")
+
+
+def build_mcp_help_stories(tools: list[str]) -> list[Story]:
+    # tool_help is the tool that returns the help; its own help is its entry.
+    return [
+        Story(
+            slug=_mcp_slug(tool),
+            title=f"Learn to call {tool} over MCP",
+            goal=(
+                f"My AI agent wants to use `{tool}`. It reads the tool's entry in the "
+                f'tool list, then calls `tool_help {{"tool": "{tool}"}}` before it '
+                "calls the tool."
+            ),
+            judge=MCP_HELP_RUBRIC,
+            args=["mcp"],
+            check=mcp_help_check,
+            json_capable=False,
+            mcp_tool=tool,
+        )
+        for tool in tools
+        if tool != "tool_help"
+    ]
+
+
+def mcp_help_check(sr: StoryRun, _reg: Registry) -> tuple[bool, str]:
+    # The Rust tests check what the help and the schema say; this checks
+    # only that the server serves them.
+    tool = sr.story.mcp_tool
+    if sr.mcp_entry is None:
+        return False, f"{tool} is not in the tool list"
+    if not sr.result.ok:
+        return False, f"tool_help failed: {sr.result.stdout.strip()[:200]}"
+    text = sr.result.stdout
+    if not text.startswith(f"The help of {tool}"):
+        return False, "tool_help text does not start with the tool's name"
+    params = len(sr.mcp_entry.get("inputSchema", {}).get("properties", {}))
+    return (
+        True,
+        f"{len(text.splitlines())} lines of help, {params} params in the schema",
+    )
+
+
 def _help_story(
     slug: str,
     title: str,
@@ -4616,10 +4740,35 @@ def _write_tty_story(
     (out_dir / f"{story.slug}.md").write_text("\n\n".join(parts) + "\n")
 
 
+def _write_mcp_story(
+    out_dir: Path, story: Story, sr: StoryRun, verdict: str, detail: str, build: str
+) -> None:
+    entry = json.dumps(sr.mcp_entry, indent=2, ensure_ascii=False)
+    call = json.dumps({"tool": story.mcp_tool})
+    parts = [
+        f"# {story.title}",
+        _build_line(build),
+        f"**User goal:** {story.goal}",
+        f"**Judge satisfaction by:** {story.judge}",
+        "_Capture: a JSON-RPC session with `snouty mcp` over stdio; "
+        + "no terminal emulation._",
+        "## Tool list entry",
+        f"```json\n{entry}\n```",
+        f"## `tool_help {call}`",
+        f"```text\n{sr.result.stdout.rstrip()}\n```",
+        f"isError: `{str(not sr.result.ok).lower()}`",
+        f"_Automated check: {verdict} — {detail}_",
+    ]
+    (out_dir / f"{story.slug}.md").write_text("\n\n".join(parts) + "\n")
+
+
 def write_story(
     out_dir: Path, story: Story, sr: StoryRun, passed: bool, detail: str, build: str
 ) -> None:
     verdict = "PASS" if passed else "FAIL"
+    if story.mcp_tool is not None:
+        _write_mcp_story(out_dir, story, sr, verdict, detail, build)
+        return
     if story.help_cmd is not None:
         _write_help_story(out_dir, story, sr, verdict, detail, build)
         return
@@ -4705,9 +4854,27 @@ def _run_isolated_story(sn: Snouty, story: Story) -> StoryRun:
         shutil.rmtree(home, ignore_errors=True)
 
 
+def run_mcp_story(sn: Snouty, story: Story) -> StoryRun:
+    listing, help_ = sn.mcp(
+        [
+            ("tools/list", {}),
+            (
+                "tools/call",
+                {"name": "tool_help", "arguments": {"tool": story.mcp_tool}},
+            ),
+        ]
+    )
+    entry = next((t for t in listing["tools"] if t["name"] == story.mcp_tool), None)
+    text = "\n".join(block.get("text", "") for block in help_["content"])
+    returncode = 1 if help_.get("isError") else 0
+    return StoryRun(story, Result(["mcp"], text, "", returncode), None, mcp_entry=entry)
+
+
 def run_story(sn: Snouty, story: Story) -> StoryRun:
     if story.precaptured is not None:
         return StoryRun(story, story.precaptured, None)
+    if story.mcp_tool is not None:
+        return run_mcp_story(sn, story)
     if story.dialogue is not None:
         return run_tty_story(sn, story)
     if story.isolate_config:
@@ -4780,6 +4947,15 @@ def main() -> int:
             print(s.slug)
         for s in build_tty_stories():
             print(s.slug)
+        # The MCP tool help stories come from the tools that the binary lists.
+        binary = args.snouty or repo_root / "target" / "debug" / "snouty"
+        if binary.exists():
+            listing = Snouty(binary.resolve())
+            try:
+                for s in build_mcp_help_stories(mcp_tool_names(listing)):
+                    print(s.slug)
+            finally:
+                listing.cleanup()
         for slugs in listed_run_slugs():
             for slug in slugs:
                 print(slug)
@@ -4818,6 +4994,14 @@ def main() -> int:
     def selected(slug: str) -> bool:
         return not args.only or any(fnmatch.fnmatch(slug, pat) for pat in args.only)
 
+    sn = Snouty(snouty_bin)
+    try:
+        mcp_stories = build_mcp_help_stories(mcp_tool_names(sn))
+    except (GalleryError, subprocess.TimeoutExpired, json.JSONDecodeError) as e:
+        sn.cleanup()
+        print(f"error: cannot list the MCP tools: {e}", file=sys.stderr)
+        return 1
+
     api_slugs = {s.slug for s in build_stories(Discovery())}
     launch_slugs, ready_slugs, final_slugs = (
         listed_run_slugs() if args.run else ([], [], [])
@@ -4840,15 +5024,16 @@ def main() -> int:
             *final_slugs,
             *validate_slugs,
             *tty_slugs,
+            *(s.slug for s in mcp_stories),
         ]
         unmatched = [
             p for p in args.only if not any(fnmatch.fnmatch(s, p) for s in known)
         ]
         if unmatched:
             print(f"error: --only matched no stories: {unmatched}", file=sys.stderr)
+            sn.cleanup()
             return 1
 
-    sn = Snouty(snouty_bin)
     failures: list[tuple[str, str]] = []
     guard: LaunchGuard | None = None
     run: GalleryRun | None = None
@@ -4923,8 +5108,10 @@ def main() -> int:
             guard = LaunchGuard.for_tenant(sn)
             regular += build_stories(disc, guard)
         regular += [s for s in validate_stories if s not in early]
-        # TTY stories need no external dependencies, so they always run.
+        # TTY and MCP tool help stories need no external dependencies, so they
+        # always run.
         regular += build_tty_stories()
+        regular += mcp_stories
         regular = [s for s in regular if selected(s.slug)]
 
         # Capture concurrently (subprocess + API roundtrips dominate), preserving

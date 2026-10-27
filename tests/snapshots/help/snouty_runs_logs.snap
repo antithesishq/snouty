@@ -19,10 +19,13 @@ timeline's current end; a run in progress can extend the timeline, so the same
 INPUT_HASH can return more logs later. Give VTIME to end the stream at that
 moment instead.
 
+Each event has its moment (an input_hash and a vtime), its source, and its
+payload: log output, an SDK assertion, a fault, a container lifecycle change, or
+a test composer command.
+
 Output: a `moment HASH` divider opens each timeline segment, and each event
-under it renders on one line as `VTIME [source] payload` — Antithesis event
-shapes (SDK assertions, faults, container lifecycle, test composer) each in
-their own concise form.
+under it renders on one line as `VTIME [source] payload`, each event shape in
+its own concise form.
 
 Add --json for machine-readable output. Each event prints as one JSON object on
 its own line:

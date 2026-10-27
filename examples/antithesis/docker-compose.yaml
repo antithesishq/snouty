@@ -1,0 +1,26 @@
+# snouty example project: a tiny bank and a workload that drives it.
+# Build the images, then validate:
+#   docker compose -f examples/antithesis/docker-compose.yaml build
+#   snouty validate examples/antithesis
+services:
+  bank:
+    build:
+      context: .
+      target: bank
+    image: snouty-example-bank:latest
+    platform: linux/amd64
+    container_name: bank
+    hostname: bank
+    command: ["python3", "-m", "antithesis", "/opt/bank/server.py"]
+
+  workload:
+    build:
+      context: .
+      target: workload
+    image: snouty-example-workload:latest
+    platform: linux/amd64
+    container_name: workload
+    hostname: workload
+    command: ["python3", "-m", "antithesis", "/opt/bank/ready.py"]
+    depends_on:
+      - bank

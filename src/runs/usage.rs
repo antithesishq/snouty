@@ -407,7 +407,7 @@ fn render_usage_table(entries: &[ZonedUsageEntry], width: usize) -> String {
         .column(Column::new("RUN ID"))
         .column(Column::new("STARTED"))
         .column(Column::new("ENDED"))
-        .column(Column::new("CORE-HOURS").align(Align::Right))
+        .column(Column::new("CORE HOURS").align(Align::Right))
         .render(rows, width)
 }
 
@@ -427,7 +427,7 @@ fn render_periods_table(periods: &[PeriodUsage], width: usize) -> String {
         .column(Column::new("START"))
         .column(Column::new("END"))
         .column(Column::new("RUNS").align(Align::Right))
-        .column(Column::new("CORE-HOURS").align(Align::Right))
+        .column(Column::new("CORE HOURS").align(Align::Right))
         .render(rows, width)
 }
 

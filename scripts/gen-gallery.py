@@ -2194,8 +2194,8 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-usage",
             "See how many hours recent runs used",
             "I want to know which recent runs used the most hours.",
-            "Up to 10 runs, newest first, with RUN ID/STARTED/ENDED/CORE-HOURS columns; "
-            "STARTED/ENDED are local times, and CORE-HOURS is last, right-aligned, with one decimal; "
+            "Up to 10 runs, newest first, with RUN ID/STARTED/ENDED/CORE HOURS columns; "
+            "STARTED/ENDED are local times, and CORE HOURS is last, right-aligned, with one decimal; "
             "when more runs exist, a stderr note says the output stopped at the limit.",
             ["runs", "usage"],
             rows_at_most(10),
@@ -2205,8 +2205,8 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "Track core-hour usage week by week",
             "I want the total runs and hours of each of the last few weeks.",
             "Exactly 4 rows: the current week and the 3 before it, newest first, with "
-            "START/END/RUNS/CORE-HOURS columns; START is a Monday and END the Sunday after it, a week with "
-            "no runs shows 0, and CORE-HOURS has one decimal; a stderr note says it shows up to 4 periods.",
+            "START/END/RUNS/CORE HOURS columns; START is a Monday and END the Sunday after it, a week with "
+            "no runs shows 0, and CORE HOURS has one decimal; a stderr note says it shows up to 4 periods.",
             ["runs", "usage", "--rollup", "week", "-n", "4"],
             rows_at_most(4),
         ),
@@ -3231,7 +3231,7 @@ def build_help_stories(d: Discovery) -> list[Story]:
             samples=[
                 ("with --rollup week", ["runs", "usage", "--rollup", "week", "-n", "4"])
             ],
-            align=("RUN ID", "CORE-HOURS", "STARTED", "ENDED"),
+            align=("RUN ID", "CORE HOURS", "STARTED", "ENDED"),
         ),
         _help_story(
             "help-runs-show",

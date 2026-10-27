@@ -2,9 +2,9 @@ Show the core-hours that recent runs used, newest first.
 
 Core-hours are the unit that Antithesis bills usage in, and that the usage cap counts. They are not wall-clock hours: Antithesis runs a test in parallel, so one hour of testing uses many core-hours, and a higher performance tier uses more.
 
-Columns: RUN ID, STARTED, ENDED, CORE-HOURS. STARTED and ENDED are the start and end of the billable usage of the run. CORE-HOURS has one decimal place.
+Columns: RUN ID, STARTED, ENDED, CORE HOURS. STARTED and ENDED are the start and end of the billable usage of the run. CORE HOURS has one decimal place.
 
-With --rollup, each row is the total of one day, week, or month. A run counts in the period in which it ended. A week starts on Monday. Columns: START, END, RUNS, CORE-HOURS. START and END are the first and last days of the period. The rows are the --limit periods that end with the current period, and a period with no runs shows 0.
+With --rollup, each row is the total of one day, week, or month. A run counts in the period in which it ended. A week starts on Monday. Columns: START, END, RUNS, CORE HOURS. START and END are the first and last days of the period. The rows are the --limit periods that end with the current period, and a period with no runs shows 0.
 
 Times and periods are in the local timezone. Add --utc to show them in UTC.
 

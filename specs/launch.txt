@@ -168,7 +168,7 @@ stdout 'Test run started: run_id run-123'
 # value means unset, so the last line restores username/password auth for the
 # rest of the file.)
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-set-env ANTITHESIS_API_KEY ${FAKE_API_KEY}
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 snouty launch --launcher basic_test --config-image config:latest --duration 30 --source ci-pipeline
 ! stderr 'deprecated'
 stdout 'Test run started: run_id run-123'

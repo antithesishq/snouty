@@ -213,7 +213,7 @@ fn a_pasted_api_key_is_masked() {
     let (home, mut session) = start_login();
     expect(&mut session, "Please enter your API Key");
 
-    let key = fake_secrets::API_KEY;
+    let key = fake_secrets::FAKE_API_KEY_A;
     send(&mut session, key);
     let mut seen = expect(&mut session, &"*".repeat(key.len()));
     send(&mut session, "\r");
@@ -232,7 +232,7 @@ fn accepts_an_api_key_longer_than_the_terminal_width() {
     let (home, mut session) = start_login();
     expect(&mut session, "Please enter your API Key");
 
-    let long_key = format!("{}{}", fake_secrets::API_KEY, "a".repeat(197));
+    let long_key = format!("{}{}", fake_secrets::FAKE_API_KEY_A, "a".repeat(197));
     assert!(
         long_key.len() > PTY_COLS as usize,
         "the key must be wider than the terminal for this test to mean anything"
@@ -263,7 +263,7 @@ fn accepts_an_api_key_longer_than_the_terminal_width() {
 /// characters, which is what makes the hint recognizable.
 #[test]
 fn bare_enter_keeps_the_stored_api_key() {
-    let stored = fake_secrets::API_KEY_STORED;
+    let stored = fake_secrets::FAKE_API_KEY_A;
     let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &api_key_credentials(stored))]);
 
     // The hint: stars, then the key's own last characters. Antithesis keys
@@ -292,12 +292,12 @@ fn bare_enter_without_a_stored_key_asks_again() {
     expect(&mut session, "Please enter your API Key");
     send(&mut session, "\r");
     expect(&mut session, EMPTY_REFUSED);
-    send(&mut session, &format!("{}\r", fake_secrets::API_KEY));
+    send(&mut session, &format!("{}\r", fake_secrets::FAKE_API_KEY_A));
     finish(session);
 
     let creds = credentials(home.path());
     assert!(
-        creds.contains(&api_key_line(fake_secrets::API_KEY)),
+        creds.contains(&api_key_line(fake_secrets::FAKE_API_KEY_A)),
         "{creds}"
     );
 }
@@ -324,7 +324,7 @@ fn an_api_key_asks_before_it_replaces_stored_oauth_tokens() {
     let stored = oauth_credentials(None);
     let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &stored)]);
     expect(&mut session, "Please enter your API Key");
-    send(&mut session, &format!("{}\r", fake_secrets::API_KEY));
+    send(&mut session, &format!("{}\r", fake_secrets::FAKE_API_KEY_A));
     expect(&mut session, "Replace your stored OAuth credentials?");
     send(&mut session, "\r");
     let seen = finish(session);
@@ -339,7 +339,7 @@ fn an_api_key_asks_before_it_replaces_stored_oauth_tokens() {
 fn declining_keeps_a_stored_password() {
     let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &password_credentials())]);
     expect(&mut session, "Please enter your API Key");
-    send(&mut session, &format!("{}\r", fake_secrets::API_KEY));
+    send(&mut session, &format!("{}\r", fake_secrets::FAKE_API_KEY_A));
     expect(&mut session, REPLACE_PASSWORD);
     send(&mut session, "\r");
     let seen = finish(session);
@@ -354,10 +354,10 @@ fn declining_keeps_a_stored_password() {
 fn a_different_api_key_asks_before_it_replaces_the_stored_key() {
     let (home, mut session) = start_login_with(&[(
         CREDENTIALS_FILE,
-        &api_key_credentials(fake_secrets::API_KEY_STORED),
+        &api_key_credentials(fake_secrets::FAKE_API_KEY_A),
     )]);
     expect(&mut session, "Please enter your API Key (********9Pgw)");
-    send(&mut session, &format!("{}\r", fake_secrets::API_KEY));
+    send(&mut session, &format!("{}\r", fake_secrets::FAKE_API_KEY_B));
     expect(&mut session, "Replace your stored API key?");
     send(&mut session, "y\r");
     let seen = finish(session);
@@ -370,7 +370,7 @@ fn a_different_api_key_asks_before_it_replaces_the_stored_key() {
     );
     let creds = credentials(home.path());
     assert!(
-        creds.contains(&api_key_line(fake_secrets::API_KEY)),
+        creds.contains(&api_key_line(fake_secrets::FAKE_API_KEY_B)),
         "{creds}"
     );
 }
@@ -381,7 +381,7 @@ fn a_different_api_key_asks_before_it_replaces_the_stored_key() {
 fn an_api_key_that_replaces_a_stored_password_says_so() {
     let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &password_credentials())]);
     expect(&mut session, "Please enter your API Key");
-    send(&mut session, &format!("{}\r", fake_secrets::API_KEY));
+    send(&mut session, &format!("{}\r", fake_secrets::FAKE_API_KEY_A));
     expect(&mut session, REPLACE_PASSWORD);
     send(&mut session, "y\r");
     let seen = finish(session);
@@ -413,7 +413,7 @@ fn an_api_key_that_replaces_a_stored_password_says_so() {
     );
     let creds = credentials(home.path());
     assert!(
-        creds.contains(&api_key_line(fake_secrets::API_KEY)),
+        creds.contains(&api_key_line(fake_secrets::FAKE_API_KEY_A)),
         "{creds}"
     );
 }
@@ -425,12 +425,12 @@ fn an_api_key_does_not_claim_to_replace_a_password_from_the_environment() {
     let (_home, mut session) = spawn_login(&Login {
         env: &[
             ("ANTITHESIS_USERNAME", "puser"),
-            ("ANTITHESIS_PASSWORD", fake_secrets::PASSWORD),
+            ("ANTITHESIS_PASSWORD", fake_secrets::FAKE_PASSWORD),
         ],
         ..Login::default()
     });
     expect(&mut session, "Please enter your API Key");
-    send(&mut session, &format!("{}\r", fake_secrets::API_KEY));
+    send(&mut session, &format!("{}\r", fake_secrets::FAKE_API_KEY_A));
     let seen = finish(session);
 
     assert!(seen.contains("Stored your API key in"), "{seen}");
@@ -447,7 +447,7 @@ fn a_redirected_summary_keeps_whole_lines() {
         ..Login::default()
     });
     expect(&mut session, "Please enter your API Key");
-    send(&mut session, &format!("{}\r", fake_secrets::API_KEY));
+    send(&mut session, &format!("{}\r", fake_secrets::FAKE_API_KEY_A));
     expect(&mut session, REPLACE_PASSWORD);
     send(&mut session, "y\r");
     // Read the PTY to its end before the wait: on macOS a child cannot exit
@@ -524,7 +524,9 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use fake_secrets::{ACCESS_TOKEN, OAUTH_CODE, OAUTH_FLOW_TOKEN, REFRESH_TOKEN};
+    use fake_secrets::{
+        FAKE_ACCESS_TOKEN_A, FAKE_OAUTH_CODE, FAKE_OAUTH_FLOW_TOKEN, FAKE_REFRESH_TOKEN_A,
+    };
 
     // wiremock serves from its own thread. The runtime only mounts the mocks
     // and reads the received requests.
@@ -548,7 +550,7 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
             (
                 "POST",
                 "/auth/cli/token",
-                json!({"antithesis_token": ACCESS_TOKEN, "refresh_token": REFRESH_TOKEN}),
+                json!({"antithesis_token": FAKE_ACCESS_TOKEN_A, "refresh_token": FAKE_REFRESH_TOKEN_A}),
             ),
         ] {
             Mock::given(method(verb))
@@ -596,7 +598,7 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
     let mut callback = TcpStream::connect(("127.0.0.1", port)).expect("reach the callback");
     write!(
         callback,
-        "GET /callback?code={OAUTH_CODE}&state={OAUTH_FLOW_TOKEN} HTTP/1.1\r\n\
+        "GET /callback?code={FAKE_OAUTH_CODE}&state={FAKE_OAUTH_FLOW_TOKEN} HTTP/1.1\r\n\
          Host: localhost\r\nConnection: close\r\n\r\n"
     )
     .expect("send the callback");
@@ -612,10 +614,10 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
     // Check for leaks first, because the assertions below print stderr.
     let cli_state = login["cli_state"].as_str().expect("a cli_state");
     let mut checked = vec![
-        ("access token", ACCESS_TOKEN.to_owned()),
-        ("refresh token", REFRESH_TOKEN.to_owned()),
-        ("authorization code", OAUTH_CODE.to_owned()),
-        ("flow token", OAUTH_FLOW_TOKEN.to_owned()),
+        ("access token", FAKE_ACCESS_TOKEN_A.to_owned()),
+        ("refresh token", FAKE_REFRESH_TOKEN_A.to_owned()),
+        ("authorization code", FAKE_OAUTH_CODE.to_owned()),
+        ("flow token", FAKE_OAUTH_FLOW_TOKEN.to_owned()),
         ("CSRF state", cli_state.to_owned()),
     ];
     // The token exchange sends `base64url(code:verifier)` as its bearer token.
@@ -629,7 +631,13 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
         // out of the panic.
         let code_verifier = String::from_utf8(decoded)
             .ok()
-            .and_then(|decoded| Some(decoded.strip_prefix(&format!("{OAUTH_CODE}:"))?.to_owned()))
+            .and_then(|decoded| {
+                Some(
+                    decoded
+                        .strip_prefix(&format!("{FAKE_OAUTH_CODE}:"))?
+                        .to_owned(),
+                )
+            })
             .unwrap_or_else(|| {
                 panic!("the token exchange credential is not the code, then the verifier")
             });
@@ -654,7 +662,8 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
     }
     assert_eq!(stderr.matches("> <body withheld>").count(), 2, "{stderr}");
     assert!(
-        credentials(home.path()).contains(&format!(r#"antithesis_token = "{ACCESS_TOKEN}""#)),
+        credentials(home.path())
+            .contains(&format!(r#"antithesis_token = "{FAKE_ACCESS_TOKEN_A}""#)),
         "the credentials file does not hold the issued access token"
     );
 }

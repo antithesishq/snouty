@@ -105,11 +105,11 @@ fn cmd_substitute(
     Ok(())
 }
 
-/// Give a spec each fake secret as `FAKE_<NAME>`, so the spec names a secret
-/// by `${FAKE_<NAME>}` and holds no literal.
+/// Give a spec each fake secret under the name of its constant, so the spec
+/// names a secret by `${FAKE_<TYPE>}` and holds no literal.
 fn set_fake_secret_vars(env: &mut testscript_rs::TestEnvironment) {
     for (name, value) in fake_secrets::ALL {
-        env.set_env_var(&format!("FAKE_{name}"), value);
+        env.set_env_var(name, value);
     }
 }
 
@@ -327,7 +327,7 @@ fn cmd_mock_server(
 
     env.set_env_var("ANTITHESIS_BASE_URL", &url);
     env.set_env_var("ANTITHESIS_USERNAME", "testuser");
-    env.set_env_var("ANTITHESIS_PASSWORD", fake_secrets::PASSWORD);
+    env.set_env_var("ANTITHESIS_PASSWORD", fake_secrets::FAKE_PASSWORD);
     env.set_env_var("ANTITHESIS_TENANT", "testtenant");
     Ok(())
 }

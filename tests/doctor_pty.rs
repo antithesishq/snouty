@@ -31,7 +31,7 @@ fn long_notes_wrap_under_their_text() {
         .env("ANTITHESIS_USERNAME", "pty-user")
         .env(
             "ANTITHESIS_PASSWORD",
-            snouty::testutils::fake_secrets::PASSWORD,
+            snouty::testutils::fake_secrets::FAKE_PASSWORD,
         );
 
     let mut session = command.spawn(PTY_COLS, 40);

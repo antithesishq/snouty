@@ -18,7 +18,7 @@
 # takes effect. --offline makes no request, so the proxy target does not have to
 # exist. The credentials only get doctor past its own checks.
 env ANTITHESIS_TENANT=testtenant
-set-env ANTITHESIS_API_KEY ${FAKE_API_KEY}
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 env ANTITHESIS_HTTPS_PROXY=http://127.0.0.1:9
 snouty doctor --offline
 stderr '\s*https_proxy\s*http://127\.0\.0\.1:9'
@@ -34,7 +34,7 @@ env ANTITHESIS_HTTPS_PROXY=
 # run table. A real API key gets past the auth-presence check so the request is
 # actually attempted (and fails on the network), rather than short-circuiting.
 env ANTITHESIS_BASE_URL=http://mock.invalid
-set-env ANTITHESIS_API_KEY ${FAKE_API_KEY}
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 env ANTITHESIS_TENANT=testtenant
 ! snouty runs
 ! stdout 'RUN ID'

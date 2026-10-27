@@ -844,7 +844,7 @@ pub async fn cmd_doctor(
 mod tests {
     use crate::auth::{API_KEY_VAR_NAME, PASSWORD_VAR_NAME, USERNAME_VAR_NAME};
     use crate::cli::UpdateChannel;
-    use crate::testutils::fake_secrets::{API_KEY, PASSWORD};
+    use crate::testutils::fake_secrets::{FAKE_API_KEY_A, FAKE_PASSWORD};
 
     use super::*;
 
@@ -854,7 +854,7 @@ mod tests {
     fn auth_api_key_set_is_a_single_bare_ok_check() {
         let checks = authn_checks(&[AttributedValue::EnvironmentVariable {
             value: AuthenticationInfo::ApiKey {
-                api_key: API_KEY.to_owned(),
+                api_key: FAKE_API_KEY_A.to_owned(),
             },
             environment_variable_names: vec![API_KEY_VAR_NAME],
         }]);
@@ -871,7 +871,7 @@ mod tests {
         let note = |profile: Option<&str>| {
             let checks = authn_checks(&[AttributedValue::SettingsFile {
                 value: AuthenticationInfo::ApiKey {
-                    api_key: API_KEY.to_owned(),
+                    api_key: FAKE_API_KEY_A.to_owned(),
                 },
                 settings_file_path: std::path::PathBuf::from("/tmp/credentials.toml"),
                 profile: profile.map(str::to_owned),
@@ -948,7 +948,7 @@ mod tests {
             notes(AttributedValue::SettingsFile {
                 value: AuthenticationInfo::Password {
                     username: "user".to_owned(),
-                    password: PASSWORD.to_owned(),
+                    password: FAKE_PASSWORD.to_owned(),
                 },
                 settings_file_path: std::path::PathBuf::from("/tmp/credentials.toml"),
                 profile: None,
@@ -970,7 +970,7 @@ mod tests {
         let keychain = notes(AttributedValue::Keychain {
             value: AuthenticationInfo::Password {
                 username: "user".to_owned(),
-                password: PASSWORD.to_owned(),
+                password: FAKE_PASSWORD.to_owned(),
             },
             entry_name: "profile_prod".to_owned(),
         });
@@ -1014,7 +1014,7 @@ mod tests {
                 .join(" ")
         );
         assert!(!all.contains("USERNAME"));
-        assert!(!all.contains("PASSWORD"));
+        assert!(!all.contains("FAKE_PASSWORD"));
     }
 
     /// A user who meets both messages reads one wording, not two.
@@ -1030,7 +1030,7 @@ mod tests {
         AttributedValue::EnvironmentVariable {
             value: AuthenticationInfo::Password {
                 username: "user".to_owned(),
-                password: PASSWORD.to_owned(),
+                password: FAKE_PASSWORD.to_owned(),
             },
             environment_variable_names: vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
         }
@@ -1039,7 +1039,7 @@ mod tests {
     fn file_api_key_source() -> AttributedValue<AuthenticationInfo> {
         AttributedValue::SettingsFile {
             value: AuthenticationInfo::ApiKey {
-                api_key: API_KEY.to_owned(),
+                api_key: FAKE_API_KEY_A.to_owned(),
             },
             settings_file_path: std::path::PathBuf::from("/tmp/credentials.toml"),
             profile: None,
@@ -1106,7 +1106,7 @@ mod tests {
     fn the_action_that_frees_a_credential_matches_its_origin() {
         let keychain = AttributedValue::Keychain {
             value: AuthenticationInfo::ApiKey {
-                api_key: API_KEY.to_owned(),
+                api_key: FAKE_API_KEY_A.to_owned(),
             },
             entry_name: "_default_".to_owned(),
         };

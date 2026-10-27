@@ -293,7 +293,7 @@ fn unescape_pointer_token(token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutils::fake_secrets::GITHUB_TOKEN;
+    use crate::testutils::fake_secrets::FAKE_GITHUB_TOKEN;
     use hegel::generators::{self, Generator};
 
     #[test]
@@ -311,7 +311,7 @@ mod tests {
     fn parse_integration_params() {
         let pairs = [
             "antithesis.integrations.github.callback_url=https://github.com/cb".to_owned(),
-            format!("antithesis.integrations.github.token={GITHUB_TOKEN}"),
+            format!("antithesis.integrations.github.token={FAKE_GITHUB_TOKEN}"),
         ];
         let params = Params::from_key_value_pairs(pairs).unwrap();
 
@@ -327,7 +327,7 @@ mod tests {
                 .as_map()
                 .get("antithesis.integrations.github.token")
                 .unwrap(),
-            GITHUB_TOKEN
+            FAKE_GITHUB_TOKEN
         );
     }
 
@@ -689,7 +689,7 @@ mod tests {
 
     #[test]
     fn redacted_map_hides_sensitive_values() {
-        let github_token = format!("antithesis.integrations.github.token={GITHUB_TOKEN}");
+        let github_token = format!("antithesis.integrations.github.token={FAKE_GITHUB_TOKEN}");
         let pairs = [
             "antithesis.duration=30",
             &github_token,

@@ -58,7 +58,7 @@ stderr '^      NOTE: run `snouty login` to store an API key, then `unset ANTITHE
 # only with an API key (the endpoint rejects basic auth), so set one on top of
 # the basic creds mock-server configures.
 [!staging] mock-server 200 '{"latest_api_version":"v1","release_version":"56.0"}'
-[!staging] set-env ANTITHESIS_API_KEY ${FAKE_API_KEY}
+[!staging] set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 [!staging] snouty doctor
 [!staging] stderr '.*Antithesis API reachable.*'
 [!staging] stderr '.*latest API version: v1.*'
@@ -77,7 +77,7 @@ stderr '^      NOTE: run `snouty login` to store an API key, then `unset ANTITHE
 # proxy/route intercepting the request — either way it's still reachable and
 # authenticated, so doctor stays green and warns without blaming the tenant.
 [!staging] mock-server 404 '{}'
-[!staging] set-env ANTITHESIS_API_KEY ${FAKE_API_KEY}
+[!staging] set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 [!staging] snouty doctor
 [!staging] stderr '.*Antithesis API reachable.*'
 [!staging] stderr '.*returned 404.*'
@@ -96,7 +96,7 @@ stderr '^      NOTE: run `snouty login` to store an API key, then `unset ANTITHE
 # sends the request to the tenant's own gateway: a proxy base URL can replace
 # the bad key with a real credential, and then the gateway accepts it.
 mock-server 401 ''
-set-env ANTITHESIS_API_KEY ${FAKE_API_KEY}
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 [staging] env ANTITHESIS_BASE_URL=
 ! snouty doctor
 stderr '.*Antithesis API rejected authentication.*'
@@ -104,14 +104,14 @@ stderr '.*returned HTTP 40[13].*'
 ! stderr '.*Antithesis API unreachable.*'
 
 # --offline skips the network check entirely: no version line, no API contact.
-set-env ANTITHESIS_API_KEY ${FAKE_API_KEY}
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 env ANTITHESIS_TENANT=testtenant
 snouty doctor --offline
 ! stderr '.*Antithesis API.*'
 
 # Connection failure: the check fails (non-zero) with a host-named note (the raw
 # error detail follows it; its exact text is reqwest's and unit-tested instead).
-set-env ANTITHESIS_API_KEY ${FAKE_API_KEY}
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 env ANTITHESIS_TENANT=testtenant
 env ANTITHESIS_BASE_URL=http://127.0.0.1:1
 ! snouty doctor
@@ -171,7 +171,7 @@ stdout '"name": "credentials"'
 stdout '"text": "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in .*credentials\.toml"'
 ! stdout '"name": "credential_sources"'
 ! stdout '"name": "basic_auth"'
-! stdout '${FAKE_API_KEY_STORED@R}|${FAKE_PASSWORD@R}'
+! stdout '${FAKE_API_KEY_A@R}|${FAKE_PASSWORD@R}'
 
 # A username and password stored in the credentials file: `snouty login`
 # replaces them, so it is the only next step. A warning does not fail doctor.
@@ -191,7 +191,7 @@ stderr '^      NOTE: run `snouty login` to replace it with an API key$'
 snouty doctor --json
 stdout '"name": "credentials",\s*"status": "warn"'
 ! stdout '"name": "basic_auth"'
-! stdout '${FAKE_PASSWORD_STORED@R}'
+! stdout '${FAKE_PASSWORD@R}'
 
 # A bare `snouty login` writes the default profile, so for a password stored
 # under a named profile the next step names that profile.
@@ -204,7 +204,7 @@ stderr '^      NOTE: run `snouty login --profile prod` to replace it with an API
 # rather than failing on a file that stops nothing. `--offline` is needed here:
 # the API key makes doctor call the API, and `testtenant` resolves nowhere.
 isolate-home broken_credentials
-set-env ANTITHESIS_API_KEY ${FAKE_API_KEY}
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 env ANTITHESIS_TENANT=testtenant
 env ANTITHESIS_USERNAME=
 env ANTITHESIS_PASSWORD=
@@ -236,18 +236,18 @@ stderr '^  ⚠ username/password for user \[envuser\] only works for `snouty lau
 -- credential_conflict/.config/snouty/credentials.toml --
 [default]
 type = "ApiKey"
-api_key = "${FAKE_API_KEY_STORED}"
+api_key = "${FAKE_API_KEY_A}"
 
 -- stored_password/.config/snouty/credentials.toml --
 [default]
 type = "Password"
 username = "storeduser"
-password = "${FAKE_PASSWORD_STORED}"
+password = "${FAKE_PASSWORD}"
 
 [profile.prod]
 type = "Password"
 username = "prod-user"
-password = "${FAKE_PASSWORD_STORED}"
+password = "${FAKE_PASSWORD}"
 
 -- empty_api_key/.config/snouty/credentials.toml --
 [default]

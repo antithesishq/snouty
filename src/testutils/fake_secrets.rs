@@ -1,16 +1,21 @@
 //! The fake secrets that the tests use: API keys, passwords, OAuth tokens, and
 //! the other credentials. Tests use only these values.
 //!
+//! Each name is `FAKE_<TYPE>`. When a test needs more than one secret of a
+//! type, the names end in `_A`, `_B`, and so on, and the test gives each one
+//! its role. Use `_A` before `_B`, and add a letter only when a test needs one
+//! more distinct value.
+//!
 //! Each value contains [`MARKER`], so `git grep fake-` finds every use. The
 //! only exceptions are in the `unmarked` list, each with a reason. Rust code
-//! refers to the constants. A spec gets each value as the environment variable
-//! `FAKE_<NAME>`, for example `${FAKE_API_KEY}` (see `tests/spec.rs`). A
+//! refers to the constants. A spec gets each value as an environment variable
+//! of the same name, for example `${FAKE_API_KEY_A}` (see `tests/spec.rs`). A
 //! Python script cannot import the constants, so it writes the value itself.
 //!
 //! The `scan` test below fails when a file in the repository holds a
 //! secret-shaped literal that is not in this registry. To add a fake secret,
 //! add a line to the `fake_secrets!` list, with a doc comment that says what
-//! it stands for.
+//! type of secret it is and, if its format matters, why.
 
 /// The text that each fake secret contains, except the `unmarked` ones.
 pub const MARKER: &str = "fake-";
@@ -37,68 +42,56 @@ macro_rules! fake_secrets {
 
 fake_secrets! {
     marked {
-        /// An API key that a test exports, types at a prompt, or stores.
-        API_KEY = "fake-api-key";
-        /// An API key in `ANTITHESIS_API_KEY` when a test also types or stores
-        /// [`API_KEY`].
-        API_KEY_ENV = "fake-env-api-key";
-        /// An API key under a named profile, next to [`API_KEY`] in `[default]`.
-        API_KEY_PROFILE = "fake-profile-api-key";
-        /// An API key that `credentials.toml` already holds. It has the shape of
-        /// a real key, because the login prompt shows the last four characters
-        /// of a stored key as a hint.
-        API_KEY_STORED = "antithesis_api_key_v2_fake-stored_9Pgw";
-        /// An API key that replaces [`API_KEY_STORED`]. It has the same shape.
-        API_KEY_NEW = "antithesis_api_key_v2_fake-new_7Qxz";
-        /// The API key that `MockApiServer` accepts.
-        MOCK_SERVER_API_KEY = "fake-mock-server-api-key";
+        /// An API key. Both keys have the shape of a real key, because the
+        /// login prompt shows the last four characters of a stored key as a
+        /// hint, and a real key starts with `antithesis_api_key_v2_`.
+        FAKE_API_KEY_A = "antithesis_api_key_v2_fake-a_9Pgw";
+        /// A second API key, different from [`FAKE_API_KEY_A`] in its last
+        /// four characters and its length, so the two hint differently and a
+        /// hint cannot tell their lengths apart. `MockApiServer` accepts only
+        /// this key.
+        FAKE_API_KEY_B = "antithesis_api_key_v2_fake-b-longer_7Qxz";
         /// A username for basic authentication. It is not a secret, but
-        /// [`BASIC_AUTHORIZATION`] encodes it.
-        USERNAME = "fake-user";
-        /// A password for basic authentication.
-        PASSWORD = "fake-password";
-        /// A password that `credentials.toml` already holds, when a test also
-        /// uses [`PASSWORD`].
-        PASSWORD_STORED = "fake-stored-password";
+        /// [`FAKE_BASIC_AUTHORIZATION`] encodes it.
+        FAKE_USERNAME = "fake-user";
+        /// A password.
+        FAKE_PASSWORD = "fake-password";
         /// An OAuth access token.
-        ACCESS_TOKEN = "fake-access-token";
+        FAKE_ACCESS_TOKEN_A = "fake-access-token-a";
+        /// A second OAuth access token.
+        FAKE_ACCESS_TOKEN_B = "fake-access-token-b";
         /// An OAuth refresh token.
-        REFRESH_TOKEN = "fake-refresh-token";
-        /// The access token that a refresh issues in place of [`ACCESS_TOKEN`].
-        ACCESS_TOKEN_NEW = "fake-new-access-token";
-        /// The refresh token that a refresh issues in place of
-        /// [`REFRESH_TOKEN`].
-        REFRESH_TOKEN_NEW = "fake-new-refresh-token";
+        FAKE_REFRESH_TOKEN_A = "fake-refresh-token-a";
+        /// A second OAuth refresh token.
+        FAKE_REFRESH_TOKEN_B = "fake-refresh-token-b";
         /// An OAuth authorization code.
-        OAUTH_CODE = "fake-oauth-code";
-        /// The OAuth flow token, which the sign-in sends as `state`.
-        OAUTH_FLOW_TOKEN = "fake-oauth-flow-token";
+        FAKE_OAUTH_CODE = "fake-oauth-code";
+        /// An OAuth flow token, which the sign-in sends as `state`.
+        FAKE_OAUTH_FLOW_TOKEN = "fake-oauth-flow-token";
         /// The request token that GitHub Actions gives a job to fetch an OIDC
         /// token.
-        OIDC_REQUEST_TOKEN = "fake-oidc-request-token";
+        FAKE_OIDC_REQUEST_TOKEN = "fake-oidc-request-token";
         /// A GitHub Actions OIDC token.
-        OIDC_TOKEN = "fake-oidc-token";
-        /// The `antithesis.integrations.github.token` launch parameter.
-        GITHUB_TOKEN = "fake-github-token";
+        FAKE_OIDC_TOKEN = "fake-oidc-token";
+        /// An `antithesis.integrations.github.token` launch parameter.
+        FAKE_GITHUB_TOKEN = "fake-github-token";
         /// A session cookie.
-        SESSION_COOKIE = "fake-session-cookie";
-        /// The password of the throwaway macOS keychain that the keychain test
-        /// makes.
-        KEYCHAIN_PASSWORD = "fake-keychain-password";
+        FAKE_SESSION_COOKIE = "fake-session-cookie";
     }
     unmarked {
-        /// The `Authorization` header for [`USERNAME`] and [`PASSWORD`]. Base64
-        /// hides the marker.
-        BASIC_AUTHORIZATION = "Basic ZmFrZS11c2VyOmZha2UtcGFzc3dvcmQ=";
-        /// The PKCE code verifier from RFC 7636, Appendix B. A published test
-        /// vector must not change.
-        PKCE_VERIFIER_RFC7636 = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-        /// The PASETO test vector 2-S-1: a `v2.public` token with a real
-        /// signature. A published test vector must not change.
-        PASETO_V2_PUBLIC_VECTOR = "v2.public.eyJkYXRhIjoidGhpcyBpcyBhIHNpZ25lZCBtZXNzYWdlIiwiZXhwIjoiMjAxOS0wMS0wMVQwMDowMDowMCswMDowMCJ9HQr8URrGntTu7Dz9J2IF23d1M7-9lH9xiqdGyJNvzp4angPW5Esc7C5huy_M8I8_DjJK2ZXC2SUYuOFM-Q_5Cw";
-        /// The PASETO test vector 2-S-2: the claims of 2-S-1, with a footer. A
+        /// The `Authorization` header for [`FAKE_USERNAME`] and
+        /// [`FAKE_PASSWORD`]. A header has this format, and base64 hides the
+        /// marker.
+        FAKE_BASIC_AUTHORIZATION = "Basic ZmFrZS11c2VyOmZha2UtcGFzc3dvcmQ=";
+        /// A PKCE code verifier: the one from RFC 7636, Appendix B. A
         /// published test vector must not change.
-        PASETO_V2_PUBLIC_VECTOR_WITH_FOOTER = "v2.public.eyJkYXRhIjoidGhpcyBpcyBhIHNpZ25lZCBtZXNzYWdlIiwiZXhwIjoiMjAxOS0wMS0wMVQwMDowMDowMCswMDowMCJ9flsZsx_gYCR0N_Ec2QxJFFpvQAs7h9HtKwbVK2n1MJ3Rz-hwe8KUqjnd8FAnIJZ601tp7lGkguU63oGbomhoBw.UGFyYWdvbiBJbml0aWF0aXZlIEVudGVycHJpc2Vz";
+        FAKE_PKCE_VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        /// A PASETO: test vector 2-S-1, a `v2.public` token with a real
+        /// signature. A published test vector must not change.
+        FAKE_PASETO_A = "v2.public.eyJkYXRhIjoidGhpcyBpcyBhIHNpZ25lZCBtZXNzYWdlIiwiZXhwIjoiMjAxOS0wMS0wMVQwMDowMDowMCswMDowMCJ9HQr8URrGntTu7Dz9J2IF23d1M7-9lH9xiqdGyJNvzp4angPW5Esc7C5huy_M8I8_DjJK2ZXC2SUYuOFM-Q_5Cw";
+        /// A second PASETO: test vector 2-S-2, the claims of 2-S-1 with a
+        /// footer. A published test vector must not change.
+        FAKE_PASETO_B = "v2.public.eyJkYXRhIjoidGhpcyBpcyBhIHNpZ25lZCBtZXNzYWdlIiwiZXhwIjoiMjAxOS0wMS0wMVQwMDowMDowMCswMDowMCJ9flsZsx_gYCR0N_Ec2QxJFFpvQAs7h9HtKwbVK2n1MJ3Rz-hwe8KUqjnd8FAnIJZ601tp7lGkguU63oGbomhoBw.UGFyYWdvbiBJbml0aWF0aXZlIEVudGVycHJpc2Vz";
     }
 }
 
@@ -147,8 +140,8 @@ mod tests {
 
     #[test]
     fn basic_authorization_encodes_the_username_and_password() {
-        let encoded = BASE64_STANDARD.encode(format!("{USERNAME}:{PASSWORD}"));
-        assert_eq!(BASIC_AUTHORIZATION, format!("Basic {encoded}"));
+        let encoded = BASE64_STANDARD.encode(format!("{FAKE_USERNAME}:{FAKE_PASSWORD}"));
+        assert_eq!(FAKE_BASIC_AUTHORIZATION, format!("Basic {encoded}"));
     }
 
     fn registered(value: &str) -> bool {
@@ -182,10 +175,15 @@ mod tests {
         Regex::new(&format!("{word}{}{word}", regex::escape(MARKER))).unwrap()
     });
 
-    /// A spec variable without braces. testscript replaces `$FAKE_API_KEY`
-    /// inside `$FAKE_API_KEY_ENV` too, so a spec must write `${FAKE_...}`.
+    /// A spec variable without braces. testscript replaces `$FAKE_X` inside
+    /// `$FAKE_X_Y` too, so a spec must write `${FAKE_...}`.
     static BARE_SPEC_VAR: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"\$FAKE_[A-Z_]+").unwrap());
+
+    /// A spec variable with braces. Its name must be a registry constant, or
+    /// testscript leaves the text as it is.
+    static SPEC_VAR: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\$\{(FAKE_[A-Z_]+)(?:@R)?\}").unwrap());
 
     /// The shapes of a secret. Each pattern captures the value in group 1.
     static SHAPES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
@@ -225,7 +223,8 @@ mod tests {
     /// Each place in `text` that holds a secret it should not: a value with
     /// the marker that is not in the registry (in Rust, any literal with the
     /// marker, because Rust uses the constants), a secret-shaped value that
-    /// [`allowed`] rejects, or a spec variable without braces.
+    /// [`allowed`] rejects, or a spec variable without braces or with an
+    /// unknown name.
     fn findings(text: &str, rust: bool) -> Vec<String> {
         let mut found = Vec::new();
         for (number, line) in text.lines().enumerate() {
@@ -256,6 +255,12 @@ mod tests {
             }
             for var in BARE_SPEC_VAR.find_iter(line).map(|m| m.as_str()) {
                 found.push(format!("{number}: `{var}`: write it with braces"));
+            }
+            for captures in SPEC_VAR.captures_iter(line) {
+                let name = &captures[1];
+                if ALL.iter().all(|(known, _)| *known != name) {
+                    found.push(format!("{number}: `{name}` is not in the registry"));
+                }
             }
         }
         found

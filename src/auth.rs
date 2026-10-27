@@ -1135,8 +1135,8 @@ impl CredentialsFile {
 mod tests {
     use super::*;
     use crate::testutils::fake_secrets::{
-        ACCESS_TOKEN, ACCESS_TOKEN_NEW, OIDC_REQUEST_TOKEN, OIDC_TOKEN, PASETO_V2_PUBLIC_VECTOR,
-        PASETO_V2_PUBLIC_VECTOR_WITH_FOOTER, REFRESH_TOKEN, REFRESH_TOKEN_NEW,
+        FAKE_ACCESS_TOKEN_A, FAKE_ACCESS_TOKEN_B, FAKE_OIDC_REQUEST_TOKEN, FAKE_OIDC_TOKEN,
+        FAKE_PASETO_A, FAKE_PASETO_B, FAKE_REFRESH_TOKEN_A, FAKE_REFRESH_TOKEN_B,
     };
     use std::io::{BufRead, BufReader};
     use std::net::TcpListener;
@@ -1154,15 +1154,15 @@ mod tests {
             .and(path("/auth/cli/refresh"))
             // New access token, but NO refresh_token (and no expires_in).
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "antithesis_token": ACCESS_TOKEN_NEW
+                "antithesis_token": FAKE_ACCESS_TOKEN_B
             })))
             .expect(1)
             .mount(&server)
             .await;
 
         let active_credential = Arc::new(RwLock::new(OAuthCredential {
-            antithesis_token: ACCESS_TOKEN.to_owned(),
-            refresh_token: Some(REFRESH_TOKEN.to_owned()),
+            antithesis_token: FAKE_ACCESS_TOKEN_A.to_owned(),
+            refresh_token: Some(FAKE_REFRESH_TOKEN_A.to_owned()),
         }));
 
         let creds_dir = tempfile::TempDir::new().unwrap();
@@ -1177,24 +1177,27 @@ mod tests {
             &server.uri(),
             &refresh_info,
             &active_credential,
-            REFRESH_TOKEN,
+            FAKE_REFRESH_TOKEN_A,
         )
         .await
         .unwrap();
 
-        assert_eq!(new_access, ACCESS_TOKEN_NEW);
+        assert_eq!(new_access, FAKE_ACCESS_TOKEN_B);
 
         let in_memory = active_credential.read().unwrap();
-        assert_eq!(in_memory.antithesis_token, ACCESS_TOKEN_NEW);
+        assert_eq!(in_memory.antithesis_token, FAKE_ACCESS_TOKEN_B);
         assert_eq!(
             in_memory.refresh_token.as_deref(),
-            Some(REFRESH_TOKEN),
+            Some(FAKE_REFRESH_TOKEN_A),
             "the refresh token must be retained when the server didn't rotate it"
         );
 
         let persisted = std::fs::read_to_string(creds_dir.path().join("credentials.toml")).unwrap();
-        assert!(persisted.contains(ACCESS_TOKEN_NEW), "got:\n{persisted}");
-        assert!(persisted.contains(REFRESH_TOKEN), "got:\n{persisted}");
+        assert!(persisted.contains(FAKE_ACCESS_TOKEN_B), "got:\n{persisted}");
+        assert!(
+            persisted.contains(FAKE_REFRESH_TOKEN_A),
+            "got:\n{persisted}"
+        );
     }
 
     #[tokio::test]
@@ -1214,8 +1217,8 @@ mod tests {
 
         // In-memory holds the stale token (as if it just expired / 401'd).
         let active_credential = Arc::new(RwLock::new(OAuthCredential {
-            antithesis_token: ACCESS_TOKEN.to_owned(),
-            refresh_token: Some(REFRESH_TOKEN.to_owned()),
+            antithesis_token: FAKE_ACCESS_TOKEN_A.to_owned(),
+            refresh_token: Some(FAKE_REFRESH_TOKEN_A.to_owned()),
         }));
 
         // The origin already holds a newer credential — as though a *different*
@@ -1227,8 +1230,8 @@ mod tests {
         };
         refresh_info
             .persist(PersistableCredentials::OAuth {
-                antithesis_token: ACCESS_TOKEN_NEW.to_owned(),
-                refresh_token: Some(REFRESH_TOKEN_NEW.to_owned()),
+                antithesis_token: FAKE_ACCESS_TOKEN_B.to_owned(),
+                refresh_token: Some(FAKE_REFRESH_TOKEN_B.to_owned()),
             })
             .unwrap();
 
@@ -1238,7 +1241,7 @@ mod tests {
             &server.uri(),
             &refresh_info,
             &active_credential,
-            ACCESS_TOKEN,
+            FAKE_ACCESS_TOKEN_A,
         )
         .await
         .unwrap();
@@ -1246,14 +1249,17 @@ mod tests {
         // Adopted the persisted token; no network refresh happened. The
         // network assertion runs before the read lock is taken, so no guard
         // is held across an await point (clippy::await_holding_lock).
-        assert_eq!(result.as_deref(), Some(ACCESS_TOKEN_NEW));
+        assert_eq!(result.as_deref(), Some(FAKE_ACCESS_TOKEN_B));
         assert!(
             server.received_requests().await.unwrap().is_empty(),
             "must not refresh when the origin already holds a newer token"
         );
         let in_memory = active_credential.read().unwrap();
-        assert_eq!(in_memory.antithesis_token, ACCESS_TOKEN_NEW);
-        assert_eq!(in_memory.refresh_token.as_deref(), Some(REFRESH_TOKEN_NEW));
+        assert_eq!(in_memory.antithesis_token, FAKE_ACCESS_TOKEN_B);
+        assert_eq!(
+            in_memory.refresh_token.as_deref(),
+            Some(FAKE_REFRESH_TOKEN_B)
+        );
     }
 
     /// Build a `v4.public` PASETO whose payload is `claims_json ‖ signature`,
@@ -1323,7 +1329,7 @@ mod tests {
         // the real base64url decode and the skip-the-signature parse — unlike the
         // synthetic tokens above whose "signature" is 64 zero bytes.
         assert_eq!(
-            try_get_expiry_from_token(PASETO_V2_PUBLIC_VECTOR),
+            try_get_expiry_from_token(FAKE_PASETO_A),
             DateTime::from_timestamp(CANONICAL_VECTOR_EXP_UNIX, 0)
         );
     }
@@ -1334,7 +1340,7 @@ mod tests {
         // (`UGFyYWdvbiBJbml0aWF0aXZlIEVudGVycHJpc2Vz` = "Paragon Initiative
         // Enterprises"). Confirms the 4th `.`-delimited segment is ignored.
         assert_eq!(
-            try_get_expiry_from_token(PASETO_V2_PUBLIC_VECTOR_WITH_FOOTER),
+            try_get_expiry_from_token(FAKE_PASETO_B),
             DateTime::from_timestamp(CANONICAL_VECTOR_EXP_UNIX, 0)
         );
     }
@@ -1405,7 +1411,7 @@ mod tests {
 
     /// The JSON envelope that GitHub's Actions OIDC endpoint wraps the token in.
     fn oidc_token_body() -> String {
-        serde_json::json!({"count": 1, "value": OIDC_TOKEN}).to_string()
+        serde_json::json!({"count": 1, "value": FAKE_OIDC_TOKEN}).to_string()
     }
 
     #[tokio::test]
@@ -1414,11 +1420,11 @@ mod tests {
         // GitHub's Actions OIDC endpoint does.
         let (url, requests) = spawn_oidc_token_server("200 OK", &oidc_token_body());
 
-        let token = fetch_github_actions_oidc_credentials(&url, OIDC_REQUEST_TOKEN)
+        let token = fetch_github_actions_oidc_credentials(&url, FAKE_OIDC_REQUEST_TOKEN)
             .await
             .unwrap();
 
-        assert_eq!(token, OIDC_TOKEN);
+        assert_eq!(token, FAKE_OIDC_TOKEN);
 
         let request = requests
             .recv_timeout(Duration::from_secs(5))
@@ -1433,7 +1439,7 @@ mod tests {
         // The Actions request token is presented as a bearer credential.
         assert_eq!(
             request.authorization.as_deref(),
-            Some(format!("Bearer {OIDC_REQUEST_TOKEN}").as_str())
+            Some(format!("Bearer {FAKE_OIDC_REQUEST_TOKEN}").as_str())
         );
     }
 
@@ -1444,7 +1450,7 @@ mod tests {
         let (url, _requests) =
             spawn_oidc_token_server("403 Forbidden", r#"{"message":"bad credentials"}"#);
 
-        let result = fetch_github_actions_oidc_credentials(&url, OIDC_REQUEST_TOKEN).await;
+        let result = fetch_github_actions_oidc_credentials(&url, FAKE_OIDC_REQUEST_TOKEN).await;
         assert!(result.is_err(), "expected an error for a 403 response");
     }
 
@@ -1458,7 +1464,7 @@ mod tests {
 
         let auth = AuthenticationInfo::GithubActionsOidc {
             url,
-            request_token: OIDC_REQUEST_TOKEN.to_owned(),
+            request_token: FAKE_OIDC_REQUEST_TOKEN.to_owned(),
             cached: Arc::new(OnceCell::new()),
         };
 
@@ -1471,7 +1477,7 @@ mod tests {
             .auth_header(&client, "https://snouty.example")
             .await
             .unwrap();
-        assert_eq!(first.to_str().unwrap(), format!("GHA {OIDC_TOKEN}"));
+        assert_eq!(first.to_str().unwrap(), format!("GHA {FAKE_OIDC_TOKEN}"));
         assert_eq!(first, second);
 
         // Exactly one request reached the server: the first fetch is captured,

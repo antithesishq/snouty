@@ -42,16 +42,16 @@ pub fn api_key_credentials(api_key: &str) -> String {
     format!("[default]\ntype = \"ApiKey\"\napi_key = \"{api_key}\"\n")
 }
 
-/// A `credentials.toml` that holds a username and [`fake_secrets::PASSWORD`]
+/// A `credentials.toml` that holds a username and [`fake_secrets::FAKE_PASSWORD`]
 /// in `[default]`, as an older snouty stored them.
 pub fn password_credentials() -> String {
     format!(
         "[default]\ntype = \"Password\"\nusername = \"puser\"\npassword = \"{}\"\n",
-        fake_secrets::PASSWORD
+        fake_secrets::FAKE_PASSWORD
     )
 }
 
-/// A `credentials.toml` that holds [`fake_secrets::ACCESS_TOKEN`] and
+/// A `credentials.toml` that holds [`fake_secrets::FAKE_ACCESS_TOKEN_A`] and
 /// `refresh_token` in `[default]`.
 pub fn oauth_credentials(refresh_token: Option<&str>) -> String {
     let refresh_line = refresh_token
@@ -59,7 +59,7 @@ pub fn oauth_credentials(refresh_token: Option<&str>) -> String {
         .unwrap_or_default();
     format!(
         "[default]\ntype = \"OAuth\"\nantithesis_token = \"{}\"\n{refresh_line}",
-        fake_secrets::ACCESS_TOKEN
+        fake_secrets::FAKE_ACCESS_TOKEN_A
     )
 }
 
@@ -530,7 +530,7 @@ impl MockApiServer {
 
     /// Return the token the server expects in Authorization headers.
     pub fn token(&self) -> &str {
-        fake_secrets::MOCK_SERVER_API_KEY
+        fake_secrets::FAKE_API_KEY_B
     }
 
     /// Block until the server thread stops.
@@ -561,7 +561,7 @@ impl MockApiServer {
                             NO_CACHE_CACHE_CONTROL,
                         )
                     } else if !path.starts_with("/auth/cli/")
-                        && !mock_check_auth(&request, fake_secrets::MOCK_SERVER_API_KEY)
+                        && !mock_check_auth(&request, fake_secrets::FAKE_API_KEY_B)
                     {
                         (
                             401,

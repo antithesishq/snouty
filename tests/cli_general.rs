@@ -578,7 +578,7 @@ fn launch_exits_cleanly_when_stdout_closes_early() {
         .env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1")
         .env(
             "ANTITHESIS_API_KEY",
-            snouty::testutils::fake_secrets::API_KEY,
+            snouty::testutils::fake_secrets::FAKE_API_KEY_A,
         )
         .env("ANTITHESIS_TENANT", "testtenant")
         .env("ANTITHESIS_BASE_URL", &mock_url)

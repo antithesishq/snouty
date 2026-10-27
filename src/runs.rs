@@ -1983,8 +1983,8 @@ impl Drop for ReadyDisplay {
 /// - Release 66.0, a test run: `The requested moment is unavailable in this
 ///   run. Provide source_run_id or source_session_id to restore it.`
 /// - Release 66.0, a debugging session: `The requested moment is not valid in
-///   the original run.` A session rewarms a moment of its own source run, so
-///   only a moment of another run gets this answer.
+///   the original run.` A debugging session rewarms a moment of the run it
+///   was launched from, so only a moment of another run gets this answer.
 const MOMENT_NOT_WARM: [&str; 3] = [
     "Moment not warm",
     "moment is unavailable in this run",
@@ -2028,9 +2028,9 @@ fn explain_exec_error(
         .is_some_and(|m| MOMENT_NOT_WARM.iter().any(|marker| m.contains(marker)));
     match (status, rewarm_flag) {
         (404, Some(flag)) => err.suggestion(format!("check that {flag} names an existing source")),
-        (400, None) if cold => err.suggestion(
-            "use --source-run-id or --source-session-id to load a moment from a different run",
-        ),
+        (400, None) if cold => {
+            err.suggestion("use --source-run-id to load a moment from a different run")
+        }
         (400, Some(flag)) => err.suggestion(format!(
             "check that {flag} names the run the moment comes from"
         )),
@@ -5021,7 +5021,7 @@ mod tests {
                     api_error(400, message),
                 );
                 assert!(
-                    format!("{err:?}").contains("use --source-run-id or --source-session-id"),
+                    format!("{err:?}").contains("use --source-run-id to load"),
                     "{message}: {err:?}"
                 );
             }

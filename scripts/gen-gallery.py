@@ -3503,11 +3503,10 @@ def build_ready_stories(d: Discovery, x: GalleryRun, wait_ready: Result) -> list
             "Execute at a moment from another run",
             f"I copied a moment from run {d.fail} and try to execute at it in my run.",
             "snouty fails, says that the moment is not loaded into the run, and tells me "
-            "how to load it: use --source-run-id or --source-session-id to load a moment "
-            "from a different run.",
+            "how to load it: use --source-run-id to load a moment from a different run.",
             # No story loads d.fail's moment, so it stays cold in a reused run.
             ["runs", "exec", x.run, d.fail_hash, d.fail_vtime, "uname -n"],
-            fails_with("--source-run-id or --source-session-id"),
+            fails_with("use --source-run-id to load"),
         ),
         exec_story(
             "runs-exec--source-run-id",
@@ -3935,7 +3934,7 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "which tenant "
             "release the command needs, how "
             "to pick the moment and the container, when a moment needs "
-            "--source-run-id or --source-session-id, where the script's output goes, "
+            "--source-run-id, where the script's output goes, "
             "what --events prints "
             "instead, and how to chain a follow-up command. Help-only: the "
             "`runs-exec*` stories show its output in the gallery's live run.",
@@ -3981,8 +3980,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "help-debug",
             "Understand how to open a debugging session",
             "I run `snouty debug --help` to learn how to debug a moment. The usage line "
-            "should show that --input-hash, --vtime, and one of --run-id or --session-id are "
-            "required.",
+            "should show that --input-hash, --vtime, and --run-id are required, and that "
+            "--session-id is only for a moment that names a session ID.",
             ["debug"],
         ),
         _help_story(

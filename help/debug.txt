@@ -1,6 +1,6 @@
 Launch a debugging session
 
-Identify the target run with exactly one of {{ t("--run-id")? }} (preferred) or {{ t("--session-id")? }}.
+Identify the target run with {{ t("--run-id")? }}. Use {{ t("--session-id")? }} in its place only for a moment that names a session ID rather than a run ID.
 
 Example:
   {% filter cmd %}

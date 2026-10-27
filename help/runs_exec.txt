@@ -4,7 +4,7 @@ The run must be ready. It can be a test run or a debugging session. The exec com
 
 The script executes on a fresh branch of the multiverse, so it does not interact with other work happening in the session, like fuzzing or other executing commands.
 
-{{ t("input_hash")? }} and {{ t("vtime")? }} identify the moment to execute at, and the moment must be warm. A warm moment is a moment that is loaded into the run. Every moment generated in the run is warm: by fuzzing, and by an earlier `{{ t("runs exec")? }}`, so the end moment of one command is warm for the next. A moment from another run is cold. Use {{ t("--source-run-id")? }} to load a moment from a different run. Rewarming a moment can take minutes and depends on the magnitude of the vtime. {% if cli %}The `--timeout` flag{% else %}`timeout`{% endif %} does not apply to the time it takes to rewarm a moment. Find a moment with `{{ t("runs properties --detail")? }}`{% if cli %}, `{{ t("runs search")? }}`, or `runs events`{% else %} or `{{ t("runs search")? }}`{% endif %}.
+{{ t("input_hash")? }} and {{ t("vtime")? }} identify the moment to execute at, and the moment must be warm. A warm moment is a moment that is loaded into the run. Every moment generated in the run is warm: by fuzzing, and by an earlier `{{ t("runs exec")? }}`, so the end moment of one command is warm for the next. A moment from another run is cold, and the server must rewarm it: load it by replaying the inputs of the run it comes from. A debugging session rewarms a moment of the run it was launched from without a source. For a moment of any other run, name that run with {{ t("--source-run-id")? }}. Rewarming a moment can take minutes and depends on the magnitude of the vtime. {% if cli %}The `--timeout` flag{% else %}`timeout`{% endif %} does not apply to the time it takes to rewarm a moment. Find a moment with `{{ t("runs properties --detail")? }}`{% if cli %}, `{{ t("runs search")? }}`, or `runs events`{% else %} or `{{ t("runs search")? }}`{% endif %}.
 
 The script executes on the host, or in the container that {{ t("--container")? }} names. The command needs tenant release 64.0 or newer; `{{ t("snouty doctor")? }}` reports the tenant release.
 
@@ -21,7 +21,7 @@ Examples:
   {{ t("snouty runs exec <run_id> <hash> <vtime> 'uname -a'")? }}
   {{ t("snouty runs exec <run_id> <hash> <vtime> --container <name> 'ps aux'")? }}
   {{ t("snouty runs exec <run_id> <hash> <vtime> --events 'sleep 5'")? }}
-  {{ t("snouty runs exec <run_id> <hash> <vtime> --source-run-id <id> --timeout 5m 'ls'")? }}
+  {{ t("snouty runs exec <run_id> <hash> <vtime> --source-run-id <other_run_id> --timeout 5m 'ls'")? }}
 {%- if cli %}
   {{ t("echo 'ps aux' | snouty runs exec <run_id> <hash> <vtime>")? }}
   {{ t("snouty runs exec <run_id> <hash> <vtime> < script.sh")? }}

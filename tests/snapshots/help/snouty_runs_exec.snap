@@ -14,10 +14,13 @@ INPUT_HASH and VTIME identify the moment to execute at, and the moment must be
 warm. A warm moment is a moment that is loaded into the run. Every moment
 generated in the run is warm: by fuzzing, and by an earlier `runs exec`, so the
 end moment of one command is warm for the next. A moment from another run is
-cold. Use --source-run-id to load a moment from a different run. Rewarming a
-moment can take minutes and depends on the magnitude of the vtime. The
-`--timeout` flag does not apply to the time it takes to rewarm a moment. Find a
-moment with `runs properties --detail`, `runs search`, or `runs events`.
+cold, and the server must rewarm it: load it by replaying the inputs of the run
+it comes from. A debugging session rewarms a moment of the run it was launched
+from without a source. For a moment of any other run, name that run with
+--source-run-id. Rewarming a moment can take minutes and depends on the
+magnitude of the vtime. The `--timeout` flag does not apply to the time it takes
+to rewarm a moment. Find a moment with `runs properties --detail`,
+`runs search`, or `runs events`.
 
 The script executes on the host, or in the container that --container names. The
 command needs tenant release 64.0 or newer; `snouty doctor` reports the tenant
@@ -40,8 +43,8 @@ Examples:
   snouty runs exec <run_id> <hash> <vtime> 'uname -a'
   snouty runs exec <run_id> <hash> <vtime> --container <name> 'ps aux'
   snouty runs exec <run_id> <hash> <vtime> --events 'sleep 5'
-  snouty runs exec <run_id> <hash> <vtime> --source-run-id <id> --timeout 5m
-  'ls'
+  snouty runs exec <run_id> <hash> <vtime> --source-run-id <other_run_id>
+  --timeout 5m 'ls'
   echo 'ps aux' | snouty runs exec <run_id> <hash> <vtime>
   snouty runs exec <run_id> <hash> <vtime> < script.sh
 
@@ -76,10 +79,12 @@ Options:
 
       --source-run-id <SOURCE_RUN_ID>
           Run that a cold moment comes from; the server loads the moment into
-          the run
+          the run. Omit it in a debugging session for a moment of the run that
+          the debugging session was launched from
 
       --source-session-id <SOURCE_SESSION_ID>
-          Session that a cold moment comes from, in place of the source run
+          Session ID that a cold moment comes from, in place of the source run.
+          Use it only for a moment that names a session ID rather than a run ID
 
       --timeout <TIMEOUT>
           Maximum time the server waits for the script to exit before reporting

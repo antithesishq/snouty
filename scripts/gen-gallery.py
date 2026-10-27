@@ -2336,7 +2336,8 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-properties",
             "See all properties — pass and fail",
             "I want the full property list for a completed run.",
-            "A table with green passing and red failing labels on a terminal. "
+            "A STAT/✓/✗/ID/NAME table with green pass and red fail labels on a "
+            "terminal, and each property's full ID. "
             "The --json rows carry no `description` field.",
             ["runs", "properties", d.success],
             properties_pass_and_fail,
@@ -2345,7 +2346,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-properties--passing",
             "List only the green properties",
             "I want to see only the properties that passed.",
-            "Every row is a passing property.",
+            "Every row is a passing property (STAT `pass`).",
             ["runs", "properties", d.success, "--passing"],
             all_status("Passing"),
         ),
@@ -2353,7 +2354,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-properties--failing",
             "Focus on the properties that broke",
             "I want to see only the properties that failed.",
-            "Every row is a failing property.",
+            "Every row is a failing property (STAT `fail`).",
             ["runs", "properties", d.success, "--failing"],
             all_status("Failing"),
         ),

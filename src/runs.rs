@@ -902,7 +902,7 @@ fn property_example_counts(p: &Property) -> (u64, u64) {
     (u64::from(ex.unwrap_or(0)), u64::from(cex.unwrap_or(0)))
 }
 
-/// Format a count in short SI-style notation so the EXAMPLES column stays narrow
+/// Format a count in short SI-style notation so the count columns stay narrow
 /// and scannable: values under 1000 print exactly (`0`, `20`, `885`); larger
 /// ones use ~3 significant figures with a k/M/G/T suffix (`2.3k`, `13k`, `18M`).
 fn format_count_si(n: u64) -> String {
@@ -1269,20 +1269,13 @@ fn is_failing(p: &Property) -> bool {
     matches!(p.status(), PropertyStatus::Failing)
 }
 
-/// The EXAMPLES cell for a property: the example count, SI-shortened so big
-/// counts stay narrow (`18496678` -> `18M`), with counterexamples appended
-/// inline (`examples/counterexamples`) only when a property actually has some —
-/// so the common all-zero-counterexample rows aren't cluttered with `/0`.
-fn property_examples_cell(p: &Property) -> String {
-    let (examples, counters) = property_example_counts(p);
-    if counters == 0 {
-        format_count_si(examples)
-    } else {
-        format!(
-            "{}/{}",
-            format_count_si(examples),
-            format_count_si(counters)
-        )
+/// The STAT cell: a short colored word, blank for an undetermined property so
+/// the decided rows stand out.
+fn property_stat_cell(status: PropertyStatus) -> String {
+    match status {
+        PropertyStatus::Passing => console::style("pass").green().to_string(),
+        PropertyStatus::Failing => console::style("fail").red().to_string(),
+        PropertyStatus::Undetermined => String::new(),
     }
 }
 
@@ -1340,11 +1333,13 @@ fn render_properties_table(properties: &[Property]) -> String {
     // One table per group, like the report UI. The heading carries the group, so
     // NAME drops the group prefix.
     let width = terminal_width();
-    // Right-align the numeric EXAMPLES column so magnitudes line up. The ✓/✗
-    // header order must match property_examples_cell.
+    // Right-align the counts so magnitudes line up. ID never shrinks, so a
+    // user can copy it whole into `runs property`.
     let table = Table::builder()
-        .column(Column::new("STATUS"))
-        .column(Column::new("EXAMPLES (✓/✗)").align(Align::Right))
+        .column(Column::new("STAT"))
+        .column(Column::new("✓").align(Align::Right))
+        .column(Column::new("✗").align(Align::Right))
+        .column(Column::new("ID"))
         .column(Column::new("NAME").fit(Fit::Wrap { floor: 20 }));
 
     group_property_sections(properties)
@@ -1353,9 +1348,12 @@ fn render_properties_table(properties: &[Property]) -> String {
             let rows: Vec<Vec<String>> = props
                 .iter()
                 .map(|p| {
+                    let (examples, counterexamples) = property_example_counts(p);
                     vec![
-                        property_status_label(p.status()),
-                        property_examples_cell(p),
+                        property_stat_cell(p.status()),
+                        format_count_si(examples),
+                        format_count_si(counterexamples),
+                        sanitize(p.id().unwrap_or_default()),
                         sanitize(property_display_name(p)),
                     ]
                 })
@@ -2807,14 +2805,18 @@ mod tests {
 
     #[test]
     fn properties_table_renders_one_table_per_group() {
+        let mut counter = event_property(
+            "Counter value stays below limit",
+            PropertyStatus::Failing,
+            Some("Safety"),
+            vec![event("-300", "15.0")],
+            vec![event("-100", "5.0"), event("-200", "10.0")],
+        );
+        if let Property::EventProperty(p) = &mut counter {
+            p.id = Some("prop-1".to_string());
+        }
         let properties = vec![
-            event_property(
-                "Counter value stays below limit",
-                PropertyStatus::Failing,
-                Some("Safety"),
-                vec![event("-300", "15.0")],
-                vec![event("-100", "5.0"), event("-200", "10.0")],
-            ),
+            counter,
             event_property(
                 "Setup completes",
                 PropertyStatus::Passing,
@@ -2828,29 +2830,25 @@ mod tests {
         let lines: Vec<&str> = table.lines().collect();
 
         // One table per group: the failing "Safety" group leads with its name as
-        // a heading, followed by a STATUS/EXAMPLES/NAME table.
+        // a heading, followed by a STAT/✓/✗/ID/NAME table.
         assert_eq!(lines[0], "Safety");
-        assert!(
-            table.contains("\nSTATUS"),
-            "expected a column header\n{table}"
+        assert_eq!(
+            lines[1].split_whitespace().collect::<Vec<_>>(),
+            ["STAT", "✓", "✗", "ID", "NAME"]
         );
-        assert!(table.contains("EXAMPLES (✓/✗)"));
-        assert!(table.contains("NAME"));
         assert!(!table.contains("GROUP"));
         assert!(
             !table.contains('▸'),
             "group should not be folded into NAME\n{table}"
         );
 
-        // Counter property: 1 example + 2 counterexamples -> `1/2`, name only.
+        // Counter property: 1 example + 2 counterexamples, its ID, name only.
         let counter_row = lines.iter().find(|l| l.contains("Counter value")).unwrap();
-        assert!(counter_row.contains("failing"));
-        assert!(counter_row.contains("1/2"));
-        assert!(
-            counter_row
-                .trim_end()
-                .ends_with("Counter value stays below limit")
+        assert_eq!(
+            counter_row.split_whitespace().take(4).collect::<Vec<_>>(),
+            ["fail", "1", "2", "prop-1"]
         );
+        assert!(counter_row.ends_with("Counter value stays below limit"));
 
         // Ungrouped properties land in a trailing "(ungrouped)" section.
         assert!(
@@ -2861,8 +2859,7 @@ mod tests {
             .iter()
             .find(|l| l.contains("Setup completes"))
             .unwrap();
-        assert!(setup_row.contains("passing"));
-        assert!(setup_row.contains('1'));
+        assert!(setup_row.starts_with("pass"));
     }
 
     #[test]

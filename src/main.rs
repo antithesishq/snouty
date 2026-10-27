@@ -20,6 +20,7 @@ use snouty::cli::{
 use snouty::compose;
 use snouty::config;
 use snouty::container;
+use snouty::docker_credential::CredentialsNotFound;
 use snouty::docs;
 use snouty::error::user_error;
 use snouty::features;
@@ -142,6 +143,28 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Doctor(args) => {
             snouty::doctor::cmd_doctor(&settings?, output, args.offline).await
         }
+        Commands::DockerCredential { action } => {
+            let result = match settings {
+                Ok(settings) => {
+                    snouty::docker_credential::cmd_docker_credential(
+                        action,
+                        settings,
+                        settings_path,
+                    )
+                    .await
+                }
+                Err(err) => Err(err),
+            };
+            if let Err(report) = &result {
+                // The protocol reads the error from stdout. Docker reads
+                // "not found" as an answer, so stderr stays quiet for it.
+                println!("{report}");
+                if report.is::<CredentialsNotFound>() {
+                    std::process::exit(1);
+                }
+            }
+            result
+        }
         Commands::Mcp(args) => {
             // The tool calls resolve the settings again, in each child.
             settings?;
@@ -206,6 +229,7 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
             SettingsCommands::Trust(_) => Some("settings trust"),
             SettingsCommands::Deny(_) => Some("settings deny"),
         },
+        Commands::DockerCredential { .. } => Some("docker-credential"),
     }
 }
 

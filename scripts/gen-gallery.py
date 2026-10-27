@@ -4045,6 +4045,16 @@ def build_help_stories(d: Discovery) -> list[Story]:
             ["update"],
         ),
         _help_story(
+            # Help-only: get and list read the user's settings and credentials,
+            # and get prints a secret.
+            "help-docker-credential",
+            "Let Docker push to my tenant registry",
+            "I run `snouty docker-credential --help` to learn how to set up Docker for "
+            "registry.<tenant>.antithesis.com, which profile and credential the helper "
+            "uses, and what each action does.",
+            ["docker-credential"],
+        ),
+        _help_story(
             "help-mcp",
             "Connect an AI agent over MCP",
             "I run `snouty mcp --help` to learn how to give my AI agent snouty's tools, "

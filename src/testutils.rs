@@ -514,6 +514,7 @@ pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
 ///   for any other known run, 404 for an unknown run
 /// - `GET  /api/v0/usage` — paginated usage entries
 /// - `GET  /auth/cli/config` — `{"port_strategy":"disabled"}`
+/// - `POST /auth/cli/refresh` — [`MOCK_REFRESHED_ACCESS_TOKEN`]
 ///
 /// Every route but the OAuth routes (`/auth/cli/`) requires the bearer token.
 /// The OAuth routes take none, as on the real server.
@@ -602,6 +603,9 @@ impl MockApiServer {
         }
     }
 }
+
+/// The access token that the mock `POST /auth/cli/refresh` returns.
+pub const MOCK_REFRESHED_ACCESS_TOKEN: &str = "snouty-mock-refreshed-access-token";
 
 /// The `Cache-Control` the real API sends on a cacheable read (observed on
 /// tenant release 61). The response cache admits nothing without such a
@@ -712,6 +716,14 @@ fn mock_route(
         ("GET", "/auth/cli/config") => (
             200,
             r#"{"port_strategy":"disabled"}"#.to_string(),
+            json,
+            NO_CACHE_CACHE_CONTROL,
+        ),
+        // The real route takes the refresh token as a bearer token; the mock
+        // takes any, and always mints the same access token.
+        ("POST", "/auth/cli/refresh") => (
+            200,
+            format!(r#"{{"antithesis_token":"{MOCK_REFRESHED_ACCESS_TOKEN}"}}"#),
             json,
             NO_CACHE_CACHE_CONTROL,
         ),

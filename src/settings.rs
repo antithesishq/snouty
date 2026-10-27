@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs,
     io::{ErrorKind, Write},
     path::{Path, PathBuf},
@@ -138,117 +139,24 @@ impl Settings {
         }
         .filter(|profile| !profile.is_empty());
 
-        let explicit = explicit_settings_path(project_settings_path)?;
+        SettingsFiles::load(project_settings_path)?.resolve(profile)
+    }
 
-        // Parse this even without a project file, so a bad value fails in
-        // every directory.
-        let trust_override = trust::TrustOverride::from_env()?;
-        // A named project file must exist and needs no trust; the default
-        // `./.snouty.toml` is optional and needs trust. (Climbing the directory
-        // tree, if ever wanted, would go here.)
-        let (project, project_path) = match explicit {
-            Some(path) => (load_settings_file(&path, true)?, path),
-            None => (
-                load_default_project_file(trust_override)?,
-                PathBuf::from(PROJECT_SETTINGS_FILENAME),
-            ),
-        };
-        let global_path = global_settings_dir().map(|dir| dir.join(GLOBAL_SETTINGS_FILENAME));
-        let global = match &global_path {
-            Some(path) => load_settings_file(path, false)?,
-            None => None,
-        };
-        // Most specific first: the project file overrides the global one.
-        let files = [
-            project
-                .is_some()
-                .then(|| SettingsFile::new(SettingsFileType::Project, &project_path)),
-            global_path
-                .filter(|_| global.is_some())
-                .map(|path| SettingsFile::new(SettingsFileType::Global, &path)),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-
-        let resolve = |key: &str, env_var: &str| {
-            resolve_value(
-                key,
-                env_var,
-                profile.as_deref(),
-                project.as_ref(),
-                global.as_ref(),
-            )
-        };
-
-        let tenant = resolve("tenant", ANTITHESIS_TENANT_VAR_NAME)?;
-        let repository = resolve("repository", ANTITHESIS_REPOSITORY_VAR_NAME)?;
-        let base_url = resolve("base_url", ANTITHESIS_BASE_URL_VAR_NAME)?;
-        let https_proxy = resolve("https_proxy", ANTITHESIS_HTTPS_PROXY_VAR_NAME)?;
-        let container_engine = resolve("container_engine", CONTAINER_ENGINE_VAR_NAME)?;
-
-        // The channel resolves to a typed value here, so an invalid setting
-        // fails at startup like any other malformed setting.
-        let update_channel = match resolve("update_channel", UPDATE_CHANNEL_VAR_NAME)? {
-            Some(value) => value
-                .parse::<UpdateChannel>()
-                .map_err(|err| user_error(format!("invalid update_channel setting: {err}")))?,
-            None => UpdateChannel::default(),
-        };
-
-        // Likewise a typed value: the largest API response body the response
-        // cache will store, as a size such as "10 MB" or a bare byte count.
-        // A bare count is naturally written as a TOML integer, so the file
-        // layers accept one (see `resolve_integer_value`).
-        let api_cache_max_file_size = resolve_integer_value(
-            "api_cache_max_file_size",
-            API_CACHE_MAX_FILE_SIZE_VAR_NAME,
-            profile.as_deref(),
-            project.as_ref(),
-            global.as_ref(),
-        )?
-        .map(|value| parse_byte_size("api_cache_max_file_size", &value))
-        .transpose()?;
-
-        // A typed boolean: whether the response cache requires the server's
-        // cache headers to allow caching. Set false to fall back to the
-        // handlers' logical admission checks alone (see `crate::api_cache`).
-        let api_cache_respect_headers = resolve_boolean_value(
-            "api_cache_respect_headers",
-            API_CACHE_RESPECT_HEADERS_VAR_NAME,
-            profile.as_deref(),
-            project.as_ref(),
-            global.as_ref(),
-        )?
-        .map(|value| parse_boolean("api_cache_respect_headers", &value))
-        .transpose()?;
-
-        // A derived base URL interpolates the tenant into the request host
-        // (`https://{tenant}.antithesis.com`) and we attach the API key to that
-        // host, so a malformed tenant would silently send credentials to an
-        // unintended endpoint. Validate it as a hostname before deriving. An
-        // explicit base_url bypasses the tenant, so only check when we'd derive.
-        if base_url.is_none()
-            && let Some(tenant) = &tenant
-        {
-            validate_tenant_host(tenant)?;
-        }
-
-        // A named-field literal (not the setters) so the compiler flags this
-        // site whenever a new setting is added to the builder.
-        Ok(SettingsBuilder {
-            profile,
-            tenant,
-            repository,
-            base_url,
-            https_proxy,
-            container_engine,
-            update_channel,
-            api_cache_max_file_size,
-            api_cache_respect_headers,
-            files,
-        }
-        .build())
+    /// The settings of the top-level defaults, then of each profile that a
+    /// settings file names, in name order. The settings files are found as in
+    /// [`Settings::resolve`], and an environment variable still overrides
+    /// every profile.
+    ///
+    /// A profile that fails to resolve, such as one with an invalid tenant, is
+    /// left out: a caller that searches the profiles must not fail on a
+    /// profile it does not use.
+    pub fn resolve_every_profile(project_settings_path: Option<PathBuf>) -> Result<Vec<Self>> {
+        let files = SettingsFiles::load(project_settings_path)?;
+        let names = files.profile_names()?;
+        Ok(std::iter::once(None)
+            .chain(names.into_iter().map(Some))
+            .filter_map(|profile| files.resolve(profile).ok())
+            .collect())
     }
 
     /// The resolved tenant, or `None` if unset. Call sites that require it turn
@@ -320,6 +228,153 @@ impl Settings {
     #[cfg(test)]
     pub(crate) fn for_test_base_url(base_url: &str) -> Self {
         Self::builder().base_url(base_url).build()
+    }
+}
+
+/// The project and global settings files, read and parsed.
+struct SettingsFiles {
+    project: Option<Table>,
+    global: Option<Table>,
+    /// The files that were read, most specific first.
+    files: Vec<SettingsFile>,
+}
+
+impl SettingsFiles {
+    /// Find and read the settings files, as [`Settings::resolve`] states.
+    fn load(project_settings_path: Option<PathBuf>) -> Result<Self> {
+        let explicit = explicit_settings_path(project_settings_path)?;
+
+        // Parse this even without a project file, so a bad value fails in
+        // every directory.
+        let trust_override = trust::TrustOverride::from_env()?;
+        // A named project file must exist and needs no trust; the default
+        // `./.snouty.toml` is optional and needs trust. (Climbing the directory
+        // tree, if ever wanted, would go here.)
+        let (project, project_path) = match explicit {
+            Some(path) => (load_settings_file(&path, true)?, path),
+            None => (
+                load_default_project_file(trust_override)?,
+                PathBuf::from(PROJECT_SETTINGS_FILENAME),
+            ),
+        };
+        let global_path = global_settings_dir().map(|dir| dir.join(GLOBAL_SETTINGS_FILENAME));
+        let global = match &global_path {
+            Some(path) => load_settings_file(path, false)?,
+            None => None,
+        };
+        // Most specific first: the project file overrides the global one.
+        let files = [
+            project
+                .is_some()
+                .then(|| SettingsFile::new(SettingsFileType::Project, &project_path)),
+            global_path
+                .filter(|_| global.is_some())
+                .map(|path| SettingsFile::new(SettingsFileType::Global, &path)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        Ok(Self {
+            project,
+            global,
+            files,
+        })
+    }
+
+    /// The names of the profiles that either file defines.
+    fn profile_names(&self) -> Result<BTreeSet<String>> {
+        let mut names = BTreeSet::new();
+        for table in [&self.project, &self.global].into_iter().flatten() {
+            if let Some(profiles) = table.get(PROFILE_KEY) {
+                let profiles = profiles
+                    .as_table()
+                    .ok_or_else(|| eyre!("`{PROFILE_KEY}` must be a table of profiles"))?;
+                names.extend(profiles.keys().cloned());
+            }
+        }
+        Ok(names)
+    }
+
+    /// Resolve each setting for `profile` through the precedence chain.
+    fn resolve(&self, profile: Option<String>) -> Result<Settings> {
+        let resolve = |key: &str, env_var: &str| {
+            resolve_value(
+                key,
+                env_var,
+                profile.as_deref(),
+                self.project.as_ref(),
+                self.global.as_ref(),
+            )
+        };
+
+        let tenant = resolve("tenant", ANTITHESIS_TENANT_VAR_NAME)?;
+        let repository = resolve("repository", ANTITHESIS_REPOSITORY_VAR_NAME)?;
+        let base_url = resolve("base_url", ANTITHESIS_BASE_URL_VAR_NAME)?;
+        let https_proxy = resolve("https_proxy", ANTITHESIS_HTTPS_PROXY_VAR_NAME)?;
+        let container_engine = resolve("container_engine", CONTAINER_ENGINE_VAR_NAME)?;
+
+        // The channel resolves to a typed value here, so an invalid setting
+        // fails at startup like any other malformed setting.
+        let update_channel = match resolve("update_channel", UPDATE_CHANNEL_VAR_NAME)? {
+            Some(value) => value
+                .parse::<UpdateChannel>()
+                .map_err(|err| user_error(format!("invalid update_channel setting: {err}")))?,
+            None => UpdateChannel::default(),
+        };
+
+        // Likewise a typed value: the largest API response body the response
+        // cache will store, as a size such as "10 MB" or a bare byte count.
+        // A bare count is naturally written as a TOML integer, so the file
+        // layers accept one (see `resolve_integer_value`).
+        let api_cache_max_file_size = resolve_integer_value(
+            "api_cache_max_file_size",
+            API_CACHE_MAX_FILE_SIZE_VAR_NAME,
+            profile.as_deref(),
+            self.project.as_ref(),
+            self.global.as_ref(),
+        )?
+        .map(|value| parse_byte_size("api_cache_max_file_size", &value))
+        .transpose()?;
+
+        // A typed boolean: whether the response cache requires the server's
+        // cache headers to allow caching. Set false to fall back to the
+        // handlers' logical admission checks alone (see `crate::api_cache`).
+        let api_cache_respect_headers = resolve_boolean_value(
+            "api_cache_respect_headers",
+            API_CACHE_RESPECT_HEADERS_VAR_NAME,
+            profile.as_deref(),
+            self.project.as_ref(),
+            self.global.as_ref(),
+        )?
+        .map(|value| parse_boolean("api_cache_respect_headers", &value))
+        .transpose()?;
+
+        // A derived base URL interpolates the tenant into the request host
+        // (`https://{tenant}.antithesis.com`) and we attach the API key to that
+        // host, so a malformed tenant would silently send credentials to an
+        // unintended endpoint. Validate it as a hostname before deriving. An
+        // explicit base_url bypasses the tenant, so only check when we'd derive.
+        if base_url.is_none()
+            && let Some(tenant) = &tenant
+        {
+            validate_tenant_host(tenant)?;
+        }
+
+        // A named-field literal (not the setters) so the compiler flags this
+        // site whenever a new setting is added to the builder.
+        Ok(SettingsBuilder {
+            profile,
+            tenant,
+            repository,
+            base_url,
+            https_proxy,
+            container_engine,
+            update_channel,
+            api_cache_max_file_size,
+            api_cache_respect_headers,
+            files: self.files.clone(),
+        }
+        .build())
     }
 }
 

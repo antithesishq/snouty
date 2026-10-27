@@ -243,6 +243,12 @@ pub enum Commands {
         repository: Option<String>,
     },
 
+    /// Give Docker the credential for the tenant's container registry
+    DockerCredential {
+        /// The credential helper action that Docker requests
+        action: DockerCredentialAction,
+    },
+
     /// Serve snouty's run, docs, doctor and settings commands to AI agents over MCP
     #[command(
         hide = !features::is_enabled(Feature::Mcp)
@@ -279,7 +285,8 @@ pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Re
         | Commands::Update(_)
         | Commands::Doctor(_)
         | Commands::Settings { .. }
-        | Commands::Login { .. } => return None,
+        | Commands::Login { .. }
+        | Commands::DockerCredential { .. } => return None,
     };
     if enabled.contains(&feature) {
         return None;
@@ -319,6 +326,19 @@ fn parse_path_segment(value: &str, what: &str) -> Result<String, String> {
         return Err(format!("invalid {what}: '{value}'"));
     }
     Ok(value.to_owned())
+}
+
+/// The actions of the Docker credential helper protocol.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum DockerCredentialAction {
+    /// Print the credential for the server URL on stdin
+    Get,
+    /// Read a credential from stdin and keep nothing
+    Store,
+    /// Read a server URL from stdin and erase nothing
+    Erase,
+    /// Print each registry that snouty has a credential for
+    List,
 }
 
 fn validate_non_empty(value: &str) -> Result<String, String> {

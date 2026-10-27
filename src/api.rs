@@ -1615,6 +1615,12 @@ impl HttpClient {
         }
     }
 
+    /// The client itself, for a request that has its own log rules, such as
+    /// the OAuth refresh.
+    pub(crate) fn inner(&self) -> &Client {
+        &self.client
+    }
+
     pub(crate) fn get(&self, url: impl reqwest::IntoUrl) -> reqwest::RequestBuilder {
         self.client.get(url)
     }

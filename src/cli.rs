@@ -295,10 +295,22 @@ pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Re
 /// a URL parser removes an empty, `.` or `..` segment, so the request would go
 /// to a different endpoint.
 fn parse_run_id(value: &str) -> Result<String, String> {
-    match value {
-        "" | "." | ".." => Err(format!("invalid run ID: '{value}'")),
-        _ => Ok(value.to_owned()),
+    parse_path_segment(value, "run ID")
+}
+
+/// clap value parser for a property ID, which is a path segment too. See
+/// [`parse_run_id`].
+fn parse_property_id(value: &str) -> Result<String, String> {
+    parse_path_segment(value, "property ID")
+}
+
+/// The client percent-encodes `/` in a path segment, but not `\`, which a URL
+/// parser reads as `/`. So `..\x` would also leave the segment.
+fn parse_path_segment(value: &str, what: &str) -> Result<String, String> {
+    if matches!(value, "" | "." | "..") || value.contains('\\') {
+        return Err(format!("invalid {what}: '{value}'"));
     }
+    Ok(value.to_owned())
 }
 
 fn validate_non_empty(value: &str) -> Result<String, String> {
@@ -668,15 +680,18 @@ pub enum RunsCommands {
     /// Show one property of a run, by its ID
     Property {
         /// Run ID
+        #[arg(value_parser = parse_run_id)]
         run_id: String,
 
-        /// Property ID, from the ID column of `snouty runs properties`
+        /// Property ID, as the run's property list shows it
+        #[arg(value_parser = parse_property_id)]
         property_id: String,
     },
 
     /// Stream a run's property changes until the run is final
     Stream {
         /// Run ID
+        #[arg(value_parser = parse_run_id)]
         run_id: String,
 
         /// Stream only the events of this property (repeatable)
@@ -813,8 +828,8 @@ pub struct RunsUsageArgs {
     #[arg(long)]
     pub utc: bool,
 
-    /// Maximum number of rows to display: runs, or periods with --rollup
-    /// [default: 10; not allowed with both --after and --before]
+    /// Maximum number of rows to display: runs, or periods with a rollup
+    /// [default: 10; not allowed with both an after and a before time]
     #[arg(short = 'n', long)]
     pub limit: Option<NonZeroU64>,
 }

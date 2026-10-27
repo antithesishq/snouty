@@ -8,14 +8,16 @@ counts. They are not wall-clock hours: Antithesis runs a test in parallel, so
 one hour of testing uses many core-hours, and a higher performance tier uses
 more.
 
-Columns: RUN ID, STARTED, ENDED, CORE HOURS. STARTED and ENDED are the start and
-end of the billable usage of the run. CORE HOURS has one decimal place.
+Each run has its ID, the start and end of its billable usage, and its
+core-hours.
 
-With --rollup, each row is the total of one day, week, or month. A run counts in
-the period in which it ended. A week starts on Monday. Columns: START, END,
-RUNS, CORE HOURS. START and END are the first and last days of the period. The
-rows are the --limit periods that end with the current period, and a period with
-no runs shows 0.
+Columns: RUN ID, STARTED, ENDED, CORE HOURS. CORE HOURS has one decimal place.
+
+With --rollup, each row is the total of one day, week, or month: its first and
+last days, its number of runs, and its core-hours. A run counts in the period in
+which it ended. A week starts on Monday. Columns: START, END, RUNS, CORE HOURS.
+The rows are the --limit periods that end with the current period, and a period
+with no runs shows 0.
 
 Times and periods are in the local timezone. Add --utc to show them in UTC.
 
@@ -65,8 +67,8 @@ Options:
           Show times and periods in UTC instead of the local timezone
 
   -n, --limit <LIMIT>
-          Maximum number of rows to display: runs, or periods with --rollup
-          [default: 10; not allowed with both --after and --before]
+          Maximum number of rows to display: runs, or periods with a rollup
+          [default: 10; not allowed with both an after and a before time]
 
   -h, --help
           Print help (see a summary with '-h')

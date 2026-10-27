@@ -2008,7 +2008,7 @@ const MOMENT_NOT_WARM: [&str; 3] = [
 /// - Any other 400 (release 64.0): a rewarm did not finish, or the source is
 ///   not the moment's run.
 fn explain_exec_error(
-    run_status: RunStatus,
+    run_status: &RunStatus,
     debug_command: &str,
     rewarm_flag: Option<&str>,
     err: color_eyre::eyre::Report,
@@ -2186,7 +2186,7 @@ async fn exec_when_ready(
     let stream = api
         .execute_command(run_id, exec)
         .await
-        .map_err(|err| explain_exec_error(run.status, &debug_command, rewarm_flag, err))?;
+        .map_err(|err| explain_exec_error(&run.status, &debug_command, rewarm_flag, err))?;
 
     // Only the last line can be the terminal result. A line that parses as
     // one is held until the next line arrives, and is shown as an event if one
@@ -5034,7 +5034,7 @@ mod tests {
                 "The requested moment is not valid in the original run.",
             ] {
                 let err = explain_exec_error(
-                    RunStatus::InProgress,
+                    &RunStatus::InProgress,
                     "snouty debug",
                     None,
                     api_error(400, message),

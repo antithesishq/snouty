@@ -531,9 +531,8 @@ fn unclassified_status_error(run_id: &str, status: &RunStatus) -> color_eyre::ey
 
 /// Poll `get_run` every `poll_interval` until the run reaches the `until`
 /// point, and call `on_wait` with each poll that has not reached it. The first
-/// poll is at once. A run that reports `unknown`, or a status this build does
-/// not know, fails the wait (see [`RunStatus::is_unclassified`]). The polls
-/// bypass the response cache, so each one observes fresh state.
+/// poll is at once. An unclassified run fails the wait (see
+/// [`RunStatus::is_unclassified`]). The polls bypass the response cache, so each one observes fresh state.
 ///
 /// Never returns on its own — the caller bounds it with `tokio::time::timeout`.
 async fn wait_for_run(
@@ -948,7 +947,6 @@ fn property_status_label(status: &PropertyStatus) -> String {
     style_property_status(status, property_status_word(status))
 }
 
-/// `word` in the color of `status`.
 fn style_property_status(status: &PropertyStatus, word: Cow<'_, str>) -> String {
     let word = console::style(word);
     match status {

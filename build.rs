@@ -127,12 +127,11 @@ fn generate_api_client(out_dir: &Path) {
 
 /// Give every string enum the server sends an `Other(String)` variant, so a
 /// value this build does not know decodes as `Other` and keeps its spelling.
-/// `Display` escapes an `Other` value, because the server controls its text
-/// and every format site prints it to the terminal.
-/// typify makes each enum closed, and a closed enum fails the whole response:
-/// one new run status would fail `runs list`. `FromStr` stays strict, because
-/// it parses user input. The `LAUNCH_ENUM_PARAMS` enums stay closed: snouty only
-/// sends them, and `clap::ValueEnum` needs unit variants.
+/// A closed enum fails the whole response: one new run status fails `runs list`.
+/// `Display` escapes an `Other` value, because the server controls its text.
+/// `FromStr` stays strict, because it parses user input. The
+/// `LAUNCH_ENUM_PARAMS` enums stay closed, because `clap::ValueEnum` needs unit
+/// variants.
 fn open_string_enums(file: &mut syn::File) {
     let types = file
         .items
@@ -436,8 +435,8 @@ const LAUNCH_ENUM_PARAMS: &[(&str, &str)] = &[
 ];
 
 /// Decode `Params.<param>` as a plain string, and move the enum to `schema`,
-/// which the `launch` flag parses into. `open_string_enums` skips `schema`,
-/// because `clap::ValueEnum` needs a closed enum.
+/// which the `launch` flag parses into. That enum stays closed for
+/// `clap::ValueEnum`.
 fn open_param_enum(spec: &mut serde_json::Value, param: &str, schema: &str) {
     let pointer = format!("/components/schemas/Params/properties/{param}");
     let values = remove_schema_key(spec, &pointer, "enum", "open_param_enum");

@@ -221,7 +221,7 @@ impl RunSummary {
 
 impl RunDetail {
     /// Whether the run accepts commands: it is in progress, with the `Ready`
-    /// sub-status. A run from before [`MIN_SUB_STATUS_RELEASE`] has no
+    /// sub-status (observed on orbitinghail, release 64.0). A run from before [`MIN_SUB_STATUS_RELEASE`] has no
     /// sub-status, so it is ready while it is in progress.
     pub(crate) fn is_ready(&self) -> bool {
         let in_progress = self.status == RunStatus::InProgress;

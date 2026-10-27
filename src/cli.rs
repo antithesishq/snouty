@@ -22,7 +22,7 @@ use crate::vtime::VTime;
 
 pub(crate) mod tree;
 
-/// Every `RunStatus` variant, used to enumerate valid `--status` values in
+/// Every known `RunStatus` variant, used to enumerate valid `--status` values in
 /// error output. The generated enum offers no iteration, so this array is the
 /// source of truth; [`assert_run_statuses_complete`] forces an update here
 /// whenever the generated enum gains a variant.

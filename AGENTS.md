@@ -50,8 +50,16 @@ command, named for its path below `snouty` with `_` between the parts:
   | `{{ t("snouty runs wait <run_id> --until ready")? }}` | the command as written | `runs_wait {"run_id": "<run_id>", "until": "ready"}` |
 
   Write an example that spans lines, or that holds quotes or backslashes, in
-  a filter block, which takes its text as written:
-  `{% filter cmd %}snouty debug \ …{% endfilter %}`.
+  a filter block, which takes its text as written. The whitespace around
+  the text drops out, so the tags stand on lines of their own:
+
+  ```
+    {% filter cmd %}
+    snouty debug \
+      --run-id <run_id> \
+      --title "stalled leader election"
+    {% endfilter %}
+  ```
 
   A name that does not exist, an example that clap refuses, or a literal
   value that its parser refuses is an error. A `<placeholder>` can stand for

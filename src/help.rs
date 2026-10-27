@@ -92,14 +92,15 @@ macro_rules! help_pages {
 
             mod filters {
                 /// `{% filter cmd %}…{% endfilter %}` is `t()` of the block's
-                /// text, for an example that spans lines.
+                /// text, for an example that spans lines. The tags can stand on
+                /// lines of their own: the whitespace around the text drops out.
                 #[askama::filter_fn]
                 pub fn cmd(
                     text: impl std::fmt::Display,
                     values: &dyn askama::Values,
                 ) -> askama::Result<String> {
                     let context: &super::Context = askama::get_value(values, "context")?;
-                    context.t(&text.to_string())
+                    context.t(text.to_string().trim())
                 }
             }
         }

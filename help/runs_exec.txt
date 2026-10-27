@@ -26,8 +26,10 @@ Examples:
 
 {%~ if cli %}
 Add --json for machine-readable output. Each frame of the stream prints as one JSON object on its own line, and the trailer is left out:
-  {% filter cmd %}snouty --json runs exec <run_id> <hash> <vtime> 'ls' \
-    | jq -r 'select(.output_text != null).output_text'{% endfilter %}
+  {% filter cmd %}
+  snouty --json runs exec <run_id> <hash> <vtime> 'ls' \
+    | jq -r 'select(.output_text != null).output_text'
+  {% endfilter %}
 {%- else %}
 Each frame of the stream prints as one JSON object on its own line, and the trailer is left out.
 {%- endif %}

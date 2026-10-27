@@ -41,9 +41,9 @@ fake_secrets! {
         API_KEY = "fake-api-key";
         /// An API key in `ANTITHESIS_API_KEY` when a test also types or stores
         /// [`API_KEY`].
-        API_KEY_ENV = "fake-api-key-env";
+        API_KEY_ENV = "fake-env-api-key";
         /// An API key under a named profile, next to [`API_KEY`] in `[default]`.
-        API_KEY_PROFILE = "fake-api-key-profile";
+        API_KEY_PROFILE = "fake-profile-api-key";
         /// An API key that `credentials.toml` already holds. It has the shape of
         /// a real key, because the login prompt shows the last four characters
         /// of a stored key as a hint.
@@ -59,16 +59,16 @@ fake_secrets! {
         PASSWORD = "fake-password";
         /// A password that `credentials.toml` already holds, when a test also
         /// uses [`PASSWORD`].
-        PASSWORD_STORED = "fake-password-stored";
+        PASSWORD_STORED = "fake-stored-password";
         /// An OAuth access token.
         ACCESS_TOKEN = "fake-access-token";
         /// An OAuth refresh token.
         REFRESH_TOKEN = "fake-refresh-token";
         /// The access token that a refresh issues in place of [`ACCESS_TOKEN`].
-        ACCESS_TOKEN_NEW = "fake-access-token-new";
+        ACCESS_TOKEN_NEW = "fake-new-access-token";
         /// The refresh token that a refresh issues in place of
         /// [`REFRESH_TOKEN`].
-        REFRESH_TOKEN_NEW = "fake-refresh-token-new";
+        REFRESH_TOKEN_NEW = "fake-new-refresh-token";
         /// An OAuth authorization code.
         OAUTH_CODE = "fake-oauth-code";
         /// The OAuth flow token, which the sign-in sends as `state`.
@@ -131,13 +131,17 @@ mod tests {
         }
     }
 
+    /// No value contains another, so a test that checks for one value with
+    /// `contains` cannot match a different one.
     #[test]
-    fn each_value_is_unique() {
+    fn no_value_contains_another() {
         for (i, (name, value)) in ALL.iter().enumerate() {
-            assert!(
-                ALL[..i].iter().all(|(_, other)| other != value),
-                "{name} repeats a value"
-            );
+            for (j, (other_name, other)) in ALL.iter().enumerate() {
+                assert!(
+                    i == j || !value.contains(other),
+                    "{name} contains {other_name}"
+                );
+            }
         }
     }
 
@@ -153,13 +157,21 @@ mod tests {
 
     /// A secret-shaped value is allowed when the registry has it, when it is
     /// a documented placeholder, or when it only names another value:
-    /// `${VAR}`, `{var}`, `$VAR`, `<VALUE>`, `[REDACTED]`, or `VALUE`. A
-    /// Python `True`, `False`, or `None` is not a value either, and nor is a
-    /// GitHub Actions permission such as `"id-token": "write"`.
+    /// `${VAR}`, `$VAR`, `$(command)`, `{var}`, `<VALUE>`, `[REDACTED]`, or
+    /// `VALUE`. A Python `True`, `False`, or `None` is not a value either, and
+    /// nor is a GitHub Actions permission such as `"id-token": "write"`.
     fn allowed(value: &str) -> bool {
+        let names_a_variable = value
+            .strip_prefix('$')
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(|c| matches!(c, '{' | '(') || c.is_ascii_alphabetic());
         registered(value)
             || PLACEHOLDERS.contains(&value)
-            || value.starts_with(['$', '{', '<', '[', '\\'])
+            || names_a_variable
+            || value.starts_with(['{', '<'])
+            || value
+                .trim_matches(['\\', '[', ']'])
+                .eq_ignore_ascii_case("redacted")
             || ["True", "False", "None", "read", "write", "none"].contains(&value)
             || value.chars().all(|c| c.is_ascii_uppercase() || c == '_')
     }
@@ -256,6 +268,12 @@ mod tests {
     #[test]
     fn scan() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        // A copy of the source without git, such as a crates.io package, is
+        // not where a secret gets committed.
+        if !root.join(".git").exists() {
+            eprintln!("skipping: {} is not a git checkout", root.display());
+            return;
+        }
         let output = std::process::Command::new("git")
             .args([
                 "ls-files",

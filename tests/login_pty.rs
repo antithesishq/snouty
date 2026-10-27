@@ -305,7 +305,7 @@ fn bare_enter_without_a_stored_key_asks_again() {
 /// A bare Enter does not replace a stored username and password with an empty
 /// key: the prompt refuses it, and Esc then keeps the password.
 #[test]
-fn bare_enter_keeps_a_password_credentials() {
+fn bare_enter_keeps_a_stored_password() {
     let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &password_credentials())]);
     expect(&mut session, "Please enter your API Key");
     send(&mut session, "\r");
@@ -336,7 +336,7 @@ fn an_api_key_asks_before_it_replaces_stored_oauth_tokens() {
 /// Login asks before a new API key replaces a stored username and password,
 /// and a bare Enter answers no: the credentials file stays as it was.
 #[test]
-fn declining_keeps_a_password_credentials() {
+fn declining_keeps_a_stored_password() {
     let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &password_credentials())]);
     expect(&mut session, "Please enter your API Key");
     send(&mut session, &format!("{}\r", fake_secrets::API_KEY));

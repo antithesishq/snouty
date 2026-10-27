@@ -509,7 +509,6 @@ pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
 /// The OAuth routes take none, as on the real server.
 pub struct MockApiServer {
     url: String,
-    token: String,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -531,7 +530,7 @@ impl MockApiServer {
 
     /// Return the token the server expects in Authorization headers.
     pub fn token(&self) -> &str {
-        &self.token
+        fake_secrets::MOCK_SERVER_API_KEY
     }
 
     /// Block until the server thread stops.
@@ -545,7 +544,6 @@ impl MockApiServer {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let url = format!("http://{addr}");
-        let token = fake_secrets::MOCK_SERVER_API_KEY.to_string();
 
         let handle = thread::spawn(move || {
             for mut stream in listener.incoming().flatten() {
@@ -590,7 +588,6 @@ impl MockApiServer {
 
         Self {
             url,
-            token,
             handle: Some(handle),
         }
     }

@@ -4216,7 +4216,7 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
 # again before embedding (see `_redact_secrets`). They are API_KEY_NEW,
 # PASSWORD_STORED, and API_KEY_STORED from src/testutils/fake_secrets.rs.
 _FAKE_KEY = "antithesis_api_key_v2_fake-new_7Qxz"
-_FAKE_PASS = "fake-password-stored"
+_FAKE_PASS = "fake-stored-password"
 _SEED_KEY = "antithesis_api_key_v2_fake-stored_9Pgw"
 _TENANT = "acme"
 _REPO = "registry.example.com/acme/app"

@@ -3725,12 +3725,9 @@ def build_mcp_help_stories(tools: list[str]) -> list[Story]:
     ]
 
 
-# A flag, such as `--limit`, outside a code example. An MCP render names each
-# arg by its param.
-_FLAG = re.compile(r"(^|[\s(`])--[a-z]")
-
-
 def mcp_help_check(sr: StoryRun, _reg: Registry) -> tuple[bool, str]:
+    # The Rust tests check what the help and the schema say; this checks
+    # only that the server serves them.
     tool = sr.story.mcp_tool
     if sr.mcp_entry is None:
         return False, f"{tool} is not in the tool list"
@@ -3739,22 +3736,6 @@ def mcp_help_check(sr: StoryRun, _reg: Registry) -> tuple[bool, str]:
     text = sr.result.stdout
     if not text.startswith(f"The help of {tool}"):
         return False, "tool_help text does not start with the tool's name"
-    # The first line names the command that the tool runs.
-    flags = [line for line in text.splitlines()[1:] if _FLAG.search(line)]
-    if flags:
-        return False, f"tool_help names a CLI flag: {flags[0].strip()[:120]}"
-    commands = [line for line in text.splitlines()[1:] if "`snouty " in line]
-    if commands:
-        return False, f"tool_help names a snouty command: {commands[0].strip()[:120]}"
-    for param, schema in (
-        sr.mcp_entry.get("inputSchema", {}).get("properties", {}).items()
-    ):
-        description = schema.get("description", "")
-        if _FLAG.search(description) or "snouty " in description:
-            return (
-                False,
-                f"the description of {param} names a flag or a command: {description}",
-            )
     params = len(sr.mcp_entry.get("inputSchema", {}).get("properties", {}))
     return (
         True,

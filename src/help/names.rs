@@ -150,15 +150,15 @@ mod tests {
         assert!(result.is_err(), "{result:?}");
     }
 
-    /// A misspelled name is an error for every reader, so the CLI render
+    /// An unknown name is an error for every reader, so the CLI render
     /// cannot print it as written.
     #[test]
-    fn a_misspelled_name_is_an_error() {
+    fn an_unknown_name_is_an_error() {
         for text in [
-            "--evnts",
-            "rnus search",
-            "runs serch",
-            "snouty runs list --limt 5",
+            "--nosuch",
+            "nosuch search",
+            "runs nosuch",
+            "snouty runs list --nosuch 5",
         ] {
             for reader in [Reader::Cli, Reader::Mcp] {
                 let result = t(HelpPage::RunsExec, reader, text);

@@ -23,6 +23,18 @@
 # surfaces at once. A served HTTP response of any other status is never
 # retried.
 
+# A run ID is one segment of an API path. An empty, `.` or `..` ID would
+# send the request to a different endpoint, so the parser refuses it before
+# any request.
+! snouty runs show ..
+stderr "invalid value '..' for '<RUN_ID>': invalid run ID"
+! snouty runs logs . -1
+stderr "invalid value '.' for '<RUN_ID>': invalid run ID"
+! snouty runs properties ''
+stderr "invalid value '' for '<RUN_ID>': invalid run ID"
+! snouty debug --run-id=.. --input-hash=-1 --vtime=1
+stderr "invalid value '..' for '--run-id <RUN_ID>': invalid run ID"
+
 # The command authenticates with the Antithesis API using
 #    ANTITHESIS_API_KEY and ANTITHESIS_TENANT env vars. Every endpoint other
 #    than launch requires an API key, so unlike the launch commands,

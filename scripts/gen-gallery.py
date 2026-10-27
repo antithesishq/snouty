@@ -3397,6 +3397,13 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "I run `snouty update --help` to understand what updating does.",
             ["update"],
         ),
+        _help_story(
+            "help-mcp",
+            "Connect an AI agent over MCP",
+            "I run `snouty mcp --help` to learn how to give my AI agent snouty's tools, "
+            "and what those tools can do.",
+            ["mcp"],
+        ),
         # -- docs (help-only: output depends on a downloaded docs DB) --------
         _help_story(
             "help-docs",

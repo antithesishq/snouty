@@ -144,16 +144,15 @@ async fn run(cli: Cli) -> Result<()> {
             snouty::doctor::cmd_doctor(&settings?, output, args.offline).await
         }
         Commands::DockerCredential { action } => {
-            // The search skips each profile that fails to resolve, the active
-            // profile too, so its error is dropped. A settings file that
-            // fails to load still fails the search, which loads it again.
+            // The search skips a profile that fails to resolve, so drop the
+            // error. A settings file that fails to load still fails the search.
             let active = settings.ok();
             let result =
                 snouty::docker_credential::cmd_docker_credential(action, active, settings_path)
                     .await;
             if let Err(report) = &result {
                 // The protocol reads the error from stdout. Docker reads
-                // "not found" as an answer, so stderr stays quiet for it.
+                // "not found" as an answer, so it must not go to stderr.
                 println!("{report}");
                 if report.is::<CredentialsNotFound>() {
                     std::process::exit(1);

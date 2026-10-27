@@ -12,7 +12,6 @@ use color_eyre::{Section, eyre::Result};
 
 use crate::{error::user_error, settings::Settings};
 
-/// The basic-auth username for every registry credential.
 pub const USERNAME: &str = "snouty-token";
 
 /// A registry host, such as `registry.acme.antithesis.com`, or
@@ -22,7 +21,6 @@ pub const USERNAME: &str = "snouty-token";
 pub struct RegistryHost(String);
 
 impl RegistryHost {
-    /// The registry of `tenant`.
     pub fn for_tenant(tenant: &str) -> Self {
         Self(format!("registry.{tenant}.antithesis.com").to_ascii_lowercase())
     }
@@ -62,15 +60,15 @@ pub fn tenant_registry(settings: &Settings) -> Option<RegistryHost> {
     (host == RegistryHost::for_tenant(settings.tenant()?)).then_some(host)
 }
 
-/// The settings whose tenant registry is `host`, from the `active` settings
-/// (of the selected profile, `None` when they fail to resolve) or else the
-/// settings of `every` profile (see [`Settings::resolve_every_profile`]),
-/// which load only when `active` does not match.
+/// The settings whose tenant registry is `host`. `active` is the settings of
+/// the selected profile, or `None` when they fail to resolve. `every` loads
+/// all profiles (see [`Settings::resolve_every_profile`]), and runs only when
+/// `active` does not match.
 ///
-/// The active profile wins when it matches. Then the top-level defaults win,
-/// because a named profile that sets no tenant and no repository gets them
-/// from the defaults. Then exactly one named profile can match. When more
-/// than one does, the choice is the user's, and this is an error.
+/// The active profile wins. Then the top-level defaults win, because a named
+/// profile that sets no tenant and no repository gets them from the defaults.
+/// Then one named profile can match. More than one match is an error, because
+/// only the user can choose.
 pub fn select_profile(
     active: Option<Settings>,
     every: impl FnOnce() -> Result<Vec<Settings>>,

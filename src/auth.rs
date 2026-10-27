@@ -559,12 +559,11 @@ impl AuthenticationInfo {
     /// The Antithesis token that the tenant's container registry takes as the
     /// password of its basic auth: the API key, or an OAuth access token.
     ///
-    /// An OAuth token is refreshed on each call, also when it is still valid.
-    /// A registry client reuses one password for the whole push, so the token
-    /// must have its full lifetime. A token that another process stored since
-    /// this one loaded the credential is new, so it is used as it is. Without
-    /// a refresh token, or when the refresh fails, the stored token is used
-    /// while it has not expired.
+    /// Each call refreshes an OAuth token, also a token that is still valid,
+    /// because a registry client uses one password for the whole push. A token
+    /// that another process stored after this one loaded the credential is
+    /// already new, so the call uses it as it is. Without a refresh token, or
+    /// when the refresh fails, the call uses the stored token until it expires.
     pub(crate) async fn registry_secret(
         &self,
         client: &reqwest::Client,
@@ -721,8 +720,6 @@ async fn refresh_under_lock(
         )
     };
 
-    // Someone (another process, or an earlier refresh) already replaced the token
-    // we held — use theirs instead of refreshing again.
     if current_access_token != held_access_token {
         return Ok(Some(current_access_token));
     }

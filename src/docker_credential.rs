@@ -38,13 +38,12 @@ struct Credential<'a> {
     secret: &'a str,
 }
 
-/// Run `action`. `active` is the settings of the selected profile, `None`
-/// when they fail to resolve, and
-/// `project_settings_path` is the `--settings` flag, to find every other
-/// profile.
+/// `active` is the settings of the selected profile, or `None` when they fail
+/// to resolve. `project_settings_path` is the `--settings` path, which finds
+/// the other profiles.
 ///
-/// The protocol puts an error on stdout, so the caller prints the message of
-/// an error there (see [`CredentialsNotFound`]).
+/// The caller must print an error on stdout, because the protocol reads it
+/// there (see [`CredentialsNotFound`]).
 pub async fn cmd_docker_credential(
     action: DockerCredentialAction,
     active: Option<Settings>,
@@ -61,8 +60,6 @@ pub async fn cmd_docker_credential(
             let Some(settings) = registry::select_profile(active, every, &host)? else {
                 return Err(Report::new(CredentialsNotFound));
             };
-            // Credentials resolve as for any other command, so
-            // `ANTITHESIS_API_KEY` wins over a stored credential.
             let secret = AntithesisApi::new(&settings, false)?
                 .registry_secret()
                 .await?;
@@ -75,9 +72,8 @@ pub async fn cmd_docker_credential(
                 })?
             );
         }
-        // Snouty owns the credential, so it keeps nothing that Docker gives it
-        // and erases nothing. A failure here would fail `docker login` and
-        // `docker logout`, which change nothing that snouty uses.
+        // Snouty owns the credential, so it keeps and erases nothing. A failure
+        // here would fail `docker login` and `docker logout` for no reason.
         DockerCredentialAction::Store | DockerCredentialAction::Erase => {
             read_stdin()?;
         }

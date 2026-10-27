@@ -10,8 +10,7 @@ use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 
 fn main() -> ExitCode {
-    // The `snouty` next to this binary, which the installers put there.
-    // Without one, `snouty` on PATH.
+    // The installers put `snouty` in the same directory as this binary.
     let name = format!("snouty{}", env::consts::EXE_SUFFIX);
     let snouty = env::current_exe()
         .ok()

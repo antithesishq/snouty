@@ -231,7 +231,6 @@ impl Settings {
     }
 }
 
-/// The project and global settings files, read and parsed.
 struct SettingsFiles {
     project: Option<Table>,
     global: Option<Table>,
@@ -240,7 +239,6 @@ struct SettingsFiles {
 }
 
 impl SettingsFiles {
-    /// Find and read the settings files, as [`Settings::resolve`] states.
     fn load(project_settings_path: Option<PathBuf>) -> Result<Self> {
         let explicit = explicit_settings_path(project_settings_path)?;
 
@@ -292,7 +290,6 @@ impl SettingsFiles {
         Ok(names)
     }
 
-    /// Resolve each setting for `profile` through the precedence chain.
     fn resolve(&self, profile: Option<String>) -> Result<Settings> {
         let resolve = |key: &str, env_var: &str| {
             resolve_value(

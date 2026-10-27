@@ -118,8 +118,7 @@ apple-native-keyring-store = { version = "1.0.0", features = ["keychain"] }
 name = "snouty"
 path = "src/main.rs"
 
-# Docker runs a credential helper named `docker-credential-<name>`. This one
-# runs `snouty docker-credential`, and links nothing from snouty.
+# Docker finds a credential helper by the name `docker-credential-<name>`.
 [[bin]]
 name = "docker-credential-snouty"
 path = "src/bin/docker-credential-snouty.rs"

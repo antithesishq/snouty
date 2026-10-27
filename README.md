@@ -305,32 +305,43 @@ Username and password authentication is deprecated. It works with `snouty launch
 
 ## Shell Completions
 
-Snouty supports tab completions for bash, zsh, fish, and elvish.
+Snouty supports tab completions for bash, zsh, fish, elvish, and PowerShell. Have your shell generate them at startup, as below. A completion script saved to a file describes the snouty that wrote it, and goes stale when `snouty update` installs a new version. Open a new shell after each update to load the new completions.
 
 ### Bash
 
 ```sh
 # Add to ~/.bashrc
-eval "$(snouty completions bash)"
+source <(snouty completions bash)
 ```
 
 ### Zsh
 
 ```sh
-# Add to ~/.zshrc
-eval "$(snouty completions zsh)"
+# Add to ~/.zshrc, after compinit
+autoload -Uz compinit
+compinit
+source <(snouty completions zsh)
 ```
 
 ### Fish
 
-```sh
-snouty completions fish > ~/.config/fish/completions/snouty.fish
+```fish
+# Put this line in ~/.config/fish/completions/snouty.fish
+snouty completions fish | source
 ```
 
 ### Elvish
 
-```sh
-snouty completions elvish > ~/.config/elvish/lib/snouty.elv
+```elvish
+# Add to ~/.config/elvish/rc.elv
+eval (snouty completions elvish | slurp)
+```
+
+### PowerShell
+
+```powershell
+# Add to $PROFILE
+snouty completions powershell | Out-String | Invoke-Expression
 ```
 
 # Credits

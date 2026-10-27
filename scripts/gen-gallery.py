@@ -3873,7 +3873,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "I run `snouty completions --help` to learn how to install completions. "
             "For zsh, I want a complete .zshrc setup that initializes completion before "
             "sourcing the script. Advice for shells that already initialize completion "
-            "should come before the setup example.",
+            "should come before the setup example. Every shell's setup should generate "
+            "completions at startup, so they stay current after `snouty update`.",
             ["completions"],
         ),
         _help_story(

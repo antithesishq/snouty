@@ -11,4 +11,8 @@ Example:
 Extra parameters can be passed with `param`. A `param` cannot replace the value of a dedicated param, such as `title`:
   debug {"run_id": "<run_id>", "input_hash": "<hash>", "vtime": <vtime>, "param": ["attrs.team=payments"]}
 
+The response holds the new session's run ID in `runId`. The session starts at the moment that it debugs. Wait until it is ready, then run commands at that moment:
+  runs_wait {"run_id": "<session_run_id>", "until": "ready"}
+  runs_exec {"run_id": "<session_run_id>", "input_hash": "<hash>", "vtime": <vtime>, "script": "ps aux"}
+
 The response prints as one JSON object.

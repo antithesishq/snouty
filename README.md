@@ -335,7 +335,9 @@ Then `docker push`, `docker pull`, `podman push` and `podman pull` sign in to th
 
 The username is `snouty-token`. The password is your API key, or the OAuth access token from `snouty login`. Snouty refreshes the OAuth token each time the engine asks for it, so a long push has the full lifetime of the token. The registry does not accept a GitHub Actions OIDC token or a username and password.
 
-The engine gives the helper no profile, so snouty uses the profile whose `repository` is on the requested registry, and whose `tenant` is the tenant of that registry. The selected profile wins when it agrees, then the top-level defaults, then the one named profile that agrees. If more than one named profile agrees, set `ANTITHESIS_PROFILE` to select one. Run `snouty docker-credential list` to see the tenant registry of each profile whose repository is on it. The engine starts the helper in any working directory, such as a cloned repository, so the helper does not read a `./.snouty.toml`. Put the registry settings in the global `settings.toml`, or name a settings file with `SNOUTY_SETTINGS_PATH`.
+Snouty owns the credential, so `docker login`, and a `podman login` with a username, fail with a message that tells you to run `snouty login` or to set `ANTITHESIS_API_KEY`. A `podman login` with no username succeeds, because it gets the credential from snouty. `docker logout` and `podman logout` succeed and change nothing: the engine continues to get the credential from snouty.
+
+The engine gives the helper no profile, so snouty uses the profile whose `repository` is on the requested registry, and whose `tenant` is the tenant of that registry. The selected profile wins when it agrees, then the top-level defaults, then the one named profile that agrees. If more than one named profile agrees, set `ANTITHESIS_PROFILE` to select one. The engine starts the helper in any working directory, such as a cloned repository, so the helper does not read a `./.snouty.toml`. Put the registry settings in the global `settings.toml`, or name a settings file with `SNOUTY_SETTINGS_PATH`.
 
 ### Username and password (deprecated)
 

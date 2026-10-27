@@ -333,11 +333,11 @@ fn parse_path_segment(value: &str, what: &str) -> Result<String, String> {
 pub enum DockerCredentialAction {
     /// Print the credential for the server URL on stdin
     Get,
-    /// Read a credential from stdin and keep nothing
+    /// Fail: snouty gives the credential, so a login is not necessary
     Store,
     /// Read a server URL from stdin and erase nothing
     Erase,
-    /// Print the tenant registry of each profile whose repository is on it
+    /// Fail: Docker and Podman do not call it for a "credHelpers" entry
     List,
 }
 

@@ -45,12 +45,30 @@ fn not_found_passes_through_with_its_exit_status() {
         .stderr("");
 }
 
+/// store and list fail with exit status 1, and with the message on stdout,
+/// where the engine shows it.
 #[test]
-fn store_reads_stdin_and_succeeds() {
+fn store_and_list_fail_with_status_1() {
+    let home = TempDir::new().unwrap();
+    for (action, message) in [
+        ("store", "snouty gives the credential for this registry"),
+        ("list", "list is not necessary"),
+    ] {
+        shim(&home)
+            .arg(action)
+            .write_stdin("registry.acme.antithesis.com")
+            .assert()
+            .code(1)
+            .stdout(predicates::str::starts_with(message));
+    }
+}
+
+#[test]
+fn erase_reads_stdin_and_succeeds() {
     let home = TempDir::new().unwrap();
     shim(&home)
-        .arg("store")
-        .write_stdin(r#"{"ServerURL":"registry.acme.antithesis.com","Username":"u","Secret":"s"}"#)
+        .arg("erase")
+        .write_stdin("registry.acme.antithesis.com")
         .assert()
         .success()
         .stdout("");

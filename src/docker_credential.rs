@@ -3,7 +3,6 @@
 //! registry. Docker and Podman run it through the `docker-credential-snouty`
 //! binary.
 
-use std::collections::BTreeMap;
 use std::io::{self, Read};
 use std::path::PathBuf;
 
@@ -75,26 +74,25 @@ pub async fn cmd_docker_credential(
                     secret: &secret,
                 })?
             );
+            Ok(())
         }
-        // Snouty owns the credential, so it keeps and erases nothing. A failure
-        // here would fail `docker login` and `docker logout` for no reason.
-        DockerCredentialAction::Store | DockerCredentialAction::Erase => {
+        // Docker and Podman call store only for a login. Snouty owns the
+        // credential, so store fails and tells why.
+        DockerCredentialAction::Store => Err(user_error(
+            "snouty gives the credential for this registry, so a login is not necessary; to sign in, run `snouty login` or set ANTITHESIS_API_KEY",
+        )),
+        // Erase changes nothing, but it must succeed: when it fails,
+        // `podman logout --all` keeps the credentials of every registry, and
+        // podman 4.9 crashes on `podman logout <registry>`.
+        DockerCredentialAction::Erase => {
             read_stdin()?;
+            Ok(())
         }
-        DockerCredentialAction::List => {
-            let hosts: BTreeMap<String, &str> = active
-                .into_iter()
-                .chain(Settings::resolve_every_profile(
-                    project_settings_path,
-                    DefaultProjectFile::None,
-                )?)
-                .filter_map(|settings| registry::tenant_registry(&settings))
-                .map(|host| (host.to_string(), registry::USERNAME))
-                .collect();
-            println!("{}", serde_json::to_string(&hosts)?);
-        }
+        // Neither engine calls list for a "credHelpers" entry.
+        DockerCredentialAction::List => Err(user_error(
+            "list is not necessary: Docker and Podman do not call it for a \"credHelpers\" entry",
+        )),
     }
-    Ok(())
 }
 
 fn read_stdin() -> Result<String> {

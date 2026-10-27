@@ -738,6 +738,10 @@ fn mock_route(
             } else if let Some(run_id) = rest.strip_suffix("/command") {
                 let (s, b) = mock_route_execute_command(run_id, req_body);
                 (s, b, ndjson, NO_CACHE_CACHE_CONTROL)
+            } else if let Some(run_id) = rest.strip_suffix("/stream") {
+                let (s, b) = mock_route_stream_run_status(run_id, req_body);
+                let ct = if s == 200 { ndjson } else { json };
+                (s, b, ct, NO_CACHE_CACHE_CONTROL)
             } else if let Some(run_id) = rest.strip_suffix("/cancel") {
                 let (s, b) = mock_route_cancel_run(run_id);
                 (s, b, json, NO_CACHE_CACHE_CONTROL)
@@ -941,12 +945,19 @@ fn mock_route_list_usage(query: Option<&str>, empty: bool) -> String {
 /// Run ids that exist on the mock server. Nested endpoints (properties, logs,
 /// events, build logs) 404 for any other id, matching the real API and letting
 /// run-scoped commands disambiguate "run not found" from an empty resource.
-/// `run-empty` and `run-no-events` are recognised separately by their own
-/// routes; `run-stream-error`
-/// is recognised separately by the streaming routes, whose response ends with
-/// a `Stream_Error` line.
+/// The routes of `run-empty` and `run-no-events` know those IDs. The streaming
+/// routes know `run-stream-error`, whose response ends with a `Stream_Error`
+/// line, and the run status stream route also knows `run-stream-cut`.
 fn mock_run_known(run_id: &str) -> bool {
     MOCK_RUNS.iter().any(|(id, ..)| *id == run_id)
+}
+
+/// Whether `run_id` is a `completed` run in `MOCK_RUNS`, the only kind with
+/// properties.
+fn mock_run_completed(run_id: &str) -> bool {
+    MOCK_RUNS
+        .iter()
+        .any(|&(id, status, ..)| id == run_id && status == "completed")
 }
 
 fn mock_run_not_found(run_id: &str) -> (u16, String) {
@@ -956,18 +967,20 @@ fn mock_run_not_found(run_id: &str) -> (u16, String) {
 /// Debugging sessions, and runs that only some specs read, kept out of
 /// `MOCK_RUNS` so the list-oriented specs do not see them: (`run_id`, status,
 /// `sub_status`). A loading session reports `in_progress` without the `Ready`
-/// sub-status, as a new session does on release 64.0. `run-stream-error` is
-/// ready, because `runs exec` reads the run before it executes.
+/// sub-status, as a new session does on release 64.0. `run-stream-error` and
+/// `run-stream-cut` are ready, because `runs exec` reads the run before it
+/// executes.
 const MOCK_HIDDEN_SESSIONS: &[(&str, &str, Option<&str>)] = &[
     ("session-starting", "starting", None),
     ("session-loading", "in_progress", None),
     ("run-stream-error", "in_progress", Some("Ready")),
+    ("run-stream-cut", "in_progress", Some("Ready")),
     (MOCK_OLD_RELEASE_RUN, "in_progress", None),
 ];
 
 /// An in-progress run from a release before `MIN_SEARCH_RELEASE`, whose
-/// events search answers 404. A run from before release 64.0 has no
-/// sub-status, so it is ready.
+/// events search answers 404 and whose run status stream answers 409. A run
+/// from before release 64.0 has no sub-status, so it is ready.
 pub(crate) const MOCK_OLD_RELEASE_RUN: &str = "0df9ac1f5155c14f88ea41f5ad503e07-61-1";
 
 fn mock_route_get_run(run_id: &str) -> (u16, String) {
@@ -1072,7 +1085,7 @@ const MOCK_CANCEL_404_BODY: &str = r#"{"error":"404 Not Found"}"#;
 
 /// The `Stream_Error` line the `run-stream-error` fixture ends its streams
 /// with: the server's shape for a failure that happens after the `200 OK` is
-/// already committed (see `parse_stream_error` in runs.rs).
+/// already committed (see `stream_error_message` in runs.rs).
 const MOCK_STREAM_ERROR_LINE: &str = r#"{"error":"mock stream failure"}"#;
 
 fn mock_route_get_run_build_logs(run_id: &str) -> (u16, String) {
@@ -1212,9 +1225,7 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
 /// run has them; any other run or property gets the bare 404 that orbitinghail
 /// sends on release 65.3.
 fn mock_route_get_run_property(run_id: &str, property_id: &str) -> (u16, String) {
-    let completed = MOCK_RUNS
-        .iter()
-        .any(|&(id, status, ..)| id == run_id && status == "completed");
+    let completed = mock_run_completed(run_id);
     let property = MOCK_COMPLETED_PROPERTIES.into_iter().find(|property| {
         serde_json::from_str::<serde_json::Value>(property).unwrap()["id"] == property_id
     });
@@ -1222,6 +1233,76 @@ fn mock_route_get_run_property(run_id: &str, property_id: &str) -> (u16, String)
         Some(property) if completed => (200, property.to_string()),
         _ => (404, MOCK_BARE_404_BODY.to_string()),
     }
+}
+
+/// The ID the run status stream gives the passing fixture, which has none in
+/// the properties list.
+const MOCK_STREAM_PASSING_ID: &str = "5e3a0c1b9d7f4e2a8c6b0d1f3e5a7c9b";
+
+/// The run status stream. As observed on the antithesis-orbitinghail tenant
+/// (release 65.3), a run that is already final sends only `RUN_FINALIZED`, and
+/// a run created before 65.3 gets a 409. `run-stream-error` fails after its
+/// first change, and `run-stream-cut` ends without `RUN_FINALIZED`.
+fn mock_route_stream_run_status(run_id: &str, req_body: &str) -> (u16, String) {
+    use serde_json::{Value, json};
+
+    if run_id == MOCK_OLD_RELEASE_RUN {
+        return (
+            409,
+            r#"{"message":"Conflict: Streaming is not available for this run. Streaming requires a run created with Antithesis version 65.3 or later. You can still view this run's saved property results."}"#.to_string(),
+        );
+    }
+    let finalized = json!({"type": "RUN_FINALIZED", "data": []});
+    if mock_run_completed(run_id) {
+        return (200, format!("{finalized}\n"));
+    }
+    if !matches!(run_id, "run-2" | "run-stream-error" | "run-stream-cut") {
+        return (404, MOCK_BARE_404_BODY.to_string());
+    }
+
+    let request: Value = serde_json::from_str(req_body).unwrap_or_default();
+    let ids = request["property_filter"].as_array();
+    let types = request["notification_type_filter"].as_array();
+    let [failing, failing_nonevent, undetermined, mut passing] =
+        MOCK_COMPLETED_PROPERTIES.map(|p| serde_json::from_str::<Value>(p).unwrap());
+    // Every property on the stream has an ID (release 65.3 and later).
+    passing["id"] = json!(MOCK_STREAM_PASSING_ID);
+    let mut resolved = undetermined.clone();
+    resolved["status"] = json!("Passing");
+    let mut new_examples = failing.clone();
+    new_examples["examples"] = json!([]);
+    new_examples["counterexamples"] =
+        json!([{"moment": {"input_hash": "-100", "vtime": "45.334635781589895"}}]);
+    // A property can be added already failing, with its counterexample.
+    // NEW_EXAMPLES_FOUND carries a new sample, and the PROPERTIES_FAILED
+    // after it repeats the samples the server keeps, that one included.
+    let changes = [
+        ("NEW_PROPERTIES_ADDED", undetermined),
+        ("NEW_PROPERTIES_ADDED", failing_nonevent),
+        ("NEW_EXAMPLES_FOUND", new_examples),
+        ("PROPERTIES_FAILED", failing),
+        ("PROPERTIES_PASSED", passing),
+        // A verdict with no sample, as the final PROPERTIES_PASSED sends.
+        ("PROPERTIES_PASSED", resolved),
+    ];
+    let mut lines: Vec<String> = changes
+        .into_iter()
+        .filter(|(kind, _)| match types {
+            Some(types) => types.iter().any(|t| t == kind),
+            None => *kind != "NEW_EXAMPLES_FOUND",
+        })
+        .filter(|(_, property)| ids.is_none_or(|ids| ids.contains(&property["id"])))
+        .map(|(kind, property)| json!({"type": kind, "data": [property]}).to_string())
+        .collect();
+    match run_id {
+        "run-stream-error" => {
+            lines.truncate(1);
+            lines.push(MOCK_STREAM_ERROR_LINE.to_string());
+        }
+        "run-stream-cut" => lines.truncate(1),
+        _ => lines.push(finalized.to_string()),
+    }
+    (200, lines.join("\n") + "\n")
 }
 
 /// The text the search route matches a needle against: an event's log text,

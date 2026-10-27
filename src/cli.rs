@@ -478,7 +478,8 @@ pub struct LaunchArgs {
     #[arg(long, value_parser = parse_launch_duration)]
     pub duration: Option<HumanDuration>,
 
-    /// Mark the test run as ephemeral. Ephemeral runs will not appear in future reports as a historic result.
+    /// Mark the test run as ephemeral, so it does not appear in future reports
+    /// as a historic result. A launch without --source is ephemeral already.
     #[arg(long)]
     pub ephemeral: bool,
 
@@ -665,6 +666,17 @@ pub enum RunsCommands {
 
         /// Property ID, from `snouty --json runs properties` or --detail
         property_id: String,
+    },
+
+    /// Stream a run's property changes until the run is final
+    #[command(long_about = HelpPage::RunsStream.cli())]
+    Stream {
+        /// Run ID
+        run_id: String,
+
+        /// Stream only the events of this property (repeatable)
+        #[arg(long = "property", value_name = "PROPERTY_ID")]
+        property_ids: Vec<String>,
     },
 
     /// Stream build logs for a run

@@ -40,7 +40,8 @@ pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
     BuildLogLine, Event, EventProperty, ExecuteCommandRequestSourceRunId as SourceRunId,
     ExecuteCommandRequestSourceSessionId as SourceSessionId, Moment, NonEventProperty,
-    PerformanceTier, Property, PropertyStatus, RunDetail, RunStatus, RunSummary, UsageEntry,
+    PerformanceTier, Property, PropertyStatus, RunDetail, RunStatus, RunStreamNotificationType,
+    RunSummary, UsageEntry,
 };
 
 /// The outcome of a launch or debugging-launch request, and the `--json` output
@@ -77,6 +78,9 @@ pub struct ApiVersion {
 /// tenant `orbitinghail`). `runs search` and `runs events` assume the tenant
 /// meets this; `snouty doctor` checks it.
 pub const MIN_SEARCH_RELEASE: (u64, u64) = (62, 2);
+
+/// Only a run created on this release or later has a run status stream.
+pub const MIN_STREAM_RELEASE: (u64, u64) = (65, 3);
 
 /// The first tenant release whose execute-command API takes `container`.
 /// Earlier releases reject the field, and this release requires it. `runs exec`
@@ -264,10 +268,11 @@ impl RunDetail {
         }
     }
 
-    /// Whether the run's tenant release serves the events-search API: a run
-    /// ID that names no release counts as one that does.
-    pub(crate) fn serves_events_search(&self) -> bool {
-        run_release(&self.run_id).is_none_or(|release| release >= MIN_SEARCH_RELEASE)
+    /// Whether the run was created on `release` or later, as for
+    /// [`MIN_SEARCH_RELEASE`] or [`MIN_STREAM_RELEASE`]: a run ID that names no
+    /// release counts as one that was.
+    pub(crate) fn created_on_or_after(&self, release: (u64, u64)) -> bool {
+        run_release(&self.run_id).is_none_or(|run| run >= release)
     }
 
     pub(crate) fn is_ready_or_terminal(&self) -> bool {
@@ -413,6 +418,35 @@ fn normalize_property(property: Property) -> Result<Property> {
         other => Ok(other),
     }
 }
+
+/// Decode a JSON array of properties, as a stream notification's `data`
+/// carries it, each coerced into its `is_event` variant.
+pub(crate) fn decode_properties(data: &serde_json::Value) -> Result<Vec<Property>> {
+    <Vec<Property> as serde::Deserialize>::deserialize(data)?
+        .into_iter()
+        .map(normalize_property)
+        .collect()
+}
+
+/// The notification types `runs stream` asks for. `NEW_EXAMPLES_FOUND` is
+/// opt-in, so the request names each type. The server always sends
+/// `RUN_FINALIZED`, so the list leaves it out.
+const RUN_STREAM_NOTIFICATIONS: [RunStreamNotificationType; 4] = [
+    RunStreamNotificationType::NewPropertiesAdded,
+    RunStreamNotificationType::PropertiesPassed,
+    RunStreamNotificationType::PropertiesFailed,
+    RunStreamNotificationType::NewExamplesFound,
+];
+
+/// A new notification type fails this match: add it to
+/// [`RUN_STREAM_NOTIFICATIONS`], then here.
+const _: fn(RunStreamNotificationType) = |kind| match kind {
+    RunStreamNotificationType::NewPropertiesAdded
+    | RunStreamNotificationType::PropertiesPassed
+    | RunStreamNotificationType::PropertiesFailed
+    | RunStreamNotificationType::NewExamplesFound
+    | RunStreamNotificationType::RunFinalized => {}
+};
 
 /// Caps connection setup (DNS, TCP, TLS) so no command hangs on an unreachable host.
 /// Callers set no read or total timeout: a connected request may run for a long time.
@@ -1033,6 +1067,26 @@ impl AntithesisApi {
                 Ok((normalized, page.next_cursor))
             }
         })
+    }
+
+    /// Open the run's status stream. It yields NDJSON notifications until
+    /// the run is final.
+    pub async fn stream_run_status(
+        &self,
+        run_id: &str,
+        property_ids: &[String],
+    ) -> Result<JsonStream> {
+        // The spec: an empty `property_filter` suppresses every property.
+        let property_filter = (!property_ids.is_empty()).then(|| property_ids.to_vec());
+        let body = generated::types::RunStatusStreamRequest {
+            notification_type_filter: Some(RUN_STREAM_NOTIFICATIONS.to_vec()),
+            property_filter,
+        };
+        let request = self.client.stream_run_status().run_id(run_id).body(body);
+        match request.send().await {
+            Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
+            Err(err) => Err(format_api_client_error(err).await),
+        }
     }
 
     /// Fetch one property by its ID.

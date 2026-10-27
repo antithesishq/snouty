@@ -155,7 +155,7 @@ pub(super) fn explain_search_error(
     err: color_eyre::eyre::Report,
 ) -> color_eyre::eyre::Report {
     match api_error_status(&err) {
-        Some(404) if !run.serves_events_search() => {
+        Some(404) if !run.created_on_or_after(MIN_SEARCH_RELEASE) => {
             let (major, minor) = MIN_SEARCH_RELEASE;
             err.suggestion(format!(
                 "tenant releases before {major}.{minor} do not serve the events-search \

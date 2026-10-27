@@ -18,8 +18,8 @@ use serde_json::{Map, Value, json};
 use chrono::{DateTime, Utc};
 
 use crate::api::{
-    AntithesisApi, Event, EventProperty, ExecRequest, Moment, NonEventProperty, Property,
-    PropertyStatus, RewarmSource, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
+    AntithesisApi, Event, EventProperty, ExecRequest, MIN_STREAM_RELEASE, Moment, NonEventProperty,
+    Property, PropertyStatus, RewarmSource, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
     SEARCH_DEFAULT_LIMIT, SearchMode,
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs, WaitUntil};
@@ -36,6 +36,7 @@ use crate::time::{HumanDuration, format_local_with_offset};
 use crate::vtime::VTime;
 
 mod event_search;
+mod run_stream;
 
 use event_search::EventOutput;
 
@@ -195,6 +196,10 @@ pub async fn cmd_runs(
             };
             cmd_runs_properties(&run_id, filter, detail, settings, output).await
         }
+        Some(RunsCommands::Stream {
+            run_id,
+            property_ids,
+        }) => cmd_runs_stream(&run_id, property_ids, settings, output).await,
         Some(RunsCommands::BuildLogs { run_id }) => {
             // `--json` on build-logs is the raw passthrough: the records
             // carry no vtime to normalize and no faults to annotate.
@@ -515,6 +520,13 @@ async fn cmd_runs_cancel(
     Ok(())
 }
 
+/// The failure for a run that reports `unknown`: it may never progress.
+fn unknown_status_error(run_id: &str) -> color_eyre::eyre::Report {
+    user_error(format!("run {run_id} reported status \"unknown\""))
+        .note("snouty cannot tell whether this run will still make progress")
+        .suggestion(format!("inspect the run with `snouty runs show {run_id}`"))
+}
+
 /// Poll `get_run` every `poll_interval` until the run reaches the `until`
 /// point, and call `on_wait` with each poll that has not reached it. The first
 /// poll is at once. A run that reports `unknown` fails the wait (see
@@ -546,11 +558,7 @@ async fn wait_for_run(
         };
 
         if run.status == RunStatus::Unknown {
-            return Err(
-                user_error(format!("run {run_id} reported status \"unknown\""))
-                    .note("snouty cannot tell whether this run will still make progress")
-                    .suggestion(format!("inspect the run with `snouty runs show {run_id}`")),
-            );
+            return Err(unknown_status_error(run_id));
         }
         let reached = match until {
             WaitUntil::Ready => run.is_ready_or_terminal(),
@@ -860,7 +868,8 @@ async fn explain_property_error(
     let err = explain_run_scoped_error(api, run_id, err).await;
     if api_error_status(&err) == Some(404) {
         user_error(format!("property not found: {property_id}")).suggestion(format!(
-            "list the run's properties with `snouty runs properties {run_id}`"
+            "find the property's ID with `snouty runs properties {run_id} --detail \
+             --name <substring>`, or with `--group <group>` in place of `--name`"
         ))
     } else {
         err
@@ -1548,6 +1557,120 @@ fn raw_requires_json_error() -> color_eyre::eyre::Report {
         .suggestion("add --json, or drop --raw for the rendered output")
 }
 
+async fn cmd_runs_stream(
+    run_id: &str,
+    property_ids: Vec<String>,
+    settings: &Settings,
+    OutputOptions { json, verbose }: OutputOptions,
+) -> Result<()> {
+    debug!("streaming status for run: {run_id}");
+
+    let api = AntithesisApi::new(settings, verbose)?;
+    let mut stream = open_run_stream(&api, run_id, &property_ids, READY_POLL).await?;
+    // The stream is silent between events, so a spinner shows that it is
+    // open. When stdout goes to a pipe, the next program writes to the same
+    // terminal, and its output would mix with the spinner frames.
+    let spinner = (std::io::stdout().is_terminal() && std::io::stderr().is_terminal())
+        .then(|| spinner(format!("streaming run {run_id}")));
+    // A script reads the current results once the stream is open, so it
+    // misses no event (see the help). Without a spinner, this line says when.
+    if spinner.is_none() {
+        eprintln!("the stream of run {run_id} is open");
+    }
+    let mut denormalizer = run_stream::Denormalizer::default();
+    let result = async {
+        while let Some(line) = stream.try_next().await? {
+            let record = run_stream::Record::parse(line)?;
+            let finalized = matches!(record, run_stream::Record::Finalized);
+            let mut text = String::new();
+            for line in denormalizer.lines(record, run_id) {
+                let line = if json { line.json().to_string() } else { line.render() };
+                text.push_str(&line);
+                text.push('\n');
+            }
+            // One write per notification, so the spinner redraws once.
+            let write = || std::io::stdout().lock().write_all(text.as_bytes());
+            match &spinner {
+                Some(spinner) => spinner.suspend(write)?,
+                None => write()?,
+            }
+            if finalized {
+                return Ok(());
+            }
+        }
+        // Without RUN_FINALIZED, the run can still change.
+        Err(eyre!("the stream ended before the run was final")
+            .note("later events are missing")
+            .suggestion(format!(
+                "read the current results with `snouty runs properties {run_id}`, or stream again with `snouty runs stream {run_id}`"
+            )))
+    }
+    .await;
+    if let Some(spinner) = spinner {
+        spinner.finish_and_clear();
+    }
+    result
+}
+
+/// Open the run's status stream, and wait while the run has none yet. The
+/// server answers 404 until the run's stream opens, minutes after the run
+/// reports that it is ready (observed on the antithesis-orbitinghail tenant,
+/// release 65.3: ready at 73 s, stream at 241 s). A 404 is an error when the
+/// run does not exist, has finished, has status "unknown", or was created
+/// before release 65.3.
+async fn open_run_stream(
+    api: &AntithesisApi,
+    run_id: &str,
+    property_ids: &[String],
+    poll: Duration,
+) -> Result<JsonStream> {
+    let mut waiting: Option<ReadyDisplay> = None;
+    loop {
+        let err = match api.stream_run_status(run_id, property_ids).await {
+            Ok(stream) => {
+                if let Some(waiting) = waiting {
+                    waiting.clear();
+                }
+                return Ok(stream);
+            }
+            Err(err) => err,
+        };
+        if api_error_status(&err) != Some(404) {
+            return Err(err);
+        }
+        match probe_run(api, run_id).await {
+            RunProbe::NotFound => return Err(user_error(format!("run not found: {run_id}"))),
+            RunProbe::ProbeFailed(probe_err) => return Err(probe_err),
+            // A tenant before release 65.3 has no stream route and answers 404
+            // for every run. The run ID names the release that created the run.
+            RunProbe::Exists(run) if !run.created_on_or_after(MIN_STREAM_RELEASE) => {
+                let (major, minor) = MIN_STREAM_RELEASE;
+                return Err(
+                    user_error(format!("run {run_id} has no status stream")).note(format!(
+                        "streaming needs a run created on release {major}.{minor} or later"
+                    )),
+                );
+            }
+            RunProbe::Exists(run) if run.status == RunStatus::Unknown => {
+                return Err(unknown_status_error(run_id));
+            }
+            RunProbe::Exists(run) if run.status.is_terminal() => {
+                return Err(user_error(format!(
+                    "run {run_id} has finished, and has no status stream"
+                ))
+                .suggestion(format!(
+                    "read the results with `snouty runs properties {run_id}`"
+                )));
+            }
+            RunProbe::Exists(_) => {}
+        }
+        waiting
+            .get_or_insert_with(|| ReadyDisplay::new("waiting for the run's stream to open"))
+            .show();
+        tokio::time::sleep(poll).await;
+    }
+}
+
 async fn cmd_runs_build_logs(
     run_id: &str,
     settings: &Settings,
@@ -1765,11 +1888,23 @@ impl RewarmDisplay {
     }
 }
 
-/// What a command shows on stderr while it waits for the run to be ready: a
-/// spinner on a terminal, else a line at once and a line each whole minute.
+/// A spinner on stderr that shows `message` and the time since it started.
+fn spinner(message: impl Into<std::borrow::Cow<'static, str>>) -> ProgressBar {
+    let style =
+        ProgressStyle::with_template("{spinner} {msg} ({elapsed})").expect("the template is valid");
+    let spinner = ProgressBar::new_spinner()
+        .with_style(style)
+        .with_message(message);
+    spinner.enable_steady_tick(Duration::from_millis(120));
+    spinner
+}
+
+/// What a command shows on stderr while it waits: a spinner on a terminal,
+/// else a line at once and a line each whole minute.
 enum ReadyDisplay {
     Spinner(ProgressBar),
     Lines {
+        waiting: &'static str,
         start: Instant,
         /// The whole minutes waited at the last line.
         last_minutes: Option<u64>,
@@ -1777,23 +1912,20 @@ enum ReadyDisplay {
 }
 
 impl ReadyDisplay {
-    fn new() -> Self {
+    fn new(waiting: &'static str) -> Self {
         if !std::io::stderr().is_terminal() {
             return Self::Lines {
+                waiting,
                 start: Instant::now(),
                 last_minutes: None,
             };
         }
-        let style =
-            ProgressStyle::with_template("{spinner} waiting for the run to be ready ({elapsed})")
-                .expect("the template is valid");
-        let spinner = ProgressBar::new_spinner().with_style(style);
-        spinner.enable_steady_tick(Duration::from_millis(120));
-        Self::Spinner(spinner)
+        Self::Spinner(spinner(waiting))
     }
 
     fn show(&mut self) {
         if let Self::Lines {
+            waiting,
             start,
             last_minutes,
         } = self
@@ -1802,7 +1934,7 @@ impl ReadyDisplay {
             let minutes = waited / 60;
             if last_minutes.is_none_or(|last| minutes > last) {
                 let waited = HumanDuration::from_seconds(waited);
-                eprintln!("waiting for the run to be ready ({waited})");
+                eprintln!("{waiting} ({waited})");
                 *last_minutes = Some(minutes);
             }
         }
@@ -1811,11 +1943,16 @@ impl ReadyDisplay {
     /// End the display. A run that stopped instead of becoming ready gets no
     /// line: the error that follows names its status.
     fn finish(self, run: &RunDetail) {
-        if let Self::Spinner(spinner) = &self {
-            spinner.finish_and_clear();
-        }
+        self.clear();
         if run.is_ready() {
             eprintln!("run {} is ready", run.run_id);
+        }
+    }
+
+    /// End the display, and print nothing.
+    fn clear(&self) {
+        if let Self::Spinner(spinner) = self {
+            spinner.finish_and_clear();
         }
     }
 }
@@ -1990,7 +2127,9 @@ const READY_POLL: Duration = Duration::from_secs(10);
 async fn wait_until_ready(api: &AntithesisApi, run_id: &str, poll: Duration) -> Result<RunDetail> {
     let mut waiting: Option<ReadyDisplay> = None;
     let run = wait_for_run(api, run_id, poll, WaitUntil::Ready, |_| {
-        waiting.get_or_insert_with(ReadyDisplay::new).show();
+        waiting
+            .get_or_insert_with(|| ReadyDisplay::new("waiting for the run to be ready"))
+            .show();
     })
     .await?;
     if let Some(waiting) = waiting {
@@ -2116,7 +2255,7 @@ fn normalize_vtime_field(entry: &mut Value, key: &str) -> Option<VTime> {
 }
 
 /// Extract the message from a `Stream_Error` record, the shape every
-/// streaming endpoint (logs, events, build logs) uses to report a
+/// streaming endpoint (logs, events, build logs, run status) uses to report a
 /// server-side failure that happens after the `200 OK` is already committed:
 /// `{"error": "..."}` as its own NDJSON line, usually ending the stream.
 ///
@@ -2128,11 +2267,15 @@ fn normalize_vtime_field(entry: &mut Value, key: &str) -> Option<VTime> {
 /// A *data* record can legitimately carry a top-level `error` field of its
 /// own (an event's payload is arbitrary workload JSON), but data records
 /// always carry their schema's required envelope — `moment` for log/event
-/// records, `timestamp` for build log lines — which `Stream_Error` never has,
-/// so the envelope's absence disambiguates.
+/// records, `timestamp` for build log lines, `type` for run status
+/// notifications — which `Stream_Error` never has, so the envelope's absence
+/// disambiguates.
 fn stream_error_message(entry: &Value) -> Option<&str> {
     let obj = entry.as_object()?;
-    if obj.contains_key("moment") || obj.contains_key("timestamp") {
+    if ["moment", "timestamp", "type"]
+        .iter()
+        .any(|key| obj.contains_key(*key))
+    {
         return None;
     }
     obj.get("error")?.as_str()
@@ -5032,7 +5175,7 @@ mod tests {
             for (i, body) in bodies.into_iter().enumerate() {
                 let route = format!("/api/v0/runs/{}", body["run_id"].as_str().unwrap());
                 let mock = Mock::given(method("GET"))
-                    .and(path(route))
+                    .and(path(&route))
                     .respond_with(ResponseTemplate::new(200).set_body_json(body));
                 let mock = if i + 1 < count {
                     mock.up_to_n_times(1)
@@ -5046,6 +5189,100 @@ mod tests {
         /// Sub-minute polling is fine below the CLI: the 1-minute floor is
         /// clap's, `wait_for_run` takes any interval.
         const FAST_POLL: Duration = Duration::from_millis(10);
+
+        /// The stream of `run_id` answers `404 Resource not found` `misses`
+        /// times, then opens with one `RUN_FINALIZED` line.
+        async fn mount_stream(server: &MockServer, run_id: &str, misses: u64) {
+            let route = format!("/api/v0/runs/{run_id}/stream");
+            if misses > 0 {
+                Mock::given(method("POST"))
+                    .and(path(&route))
+                    .respond_with(
+                        ResponseTemplate::new(404)
+                            .set_body_json(json!({"message": "Resource not found"})),
+                    )
+                    .up_to_n_times(misses)
+                    .mount(server)
+                    .await;
+            }
+            Mock::given(method("POST"))
+                .and(path(route))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string("{\"type\":\"RUN_FINALIZED\",\"data\":[]}\n"),
+                )
+                .mount(server)
+                .await;
+        }
+
+        #[tokio::test]
+        async fn the_stream_opens_after_a_ready_run_answers_404() {
+            let server = MockServer::start().await;
+            mount_get_run_statuses(&server, &["in_progress"]).await;
+            mount_stream(&server, "run-w", 2).await;
+            let api = test_api(&server.uri());
+
+            let mut stream = open_run_stream(&api, "run-w", &[], FAST_POLL)
+                .await
+                .unwrap();
+            let line = stream.try_next().await.unwrap().unwrap();
+
+            assert_eq!(line["type"], "RUN_FINALIZED");
+        }
+
+        #[tokio::test]
+        async fn a_run_with_status_unknown_is_an_error() {
+            let server = MockServer::start().await;
+            mount_get_run_statuses(&server, &["unknown"]).await;
+            mount_stream(&server, "run-w", u64::MAX).await;
+            let api = test_api(&server.uri());
+
+            let err = open_run_stream(&api, "run-w", &[], FAST_POLL)
+                .await
+                .err()
+                .unwrap();
+
+            assert_eq!(err.to_string(), "run run-w reported status \"unknown\"");
+        }
+
+        #[tokio::test]
+        async fn a_run_from_before_the_stream_release_is_an_error() {
+            let server = MockServer::start().await;
+            let run_id = "0df9ac1f5155c14f88ea41f5ad503e07-64-0";
+            let mut body = run_body("in_progress");
+            body["run_id"] = json!(run_id);
+            mount_get_run_bodies(&server, vec![body]).await;
+            mount_stream(&server, run_id, u64::MAX).await;
+            let api = test_api(&server.uri());
+
+            let err = open_run_stream(&api, run_id, &[], FAST_POLL)
+                .await
+                .err()
+                .unwrap();
+
+            assert_eq!(
+                err.to_string(),
+                format!("run {run_id} has no status stream")
+            );
+        }
+
+        #[tokio::test]
+        async fn a_finished_run_without_a_stream_is_an_error() {
+            let server = MockServer::start().await;
+            mount_get_run_statuses(&server, &["completed"]).await;
+            mount_stream(&server, "run-w", u64::MAX).await;
+            let api = test_api(&server.uri());
+
+            let err = open_run_stream(&api, "run-w", &[], FAST_POLL)
+                .await
+                .err()
+                .unwrap();
+
+            assert_eq!(
+                err.to_string(),
+                "run run-w has finished, and has no status stream"
+            );
+        }
 
         #[tokio::test]
         async fn wait_polls_until_the_run_completes() {

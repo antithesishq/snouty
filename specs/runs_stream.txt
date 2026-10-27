@@ -1,0 +1,81 @@
+# snouty runs stream
+#
+# Stream the property events of a run (`POST /api/v0/runs/{run_id}/stream`)
+# until the run is final, one line per event:
+#
+#   property <property id> <name>
+#   sample <property id> example|counterexample <input hash> <vtime>
+#   sample <property id> example|counterexample <value>
+#   verdict <property id> passed|failed
+#   completed <run id>
+#   unknown <type> <json>
+
+# Like every runs command, stream requires an API key.
+! snouty runs stream some-run
+stderr 'No Antithesis credentials found.*'
+
+# A run ID is required.
+! snouty runs stream
+stderr '.*RUN_ID.*'
+
+# An unknown run is an error.
+mock-runs-server
+! snouty runs stream run-does-not-exist
+stderr 'run not found: run-does-not-exist'
+
+# The cases below read the mock's fixtures.
+[staging] skip
+
+# A run in progress streams each event until the run is final. run-2 is the
+# mock's in-progress fixture. A property prints the first time it appears,
+# each sample prints once, and a verdict prints as its own event.
+mock-runs-server
+snouty runs stream run-2
+stderr '^the stream of run run-2 is open$'
+stdout '(?s)\Aproperty +27a7cb0b311c8481c4ce12f3347fadbf +Balance stays nonnegative\nproperty +d2558d97fabac81ba7eb4676e47a0cba558263f8 +Peak memory stays below cap\nsample +d2558d97fabac81ba7eb4676e47a0cba558263f8 +counterexample +1340\nsample +d2558d97fabac81ba7eb4676e47a0cba558263f8 +example +820\nsample +d2558d97fabac81ba7eb4676e47a0cba558263f8 +example +910\nproperty +97cf5fcafa500ed62bf109d81834c5b881a2c854 +Safety: Counter value stays below limit\nsample +97cf5fcafa500ed62bf109d81834c5b881a2c854 +counterexample +\-100 +45\.334635781589895\nsample +97cf5fcafa500ed62bf109d81834c5b881a2c854 +counterexample +\-200 +313\.15126806590706\nsample +97cf5fcafa500ed62bf109d81834c5b881a2c854 +example +\-300 +398\.4898056755774\nverdict +97cf5fcafa500ed62bf109d81834c5b881a2c854 +failed\nproperty +5e3a0c1b9d7f4e2a8c6b0d1f3e5a7c9b +Setup completes\nsample +5e3a0c1b9d7f4e2a8c6b0d1f3e5a7c9b +example +\{"final_counter":42\}\nverdict +5e3a0c1b9d7f4e2a8c6b0d1f3e5a7c9b +passed\nverdict +27a7cb0b311c8481c4ce12f3347fadbf +passed\ncompleted +run\-2\n?\z'
+
+# A non-event property's sample is its value, as JSON.
+mock-runs-server
+snouty runs stream run-2
+stdout '^sample +d2558d97fabac81ba7eb4676e47a0cba558263f8 +counterexample +1340$'
+
+# --property streams only the events of that property.
+mock-runs-server
+snouty runs stream run-2 --property 27a7cb0b311c8481c4ce12f3347fadbf
+stdout '(?s)\Aproperty +27a7cb0b311c8481c4ce12f3347fadbf +Balance stays nonnegative\nverdict +27a7cb0b311c8481c4ce12f3347fadbf +passed\ncompleted +run\-2\n?\z'
+
+# A run that is already final sends only RUN_FINALIZED.
+mock-runs-server
+snouty runs stream run-1
+stdout '\Acompleted +run-1\n?\z'
+
+# --json prints the same events, one JSON object per line, with each vtime as
+# a JSON number.
+mock-runs-server
+snouty --json runs stream run-2
+stdout '^\{"event":"property","property_id":"27a7cb0b311c8481c4ce12f3347fadbf","name":"Balance stays nonnegative"\}$'
+stdout '^\{"event":"sample","property_id":"97cf5fcafa500ed62bf109d81834c5b881a2c854","kind":"counterexample","input_hash":"-100","vtime":45\.334635781589895\}$'
+stdout '^\{"event":"verdict","property_id":"97cf5fcafa500ed62bf109d81834c5b881a2c854","verdict":"failed"\}$'
+stdout '^\{"event":"completed","run_id":"run-2"\}$'
+
+# A server error after the stream opens fails the command. The events before
+# the error still print.
+mock-runs-server
+! snouty runs stream run-stream-error
+stdout '^property +27a7cb0b311c8481c4ce12f3347fadbf'
+stderr 'the server reported an error mid-stream: mock stream failure'
+
+# A stream that ends before RUN_FINALIZED fails, because the run can still
+# change. The error tells how to read the current results.
+mock-runs-server
+! snouty runs stream run-stream-cut
+stdout '^property +27a7cb0b311c8481c4ce12f3347fadbf'
+stderr 'the stream ended before the run was final'
+stderr 'snouty runs properties run-stream-cut'
+
+# A run created before release 65.3 cannot stream. The server's message says
+# why.
+mock-runs-server
+! snouty runs stream 0df9ac1f5155c14f88ea41f5ad503e07-61-1
+stderr '409 Conflict'
+stderr 'Streaming requires a run created with Antithesis version 65.3 or later'

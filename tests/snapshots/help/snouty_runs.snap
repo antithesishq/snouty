@@ -17,6 +17,8 @@ Examples:
   snouty runs properties <run_id>
   snouty runs properties --failing <run_id>
   snouty runs properties <run_id> --name <substring> --detail
+  snouty runs property <run_id> <property_id>
+  snouty runs stream <run_id>
   snouty runs build-logs <run_id>
   snouty runs logs <run_id> <input_hash> [vtime]
   snouty runs events <run_id> -m <query>
@@ -37,6 +39,7 @@ Commands:
   cancel      Cancel a run that has not finished
   properties  List property results for a run
   property    Show one property of a run, by its ID
+  stream      Stream a run's property changes until the run is final
   build-logs  Stream build logs for a run
   logs        Stream moment logs for a run
   exec        Execute a command in a run that is in progress

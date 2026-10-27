@@ -209,25 +209,20 @@ impl Simulation {
             } else {
                 Vec::new()
             })
-            .args(
-                if matches!(mode, "disable-faults" | "fault-pause-failure") {
-                    vec!["--disable-faults"]
-                } else {
-                    Vec::new()
-                },
-            )
-            .args(if mode == "configure-faults" {
+            .args(if matches!(mode, "no-faults" | "fault-pause-failure") {
+                vec!["--fault-tolerance", "none"]
+            } else {
+                Vec::new()
+            })
+            .args(if mode == "legacy-faults" {
+                vec!["--fault-tolerance", "legacy"]
+            } else if mode == "resilient-faults" {
+                vec!["--fault-tolerance", "resilient"]
+            } else if mode == "configure-faults" {
                 vec![
                     "--fault-tolerance",
                     "high_availability",
                     "--fault-exclusions=-db'$(touch injected);\ncache",
-                    "--notebook-flag",
-                    "thread-pause-probability",
-                    "--notebook-flag",
-                    "event-net-partition-groups",
-                    "--custom-scripts",
-                    r#"[{"command":"echo 'hello'; $(whoami)","interval":60,"extra":true}]"#,
-                    "--reset-custom-scripts",
                 ]
             } else {
                 Vec::new()
@@ -1229,9 +1224,18 @@ fn composer_waits_for_setup_complete_and_wait_is_interruptible() {
 }
 
 #[test]
-fn disable_faults_still_starts_composer() {
-    let mut simulation = Simulation::start("disable-faults");
+fn fault_tolerance_none_keeps_faults_paused_and_starts_composer() {
+    let mut simulation = Simulation::start("no-faults");
     simulation.wait_for("compose_started", "yes");
+    let args: Vec<String> = serde_json::from_str(&simulation.read("configure_args")).unwrap();
+    assert_eq!(
+        args,
+        [
+            "/opt/antithesis/bin/fault_scripts/randomization/configure.py",
+            "--fault-tolerance",
+            "none"
+        ]
+    );
     assert_eq!(simulation.read("faults_paused"), "yes");
     simulation.wait_for("rollout_started", "yes");
     kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
@@ -1251,25 +1255,34 @@ fn fault_configuration_is_forwarded_before_compose() {
             "--fault-tolerance",
             "high_availability",
             "--fault-exclusions=-db'$(touch injected);\ncache",
-            "--notebook-flag=thread-pause-probability",
-            "--notebook-flag=event-net-partition-groups",
-            r#"--custom-scripts=[{"command":"echo 'hello'; $(whoami)","interval":60,"extra":true}]"#,
-            "--reset-custom-scripts",
         ]
     );
+    simulation.wait_for("faults_unpaused", "yes");
+    assert!(!simulation.root().join("faults_paused").exists());
     kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
     simulation.finish();
 
-    let mut simulation = Simulation::start("clean-once");
-    simulation.wait_for("compose_started", "yes");
-    let args: Vec<String> = serde_json::from_str(&simulation.read("configure_args")).unwrap();
-    assert_eq!(
-        args,
-        ["/opt/antithesis/bin/fault_scripts/randomization/configure.py"]
-    );
-    simulation.wait_for("faults_unpaused", "yes");
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
-    simulation.finish();
+    for (mode, tolerance) in [
+        ("clean-once", "resilient"),
+        ("legacy-faults", "legacy"),
+        ("resilient-faults", "resilient"),
+    ] {
+        let mut simulation = Simulation::start(mode);
+        simulation.wait_for("compose_started", "yes");
+        let args: Vec<String> = serde_json::from_str(&simulation.read("configure_args")).unwrap();
+        assert_eq!(
+            args,
+            [
+                "/opt/antithesis/bin/fault_scripts/randomization/configure.py",
+                "--fault-tolerance",
+                tolerance
+            ]
+        );
+        simulation.wait_for("faults_unpaused", "yes");
+        assert!(!simulation.root().join("faults_paused").exists());
+        kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+        simulation.finish();
+    }
 }
 
 #[test]

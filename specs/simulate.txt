@@ -21,17 +21,18 @@ stdout 'native host platform'
 stdout 'Requires Linux or macOS and QEMU'
 stdout 'antithesis-guest:v<RELEASE>'
 stdout 'disable-restart'
-stdout 'disable-faults'
+! stdout '\-\-disable-faults'
 stdout '\-\-fault-tolerance <FAULT_TOLERANCE>'
 stdout 'legacy, none, resilient, high_availability'
 stdout '\-\-fault-exclusions <FAULT_EXCLUSIONS>'
-stdout '\-\-notebook-flag <NAME>'
-stdout '\-\-custom-scripts <JSON_ARRAY>'
-stdout '\-\-reset-custom-scripts'
-stdout 'membership only; they do not set live fault values'
+! stdout '\-\-notebook-flag'
+! stdout '\-\-custom-scripts'
+! stdout '\-\-reset-custom-scripts'
+stdout 'Fault tolerance defaults to resilient'
+stdout '\[default: resilient\]'
 ! stdout '\-\-node-kills'
-stdout 'Pause fault injection before Compose starts'
-stdout 'Unpauses fault injection after setup_complete unless --disable-faults is set.'
+stdout '\-\-fault-tolerance none pauses fault injection before Compose starts'
+stdout 'Other groups unpause fault injection after'
 stdout 'Waits for setup_complete before starting test composer'
 stdout 'Forces a new fault configuration before the first rollout'
 stdout 'calls add_entropy every 30 seconds, independent of composer restarts'
@@ -62,21 +63,17 @@ stderr 'invalid value'
 stderr 'unexpected argument'
 ! snouty simulate empty --fault-tolerance unknown
 stderr 'invalid value'
-! snouty simulate empty --custom-scripts '{}'
-stderr 'custom scripts must be a JSON array'
-! snouty simulate empty --custom-scripts '[{"command":"echo hi"}]'
-stderr 'string command and a numeric interval'
-! snouty simulate empty --custom-scripts '[{"command":42,"interval":1}]'
-stderr 'string command and a numeric interval'
-! snouty simulate empty --custom-scripts '[{"command":"echo hi","interval":"1"}]'
-stderr 'string command and a numeric interval'
-! snouty simulate empty --custom-scripts 'invalid'
-stderr 'invalid value'
-! snouty simulate empty --fault-tolerance none --fault-exclusions '' --notebook-flag unpause --custom-scripts '[]' --reset-custom-scripts
+! snouty simulate empty --notebook-flag unpause
+stderr 'unexpected argument'
+! snouty simulate empty --custom-scripts '[]'
+stderr 'unexpected argument'
+! snouty simulate empty --reset-custom-scripts
+stderr 'unexpected argument'
+! snouty simulate empty --fault-tolerance none --fault-exclusions ''
 stderr 'does not contain.*docker-compose.yaml'
 ! snouty simulate --attach simulate-abc --fault-exclusions ''
 stderr 'cannot be used with'
-! snouty simulate --shell --reset-custom-scripts
+! snouty simulate --shell --fault-exclusions x
 stderr 'cannot be used with'
 
 snouty completions bash
@@ -103,8 +100,8 @@ stderr '\-\-shell cannot be combined with \-\-json'
 stderr 'cannot be used with'
 ! snouty simulate --shell --disable-restart --guest-image guest:latest
 stderr 'cannot be used with'
-! snouty simulate --shell --disable-faults --guest-image guest:latest
-stderr 'cannot be used with'
+! snouty simulate empty --disable-faults --guest-image guest:latest
+stderr 'unexpected argument'
 ! snouty simulate --shell --fault-tolerance none --guest-image guest:latest
 stderr 'cannot be used with'
 ! snouty simulate --attach ../other

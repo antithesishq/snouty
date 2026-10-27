@@ -338,33 +338,16 @@ pub(super) async fn run(
         let guest = vm.as_mut().expect("guest booted");
         guest.run_script(SCRATCH_SETUP).await?;
         guest.run_script(PREPARE).await?;
-        let mut configure = String::from(
-            "set -euo pipefail\n/opt/antithesis/bin/fault_scripts/randomization/configure.py",
+        let mut configure = format!(
+            "set -euo pipefail\n/opt/antithesis/bin/fault_scripts/randomization/configure.py --fault-tolerance {}",
+            shell_quote(&args.fault_tolerance.to_string())
         );
-        if let Some(tolerance) = args.fault_tolerance {
-            configure.push_str(&format!(
-                " --fault-tolerance {}",
-                shell_quote(&tolerance.to_string())
-            ));
-        }
         if let Some(exclusions) = &args.fault_exclusions {
             configure.push_str(&format!(" --fault-exclusions={}", shell_quote(exclusions)));
         }
-        for flag in &args.notebook_flag {
-            configure.push_str(&format!(" --notebook-flag={}", shell_quote(flag)));
-        }
-        if let Some(scripts) = &args.custom_scripts {
-            configure.push_str(&format!(
-                " --custom-scripts={}",
-                shell_quote(&scripts.to_string())
-            ));
-        }
-        if args.reset_custom_scripts {
-            configure.push_str(" --reset-custom-scripts");
-        }
         configure.push('\n');
         guest.run_script(&configure).await?;
-        if args.disable_faults {
+        if args.fault_tolerance == super::FaultTolerance::None {
             guest.run_script(DISABLE_FAULTS).await?;
         }
         std::fs::write(run_dir.path().join(ATTACH_READY), "")?;
@@ -429,7 +412,7 @@ pub(super) async fn run(
                     if let Some(event) = events::parse_line(&line)?
                         && matches!(event.kind, events::EventKind::SetupComplete { .. })
                     {
-                        if !args.disable_faults {
+                        if args.fault_tolerance != super::FaultTolerance::None {
                             guest.run_script("fault_injector_update --unpause\n").await?;
                         }
                         guest.run_script("touch /run/antithesis-local-injection/setup-ready\n").await?;

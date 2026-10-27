@@ -50,7 +50,7 @@ impl From<SimulatePlatform> for crate::container::Architecture {
     }
 }
 
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 #[value(rename_all = "snake_case")]
 pub enum FaultTolerance {
     Legacy,
@@ -67,39 +67,6 @@ impl std::fmt::Display for FaultTolerance {
                 .expect("fault group is visible")
                 .get_name(),
         )
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct CustomScripts(serde_json::Value);
-
-impl std::str::FromStr for CustomScripts {
-    type Err = color_eyre::Report;
-
-    fn from_str(value: &str) -> Result<Self> {
-        let scripts: serde_json::Value = serde_json::from_str(value)?;
-        let entries = scripts
-            .as_array()
-            .ok_or_else(|| color_eyre::eyre::eyre!("custom scripts must be a JSON array"))?;
-        for entry in entries {
-            // configure.py also accepts booleans as Python numeric intervals.
-            color_eyre::eyre::ensure!(
-                entry
-                    .get("command")
-                    .is_some_and(serde_json::Value::is_string)
-                    && entry
-                        .get("interval")
-                        .is_some_and(|interval| interval.is_number() || interval.is_boolean()),
-                "each custom script must have a string command and a numeric interval"
-            );
-        }
-        Ok(Self(scripts))
-    }
-}
-
-impl std::fmt::Display for CustomScripts {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
     }
 }
 
@@ -173,31 +140,3 @@ pub async fn cmd_simulate(
 use host::{attach, run, shell};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod host;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use hegel::generators;
-
-    #[hegel::test]
-    fn custom_scripts_preserve_commands_intervals_and_extra_fields(tc: hegel::TestCase) {
-        let command = tc.draw(generators::text());
-        let interval = if tc.draw(generators::booleans()) {
-            serde_json::Value::from(tc.draw(generators::integers::<i64>()))
-        } else {
-            serde_json::Value::from(tc.draw(generators::booleans()))
-        };
-        let extra = tc.draw(generators::text());
-        let value = serde_json::json!([{"command": command, "interval": interval, "extra": extra}]);
-        let scripts: CustomScripts = value.to_string().parse().unwrap();
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&scripts.to_string()).unwrap(),
-            value
-        );
-        for field in ["command", "interval"] {
-            let mut invalid = value.clone();
-            invalid[0].as_object_mut().unwrap().remove(field);
-            assert!(invalid.to_string().parse::<CustomScripts>().is_err());
-        }
-    }
-}

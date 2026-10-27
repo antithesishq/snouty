@@ -1,17 +1,17 @@
-/* Antithesis brand fonts. Each stack falls back to a system font, so the
-   page still renders if assets.anta.design is unreachable. */
+/* Optional fonts prevent a late font swap. System fonts keep text readable
+   if the brand fonts load too slowly or fail. */
 @font-face {
   font-family: "TT Interphases Pro Variable";
   src: url("https://assets.anta.design/fonts/TT_Interphases_Pro_Variable.woff2") format("woff2");
   font-weight: 100 900;
   font-stretch: 75% 100%;
-  font-display: swap;
+  font-display: optional;
 }
 @font-face {
   font-family: Stringer;
   src: url("https://assets.anta.design/fonts/Stringer-Regular-Web.woff2") format("woff2");
   font-weight: 300 400;
-  font-display: swap;
+  font-display: optional;
 }
 
 /* Values from Figma "Anta 0.4 — SaaS Web app" › CLI login: sign-in (node
@@ -116,11 +116,9 @@ body {
   flex-direction: column;
   align-items: center;
   gap: 180px;
-  width: min(367px, 100%);
+  width: 100%;
   margin-inline: auto;
 }
-
-.result .page { width: min(439px, 100%); }
 
 .logo {
   display: block;
@@ -151,8 +149,6 @@ body {
   align-items: center;
   gap: 32px;
 }
-
-.result .header { width: min(271px, 100%); }
 
 .tile {
   position: relative;

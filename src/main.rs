@@ -615,8 +615,10 @@ mod tests {
     fn suppress_broken_pipe_reports_unmarked_broken_pipe() {
         let err = io::Error::new(ErrorKind::BrokenPipe, "write to docker build stdin");
         assert!(suppress_broken_pipe(Err(Report::new(err))).is_err());
-        let bare = io::Error::from(ErrorKind::BrokenPipe);
-        assert!(suppress_broken_pipe(Err(Report::new(bare))).is_err());
+        let bare = || Report::new(io::Error::from(ErrorKind::BrokenPipe));
+        assert!(suppress_broken_pipe(Err(bare())).is_err());
+        let wrapped = bare().wrap_err("failed to write Dockerfile to stdin");
+        assert!(suppress_broken_pipe(Err(wrapped)).is_err());
     }
 
     #[test]

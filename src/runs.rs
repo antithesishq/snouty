@@ -1983,8 +1983,8 @@ impl Drop for ReadyDisplay {
 /// - Release 66.0, a test run: `The requested moment is unavailable in this
 ///   run. Provide source_run_id or source_session_id to restore it.`
 /// - Release 66.0, a debugging session: `The requested moment is not valid in
-///   the original run.` The session rewarms a moment of its own source run
-///   without a source, so only a moment of another run gets this answer.
+///   the original run.` A session rewarms a moment of its own source run, so
+///   only a moment of another run gets this answer.
 const MOMENT_NOT_WARM: [&str; 3] = [
     "Moment not warm",
     "moment is unavailable in this run",
@@ -2002,8 +2002,8 @@ const MOMENT_NOT_WARM: [&str; 3] = [
 /// mean:
 ///
 /// - 404 `Resource not found` (release 64.0): the source does not exist.
-/// - A 400 that `MOMENT_NOT_WARM` matches (releases 64.0 and 66.0): the
-///   moment is cold and there is no source.
+/// - A 400 that `MOMENT_NOT_WARM` matches: the moment is cold and there is
+///   no source.
 /// - Any other 400 (release 64.0): a rewarm did not finish, or the source is
 ///   not the moment's run.
 fn explain_exec_error(

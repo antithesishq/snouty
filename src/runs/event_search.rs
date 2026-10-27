@@ -26,6 +26,7 @@ use crate::api::{AntithesisApi, MIN_SEARCH_RELEASE, RunDetail, SearchMode};
 use crate::error::api_error_status;
 use crate::event_render::EventStreamRenderer;
 use crate::jsonl::JsonStream;
+use crate::stdio;
 
 use super::{ErrorRows, FaultAnnotator, READY_POLL, event_lines, raw_lines, wait_until_ready};
 
@@ -99,7 +100,7 @@ pub(super) async fn check_query(
         api.search_run_events_query(run_id, query, SearchMode::Validate)
     })
     .await?;
-    let mut stdout = std::io::stdout().lock();
+    let mut stdout = stdio::stdout().lock();
     if json {
         writeln!(stdout, "{}", json!({"valid": true}))?;
     } else {
@@ -119,7 +120,7 @@ pub(super) async fn count_query(
         api.count_run_events_query(run_id, query)
     })
     .await?;
-    let mut stdout = std::io::stdout().lock();
+    let mut stdout = stdio::stdout().lock();
     if json {
         writeln!(stdout, "{}", json!({"count": count}))?;
     } else {

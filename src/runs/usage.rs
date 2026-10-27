@@ -121,8 +121,17 @@ struct PeriodUsage {
     /// The last day of the period.
     date: NaiveDate,
     runs: u64,
-    /// Rounded to hundredths, so that a sum shows no floating-point noise.
+    /// The exact sum. The JSON rounds it to hundredths, so that it shows no
+    /// floating-point noise; the table rounds it once, to one decimal.
+    #[serde(serialize_with = "serialize_hundredths")]
     hours: f64,
+}
+
+fn serialize_hundredths<S: serde::Serializer>(
+    hours: &f64,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_f64((hours * 100.0).round() / 100.0)
 }
 
 /// No usage predates the Unix epoch, so no window reaches past it. This also
@@ -273,7 +282,7 @@ pub(super) async fn cmd_runs_usage(
             start: rollup.period_start(date),
             date,
             runs,
-            hours: (hours * 100.0).round() / 100.0,
+            hours,
         })
         .collect();
     print_rows(
@@ -427,6 +436,22 @@ mod tests {
 
     fn date(text: &str) -> NaiveDate {
         text.parse().unwrap()
+    }
+
+    #[test]
+    fn a_period_total_rounds_once() {
+        let period = PeriodUsage {
+            start: date("2026-10-19"),
+            date: date("2026-10-25"),
+            runs: 2,
+            hours: 0.446,
+        };
+        // Rounded to hundredths first, 0.446 would become 0.45 and print 0.5.
+        assert_eq!(format_hours(period.hours), "0.4");
+        assert_eq!(
+            serde_json::to_value(&period).unwrap()["hours"],
+            serde_json::json!(0.45)
+        );
     }
 
     #[test]

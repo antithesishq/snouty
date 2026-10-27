@@ -127,6 +127,8 @@ struct PeriodUsage {
     hours: f64,
 }
 
+// `serialize_with` passes the field by reference.
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn serialize_hundredths<S: serde::Serializer>(
     hours: &f64,
     serializer: S,

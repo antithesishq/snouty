@@ -691,6 +691,7 @@ pub enum RunsCommands {
     /// Stream a run's property changes until the run is final
     Stream {
         /// Run ID
+        #[arg(value_parser = parse_run_id)]
         run_id: String,
 
         /// Stream only the events of this property (repeatable)

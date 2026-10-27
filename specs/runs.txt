@@ -34,6 +34,8 @@ stderr "invalid value '.' for '<RUN_ID>': invalid run ID"
 stderr "invalid value '' for '<RUN_ID>': invalid run ID"
 ! snouty runs property .. p
 stderr "invalid value '..' for '<RUN_ID>': invalid run ID"
+! snouty runs stream ..
+stderr "invalid value '..' for '<RUN_ID>': invalid run ID"
 ! snouty runs property r .
 stderr "invalid value '.' for '<PROPERTY_ID>': invalid property ID"
 ! snouty runs show '..\\..\\x'

@@ -243,12 +243,15 @@ impl RunDetail {
     }
 
     /// The status, and the sub-status after a colon when the run has one. The
-    /// sub-status is lowercase like the status: `in_progress:ready`.
+    /// sub-status is lowercase: `in_progress:ready`.
     pub(crate) fn status_label(&self) -> String {
         match &self.sub_status {
-            Some(sub_status) => {
-                format!("{}:{}", self.status, sub_status.to_string().to_lowercase())
-            }
+            Some(RunDetailSubStatus::Ready) => format!("{}:ready", self.status),
+            Some(RunDetailSubStatus::Other(sub_status)) => format!(
+                "{}:{}",
+                self.status,
+                crate::render::sanitize(&sub_status.to_lowercase())
+            ),
             None => self.status.to_string(),
         }
     }
@@ -3477,6 +3480,7 @@ mod tests {
         let loading = run("Loading");
         assert!(!loading.is_ready());
         assert_eq!(loading.status_label(), "in_progress:loading");
+        assert_eq!(run("Odd\u{1b}").status_label(), "in_progress:odd\\x1B");
         assert_eq!(
             serde_json::to_value(&loading).unwrap()["sub_status"],
             "Loading"

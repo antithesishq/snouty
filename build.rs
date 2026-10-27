@@ -131,7 +131,8 @@ fn generate_api_client(out_dir: &Path) {
 /// `Display` escapes an `Other` value, because the server controls its text.
 /// `FromStr` stays strict, because it parses user input. The
 /// `LAUNCH_ENUM_PARAMS` enums stay closed, because `clap::ValueEnum` needs unit
-/// variants.
+/// variants. An enum that tells the variants of an untagged enum apart stays
+/// closed, because an `Other` would match any variant's tag.
 fn open_string_enums(file: &mut syn::File) {
     let types = file
         .items
@@ -143,6 +144,29 @@ fn open_string_enums(file: &mut syn::File) {
         .map(|(_, items)| items)
         .expect("generated client has no `types` module; update `open_string_enums` in build.rs");
 
+    let discriminators: Vec<syn::Ident> = types
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Enum(item)
+                if item.attrs.iter().any(|attr| {
+                    attr.path().is_ident("serde")
+                        && attr
+                            .parse_args::<syn::Ident>()
+                            .is_ok_and(|arg| arg == "untagged")
+                }) =>
+            {
+                Some(item)
+            }
+            _ => None,
+        })
+        .flat_map(|item| &item.variants)
+        .flat_map(|variant| &variant.fields)
+        .filter_map(|field| match &field.ty {
+            syn::Type::Path(ty) => ty.path.get_ident().cloned(),
+            _ => None,
+        })
+        .collect();
+
     let mut opened = Vec::new();
     for item in types.iter_mut() {
         let syn::Item::Enum(item) = item else {
@@ -153,6 +177,7 @@ fn open_string_enums(file: &mut syn::File) {
             .iter()
             .all(|variant| matches!(variant.fields, syn::Fields::Unit));
         if !is_string_enum
+            || discriminators.contains(&item.ident)
             || LAUNCH_ENUM_PARAMS
                 .iter()
                 .any(|&(_, schema)| item.ident == schema)

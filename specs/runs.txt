@@ -234,7 +234,7 @@ stdout '"run_id".*"$R_run_id"'
 # "(ungrouped)" section.
 mock-runs-server
 snouty runs properties $R_run_id
-stdout '^STAT +✓ +✗ +ID +NAME$'
+[!staging] stdout '^STAT +✓ +✗ +ID +NAME$'
 # Counter has 12 examples and 3 counterexamples.
 [!staging] stdout '^fail +12 +3 +97cf5fcafa500ed62bf109d81834c5b881a2c854 +Counter value stays below limit$'
 # The API sends the name as `Safety: Counter value…`. The heading carries the

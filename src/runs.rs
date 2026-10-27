@@ -2859,7 +2859,10 @@ mod tests {
             .iter()
             .find(|l| l.contains("Setup completes"))
             .unwrap();
-        assert!(setup_row.starts_with("pass"));
+        assert_eq!(
+            setup_row.split_whitespace().take(3).collect::<Vec<_>>(),
+            ["pass", "1", "0"]
+        );
     }
 
     #[test]

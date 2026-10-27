@@ -2212,7 +2212,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "forced fault rerandomization only on the first rollout, then a guest timer "
             "calling add_entropy independently of composer restarts, "
             "--disable-faults keeping faults paused through test composer, startup timeout, "
-            "node kills disabled by default and enabled with --node-kills, "
+            "configure.py options for fault tolerance, exclusions, notebook flag membership, "
+            "custom scripts and reset; notebook flags do not set live values, "
             "interruption, failure status, the runs-compatible human log rendering, and "
             "active-fault annotations in JSON output. It should also show how to attach "
             "a second terminal to a running guest, with the ID printed after boot.",

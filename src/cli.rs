@@ -9,7 +9,7 @@ use color_eyre::eyre::Report;
 use crate::api::{RunStatus, SEARCH_DEFAULT_LIMIT};
 use crate::error::user_error;
 use crate::features::{self, Feature};
-use crate::simulate::SimulatePlatform;
+use crate::simulate::{CustomScripts, FaultTolerance, SimulatePlatform};
 use crate::time::HumanDuration;
 use crate::vtime::VTime;
 
@@ -295,8 +295,12 @@ Forces a new fault configuration before the first rollout. A guest timer then
 calls add_entropy every 30 seconds, independent of composer restarts. Later
 calls use the guest's normal rerandomization chance.
 Unpauses fault injection after setup_complete unless --disable-faults is set.
-Use --node-kills to make the classic fault injector attempt a node kill every
-60 virtual seconds on average. Other faults remain enabled by default.
+Uses the guest's configure.py to apply --fault-tolerance, --fault-exclusions,
+--notebook-flag, --custom-scripts, and --reset-custom-scripts before the first
+rollout. Omitted settings keep their guest values. Notebook flags record fault
+membership only; they do not set live fault values. Use --custom-scripts to
+schedule node kills. --fault-tolerance none selects an empty fault group;
+notebook faults and custom scripts can still add faults.
 TacticsLang does not use this fault configuration.
 Repeats rollouts until interrupted. --disable-restart runs one rollout and
 continues to stream logs. Failed assertions and composer commands do not stop
@@ -602,9 +606,25 @@ pub struct SimulateArgs {
     #[arg(long, conflicts_with = "attach")]
     pub disable_faults: bool,
 
-    /// Add node kills to the classic fault injector schedule
+    /// Fault group for the classic fault injector (omitted: keep the guest setting)
+    #[arg(long, value_enum, conflicts_with = "attach")]
+    pub fault_tolerance: Option<FaultTolerance>,
+
+    /// Fault exclusion regex (an empty string clears the guest setting)
     #[arg(long, conflicts_with = "attach")]
-    pub node_kills: bool,
+    pub fault_exclusions: Option<String>,
+
+    /// Record a notebook flag name without leading -- (repeatable; does not set its value)
+    #[arg(long, value_name = "NAME", conflicts_with = "attach")]
+    pub notebook_flag: Vec<String>,
+
+    /// Append custom fault scripts as a JSON array (command: string, interval: seconds)
+    #[arg(long, value_name = "JSON_ARRAY", conflicts_with = "attach")]
+    pub custom_scripts: Option<CustomScripts>,
+
+    /// Clear existing custom scripts before adding --custom-scripts
+    #[arg(long, conflicts_with = "attach")]
+    pub reset_custom_scripts: bool,
 
     /// Guest memory in MiB (maximum: 15000)
     #[arg(long, default_value_t = 15000, value_parser = clap::value_parser!(u64).range(1..=15000), conflicts_with = "attach")]
@@ -614,7 +634,7 @@ pub struct SimulateArgs {
     #[arg(
         long,
         hide = true,
-        conflicts_with_all = ["config", "disable_restart", "disable_faults", "node_kills", "attach"]
+        conflicts_with_all = ["config", "disable_restart", "disable_faults", "fault_tolerance", "fault_exclusions", "notebook_flag", "custom_scripts", "reset_custom_scripts", "attach"]
     )]
     pub shell: bool,
 

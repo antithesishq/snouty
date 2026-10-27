@@ -202,8 +202,19 @@ impl Simulation {
                     Vec::new()
                 },
             )
-            .args(if mode == "node-kills" {
-                vec!["--node-kills"]
+            .args(if mode == "configure-faults" {
+                vec![
+                    "--fault-tolerance",
+                    "high_availability",
+                    "--fault-exclusions=-db'$(touch injected);\ncache",
+                    "--notebook-flag",
+                    "thread-pause-probability",
+                    "--notebook-flag",
+                    "event-net-partition-groups",
+                    "--custom-scripts",
+                    r#"[{"command":"echo 'hello'; $(whoami)","interval":60,"extra":true}]"#,
+                    "--reset-custom-scripts",
+                ]
             } else {
                 Vec::new()
             })
@@ -1145,27 +1156,49 @@ fn disable_faults_still_starts_composer() {
 }
 
 #[test]
-fn node_kills_are_enabled_only_when_requested() {
-    let expected = serde_json::json!({
-        "custom_scripts": [{
-            "interval": 60.0,
-            "command": "container_status.py --fault-type kill --fault-duration 2.0 1.0"
-        }]
-    });
-    let mut simulation = Simulation::start("node-kills");
+fn fault_configuration_is_forwarded_before_compose() {
+    let mut simulation = Simulation::start("configure-faults");
     simulation.wait_for("compose_started", "yes");
-    let config: serde_json::Value =
-        serde_json::from_str(&simulation.read("node_kills_config")).unwrap();
-    assert_eq!(config, expected);
+    let args: Vec<String> = serde_json::from_str(&simulation.read("configure_args")).unwrap();
+    assert_eq!(
+        args,
+        vec![
+            "/opt/antithesis/bin/fault_scripts/randomization/configure.py",
+            "--fault-tolerance",
+            "high_availability",
+            "--fault-exclusions=-db'$(touch injected);\ncache",
+            "--notebook-flag=thread-pause-probability",
+            "--notebook-flag=event-net-partition-groups",
+            r#"--custom-scripts=[{"command":"echo 'hello'; $(whoami)","interval":60,"extra":true}]"#,
+            "--reset-custom-scripts",
+        ]
+    );
     kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
     simulation.finish();
 
     let mut simulation = Simulation::start("clean-once");
     simulation.wait_for("compose_started", "yes");
-    assert!(!simulation.root().join("node_kills_config").exists());
+    let args: Vec<String> = serde_json::from_str(&simulation.read("configure_args")).unwrap();
+    assert_eq!(
+        args,
+        ["/opt/antithesis/bin/fault_scripts/randomization/configure.py"]
+    );
     simulation.wait_for("faults_unpaused", "yes");
     kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
     simulation.finish();
+}
+
+#[test]
+fn configure_failure_stops_simulation_before_compose() {
+    let mut simulation = Simulation::start("configure-failure");
+    let output = simulation.finish();
+    assert!(!output.status.success());
+    assert!(
+        simulation
+            .read("stderr")
+            .contains("configure.py rejected configuration")
+    );
+    assert!(!simulation.root().join("compose_started").exists());
 }
 
 #[test]

@@ -10,13 +10,7 @@ use std::{fmt, str::FromStr};
 
 use color_eyre::{Section, eyre::Result};
 
-use crate::{
-    api::{HttpClient, normalize_base_url},
-    auth::{AuthenticationInfo, PasswordPolicy},
-    container::registry_host,
-    error::user_error,
-    settings::{Settings, require},
-};
+use crate::{error::user_error, settings::Settings};
 
 /// The basic-auth username for every registry credential.
 pub const USERNAME: &str = "snouty-token";
@@ -40,21 +34,10 @@ impl fmt::Display for RegistryHost {
     }
 }
 
-#[derive(Debug)]
-pub struct ParseRegistryHostError;
-
-impl fmt::Display for ParseRegistryHostError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("the server URL names no host")
-    }
-}
-
-impl std::error::Error for ParseRegistryHostError {}
-
 /// Parses a server URL as a registry client gives it: a bare host, or a URL
 /// with a scheme, a path, or both.
 impl FromStr for RegistryHost {
-    type Err = ParseRegistryHostError;
+    type Err = &'static str;
 
     fn from_str(server_url: &str) -> Result<Self, Self::Err> {
         let server_url = server_url.trim();
@@ -64,7 +47,7 @@ impl FromStr for RegistryHost {
         };
         let host = rest.split('/').next().unwrap_or_default().trim();
         if host.is_empty() {
-            return Err(ParseRegistryHostError);
+            return Err("the server URL names no host");
         }
         Ok(Self(host.to_ascii_lowercase()))
     }
@@ -75,16 +58,14 @@ impl FromStr for RegistryHost {
 /// settings. `None` when the repository is on another registry, or when the
 /// tenant or the repository is not set.
 pub fn tenant_registry(settings: &Settings) -> Option<RegistryHost> {
-    // Snouty pushes `<repository>/<name>`, so a repository that is only a
-    // host is on that host too.
-    let pushed = format!("{}/", settings.repository()?.trim_end_matches('/'));
-    let host: RegistryHost = registry_host(&pushed)?.parse().ok()?;
+    let host: RegistryHost = settings.repository()?.parse().ok()?;
     (host == RegistryHost::for_tenant(settings.tenant()?)).then_some(host)
 }
 
 /// The settings whose tenant registry is `host`, from the `active` settings
-/// (of the selected profile) and the settings of `every` profile (see
-/// [`Settings::resolve_every_profile`]).
+/// (of the selected profile) or else the settings of `every` profile (see
+/// [`Settings::resolve_every_profile`]), which load only when `active` does
+/// not match.
 ///
 /// The active profile wins when it matches. Then the top-level defaults win,
 /// because a named profile that sets no tenant and no repository gets them
@@ -92,13 +73,13 @@ pub fn tenant_registry(settings: &Settings) -> Option<RegistryHost> {
 /// than one does, the choice is the user's, and this is an error.
 pub fn select_profile(
     active: Settings,
-    every: Vec<Settings>,
+    every: impl FnOnce() -> Result<Vec<Settings>>,
     host: &RegistryHost,
 ) -> Result<Option<Settings>> {
     if tenant_registry(&active).as_ref() == Some(host) {
         return Ok(Some(active));
     }
-    let mut matching: Vec<Settings> = every
+    let mut matching: Vec<Settings> = every()?
         .into_iter()
         .filter(|settings| tenant_registry(settings).as_ref() == Some(host))
         .collect();
@@ -117,43 +98,6 @@ pub fn select_profile(
         .suggestion("set ANTITHESIS_PROFILE to the profile to use for this registry"));
     }
     Ok(matching.pop())
-}
-
-/// The basic-auth credential for the tenant registry.
-pub struct RegistryCredential {
-    secret: String,
-}
-
-impl RegistryCredential {
-    pub fn username(&self) -> &'static str {
-        USERNAME
-    }
-
-    pub fn secret(&self) -> &str {
-        &self.secret
-    }
-}
-
-impl fmt::Debug for RegistryCredential {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RegistryCredential")
-            .field("username", &USERNAME)
-            .field("secret", &"[REDACTED]")
-            .finish()
-    }
-}
-
-/// The registry credential of the profile that `settings` selected: its API
-/// key, or a freshly refreshed OAuth access token (see
-/// [`AuthenticationInfo::registry_secret`]). Credentials resolve as for any
-/// other command, so `ANTITHESIS_API_KEY` wins over a stored credential.
-pub async fn credential(settings: &Settings) -> Result<RegistryCredential> {
-    let auth =
-        AuthenticationInfo::for_ambient_configuration(settings.profile(), PasswordPolicy::Reject)?;
-    let base_url = normalize_base_url(require(settings.base_url(), "tenant")?);
-    let http = HttpClient::new(settings, false)?;
-    let secret = auth.registry_secret(http.inner(), &base_url).await?;
-    Ok(RegistryCredential { secret })
 }
 
 #[cfg(test)]
@@ -237,7 +181,7 @@ mod tests {
     /// The name of the selected profile, `defaults` for the top-level
     /// defaults.
     fn selected(active: Settings, every: Vec<Settings>, requested: &str) -> Result<Option<String>> {
-        Ok(select_profile(active, every, &host(requested))?
+        Ok(select_profile(active, || Ok(every), &host(requested))?
             .map(|settings| settings.profile().unwrap_or("defaults").to_owned()))
     }
 

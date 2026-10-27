@@ -144,17 +144,11 @@ async fn run(cli: Cli) -> Result<()> {
             snouty::doctor::cmd_doctor(&settings?, output, args.offline).await
         }
         Commands::DockerCredential { action } => {
-            let result = match settings {
-                Ok(settings) => {
-                    snouty::docker_credential::cmd_docker_credential(
-                        action,
-                        settings,
-                        settings_path,
-                    )
+            let result = async {
+                snouty::docker_credential::cmd_docker_credential(action, settings?, settings_path)
                     .await
-                }
-                Err(err) => Err(err),
-            };
+            }
+            .await;
             if let Err(report) = &result {
                 // The protocol reads the error from stdout. Docker reads
                 // "not found" as an answer, so stderr stays quiet for it.

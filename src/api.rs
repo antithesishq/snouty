@@ -823,6 +823,16 @@ impl AntithesisApi {
         )
     }
 
+    /// The password for the tenant's container registry (see
+    /// [`AuthenticationInfo::registry_secret`]).
+    pub async fn registry_secret(&self) -> Result<String> {
+        self.client
+            .inner()
+            .authn_info
+            .registry_secret(self.client.client(), &self.base_url)
+            .await
+    }
+
     pub async fn launch_test(&self, launcher: &str, params: &Params) -> Result<LaunchResponse> {
         let body = launch_request(params)?;
         let result = self
@@ -1613,12 +1623,6 @@ impl HttpClient {
             }
             Err(err) => eprintln!("* request failed: {}", root_cause(err)),
         }
-    }
-
-    /// The client itself, for a request that has its own log rules, such as
-    /// the OAuth refresh.
-    pub(crate) fn inner(&self) -> &Client {
-        &self.client
     }
 
     pub(crate) fn get(&self, url: impl reqwest::IntoUrl) -> reqwest::RequestBuilder {

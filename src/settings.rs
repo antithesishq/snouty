@@ -285,10 +285,7 @@ impl SettingsFiles {
     fn profile_names(&self) -> Result<BTreeSet<String>> {
         let mut names = BTreeSet::new();
         for table in [&self.project, &self.global].into_iter().flatten() {
-            if let Some(profiles) = table.get(PROFILE_KEY) {
-                let profiles = profiles
-                    .as_table()
-                    .ok_or_else(|| eyre!("`{PROFILE_KEY}` must be a table of profiles"))?;
+            if let Some(profiles) = profiles(table)? {
                 names.extend(profiles.keys().cloned());
             }
         }
@@ -766,6 +763,19 @@ fn resolve_value_with(
     Ok(None)
 }
 
+/// The `profile` table of a settings file. `Ok(None)` when it is absent; an
+/// error when it is present but not a table.
+fn profiles(table: &Table) -> Result<Option<&Table>> {
+    table
+        .get(PROFILE_KEY)
+        .map(|profiles| {
+            profiles
+                .as_table()
+                .ok_or_else(|| eyre!("`{PROFILE_KEY}` must be a table of profiles"))
+        })
+        .transpose()
+}
+
 /// A `[profile.<name>]` value: `profile.<profile>.<key>`. `Ok(None)` when the
 /// `profile` section, the named profile, or the key is absent; an error when
 /// `profile`/`profile.<name>` is present but not a table, or the value fails
@@ -776,12 +786,9 @@ fn profile_value(
     key: &str,
     read: ValueReader,
 ) -> Result<Option<String>> {
-    let Some(profiles) = table.get(PROFILE_KEY) else {
+    let Some(profiles) = profiles(table)? else {
         return Ok(None);
     };
-    let profiles = profiles
-        .as_table()
-        .ok_or_else(|| eyre!("`{PROFILE_KEY}` must be a table of profiles"))?;
     let Some(selected) = profiles.get(profile) else {
         return Ok(None);
     };

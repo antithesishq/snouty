@@ -605,7 +605,7 @@ impl MockApiServer {
 }
 
 /// The access token that the mock `POST /auth/cli/refresh` returns.
-pub const MOCK_REFRESHED_ACCESS_TOKEN: &str = "snouty-mock-refreshed-access-token";
+const MOCK_REFRESHED_ACCESS_TOKEN: &str = "snouty-mock-refreshed-access-token";
 
 /// The `Cache-Control` the real API sends on a cacheable read (observed on
 /// tenant release 61). The response cache admits nothing without such a

@@ -9,22 +9,21 @@ use std::path::PathBuf;
 use color_eyre::eyre::{Context, Report, Result};
 use serde::Serialize;
 
+use crate::api::AntithesisApi;
 use crate::cli::DockerCredentialAction;
 use crate::error::user_error;
 use crate::registry::{self, RegistryHost};
 use crate::settings::Settings;
-
-/// The exact message that Docker reads as "this helper has no credential for
-/// the server", rather than as a failure.
-pub const NOT_FOUND_MESSAGE: &str = "credentials not found in native keychain";
 
 /// No profile has a credential for the requested registry.
 #[derive(Debug)]
 pub struct CredentialsNotFound;
 
 impl std::fmt::Display for CredentialsNotFound {
+    /// The exact message that Docker reads as "this helper has no credential
+    /// for the server", rather than as a failure.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(NOT_FOUND_MESSAGE)
+        f.write_str("credentials not found in native keychain")
     }
 }
 
@@ -57,17 +56,21 @@ pub async fn cmd_docker_credential(
             let host: RegistryHost = server_url
                 .parse()
                 .map_err(|err| user_error(format!("invalid server URL on stdin: {err}")))?;
-            let every = Settings::resolve_every_profile(project_settings_path)?;
+            let every = || Settings::resolve_every_profile(project_settings_path);
             let Some(settings) = registry::select_profile(active, every, &host)? else {
                 return Err(Report::new(CredentialsNotFound));
             };
-            let credential = registry::credential(&settings).await?;
+            // Credentials resolve as for any other command, so
+            // `ANTITHESIS_API_KEY` wins over a stored credential.
+            let secret = AntithesisApi::new(&settings, false)?
+                .registry_secret()
+                .await?;
             println!(
                 "{}",
                 serde_json::to_string(&Credential {
                     server_url,
-                    username: credential.username(),
-                    secret: credential.secret(),
+                    username: registry::USERNAME,
+                    secret: &secret,
                 })?
             );
         }

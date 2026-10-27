@@ -4,8 +4,9 @@
 use assert_cmd::Command;
 use tempfile::TempDir;
 
-/// The shim, in an empty working directory and home, with only `vars` set.
-fn shim(home: &TempDir, vars: &[(&str, &str)]) -> Command {
+/// The shim, in an empty working directory and home, with only the `acme`
+/// tenant settings and an API key set.
+fn shim(home: &TempDir) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_docker-credential-snouty"));
     command
         .current_dir(home.path())
@@ -13,20 +14,16 @@ fn shim(home: &TempDir, vars: &[(&str, &str)]) -> Command {
         .env("HOME", home.path())
         // No PATH: the shim must find the `snouty` next to it.
         .env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1")
-        .envs(vars.iter().copied());
+        .env("ANTITHESIS_TENANT", "acme")
+        .env("ANTITHESIS_REPOSITORY", "registry.acme.antithesis.com/app")
+        .env("ANTITHESIS_API_KEY", "shim-key");
     command
 }
-
-const ACME: [(&str, &str); 3] = [
-    ("ANTITHESIS_TENANT", "acme"),
-    ("ANTITHESIS_REPOSITORY", "registry.acme.antithesis.com/app"),
-    ("ANTITHESIS_API_KEY", "shim-key"),
-];
 
 #[test]
 fn get_prints_the_credential() {
     let home = TempDir::new().unwrap();
-    shim(&home, &ACME)
+    shim(&home)
         .arg("get")
         .write_stdin("registry.acme.antithesis.com")
         .assert()
@@ -39,7 +36,7 @@ fn get_prints_the_credential() {
 #[test]
 fn not_found_passes_through_with_its_exit_status() {
     let home = TempDir::new().unwrap();
-    shim(&home, &ACME)
+    shim(&home)
         .arg("get")
         .write_stdin("registry.example.com")
         .assert()
@@ -51,7 +48,7 @@ fn not_found_passes_through_with_its_exit_status() {
 #[test]
 fn store_reads_stdin_and_succeeds() {
     let home = TempDir::new().unwrap();
-    shim(&home, &ACME)
+    shim(&home)
         .arg("store")
         .write_stdin(r#"{"ServerURL":"registry.acme.antithesis.com","Username":"u","Secret":"s"}"#)
         .assert()

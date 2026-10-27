@@ -364,10 +364,9 @@ pub trait ContainerRuntime: Send + Sync {
 }
 
 /// Write `data` to the stdin of a build. A build that exits before it reads
-/// stdin breaks the pipe, and that is not an error here: its exit status and
-/// stderr say why it stopped. Passing the `BrokenPipe` on would be worse than
-/// losing the reason, because `main` reads a `BrokenPipe` as a closed stdout
-/// and exits 0.
+/// stdin breaks the pipe. Ignore `BrokenPipe`: the build's exit status and
+/// stderr report the failure, and `main` reads `BrokenPipe` as a closed
+/// stdout and exits 0.
 fn write_build_stdin(mut stdin: impl Write, data: &[u8]) -> std::io::Result<()> {
     match stdin.write_all(data) {
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
@@ -1193,9 +1192,6 @@ mod tests {
         }
     }
 
-    /// A build that exits before it reads its stdin breaks the pipe. The write
-    /// must not fail with `BrokenPipe`, which `main` reads as a closed stdout and
-    /// exits 0 on, so that the build's own failure is what the user sees.
     #[test]
     fn write_build_stdin_ignores_a_build_that_exited() {
         let (reader, writer) = std::io::pipe().unwrap();

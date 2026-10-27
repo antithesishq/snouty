@@ -54,14 +54,14 @@ Arguments:
           Run ID
 
   <INPUT_HASH>
-          Input hash of the moment to execute at (with VTIME, picks the
+          Input hash of the moment to execute at (with the vtime, picks the
           timeline)
 
   <VTIME>
           Virtual time of the moment to execute at
 
   [SCRIPT]
-          Bash script to execute; omit it to read the script from stdin
+          Bash script to execute
 
 Options:
       --container <CONTAINER>
@@ -76,7 +76,7 @@ Options:
           the run
 
       --source-session-id <SOURCE_SESSION_ID>
-          Session that a cold moment comes from, in place of --source-run-id
+          Session that a cold moment comes from, in place of the source run
 
       --timeout <TIMEOUT>
           Maximum time the server waits for the script to exit before reporting

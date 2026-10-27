@@ -772,6 +772,24 @@ mod tests {
 
     /// The root's globals are the server's to set, and every tool but debug
     /// is read-only.
+    /// A param's description serves the command line and MCP, so it names
+    /// no flag and no snouty command.
+    #[test]
+    fn param_descriptions_name_no_flags_or_commands() {
+        let flag = regex::Regex::new(r"(^|[\s(`])--[a-z]").unwrap();
+        for spec in snouty().tools.iter() {
+            let properties = spec.tool.input_schema["properties"].as_object().unwrap();
+            for (param, schema) in properties {
+                let description = schema["description"].as_str().unwrap_or_default();
+                assert!(
+                    !flag.is_match(description) && !description.contains("snouty "),
+                    "{}.{param}: {description}",
+                    spec.name
+                );
+            }
+        }
+    }
+
     #[test]
     fn tools_expose_no_globals_and_only_debug_writes() {
         for spec in snouty().tools.iter() {

@@ -545,11 +545,12 @@ pub struct McpArgs {
 #[derive(Args)]
 #[command(group(ArgGroup::new("target").args(["run_id", "session_id"]).required(true)))]
 pub struct DebugArgs {
-    /// Run ID of the test run to debug (preferred; mutually exclusive with --session-id)
+    /// Run ID of the test run to debug (preferred; give it or the session
+    /// ID, not both)
     #[arg(long, value_parser = parse_run_id)]
     pub run_id: Option<String>,
 
-    /// Session ID of the test run to debug (mutually exclusive with --run-id)
+    /// Session ID of the test run to debug (give it or the run ID, not both)
     #[arg(long)]
     pub session_id: Option<String>,
 
@@ -561,7 +562,7 @@ pub struct DebugArgs {
     #[arg(long)]
     pub vtime: VTime,
 
-    /// Debugging session title, shown as the test name in `snouty runs list`
+    /// Debugging session title, shown as the test name in the run list
     #[arg(long)]
     pub title: Option<String>,
 
@@ -628,15 +629,15 @@ pub enum RunsCommands {
         #[arg(value_parser = parse_run_id)]
         run_id: String,
 
-        /// Show passing properties; combine with --failing and --undetermined
+        /// Show passing properties; combine with the other status filters
         #[arg(long)]
         passing: bool,
 
-        /// Show failing properties; combine with --passing and --undetermined
+        /// Show failing properties; combine with the other status filters
         #[arg(long)]
         failing: bool,
 
-        /// Show undetermined properties; combine with --passing and --failing
+        /// Show undetermined properties; combine with the other status filters
         #[arg(long)]
         undetermined: bool,
 
@@ -711,7 +712,8 @@ pub enum RunsCommands {
         #[arg(value_parser = parse_run_id)]
         run_id: String,
 
-        /// Input hash of the moment to execute at (with VTIME, picks the timeline)
+        /// Input hash of the moment to execute at (with the vtime, picks the
+        /// timeline)
         // A moment's input hash is routinely negative.
         #[arg(allow_hyphen_values = true)]
         input_hash: String,
@@ -723,7 +725,7 @@ pub enum RunsCommands {
         // here would swallow a misplaced `--timeout` as the vtime.
         vtime: VTime,
 
-        /// Bash script to execute; omit it to read the script from stdin
+        /// Bash script to execute
         script: Option<String>,
 
         /// Name or ID of the container to execute in; omit it to execute on
@@ -740,8 +742,7 @@ pub enum RunsCommands {
         #[arg(long, conflicts_with = "source_session_id")]
         source_run_id: Option<SourceRunId>,
 
-        /// Session that a cold moment comes from, in place of
-        /// --source-run-id
+        /// Session that a cold moment comes from, in place of the source run
         #[arg(long)]
         source_session_id: Option<SourceSessionId>,
 

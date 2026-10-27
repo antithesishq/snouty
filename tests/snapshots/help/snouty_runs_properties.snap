@@ -35,13 +35,13 @@ Arguments:
 
 Options:
       --passing
-          Show passing properties; combine with --failing and --undetermined
+          Show passing properties; combine with the other status filters
 
       --failing
-          Show failing properties; combine with --passing and --undetermined
+          Show failing properties; combine with the other status filters
 
       --undetermined
-          Show undetermined properties; combine with --passing and --failing
+          Show undetermined properties; combine with the other status filters
 
       --name <NAME>
           Filter properties by name (matched by substring, case-insensitive)

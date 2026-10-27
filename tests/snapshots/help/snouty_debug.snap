@@ -28,11 +28,11 @@ Usage: snouty debug [OPTIONS] --input-hash <INPUT_HASH> --vtime <VTIME> <--run-i
 
 Options:
       --run-id <RUN_ID>
-          Run ID of the test run to debug (preferred; mutually exclusive with
-          --session-id)
+          Run ID of the test run to debug (preferred; give it or the session ID,
+          not both)
 
       --session-id <SESSION_ID>
-          Session ID of the test run to debug (mutually exclusive with --run-id)
+          Session ID of the test run to debug (give it or the run ID, not both)
 
       --input-hash <INPUT_HASH>
           Input hash identifying the moment to debug
@@ -41,7 +41,7 @@ Options:
           Virtual time identifying the moment to debug
 
       --title <TITLE>
-          Debugging session title, shown as the test name in `snouty runs list`
+          Debugging session title, shown as the test name in the run list
 
       --description <DESCRIPTION>
           Debugging session description

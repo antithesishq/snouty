@@ -82,6 +82,32 @@ _Automated check: PASS|FAIL — <detail>_
 (Help stories show an `Exit code:` line under each command block — the `--help`,
 the default output, and every variant.)
 
+**MCP tool help stories** (the `mcp-help-*` slugs) have a different shape.
+They show what an AI agent reads about one `snouty mcp` tool, from a JSON-RPC
+session over stdio, with no terminal:
+
+```
+## Tool list entry
+```json
+{ "name": "runs_logs", "description": "…", "inputSchema": { … }, "annotations": { … } }
+```
+
+## `tool_help {"tool": "runs_logs"}`
+```text
+The help of runs_logs, which runs `snouty --json runs logs`.
+
+<the help page, rendered for MCP>
+```
+isError: `false`
+```
+
+The `tool_help` text is the command's `--help` page, rendered for an MCP
+client. Its first line names the snouty command, on purpose. After it, each arg
+is named by its param in the schema, and each example is a tool call such as
+`runs_logs {"run_id": "<run_id>", "input_hash": "<hash>"}`. The matching
+`help-*` story shows the same page as `--help` prints it, when you want to
+compare the two renders.
+
 **TTY stories** (the `login-*` slugs) have a different shape. `snouty login`
 holds a conversation on a terminal and *writes files*, so instead of a single
 output block these stories show one **frame** per prompt — the screen exactly as
@@ -214,6 +240,27 @@ threshold.
   different sequence on the exit line, and any escape in a story that is not
   `validate-*`. A change there means compose changed its behaviour, which is
   worth knowing.
+
+### MCP tool help stories (`mcp-help-*`)
+The reader is an AI agent that sees only the tool list entry and the
+`tool_help` text. Reinterpret the axes:
+- **Axis A (correctness):** could the agent call the tool correctly from these
+  alone? Every arg is named by its schema param, never by a CLI flag or an
+  uppercase positional. Each example is a valid call of this tool, with params
+  that the schema has. The text says what the tool returns and in what shape
+  (the tool runs the command in JSON mode). Nothing tells the agent to do what
+  a tool call cannot: open a browser, pipe to `jq`, read stdin, or run a
+  command that has no tool. The help and the schema's param descriptions do
+  not contradict each other.
+- **Axis B (follow-up readiness):** does it say which tool to call next, and
+  which fields of the output feed it? For example, a moment from
+  `runs_properties` feeds `runs_logs` and `runs_exec`. A reference to the next
+  step must name a tool, not a CLI command.
+- **Axis C (rendering):** the text is read by a model, not shown on a
+  terminal, so line length does not matter. Judge whether it is concise and
+  free of CLI-only material: terminal tables that the JSON output does not
+  have, color, `--help` pointers, or shell syntax. Text that only a person at
+  a terminal needs is noise here.
 
 ### TTY stories (`login-*`)
 These are `snouty login` runs, so reinterpret the axes — the deliverable is a

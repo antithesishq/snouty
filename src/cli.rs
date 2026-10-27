@@ -4,7 +4,7 @@
 use std::num::NonZeroU64;
 
 use chrono::{DateTime, Utc};
-use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueEnum};
 
 use crate::api::{
     PerformanceTier, RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SourceRunId,
@@ -179,7 +179,6 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Launch a test run
-    #[command(long_about = HelpPage::Launch.cli())]
     Launch(LaunchArgs),
 
     /// Deprecated: use `launch` instead
@@ -187,43 +186,34 @@ pub enum Commands {
     Run(LaunchArgs),
 
     /// Interact with test runs
-    #[command(
-        long_about = HelpPage::Runs.cli(),
-        subcommand_required = false
-    )]
+    #[command(subcommand_required = false)]
     Runs {
         #[command(subcommand)]
         command: Option<RunsCommands>,
     },
 
     /// Launch a debugging session
-    #[command(long_about = HelpPage::Debug.cli())]
     Debug(DebugArgs),
 
     /// Output shell completions
-    #[command(long_about = HelpPage::Completions.cli())]
     Completions {
         /// Shell to generate completions for
         shell: clap_complete::Shell,
     },
 
     /// Validate local Antithesis setup
-    #[command(long_about = HelpPage::Validate.cli())]
     Validate(ValidateArgs),
 
     /// Check environment configuration
-    #[command(long_about = HelpPage::Doctor.cli())]
     Doctor(DoctorArgs),
 
     /// Print version information
     Version,
 
     /// Check for and install updates
-    #[command(long_about = HelpPage::Update.cli())]
     Update(UpdateArgs),
 
     /// Search Antithesis documentation
-    #[command(long_about = HelpPage::Docs.cli())]
     Docs {
         /// Don't check for documentation updates
         // Sorts after each docs subcommand's own flags and before the root
@@ -236,7 +226,6 @@ pub enum Commands {
     },
 
     /// Sign in and store your snouty configuration
-    #[command(long_about = HelpPage::Login.cli())]
     Login {
         #[arg(long, value_parser = validate_non_empty)]
         tenant: Option<String>,
@@ -247,10 +236,32 @@ pub enum Commands {
 
     /// Serve snouty's run, docs and doctor commands to AI agents over MCP
     #[command(
-        hide = !features::is_enabled(Feature::Mcp),
-        long_about = HelpPage::Mcp.cli()
+        hide = !features::is_enabled(Feature::Mcp)
     )]
     Mcp(McpArgs),
+}
+
+/// `snouty`'s clap command, with the long help of each command. Parse with
+/// this, not with `Cli::parse`: the long help is rendered at run time, from
+/// the plain `Cli::command()`, so the derive cannot set it. clap renders a
+/// page only when it builds that page's command.
+pub fn command() -> clap::Command {
+    HelpPage::ALL
+        .into_iter()
+        .fold(Cli::command(), |command, page| {
+            defer_at(command, page.path(), page.set_long_help())
+        })
+}
+
+fn defer_at(
+    command: clap::Command,
+    path: &[&str],
+    deferred: fn(clap::Command) -> clap::Command,
+) -> clap::Command {
+    match path.split_first() {
+        None => command.defer(deferred),
+        Some((name, rest)) => command.mut_subcommand(name, |sub| defer_at(sub, rest, deferred)),
+    }
 }
 
 /// Refuses a gated command while its feature is off. A hidden subcommand is
@@ -309,7 +320,6 @@ fn validate_non_empty(value: &str) -> Result<String, String> {
 #[derive(Subcommand)]
 pub enum DocsCommands {
     /// Search the documentation
-    #[command(long_about = HelpPage::DocsSearch.cli())]
     Search {
         /// Print only matching page paths, one per line
         #[arg(short = 'l', long)]
@@ -328,7 +338,6 @@ pub enum DocsCommands {
         query: Vec<String>,
     },
     /// Print a tree of documentation paths
-    #[command(long_about = HelpPage::DocsTree.cli())]
     Tree {
         /// Limit output to nodes at this depth or shallower
         #[arg(short = 'd', long)]
@@ -339,14 +348,12 @@ pub enum DocsCommands {
     },
 
     /// Show full contents of a documentation page
-    #[command(long_about = HelpPage::DocsShow.cli())]
     Show {
         /// Page path (e.g. "product/writing_tests/controlling_faults")
         path: String,
     },
 
     /// Print the path to the cached SQLite database
-    #[command(long_about = HelpPage::DocsSqlite.cli())]
     Sqlite,
 }
 
@@ -567,22 +574,16 @@ pub struct DebugArgs {
     pub recipients: Option<String>,
 
     /// Extra parameters as key=value pairs (repeatable)
-    #[arg(long = "param")]
+    #[arg(long = "param", id = "param", value_name = "PARAMS")]
     pub params: Vec<KVPair>,
 }
 
 #[derive(Subcommand)]
 pub enum RunsCommands {
     /// List recent runs
-    #[command(
-        long_about = HelpPage::RunsList.cli()
-    )]
     List(RunsListArgs),
 
     /// Show details of a specific run
-    #[command(
-        long_about = HelpPage::RunsShow.cli()
-    )]
     Show {
         /// Run ID
         #[arg(value_parser = parse_run_id)]
@@ -594,7 +595,6 @@ pub enum RunsCommands {
     },
 
     /// Wait until a run is ready or complete
-    #[command(long_about = HelpPage::RunsWait.cli())]
     Wait {
         /// Run ID
         #[arg(value_parser = parse_run_id)]
@@ -616,7 +616,6 @@ pub enum RunsCommands {
     },
 
     /// Cancel a run that has not finished
-    #[command(long_about = HelpPage::RunsCancel.cli())]
     Cancel {
         /// Run ID
         #[arg(value_parser = parse_run_id)]
@@ -624,9 +623,6 @@ pub enum RunsCommands {
     },
 
     /// List property results for a run
-    #[command(
-        long_about = HelpPage::RunsProperties.cli()
-    )]
     Properties {
         /// Run ID
         #[arg(value_parser = parse_run_id)]
@@ -659,7 +655,6 @@ pub enum RunsCommands {
     },
 
     /// Show one property of a run, by its ID
-    #[command(long_about = HelpPage::RunsProperty.cli())]
     Property {
         /// Run ID
         run_id: String,
@@ -669,7 +664,6 @@ pub enum RunsCommands {
     },
 
     /// Stream a run's property changes until the run is final
-    #[command(long_about = HelpPage::RunsStream.cli())]
     Stream {
         /// Run ID
         run_id: String,
@@ -680,9 +674,6 @@ pub enum RunsCommands {
     },
 
     /// Stream build logs for a run
-    #[command(
-        long_about = HelpPage::RunsBuildLogs.cli()
-    )]
     BuildLogs {
         /// Run ID
         #[arg(value_parser = parse_run_id)]
@@ -690,9 +681,6 @@ pub enum RunsCommands {
     },
 
     /// Stream moment logs for a run
-    #[command(
-        long_about = HelpPage::RunsLogs.cli()
-    )]
     Logs {
         /// Run ID
         #[arg(value_parser = parse_run_id)]
@@ -718,9 +706,6 @@ pub enum RunsCommands {
     },
 
     /// Execute a command in a run that is in progress
-    #[command(
-        long_about = HelpPage::RunsExec.cli()
-    )]
     Exec {
         /// Run ID
         #[arg(value_parser = parse_run_id)]
@@ -768,9 +753,6 @@ pub enum RunsCommands {
     },
 
     /// Search events in a run
-    #[command(
-        long_about = HelpPage::RunsEvents.cli()
-    )]
     Events {
         /// Run ID
         #[arg(value_parser = parse_run_id)]
@@ -794,11 +776,9 @@ pub enum RunsCommands {
     },
 
     /// Query events with the event-set DSL
-    #[command(long_about = HelpPage::RunsSearch.cli())]
     Search(RunsSearchArgs),
 
     /// Show the core-hours that recent runs used
-    #[command(long_about = HelpPage::RunsUsage.cli())]
     Usage(RunsUsageArgs),
 }
 
@@ -1274,6 +1254,9 @@ mod tests {
             }
         }
 
-        walk(&<Cli as clap::CommandFactory>::command());
+        let mut cli = command();
+        // A long help is set when its command is built.
+        cli.build();
+        walk(&cli);
     }
 }

@@ -1,0 +1,16 @@
+---
+source: tests/help_snapshots.rs
+---
+List a run's property (assertion) results, one table per group.
+
+Each table is headed by its group; columns are STATUS, ✓, ✗, ID, NAME (failing first). STATUS is pass, fail, or unseen. An unseen property is undetermined: it has not triggered yet, and `undetermined` selects it. ✓ is the example count and ✗ is the counterexample count; large counts are shortened, as in 186k. ID is the property ID, for `snouty runs property`.
+
+Filter by status with `passing`, `failing`, and `undetermined`. Give more than one to show each of those statuses.
+
+Narrow with `name` and/or `group`. Both are case-insensitive substring matches against the relevant fields. To show one property by its ID, use `snouty runs property <run_id> <property_id>`.
+
+Examples:
+  runs_properties {"run_id": "<run_id>", "failing": true}
+  runs_properties {"run_id": "<run_id>", "failing": true, "undetermined": true}
+
+Each property prints as one JSON object on its own line.

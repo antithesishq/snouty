@@ -15,11 +15,13 @@ const PIPE_WIDTH: usize = 80;
 /// command is listed depends on `SNOUTY_UNSTABLE_FEATURES`, which a
 /// developer's shell can set.
 fn features_off() -> clap::Command {
-    Feature::value_variants()
-        .iter()
-        .fold(Cli::command(), |cli, feature| {
-            cli.mut_subcommand(feature.gated_command(), |command| command.hide(true))
-        })
+    let mut cli = snouty::cli::command();
+    // A long help is set when its command is built, wrapped to the terminal.
+    // at_pipe_width sets it again at a fixed width.
+    cli.build();
+    Feature::value_variants().iter().fold(cli, |cli, feature| {
+        cli.mut_subcommand(feature.gated_command(), |command| command.hide(true))
+    })
 }
 
 /// Lays `command` and its subcommands out at [`PIPE_WIDTH`], as `--help`
@@ -99,7 +101,10 @@ fn every_page_is_one_commands_long_help() {
         }
     }
     let mut abouts = Vec::new();
-    collect(&Cli::command(), &mut abouts);
+    let mut cli = snouty::cli::command();
+    // A long help is set when its command is built.
+    cli.build();
+    collect(&cli, &mut abouts);
     for page in HelpPage::ALL {
         let uses = abouts.iter().filter(|about| **about == page.cli()).count();
         assert_eq!(uses, 1, "{page} is the long help of {uses} commands");
@@ -109,4 +114,31 @@ fn every_page_is_one_commands_long_help() {
         HelpPage::ALL.len(),
         "a long help is not a page"
     );
+}
+
+/// What the `tool_help` MCP tool returns for each tool: the MCP render of its
+/// command's help page, under a snapshot named for the tool.
+#[test]
+fn mcp_tool_help() {
+    insta::with_settings!({
+        snapshot_path => "snapshots/mcp_help",
+        prepend_module_to_snapshot => false,
+        omit_expression => true,
+    }, {
+        for tool in snouty::mcp::ToolName::ALL {
+            insta::assert_snapshot!(tool.to_string(), tool.help().mcp());
+        }
+    });
+}
+
+/// An MCP render names each arg by its param, never by its flag, and shows
+/// each example as a tool call.
+#[test]
+fn mcp_tool_help_names_no_flags() {
+    let flag = regex::Regex::new(r"(^|[\s(`])--[a-z]").unwrap();
+    for tool in snouty::mcp::ToolName::ALL {
+        for line in tool.help().mcp().lines() {
+            assert!(!flag.is_match(line), "{tool}: {line}");
+        }
+    }
 }

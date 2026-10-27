@@ -4,11 +4,13 @@ Verifies that your environment is properly configured for Antithesis testing. Ru
 
 snouty prefers an API key (full API access); a username and password is deprecated auth, accepted only by `snouty launch` and `snouty debug`.
 
-When credentials are configured, doctor also contacts the Antithesis API to report the API and tenant versions and confirm connectivity. Pass --offline to skip that network call.
+When credentials are configured, doctor also contacts the Antithesis API to report the API and tenant versions and confirm connectivity. Pass {{ t("--offline")? }} to skip that network call.
 
-Exits non-zero if any required check fails. Pass --json for a machine-readable report (e.g. to gate CI).
+{% if cli %}Exits non-zero if any required check fails. Pass --json for a machine-readable report (e.g. to gate CI).{% else %}The report is JSON. A failed required check marks the result isError.{% endif %}
 
 Examples:
-  snouty doctor
-  snouty doctor --json | jq -r .settings.tenant
-  snouty doctor --offline
+  {{ t("snouty doctor")? }}
+{%- if cli %}
+  {{ t("snouty doctor --json | jq -r .settings.tenant")? }}
+{%- endif %}
+  {{ t("snouty doctor --offline")? }}

@@ -30,16 +30,55 @@ command, named for its path below `snouty` with `_` between the parts:
   the help prints: to the terminal width, up to 100 columns, and to 80
   columns off a terminal. Indent a line that must keep its layout, such as an
   example command or a table row; an indented line never wraps.
-- `build.rs` renders each template with [minijinja](https://docs.rs/minijinja),
-  and `src/help.rs` embeds the renders. A `HelpPage` variant names each page.
-- A template error or an undefined variable fails `cargo build`, and the
-  error names the file.
+- Each template is an [askama](https://askama.rs) template, which the build
+  compiles: a syntax error or a missing include fails `cargo build`. A page
+  renders at run time, for two readers: `--help`, and the `tool_help` MCP
+  tool. A `HelpPage` variant in `src/help.rs` names each page and its
+  command.
+  `cli::command()` sets each page as its command's long help; parse with it,
+  not with `Cli::parse`. clap renders a page only when it builds that
+  command, so a run renders only the pages on its command path.
+- Name each flag, positional arg, command and example with `t()`, never as
+  literal text. `t()` looks the name up in the clap definition of the page's
+  command, and writes it for the reader:
+
+  | template | `--help` | `tool_help` |
+  |---|---|---|
+  | `{{ t("--begin-vtime")? }}` | `--begin-vtime` | `` `begin_vtime` `` |
+  | `{{ t("input_hash")? }}` | `INPUT_HASH` | `` `input_hash` `` |
+  | `` `{{ t("runs search")? }}` `` | `` `runs search` `` | `` `runs_search` `` |
+  | `{{ t("snouty runs wait <run_id> --until ready")? }}` | the command as written | `runs_wait {"run_id": "<run_id>", "until": "ready"}` |
+
+  Write an example that spans lines, or that holds quotes or backslashes, in
+  a filter block, which takes its text as written:
+  `{% filter cmd %}snouty debug \ …{% endfilter %}`.
+
+  A name that does not exist, an example that clap refuses, or a literal
+  value that its parser refuses is an error. A `<placeholder>` can stand for
+  any value. A command with flags but not its required args, such as
+  `runs properties --detail`, names the command, and over MCP its flags drop
+  out. Over MCP, `t()` refuses a
+  command with no tool, an arg that the tool leaves out, and a shell pipeline
+  or redirect.
+- Put text that only one reader needs, such as the `--json` paragraph or a
+  pipeline example, in `{% if cli %}…{% else %}…{% endif %}`. The other
+  reader's branch is not rendered, so `t()` does not check it for that
+  reader. `{{ tool_table() }}` is the list of MCP tools.
+- A line that holds only a block tag (`if`, `else`, `endif`) must not print.
+  Start the tag at the start of the line, and mark it by the line before it:
+  `{%- if cli %}` after a line of text, and `{%~ if cli %}` after a blank
+  line. A tag inside a line of text takes no mark.
+- A `t()` error is a test failure: `tests/help_snapshots.rs` renders every
+  page for both readers, and the error names the page.
 - Put text that two or more pages share in `help/fragments/`, and add it with
-  `{% include "fragments/<name>.txt" %}`. An `{% include %}` line becomes the
-  lines of the included file. The final newline of a page is removed.
+  `{% include "fragments/<name>.txt" %}` on a line of its own, with no mark.
+  askama drops the final newline of each template file, so the line becomes
+  the lines of the included file.
 - `tests/help_snapshots.rs` keeps an [insta](https://insta.rs) snapshot of
   every command's `--help` as it prints off a terminal, in
-  `tests/snapshots/help/`. After you change a template, a flag or a
+  `tests/snapshots/help/`, and of each MCP tool's `tool_help`, in
+  `tests/snapshots/mcp_help/`. A test fails when an MCP render names a flag
+  outside an example. After you change a template, a flag or a
   subcommand, review the snapshot diff with `cargo insta review`, or accept
   every change and read the diff in git:
 

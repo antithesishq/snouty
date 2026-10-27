@@ -1,0 +1,13 @@
+---
+source: tests/help_snapshots.rs
+---
+Print a tree of documentation paths
+
+Builds a directory-like tree from all page paths stored in the documentation database.
+
+Examples:
+  docs_tree
+  docs_tree {"depth": 2}
+  docs_tree {"filter": "sdk"}
+
+The tree prints as one JSON object, {"children": [node, ...]}. Each node has name, the last segment of its path, and path. A node has title when it is a page, and then `docs_show` accepts its path. A node has children, sorted by name, when it has child nodes that `depth` did not remove. When no page matches, the output is {"children": []}.

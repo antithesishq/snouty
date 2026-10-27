@@ -4,9 +4,10 @@ This command is gated behind the `mcp` unstable feature, because its tools and t
 
 Starts a Model Context Protocol server on stdin and stdout. An agent starts `snouty mcp` itself and talks to it over the stdio transport. The server stops when stdin closes, or on Ctrl-C, SIGTERM or SIGHUP. A stop also ends the tool calls in progress.
 
-The tools are runs_list, runs_show, runs_wait, runs_properties, runs_build_logs, runs_logs, runs_search, runs_exec, debug, docs_tree, docs_show, docs_search and doctor. Each tool runs its snouty command in JSON mode and returns what the command prints: stdout, then stderr in a second block when there is any. The params of a tool are the arguments of its command, by name. A command that fails marks the result isError.
+The tools:
+{{ tool_table() }}
 
-All tools but debug are marked read-only. debug starts a debugging session, which uses your tenant's resources. runs_exec runs a bash script from the client in a branch of a run that is in progress, and cannot change the run. doctor runs the local container runtime to check it.
+Each tool runs its snouty command in JSON mode and returns what the command prints: stdout, then stderr in a second block when there is any. The params of a tool are the arguments of its command, by name. A command that fails marks the result isError.
 
 The server sets no time limit and no output limit on a tool call. When the client cancels a call or closes stdin, the server kills the call's command. A command also exits when its server is gone. Up to --max-concurrent-calls tool calls run at the same time.
 

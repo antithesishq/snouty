@@ -1,0 +1,4 @@
+# askama's template directories. `templates/` holds the login page, and
+# `help/` the help pages (src/help.rs).
+[general]
+dirs = ["templates", "help"]

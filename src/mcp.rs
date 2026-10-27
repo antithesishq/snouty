@@ -25,18 +25,29 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::Semaphore;
 
 use crate::cli::Cli;
+use crate::help::HelpPage;
 use crate::vtime::VTime;
 
 /// The server sets this to its own PID on each tool call's child. See
 /// [`exit_with_server`].
 const SERVER_PID_ENV: &str = "SNOUTY_MCP_SERVER_PID";
 
-const INSTRUCTIONS: &str = "Find a run with runs_list, then read it with runs_show and \
-runs_properties, or wait for it with runs_wait. A property example or a run failure names a \
-moment (run_id, input_hash and vtime). runs_logs returns the events of a moment's timeline, \
-runs_search queries the events of a run, runs_exec runs a bash script at a moment of a run that \
-is in progress, and debug starts a debugging session at a moment. docs_search, docs_tree and \
-docs_show read the Antithesis documentation, and doctor checks the local setup.";
+/// Context for the client. The tool list describes each tool, so this does
+/// not.
+const INSTRUCTIONS: &str = "Antithesis tests software in a deterministic simulation that injects \
+faults. A run explores a tree of timelines, and an event, a property example or a failure names \
+one moment of it: a run_id, an input_hash and a vtime. These tools read the runs of an \
+Antithesis tenant, run commands at a moment of a run, and search the Antithesis documentation. \
+tool_help returns the full help of a tool.";
+
+const TOOL_HELP: &str = "tool_help";
+
+/// What `tool_help` does, in the tool list and in the table of
+/// `snouty mcp --help`.
+pub const TOOL_HELP_ABOUT: &str = "Return the full help of a tool";
+
+/// The one param of [`TOOL_HELP`].
+const TOOL_PARAM: &str = "tool";
 
 /// The server's own options. Every tool call passes `settings`, `profile`
 /// and `verbose` to its child. A client cannot set them.
@@ -69,9 +80,10 @@ impl Effect {
     }
 }
 
-/// One row per tool: the variant, the tool name, the path of its snouty
-/// command, its effect, the args that the tool leaves out, and the args that
-/// the tool requires although the command does not.
+/// One row per tool: the variant, which also names its [`HelpPage`], the tool
+/// name, the path of its snouty command, its effect, the args that the tool
+/// leaves out, and the args that the tool requires although the command does
+/// not.
 macro_rules! tools {
     ($(
         $variant:ident => $name:literal, [$($part:literal),+], $effect:ident,
@@ -86,9 +98,15 @@ macro_rules! tools {
             pub const ALL: [ToolName; [$($name),*].len()] = [$(ToolName::$variant,)*];
 
             /// The server runs only these commands.
-            fn path(self) -> &'static [&'static str] {
+            pub(crate) fn path(self) -> &'static [&'static str] {
                 match self {
                     $(ToolName::$variant => &[$($part),+],)*
+                }
+            }
+
+            pub fn help(self) -> HelpPage {
+                match self {
+                    $(ToolName::$variant => HelpPage::$variant,)*
                 }
             }
 
@@ -100,7 +118,7 @@ macro_rules! tools {
 
             /// Args that open a browser, stream with no end, or print human
             /// output only.
-            fn hidden(self) -> &'static [&'static str] {
+            pub(crate) fn hidden(self) -> &'static [&'static str] {
                 match self {
                     $(ToolName::$variant => &[$($hidden),*],)*
                 }
@@ -143,6 +161,28 @@ tools! {
     Doctor => "doctor", ["doctor"], Reads, hidden: [], required: [];
 }
 
+impl ToolName {
+    /// Whether an arg of the tool's command is a param of the tool. The root's
+    /// args (--json, --settings and the rest) are the server's to set.
+    pub(crate) fn is_param(self, arg: &Arg) -> bool {
+        let id = arg.get_id().as_str();
+        id != "help"
+            && !arg.is_hide_set()
+            && !root_arg_ids().iter().any(|root| root == id)
+            && !self.hidden().contains(&id)
+    }
+}
+
+fn root_arg_ids() -> &'static [String] {
+    static IDS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    IDS.get_or_init(|| {
+        Cli::command()
+            .get_arguments()
+            .map(|arg| arg.get_id().to_string())
+            .collect()
+    })
+}
+
 struct ToolSpec {
     name: ToolName,
     args: Vec<Arg>,
@@ -150,10 +190,7 @@ struct ToolSpec {
 }
 
 impl ToolSpec {
-    /// `root_globals` are the ids of the root command's args (--json,
-    /// --settings, …). A built subcommand carries them, and they are the
-    /// server's to set.
-    fn new(name: ToolName, cli: &clap::Command, root_globals: &[String]) -> Self {
+    fn new(name: ToolName, cli: &clap::Command) -> Self {
         let command = name
             .path()
             .iter()
@@ -161,13 +198,7 @@ impl ToolSpec {
             .unwrap_or_else(|| panic!("{name}: no command at {:?}", name.path()));
         let args: Vec<Arg> = command
             .get_arguments()
-            .filter(|arg| {
-                let id = arg.get_id().as_str();
-                id != "help"
-                    && !arg.is_hide_set()
-                    && !root_globals.iter().any(|global| global == id)
-                    && !name.hidden().contains(&id)
-            })
+            .filter(|arg| name.is_param(arg))
             .cloned()
             .collect();
         let about = command
@@ -188,18 +219,18 @@ impl ToolSpec {
     }
 }
 
-fn is_flag(arg: &Arg) -> bool {
+pub(crate) fn is_flag(arg: &Arg) -> bool {
     !arg.get_action().takes_values()
 }
 
-fn takes_many(arg: &Arg) -> bool {
+pub(crate) fn takes_many(arg: &Arg) -> bool {
     matches!(arg.get_action(), clap::ArgAction::Append)
         || arg
             .get_num_args()
             .is_some_and(|range| range.max_values() > 1)
 }
 
-fn value_type(arg: &Arg) -> &'static str {
+pub(crate) fn value_type(arg: &Arg) -> &'static str {
     let parsed = arg.get_value_parser().type_id();
     let integers = [
         TypeId::of::<usize>(),
@@ -408,6 +439,7 @@ fn shell_line(argv: &[OsString]) -> String {
 #[derive(Clone)]
 struct Snouty {
     tools: Arc<[ToolSpec]>,
+    tool_help: Arc<Tool>,
     globals: Arc<Globals>,
     exe: Arc<PathBuf>,
     running: Arc<Semaphore>,
@@ -415,19 +447,16 @@ struct Snouty {
 
 impl Snouty {
     fn new(globals: Globals) -> Result<Self> {
-        let root_globals: Vec<String> = Cli::command()
-            .get_arguments()
-            .map(|arg| arg.get_id().to_string())
-            .collect();
         let mut cli = Cli::command();
         cli.build();
         let tools = ToolName::ALL
             .into_iter()
-            .map(|name| ToolSpec::new(name, &cli, &root_globals))
+            .map(|name| ToolSpec::new(name, &cli))
             .collect();
         let running = Arc::new(Semaphore::new(globals.max_concurrent_calls.get()));
         Ok(Snouty {
             tools,
+            tool_help: Arc::new(tool_help_tool()),
             globals: Arc::new(globals),
             exe: Arc::new(own_exe()?),
             running,
@@ -477,9 +506,9 @@ impl ServerHandler for Snouty {
         _request: Option<PaginatedRequestParams>,
         ctx: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + Send + '_ {
-        let result = ListToolsResult::with_all_items(
-            self.tools.iter().map(|spec| spec.tool.clone()).collect(),
-        );
+        let tools = self.tools.iter().map(|spec| spec.tool.clone());
+        let result =
+            ListToolsResult::with_all_items(tools.chain([(*self.tool_help).clone()]).collect());
         // Protocol 2026-07-28 requires cache hints on a list result, and
         // `with_all_items` leaves them out. These are the values that rmcp's
         // own `#[tool_handler]` list_tools sends.
@@ -494,6 +523,9 @@ impl ServerHandler for Snouty {
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
+        if name == TOOL_HELP {
+            return Some((*self.tool_help).clone());
+        }
         self.tools
             .iter()
             .find(|spec| spec.tool.name == name)
@@ -505,6 +537,12 @@ impl ServerHandler for Snouty {
         request: CallToolRequestParams,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        if request.name == TOOL_HELP {
+            return Ok(match tool_help(request.arguments.unwrap_or_default()) {
+                Ok(help) => text_result(vec![help], false),
+                Err(e) => text_result(vec![format!("invalid params: {e}")], true),
+            });
+        }
         let Some(spec) = self
             .tools
             .iter()
@@ -536,6 +574,50 @@ impl ServerHandler for Snouty {
             () = ctx.ct.cancelled() => Err(ErrorData::internal_error("cancelled", None)),
         }
     }
+}
+
+fn tool_help_tool() -> Tool {
+    let names: Vec<String> = ToolName::ALL.iter().map(ToString::to_string).collect();
+    let schema = json!({
+        "type": "object",
+        "properties": { TOOL_PARAM: { "type": "string", "enum": names } },
+        "required": [TOOL_PARAM],
+        "additionalProperties": false,
+    });
+    let Value::Object(schema) = schema else {
+        unreachable!("the schema is an object")
+    };
+    Tool::new(
+        TOOL_HELP,
+        format!(
+            "{TOOL_HELP_ABOUT}: what its command does, what its params mean, and the shape of \
+             its output."
+        ),
+        Arc::new(schema),
+    )
+    .with_annotations(Effect::Reads.annotations())
+}
+
+/// The MCP render of a tool's help page, after a line that names the tool's
+/// command.
+fn tool_help(mut params: JsonObject) -> Result<String> {
+    let tool = match params.remove(TOOL_PARAM) {
+        Some(Value::String(tool)) => tool,
+        Some(_) => bail!("{TOOL_PARAM}: must be a string"),
+        None => bail!("missing param: {TOOL_PARAM}"),
+    };
+    if let Some(key) = params.keys().next() {
+        bail!("unknown param: {key}");
+    }
+    let name = ToolName::ALL
+        .into_iter()
+        .find(|name| name.to_string() == tool)
+        .ok_or_else(|| eyre!("unknown tool: {tool}"))?;
+    Ok(format!(
+        "The help of {name}, which runs `snouty --json {}`.\n\n{}",
+        name.path().join(" "),
+        name.help().mcp()
+    ))
 }
 
 fn text_result(blocks: Vec<String>, is_error: bool) -> CallToolResponse {
@@ -867,7 +949,7 @@ mod tests {
         assert_eq!(list["additionalProperties"], false);
         let debug = &spec(&snouty, ToolName::Debug).tool.input_schema;
         assert_eq!(debug["required"], json!(["input_hash", "vtime"]));
-        assert_eq!(debug["properties"]["params"]["type"], "array");
+        assert_eq!(debug["properties"]["param"]["type"], "array");
         let wait = &spec(&snouty, ToolName::RunsWait).tool.input_schema;
         assert_eq!(
             wait["properties"]["until"]["enum"],
@@ -880,7 +962,7 @@ mod tests {
     fn debug_params_reach_the_command() {
         let snouty = snouty();
         let call = params(json!({
-            "run_id": "r", "input_hash": "-5", "vtime": 2.5, "params": ["a=b", "c=d"],
+            "run_id": "r", "input_hash": "-5", "vtime": 2.5, "param": ["a=b", "c=d"],
         }));
         let argv = command_args(spec(&snouty, ToolName::Debug), &snouty.globals, call);
         let cli = parse(argv.unwrap());
@@ -890,6 +972,30 @@ mod tests {
         assert_eq!(debug.run_id.as_deref(), Some("r"));
         assert_eq!(debug.input_hash, "-5");
         assert_eq!(debug.params.len(), 2);
+    }
+
+    #[test]
+    fn tool_help_returns_the_help_page_of_each_tool() {
+        for name in ToolName::ALL {
+            let help = tool_help(params(json!({ "tool": name.to_string() }))).unwrap();
+            assert!(help.ends_with(&name.help().mcp()), "{name}");
+        }
+        let help = tool_help(params(json!({ "tool": "runs_logs" }))).unwrap();
+        assert!(
+            help.starts_with("The help of runs_logs, which runs `snouty --json runs logs`."),
+            "{help}"
+        );
+        let cases = [
+            (json!({}), "missing param: tool"),
+            (json!({ "tool": 1 }), "tool: must be a string"),
+            (json!({ "tool": "mcp" }), "unknown tool: mcp"),
+            (json!({ "tool": "doctor", "x": 1 }), "unknown param: x"),
+        ];
+        for (call, error) in cases {
+            let result = tool_help(params(call.clone()));
+            let error_text = result.err().map(|e| e.to_string());
+            assert_eq!(error_text.as_deref(), Some(error), "{call}");
+        }
     }
 
     #[test]

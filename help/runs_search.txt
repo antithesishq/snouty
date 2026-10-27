@@ -1,10 +1,10 @@
 Run an event-set DSL query against a run's events.
 
-For how a run is structured (timelines, input_hash, vtime), read `snouty runs logs --help`.
+For how a run is structured (timelines, input_hash, vtime), read {% if cli %}`snouty runs logs --help`{% else %}the help of runs_logs{% endif %}.
 
-How to read the results: The output is a sample of the matching events, and they can come from different timelines. The server returns at most --limit events (default 50, maximum 999) in no fixed order. When the output reaches the limit, stderr says "Additional results may be available". Then any count or pattern in the output holds for the sample, not for the run: if all 50 events come from node-0, other nodes can still have matches. An event missing from the output can still be in the run. Fewer events than the limit means the query matched only those events. Two events that conflict in one history (for example, two nodes that each win the same election term) are usually on different timelines. To relate an event to others on its own timeline, use fold, with_last, or with_next in the query. To read the whole timeline up to one event, run `snouty runs logs <run_id> <input_hash> <vtime>` with that event's moment.
+How to read the results: The output is a sample of the matching events, and they can come from different timelines. The server returns at most {{ t("--limit")? }} events (default 50, maximum 999) in no fixed order. When the output reaches the limit, stderr says "Additional results may be available". Then any count or pattern in the output holds for the sample, not for the run: if all 50 events come from node-0, other nodes can still have matches. An event missing from the output can still be in the run. Fewer events than the limit means the query matched only those events. Two events that conflict in one history (for example, two nodes that each win the same election term) are usually on different timelines. To relate an event to others on its own timeline, use fold, with_last, or with_next in the query. To read the whole timeline up to one event, run `snouty runs logs <run_id> <input_hash> <vtime>` with that event's moment.
 
-QUERY is a pipeline of dot-separated verbs. The first verb reads all events in the run. Each later verb reads the output of the verb before it.
+{{ t("query")? }} is a pipeline of dot-separated verbs. The first verb reads all events in the run. Each later verb reads the output of the verb before it.
 
 Verbs:
   matches({f: "x"})        keep events whose fields equal every given value
@@ -40,7 +40,7 @@ fold: the reducer takes the state s and one event ev, and returns [events, s']. 
 
 fold, with_last, and with_next cause the API to scan a lot of data before returning. On a large run, the scan can take more than 10 minutes. Use simpler operations when possible.
 
-Query snippets (each is a complete QUERY, ready to paste):
+Query snippets (each is a complete {{ t("query")? }}, ready to paste):
 
   # log text contains a substring
   contains({output_text: "connection refused"})
@@ -79,15 +79,19 @@ Query snippets (each is a complete QUERY, ready to paste):
 {% include "fragments/classified_blocks.txt" %}
 Rows reshaped by map/narrow/fold print as raw JSON.
 
-Add --count to print how many events in the whole run match the query, instead of a sample. No limit applies.
+Add {{ t("--count")? }} to print how many events in the whole run match the query, instead of a sample. No limit applies.
 
 {% include "fragments/ready_wait_search.txt" %}
 
 {% include "fragments/events_search_release.txt" %}
 
+{%~ if cli %}
 Add --json for machine-readable output. Each event prints as one JSON object on its own line:
-  snouty --json runs search <run_id> 'contains({output_text: "err"})' \
-    | jq -r .moment.vtime
+  {% filter cmd %}snouty --json runs search <run_id> 'contains({output_text: "err"})' \
+    | jq -r .moment.vtime{% endfilter %}
 With --count, the count prints as one JSON object:
-  snouty --json runs search <run_id> 'contains({output_text: "err"})' \
-    --count | jq .count
+  {% filter cmd %}snouty --json runs search <run_id> 'contains({output_text: "err"})' \
+    --count | jq .count{% endfilter %}
+{%- else %}
+Each event prints as one JSON object on its own line. With `count`, the count prints as one JSON object.
+{%- endif %}

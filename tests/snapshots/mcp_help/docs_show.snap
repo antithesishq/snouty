@@ -1,0 +1,8 @@
+---
+source: tests/help_snapshots.rs
+---
+Show full contents of a documentation page
+
+Displays the full markdown content of a page by its path. If the exact path is not found, suggests similar pages.
+
+The tool returns the page as markdown text, not JSON.

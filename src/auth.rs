@@ -1322,9 +1322,8 @@ mod tests {
         // Ed25519 signature trailing the JSON claims (no footer). This exercises
         // the real base64url decode and the skip-the-signature parse — unlike the
         // synthetic tokens above whose "signature" is 64 zero bytes.
-        let token = PASETO_V2_PUBLIC_VECTOR;
         assert_eq!(
-            try_get_expiry_from_token(token),
+            try_get_expiry_from_token(PASETO_V2_PUBLIC_VECTOR),
             DateTime::from_timestamp(CANONICAL_VECTOR_EXP_UNIX, 0)
         );
     }
@@ -1334,9 +1333,8 @@ mod tests {
         // Official PASETO 2-S-2 test vector: same claims, but with a footer
         // (`UGFyYWdvbiBJbml0aWF0aXZlIEVudGVycHJpc2Vz` = "Paragon Initiative
         // Enterprises"). Confirms the 4th `.`-delimited segment is ignored.
-        let token = PASETO_V2_PUBLIC_VECTOR_WITH_FOOTER;
         assert_eq!(
-            try_get_expiry_from_token(token),
+            try_get_expiry_from_token(PASETO_V2_PUBLIC_VECTOR_WITH_FOOTER),
             DateTime::from_timestamp(CANONICAL_VECTOR_EXP_UNIX, 0)
         );
     }
@@ -1353,11 +1351,12 @@ mod tests {
     /// endpoint — and a channel that yields the captured request once it arrives.
     fn spawn_oidc_token_server(
         status: &'static str,
-        body: String,
+        body: &str,
     ) -> (String, Receiver<CapturedRequest>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock OIDC server");
         let addr = listener.local_addr().expect("mock server address");
         let (tx, rx) = mpsc::channel();
+        let body = body.to_owned();
 
         thread::spawn(move || {
             let Ok((stream, _)) = listener.accept() else {
@@ -1413,7 +1412,7 @@ mod tests {
     async fn github_actions_oidc_exchange_sends_bearer_token_and_audience() {
         // The endpoint returns the JWT wrapped in a JSON envelope, exactly as
         // GitHub's Actions OIDC endpoint does.
-        let (url, requests) = spawn_oidc_token_server("200 OK", oidc_token_body());
+        let (url, requests) = spawn_oidc_token_server("200 OK", &oidc_token_body());
 
         let token = fetch_github_actions_oidc_credentials(&url, OIDC_REQUEST_TOKEN)
             .await
@@ -1442,10 +1441,8 @@ mod tests {
     async fn github_actions_oidc_exchange_errors_on_non_success_status() {
         // A rejected request token (or any non-2xx) must surface as an error
         // rather than letting the error body be mistaken for a token.
-        let (url, _requests) = spawn_oidc_token_server(
-            "403 Forbidden",
-            r#"{"message":"bad credentials"}"#.to_owned(),
-        );
+        let (url, _requests) =
+            spawn_oidc_token_server("403 Forbidden", r#"{"message":"bad credentials"}"#);
 
         let result = fetch_github_actions_oidc_credentials(&url, OIDC_REQUEST_TOKEN).await;
         assert!(result.is_err(), "expected an error for a 403 response");
@@ -1457,7 +1454,7 @@ mod tests {
         // a second exchange would fail with a connection error. Both
         // `auth_header` calls succeeding proves the token is reused from the
         // cache rather than re-fetched per request.
-        let (url, requests) = spawn_oidc_token_server("200 OK", oidc_token_body());
+        let (url, requests) = spawn_oidc_token_server("200 OK", &oidc_token_body());
 
         let auth = AuthenticationInfo::GithubActionsOidc {
             url,

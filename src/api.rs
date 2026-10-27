@@ -2090,8 +2090,8 @@ mod tests {
     use super::*;
     use crate::params::{ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID};
     use crate::testutils::fake_secrets::{
-        ACCESS_TOKEN, ACCESS_TOKEN_NEW, API_KEY, BASIC_AUTHORIZATION, OAUTH_FLOW_TOKEN, PASSWORD,
-        REFRESH_TOKEN, REFRESH_TOKEN_NEW, SESSION_COOKIE, USERNAME,
+        ACCESS_TOKEN, ACCESS_TOKEN_NEW, API_KEY, BASIC_AUTHORIZATION, MARKER, OAUTH_FLOW_TOKEN,
+        PASSWORD, REFRESH_TOKEN, REFRESH_TOKEN_NEW, SESSION_COOKIE, USERNAME,
     };
     use hegel::{Generator, generators};
     use std::sync::Arc;
@@ -2197,7 +2197,7 @@ mod tests {
 
         assert!(out.contains("POST http://example.com/api/v1/launch"));
         assert!(out.contains("authorization: Bearer [redacted]\n"));
-        assert!(!out.contains(&ACCESS_TOKEN[..4]));
+        assert!(!out.contains(MARKER));
         assert!(out.contains("content-type: application/json"));
         assert!(out.contains(r#"{"hello":"world"}"#));
     }
@@ -2236,7 +2236,7 @@ mod tests {
         format_request(&request, &defaults, LoggedBody::Shown, &mut out);
 
         assert!(out.contains("authorization: Basic [redacted]\n"));
-        assert!(!out.contains(&BASIC_AUTHORIZATION[6..10]));
+        assert!(!out.contains(BASIC_AUTHORIZATION.strip_prefix("Basic ").unwrap()));
     }
 
     #[test]

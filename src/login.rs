@@ -1106,7 +1106,9 @@ mod tests {
     use std::thread;
 
     use crate::settings::Settings;
-    use crate::testutils::fake_secrets;
+    use crate::testutils::{
+        api_key_credentials, api_key_line, fake_secrets, oauth_credentials, password_credentials,
+    };
     use color_eyre::eyre::Result;
 
     enum Answer {
@@ -1434,30 +1436,12 @@ mod tests {
         Ok(())
     }
 
-    /// A username and password as an older snouty stored them.
-    fn stored_password() -> String {
-        format!(
-            "[default]\ntype = \"Password\"\nusername = \"puser\"\npassword = \"{}\"\n",
-            fake_secrets::PASSWORD
-        )
-    }
-
-    /// A `credentials.toml` that holds `api_key` in `[default]`.
-    fn api_key_credentials(api_key: &str) -> String {
-        format!("[default]\ntype = \"ApiKey\"\napi_key = \"{api_key}\"\n")
-    }
-
-    /// The `credentials.toml` line that stores `api_key`.
-    fn api_key_line(api_key: &str) -> String {
-        format!(r#"api_key = "{api_key}""#)
-    }
-
     /// Login reads a username and password an older snouty stored, asks for an
     /// API key, asks to replace them, and replaces them on a yes.
     #[tokio::test]
     async fn login_replaces_a_stored_username_and_password_with_an_api_key() -> Result<()> {
         let env = LoginEnv::new();
-        env.seed(".config/snouty/credentials.toml", &stored_password());
+        env.seed(".config/snouty/credentials.toml", &password_credentials());
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("mytenant")
@@ -1486,7 +1470,7 @@ mod tests {
     #[tokio::test]
     async fn login_keeps_a_stored_password_when_the_user_declines() -> Result<()> {
         let env = LoginEnv::new();
-        env.seed(".config/snouty/credentials.toml", &stored_password());
+        env.seed(".config/snouty/credentials.toml", &password_credentials());
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("mytenant")
@@ -1497,7 +1481,7 @@ mod tests {
 
         login(None, &settings, &prompter).await?;
 
-        assert_eq!(env.credentials(), stored_password());
+        assert_eq!(env.credentials(), password_credentials());
         assert!(env.settings().contains(r#"tenant = "mytenant""#));
         Ok(())
     }
@@ -1507,7 +1491,7 @@ mod tests {
     #[tokio::test]
     async fn login_does_not_ask_to_replace_another_profiles_credential() -> Result<()> {
         let env = LoginEnv::new();
-        env.seed(".config/snouty/credentials.toml", &stored_password());
+        env.seed(".config/snouty/credentials.toml", &password_credentials());
         let settings = env.resolve_settings(Some("prod"))?;
         let prompter = Script::default()
             .input("ptenant")
@@ -1752,10 +1736,7 @@ mod tests {
     #[tokio::test]
     async fn login_replaces_a_blank_stored_api_key_without_asking() -> Result<()> {
         let env = LoginEnv::new();
-        env.seed(
-            ".config/snouty/credentials.toml",
-            "[default]\ntype = \"ApiKey\"\napi_key = \"\"\n",
-        );
+        env.seed(".config/snouty/credentials.toml", &api_key_credentials(""));
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("mytenant")
@@ -1774,21 +1755,15 @@ mod tests {
         Ok(())
     }
 
-    /// OAuth tokens as a single sign-on login stores them.
-    fn stored_oauth() -> String {
-        format!(
-            "[default]\ntype = \"OAuth\"\nantithesis_token = \"{}\"\nrefresh_token = \"{}\"\n",
-            fake_secrets::ACCESS_TOKEN,
-            fake_secrets::REFRESH_TOKEN
-        )
-    }
-
     /// A new single sign-on replaces stored OAuth tokens without a question,
     /// but an API key that would replace them still asks.
     #[test]
     fn only_a_new_sign_in_replaces_stored_oauth_tokens_without_asking() -> Result<()> {
         let env = LoginEnv::new();
-        env.seed(".config/snouty/credentials.toml", &stored_oauth());
+        env.seed(
+            ".config/snouty/credentials.toml",
+            &oauth_credentials(Some(fake_secrets::REFRESH_TOKEN)),
+        );
         let stored = AuthenticationInfo::stored_for_profile(None)?;
         let stored = stored.as_ref().map(AttributedValue::value);
 

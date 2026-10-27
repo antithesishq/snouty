@@ -37,6 +37,37 @@ pub fn available_runtimes() -> Vec<Box<dyn ContainerRuntime>> {
     runtimes
 }
 
+/// A `credentials.toml` that holds `api_key` in `[default]`.
+pub fn api_key_credentials(api_key: &str) -> String {
+    format!("[default]\ntype = \"ApiKey\"\napi_key = \"{api_key}\"\n")
+}
+
+/// A `credentials.toml` that holds a username and [`fake_secrets::PASSWORD`]
+/// in `[default]`, as an older snouty stored them.
+pub fn password_credentials() -> String {
+    format!(
+        "[default]\ntype = \"Password\"\nusername = \"puser\"\npassword = \"{}\"\n",
+        fake_secrets::PASSWORD
+    )
+}
+
+/// A `credentials.toml` that holds [`fake_secrets::ACCESS_TOKEN`] and
+/// `refresh_token` in `[default]`.
+pub fn oauth_credentials(refresh_token: Option<&str>) -> String {
+    let refresh_line = refresh_token
+        .map(|token| format!("refresh_token = \"{token}\"\n"))
+        .unwrap_or_default();
+    format!(
+        "[default]\ntype = \"OAuth\"\nantithesis_token = \"{}\"\n{refresh_line}",
+        fake_secrets::ACCESS_TOKEN
+    )
+}
+
+/// The `credentials.toml` line that stores `api_key`.
+pub fn api_key_line(api_key: &str) -> String {
+    format!(r#"api_key = "{api_key}""#)
+}
+
 /// Points tests at a registry the environment already runs, instead of each one
 /// starting its own (see `scripts/setup-test-images.sh`, which CI runs).
 ///
@@ -515,7 +546,6 @@ impl MockApiServer {
         let addr = listener.local_addr().unwrap();
         let url = format!("http://{addr}");
         let token = fake_secrets::MOCK_SERVER_API_KEY.to_string();
-        let expected_token = fake_secrets::MOCK_SERVER_API_KEY.to_string();
 
         let handle = thread::spawn(move || {
             for mut stream in listener.incoming().flatten() {
@@ -533,7 +563,7 @@ impl MockApiServer {
                             NO_CACHE_CACHE_CONTROL,
                         )
                     } else if !path.starts_with("/auth/cli/")
-                        && !mock_check_auth(&request, &expected_token)
+                        && !mock_check_auth(&request, fake_secrets::MOCK_SERVER_API_KEY)
                     {
                         (
                             401,

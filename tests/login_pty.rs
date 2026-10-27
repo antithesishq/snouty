@@ -26,7 +26,9 @@ use std::time::Duration;
 use expectrl::Expect;
 use expectrl::process::unix::WaitStatus;
 use expectrl::session::OsSession;
-use snouty::testutils::fake_secrets;
+use snouty::testutils::{
+    api_key_credentials, api_key_line, fake_secrets, oauth_credentials, password_credentials,
+};
 use support::pty::PtyCommand;
 
 /// How long to wait for any single expected string. Generous for CI; a healthy
@@ -46,24 +48,6 @@ fn row_of_stars() -> String {
 
 /// The `GET /auth/cli/config` body that reports OAuth disabled for the CLI.
 const OAUTH_DISABLED: &str = r#"{"port_strategy":"disabled"}"#;
-
-/// A username and password as an older snouty stored them.
-fn stored_password() -> String {
-    format!(
-        "[default]\ntype = \"Password\"\nusername = \"puser\"\npassword = \"{}\"\n",
-        fake_secrets::PASSWORD
-    )
-}
-
-/// The `credentials.toml` line that stores [`fake_secrets::API_KEY`].
-fn api_key_line() -> String {
-    format!(r#"api_key = "{}""#, fake_secrets::API_KEY)
-}
-
-/// [`fake_secrets::API_KEY`], typed and then submitted with Enter.
-fn api_key_enter() -> String {
-    format!("{}\r", fake_secrets::API_KEY)
-}
 
 const CREDENTIALS_FILE: &str = ".config/snouty/credentials.toml";
 
@@ -280,10 +264,7 @@ fn accepts_an_api_key_longer_than_the_terminal_width() {
 #[test]
 fn bare_enter_keeps_the_stored_api_key() {
     let stored = fake_secrets::API_KEY_STORED;
-    let (home, mut session) = start_login_with(&[(
-        CREDENTIALS_FILE,
-        &format!("[default]\ntype = \"ApiKey\"\napi_key = \"{stored}\"\n"),
-    )]);
+    let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &api_key_credentials(stored))]);
 
     // The hint: stars, then the key's own last characters. Antithesis keys
     // share a constant prefix, so the tail is what tells two of them apart.
@@ -311,18 +292,21 @@ fn bare_enter_without_a_stored_key_asks_again() {
     expect(&mut session, "Please enter your API Key");
     send(&mut session, "\r");
     expect(&mut session, EMPTY_REFUSED);
-    send(&mut session, &api_key_enter());
+    send(&mut session, &format!("{}\r", fake_secrets::API_KEY));
     finish(session);
 
     let creds = credentials(home.path());
-    assert!(creds.contains(&api_key_line()), "{creds}");
+    assert!(
+        creds.contains(&api_key_line(fake_secrets::API_KEY)),
+        "{creds}"
+    );
 }
 
 /// A bare Enter does not replace a stored username and password with an empty
 /// key: the prompt refuses it, and Esc then keeps the password.
 #[test]
-fn bare_enter_keeps_a_stored_password() {
-    let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &stored_password())]);
+fn bare_enter_keeps_a_password_credentials() {
+    let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &password_credentials())]);
     expect(&mut session, "Please enter your API Key");
     send(&mut session, "\r");
     expect(&mut session, EMPTY_REFUSED);
@@ -330,20 +314,17 @@ fn bare_enter_keeps_a_stored_password() {
     let seen = finish(session);
 
     assert!(seen.contains(RETAINED), "{seen}");
-    assert_eq!(credentials(home.path()), stored_password());
+    assert_eq!(credentials(home.path()), password_credentials());
 }
 
 /// Login asks before a new API key replaces stored OAuth tokens, and a bare
 /// Enter answers no.
 #[test]
 fn an_api_key_asks_before_it_replaces_stored_oauth_tokens() {
-    let stored = format!(
-        "[default]\ntype = \"OAuth\"\nantithesis_token = \"{}\"\n",
-        fake_secrets::ACCESS_TOKEN
-    );
+    let stored = oauth_credentials(None);
     let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &stored)]);
     expect(&mut session, "Please enter your API Key");
-    send(&mut session, &api_key_enter());
+    send(&mut session, &format!("{}\r", fake_secrets::API_KEY));
     expect(&mut session, "Replace your stored OAuth credentials?");
     send(&mut session, "\r");
     let seen = finish(session);
@@ -355,16 +336,16 @@ fn an_api_key_asks_before_it_replaces_stored_oauth_tokens() {
 /// Login asks before a new API key replaces a stored username and password,
 /// and a bare Enter answers no: the credentials file stays as it was.
 #[test]
-fn declining_keeps_a_stored_password() {
-    let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &stored_password())]);
+fn declining_keeps_a_password_credentials() {
+    let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &password_credentials())]);
     expect(&mut session, "Please enter your API Key");
-    send(&mut session, &api_key_enter());
+    send(&mut session, &format!("{}\r", fake_secrets::API_KEY));
     expect(&mut session, REPLACE_PASSWORD);
     send(&mut session, "\r");
     let seen = finish(session);
 
     assert!(seen.contains(RETAINED), "{seen}");
-    assert_eq!(credentials(home.path()), stored_password());
+    assert_eq!(credentials(home.path()), password_credentials());
 }
 
 /// Login asks before a new API key replaces a different stored key, and the
@@ -373,13 +354,10 @@ fn declining_keeps_a_stored_password() {
 fn a_different_api_key_asks_before_it_replaces_the_stored_key() {
     let (home, mut session) = start_login_with(&[(
         CREDENTIALS_FILE,
-        &format!(
-            "[default]\ntype = \"ApiKey\"\napi_key = \"{}\"\n",
-            fake_secrets::API_KEY_STORED
-        ),
+        &api_key_credentials(fake_secrets::API_KEY_STORED),
     )]);
     expect(&mut session, "Please enter your API Key (********9Pgw)");
-    send(&mut session, &api_key_enter());
+    send(&mut session, &format!("{}\r", fake_secrets::API_KEY));
     expect(&mut session, "Replace your stored API key?");
     send(&mut session, "y\r");
     let seen = finish(session);
@@ -391,16 +369,19 @@ fn a_different_api_key_asks_before_it_replaces_the_stored_key() {
         "{seen}"
     );
     let creds = credentials(home.path());
-    assert!(creds.contains(&api_key_line()), "{creds}");
+    assert!(
+        creds.contains(&api_key_line(fake_secrets::API_KEY)),
+        "{creds}"
+    );
 }
 
 /// A new API key that overwrites a stored username and password says so in the
 /// summary, because a script that still uses the password will no longer work.
 #[test]
 fn an_api_key_that_replaces_a_stored_password_says_so() {
-    let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &stored_password())]);
+    let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &password_credentials())]);
     expect(&mut session, "Please enter your API Key");
-    send(&mut session, &api_key_enter());
+    send(&mut session, &format!("{}\r", fake_secrets::API_KEY));
     expect(&mut session, REPLACE_PASSWORD);
     send(&mut session, "y\r");
     let seen = finish(session);
@@ -431,7 +412,10 @@ fn an_api_key_that_replaces_a_stored_password_says_so() {
         "the credentials line is split mid-word: {seen}"
     );
     let creds = credentials(home.path());
-    assert!(creds.contains(&api_key_line()), "{creds}");
+    assert!(
+        creds.contains(&api_key_line(fake_secrets::API_KEY)),
+        "{creds}"
+    );
 }
 
 /// A username and password from the environment is still there after login,
@@ -446,7 +430,7 @@ fn an_api_key_does_not_claim_to_replace_a_password_from_the_environment() {
         ..Login::default()
     });
     expect(&mut session, "Please enter your API Key");
-    send(&mut session, &api_key_enter());
+    send(&mut session, &format!("{}\r", fake_secrets::API_KEY));
     let seen = finish(session);
 
     assert!(seen.contains("Stored your API key in"), "{seen}");
@@ -458,12 +442,12 @@ fn an_api_key_does_not_claim_to_replace_a_password_from_the_environment() {
 #[test]
 fn a_redirected_summary_keeps_whole_lines() {
     let (home, mut session) = spawn_login(&Login {
-        seed: &[(CREDENTIALS_FILE, &stored_password())],
+        seed: &[(CREDENTIALS_FILE, &password_credentials())],
         stdout: Stdout::File,
         ..Login::default()
     });
     expect(&mut session, "Please enter your API Key");
-    send(&mut session, &api_key_enter());
+    send(&mut session, &format!("{}\r", fake_secrets::API_KEY));
     expect(&mut session, REPLACE_PASSWORD);
     send(&mut session, "y\r");
     // Read the PTY to its end before the wait: on macOS a child cannot exit

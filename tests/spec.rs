@@ -109,7 +109,7 @@ fn cmd_substitute(
 /// by `${FAKE_<NAME>}` and holds no literal.
 fn set_fake_secret_vars(env: &mut testscript_rs::TestEnvironment) {
     for (name, value) in fake_secrets::ALL {
-        env.set_env_var(&fake_secrets::spec_var(name), value);
+        env.set_env_var(&format!("FAKE_{name}"), value);
     }
 }
 

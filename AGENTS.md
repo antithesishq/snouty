@@ -90,14 +90,11 @@ is worth.
   validates, and normalizes. If the code has clear properties, use Hegel to
   verify they hold.
 - Tests use only the fake secrets in `src/testutils/fake_secrets.rs`: API
-  keys, passwords, tokens, and all other credentials. Each value contains
-  `fake-`, except a published test vector, whose doc tells why. Rust code
-  uses the constants. A spec uses `${FAKE_<NAME>}`: `set-env` for a variable,
-  `substitute <path>` for a fixture file, and `${FAKE_<NAME>@R}` in a
-  pattern. A Python script writes the registry value. To add a secret, add a
-  line with a doc comment to the `fake_secrets!` list. The `scan` test in
-  that file fails when a scanned file holds a secret-shaped literal that is
-  not in the registry.
+  keys, passwords, tokens, and all other credentials. Its module doc tells
+  how to add one, and its `scan` test fails on any other secret-shaped
+  literal. A spec writes `${FAKE_<NAME>}`, always with braces: `set-env` for
+  a variable, `substitute <path>` for a fixture file, and `${FAKE_<NAME>@R}`
+  in a pattern.
 
 ## Checks and lints
 

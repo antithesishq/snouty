@@ -26,10 +26,7 @@ use std::time::Duration;
 use expectrl::Expect;
 use expectrl::process::unix::WaitStatus;
 use expectrl::session::OsSession;
-use snouty::testutils::fake_secrets::{
-    FAKE_ACCESS_TOKEN_A, FAKE_API_KEY_A, FAKE_API_KEY_B, FAKE_OAUTH_CODE, FAKE_OAUTH_FLOW_TOKEN,
-    FAKE_PASSWORD, FAKE_REFRESH_TOKEN_A,
-};
+use snouty::testutils::fake_secrets::{FAKE_API_KEY_A, FAKE_API_KEY_B, FAKE_PASSWORD};
 use snouty::testutils::{
     api_key_credentials, api_key_line, oauth_credentials, password_credentials,
 };
@@ -514,6 +511,9 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
 
     use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
     use serde_json::{Value, json};
+    use snouty::testutils::fake_secrets::{
+        FAKE_ACCESS_TOKEN_A, FAKE_OAUTH_CODE, FAKE_OAUTH_FLOW_TOKEN, FAKE_REFRESH_TOKEN_A,
+    };
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

@@ -1,5 +1,5 @@
-//! `docker-credential-snouty`: the name Docker gives the snouty credential
-//! helper (`"credHelpers": {"<registry>": "snouty"}`). It runs
+//! `docker-credential-snouty`: the name Docker and Podman give the snouty
+//! credential helper (`"credHelpers": {"<registry>": "snouty"}`). It runs
 //! `snouty docker-credential <args>`, with the same stdin, stdout, stderr and
 //! exit status.
 //!

@@ -1,6 +1,7 @@
 //! `snouty docker-credential`: the Docker credential helper protocol
 //! (<https://github.com/docker/docker-credential-helpers>) for the tenant
-//! registry. Docker runs it through the `docker-credential-snouty` binary.
+//! registry. Docker and Podman run it through the `docker-credential-snouty`
+//! binary.
 
 use std::collections::BTreeMap;
 use std::io::{self, Read};
@@ -20,8 +21,8 @@ use crate::settings::{DefaultProjectFile, Settings};
 pub struct CredentialsNotFound;
 
 impl std::fmt::Display for CredentialsNotFound {
-    /// The exact message that Docker reads as "this helper has no credential
-    /// for the server", rather than as a failure.
+    /// The exact message that Docker and Podman read as "this helper has no
+    /// credential for the server", rather than as a failure.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("credentials not found in native keychain")
     }

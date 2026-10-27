@@ -243,9 +243,9 @@ pub enum Commands {
         repository: Option<String>,
     },
 
-    /// Give Docker the credential for the tenant's container registry
+    /// Give Docker or Podman the credential for the tenant's container registry
     DockerCredential {
-        /// The credential helper action that Docker requests
+        /// The credential helper action that the engine requests
         action: DockerCredentialAction,
     },
 

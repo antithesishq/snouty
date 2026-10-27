@@ -88,14 +88,12 @@ impl Params {
             .collect::<std::result::Result<_, crate::cli::ParseKVPairError>>()?)
     }
 
-    /// Validate params against the test params schema, the log filter
-    /// patterns and the fault exclusions. The pattern checks run here so no
-    /// launch path can skip them.
+    /// Validate params against the test params schema, and check the pattern
+    /// params. The checks run here so no launch path can skip them.
     ///
-    /// The platform checks the patterns only after the run starts,
-    /// so a bad pattern fails the run minutes later. The local check uses the
-    /// `regex` crate, which is close to RE2 but not identical, so it is a
-    /// pre-check only.
+    /// The platform checks the log filter patterns only after the run starts,
+    /// so a bad pattern fails the run minutes later. The `regex` crate is close
+    /// to RE2 but not identical, so the filter check is a pre-check only.
     pub fn validate_test_params(&self) -> Result<()> {
         validate_against_def(&self.inner, "testParams")?;
         for (key, suppressed) in [

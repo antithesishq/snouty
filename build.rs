@@ -91,11 +91,10 @@ fn generate_api_client(out_dir: &Path) {
         "crate::api::RunSubStatus",
         std::iter::empty::<progenitor::TypeImpl>(),
     );
-    // clap names a `ValueEnum` value in kebab-case, but `launch` sends its
-    // `Display` form, the snake_case wire value. Name each value as it is
-    // sent, so `--fault-tolerance high_availability` parses. typify puts a
-    // patch's attributes before its derives, and a derive helper must follow
-    // its derive, so the derive goes in the same attribute string.
+    // `launch` sends each value's `Display` form, the snake_case wire value, so
+    // clap must name each value the same way. typify puts patch attributes
+    // before derives, and `#[value]` must follow its derive, so the derive goes
+    // here too.
     for &(_, schema) in LAUNCH_ENUM_PARAMS {
         settings.with_patch(
             schema,

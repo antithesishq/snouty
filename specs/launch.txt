@@ -72,8 +72,8 @@ stderr 'possible values: standard, fast, turbo'
 stderr 'invalid value .high-availability. for .--fault-tolerance'
 stderr 'possible values: none, resilient, high_availability, legacy'
 
-# `antithesis.fault_exclusions` must be a valid Rust regex, from the flag or
-#    from --param.
+# `antithesis.fault_exclusions` must be a non-empty, valid Rust regex, from
+#    the flag or from --param.
 ! snouty launch --launcher basic_test --duration 30 --fault-exclusions '(?=raft)'
 stderr 'antithesis\.fault_exclusions is not a valid regular expression.*'
 ! snouty launch --launcher basic_test --duration 30 --param antithesis.fault_exclusions='('

@@ -4754,7 +4754,7 @@ def _write_mcp_story(
         f"**User goal:** {story.goal}",
         f"**Judge satisfaction by:** {story.judge}",
         "_Capture: a JSON-RPC session with `snouty mcp` over stdio; "
-        "no terminal emulation._",
+        + "no terminal emulation._",
         "## Tool list entry",
         f"```json\n{entry}\n```",
         f"## `tool_help {call}`",

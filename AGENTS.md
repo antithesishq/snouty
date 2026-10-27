@@ -93,9 +93,9 @@ is worth.
   keys, passwords, tokens, and all other credentials, named `FAKE_<TYPE>`,
   with `_A`, `_B` and so on when a test needs more than one of a type. Its
   module doc tells how to add one, and its `scan` test fails on any other
-  secret-shaped literal. A spec writes `${FAKE_<TYPE>}`, always with braces:
-  `set-env` for a variable, `substitute <path>` for a fixture file, and
-  `${FAKE_<TYPE>@R}` in a pattern.
+  secret-shaped literal. A spec writes `${FAKE_<TYPE>}`: `set-env` for a
+  variable, `substitute <path>` for a fixture file, and `${FAKE_<TYPE>@R}` in
+  a pattern.
 
 ## Checks and lints
 

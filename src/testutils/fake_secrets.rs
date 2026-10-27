@@ -124,6 +124,21 @@ mod tests {
         }
     }
 
+    /// No name is a prefix of another, so testscript, which replaces `$NAME`
+    /// with no word boundary, cannot replace part of a longer name. When a
+    /// type gets a second value, rename the first one to `_A`.
+    #[test]
+    fn no_name_is_a_prefix_of_another() {
+        for (i, (name, _)) in ALL.iter().enumerate() {
+            for (j, (other, _)) in ALL.iter().enumerate() {
+                assert!(
+                    i == j || !other.starts_with(name),
+                    "{name} is a prefix of {other}"
+                );
+            }
+        }
+    }
+
     /// No value contains another, so a test that checks for one value with
     /// `contains` cannot match a different one.
     #[test]
@@ -175,15 +190,10 @@ mod tests {
         Regex::new(&format!("{word}{}{word}", regex::escape(MARKER))).unwrap()
     });
 
-    /// A spec variable without braces. testscript replaces `$FAKE_X` inside
-    /// `$FAKE_X_Y` too, so a spec must write `${FAKE_...}`.
-    static BARE_SPEC_VAR: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"\$FAKE_[A-Z_]+").unwrap());
-
-    /// A spec variable with braces. Its name must be a registry constant, or
-    /// testscript leaves the text as it is.
+    /// A spec variable, `$FAKE_X` or `${FAKE_X}`. Its name must be a registry
+    /// constant, or testscript leaves the text as it is.
     static SPEC_VAR: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"\$\{(FAKE_[A-Z_]+)(?:@R)?\}").unwrap());
+        LazyLock::new(|| Regex::new(r"\$\{?(FAKE_[A-Z_]+)").unwrap());
 
     /// The shapes of a secret. Each pattern captures the value in group 1.
     static SHAPES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
@@ -223,14 +233,20 @@ mod tests {
     /// Each place in `text` that holds a secret it should not: a value with
     /// the marker that is not in the registry (in Rust, any literal with the
     /// marker, because Rust uses the constants), a secret-shaped value that
-    /// [`allowed`] rejects, or a spec variable without braces or with an
-    /// unknown name.
-    fn findings(text: &str, rust: bool) -> Vec<String> {
+    /// [`allowed`] rejects, or, in a spec, a variable with an unknown name.
+    #[derive(Clone, Copy, PartialEq)]
+    enum FileKind {
+        Rust,
+        Spec,
+        Other,
+    }
+
+    fn findings(text: &str, kind: FileKind) -> Vec<String> {
         let mut found = Vec::new();
         for (number, line) in text.lines().enumerate() {
             let number = number + 1;
             for value in MARKED.find_iter(line).map(|m| m.as_str()) {
-                if rust {
+                if kind == FileKind::Rust {
                     found.push(format!(
                         "{number}: `{value}`: use the fake_secrets constant"
                     ));
@@ -245,7 +261,7 @@ mod tests {
                 // The marker check above reports a value with the marker.
                 .filter(|value| !value.contains(MARKER))
             {
-                if rust && registered(value) {
+                if kind == FileKind::Rust && registered(value) {
                     found.push(format!(
                         "{number}: `{value}`: use the fake_secrets constant"
                     ));
@@ -253,13 +269,12 @@ mod tests {
                     found.push(format!("{number}: `{value}` looks like a secret"));
                 }
             }
-            for var in BARE_SPEC_VAR.find_iter(line).map(|m| m.as_str()) {
-                found.push(format!("{number}: `{var}`: write it with braces"));
-            }
-            for captures in SPEC_VAR.captures_iter(line) {
-                let name = &captures[1];
-                if ALL.iter().all(|(known, _)| *known != name) {
-                    found.push(format!("{number}: `{name}` is not in the registry"));
+            if kind == FileKind::Spec {
+                for captures in SPEC_VAR.captures_iter(line) {
+                    let name = &captures[1];
+                    if !ALL.iter().any(|(known, _)| *known == name) {
+                        found.push(format!("{number}: `{name}` is not in the registry"));
+                    }
                 }
             }
         }
@@ -304,8 +319,14 @@ mod tests {
             let Ok(text) = std::fs::read_to_string(root.join(relative)) else {
                 continue;
             };
-            let rust = Path::new(relative).extension().is_some_and(|e| e == "rs");
-            for finding in findings(&text, rust) {
+            let kind = if Path::new(relative).extension().is_some_and(|e| e == "rs") {
+                FileKind::Rust
+            } else if relative.starts_with("specs") {
+                FileKind::Spec
+            } else {
+                FileKind::Other
+            };
+            for finding in findings(&text, kind) {
                 report.push(format!("{relative}:{finding}"));
             }
         }

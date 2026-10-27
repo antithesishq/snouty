@@ -1014,7 +1014,7 @@ mod tests {
                 .join(" ")
         );
         assert!(!all.contains("USERNAME"));
-        assert!(!all.contains("FAKE_PASSWORD"));
+        assert!(!all.contains("PASSWORD"));
     }
 
     /// A user who meets both messages reads one wording, not two.

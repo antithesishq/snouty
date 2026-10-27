@@ -2400,11 +2400,9 @@ def _doctor_env(
         return (os.environ.get(name) or placeholder) if set_it else None
 
     return {
-        "ANTITHESIS_API_KEY": want(
-            "ANTITHESIS_API_KEY", api_key, "antithesis_api_key_v2_fake-a_9Pgw"
-        ),
+        "ANTITHESIS_API_KEY": want("ANTITHESIS_API_KEY", api_key, _FAKE_API_KEY_A),
         "ANTITHESIS_USERNAME": want("ANTITHESIS_USERNAME", username, "demo-user"),
-        "ANTITHESIS_PASSWORD": want("ANTITHESIS_PASSWORD", password, "fake-password"),
+        "ANTITHESIS_PASSWORD": want("ANTITHESIS_PASSWORD", password, _FAKE_PASSWORD),
         "ANTITHESIS_TENANT": want("ANTITHESIS_TENANT", tenant, "demo-tenant"),
         "ANTITHESIS_REPOSITORY": want(
             "ANTITHESIS_REPOSITORY", repo, "registry.example.com/acme/demo"
@@ -4214,19 +4212,19 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
 # human would see on that tenant.
 # ---------------------------------------------------------------------------
 
-# Fake secrets typed at the prompts — never a real credential, and redacted
-# again before embedding (see `_redact_secrets`). They are FAKE_API_KEY_B,
-# FAKE_PASSWORD, and FAKE_API_KEY_A from src/testutils/fake_secrets.rs.
-_FAKE_KEY = "antithesis_api_key_v2_fake-b-longer_7Qxz"
-_FAKE_PASS = "fake-password"
-_SEED_KEY = "antithesis_api_key_v2_fake-a_9Pgw"
+# Fake secrets, never a real credential, and redacted again before embedding
+# (see `_redact_secrets`). Each one has the name and value of a constant in
+# src/testutils/fake_secrets.rs.
+_FAKE_API_KEY_A = "antithesis_api_key_v2_fake-a_9Pgw"
+_FAKE_API_KEY_B = "antithesis_api_key_v2_fake-b-longer_7Qxz"
+_FAKE_PASSWORD = "fake-password"
 _TENANT = "acme"
 _REPO = "registry.example.com/acme/app"
 _SETTINGS = ".config/snouty/settings.toml"
 _CREDS = ".config/snouty/credentials.toml"
 _SEED_SETTINGS_TOML = f'tenant = "{_TENANT}"\nrepository = "{_REPO}"\n'
 # A `credentials.toml` exactly as `snouty login` writes it.
-_SEED_CREDS_TOML = f'[default]\ntype = "ApiKey"\napi_key = "{_SEED_KEY}"\n'
+_SEED_CREDS_TOML = f'[default]\ntype = "ApiKey"\napi_key = "{_FAKE_API_KEY_A}"\n'
 
 # Prompts the dialogues wait for. The gallery's tenant has no CLI OAuth, so
 # login asks for the API key with no credential menu.
@@ -4239,7 +4237,7 @@ _ASK_REPLACE_PASSWORD = "Replace your stored username and password?"
 _RETAINED = "Retained your previously stored credentials"
 # A `credentials.toml` with a username and password, as an older snouty wrote it.
 _SEED_PASSWORD_CREDS_TOML = (
-    f'[default]\ntype = "Password"\nusername = "puser"\npassword = "{_FAKE_PASS}"\n'
+    f'[default]\ntype = "Password"\nusername = "puser"\npassword = "{_FAKE_PASSWORD}"\n'
 )
 
 # Shared satisfaction rubric for the TTY stories: judge the conversation AND the
@@ -4289,16 +4287,16 @@ def build_tty_stories() -> list[Story]:
             (
                 (_ASK_TENANT, _TENANT + ENTER),
                 (_ASK_REPO, _REPO + ENTER),
-                (_ASK_KEY, _FAKE_KEY + ENTER),
+                (_ASK_KEY, _FAKE_API_KEY_B + ENTER),
             ),
             tty_persisted(
                 prompts=(_ASK_TENANT, _ASK_REPO, _ASK_KEY),
                 absent_prompts=(_ASK_CREDENTIALS,),
                 files=(
                     (_SETTINGS, (f'tenant = "{_TENANT}"', f'repository = "{_REPO}"')),
-                    (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_KEY}"')),
+                    (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_API_KEY_B}"')),
                 ),
-                secrets_absent=(_FAKE_KEY,),
+                secrets_absent=(_FAKE_API_KEY_B,),
             ),
         ),
         _tty_story(
@@ -4319,9 +4317,9 @@ def build_tty_stories() -> list[Story]:
                 files=(
                     (_SETTINGS, (f'tenant = "{_TENANT}"', f'repository = "{_REPO}"')),
                     # Every answer was a bare Enter, so the stored key must survive.
-                    (_CREDS, ('type = "ApiKey"', f'api_key = "{_SEED_KEY}"')),
+                    (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_API_KEY_A}"')),
                 ),
-                secrets_absent=(_SEED_KEY,),
+                secrets_absent=(_FAKE_API_KEY_A,),
             ),
             seed_files={
                 _SETTINGS: _SEED_SETTINGS_TOML,
@@ -4337,7 +4335,7 @@ def build_tty_stories() -> list[Story]:
             (
                 (_ASK_TENANT, ENTER),
                 (_ASK_REPO, ENTER),
-                (_ASK_KEY, _FAKE_KEY + ENTER),
+                (_ASK_KEY, _FAKE_API_KEY_B + ENTER),
                 (_ASK_REPLACE_PASSWORD, "y" + ENTER),
             ),
             tty_persisted(
@@ -4347,8 +4345,10 @@ def build_tty_stories() -> list[Story]:
                     ", replacing your stored username and password.",
                 ),
                 absent_prompts=(_ASK_CREDENTIALS,),
-                files=((_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_KEY}"')),),
-                secrets_absent=(_FAKE_KEY, _FAKE_PASS),
+                files=(
+                    (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_API_KEY_B}"')),
+                ),
+                secrets_absent=(_FAKE_API_KEY_B, _FAKE_PASSWORD),
             ),
             seed_files={
                 _SETTINGS: _SEED_SETTINGS_TOML,
@@ -4369,8 +4369,10 @@ def build_tty_stories() -> list[Story]:
             ),
             tty_persisted(
                 prompts=(_ASK_KEY, _EMPTY_KEY_REFUSED, _RETAINED),
-                files=((_CREDS, ('type = "Password"', f'password = "{_FAKE_PASS}"')),),
-                secrets_absent=(_FAKE_PASS,),
+                files=(
+                    (_CREDS, ('type = "Password"', f'password = "{_FAKE_PASSWORD}"')),
+                ),
+                secrets_absent=(_FAKE_PASSWORD,),
             ),
             seed_files={
                 _SETTINGS: _SEED_SETTINGS_TOML,
@@ -4386,13 +4388,15 @@ def build_tty_stories() -> list[Story]:
             (
                 (_ASK_TENANT, ENTER),
                 (_ASK_REPO, ENTER),
-                (_ASK_KEY, _FAKE_KEY + ENTER),
+                (_ASK_KEY, _FAKE_API_KEY_B + ENTER),
                 (_ASK_REPLACE_PASSWORD, "n" + ENTER),
             ),
             tty_persisted(
                 prompts=(_ASK_REPLACE_PASSWORD, _RETAINED),
-                files=((_CREDS, ('type = "Password"', f'password = "{_FAKE_PASS}"')),),
-                secrets_absent=(_FAKE_KEY, _FAKE_PASS),
+                files=(
+                    (_CREDS, ('type = "Password"', f'password = "{_FAKE_PASSWORD}"')),
+                ),
+                secrets_absent=(_FAKE_API_KEY_B, _FAKE_PASSWORD),
             ),
             seed_files={
                 _SETTINGS: _SEED_SETTINGS_TOML,
@@ -4408,14 +4412,16 @@ def build_tty_stories() -> list[Story]:
             (
                 (_ASK_TENANT, ENTER),
                 (_ASK_REPO, ENTER),
-                (_ASK_KEY, _FAKE_KEY + ENTER),
+                (_ASK_KEY, _FAKE_API_KEY_B + ENTER),
             ),
             tty_persisted(
                 # The live tenant decides the probe's outcome, so only the
                 # request is checked.
                 prompts=(f"> GET https://{_TENANT}.antithesis.com/auth/cli/config",),
-                files=((_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_KEY}"')),),
-                secrets_absent=(_FAKE_KEY,),
+                files=(
+                    (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_API_KEY_B}"')),
+                ),
+                secrets_absent=(_FAKE_API_KEY_B,),
             ),
             seed_files={_SETTINGS: _SEED_SETTINGS_TOML},
         ),

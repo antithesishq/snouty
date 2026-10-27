@@ -7,8 +7,8 @@ use chrono::{DateTime, Utc};
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 use crate::api::{
-    PerformanceTier, RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SourceRunId,
-    SourceSessionId,
+    FaultTolerance, PerformanceTier, RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT,
+    SourceRunId, SourceSessionId,
 };
 use color_eyre::Section;
 use color_eyre::eyre::Report;
@@ -515,6 +515,24 @@ pub struct LaunchArgs {
     /// `--param=antithesis.performance_tier=TIER`.
     #[arg(long, value_enum)]
     pub performance_tier: Option<PerformanceTier>,
+
+    /// Which faults to inject, by how much disruption the system must survive.
+    /// `none`: no faults. `resilient`: degraded network links, thread pauses,
+    /// container pauses of up to 10 seconds, CPU throttling and clock jitter.
+    /// `high_availability`: everything in `resilient`, plus network
+    /// partitions and killed or stopped containers or pods. `legacy`: all
+    /// network faults and thread pausing, for a custom notebook only. To send
+    /// a level that is not listed, use
+    /// `--param=antithesis.fault_tolerance=LEVEL`.
+    #[arg(long, value_enum)]
+    pub fault_tolerance: Option<FaultTolerance>,
+
+    /// Regular expression for the containers (or pods, on Kubernetes) that
+    /// faults must not touch, matched against the container name. Thread
+    /// pausing is machine-wide, so it still applies. Rust regex syntax: no
+    /// lookaround or backreferences. Max 1024 characters.
+    #[arg(long)]
+    pub fault_exclusions: Option<String>,
 
     /// Do not record the commit, branch, and repository of the local git
     /// checkout in run metadata. A pre-built config image (--config-image)

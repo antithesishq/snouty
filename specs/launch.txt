@@ -66,6 +66,21 @@ stderr 'antithesis\.filter_source_matching is empty'
 stderr 'invalid value .ultra. for .--performance-tier'
 stderr 'possible values: standard, fast, turbo'
 
+# --fault-tolerance accepts only the levels in the vendored OpenAPI spec, by
+#    their wire names.
+! snouty launch --launcher basic_test --duration 30 --fault-tolerance high-availability
+stderr 'invalid value .high-availability. for .--fault-tolerance'
+stderr 'possible values: none, resilient, high_availability, legacy'
+
+# `antithesis.fault_exclusions` must be a non-empty, valid Rust regex, from
+#    the flag or from --param.
+! snouty launch --launcher basic_test --duration 30 --fault-exclusions '(?=raft)'
+stderr 'antithesis\.fault_exclusions is not a valid regular expression.*'
+! snouty launch --launcher basic_test --duration 30 --param antithesis.fault_exclusions='('
+stderr 'antithesis\.fault_exclusions is not a valid regular expression.*'
+! snouty launch --launcher basic_test --duration 30 --fault-exclusions ''
+stderr 'antithesis\.fault_exclusions is empty'
+
 # `launch` does not accept --stdin.
 ! snouty launch --launcher basic_test --stdin --duration 30
 stderr 'unexpected argument.*'
@@ -292,6 +307,20 @@ stdout 'Test run started: run_id run-123'
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch --launcher basic_test --config-image config:latest --duration 30 --param antithesis.performance_tier=ultra
 stderr '"antithesis.performance_tier": "ultra"'
+stdout 'Test run started: run_id run-123'
+
+# --fault-tolerance sends `antithesis.fault_tolerance`, and
+#    --fault-exclusions sends `antithesis.fault_exclusions`.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --fault-tolerance high_availability --fault-exclusions '^(raft-client|raft-monitor)$'
+stderr '"antithesis.fault_tolerance": "high_availability"'
+stderr '"antithesis.fault_exclusions": "\^\(raft-client\|raft-monitor\)\$"'
+stdout 'Test run started: run_id run-123'
+
+# The raw --param form sends any fault tolerance level.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --param antithesis.fault_tolerance=extreme
+stderr '"antithesis.fault_tolerance": "extreme"'
 stdout 'Test run started: run_id run-123'
 
 # --param antithesis.config_image also supplies the config image.

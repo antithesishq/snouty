@@ -27,6 +27,8 @@ pub const ANT_EVENT_DESCRIPTION: &str = "antithesis.event_description";
 pub const ANT_FILTER_LOGS_MATCHING: &str = "antithesis.filter_logs_matching";
 pub const ANT_FILTER_SOURCE_MATCHING: &str = "antithesis.filter_source_matching";
 pub const ANT_PERFORMANCE_TIER: &str = "antithesis.performance_tier";
+pub const ANT_FAULT_TOLERANCE: &str = "antithesis.fault_tolerance";
+pub const ANT_FAULT_EXCLUSIONS: &str = "antithesis.fault_exclusions";
 /// The kind of tool that launched a run. The server shows it as the creator's
 /// type. Observed on `GET /api/v0/runs/{run_id}` (tenant version 64): a run
 /// launched with `run.caller_type=snouty` reports `creator.type` `snouty`.
@@ -86,13 +88,12 @@ impl Params {
             .collect::<std::result::Result<_, crate::cli::ParseKVPairError>>()?)
     }
 
-    /// Validate params against the test params schema and the log filter
-    /// patterns. The pattern check runs here so no launch path can skip it.
+    /// Validate params against the test params schema, and check the pattern
+    /// params. The checks run here so no launch path can skip them.
     ///
-    /// The platform checks the patterns only after the run starts,
-    /// so a bad pattern fails the run minutes later. The local check uses the
-    /// `regex` crate, which is close to RE2 but not identical, so it is a
-    /// pre-check only.
+    /// The platform checks the log filter patterns only after the run starts,
+    /// so a bad pattern fails the run minutes later. The `regex` crate is close
+    /// to RE2 but not identical, so the filter check is a pre-check only.
     pub fn validate_test_params(&self) -> Result<()> {
         validate_against_def(&self.inner, "testParams")?;
         for (key, suppressed) in [
@@ -102,6 +103,9 @@ impl Params {
             if let Some(value) = self.inner.get(key).and_then(Value::as_str) {
                 validate_filter_pattern(key, value, suppressed)?;
             }
+        }
+        if let Some(value) = self.inner.get(ANT_FAULT_EXCLUSIONS).and_then(Value::as_str) {
+            validate_fault_exclusions(value)?;
         }
         Ok(())
     }
@@ -200,14 +204,30 @@ fn validate_filter_pattern(key: &str, value: &str, suppressed: &str) -> Result<(
             value.len()
         )));
     }
-    let re = regex::Regex::new(value)
-        .map_err(|err| user_error(format!("{key} is not a valid regular expression: {err}")))?;
-    if re.is_match("") {
+    if compile_pattern(key, value)?.is_match("") {
         return Err(user_error(format!(
             "{key} matches the empty string, which would suppress {suppressed}"
         )));
     }
     Ok(())
+}
+
+/// The OpenAPI spec gives the pattern the `regex` crate's syntax, but the
+/// server can run another version of the crate, so this is a pre-check only.
+fn validate_fault_exclusions(value: &str) -> Result<()> {
+    // A blank pattern is most likely an unset shell variable, and it would
+    // exclude every container from faults.
+    if value.trim().is_empty() {
+        return Err(user_error(format!("{ANT_FAULT_EXCLUSIONS} is empty"))
+            .suggestion("provide a pattern or drop the flag"));
+    }
+    compile_pattern(ANT_FAULT_EXCLUSIONS, value)?;
+    Ok(())
+}
+
+fn compile_pattern(key: &str, value: &str) -> Result<regex::Regex> {
+    regex::Regex::new(value)
+        .map_err(|err| user_error(format!("{key} is not a valid regular expression: {err}")))
 }
 
 fn validate_against_def(params: &Map<String, Value>, def_name: &str) -> Result<()> {
@@ -647,12 +667,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn validate_test_params_limits_fault_exclusions_to_1024_chars() {
+        let params = |len| {
+            Params::from_key_value_pairs([format!("{ANT_FAULT_EXCLUSIONS}={}", "é".repeat(len))])
+                .unwrap()
+        };
+        assert!(params(1024).validate_test_params().is_ok());
+        assert!(params(1025).validate_test_params().is_err());
+    }
+
     /// For *any* input — however far from a regex — validation returns
     /// instead of panicking.
     #[hegel::test]
     fn filter_validation_never_panics(tc: hegel::TestCase) {
         let pattern = tc.draw(generators::text());
         let _ = validate_filter(&pattern);
+        let _ = validate_fault_exclusions(&pattern);
     }
 
     #[test]

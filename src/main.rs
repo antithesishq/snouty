@@ -27,10 +27,10 @@ use snouty::login::cmd_login;
 use snouty::params::{
     ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID,
     ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION, ANT_EVENT_DESCRIPTION,
-    ANT_FILTER_LOGS_MATCHING, ANT_FILTER_SOURCE_MATCHING, ANT_IS_EPHEMERAL, ANT_PERFORMANCE_TIER,
-    ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, DuplicateKey, Params, RUN_CALLER_TYPE,
-    VCS_PARAMS, VCS_REPO_BRANCH, VCS_REPO_NAME, VCS_REPO_OWNER, VCS_REPO_TYPE, VCS_VERSION_ID,
-    VCS_VERSION_LINK,
+    ANT_FAULT_EXCLUSIONS, ANT_FAULT_TOLERANCE, ANT_FILTER_LOGS_MATCHING,
+    ANT_FILTER_SOURCE_MATCHING, ANT_IS_EPHEMERAL, ANT_PERFORMANCE_TIER, ANT_REPORT_RECIPIENTS,
+    ANT_SOURCE, ANT_TEST_NAME, DuplicateKey, Params, RUN_CALLER_TYPE, VCS_PARAMS, VCS_REPO_BRANCH,
+    VCS_REPO_NAME, VCS_REPO_OWNER, VCS_REPO_TYPE, VCS_VERSION_ID, VCS_VERSION_LINK,
 };
 use snouty::settings::Settings;
 use snouty::validate;
@@ -244,6 +244,14 @@ async fn cmd_launch(
 
     if let Some(performance_tier) = args.performance_tier {
         params.insert(ANT_PERFORMANCE_TIER, performance_tier.to_string());
+    }
+
+    if let Some(fault_tolerance) = args.fault_tolerance {
+        params.insert(ANT_FAULT_TOLERANCE, fault_tolerance.to_string());
+    }
+
+    if let Some(fault_exclusions) = args.fault_exclusions {
+        params.insert(ANT_FAULT_EXCLUSIONS, fault_exclusions);
     }
 
     let config_image_ref = if let Some(config_dir) = &args.config {

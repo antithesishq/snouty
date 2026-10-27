@@ -331,7 +331,7 @@ Your tenant has a container registry at `registry.<tenant>.antithesis.com`. Dock
 
 The username is `snouty-token`. The password is your API key, or the OAuth access token from `snouty login`. Snouty refreshes the OAuth token each time Docker asks for it, so a long push has the full lifetime of the token. The registry does not accept a GitHub Actions OIDC token or a username and password.
 
-Docker gives the helper no profile, so snouty uses the profile whose `repository` is on the requested registry, and whose `tenant` is the tenant of that registry. The selected profile wins when it agrees, then the top-level defaults, then the one named profile that agrees. If more than one named profile agrees, set `ANTITHESIS_PROFILE` to select one. Run `snouty docker-credential list` to see the registries that snouty has a credential for.
+Docker gives the helper no profile, so snouty uses the profile whose `repository` is on the requested registry, and whose `tenant` is the tenant of that registry. The selected profile wins when it agrees, then the top-level defaults, then the one named profile that agrees. If more than one named profile agrees, set `ANTITHESIS_PROFILE` to select one. Run `snouty docker-credential list` to see the tenant registry of each profile whose repository is on it.
 
 ### Username and password (deprecated)
 

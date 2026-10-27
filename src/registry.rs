@@ -63,20 +63,22 @@ pub fn tenant_registry(settings: &Settings) -> Option<RegistryHost> {
 }
 
 /// The settings whose tenant registry is `host`, from the `active` settings
-/// (of the selected profile) or else the settings of `every` profile (see
-/// [`Settings::resolve_every_profile`]), which load only when `active` does
-/// not match.
+/// (of the selected profile, `None` when they fail to resolve) or else the
+/// settings of `every` profile (see [`Settings::resolve_every_profile`]),
+/// which load only when `active` does not match.
 ///
 /// The active profile wins when it matches. Then the top-level defaults win,
 /// because a named profile that sets no tenant and no repository gets them
 /// from the defaults. Then exactly one named profile can match. When more
 /// than one does, the choice is the user's, and this is an error.
 pub fn select_profile(
-    active: Settings,
+    active: Option<Settings>,
     every: impl FnOnce() -> Result<Vec<Settings>>,
     host: &RegistryHost,
 ) -> Result<Option<Settings>> {
-    if tenant_registry(&active).as_ref() == Some(host) {
+    if let Some(active) = active
+        && tenant_registry(&active).as_ref() == Some(host)
+    {
         return Ok(Some(active));
     }
     let mut matching: Vec<Settings> = every()?
@@ -180,7 +182,11 @@ mod tests {
 
     /// The name of the selected profile, `defaults` for the top-level
     /// defaults.
-    fn selected(active: Settings, every: Vec<Settings>, requested: &str) -> Result<Option<String>> {
+    fn selected(
+        active: Option<Settings>,
+        every: Vec<Settings>,
+        requested: &str,
+    ) -> Result<Option<String>> {
         Ok(select_profile(active, || Ok(every), &host(requested))?
             .map(|settings| settings.profile().unwrap_or("defaults").to_owned()))
     }
@@ -193,7 +199,7 @@ mod tests {
             settings(Some("a"), "acme", "registry.acme.antithesis.com/a"),
         ];
         assert_eq!(
-            selected(active, every, "registry.acme.antithesis.com").unwrap(),
+            selected(Some(active), every, "registry.acme.antithesis.com").unwrap(),
             Some("b".to_owned())
         );
     }
@@ -206,7 +212,7 @@ mod tests {
             settings(Some("a"), "acme", "registry.acme.antithesis.com/x"),
         ];
         assert_eq!(
-            selected(active, every, "registry.acme.antithesis.com").unwrap(),
+            selected(Some(active), every, "registry.acme.antithesis.com").unwrap(),
             Some("defaults".to_owned())
         );
     }
@@ -220,7 +226,12 @@ mod tests {
             settings(Some("b"), "beta", "registry.beta.antithesis.com/x"),
         ];
         assert_eq!(
-            selected(active, every, "https://registry.acme.antithesis.com/v2/").unwrap(),
+            selected(
+                Some(active),
+                every,
+                "https://registry.acme.antithesis.com/v2/"
+            )
+            .unwrap(),
             Some("a".to_owned())
         );
     }
@@ -232,15 +243,24 @@ mod tests {
             settings(Some("a"), "acme", "registry.acme.antithesis.com/a"),
             settings(Some("b"), "acme", "registry.acme.antithesis.com/b"),
         ];
-        let err = selected(active, every, "registry.acme.antithesis.com").unwrap_err();
+        let err = selected(Some(active), every, "registry.acme.antithesis.com").unwrap_err();
         assert!(err.to_string().ends_with(": a, b"), "{err}");
+    }
+
+    #[test]
+    fn an_active_profile_that_fails_to_resolve_is_skipped() {
+        let every = vec![settings(None, "acme", "registry.acme.antithesis.com/x")];
+        assert_eq!(
+            selected(None, every, "registry.acme.antithesis.com").unwrap(),
+            Some("defaults".to_owned())
+        );
     }
 
     #[test]
     fn no_matching_profile_is_none() {
         let active = settings(None, "acme", "us-docker.pkg.dev/acme/repo");
         assert_eq!(
-            selected(active, vec![], "registry.acme.antithesis.com").unwrap(),
+            selected(Some(active), vec![], "registry.acme.antithesis.com").unwrap(),
             None
         );
     }

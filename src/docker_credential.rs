@@ -15,7 +15,7 @@ use crate::error::user_error;
 use crate::registry::{self, RegistryHost};
 use crate::settings::Settings;
 
-/// No profile has a credential for the requested registry.
+/// No profile uses the requested registry as its tenant registry.
 #[derive(Debug)]
 pub struct CredentialsNotFound;
 
@@ -38,7 +38,8 @@ struct Credential<'a> {
     secret: &'a str,
 }
 
-/// Run `action`. `active` is the settings of the selected profile, and
+/// Run `action`. `active` is the settings of the selected profile, `None`
+/// when they fail to resolve, and
 /// `project_settings_path` is the `--settings` flag, to find every other
 /// profile.
 ///
@@ -46,7 +47,7 @@ struct Credential<'a> {
 /// an error there (see [`CredentialsNotFound`]).
 pub async fn cmd_docker_credential(
     action: DockerCredentialAction,
-    active: Settings,
+    active: Option<Settings>,
     project_settings_path: Option<PathBuf>,
 ) -> Result<()> {
     match action {
@@ -81,7 +82,8 @@ pub async fn cmd_docker_credential(
             read_stdin()?;
         }
         DockerCredentialAction::List => {
-            let hosts: BTreeMap<String, &str> = std::iter::once(active)
+            let hosts: BTreeMap<String, &str> = active
+                .into_iter()
                 .chain(Settings::resolve_every_profile(project_settings_path)?)
                 .filter_map(|settings| registry::tenant_registry(&settings))
                 .map(|host| (host.to_string(), registry::USERNAME))

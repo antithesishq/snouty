@@ -337,7 +337,7 @@ pub enum DockerCredentialAction {
     Store,
     /// Read a server URL from stdin and erase nothing
     Erase,
-    /// Print each registry that snouty has a credential for
+    /// Print the tenant registry of each profile whose repository is on it
     List,
 }
 

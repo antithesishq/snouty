@@ -3743,6 +3743,18 @@ def mcp_help_check(sr: StoryRun, _reg: Registry) -> tuple[bool, str]:
     flags = [line for line in text.splitlines()[1:] if _FLAG.search(line)]
     if flags:
         return False, f"tool_help names a CLI flag: {flags[0].strip()[:120]}"
+    commands = [line for line in text.splitlines()[1:] if "`snouty " in line]
+    if commands:
+        return False, f"tool_help names a snouty command: {commands[0].strip()[:120]}"
+    for param, schema in (
+        sr.mcp_entry.get("inputSchema", {}).get("properties", {}).items()
+    ):
+        description = schema.get("description", "")
+        if _FLAG.search(description) or "snouty " in description:
+            return (
+                False,
+                f"the description of {param} names a flag or a command: {description}",
+            )
     params = len(sr.mcp_entry.get("inputSchema", {}).get("properties", {}))
     return (
         True,

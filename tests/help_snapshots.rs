@@ -131,14 +131,16 @@ fn mcp_tool_help() {
     });
 }
 
-/// An MCP render names each arg by its param, never by its flag, and shows
-/// each example as a tool call.
+/// An MCP render names each arg by its param, never by its flag, names no
+/// snouty command, and shows each example as a tool call.
 #[test]
 fn mcp_tool_help_names_no_flags() {
     let flag = regex::Regex::new(r"(^|[\s(`])--[a-z]").unwrap();
     for tool in snouty::mcp::ToolName::ALL {
         for line in tool.help().mcp().lines() {
             assert!(!flag.is_match(line), "{tool}: {line}");
+            // A command that has a tool is named by the tool, through t().
+            assert!(!line.contains("`snouty "), "{tool}: {line}");
         }
     }
 }

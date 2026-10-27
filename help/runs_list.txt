@@ -1,6 +1,15 @@
 List recent runs{% if cli %} (the default when `snouty runs` runs with no subcommand){% endif %}.
 
-Columns: RUN ID, STATUS, CREATED, LAUNCHER, RUN. RUN is the test name. For a run with no test name, RUN is the first line of its description, or `-` when it has none.{% if cli %} Use --detail for the full description.{% endif %}
+Each run has its ID, status, creation time, launcher, and test name. For a run with no test name, the name is the first line of its description.
+{%- if cli %}
+
+Columns: RUN ID, STATUS, CREATED, LAUNCHER, RUN. RUN is the test name, or `-` for a run with no test name and no description. Use --detail for the full description.
+{%- endif %}
+
+Pass a run's ID to `{{ t("runs show")? }}` for its details, to `{{ t("runs properties")? }}` for its property results, or to `{{ t("runs wait")? }}` to wait until it is ready or complete.
+
+Examples:
+  {{ t("snouty runs list --status completed --limit 5")? }}
 
 {%~ if cli %}
 Add --json for machine-readable output. Each run prints as one JSON object on its own line, in the order the server returns them:

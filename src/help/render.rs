@@ -369,20 +369,16 @@ fn mcp_call(text: &str, path: &[String], matches: &ArgMatches) -> Result<String,
             return Err(error(format!("{text}: {id} is not a param of {tool}")));
         }
         let value = if mcp::is_flag(arg) {
-            Value::Bool(true)
+            "true".to_owned()
         } else {
-            let mut values: Vec<Value> = values.map(|value| json_value(arg, value)).collect();
+            let mut values: Vec<String> = values.map(|value| value_text(arg, value)).collect();
             if mcp::takes_many(arg) {
-                Value::Array(values)
+                format!("[{}]", values.join(", "))
             } else {
-                values.pop().unwrap_or(Value::Null)
+                values.pop().unwrap_or_else(|| "null".to_owned())
             }
         };
-        params.push(format!(
-            "{}: {}",
-            Value::String(id.to_owned()),
-            spaced(&value)
-        ));
+        params.push(format!("{}: {value}", Value::String(id.to_owned())));
     }
     if params.is_empty() {
         Ok(tool.to_string())
@@ -391,27 +387,19 @@ fn mcp_call(text: &str, path: &[String], matches: &ArgMatches) -> Result<String,
     }
 }
 
-/// JSON with a space after each comma of an array, as in the params.
-fn spaced(value: &Value) -> String {
-    match value {
-        Value::Array(items) => {
-            let items: Vec<String> = items.iter().map(Value::to_string).collect();
-            format!("[{}]", items.join(", "))
+/// One value of a param, as JSON. A number arg's value is a JSON number, and
+/// its placeholder stands where the number goes, unquoted, as in
+/// `"vtime": <vtime>`. Any other value is a JSON string.
+fn value_text(arg: &Arg, value: String) -> String {
+    if mcp::value_type(arg) != "string" {
+        if is_placeholder(&value) {
+            return value;
         }
-        value => value.to_string(),
+        if let Ok(number) = value.parse::<serde_json::Number>() {
+            return number.to_string();
+        }
     }
-}
-
-/// A number arg's literal value is a JSON number, and a placeholder or any
-/// other value is a string.
-fn json_value(arg: &Arg, value: String) -> Value {
-    if mcp::value_type(arg) != "string"
-        && !is_placeholder(&value)
-        && let Ok(number) = value.parse::<serde_json::Number>()
-    {
-        return Value::Number(number);
-    }
-    Value::String(value)
+    Value::String(value).to_string()
 }
 
 #[cfg(test)]

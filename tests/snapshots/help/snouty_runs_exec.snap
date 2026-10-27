@@ -25,11 +25,14 @@ release.
 
 Without --events, the script's stdout and stderr stream to snouty's stdout and
 stderr. With --events, snouty prints every event of the timeline to stdout while
-the script executes, as `runs logs` prints them: the script's output, the
+the script executes, as `snouty runs logs` prints them: the script's output, the
 workload's logs and assertions, and Antithesis events. On exit, a trailer on
-stderr documents the branch's end moment, to chain a follow-up command from. A
-non-zero exit code, a timeout, or a truncated stream fails snouty with exit code
-1.
+stderr documents the branch's end moment, to chain a follow-up command from. The
+command fails when the script fails, times out, or its stream ends early.
+
+To run more at the moment that a script left, pass its end moment as the next
+call's input_hash and vtime:
+  snouty runs exec <run_id> <end_hash> <end_vtime> 'cat /tmp/state'
 
 Omit SCRIPT to read the script from stdin — a pipe, a redirect, or a heredoc.
 

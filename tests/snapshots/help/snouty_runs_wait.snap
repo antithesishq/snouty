@@ -12,7 +12,7 @@ The status is a minimum. A run can only move forward, and a complete run never
 starts again. Thus `--until ready` on a complete run returns at once.
 
 When the run reaches the status, the command prints the run's current status and
-exits 0, whatever that status is. A run that reports status `unknown` fails the
+succeeds, whatever that status is. A run that reports status `unknown` fails the
 command: snouty cannot tell whether such a run will still make progress.
 
 The wait is unbounded unless --timeout is given. The command is safe to

@@ -13,7 +13,7 @@ Example:
     --recipients "team@example.com"
   {% endfilter %}
 
-Extra parameters can be passed with {{ t("--param")? }}, as for `snouty launch`. A {{ t("--param")? }} cannot replace the value of a dedicated {% if cli %}flag{% else %}param{% endif %}, such as {{ t("--title")? }}:
+Extra parameters can be passed with {{ t("--param")? }}{% if cli %}, as for `snouty launch`{% endif %}. A {{ t("--param")? }} cannot replace the value of a dedicated {% if cli %}flag{% else %}param{% endif %}, such as {{ t("--title")? }}:
   {% filter cmd %}
   snouty debug --run-id <run_id> --input-hash <hash> --vtime <vtime> \
     --param attrs.team=payments

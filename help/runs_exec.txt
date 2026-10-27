@@ -8,7 +8,10 @@ The script executes on a fresh branch of the multiverse, so it does not interact
 
 The script executes on the host, or in the container that {{ t("--container")? }} names. The command needs tenant release 64.0 or newer; `{{ t("snouty doctor")? }}` reports the tenant release.
 
-Without {{ t("--events")? }}, the script's stdout and stderr stream to snouty's stdout and stderr. With {{ t("--events")? }}, snouty prints every event of the timeline to stdout while the script executes, as `{{ t("runs logs")? }}` prints them: the script's output, the workload's logs and assertions, and Antithesis events. On exit, a trailer on stderr documents the branch's end moment, to chain a follow-up command from. A non-zero exit code, a timeout, or a truncated stream fails snouty with exit code 1.
+{% if cli %}Without --events, the script's stdout and stderr stream to snouty's stdout and stderr. With --events, snouty prints every event of the timeline to stdout while the script executes, as `snouty runs logs` prints them: the script's output, the workload's logs and assertions, and Antithesis events. On exit, a trailer on stderr documents the branch's end moment, to chain a follow-up command from.{% else %}The result's first content block is the stream, one JSON object per line. Without `events`, the stream is the script's output. With `events`, it is every event of the timeline while the script executes, as `runs_logs` returns them: the script's output, the workload's logs and assertions, and Antithesis events. The last line is the exit result, and its `end_moment` is the moment to chain a follow-up call from. When the command fails, a second block says why.{% endif %} The command fails when the script fails, times out, or its stream ends early.
+
+To run more at the moment that a script left, pass its end moment as the next call's input_hash and vtime:
+  {{ t("snouty runs exec <run_id> <end_hash> <end_vtime> 'cat /tmp/state'")? }}
 
 {%~ if cli %}
 Omit SCRIPT to read the script from stdin — a pipe, a redirect, or a heredoc.
@@ -31,5 +34,5 @@ Add --json for machine-readable output. Each frame of the stream prints as one J
     | jq -r 'select(.output_text != null).output_text'
   {% endfilter %}
 {%- else %}
-Each frame of the stream prints as one JSON object on its own line, and the trailer is left out.
+Each frame of the stream prints as one JSON object on its own line.
 {%- endif %}

@@ -23,6 +23,7 @@ Snouty provides the following subcommands. Invoke `snouty <command> --help` to f
 - `snouty validate`: locally run and validate your docker-compose.yaml setup.
 - `snouty doctor`: check your environment is configured correctly.
 - `snouty docs`: search the Antithesis documentation locally (auto-refreshes the local copy over the network; pass `--offline` to skip).
+- `snouty docker-credential <action>`: the Docker credential helper for your tenant registry. See [Docker credential helper](#docker-credential-helper).
 - `snouty completions <shell>`: generate shell completion scripts.
 - `snouty version`: print version and build information.
 - `snouty update`: install the latest version. Set `update_channel = "unstable"` (or `SNOUTY_UPDATE_CHANNEL=unstable`) to also consider pre-releases; override the setting for one run with `--channel stable|unstable`.
@@ -57,6 +58,8 @@ There are two fixes:
 
 ## Install snouty
 
+Each install method puts two binaries in the same directory: `snouty`, and `docker-credential-snouty`, the small [Docker credential helper](#docker-credential-helper) that runs `snouty docker-credential`.
+
 ### Install prebuilt binaries via shell script
 
 ```sh
@@ -88,7 +91,7 @@ cargo install snouty
 ### Uninstalling
 
 ```
-cargo uninstall snouty || rm -f "$(which snouty)" "$(which snouty-update)"
+cargo uninstall snouty || rm -f "$(which snouty)" "$(which snouty-update)" "$(which docker-credential-snouty)"
 ```
 
 If you set up [shell completions](#shell-completions), also remove the snouty line from your shell's startup file.
@@ -311,6 +314,24 @@ Three things to know:
 ```sh
 export ANTITHESIS_EXTRA_HEADERS="X-Proxy-Token: abc123"
 ```
+
+### Docker credential helper
+
+Your tenant has a container registry at `registry.<tenant>.antithesis.com`. Docker can sign in to it with your snouty credential, through the `docker-credential-snouty` helper. Add the registry to `credHelpers` in `~/.docker/config.json`:
+
+```json
+{
+  "credHelpers": {
+    "registry.<tenant>.antithesis.com": "snouty"
+  }
+}
+```
+
+`docker-credential-snouty` must be on your `PATH`, next to `snouty`. Then `docker push` and `docker pull` sign in to the registry, and `docker login` is not necessary.
+
+The username is `snouty-token`. The password is your API key, or the OAuth access token from `snouty login`. Snouty refreshes the OAuth token each time Docker asks for it, so a long push has the full lifetime of the token. The registry does not accept a GitHub Actions OIDC token or a username and password.
+
+Docker gives the helper no profile, so snouty uses the profile whose `repository` is on the requested registry, and whose `tenant` is the tenant of that registry. The selected profile wins when it agrees, then the top-level defaults, then the one named profile that agrees. If more than one named profile agrees, set `ANTITHESIS_PROFILE` to select one. Run `snouty docker-credential list` to see the registries that snouty has a credential for.
 
 ### Username and password (deprecated)
 

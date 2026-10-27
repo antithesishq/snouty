@@ -114,6 +114,16 @@ mimalloc = "0.1.52"
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1.0.0", features = ["keychain"] }
 
+[[bin]]
+name = "snouty"
+path = "src/main.rs"
+
+# Docker runs a credential helper named `docker-credential-<name>`. This one
+# runs `snouty docker-credential`, and links nothing from snouty.
+[[bin]]
+name = "docker-credential-snouty"
+path = "src/bin/docker-credential-snouty.rs"
+
 [[example]]
 name = "mock_api"
 path = "examples/mock_api.rs"

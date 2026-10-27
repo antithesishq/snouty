@@ -84,15 +84,6 @@ impl StdWriter<io::Stdout> {
     }
 }
 
-impl StdWriter<io::Stderr> {
-    pub fn lock(&self) -> StdWriter<io::StderrLock<'static>> {
-        StdWriter {
-            inner: self.inner.lock(),
-            stream: self.stream,
-        }
-    }
-}
-
 // `IsTerminal` is sealed, so this is an inherent method.
 impl<W: IsTerminal> StdWriter<W> {
     pub fn is_terminal(&self) -> bool {
@@ -117,6 +108,15 @@ impl<W: Write> Write for StdWriter<W> {
 
     fn flush(&mut self) -> io::Result<()> {
         self.inner.flush().map_err(|e| self.mark(e))
+    }
+
+    // `Stdout` takes its lock once for each of these, not once for each piece.
+    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        self.inner.write_all(buf).map_err(|e| self.mark(e))
+    }
+
+    fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> io::Result<()> {
+        self.inner.write_fmt(args).map_err(|e| self.mark(e))
     }
 }
 

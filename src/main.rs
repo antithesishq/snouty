@@ -166,10 +166,11 @@ async fn run(cli: Cli) -> Result<()> {
 fn suppress_broken_pipe(result: Result<()>) -> Result<()> {
     match result {
         Err(err)
-            if err
-                .downcast_ref::<io::Error>()
-                .and_then(StreamClosed::of)
-                .is_some() =>
+            if err.chain().any(|e| {
+                e.downcast_ref::<io::Error>()
+                    .and_then(StreamClosed::of)
+                    .is_some()
+            }) =>
         {
             Ok(())
         }
@@ -626,10 +627,8 @@ mod tests {
     }
 
     /// A broken connection during an API call must not be mistaken for a
-    /// closed stdout pipe. reqwest wraps the socket-level `io::Error` in its
-    /// own error type, whose source chain eyre's downcast does not traverse —
-    /// so no `io::Error` (broken pipe or otherwise) is downcastable from an
-    /// API error report, and it can never be suppressed.
+    /// closed stdout pipe. The socket's `io::Error` sits in reqwest's source
+    /// chain without a [`StreamClosed`] marker, so it is never suppressed.
     #[tokio::test]
     async fn suppress_broken_pipe_ignores_network_socket_errors() {
         // Grab a port that refuses connections by binding then dropping.
@@ -657,9 +656,6 @@ mod tests {
         // Wrap it the way api.rs wraps communication errors.
         let report = eyre!(reqwest_err).wrap_err("failed to contact API");
 
-        // The io::Error is not downcastable through reqwest's error...
-        assert!(report.downcast_ref::<io::Error>().is_none());
-        // ...so the report can never be suppressed.
         assert!(suppress_broken_pipe(Err(report)).is_err());
     }
 

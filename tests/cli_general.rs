@@ -524,68 +524,29 @@ fn validate_help_shows_keep_running() {
 #[test]
 fn runs_list_exits_cleanly_when_stdout_closes_early() {
     let mock = start_runs_server(false);
-
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_snouty"));
-    for env_var in [
-        "ANTITHESIS_API_KEY",
-        "ANTITHESIS_USERNAME",
-        "ANTITHESIS_PASSWORD",
-        "ANTITHESIS_TENANT",
-        "ANTITHESIS_BASE_URL",
-        "ANTITHESIS_REPOSITORY",
-        "RUST_LOG",
-    ] {
-        cmd.env_remove(env_var);
-    }
-    cmd.env("ANTITHESIS_API_KEY", &mock.token)
-        .env("ANTITHESIS_TENANT", "testtenant")
-        .env("ANTITHESIS_BASE_URL", &mock.url)
-        .args(["runs", "list"]);
-    assert_quiet_exit_with_closed_stdout(cmd);
+    let stderr = run_with_closed_stdout(
+        &[
+            ("ANTITHESIS_API_KEY", &mock.token),
+            ("ANTITHESIS_TENANT", "testtenant"),
+            ("ANTITHESIS_BASE_URL", &mock.url),
+        ],
+        &["runs", "list"],
+    );
+    assert!(stderr.is_empty(), "stderr:\n{stderr}");
 }
 
 // `snouty completions bash | head -1`. clap_complete panics on a failed
 // write, and this needs no network.
 #[test]
 fn completions_exit_cleanly_when_stdout_closes_early() {
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_snouty"));
-    cmd.env_clear()
-        .env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1")
-        .args(["completions", "bash"]);
-    assert_quiet_exit_with_closed_stdout(cmd);
-}
-
-/// Runs `cmd` with a stdout whose read end is already closed, so its first
-/// stdout write hits a broken pipe, and asserts that it exits 0 and writes
-/// nothing to stderr.
-fn assert_quiet_exit_with_closed_stdout(mut cmd: std::process::Command) {
-    let (reader, writer) = std::io::pipe().unwrap();
-    drop(reader);
-
-    let output = cmd
-        .stdout(writer)
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap()
-        .wait_with_output()
-        .unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "expected clean exit on broken pipe, got {:?}; stderr:\n{stderr}",
-        output.status
-    );
+    let stderr = run_with_closed_stdout(&[], &["completions", "bash"]);
     assert!(stderr.is_empty(), "stderr:\n{stderr}");
 }
 
-// `snouty launch | head -1` takes the run ID line and closes stdout before the
-// next-step lines are written. snouty must exit cleanly, not panic.
-#[test]
-fn launch_exits_cleanly_when_stdout_closes_early() {
-    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
-
-    // The read end is closed before snouty spawns, so its first stdout write
-    // hits a broken pipe.
+/// Runs snouty with only `envs` set and a stdout whose read end is already
+/// closed, so its first stdout write hits a broken pipe. Asserts that it
+/// exits 0, and returns its stderr.
+fn run_with_closed_stdout(envs: &[(&str, &str)], args: &[&str]) -> String {
     let (reader, writer) = std::io::pipe().unwrap();
     drop(reader);
 
@@ -593,26 +554,50 @@ fn launch_exits_cleanly_when_stdout_closes_early() {
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1")
-        .env(
-            "ANTITHESIS_API_KEY",
-            snouty::testutils::fake_secrets::FAKE_API_KEY_A,
-        )
-        .env("ANTITHESIS_TENANT", "testtenant")
-        .env("ANTITHESIS_BASE_URL", &mock_url)
-        .args(["launch", "--launcher", "advanced_test", "--duration", "30"])
-        .args(["--source", "ci", "--no-vcs"])
+        .envs(envs.iter().copied())
+        .args(args)
         .stdout(writer)
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap()
         .wait_with_output()
         .unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(
         output.status.success(),
         "expected clean exit on broken pipe, got {:?}; stderr:\n{stderr}",
         output.status
     );
+    stderr
+}
+
+// `snouty launch | head -1` takes the run ID line and closes stdout before the
+// next-step lines are written. snouty must exit cleanly, not panic.
+#[test]
+fn launch_exits_cleanly_when_stdout_closes_early() {
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
+    let stderr = run_with_closed_stdout(
+        &[
+            (
+                "ANTITHESIS_API_KEY",
+                snouty::testutils::fake_secrets::FAKE_API_KEY_A,
+            ),
+            ("ANTITHESIS_TENANT", "testtenant"),
+            ("ANTITHESIS_BASE_URL", &mock_url),
+        ],
+        &[
+            "launch",
+            "--launcher",
+            "advanced_test",
+            "--duration",
+            "30",
+            "--source",
+            "ci",
+            "--no-vcs",
+        ],
+    );
+    // launch writes its request params to stderr, but no error or panic.
+    assert!(!stderr.contains("Error"), "stderr:\n{stderr}");
     assert!(!stderr.contains("panicked"), "stderr:\n{stderr}");
 }
 

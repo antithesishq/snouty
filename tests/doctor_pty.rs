@@ -29,7 +29,10 @@ fn long_notes_wrap_under_their_text() {
         .env("ANTITHESIS_REPOSITORY", "pty-repo")
         // Username/password credentials draw the long deprecation warning.
         .env("ANTITHESIS_USERNAME", "pty-user")
-        .env("ANTITHESIS_PASSWORD", "pty-password");
+        .env(
+            "ANTITHESIS_PASSWORD",
+            snouty::testutils::fake_secrets::PASSWORD,
+        );
 
     let mut session = command.spawn(PTY_COLS, 40);
     session.set_expect_timeout(Some(Duration::from_secs(30)));

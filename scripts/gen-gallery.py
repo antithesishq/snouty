@@ -2400,9 +2400,9 @@ def _doctor_env(
         return (os.environ.get(name) or placeholder) if set_it else None
 
     return {
-        "ANTITHESIS_API_KEY": want("ANTITHESIS_API_KEY", api_key, "demo-api-key"),
+        "ANTITHESIS_API_KEY": want("ANTITHESIS_API_KEY", api_key, "fake-api-key"),
         "ANTITHESIS_USERNAME": want("ANTITHESIS_USERNAME", username, "demo-user"),
-        "ANTITHESIS_PASSWORD": want("ANTITHESIS_PASSWORD", password, "demo-pass"),
+        "ANTITHESIS_PASSWORD": want("ANTITHESIS_PASSWORD", password, "fake-password"),
         "ANTITHESIS_TENANT": want("ANTITHESIS_TENANT", tenant, "demo-tenant"),
         "ANTITHESIS_REPOSITORY": want(
             "ANTITHESIS_REPOSITORY", repo, "registry.example.com/acme/demo"
@@ -4212,11 +4212,12 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
 # human would see on that tenant.
 # ---------------------------------------------------------------------------
 
-# Fake, obviously-not-real secrets typed at the prompts — never a real
-# credential, and redacted again before embedding (see `_redact_secrets`).
-_FAKE_KEY = "antithesis_api_key_v2_NOTAREALKEY_7Qxz"
-_FAKE_PASS = "FAKE-not-a-real-password"
-_SEED_KEY = "antithesis_api_key_v2_NOTAREALSEED_9Pgw"
+# Fake secrets typed at the prompts — never a real credential, and redacted
+# again before embedding (see `_redact_secrets`). They are API_KEY_NEW,
+# PASSWORD_STORED, and API_KEY_STORED from src/testutils/fake_secrets.rs.
+_FAKE_KEY = "antithesis_api_key_v2_fake-new_7Qxz"
+_FAKE_PASS = "fake-password-stored"
+_SEED_KEY = "antithesis_api_key_v2_fake-stored_9Pgw"
 _TENANT = "acme"
 _REPO = "registry.example.com/acme/app"
 _SETTINGS = ".config/snouty/settings.toml"

@@ -306,7 +306,10 @@ pub(crate) fn start_runs_server(empty: bool) -> MockServer {
 pub(crate) fn snouty_with_mock(mock_url: &str) -> Command {
     let mut cmd = snouty();
     cmd.env("ANTITHESIS_USERNAME", "testuser")
-        .env("ANTITHESIS_PASSWORD", "testpass")
+        .env(
+            "ANTITHESIS_PASSWORD",
+            snouty::testutils::fake_secrets::PASSWORD,
+        )
         .env("ANTITHESIS_TENANT", "testtenant")
         .env("ANTITHESIS_BASE_URL", mock_url);
     cmd

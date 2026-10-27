@@ -2732,6 +2732,7 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutils::fake_secrets::{API_KEY, PASSWORD};
     use hegel::generators;
 
     /// Column indexes of the runs table.
@@ -5032,7 +5033,7 @@ mod tests {
                 &Settings::for_test_base_url(base_url),
                 AuthenticationInfo::Password {
                     username: "user".to_string(),
-                    password: "pass".to_string(),
+                    password: PASSWORD.to_string(),
                 },
                 false,
                 crate::api::ResponseCache::Disabled,
@@ -5177,7 +5178,7 @@ mod tests {
             AntithesisApi::build(
                 &Settings::for_test_base_url(base_url),
                 AuthenticationInfo::ApiKey {
-                    api_key: "test-key".to_owned(),
+                    api_key: API_KEY.to_owned(),
                 },
                 false,
                 crate::api::ResponseCache::Disabled,
@@ -5616,7 +5617,7 @@ mod tests {
             let api = AntithesisApi::build(
                 &Settings::for_test_base_url(&server.uri()),
                 AuthenticationInfo::ApiKey {
-                    api_key: "test-key".to_owned(),
+                    api_key: API_KEY.to_owned(),
                 },
                 false,
                 crate::api::ResponseCache::Dir(cache_dir.path().to_path_buf()),

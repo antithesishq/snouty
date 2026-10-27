@@ -2089,6 +2089,10 @@ fn error_body_message(body: &str) -> String {
 mod tests {
     use super::*;
     use crate::params::{ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID};
+    use crate::testutils::fake_secrets::{
+        ACCESS_TOKEN, ACCESS_TOKEN_NEW, API_KEY, BASIC_AUTHORIZATION, OAUTH_FLOW_TOKEN, PASSWORD,
+        REFRESH_TOKEN, REFRESH_TOKEN_NEW, SESSION_COOKIE, USERNAME,
+    };
     use hegel::{Generator, generators};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2160,8 +2164,8 @@ mod tests {
         AntithesisApi::build(
             settings,
             AuthenticationInfo::Password {
-                username: "user".to_owned(),
-                password: "pass".to_owned(),
+                username: USERNAME.to_owned(),
+                password: PASSWORD.to_owned(),
             },
             false,
             cache_dir.map_or(ResponseCache::Disabled, |d| {
@@ -2181,7 +2185,7 @@ mod tests {
         );
         request.headers_mut().insert(
             AUTHORIZATION,
-            HeaderValue::from_static("Bearer secret-rest-of-token"),
+            HeaderValue::from_str(&format!("Bearer {ACCESS_TOKEN}")).unwrap(),
         );
         request
             .headers_mut()
@@ -2193,7 +2197,7 @@ mod tests {
 
         assert!(out.contains("POST http://example.com/api/v1/launch"));
         assert!(out.contains("authorization: Bearer [redacted]\n"));
-        assert!(!out.contains("sec"));
+        assert!(!out.contains(&ACCESS_TOKEN[..4]));
         assert!(out.contains("content-type: application/json"));
         assert!(out.contains(r#"{"hello":"world"}"#));
     }
@@ -2204,7 +2208,11 @@ mod tests {
             reqwest::Method::POST,
             "http://example.com/auth/cli/token".parse().unwrap(),
         );
-        *request.body_mut() = Some(r#"{"flow_token":"secret-flow-token"}"#.into());
+        *request.body_mut() = Some(
+            serde_json::json!({"flow_token": OAUTH_FLOW_TOKEN})
+                .to_string()
+                .into(),
+        );
 
         let mut out = String::new();
         format_request(&request, &HeaderMap::new(), LoggedBody::Withheld, &mut out);
@@ -2222,16 +2230,13 @@ mod tests {
             "http://example.com/api/v1/runs".parse().unwrap(),
         );
         let mut defaults = HeaderMap::new();
-        defaults.insert(
-            AUTHORIZATION,
-            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
-        );
+        defaults.insert(AUTHORIZATION, HeaderValue::from_static(BASIC_AUTHORIZATION));
 
         let mut out = String::new();
         format_request(&request, &defaults, LoggedBody::Shown, &mut out);
 
         assert!(out.contains("authorization: Basic [redacted]\n"));
-        assert!(!out.contains("dXN"));
+        assert!(!out.contains(&BASIC_AUTHORIZATION[6..10]));
     }
 
     #[test]
@@ -2240,25 +2245,25 @@ mod tests {
         let set_cookie = HeaderName::from_static("set-cookie");
 
         assert_eq!(
-            redact_sensitive_value(&AUTHORIZATION, "bearer secret-token-12345"),
+            redact_sensitive_value(&AUTHORIZATION, &format!("bearer {ACCESS_TOKEN}")),
             "Bearer [redacted]"
         );
         assert_eq!(
-            redact_sensitive_value(&AUTHORIZATION, "Basic dXNlcjpwYXNz"),
+            redact_sensitive_value(&AUTHORIZATION, BASIC_AUTHORIZATION),
             "Basic [redacted]"
         );
         // An unknown scheme is not named: it could be the credential itself.
         assert_eq!(
-            redact_sensitive_value(&AUTHORIZATION, "Token secret-token"),
+            redact_sensitive_value(&AUTHORIZATION, &format!("Token {ACCESS_TOKEN}")),
             "[redacted]"
         );
         assert_eq!(
-            redact_sensitive_value(&COOKIE, "sessionid=abcdef"),
+            redact_sensitive_value(&COOKIE, &format!("sessionid={SESSION_COOKIE}")),
             "[redacted]"
         );
         // A Set-Cookie value that looks like an auth scheme is still not named.
         assert_eq!(
-            redact_sensitive_value(&set_cookie, "Bearer very-secret; Path=/"),
+            redact_sensitive_value(&set_cookie, &format!("Bearer {ACCESS_TOKEN}; Path=/")),
             "[redacted]"
         );
     }
@@ -2571,7 +2576,7 @@ mod tests {
             .respond_with(
                 ResponseTemplate::new(418)
                     .insert_header("content-type", "text/plain")
-                    .insert_header("set-cookie", "session=very-secret-token; Path=/"),
+                    .insert_header("set-cookie", format!("session={SESSION_COOKIE}; Path=/")),
             )
             .expect(1)
             .mount(&mock_server)
@@ -2611,8 +2616,8 @@ mod tests {
         let api = AntithesisApi::build(
             &Settings::for_test_base_url("http://example.com/"),
             AuthenticationInfo::Password {
-                username: "user".to_owned(),
-                password: "pass".to_owned(),
+                username: USERNAME.to_owned(),
+                password: PASSWORD.to_owned(),
             },
             true,
             ResponseCache::Disabled,
@@ -2626,8 +2631,8 @@ mod tests {
         let api = AntithesisApi::build(
             &Settings::for_test_base_url("http://example.com/api/v1/"),
             AuthenticationInfo::Password {
-                username: "user".to_owned(),
-                password: "pass".to_owned(),
+                username: USERNAME.to_owned(),
+                password: PASSWORD.to_owned(),
             },
             true,
             ResponseCache::Disabled,
@@ -2680,7 +2685,7 @@ mod tests {
                 .unwrap()
                 .to_str()
                 .unwrap(),
-            "Basic dXNlcjpwYXNz"
+            BASIC_AUTHORIZATION
         );
         assert_eq!(
             requests[0].body_json::<serde_json::Value>().unwrap(),
@@ -4148,8 +4153,8 @@ mod tests {
         let api = AntithesisApi::build(
             &Settings::for_test_base_url(&mock_server.uri()),
             AuthenticationInfo::Password {
-                username: "user".to_owned(),
-                password: "pass".to_owned(),
+                username: USERNAME.to_owned(),
+                password: PASSWORD.to_owned(),
             },
             false,
             ResponseCache::Dir(bogus),
@@ -4170,10 +4175,10 @@ mod tests {
         // new access + refresh token pair.
         Mock::given(method("POST"))
             .and(path("/auth/cli/refresh"))
-            .and(header("authorization", "Bearer old-refresh-token"))
+            .and(header("authorization", format!("Bearer {REFRESH_TOKEN}")))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "antithesis_token": "new-access-token",
-                "refresh_token": "new-refresh-token",
+                "antithesis_token": ACCESS_TOKEN_NEW,
+                "refresh_token": REFRESH_TOKEN_NEW,
                 "expires_in": 3600
             })))
             .expect(1)
@@ -4183,7 +4188,7 @@ mod tests {
         // The API rejects the stale access token …
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1"))
-            .and(header("authorization", "Bearer old-access-token"))
+            .and(header("authorization", format!("Bearer {ACCESS_TOKEN}")))
             .respond_with(ResponseTemplate::new(401))
             .expect(1)
             .mount(&mock_server)
@@ -4192,7 +4197,10 @@ mod tests {
         // … and accepts the refreshed one on the retry.
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1"))
-            .and(header("authorization", "Bearer new-access-token"))
+            .and(header(
+                "authorization",
+                format!("Bearer {ACCESS_TOKEN_NEW}"),
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "run_id": "run-1",
                 "status": "completed",
@@ -4208,8 +4216,8 @@ mod tests {
         let creds_dir = TempDir::new().unwrap();
         let creds_path = creds_dir.path().join("credentials.toml");
         let auth = AuthenticationInfo::oauth_for_test(
-            "old-access-token",
-            Some("old-refresh-token"),
+            ACCESS_TOKEN,
+            Some(REFRESH_TOKEN),
             crate::auth::OAuthRefreshInfo::CredentialsFile {
                 path: creds_path.clone(),
                 profile: None,
@@ -4240,16 +4248,16 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(requests[0].url.path(), "/api/v0/runs/run-1");
-        assert_eq!(auth_header(0), "Bearer old-access-token");
+        assert_eq!(auth_header(0), format!("Bearer {ACCESS_TOKEN}"));
         assert_eq!(requests[1].url.path(), "/auth/cli/refresh");
-        assert_eq!(auth_header(1), "Bearer old-refresh-token");
+        assert_eq!(auth_header(1), format!("Bearer {REFRESH_TOKEN}"));
         assert_eq!(requests[2].url.path(), "/api/v0/runs/run-1");
-        assert_eq!(auth_header(2), "Bearer new-access-token");
+        assert_eq!(auth_header(2), format!("Bearer {ACCESS_TOKEN_NEW}"));
 
         // The refreshed tokens were persisted to the file.
         let persisted = std::fs::read_to_string(&creds_path).unwrap();
-        assert!(persisted.contains("new-access-token"), "got:\n{persisted}");
-        assert!(persisted.contains("new-refresh-token"), "got:\n{persisted}");
+        assert!(persisted.contains(ACCESS_TOKEN_NEW), "got:\n{persisted}");
+        assert!(persisted.contains(REFRESH_TOKEN_NEW), "got:\n{persisted}");
     }
 
     // The retry budget covers the whole API call: the resend after a token
@@ -4263,30 +4271,33 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/auth/cli/refresh"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "antithesis_token": "new-access-token",
-                "refresh_token": "new-refresh-token",
+                "antithesis_token": ACCESS_TOKEN_NEW,
+                "refresh_token": REFRESH_TOKEN_NEW,
                 "expires_in": 3600
             })))
             .mount(&mock_server)
             .await;
-        Mock::given(header("authorization", "Bearer old-access-token"))
+        Mock::given(header("authorization", format!("Bearer {ACCESS_TOKEN}")))
             .respond_with(ResponseTemplate::new(429))
             .up_to_n_times(u64::from(MAX_RETRIES))
             .with_priority(1)
             .mount(&mock_server)
             .await;
-        Mock::given(header("authorization", "Bearer old-access-token"))
+        Mock::given(header("authorization", format!("Bearer {ACCESS_TOKEN}")))
             .respond_with(ResponseTemplate::new(401))
             .mount(&mock_server)
             .await;
-        Mock::given(header("authorization", "Bearer new-access-token"))
-            .respond_with(ResponseTemplate::new(429))
-            .mount(&mock_server)
-            .await;
+        Mock::given(header(
+            "authorization",
+            format!("Bearer {ACCESS_TOKEN_NEW}"),
+        ))
+        .respond_with(ResponseTemplate::new(429))
+        .mount(&mock_server)
+        .await;
         let creds_dir = TempDir::new().unwrap();
         let auth = AuthenticationInfo::oauth_for_test(
-            "old-access-token",
-            Some("old-refresh-token"),
+            ACCESS_TOKEN,
+            Some(REFRESH_TOKEN),
             crate::auth::OAuthRefreshInfo::CredentialsFile {
                 path: creds_dir.path().join("credentials.toml"),
                 profile: None,
@@ -4374,7 +4385,7 @@ mod tests {
         let api = AntithesisApi::build(
             &Settings::for_test_base_url(&mock_server.uri()),
             AuthenticationInfo::ApiKey {
-                api_key: "some-key".to_owned(),
+                api_key: API_KEY.to_owned(),
             },
             false,
             ResponseCache::Disabled,

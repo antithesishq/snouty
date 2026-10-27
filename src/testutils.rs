@@ -4,6 +4,8 @@ use std::process::{Child, Command, Stdio};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+pub mod fake_secrets;
+
 use crate::container::{ContainerRuntime, DockerRuntime, PodmanRuntime, is_podman_in_disguise};
 
 /// Return all container runtimes that are actually usable on this machine.
@@ -512,8 +514,8 @@ impl MockApiServer {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let url = format!("http://{addr}");
-        let token = MOCK_API_TOKEN.to_string();
-        let expected_token = MOCK_API_TOKEN.to_string();
+        let token = fake_secrets::MOCK_SERVER_API_KEY.to_string();
+        let expected_token = fake_secrets::MOCK_SERVER_API_KEY.to_string();
 
         let handle = thread::spawn(move || {
             for mut stream in listener.incoming().flatten() {
@@ -563,8 +565,6 @@ impl MockApiServer {
         }
     }
 }
-
-const MOCK_API_TOKEN: &str = "snouty-mock-api-token";
 
 /// The `Cache-Control` the real API sends on a cacheable read (observed on
 /// tenant release 61). The response cache admits nothing without such a
@@ -1959,7 +1959,7 @@ mod tests {
     fn oci_registry_drop_removes_container_by_name() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("runtime.log");
-        let runtime_path = dir.path().join("fake-runtime.sh");
+        let runtime_path = dir.path().join("stub-runtime.sh");
         fs::write(
             &runtime_path,
             format!(
@@ -2000,7 +2000,7 @@ mod tests {
     fn ensure_registry_image_available_pulls_registry_image() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("runtime.log");
-        let runtime_path = dir.path().join("fake-runtime.sh");
+        let runtime_path = dir.path().join("stub-runtime.sh");
         fs::write(
             &runtime_path,
             format!(

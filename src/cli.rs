@@ -542,7 +542,8 @@ pub struct DebugArgs {
     #[arg(long, value_parser = parse_run_id)]
     pub run_id: Option<String>,
 
-    /// Session ID of the test run to debug (mutually exclusive with --run-id)
+    /// Session ID of the test run to debug, in place of --run-id. Use it only
+    /// for a moment that names a session ID rather than a run ID
     #[arg(long)]
     pub session_id: Option<String>,
 
@@ -752,12 +753,13 @@ pub enum RunsCommands {
 
         /// Run that a cold moment comes from; the server loads the moment
         /// into the run. Omit it in a debugging session for a moment of the
-        /// run or session the session was launched from
+        /// run that the debugging session was launched from
         #[arg(long, conflicts_with = "source_session_id")]
         source_run_id: Option<SourceRunId>,
 
-        /// Debugging session that a cold moment comes from, in place of
-        /// --source-run-id
+        /// Session ID that a cold moment comes from, in place of
+        /// --source-run-id. Use it only for a moment that names a session ID
+        /// rather than a run ID
         #[arg(long)]
         source_session_id: Option<SourceSessionId>,
 

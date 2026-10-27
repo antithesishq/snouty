@@ -1,6 +1,6 @@
 Launch a debugging session
 
-Identify the target run with exactly one of --run-id (preferred) or --session-id.
+Identify the target run with --run-id. Use --session-id in its place only for a moment that names a session ID rather than a run ID.
 
 Example:
   snouty debug \

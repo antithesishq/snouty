@@ -702,8 +702,8 @@ pub struct ExecRequest {
     pub rewarm: Option<RewarmSource>,
 }
 
-/// The run, or that run's session, that a cold moment comes from. The server
-/// rewarms the moment by replaying its inputs.
+/// The run that a cold moment comes from, by run ID or by session ID. The
+/// server rewarms the moment by replaying its inputs.
 pub enum RewarmSource {
     Run(SourceRunId),
     Session(SourceSessionId),

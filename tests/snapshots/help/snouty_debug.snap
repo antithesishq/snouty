@@ -3,8 +3,8 @@ source: tests/help_snapshots.rs
 ---
 Launch a debugging session
 
-Identify the target run with exactly one of --run-id (preferred) or
---session-id.
+Identify the target run with --run-id. Use --session-id in its place only for a
+moment that names a session ID rather than a run ID.
 
 Example:
   snouty debug \
@@ -32,7 +32,8 @@ Options:
           --session-id)
 
       --session-id <SESSION_ID>
-          Session ID of the test run to debug (mutually exclusive with --run-id)
+          Session ID of the test run to debug, in place of --run-id. Use it only
+          for a moment that names a session ID rather than a run ID
 
       --input-hash <INPUT_HASH>
           Input hash identifying the moment to debug

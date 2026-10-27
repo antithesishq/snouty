@@ -2336,7 +2336,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-properties",
             "See all properties — pass and fail",
             "I want the full property list for a completed run.",
-            "A STAT/✓/✗/ID/NAME table with green pass and red fail labels on a "
+            "A STATUS/✓/✗/ID/NAME table with green pass and red fail labels on a "
             "terminal, and each property's full ID. "
             "The --json rows carry no `description` field.",
             ["runs", "properties", d.success],
@@ -2346,7 +2346,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-properties--passing",
             "List only the green properties",
             "I want to see only the properties that passed.",
-            "Every row is a passing property (STAT `pass`).",
+            "Every row is a passing property (STATUS `pass`).",
             ["runs", "properties", d.success, "--passing"],
             all_status("Passing"),
         ),
@@ -2354,7 +2354,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-properties--failing",
             "Focus on the properties that broke",
             "I want to see only the properties that failed.",
-            "Every row is a failing property (STAT `fail`).",
+            "Every row is a failing property (STATUS `fail`).",
             ["runs", "properties", d.success, "--failing"],
             all_status("Failing"),
         ),
@@ -3282,7 +3282,7 @@ def build_help_stories(d: Discovery) -> list[Story]:
         _help_story(
             "help-runs-properties",
             "Learn the properties table, filters, and --detail",
-            "I want the help to explain the STAT, ✓, ✗, ID, and NAME columns "
+            "I want the help to explain the STATUS, ✓, ✗, ID, and NAME columns "
             "and the example and counterexample counts, and the --name/--group/--detail flags "
             "(including how --detail feeds a moment into `runs logs`).",
             ["runs", "properties"],
@@ -3294,7 +3294,7 @@ def build_help_stories(d: Discovery) -> list[Story]:
                     ["runs", "properties", s, "--name", d.pass_event_prop, "--detail"],
                 ),
             ],
-            align=("STAT", "✓", "✗", "ID", "NAME"),
+            align=("STATUS", "✓", "✗", "ID", "NAME"),
         ),
         _help_story(
             "help-runs-events",

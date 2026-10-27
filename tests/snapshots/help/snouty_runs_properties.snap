@@ -3,11 +3,11 @@ source: tests/help_snapshots.rs
 ---
 List a run's property (assertion) results, one table per group.
 
-Each table is headed by its group; columns are STAT, ✓, ✗, ID, NAME (failing
-first). STAT is pass or fail, and is empty for an undetermined property. A
-property is undetermined until it triggers. ✓ is the example count and ✗ is the
-counterexample count; large counts are shortened, as in 186k. ID is the property
-ID, for `snouty runs property`.
+Each table is headed by its group; columns are STATUS, ✓, ✗, ID, NAME (failing
+first). STATUS is pass, fail, or unseen. An unseen property is undetermined: it
+has not triggered yet, and --undetermined selects it. ✓ is the example count and
+✗ is the counterexample count; large counts are shortened, as in 186k. ID is the
+property ID, for `snouty runs property`.
 
 Filter by status with --passing, --failing, and --undetermined. Give more than
 one to show each of those statuses.

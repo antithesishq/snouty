@@ -1269,13 +1269,20 @@ fn is_failing(p: &Property) -> bool {
     matches!(p.status(), PropertyStatus::Failing)
 }
 
-/// Blank for an undetermined property, so the decided rows stand out.
-fn property_stat_cell(status: PropertyStatus) -> String {
+/// A word of at most six characters, so the column is no wider than its
+/// STATUS header.
+fn property_status_cell(status: PropertyStatus) -> String {
+    let word = console::style(match status {
+        PropertyStatus::Passing => "pass",
+        PropertyStatus::Failing => "fail",
+        PropertyStatus::Undetermined => "unseen",
+    });
     match status {
-        PropertyStatus::Passing => console::style("pass").green().to_string(),
-        PropertyStatus::Failing => console::style("fail").red().to_string(),
-        PropertyStatus::Undetermined => String::new(),
+        PropertyStatus::Passing => word.green(),
+        PropertyStatus::Failing => word.red(),
+        PropertyStatus::Undetermined => word.yellow(),
     }
+    .to_string()
 }
 
 /// Order properties into display sections shared by the table and `--detail`
@@ -1335,7 +1342,7 @@ fn render_properties_table(properties: &[Property]) -> String {
     // Right-align the counts so magnitudes line up. ID never shrinks, so a
     // user can copy it whole into `runs property`.
     let table = Table::builder()
-        .column(Column::new("STAT"))
+        .column(Column::new("STATUS"))
         .column(Column::new("✓").align(Align::Right))
         .column(Column::new("✗").align(Align::Right))
         .column(Column::new("ID"))
@@ -1349,7 +1356,7 @@ fn render_properties_table(properties: &[Property]) -> String {
                 .map(|p| {
                     let (examples, counterexamples) = property_example_counts(p);
                     vec![
-                        property_stat_cell(p.status()),
+                        property_status_cell(p.status()),
                         format_count_si(examples),
                         format_count_si(counterexamples),
                         sanitize(p.id().unwrap_or_default()),
@@ -2832,7 +2839,7 @@ mod tests {
         assert_eq!(lines[0], "Safety");
         assert_eq!(
             lines[1].split_whitespace().collect::<Vec<_>>(),
-            ["STAT", "✓", "✗", "ID", "NAME"]
+            ["STATUS", "✓", "✗", "ID", "NAME"]
         );
         assert!(!table.contains("GROUP"));
         assert!(

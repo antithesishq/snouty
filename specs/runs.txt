@@ -228,20 +228,19 @@ stdout '"run_id".*"$R_run_id"'
 [!staging] stdout '"status".*"completed"'
 
 # `snouty runs properties` renders one table per group, headed by the group.
-# Each table has STAT, ✓, ✗, ID, and NAME columns. STAT is `pass` or `fail`,
-# and empty for an undetermined property. ✓ and ✗ are the SI-shortened example
-# and counterexample counts. Ungrouped properties go in a trailing
-# "(ungrouped)" section.
+# Each table has STATUS, ✓, ✗, ID, and NAME columns. STATUS is `pass`,
+# `fail`, or `unseen` for an undetermined property. ✓ and ✗ are the
+# SI-shortened example and counterexample counts. Ungrouped properties go in a
+# trailing "(ungrouped)" section.
 mock-runs-server
 snouty runs properties $R_run_id
-[!staging] stdout '^STAT +✓ +✗ +ID +NAME$'
+[!staging] stdout '^STATUS +✓ +✗ +ID +NAME$'
 [!staging] stdout '^fail +12 +3 +97cf5fcafa500ed62bf109d81834c5b881a2c854 +Counter value stays below limit$'
 # The API sends the name as `Safety: Counter value…`. The heading carries the
 # group, so NAME drops the `Safety: ` prefix.
 [!staging] ! stdout 'Safety: Counter'
 [!staging] stdout '^pass +.*Setup completes$'
-# An undetermined property has an empty STAT cell.
-[!staging] stdout '^ +0 +0 +\S+ +Balance stays nonnegative$'
+[!staging] stdout '^unseen +0 +0 +\S+ +Balance stays nonnegative$'
 
 # `snouty runs properties --failing` shows only failing properties.
 mock-runs-server
@@ -258,7 +257,7 @@ snouty runs properties --passing $R_run_id
 # `snouty runs properties --undetermined` shows only undetermined properties.
 mock-runs-server
 snouty runs properties --undetermined $R_run_id
-[!staging] stdout '^ +0 +0 .*Balance stays nonnegative'
+[!staging] stdout '^unseen .*Balance stays nonnegative'
 [!staging] ! stdout 'Setup completes'
 [!staging] ! stdout 'Counter value stays below limit'
 
@@ -266,7 +265,7 @@ snouty runs properties --undetermined $R_run_id
 mock-runs-server
 snouty runs properties --passing --undetermined $R_run_id
 [!staging] stdout '^pass .*Setup completes'
-[!staging] stdout '^ +0 +0 .*Balance stays nonnegative'
+[!staging] stdout '^unseen .*Balance stays nonnegative'
 [!staging] ! stdout 'Counter value stays below limit'
 
 # A status filter that matches nothing names every status it asked for.
@@ -593,7 +592,7 @@ snouty --json runs properties run-empty
 # any examples were sampled.
 mock-runs-server
 snouty runs properties run-no-events
-stdout '^STAT +✓ +✗ +ID +NAME$'
+stdout '^STATUS +✓ +✗ +ID +NAME$'
 stdout '^pass +0 +0 +No events property$'
 
 # A bad run id gives the same friendly "run not found" message across every

@@ -12,6 +12,7 @@ use chrono::{TimeDelta, Utc};
 use color_eyre::eyre::Result;
 
 use crate::api::AntithesisApi;
+use crate::auth::AuthenticationInfo;
 use crate::error::user_error;
 use crate::settings::{Settings, SettingsRequest};
 
@@ -76,10 +77,12 @@ pub fn tenant_registry(settings: &Settings) -> Option<RegistryHost> {
 ///    those settings is not `host`, return `None`: do not search the other
 ///    profiles.
 /// 2. Implicit. Otherwise, use the first profile whose tenant registry is
-///    `host`, in the order of [`Settings::resolve_every_profile`]: the
-///    top-level defaults first, then the named profiles. When more than one
-///    profile matches, the first one wins. A profile that fails to resolve
-///    is skipped. When no profile matches, return `None`.
+///    `host` and that has a credential, in the order of
+///    [`Settings::resolve_every_profile`]: the top-level defaults first, then
+///    the named profiles. When more than one such profile matches, the first
+///    one wins. A profile that fails to resolve is skipped. When no profile
+///    matches, return `None`. When profiles match but none has a credential,
+///    fail with an error that names them.
 pub fn select_settings(
     project_settings_path: Option<PathBuf>,
     profile: Option<String>,
@@ -90,9 +93,35 @@ pub fn select_settings(
     if request.is_explicit() {
         return Ok(Some(request.resolve()?).filter(uses_host));
     }
-    Ok(Settings::resolve_every_profile()?
+    let mut without_credential = Vec::new();
+    for settings in Settings::resolve_every_profile()?
         .into_iter()
-        .find(uses_host))
+        .filter(uses_host)
+    {
+        if AuthenticationInfo::find_ambient(settings.profile())?.is_some() {
+            return Ok(Some(settings));
+        }
+        without_credential.push(settings.profile().map(str::to_owned));
+    }
+    if without_credential.is_empty() {
+        return Ok(None);
+    }
+    let names: Vec<_> = without_credential
+        .iter()
+        .map(|profile| match profile {
+            Some(name) => format!("`{name}`"),
+            None => "the default profile".to_owned(),
+        })
+        .collect();
+    let login = if without_credential.contains(&None) {
+        "run `snouty login`, or `snouty login --profile <name>` for a named profile"
+    } else {
+        "run `snouty login --profile <name>` for one of them"
+    };
+    Err(user_error(format!(
+        "no profile that uses {host} has an Antithesis credential: {}; {login}, or set ANTITHESIS_API_KEY",
+        names.join(", ")
+    )))
 }
 
 /// The password that the registry takes with [`USERNAME`]: the API key, or
@@ -145,7 +174,7 @@ pub async fn password(api: &AntithesisApi) -> Result<String> {
 mod tests {
     use super::*;
     use crate::api::ResponseCache;
-    use crate::auth::{AuthenticationInfo, OAuthRefreshInfo, paseto_expiring_in};
+    use crate::auth::{OAuthRefreshInfo, paseto_expiring_in};
     use crate::testutils::fake_secrets::{
         FAKE_ACCESS_TOKEN_A, FAKE_ACCESS_TOKEN_B, FAKE_API_KEY_A, FAKE_PASSWORD,
         FAKE_REFRESH_TOKEN_A, FAKE_REFRESH_TOKEN_B, FAKE_USERNAME,

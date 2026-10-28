@@ -395,15 +395,27 @@ impl AuthenticationInfo {
         profile: Option<&str>,
         policy: PasswordPolicy,
     ) -> Result<AttributedValue<Self>> {
+        match Self::find_ambient(profile)? {
+            Some(found) => apply_password_policy(found, policy),
+            None => Err(user_error(NO_CREDENTIALS_MESSAGE).suggestion(
+                "set ANTITHESIS_API_KEY; ask Antithesis support for an API key if you don't have one",
+            )),
+        }
+    }
+
+    /// The credential that ambient resolution for `profile` finds, of any
+    /// kind. It reads the environment, the keychain and the credentials file,
+    /// and makes no network call.
+    ///
+    /// The [`PasswordPolicy`] gate does not run, so only a caller that never
+    /// authenticates with the result may call it.
+    pub(crate) fn find_ambient(profile: Option<&str>) -> Result<Option<AttributedValue<Self>>> {
         for origin in CredentialOrigin::in_resolution_order(profile) {
             if let Some(found) = origin.resolve()? {
-                return apply_password_policy(found, policy);
+                return Ok(Some(found));
             }
         }
-
-        Err(user_error(NO_CREDENTIALS_MESSAGE).suggestion(
-            "set ANTITHESIS_API_KEY; ask Antithesis support for an API key if you don't have one",
-        ))
+        Ok(None)
     }
 
     /// Every origin that holds a credential, in resolution order: the first is

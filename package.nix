@@ -47,6 +47,12 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # Some tests require a container runtime, unavailable in the Nix sandbox
   doCheck = false;
 
+  # Docker and Podman run the credential helper by this name, and snouty runs
+  # the helper when it starts by this name.
+  postInstall = ''
+    ln -s snouty "$out/bin/docker-credential-snouty"
+  '';
+
   env = {
     LIBSQLITE3_SYS_USE_PKG_CONFIG = true;
   };

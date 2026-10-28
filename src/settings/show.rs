@@ -3,7 +3,7 @@ use std::io::Write;
 use color_eyre::eyre::Result;
 use serde_json::{Map, Value, json};
 
-use super::{Settings, SettingsFiles};
+use super::Settings;
 use crate::features::{self, Feature};
 use crate::render::render_kv;
 use crate::stdio;
@@ -49,27 +49,6 @@ fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, 
     rows
 }
 
-/// The human table's rows for the settings files: each file's path, or
-/// `none` when it does not exist.
-fn file_rows(files: &SettingsFiles) -> [(&'static str, String); 2] {
-    [
-        (
-            "project file",
-            files.project.as_ref().map_or_else(
-                || "none".to_owned(),
-                |file| format!("{} ({})", file.path.display(), file.source),
-            ),
-        ),
-        (
-            "global file",
-            files
-                .global
-                .as_ref()
-                .map_or_else(|| "none".to_owned(), |path| path.display().to_string()),
-        ),
-    ]
-}
-
 pub fn cmd_settings_show(settings: &Settings, json: bool) -> Result<()> {
     let rows = rows(settings, &features::enabled());
     let mut stdout = stdio::stdout();
@@ -92,20 +71,21 @@ pub fn cmd_settings_show(settings: &Settings, json: bool) -> Result<()> {
                 (name, text)
             })
             .collect();
-        let files = file_rows(settings.files());
-        // One label width for both blocks, so that their values line up.
-        let width = text
-            .iter()
-            .map(|(name, _)| name.len())
-            .chain(files.iter().map(|(name, _)| name.len()))
-            .max()
-            .unwrap_or(0);
-        write!(
-            stdout,
-            "{}\n{}",
-            render_kv(&text, width),
-            render_kv(&files, width)
-        )?;
+        write!(stdout, "{}", render_kv(&text, 0))?;
+        // Least to most specific: a later file overrides an earlier one.
+        let files = settings.files();
+        if files.is_empty() {
+            writeln!(stdout, "\nsettings files: none")?;
+        } else {
+            let rows: Vec<(String, String)> = files
+                .iter()
+                .map(|file| (file.source.to_string(), file.path.display().to_string()))
+                .collect();
+            writeln!(stdout, "\nsettings files, least to most specific:")?;
+            for line in render_kv(&rows, 0).lines() {
+                writeln!(stdout, "  {line}")?;
+            }
+        }
     }
     Ok(())
 }

@@ -3298,8 +3298,8 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "I want to see each setting that snouty resolved from my environment and "
             "settings files, before I run a command against my tenant.",
             "settings show prints one aligned row per setting, with `not set` (or the default) "
-            "for a setting that is not configured, then names the project and global settings "
-            "files it read.",
+            "for a setting that is not configured, then lists the settings files it read, least "
+            "to most specific.",
             ["settings", "show"],
             contains_all(
                 "tenant", "base_url", "update_channel", "project file", "global file"

@@ -16,7 +16,7 @@ use crate::error::user_error;
 mod files;
 mod show;
 mod trust;
-pub use files::{ProjectFile, ProjectFileSource, SettingsFiles};
+pub use files::{SettingsFile, SettingsFileSource};
 pub use show::cmd_settings_show;
 pub use trust::{SETTINGS_TRUST_VAR_NAME, deny, trust};
 
@@ -102,7 +102,7 @@ pub struct Settings {
     update_channel: UpdateChannel,
     api_cache_max_file_size: u64,
     api_cache_respect_headers: bool,
-    files: SettingsFiles,
+    files: Vec<SettingsFile>,
 }
 
 impl Default for Settings {
@@ -146,24 +146,37 @@ impl Settings {
         // A named project file must exist and needs no trust; the default
         // `./.snouty.toml` is optional and needs trust. (Climbing the directory
         // tree, if ever wanted, would go here.)
-        let (project, project_file) = match explicit {
-            Some((path, source)) => (
-                load_settings_file(&path, true)?,
-                Some(ProjectFile::new(&path, source)),
+        let (project_path, project_source) = match explicit {
+            Some(named) => named,
+            None => (
+                PathBuf::from(PROJECT_SETTINGS_FILENAME),
+                SettingsFileSource::CurrentDirectory,
             ),
-            None => load_default_project_file(trust_override)?,
+        };
+        let project = match project_source {
+            SettingsFileSource::CurrentDirectory => load_default_project_file(trust_override)?,
+            SettingsFileSource::SettingsFlag
+            | SettingsFileSource::SettingsPathEnv
+            | SettingsFileSource::Global => load_settings_file(&project_path, true)?,
         };
         let global_path = global_settings_dir().map(|dir| dir.join(GLOBAL_SETTINGS_FILENAME));
         let global = match &global_path {
             Some(path) => load_settings_file(path, false)?,
             None => None,
         };
-        let files = SettingsFiles {
-            project: project_file,
-            global: global_path
+        // Least to most specific, the order in which the project file
+        // overrides the global one.
+        let files = [
+            global_path
                 .filter(|_| global.is_some())
-                .map(|path| files::absolute(&path)),
-        };
+                .map(|path| SettingsFile::new(&path, SettingsFileSource::Global)),
+            project
+                .is_some()
+                .then(|| SettingsFile::new(&project_path, project_source)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
 
         let resolve = |key: &str, env_var: &str| {
             resolve_value(
@@ -291,8 +304,8 @@ impl Settings {
         self.api_cache_respect_headers
     }
 
-    /// The settings files that exist, and whether snouty read each one.
-    pub fn files(&self) -> &SettingsFiles {
+    /// The settings files that snouty read, least to most specific.
+    pub fn files(&self) -> &[SettingsFile] {
         &self.files
     }
 
@@ -332,7 +345,7 @@ pub struct SettingsBuilder {
     update_channel: UpdateChannel,
     api_cache_max_file_size: Option<u64>,
     api_cache_respect_headers: Option<bool>,
-    files: SettingsFiles,
+    files: Vec<SettingsFile>,
 }
 
 impl SettingsBuilder {
@@ -423,11 +436,11 @@ impl SettingsBuilder {
 /// is unset; it would otherwise name an empty path that must, and cannot, exist.
 pub fn explicit_settings_path(
     flag: Option<PathBuf>,
-) -> Result<Option<(PathBuf, ProjectFileSource)>> {
+) -> Result<Option<(PathBuf, SettingsFileSource)>> {
     match flag {
-        Some(path) => Ok(Some((path, ProjectFileSource::SettingsFlag))),
+        Some(path) => Ok(Some((path, SettingsFileSource::SettingsFlag))),
         None => Ok(env::var(SNOUTY_SETTINGS_PATH_VAR_NAME)?
-            .map(|path| (PathBuf::from(path), ProjectFileSource::SettingsPathEnv))),
+            .map(|path| (PathBuf::from(path), SettingsFileSource::SettingsPathEnv))),
     }
 }
 
@@ -608,23 +621,20 @@ fn load_settings_file(path: &Path, required: bool) -> Result<Option<Table>> {
 }
 
 /// Load `./.snouty.toml` when it exists and [`trust::verdict`] allows it.
-/// The [`ProjectFile`] is present whenever the file exists, also when snouty
-/// ignores it.
 fn load_default_project_file(
     trust_override: Option<trust::TrustOverride>,
-) -> Result<(Option<Table>, Option<ProjectFile>)> {
+) -> Result<Option<Table>> {
     let path = Path::new(PROJECT_SETTINGS_FILENAME);
     let Some(contents) = read_to_string_if_file_exists(path)? else {
-        return Ok((None, None));
+        return Ok(None);
     };
-    let source = trust::verdict(path, contents.as_bytes(), trust_override)?;
-    let table = if source == ProjectFileSource::Denied {
-        debug!("ignoring the denied settings file {}", path.display());
-        None
-    } else {
-        Some(parse_settings(&contents, path)?)
-    };
-    Ok((table, Some(ProjectFile::new(path, source))))
+    match trust::verdict(path, contents.as_bytes(), trust_override)? {
+        trust::Verdict::Use => parse_settings(&contents, path).map(Some),
+        trust::Verdict::Ignore => {
+            debug!("ignoring the denied settings file {}", path.display());
+            Ok(None)
+        }
+    }
 }
 
 /// Reads a setting out of one TOML table: [`string_value`] for text settings,

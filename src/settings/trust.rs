@@ -20,8 +20,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{
-    NO_GLOBAL_SETTINGS_DIR, ProjectFileSource, global_settings_dir, read_to_string_if_file_exists,
-    write_global_toml,
+    NO_GLOBAL_SETTINGS_DIR, global_settings_dir, read_to_string_if_file_exists, write_global_toml,
 };
 use crate::env;
 use crate::error::user_error;
@@ -94,18 +93,22 @@ impl TrustOverride {
     }
 }
 
+/// What snouty does with a project settings file that it may use.
+pub(super) enum Verdict {
+    Use,
+    Ignore,
+}
+
 /// The verdict for the project settings file at `path`, whose content is
-/// `contents`: [`ProjectFileSource::Trusted`], [`ProjectFileSource::TrustAll`]
-/// or [`ProjectFileSource::Denied`]. A file that the user has not trusted, or
-/// that changed since the user trusted it, is an error that tells how to
-/// decide.
+/// `contents`. A file that the user has not trusted, or that changed since the
+/// user trusted it, is an error that tells how to decide.
 pub(super) fn verdict(
     path: &Path,
     contents: &[u8],
     trust_override: Option<TrustOverride>,
-) -> Result<ProjectFileSource> {
+) -> Result<Verdict> {
     if let Some(TrustOverride::All) = trust_override {
-        return Ok(ProjectFileSource::TrustAll);
+        return Ok(Verdict::Use);
     }
     let path = canonicalize(path)?;
     let Some(dir) = global_settings_dir() else {
@@ -118,10 +121,8 @@ pub(super) fn verdict(
         )));
     };
     match TrustStore::load(&dir)?.files.get(&path) {
-        Some(Decision::Deny) => Ok(ProjectFileSource::Denied),
-        Some(Decision::Trust { sha256 }) if *sha256 == digest(contents) => {
-            Ok(ProjectFileSource::Trusted)
-        }
+        Some(Decision::Deny) => Ok(Verdict::Ignore),
+        Some(Decision::Trust { sha256 }) if *sha256 == digest(contents) => Ok(Verdict::Use),
         Some(Decision::Trust { .. }) => Err(untrusted(&path, "changed since you trusted it")),
         None => Err(untrusted(&path, "is not trusted")),
     }

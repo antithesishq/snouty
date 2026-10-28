@@ -26,7 +26,7 @@ stderr 'is not trusted'
 env SNOUTY_SETTINGS_TRUST=all
 snouty settings show
 stdout 'tenant +acme'
-stdout '^project file +.*\.snouty\.toml \(SNOUTY_SETTINGS_TRUST=all\)$'
+stdout '^  current directory +/.*/\.snouty\.toml$'
 env SNOUTY_SETTINGS_TRUST=
 ! snouty settings show
 stderr 'is not trusted'
@@ -44,9 +44,9 @@ stderr 'Trusted .*\.snouty\.toml'
 snouty settings show
 stdout 'tenant +acme'
 stdout 'base_url +https://acme\.antithesis\.com'
-stdout '^project file +/.*/\.snouty\.toml \(trusted\)$'
+stdout '^  current directory +/.*/\.snouty\.toml$'
 snouty settings show --json
-stdout '"source": "trusted"'
+stdout '"source": "current_directory"'
 
 # 5. A trusted file whose content changes is not trusted any more.
 cp evil.toml .snouty.toml
@@ -62,7 +62,7 @@ snouty settings deny
 stderr 'Denied .*\.snouty\.toml'
 snouty settings show
 stdout 'tenant +not set'
-stdout '^project file +.*\.snouty\.toml \(denied, ignored\)$'
+stdout '^settings files: none$'
 cp acme.toml .snouty.toml
 snouty settings show
 stdout 'tenant +not set'
@@ -91,11 +91,11 @@ cd .
 # 9. A file named with --settings or SNOUTY_SETTINGS_PATH needs no trust.
 snouty --settings chosen.toml settings show
 stdout 'tenant +chosen-tenant'
-stdout '^project file +/.*/chosen\.toml \(--settings\)$'
+stdout '^  --settings +/.*/chosen\.toml$'
 env SNOUTY_SETTINGS_PATH=chosen.toml
 snouty settings show
 stdout 'tenant +chosen-tenant'
-stdout '^project file +/.*/chosen\.toml \(SNOUTY_SETTINGS_PATH\)$'
+stdout '^  SNOUTY_SETTINGS_PATH +/.*/chosen\.toml$'
 env SNOUTY_SETTINGS_PATH=
 
 # 10. `settings trust` fails for a file that does not exist.

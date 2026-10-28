@@ -106,7 +106,7 @@ impl Settings {
     /// global `settings.toml`.
     ///
     /// The project settings file is located by, in descending precedence:
-    /// `SNOUTY_SETTINGS_PATH`, the `--settings` flag (`project_settings_path`),
+    /// the `--settings` flag (`project_settings_path`), `SNOUTY_SETTINGS_PATH`,
     /// then `./.snouty.toml` in the current working directory. The active profile
     /// is the `--profile` flag if set, otherwise `ANTITHESIS_PROFILE`.
     ///

@@ -147,10 +147,8 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Doctor(args) => {
             snouty::doctor::cmd_doctor(&settings?, output, args.offline).await
         }
-        // Not through `suppress_broken_pipe`: a closed stdout must fail the
-        // helper action.
         Commands::DockerCredential { action } => {
-            return snouty::docker_credential::run(action, settings.ok(), settings_path).await;
+            snouty::docker_credential::run(action, settings.ok(), settings_path).await
         }
         Commands::Mcp(args) => {
             // The tool calls resolve the settings again, in each child.

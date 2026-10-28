@@ -6,7 +6,7 @@
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
-use color_eyre::eyre::{Context, Report, Result};
+use color_eyre::eyre::{Context, Report, Result, eyre};
 use serde::Serialize;
 
 use crate::api::AntithesisApi;
@@ -91,7 +91,10 @@ async fn cmd_docker_credential(
                 username: registry::USERNAME,
                 secret: &secret,
             })?;
-            writeln!(stdio::stdout(), "{credential}").wrap_err("failed to write the credential")?;
+            // A closed stdout must fail the action. The error keeps only the
+            // message, so `suppress_broken_pipe` does not find a closed stream.
+            writeln!(stdio::stdout(), "{credential}")
+                .map_err(|err| eyre!("failed to write the credential: {err}"))?;
             Ok(())
         }
         // Docker and Podman call store only for a login. Snouty owns the

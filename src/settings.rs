@@ -13,8 +13,10 @@ use crate::cli::UpdateChannel;
 use crate::env;
 use crate::error::user_error;
 
+mod files;
 mod show;
 mod trust;
+pub use files::{SettingsFile, SettingsFileType};
 pub use show::cmd_settings_show;
 pub use trust::{SETTINGS_TRUST_VAR_NAME, deny, trust};
 
@@ -100,7 +102,7 @@ pub struct Settings {
     update_channel: UpdateChannel,
     api_cache_max_file_size: u64,
     api_cache_respect_headers: bool,
-    files: Vec<PathBuf>,
+    files: Vec<SettingsFile>,
 }
 
 impl Default for Settings {
@@ -158,14 +160,15 @@ impl Settings {
         };
         // Most specific first: the project file overrides the global one.
         let files = [
-            project.is_some().then_some(project_path),
-            global_path.filter(|_| global.is_some()),
+            project
+                .is_some()
+                .then(|| SettingsFile::new(SettingsFileType::Project, &project_path)),
+            global_path
+                .filter(|_| global.is_some())
+                .map(|path| SettingsFile::new(SettingsFileType::Global, &path)),
         ]
         .into_iter()
         .flatten()
-        // Each file exists, so `canonicalize` fails only in a race; the path
-        // as given still names the file then.
-        .map(|path| fs::canonicalize(&path).unwrap_or(path))
         .collect();
 
         let resolve = |key: &str, env_var: &str| {
@@ -295,7 +298,7 @@ impl Settings {
     }
 
     /// The settings files that snouty read, most specific first.
-    pub fn files(&self) -> &[PathBuf] {
+    pub fn files(&self) -> &[SettingsFile] {
         &self.files
     }
 
@@ -335,7 +338,7 @@ pub struct SettingsBuilder {
     update_channel: UpdateChannel,
     api_cache_max_file_size: Option<u64>,
     api_cache_respect_headers: Option<bool>,
-    files: Vec<PathBuf>,
+    files: Vec<SettingsFile>,
 }
 
 impl SettingsBuilder {

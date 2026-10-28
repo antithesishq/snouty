@@ -7,6 +7,7 @@ use super::Settings;
 use crate::features::{self, Feature};
 use crate::render::{render_kv, sanitize};
 use crate::stdio;
+use crate::table::{Column, Table};
 
 const NOT_SET: &str = "not set";
 
@@ -74,12 +75,24 @@ pub fn cmd_settings_show(settings: &Settings, json: bool) -> Result<()> {
         write!(stdout, "{}", render_kv(&text, 0))?;
         let files = settings.files();
         if files.is_empty() {
-            writeln!(stdout, "\nresolved settings files: none")?;
+            writeln!(stdout, "\nsettings files: none")?;
         } else {
-            writeln!(stdout, "\nresolved settings files:")?;
-            for path in files {
-                writeln!(stdout, "  {}", sanitize(&path.display().to_string()))?;
-            }
+            let rows = files
+                .iter()
+                .map(|file| {
+                    vec![
+                        file.file_type.to_string(),
+                        sanitize(&file.path.display().to_string()),
+                    ]
+                })
+                .collect();
+            // Both columns are fixed, so the table never needs the terminal
+            // width.
+            let table = Table::builder()
+                .column(Column::new("TYPE"))
+                .column(Column::new("PATH"))
+                .render(rows, usize::MAX);
+            writeln!(stdout, "\n{table}")?;
         }
     }
     Ok(())

@@ -1,7 +1,7 @@
 # snouty settings show
 #
 # Prints each setting with the value snouty resolved for it, one row each, on
-# stdout, then the settings files that snouty read, most specific first.
+# stdout, then a table of the settings files that snouty read.
 # --json prints both as one JSON object: `settings`, with null for a setting
 # that is not set and has no default, and `files`.
 
@@ -16,7 +16,7 @@ stdout '^container_engine +auto-detect$'
 stdout '^update_channel +stable$'
 stdout '^api_cache_max_file_size +\d+$'
 stdout '^api_cache_respect_headers +true$'
-stdout '^resolved settings files: none$'
+stdout '^settings files: none$'
 
 # 2. Values resolve through the usual chain. The base URL derives from the
 #    tenant.
@@ -31,13 +31,13 @@ stdout '^base_url +https://acme\.antithesis\.com$'
 stdout '^https_proxy +http://proxy\.example\.com:3128$'
 stdout '^api_cache_max_file_size +1000$'
 
-# 3. The human output lists each settings file that snouty read, most
-#    specific first: the project file, then the global one.
-stdout '^resolved settings files:$'
-stdout '^  /.*/chosen\.toml$'
+# 3. The human output is a table of the settings files that snouty read:
+#    the project file, which overrides the global one, then the global file.
+stdout '^TYPE +PATH$'
+stdout '^project +/.*/chosen\.toml$'
 set-env XDG_CONFIG_HOME ${WORK}/cfg
 snouty --settings chosen.toml settings show
-stdout '(?s)^  /[^\n]*/chosen\.toml\n  /[^\n]*/cfg/snouty/settings\.toml$'
+stdout '(?s)^project +/[^\n]*/chosen\.toml\nglobal +/[^\n]*/cfg/snouty/settings\.toml$'
 
 # 4. --json prints the settings, keyed by setting, and the files.
 snouty --json --settings chosen.toml settings show
@@ -47,7 +47,7 @@ stdout '"repository": "global-repo"'
 stdout '"profile": null'
 stdout '"api_cache_max_file_size": 1000'
 stdout '"api_cache_respect_headers": true'
-stdout '(?s)"files": \[\n +"/[^\n]*/chosen\.toml",\n +"/[^\n]*/cfg/snouty/settings\.toml"\n +\]'
+stdout '(?s)"files": \[.*"type": "project",\n +"path": "/[^\n]*/chosen\.toml".*"type": "global",\n +"path": "/[^\n]*/cfg/snouty/settings\.toml"'
 
 -- cfg/snouty/settings.toml --
 repository = "global-repo"

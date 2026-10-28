@@ -3298,12 +3298,12 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "I want to see each setting that snouty resolved from my environment and "
             "settings files, before I run a command against my tenant.",
             "settings show prints one aligned row per setting, with `not set` (or the default) "
-            "for a setting that is not configured, then lists the settings files it read, most "
-            "specific first.",
+            "for a setting that is not configured, then a TYPE/PATH table "
+            "of the settings files it read, project before global.",
             ["settings", "show"],
-            contains_all(
-                "tenant", "base_url", "update_channel", "resolved settings files"
-            ),
+            # A machine with no settings file prints "settings files: none"
+            # instead of the table.
+            expect_message("TYPE", "settings files: none"),
             json_capable=False,
         ),
         Story(

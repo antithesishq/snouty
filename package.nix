@@ -50,7 +50,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # Docker and Podman run the credential helper by this name, and snouty runs
   # the helper when it starts by this name.
   postInstall = ''
-    ln -s snouty "$out/bin/docker-credential-snouty"
+    ln -s "$out/bin/snouty" "$out/bin/docker-credential-snouty"
   '';
 
   env = {

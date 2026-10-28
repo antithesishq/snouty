@@ -317,17 +317,9 @@ export ANTITHESIS_EXTRA_HEADERS="X-Proxy-Token: abc123"
 
 ### Docker credential helper
 
-Your tenant has a container registry at `registry.<tenant>.antithesis.com`. Docker and Podman can sign in to it with your snouty credential, through the `docker-credential-snouty` helper. For a `credHelpers` entry `"snouty"`, the engine runs the program `docker-credential-snouty` from your `PATH`. `docker-credential-snouty` is an alias of `snouty`: when `snouty` starts by the name `docker-credential-snouty`, it runs the helper instead of the usual commands. The helper does not run another program.
+`docker-credential-snouty` gives Docker and Podman your snouty credentials for your tenant's container registry, `registry.<tenant>.antithesis.com`.
 
-The shell script installer and the Nix package make the alias for you, as a symlink next to `snouty`. `snouty update` keeps it. For another install method, such as `cargo install`, `cargo binstall`, a downloaded archive or a build from source, make the symlink yourself, in a directory on your `PATH`:
-
-```sh
-ln -s "$(command -v snouty)" ~/.local/bin/docker-credential-snouty
-```
-
-The name must be exactly `docker-credential-snouty`. A hard link or a copy of `snouty` by that name also works.
-
-To use the helper, add the registry to `credHelpers` in the file that your engine reads:
+To set it up, add the registry to `credHelpers` in `~/.docker/config.json` for Docker, or in `~/.config/containers/auth.json` for Podman:
 
 ```json
 {
@@ -337,23 +329,13 @@ To use the helper, add the registry to `credHelpers` in the file that your engin
 }
 ```
 
-Then `docker push`, `docker pull`, `podman push` and `podman pull` sign in to the registry, and `docker login` or `podman login` is not necessary.
-
-- **Docker** reads `~/.docker/config.json`, or `$DOCKER_CONFIG/config.json` when `DOCKER_CONFIG` is set.
-- **Podman** reads `${XDG_RUNTIME_DIR}/containers/auth.json` (Linux only), then `~/.config/containers/auth.json`, then `~/.docker/config.json`. It uses the first file that has an entry for the registry, so a username and password from `podman login` in an earlier file win over `credHelpers` in a later file. Put the entry in `~/.config/containers/auth.json`, because the system clears `${XDG_RUNTIME_DIR}` when you log out. When `REGISTRY_AUTH_FILE` or `--authfile` names a file, Podman reads only that file. When `DOCKER_CONFIG` is set, Podman reads only `$DOCKER_CONFIG/config.json`.
-- **Podman on macOS** (`podman machine`): the `podman` command on your Mac gets the credential before it sends the push or pull to the machine. Install snouty on your Mac, not in the machine, and put the entry in `~/.config/containers/auth.json` on your Mac. This `podman` gets the credential for each registry in `credHelpers` before each push and pull. Thus, when the helper fails, for example because your login expired, every push and pull fails, also for other registries. Run `snouty login` to repair it.
-
-The username is `snouty-token`. The password is your API key, or the OAuth access token from `snouty login`. When the engine asks for the password and the OAuth token expires in 2 hours or less, or its expiry is unknown, snouty refreshes the token, so that the token outlives a long push. The registry does not accept a GitHub Actions OIDC token or a username and password.
-
-Snouty owns the credential, so `docker login`, and a `podman login` with a username, fail with a message that tells you to run `snouty login` or to set `ANTITHESIS_API_KEY`. A `podman login` with no username succeeds, because it gets the credential from snouty. `docker logout` and `podman logout` succeed and change nothing: the engine continues to get the credential from snouty.
-
-The engine gives the helper no profile, so snouty uses the profile whose `repository` is on the requested registry, and whose `tenant` is the tenant of that registry. The selected profile wins when it agrees, then the top-level defaults, then the one named profile that agrees. If more than one named profile agrees, set `ANTITHESIS_PROFILE` to select one. The engine starts the helper in any working directory, such as a cloned repository, so the helper does not read a `./.snouty.toml`. Put the registry settings in the global `settings.toml`, or name a settings file with `SNOUTY_SETTINGS_PATH`.
-
-To debug the helper, run `snouty docker-credential`. It runs the same code as `docker-credential-snouty`, and it also takes `--profile` and `--settings`:
+The shell script installer and the Nix package install `docker-credential-snouty`, an alias of `snouty`. For another install method, make the alias yourself, in a directory on your `PATH`:
 
 ```sh
-echo registry.<tenant>.antithesis.com | snouty docker-credential get
+ln -s "$(command -v snouty)" ~/.local/bin/docker-credential-snouty
 ```
+
+Then `docker push`, `docker pull`, `podman push` and `podman pull` automatically use your snouty credentials for the Antithesis docker registry. The registry requires tenant version 66 or later; `snouty doctor` reports your tenant version.
 
 ### Username and password (deprecated)
 

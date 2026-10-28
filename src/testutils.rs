@@ -208,7 +208,9 @@ impl OCIRegistry {
                 log,
             }),
         };
-        match registry.wait_until_ready() {
+        // A registry that takes auth answers `/v2/` without auth with 401.
+        let ready_status = if htpasswd.is_some() { 401 } else { 200 };
+        match registry.wait_until_ready(ready_status) {
             Ok(host_port) => {
                 registry.host_port = host_port;
                 Some(registry)
@@ -235,10 +237,10 @@ impl OCIRegistry {
             == Some(200)
     }
 
-    /// Wait for the container to publish its port and answer `/v2/`, returning
-    /// the `host:port` it landed on. `Err` carries what the container said, so a
-    /// failure to start explains itself.
-    fn wait_until_ready(&mut self) -> Result<String, String> {
+    /// Wait for the container to publish its port and answer `/v2/` with
+    /// `ready_status`, returning the `host:port` it landed on. `Err` carries
+    /// what the container said, so a failure to start explains itself.
+    fn wait_until_ready(&mut self, ready_status: u16) -> Result<String, String> {
         let owned = self
             .owned
             .as_mut()
@@ -249,7 +251,7 @@ impl OCIRegistry {
                 host_port = published_host_port(&owned.runtime, &owned.container_name);
             }
             if let Some(addr) = &host_port
-                && registry_v2_ping_addr(addr)
+                && registry_v2_get_status(addr, "/v2/") == Some(ready_status)
             {
                 return Ok(addr.clone());
             }
@@ -398,6 +400,14 @@ pub fn has_compose() -> bool {
     crate::compose::DockerCompose::probe().is_ok()
 }
 
+/// Writes an executable `#!/bin/sh` script with `body` to `path`.
+#[cfg(unix)]
+pub fn write_script(path: &std::path::Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, format!("#!/bin/sh\n{body}")).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 /// Return available runtimes, or skip/fail if none are found.
 /// Convenience wrapper for tests that require at least one runtime.
 #[track_caller]
@@ -419,10 +429,9 @@ pub fn require_runtimes_with_compose() -> Vec<Box<dyn ContainerRuntime>> {
     runtimes
 }
 
-/// Whether an OCI registry answers `/v2/` at `addr` (a `host:port`). A
-/// registry that takes auth answers 401.
+/// Whether an OCI registry answers `/v2/` at `addr` (a `host:port`).
 fn registry_v2_ping_addr(addr: &str) -> bool {
-    matches!(registry_v2_get_status(addr, "/v2/"), Some(200 | 401))
+    registry_v2_get_status(addr, "/v2/") == Some(200)
 }
 
 /// The status code the registry answers for `path`, or `None` when the request
@@ -1879,9 +1888,6 @@ mod tests {
     use super::*;
     use std::fs;
 
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
-
     #[test]
     fn extract_quoted_literals_resolves_escapes() {
         assert_eq!(
@@ -2081,17 +2087,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("runtime.log");
         let runtime_path = dir.path().join("stub-runtime.sh");
-        fs::write(
+        write_script(
             &runtime_path,
-            format!(
-                "#!/bin/sh\nprintf '%s\n' \"$*\" >> \"{}\"\nexit 0\n",
+            &format!(
+                "printf '%s\n' \"$*\" >> \"{}\"\nexit 0\n",
                 log_path.display()
             ),
-        )
-        .unwrap();
-        let mut perms = fs::metadata(&runtime_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&runtime_path, perms).unwrap();
+        );
 
         let child = Command::new("sh").args(["-c", "sleep 30"]).spawn().unwrap();
         let container_name = "snouty-test-registry-drop".to_string();
@@ -2123,18 +2125,14 @@ mod tests {
         let log_path = dir.join("runtime.log");
         let runtime_path = dir.join("stub-runtime.sh");
         let inspect_status = u8::from(!local);
-        fs::write(
+        write_script(
             &runtime_path,
-            format!(
-                "#!/bin/sh\nprintf '%s\n' \"$*\" >> \"{}\"\n\
+            &format!(
+                "printf '%s\n' \"$*\" >> \"{}\"\n\
                  [ \"$1\" = image ] && exit {inspect_status}\nexit 0\n",
                 log_path.display()
             ),
-        )
-        .unwrap();
-        let mut perms = fs::metadata(&runtime_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&runtime_path, perms).unwrap();
+        );
         (runtime_path.to_str().unwrap().to_string(), log_path)
     }
 

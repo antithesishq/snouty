@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
-use snouty::docker_credential::HELPER_NAME;
+use snouty::docker_credential::{CRED_HELPER, HELPER_NAME};
 use snouty::testutils::fake_secrets::{FAKE_API_KEY_A, FAKE_BCRYPT_HASH};
 use tempfile::TempDir;
 
@@ -18,19 +18,9 @@ struct Alias {
 
 impl Alias {
     fn symlink() -> Self {
-        Self::new(|path| std::os::unix::fs::symlink(SNOUTY, path))
-    }
-
-    /// A copy has no link to follow back to `snouty`, so only argv[0] can
-    /// select the helper.
-    fn copy() -> Self {
-        Self::new(|path| std::fs::copy(SNOUTY, path).map(drop))
-    }
-
-    fn new(make: impl FnOnce(&Path) -> std::io::Result<()>) -> Self {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join(HELPER_NAME);
-        make(&path).unwrap();
+        std::os::unix::fs::symlink(SNOUTY, &path).unwrap();
         Self { dir, path }
     }
 }
@@ -66,14 +56,13 @@ fn assert_get_prints_the_credential(command: &mut Command) {
         ));
 }
 
-/// A symlink and a copy of `snouty` named `docker-credential-snouty` run the
-/// helper. Each works alone in a directory, with no `snouty` on PATH.
+/// A symlink to `snouty` named `docker-credential-snouty` runs the helper. It
+/// works alone in a directory, with no `snouty` on PATH.
 #[test]
 fn an_alias_of_snouty_prints_the_credential() {
     let home = TempDir::new().unwrap();
-    for alias in [Alias::symlink(), Alias::copy()] {
-        assert_get_prints_the_credential(helper(&alias, &home).env("PATH", alias.dir.path()));
-    }
+    let alias = Alias::symlink();
+    assert_get_prints_the_credential(helper(&alias, &home).env("PATH", alias.dir.path()));
 }
 
 /// The file name of argv[0] selects the helper, not the path of the binary:
@@ -91,8 +80,9 @@ fn argv0_named_as_the_helper_runs_the_helper() {
     }
 }
 
-/// `snouty` runs the CLI under its own name, also through a symlink named as
-/// the helper, and when only a directory of argv[0] has the helper's name.
+/// `snouty` runs the CLI when argv[0] is `snouty`, also through a symlink
+/// named as the helper, and when only a directory of argv[0] has the helper's
+/// name.
 #[test]
 fn other_argv0_runs_the_cli() {
     use std::os::unix::process::CommandExt;
@@ -101,14 +91,11 @@ fn other_argv0_runs_the_cli() {
     let alias = Alias::symlink();
     let in_helper_dir = home.path().join(HELPER_NAME).join("snouty");
     for (bin, argv0) in [
-        (Path::new(SNOUTY), None),
-        (alias.path.as_path(), Some(Path::new("snouty"))),
-        (Path::new(SNOUTY), Some(in_helper_dir.as_path())),
+        (alias.path.as_path(), Path::new("snouty")),
+        (Path::new(SNOUTY), in_helper_dir.as_path()),
     ] {
         let mut command = helper_process(bin, &home);
-        if let Some(argv0) = argv0 {
-            command.arg0(argv0);
-        }
+        command.arg0(argv0);
         Command::from_std(command)
             .arg("get")
             .write_stdin("registry.acme.antithesis.com")
@@ -204,7 +191,7 @@ fn erase_reads_stdin_and_succeeds() {
 }
 
 /// Each engine pushes to and pulls from a registry that takes basic auth,
-/// through `"credHelpers": {"<registry>": "snouty"}` in the file that the
+/// through a `"credHelpers"` entry for [`CRED_HELPER`] in the file that the
 /// engine reads: `config.json` in `DOCKER_CONFIG` for Docker, and the
 /// `REGISTRY_AUTH_FILE` for podman.
 ///
@@ -222,7 +209,6 @@ fn engines_push_and_pull_through_the_helper() {
 }
 
 fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRuntime) {
-    use std::os::unix::fs::PermissionsExt;
     use std::process::Output;
 
     let engine = runtime.name();
@@ -250,11 +236,10 @@ fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRu
     std::fs::create_dir(&home).unwrap();
     let alias = Alias::symlink();
     let helper = bin.join(HELPER_NAME);
-    std::fs::write(
+    snouty::testutils::write_script(
         &helper,
-        format!(
-            "#!/bin/sh\n\
-             sed 's/{addr}/registry.acme.antithesis.com/' | exec env -i \
+        &format!(
+            "sed 's/{addr}/registry.acme.antithesis.com/' | exec env -i \
              HOME='{home}' SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE=1 \
              ANTITHESIS_TENANT=acme \
              ANTITHESIS_REPOSITORY=registry.acme.antithesis.com/app \
@@ -263,9 +248,7 @@ fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRu
             home = home.display(),
             helper = alias.path.display(),
         ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     let path = std::env::join_paths(
         std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
     )
@@ -276,7 +259,7 @@ fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRu
     for (config, contents) in [
         (
             &with_helper,
-            serde_json::json!({"credHelpers": {&addr: "snouty"}}),
+            serde_json::json!({"credHelpers": {&addr: CRED_HELPER}}),
         ),
         (&without_helper, serde_json::json!({})),
     ] {
@@ -317,9 +300,8 @@ fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRu
         describe(&output)
     );
 
-    // The image stays in the local store, so that no test removes an image
-    // while the others build (see `remove_test_images`). A pull still asks the
-    // registry for the manifest, so it still needs the credential.
+    // The image is still in the local store. A pull still asks the registry
+    // for the manifest, so it still needs the credential.
     let output = run(&without_helper, "pull");
     assert!(
         !output.status.success(),

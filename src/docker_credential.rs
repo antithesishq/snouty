@@ -31,9 +31,11 @@ impl std::fmt::Display for CredentialsNotFound {
 
 impl std::error::Error for CredentialsNotFound {}
 
-/// The name that Docker and Podman run for `"credHelpers": {"<registry>":
-/// "snouty"}`. `snouty` runs `snouty docker-credential` when it starts by this
-/// name.
+/// The value of a `"credHelpers"` entry that selects this helper.
+pub const CRED_HELPER: &str = "snouty";
+
+/// The name that Docker and Podman run for a [`CRED_HELPER`] entry. `snouty`
+/// runs `snouty docker-credential` when it starts by this name.
 pub const HELPER_NAME: &str = "docker-credential-snouty";
 
 #[derive(Serialize)]
@@ -123,4 +125,14 @@ fn read_stdin() -> Result<String> {
         .read_to_string(&mut input)
         .wrap_err("failed to read stdin")?;
     Ok(input)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn helper_name_is_the_engine_name_for_cred_helper() {
+        assert_eq!(HELPER_NAME, format!("docker-credential-{CRED_HELPER}"));
+    }
 }

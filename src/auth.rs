@@ -497,12 +497,7 @@ impl AuthenticationInfo {
             } => to_header_value(
                 &format!(
                     "GHA {}",
-                    cached
-                        .get_or_try_init(|| fetch_github_actions_oidc_credentials(
-                            url,
-                            request_token
-                        ))
-                        .await?
+                    cached_github_actions_oidc_token(url, request_token, cached).await?
                 ),
                 true,
             ),
@@ -534,6 +529,23 @@ impl AuthenticationInfo {
                 let encoded = BASE64_STANDARD.encode(credentials);
                 to_header_value(&format!("Basic {encoded}"), true)
             }
+        }
+    }
+
+    /// The GitHub Actions OIDC token of the credential: the token that it
+    /// sends as `Authorization: GHA`. The first call fetches it from the
+    /// Actions token endpoint, and later calls reuse it. `None` for a
+    /// credential of another kind.
+    pub(crate) async fn github_actions_oidc_token(&self) -> Result<Option<&str>> {
+        match self {
+            Self::GithubActionsOidc {
+                url,
+                request_token,
+                cached,
+            } => Ok(Some(
+                cached_github_actions_oidc_token(url, request_token, cached).await?,
+            )),
+            Self::ApiKey { .. } | Self::OAuth { .. } | Self::Password { .. } => Ok(None),
         }
     }
 
@@ -829,6 +841,18 @@ fn try_get_credentials_file_path() -> Option<(PathBuf, PathBuf)> {
     } else {
         None
     }
+}
+
+/// The token of a `GithubActionsOidc` credential: fetched on the first call,
+/// and kept in `cached` for the later calls.
+async fn cached_github_actions_oidc_token<'a>(
+    url: &str,
+    request_token: &str,
+    cached: &'a OnceCell<String>,
+) -> Result<&'a str> {
+    Ok(cached
+        .get_or_try_init(|| fetch_github_actions_oidc_credentials(url, request_token))
+        .await?)
 }
 
 /// Exchange the GitHub Actions OIDC *request* token for an Antithesis-audience

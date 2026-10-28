@@ -586,9 +586,13 @@ pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
 /// - `GET  /api/v0/usage` — paginated usage entries
 /// - `GET  /auth/cli/config` — `{"port_strategy":"disabled"}`
 /// - `POST /auth/cli/refresh` — [`fake_secrets::FAKE_ACCESS_TOKEN_B`]
+/// - `GET  /github-actions/token` — the GitHub Actions OIDC token endpoint:
+///   [`fake_secrets::FAKE_OIDC_TOKEN`] for the `antithesis` audience
 ///
 /// Every route but the OAuth routes (`/auth/cli/`) requires the bearer token.
-/// The OAuth routes take none, as on the real server.
+/// The OAuth routes take none, as on the real server. The GitHub Actions
+/// route takes [`fake_secrets::FAKE_OIDC_REQUEST_TOKEN`] instead, and no
+/// User-Agent.
 pub struct MockApiServer {
     url: String,
     handle: Option<JoinHandle<()>>,
@@ -634,17 +638,25 @@ impl MockApiServer {
                 };
 
                 let (method, path) = mock_parse_request_line(&request);
+                // The GitHub Actions route stands for GitHub's server, which
+                // does not require a User-Agent.
+                let github_actions = path.starts_with(MOCK_GITHUB_ACTIONS_TOKEN_PATH);
+                let bearer_token = if github_actions {
+                    Some(fake_secrets::FAKE_OIDC_REQUEST_TOKEN)
+                } else if path.starts_with("/auth/cli/") {
+                    None
+                } else {
+                    Some(fake_secrets::FAKE_API_KEY_B)
+                };
                 let (status, body, content_type, cache_control) =
-                    if !mock_check_user_agent(&request) {
+                    if !github_actions && !mock_check_user_agent(&request) {
                         (
                             400,
                             r#"{"message":"Missing User-Agent header."}"#.to_string(),
                             "application/json",
                             NO_CACHE_CACHE_CONTROL,
                         )
-                    } else if !path.starts_with("/auth/cli/")
-                        && !mock_check_auth(&request, fake_secrets::FAKE_API_KEY_B)
-                    {
+                    } else if bearer_token.is_some_and(|token| !mock_check_auth(&request, token)) {
                         (
                             401,
                             r#"{"message":"Invalid or expired bearer token."}"#.to_string(),
@@ -683,6 +695,8 @@ pub const CACHEABLE_CACHE_CONTROL: &str = "private, max-age=3600";
 /// The `Cache-Control` the real API sends on everything else — writes,
 /// listings, errors (same observation).
 const NO_CACHE_CACHE_CONTROL: &str = "no-cache";
+
+const MOCK_GITHUB_ACTIONS_TOKEN_PATH: &str = "/github-actions/token";
 
 /// Read one HTTP request off the socket: headers, then as many body bytes as
 /// Content-Length declares. A single `read` is not enough — the client may
@@ -787,6 +801,16 @@ fn mock_route(
             json,
             NO_CACHE_CACHE_CONTROL,
         ),
+        ("GET", MOCK_GITHUB_ACTIONS_TOKEN_PATH)
+            if mock_query_param(query, "audience").as_deref() == Some("antithesis") =>
+        {
+            (
+                200,
+                serde_json::json!({"count": 1, "value": fake_secrets::FAKE_OIDC_TOKEN}).to_string(),
+                json,
+                NO_CACHE_CACHE_CONTROL,
+            )
+        }
         // The real route takes the refresh token as a bearer token; the mock
         // takes any, and always mints the same access token.
         ("POST", "/auth/cli/refresh") => (

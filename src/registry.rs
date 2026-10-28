@@ -2,9 +2,9 @@
 //! the credential that snouty gives it.
 //!
 //! The registry takes HTTP basic auth: the username [`USERNAME`], and an
-//! Antithesis token as the password. The Antithesis API team gave this
-//! contract before the registry went live, so no response from it has been
-//! observed yet.
+//! Antithesis token or a GitHub Actions OIDC token as the password. The
+//! Antithesis API team gave this contract before the registry went live, so
+//! no response from it has been observed yet.
 
 use std::{fmt, path::PathBuf, str::FromStr};
 
@@ -127,15 +127,19 @@ pub fn select_settings(
     )))
 }
 
-/// The password that the registry takes with [`USERNAME`]: the API key, or
-/// the OAuth access token of the credential of `api`.
+/// The password that the registry takes with [`USERNAME`]: the API key, the
+/// OAuth access token, or the GitHub Actions OIDC token of the credential of
+/// `api`. A username and password is an error.
 ///
-/// A token that expires in more than [`TOKEN_MIN_LIFETIME`] is used as it
+/// An OAuth token that expires in more than [`TOKEN_MIN_LIFETIME`] is used as it
 /// is. A token that expires sooner, or whose expiry is unknown, is refreshed
 /// when the credential can refresh. When the credential cannot refresh, or
 /// the refresh fails, the stored token is used until it expires.
 pub async fn password(api: &AntithesisApi) -> Result<String> {
     let auth = api.authentication();
+    if let Some(token) = auth.github_actions_oidc_token().await? {
+        return Ok(token.to_owned());
+    }
     let Some(stored) = auth.bearer_token() else {
         return Err(user_error(format!(
             "the Antithesis container registry does not accept a {auth}; set ANTITHESIS_API_KEY, or run `snouty login` to store an API key or OAuth credentials"
@@ -179,11 +183,11 @@ mod tests {
     use crate::api::ResponseCache;
     use crate::auth::{OAuthRefreshInfo, paseto_expiring_in};
     use crate::testutils::fake_secrets::{
-        FAKE_ACCESS_TOKEN_A, FAKE_ACCESS_TOKEN_B, FAKE_API_KEY_A, FAKE_PASSWORD,
-        FAKE_REFRESH_TOKEN_A, FAKE_REFRESH_TOKEN_B, FAKE_USERNAME,
+        FAKE_ACCESS_TOKEN_A, FAKE_ACCESS_TOKEN_B, FAKE_API_KEY_A, FAKE_OIDC_REQUEST_TOKEN,
+        FAKE_OIDC_TOKEN, FAKE_PASSWORD, FAKE_REFRESH_TOKEN_A, FAKE_REFRESH_TOKEN_B, FAKE_USERNAME,
     };
     use hegel::generators;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// Nothing listens on this address, so a request to it fails.
@@ -243,21 +247,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_password_or_oidc_credential_is_rejected_with_the_fix() {
-        for auth in [
-            AuthenticationInfo::Password {
-                username: FAKE_USERNAME.to_owned(),
-                password: FAKE_PASSWORD.to_owned(),
-            },
-            AuthenticationInfo::GithubActionsOidc {
-                url: NO_SERVER.to_owned(),
-                request_token: FAKE_PASSWORD.to_owned(),
-                cached: std::sync::Arc::default(),
-            },
-        ] {
-            let err = password(&api(NO_SERVER, auth)).await.unwrap_err();
-            assert!(err.to_string().contains("set ANTITHESIS_API_KEY"), "{err}");
-        }
+    async fn the_password_is_the_github_actions_oidc_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/token"))
+            .and(query_param("audience", "antithesis"))
+            .and(header(
+                "authorization",
+                format!("Bearer {FAKE_OIDC_REQUEST_TOKEN}"),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"count": 1, "value": FAKE_OIDC_TOKEN})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let auth = AuthenticationInfo::GithubActionsOidc {
+            url: format!("{}/token?api-version=2.0", server.uri()),
+            request_token: FAKE_OIDC_REQUEST_TOKEN.to_owned(),
+            cached: std::sync::Arc::default(),
+        };
+
+        assert_eq!(
+            password(&api(NO_SERVER, auth)).await.unwrap(),
+            FAKE_OIDC_TOKEN
+        );
+    }
+
+    #[tokio::test]
+    async fn a_password_credential_is_rejected_with_the_fix() {
+        let auth = AuthenticationInfo::Password {
+            username: FAKE_USERNAME.to_owned(),
+            password: FAKE_PASSWORD.to_owned(),
+        };
+        let err = password(&api(NO_SERVER, auth)).await.unwrap_err();
+        assert!(err.to_string().contains("set ANTITHESIS_API_KEY"), "{err}");
     }
 
     #[tokio::test]

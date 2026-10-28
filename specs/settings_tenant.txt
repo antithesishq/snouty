@@ -8,6 +8,10 @@
 # An explicit ANTITHESIS_BASE_URL bypasses the tenant and this check (covered by
 # the validate_tenant_host unit tests).
 
+# The project file is used only once the user trusts it (see
+# config_trust.txt).
+snouty settings trust
+
 # A tenant with a path separator would mangle the derived host; reject it.
 ! snouty doctor
 stderr '.*invalid tenant.*'

@@ -2,64 +2,64 @@
 #
 # Snouty resolves each setting with precedence: environment variable, then the
 # active profile, then top-level defaults — checking the project settings file
-# (.snouty.toml) before the global one. `snouty doctor` prints the fully
+# (.snouty.toml) before the global one. `snouty settings show` prints the fully
 # resolved values, so we drive resolution by setting env/flags/files and reading
 # the table back. Each layer below uses a distinct value, so the resolved value
-# alone proves which layer won.
-#
-# doctor exits non-zero here (no auth or container runtime is configured), so
-# each step uses `! snouty doctor`; the resolved-settings rows are printed
-# regardless of the exit status. Each row is `<setting>  <value>`.
+# alone proves which layer won. Each row is `<setting>  <value>`.
+
+# The project file is used only once the user trusts it (see
+# config_trust.txt).
+snouty settings trust
 
 # 1. tenant/repository come from the project .snouty.toml in the working
 #    directory (top-level defaults).
-! snouty doctor
-stderr 'tenant.*acme'
-stderr 'repository.*acme/repo'
+snouty settings show
+stdout 'tenant.*acme'
+stdout 'repository.*acme/repo'
 
 # 2. A profile selected with --profile overrides the top-level default; the
 #    active profile is also named in its own row.
-! snouty --profile staging doctor
-stderr 'profile.*staging'
-stderr 'tenant.*staging-tenant'
+snouty --profile staging settings show
+stdout 'profile.*staging'
+stdout 'tenant.*staging-tenant'
 
 # 3. An explicit --settings file is read instead of ./.snouty.toml.
-! snouty --settings other.toml doctor
-stderr 'tenant.*other-tenant'
+snouty --settings other.toml settings show
+stdout 'tenant.*other-tenant'
 
 # 4. The --profile flag wins over ANTITHESIS_PROFILE.
 env ANTITHESIS_PROFILE=staging
-! snouty --profile prod doctor
-stderr 'tenant.*prod-tenant'
+snouty --profile prod settings show
+stdout 'tenant.*prod-tenant'
 
 # 5. An environment variable overrides everything else (profile prod is still
 #    set, but the env var wins).
 env ANTITHESIS_TENANT=from-env
-! snouty doctor
-stderr 'tenant.*from-env'
+snouty settings show
+stdout 'tenant.*from-env'
 
 # 6. The container engine override is reported in the table.
 env SNOUTY_CONTAINER_ENGINE=podman
-! snouty doctor
-stderr 'container_engine.*podman'
+snouty settings show
+stdout 'container_engine.*podman'
 
 # 7. The update channel is reported in the table; unset resolves to stable.
-! snouty doctor
-stderr 'update_channel.*stable'
+snouty settings show
+stdout 'update_channel.*stable'
 env SNOUTY_UPDATE_CHANNEL=unstable
-! snouty doctor
-stderr 'update_channel.*unstable'
+snouty settings show
+stdout 'update_channel.*unstable'
 
 # 8. SNOUTY_SETTINGS_PATH selects the project file in place of ./.snouty.toml.
 #    Observed via repository, since no earlier step set ANTITHESIS_REPOSITORY
 #    (ANTITHESIS_TENANT is already pinned from step 5, so tenant won't show it).
 env SNOUTY_SETTINGS_PATH=env-settings.toml
-! snouty doctor
-stderr 'repository.*env-path-repo'
+snouty settings show
+stdout 'repository.*env-path-repo'
 
 # 9. The --settings flag wins over SNOUTY_SETTINGS_PATH.
-! snouty --settings other.toml doctor
-stderr 'repository.*other/repo'
+snouty --settings other.toml settings show
+stdout 'repository.*other/repo'
 
 -- .snouty.toml --
 tenant = "acme"

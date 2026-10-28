@@ -239,6 +239,7 @@ class Snouty:
         stdin: str | None = None,
         pipe: bool = False,
         timeout: float | None = None,
+        cwd: Path | None = None,
     ) -> Result:
         """Run snouty on a terminal, or on pipes for `--json` or with `pipe`.
         A `pipe` run without `--json` sends stderr into the stdout pipe, so the
@@ -261,6 +262,7 @@ class Snouty:
                 argv,
                 self.env_with({**(env or {}), "TERM": "xterm-256color"}),
                 screen=screen,
+                cwd=cwd,
             )
             self._track(session.child, live=True)
             try:
@@ -282,6 +284,7 @@ class Snouty:
             stderr=subprocess.PIPE if "--json" in args else subprocess.STDOUT,
             text=True,
             env=self._env if env is None else self.env_with(env),
+            cwd=cwd,
         )
         self._track(proc, live=True)
         try:
@@ -450,15 +453,12 @@ class LaunchGuard:
 
     @classmethod
     def for_tenant(cls, sn: Snouty) -> LaunchGuard:
-        """A guard in front of the tenant that snouty's settings name. Doctor
-        exits non-zero when some check fails, but it still reports the settings."""
-        doctor = sn.run(["--json", "doctor", "--offline"])
-        settings = json.loads(doctor.stdout).get("settings") or {}
-        upstream = os.environ.get("ANTITHESIS_BASE_URL")
+        """A guard in front of the base URL that snouty's settings name."""
+        shown = sn.run(["--json", "settings", "show"])
+        settings = json.loads(shown.stdout).get("settings") or {}
+        upstream = settings.get("base_url")
         if not upstream:
-            if not settings.get("tenant"):
-                raise GalleryError("no tenant or ANTITHESIS_BASE_URL is set")
-            upstream = f"https://{settings['tenant']}.antithesis.com"
+            raise GalleryError("no tenant or ANTITHESIS_BASE_URL is set")
         return cls(upstream, settings.get("https_proxy"))
 
     def close(self) -> None:
@@ -558,6 +558,7 @@ class TtySession:
         env: dict[str, str],
         *,
         screen: pyte.Screen | None = None,
+        cwd: Path | None = None,
     ):
         self.screen = screen if screen is not None else pyte.Screen(TTY_COLS, TTY_ROWS)
         self.recorder = _Recorder(self.screen)
@@ -568,6 +569,7 @@ class TtySession:
             str(binary),
             args,
             env=env,
+            cwd=cwd,
             dimensions=(TTY_ROWS, TTY_COLS),
             timeout=PROMPT_TIMEOUT,
             echo=False,
@@ -3289,6 +3291,42 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             isolate_config=True,
             seed_files={_CREDS: _SEED_CREDS_TOML},
         ),
+        # -- config ---------------------------------------------------------
+        Story(
+            "settings-show",
+            "See the settings snouty will use",
+            "I want to see each setting that snouty resolved from my environment and "
+            "settings files, before I run a command against my tenant.",
+            "settings show prints one aligned row per setting, with `not set` (or the default) "
+            "for a setting that is not configured, then a TYPE/PATH table "
+            "of the settings files it read, project before global.",
+            ["settings", "show"],
+            # A machine with no settings file prints "settings files: none"
+            # instead of the table.
+            expect_message("TYPE", "settings files: none"),
+            json_capable=False,
+        ),
+        Story(
+            "settings-untrusted",
+            "A cloned repository ships a settings file",
+            "I cloned a repository that contains a .snouty.toml, and I ran snouty in it for "
+            "the first time.",
+            "snouty stops before it reads the file, names the file, and tells me how to trust it, "
+            "deny it, or skip the check in CI.",
+            ["settings", "show"],
+            fails_with(
+                "is not trusted",
+                "snouty settings trust",
+                "snouty settings deny",
+                "SNOUTY_SETTINGS_TRUST=all",
+            ),
+            json_capable=False,
+            expect_ok=False,
+            isolate_config=True,
+            seed_files={
+                ".snouty.toml": 'tenant = "acme"\nbase_url = "https://attacker.example.com"\n'
+            },
+        ),
         Story(
             "doctor-json",
             "Stop CI when required configuration is missing",
@@ -4012,6 +4050,29 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "I run `snouty mcp --help` to learn how to give my AI agent snouty's tools, "
             "and what those tools can do.",
             ["mcp"],
+        ),
+        _help_story(
+            "help-settings",
+            "Understand the settings command group",
+            "I run `snouty settings --help` to learn why snouty asks me to trust a "
+            "settings file, and how to see what snouty resolved.",
+            ["settings"],
+        ),
+        _help_story(
+            "help-settings-show",
+            "Learn where my settings come from",
+            "I run `snouty settings show --help` to learn which value wins when a setting "
+            "is set in more than one place.",
+            ["settings", "show"],
+            ["settings", "show"],
+        ),
+        # Help-only: `settings trust` and `settings deny` write the trust record.
+        _help_story(
+            "help-settings-trust",
+            "Learn what trusting a settings file does",
+            "I run `snouty settings trust --help` before I trust a file that came with a "
+            "repository.",
+            ["settings", "trust"],
         ),
         # -- docs (help-only: output depends on a downloaded docs DB) --------
         _help_story(
@@ -4850,14 +4911,22 @@ def _run_isolated_story(sn: Snouty, story: Story) -> StoryRun:
     leak in. The home starts empty, which models an unconfigured machine;
     `seed_files` writes the persisted state a story needs. `$XDG_CONFIG_HOME`
     points at `<home>/.config`, so a seed path means the same here as in
-    `run_tty_story`. These stories validate their primary result directly;
-    they do not need a second JSON command."""
+    `run_tty_story`. The story runs in the home, so a seeded `.snouty.toml` is
+    its project settings file, and the operator's own one stays out. These
+    stories validate their primary result directly; they do not need a second
+    JSON command."""
     home = Path(tempfile.mkdtemp(prefix="snouty-gallery-config."))
     try:
         _write_seed_files(home, story.seed_files)
 
-        env = {**(story.env or {}), "XDG_CONFIG_HOME": str(home / ".config")}
-        result = sn.run(story.args, env)
+        env = {
+            **(story.env or {}),
+            "XDG_CONFIG_HOME": str(home / ".config"),
+            # The operator's own settings file and trust override stay out too.
+            "SNOUTY_SETTINGS_PATH": None,
+            "SNOUTY_SETTINGS_TRUST": None,
+        }
+        result = sn.run(story.args, env, cwd=home)
         return StoryRun(story, result, None)
     finally:
         shutil.rmtree(home, ignore_errors=True)

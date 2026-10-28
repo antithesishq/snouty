@@ -1,0 +1,14 @@
+Print the settings that snouty resolved
+
+Prints each setting with the value that snouty resolved for it. For each setting, snouty uses the first value that it finds: the environment variable, the selected profile in the project settings file, the selected profile in the global settings file, the top-level value in the project settings file, then the top-level value in the global settings file.
+
+Then it lists the settings files that snouty read: the project settings file, which overrides the global one, then the global settings file.
+
+The JSON output is one object. `settings` holds each setting, with null for a setting that is not set and has no default. `files` lists the settings files in the same order, each with its `type` (`project` or `global`) and `path`.
+
+Examples:
+  {{ t("snouty settings show")? }}
+{%- if cli %}
+  {{ t("snouty --profile staging settings show")? }}
+  {{ t("snouty settings show --json | jq -r .settings.tenant")? }}
+{%- endif %}

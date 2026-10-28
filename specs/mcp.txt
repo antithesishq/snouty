@@ -16,10 +16,10 @@ env SNOUTY_UNSTABLE_FEATURES=runs-exec
 ! snouty mcp
 stderr 'SNOUTY_UNSTABLE_FEATURES=mcp'
 
-# 3. With the feature on, doctor lists it in its features row.
+# 3. With the feature on, `settings show` lists it in its features row.
 env SNOUTY_UNSTABLE_FEATURES=mcp
-! snouty doctor
-stderr '^\s*features\s+mcp$'
+snouty settings show
+stdout '^features\s+mcp$'
 
 # 4. At least one tool call must be able to run.
 ! snouty mcp --max-concurrent-calls 0

@@ -1,0 +1,34 @@
+---
+source: tests/help_snapshots.rs
+---
+Show snouty's settings, and trust or deny a project settings file
+
+`settings show` prints the settings that snouty resolved, and the settings files
+it read. `settings trust` and `settings deny` decide whether snouty uses a
+project settings file (./.snouty.toml).
+
+Usage: snouty settings [OPTIONS] <COMMAND>
+
+Commands:
+  show   Print the settings that snouty resolved
+  trust  Use a project settings file while its content stays the same
+  deny   Ignore a project settings file
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --json
+          Output JSON where supported (NDJSON for list/stream commands, pretty
+          JSON otherwise)
+
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

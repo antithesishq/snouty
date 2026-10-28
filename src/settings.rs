@@ -5,12 +5,20 @@ use std::{
 };
 
 use color_eyre::eyre::{Context, OptionExt, Result, eyre};
+use log::debug;
 use tempfile::NamedTempFile;
 use toml::{Table, Value};
 
 use crate::cli::UpdateChannel;
 use crate::env;
 use crate::error::user_error;
+
+mod files;
+mod show;
+mod trust;
+pub use files::{SettingsFile, SettingsFileType};
+pub use show::cmd_settings_show;
+pub use trust::{SETTINGS_TRUST_VAR_NAME, deny, trust};
 
 pub const ANTITHESIS_PROFILE_ENV_VAR_NAME: &str = "ANTITHESIS_PROFILE";
 pub const SNOUTY_SETTINGS_PATH_VAR_NAME: &str = "SNOUTY_SETTINGS_PATH";
@@ -22,9 +30,10 @@ pub const CONTAINER_ENGINE_VAR_NAME: &str = "SNOUTY_CONTAINER_ENGINE";
 pub const UPDATE_CHANNEL_VAR_NAME: &str = "SNOUTY_UPDATE_CHANNEL";
 pub const API_CACHE_MAX_FILE_SIZE_VAR_NAME: &str = "SNOUTY_API_CACHE_MAX_FILE_SIZE";
 pub const API_CACHE_RESPECT_HEADERS_VAR_NAME: &str = "SNOUTY_API_CACHE_RESPECT_HEADERS";
-const PROJECT_SETTINGS_FILENAME: &str = ".snouty.toml";
+pub const PROJECT_SETTINGS_FILENAME: &str = ".snouty.toml";
 const GLOBAL_SETTINGS_FILENAME: &str = "settings.toml";
 const PROFILE_KEY: &str = "profile";
+const NO_GLOBAL_SETTINGS_DIR: &str = "Could not determine global settings directory. Ensure either $XDG_CONFIG_HOME or $HOME is set.";
 
 /// snouty's subdirectory under an XDG base dir: `$<xdg_var>/snouty`, falling
 /// back to `$HOME/<home_subdir>/snouty`. `None` when neither is set (e.g.
@@ -93,6 +102,7 @@ pub struct Settings {
     update_channel: UpdateChannel,
     api_cache_max_file_size: u64,
     api_cache_respect_headers: bool,
+    files: Vec<SettingsFile>,
 }
 
 impl Default for Settings {
@@ -113,7 +123,8 @@ impl Settings {
     /// A settings file that exists but cannot be read or parsed is a hard error,
     /// as is an explicitly-requested file (via flag or env var) that is missing:
     /// silently ignoring it would resurface later as a confusing "tenant not
-    /// set". A missing *default* `./.snouty.toml` is fine.
+    /// set". A missing *default* `./.snouty.toml` is fine. The default file is
+    /// used only when the user trusts it (see [`trust::verdict`]).
     pub fn resolve(
         project_settings_path: Option<PathBuf>,
         profile: Option<String>,
@@ -127,24 +138,38 @@ impl Settings {
         }
         .filter(|profile| !profile.is_empty());
 
-        // Likewise an empty `SNOUTY_SETTINGS_PATH` is "unset" (it would otherwise
-        // become an explicitly-requested empty path that must — and can't — exist).
-        let project_settings_path = match project_settings_path {
-            Some(path) => Some(path),
-            None => env::var(SNOUTY_SETTINGS_PATH_VAR_NAME)?.map(PathBuf::from),
-        };
+        let explicit = explicit_settings_path(project_settings_path)?;
 
-        // An explicitly-requested project file must exist; the default
-        // `./.snouty.toml` is optional. (Climbing the directory tree, if ever
-        // wanted, would go here.)
-        let project = match &project_settings_path {
-            Some(path) => load_settings_file(path, true)?,
-            None => load_settings_file(Path::new(PROJECT_SETTINGS_FILENAME), false)?,
+        // Parse this even without a project file, so a bad value fails in
+        // every directory.
+        let trust_override = trust::TrustOverride::from_env()?;
+        // A named project file must exist and needs no trust; the default
+        // `./.snouty.toml` is optional and needs trust. (Climbing the directory
+        // tree, if ever wanted, would go here.)
+        let (project, project_path) = match explicit {
+            Some(path) => (load_settings_file(&path, true)?, path),
+            None => (
+                load_default_project_file(trust_override)?,
+                PathBuf::from(PROJECT_SETTINGS_FILENAME),
+            ),
         };
-        let global = match global_settings_dir() {
-            Some(dir) => load_settings_file(&dir.join(GLOBAL_SETTINGS_FILENAME), false)?,
+        let global_path = global_settings_dir().map(|dir| dir.join(GLOBAL_SETTINGS_FILENAME));
+        let global = match &global_path {
+            Some(path) => load_settings_file(path, false)?,
             None => None,
         };
+        // Most specific first: the project file overrides the global one.
+        let files = [
+            project
+                .is_some()
+                .then(|| SettingsFile::new(SettingsFileType::Project, &project_path)),
+            global_path
+                .filter(|_| global.is_some())
+                .map(|path| SettingsFile::new(SettingsFileType::Global, &path)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
 
         let resolve = |key: &str, env_var: &str| {
             resolve_value(
@@ -221,6 +246,7 @@ impl Settings {
             update_channel,
             api_cache_max_file_size,
             api_cache_respect_headers,
+            files,
         }
         .build())
     }
@@ -271,6 +297,11 @@ impl Settings {
         self.api_cache_respect_headers
     }
 
+    /// The settings files that snouty read, most specific first.
+    pub fn files(&self) -> &[SettingsFile] {
+        &self.files
+    }
+
     pub(crate) fn profile(&self) -> Option<&str> {
         self.profile.as_deref()
     }
@@ -307,6 +338,7 @@ pub struct SettingsBuilder {
     update_channel: UpdateChannel,
     api_cache_max_file_size: Option<u64>,
     api_cache_respect_headers: Option<bool>,
+    files: Vec<SettingsFile>,
 }
 
 impl SettingsBuilder {
@@ -387,7 +419,18 @@ impl SettingsBuilder {
                 .api_cache_max_file_size
                 .unwrap_or(crate::api_cache::DEFAULT_MAX_FILE_SIZE),
             api_cache_respect_headers: self.api_cache_respect_headers.unwrap_or(true),
+            files: self.files,
         }
+    }
+}
+
+/// The project settings file that the user named: the `--settings` flag
+/// (`flag`), otherwise `SNOUTY_SETTINGS_PATH`. An empty `SNOUTY_SETTINGS_PATH`
+/// is unset; it would otherwise name an empty path that must, and cannot, exist.
+fn explicit_settings_path(flag: Option<PathBuf>) -> Result<Option<PathBuf>> {
+    match flag {
+        Some(path) => Ok(Some(path)),
+        None => Ok(env::var(SNOUTY_SETTINGS_PATH_VAR_NAME)?.map(PathBuf::from)),
     }
 }
 
@@ -400,8 +443,9 @@ pub(crate) fn update_settings_in_global_file(
     container_engine: Option<String>,
     profile_to_update: Option<&str>,
 ) -> Result<PathBuf> {
-    let settings_dir = global_settings_dir().ok_or_eyre("Could not determine global settings directory. Ensure either $XDG_CONFIG_HOME or $HOME is set.")?;
-    let path = settings_dir.join(GLOBAL_SETTINGS_FILENAME);
+    let path = global_settings_dir()
+        .ok_or_eyre(NO_GLOBAL_SETTINGS_DIR)?
+        .join(GLOBAL_SETTINGS_FILENAME);
     let mut contents = match read_to_string_if_file_exists(&path)? {
         Some(contents) => {
             if let Ok(table) = parse_settings(&contents, &path) {
@@ -448,12 +492,18 @@ pub(crate) fn update_settings_in_global_file(
         );
     }
 
+    write_global_toml(GLOBAL_SETTINGS_FILENAME, &contents)
+}
+
+/// Atomically write `value` as TOML to `filename` in the global settings dir,
+/// and return the path it wrote.
+fn write_global_toml(filename: &str, value: &impl serde::Serialize) -> Result<PathBuf> {
+    let settings_dir = global_settings_dir().ok_or_eyre(NO_GLOBAL_SETTINGS_DIR)?;
+    let path = settings_dir.join(filename);
     mkdir(&settings_dir, true, 0o700)?;
     let mut temp = NamedTempFile::new_in(&settings_dir)?;
-    temp.write_all(toml::to_string_pretty(&contents)?.as_bytes())?;
-
+    temp.write_all(toml::to_string_pretty(value)?.as_bytes())?;
     temp.persist(&path)?;
-
     Ok(path)
 }
 
@@ -558,6 +608,23 @@ fn load_settings_file(path: &Path, required: bool) -> Result<Option<Table>> {
         None => return Err(eyre!("Settings file at {:?} was not found", path)),
     };
     parse_settings(&contents, path).map(Some)
+}
+
+/// Load `./.snouty.toml` when it exists and [`trust::verdict`] allows it.
+fn load_default_project_file(
+    trust_override: Option<trust::TrustOverride>,
+) -> Result<Option<Table>> {
+    let path = Path::new(PROJECT_SETTINGS_FILENAME);
+    let Some(contents) = read_to_string_if_file_exists(path)? else {
+        return Ok(None);
+    };
+    match trust::verdict(path, contents.as_bytes(), trust_override)? {
+        trust::Verdict::Use => parse_settings(&contents, path).map(Some),
+        trust::Verdict::Ignore => {
+            debug!("ignoring the denied settings file {}", path.display());
+            Ok(None)
+        }
+    }
 }
 
 /// Reads a setting out of one TOML table: [`string_value`] for text settings,

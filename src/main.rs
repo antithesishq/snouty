@@ -14,7 +14,8 @@ use snouty::OutputOptions;
 use snouty::api::AntithesisApi;
 use snouty::auth::initialize_credential_store;
 use snouty::cli::{
-    Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs, UpdateChannel, gated_command_error,
+    Cli, Commands, DebugArgs, LaunchArgs, SettingsCommands, UpdateArgs, UpdateChannel,
+    gated_command_error,
 };
 use snouty::compose;
 use snouty::config;
@@ -101,9 +102,8 @@ async fn run(cli: Cli) -> Result<()> {
         eprintln!("warning: Could not initialize system keychain credential storage: {err:?}");
     }
 
-    // Resolve all settings up front. A broken/unreadable settings file fails
-    // here, cleanly and once, before any command runs — including commands that
-    // don't read settings. That keeps dispatch a single flat match.
+    // Resolve settings once, up front. Each command that reads settings
+    // unwraps the result, so a bad settings file stops only those commands.
     let settings = Settings::resolve(settings_path.clone(), profile.clone());
     let result = match command {
         Commands::Completions { shell } => cmd_completions(shell).map_err(Report::new),
@@ -116,6 +116,15 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::Update(args) => cmd_update(&args, &settings?),
         Commands::Docs { offline, command } => docs::cmd_docs(command, offline, output).await,
+        Commands::Settings { command } => match command {
+            SettingsCommands::Show => snouty::settings::cmd_settings_show(&settings?, output.json),
+            // These do not read settings, so they work while an untrusted
+            // file blocks other commands.
+            SettingsCommands::Trust(args) => snouty::settings::trust(&args.path)
+                .map(|path| eprintln!("Trusted {}", path.display())),
+            SettingsCommands::Deny(args) => snouty::settings::deny(&args.path)
+                .map(|path| eprintln!("Denied {}", path.display())),
+        },
         Commands::Login { tenant, repository } => {
             cmd_login(tenant, repository, profile.as_deref(), &settings?, output).await
         }
@@ -192,6 +201,11 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
         Commands::Update(_) => Some("update"),
         Commands::Login { .. } => Some("login"),
         Commands::Mcp(_) => Some("mcp"),
+        Commands::Settings { command } => match command {
+            SettingsCommands::Show => None,
+            SettingsCommands::Trust(_) => Some("settings trust"),
+            SettingsCommands::Deny(_) => Some("settings deny"),
+        },
     }
 }
 

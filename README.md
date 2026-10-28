@@ -111,7 +111,7 @@ export ANTITHESIS_REPOSITORY="us-central1-docker.pkg.dev/your-project/your-repo"
 export ANTITHESIS_API_KEY="your-api-key"
 ```
 
-Run `snouty doctor` at any point to see what snouty resolves, and where each value comes from.
+Run `snouty settings show` at any point to see what snouty resolves, and which settings files it reads. Run `snouty doctor` to check that your environment works.
 
 ### Settings files
 
@@ -139,6 +139,21 @@ A matching environment variable always overrides the file. The supported keys an
 | `api_cache_respect_headers` | `SNOUTY_API_CACHE_RESPECT_HEADERS`| Set `false` to ignore server caching directives.                                 |
 
 A credential is never read from a settings file. `snouty login` keeps credentials apart from settings — see [Authentication](#authentication).
+
+Run `snouty settings show` to print the value that snouty resolved for each setting, and the settings files it read.
+
+### Trusting a project settings file
+
+snouty uses `./.snouty.toml` only after you trust it. Until you trust or deny the file, each command that reads the settings stops with an error. Review the file, then decide:
+
+```sh
+snouty settings trust   # use ./.snouty.toml while its content stays the same
+snouty settings deny    # ignore ./.snouty.toml
+```
+
+Each command also takes the path of a settings file. When a trusted file changes, you must trust it again. snouty keeps the decisions in `trust.toml`, next to the global settings file.
+
+A file that you name with `--settings` or `SNOUTY_SETTINGS_PATH` needs no trust, because you chose it. To use every project settings file without a check, for example in CI, set `SNOUTY_SETTINGS_TRUST=all`.
 
 ### Profiles
 
@@ -178,7 +193,7 @@ An id that snouty does not know, such as the retired `runs-exec`, has no effect.
 
 ## MCP server
 
-`snouty mcp` serves snouty's run, docs, and doctor commands to AI agents as [Model Context Protocol](https://modelcontextprotocol.io) tools, over the stdio transport. It is an unstable feature: set `SNOUTY_UNSTABLE_FEATURES=mcp` to turn it on. The agent starts the server itself. For example, in Claude Code:
+`snouty mcp` serves most of snouty's commands to AI agents as [Model Context Protocol](https://modelcontextprotocol.io) tools, over the stdio transport. It is an unstable feature: set `SNOUTY_UNSTABLE_FEATURES=mcp` to turn it on. The agent starts the server itself. For example, in Claude Code:
 
 ```sh
 claude mcp add snouty -e SNOUTY_UNSTABLE_FEATURES=mcp -- snouty mcp
@@ -198,9 +213,7 @@ A JSON config for a stdio server looks like this one. The key names can be diffe
 }
 ```
 
-The tools are `runs_list`, `runs_show`, `runs_wait`, `runs_properties`, `runs_property`, `runs_build_logs`, `runs_logs`, `runs_search`, `runs_usage`, `runs_exec`, `debug`, `docs_tree`, `docs_show`, `docs_search`, and `doctor`. Each tool runs its snouty command with `--json` and returns what the command prints: stdout, then stderr in a second block when there is any. The params of a tool are the arguments of its command, by name: `runs_logs` takes `run_id`, `input_hash`, `vtime`, and `begin_vtime`. A few arguments that open a browser, stream with no end, or print human output only are left out. A command that fails marks the result `isError`. One more tool, `tool_help`, returns a tool's full help: its command's `--help` page, rendered for MCP, so that it names each arg by param name and describes the JSON output.
-
-All tools but `debug` are marked read-only. `debug` starts a debugging session, which uses your tenant's resources. `runs_exec` runs a bash script from the client in a branch of a run that is in progress, and cannot change the run. `doctor` runs the local container runtime to check it.
+Run `snouty mcp --help` to see all tools.
 
 The server sets no time limit and no output limit on a tool call. The client sets them: when it cancels a call or closes stdin, the server kills the call's command. A command also exits when its server is gone. Up to 8 tool calls run at the same time, and `--max-concurrent-calls` changes that number.
 

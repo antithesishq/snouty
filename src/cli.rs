@@ -228,6 +228,12 @@ pub enum Commands {
         command: DocsCommands,
     },
 
+    /// Show snouty's settings, and trust or deny a project settings file
+    Settings {
+        #[command(subcommand)]
+        command: SettingsCommands,
+    },
+
     /// Sign in and store your snouty configuration
     Login {
         #[arg(long, value_parser = validate_non_empty)]
@@ -237,7 +243,7 @@ pub enum Commands {
         repository: Option<String>,
     },
 
-    /// Serve snouty's run, docs and doctor commands to AI agents over MCP
+    /// Serve snouty's run, docs, doctor and settings commands to AI agents over MCP
     #[command(
         hide = !features::is_enabled(Feature::Mcp)
     )]
@@ -272,6 +278,7 @@ pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Re
         | Commands::Version
         | Commands::Update(_)
         | Commands::Doctor(_)
+        | Commands::Settings { .. }
         | Commands::Login { .. } => return None,
     };
     if enabled.contains(&feature) {
@@ -320,6 +327,25 @@ fn validate_non_empty(value: &str) -> Result<String, String> {
     } else {
         Ok(value.to_owned())
     }
+}
+
+#[derive(Subcommand)]
+pub enum SettingsCommands {
+    /// Print the settings that snouty resolved
+    Show,
+
+    /// Use a project settings file while its content stays the same
+    Trust(SettingsFileArgs),
+
+    /// Ignore a project settings file
+    Deny(SettingsFileArgs),
+}
+
+#[derive(Args)]
+pub struct SettingsFileArgs {
+    /// The project settings file
+    #[arg(default_value = crate::settings::PROJECT_SETTINGS_FILENAME)]
+    pub path: std::path::PathBuf,
 }
 
 #[derive(Subcommand)]

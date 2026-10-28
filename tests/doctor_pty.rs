@@ -37,8 +37,8 @@ fn long_notes_wrap_under_their_text() {
     let mut session = command.spawn(PTY_COLS, 40);
     session.set_expect_timeout(Some(Duration::from_secs(30)));
     let captures = session
-        .expect("Resolved settings")
-        .expect("doctor prints its settings after the checks");
+        .expect("snouty settings show")
+        .expect("doctor points at `settings show` after the checks");
     let screen =
         String::from_utf8_lossy(&strip_ansi_escapes::strip(captures.as_bytes())).replace('\r', "");
 

@@ -1,0 +1,46 @@
+---
+source: tests/help_snapshots.rs
+---
+Use a project settings file while its content stays the same
+
+snouty uses a project settings file (./.snouty.toml) only after you trust it.
+Until you trust or deny the file, each command that reads the settings fails.
+
+Records that you trust the settings file at PATH with its current content. When
+the content changes, you must trust the file again.
+
+snouty trusts a file that you name with --settings or SNOUTY_SETTINGS_PATH, and
+the global settings file. Set SNOUTY_SETTINGS_TRUST=all to use every project
+settings file without a check, for example in CI.
+
+snouty keeps the record in trust.toml, in the global settings directory.
+
+Examples:
+  snouty settings trust
+  snouty settings trust path/to/.snouty.toml
+
+Usage: snouty settings trust [OPTIONS] [PATH]
+
+Arguments:
+  [PATH]
+          The project settings file
+          
+          [default: .snouty.toml]
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --json
+          Output JSON where supported (NDJSON for list/stream commands, pretty
+          JSON otherwise)
+
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

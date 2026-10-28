@@ -1,4 +1,4 @@
-Serve snouty's run, docs and doctor commands to AI agents over MCP
+Serve snouty's run, docs, doctor and settings commands to AI agents over MCP
 
 This command is gated behind the `mcp` unstable feature, because its tools and their output can still change. Enable it by setting SNOUTY_UNSTABLE_FEATURES=mcp. An unstable feature can change or go away in any release.
 

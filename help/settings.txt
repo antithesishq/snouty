@@ -1,0 +1,3 @@
+Show snouty's settings, and trust or deny a project settings file
+
+`{{ t("settings show")? }}` prints the settings that snouty resolved, and the settings files it read. `{{ t("settings trust")? }}` and `{{ t("settings deny")? }}` decide whether snouty uses a project settings file (./.snouty.toml).

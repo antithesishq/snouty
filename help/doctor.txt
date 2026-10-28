@@ -1,6 +1,6 @@
 Check environment configuration
 
-Verifies that your environment is properly configured for Antithesis testing. Runs health checks — container runtime, docker compose, your credentials ({% if cli %}stored by `snouty login`, or {% endif %}set in the ANTITHESIS_* environment variables), and API connectivity — then prints the resolved settings (tenant, repository, container engine) so you can confirm what snouty will use.
+Verifies that your environment is properly configured for Antithesis testing. Runs health checks — container runtime, docker compose, your credentials ({% if cli %}stored by `snouty login`, or {% endif %}set in the ANTITHESIS_* environment variables), and API connectivity. To see the settings that snouty resolved, run `{{ t("settings show")? }}`.
 
 snouty prefers an API key (full API access); a username and password is deprecated auth, accepted only by {% if cli %}`snouty launch` and {% endif %}`{{ t("snouty debug")? }}`.
 
@@ -11,6 +11,6 @@ The command fails if any required check fails.{% if cli %} Pass --json for a mac
 Examples:
   {{ t("snouty doctor")? }}
 {%- if cli %}
-  {{ t("snouty doctor --json | jq -r .settings.tenant")? }}
+  {{ t("snouty doctor --json | jq .ok")? }}
 {%- endif %}
   {{ t("snouty doctor --offline")? }}

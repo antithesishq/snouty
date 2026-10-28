@@ -97,7 +97,18 @@ elif name == 'ssh':
     elif command == 'bash -s':
         script = sys.stdin.read()
         record('batch_script', script)
-        if 'mkfs.ext4' in script:
+        if script == 'poweroff -f\n':
+            record('poweroff_requested', 'yes')
+            if mode in ('poweroff-hangs', 'poweroff-second-interrupt'):
+                while True:
+                    time.sleep(1)
+            if mode == 'poweroff-fails':
+                sys.exit('poweroff failed fixture')
+            os.kill(int((root / 'qemu_pid').read_text()), signal.SIGUSR1)
+            sys.exit(255)
+        elif 'systemctl stop' in script:
+            sys.exit('unexpected service cleanup')
+        elif 'mkfs.ext4' in script:
             record('scratch_setup_script', script)
         elif 'shmctl --thread_pause_enable' in script:
             record('thread_pause_enabled', 'yes')
@@ -126,7 +137,7 @@ elif name == 'ssh':
                 log.write_text("11.0 [fault_injector] [JSON] '{\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"workload\"],\"max_duration\":2}}'\n11.1 [fault_injector] [JSON] '{\"fault\":{\"name\":\"kill\",\"type\":\"node\",\"affected_nodes\":[\"echo-server\"],\"max_duration\":2}}'\n11.2 [workload] [JSON] '{\"antithesis_assert\":{\"message\":\"balance stays positive\",\"assert_type\":\"always\",\"must_hit\":true,\"hit\":true,\"condition\":false}}'\n")
             if mode == 'malformed-json':
                 log.write_text("12.0 [workload] [JSON] '{broken json}'\n")
-            if mode in ('supervisor-failure', 'clean-once', 'missing-guest', 'default-image', 'human', 'arm64'):
+            if mode in ('supervisor-failure', 'clean-once', 'missing-guest', 'default-image', 'human', 'arm64', 'poweroff-fails', 'poweroff-hangs', 'poweroff-second-interrupt'):
                 log.write_text('12.0 [workload] [STDOUT] \'workload running\'\n')
             if mode.startswith('blocked-output'):
                 with log.open('w') as output:
@@ -203,6 +214,10 @@ elif name in ('qemu-system-x86_64', 'qemu-system-aarch64'):
     record('qemu_child_pid', child.pid)
     def stop(signum, _frame):
         record('qemu_signal', signum)
+        if signum == signal.SIGUSR1:
+            time.sleep(0.1)
+            with Path('instrumentation.log').open('a') as output:
+                output.write("15 [workload] [STDOUT] 'last output before poweroff'\n")
         if child.poll() is None:
             try:
                 child.terminate()
@@ -210,6 +225,7 @@ elif name in ('qemu-system-x86_64', 'qemu-system-aarch64'):
                 pass
         child.wait(timeout=5)
         sys.exit(0)
+    signal.signal(signal.SIGUSR1, stop)
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     if mode != 'shell-booting':

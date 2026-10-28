@@ -327,7 +327,7 @@ To set it up, add the registry to `credHelpers` in `~/.docker/config.json` for D
 }
 ```
 
-The helper answers for a profile whose `repository` is on `registry.<tenant>.antithesis.com` for its tenant. Put those settings in the [global settings file](#settings-files), or name the file with `SNOUTY_SETTINGS_PATH`: the helper never reads `./.snouty.toml`.
+The helper uses the same [settings](#settings-files) as snouty in the directory where Docker runs it, including `./.snouty.toml`. It answers for the profile whose `repository` is on `registry.<tenant>.antithesis.com` for its tenant.
 
 The shell script installer and the Nix package install `docker-credential-snouty`, an alias of `snouty`. For another install method, make the alias yourself, in a directory on your `PATH`:
 

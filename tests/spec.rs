@@ -47,12 +47,13 @@ fn resolve_spec_path(
 /// regex `<pattern>`, mirroring the built-in `stdout`/`stderr` matchers (combine
 /// with a leading `!` to assert the pattern is absent). `<path>` may start with
 /// `~` to reference the test's isolated `$HOME` (see [`resolve_spec_path`]).
+/// `<pattern>` takes `${VAR}` and `${VAR@R}`, as `stdout` does.
 fn cmd_file(
     env: &mut testscript_rs::TestEnvironment,
     args: &[String],
 ) -> testscript_rs::Result<()> {
     let (path_arg, pattern) = match args {
-        [path, rest @ ..] if !rest.is_empty() => (path, rest.join(" ")),
+        [path, rest @ ..] if !rest.is_empty() => (path, env.substitute_env_vars(&rest.join(" "))),
         _ => return Err(err("file requires <path> <pattern>".to_string())),
     };
     let path = resolve_spec_path(env, path_arg)?;

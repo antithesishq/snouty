@@ -1346,10 +1346,13 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/auth/cli/refresh"))
-            .and(header("authorization", "Bearer the-refresh-token"))
+            .and(header(
+                "authorization",
+                format!("Bearer {FAKE_REFRESH_TOKEN_A}"),
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "antithesis_token": "minted-access-token",
-                "refresh_token": "rotated-refresh-token"
+                "antithesis_token": FAKE_ACCESS_TOKEN_A,
+                "refresh_token": FAKE_REFRESH_TOKEN_B
             })))
             .expect(1)
             .mount(&server)
@@ -1360,7 +1363,7 @@ mod tests {
         let valid = public_paseto_with_claims(br#"{"exp":"2039-01-01T00:00:00+00:00"}"#);
         let auth = AuthenticationInfo::oauth_for_test(
             valid,
-            Some("the-refresh-token"),
+            Some(FAKE_REFRESH_TOKEN_A),
             OAuthRefreshInfo::CredentialsFile {
                 path: path.clone(),
                 profile: None,
@@ -1372,10 +1375,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(secret, "minted-access-token");
+        assert_eq!(secret, FAKE_ACCESS_TOKEN_A);
         let persisted = std::fs::read_to_string(path).unwrap();
-        assert!(persisted.contains("minted-access-token"), "{persisted}");
-        assert!(persisted.contains("rotated-refresh-token"), "{persisted}");
+        assert!(persisted.contains(FAKE_ACCESS_TOKEN_A), "{persisted}");
+        assert!(persisted.contains(FAKE_REFRESH_TOKEN_B), "{persisted}");
     }
 
     #[tokio::test]
@@ -1424,19 +1427,20 @@ mod tests {
         };
         refresh_info
             .persist(PersistableCredentials::OAuth {
-                antithesis_token: "refreshed-by-other-process".to_owned(),
-                refresh_token: Some("rotated-refresh".to_owned()),
+                antithesis_token: FAKE_ACCESS_TOKEN_A.to_owned(),
+                refresh_token: Some(FAKE_REFRESH_TOKEN_B.to_owned()),
             })
             .unwrap();
         let loaded = public_paseto_with_claims(br#"{"exp":"2039-01-01T00:00:00+00:00"}"#);
-        let auth = AuthenticationInfo::oauth_for_test(loaded, Some("spent-refresh"), refresh_info);
+        let auth =
+            AuthenticationInfo::oauth_for_test(loaded, Some(FAKE_REFRESH_TOKEN_A), refresh_info);
 
         let secret = auth
             .registry_secret(&crate::testutils::test_client(), &server.uri())
             .await
             .unwrap();
 
-        assert_eq!(secret, "refreshed-by-other-process");
+        assert_eq!(secret, FAKE_ACCESS_TOKEN_A);
     }
 
     #[tokio::test]
@@ -1460,7 +1464,7 @@ mod tests {
         let valid = public_paseto_with_claims(br#"{"exp":"2039-01-01T00:00:00+00:00"}"#);
         let auth = AuthenticationInfo::oauth_for_test(
             valid.clone(),
-            Some("refresh"),
+            Some(FAKE_REFRESH_TOKEN_A),
             refresh_info.clone(),
         );
         assert_eq!(
@@ -1469,7 +1473,8 @@ mod tests {
         );
 
         let expired = public_paseto_with_claims(br#"{"exp":"2000-01-01T00:00:00+00:00"}"#);
-        let auth = AuthenticationInfo::oauth_for_test(expired, Some("refresh"), refresh_info);
+        let auth =
+            AuthenticationInfo::oauth_for_test(expired, Some(FAKE_REFRESH_TOKEN_A), refresh_info);
         let err = auth
             .registry_secret(&client, &server.uri())
             .await

@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use assert_cmd::Command;
+use snouty::testutils::fake_secrets::{FAKE_API_KEY_A, FAKE_BCRYPT_HASH};
 use tempfile::TempDir;
 
 /// The helper at `bin`, in an empty working directory and home, with only the
@@ -21,7 +22,7 @@ fn helper_process(bin: &Path, home: &TempDir) -> std::process::Command {
         .env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1")
         .env("ANTITHESIS_TENANT", "acme")
         .env("ANTITHESIS_REPOSITORY", "registry.acme.antithesis.com/app")
-        .env("ANTITHESIS_API_KEY", "helper-key");
+        .env("ANTITHESIS_API_KEY", FAKE_API_KEY_A);
     command
 }
 
@@ -51,9 +52,9 @@ fn get_prints_the_credential_and_runs_no_snouty() {
             .write_stdin("registry.acme.antithesis.com")
             .assert()
             .success()
-            .stdout(
-                "{\"ServerURL\":\"registry.acme.antithesis.com\",\"Username\":\"snouty-token\",\"Secret\":\"helper-key\"}\n",
-            );
+            .stdout(format!(
+                "{{\"ServerURL\":\"registry.acme.antithesis.com\",\"Username\":\"snouty-token\",\"Secret\":\"{FAKE_API_KEY_A}\"}}\n"
+            ));
     };
     get();
 
@@ -147,16 +148,6 @@ fn erase_reads_stdin_and_succeeds() {
         .stdout("");
 }
 
-/// The test registry's password: the API key that the helper gives.
-#[cfg(unix)]
-const REGISTRY_API_KEY: &str = "snouty-test-api-key";
-
-/// `snouty-token` with a bcrypt hash of [`REGISTRY_API_KEY`], as
-/// `htpasswd -nbB` writes it.
-#[cfg(unix)]
-const REGISTRY_HTPASSWD: &str =
-    "snouty-token:$2a$05$vr70JMlnyI5b0YbJ0mm4v.RmWKdovtX9xcIDaLMU5/ixzJX6Z5Y5O";
-
 /// Each engine pushes to and pulls from a registry that takes basic auth,
 /// through `"credHelpers": {"<registry>": "snouty"}` in the file that the
 /// engine reads: `config.json` in `DOCKER_CONFIG` for Docker, and the
@@ -181,9 +172,10 @@ fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRu
     use std::process::Output;
 
     let engine = runtime.name();
-    let Some(registry) =
-        snouty::testutils::OCIRegistry::start_with_basic_auth(runtime, REGISTRY_HTPASSWD)
-    else {
+    let Some(registry) = snouty::testutils::OCIRegistry::start_with_basic_auth(
+        runtime,
+        &format!("snouty-token:{FAKE_BCRYPT_HASH}"),
+    ) else {
         return;
     };
     let addr = registry.host_port();
@@ -211,7 +203,7 @@ fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRu
              HOME='{home}' SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE=1 \
              ANTITHESIS_TENANT=acme \
              ANTITHESIS_REPOSITORY=registry.acme.antithesis.com/app \
-             ANTITHESIS_API_KEY={REGISTRY_API_KEY} '{helper}' \"$@\"\n",
+             ANTITHESIS_API_KEY={FAKE_API_KEY_A} '{helper}' \"$@\"\n",
             addr = addr.replace('.', r"\."),
             home = home.display(),
             helper = env!("CARGO_BIN_EXE_docker-credential-snouty"),

@@ -359,6 +359,26 @@ pub fn unique_image_prefix(label: &str) -> String {
     )
 }
 
+/// Removes images that a test built, pushed or pulled, except on CI.
+///
+/// The engine tests run in parallel and share one local image store. In
+/// podman, removing an image while another process runs `podman build` can
+/// fail that build in its cache check with "getting top layer info: layer not
+/// known" (issue #136). So no test removes an image while the others run: on
+/// CI, whose runner is thrown away after the job, nothing is removed. Locally
+/// the images are removed, so that a developer's store does not fill up, and a
+/// build can still fail in that race.
+pub fn remove_test_images(runtime: &str, images: &[&str]) {
+    if is_ci() {
+        return;
+    }
+    // One image at a time, so that a name that is gone does not keep the
+    // others.
+    for image in images {
+        let _ = Command::new(runtime).args(["rmi", "-f", image]).output();
+    }
+}
+
 /// Returns `true` when running inside GitHub Actions (or any CI that sets `CI=true`).
 pub fn is_ci() -> bool {
     std::env::var("CI").is_ok_and(|v| v == "true" || v == "1")

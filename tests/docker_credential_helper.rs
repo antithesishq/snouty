@@ -296,9 +296,6 @@ fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRu
         };
         command.env("PATH", &path).output().unwrap()
     };
-    let remove_image = || {
-        let _ = runtime.command(&["rmi", &image]).output();
-    };
     let describe = |output: &Output| {
         format!(
             "stdout: {}\nstderr: {}",
@@ -320,7 +317,9 @@ fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRu
         describe(&output)
     );
 
-    remove_image();
+    // The image stays in the local store, so that no test removes an image
+    // while the others build (see `remove_test_images`). A pull still asks the
+    // registry for the manifest, so it still needs the credential.
     let output = run(&without_helper, "pull");
     assert!(
         !output.status.success(),
@@ -333,5 +332,5 @@ fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRu
         "{engine}: pull with the helper\n{}",
         describe(&output)
     );
-    remove_image();
+    snouty::testutils::remove_test_images(engine, &[&image]);
 }

@@ -1,6 +1,6 @@
 use snouty::testutils::{
     MockApiServer, OCIRegistry, available_runtimes, fake_secrets, filtered_path_without_binary,
-    skip_or_fail,
+    remove_test_images, skip_or_fail,
 };
 use std::cell::RefCell;
 use std::io::{Read, Write};
@@ -740,33 +740,20 @@ fn find_runtime(runtime_name: &str) -> Option<Box<dyn snouty::container::Contain
 }
 
 fn cleanup_engine_images(runtime_name: &str, built_images: &[String], registry_addr: Option<&str>) {
-    // The engine spec cases run as separate `#[test]` processes in parallel and
-    // share one local `containers/storage`. A forced image removal here mutates
-    // that store's layer database while a sibling test's `podman build` is
-    // enumerating images for its build-cache check ("getting top layer info"),
-    // intermittently yielding `layer not known` (issue #136). On CI the runner
-    // is ephemeral and thrown away after the job, so there is nothing to clean
-    // up — skip the `rmi` entirely there to remove the writer that races those
-    // concurrent builds. Locally we still clean up so a dev's image store does
-    // not accumulate junk across runs. TODO: clean up on CI too once `podman
-    // build` no longer races `rmi` (#136).
-    if std::env::var_os("CI").is_some() {
-        eprintln!(
-            "CI is set: skipping {runtime_name} image cleanup (ephemeral runner; avoids racing concurrent builds, issue #136)"
-        );
-        return;
-    }
-    for image in built_images {
-        let _ = std::process::Command::new(runtime_name)
-            .args(["rmi", "-f", image])
-            .output();
-        if let Some(registry_addr) = registry_addr {
-            let prefixed = format!("{registry_addr}/{image}");
-            let _ = std::process::Command::new(runtime_name)
-                .args(["rmi", "-f", &prefixed])
-                .output();
-        }
-    }
+    let prefixed: Vec<String> = registry_addr
+        .map(|addr| {
+            built_images
+                .iter()
+                .map(|image| format!("{addr}/{image}"))
+                .collect()
+        })
+        .unwrap_or_default();
+    let images: Vec<&str> = built_images
+        .iter()
+        .chain(&prefixed)
+        .map(String::as_str)
+        .collect();
+    remove_test_images(runtime_name, &images);
 }
 
 fn run_engine_spec_case(runtime_name: &'static str, case: EngineSpecCase) {

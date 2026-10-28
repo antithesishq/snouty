@@ -3,7 +3,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     str::FromStr,
-    sync::{Arc, RwLock},
+    sync::{Arc, PoisonError, RwLock},
     time::Duration,
 };
 
@@ -11,7 +11,7 @@ use base64::{
     Engine,
     prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD},
 };
-use chrono::{DateTime, TimeDelta, Utc};
+use chrono::{DateTime, Utc};
 use color_eyre::{
     Section,
     eyre::{Context, OptionExt, Result, eyre},
@@ -80,10 +80,6 @@ impl OAuthCredential {
         }
     }
 }
-
-/// A registry client uses one password for a whole push, so a token that
-/// [`AuthenticationInfo::registry_secret`] returns must outlive the push.
-const REGISTRY_TOKEN_MIN_LIFETIME: TimeDelta = TimeDelta::hours(2);
 
 /// Try to parse the supplied string as a PASETO token and return the `exp` claim
 fn try_get_expiry_from_token(token: &str) -> Option<DateTime<Utc>> {
@@ -499,9 +495,28 @@ impl AuthenticationInfo {
                 true,
             ),
             Self::OAuth {
-                refresh_info,
-                active_credential,
-            } => oauth_auth_header(client, base_url, refresh_info, active_credential).await,
+                active_credential, ..
+            } => {
+                // Fast path: use the current access token unless it has expired.
+                let (expired, access_token) = {
+                    let current = active_credential
+                        .read()
+                        .map_err(|err| eyre!("the OAuth credential lock is poisoned: {err}"))?;
+                    (current.is_expired(), current.antithesis_token.clone())
+                };
+                let access_token = if expired {
+                    // Fall back to the (expired) token if there's nothing to
+                    // refresh with — the server will reject it and the
+                    // reactive path can take over.
+                    refresh(client, base_url, self)
+                        .await?
+                        .and_then(|refreshed| refreshed.bearer_token())
+                        .unwrap_or(access_token)
+                } else {
+                    access_token
+                };
+                to_header_value(&format!("Bearer {access_token}"), true)
+            }
             Self::Password { username, password } => {
                 let credentials = format!("{username}:{password}");
                 let encoded = BASE64_STANDARD.encode(credentials);
@@ -521,107 +536,74 @@ impl AuthenticationInfo {
         }
     }
 
+    /// When the expiry of the credential is known, the time at which it
+    /// expires: the `exp` claim of an OAuth access token. `None` for every
+    /// other credential.
+    pub(crate) fn expires_at(&self) -> Option<DateTime<Utc>> {
+        match self {
+            Self::OAuth {
+                active_credential, ..
+            } => try_get_expiry_from_token(
+                &active_credential
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .antithesis_token,
+            ),
+            Self::ApiKey { .. } | Self::GithubActionsOidc { .. } | Self::Password { .. } => None,
+        }
+    }
+
+    /// The token that the credential sends as `Authorization: Bearer`: the
+    /// API key, or the current OAuth access token. `None` for a credential
+    /// that authenticates in a different way.
+    pub(crate) fn bearer_token(&self) -> Option<String> {
+        match self {
+            Self::ApiKey { api_key } => Some(api_key.clone()),
+            Self::OAuth {
+                active_credential, ..
+            } => Some(
+                active_credential
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .antithesis_token
+                    .clone(),
+            ),
+            Self::GithubActionsOidc { .. } | Self::Password { .. } => None,
+        }
+    }
+
+    /// The `Authorization` header to retry a request with after the server
+    /// rejected it as unauthorized, from [`refresh`].
     pub(crate) async fn refresh_after_unauthorized(
         &self,
         client: &reqwest::Client,
         base_url: &str,
     ) -> Result<Option<HeaderValue>> {
-        let Self::OAuth {
-            refresh_info,
-            active_credential,
-        } = self
-        else {
-            return Ok(None);
-        };
-
-        // The access token that just got rejected.
-        let stale_access_token = {
-            let current = active_credential
-                .read()
-                .map_err(|err| eyre!("the OAuth credential lock is poisoned: {err}"))?;
-            current.antithesis_token.clone()
-        };
-
-        match refresh_under_lock(
-            client,
-            base_url,
-            refresh_info,
-            active_credential,
-            &stale_access_token,
-        )
-        .await?
-        {
-            Some(access_token) => Ok(Some(to_header_value(
-                &format!("Bearer {access_token}"),
-                true,
-            )?)),
-            // No refresh token to try — let the caller surface the original 401.
-            None => Ok(None),
-        }
+        // `None`: no refresh token to try — let the caller surface the
+        // original 401.
+        refresh(client, base_url, self)
+            .await?
+            .and_then(|refreshed| refreshed.bearer_token())
+            .map(|access_token| to_header_value(&format!("Bearer {access_token}"), true))
+            .transpose()
     }
+}
 
-    /// The Antithesis token that the tenant's container registry takes as the
-    /// password of its basic auth: the API key, or an OAuth access token.
-    ///
-    /// An OAuth token that expires in more than [`REGISTRY_TOKEN_MIN_LIFETIME`]
-    /// is used as it is. A token that expires sooner, or whose expiry is
-    /// unknown, is refreshed. A token that another process stored after this
-    /// one loaded the credential is already new, so the call uses it as it is.
-    /// Without a refresh token, or when the refresh fails, the call uses the
-    /// stored token until it expires.
-    pub(crate) async fn registry_secret(
-        &self,
-        client: &reqwest::Client,
-        base_url: &str,
-    ) -> Result<String> {
-        match self {
-            Self::ApiKey { api_key } => Ok(api_key.clone()),
-            Self::OAuth {
-                refresh_info,
-                active_credential,
-            } => {
-                let held_access_token = active_credential
-                    .read()
-                    .map_err(|err| eyre!("the OAuth credential lock is poisoned: {err}"))?
-                    .antithesis_token
-                    .clone();
-                let expiry = try_get_expiry_from_token(&held_access_token);
-                if expiry.is_some_and(|expiry| expiry - Utc::now() > REGISTRY_TOKEN_MIN_LIFETIME) {
-                    return Ok(held_access_token);
-                }
-                // `refresh_under_lock` returns `Ok(None)` or `Err` only while
-                // the persisted token is still the held one.
-                let refreshed = refresh_under_lock(
-                    client,
-                    base_url,
-                    refresh_info,
-                    active_credential,
-                    &held_access_token,
-                )
-                .await;
-                let expired = expiry.is_some_and(|expiry| Utc::now() >= expiry);
-                match refreshed {
-                    Ok(Some(token)) => Ok(token),
-                    Err(err) if expired => Err(err),
-                    Ok(None) if expired => Err(user_error(
-                        "the stored OAuth token has expired, and there is no refresh token to replace it; run `snouty login`",
-                    )),
-                    Err(err) => {
-                        // A bare eprintln, not log::warn!: the notice must
-                        // reach stderr independent of RUST_LOG.
-                        eprintln!(
-                            "warning: the OAuth token refresh failed, so the stored token is used until it expires: {err:#}"
-                        );
-                        Ok(held_access_token)
-                    }
-                    Ok(None) => Ok(held_access_token),
-                }
-            }
-            Self::GithubActionsOidc { .. } | Self::Password { .. } => Err(user_error(format!(
-                "the Antithesis container registry does not accept a {self}; set ANTITHESIS_API_KEY, or run `snouty login` to store an API key or OAuth credentials"
-            ))),
-        }
-    }
+/// Build a `v4.public` PASETO whose payload is `claims_json ‖ signature`,
+/// mirroring the real wire format (a 64-byte Ed25519 signature stand-in
+/// trails the JSON claims).
+#[cfg(test)]
+pub(crate) fn public_paseto_with_claims(claims_json: &[u8]) -> String {
+    let mut payload = claims_json.to_vec();
+    payload.extend_from_slice(&[0u8; 64]);
+    format!("v4.public.{}", BASE64_URL_SAFE_NO_PAD.encode(&payload))
+}
+
+/// A `v4.public` PASETO whose `exp` claim is `lifetime` after now.
+#[cfg(test)]
+pub(crate) fn paseto_expiring_in(lifetime: chrono::TimeDelta) -> String {
+    let exp = (Utc::now() + lifetime).to_rfc3339();
+    public_paseto_with_claims(serde_json::json!({ "exp": exp }).to_string().as_bytes())
 }
 
 #[cfg(test)]
@@ -641,59 +623,38 @@ impl AuthenticationInfo {
     }
 }
 
-/// Build the `Authorization` header for an OAuth credential, proactively
-/// refreshing if the token has expired and a refresh token is available.
-async fn oauth_auth_header(
+/// The one path that refreshes a credential. Refresh the OAuth access token
+/// of `auth`, serialized *across processes* by an advisory file lock and
+/// reconciled against the persisted credential, and store the result in
+/// `auth` and in its origin.
+///
+/// A refresh happens only while the persisted token is still the one that
+/// `auth` held when the call started. A different persisted token is one
+/// that another process or refresh stored meanwhile, and it is used instead,
+/// so that two callers do not both spend one refresh token.
+///
+/// Returns `Some` with the refreshed credential, which shares its state with
+/// `auth`, to (re)try with: its token is freshly minted, or one that another
+/// process/refresh already produced. Returns `None` when nothing better is
+/// available: `auth` is not OAuth, or has no refresh token on hand.
+pub(crate) async fn refresh(
     client: &reqwest::Client,
     base_url: &str,
-    refresh_info: &OAuthRefreshInfo,
-    active_credential: &Arc<RwLock<OAuthCredential>>,
-) -> Result<HeaderValue> {
-    // Fast path: use the current access token unless it has expired.
-    let (expired, access_token) = {
-        let current = active_credential
-            .read()
-            .map_err(|err| eyre!("the OAuth credential lock is poisoned: {err}"))?;
-        (current.is_expired(), current.antithesis_token.clone())
+    auth: &AuthenticationInfo,
+) -> Result<Option<AuthenticationInfo>> {
+    let AuthenticationInfo::OAuth {
+        refresh_info,
+        active_credential,
+    } = auth
+    else {
+        return Ok(None);
     };
+    let held_access_token = active_credential
+        .read()
+        .map_err(|err| eyre!("the OAuth credential lock is poisoned: {err}"))?
+        .antithesis_token
+        .clone();
 
-    let access_token = if expired {
-        // Fall back to the (expired) token if there's nothing to refresh with —
-        // the server will reject it and the reactive path can take over.
-        refresh_under_lock(
-            client,
-            base_url,
-            refresh_info,
-            active_credential,
-            &access_token,
-        )
-        .await?
-        .unwrap_or(access_token)
-    } else {
-        access_token
-    };
-    to_header_value(&format!("Bearer {access_token}"), true)
-}
-
-/// Refresh the access token, serialized *across processes* by an advisory file
-/// lock and reconciled against the persisted credential.
-///
-/// `held_access_token` is the access token that the caller held before it
-/// called. A refresh happens only while the persisted token is still that
-/// one. A different persisted token is one that another process or refresh
-/// stored meanwhile, and it is used instead, so that two callers do not both
-/// spend one refresh token.
-///
-/// Returns `Some(token)` to (re)try with — freshly minted, or one another
-/// process/refresh already produced — or `None` when nothing better is
-/// available (no refresh token on hand).
-async fn refresh_under_lock(
-    client: &reqwest::Client,
-    base_url: &str,
-    refresh_info: &OAuthRefreshInfo,
-    active_credential: &Arc<RwLock<OAuthCredential>>,
-    held_access_token: &str,
-) -> Result<Option<String>> {
     // Best-effort cross-process lock, held across the reload + refresh. If we
     // can't take it we proceed unserialized rather than fail the request; the
     // lock is released when `_lock` drops at the end of this scope.
@@ -723,8 +684,10 @@ async fn refresh_under_lock(
         )
     };
 
+    // Someone (another process, or an earlier refresh) already replaced the token
+    // we were unhappy with — use theirs instead of refreshing again.
     if current_access_token != held_access_token {
-        return Ok(Some(current_access_token));
+        return Ok(Some(auth.clone()));
     }
 
     let Some(refresh_token) = current_refresh_token else {
@@ -738,8 +701,8 @@ async fn refresh_under_lock(
         active_credential,
         &refresh_token,
     )
-    .await
-    .map(Some)
+    .await?;
+    Ok(Some(auth.clone()))
 }
 
 /// Best-effort cross-process advisory lock serializing refreshes for a
@@ -1206,7 +1169,7 @@ mod tests {
     use super::*;
     use crate::testutils::fake_secrets::{
         FAKE_ACCESS_TOKEN_A, FAKE_ACCESS_TOKEN_B, FAKE_OIDC_REQUEST_TOKEN, FAKE_OIDC_TOKEN,
-        FAKE_PASETO_A, FAKE_PASETO_B, FAKE_REFRESH_TOKEN_A, FAKE_REFRESH_TOKEN_B,
+        FAKE_PASETO_A, FAKE_PASETO_B, FAKE_REFRESH_TOKEN_A, FAKE_REFRESH_TOKEN_B, FAKE_USERNAME,
     };
     use std::io::{BufRead, BufReader};
     use std::net::TcpListener;
@@ -1305,21 +1268,22 @@ mod tests {
             })
             .unwrap();
 
+        let auth = AuthenticationInfo::OAuth {
+            refresh_info,
+            active_credential: active_credential.clone(),
+        };
         let client = crate::testutils::test_client();
-        let result = refresh_under_lock(
-            &client,
-            &server.uri(),
-            &refresh_info,
-            &active_credential,
-            FAKE_ACCESS_TOKEN_A,
-        )
-        .await
-        .unwrap();
+        let refreshed = refresh(&client, &server.uri(), &auth).await.unwrap();
 
         // Adopted the persisted token; no network refresh happened. The
         // network assertion runs before the read lock is taken, so no guard
         // is held across an await point (clippy::await_holding_lock).
-        assert_eq!(result.as_deref(), Some(FAKE_ACCESS_TOKEN_B));
+        assert_eq!(
+            refreshed
+                .and_then(|refreshed| refreshed.bearer_token())
+                .as_deref(),
+            Some(FAKE_ACCESS_TOKEN_B)
+        );
         assert!(
             server.received_requests().await.unwrap().is_empty(),
             "must not refresh when the origin already holds a newer token"
@@ -1332,13 +1296,12 @@ mod tests {
         );
     }
 
-    /// Mount a refresh endpoint that [`FAKE_REFRESH_TOKEN_A`] must call
-    /// `times` times, and that answers with `new_access_token` and
-    /// [`FAKE_REFRESH_TOKEN_B`].
-    async fn mount_refresh(server: &wiremock::MockServer, new_access_token: &str, times: u64) {
+    #[tokio::test]
+    async fn an_expired_access_token_is_refreshed_before_the_request() {
         use wiremock::matchers::{header, method, path};
-        use wiremock::{Mock, ResponseTemplate};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
 
+        let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/auth/cli/refresh"))
             .and(header(
@@ -1346,196 +1309,27 @@ mod tests {
                 format!("Bearer {FAKE_REFRESH_TOKEN_A}"),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "antithesis_token": new_access_token,
-                "refresh_token": FAKE_REFRESH_TOKEN_B
+                "antithesis_token": FAKE_ACCESS_TOKEN_B
             })))
-            .expect(times)
-            .mount(server)
-            .await;
-    }
-
-    /// A `v4.public` PASETO whose `exp` claim is `lifetime` after now.
-    fn paseto_expiring_in(lifetime: TimeDelta) -> String {
-        let exp = (Utc::now() + lifetime).to_rfc3339();
-        public_paseto_with_claims(serde_json::json!({ "exp": exp }).to_string().as_bytes())
-    }
-
-    /// A credentials file in a new temporary directory, which the caller
-    /// keeps alive.
-    fn temp_credentials_file() -> (tempfile::TempDir, OAuthRefreshInfo) {
-        let dir = tempfile::TempDir::new().unwrap();
-        let refresh_info = OAuthRefreshInfo::CredentialsFile {
-            path: dir.path().join("credentials.toml"),
-            profile: None,
-        };
-        (dir, refresh_info)
-    }
-
-    #[tokio::test]
-    async fn registry_secret_uses_a_token_far_from_expiry_without_a_refresh() {
-        let server = wiremock::MockServer::start().await;
-        mount_refresh(&server, FAKE_ACCESS_TOKEN_A, 0).await;
-        let (_dir, refresh_info) = temp_credentials_file();
-        let fresh = paseto_expiring_in(TimeDelta::minutes(125));
-        let auth = AuthenticationInfo::oauth_for_test(
-            fresh.clone(),
-            Some(FAKE_REFRESH_TOKEN_A),
-            refresh_info,
-        );
-
-        let secret = auth
-            .registry_secret(&crate::testutils::test_client(), &server.uri())
-            .await
-            .unwrap();
-
-        assert_eq!(secret, fresh);
-    }
-
-    #[tokio::test]
-    async fn registry_secret_refreshes_a_token_that_expires_within_the_margin() {
-        let server = wiremock::MockServer::start().await;
-        mount_refresh(&server, FAKE_ACCESS_TOKEN_A, 1).await;
-        let (dir, refresh_info) = temp_credentials_file();
-        let auth = AuthenticationInfo::oauth_for_test(
-            paseto_expiring_in(TimeDelta::minutes(119)),
-            Some(FAKE_REFRESH_TOKEN_A),
-            refresh_info,
-        );
-
-        let secret = auth
-            .registry_secret(&crate::testutils::test_client(), &server.uri())
-            .await
-            .unwrap();
-
-        assert_eq!(secret, FAKE_ACCESS_TOKEN_A);
-        let persisted = std::fs::read_to_string(dir.path().join("credentials.toml")).unwrap();
-        assert!(persisted.contains(FAKE_ACCESS_TOKEN_A), "{persisted}");
-        assert!(persisted.contains(FAKE_REFRESH_TOKEN_B), "{persisted}");
-    }
-
-    #[tokio::test]
-    async fn registry_secret_refreshes_a_token_whose_expiry_is_unknown() {
-        let server = wiremock::MockServer::start().await;
-        mount_refresh(&server, FAKE_ACCESS_TOKEN_B, 1).await;
-        let (_dir, refresh_info) = temp_credentials_file();
-        let auth = AuthenticationInfo::oauth_for_test(
-            FAKE_ACCESS_TOKEN_A,
-            Some(FAKE_REFRESH_TOKEN_A),
-            refresh_info,
-        );
-
-        let secret = auth
-            .registry_secret(&crate::testutils::test_client(), &server.uri())
-            .await
-            .unwrap();
-
-        assert_eq!(secret, FAKE_ACCESS_TOKEN_B);
-    }
-
-    #[tokio::test]
-    async fn registry_secret_without_a_refresh_token_uses_only_an_unexpired_token() {
-        let (_dir, refresh_info) = temp_credentials_file();
-        // No request may go out: nothing listens on this address.
-        let base_url = "http://127.0.0.1:9";
-        let client = crate::testutils::test_client();
-
-        for valid in [
-            public_paseto_with_claims(br#"{"exp":"2039-01-01T00:00:00+00:00"}"#),
-            paseto_expiring_in(TimeDelta::minutes(119)),
-        ] {
-            let auth =
-                AuthenticationInfo::oauth_for_test(valid.clone(), None, refresh_info.clone());
-            assert_eq!(
-                auth.registry_secret(&client, base_url).await.unwrap(),
-                valid
-            );
-        }
-
-        let expired = paseto_expiring_in(-TimeDelta::days(1));
-        let auth = AuthenticationInfo::oauth_for_test(expired, None, refresh_info);
-        let err = auth.registry_secret(&client, base_url).await.unwrap_err();
-        assert!(err.to_string().contains("has expired"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn registry_secret_uses_a_token_that_another_process_just_refreshed() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        // A second refresh would spend the refresh token that the other
-        // process already spent.
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/auth/cli/refresh"))
-            .respond_with(ResponseTemplate::new(500))
-            .expect(0)
+            .expect(1)
             .mount(&server)
             .await;
-
-        let (_dir, refresh_info) = temp_credentials_file();
-        refresh_info
-            .persist(PersistableCredentials::OAuth {
-                antithesis_token: FAKE_ACCESS_TOKEN_A.to_owned(),
-                refresh_token: Some(FAKE_REFRESH_TOKEN_B.to_owned()),
-            })
-            .unwrap();
+        let creds_dir = tempfile::TempDir::new().unwrap();
         let auth = AuthenticationInfo::oauth_for_test(
-            paseto_expiring_in(TimeDelta::minutes(119)),
+            paseto_expiring_in(-chrono::TimeDelta::minutes(1)),
             Some(FAKE_REFRESH_TOKEN_A),
-            refresh_info,
+            OAuthRefreshInfo::CredentialsFile {
+                path: creds_dir.path().join("credentials.toml"),
+                profile: None,
+            },
         );
 
-        let secret = auth
-            .registry_secret(&crate::testutils::test_client(), &server.uri())
+        let header = auth
+            .auth_header(&crate::testutils::test_client(), &server.uri())
             .await
             .unwrap();
 
-        assert_eq!(secret, FAKE_ACCESS_TOKEN_A);
-    }
-
-    #[tokio::test]
-    async fn registry_secret_uses_an_unexpired_token_when_the_refresh_fails() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/auth/cli/refresh"))
-            .respond_with(ResponseTemplate::new(503))
-            .expect(2)
-            .mount(&server)
-            .await;
-        let (_dir, refresh_info) = temp_credentials_file();
-        let client = crate::testutils::test_client();
-
-        let valid = paseto_expiring_in(TimeDelta::minutes(119));
-        let auth = AuthenticationInfo::oauth_for_test(
-            valid.clone(),
-            Some(FAKE_REFRESH_TOKEN_A),
-            refresh_info.clone(),
-        );
-        assert_eq!(
-            auth.registry_secret(&client, &server.uri()).await.unwrap(),
-            valid
-        );
-
-        let expired = paseto_expiring_in(-TimeDelta::days(1));
-        let auth =
-            AuthenticationInfo::oauth_for_test(expired, Some(FAKE_REFRESH_TOKEN_A), refresh_info);
-        let err = auth
-            .registry_secret(&client, &server.uri())
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("snouty login"), "{err}");
-    }
-
-    /// Build a `v4.public` PASETO whose payload is `claims_json ‖ signature`,
-    /// mirroring the real wire format (a 64-byte Ed25519 signature stand-in
-    /// trails the JSON claims).
-    fn public_paseto_with_claims(claims_json: &[u8]) -> String {
-        let mut payload = claims_json.to_vec();
-        payload.extend_from_slice(&[0u8; 64]);
-        format!("v4.public.{}", BASE64_URL_SAFE_NO_PAD.encode(&payload))
+        assert_eq!(header, format!("Bearer {FAKE_ACCESS_TOKEN_B}"));
     }
 
     #[test]
@@ -1555,6 +1349,43 @@ mod tests {
             try_get_expiry_from_token(&token),
             DateTime::from_timestamp(2_145_916_800, 0)
         );
+    }
+
+    #[test]
+    fn expires_at_is_the_exp_of_an_oauth_access_token() {
+        let refresh_info = OAuthRefreshInfo::Keychain {
+            entry_name: "unused".to_owned(),
+        };
+        let token = public_paseto_with_claims(br#"{"exp":"2039-01-01T00:00:00+00:00"}"#);
+        let oauth = AuthenticationInfo::oauth_for_test(token, None, refresh_info.clone());
+        assert_eq!(
+            oauth.expires_at(),
+            Some("2039-01-01T00:00:00Z".parse().unwrap())
+        );
+        // An access token whose expiry cannot be read.
+        let opaque = AuthenticationInfo::oauth_for_test(FAKE_ACCESS_TOKEN_A, None, refresh_info);
+        assert_eq!(opaque.expires_at(), None);
+    }
+
+    #[test]
+    fn expires_at_is_unknown_for_every_other_credential() {
+        let others = [
+            AuthenticationInfo::ApiKey {
+                api_key: FAKE_PASETO_A.to_owned(),
+            },
+            AuthenticationInfo::GithubActionsOidc {
+                url: "http://127.0.0.1:9".to_owned(),
+                request_token: FAKE_OIDC_REQUEST_TOKEN.to_owned(),
+                cached: Arc::new(OnceCell::new_with(Some(FAKE_PASETO_A.to_owned()))),
+            },
+            AuthenticationInfo::Password {
+                username: FAKE_USERNAME.to_owned(),
+                password: FAKE_PASETO_A.to_owned(),
+            },
+        ];
+        for auth in others {
+            assert_eq!(auth.expires_at(), None, "{auth}");
+        }
     }
 
     #[test]

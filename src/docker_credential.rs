@@ -81,9 +81,7 @@ async fn cmd_docker_credential(
             let Some(settings) = registry::select_settings(settings_path, profile, &host)? else {
                 return Err(Report::new(CredentialsNotFound));
             };
-            let secret = AntithesisApi::new(&settings, false)?
-                .registry_secret()
-                .await?;
+            let secret = registry::password(&AntithesisApi::new(&settings, false)?).await?;
             let credential = serde_json::to_string(&Credential {
                 server_url,
                 username: registry::USERNAME,

@@ -13,7 +13,7 @@ use reqwest::{Client, Proxy};
 use serde::de::DeserializeOwned;
 
 use crate::api_cache::{self, ApiCache, CachePolicy};
-use crate::auth::{AuthenticationInfo, PasswordPolicy};
+use crate::auth::{self, AuthenticationInfo, PasswordPolicy};
 use crate::env;
 use crate::error::{ApiError, user_error};
 use crate::params::{
@@ -823,14 +823,14 @@ impl AntithesisApi {
         )
     }
 
-    /// The password for the tenant's container registry (see
-    /// [`AuthenticationInfo::registry_secret`]).
-    pub async fn registry_secret(&self) -> Result<String> {
-        self.client
-            .inner()
-            .authn_info
-            .registry_secret(self.client.client(), &self.base_url)
-            .await
+    /// The credential that the client authenticates with.
+    pub(crate) fn authentication(&self) -> &AuthenticationInfo {
+        &self.client.inner().authn_info
+    }
+
+    /// Refreshes the credential of the client through [`auth::refresh`].
+    pub(crate) async fn refresh_authentication(&self) -> Result<Option<AuthenticationInfo>> {
+        auth::refresh(self.client.client(), &self.base_url, self.authentication()).await
     }
 
     pub async fn launch_test(&self, launcher: &str, params: &Params) -> Result<LaunchResponse> {

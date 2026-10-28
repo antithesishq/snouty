@@ -8,11 +8,18 @@
 
 use std::{fmt, path::PathBuf, str::FromStr};
 
+use chrono::{TimeDelta, Utc};
 use color_eyre::eyre::Result;
 
+use crate::api::AntithesisApi;
+use crate::error::user_error;
 use crate::settings::{Settings, SettingsRequest};
 
 pub const USERNAME: &str = "snouty-token";
+
+/// A registry client uses one password for a whole push, so a token that
+/// [`password`] returns must outlive the push.
+const TOKEN_MIN_LIFETIME: TimeDelta = TimeDelta::hours(2);
 
 /// A registry host, such as `registry.acme.antithesis.com`, or
 /// `localhost:5000` with its port. It holds no scheme and no path, and its
@@ -88,10 +95,250 @@ pub fn select_settings(
         .find(uses_host))
 }
 
+/// The password that the registry takes with [`USERNAME`]: the API key, or
+/// the OAuth access token of the credential of `api`.
+///
+/// A token that expires in more than [`TOKEN_MIN_LIFETIME`] is used as it
+/// is. A token that expires sooner, or whose expiry is unknown, is refreshed
+/// when the credential can refresh. When the credential cannot refresh, or
+/// the refresh fails, the stored token is used until it expires.
+pub async fn password(api: &AntithesisApi) -> Result<String> {
+    let auth = api.authentication();
+    let Some(stored) = auth.bearer_token() else {
+        return Err(user_error(format!(
+            "the Antithesis container registry does not accept a {auth}; set ANTITHESIS_API_KEY, or run `snouty login` to store an API key or OAuth credentials"
+        )));
+    };
+    let expires_at = auth.expires_at();
+    let expired = expires_at.is_some_and(|expires_at| Utc::now() >= expires_at);
+    let near_expiry =
+        expires_at.is_none_or(|expires_at| expires_at - Utc::now() <= TOKEN_MIN_LIFETIME);
+    if near_expiry && auth.can_refresh() {
+        // `refresh_authentication` gives `Ok(None)` or `Err` only while the
+        // persisted token is still the stored one.
+        match api.refresh_authentication().await {
+            Ok(refreshed) => {
+                if let Some(token) = refreshed.and_then(|refreshed| refreshed.bearer_token()) {
+                    return Ok(token);
+                }
+            }
+            Err(err) if expired => return Err(err),
+            Err(err) => {
+                // A bare eprintln, not log::warn!: the notice must reach
+                // stderr independent of RUST_LOG.
+                eprintln!(
+                    "warning: the OAuth token refresh failed, so the stored token is used until it expires: {err:#}"
+                );
+                return Ok(stored);
+            }
+        }
+    }
+    if expired {
+        return Err(user_error(
+            "the stored OAuth token has expired, and there is no refresh token to replace it; run `snouty login`",
+        ));
+    }
+    Ok(stored)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::ResponseCache;
+    use crate::auth::{AuthenticationInfo, OAuthRefreshInfo, paseto_expiring_in};
+    use crate::testutils::fake_secrets::{
+        FAKE_ACCESS_TOKEN_A, FAKE_ACCESS_TOKEN_B, FAKE_API_KEY_A, FAKE_PASSWORD,
+        FAKE_REFRESH_TOKEN_A, FAKE_REFRESH_TOKEN_B, FAKE_USERNAME,
+    };
     use hegel::generators;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Nothing listens on this address, so a request to it fails.
+    const NO_SERVER: &str = "http://127.0.0.1:9";
+
+    fn api(base_url: &str, auth: AuthenticationInfo) -> AntithesisApi {
+        AntithesisApi::build(
+            &Settings::for_test_base_url(base_url),
+            auth,
+            false,
+            ResponseCache::Disabled,
+        )
+        .unwrap()
+    }
+
+    /// An OAuth credential whose origin is a credentials file in `dir`.
+    fn oauth(
+        dir: &tempfile::TempDir,
+        access_token: &str,
+        refresh_token: Option<&str>,
+    ) -> AuthenticationInfo {
+        let refresh_info = OAuthRefreshInfo::CredentialsFile {
+            path: dir.path().join("credentials.toml"),
+            profile: None,
+        };
+        AuthenticationInfo::oauth_for_test(access_token, refresh_token, refresh_info)
+    }
+
+    /// Mount a refresh endpoint that [`FAKE_REFRESH_TOKEN_A`] must call
+    /// `times` times, and that answers with `new_access_token` and
+    /// [`FAKE_REFRESH_TOKEN_B`].
+    async fn mount_refresh(server: &MockServer, new_access_token: &str, times: u64) {
+        Mock::given(method("POST"))
+            .and(path("/auth/cli/refresh"))
+            .and(header(
+                "authorization",
+                format!("Bearer {FAKE_REFRESH_TOKEN_A}"),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "antithesis_token": new_access_token,
+                "refresh_token": FAKE_REFRESH_TOKEN_B
+            })))
+            .expect(times)
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn the_password_is_the_api_key() {
+        let auth = AuthenticationInfo::ApiKey {
+            api_key: FAKE_API_KEY_A.to_owned(),
+        };
+        assert_eq!(
+            password(&api(NO_SERVER, auth)).await.unwrap(),
+            FAKE_API_KEY_A
+        );
+    }
+
+    #[tokio::test]
+    async fn a_password_or_oidc_credential_is_rejected_with_the_fix() {
+        for auth in [
+            AuthenticationInfo::Password {
+                username: FAKE_USERNAME.to_owned(),
+                password: FAKE_PASSWORD.to_owned(),
+            },
+            AuthenticationInfo::GithubActionsOidc {
+                url: NO_SERVER.to_owned(),
+                request_token: FAKE_PASSWORD.to_owned(),
+                cached: std::sync::Arc::default(),
+            },
+        ] {
+            let err = password(&api(NO_SERVER, auth)).await.unwrap_err();
+            assert!(err.to_string().contains("set ANTITHESIS_API_KEY"), "{err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_token_far_from_expiry_is_used_without_a_refresh() {
+        let server = MockServer::start().await;
+        mount_refresh(&server, FAKE_ACCESS_TOKEN_A, 0).await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let fresh = paseto_expiring_in(TimeDelta::minutes(125));
+        let auth = oauth(&dir, &fresh, Some(FAKE_REFRESH_TOKEN_A));
+
+        assert_eq!(password(&api(&server.uri(), auth)).await.unwrap(), fresh);
+    }
+
+    #[tokio::test]
+    async fn a_token_that_expires_within_the_margin_is_refreshed() {
+        let server = MockServer::start().await;
+        mount_refresh(&server, FAKE_ACCESS_TOKEN_A, 1).await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let auth = oauth(
+            &dir,
+            &paseto_expiring_in(TimeDelta::minutes(119)),
+            Some(FAKE_REFRESH_TOKEN_A),
+        );
+
+        let secret = password(&api(&server.uri(), auth)).await.unwrap();
+
+        assert_eq!(secret, FAKE_ACCESS_TOKEN_A);
+        let persisted = std::fs::read_to_string(dir.path().join("credentials.toml")).unwrap();
+        assert!(persisted.contains(FAKE_ACCESS_TOKEN_A), "{persisted}");
+        assert!(persisted.contains(FAKE_REFRESH_TOKEN_B), "{persisted}");
+    }
+
+    #[tokio::test]
+    async fn a_token_whose_expiry_is_unknown_is_refreshed() {
+        let server = MockServer::start().await;
+        mount_refresh(&server, FAKE_ACCESS_TOKEN_B, 1).await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let auth = oauth(&dir, FAKE_ACCESS_TOKEN_A, Some(FAKE_REFRESH_TOKEN_A));
+
+        let secret = password(&api(&server.uri(), auth)).await.unwrap();
+
+        assert_eq!(secret, FAKE_ACCESS_TOKEN_B);
+    }
+
+    #[tokio::test]
+    async fn without_a_refresh_token_only_an_unexpired_token_is_used() {
+        let dir = tempfile::TempDir::new().unwrap();
+        for valid in [
+            paseto_expiring_in(TimeDelta::days(1000)),
+            paseto_expiring_in(TimeDelta::minutes(119)),
+        ] {
+            let auth = oauth(&dir, &valid, None);
+            assert_eq!(password(&api(NO_SERVER, auth)).await.unwrap(), valid);
+        }
+
+        let auth = oauth(&dir, &paseto_expiring_in(-TimeDelta::days(1)), None);
+        let err = password(&api(NO_SERVER, auth)).await.unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "the stored OAuth token has expired, and there is no refresh token to replace it; run `snouty login`"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_token_that_another_process_just_refreshed_is_used() {
+        // A second refresh would spend the refresh token that the other
+        // process already spent.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/cli/refresh"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("credentials.toml"),
+            format!(
+                "[default]\ntype = \"OAuth\"\nantithesis_token = \"{FAKE_ACCESS_TOKEN_A}\"\nrefresh_token = \"{FAKE_REFRESH_TOKEN_B}\"\n"
+            ),
+        )
+        .unwrap();
+        let auth = oauth(
+            &dir,
+            &paseto_expiring_in(TimeDelta::minutes(119)),
+            Some(FAKE_REFRESH_TOKEN_A),
+        );
+
+        let secret = password(&api(&server.uri(), auth)).await.unwrap();
+
+        assert_eq!(secret, FAKE_ACCESS_TOKEN_A);
+    }
+
+    #[tokio::test]
+    async fn a_failed_refresh_falls_back_only_to_an_unexpired_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/cli/refresh"))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let dir = tempfile::TempDir::new().unwrap();
+
+        let valid = paseto_expiring_in(TimeDelta::minutes(119));
+        let auth = oauth(&dir, &valid, Some(FAKE_REFRESH_TOKEN_A));
+        assert_eq!(password(&api(&server.uri(), auth)).await.unwrap(), valid);
+
+        let expired = paseto_expiring_in(-TimeDelta::days(1));
+        let auth = oauth(&dir, &expired, Some(FAKE_REFRESH_TOKEN_A));
+        let err = password(&api(&server.uri(), auth)).await.unwrap_err();
+        assert!(err.to_string().contains("snouty login"), "{err}");
+    }
 
     fn settings(profile: Option<&str>, tenant: &str, repository: &str) -> Settings {
         let builder = Settings::builder().tenant(tenant).repository(repository);

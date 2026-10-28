@@ -121,7 +121,7 @@ impl Settings {
     /// as is an explicitly-requested file (via flag or env var) that is missing:
     /// silently ignoring it would resurface later as a confusing "tenant not
     /// set". A missing *default* `./.snouty.toml` is fine. The default file is
-    /// used only when the user trusts it (see [`trust`]).
+    /// used only when the user trusts it (see [`trust::verdict`]).
     pub fn resolve(
         project_settings_path: Option<PathBuf>,
         profile: Option<String>,
@@ -142,13 +142,12 @@ impl Settings {
             None => env::var(SNOUTY_SETTINGS_PATH_VAR_NAME)?.map(PathBuf::from),
         };
 
-        // An explicitly-requested project file must exist, and is trusted
-        // because the user named it. The default `./.snouty.toml` is optional,
-        // and is used only when the user trusts it. (Climbing the directory
-        // tree, if ever wanted, would go here.)
-        // Parsed whether or not a project file exists, so that a bad value
-        // fails in every directory.
+        // Parse this even without a project file, so a bad value fails in
+        // every directory.
         let trust_override = trust::TrustOverride::from_env()?;
+        // A named project file must exist and needs no trust; the default
+        // `./.snouty.toml` is optional and needs trust. (Climbing the directory
+        // tree, if ever wanted, would go here.)
         let project = match &project_settings_path {
             Some(path) => load_settings_file(path, true)?,
             None => load_default_project_file(trust_override)?,

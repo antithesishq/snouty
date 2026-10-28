@@ -1,5 +1,3 @@
-//! `snouty config show`.
-
 use std::io::Write;
 
 use color_eyre::eyre::Result;
@@ -9,12 +7,10 @@ use super::Settings;
 use crate::render::render_kv;
 use crate::stdio;
 
-/// The human table's word for a setting that is not set.
 const NOT_SET: &str = "not set";
 
-/// Each setting, keyed by its name in a settings file, with its resolved
-/// value (null when it is not set) and the human table's word for it when it
-/// is not set: what snouty does without it.
+/// Each setting's name in a settings file, its resolved value (null when
+/// unset), and the text the table prints when it is unset.
 fn rows(settings: &Settings) -> [(&'static str, Value, &'static str); 9] {
     [
         ("profile", json!(settings.profile()), "default"),

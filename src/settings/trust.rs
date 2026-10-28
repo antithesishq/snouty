@@ -91,7 +91,7 @@ pub(super) enum Verdict {
 }
 
 impl TrustOverride {
-    /// The value of `SNOUTY_CONFIG_TRUST`; `None` when it is not set.
+    /// `None` when `SNOUTY_CONFIG_TRUST` is not set.
     pub(super) fn from_env() -> Result<Option<Self>> {
         env::var(CONFIG_TRUST_VAR_NAME)?
             .map(|value| value.parse())
@@ -164,7 +164,7 @@ fn record(path: PathBuf, decision: Decision) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// The canonical form of `path`, which must name a file.
+/// The canonical form of `path`; an error when `path` does not name a file.
 fn canonicalize(path: &Path) -> Result<PathBuf> {
     let canonical = fs::canonicalize(path).map_err(|err| {
         if err.kind() == ErrorKind::NotFound {

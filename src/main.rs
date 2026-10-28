@@ -102,9 +102,8 @@ async fn run(cli: Cli) -> Result<()> {
         eprintln!("warning: Could not initialize system keychain credential storage: {err:?}");
     }
 
-    // Resolve all settings up front. A broken/unreadable settings file fails
-    // here, cleanly and once, before any command runs — including commands that
-    // don't read settings. That keeps dispatch a single flat match.
+    // Resolve settings once, up front. Each command that reads settings
+    // unwraps the result, so a bad settings file stops only those commands.
     let settings = Settings::resolve(settings_path.clone(), profile.clone());
     let result = match command {
         Commands::Completions { shell } => cmd_completions(shell).map_err(Report::new),
@@ -119,14 +118,14 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Docs { offline, command } => docs::cmd_docs(command, offline, output).await,
         Commands::Config { command } => match command {
             ConfigCommands::Show => snouty::settings::cmd_config_show(&settings?, output.json),
-            // `--settings` names a file that is trusted already, so a user who
-            // passes it means the file, not ./.snouty.toml.
+            // `--settings` names a file that needs no trust, so reject it
+            // rather than act on ./.snouty.toml.
             ConfigCommands::Trust(_) | ConfigCommands::Deny(_) if settings_path.is_some() => Err(
                 user_error("`config trust` and `config deny` ignore --settings")
                     .suggestion("Pass the path of the settings file as an argument."),
             ),
-            // Neither reads the settings, so each works where an untrusted
-            // file stops every other command.
+            // These do not read settings, so they work while an untrusted
+            // file blocks other commands.
             ConfigCommands::Trust(args) => snouty::settings::trust(&args.path)
                 .map(|path| eprintln!("Trusted {}", path.display())),
             ConfigCommands::Deny(args) => snouty::settings::deny(&args.path)

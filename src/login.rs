@@ -852,14 +852,8 @@ mod tests {
         // stored; the star run is fixed, so two keys of different lengths hint
         // identically. Antithesis keys share a constant prefix, which is why the
         // hint shows the end and not the start.
-        assert_eq!(
-            secret_hint("antithesis_api_key_v2_NOTREAL_9Pgw"),
-            "********9Pgw"
-        );
-        assert_eq!(
-            secret_hint("antithesis_api_key_v2_SHORTER_7Qxz"),
-            "********7Qxz"
-        );
+        assert_eq!(secret_hint(FAKE_API_KEY_A), "********9Pgw");
+        assert_eq!(secret_hint(FAKE_API_KEY_B), "********7Qxz");
     }
 
     #[test]
@@ -887,9 +881,8 @@ mod tests {
     #[test]
     fn code_challenge_matches_rfc7636_test_vector() {
         // RFC 7636 Appendix B.
-        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
         assert_eq!(
-            code_challenge_for(verifier),
+            code_challenge_for(FAKE_PKCE_VERIFIER),
             "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
         );
     }
@@ -910,12 +903,15 @@ mod tests {
 
     #[test]
     fn parse_callback_extracts_code_and_flow_token() {
-        let params = parse_callback_params("code=AUTH_CODE&state=FLOW_TOKEN").unwrap();
+        let params = parse_callback_params(&format!(
+            "code={FAKE_OAUTH_CODE}&state={FAKE_OAUTH_FLOW_TOKEN}"
+        ))
+        .unwrap();
         assert_eq!(
             params,
             CallbackParams {
-                auth_code: "AUTH_CODE".to_owned(),
-                flow_token: "FLOW_TOKEN".to_owned(),
+                auth_code: FAKE_OAUTH_CODE.to_owned(),
+                flow_token: FAKE_OAUTH_FLOW_TOKEN.to_owned(),
             }
         );
     }
@@ -1065,13 +1061,15 @@ mod tests {
             "got: {sign_in}"
         );
 
-        let signed_in = get(port, "/callback?code=the-code&state=the-flow", "").await;
+        let callback_target =
+            format!("/callback?code={FAKE_OAUTH_CODE}&state={FAKE_OAUTH_FLOW_TOKEN}");
+        let signed_in = get(port, &callback_target, "").await;
         assert!(signed_in.starts_with("HTTP/1.1 200 "), "got: {signed_in}");
         assert!(signed_in.contains("You’re signed in"), "got: {signed_in}");
 
         let callback = server.await.unwrap().unwrap();
-        assert_eq!(callback.auth_code, "the-code");
-        assert_eq!(callback.flow_token, "the-flow");
+        assert_eq!(callback.auth_code, FAKE_OAUTH_CODE);
+        assert_eq!(callback.flow_token, FAKE_OAUTH_FLOW_TOKEN);
     }
 
     #[tokio::test]
@@ -1103,6 +1101,13 @@ mod tests {
     use std::thread;
 
     use crate::settings::Settings;
+    use crate::testutils::fake_secrets::{
+        FAKE_API_KEY_A, FAKE_API_KEY_B, FAKE_OAUTH_CODE, FAKE_OAUTH_FLOW_TOKEN, FAKE_PASSWORD,
+        FAKE_PKCE_VERIFIER, FAKE_REFRESH_TOKEN_A,
+    };
+    use crate::testutils::{
+        api_key_credentials, api_key_line, oauth_credentials, password_credentials,
+    };
     use color_eyre::eyre::Result;
 
     enum Answer {
@@ -1378,7 +1383,7 @@ mod tests {
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
-            .secret("sk-test-key")
+            .secret(FAKE_API_KEY_A)
             .build();
 
         login(None, &settings, &prompter).await?;
@@ -1388,7 +1393,7 @@ mod tests {
         assert!(stored.contains(r#"repository = "myrepo""#), "{stored}");
         let creds = env.credentials();
         assert!(creds.contains(r#"type = "ApiKey""#), "{creds}");
-        assert!(creds.contains(r#"api_key = "sk-test-key""#), "{creds}");
+        assert!(creds.contains(&api_key_line(FAKE_API_KEY_A)), "{creds}");
         Ok(())
     }
 
@@ -1398,7 +1403,7 @@ mod tests {
     async fn login_flags_skip_the_tenant_and_repository_prompts() -> Result<()> {
         let env = LoginEnv::new();
         let settings = env.resolve_settings(None)?;
-        let prompter = Script::default().secret("sk-test-key").build();
+        let prompter = Script::default().secret(FAKE_API_KEY_A).build();
 
         do_cmd_login(
             Some("mytenant".to_owned()),
@@ -1427,21 +1432,17 @@ mod tests {
         Ok(())
     }
 
-    /// A username and password as an older snouty stored them.
-    const STORED_PASSWORD: &str =
-        "[default]\ntype = \"Password\"\nusername = \"puser\"\npassword = \"ppass\"\n";
-
     /// Login reads a username and password an older snouty stored, asks for an
     /// API key, asks to replace them, and replaces them on a yes.
     #[tokio::test]
     async fn login_replaces_a_stored_username_and_password_with_an_api_key() -> Result<()> {
         let env = LoginEnv::new();
-        env.seed(".config/snouty/credentials.toml", STORED_PASSWORD);
+        env.seed(".config/snouty/credentials.toml", &password_credentials());
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
-            .secret("sk-test-key")
+            .secret(FAKE_API_KEY_A)
             .confirm(true)
             .build();
 
@@ -1456,7 +1457,7 @@ mod tests {
         );
         let creds = env.credentials();
         assert!(creds.contains(r#"type = "ApiKey""#), "{creds}");
-        assert!(!creds.contains("ppass"), "{creds}");
+        assert!(!creds.contains(FAKE_PASSWORD), "{creds}");
         Ok(())
     }
 
@@ -1465,18 +1466,18 @@ mod tests {
     #[tokio::test]
     async fn login_keeps_a_stored_password_when_the_user_declines() -> Result<()> {
         let env = LoginEnv::new();
-        env.seed(".config/snouty/credentials.toml", STORED_PASSWORD);
+        env.seed(".config/snouty/credentials.toml", &password_credentials());
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
-            .secret("sk-test-key")
+            .secret(FAKE_API_KEY_A)
             .confirm(false)
             .build();
 
         login(None, &settings, &prompter).await?;
 
-        assert_eq!(env.credentials(), STORED_PASSWORD);
+        assert_eq!(env.credentials(), password_credentials());
         assert!(env.settings().contains(r#"tenant = "mytenant""#));
         Ok(())
     }
@@ -1486,19 +1487,19 @@ mod tests {
     #[tokio::test]
     async fn login_does_not_ask_to_replace_another_profiles_credential() -> Result<()> {
         let env = LoginEnv::new();
-        env.seed(".config/snouty/credentials.toml", STORED_PASSWORD);
+        env.seed(".config/snouty/credentials.toml", &password_credentials());
         let settings = env.resolve_settings(Some("prod"))?;
         let prompter = Script::default()
             .input("ptenant")
             .input("prepo")
-            .secret("pk-secret")
+            .secret(FAKE_API_KEY_B)
             .build();
 
         login(Some("prod"), &settings, &prompter).await?;
 
         let creds = env.credentials();
-        assert!(creds.contains("ppass"), "{creds}");
-        assert!(creds.contains(r#"api_key = "pk-secret""#), "{creds}");
+        assert!(creds.contains(FAKE_PASSWORD), "{creds}");
+        assert!(creds.contains(&api_key_line(FAKE_API_KEY_B)), "{creds}");
         Ok(())
     }
 
@@ -1510,7 +1511,7 @@ mod tests {
         let prompter = Script::default()
             .input("ptenant")
             .input("prepo")
-            .secret("pk-secret")
+            .secret(FAKE_API_KEY_B)
             .build();
 
         login(Some("prod"), &settings, &prompter).await?;
@@ -1556,7 +1557,7 @@ mod tests {
             .input("mytenant")
             .input("myrepo")
             .select(1)
-            .secret("sk-test-key")
+            .secret(FAKE_API_KEY_A)
             .build();
 
         login(None, &settings, &prompter).await?;
@@ -1578,7 +1579,7 @@ mod tests {
         let env = LoginEnv::with_oauth_config(OAUTH_EPHEMERAL);
         env.seed(
             ".config/snouty/credentials.toml",
-            "[default]\ntype = \"ApiKey\"\napi_key = \"sk-stored-key\"\n",
+            &api_key_credentials(FAKE_API_KEY_A),
         );
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
@@ -1602,7 +1603,7 @@ mod tests {
         let env = LoginEnv::new();
         env.seed(
             ".config/snouty/credentials.toml",
-            "[default]\ntype = \"ApiKey\"\napi_key = \"antithesis_api_key_v2_STORED_9Pgw\"\n",
+            &api_key_credentials(FAKE_API_KEY_A),
         );
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
@@ -1619,10 +1620,7 @@ mod tests {
             "the key prompt must show that a stored key is there to keep"
         );
         let creds = env.credentials();
-        assert!(
-            creds.contains(r#"api_key = "antithesis_api_key_v2_STORED_9Pgw""#),
-            "{creds}"
-        );
+        assert!(creds.contains(&api_key_line(FAKE_API_KEY_A)), "{creds}");
         Ok(())
     }
 
@@ -1631,14 +1629,13 @@ mod tests {
     #[tokio::test]
     async fn login_writes_nothing_when_the_stored_key_is_typed_again() -> Result<()> {
         let env = LoginEnv::new();
-        let seeded =
-            "[default]\ntype = \"ApiKey\"\napi_key = \"antithesis_api_key_v2_STORED_9Pgw\"\n";
-        env.seed(".config/snouty/credentials.toml", seeded);
+        let seeded = api_key_credentials(FAKE_API_KEY_A);
+        env.seed(".config/snouty/credentials.toml", &seeded);
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
-            .secret("antithesis_api_key_v2_STORED_9Pgw")
+            .secret(FAKE_API_KEY_A)
             .build();
 
         login(None, &settings, &prompter).await?;
@@ -1652,14 +1649,13 @@ mod tests {
     #[tokio::test]
     async fn login_trims_a_pasted_key() -> Result<()> {
         let env = LoginEnv::new();
-        let seeded =
-            "[default]\ntype = \"ApiKey\"\napi_key = \"antithesis_api_key_v2_STORED_9Pgw\"\n";
-        env.seed(".config/snouty/credentials.toml", seeded);
+        let seeded = api_key_credentials(FAKE_API_KEY_A);
+        env.seed(".config/snouty/credentials.toml", &seeded);
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
-            .secret(" antithesis_api_key_v2_STORED_9Pgw\n")
+            .secret(&format!(" {FAKE_API_KEY_A}\n"))
             .build();
 
         login(None, &settings, &prompter).await?;
@@ -1675,21 +1671,21 @@ mod tests {
         let env = LoginEnv::new();
         env.seed(
             ".config/snouty/credentials.toml",
-            "[default]\ntype = \"ApiKey\"\napi_key = \"sk-default-key\"\n",
+            &api_key_credentials(FAKE_API_KEY_A),
         );
         let settings = env.resolve_settings(Some("prod"))?;
         let prompter = Script::default()
             .input("ptenant")
             .input("prepo")
-            .secret("pk-secret")
+            .secret(FAKE_API_KEY_B)
             .build();
 
         login(Some("prod"), &settings, &prompter).await?;
 
         assert_eq!(prompter.secret_hints(), vec![None]);
         let creds = env.credentials();
-        assert!(creds.contains(r#"api_key = "sk-default-key""#), "{creds}");
-        assert!(creds.contains(r#"api_key = "pk-secret""#), "{creds}");
+        assert!(creds.contains(&api_key_line(FAKE_API_KEY_A)), "{creds}");
+        assert!(creds.contains(&api_key_line(FAKE_API_KEY_B)), "{creds}");
         Ok(())
     }
 
@@ -1699,23 +1695,20 @@ mod tests {
         let env = LoginEnv::new();
         env.seed(
             ".config/snouty/credentials.toml",
-            "[default]\ntype = \"ApiKey\"\napi_key = \"antithesis_api_key_v2_STORED_9Pgw\"\n",
+            &api_key_credentials(FAKE_API_KEY_A),
         );
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
-            .secret("antithesis_api_key_v2_NEW_7Qxz")
+            .secret(FAKE_API_KEY_B)
             .confirm(true)
             .build();
 
         login(None, &settings, &prompter).await?;
 
         let creds = env.credentials();
-        assert!(
-            creds.contains(r#"api_key = "antithesis_api_key_v2_NEW_7Qxz""#),
-            "{creds}"
-        );
+        assert!(creds.contains(&api_key_line(FAKE_API_KEY_B)), "{creds}");
         Ok(())
     }
 
@@ -1724,35 +1717,31 @@ mod tests {
     #[tokio::test]
     async fn login_replaces_a_blank_stored_api_key_without_asking() -> Result<()> {
         let env = LoginEnv::new();
-        env.seed(
-            ".config/snouty/credentials.toml",
-            "[default]\ntype = \"ApiKey\"\napi_key = \"\"\n",
-        );
+        env.seed(".config/snouty/credentials.toml", &api_key_credentials(""));
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
-            .secret("sk-test-key")
+            .secret(FAKE_API_KEY_A)
             .build();
 
         login(None, &settings, &prompter).await?;
 
         assert_eq!(prompter.secret_hints(), vec![None]);
         let creds = env.credentials();
-        assert!(creds.contains(r#"api_key = "sk-test-key""#), "{creds}");
+        assert!(creds.contains(&api_key_line(FAKE_API_KEY_A)), "{creds}");
         Ok(())
     }
-
-    /// OAuth tokens as a single sign-on login stores them.
-    const STORED_OAUTH: &str =
-        "[default]\ntype = \"OAuth\"\nantithesis_token = \"tok\"\nrefresh_token = \"ref\"\n";
 
     /// A new single sign-on replaces stored OAuth tokens without a question,
     /// but an API key that would replace them still asks.
     #[test]
     fn only_a_new_sign_in_replaces_stored_oauth_tokens_without_asking() -> Result<()> {
         let env = LoginEnv::new();
-        env.seed(".config/snouty/credentials.toml", STORED_OAUTH);
+        env.seed(
+            ".config/snouty/credentials.toml",
+            &oauth_credentials(Some(FAKE_REFRESH_TOKEN_A)),
+        );
         let stored = AuthenticationInfo::stored_for_profile(None)?;
         let stored = stored.as_ref().map(AttributedValue::value);
 
@@ -1782,8 +1771,8 @@ mod tests {
     #[tokio::test]
     async fn login_asks_before_single_sign_on_replaces_a_stored_credential() -> Result<()> {
         let env = LoginEnv::with_oauth_config(OAUTH_EPHEMERAL);
-        let seeded = "[default]\ntype = \"ApiKey\"\napi_key = \"sk-stored-key\"\n";
-        env.seed(".config/snouty/credentials.toml", seeded);
+        let seeded = api_key_credentials(FAKE_API_KEY_A);
+        env.seed(".config/snouty/credentials.toml", &seeded);
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("mytenant")
@@ -1809,12 +1798,12 @@ mod tests {
         let env = LoginEnv::new();
         // SAFETY: `LoginEnv` holds `ENV_LOCK` for this test's whole body, so no
         // other test reads or writes process env while this var is set.
-        unsafe { std::env::set_var("ANTITHESIS_API_KEY", "antithesis_api_key_v2_AMBIENT_5Kfn") };
+        unsafe { std::env::set_var("ANTITHESIS_API_KEY", FAKE_API_KEY_B) };
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default()
             .input("mytenant")
             .input("myrepo")
-            .secret("sk-typed-key")
+            .secret(FAKE_API_KEY_A)
             .build();
 
         let result = login(None, &settings, &prompter).await;
@@ -1933,7 +1922,7 @@ mod tests {
         std::fs::create_dir_all(home.join("Library/Keychains")).expect("create Library/Keychains");
         let keychain = home.join("snouty-test.keychain-db");
         let kc = keychain.to_str().expect("keychain path utf-8");
-        let password = "snouty-test-keychain";
+        let password = FAKE_PASSWORD;
 
         // Create the throwaway keychain and capture the current default before we
         // repoint it, so the guard can put everything back.
@@ -1984,7 +1973,7 @@ mod tests {
         let prompter = Script::default()
             .input("acme")
             .input("registry.example.com/acme/app")
-            .secret("sk-KEYCHAIN-TEST")
+            .secret(FAKE_API_KEY_A)
             .build();
         login(None, &settings, &prompter).await?;
 
@@ -2022,7 +2011,7 @@ mod tests {
             Some(AttributedValue::Keychain {
                 value: AuthenticationInfo::ApiKey { api_key },
                 ..
-            }) => assert_eq!(api_key.as_str(), "sk-KEYCHAIN-TEST"),
+            }) => assert_eq!(api_key.as_str(), FAKE_API_KEY_A),
             _ => panic!("expected the API key to resolve from the keychain"),
         }
 
@@ -2031,7 +2020,7 @@ mod tests {
         let prof_prompter = Script::default()
             .input("acme")
             .input("registry.example.com/acme/app")
-            .secret("sk-PROD-KEY")
+            .secret(FAKE_API_KEY_B)
             .build();
         login(Some("prod"), &prof_settings, &prof_prompter).await?;
         assert!(

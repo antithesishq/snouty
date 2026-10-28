@@ -576,7 +576,10 @@ fn launch_exits_cleanly_when_stdout_closes_early() {
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1")
-        .env("ANTITHESIS_API_KEY", "testkey")
+        .env(
+            "ANTITHESIS_API_KEY",
+            snouty::testutils::fake_secrets::FAKE_API_KEY_A,
+        )
         .env("ANTITHESIS_TENANT", "testtenant")
         .env("ANTITHESIS_BASE_URL", &mock_url)
         .args(["launch", "--launcher", "advanced_test", "--duration", "30"])

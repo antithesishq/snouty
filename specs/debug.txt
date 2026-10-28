@@ -87,7 +87,7 @@ stderr 'warning: username/password authentication is deprecated'
 #    or user-defined, pass through. snouty redacts sensitive values in the
 #    printed parameters.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --param attrs.team=payments --param antithesis.brand_new_param=on --param antithesis.integrations.github.token=secret
+snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --param attrs.team=payments --param antithesis.brand_new_param=on --param antithesis.integrations.github.token=${FAKE_GITHUB_TOKEN}
 stderr '"attrs.team": "payments"'
 stderr '"antithesis.brand_new_param": "on"'
 stderr '"antithesis.integrations.github.token": "\[REDACTED\]"'

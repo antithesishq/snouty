@@ -4,6 +4,8 @@ use std::process::{Child, Command, Stdio};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+pub mod fake_secrets;
+
 use crate::container::{ContainerRuntime, DockerRuntime, PodmanRuntime, is_podman_in_disguise};
 
 /// Return all container runtimes that are actually usable on this machine.
@@ -33,6 +35,37 @@ pub fn available_runtimes() -> Vec<Box<dyn ContainerRuntime>> {
         runtimes.push(Box::new(DockerRuntime::new("docker")));
     }
     runtimes
+}
+
+/// A `credentials.toml` that holds `api_key` in `[default]`.
+pub fn api_key_credentials(api_key: &str) -> String {
+    format!("[default]\ntype = \"ApiKey\"\napi_key = \"{api_key}\"\n")
+}
+
+/// A `credentials.toml` that holds a username and [`fake_secrets::FAKE_PASSWORD`]
+/// in `[default]`, as an older snouty stored them.
+pub fn password_credentials() -> String {
+    format!(
+        "[default]\ntype = \"Password\"\nusername = \"puser\"\npassword = \"{}\"\n",
+        fake_secrets::FAKE_PASSWORD
+    )
+}
+
+/// A `credentials.toml` that holds [`fake_secrets::FAKE_ACCESS_TOKEN_A`] and
+/// `refresh_token` in `[default]`.
+pub fn oauth_credentials(refresh_token: Option<&str>) -> String {
+    let refresh_line = refresh_token
+        .map(|token| format!("refresh_token = \"{token}\"\n"))
+        .unwrap_or_default();
+    format!(
+        "[default]\ntype = \"OAuth\"\nantithesis_token = \"{}\"\n{refresh_line}",
+        fake_secrets::FAKE_ACCESS_TOKEN_A
+    )
+}
+
+/// The `credentials.toml` line that stores `api_key`.
+pub fn api_key_line(api_key: &str) -> String {
+    format!(r#"api_key = "{api_key}""#)
 }
 
 /// Points tests at a registry the environment already runs, instead of each one
@@ -476,7 +509,6 @@ pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
 /// The OAuth routes take none, as on the real server.
 pub struct MockApiServer {
     url: String,
-    token: String,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -498,7 +530,7 @@ impl MockApiServer {
 
     /// Return the token the server expects in Authorization headers.
     pub fn token(&self) -> &str {
-        &self.token
+        fake_secrets::FAKE_API_KEY_B
     }
 
     /// Block until the server thread stops.
@@ -512,8 +544,6 @@ impl MockApiServer {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let url = format!("http://{addr}");
-        let token = MOCK_API_TOKEN.to_string();
-        let expected_token = MOCK_API_TOKEN.to_string();
 
         let handle = thread::spawn(move || {
             for mut stream in listener.incoming().flatten() {
@@ -531,7 +561,7 @@ impl MockApiServer {
                             NO_CACHE_CACHE_CONTROL,
                         )
                     } else if !path.starts_with("/auth/cli/")
-                        && !mock_check_auth(&request, &expected_token)
+                        && !mock_check_auth(&request, fake_secrets::FAKE_API_KEY_B)
                     {
                         (
                             401,
@@ -558,13 +588,10 @@ impl MockApiServer {
 
         Self {
             url,
-            token,
             handle: Some(handle),
         }
     }
 }
-
-const MOCK_API_TOKEN: &str = "snouty-mock-api-token";
 
 /// The `Cache-Control` the real API sends on a cacheable read (observed on
 /// tenant release 61). The response cache admits nothing without such a
@@ -1967,7 +1994,7 @@ mod tests {
     fn oci_registry_drop_removes_container_by_name() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("runtime.log");
-        let runtime_path = dir.path().join("fake-runtime.sh");
+        let runtime_path = dir.path().join("stub-runtime.sh");
         fs::write(
             &runtime_path,
             format!(
@@ -2008,7 +2035,7 @@ mod tests {
     fn ensure_registry_image_available_pulls_registry_image() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("runtime.log");
-        let runtime_path = dir.path().join("fake-runtime.sh");
+        let runtime_path = dir.path().join("stub-runtime.sh");
         fs::write(
             &runtime_path,
             format!(

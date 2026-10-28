@@ -55,7 +55,7 @@ stderr 'No Antithesis credentials found.*'
 # With only username/password configured, the command fails fast with a clear
 # message instead of sending a request the API would reject with a 403.
 env ANTITHESIS_USERNAME=testuser
-env ANTITHESIS_PASSWORD=testpass
+set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
 env ANTITHESIS_TENANT=testtenant
 ! snouty runs
 stderr 'This command does not accept username/password authentication.*'
@@ -552,7 +552,7 @@ stdout 'No runs found\.'
 # runs` rejects before making a request, so set an API key explicitly rather
 # than relying on one leaking from an earlier mock-runs-server block.
 mock-server 400 '{"message":"bad request"}'
-env ANTITHESIS_API_KEY=test-api-key
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 ! snouty runs
 stderr '^Error: API error: 400.*'
 # The message sits on the `Error:` line itself: a single failure has no cause
@@ -568,7 +568,7 @@ stderr '^Error: API error: 400.*'
 # error names the wait and the time that the Retry-After asks for, in RFC 3339
 # UTC, so that the user or a wrapping script can wait until then.
 [!staging] mock-server -header 'Retry-After: 3600' 429 ''
-[!staging] env ANTITHESIS_API_KEY=test-api-key
+[!staging] set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 [!staging] ! snouty runs
 [!staging] stderr 'API error: 429 Too Many Requests.*'
 [!staging] stderr '^Suggestion: retry after 3600s \(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\) to respect the server.s rate limit$'

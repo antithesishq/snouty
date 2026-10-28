@@ -1,5 +1,6 @@
 use snouty::testutils::{
-    MockApiServer, OCIRegistry, available_runtimes, filtered_path_without_binary, skip_or_fail,
+    MockApiServer, OCIRegistry, available_runtimes, fake_secrets, filtered_path_without_binary,
+    skip_or_fail,
 };
 use std::cell::RefCell;
 use std::io::{Read, Write};
@@ -102,6 +103,14 @@ fn cmd_substitute(
     std::fs::write(&path, substituted)
         .map_err(|e| err(format!("could not write {}: {e}", path.display())))?;
     Ok(())
+}
+
+/// Give a spec each fake secret under the name of its constant, so the spec
+/// names a secret by `${FAKE_<TYPE>}` and holds no literal.
+fn set_fake_secret_vars(env: &mut testscript_rs::TestEnvironment) {
+    for (name, value) in fake_secrets::ALL {
+        env.set_env_var(name, value);
+    }
 }
 
 // --- Engine context (thread-local so fn-pointer commands can access it) ---
@@ -318,7 +327,7 @@ fn cmd_mock_server(
 
     env.set_env_var("ANTITHESIS_BASE_URL", &url);
     env.set_env_var("ANTITHESIS_USERNAME", "testuser");
-    env.set_env_var("ANTITHESIS_PASSWORD", "testpass");
+    env.set_env_var("ANTITHESIS_PASSWORD", fake_secrets::FAKE_PASSWORD);
     env.set_env_var("ANTITHESIS_TENANT", "testtenant");
     Ok(())
 }
@@ -784,6 +793,7 @@ fn run_engine_spec_case(runtime_name: &'static str, case: EngineSpecCase) {
         .condition("docker", is_docker)
         .setup(move |env| {
             env.set_env_var("RUST_LOG", "debug");
+            set_fake_secret_vars(env);
             env.set_env_var("SNOUTY_CONTAINER_ENGINE", &name);
             if let Some(addr) = registry_addr_for_setup.as_deref() {
                 env.set_env_var("ANTITHESIS_REPOSITORY", addr);
@@ -827,6 +837,7 @@ fn spec_tests() {
             .condition("staging", staging)
             .setup(|env| {
                 env.set_env_var("RUST_LOG", "debug");
+                set_fake_secret_vars(env);
                 if let Some(path) = filtered_path_without_binary("snouty-update") {
                     env.set_env_var("PATH", &path);
                 }
@@ -840,6 +851,7 @@ fn spec_tests() {
             .command("env_from_json_find", cmd_env_from_json_find)
             .command("file", cmd_file)
             .command("set-env", cmd_set_env)
+            .command("substitute", cmd_substitute)
             .command("snouty-bg", |env, args| {
                 let child = snouty_cmd(env, args)
                     .spawn()

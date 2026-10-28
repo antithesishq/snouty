@@ -107,14 +107,6 @@ async fn run(cli: Cli) -> Result<()> {
         eprintln!("warning: Could not initialize system keychain credential storage: {err:?}");
     }
 
-    // The credential helper selects its settings itself, from the flags and
-    // their environment variables (see `registry::select_settings`).
-    if let Commands::DockerCredential { action } = command {
-        return suppress_broken_pipe(
-            snouty::docker_credential::run(action, settings_path, profile).await,
-        );
-    }
-
     // Resolve settings once, up front. Each command that reads settings
     // unwraps the result, so a bad settings file stops only those commands.
     let settings = Settings::resolve(settings_path.clone(), profile.clone());
@@ -155,7 +147,12 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Doctor(args) => {
             snouty::doctor::cmd_doctor(&settings?, output, args.offline).await
         }
-        Commands::DockerCredential { .. } => unreachable!("dispatched before the settings"),
+        // The credential helper selects its settings itself, from the flags
+        // and their environment variables (see `registry::select_settings`),
+        // so it ignores `settings`.
+        Commands::DockerCredential { action } => {
+            snouty::docker_credential::run(action, settings_path, profile).await
+        }
         Commands::Mcp(args) => {
             // The tool calls resolve the settings again, in each child.
             settings?;

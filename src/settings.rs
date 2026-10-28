@@ -131,23 +131,6 @@ impl Settings {
     ) -> Result<Self> {
         SettingsRequest::from_flags(project_settings_path, profile)?.resolve()
     }
-
-    /// The settings of the top-level defaults, then of each named profile:
-    /// first the profiles of `./.snouty.toml`, then the other profiles of the
-    /// global settings file, each file in name order. This is the order in
-    /// which the resolution reads the files: a value in `./.snouty.toml` wins
-    /// over the same value in the global file. An environment variable still
-    /// overrides every profile.
-    ///
-    /// This reads only the files that snouty reads when no `--settings` or
-    /// `SNOUTY_SETTINGS_PATH` names one.
-    ///
-    /// A profile that fails to resolve, such as one with an invalid tenant, is
-    /// left out: a caller that searches the profiles must not fail on a
-    /// profile it does not use.
-    pub fn resolve_every_profile() -> Result<Vec<Self>> {
-        SettingsFiles::load(None)?.resolve_every_profile()
-    }
 }
 
 /// The settings file and the profile that the user names, by flag or by
@@ -179,14 +162,29 @@ impl SettingsRequest {
         })
     }
 
-    /// Whether the user names a settings file or a profile.
-    pub fn is_explicit(&self) -> bool {
-        self.project_settings_path.is_some() || self.profile.is_some()
+    /// The profile that the user names.
+    pub fn profile(&self) -> Option<&str> {
+        self.profile.as_deref()
     }
 
     /// See [`Settings::resolve`].
     pub fn resolve(self) -> Result<Settings> {
         SettingsFiles::load(self.project_settings_path.as_deref())?.resolve(self.profile)
+    }
+
+    /// The settings of the top-level defaults, then of each named profile:
+    /// first the profiles of the project settings file, then the other
+    /// profiles of the global settings file, each file in name order. This
+    /// reads the same files as [`Self::resolve`], in the same order: a value
+    /// in the project file wins over the same value in the global file. An
+    /// environment variable still overrides every profile. The profile that
+    /// the user names is not used.
+    ///
+    /// A profile that fails to resolve, such as one with an invalid tenant, is
+    /// left out: a caller that searches the profiles must not fail on a
+    /// profile it does not use.
+    pub fn resolve_every_profile(&self) -> Result<Vec<Settings>> {
+        SettingsFiles::load(self.project_settings_path.as_deref())?.resolve_every_profile()
     }
 }
 
@@ -238,7 +236,7 @@ impl SettingsFiles {
         })
     }
 
-    /// See [`Settings::resolve_every_profile`].
+    /// See [`SettingsRequest::resolve_every_profile`].
     fn resolve_every_profile(&self) -> Result<Vec<Settings>> {
         let mut names: Vec<&String> = Vec::new();
         for table in [&self.project, &self.global].into_iter().flatten() {

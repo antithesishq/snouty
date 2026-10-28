@@ -67,22 +67,24 @@ pub fn tenant_registry(settings: &Settings) -> Option<RegistryHost> {
     (host == RegistryHost::for_tenant(settings.tenant()?)).then_some(host)
 }
 
-/// The settings that give the credential for `host`. Exactly two rules
-/// select them:
+/// The settings that give the credential for `host`. Settings files resolve
+/// as for every snouty command: `--settings` or `SNOUTY_SETTINGS_PATH` takes
+/// the place of `./.snouty.toml`, and the global settings file applies.
 ///
-/// 1. Explicit. When `--settings`, `SNOUTY_SETTINGS_PATH`, `--profile` or
-///    `ANTITHESIS_PROFILE` names a settings file or a profile, use only the
-///    settings that they resolve to, as for every snouty command. When the
-///    resolution fails, fail with its error. When the tenant registry of
-///    those settings is not `host`, return `None`: do not search the other
+/// 1. When `--profile` or `ANTITHESIS_PROFILE` names a profile, use only that
+///    profile. When it fails to resolve, fail with its error. When its tenant
+///    registry is not `host`, return `None`: do not search the other
 ///    profiles.
-/// 2. Implicit. Otherwise, use the first profile whose tenant registry is
-///    `host` and that has a credential, in the order of
-///    [`Settings::resolve_every_profile`]: the top-level defaults first, then
-///    the named profiles. When more than one such profile matches, the first
-///    one wins. A profile that fails to resolve is skipped. When no profile
-///    matches, return `None`. When profiles match but none has a credential,
-///    fail with an error that names them.
+/// 2. Otherwise, use the first profile whose tenant registry is `host` and
+///    that has a credential, in the order of
+///    [`SettingsRequest::resolve_every_profile`]: the top-level defaults
+///    first, then the named profiles. A profile that fails to resolve is
+///    skipped. When no profile matches, return `None`. When profiles match
+///    but none has a credential, fail with an error that names them.
+///
+/// A profile has a credential when the lookup of every command finds one for
+/// it: in the environment, or in the keychain or the credentials file, for
+/// that profile or for the default profile. The search makes no network call.
 pub fn select_settings(
     project_settings_path: Option<PathBuf>,
     profile: Option<String>,
@@ -90,11 +92,12 @@ pub fn select_settings(
 ) -> Result<Option<Settings>> {
     let uses_host = |settings: &Settings| tenant_registry(settings).as_ref() == Some(host);
     let request = SettingsRequest::from_flags(project_settings_path, profile)?;
-    if request.is_explicit() {
+    if request.profile().is_some() {
         return Ok(Some(request.resolve()?).filter(uses_host));
     }
     let mut without_credential = Vec::new();
-    for settings in Settings::resolve_every_profile()?
+    for settings in request
+        .resolve_every_profile()?
         .into_iter()
         .filter(uses_host)
     {

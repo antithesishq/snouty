@@ -32,6 +32,7 @@ use crate::render::{
     CodeSpans, OutputOptions, indent_lines, render_kv, sanitize, sanitize_multiline, wrap_text,
 };
 use crate::settings::Settings;
+use crate::stdio;
 use crate::table::{Align, Column, Fit, Table};
 use crate::time::{HumanDuration, format_local_with_offset};
 use crate::vtime::VTime;
@@ -74,7 +75,7 @@ async fn print_event_lines(
     empty_message: &str,
     limit: Option<NonZeroU64>,
 ) -> Result<()> {
-    let mut stdout = std::io::stdout().lock();
+    let mut stdout = stdio::stdout().lock();
     let mut seen: usize = 0;
     while let Some(line) = lines.try_next().await? {
         seen += 1;
@@ -98,11 +99,11 @@ async fn print_event_lines(
 /// caller propagates with `?` — `println!` would panic instead. Each call
 /// evaluates to an `io::Result<()>`, so every use must be `?`-ed.
 macro_rules! out {
-    ($($arg:tt)*) => {{ write!(std::io::stdout(), $($arg)*) }};
+    ($($arg:tt)*) => {{ write!(crate::stdio::stdout(), $($arg)*) }};
 }
 macro_rules! outln {
-    () => {{ writeln!(std::io::stdout()) }};
-    ($($arg:tt)*) => {{ writeln!(std::io::stdout(), $($arg)*) }};
+    () => {{ writeln!(crate::stdio::stdout()) }};
+    ($($arg:tt)*) => {{ writeln!(crate::stdio::stdout(), $($arg)*) }};
 }
 
 // Declared after the macros above, so that the module can use them.
@@ -1574,7 +1575,7 @@ async fn cmd_runs_stream(
     // The stream is silent between events, so a spinner shows that it is
     // open. When stdout goes to a pipe, the next program writes to the same
     // terminal, and its output would mix with the spinner frames.
-    let spinner = (std::io::stdout().is_terminal() && std::io::stderr().is_terminal())
+    let spinner = (stdio::stdout().is_terminal() && stdio::stderr().is_terminal())
         .then(|| spinner(format!("streaming run {run_id}")));
     // A script reads the current results once the stream is open, so it
     // misses no event (see the help). Without a spinner, this line says when.
@@ -1593,7 +1594,7 @@ async fn cmd_runs_stream(
                 text.push('\n');
             }
             // One write per notification, so the spinner redraws once.
-            let write = || std::io::stdout().lock().write_all(text.as_bytes());
+            let write = || stdio::stdout().lock().write_all(text.as_bytes());
             match &spinner {
                 Some(spinner) => spinner.suspend(write)?,
                 None => write()?,
@@ -1847,7 +1848,7 @@ enum RewarmDisplay {
 
 impl Default for RewarmDisplay {
     fn default() -> Self {
-        if !std::io::stderr().is_terminal() {
+        if !stdio::stderr().is_terminal() {
             return Self::Lines(None);
         }
         let style = ProgressStyle::with_template("rewarming moment [{bar:40}] {pos}%")
@@ -1917,7 +1918,7 @@ enum ReadyDisplay {
 
 impl ReadyDisplay {
     fn new(waiting: &'static str) -> Self {
-        if !std::io::stderr().is_terminal() {
+        if !stdio::stderr().is_terminal() {
             return Self::Lines {
                 waiting,
                 start: Instant::now(),

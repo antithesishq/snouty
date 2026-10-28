@@ -82,8 +82,7 @@ pub fn render_report(report: &Report) -> String {
 /// color is a property of printing, and piped output must stay byte-exact.
 fn painted_message(report: &Report) -> String {
     use color_eyre::owo_colors::OwoColorize;
-    use std::io::IsTerminal;
-    if std::io::stderr().is_terminal() {
+    if crate::stdio::stderr().is_terminal() {
         format!("{}", report.bright_red())
     } else {
         report.to_string()

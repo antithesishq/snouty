@@ -1,4 +1,4 @@
-use std::io::{self, ErrorKind, IsTerminal, Write};
+use std::io::{self, ErrorKind, Write};
 use std::path::Path;
 use std::process::Command;
 
@@ -33,6 +33,7 @@ use snouty::params::{
     VCS_REPO_NAME, VCS_REPO_OWNER, VCS_REPO_TYPE, VCS_VERSION_ID, VCS_VERSION_LINK,
 };
 use snouty::settings::Settings;
+use snouty::stdio::{self, StreamClosed};
 use snouty::validate;
 
 // musl's malloc is slow, and the Linux release binaries are static musl builds.
@@ -49,7 +50,7 @@ async fn main() {
     //
     // Color the report only on a real terminal — piped/redirected stderr (and the
     // test/gallery captures) gets plain text, not ANSI escapes.
-    let theme = if std::io::stderr().is_terminal() {
+    let theme = if stdio::stderr().is_terminal() {
         color_eyre::config::Theme::dark()
     } else {
         color_eyre::config::Theme::new()
@@ -105,10 +106,7 @@ async fn run(cli: Cli) -> Result<()> {
     // don't read settings. That keeps dispatch a single flat match.
     let settings = Settings::resolve(settings_path.clone(), profile.clone());
     let result = match command {
-        Commands::Completions { shell } => {
-            cmd_completions(shell);
-            Ok(())
-        }
+        Commands::Completions { shell } => cmd_completions(shell).map_err(Report::new),
         Commands::Version => {
             // SNOUTY_VERSION (set by build.rs) is the crate version plus the
             // build's git sha when known — the same string clap's --version
@@ -158,16 +156,21 @@ async fn run(cli: Cli) -> Result<()> {
 
 /// When our output is piped into something that exits early (e.g. `snouty
 /// runs list | head`), writes to stdout fail with `BrokenPipe`. That's a
-/// normal way for a pipeline to end, not an error — exit quietly. Network
-/// errors don't take this path: they surface as reqwest errors, whose
-/// underlying `io::Error` sits in reqwest's source chain and is not
-/// downcastable from the report (see the tests below).
+/// normal way for a pipeline to end, not an error — exit quietly.
+///
+/// Only an error that [`stdio`] marked as a closed stdout or stderr is
+/// suppressed. Any other `BrokenPipe`, such as from a child's stdin or a
+/// socket, is a real failure and must be reported. A closed stderr is
+/// suppressed too: the report would go to that same closed stderr, so there
+/// is nowhere left to say anything.
 fn suppress_broken_pipe(result: Result<()>) -> Result<()> {
     match result {
         Err(err)
-            if err
-                .downcast_ref::<io::Error>()
-                .is_some_and(|e| e.kind() == ErrorKind::BrokenPipe) =>
+            if err.chain().any(|e| {
+                e.downcast_ref::<io::Error>()
+                    .and_then(StreamClosed::of)
+                    .is_some()
+            }) =>
         {
             Ok(())
         }
@@ -354,7 +357,7 @@ async fn cmd_launch(
         // `writedoc!` and not `println!`: a reader that stops after the run ID
         // line (`| head -1`) closes the pipe, and `println!` panics on that.
         writedoc!(
-            io::stdout(),
+            stdio::stdout(),
             r"
                 Test run started: run_id {run_id}
 
@@ -508,10 +511,14 @@ async fn cmd_debug(
     Ok(())
 }
 
-fn cmd_completions(shell: Shell) {
+fn cmd_completions(shell: Shell) -> io::Result<()> {
     let mut cmd = Cli::command();
     let bin_name = cmd.get_name().to_string();
-    clap_complete::generate(shell, &mut cmd, bin_name, &mut io::stdout());
+    // clap_complete panics when a write fails, so generate into memory and
+    // write that, so that a closed stdout is an error and not a panic.
+    let mut script = Vec::new();
+    clap_complete::generate(shell, &mut cmd, bin_name, &mut script);
+    stdio::stdout().write_all(&script)
 }
 
 /// Validate a requested update target against the running version.
@@ -589,10 +596,29 @@ mod tests {
     use super::*;
     use color_eyre::eyre::{Report, eyre};
 
+    fn closed(stream: stdio::Stream) -> Report {
+        Report::new(io::Error::new(ErrorKind::BrokenPipe, StreamClosed(stream)))
+    }
+
     #[test]
-    fn suppress_broken_pipe_swallows_stdout_pipe_errors() {
-        let err = io::Error::new(ErrorKind::BrokenPipe, "stdout closed");
-        assert!(suppress_broken_pipe(Err(Report::new(err))).is_ok());
+    fn suppress_broken_pipe_swallows_closed_stdout_and_stderr() {
+        for stream in [stdio::Stream::Stdout, stdio::Stream::Stderr] {
+            assert!(suppress_broken_pipe(Err(closed(stream))).is_ok());
+            let wrapped = closed(stream).wrap_err("writing the table");
+            assert!(suppress_broken_pipe(Err(wrapped)).is_ok());
+        }
+    }
+
+    /// A broken pipe that is not stdout or stderr, such as a child's stdin
+    /// that closed early, is a real error.
+    #[test]
+    fn suppress_broken_pipe_reports_unmarked_broken_pipe() {
+        let err = io::Error::new(ErrorKind::BrokenPipe, "write to docker build stdin");
+        assert!(suppress_broken_pipe(Err(Report::new(err))).is_err());
+        let bare = || Report::new(io::Error::from(ErrorKind::BrokenPipe));
+        assert!(suppress_broken_pipe(Err(bare())).is_err());
+        let wrapped = bare().wrap_err("failed to write Dockerfile to stdin");
+        assert!(suppress_broken_pipe(Err(wrapped)).is_err());
     }
 
     #[test]
@@ -603,10 +629,8 @@ mod tests {
     }
 
     /// A broken connection during an API call must not be mistaken for a
-    /// closed stdout pipe. reqwest wraps the socket-level `io::Error` in its
-    /// own error type, whose source chain eyre's downcast does not traverse —
-    /// so no `io::Error` (broken pipe or otherwise) is downcastable from an
-    /// API error report, and it can never be suppressed.
+    /// closed stdout pipe. The socket's `io::Error` sits in reqwest's source
+    /// chain without a [`StreamClosed`] marker, so it is never suppressed.
     #[tokio::test]
     async fn suppress_broken_pipe_ignores_network_socket_errors() {
         // Grab a port that refuses connections by binding then dropping.
@@ -634,9 +658,6 @@ mod tests {
         // Wrap it the way api.rs wraps communication errors.
         let report = eyre!(reqwest_err).wrap_err("failed to contact API");
 
-        // The io::Error is not downcastable through reqwest's error...
-        assert!(report.downcast_ref::<io::Error>().is_none());
-        // ...so the report can never be suppressed.
         assert!(suppress_broken_pipe(Err(report)).is_err());
     }
 

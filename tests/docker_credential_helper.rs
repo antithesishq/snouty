@@ -1,18 +1,42 @@
-//! `docker-credential-snouty`, as Docker runs it.
+//! `docker-credential-snouty`, an alias of `snouty`, as Docker runs it.
+#![cfg(unix)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
+use snouty::docker_credential::HELPER_NAME;
 use snouty::testutils::fake_secrets::{FAKE_API_KEY_A, FAKE_BCRYPT_HASH};
 use tempfile::TempDir;
 
-/// The helper at `bin`, in an empty working directory and home, with only the
-/// `acme` tenant settings and an API key set.
-fn helper_at(bin: &Path, home: &TempDir) -> Command {
-    Command::from_std(helper_process(bin, home))
+const SNOUTY: &str = env!("CARGO_BIN_EXE_snouty");
+
+/// A `docker-credential-snouty` alias of `snouty`, alone in a directory.
+struct Alias {
+    dir: TempDir,
+    path: PathBuf,
 }
 
-/// [`helper_at`], for a test that sets up the helper's stdout itself.
+impl Alias {
+    fn symlink() -> Self {
+        Self::new(|path| std::os::unix::fs::symlink(SNOUTY, path))
+    }
+
+    /// A copy has no link to follow back to `snouty`, so only argv[0] can
+    /// select the helper.
+    fn copy() -> Self {
+        Self::new(|path| std::fs::copy(SNOUTY, path).map(drop))
+    }
+
+    fn new(make: impl FnOnce(&Path) -> std::io::Result<()>) -> Self {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(HELPER_NAME);
+        make(&path).unwrap();
+        Self { dir, path }
+    }
+}
+
+/// The process at `bin`, in an empty working directory and home, with only the
+/// `acme` tenant settings and an API key set.
 fn helper_process(bin: &Path, home: &TempDir) -> std::process::Command {
     let mut command = std::process::Command::new(bin);
     command
@@ -26,48 +50,81 @@ fn helper_process(bin: &Path, home: &TempDir) -> std::process::Command {
     command
 }
 
-fn helper(home: &TempDir) -> Command {
-    helper_at(
-        Path::new(env!("CARGO_BIN_EXE_docker-credential-snouty")),
-        home,
-    )
+/// [`helper_process`] for an alias that lives as long as the command.
+fn helper(alias: &Alias, home: &TempDir) -> Command {
+    Command::from_std(helper_process(&alias.path, home))
 }
 
-/// get prints the credential. The helper runs no other binary: it works alone
-/// in a directory, with no `snouty` on PATH, and a `snouty` next to it or on
-/// PATH does not change its answer.
-#[cfg(unix)]
+fn assert_get_prints_the_credential(command: &mut Command) {
+    command
+        .arg("get")
+        .write_stdin("registry.acme.antithesis.com")
+        .assert()
+        .success()
+        .stdout(format!(
+            "{{\"ServerURL\":\"registry.acme.antithesis.com\",\"Username\":\"snouty-token\",\"Secret\":\"{FAKE_API_KEY_A}\"}}\n"
+        ));
+}
+
+/// A symlink and a copy of `snouty` named `docker-credential-snouty` run the
+/// helper. Each works alone in a directory, with no `snouty` on PATH.
 #[test]
-fn get_prints_the_credential_and_runs_no_snouty() {
-    use std::os::unix::fs::PermissionsExt;
+fn an_alias_of_snouty_prints_the_credential() {
+    let home = TempDir::new().unwrap();
+    for alias in [Alias::symlink(), Alias::copy()] {
+        assert_get_prints_the_credential(helper(&alias, &home).env("PATH", alias.dir.path()));
+    }
+}
+
+/// The file name of argv[0] selects the helper, not the path of the binary:
+/// a full path and a bare name both run the helper.
+#[test]
+fn argv0_named_as_the_helper_runs_the_helper() {
+    use std::os::unix::process::CommandExt;
 
     let home = TempDir::new().unwrap();
-    let dir = TempDir::new().unwrap();
-    let bin = dir.path().join("docker-credential-snouty");
-    std::fs::copy(env!("CARGO_BIN_EXE_docker-credential-snouty"), &bin).unwrap();
-    let get = || {
-        helper_at(&bin, &home)
-            .env("PATH", dir.path())
+    let full_path = home.path().join("some/dir").join(HELPER_NAME);
+    for argv0 in [full_path.as_os_str(), HELPER_NAME.as_ref()] {
+        let mut command = helper_process(Path::new(SNOUTY), &home);
+        command.arg0(argv0);
+        assert_get_prints_the_credential(&mut Command::from_std(command));
+    }
+}
+
+/// `snouty` runs the CLI under its own name, also through a symlink named as
+/// the helper, and when only a directory of argv[0] has the helper's name.
+#[test]
+fn other_argv0_runs_the_cli() {
+    use std::os::unix::process::CommandExt;
+
+    let home = TempDir::new().unwrap();
+    let alias = Alias::symlink();
+    let in_helper_dir = home.path().join(HELPER_NAME).join("snouty");
+    for (bin, argv0) in [
+        (Path::new(SNOUTY), None),
+        (alias.path.as_path(), Some(Path::new("snouty"))),
+        (Path::new(SNOUTY), Some(in_helper_dir.as_path())),
+    ] {
+        let mut command = helper_process(bin, &home);
+        if let Some(argv0) = argv0 {
+            command.arg0(argv0);
+        }
+        Command::from_std(command)
             .arg("get")
             .write_stdin("registry.acme.antithesis.com")
             .assert()
-            .success()
-            .stdout(format!(
-                "{{\"ServerURL\":\"registry.acme.antithesis.com\",\"Username\":\"snouty-token\",\"Secret\":\"{FAKE_API_KEY_A}\"}}\n"
+            .code(2)
+            .stdout("")
+            .stderr(predicates::str::contains(
+                "error: unrecognized subcommand 'get'",
             ));
-    };
-    get();
-
-    let snouty = dir.path().join("snouty");
-    std::fs::write(&snouty, "#!/bin/sh\necho decoy\n").unwrap();
-    std::fs::set_permissions(&snouty, std::fs::Permissions::from_mode(0o755)).unwrap();
-    get();
+    }
 }
 
 #[test]
 fn not_found_exits_1_with_no_stderr() {
     let home = TempDir::new().unwrap();
-    helper(&home)
+    helper(&Alias::symlink(), &home)
         .arg("get")
         .write_stdin("registry.example.com")
         .assert()
@@ -81,24 +138,22 @@ fn not_found_exits_1_with_no_stderr() {
 #[test]
 fn a_closed_stdout_fails_get_without_a_panic() {
     let home = TempDir::new().unwrap();
+    let alias = Alias::symlink();
     for server in ["registry.acme.antithesis.com", "registry.example.com"] {
         let (reader, writer) = std::io::pipe().unwrap();
         drop(reader);
-        let output = helper_process(
-            Path::new(env!("CARGO_BIN_EXE_docker-credential-snouty")),
-            &home,
-        )
-        .arg("get")
-        .stdin(std::process::Stdio::piped())
-        .stdout(writer)
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            child.stdin.take().unwrap().write_all(server.as_bytes())?;
-            child.wait_with_output()
-        })
-        .unwrap();
+        let output = helper_process(&alias.path, &home)
+            .arg("get")
+            .stdin(std::process::Stdio::piped())
+            .stdout(writer)
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                child.stdin.take().unwrap().write_all(server.as_bytes())?;
+                child.wait_with_output()
+            })
+            .unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(1), "stderr:\n{stderr}");
         assert!(!stderr.contains("panicked"), "stderr:\n{stderr}");
@@ -114,7 +169,7 @@ fn store_and_list_fail_with_status_1() {
         ("store", "snouty gives the credential for this registry"),
         ("list", "list is not necessary"),
     ] {
-        helper(&home)
+        helper(&Alias::symlink(), &home)
             .arg(action)
             .write_stdin("registry.acme.antithesis.com")
             .assert()
@@ -128,7 +183,7 @@ fn store_and_list_fail_with_status_1() {
 #[test]
 fn an_unknown_action_fails_with_status_1() {
     let home = TempDir::new().unwrap();
-    helper(&home)
+    helper(&Alias::symlink(), &home)
         .arg("version")
         .assert()
         .code(1)
@@ -140,7 +195,7 @@ fn an_unknown_action_fails_with_status_1() {
 #[test]
 fn erase_reads_stdin_and_succeeds() {
     let home = TempDir::new().unwrap();
-    helper(&home)
+    helper(&Alias::symlink(), &home)
         .arg("erase")
         .write_stdin("registry.acme.antithesis.com")
         .assert()
@@ -157,8 +212,8 @@ fn erase_reads_stdin_and_succeeds() {
 /// and the engine must reach the registry at `127.0.0.1`. So the
 /// `docker-credential-snouty` that the engine finds on PATH is a script that
 /// changes the address to `registry.acme.antithesis.com` on stdin, in the
-/// format the engine wrote it, and then runs the real helper.
-#[cfg(unix)]
+/// format the engine wrote it, and then runs a symlink to `snouty` named
+/// `docker-credential-snouty`.
 #[test]
 fn engines_push_and_pull_through_the_helper() {
     for runtime in snouty::testutils::require_runtimes() {
@@ -166,7 +221,6 @@ fn engines_push_and_pull_through_the_helper() {
     }
 }
 
-#[cfg(unix)]
 fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRuntime) {
     use std::os::unix::fs::PermissionsExt;
     use std::process::Output;
@@ -194,7 +248,8 @@ fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRu
     let home = dir.path().join("home");
     std::fs::create_dir(&bin).unwrap();
     std::fs::create_dir(&home).unwrap();
-    let helper = bin.join("docker-credential-snouty");
+    let alias = Alias::symlink();
+    let helper = bin.join(HELPER_NAME);
     std::fs::write(
         &helper,
         format!(
@@ -206,7 +261,7 @@ fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRu
              ANTITHESIS_API_KEY={FAKE_API_KEY_A} '{helper}' \"$@\"\n",
             addr = addr.replace('.', r"\."),
             home = home.display(),
-            helper = env!("CARGO_BIN_EXE_docker-credential-snouty"),
+            helper = alias.path.display(),
         ),
     )
     .unwrap();

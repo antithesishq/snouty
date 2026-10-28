@@ -1,6 +1,6 @@
 //! `snouty docker-credential`: the Docker credential helper protocol
 //! (<https://github.com/docker/docker-credential-helpers>) for the tenant
-//! registry. Docker and Podman run the `docker-credential-snouty` binary,
+//! registry. Docker and Podman run [`HELPER_NAME`], an alias of `snouty`,
 //! which calls [`main`]. `snouty docker-credential` calls [`run`] too.
 
 use std::io::{self, Read, Write};
@@ -34,6 +34,10 @@ impl std::fmt::Display for CredentialsNotFound {
 
 impl std::error::Error for CredentialsNotFound {}
 
+/// The name that Docker and Podman run for `"credHelpers": {"<registry>":
+/// "snouty"}`. `snouty` runs [`main`] when it starts by this name.
+pub const HELPER_NAME: &str = "docker-credential-snouty";
+
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
 struct Credential<'a> {
@@ -50,13 +54,13 @@ struct Credential<'a> {
 // The doc comment is clap help text, where backticks print literally.
 #[allow(clippy::doc_markdown)]
 #[derive(Parser)]
-#[command(name = "docker-credential-snouty", version = env!("SNOUTY_VERSION"))]
+#[command(name = HELPER_NAME, version = env!("SNOUTY_VERSION"))]
 struct HelperCli {
     action: DockerCredentialAction,
 }
 
-/// The `main` of `docker-credential-snouty`. It runs the helper in this
-/// process, and never runs another binary.
+/// The `main` of `snouty` when it starts as [`HELPER_NAME`]. It runs the
+/// helper in this process, and never runs another binary.
 pub fn main() -> ExitCode {
     crate::install_hooks();
     let action = match HelperCli::try_parse() {

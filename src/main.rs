@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::io::{self, ErrorKind, Write};
 use std::path::Path;
 use std::process::{Command, ExitCode};
@@ -42,8 +43,20 @@ use snouty::validate;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+fn main() -> ExitCode {
+    // Docker and Podman find the helper as an alias of this binary. Any other
+    // name, or no argv[0], runs the CLI.
+    let argv0 = std::env::args_os().next();
+    if argv0.as_deref().map(Path::new).and_then(Path::file_name)
+        == Some(OsStr::new(snouty::docker_credential::HELPER_NAME))
+    {
+        return snouty::docker_credential::main();
+    }
+    cli_main()
+}
+
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> ExitCode {
+async fn cli_main() -> ExitCode {
     snouty::install_hooks();
     snouty::mcp::exit_with_server();
     let cli = snouty::cli::parse();

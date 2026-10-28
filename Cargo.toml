@@ -7,7 +7,7 @@ rust-version = "1.89"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
-# The snouty library serves only its own binaries and tests: #[must_use] on
+# The snouty library serves only its own binary and tests: #[must_use] on
 # every getter is noise, and no one reads its rustdoc.
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
@@ -107,21 +107,12 @@ askama = { version = "0.16.1", default-features = false, features = ["config", "
 axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1"] }
 gix = { version = "0.90", default-features = false, features = ["sha1"] }
 
-# See the global_allocator in main.rs and src/bin/docker-credential-snouty.rs.
+# See the global_allocator in main.rs.
 [target.'cfg(target_env = "musl")'.dependencies]
 mimalloc = "0.1.52"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1.0.0", features = ["keychain"] }
-
-[[bin]]
-name = "snouty"
-path = "src/main.rs"
-
-# Docker finds a credential helper by the name `docker-credential-<name>`.
-[[bin]]
-name = "docker-credential-snouty"
-path = "src/bin/docker-credential-snouty.rs"
 
 [[example]]
 name = "mock_api"

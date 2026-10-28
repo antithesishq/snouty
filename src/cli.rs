@@ -279,9 +279,8 @@ does not stop the simulation.
 
 Accepts a directory containing docker-compose.yaml, as validate does.
 Kubernetes configurations are not supported. Workload images must exist in
-the local container engine. The guest image defaults to antithesis-guest:v<RELEASE>
-in the configured repository, using the tenant release from /api/version.
-Requires an API key unless --guest-image is supplied.
+the local container engine. The guest image defaults to antithesis-guest:v66.0
+in the configured repository. No API key is required.
 
 Requires Linux or macOS and QEMU. Uses 1 CPU and 15000 MiB of memory by default.
 Use --memory to lower guest memory when the host has less RAM.
@@ -592,7 +591,7 @@ pub struct SimulateArgs {
     #[arg(required_unless_present_any = ["shell", "attach"])]
     pub config: Option<std::path::PathBuf>,
 
-    /// Container image containing /guest.iso (default: REPOSITORY/antithesis-guest:v<RELEASE>)
+    /// Container image containing /guest.iso (default: REPOSITORY/antithesis-guest:v66.0)
     #[arg(long, value_parser = validate_non_empty, conflicts_with = "attach")]
     pub guest_image: Option<String>,
 

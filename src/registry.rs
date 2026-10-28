@@ -6,11 +6,11 @@
 //! contract before the registry went live, so no response from it has been
 //! observed yet.
 
-use std::{fmt, str::FromStr};
+use std::{fmt, path::PathBuf, str::FromStr};
 
 use color_eyre::eyre::Result;
 
-use crate::{error::user_error, settings::Settings};
+use crate::settings::{Settings, SettingsRequest};
 
 pub const USERNAME: &str = "snouty-token";
 
@@ -59,43 +59,33 @@ pub fn tenant_registry(settings: &Settings) -> Option<RegistryHost> {
     (host == RegistryHost::for_tenant(settings.tenant()?)).then_some(host)
 }
 
-/// The settings whose tenant registry is `host`. `active` is the settings of
-/// the selected profile, or `None` when they fail to resolve. `every` loads
-/// all profiles (see [`Settings::resolve_every_profile`]), and runs only when
-/// `active` does not match.
+/// The settings that give the credential for `host`. Exactly two rules
+/// select them:
 ///
-/// The active profile wins. Then the top-level defaults win, because a named
-/// profile that sets no tenant and no repository gets them from the defaults.
-/// Then one named profile can match. More than one match is an error, because
-/// only the user can choose.
-pub fn select_profile(
-    active: Option<Settings>,
-    every: impl FnOnce() -> Result<Vec<Settings>>,
+/// 1. Explicit. When `--settings`, `SNOUTY_SETTINGS_PATH`, `--profile` or
+///    `ANTITHESIS_PROFILE` names a settings file or a profile, use only the
+///    settings that they resolve to, as for every snouty command. When the
+///    resolution fails, fail with its error. When the tenant registry of
+///    those settings is not `host`, return `None`: do not search the other
+///    profiles.
+/// 2. Implicit. Otherwise, use the first profile whose tenant registry is
+///    `host`, in the order of [`Settings::resolve_every_profile`]: the
+///    top-level defaults first, then the named profiles. When more than one
+///    profile matches, the first one wins. A profile that fails to resolve
+///    is skipped. When no profile matches, return `None`.
+pub fn select_settings(
+    project_settings_path: Option<PathBuf>,
+    profile: Option<String>,
     host: &RegistryHost,
 ) -> Result<Option<Settings>> {
-    if let Some(active) = active
-        && tenant_registry(&active).as_ref() == Some(host)
-    {
-        return Ok(Some(active));
+    let uses_host = |settings: &Settings| tenant_registry(settings).as_ref() == Some(host);
+    let request = SettingsRequest::from_flags(project_settings_path, profile)?;
+    if request.is_explicit() {
+        return Ok(Some(request.resolve()?).filter(uses_host));
     }
-    let mut matching: Vec<Settings> = every()?
+    Ok(Settings::resolve_every_profile()?
         .into_iter()
-        .filter(|settings| tenant_registry(settings).as_ref() == Some(host))
-        .collect();
-    if let Some(defaults) = matching
-        .iter()
-        .position(|settings| settings.profile().is_none())
-    {
-        return Ok(Some(matching.swap_remove(defaults)));
-    }
-    if matching.len() > 1 {
-        let names: Vec<&str> = matching.iter().filter_map(Settings::profile).collect();
-        return Err(user_error(format!(
-            "more than one profile uses the registry {host}; set ANTITHESIS_PROFILE to one of: {}",
-            names.join(", ")
-        )));
-    }
-    Ok(matching.pop())
+        .find(uses_host))
 }
 
 #[cfg(test)]
@@ -172,91 +162,6 @@ mod tests {
         }
         assert_eq!(
             tenant_registry(&Settings::builder().tenant("acme").build()),
-            None
-        );
-    }
-
-    /// The name of the selected profile, `defaults` for the top-level
-    /// defaults.
-    fn selected(
-        active: Option<Settings>,
-        every: Vec<Settings>,
-        requested: &str,
-    ) -> Result<Option<String>> {
-        Ok(select_profile(active, || Ok(every), &host(requested))?
-            .map(|settings| settings.profile().unwrap_or("defaults").to_owned()))
-    }
-
-    #[test]
-    fn the_active_profile_wins_when_it_matches() {
-        let active = settings(Some("b"), "acme", "registry.acme.antithesis.com/b");
-        let every = vec![
-            settings(None, "acme", "registry.acme.antithesis.com/x"),
-            settings(Some("a"), "acme", "registry.acme.antithesis.com/a"),
-        ];
-        assert_eq!(
-            selected(Some(active), every, "registry.acme.antithesis.com").unwrap(),
-            Some("b".to_owned())
-        );
-    }
-
-    #[test]
-    fn the_defaults_win_over_named_profiles() {
-        let active = settings(Some("other"), "other", "registry.other.antithesis.com/x");
-        let every = vec![
-            settings(None, "acme", "registry.acme.antithesis.com/x"),
-            settings(Some("a"), "acme", "registry.acme.antithesis.com/x"),
-        ];
-        assert_eq!(
-            selected(Some(active), every, "registry.acme.antithesis.com").unwrap(),
-            Some("defaults".to_owned())
-        );
-    }
-
-    #[test]
-    fn one_matching_named_profile_is_selected() {
-        let active = settings(None, "other", "registry.other.antithesis.com/x");
-        let every = vec![
-            settings(None, "other", "registry.other.antithesis.com/x"),
-            settings(Some("a"), "acme", "registry.acme.antithesis.com/x"),
-            settings(Some("b"), "beta", "registry.beta.antithesis.com/x"),
-        ];
-        assert_eq!(
-            selected(
-                Some(active),
-                every,
-                "https://registry.acme.antithesis.com/v2/"
-            )
-            .unwrap(),
-            Some("a".to_owned())
-        );
-    }
-
-    #[test]
-    fn two_matching_named_profiles_are_an_error_that_names_them() {
-        let active = settings(None, "other", "registry.other.antithesis.com/x");
-        let every = vec![
-            settings(Some("a"), "acme", "registry.acme.antithesis.com/a"),
-            settings(Some("b"), "acme", "registry.acme.antithesis.com/b"),
-        ];
-        let err = selected(Some(active), every, "registry.acme.antithesis.com").unwrap_err();
-        assert!(err.to_string().ends_with(": a, b"), "{err}");
-    }
-
-    #[test]
-    fn an_active_profile_that_fails_to_resolve_is_skipped() {
-        let every = vec![settings(None, "acme", "registry.acme.antithesis.com/x")];
-        assert_eq!(
-            selected(None, every, "registry.acme.antithesis.com").unwrap(),
-            Some("defaults".to_owned())
-        );
-    }
-
-    #[test]
-    fn no_matching_profile_is_none() {
-        let active = settings(None, "acme", "us-docker.pkg.dev/acme/repo");
-        assert_eq!(
-            selected(Some(active), vec![], "registry.acme.antithesis.com").unwrap(),
             None
         );
     }

@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeSet,
     fs,
     io::{ErrorKind, Write},
     path::{Path, PathBuf},
@@ -130,6 +129,42 @@ impl Settings {
         project_settings_path: Option<PathBuf>,
         profile: Option<String>,
     ) -> Result<Self> {
+        SettingsRequest::from_flags(project_settings_path, profile)?.resolve()
+    }
+
+    /// The settings of the top-level defaults, then of each named profile:
+    /// first the profiles of `./.snouty.toml`, then the other profiles of the
+    /// global settings file, each file in name order. This is the order in
+    /// which the resolution reads the files: a value in `./.snouty.toml` wins
+    /// over the same value in the global file. An environment variable still
+    /// overrides every profile.
+    ///
+    /// This reads only the files that snouty reads when no `--settings` or
+    /// `SNOUTY_SETTINGS_PATH` names one.
+    ///
+    /// A profile that fails to resolve, such as one with an invalid tenant, is
+    /// left out: a caller that searches the profiles must not fail on a
+    /// profile it does not use.
+    pub fn resolve_every_profile() -> Result<Vec<Self>> {
+        SettingsFiles::load(None)?.resolve_every_profile()
+    }
+}
+
+/// The settings file and the profile that the user names, by flag or by
+/// environment variable.
+pub struct SettingsRequest {
+    project_settings_path: Option<PathBuf>,
+    profile: Option<String>,
+}
+
+impl SettingsRequest {
+    /// The `--settings` flag, else `SNOUTY_SETTINGS_PATH`; the `--profile`
+    /// flag, else `ANTITHESIS_PROFILE`.
+    pub fn from_flags(
+        project_settings_path: Option<PathBuf>,
+        profile: Option<String>,
+    ) -> Result<Self> {
+        let project_settings_path = explicit_settings_path(project_settings_path)?;
         // An empty value means "unset", not "a profile named the empty string".
         // `env::var` already collapses an empty env var to `None`; the trailing
         // filter also covers an explicitly-empty `--profile ""` flag.
@@ -138,25 +173,20 @@ impl Settings {
             None => env::var(ANTITHESIS_PROFILE_ENV_VAR_NAME)?,
         }
         .filter(|profile| !profile.is_empty());
-
-        SettingsFiles::load(project_settings_path)?.resolve(profile)
+        Ok(Self {
+            project_settings_path,
+            profile,
+        })
     }
 
-    /// The settings of the top-level defaults, then of each profile that a
-    /// settings file names, in name order. The settings files are found as in
-    /// [`Settings::resolve`], and an environment variable still overrides
-    /// every profile.
-    ///
-    /// A profile that fails to resolve, such as one with an invalid tenant, is
-    /// left out: a caller that searches the profiles must not fail on a
-    /// profile it does not use.
-    pub fn resolve_every_profile(project_settings_path: Option<PathBuf>) -> Result<Vec<Self>> {
-        let files = SettingsFiles::load(project_settings_path)?;
-        let names = files.profile_names()?;
-        Ok(std::iter::once(None)
-            .chain(names.into_iter().map(Some))
-            .filter_map(|profile| files.resolve(profile).ok())
-            .collect())
+    /// Whether the user names a settings file or a profile.
+    pub fn is_explicit(&self) -> bool {
+        self.project_settings_path.is_some() || self.profile.is_some()
+    }
+
+    /// See [`Settings::resolve`].
+    pub fn resolve(self) -> Result<Settings> {
+        SettingsFiles::load(self.project_settings_path.as_deref())?.resolve(self.profile)
     }
 }
 
@@ -168,20 +198,20 @@ struct SettingsFiles {
 }
 
 impl SettingsFiles {
-    fn load(project_settings_path: Option<PathBuf>) -> Result<Self> {
-        let explicit = explicit_settings_path(project_settings_path)?;
-
+    /// Loads the project file at `project_settings_path`, else the optional
+    /// `./.snouty.toml`, and the global settings file.
+    fn load(project_settings_path: Option<&Path>) -> Result<Self> {
         // Parse this even without a project file, so a bad value fails in
         // every directory.
         let trust_override = trust::TrustOverride::from_env()?;
         // A named project file must exist and needs no trust; the default
         // `./.snouty.toml` is optional and needs trust. (Climbing the directory
         // tree, if ever wanted, would go here.)
-        let (project, project_path) = match explicit {
-            Some(path) => (load_settings_file(&path, true)?, path),
+        let (project, project_path) = match project_settings_path {
+            Some(path) => (load_settings_file(path, true)?, path),
             None => (
                 load_default_project_file(trust_override)?,
-                PathBuf::from(PROJECT_SETTINGS_FILENAME),
+                Path::new(PROJECT_SETTINGS_FILENAME),
             ),
         };
         let global_path = global_settings_dir().map(|dir| dir.join(GLOBAL_SETTINGS_FILENAME));
@@ -193,7 +223,7 @@ impl SettingsFiles {
         let files = [
             project
                 .is_some()
-                .then(|| SettingsFile::new(SettingsFileType::Project, &project_path)),
+                .then(|| SettingsFile::new(SettingsFileType::Project, project_path)),
             global_path
                 .filter(|_| global.is_some())
                 .map(|path| SettingsFile::new(SettingsFileType::Global, &path)),
@@ -208,15 +238,20 @@ impl SettingsFiles {
         })
     }
 
-    /// The names of the profiles that either file defines.
-    fn profile_names(&self) -> Result<BTreeSet<String>> {
-        let mut names = BTreeSet::new();
+    /// See [`Settings::resolve_every_profile`].
+    fn resolve_every_profile(&self) -> Result<Vec<Settings>> {
+        let mut names: Vec<&String> = Vec::new();
         for table in [&self.project, &self.global].into_iter().flatten() {
-            if let Some(profiles) = profiles(table)? {
-                names.extend(profiles.keys().cloned());
+            for name in profiles(table)?.into_iter().flat_map(Table::keys) {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
             }
         }
-        Ok(names)
+        Ok(std::iter::once(None)
+            .chain(names.into_iter().map(|name| Some(name.clone())))
+            .filter_map(|profile| self.resolve(profile).ok())
+            .collect())
     }
 
     fn resolve(&self, profile: Option<String>) -> Result<Settings> {
@@ -1175,6 +1210,40 @@ mod tests {
             resolve_tenant(None, Some(&project), None).as_deref(),
             Some("proj-default")
         );
+    }
+
+    // ---- resolve_every_profile -----------------------------------------
+
+    /// The profiles that `resolve_every_profile` gives, in order, with
+    /// `defaults` for the top-level defaults.
+    fn every_profile(project: &str, global: &str) -> Vec<String> {
+        SettingsFiles {
+            project: Some(settings_file(project)),
+            global: Some(settings_file(global)),
+            files: Vec::new(),
+        }
+        .resolve_every_profile()
+        .unwrap()
+        .iter()
+        .map(|settings| settings.profile().unwrap_or("defaults").to_owned())
+        .collect()
+    }
+
+    #[test]
+    fn every_profile_is_the_defaults_then_the_project_then_the_global_profiles() {
+        let project = "[profile.zulu]\n[profile.mike]\n";
+        let global = "[profile.alpha]\n[profile.zulu]\n[profile.kilo]\n";
+        assert_eq!(
+            every_profile(project, global),
+            ["defaults", "mike", "zulu", "alpha", "kilo"]
+        );
+    }
+
+    #[test]
+    fn every_profile_skips_a_profile_that_fails_to_resolve() {
+        let project =
+            "[profile.a]\n[profile.broken]\napi_cache_max_file_size = \"lots\"\n[profile.c]\n";
+        assert_eq!(every_profile(project, ""), ["defaults", "a", "c"]);
     }
 
     // ---- accessors -----------------------------------------------------

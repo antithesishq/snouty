@@ -127,6 +127,17 @@ struct EngineSpecCase {
     needs_registry: bool,
 }
 
+/// Installs color-eyre's handler, without colors, so that a report keeps the
+/// sections that `with_section` attaches. Under eyre's default handler they are
+/// dropped, and a failed `podman build` reports no stderr.
+#[ctor::ctor(unsafe)]
+fn init_eyre() {
+    let _ = color_eyre::config::HookBuilder::default()
+        .theme(color_eyre::config::Theme::new())
+        .display_env_section(false)
+        .install();
+}
+
 thread_local! {
     static ENGINE_CTX: RefCell<Option<EngineContext>> = const { RefCell::new(None) };
 }
@@ -693,9 +704,11 @@ fn cmd_build_image(
         let dir = env.work_dir.join(dir_arg);
         let dockerfile = dir.join("Dockerfile");
         let dockerfile = dockerfile.exists().then_some(dockerfile.as_path());
+        // `{e:?}` prints the report's sections too, among them the engine's
+        // stdout and stderr; `{e}` prints only "'podman build' failed".
         ctx.engine
             .build_image(&dir, &image_ref, dockerfile, platform.as_deref())
-            .map_err(|e| err(format!("build-image: {e}")))?;
+            .map_err(|e| err(format!("build-image: {e:?}")))?;
         eprintln!(
             "[{:.1}s] build-image {label}",
             start.elapsed().as_secs_f64()

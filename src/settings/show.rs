@@ -5,7 +5,7 @@ use serde_json::{Map, Value, json};
 
 use super::Settings;
 use crate::features::{self, Feature};
-use crate::render::render_kv;
+use crate::render::{render_kv, sanitize};
 use crate::stdio;
 
 const NOT_SET: &str = "not set";
@@ -72,18 +72,13 @@ pub fn cmd_settings_show(settings: &Settings, json: bool) -> Result<()> {
             })
             .collect();
         write!(stdout, "{}", render_kv(&text, 0))?;
-        // Least to most specific: a later file overrides an earlier one.
         let files = settings.files();
         if files.is_empty() {
-            writeln!(stdout, "\nsettings files: none")?;
+            writeln!(stdout, "\nresolved settings files: none")?;
         } else {
-            let rows: Vec<(String, String)> = files
-                .iter()
-                .map(|file| (file.source.to_string(), file.path.display().to_string()))
-                .collect();
-            writeln!(stdout, "\nsettings files, least to most specific:")?;
-            for line in render_kv(&rows, 0).lines() {
-                writeln!(stdout, "  {line}")?;
+            writeln!(stdout, "\nresolved settings files:")?;
+            for path in files {
+                writeln!(stdout, "  {}", sanitize(&path.display().to_string()))?;
             }
         }
     }

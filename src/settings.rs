@@ -13,10 +13,8 @@ use crate::cli::UpdateChannel;
 use crate::env;
 use crate::error::user_error;
 
-mod files;
 mod show;
 mod trust;
-pub use files::{SettingsFile, SettingsFileSource};
 pub use show::cmd_settings_show;
 pub use trust::{SETTINGS_TRUST_VAR_NAME, deny, trust};
 
@@ -102,7 +100,7 @@ pub struct Settings {
     update_channel: UpdateChannel,
     api_cache_max_file_size: u64,
     api_cache_respect_headers: bool,
-    files: Vec<SettingsFile>,
+    files: Vec<PathBuf>,
 }
 
 impl Default for Settings {
@@ -146,36 +144,28 @@ impl Settings {
         // A named project file must exist and needs no trust; the default
         // `./.snouty.toml` is optional and needs trust. (Climbing the directory
         // tree, if ever wanted, would go here.)
-        let (project_path, project_source) = match explicit {
-            Some(named) => named,
+        let (project, project_path) = match explicit {
+            Some(path) => (load_settings_file(&path, true)?, path),
             None => (
+                load_default_project_file(trust_override)?,
                 PathBuf::from(PROJECT_SETTINGS_FILENAME),
-                SettingsFileSource::CurrentDirectory,
             ),
-        };
-        let project = match project_source {
-            SettingsFileSource::CurrentDirectory => load_default_project_file(trust_override)?,
-            SettingsFileSource::SettingsFlag
-            | SettingsFileSource::SettingsPathEnv
-            | SettingsFileSource::Global => load_settings_file(&project_path, true)?,
         };
         let global_path = global_settings_dir().map(|dir| dir.join(GLOBAL_SETTINGS_FILENAME));
         let global = match &global_path {
             Some(path) => load_settings_file(path, false)?,
             None => None,
         };
-        // Least to most specific, the order in which the project file
-        // overrides the global one.
+        // Most specific first: the project file overrides the global one.
         let files = [
-            global_path
-                .filter(|_| global.is_some())
-                .map(|path| SettingsFile::new(&path, SettingsFileSource::Global)),
-            project
-                .is_some()
-                .then(|| SettingsFile::new(&project_path, project_source)),
+            project.is_some().then_some(project_path),
+            global_path.filter(|_| global.is_some()),
         ]
         .into_iter()
         .flatten()
+        // Each file exists, so `canonicalize` fails only in a race; the path
+        // as given still names the file then.
+        .map(|path| fs::canonicalize(&path).unwrap_or(path))
         .collect();
 
         let resolve = |key: &str, env_var: &str| {
@@ -304,8 +294,8 @@ impl Settings {
         self.api_cache_respect_headers
     }
 
-    /// The settings files that snouty read, least to most specific.
-    pub fn files(&self) -> &[SettingsFile] {
+    /// The settings files that snouty read, most specific first.
+    pub fn files(&self) -> &[PathBuf] {
         &self.files
     }
 
@@ -345,7 +335,7 @@ pub struct SettingsBuilder {
     update_channel: UpdateChannel,
     api_cache_max_file_size: Option<u64>,
     api_cache_respect_headers: Option<bool>,
-    files: Vec<SettingsFile>,
+    files: Vec<PathBuf>,
 }
 
 impl SettingsBuilder {
@@ -434,13 +424,10 @@ impl SettingsBuilder {
 /// The project settings file that the user named: the `--settings` flag
 /// (`flag`), otherwise `SNOUTY_SETTINGS_PATH`. An empty `SNOUTY_SETTINGS_PATH`
 /// is unset; it would otherwise name an empty path that must, and cannot, exist.
-pub fn explicit_settings_path(
-    flag: Option<PathBuf>,
-) -> Result<Option<(PathBuf, SettingsFileSource)>> {
+pub fn explicit_settings_path(flag: Option<PathBuf>) -> Result<Option<PathBuf>> {
     match flag {
-        Some(path) => Ok(Some((path, SettingsFileSource::SettingsFlag))),
-        None => Ok(env::var(SNOUTY_SETTINGS_PATH_VAR_NAME)?
-            .map(|path| (PathBuf::from(path), SettingsFileSource::SettingsPathEnv))),
+        Some(path) => Ok(Some(path)),
+        None => Ok(env::var(SNOUTY_SETTINGS_PATH_VAR_NAME)?.map(PathBuf::from)),
     }
 }
 

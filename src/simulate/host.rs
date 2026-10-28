@@ -30,6 +30,7 @@ const DISABLE_FAULTS: &str = include_str!("assets/disable-faults.sh");
 const START: &str = include_str!("assets/start.sh");
 const STATUS: &str = include_str!("assets/status.sh");
 const ATTACH_READY: &str = "attach-ready";
+const GUEST_VERSION: &str = "v66.0";
 const GUEST_ISO_ENV: &str = "SNOUTY_SIMULATE_GUEST_ISO";
 
 fn session_root() -> Result<PathBuf> {
@@ -274,7 +275,7 @@ pub(super) async fn run(
     settings: &Settings,
     options: OutputOptions,
 ) -> Result<ExitCode> {
-    let guest = resolve_guest(args.guest_image, settings, options.verbose).await?;
+    let guest = resolve_guest(args.guest_image, settings)?;
     let runtime = container::runtime(settings)?;
     container::warn_ambiguous_engine(settings, runtime.as_ref(), options.json);
     let compose = compose::DockerCompose::resolve(runtime.as_ref(), config.clone())?;
@@ -541,7 +542,7 @@ impl Guest {
     }
 }
 
-async fn resolve_guest(image: Option<String>, settings: &Settings, verbose: bool) -> Result<Guest> {
+fn resolve_guest(image: Option<String>, settings: &Settings) -> Result<Guest> {
     if let Some(path) = std::env::var_os(GUEST_ISO_ENV) {
         let path = PathBuf::from(path);
         let iso = std::fs::canonicalize(&path)
@@ -555,31 +556,17 @@ async fn resolve_guest(image: Option<String>, settings: &Settings, verbose: bool
         Some(image) => image,
         None => {
             let repository = crate::settings::require(settings.repository(), "repository")?;
-            let api = crate::api::AntithesisApi::new(settings, verbose)?;
-            let version = api.get_version().await.map_err(|error| {
-                use crate::api::VersionError;
-                let reason = match error {
-                    VersionError::Http(status) => format!("GET /api/version returned HTTP {status}"),
-                    VersionError::BadResponse(reason) | VersionError::Unreachable(reason) => reason,
-                };
-                color_eyre::eyre::eyre!("cannot determine guest image from tenant release: {reason}; use --guest-image to select an image explicitly")
-            })?;
             format!(
-                "{}/antithesis-guest:v{}",
-                repository.trim_end_matches('/'),
-                version.release_version
+                "{}/antithesis-guest:{GUEST_VERSION}",
+                repository.trim_end_matches('/')
             )
         }
     }))
 }
 
-pub(super) async fn shell(
-    args: SimulateArgs,
-    settings: &Settings,
-    verbose: bool,
-) -> Result<ExitCode> {
+pub(super) async fn shell(args: SimulateArgs, settings: &Settings) -> Result<ExitCode> {
     interactive_terminal("--shell")?;
-    let guest = resolve_guest(args.guest_image, settings, verbose).await?;
+    let guest = resolve_guest(args.guest_image, settings)?;
     let runtime = container::runtime(settings)?;
     container::warn_ambiguous_engine(settings, runtime.as_ref(), false);
     let images = Images::from_runtime(runtime.as_ref());

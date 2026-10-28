@@ -1,6 +1,10 @@
 Use a project settings file while its content stays the same
 
-Records that you trust the settings file at {{ t("path")? }} with its current content. snouty then uses the file. When the content changes, snouty stops with an error until you trust the file again. Read the file before you trust it: it can set where snouty sends your credentials.
+snouty uses a project settings file (./.snouty.toml) only after you trust it. Until you trust or deny the file, each command that reads the settings fails.
+
+Records that you trust the settings file at {{ t("path")? }} with its current content. When the content changes, you must trust the file again.
+
+snouty trusts a file that you name with {{ t("--settings")? }} or SNOUTY_SETTINGS_PATH, and the global settings file. Set SNOUTY_SETTINGS_TRUST=all to use every project settings file without a check, for example in CI.
 
 snouty keeps the record in trust.toml, in the global settings directory.
 

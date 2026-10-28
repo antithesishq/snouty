@@ -6,6 +6,10 @@ Ignore a project settings file
 Records that snouty must ignore the settings file at PATH, also after its
 content changes. To use the file again, run `settings trust`.
 
+Until you trust or deny a project settings file (./.snouty.toml), each command
+that reads the settings fails. Set SNOUTY_SETTINGS_TRUST=all to use every
+project settings file without a check, for example in CI.
+
 Examples:
   snouty settings deny
   snouty settings deny path/to/.snouty.toml

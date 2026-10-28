@@ -3311,9 +3311,8 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "A cloned repository ships a settings file",
             "I cloned a repository that contains a .snouty.toml, and I ran snouty in it for "
             "the first time.",
-            "snouty stops before it reads the file, names the file, says why it matters (it can "
-            "send my credentials elsewhere), and tells me how to trust it, deny it, or skip the "
-            "check in CI.",
+            "snouty stops before it reads the file, names the file, and tells me how to trust it, "
+            "deny it, or skip the check in CI.",
             ["settings", "show"],
             fails_with(
                 "is not trusted",

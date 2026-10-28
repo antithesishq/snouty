@@ -130,7 +130,6 @@ pub(super) fn verdict(
 
 fn untrusted(path: &Path, problem: &str) -> Report {
     user_error(format!("the settings file {} {problem}", path.display()))
-        .note("A project settings file can set where snouty sends your credentials.")
         .suggestion(format!(
             "Review the file. Then run `snouty settings trust` to use it, or `snouty settings deny` \
              to ignore it. To skip this check, for example in CI, set {SETTINGS_TRUST_VAR_NAME}=all."

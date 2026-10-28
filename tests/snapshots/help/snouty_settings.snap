@@ -3,19 +3,9 @@ source: tests/help_snapshots.rs
 ---
 Show snouty's settings, and trust or deny a project settings file
 
-`settings show` prints the settings that snouty resolved, from the environment,
-the project settings file and the global settings file.
-
-A project settings file (./.snouty.toml) can set `base_url` and `https_proxy`,
-which decide where snouty sends your credentials, and a repository that you
-clone can contain one. So snouty uses ./.snouty.toml only after you trust it
-with `settings trust`. When the file changes, you must trust it again. To make
-snouty ignore the file, use `settings deny`. Until you do one of the two, each
-command that reads the settings fails.
-
-snouty trusts a file that you name with --settings or SNOUTY_SETTINGS_PATH, and
-the global settings file. Set SNOUTY_SETTINGS_TRUST=all to use every project
-settings file without a check, for example in CI.
+`settings show` prints the settings that snouty resolved, and the settings files
+it read. `settings trust` and `settings deny` decide whether snouty uses a
+project settings file (./.snouty.toml).
 
 `settings show` prints JSON with --json.
 

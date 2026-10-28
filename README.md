@@ -144,7 +144,7 @@ Run `snouty settings show` to print the value that snouty resolved for each sett
 
 ### Trusting a project settings file
 
-A project settings file can set `base_url` and `https_proxy`, which decide where snouty sends your credentials, and a repository that you clone can contain one. So snouty uses `./.snouty.toml` only after you trust it. Until then, each command that reads the settings stops with an error. Read the file, then decide:
+snouty uses `./.snouty.toml` only after you trust it. Until you trust or deny the file, each command that reads the settings stops with an error. Review the file, then decide:
 
 ```sh
 snouty settings trust   # use ./.snouty.toml while its content stays the same

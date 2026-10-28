@@ -70,6 +70,10 @@ command, named for its path below `snouty` with `_` between the parts:
   `runs properties --detail`, names the command, and over MCP its flags drop
   out. Over MCP, `t()` refuses a command with no tool, an arg that the tool
   leaves out, and a shell pipeline or redirect.
+- An MCP tool call always runs its command with `--json`, so over MCP the
+  JSON is the result, not an option. Put "Pass --json to print ..." in a
+  `{% if cli %}` block, and in the `{% else %}` branch say what the JSON
+  result holds.
 - Put text that only one reader needs, such as the `--json` paragraph or a
   pipeline example, in `{% if cli %}…{% else %}…{% endif %}`. The other
   reader's branch is not rendered, so `t()` does not check it for that

@@ -996,8 +996,10 @@ fn mock_run_not_found(run_id: &str) -> (u16, String) {
 /// `sub_status`). A loading session reports `in_progress` without the `Ready`
 /// sub-status, as a new session does on release 64.0. `run-stream-error` and
 /// `run-stream-cut` are ready, because `runs exec` reads the run before it
-/// executes.
+/// executes. `run-new-status` has a status and a sub-status that the OpenAPI
+/// spec does not list.
 const MOCK_HIDDEN_SESSIONS: &[(&str, &str, Option<&str>)] = &[
+    ("run-new-status", "paused", Some("Frozen")),
     ("session-starting", "starting", None),
     ("session-loading", "in_progress", None),
     ("run-stream-error", "in_progress", Some("Ready")),

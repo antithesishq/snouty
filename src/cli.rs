@@ -22,7 +22,7 @@ use crate::vtime::VTime;
 
 pub(crate) mod tree;
 
-/// Every `RunStatus` variant, used to enumerate valid `--status` values in
+/// Every known `RunStatus` variant, used to enumerate valid `--status` values in
 /// error output. The generated enum offers no iteration, so this array is the
 /// source of truth; [`assert_run_statuses_complete`] forces an update here
 /// whenever the generated enum gains a variant.
@@ -38,18 +38,19 @@ const ALL_RUN_STATUSES: [RunStatus; 6] = [
 /// Compile-time guard: matching every variant with no wildcard arm makes this
 /// fail to compile when the generated `RunStatus` gains a variant, which is
 /// the cue to extend [`ALL_RUN_STATUSES`].
-const fn assert_run_statuses_complete(status: RunStatus) {
+const fn assert_run_statuses_complete(status: &RunStatus) {
     match status {
         RunStatus::Starting
         | RunStatus::InProgress
         | RunStatus::Completed
         | RunStatus::Cancelled
         | RunStatus::Incomplete
-        | RunStatus::Unknown => {}
+        | RunStatus::Unknown
+        | RunStatus::Other(_) => {}
     }
 }
 
-const _: () = assert_run_statuses_complete(RunStatus::Starting);
+const _: () = assert_run_statuses_complete(&RunStatus::Starting);
 
 /// A `key=value` argument, such as `--param`. The value may contain `=`:
 /// only the first `=` splits.

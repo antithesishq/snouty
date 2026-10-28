@@ -40,8 +40,8 @@ pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
     BuildLogLine, Event, EventProperty, ExecuteCommandRequestSourceRunId as SourceRunId,
     ExecuteCommandRequestSourceSessionId as SourceSessionId, FaultTolerance, Moment,
-    NonEventProperty, PerformanceTier, Property, PropertyStatus, RunDetail, RunStatus,
-    RunStreamNotificationType, RunSummary, UsageEntry,
+    NonEventProperty, PerformanceTier, Property, PropertyStatus, RunDetail, RunDetailSubStatus,
+    RunStatus, RunStreamNotificationType, RunSummary, UsageEntry,
 };
 
 /// The outcome of a launch or debugging-launch request, and the `--json` output
@@ -169,58 +169,21 @@ pub enum VersionError {
     Unreachable(String),
 }
 
-/// `Run_Detail.sub_status`. Open (see `open_sub_status` in build.rs): a value
-/// this build does not know decodes as `Other` and keeps its spelling.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(from = "String", into = "String")]
-pub enum RunSubStatus {
-    /// A debugging session that accepts commands, or any other run that is in
-    /// progress (observed on orbitinghail, release 64.0).
-    Ready,
-    Other(String),
-}
-
-impl RunSubStatus {
-    const READY: &'static str = "Ready";
-}
-
-impl From<String> for RunSubStatus {
-    fn from(value: String) -> Self {
-        match value.as_str() {
-            Self::READY => Self::Ready,
-            _ => Self::Other(value),
-        }
-    }
-}
-
-impl From<RunSubStatus> for String {
-    fn from(value: RunSubStatus) -> Self {
-        match value {
-            RunSubStatus::Ready => RunSubStatus::READY.to_owned(),
-            RunSubStatus::Other(value) => value,
-        }
-    }
-}
-
-/// Lowercase like `RunStatus`, also for a value this build does not know.
-impl std::fmt::Display for RunSubStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Ready => f.write_str("ready"),
-            Self::Other(value) => f.write_str(&value.to_lowercase()),
-        }
-    }
-}
-
 impl RunStatus {
     /// Whether the run has stopped and its status will not change again.
     /// `unknown` is not terminal: it is the server saying it cannot classify
     /// the run.
-    pub(crate) fn is_terminal(self) -> bool {
+    pub(crate) fn is_terminal(&self) -> bool {
         matches!(
             self,
             RunStatus::Completed | RunStatus::Cancelled | RunStatus::Incomplete
         )
+    }
+
+    /// Whether snouty cannot tell if the run will still make progress: the
+    /// server reports `unknown`, or a status this build does not know.
+    pub(crate) fn is_unclassified(&self) -> bool {
+        matches!(self, RunStatus::Unknown | RunStatus::Other(_))
     }
 }
 
@@ -258,13 +221,13 @@ impl RunSummary {
 
 impl RunDetail {
     /// Whether the run accepts commands: it is in progress, with the `Ready`
-    /// sub-status. A run from before [`MIN_SUB_STATUS_RELEASE`] has no
+    /// sub-status (observed on orbitinghail, release 64.0). A run from before [`MIN_SUB_STATUS_RELEASE`] has no
     /// sub-status, so it is ready while it is in progress.
     pub(crate) fn is_ready(&self) -> bool {
         let in_progress = self.status == RunStatus::InProgress;
         match run_release(&self.run_id) {
             Some(release) if release < MIN_SUB_STATUS_RELEASE => in_progress,
-            _ => in_progress && self.sub_status == Some(RunSubStatus::Ready),
+            _ => in_progress && self.sub_status == Some(RunDetailSubStatus::Ready),
         }
     }
 
@@ -279,11 +242,16 @@ impl RunDetail {
         self.is_ready() || self.status.is_terminal()
     }
 
-    /// The status, and the sub-status after a colon when the run has one:
-    /// `in_progress:ready`.
+    /// The status, and the sub-status after a colon when the run has one. The
+    /// sub-status is lowercase: `in_progress:ready`.
     pub(crate) fn status_label(&self) -> String {
         match &self.sub_status {
-            Some(sub_status) => format!("{}:{sub_status}", self.status),
+            Some(RunDetailSubStatus::Ready) => format!("{}:ready", self.status),
+            Some(RunDetailSubStatus::Other(sub_status)) => format!(
+                "{}:{}",
+                self.status,
+                crate::render::sanitize(&sub_status.to_lowercase())
+            ),
             None => self.status.to_string(),
         }
     }
@@ -350,10 +318,10 @@ impl Property {
         }
     }
 
-    pub fn status(&self) -> PropertyStatus {
+    pub fn status(&self) -> &PropertyStatus {
         match self {
-            Self::EventProperty(p) => p.status,
-            Self::NonEventProperty(p) => p.status,
+            Self::EventProperty(p) => &p.status,
+            Self::NonEventProperty(p) => &p.status,
         }
     }
 
@@ -445,7 +413,8 @@ const _: fn(RunStreamNotificationType) = |kind| match kind {
     | RunStreamNotificationType::PropertiesPassed
     | RunStreamNotificationType::PropertiesFailed
     | RunStreamNotificationType::NewExamplesFound
-    | RunStreamNotificationType::RunFinalized => {}
+    | RunStreamNotificationType::RunFinalized
+    | RunStreamNotificationType::Other(_) => {}
 };
 
 /// Caps connection setup (DNS, TCP, TLS) so no command hangs on an unreachable host.
@@ -1182,7 +1151,7 @@ impl AntithesisApi {
             request = request.after(cursor);
         }
         if let Some(ref status) = opts.status {
-            request = request.status(*status);
+            request = request.status(status.clone());
         }
         if let Some(ref launcher) = opts.launcher {
             request = request.launcher(launcher.clone());
@@ -3493,6 +3462,7 @@ mod tests {
                     .as_ref()
                     .unwrap()
                     .antithesis_is_ephemeral
+                    .clone()
                     .unwrap()
             })
             .collect::<Vec<_>>();
@@ -3525,10 +3495,31 @@ mod tests {
         let loading = run("Loading");
         assert!(!loading.is_ready());
         assert_eq!(loading.status_label(), "in_progress:loading");
+        assert_eq!(run("Odd\u{1b}").status_label(), "in_progress:odd\\x1B");
         assert_eq!(
             serde_json::to_value(&loading).unwrap()["sub_status"],
             "Loading"
         );
+    }
+
+    #[test]
+    fn run_summary_keeps_unknown_enum_values() {
+        let run: RunSummary = serde_json::from_value(serde_json::json!({
+            "run_id": "run-1",
+            "status": "paused",
+            "created_at": "2025-03-20T02:00:00Z",
+            "launcher": "nightly",
+            "parameters": {"antithesis.is_ephemeral": "sometimes"},
+        }))
+        .unwrap();
+        assert_eq!(run.status, RunStatus::Other("paused".to_owned()));
+        assert_eq!(run.status.to_string(), "paused");
+        let json = serde_json::to_value(&run).unwrap();
+        assert_eq!(json["status"], "paused");
+        assert_eq!(json["parameters"]["antithesis.is_ephemeral"], "sometimes");
+        // User input stays strict: `--status` and `--param` refuse the value.
+        assert!("paused".parse::<RunStatus>().is_err());
+        assert!(generated::types::ParamsAntithesisIsEphemeral::try_from("sometimes").is_err());
     }
 
     #[test]
@@ -3548,10 +3539,10 @@ mod tests {
         assert!(!run("run-1", "in_progress").is_ready());
         // A sub-status of `Ready` is not enough: the run must be in progress.
         let mut stopped = run("run-1", "completed");
-        stopped.sub_status = Some(RunSubStatus::Ready);
+        stopped.sub_status = Some(RunDetailSubStatus::Ready);
         assert!(!stopped.is_ready());
         let mut ready = run("run-1", "in_progress");
-        ready.sub_status = Some(RunSubStatus::Ready);
+        ready.sub_status = Some(RunDetailSubStatus::Ready);
         assert!(ready.is_ready());
     }
 

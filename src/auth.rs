@@ -11,7 +11,7 @@ use base64::{
     Engine,
     prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD},
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use color_eyre::{
     Section,
     eyre::{Context, OptionExt, Result, eyre},
@@ -79,6 +79,16 @@ impl OAuthCredential {
             None => false,
         }
     }
+}
+
+/// A registry client uses one password for a whole push, so a token that
+/// [`AuthenticationInfo::registry_secret`] returns must outlive the push.
+const REGISTRY_TOKEN_MIN_LIFETIME: TimeDelta = TimeDelta::hours(2);
+
+/// Whether a registry secret must be refreshed: when its expiry is unknown, or
+/// when it expires in [`REGISTRY_TOKEN_MIN_LIFETIME`] or less after `now`.
+fn registry_token_needs_refresh(now: DateTime<Utc>, expiry: Option<DateTime<Utc>>) -> bool {
+    expiry.is_none_or(|expiry| expiry - now <= REGISTRY_TOKEN_MIN_LIFETIME)
 }
 
 /// Try to parse the supplied string as a PASETO token and return the `exp` claim
@@ -559,11 +569,12 @@ impl AuthenticationInfo {
     /// The Antithesis token that the tenant's container registry takes as the
     /// password of its basic auth: the API key, or an OAuth access token.
     ///
-    /// Each call refreshes an OAuth token, also a token that is still valid,
-    /// because a registry client uses one password for the whole push. A token
-    /// that another process stored after this one loaded the credential is
-    /// already new, so the call uses it as it is. Without a refresh token, or
-    /// when the refresh fails, the call uses the stored token until it expires.
+    /// An OAuth token that expires in more than [`REGISTRY_TOKEN_MIN_LIFETIME`]
+    /// is used as it is. A token that expires sooner, or whose expiry is
+    /// unknown, is refreshed. A token that another process stored after this
+    /// one loaded the credential is already new, so the call uses it as it is.
+    /// Without a refresh token, or when the refresh fails, the call uses the
+    /// stored token until it expires.
     pub(crate) async fn registry_secret(
         &self,
         client: &reqwest::Client,
@@ -580,6 +591,12 @@ impl AuthenticationInfo {
                     .map_err(|err| eyre!("the OAuth credential lock is poisoned: {err}"))?
                     .antithesis_token
                     .clone();
+                if !registry_token_needs_refresh(
+                    Utc::now(),
+                    try_get_expiry_from_token(&held_access_token),
+                ) {
+                    return Ok(held_access_token);
+                }
                 let refreshed = refresh_under_lock(
                     client,
                     base_url,
@@ -1338,12 +1355,13 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn registry_secret_refreshes_a_token_that_is_still_valid() {
+    /// Mount a refresh endpoint that [`FAKE_REFRESH_TOKEN_A`] must call
+    /// `times` times, and that answers with `new_access_token` and
+    /// [`FAKE_REFRESH_TOKEN_B`].
+    async fn mount_refresh(server: &wiremock::MockServer, new_access_token: &str, times: u64) {
         use wiremock::matchers::{header, method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::{Mock, ResponseTemplate};
 
-        let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/auth/cli/refresh"))
             .and(header(
@@ -1351,18 +1369,56 @@ mod tests {
                 format!("Bearer {FAKE_REFRESH_TOKEN_A}"),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "antithesis_token": FAKE_ACCESS_TOKEN_A,
+                "antithesis_token": new_access_token,
                 "refresh_token": FAKE_REFRESH_TOKEN_B
             })))
-            .expect(1)
-            .mount(&server)
+            .expect(times)
+            .mount(server)
             .await;
+    }
 
+    /// A `v4.public` PASETO whose `exp` claim is `lifetime` after now.
+    fn paseto_expiring_in(lifetime: TimeDelta) -> String {
+        let exp = (Utc::now() + lifetime).to_rfc3339();
+        public_paseto_with_claims(serde_json::json!({ "exp": exp }).to_string().as_bytes())
+    }
+
+    /// A token that expires within the 2-hour margin.
+    fn paseto_expiring_within_the_margin() -> String {
+        paseto_expiring_in(TimeDelta::minutes(119))
+    }
+
+    #[tokio::test]
+    async fn registry_secret_uses_a_token_far_from_expiry_without_a_refresh() {
+        let server = wiremock::MockServer::start().await;
+        mount_refresh(&server, FAKE_ACCESS_TOKEN_A, 0).await;
+        let creds_dir = tempfile::TempDir::new().unwrap();
+        let fresh = paseto_expiring_in(TimeDelta::minutes(125));
+        let auth = AuthenticationInfo::oauth_for_test(
+            fresh.clone(),
+            Some(FAKE_REFRESH_TOKEN_A),
+            OAuthRefreshInfo::CredentialsFile {
+                path: creds_dir.path().join("credentials.toml"),
+                profile: None,
+            },
+        );
+
+        let secret = auth
+            .registry_secret(&crate::testutils::test_client(), &server.uri())
+            .await
+            .unwrap();
+
+        assert_eq!(secret, fresh);
+    }
+
+    #[tokio::test]
+    async fn registry_secret_refreshes_a_token_that_expires_within_the_margin() {
+        let server = wiremock::MockServer::start().await;
+        mount_refresh(&server, FAKE_ACCESS_TOKEN_A, 1).await;
         let creds_dir = tempfile::TempDir::new().unwrap();
         let path = creds_dir.path().join("credentials.toml");
-        let valid = public_paseto_with_claims(br#"{"exp":"2039-01-01T00:00:00+00:00"}"#);
         let auth = AuthenticationInfo::oauth_for_test(
-            valid,
+            paseto_expiring_within_the_margin(),
             Some(FAKE_REFRESH_TOKEN_A),
             OAuthRefreshInfo::CredentialsFile {
                 path: path.clone(),
@@ -1382,6 +1438,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn registry_secret_refreshes_a_token_whose_expiry_is_unknown() {
+        let server = wiremock::MockServer::start().await;
+        mount_refresh(&server, FAKE_ACCESS_TOKEN_B, 1).await;
+        let creds_dir = tempfile::TempDir::new().unwrap();
+        let auth = AuthenticationInfo::oauth_for_test(
+            FAKE_ACCESS_TOKEN_A,
+            Some(FAKE_REFRESH_TOKEN_A),
+            OAuthRefreshInfo::CredentialsFile {
+                path: creds_dir.path().join("credentials.toml"),
+                profile: None,
+            },
+        );
+
+        let secret = auth
+            .registry_secret(&crate::testutils::test_client(), &server.uri())
+            .await
+            .unwrap();
+
+        assert_eq!(secret, FAKE_ACCESS_TOKEN_B);
+    }
+
+    #[tokio::test]
     async fn registry_secret_without_a_refresh_token_uses_only_an_unexpired_token() {
         let creds_dir = tempfile::TempDir::new().unwrap();
         let refresh_info = OAuthRefreshInfo::CredentialsFile {
@@ -1392,12 +1470,17 @@ mod tests {
         let base_url = "http://127.0.0.1:9";
         let client = crate::testutils::test_client();
 
-        let valid = public_paseto_with_claims(br#"{"exp":"2039-01-01T00:00:00+00:00"}"#);
-        let auth = AuthenticationInfo::oauth_for_test(valid.clone(), None, refresh_info.clone());
-        assert_eq!(
-            auth.registry_secret(&client, base_url).await.unwrap(),
-            valid
-        );
+        for valid in [
+            public_paseto_with_claims(br#"{"exp":"2039-01-01T00:00:00+00:00"}"#),
+            paseto_expiring_within_the_margin(),
+        ] {
+            let auth =
+                AuthenticationInfo::oauth_for_test(valid.clone(), None, refresh_info.clone());
+            assert_eq!(
+                auth.registry_secret(&client, base_url).await.unwrap(),
+                valid
+            );
+        }
 
         let expired = public_paseto_with_claims(br#"{"exp":"2000-01-01T00:00:00+00:00"}"#);
         let auth = AuthenticationInfo::oauth_for_test(expired, None, refresh_info);
@@ -1431,9 +1514,11 @@ mod tests {
                 refresh_token: Some(FAKE_REFRESH_TOKEN_B.to_owned()),
             })
             .unwrap();
-        let loaded = public_paseto_with_claims(br#"{"exp":"2039-01-01T00:00:00+00:00"}"#);
-        let auth =
-            AuthenticationInfo::oauth_for_test(loaded, Some(FAKE_REFRESH_TOKEN_A), refresh_info);
+        let auth = AuthenticationInfo::oauth_for_test(
+            paseto_expiring_within_the_margin(),
+            Some(FAKE_REFRESH_TOKEN_A),
+            refresh_info,
+        );
 
         let secret = auth
             .registry_secret(&crate::testutils::test_client(), &server.uri())
@@ -1452,6 +1537,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/auth/cli/refresh"))
             .respond_with(ResponseTemplate::new(503))
+            .expect(2)
             .mount(&server)
             .await;
         let creds_dir = tempfile::TempDir::new().unwrap();
@@ -1461,7 +1547,7 @@ mod tests {
         };
         let client = crate::testutils::test_client();
 
-        let valid = public_paseto_with_claims(br#"{"exp":"2039-01-01T00:00:00+00:00"}"#);
+        let valid = paseto_expiring_within_the_margin();
         let auth = AuthenticationInfo::oauth_for_test(
             valid.clone(),
             Some(FAKE_REFRESH_TOKEN_A),
@@ -1480,6 +1566,43 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("snouty login"), "{err}");
+    }
+
+    #[test]
+    fn registry_token_needs_refresh_at_the_margin() {
+        let now = Utc::now();
+        let refresh_in = |lifetime| registry_token_needs_refresh(now, Some(now + lifetime));
+        assert!(registry_token_needs_refresh(now, None));
+        assert!(refresh_in(-TimeDelta::seconds(1)));
+        assert!(refresh_in(TimeDelta::zero()));
+        assert!(refresh_in(TimeDelta::hours(2)));
+        assert!(!refresh_in(TimeDelta::hours(2) + TimeDelta::seconds(1)));
+    }
+
+    /// A known expiry needs a refresh iff it is at most the margin after `now`,
+    /// in the past included.
+    #[hegel::test]
+    fn registry_token_needs_refresh_iff_within_the_margin(tc: hegel::TestCase) {
+        use hegel::generators;
+
+        // 1970 through 2100, at whole seconds.
+        let now = tc.draw(
+            generators::integers::<i64>()
+                .min_value(0)
+                .max_value(4_102_444_800),
+        );
+        // Up to about 30 years either side of `now`.
+        let lifetime = tc.draw(
+            generators::integers::<i64>()
+                .min_value(-1_000_000_000)
+                .max_value(1_000_000_000),
+        );
+        let expiry = DateTime::from_timestamp(now + lifetime, 0).expect("in range");
+        let now = DateTime::from_timestamp(now, 0).expect("in range");
+        assert_eq!(
+            registry_token_needs_refresh(now, Some(expiry)),
+            lifetime <= 2 * 60 * 60
+        );
     }
 
     /// Build a `v4.public` PASETO whose payload is `claims_json ‖ signature`,

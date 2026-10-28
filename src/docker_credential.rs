@@ -75,7 +75,7 @@ pub async fn run(
 async fn cmd_docker_credential(
     action: DockerCredentialAction,
     active: Option<Settings>,
-    project_settings_path: Option<PathBuf>,
+    settings_path: Option<PathBuf>,
 ) -> Result<()> {
     match action {
         DockerCredentialAction::Get => {
@@ -84,8 +84,7 @@ async fn cmd_docker_credential(
             let host: RegistryHost = server_url
                 .parse()
                 .map_err(|err| user_error(format!("invalid server URL on stdin: {err}")))?;
-            let every =
-                || Settings::resolve_every_profile(project_settings_path, DefaultProjectFile::None);
+            let every = || Settings::resolve_every_profile(settings_path, DefaultProjectFile::None);
             let Some(settings) = registry::select_profile(active, every, &host)? else {
                 return Err(Report::new(CredentialsNotFound));
             };

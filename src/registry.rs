@@ -8,7 +8,7 @@
 
 use std::{fmt, str::FromStr};
 
-use color_eyre::{Section, eyre::Result};
+use color_eyre::eyre::Result;
 
 use crate::{error::user_error, settings::Settings};
 
@@ -17,7 +17,7 @@ pub const USERNAME: &str = "snouty-token";
 /// A registry host, such as `registry.acme.antithesis.com`, or
 /// `localhost:5000` with its port. It holds no scheme and no path, and its
 /// letters are lowercase, because a host name ignores case.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct RegistryHost(String);
 
 impl RegistryHost {
@@ -38,7 +38,6 @@ impl FromStr for RegistryHost {
     type Err = &'static str;
 
     fn from_str(server_url: &str) -> Result<Self, Self::Err> {
-        let server_url = server_url.trim();
         let rest = match server_url.split_once("://") {
             Some((scheme, rest)) if !scheme.contains('/') => rest,
             _ => server_url,
@@ -92,10 +91,9 @@ pub fn select_profile(
     if matching.len() > 1 {
         let names: Vec<&str> = matching.iter().filter_map(Settings::profile).collect();
         return Err(user_error(format!(
-            "more than one profile uses the registry {host}: {}",
+            "more than one profile uses the registry {host}; set ANTITHESIS_PROFILE to one of: {}",
             names.join(", ")
-        ))
-        .suggestion("set ANTITHESIS_PROFILE to the profile to use for this registry"));
+        )));
     }
     Ok(matching.pop())
 }

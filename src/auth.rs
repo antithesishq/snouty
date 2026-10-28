@@ -604,9 +604,8 @@ impl AuthenticationInfo {
                     Ok(Some(token)) => Ok(token),
                     Err(err) if expired => Err(err),
                     Ok(None) if expired => Err(user_error(
-                        "the stored OAuth token has expired, and there is no refresh token to replace it",
-                    )
-                    .suggestion("run `snouty login`")),
+                        "the stored OAuth token has expired, and there is no refresh token to replace it; run `snouty login`",
+                    )),
                     Err(err) => {
                         // A bare eprintln, not log::warn!: the notice must
                         // reach stderr independent of RUST_LOG.
@@ -619,11 +618,8 @@ impl AuthenticationInfo {
                 }
             }
             Self::GithubActionsOidc { .. } | Self::Password { .. } => Err(user_error(format!(
-                "the Antithesis container registry does not accept a {self}"
-            ))
-            .suggestion(
-                "set ANTITHESIS_API_KEY, or run `snouty login` to store an API key or OAuth credentials",
-            )),
+                "the Antithesis container registry does not accept a {self}; set ANTITHESIS_API_KEY, or run `snouty login` to store an API key or OAuth credentials"
+            ))),
         }
     }
 }

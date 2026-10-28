@@ -107,7 +107,7 @@ pub async fn cmd_simulate(
         }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            return shell(args, settings, output.verbose).await;
+            return shell(args, settings).await;
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {

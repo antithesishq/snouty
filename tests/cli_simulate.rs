@@ -164,7 +164,6 @@ impl Simulation {
             .current_dir(root)
             .env("TERM", "dumb")
             .env("ANTITHESIS_BASE_URL", api_url)
-            .env("ANTITHESIS_API_KEY", "test-key")
             .env("ANTITHESIS_REPOSITORY", "registry.example/team/")
             .envs(match mode {
                 "local-iso" | "local-iso-default-image" => {
@@ -1211,7 +1210,7 @@ async fn guest_image_defaults_to_configured_repository() {
                 "latest_api_version": "v1", "release_version": "62.2"
             })),
         )
-        .expect(1)
+        .expect(0)
         .mount(&server)
         .await;
     let api_url = server.uri();
@@ -1220,7 +1219,7 @@ async fn guest_image_defaults_to_configured_repository() {
         simulation.wait_for("stdout", "workload running");
         assert_eq!(
             simulation.read("guest_image"),
-            "registry.example/team/antithesis-guest:v62.2"
+            "registry.example/team/antithesis-guest:v66.0"
         );
         kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
         simulation.finish();
@@ -1229,25 +1228,16 @@ async fn guest_image_defaults_to_configured_repository() {
     .unwrap();
 }
 
-#[tokio::test]
-async fn failed_release_lookup_requires_explicit_image() {
-    let server = wiremock::MockServer::start().await;
-    wiremock::Mock::given(wiremock::matchers::path("/api/version"))
-        .respond_with(wiremock::ResponseTemplate::new(403))
-        .mount(&server)
-        .await;
-    let api_url = server.uri();
-    tokio::task::spawn_blocking(move || {
-        let mut simulation = Simulation::start_with_api("default-image", &api_url);
-        let output = simulation.finish();
-        assert!(!output.status.success());
-        let stderr = String::from_utf8(output.stderr).unwrap();
-        assert!(stderr.contains("HTTP 403"), "{stderr}");
-        assert!(stderr.contains("--guest-image"), "{stderr}");
-        assert!(!simulation.root().join("qemu_pid").exists());
-    })
-    .await
-    .unwrap();
+#[test]
+fn default_guest_image_works_without_api_access() {
+    let mut simulation = Simulation::start("default-image");
+    simulation.wait_for("stdout", "workload running");
+    assert_eq!(
+        simulation.read("guest_image"),
+        "registry.example/team/antithesis-guest:v66.0"
+    );
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    assert_eq!(simulation.finish().status.code(), Some(143));
 }
 
 #[test]

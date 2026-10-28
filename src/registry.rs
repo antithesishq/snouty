@@ -132,9 +132,9 @@ pub fn select_settings(
 /// `api`. A username and password is an error.
 ///
 /// An OAuth token that expires in more than [`TOKEN_MIN_LIFETIME`] is used as it
-/// is. A token that expires sooner, or whose expiry is unknown, is refreshed
-/// when the credential can refresh. When the credential cannot refresh, or
-/// the refresh fails, the stored token is used until it expires.
+/// is. A token that expires sooner, or whose expiry is unknown, is refreshed.
+/// When there is no refresh token, or the refresh fails, the stored token is
+/// used until it expires.
 pub async fn password(api: &AntithesisApi) -> Result<String> {
     let auth = api.authentication();
     if let Some(token) = auth.github_actions_oidc_token().await? {
@@ -149,7 +149,7 @@ pub async fn password(api: &AntithesisApi) -> Result<String> {
     let near_expiry = auth
         .expires_at()
         .is_none_or(|expires_at| expires_at - Utc::now() <= TOKEN_MIN_LIFETIME);
-    if near_expiry && auth.can_refresh() {
+    if near_expiry {
         // `refresh_authentication` gives `Ok(None)` or `Err` only while the
         // persisted token is still the stored one.
         match api.refresh_authentication().await {

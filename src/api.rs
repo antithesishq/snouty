@@ -1275,9 +1275,10 @@ impl ClientHooks<ClientState> for generated::Client {
         _info: &OperationInfo,
     ) -> std::result::Result<(), ClientError<E>> {
         let auth = &self.inner().authn_info;
-        if auth.expired() && auth.can_refresh() {
-            // When the refresh gives nothing, the expired token is sent: the
-            // server rejects it, and the 401 path in `exec` takes over.
+        if auth.expired() {
+            // `refresh` adopts a newer persisted token, or refreshes. When it
+            // gives nothing, the expired token is sent: the server rejects it,
+            // and the 401 path in `exec` takes over.
             auth::refresh(self.client(), self.baseurl(), auth)
                 .await
                 .map_err(|e| ClientError::Custom(e.to_string()))?;
@@ -1300,9 +1301,9 @@ impl ClientHooks<ClientState> for generated::Client {
         let state = self.inner();
         let http = &state.http;
 
-        // Keep a resendable copy so a token refresh can retry the request once if
-        // the first attempt is rejected as unauthorized but we have a refreshable credential
-        let retry_request = if state.authn_info.can_refresh() {
+        // Keep a resendable copy so that, when an OAuth request gets a 401, a
+        // newer or refreshed token can retry it once.
+        let retry_request = if matches!(state.authn_info, AuthenticationInfo::OAuth { .. }) {
             request.try_clone()
         } else {
             None
@@ -1316,7 +1317,8 @@ impl ClientHooks<ClientState> for generated::Client {
             (Ok(response), Some(mut retry_request))
                 if response.status() == reqwest::StatusCode::UNAUTHORIZED =>
             {
-                // `None`: no refresh token to try, so the 401 surfaces.
+                // `None`: no newer persisted token and no refresh token, so
+                // the 401 surfaces.
                 let refreshed =
                     match auth::refresh(self.client(), self.baseurl(), &state.authn_info).await {
                         Ok(Some(refreshed)) => refreshed.auth_header().await.map(Some),
@@ -4381,11 +4383,13 @@ mod tests {
             .mount(&mock_server)
             .await;
         let expired_token = crate::auth::paseto_expiring_in(-chrono::TimeDelta::minutes(1));
+        let creds_dir = TempDir::new().unwrap();
         let auth = AuthenticationInfo::oauth_for_test(
             expired_token.clone(),
             None,
-            crate::auth::OAuthRefreshInfo::Keychain {
-                entry_name: "unused".to_owned(),
+            crate::auth::OAuthRefreshInfo::CredentialsFile {
+                path: creds_dir.path().join("credentials.toml"),
+                profile: None,
             },
         );
         let api = AntithesisApi::build(
@@ -4405,6 +4409,130 @@ mod tests {
             requests[0].headers.get("authorization").unwrap(),
             format!("Bearer {expired_token}").as_str()
         );
+    }
+
+    /// A response that `get_run` accepts.
+    fn run_1() -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "run_id": "run-1",
+            "status": "completed",
+            "created_at": "2025-03-20T02:00:00Z",
+            "launcher": "nightly"
+        }))
+    }
+
+    /// An OAuth credential that holds `access_token` and no refresh token,
+    /// whose credentials file holds `FAKE_ACCESS_TOKEN_B`, as another
+    /// process's `snouty login` leaves it.
+    fn oauth_with_newer_stored_token(
+        creds_dir: &TempDir,
+        access_token: impl Into<String>,
+    ) -> AuthenticationInfo {
+        let path = creds_dir.path().join("credentials.toml");
+        std::fs::write(
+            &path,
+            format!("[default]\ntype = \"OAuth\"\nantithesis_token = \"{FAKE_ACCESS_TOKEN_B}\"\n"),
+        )
+        .unwrap();
+        AuthenticationInfo::oauth_for_test(
+            access_token,
+            None,
+            crate::auth::OAuthRefreshInfo::CredentialsFile {
+                path,
+                profile: None,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn an_expired_access_token_adopts_a_newer_stored_token_without_a_refresh_token() {
+        use wiremock::matchers::header;
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/cli/refresh"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1"))
+            .and(header(
+                "authorization",
+                format!("Bearer {FAKE_ACCESS_TOKEN_B}"),
+            ))
+            .respond_with(run_1())
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        let creds_dir = TempDir::new().unwrap();
+        let auth = oauth_with_newer_stored_token(
+            &creds_dir,
+            crate::auth::paseto_expiring_in(-chrono::TimeDelta::minutes(1)),
+        );
+        let api = AntithesisApi::build(
+            &Settings::for_test_base_url(&mock_server.uri()),
+            auth,
+            false,
+            ResponseCache::Disabled,
+        )
+        .unwrap();
+
+        api.get_run("run-1").await.unwrap();
+
+        let paths: Vec<_> = mock_server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|request| request.url.path().to_owned())
+            .collect();
+        assert_eq!(paths, ["/api/v0/runs/run-1"]);
+    }
+
+    #[tokio::test]
+    async fn a_401_adopts_a_newer_stored_token_without_a_refresh_token() {
+        use wiremock::matchers::header;
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/cli/refresh"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1"))
+            .and(header(
+                "authorization",
+                format!("Bearer {FAKE_ACCESS_TOKEN_A}"),
+            ))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1"))
+            .and(header(
+                "authorization",
+                format!("Bearer {FAKE_ACCESS_TOKEN_B}"),
+            ))
+            .respond_with(run_1())
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        let creds_dir = TempDir::new().unwrap();
+        // The expiry of this token is unknown, so only the 401 drives the reload.
+        let auth = oauth_with_newer_stored_token(&creds_dir, FAKE_ACCESS_TOKEN_A);
+        let api = AntithesisApi::build(
+            &Settings::for_test_base_url(&mock_server.uri()),
+            auth,
+            false,
+            ResponseCache::Disabled,
+        )
+        .unwrap();
+
+        api.get_run("run-1").await.unwrap();
     }
 
     // The retry budget covers the whole API call: the resend after a token
@@ -4490,13 +4618,15 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        // OAuth, but with no refresh token — there's nothing to refresh with, so
-        // `can_refresh()` is false and the 401 must pass straight through.
+        // OAuth, with no refresh token and nothing newer stored, so the 401
+        // passes straight through.
+        let creds_dir = TempDir::new().unwrap();
         let auth = AuthenticationInfo::oauth_for_test(
             "access-token",
             None,
-            crate::auth::OAuthRefreshInfo::Keychain {
-                entry_name: "unused".to_owned(),
+            crate::auth::OAuthRefreshInfo::CredentialsFile {
+                path: creds_dir.path().join("credentials.toml"),
+                profile: None,
             },
         );
         let api = AntithesisApi::build(
@@ -4533,8 +4663,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        // An API key can't refresh, so `can_refresh()` is false: no clone, no
-        // retry, no refresh call.
+        // An API key can't refresh: no clone, no retry, no refresh call.
         let api = AntithesisApi::build(
             &Settings::for_test_base_url(&mock_server.uri()),
             AuthenticationInfo::ApiKey {

@@ -517,17 +517,6 @@ impl AuthenticationInfo {
         }
     }
 
-    pub(crate) fn can_refresh(&self) -> bool {
-        match self {
-            Self::OAuth {
-                active_credential, ..
-            } => active_credential
-                .read()
-                .is_ok_and(|credential| credential.refresh_token.is_some()),
-            _ => false,
-        }
-    }
-
     /// When the expiry of the credential is known, the time at which it
     /// expires: the `exp` claim of an OAuth access token. `None` for every
     /// other credential.

@@ -239,6 +239,7 @@ class Snouty:
         stdin: str | None = None,
         pipe: bool = False,
         timeout: float | None = None,
+        cwd: Path | None = None,
     ) -> Result:
         """Run snouty on a terminal, or on pipes for `--json` or with `pipe`.
         A `pipe` run without `--json` sends stderr into the stdout pipe, so the
@@ -261,6 +262,7 @@ class Snouty:
                 argv,
                 self.env_with({**(env or {}), "TERM": "xterm-256color"}),
                 screen=screen,
+                cwd=cwd,
             )
             self._track(session.child, live=True)
             try:
@@ -282,6 +284,7 @@ class Snouty:
             stderr=subprocess.PIPE if "--json" in args else subprocess.STDOUT,
             text=True,
             env=self._env if env is None else self.env_with(env),
+            cwd=cwd,
         )
         self._track(proc, live=True)
         try:
@@ -558,6 +561,7 @@ class TtySession:
         env: dict[str, str],
         *,
         screen: pyte.Screen | None = None,
+        cwd: Path | None = None,
     ):
         self.screen = screen if screen is not None else pyte.Screen(TTY_COLS, TTY_ROWS)
         self.recorder = _Recorder(self.screen)
@@ -568,6 +572,7 @@ class TtySession:
             str(binary),
             args,
             env=env,
+            cwd=cwd,
             dimensions=(TTY_ROWS, TTY_COLS),
             timeout=PROMPT_TIMEOUT,
             echo=False,
@@ -1620,6 +1625,9 @@ class Story:
     # under `$XDG_CONFIG_HOME/snouty` — those would otherwise leak in and mask a
     # story that models an unconfigured machine (e.g. the no-auth doctor stories).
     isolate_config: bool = False
+    # With `isolate_config`: the contents of a `./.snouty.toml` that the story
+    # runs beside, in the throwaway home.
+    project_settings: str | None = None
     stdin: str | None = None
     # -- MCP tool help stories ---------------------------------------------
     # The MCP tool whose tool list entry and `tool_help` the story shows.
@@ -3289,6 +3297,38 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             isolate_config=True,
             seed_files={_CREDS: _SEED_CREDS_TOML},
         ),
+        # -- config ---------------------------------------------------------
+        Story(
+            "config-show",
+            "See the settings snouty will use",
+            "I want to see each setting that snouty resolved from my environment and "
+            "settings files, before I run a command against my tenant.",
+            "config show prints one aligned row per setting, with `not set` (or the default) "
+            "for a setting that is not configured, and the help says where each value comes from.",
+            ["config", "show"],
+            contains_all("tenant", "base_url", "update_channel"),
+            json_capable=False,
+        ),
+        Story(
+            "config-untrusted",
+            "A cloned repository ships a settings file",
+            "I cloned a repository that contains a .snouty.toml, and I ran snouty in it for "
+            "the first time.",
+            "snouty stops before it reads the file, names the file, says why it matters (it can "
+            "send my credentials elsewhere), and tells me how to trust it, deny it, or skip the "
+            "check in CI.",
+            ["config", "show"],
+            fails_with(
+                "is not trusted",
+                "snouty config trust",
+                "snouty config deny",
+                "SNOUTY_CONFIG_TRUST=all",
+            ),
+            json_capable=False,
+            expect_ok=False,
+            isolate_config=True,
+            project_settings='tenant = "acme"\nbase_url = "https://attacker.example.com"\n',
+        ),
         Story(
             "doctor-json",
             "Stop CI when required configuration is missing",
@@ -4012,6 +4052,29 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "I run `snouty mcp --help` to learn how to give my AI agent snouty's tools, "
             "and what those tools can do.",
             ["mcp"],
+        ),
+        _help_story(
+            "help-config",
+            "Understand the config command group",
+            "I run `snouty config --help` to learn why snouty asks me to trust a "
+            "settings file, and how to see what snouty resolved.",
+            ["config"],
+        ),
+        _help_story(
+            "help-config-show",
+            "Learn where my settings come from",
+            "I run `snouty config show --help` to learn which value wins when a setting "
+            "is set in more than one place.",
+            ["config", "show"],
+            ["config", "show"],
+        ),
+        # Help-only: `config trust` and `config deny` write the trust record.
+        _help_story(
+            "help-config-trust",
+            "Learn what trusting a settings file does",
+            "I run `snouty config trust --help` before I trust a file that came with a "
+            "repository.",
+            ["config", "trust"],
         ),
         # -- docs (help-only: output depends on a downloaded docs DB) --------
         _help_story(
@@ -4855,9 +4918,12 @@ def _run_isolated_story(sn: Snouty, story: Story) -> StoryRun:
     home = Path(tempfile.mkdtemp(prefix="snouty-gallery-config."))
     try:
         _write_seed_files(home, story.seed_files)
+        if story.project_settings is not None:
+            (home / ".snouty.toml").write_text(story.project_settings)
 
         env = {**(story.env or {}), "XDG_CONFIG_HOME": str(home / ".config")}
-        result = sn.run(story.args, env)
+        cwd = home if story.project_settings is not None else None
+        result = sn.run(story.args, env, cwd=cwd)
         return StoryRun(story, result, None)
     finally:
         shutil.rmtree(home, ignore_errors=True)

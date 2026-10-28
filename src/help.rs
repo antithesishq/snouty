@@ -167,9 +167,17 @@ mod tests {
     /// never raises the subject.
     #[test]
     fn every_page_says_what_json_does() {
-        const NO_JSON: [&str; 5] = ["validate", "completions", "update", "login", "mcp"];
+        const NO_JSON: [&str; 7] = [
+            "validate",
+            "completions",
+            "update",
+            "login",
+            "mcp",
+            "config trust",
+            "config deny",
+        ];
         for page in HelpPage::ALL {
-            if !NO_JSON.contains(&page.path()[0]) {
+            if !NO_JSON.contains(&page.path().join(" ").as_str()) {
                 assert!(
                     page.text().contains("--json"),
                     "{page} says nothing about --json"

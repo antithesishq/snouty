@@ -1,0 +1,38 @@
+---
+source: tests/help_snapshots.rs
+---
+Print the settings that snouty resolved
+
+Prints each setting with the value that snouty resolved for it. For each
+setting, snouty uses the first value that it finds: the environment variable,
+the selected profile in the project settings file, the selected profile in the
+global settings file, the top-level value in the project settings file, then the
+top-level value in the global settings file.
+
+Pass --json to print one JSON object, keyed by setting, with null for a setting
+that is not set.
+
+Examples:
+  snouty config show
+  snouty --profile staging config show
+  snouty config show --json | jq -r .tenant
+
+Usage: snouty config show [OPTIONS]
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --json
+          Output JSON where supported (NDJSON for list/stream commands, pretty
+          JSON otherwise)
+
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

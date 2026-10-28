@@ -14,7 +14,8 @@ use snouty::OutputOptions;
 use snouty::api::AntithesisApi;
 use snouty::auth::initialize_credential_store;
 use snouty::cli::{
-    Cli, Commands, DebugArgs, LaunchArgs, UpdateArgs, UpdateChannel, gated_command_error,
+    Cli, Commands, ConfigCommands, DebugArgs, LaunchArgs, UpdateArgs, UpdateChannel,
+    gated_command_error,
 };
 use snouty::compose;
 use snouty::config;
@@ -116,6 +117,15 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::Update(args) => cmd_update(&args, &settings?),
         Commands::Docs { offline, command } => docs::cmd_docs(command, offline, output).await,
+        Commands::Config { command } => match command {
+            ConfigCommands::Show => snouty::settings::cmd_config_show(&settings?, output.json),
+            // Neither reads the settings, so each works where an untrusted
+            // file stops every other command.
+            ConfigCommands::Trust(args) => snouty::settings::trust(&args.path)
+                .map(|path| eprintln!("Trusted {}", path.display())),
+            ConfigCommands::Deny(args) => snouty::settings::deny(&args.path)
+                .map(|path| eprintln!("Denied {}", path.display())),
+        },
         Commands::Login { tenant, repository } => {
             cmd_login(tenant, repository, profile.as_deref(), &settings?, output).await
         }
@@ -185,13 +195,22 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
         | Commands::Runs { .. }
         | Commands::Docs { .. }
         | Commands::Debug { .. }
-        | Commands::Doctor(_) => None,
+        | Commands::Doctor(_)
+        | Commands::Config {
+            command: ConfigCommands::Show,
+        } => None,
         Commands::Validate(_) => Some("validate"),
         Commands::Completions { .. } => Some("completions"),
         Commands::Version => Some("version"),
         Commands::Update(_) => Some("update"),
         Commands::Login { .. } => Some("login"),
         Commands::Mcp(_) => Some("mcp"),
+        Commands::Config {
+            command: ConfigCommands::Trust(_),
+        } => Some("config trust"),
+        Commands::Config {
+            command: ConfigCommands::Deny(_),
+        } => Some("config deny"),
     }
 }
 

@@ -140,6 +140,21 @@ A matching environment variable always overrides the file. The supported keys an
 
 A credential is never read from a settings file. `snouty login` keeps credentials apart from settings — see [Authentication](#authentication).
 
+Run `snouty config show` to print the value that snouty resolved for each setting.
+
+### Trusting a project settings file
+
+A project settings file can set `base_url` and `https_proxy`, which decide where snouty sends your credentials, and a repository that you clone can contain one. So snouty uses `./.snouty.toml` only after you trust it. Until then, each command that reads the settings stops with an error. Read the file, then decide:
+
+```sh
+snouty config trust   # use ./.snouty.toml while its content stays the same
+snouty config deny    # ignore ./.snouty.toml
+```
+
+Each command also takes the path of a settings file. When a trusted file changes, you must trust it again. snouty keeps the decisions in `trust.toml`, next to the global settings file.
+
+A file that you name with `--settings` or `SNOUTY_SETTINGS_PATH` needs no trust, because you chose it. To use every project settings file without a check, for example in CI, set `SNOUTY_CONFIG_TRUST=all`.
+
 ### Profiles
 
 A settings file can define named profiles for switching between environments. Select one with the global `--profile <name>` flag or the `ANTITHESIS_PROFILE` environment variable (the flag wins):

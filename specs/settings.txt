@@ -11,6 +11,10 @@
 # each step uses `! snouty doctor`; the resolved-settings rows are printed
 # regardless of the exit status. Each row is `<setting>  <value>`.
 
+# The project file is used only once the user trusts it (see
+# config_trust.txt).
+snouty config trust
+
 # 1. tenant/repository come from the project .snouty.toml in the working
 #    directory (top-level defaults).
 ! snouty doctor

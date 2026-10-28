@@ -5,12 +5,18 @@ use std::{
 };
 
 use color_eyre::eyre::{Context, OptionExt, Result, eyre};
+use log::debug;
 use tempfile::NamedTempFile;
 use toml::{Table, Value};
 
 use crate::cli::UpdateChannel;
 use crate::env;
 use crate::error::user_error;
+
+mod show;
+mod trust;
+pub use show::cmd_config_show;
+pub use trust::{CONFIG_TRUST_VAR_NAME, deny, trust};
 
 pub const ANTITHESIS_PROFILE_ENV_VAR_NAME: &str = "ANTITHESIS_PROFILE";
 pub const SNOUTY_SETTINGS_PATH_VAR_NAME: &str = "SNOUTY_SETTINGS_PATH";
@@ -22,7 +28,7 @@ pub const CONTAINER_ENGINE_VAR_NAME: &str = "SNOUTY_CONTAINER_ENGINE";
 pub const UPDATE_CHANNEL_VAR_NAME: &str = "SNOUTY_UPDATE_CHANNEL";
 pub const API_CACHE_MAX_FILE_SIZE_VAR_NAME: &str = "SNOUTY_API_CACHE_MAX_FILE_SIZE";
 pub const API_CACHE_RESPECT_HEADERS_VAR_NAME: &str = "SNOUTY_API_CACHE_RESPECT_HEADERS";
-const PROJECT_SETTINGS_FILENAME: &str = ".snouty.toml";
+pub const PROJECT_SETTINGS_FILENAME: &str = ".snouty.toml";
 const GLOBAL_SETTINGS_FILENAME: &str = "settings.toml";
 const PROFILE_KEY: &str = "profile";
 
@@ -113,7 +119,8 @@ impl Settings {
     /// A settings file that exists but cannot be read or parsed is a hard error,
     /// as is an explicitly-requested file (via flag or env var) that is missing:
     /// silently ignoring it would resurface later as a confusing "tenant not
-    /// set". A missing *default* `./.snouty.toml` is fine.
+    /// set". A missing *default* `./.snouty.toml` is fine. The default file is
+    /// used only when the user trusts it (see [`trust`]).
     pub fn resolve(
         project_settings_path: Option<PathBuf>,
         profile: Option<String>,
@@ -134,12 +141,13 @@ impl Settings {
             None => env::var(SNOUTY_SETTINGS_PATH_VAR_NAME)?.map(PathBuf::from),
         };
 
-        // An explicitly-requested project file must exist; the default
-        // `./.snouty.toml` is optional. (Climbing the directory tree, if ever
-        // wanted, would go here.)
+        // An explicitly-requested project file must exist, and is trusted
+        // because the user named it. The default `./.snouty.toml` is optional,
+        // and is used only when the user trusts it. (Climbing the directory
+        // tree, if ever wanted, would go here.)
         let project = match &project_settings_path {
             Some(path) => load_settings_file(path, true)?,
-            None => load_settings_file(Path::new(PROJECT_SETTINGS_FILENAME), false)?,
+            None => load_default_project_file()?,
         };
         let global = match global_settings_dir() {
             Some(dir) => load_settings_file(&dir.join(GLOBAL_SETTINGS_FILENAME), false)?,
@@ -558,6 +566,21 @@ fn load_settings_file(path: &Path, required: bool) -> Result<Option<Table>> {
         None => return Err(eyre!("Settings file at {:?} was not found", path)),
     };
     parse_settings(&contents, path).map(Some)
+}
+
+/// Load `./.snouty.toml` when it exists and [`trust::verdict`] allows it.
+fn load_default_project_file() -> Result<Option<Table>> {
+    let path = Path::new(PROJECT_SETTINGS_FILENAME);
+    let Some(contents) = read_to_string_if_file_exists(path)? else {
+        return Ok(None);
+    };
+    match trust::verdict(path, contents.as_bytes())? {
+        trust::Verdict::Use => parse_settings(&contents, path).map(Some),
+        trust::Verdict::Ignore => {
+            debug!("ignoring the denied settings file {}", path.display());
+            Ok(None)
+        }
+    }
 }
 
 /// Reads a setting out of one TOML table: [`string_value`] for text settings,

@@ -4,6 +4,10 @@
 # command resolves settings up front), naming the offending key — rather than
 # being silently dropped and resurfacing later as a confusing "not set".
 
+# The project file is used only once the user trusts it (see
+# config_trust.txt).
+snouty config trust
+
 # A non-string top-level value is rejected, naming the key.
 ! snouty doctor
 stderr 'tenant.*must be a string'

@@ -7,8 +7,6 @@ Show snouty's settings, and trust or deny a project settings file
 it read. `settings trust` and `settings deny` decide whether snouty uses a
 project settings file (./.snouty.toml).
 
-`settings show` prints JSON with --json.
-
 Usage: snouty settings [OPTIONS] <COMMAND>
 
 Commands:

@@ -335,7 +335,7 @@ The shell script installer and the Nix package install `docker-credential-snouty
 ln -s "$(command -v snouty)" ~/.local/bin/docker-credential-snouty
 ```
 
-Then `docker push`, `docker pull`, `podman push` and `podman pull` automatically use your snouty credentials for the Antithesis docker registry. The registry requires tenant version 66 or later; `snouty doctor` reports your tenant version.
+Then `docker push`, `docker pull`, `podman push` and `podman pull` automatically use your snouty credentials for the Antithesis docker registry.
 
 ### Username and password (deprecated)
 

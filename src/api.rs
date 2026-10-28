@@ -428,12 +428,12 @@ const _: fn(RunStreamNotificationType) = |kind| match kind {
 /// Callers set no read or total timeout: a connected request may run for a long time.
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A reqwest builder with rustls's ring crypto provider installed. reqwest
-/// panics on `build` until some provider is installed, so every client must
-/// start here.
+/// A reqwest builder with a rustls crypto provider installed: ring, unless
+/// another is already installed. reqwest panics on `build` without one, so
+/// every client must start here.
 #[allow(clippy::disallowed_methods)]
 pub fn client_builder() -> reqwest::ClientBuilder {
-    // Err means a provider is already installed, which is all we need.
+    // Err means a provider is already installed, which is enough.
     let _ = rustls::crypto::ring::default_provider().install_default();
     Client::builder()
 }

@@ -8,7 +8,7 @@ pub mod fake_secrets;
 
 use crate::container::{ContainerRuntime, DockerRuntime, PodmanRuntime, is_podman_in_disguise};
 
-/// A plain reqwest client, built through `api::client_builder` like every client.
+/// A reqwest client with default settings.
 pub fn test_client() -> reqwest::Client {
     crate::api::client_builder().build().unwrap()
 }

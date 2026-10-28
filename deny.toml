@@ -59,8 +59,8 @@ skip = [
     # r-efi is getrandom's UEFI backend, so it splits with it.
     { crate = "getrandom@0.3", reason = "ahash 0.8, under jsonschema" },
     { crate = "r-efi@5", reason = "getrandom 0.3" },
-    # ring 0.17, the latest, is on getrandom 0.2 and, on Windows only, on
-    # windows-sys 0.52.
+    # ring 0.17 is the latest release. It depends on getrandom 0.2, and on
+    # Windows on windows-sys 0.52.
     { crate = "getrandom@0.2", reason = "ring" },
     { crate = "windows-sys@0.52", reason = "ring, on Windows" },
     { crate = "hashbrown@0.16", reason = "clru 0.6, under gix-pack" },

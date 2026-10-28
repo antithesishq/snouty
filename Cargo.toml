@@ -59,8 +59,8 @@ log = "0.4"
 open = "5"
 progenitor-client = "0.15.0"
 reqwest = { version = "0.13.1", default-features = false, features = ["http2", "json", "query", "stream", "rustls-no-provider"] }
-# ring rather than reqwest's default aws-lc-rs: ~2 MB smaller. api::client_builder
-# installs it.
+# ring makes a smaller binary than reqwest's default, aws-lc-rs.
+# api::client_builder installs it.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 color-eyre = { version = "0.6", default-features = false }
 futures-util = "0.3"

@@ -58,8 +58,6 @@ There are two fixes:
 
 ## Install snouty
 
-The shell script installer also makes `docker-credential-snouty`, a symlink to `snouty`, for the [Docker credential helper](#docker-credential-helper). For the other install methods, make the symlink yourself.
-
 ### Install prebuilt binaries via shell script
 
 ```sh
@@ -328,6 +326,8 @@ To set it up, add the registry to `credHelpers` in `~/.docker/config.json` for D
   }
 }
 ```
+
+The helper answers for a profile whose `repository` is on `registry.<tenant>.antithesis.com` for its tenant. Put those settings in the [global settings file](#settings-files), or name the file with `SNOUTY_SETTINGS_PATH`: the helper never reads `./.snouty.toml`.
 
 The shell script installer and the Nix package install `docker-credential-snouty`, an alias of `snouty`. For another install method, make the alias yourself, in a directory on your `PATH`:
 

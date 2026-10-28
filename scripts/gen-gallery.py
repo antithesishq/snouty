@@ -4050,8 +4050,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "help-docker-credential",
             "Let Docker or Podman push to my tenant registry",
             "I run `snouty docker-credential --help` to learn how to set up Docker or "
-            "Podman for registry.<tenant>.antithesis.com, which profile and credential the helper "
-            "uses, and what each action does.",
+            "Podman for registry.<tenant>.antithesis.com, and where the helper reads my "
+            "settings.",
             ["docker-credential"],
         ),
         _help_story(

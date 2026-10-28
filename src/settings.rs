@@ -36,17 +36,6 @@ const GLOBAL_SETTINGS_FILENAME: &str = "settings.toml";
 const PROFILE_KEY: &str = "profile";
 const NO_GLOBAL_SETTINGS_DIR: &str = "Could not determine global settings directory. Ensure either $XDG_CONFIG_HOME or $HOME is set.";
 
-/// The project settings file to read when neither `--settings` nor
-/// `SNOUTY_SETTINGS_PATH` names one.
-#[derive(Clone, Copy)]
-pub enum DefaultProjectFile {
-    /// `./.snouty.toml` in the current working directory, if it exists.
-    WorkingDirectory,
-    /// No project settings file. For a command that runs in a directory the
-    /// user did not choose, where a `./.snouty.toml` is not trusted.
-    None,
-}
-
 /// snouty's subdirectory under an XDG base dir: `$<xdg_var>/snouty`, falling
 /// back to `$HOME/<home_subdir>/snouty`. `None` when neither is set (e.g.
 /// Windows). Deliberately hand-rolled rather than via the `dirs` crate, which on
@@ -129,8 +118,8 @@ impl Settings {
     ///
     /// The project settings file is located by, in descending precedence:
     /// the `--settings` flag (`project_settings_path`), `SNOUTY_SETTINGS_PATH`,
-    /// then `default_project_file`. The active profile is the `--profile` flag if
-    /// set, otherwise `ANTITHESIS_PROFILE`.
+    /// then `./.snouty.toml` in the current working directory. The active profile
+    /// is the `--profile` flag if set, otherwise `ANTITHESIS_PROFILE`.
     ///
     /// A settings file that exists but cannot be read or parsed is a hard error,
     /// as is an explicitly-requested file (via flag or env var) that is missing:
@@ -139,7 +128,6 @@ impl Settings {
     /// used only when the user trusts it (see [`trust::verdict`]).
     pub fn resolve(
         project_settings_path: Option<PathBuf>,
-        default_project_file: DefaultProjectFile,
         profile: Option<String>,
     ) -> Result<Self> {
         // An empty value means "unset", not "a profile named the empty string".
@@ -151,7 +139,7 @@ impl Settings {
         }
         .filter(|profile| !profile.is_empty());
 
-        SettingsFiles::load(project_settings_path, default_project_file)?.resolve(profile)
+        SettingsFiles::load(project_settings_path)?.resolve(profile)
     }
 
     /// The settings of the top-level defaults, then of each profile that a
@@ -162,11 +150,8 @@ impl Settings {
     /// A profile that fails to resolve, such as one with an invalid tenant, is
     /// left out: a caller that searches the profiles must not fail on a
     /// profile it does not use.
-    pub fn resolve_every_profile(
-        project_settings_path: Option<PathBuf>,
-        default_project_file: DefaultProjectFile,
-    ) -> Result<Vec<Self>> {
-        let files = SettingsFiles::load(project_settings_path, default_project_file)?;
+    pub fn resolve_every_profile(project_settings_path: Option<PathBuf>) -> Result<Vec<Self>> {
+        let files = SettingsFiles::load(project_settings_path)?;
         let names = files.profile_names()?;
         Ok(std::iter::once(None)
             .chain(names.into_iter().map(Some))
@@ -183,10 +168,7 @@ struct SettingsFiles {
 }
 
 impl SettingsFiles {
-    fn load(
-        project_settings_path: Option<PathBuf>,
-        default_project_file: DefaultProjectFile,
-    ) -> Result<Self> {
+    fn load(project_settings_path: Option<PathBuf>) -> Result<Self> {
         let explicit = explicit_settings_path(project_settings_path)?;
 
         // Parse this even without a project file, so a bad value fails in
@@ -195,13 +177,12 @@ impl SettingsFiles {
         // A named project file must exist and needs no trust; the default
         // `./.snouty.toml` is optional and needs trust. (Climbing the directory
         // tree, if ever wanted, would go here.)
-        let (project, project_path) = match (explicit, default_project_file) {
-            (Some(path), _) => (load_settings_file(&path, true)?, path),
-            (None, DefaultProjectFile::WorkingDirectory) => (
+        let (project, project_path) = match explicit {
+            Some(path) => (load_settings_file(&path, true)?, path),
+            None => (
                 load_default_project_file(trust_override)?,
                 PathBuf::from(PROJECT_SETTINGS_FILENAME),
             ),
-            (None, DefaultProjectFile::None) => (None, PathBuf::new()),
         };
         let global_path = global_settings_dir().map(|dir| dir.join(GLOBAL_SETTINGS_FILENAME));
         let global = match &global_path {

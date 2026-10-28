@@ -14,7 +14,7 @@ use crate::api::AntithesisApi;
 use crate::cli::DockerCredentialAction;
 use crate::error::{print_report, user_error};
 use crate::registry::{self, RegistryHost};
-use crate::settings::{DefaultProjectFile, Settings};
+use crate::settings::Settings;
 use crate::stdio;
 
 /// No profile uses the requested registry as its tenant registry.
@@ -50,7 +50,7 @@ struct Credential<'a> {
 /// Runs one action of the protocol, and returns the exit status. `active` is
 /// the settings of the selected profile, or `None` when they fail to resolve;
 /// the search skips such a profile. `settings_path` is the `--settings` path,
-/// which finds the other profiles. Neither reads a `./.snouty.toml`.
+/// which finds the other profiles.
 ///
 /// The protocol reads an error from stdout. Docker reads "not found" as an
 /// answer, so that error does not go to stderr. A closed stdout fails the
@@ -84,7 +84,7 @@ async fn cmd_docker_credential(
             let host: RegistryHost = server_url
                 .parse()
                 .map_err(|err| user_error(format!("invalid server URL on stdin: {err}")))?;
-            let every = || Settings::resolve_every_profile(settings_path, DefaultProjectFile::None);
+            let every = || Settings::resolve_every_profile(settings_path);
             let Some(settings) = registry::select_profile(active, every, &host)? else {
                 return Err(Report::new(CredentialsNotFound));
             };

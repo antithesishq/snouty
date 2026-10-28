@@ -1332,11 +1332,7 @@ mod tests {
         // `&self` keeps the call inside the environment's lifetime.
         #[allow(clippy::unused_self)]
         fn resolve_settings(&self, profile: Option<&str>) -> Result<Settings> {
-            Settings::resolve(
-                None,
-                crate::settings::DefaultProjectFile::WorkingDirectory,
-                profile.map(str::to_owned),
-            )
+            Settings::resolve(None, profile.map(str::to_owned))
         }
     }
 

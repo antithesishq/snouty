@@ -33,7 +33,7 @@ use snouty::params::{
     ANT_SOURCE, ANT_TEST_NAME, DuplicateKey, Params, RUN_CALLER_TYPE, VCS_PARAMS, VCS_REPO_BRANCH,
     VCS_REPO_NAME, VCS_REPO_OWNER, VCS_REPO_TYPE, VCS_VERSION_ID, VCS_VERSION_LINK,
 };
-use snouty::settings::{DefaultProjectFile, Settings};
+use snouty::settings::Settings;
 use snouty::stdio::{self, StreamClosed};
 use snouty::validate;
 
@@ -108,15 +108,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
 
     // Resolve settings once, up front. Each command that reads settings
     // unwraps the result, so a bad settings file stops only those commands.
-    //
-    // Docker starts the credential helper in any directory, such as a cloned
-    // repository, whose `./.snouty.toml` could send the credential to another
-    // host, so the helper does not read that file.
-    let project_file = match command {
-        Commands::DockerCredential { .. } => DefaultProjectFile::None,
-        _ => DefaultProjectFile::WorkingDirectory,
-    };
-    let settings = Settings::resolve(settings_path.clone(), project_file, profile.clone());
+    let settings = Settings::resolve(settings_path.clone(), profile.clone());
     let result = match command {
         Commands::Completions { shell } => cmd_completions(shell).map_err(Report::new),
         Commands::Version => {

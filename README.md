@@ -58,7 +58,7 @@ There are two fixes:
 
 ## Install snouty
 
-Each install method puts two binaries in the same directory: `snouty`, and `docker-credential-snouty`, the [Docker credential helper](#docker-credential-helper).
+The shell script installer also makes `docker-credential-snouty`, a symlink to `snouty`, for the [Docker credential helper](#docker-credential-helper). For the other install methods, make the symlink yourself.
 
 ### Install prebuilt binaries via shell script
 
@@ -317,7 +317,17 @@ export ANTITHESIS_EXTRA_HEADERS="X-Proxy-Token: abc123"
 
 ### Docker credential helper
 
-Your tenant has a container registry at `registry.<tenant>.antithesis.com`. Docker and Podman can sign in to it with your snouty credential, through the `docker-credential-snouty` helper. `docker-credential-snouty` must be on your `PATH`. It contains the helper code of snouty, and does not run `snouty` or another program. To use the helper, add the registry to `credHelpers` in the file that your engine reads:
+Your tenant has a container registry at `registry.<tenant>.antithesis.com`. Docker and Podman can sign in to it with your snouty credential, through the `docker-credential-snouty` helper. For a `credHelpers` entry `"snouty"`, the engine runs the program `docker-credential-snouty` from your `PATH`. `docker-credential-snouty` is an alias of `snouty`: when `snouty` starts by the name `docker-credential-snouty`, it runs the helper instead of the usual commands. The helper does not run another program.
+
+The shell script installer and the Nix package make the alias for you, as a symlink next to `snouty`. `snouty update` keeps it. For another install method, such as `cargo install`, `cargo binstall`, a downloaded archive or a build from source, make the symlink yourself, in a directory on your `PATH`:
+
+```sh
+ln -s "$(command -v snouty)" ~/.local/bin/docker-credential-snouty
+```
+
+The name must be exactly `docker-credential-snouty`. A hard link or a copy of `snouty` by that name also works.
+
+To use the helper, add the registry to `credHelpers` in the file that your engine reads:
 
 ```json
 {

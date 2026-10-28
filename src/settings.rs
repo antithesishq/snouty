@@ -173,77 +173,6 @@ impl Settings {
             .filter_map(|profile| files.resolve(profile).ok())
             .collect())
     }
-
-    /// The resolved tenant, or `None` if unset. Call sites that require it turn
-    /// the `None` into an error (see [`require`]); doctor reports it as-is.
-    pub fn tenant(&self) -> Option<&str> {
-        self.tenant.as_deref()
-    }
-
-    /// The resolved container registry, or `None` if unset.
-    pub fn repository(&self) -> Option<&str> {
-        self.repository.as_deref()
-    }
-
-    /// The base URL to talk to: an explicit `base_url` if set, otherwise one
-    /// derived from the tenant; `None` when neither exists (a derived `base_url`
-    /// is present exactly when the tenant is).
-    pub fn base_url(&self) -> Option<&str> {
-        self.base_url.as_deref()
-    }
-
-    pub fn https_proxy(&self) -> Option<&str> {
-        self.https_proxy.as_deref()
-    }
-
-    pub fn container_engine(&self) -> Option<&str> {
-        self.container_engine.as_deref()
-    }
-
-    /// The resolved update channel; `stable` when unset. Already validated —
-    /// an invalid setting value fails in [`Settings::resolve`].
-    pub fn update_channel(&self) -> UpdateChannel {
-        self.update_channel
-    }
-
-    /// The largest API response body, in bytes, the response cache stores;
-    /// [`crate::api_cache::DEFAULT_MAX_FILE_SIZE`] when unset. Already
-    /// validated — an invalid setting value fails in [`Settings::resolve`].
-    pub fn api_cache_max_file_size(&self) -> u64 {
-        self.api_cache_max_file_size
-    }
-
-    /// Whether the response cache requires the server's cache headers to
-    /// allow caching; true when unset. Already validated — an invalid setting
-    /// value fails in [`Settings::resolve`].
-    pub fn api_cache_respect_headers(&self) -> bool {
-        self.api_cache_respect_headers
-    }
-
-    /// The settings files that snouty read, most specific first.
-    pub fn files(&self) -> &[SettingsFile] {
-        &self.files
-    }
-
-    pub(crate) fn profile(&self) -> Option<&str> {
-        self.profile.as_deref()
-    }
-
-    /// Start building a `Settings` from explicit values, with no environment
-    /// or filesystem IO — for callers (and tests) that already hold the
-    /// values. Set only what's needed and finish with
-    /// [`SettingsBuilder::build`].
-    pub fn builder() -> SettingsBuilder {
-        SettingsBuilder::default()
-    }
-
-    /// Test-only: a `Settings` with an explicit base URL and everything else
-    /// unset, for driving [`crate::api::AntithesisApi`] against a mock server
-    /// without touching the environment.
-    #[cfg(test)]
-    pub(crate) fn for_test_base_url(base_url: &str) -> Self {
-        Self::builder().base_url(base_url).build()
-    }
 }
 
 struct SettingsFiles {
@@ -388,6 +317,79 @@ impl SettingsFiles {
             files: self.files.clone(),
         }
         .build())
+    }
+}
+
+impl Settings {
+    /// The resolved tenant, or `None` if unset. Call sites that require it turn
+    /// the `None` into an error (see [`require`]); doctor reports it as-is.
+    pub fn tenant(&self) -> Option<&str> {
+        self.tenant.as_deref()
+    }
+
+    /// The resolved container registry, or `None` if unset.
+    pub fn repository(&self) -> Option<&str> {
+        self.repository.as_deref()
+    }
+
+    /// The base URL to talk to: an explicit `base_url` if set, otherwise one
+    /// derived from the tenant; `None` when neither exists (a derived `base_url`
+    /// is present exactly when the tenant is).
+    pub fn base_url(&self) -> Option<&str> {
+        self.base_url.as_deref()
+    }
+
+    pub fn https_proxy(&self) -> Option<&str> {
+        self.https_proxy.as_deref()
+    }
+
+    pub fn container_engine(&self) -> Option<&str> {
+        self.container_engine.as_deref()
+    }
+
+    /// The resolved update channel; `stable` when unset. Already validated —
+    /// an invalid setting value fails in [`Settings::resolve`].
+    pub fn update_channel(&self) -> UpdateChannel {
+        self.update_channel
+    }
+
+    /// The largest API response body, in bytes, the response cache stores;
+    /// [`crate::api_cache::DEFAULT_MAX_FILE_SIZE`] when unset. Already
+    /// validated — an invalid setting value fails in [`Settings::resolve`].
+    pub fn api_cache_max_file_size(&self) -> u64 {
+        self.api_cache_max_file_size
+    }
+
+    /// Whether the response cache requires the server's cache headers to
+    /// allow caching; true when unset. Already validated — an invalid setting
+    /// value fails in [`Settings::resolve`].
+    pub fn api_cache_respect_headers(&self) -> bool {
+        self.api_cache_respect_headers
+    }
+
+    /// The settings files that snouty read, most specific first.
+    pub fn files(&self) -> &[SettingsFile] {
+        &self.files
+    }
+
+    pub(crate) fn profile(&self) -> Option<&str> {
+        self.profile.as_deref()
+    }
+
+    /// Start building a `Settings` from explicit values, with no environment
+    /// or filesystem IO — for callers (and tests) that already hold the
+    /// values. Set only what's needed and finish with
+    /// [`SettingsBuilder::build`].
+    pub fn builder() -> SettingsBuilder {
+        SettingsBuilder::default()
+    }
+
+    /// Test-only: a `Settings` with an explicit base URL and everything else
+    /// unset, for driving [`crate::api::AntithesisApi`] against a mock server
+    /// without touching the environment.
+    #[cfg(test)]
+    pub(crate) fn for_test_base_url(base_url: &str) -> Self {
+        Self::builder().base_url(base_url).build()
     }
 }
 

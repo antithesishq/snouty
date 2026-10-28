@@ -145,10 +145,10 @@ pub async fn password(api: &AntithesisApi) -> Result<String> {
             "the Antithesis container registry does not accept a {auth}; set ANTITHESIS_API_KEY, or run `snouty login` to store an API key or OAuth credentials"
         )));
     };
-    let expires_at = auth.expires_at();
-    let expired = expires_at.is_some_and(|expires_at| Utc::now() >= expires_at);
-    let near_expiry =
-        expires_at.is_none_or(|expires_at| expires_at - Utc::now() <= TOKEN_MIN_LIFETIME);
+    let expired = auth.expired();
+    let near_expiry = auth
+        .expires_at()
+        .is_none_or(|expires_at| expires_at - Utc::now() <= TOKEN_MIN_LIFETIME);
     if near_expiry && auth.can_refresh() {
         // `refresh_authentication` gives `Ok(None)` or `Err` only while the
         // persisted token is still the stored one.

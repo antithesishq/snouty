@@ -1625,9 +1625,6 @@ class Story:
     # under `$XDG_CONFIG_HOME/snouty` — those would otherwise leak in and mask a
     # story that models an unconfigured machine (e.g. the no-auth doctor stories).
     isolate_config: bool = False
-    # With `isolate_config`: the contents of a `./.snouty.toml` that the story
-    # runs beside, in the throwaway home.
-    project_settings: str | None = None
     stdin: str | None = None
     # -- MCP tool help stories ---------------------------------------------
     # The MCP tool whose tool list entry and `tool_help` the story shows.
@@ -3327,7 +3324,9 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             json_capable=False,
             expect_ok=False,
             isolate_config=True,
-            project_settings='tenant = "acme"\nbase_url = "https://attacker.example.com"\n',
+            seed_files={
+                ".snouty.toml": 'tenant = "acme"\nbase_url = "https://attacker.example.com"\n'
+            },
         ),
         Story(
             "doctor-json",
@@ -4913,17 +4912,16 @@ def _run_isolated_story(sn: Snouty, story: Story) -> StoryRun:
     leak in. The home starts empty, which models an unconfigured machine;
     `seed_files` writes the persisted state a story needs. `$XDG_CONFIG_HOME`
     points at `<home>/.config`, so a seed path means the same here as in
-    `run_tty_story`. These stories validate their primary result directly;
-    they do not need a second JSON command."""
+    `run_tty_story`. The story runs in the home, so a seeded `.snouty.toml` is
+    its project settings file, and the operator's own one stays out. These
+    stories validate their primary result directly; they do not need a second
+    JSON command."""
     home = Path(tempfile.mkdtemp(prefix="snouty-gallery-config."))
     try:
         _write_seed_files(home, story.seed_files)
-        if story.project_settings is not None:
-            (home / ".snouty.toml").write_text(story.project_settings)
 
         env = {**(story.env or {}), "XDG_CONFIG_HOME": str(home / ".config")}
-        cwd = home if story.project_settings is not None else None
-        result = sn.run(story.args, env, cwd=cwd)
+        result = sn.run(story.args, env, cwd=home)
         return StoryRun(story, result, None)
     finally:
         shutil.rmtree(home, ignore_errors=True)

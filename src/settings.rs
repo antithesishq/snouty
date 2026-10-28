@@ -31,6 +31,7 @@ pub const API_CACHE_RESPECT_HEADERS_VAR_NAME: &str = "SNOUTY_API_CACHE_RESPECT_H
 pub const PROJECT_SETTINGS_FILENAME: &str = ".snouty.toml";
 const GLOBAL_SETTINGS_FILENAME: &str = "settings.toml";
 const PROFILE_KEY: &str = "profile";
+const NO_GLOBAL_SETTINGS_DIR: &str = "Could not determine global settings directory. Ensure either $XDG_CONFIG_HOME or $HOME is set.";
 
 /// snouty's subdirectory under an XDG base dir: `$<xdg_var>/snouty`, falling
 /// back to `$HOME/<home_subdir>/snouty`. `None` when neither is set (e.g.
@@ -408,8 +409,9 @@ pub(crate) fn update_settings_in_global_file(
     container_engine: Option<String>,
     profile_to_update: Option<&str>,
 ) -> Result<PathBuf> {
-    let settings_dir = global_settings_dir().ok_or_eyre("Could not determine global settings directory. Ensure either $XDG_CONFIG_HOME or $HOME is set.")?;
-    let path = settings_dir.join(GLOBAL_SETTINGS_FILENAME);
+    let path = global_settings_dir()
+        .ok_or_eyre(NO_GLOBAL_SETTINGS_DIR)?
+        .join(GLOBAL_SETTINGS_FILENAME);
     let mut contents = match read_to_string_if_file_exists(&path)? {
         Some(contents) => {
             if let Ok(table) = parse_settings(&contents, &path) {
@@ -456,12 +458,18 @@ pub(crate) fn update_settings_in_global_file(
         );
     }
 
+    write_global_toml(GLOBAL_SETTINGS_FILENAME, &contents)
+}
+
+/// Atomically write `value` as TOML to `filename` in the global settings dir,
+/// and return the path it wrote.
+fn write_global_toml(filename: &str, value: &impl serde::Serialize) -> Result<PathBuf> {
+    let settings_dir = global_settings_dir().ok_or_eyre(NO_GLOBAL_SETTINGS_DIR)?;
+    let path = settings_dir.join(filename);
     mkdir(&settings_dir, true, 0o700)?;
     let mut temp = NamedTempFile::new_in(&settings_dir)?;
-    temp.write_all(toml::to_string_pretty(&contents)?.as_bytes())?;
-
+    temp.write_all(toml::to_string_pretty(value)?.as_bytes())?;
     temp.persist(&path)?;
-
     Ok(path)
 }
 

@@ -195,22 +195,18 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
         | Commands::Runs { .. }
         | Commands::Docs { .. }
         | Commands::Debug { .. }
-        | Commands::Doctor(_)
-        | Commands::Config {
-            command: ConfigCommands::Show,
-        } => None,
+        | Commands::Doctor(_) => None,
         Commands::Validate(_) => Some("validate"),
         Commands::Completions { .. } => Some("completions"),
         Commands::Version => Some("version"),
         Commands::Update(_) => Some("update"),
         Commands::Login { .. } => Some("login"),
         Commands::Mcp(_) => Some("mcp"),
-        Commands::Config {
-            command: ConfigCommands::Trust(_),
-        } => Some("config trust"),
-        Commands::Config {
-            command: ConfigCommands::Deny(_),
-        } => Some("config deny"),
+        Commands::Config { command } => match command {
+            ConfigCommands::Show => None,
+            ConfigCommands::Trust(_) => Some("config trust"),
+            ConfigCommands::Deny(_) => Some("config deny"),
+        },
     }
 }
 

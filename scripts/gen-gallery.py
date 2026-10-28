@@ -3301,9 +3301,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "for a setting that is not configured, then lists the settings files it read, least "
             "to most specific.",
             ["settings", "show"],
-            contains_all(
-                "tenant", "base_url", "update_channel", "project file", "global file"
-            ),
+            contains_all("tenant", "base_url", "update_channel", "settings files"),
             json_capable=False,
         ),
         Story(

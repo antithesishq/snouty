@@ -2,10 +2,18 @@
 # ".." keeps clippy's default list.
 doc-valid-idents = ["..", "DBus", "IdP", "OpenAPI", "SELinux"]
 
-# A `BrokenPipe` from these streams carries no mark of where it came from, so
-# `suppress_broken_pipe` in main.rs cannot tell it from a child's stdin or a
-# socket. The wrappers in src/stdio.rs add that mark.
+# A `BrokenPipe` from std's stdout and stderr carries no mark of where it came
+# from, so `suppress_broken_pipe` in main.rs cannot tell it from a child's
+# stdin or a socket. The wrappers in src/stdio.rs add that mark.
+#
+# Build every reqwest client through api::client_builder, which installs the
+# rustls crypto provider that reqwest needs. Clippy cannot name the Default
+# impls, so `Client::default()` slips past this list.
 disallowed-methods = [
     { path = "std::io::stdout", reason = "use snouty::stdio::stdout(), which marks a closed stdout" },
     { path = "std::io::stderr", reason = "use snouty::stdio::stderr(), which marks a closed stderr" },
+    { path = "reqwest::Client::new", reason = "use api::client_builder" },
+    { path = "reqwest::Client::builder", reason = "use api::client_builder" },
+    { path = "reqwest::ClientBuilder::new", reason = "use api::client_builder" },
+    { path = "reqwest::get", reason = "use api::client_builder" },
 ]

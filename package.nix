@@ -2,7 +2,6 @@
   lib,
   rustPlatform,
   pkg-config,
-  openssl,
   sqlite,
 }:
 
@@ -42,7 +41,6 @@ rustPlatform.buildRustPackage (finalAttrs: {
   ];
 
   buildInputs = [
-    openssl
     sqlite
   ];
 
@@ -51,7 +49,6 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   env = {
     LIBSQLITE3_SYS_USE_PKG_CONFIG = true;
-    OPENSSL_NO_VENDOR = true;
   };
 
   meta = {

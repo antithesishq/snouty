@@ -47,7 +47,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "wrap_help"] }
 clap_complete = "4"
 getrandom = "0.4"
-env_logger = "0.11"
+env_logger = { version = "0.11", default-features = false }
 form_urlencoded = "1"
 headers = "0.4"
 hyper = "1"
@@ -58,7 +58,10 @@ jsonschema = { version = "0.57", default-features = false }
 log = "0.4"
 open = "5"
 progenitor-client = "0.15.0"
-reqwest = { version = "0.13.1", default-features = false, features = ["http2", "json", "query", "stream", "native-tls-vendored"] }
+reqwest = { version = "0.13.1", default-features = false, features = ["http2", "json", "query", "stream", "rustls-no-provider"] }
+# ring makes a smaller binary than reqwest's default, aws-lc-rs.
+# api::client_builder installs it.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 color-eyre = { version = "0.6", default-features = false }
 futures-util = "0.3"
 # Chunk type of reqwest response streams; JsonStream buffers them.
@@ -151,4 +154,6 @@ strip-ansi-escapes = "0.2.1"
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
-lto = "thin"
+lto = "fat"
+codegen-units = 1
+strip = "debuginfo"

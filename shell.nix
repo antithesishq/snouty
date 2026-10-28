@@ -6,7 +6,7 @@ let
   snouty = import ./default.nix { inherit pkgs; };
 in
 pkgs.mkShell {
-  # Take openssl, sqlite, and pkg-config from the package itself, so the shell
+  # Take sqlite and pkg-config from the package itself, so the shell
   # cannot drift from the libraries package.nix builds against.
   inputsFrom = [ snouty ];
 
@@ -40,6 +40,5 @@ pkgs.mkShell {
   # sources rather than the sqlite above.
   env = {
     LIBSQLITE3_SYS_USE_PKG_CONFIG = true;
-    OPENSSL_NO_VENDOR = true;
   };
 }

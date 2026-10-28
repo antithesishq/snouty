@@ -1171,7 +1171,7 @@ mod tests {
             profile: None,
         };
 
-        let client = crate::api::client_builder().build().unwrap();
+        let client = crate::testutils::test_client();
         let new_access = refresh_and_store(
             &client,
             &server.uri(),
@@ -1235,7 +1235,7 @@ mod tests {
             })
             .unwrap();
 
-        let client = crate::api::client_builder().build().unwrap();
+        let client = crate::testutils::test_client();
         let result = refresh_if_still_current(
             &client,
             &server.uri(),
@@ -1468,7 +1468,7 @@ mod tests {
             cached: Arc::new(OnceCell::new()),
         };
 
-        let client = crate::api::client_builder().build().unwrap();
+        let client = crate::testutils::test_client();
         let first = auth
             .auth_header(&client, "https://snouty.example")
             .await

@@ -428,10 +428,9 @@ const _: fn(RunStreamNotificationType) = |kind| match kind {
 /// Callers set no read or total timeout: a connected request may run for a long time.
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A reqwest builder with rustls's ring crypto provider installed. snouty
-/// ships ring rather than reqwest's default aws-lc-rs because it is ~2 MB
-/// smaller, and reqwest panics on `build` until some provider is installed,
-/// so every client must start here.
+/// A reqwest builder with rustls's ring crypto provider installed. reqwest
+/// panics on `build` until some provider is installed, so every client must
+/// start here.
 #[allow(clippy::disallowed_methods)]
 pub fn client_builder() -> reqwest::ClientBuilder {
     // Err means a provider is already installed, which is all we need.
@@ -2348,11 +2347,7 @@ mod tests {
     async fn read_error_body_stops_at_the_cap() {
         let mock_server =
             mock_endpoint("GET", "/api/version", 500, &"x".repeat(MAX_ERROR_BODY * 3)).await;
-        let response = client_builder()
-            .build()
-            .unwrap()
-            .get(format!("{}/api/version", mock_server.uri()))
-            .send()
+        let response = crate::testutils::http_get(format!("{}/api/version", mock_server.uri()))
             .await
             .unwrap();
 
@@ -2364,11 +2359,7 @@ mod tests {
     #[tokio::test]
     async fn read_error_body_keeps_a_short_body_intact() {
         let mock_server = mock_endpoint("GET", "/api/version", 500, "upstream is down").await;
-        let response = client_builder()
-            .build()
-            .unwrap()
-            .get(format!("{}/api/version", mock_server.uri()))
-            .send()
+        let response = crate::testutils::http_get(format!("{}/api/version", mock_server.uri()))
             .await
             .unwrap();
 
@@ -2587,11 +2578,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let response = client_builder()
-            .build()
-            .unwrap()
-            .get(format!("{}/health", mock_server.uri()))
-            .send()
+        let response = crate::testutils::http_get(format!("{}/health", mock_server.uri()))
             .await
             .unwrap();
 

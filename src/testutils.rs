@@ -8,6 +8,16 @@ pub mod fake_secrets;
 
 use crate::container::{ContainerRuntime, DockerRuntime, PodmanRuntime, is_podman_in_disguise};
 
+/// A plain reqwest client, built through `api::client_builder` like every client.
+pub fn test_client() -> reqwest::Client {
+    crate::api::client_builder().build().unwrap()
+}
+
+/// A GET from `test_client`, in place of the disallowed `reqwest::get`.
+pub async fn http_get(url: impl reqwest::IntoUrl) -> reqwest::Result<reqwest::Response> {
+    test_client().get(url).send().await
+}
+
 /// Return all container runtimes that are actually usable on this machine.
 /// Skips `docker` if it is actually podman in disguise.
 pub fn available_runtimes() -> Vec<Box<dyn ContainerRuntime>> {

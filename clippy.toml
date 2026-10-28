@@ -7,7 +7,8 @@ doc-valid-idents = ["..", "DBus", "IdP", "OpenAPI", "SELinux"]
 # stdin or a socket. The wrappers in src/stdio.rs add that mark.
 #
 # Build every reqwest client through api::client_builder, which installs the
-# rustls crypto provider that reqwest needs.
+# rustls crypto provider that reqwest needs. Clippy cannot name the Default
+# impls, so `Client::default()` slips past this list.
 disallowed-methods = [
     { path = "std::io::stdout", reason = "use snouty::stdio::stdout(), which marks a closed stdout" },
     { path = "std::io::stderr", reason = "use snouty::stdio::stderr(), which marks a closed stderr" },

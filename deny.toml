@@ -29,6 +29,7 @@ allow = [
     # webpki-root-certs, the Mozilla root store as data, under
     # rustls-platform-verifier on wasm32 only.
     "CDLA-Permissive-2.0",
+    # ring and rustls-webpki.
     "ISC",
     "MIT",
     "MIT-0",

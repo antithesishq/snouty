@@ -334,8 +334,7 @@ async fn cmd_launch(
         );
     }
 
-    // A run with no source is ephemeral, unless the user set is_ephemeral
-    // themselves. 
+    // A run with no source is ephemeral, unless the user set is_ephemeral themselves.
     if !params.contains_key(ANT_SOURCE) && !params.contains_key(ANT_IS_EPHEMERAL) {
         params.insert(ANT_IS_EPHEMERAL, "true");
         eprintln!(

@@ -100,12 +100,16 @@ stderr 'not found'
 ! snouty config deny sub
 stderr 'is not a settings file'
 
-# 12. `config trust` and `config deny` refuse --settings, which names a file
-#     that is trusted already.
+# 12. `config trust` and `config deny` refuse --settings and
+#     SNOUTY_SETTINGS_PATH, which name a file that is trusted already.
 ! snouty --settings chosen.toml config trust
 stderr 'ignore --settings'
 ! snouty --settings chosen.toml config deny
 stderr 'ignore --settings'
+env SNOUTY_SETTINGS_PATH=chosen.toml
+! snouty config trust
+stderr 'SNOUTY_SETTINGS_PATH'
+env SNOUTY_SETTINGS_PATH=
 
 # 13. A bad SNOUTY_CONFIG_TRUST value fails also where no project file exists.
 cd empty

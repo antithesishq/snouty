@@ -118,12 +118,16 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Docs { offline, command } => docs::cmd_docs(command, offline, output).await,
         Commands::Config { command } => match command {
             ConfigCommands::Show => snouty::settings::cmd_config_show(&settings?, output.json),
-            // `--settings` names a file that needs no trust, so reject it
-            // rather than act on ./.snouty.toml.
-            ConfigCommands::Trust(_) | ConfigCommands::Deny(_) if settings_path.is_some() => Err(
-                user_error("`config trust` and `config deny` ignore --settings")
-                    .suggestion("Pass the path of the settings file as an argument."),
-            ),
+            // A named settings file needs no trust, so reject it rather than
+            // act on ./.snouty.toml.
+            ConfigCommands::Trust(_) | ConfigCommands::Deny(_)
+                if snouty::settings::explicit_settings_path(settings_path.clone())?.is_some() =>
+            {
+                Err(user_error(
+                    "`config trust` and `config deny` ignore --settings and SNOUTY_SETTINGS_PATH",
+                )
+                .suggestion("Pass the path of the settings file as an argument."))
+            }
             // These do not read settings, so they work while an untrusted
             // file blocks other commands.
             ConfigCommands::Trust(args) => snouty::settings::trust(&args.path)

@@ -4920,7 +4920,13 @@ def _run_isolated_story(sn: Snouty, story: Story) -> StoryRun:
     try:
         _write_seed_files(home, story.seed_files)
 
-        env = {**(story.env or {}), "XDG_CONFIG_HOME": str(home / ".config")}
+        env = {
+            **(story.env or {}),
+            "XDG_CONFIG_HOME": str(home / ".config"),
+            # The operator's own settings file and trust override stay out too.
+            "SNOUTY_SETTINGS_PATH": None,
+            "SNOUTY_CONFIG_TRUST": None,
+        }
         result = sn.run(story.args, env, cwd=home)
         return StoryRun(story, result, None)
     finally:

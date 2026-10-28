@@ -135,12 +135,7 @@ impl Settings {
         }
         .filter(|profile| !profile.is_empty());
 
-        // Likewise an empty `SNOUTY_SETTINGS_PATH` is "unset" (it would otherwise
-        // become an explicitly-requested empty path that must — and can't — exist).
-        let project_settings_path = match project_settings_path {
-            Some(path) => Some(path),
-            None => env::var(SNOUTY_SETTINGS_PATH_VAR_NAME)?.map(PathBuf::from),
-        };
+        let project_settings_path = explicit_settings_path(project_settings_path)?;
 
         // Parse this even without a project file, so a bad value fails in
         // every directory.
@@ -399,6 +394,16 @@ impl SettingsBuilder {
                 .unwrap_or(crate::api_cache::DEFAULT_MAX_FILE_SIZE),
             api_cache_respect_headers: self.api_cache_respect_headers.unwrap_or(true),
         }
+    }
+}
+
+/// The project settings file that the user named: the `--settings` flag
+/// (`flag`), otherwise `SNOUTY_SETTINGS_PATH`. An empty `SNOUTY_SETTINGS_PATH`
+/// is unset; it would otherwise name an empty path that must, and cannot, exist.
+pub fn explicit_settings_path(flag: Option<PathBuf>) -> Result<Option<PathBuf>> {
+    match flag {
+        Some(path) => Ok(Some(path)),
+        None => Ok(env::var(SNOUTY_SETTINGS_PATH_VAR_NAME)?.map(PathBuf::from)),
     }
 }
 

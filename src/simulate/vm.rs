@@ -32,12 +32,6 @@ const BOOT_CONSOLE_ESCAPE_CODES: [&[u8]; 6] = [
 ];
 
 #[derive(Clone, Copy)]
-pub enum ShutdownSignal {
-    Interrupt,
-    Terminate,
-}
-
-#[derive(Clone, Copy)]
 pub enum BootOutput {
     Hidden,
     Visible,
@@ -452,24 +446,28 @@ impl Vm {
         result
     }
 
-    pub async fn shutdown(&mut self, signal: ShutdownSignal) -> Result<()> {
+    pub async fn shutdown(&mut self) -> Result<()> {
         if !self.is_running()? {
             return Ok(());
         }
-        let signal = match signal {
-            ShutdownSignal::Interrupt => Signal::SIGINT,
-            ShutdownSignal::Terminate => Signal::SIGTERM,
-        };
-        killpg(Pid::from_raw(self.child.id() as i32), signal)?;
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while self.is_running()? {
-            if Instant::now() >= deadline {
+        let powered_off = timeout(Duration::from_secs(2), async {
+            // Poweroff can close SSH before it reports success.
+            if let Err(error) = self.run_script("poweroff -f\n").await {
+                log::debug!("guest poweroff request failed: {error:#}");
+            }
+            while self.is_running()? {
+                sleep(Duration::from_millis(50)).await;
+            }
+            Ok::<_, color_eyre::Report>(())
+        })
+        .await;
+        match powered_off {
+            Ok(result) => result?,
+            Err(_) => {
                 killpg(Pid::from_raw(self.child.id() as i32), Signal::SIGKILL)?;
                 self.child.wait()?;
                 self.client_key.take();
-                break;
             }
-            sleep(Duration::from_millis(50)).await;
         }
         Ok(())
     }

@@ -2214,7 +2214,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "--fault-tolerance defaulting to resilient and none keeping faults paused "
             "through test composer, startup timeout, "
             "configure.py options for fault tolerance and exclusions, "
-            "interruption, failure status, the runs-compatible human log rendering, and "
+            "interruption with a brief guest poweroff wait and final log drain, "
+            "failure status, the runs-compatible human log rendering, and "
             "active-fault annotations in JSON output. It should also show how to attach "
             "a second terminal to a running guest, with the ID printed after boot. "
             "Internal testing overrides must stay out of help.",

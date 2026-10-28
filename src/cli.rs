@@ -304,6 +304,9 @@ TacticsLang does not use this fault configuration.
 Repeats rollouts until interrupted. --disable-restart runs one rollout and
 continues to stream logs. Failed assertions and composer commands do not stop
 the simulation, but cause a nonzero exit status when it stops.
+On interruption, requests immediate guest poweroff, waits up to two seconds,
+then force-kills the VM if needed and drains the remaining logs. A second
+interrupt force-kills the VM immediately.
 
 Boot console logs are hidden unless startup fails or the VM exits unexpectedly.
 Human output uses the same vtime, source, and event rendering as `runs logs`.

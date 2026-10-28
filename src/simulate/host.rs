@@ -14,7 +14,7 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 use super::{
     events::{self, Event, Failure},
     images::{ImageId, Images},
-    vm::{BootOutput, GuestConnection, ShutdownSignal, Vm},
+    vm::{BootOutput, GuestConnection, Vm},
 };
 use crate::{
     OutputOptions,
@@ -28,9 +28,7 @@ use crate::{
 const PREPARE: &str = include_str!("assets/prepare.sh");
 const DISABLE_FAULTS: &str = include_str!("assets/disable-faults.sh");
 const START: &str = include_str!("assets/start.sh");
-const STOP: &str = include_str!("assets/stop.sh");
 const STATUS: &str = include_str!("assets/status.sh");
-const CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 const ATTACH_READY: &str = "attach-ready";
 const GUEST_ISO_ENV: &str = "SNOUTY_SIMULATE_GUEST_ISO";
 
@@ -446,36 +444,9 @@ pub(super) async fn run(
         .map_or(consumed, |m| m.len());
     if let Some(guest) = &mut vm {
         eprintln!("Stopping simulation...");
-        let cleanup = tokio::select! {
-            result = tokio::time::timeout(CLEANUP_TIMEOUT, guest.run_script(STOP)) => Some(result),
-            _ = signals.receive() => None,
-        };
-        let force_shutdown = cleanup.is_none();
-        match cleanup {
-            Some(Ok(Ok(_))) | None => {}
-            Some(Ok(Err(error))) => {
-                summary.infrastructure_failures += 1;
-                eprintln!("Guest cleanup failed: {error:#}");
-            }
-            Some(Err(_)) => {
-                summary.infrastructure_failures += 1;
-                eprintln!(
-                    "Guest cleanup timed out after {} seconds",
-                    CLEANUP_TIMEOUT.as_secs()
-                );
-            }
-        }
-        let signal = match reason {
-            Termination::Interrupted => ShutdownSignal::Interrupt,
-            _ => ShutdownSignal::Terminate,
-        };
-        let shutdown = if force_shutdown {
-            Ok(())
-        } else {
-            tokio::select! {
-                result = guest.shutdown(signal) => result,
-                _ = signals.receive() => Ok(()),
-            }
+        let shutdown = tokio::select! {
+            result = guest.shutdown() => result,
+            _ = signals.receive() => Ok(()),
         };
         if let Err(error) = shutdown {
             summary.infrastructure_failures += 1;
@@ -645,12 +616,8 @@ pub(super) async fn shell(
         _ => false,
     };
     eprintln!("Stopping simulation...");
-    let shutdown_signal = match shell {
-        Err(Termination::Interrupted) => ShutdownSignal::Interrupt,
-        _ => ShutdownSignal::Terminate,
-    };
     let shutdown_result = tokio::select! {
-        result = guest.shutdown(shutdown_signal) => result,
+        result = guest.shutdown() => result,
         _ = signals.receive() => Ok(()),
     };
     if let Ok(status) = shell

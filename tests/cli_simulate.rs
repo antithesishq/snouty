@@ -811,7 +811,7 @@ fn assertion_failure_is_latched_until_interruption_and_children_are_reaped() {
         "runtime SSH config retained"
     );
     assert!(!String::from_utf8_lossy(&output.stderr).contains("private boot console"));
-    assert_eq!(simulation.read("qemu_signal"), "15");
+    assert_eq!(simulation.read("poweroff_requested"), "yes");
     for file in ["qemu_pid", "qemu_child_pid"] {
         let pid: i32 = simulation.read(file).parse().unwrap();
         assert!(
@@ -946,7 +946,7 @@ fn supervisor_failure_is_reported_after_workload_start() {
         .find(|event| event["type"] == "summary")
         .unwrap();
     assert_eq!(summary["failures"]["infrastructure_failures"], 1);
-    assert_eq!(simulation.read("qemu_signal"), "15");
+    assert_eq!(simulation.read("poweroff_requested"), "yes");
 }
 
 #[test]
@@ -956,7 +956,7 @@ fn malformed_instrumentation_fails_and_cleans_up_vm() {
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("invalid instrumentation JSON"), "{stderr}");
-    assert_eq!(simulation.read("qemu_signal"), "15");
+    assert_eq!(simulation.read("poweroff_requested"), "yes");
 }
 
 #[test]
@@ -990,6 +990,60 @@ fn clean_single_rollout_keeps_streaming_and_preserves_signal_exit_status() {
     assert_eq!(summary["termination"], "terminated");
     assert!(summary["diagnostics"].is_null());
     assert!(!Path::new(&simulation.read("run_dir")).exists());
+}
+
+#[test]
+fn interrupt_powers_off_guest_and_drains_final_output() {
+    let mut simulation = Simulation::start("clean-once");
+    simulation.wait_for("stdout", "workload running");
+    let start = Instant::now();
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGINT).unwrap();
+    let output = simulation.finish();
+    assert_eq!(output.status.code(), Some(130));
+    assert!(start.elapsed() < Duration::from_secs(2));
+    assert_eq!(simulation.read("poweroff_requested"), "yes");
+    assert_eq!(
+        simulation.read("qemu_signal"),
+        (Signal::SIGUSR1 as i32).to_string()
+    );
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("last output before poweroff")
+    );
+}
+
+#[test]
+fn failed_or_stalled_poweroff_is_force_killed() {
+    for mode in ["poweroff-fails", "poweroff-hangs"] {
+        let mut simulation = Simulation::start(mode);
+        simulation.wait_for("compose_started", "yes");
+        let start = Instant::now();
+        kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGINT).unwrap();
+        let output = simulation.finish();
+        assert_eq!(output.status.code(), Some(130));
+        assert!(start.elapsed() < Duration::from_secs(4));
+        assert_eq!(simulation.read("poweroff_requested"), "yes");
+        let pid: i32 = simulation.read("qemu_pid").parse().unwrap();
+        assert!(
+            kill(Pid::from_raw(pid), None).is_err(),
+            "QEMU survived {mode}"
+        );
+    }
+}
+
+#[test]
+fn second_interrupt_skips_poweroff_wait() {
+    let mut simulation = Simulation::start("poweroff-second-interrupt");
+    simulation.wait_for("compose_started", "yes");
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGINT).unwrap();
+    simulation.wait_for("poweroff_requested", "yes");
+    let start = Instant::now();
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGINT).unwrap();
+    assert_eq!(simulation.finish().status.code(), Some(130));
+    assert!(start.elapsed() < Duration::from_secs(1));
+    let pid: i32 = simulation.read("qemu_pid").parse().unwrap();
+    assert!(kill(Pid::from_raw(pid), None).is_err());
 }
 
 #[test]

@@ -5,21 +5,20 @@
 
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use std::process::ExitCode;
 
 use color_eyre::eyre::{Context, Report, Result};
 use serde::Serialize;
 
 use crate::api::AntithesisApi;
 use crate::cli::DockerCredentialAction;
-use crate::error::{print_report, user_error};
+use crate::error::user_error;
 use crate::registry::{self, RegistryHost};
 use crate::settings::Settings;
 use crate::stdio;
 
 /// No profile uses the requested registry as its tenant registry.
 #[derive(Debug)]
-struct CredentialsNotFound;
+pub struct CredentialsNotFound;
 
 impl std::fmt::Display for CredentialsNotFound {
     /// The exact message that Docker and Podman read as "this helper has no
@@ -47,29 +46,25 @@ struct Credential<'a> {
     secret: &'a str,
 }
 
-/// Runs one action of the protocol, and returns the exit status. `active` is
-/// the settings of the selected profile, or `None` when they fail to resolve;
-/// the search skips such a profile. `settings_path` is the `--settings` path,
-/// which finds the other profiles.
+/// Runs one action of the protocol. `active` is the settings of the selected
+/// profile, or `None` when they fail to resolve; the search skips such a
+/// profile. `settings_path` is the `--settings` path, which finds the other
+/// profiles.
 ///
-/// The protocol reads an error from stdout. Docker reads "not found" as an
-/// answer, so that error does not go to stderr. A closed stdout fails the
-/// action, and never panics.
+/// The protocol reads an error from stdout, so an error prints its message
+/// there before it returns. The caller prints the full report on stderr,
+/// except for [`CredentialsNotFound`]: Docker reads "not found" as an answer.
 pub async fn run(
     action: DockerCredentialAction,
     active: Option<Settings>,
     settings_path: Option<PathBuf>,
-) -> ExitCode {
-    let Err(report) = cmd_docker_credential(action, active, settings_path).await else {
-        return ExitCode::SUCCESS;
-    };
-    // The exit status fails the action, and each error but "not found" also
-    // goes to stderr, so a failed write here loses nothing.
-    let _ = writeln!(stdio::stdout(), "{report}");
-    if !report.is::<CredentialsNotFound>() {
-        print_report(&report);
+) -> Result<()> {
+    let result = cmd_docker_credential(action, active, settings_path).await;
+    if let Err(report) = &result {
+        // The returned error fails the action, so a failed write loses nothing.
+        let _ = writeln!(stdio::stdout(), "{report}");
     }
-    ExitCode::FAILURE
+    result
 }
 
 async fn cmd_docker_credential(

@@ -1,6 +1,6 @@
 use std::io::{self, ErrorKind, Write};
 use std::path::Path;
-use std::process::{Command, ExitCode};
+use std::process::Command;
 
 use clap::CommandFactory;
 use clap_complete::Shell;
@@ -43,7 +43,7 @@ use snouty::validate;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> ExitCode {
+async fn main() {
     // Drop the "Backtrace omitted. Run with RUST_BACKTRACE=1…" footer: it's noise
     // on every error, and outright misleading on user errors built with
     // `suppress_backtrace` (where RUST_BACKTRACE does nothing). A genuine fault
@@ -66,24 +66,25 @@ async fn main() -> ExitCode {
         .init();
     snouty::mcp::exit_with_server();
     let cli = snouty::cli::parse();
-    match run(cli).await {
-        Ok(code) => code,
-        Err(report) => {
-            // One rendering for every error: `render_report` collapses the chain
-            // index for single errors and wraps overlong prose, both printing
-            // concerns that belong here rather than in the messages. User-facing
-            // failures are built with `user_error`/4xx `suppress_backtrace`, so they
-            // print message + any `.note()`/`.suggestion()` hints with no backtrace;
-            // genuine internal faults keep theirs.
-            snouty::error::print_report(&report);
-            ExitCode::FAILURE
+    if let Err(report) = run(cli).await {
+        // The docker-credential helper already said "not found" on stdout,
+        // which is all that the helper protocol permits for it.
+        if report.is::<snouty::docker_credential::CredentialsNotFound>() {
+            std::process::exit(1);
         }
+        // One rendering for every error: `render_report` collapses the chain
+        // index for single errors and wraps overlong prose, both printing
+        // concerns that belong here rather than in the messages. User-facing
+        // failures are built with `user_error`/4xx `suppress_backtrace`, so they
+        // print message + any `.note()`/`.suggestion()` hints with no backtrace;
+        // genuine internal faults keep theirs.
+        let rendered = snouty::error::render_report(&report);
+        eprintln!("{}", snouty::wrap_if_tty(&rendered));
+        std::process::exit(1);
     }
 }
 
-/// Runs the command. `docker-credential` reports its own errors, in the form
-/// the helper protocol reads, and returns its exit status.
-async fn run(cli: Cli) -> Result<ExitCode> {
+async fn run(cli: Cli) -> Result<()> {
     let Cli {
         json,
         verbose,
@@ -146,32 +147,30 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Commands::Doctor(args) => {
             snouty::doctor::cmd_doctor(&settings?, output, args.offline).await
         }
+        // Not through `suppress_broken_pipe`: a closed stdout must fail the
+        // helper action.
         Commands::DockerCredential { action } => {
-            return Ok(snouty::docker_credential::run(action, settings.ok(), settings_path).await);
+            return snouty::docker_credential::run(action, settings.ok(), settings_path).await;
         }
         Commands::Mcp(args) => {
             // The tool calls resolve the settings again, in each child.
             settings?;
-            let served = snouty::mcp::cmd_mcp(snouty::mcp::Globals {
+            snouty::mcp::cmd_mcp(snouty::mcp::Globals {
                 settings: settings_path,
                 profile,
                 verbose,
                 max_concurrent_calls: args.max_concurrent_calls,
             })
-            .await;
+            .await?;
             // rmcp reads stdin on a blocking thread, and the runtime waits for
-            // that thread as it shuts down. After a stop signal or a server
-            // error, stdin can still be open, so exit here. The tool calls'
-            // children are already killed.
-            if let Err(report) = served {
-                snouty::error::print_report(&report);
-                std::process::exit(1);
-            }
+            // that thread as it shuts down. After a stop signal, stdin can
+            // still be open, so exit here. The tool calls' children are
+            // already killed.
             std::process::exit(0)
         }
     };
 
-    suppress_broken_pipe(result).map(|()| ExitCode::SUCCESS)
+    suppress_broken_pipe(result)
 }
 
 /// When our output is piped into something that exits early (e.g. `snouty

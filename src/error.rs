@@ -76,14 +76,6 @@ pub fn render_report(report: &Report) -> String {
     }
 }
 
-/// Prints `report` on stderr, as [`render_report`] renders it. A closed
-/// stderr leaves nowhere to report, so a failed write is dropped.
-pub fn print_report(report: &Report) {
-    use std::io::Write;
-    let rendered = crate::wrap_if_tty(&render_report(report));
-    let _ = writeln!(crate::stdio::stderr(), "{rendered}");
-}
-
 /// The report's message, painted the way `color_eyre`'s dark theme paints an
 /// error — bright red — when stderr is a terminal, and plain otherwise. The
 /// terminal check lives here for the same reason it lives in `wrap_if_tty`:

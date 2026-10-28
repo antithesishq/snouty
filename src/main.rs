@@ -44,14 +44,28 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
-    snouty::install_hooks();
+    // Drop the "Backtrace omitted. Run with RUST_BACKTRACE=1…" footer: it's noise
+    // on every error, and outright misleading on user errors built with
+    // `suppress_backtrace` (where RUST_BACKTRACE does nothing). A genuine fault
+    // still prints its backtrace when RUST_BACKTRACE is set.
+    //
+    // Color the report only on a real terminal — piped/redirected stderr (and the
+    // test/gallery captures) gets plain text, not ANSI escapes.
+    let theme = if stdio::stderr().is_terminal() {
+        color_eyre::config::Theme::dark()
+    } else {
+        color_eyre::config::Theme::new()
+    };
+    color_eyre::config::HookBuilder::default()
+        .theme(theme)
+        .display_env_section(false)
+        .install()
+        .unwrap();
+    env_logger::Builder::from_default_env()
+        .format(|buf, record| writeln!(buf, "{}", record.args()))
+        .init();
     snouty::mcp::exit_with_server();
     let cli = snouty::cli::parse();
-    if cli.json
-        && let Some(name) = json_unaware_command_name(&cli.command)
-    {
-        eprintln!("warning: --json has no effect for `snouty {name}`");
-    }
     match run(cli).await {
         Ok(code) => code,
         Err(report) => {
@@ -62,7 +76,7 @@ async fn main() -> ExitCode {
             // print message + any `.note()`/`.suggestion()` hints with no backtrace;
             // genuine internal faults keep theirs.
             snouty::error::print_report(&report);
-            std::process::exit(1);
+            ExitCode::FAILURE
         }
     }
 }
@@ -77,6 +91,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         profile,
         command,
     } = cli;
+    if json && let Some(name) = json_unaware_command_name(&command) {
+        eprintln!("warning: --json has no effect for `snouty {name}`");
+    }
     // The global output flags travel together from here on; every command
     // takes them as one value instead of a swappable positional bool pair.
     let output = OutputOptions { json, verbose };
@@ -85,7 +102,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         return Err(report);
     }
 
-    initialize_credential_store();
+    if let Err(err) = initialize_credential_store() {
+        eprintln!("warning: Could not initialize system keychain credential storage: {err:?}");
+    }
 
     // Resolve settings once, up front. Each command that reads settings
     // unwraps the result, so a bad settings file stops only those commands.
@@ -141,17 +160,21 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Commands::Mcp(args) => {
             // The tool calls resolve the settings again, in each child.
             settings?;
-            snouty::mcp::cmd_mcp(snouty::mcp::Globals {
+            let served = snouty::mcp::cmd_mcp(snouty::mcp::Globals {
                 settings: settings_path,
                 profile,
                 verbose,
                 max_concurrent_calls: args.max_concurrent_calls,
             })
-            .await?;
+            .await;
             // rmcp reads stdin on a blocking thread, and the runtime waits for
-            // that thread as it shuts down. After a stop signal, stdin can
-            // still be open, so exit here. The tool calls' children are
-            // already killed.
+            // that thread as it shuts down. After a stop signal or a server
+            // error, stdin can still be open, so exit here. The tool calls'
+            // children are already killed.
+            if let Err(report) = served {
+                snouty::error::print_report(&report);
+                std::process::exit(1);
+            }
             std::process::exit(0)
         }
     };

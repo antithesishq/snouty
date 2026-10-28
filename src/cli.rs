@@ -280,10 +280,9 @@ pub fn parse() -> Cli {
     if as_helper {
         args.splice(..1, ["snouty", "docker-credential"].map(OsString::from));
     }
-    let parsed = command()
-        .try_get_matches_from(args)
-        .and_then(|matches| Cli::from_arg_matches(&matches))
-        .map_err(|err| err.format(&mut command()));
+    let parsed = command().try_get_matches_from(args).and_then(|matches| {
+        Cli::from_arg_matches(&matches).map_err(|err| err.format(&mut command()))
+    });
     match parsed {
         Ok(cli) => cli,
         // The helper protocol reads an error from stdout. The exit status

@@ -485,17 +485,29 @@ const REGISTRY_PULL_ATTEMPTS: u32 = 3;
 /// rate-limiting registry a moment to recover.
 const REGISTRY_PULL_RETRY_DELAY: Duration = Duration::from_secs(1);
 
-/// Pull `registry:2`, retrying a failed pull before giving up.
+/// Pull `registry:2` unless it is already in the local store, retrying a failed
+/// pull before giving up.
+///
+/// A pull asks Docker Hub for the manifest even when the image is local, and
+/// every registry-backed test starts a registry, so pulling each time runs into
+/// Docker Hub's rate limit for anonymous pulls.
 ///
 /// One attempt is enough on a healthy machine, but on the macOS podman runner
 /// the pull crosses the VM's network proxy and intermittently fails outright,
-/// which fails every registry-backed test in the run at once. Retrying is close
-/// to free — after a success the image is local, so a later pull is a no-op —
-/// and turns a transient blip into a slower success.
+/// which fails every registry-backed test in the run at once. Retrying turns a
+/// transient blip into a slower success.
 ///
 /// Returns the last failure's own words on `Err`, so the skip explains what went
 /// wrong rather than only that something did.
 fn ensure_registry_image_available(runtime: &str) -> Result<(), String> {
+    let local = Command::new(runtime)
+        .args(["image", "inspect", "registry:2"])
+        .stdin(Stdio::null())
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if local {
+        return Ok(());
+    }
     let mut last_failure = String::new();
     for attempt in 1..=REGISTRY_PULL_ATTEMPTS {
         if attempt > 1 {
@@ -2104,16 +2116,18 @@ mod tests {
         );
     }
 
+    /// A stub runtime that logs its arguments, and has `registry:2` in its
+    /// store when `local` is true. Returns the runtime and its log.
     #[cfg(unix)]
-    #[test]
-    fn ensure_registry_image_available_pulls_registry_image() {
-        let dir = tempfile::tempdir().unwrap();
-        let log_path = dir.path().join("runtime.log");
-        let runtime_path = dir.path().join("stub-runtime.sh");
+    fn stub_registry_runtime(dir: &std::path::Path, local: bool) -> (String, std::path::PathBuf) {
+        let log_path = dir.join("runtime.log");
+        let runtime_path = dir.join("stub-runtime.sh");
+        let inspect_status = u8::from(!local);
         fs::write(
             &runtime_path,
             format!(
-                "#!/bin/sh\nprintf '%s\n' \"$*\" >> \"{}\"\nexit 0\n",
+                "#!/bin/sh\nprintf '%s\n' \"$*\" >> \"{}\"\n\
+                 [ \"$1\" = image ] && exit {inspect_status}\nexit 0\n",
                 log_path.display()
             ),
         )
@@ -2121,23 +2135,39 @@ mod tests {
         let mut perms = fs::metadata(&runtime_path).unwrap().permissions();
         perms.set_mode(0o755);
         fs::set_permissions(&runtime_path, perms).unwrap();
+        (runtime_path.to_str().unwrap().to_string(), log_path)
+    }
 
-        assert_eq!(
-            ensure_registry_image_available(runtime_path.to_str().unwrap()),
-            Ok(())
-        );
+    #[cfg(unix)]
+    #[test]
+    fn ensure_registry_image_available_pulls_registry_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, log_path) = stub_registry_runtime(dir.path(), false);
+
+        assert_eq!(ensure_registry_image_available(&runtime), Ok(()));
 
         let log = fs::read_to_string(log_path).unwrap();
-        assert!(
-            log.lines().any(|line| line == "pull registry:2"),
-            "expected registry pull command in log, got: {log}"
-        );
         assert_eq!(
             log.lines()
                 .filter(|line| *line == "pull registry:2")
                 .count(),
             1,
             "a pull that works must not be retried, got: {log}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_registry_image_available_skips_the_pull_of_a_local_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, log_path) = stub_registry_runtime(dir.path(), true);
+
+        assert_eq!(ensure_registry_image_available(&runtime), Ok(()));
+
+        let log = fs::read_to_string(log_path).unwrap();
+        assert!(
+            !log.lines().any(|line| line.starts_with("pull")),
+            "expected no pull, got: {log}"
         );
     }
 }

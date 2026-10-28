@@ -10,7 +10,7 @@ global settings file, the top-level value in the project settings file, then the
 top-level value in the global settings file.
 
 Pass --json to print one JSON object, keyed by setting, with null for a setting
-that is not set.
+that is not set and has no default.
 
 Examples:
   snouty config show

@@ -146,9 +146,12 @@ impl Settings {
         // because the user named it. The default `./.snouty.toml` is optional,
         // and is used only when the user trusts it. (Climbing the directory
         // tree, if ever wanted, would go here.)
+        // Parsed whether or not a project file exists, so that a bad value
+        // fails in every directory.
+        let trust_override = trust::TrustOverride::from_env()?;
         let project = match &project_settings_path {
             Some(path) => load_settings_file(path, true)?,
-            None => load_default_project_file()?,
+            None => load_default_project_file(trust_override)?,
         };
         let global = match global_settings_dir() {
             Some(dir) => load_settings_file(&dir.join(GLOBAL_SETTINGS_FILENAME), false)?,
@@ -577,12 +580,14 @@ fn load_settings_file(path: &Path, required: bool) -> Result<Option<Table>> {
 }
 
 /// Load `./.snouty.toml` when it exists and [`trust::verdict`] allows it.
-fn load_default_project_file() -> Result<Option<Table>> {
+fn load_default_project_file(
+    trust_override: Option<trust::TrustOverride>,
+) -> Result<Option<Table>> {
     let path = Path::new(PROJECT_SETTINGS_FILENAME);
     let Some(contents) = read_to_string_if_file_exists(path)? else {
         return Ok(None);
     };
-    match trust::verdict(path, contents.as_bytes())? {
+    match trust::verdict(path, contents.as_bytes(), trust_override)? {
         trust::Verdict::Use => parse_settings(&contents, path).map(Some),
         trust::Verdict::Ignore => {
             debug!("ignoring the denied settings file {}", path.display());

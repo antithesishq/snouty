@@ -96,6 +96,31 @@ env SNOUTY_SETTINGS_PATH=
 stderr 'missing\.toml'
 stderr 'not found'
 
+# 11. `config deny` refuses a path that is not a file.
+! snouty config deny sub
+stderr 'is not a settings file'
+
+# 12. `config trust` and `config deny` refuse --settings, which names a file
+#     that is trusted already.
+! snouty --settings chosen.toml config trust
+stderr 'ignore --settings'
+! snouty --settings chosen.toml config deny
+stderr 'ignore --settings'
+
+# 13. A bad SNOUTY_CONFIG_TRUST value fails also where no project file exists.
+cd empty
+env SNOUTY_CONFIG_TRUST=yes
+! snouty config show
+stderr 'SNOUTY_CONFIG_TRUST'
+env SNOUTY_CONFIG_TRUST=
+cd .
+
+# 14. An invalid trust file is an error that tells how to recover.
+cp broken-trust.toml config/snouty/trust.toml
+! snouty config show
+stderr 'trust file .* is not valid'
+stderr 'Delete the file'
+
 -- .snouty.toml --
 tenant = "acme"
 -- acme.toml --
@@ -105,5 +130,9 @@ tenant = "acme"
 base_url = "https://evil.example.com"
 -- chosen.toml --
 tenant = "chosen-tenant"
+-- empty/.keep --
+-- broken-trust.toml --
+[files."/x"]
+decision = "maybe"
 -- sub/.snouty.toml --
 tenant = "sub-tenant"

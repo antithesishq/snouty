@@ -2,7 +2,7 @@ Print the settings that snouty resolved
 
 Prints each setting with the value that snouty resolved for it. For each setting, snouty uses the first value that it finds: the environment variable, the selected profile in the project settings file, the selected profile in the global settings file, the top-level value in the project settings file, then the top-level value in the global settings file.
 
-Pass {{ t("--json")? }} to print one JSON object, keyed by setting, with null for a setting that is not set.
+Pass {{ t("--json")? }} to print one JSON object, keyed by setting, with null for a setting that is not set and has no default.
 
 Examples:
   {{ t("snouty config show")? }}

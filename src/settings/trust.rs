@@ -15,11 +15,13 @@ use std::{
 };
 
 use color_eyre::Section;
-use color_eyre::eyre::{Report, Result, eyre};
+use color_eyre::eyre::{OptionExt, Report, Result, eyre};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{global_settings_dir, read_to_string_if_file_exists, write_global_toml};
+use super::{
+    NO_GLOBAL_SETTINGS_DIR, global_settings_dir, read_to_string_if_file_exists, write_global_toml,
+};
 use crate::env;
 use crate::error::user_error;
 
@@ -27,7 +29,8 @@ pub const CONFIG_TRUST_VAR_NAME: &str = "SNOUTY_CONFIG_TRUST";
 const TRUST_FILENAME: &str = "trust.toml";
 
 /// The values of `SNOUTY_CONFIG_TRUST`.
-enum TrustOverride {
+#[derive(Clone, Copy)]
+pub(super) enum TrustOverride {
     /// Use every project settings file, as if the user trusted it.
     All,
 }
@@ -62,14 +65,20 @@ struct TrustStore {
 }
 
 impl TrustStore {
-    /// The store in the global settings dir; empty when there is none yet.
-    fn load() -> Result<Self> {
-        let Some(path) = global_settings_dir().map(|dir| dir.join(TRUST_FILENAME)) else {
-            return Ok(Self::default());
-        };
+    /// The store in the global settings dir `dir`; empty when there is none yet.
+    fn load(dir: &Path) -> Result<Self> {
+        let path = dir.join(TRUST_FILENAME);
         match read_to_string_if_file_exists(&path)? {
-            Some(contents) => toml::from_str(&contents)
-                .map_err(|err| eyre!("Trust file at {path:?} was not valid: {err:#}")),
+            Some(contents) => toml::from_str(&contents).map_err(|err| {
+                user_error(format!(
+                    "the trust file {} is not valid: {err}",
+                    path.display()
+                ))
+                .suggestion(format!(
+                    "Delete the file, then trust or deny your project settings files again. \
+                         To skip the check, set {CONFIG_TRUST_VAR_NAME}=all."
+                ))
+            }),
             None => Ok(Self::default()),
         }
     }
@@ -81,18 +90,37 @@ pub(super) enum Verdict {
     Ignore,
 }
 
+impl TrustOverride {
+    /// The value of `SNOUTY_CONFIG_TRUST`; `None` when it is not set.
+    pub(super) fn from_env() -> Result<Option<Self>> {
+        env::var(CONFIG_TRUST_VAR_NAME)?
+            .map(|value| value.parse())
+            .transpose()
+    }
+}
+
 /// The verdict for the project settings file at `path`, whose content is
 /// `contents`. A file that the user has not trusted, or that changed since the
 /// user trusted it, is an error that tells how to decide.
-pub(super) fn verdict(path: &Path, contents: &[u8]) -> Result<Verdict> {
-    if let Some(TrustOverride::All) = env::var(CONFIG_TRUST_VAR_NAME)?
-        .map(|value| value.parse())
-        .transpose()?
-    {
+pub(super) fn verdict(
+    path: &Path,
+    contents: &[u8],
+    trust_override: Option<TrustOverride>,
+) -> Result<Verdict> {
+    if let Some(TrustOverride::All) = trust_override {
         return Ok(Verdict::Use);
     }
     let path = canonicalize(path)?;
-    match TrustStore::load()?.files.get(&path) {
+    let Some(dir) = global_settings_dir() else {
+        return Err(user_error(format!(
+            "the settings file {} is not trusted, and snouty has no place to record trust",
+            path.display()
+        ))
+        .suggestion(format!(
+            "Set $XDG_CONFIG_HOME or $HOME. To skip the check, set {CONFIG_TRUST_VAR_NAME}=all."
+        )));
+    };
+    match TrustStore::load(&dir)?.files.get(&path) {
         Some(Decision::Deny) => Ok(Verdict::Ignore),
         Some(Decision::Trust { sha256 }) if *sha256 == digest(contents) => Ok(Verdict::Use),
         Some(Decision::Trust { .. }) => Err(untrusted(&path, "changed since you trusted it")),
@@ -113,11 +141,11 @@ fn untrusted(path: &Path, problem: &str) -> Report {
 /// canonical path that the decision is recorded for.
 pub fn trust(path: &Path) -> Result<PathBuf> {
     let path = canonicalize(path)?;
-    let contents = fs::read(&path).map_err(|err| read_error(&path, &err))?;
+    let contents = read_to_string_if_file_exists(&path)?.ok_or_else(|| not_found(&path))?;
     record(
         path,
         Decision::Trust {
-            sha256: digest(&contents),
+            sha256: digest(contents.as_bytes()),
         },
     )
 }
@@ -129,27 +157,36 @@ pub fn deny(path: &Path) -> Result<PathBuf> {
 }
 
 fn record(path: PathBuf, decision: Decision) -> Result<PathBuf> {
-    let mut store = TrustStore::load()?;
+    let dir = global_settings_dir().ok_or_eyre(NO_GLOBAL_SETTINGS_DIR)?;
+    let mut store = TrustStore::load(&dir)?;
     store.files.insert(path.clone(), decision);
     write_global_toml(TRUST_FILENAME, &store)?;
     Ok(path)
 }
 
+/// The canonical form of `path`, which must name a file.
 fn canonicalize(path: &Path) -> Result<PathBuf> {
-    fs::canonicalize(path).map_err(|err| {
+    let canonical = fs::canonicalize(path).map_err(|err| {
         if err.kind() == ErrorKind::NotFound {
-            user_error(format!(
-                "the settings file {} was not found",
-                path.display()
-            ))
+            not_found(path)
         } else {
-            read_error(path, &err)
+            eyre!("File at {path:?} could not be read: {err:#}")
         }
-    })
+    })?;
+    if !canonical.is_file() {
+        return Err(user_error(format!(
+            "{} is not a settings file",
+            path.display()
+        )));
+    }
+    Ok(canonical)
 }
 
-fn read_error(path: &Path, err: &std::io::Error) -> Report {
-    eyre!("File at {path:?} could not be read: {err:#}")
+fn not_found(path: &Path) -> Report {
+    user_error(format!(
+        "the settings file {} was not found",
+        path.display()
+    ))
 }
 
 fn digest(contents: &[u8]) -> String {

@@ -119,6 +119,12 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Docs { offline, command } => docs::cmd_docs(command, offline, output).await,
         Commands::Config { command } => match command {
             ConfigCommands::Show => snouty::settings::cmd_config_show(&settings?, output.json),
+            // `--settings` names a file that is trusted already, so a user who
+            // passes it means the file, not ./.snouty.toml.
+            ConfigCommands::Trust(_) | ConfigCommands::Deny(_) if settings_path.is_some() => Err(
+                user_error("`config trust` and `config deny` ignore --settings")
+                    .suggestion("Pass the path of the settings file as an argument."),
+            ),
             // Neither reads the settings, so each works where an untrusted
             // file stops every other command.
             ConfigCommands::Trust(args) => snouty::settings::trust(&args.path)

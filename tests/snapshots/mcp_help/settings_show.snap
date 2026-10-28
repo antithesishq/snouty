@@ -7,7 +7,7 @@ Prints each setting with the value that snouty resolved for it. For each setting
 
 Then it lists the settings files that snouty read: the project settings file, which overrides the global one, then the global settings file.
 
-The result is one JSON object. `settings` holds each setting, with null for a setting that is not set and has no default. `files` lists the settings files in the same order, each with its `type` (`project` or `global`) and `path`.
+The JSON output is one object. `settings` holds each setting, with null for a setting that is not set and has no default. `files` lists the settings files in the same order, each with its `type` (`project` or `global`) and `path`.
 
 Examples:
   settings_show

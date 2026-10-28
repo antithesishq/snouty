@@ -427,7 +427,7 @@ impl SettingsBuilder {
 /// The project settings file that the user named: the `--settings` flag
 /// (`flag`), otherwise `SNOUTY_SETTINGS_PATH`. An empty `SNOUTY_SETTINGS_PATH`
 /// is unset; it would otherwise name an empty path that must, and cannot, exist.
-pub fn explicit_settings_path(flag: Option<PathBuf>) -> Result<Option<PathBuf>> {
+fn explicit_settings_path(flag: Option<PathBuf>) -> Result<Option<PathBuf>> {
     match flag {
         Some(path) => Ok(Some(path)),
         None => Ok(env::var(SNOUTY_SETTINGS_PATH_VAR_NAME)?.map(PathBuf::from)),

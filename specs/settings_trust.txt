@@ -107,16 +107,16 @@ stderr 'not found'
 ! snouty settings deny sub
 stderr 'is not a settings file'
 
-# 12. `settings trust` and `settings deny` refuse --settings and
-#     SNOUTY_SETTINGS_PATH, which name a file that is trusted already.
-! snouty --settings chosen.toml settings trust
-stderr 'ignore --settings'
-! snouty --settings chosen.toml settings deny
-stderr 'ignore --settings'
+# 12. `settings trust` and `settings deny` act on ./.snouty.toml or the path
+#     given, whatever --settings or SNOUTY_SETTINGS_PATH names.
 env SNOUTY_SETTINGS_PATH=chosen.toml
-! snouty settings trust
-stderr 'SNOUTY_SETTINGS_PATH'
+snouty settings trust sub/.snouty.toml
+stderr 'Trusted .*sub/\.snouty\.toml'
 env SNOUTY_SETTINGS_PATH=
+cd sub
+snouty settings show
+stdout 'tenant +sub-tenant'
+cd .
 
 # 13. A bad SNOUTY_SETTINGS_TRUST value fails also where no project file exists.
 cd empty

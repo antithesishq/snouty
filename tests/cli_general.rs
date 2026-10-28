@@ -161,6 +161,53 @@ fn launch_without_source_sets_ephemeral() {
 }
 
 #[test]
+fn launch_without_source_keeps_user_ephemeral_param() {
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args([
+            "launch",
+            "--launcher",
+            "basic_test",
+            "--config-image",
+            "config:latest",
+            "--duration",
+            "30",
+            "--param",
+            "antithesis.is_ephemeral=false",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            r#""antithesis.is_ephemeral": "false""#,
+        ))
+        .stderr(predicate::str::contains(r#""antithesis.is_ephemeral": "true""#).not())
+        .stderr(predicate::str::contains("Starting an ephemeral run").not());
+}
+
+#[test]
+fn launch_with_source_param_omits_ephemeral() {
+    let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
+
+    snouty_with_mock(&mock_url)
+        .args([
+            "launch",
+            "--launcher",
+            "basic_test",
+            "--config-image",
+            "config:latest",
+            "--duration",
+            "30",
+            "--param",
+            "antithesis.source=ci",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("is_ephemeral").not())
+        .stderr(predicate::str::contains("Starting an ephemeral run").not());
+}
+
+#[test]
 fn launch_with_source_omits_ephemeral() {
     let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 

@@ -221,12 +221,9 @@ async fn cmd_launch(
         // The API wants a bare minute count, not the human `1h30m` Display form.
         params.insert(ANT_DURATION, duration.minutes().to_string());
     }
-    let has_source = if let Some(source) = args.source {
+    if let Some(source) = args.source {
         params.insert(ANT_SOURCE, source);
-        true
-    } else {
-        false
-    };
+    }
     if args.ephemeral {
         params.insert(ANT_IS_EPHEMERAL, "true");
     }
@@ -337,15 +334,14 @@ async fn cmd_launch(
         );
     }
 
-    // No --source means the run is ephemeral. Set the flag and tell the user
-    // now — after validation and the config image build have succeeded — so the
-    // notice lands right before the run is sent rather than ahead of work that
-    // might still fail.
-    if !has_source {
+    // A run with no source is ephemeral, unless the user set is_ephemeral
+    // themselves. 
+    if !params.contains_key(ANT_SOURCE) && !params.contains_key(ANT_IS_EPHEMERAL) {
         params.insert(ANT_IS_EPHEMERAL, "true");
         eprintln!(
             "Starting an ephemeral run; its findings will not be retained as historic \
-             results. Pass --source to record property history across runs."
+             results. Pass --source to record property history across runs, or \
+             --param antithesis.is_ephemeral=false to opt out."
         );
     }
 

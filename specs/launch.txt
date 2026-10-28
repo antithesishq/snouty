@@ -203,6 +203,23 @@ snouty launch --launcher basic_test --config-image config:latest --duration 30 -
 ! stderr 'is_ephemeral.*'
 ! stderr 'Starting an ephemeral run.*'
 
+# 6c2b. A run without --source is ephemeral by default (6c). To opt out, pass
+#    --param antithesis.is_ephemeral=false: snouty sends it as given and shows
+#    no ephemeral message.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --param antithesis.is_ephemeral=false
+stderr '"antithesis.is_ephemeral": "false"'
+! stderr '"antithesis.is_ephemeral": "true"'
+! stderr 'Starting an ephemeral run.*'
+
+# 6c2c. A source passed through --param counts as a source, so the run is not
+#    made ephemeral.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --duration 30 --param antithesis.source=ci-pipeline
+stderr '"antithesis.source": "ci-pipeline"'
+! stderr 'is_ephemeral.*'
+! stderr 'Starting an ephemeral run.*'
+
 # 6c3. --duration accepts h/m unit suffixes, normalized to bare minutes for the
 #    API (1h30m -> 90).
 mock-server 200 '{"message":"Success","runId":"run-123"}'

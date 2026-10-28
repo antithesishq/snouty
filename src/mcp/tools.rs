@@ -116,6 +116,7 @@ tools! {
     DocsShow => "docs_show", Reads, hidden: [], required: [];
     DocsSearch => "docs_search", Reads, hidden: [], required: [];
     Doctor => "doctor", Reads, hidden: [], required: [];
+    SettingsShow => "settings_show", Reads, hidden: [], required: [];
 }
 
 impl FromStr for ToolName {

@@ -92,6 +92,7 @@ async fn tools_run_their_commands_in_json_mode() {
             "docs_show",
             "docs_search",
             "doctor",
+            "settings_show",
             "tool_help",
         ]
     );
@@ -106,6 +107,13 @@ async fn tools_run_their_commands_in_json_mode() {
         .collect();
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[0]["run_id"], "run-1");
+
+    // settings_show returns the resolved settings, which doctor no longer
+    // reports.
+    let result = call(&client, "settings_show", json!({})).await;
+    assert_eq!(result.is_error, Some(false), "{}", text(&result));
+    let shown: Value = serde_json::from_str(text(&result)).unwrap();
+    assert!(shown["settings"]["base_url"].is_string(), "{shown}");
 
     // A command that fails marks the result isError, with its error text.
     let result = call(&client, "runs_show", json!({ "run_id": "no-such-run" })).await;

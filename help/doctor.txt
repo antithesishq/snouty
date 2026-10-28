@@ -1,6 +1,6 @@
 Check environment configuration
 
-Verifies that your environment is properly configured for Antithesis testing. Runs health checks — container runtime, docker compose, your credentials ({% if cli %}stored by `snouty login`, or {% endif %}set in the ANTITHESIS_* environment variables), and API connectivity.{% if cli %} To see the settings that snouty resolved, run `{{ t("settings show")? }}`.{% endif %}
+Verifies that your environment is properly configured for Antithesis testing. Runs health checks — container runtime, docker compose, your credentials ({% if cli %}stored by `snouty login`, or {% endif %}set in the ANTITHESIS_* environment variables), and API connectivity. To see the settings that snouty resolved, run `{{ t("settings show")? }}`.
 
 snouty prefers an API key (full API access); a username and password is deprecated auth, accepted only by {% if cli %}`snouty launch` and {% endif %}`{{ t("snouty debug")? }}`.
 

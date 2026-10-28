@@ -243,7 +243,7 @@ pub enum Commands {
         repository: Option<String>,
     },
 
-    /// Serve snouty's run, docs and doctor commands to AI agents over MCP
+    /// Serve snouty's run, docs, doctor and settings commands to AI agents over MCP
     #[command(
         hide = !features::is_enabled(Feature::Mcp)
     )]

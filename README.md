@@ -193,7 +193,7 @@ An id that snouty does not know, such as the retired `runs-exec`, has no effect.
 
 ## MCP server
 
-`snouty mcp` serves snouty's run, docs, and doctor commands to AI agents as [Model Context Protocol](https://modelcontextprotocol.io) tools, over the stdio transport. It is an unstable feature: set `SNOUTY_UNSTABLE_FEATURES=mcp` to turn it on. The agent starts the server itself. For example, in Claude Code:
+`snouty mcp` serves snouty's run, docs, doctor, and `settings show` commands to AI agents as [Model Context Protocol](https://modelcontextprotocol.io) tools, over the stdio transport. It is an unstable feature: set `SNOUTY_UNSTABLE_FEATURES=mcp` to turn it on. The agent starts the server itself. For example, in Claude Code:
 
 ```sh
 claude mcp add snouty -e SNOUTY_UNSTABLE_FEATURES=mcp -- snouty mcp
@@ -213,7 +213,7 @@ A JSON config for a stdio server looks like this one. The key names can be diffe
 }
 ```
 
-The tools are `runs_list`, `runs_show`, `runs_wait`, `runs_properties`, `runs_property`, `runs_build_logs`, `runs_logs`, `runs_search`, `runs_usage`, `runs_exec`, `debug`, `docs_tree`, `docs_show`, `docs_search`, and `doctor`. Each tool runs its snouty command with `--json` and returns what the command prints: stdout, then stderr in a second block when there is any. The params of a tool are the arguments of its command, by name: `runs_logs` takes `run_id`, `input_hash`, `vtime`, and `begin_vtime`. A few arguments that open a browser, stream with no end, or print human output only are left out. A command that fails marks the result `isError`. One more tool, `tool_help`, returns a tool's full help: its command's `--help` page, rendered for MCP, so that it names each arg by param name and describes the JSON output.
+The tools are `runs_list`, `runs_show`, `runs_wait`, `runs_properties`, `runs_property`, `runs_build_logs`, `runs_logs`, `runs_search`, `runs_usage`, `runs_exec`, `debug`, `docs_tree`, `docs_show`, `docs_search`, `doctor`, and `settings_show`. Each tool runs its snouty command with `--json` and returns what the command prints: stdout, then stderr in a second block when there is any. The params of a tool are the arguments of its command, by name: `runs_logs` takes `run_id`, `input_hash`, `vtime`, and `begin_vtime`. A few arguments that open a browser, stream with no end, or print human output only are left out. A command that fails marks the result `isError`. One more tool, `tool_help`, returns a tool's full help: its command's `--help` page, rendered for MCP, so that it names each arg by param name and describes the JSON output.
 
 All tools but `debug` are marked read-only. `debug` starts a debugging session, which uses your tenant's resources. `runs_exec` runs a bash script from the client in a branch of a run that is in progress, and cannot change the run. `doctor` runs the local container runtime to check it.
 

@@ -1,7 +1,7 @@
 ---
 source: tests/help_snapshots.rs
 ---
-Serve snouty's run, docs and doctor commands to AI agents over MCP
+Serve snouty's run, docs, doctor and settings commands to AI agents over MCP
 
 This command is gated behind the `mcp` unstable feature, because its tools and
 their output can still change. Enable it by setting
@@ -29,6 +29,7 @@ The tools:
   docs_show        Show full contents of a documentation page
   docs_search      Search the documentation
   doctor           Check environment configuration
+  settings_show    Print the settings that snouty resolved
   tool_help        Return the full help of a tool
 
 Each tool runs its snouty command in JSON mode and returns what the command

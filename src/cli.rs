@@ -229,9 +229,9 @@ pub enum Commands {
     },
 
     /// Show snouty's settings, and trust or deny a project settings file
-    Config {
+    Settings {
         #[command(subcommand)]
-        command: ConfigCommands,
+        command: SettingsCommands,
     },
 
     /// Sign in and store your snouty configuration
@@ -278,7 +278,7 @@ pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Re
         | Commands::Version
         | Commands::Update(_)
         | Commands::Doctor(_)
-        | Commands::Config { .. }
+        | Commands::Settings { .. }
         | Commands::Login { .. } => return None,
     };
     if enabled.contains(&feature) {
@@ -330,19 +330,19 @@ fn validate_non_empty(value: &str) -> Result<String, String> {
 }
 
 #[derive(Subcommand)]
-pub enum ConfigCommands {
+pub enum SettingsCommands {
     /// Print the settings that snouty resolved
     Show,
 
     /// Use a project settings file while its content stays the same
-    Trust(ConfigFileArgs),
+    Trust(SettingsFileArgs),
 
     /// Ignore a project settings file
-    Deny(ConfigFileArgs),
+    Deny(SettingsFileArgs),
 }
 
 #[derive(Args)]
-pub struct ConfigFileArgs {
+pub struct SettingsFileArgs {
     /// The project settings file
     #[arg(default_value = crate::settings::PROJECT_SETTINGS_FILENAME)]
     pub path: std::path::PathBuf,

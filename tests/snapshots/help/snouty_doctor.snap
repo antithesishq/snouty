@@ -6,8 +6,7 @@ Check environment configuration
 Verifies that your environment is properly configured for Antithesis testing.
 Runs health checks — container runtime, docker compose, your credentials (stored
 by `snouty login`, or set in the ANTITHESIS_* environment variables), and API
-connectivity — then prints the resolved settings (tenant, repository, container
-engine) so you can confirm what snouty will use.
+connectivity. To see the settings that snouty resolved, run `settings show`.
 
 snouty prefers an API key (full API access); a username and password is
 deprecated auth, accepted only by `snouty launch` and `snouty debug`.
@@ -21,7 +20,7 @@ machine-readable report (e.g. to gate CI).
 
 Examples:
   snouty doctor
-  snouty doctor --json | jq -r .settings.tenant
+  snouty doctor --json | jq .ok
   snouty doctor --offline
 
 Usage: snouty doctor [OPTIONS]

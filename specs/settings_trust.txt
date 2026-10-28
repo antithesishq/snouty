@@ -1,0 +1,149 @@
+# Project settings file trust
+#
+# A project settings file (./.snouty.toml) can set base_url and https_proxy,
+# which decide where snouty sends the user's credentials. A cloned repository
+# can ship one. So snouty uses a project file only after the user trusts it
+# with `snouty settings trust`, and asks again when its content changes.
+# `snouty settings deny` makes snouty ignore the file. A file named with
+# --settings or SNOUTY_SETTINGS_PATH is trusted, because the user chose it.
+#
+# Pin the config dir, so that the trust record stays the same after a `cd`.
+set-env XDG_CONFIG_HOME ${WORK}/config
+
+# 1. An untrusted project file stops every command that reads settings. The
+#    error names the file and each way to continue.
+! snouty settings show
+stderr 'is not trusted'
+stderr '\.snouty\.toml'
+stderr 'snouty settings trust'
+stderr 'snouty settings deny'
+stderr 'SNOUTY_SETTINGS_TRUST=all'
+! stdout .
+! snouty doctor --offline
+stderr 'is not trusted'
+
+# 2. SNOUTY_SETTINGS_TRUST=all skips the check, and records nothing.
+env SNOUTY_SETTINGS_TRUST=all
+snouty settings show
+stdout 'tenant +acme'
+stdout '^project file +.*\.snouty\.toml \(SNOUTY_SETTINGS_TRUST=all\)$'
+env SNOUTY_SETTINGS_TRUST=
+! snouty settings show
+stderr 'is not trusted'
+
+# 3. Any other SNOUTY_SETTINGS_TRUST value is an error.
+env SNOUTY_SETTINGS_TRUST=yes
+! snouty settings show
+stderr 'SNOUTY_SETTINGS_TRUST'
+stderr '`all`'
+env SNOUTY_SETTINGS_TRUST=
+
+# 4. `settings trust` trusts ./.snouty.toml, and snouty then uses it.
+snouty settings trust
+stderr 'Trusted .*\.snouty\.toml'
+snouty settings show
+stdout 'tenant +acme'
+stdout 'base_url +https://acme\.antithesis\.com'
+stdout '^project file +/.*/\.snouty\.toml \(trusted\)$'
+snouty settings show --json
+stdout '"source": "trusted"'
+
+# 5. A trusted file whose content changes is not trusted any more.
+cp evil.toml .snouty.toml
+! snouty settings show
+stderr 'changed since you trusted it'
+stderr 'snouty settings trust'
+snouty settings trust
+snouty settings show
+stdout 'base_url +https://evil\.example\.com'
+
+# 6. `settings deny` makes snouty ignore the file, also after it changes.
+snouty settings deny
+stderr 'Denied .*\.snouty\.toml'
+snouty settings show
+stdout 'tenant +not set'
+stdout '^project file +.*\.snouty\.toml \(denied, ignored\)$'
+cp acme.toml .snouty.toml
+snouty settings show
+stdout 'tenant +not set'
+
+# 7. `settings trust` after `settings deny` uses the file again.
+snouty settings trust
+snouty settings show
+stdout 'tenant +acme'
+
+# 8. `settings trust` and `settings deny` take an explicit path.
+cd sub
+! snouty settings show
+stderr 'is not trusted'
+cd .
+snouty settings trust sub/.snouty.toml
+cd sub
+snouty settings show
+stdout 'tenant +sub-tenant'
+cd .
+snouty settings deny sub/.snouty.toml
+cd sub
+snouty settings show
+stdout 'tenant +not set'
+cd .
+
+# 9. A file named with --settings or SNOUTY_SETTINGS_PATH needs no trust.
+snouty --settings chosen.toml settings show
+stdout 'tenant +chosen-tenant'
+stdout '^project file +/.*/chosen\.toml \(--settings\)$'
+env SNOUTY_SETTINGS_PATH=chosen.toml
+snouty settings show
+stdout 'tenant +chosen-tenant'
+stdout '^project file +/.*/chosen\.toml \(SNOUTY_SETTINGS_PATH\)$'
+env SNOUTY_SETTINGS_PATH=
+
+# 10. `settings trust` fails for a file that does not exist.
+! snouty settings trust missing.toml
+stderr 'missing\.toml'
+stderr 'not found'
+
+# 11. `settings deny` refuses a path that is not a file.
+! snouty settings deny sub
+stderr 'is not a settings file'
+
+# 12. `settings trust` and `settings deny` refuse --settings and
+#     SNOUTY_SETTINGS_PATH, which name a file that is trusted already.
+! snouty --settings chosen.toml settings trust
+stderr 'ignore --settings'
+! snouty --settings chosen.toml settings deny
+stderr 'ignore --settings'
+env SNOUTY_SETTINGS_PATH=chosen.toml
+! snouty settings trust
+stderr 'SNOUTY_SETTINGS_PATH'
+env SNOUTY_SETTINGS_PATH=
+
+# 13. A bad SNOUTY_SETTINGS_TRUST value fails also where no project file exists.
+cd empty
+env SNOUTY_SETTINGS_TRUST=yes
+! snouty settings show
+stderr 'SNOUTY_SETTINGS_TRUST'
+env SNOUTY_SETTINGS_TRUST=
+cd .
+
+# 14. An invalid trust file is an error that tells how to recover.
+cp broken-trust.toml config/snouty/trust.toml
+! snouty settings show
+stderr 'trust file .* is not valid'
+stderr 'Delete the file'
+
+-- .snouty.toml --
+tenant = "acme"
+-- acme.toml --
+tenant = "acme"
+-- evil.toml --
+tenant = "acme"
+base_url = "https://evil.example.com"
+-- chosen.toml --
+tenant = "chosen-tenant"
+-- empty/.keep --
+-- broken-trust.toml --
+[files."/x"]
+decision = "maybe"
+-- sub/.snouty.toml --
+tenant = "sub-tenant"

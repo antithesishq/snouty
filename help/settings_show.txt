@@ -1,0 +1,12 @@
+Print the settings that snouty resolved
+
+Prints each setting with the value that snouty resolved for it. For each setting, snouty uses the first value that it finds: the environment variable, the selected profile in the project settings file, the selected profile in the global settings file, the top-level value in the project settings file, then the top-level value in the global settings file.
+
+Then it names each settings file that exists. For the project settings file, it says why snouty reads it: you trust it, you named it with {{ t("--settings")? }} or SNOUTY_SETTINGS_PATH, or SNOUTY_SETTINGS_TRUST=all is set. A file that you denied is named too, and marked as ignored.
+
+Pass {{ t("--json")? }} to print one JSON object. `settings` holds each setting, with null for a setting that is not set and has no default. `files` holds the project file's `path` and `source`, and the global file's path; each is null when its file does not exist.
+
+Examples:
+  {{ t("snouty settings show")? }}
+  {{ t("snouty --profile staging settings show")? }}
+  {{ t("snouty settings show --json | jq -r .settings.tenant")? }}

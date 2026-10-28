@@ -9,15 +9,22 @@ the selected profile in the project settings file, the selected profile in the
 global settings file, the top-level value in the project settings file, then the
 top-level value in the global settings file.
 
-Pass --json to print one JSON object, keyed by setting, with null for a setting
-that is not set and has no default.
+Then it names each settings file that exists. For the project settings file, it
+says why snouty reads it: you trust it, you named it with --settings or
+SNOUTY_SETTINGS_PATH, or SNOUTY_SETTINGS_TRUST=all is set. A file that you
+denied is named too, and marked as ignored.
+
+Pass --json to print one JSON object. `settings` holds each setting, with null
+for a setting that is not set and has no default. `files` holds the project
+file's `path` and `source`, and the global file's path; each is null when its
+file does not exist.
 
 Examples:
-  snouty config show
-  snouty --profile staging config show
-  snouty config show --json | jq -r .tenant
+  snouty settings show
+  snouty --profile staging settings show
+  snouty settings show --json | jq -r .settings.tenant
 
-Usage: snouty config show [OPTIONS]
+Usage: snouty settings show [OPTIONS]
 
 Options:
   -h, --help

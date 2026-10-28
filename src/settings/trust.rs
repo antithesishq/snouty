@@ -20,15 +20,16 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{
-    NO_GLOBAL_SETTINGS_DIR, global_settings_dir, read_to_string_if_file_exists, write_global_toml,
+    NO_GLOBAL_SETTINGS_DIR, ProjectFileSource, global_settings_dir, read_to_string_if_file_exists,
+    write_global_toml,
 };
 use crate::env;
 use crate::error::user_error;
 
-pub const CONFIG_TRUST_VAR_NAME: &str = "SNOUTY_CONFIG_TRUST";
+pub const SETTINGS_TRUST_VAR_NAME: &str = "SNOUTY_SETTINGS_TRUST";
 const TRUST_FILENAME: &str = "trust.toml";
 
-/// The values of `SNOUTY_CONFIG_TRUST`.
+/// The values of `SNOUTY_SETTINGS_TRUST`.
 #[derive(Clone, Copy)]
 pub(super) enum TrustOverride {
     /// Use every project settings file, as if the user trusted it.
@@ -42,7 +43,7 @@ impl FromStr for TrustOverride {
         match value {
             "all" => Ok(Self::All),
             _ => Err(user_error(format!(
-                "invalid {CONFIG_TRUST_VAR_NAME} value `{value}`: expected `all`"
+                "invalid {SETTINGS_TRUST_VAR_NAME} value `{value}`: expected `all`"
             ))),
         }
     }
@@ -76,7 +77,7 @@ impl TrustStore {
                 ))
                 .suggestion(format!(
                     "Delete the file, then trust or deny your project settings files again. \
-                         To skip the check, set {CONFIG_TRUST_VAR_NAME}=all."
+                         To skip the check, set {SETTINGS_TRUST_VAR_NAME}=all."
                 ))
             }),
             None => Ok(Self::default()),
@@ -84,31 +85,27 @@ impl TrustStore {
     }
 }
 
-/// What snouty does with a project settings file that it may use.
-pub(super) enum Verdict {
-    Use,
-    Ignore,
-}
-
 impl TrustOverride {
-    /// `None` when `SNOUTY_CONFIG_TRUST` is not set.
+    /// `None` when `SNOUTY_SETTINGS_TRUST` is not set.
     pub(super) fn from_env() -> Result<Option<Self>> {
-        env::var(CONFIG_TRUST_VAR_NAME)?
+        env::var(SETTINGS_TRUST_VAR_NAME)?
             .map(|value| value.parse())
             .transpose()
     }
 }
 
 /// The verdict for the project settings file at `path`, whose content is
-/// `contents`. A file that the user has not trusted, or that changed since the
-/// user trusted it, is an error that tells how to decide.
+/// `contents`: [`ProjectFileSource::Trusted`], [`ProjectFileSource::TrustAll`]
+/// or [`ProjectFileSource::Denied`]. A file that the user has not trusted, or
+/// that changed since the user trusted it, is an error that tells how to
+/// decide.
 pub(super) fn verdict(
     path: &Path,
     contents: &[u8],
     trust_override: Option<TrustOverride>,
-) -> Result<Verdict> {
+) -> Result<ProjectFileSource> {
     if let Some(TrustOverride::All) = trust_override {
-        return Ok(Verdict::Use);
+        return Ok(ProjectFileSource::TrustAll);
     }
     let path = canonicalize(path)?;
     let Some(dir) = global_settings_dir() else {
@@ -117,12 +114,14 @@ pub(super) fn verdict(
             path.display()
         ))
         .suggestion(format!(
-            "Set $XDG_CONFIG_HOME or $HOME. To skip the check, set {CONFIG_TRUST_VAR_NAME}=all."
+            "Set $XDG_CONFIG_HOME or $HOME. To skip the check, set {SETTINGS_TRUST_VAR_NAME}=all."
         )));
     };
     match TrustStore::load(&dir)?.files.get(&path) {
-        Some(Decision::Deny) => Ok(Verdict::Ignore),
-        Some(Decision::Trust { sha256 }) if *sha256 == digest(contents) => Ok(Verdict::Use),
+        Some(Decision::Deny) => Ok(ProjectFileSource::Denied),
+        Some(Decision::Trust { sha256 }) if *sha256 == digest(contents) => {
+            Ok(ProjectFileSource::Trusted)
+        }
         Some(Decision::Trust { .. }) => Err(untrusted(&path, "changed since you trusted it")),
         None => Err(untrusted(&path, "is not trusted")),
     }
@@ -132,8 +131,8 @@ fn untrusted(path: &Path, problem: &str) -> Report {
     user_error(format!("the settings file {} {problem}", path.display()))
         .note("A project settings file can set where snouty sends your credentials.")
         .suggestion(format!(
-            "Review the file. Then run `snouty config trust` to use it, or `snouty config deny` \
-             to ignore it. To skip this check, for example in CI, set {CONFIG_TRUST_VAR_NAME}=all."
+            "Review the file. Then run `snouty settings trust` to use it, or `snouty settings deny` \
+             to ignore it. To skip this check, for example in CI, set {SETTINGS_TRUST_VAR_NAME}=all."
         ))
 }
 

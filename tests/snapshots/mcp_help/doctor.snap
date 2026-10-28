@@ -3,7 +3,7 @@ source: tests/help_snapshots.rs
 ---
 Check environment configuration
 
-Verifies that your environment is properly configured for Antithesis testing. Runs health checks — container runtime, docker compose, your credentials (set in the ANTITHESIS_* environment variables), and API connectivity — then prints the resolved settings (tenant, repository, container engine) so you can confirm what snouty will use.
+Verifies that your environment is properly configured for Antithesis testing. Runs health checks — container runtime, docker compose, your credentials (set in the ANTITHESIS_* environment variables), and API connectivity.
 
 snouty prefers an API key (full API access); a username and password is deprecated auth, accepted only by `debug`.
 

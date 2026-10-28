@@ -18,23 +18,25 @@ env SNOUTY_UNSTABLE_FEATURES=from-the-future,runs-exec
 ! snouty runs exec run-1 -123 1.0 'uname -a'
 stderr 'No Antithesis credentials found.*'
 
-# 2. `snouty doctor` omits unknown ids. Both ids listed here are unknown, so
-#    the row does not print. doctor exits non-zero here (no
-#    credentials or container runtime), but the table still prints.
+# 2. `snouty settings show` omits unknown ids. Both ids listed here are
+#    unknown, so the row does not print.
 env SNOUTY_UNSTABLE_FEATURES=runs-search,runs-exec
-! snouty doctor
-stderr '^\s*update_channel\s'
-! stderr '^\s*features\s'
+snouty settings show
+stdout '^\s*update_channel\s'
+! stdout '^\s*features\s'
+snouty settings show --json
+! stdout '"features"'
+! stdout 'runs-search|runs-exec'
 
-# 3. An empty value counts as unset, so doctor omits the row.
+# 3. An empty value counts as unset, so the row does not print.
 env SNOUTY_UNSTABLE_FEATURES=
-! snouty doctor
-! stderr 'features.*'
+snouty settings show
+! stdout 'features.*'
 
 # 4. A settings file cannot enable a feature: snouty ignores the `features`
 #    key like any unknown key.
-! snouty --settings features.toml doctor
-! stderr 'features.*'
+snouty --settings features.toml settings show
+! stdout '^features'
 
 -- features.toml --
 features = ["runs-exec"]

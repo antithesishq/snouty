@@ -86,10 +86,10 @@ help_pages! {
     Update => "update.txt", ["update"];
     Docs => "docs.txt", ["docs"];
     Login => "login.txt", ["login"];
-    Config => "config.txt", ["config"];
-    ConfigShow => "config_show.txt", ["config", "show"];
-    ConfigTrust => "config_trust.txt", ["config", "trust"];
-    ConfigDeny => "config_deny.txt", ["config", "deny"];
+    Settings => "settings.txt", ["settings"];
+    SettingsShow => "settings_show.txt", ["settings", "show"];
+    SettingsTrust => "settings_trust.txt", ["settings", "trust"];
+    SettingsDeny => "settings_deny.txt", ["settings", "deny"];
     Mcp => "mcp.txt", ["mcp"];
     DocsSearch => "docs_search.txt", ["docs", "search"];
     DocsTree => "docs_tree.txt", ["docs", "tree"];

@@ -10,7 +10,7 @@
 
 # The project file is used only once the user trusts it (see
 # config_trust.txt).
-snouty config trust
+snouty settings trust
 
 # A tenant with a path separator would mangle the derived host; reject it.
 ! snouty doctor

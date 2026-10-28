@@ -453,15 +453,12 @@ class LaunchGuard:
 
     @classmethod
     def for_tenant(cls, sn: Snouty) -> LaunchGuard:
-        """A guard in front of the tenant that snouty's settings name. Doctor
-        exits non-zero when some check fails, but it still reports the settings."""
-        doctor = sn.run(["--json", "doctor", "--offline"])
-        settings = json.loads(doctor.stdout).get("settings") or {}
-        upstream = os.environ.get("ANTITHESIS_BASE_URL")
+        """A guard in front of the base URL that snouty's settings name."""
+        shown = sn.run(["--json", "settings", "show"])
+        settings = json.loads(shown.stdout).get("settings") or {}
+        upstream = settings.get("base_url")
         if not upstream:
-            if not settings.get("tenant"):
-                raise GalleryError("no tenant or ANTITHESIS_BASE_URL is set")
-            upstream = f"https://{settings['tenant']}.antithesis.com"
+            raise GalleryError("no tenant or ANTITHESIS_BASE_URL is set")
         return cls(upstream, settings.get("https_proxy"))
 
     def close(self) -> None:
@@ -3296,30 +3293,33 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
         ),
         # -- config ---------------------------------------------------------
         Story(
-            "config-show",
+            "settings-show",
             "See the settings snouty will use",
             "I want to see each setting that snouty resolved from my environment and "
             "settings files, before I run a command against my tenant.",
-            "config show prints one aligned row per setting, with `not set` (or the default) "
-            "for a setting that is not configured, and the help says where each value comes from.",
-            ["config", "show"],
-            contains_all("tenant", "base_url", "update_channel"),
+            "settings show prints one aligned row per setting, with `not set` (or the default) "
+            "for a setting that is not configured, then names the project and global settings "
+            "files it read.",
+            ["settings", "show"],
+            contains_all(
+                "tenant", "base_url", "update_channel", "project file", "global file"
+            ),
             json_capable=False,
         ),
         Story(
-            "config-untrusted",
+            "settings-untrusted",
             "A cloned repository ships a settings file",
             "I cloned a repository that contains a .snouty.toml, and I ran snouty in it for "
             "the first time.",
             "snouty stops before it reads the file, names the file, says why it matters (it can "
             "send my credentials elsewhere), and tells me how to trust it, deny it, or skip the "
             "check in CI.",
-            ["config", "show"],
+            ["settings", "show"],
             fails_with(
                 "is not trusted",
-                "snouty config trust",
-                "snouty config deny",
-                "SNOUTY_CONFIG_TRUST=all",
+                "snouty settings trust",
+                "snouty settings deny",
+                "SNOUTY_SETTINGS_TRUST=all",
             ),
             json_capable=False,
             expect_ok=False,
@@ -4053,27 +4053,27 @@ def build_help_stories(d: Discovery) -> list[Story]:
             ["mcp"],
         ),
         _help_story(
-            "help-config",
-            "Understand the config command group",
-            "I run `snouty config --help` to learn why snouty asks me to trust a "
+            "help-settings",
+            "Understand the settings command group",
+            "I run `snouty settings --help` to learn why snouty asks me to trust a "
             "settings file, and how to see what snouty resolved.",
-            ["config"],
+            ["settings"],
         ),
         _help_story(
-            "help-config-show",
+            "help-settings-show",
             "Learn where my settings come from",
-            "I run `snouty config show --help` to learn which value wins when a setting "
+            "I run `snouty settings show --help` to learn which value wins when a setting "
             "is set in more than one place.",
-            ["config", "show"],
-            ["config", "show"],
+            ["settings", "show"],
+            ["settings", "show"],
         ),
-        # Help-only: `config trust` and `config deny` write the trust record.
+        # Help-only: `settings trust` and `settings deny` write the trust record.
         _help_story(
-            "help-config-trust",
+            "help-settings-trust",
             "Learn what trusting a settings file does",
-            "I run `snouty config trust --help` before I trust a file that came with a "
+            "I run `snouty settings trust --help` before I trust a file that came with a "
             "repository.",
-            ["config", "trust"],
+            ["settings", "trust"],
         ),
         # -- docs (help-only: output depends on a downloaded docs DB) --------
         _help_story(
@@ -4925,7 +4925,7 @@ def _run_isolated_story(sn: Snouty, story: Story) -> StoryRun:
             "XDG_CONFIG_HOME": str(home / ".config"),
             # The operator's own settings file and trust override stay out too.
             "SNOUTY_SETTINGS_PATH": None,
-            "SNOUTY_CONFIG_TRUST": None,
+            "SNOUTY_SETTINGS_TRUST": None,
         }
         result = sn.run(story.args, env, cwd=home)
         return StoryRun(story, result, None)

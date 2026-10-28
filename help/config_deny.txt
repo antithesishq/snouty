@@ -1,7 +1,0 @@
-Ignore a project settings file
-
-Records that snouty must ignore the settings file at {{ t("path")? }}, also after its content changes. To use the file again, run `{{ t("config trust")? }}`.
-
-Examples:
-  {{ t("snouty config deny")? }}
-  {{ t("snouty config deny path/to/.snouty.toml")? }}

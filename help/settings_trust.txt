@@ -5,5 +5,5 @@ Records that you trust the settings file at {{ t("path")? }} with its current co
 snouty keeps the record in trust.toml, in the global settings directory.
 
 Examples:
-  {{ t("snouty config trust")? }}
-  {{ t("snouty config trust path/to/.snouty.toml")? }}
+  {{ t("snouty settings trust")? }}
+  {{ t("snouty settings trust path/to/.snouty.toml")? }}

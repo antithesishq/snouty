@@ -14,14 +14,14 @@
 # Everything below `[staging] skip` uses the local mock. The settings check
 # above it is offline, so it runs in both modes.
 
-# `snouty doctor` reports the resolved proxy, so a user can confirm the setting
-# takes effect. --offline makes no request, so the proxy target does not have to
-# exist. The credentials only get doctor past its own checks.
+# `snouty settings show` reports the resolved proxy, so a user can confirm the
+# setting takes effect. It makes no request, so the proxy target does not have
+# to exist.
 env ANTITHESIS_TENANT=testtenant
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 env ANTITHESIS_HTTPS_PROXY=http://127.0.0.1:9
-snouty doctor --offline
-stderr '\s*https_proxy\s*http://127\.0\.0\.1:9'
+snouty settings show
+stdout '^https_proxy\s+http://127\.0\.0\.1:9$'
 
 # Clear the proxy again, so the negative control below has no proxy. snouty
 # reads an empty environment variable as unset (see `env::interpret`).

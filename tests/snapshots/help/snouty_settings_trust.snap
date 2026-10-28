@@ -11,10 +11,10 @@ where snouty sends your credentials.
 snouty keeps the record in trust.toml, in the global settings directory.
 
 Examples:
-  snouty config trust
-  snouty config trust path/to/.snouty.toml
+  snouty settings trust
+  snouty settings trust path/to/.snouty.toml
 
-Usage: snouty config trust [OPTIONS] [PATH]
+Usage: snouty settings trust [OPTIONS] [PATH]
 
 Arguments:
   [PATH]

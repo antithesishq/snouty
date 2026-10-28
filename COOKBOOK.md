@@ -53,7 +53,7 @@ The fix is to copy each private image into your Antithesis repository and point
 the compose file at the copy:
 
 ```sh
-repo=$(snouty doctor --offline --json | jq -r .settings.repository)
+repo=$(snouty settings show --json | jq -r .settings.repository)
 
 for image in ghcr.io/your-org/app:v1 ghcr.io/your-org/worker:v1; do
   host=$(echo "${image%%/*}" | sed 's/:/__/')

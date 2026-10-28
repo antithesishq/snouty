@@ -1,6 +1,6 @@
 use color_eyre::eyre::Result;
 use log::debug;
-use serde::{Serialize, Serializer};
+use serde::Serialize;
 
 use crate::api::{
     AntithesisApi, ApiVersion, HttpClient, MIN_CANCEL_RELEASE, MIN_EXEC_RELEASE,
@@ -10,9 +10,8 @@ use crate::attributed_value::AttributedValue;
 use crate::auth::AuthenticationInfo;
 use crate::compose;
 use crate::container;
-use crate::features::{self, Feature};
 use crate::login::{CliOAuthConfig, fetch_cli_config};
-use crate::render::{OutputOptions, render_kv};
+use crate::render::OutputOptions;
 use crate::settings::Settings;
 
 /// Outcome of a single health check. Only `Error` fails doctor; `Warn` is
@@ -161,70 +160,16 @@ impl Check {
     }
 }
 
-/// One row of the resolved-settings table: a setting and the value snouty
-/// resolved for it. Purely informational — it carries no status; whether a value
-/// is required or optional is a [`Check`] concern.
-///
-/// `name` is `snake_case`: `--json` emits it as a key, so
-/// `jq .settings.https_proxy` needs no quoting. The human table prints the
-/// same string.
-struct Setting {
-    name: &'static str,
-    /// `None` when the setting is not configured. The human table prints a
-    /// stand-in word in its place, and `--json` prints `null`, so a script
-    /// tests the field instead of matching a sentence.
-    value: Option<String>,
-}
-
-/// The human table's stand-in for a setting that is not configured.
-const NOT_SET: &str = "not set";
-/// The same, for the profile: no profile means snouty uses the default one,
-/// not that a value is missing.
+/// What doctor prints for the profile when none is selected: no profile means
+/// snouty uses the default one, not that a value is missing.
 const DEFAULT_PROFILE: &str = "default";
 
-impl Setting {
-    /// A setting snouty resolved to a value.
-    fn new(name: &'static str, value: impl Into<String>) -> Self {
-        Self {
-            name,
-            value: Some(value.into()),
-        }
-    }
-
-    /// A setting that may not be configured.
-    fn maybe(name: &'static str, value: Option<impl Into<String>>) -> Self {
-        Self {
-            name,
-            value: value.map(Into::into),
-        }
-    }
-
-    /// What the human table prints for this setting. An unset one gets the
-    /// stand-in word that reads right for it: no profile means the default
-    /// profile, whereas no tenant means a gap the user has to fill.
-    fn render_value(&self) -> &str {
-        self.value.as_deref().unwrap_or(match self.name {
-            "profile" => DEFAULT_PROFILE,
-            _ => NOT_SET,
-        })
-    }
-}
-
-/// The full doctor report, as emitted by `--json`: the binary `checks` and the
-/// informational `settings` table snouty resolved.
+/// The full doctor report, as emitted by `--json`. The resolved settings
+/// are `settings show`'s job.
 #[derive(Serialize)]
 struct Report<'a> {
     ok: bool,
     checks: &'a [Check],
-    #[serde(serialize_with = "settings_as_map")]
-    settings: &'a [Setting],
-}
-
-/// Serialize the rows as a JSON object keyed by name, in resolution order, so
-/// a caller reads one value with `.settings.tenant`. An unset setting is
-/// `null`; the human sentinel stays in the human table.
-fn settings_as_map<S: Serializer>(settings: &&[Setting], serializer: S) -> Result<S::Ok, S::Error> {
-    serializer.collect_map(settings.iter().map(|s| (s.name, &s.value)))
 }
 
 /// The tenant is required by every command, so a missing one fails doctor.
@@ -524,8 +469,8 @@ fn enrich_with_origin<T>(check: Check, attribution: &AttributedValue<T>) -> Chec
 }
 
 /// Binary health checks: local tooling, the required settings
-/// (tenant/repository), and authentication. The resolved values themselves are
-/// reported separately by [`resolve_settings`].
+/// (tenant/repository), and authentication. `settings show` reports the
+/// resolved values themselves.
 fn collect_checks(settings: &Settings) -> Vec<Check> {
     let mut checks: Vec<Check> = Vec::new();
 
@@ -569,45 +514,6 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
     }
 
     checks
-}
-
-/// The resolved-settings table: the value snouty resolved for each setting and
-/// where it came from (env > profile > project/global file). Purely
-/// informational — required/optional semantics are reported by [`collect_checks`].
-fn resolve_settings(settings: &Settings, features: &[Feature]) -> Vec<Setting> {
-    let mut rows = vec![
-        Setting::maybe("profile", settings.profile()),
-        Setting::maybe("tenant", settings.tenant()),
-        Setting::maybe("repository", settings.repository()),
-        Setting::maybe("https_proxy", settings.https_proxy()),
-        // The explicit override, otherwise auto-detected.
-        Setting::new(
-            "container_engine",
-            settings.container_engine().unwrap_or("auto-detect"),
-        ),
-        Setting::new("update_channel", settings.update_channel().as_str()),
-    ];
-    // Only when a feature is on: an empty row would be noise on every
-    // ordinary run.
-    if !features.is_empty() {
-        let ids: Vec<String> = features.iter().map(Feature::to_string).collect();
-        rows.push(Setting::new("features", ids.join(", ")));
-    }
-    rows
-}
-
-/// Print the resolved-settings table, aligned via the shared [`render_kv`] helper
-/// (which also sanitizes the values). No status icons — the checks above own
-/// pass/warn/fail; this table just reports what snouty resolved, indented to sit
-/// under the "Resolved settings" heading.
-fn print_settings(settings: &[Setting]) {
-    let rows: Vec<(&str, String)> = settings
-        .iter()
-        .map(|s| (s.name, s.render_value().to_string()))
-        .collect();
-    for line in render_kv(&rows, 0).lines() {
-        eprintln!("  {line}");
-    }
 }
 
 /// An API that some commands assume the tenant serves, from a minimum tenant
@@ -790,8 +696,6 @@ pub async fn cmd_doctor(
         }
     }
 
-    let settings_rows = resolve_settings(settings, &features::enabled());
-
     // Only the checks carry pass/warn/fail; the settings table is informational.
     let errors = checks.iter().filter(|c| c.status == Status::Error).count();
     let warnings = checks.iter().filter(|c| c.status == Status::Warn).count();
@@ -800,7 +704,6 @@ pub async fn cmd_doctor(
         let report = Report {
             ok: errors == 0,
             checks: &checks,
-            settings: &settings_rows,
         };
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -809,8 +712,7 @@ pub async fn cmd_doctor(
             check.print();
         }
         eprintln!();
-        eprintln!("Resolved settings");
-        print_settings(&settings_rows);
+        eprintln!("Run `snouty settings show` to see your settings.");
         eprintln!();
 
         let wp = if warnings == 1 { "" } else { "s" };
@@ -843,7 +745,6 @@ pub async fn cmd_doctor(
 #[cfg(test)]
 mod tests {
     use crate::auth::{API_KEY_VAR_NAME, PASSWORD_VAR_NAME, USERNAME_VAR_NAME};
-    use crate::cli::UpdateChannel;
     use crate::testutils::fake_secrets::{FAKE_API_KEY_A, FAKE_PASSWORD};
 
     use super::*;
@@ -1169,80 +1070,6 @@ mod tests {
         assert!(check.notes.iter().any(|n| n.text.contains("snouty login")));
     }
 
-    // ---- resolved-settings table (informational, no status) ------------
-
-    fn row<'a>(rows: &'a [Setting], name: &str) -> &'a Setting {
-        rows.iter().find(|s| s.name == name).expect("row present")
-    }
-
-    #[test]
-    fn tenant_row_shows_value() {
-        let settings = Settings::builder().tenant("acme").build();
-        let rows = resolve_settings(&settings, &[]);
-        assert_eq!(row(&rows, "tenant").render_value(), "acme");
-    }
-
-    #[test]
-    fn missing_settings_render_as_not_set() {
-        let rows = resolve_settings(&Settings::default(), &[]);
-        assert_eq!(row(&rows, "tenant").render_value(), "not set");
-    }
-
-    #[test]
-    fn https_proxy_row_shows_value() {
-        let settings = Settings::builder()
-            .https_proxy("http://proxy.corp:8080")
-            .build();
-        let rows = resolve_settings(&settings, &[]);
-        assert_eq!(
-            row(&rows, "https_proxy").render_value(),
-            "http://proxy.corp:8080"
-        );
-    }
-
-    #[test]
-    fn https_proxy_row_defaults_to_not_set() {
-        let rows = resolve_settings(&Settings::default(), &[]);
-        assert_eq!(row(&rows, "https_proxy").render_value(), "not set");
-    }
-
-    #[test]
-    fn container_engine_row_auto_detects_when_unset() {
-        let settings = Settings::builder().tenant("acme").build();
-        let rows = resolve_settings(&settings, &[]);
-        assert_eq!(row(&rows, "container_engine").render_value(), "auto-detect");
-    }
-
-    #[test]
-    fn features_row_appears_only_when_a_feature_is_on() {
-        let rows = resolve_settings(&Settings::default(), &[]);
-        assert!(!rows.iter().any(|r| r.name == "features"));
-
-        let rows = resolve_settings(&Settings::default(), &[Feature::Example, Feature::Example]);
-        assert_eq!(row(&rows, "features").render_value(), "example, example");
-    }
-
-    #[test]
-    fn update_channel_row_defaults_to_stable() {
-        let rows = resolve_settings(&Settings::default(), &[]);
-        assert_eq!(row(&rows, "update_channel").render_value(), "stable");
-    }
-
-    #[test]
-    fn update_channel_row_shows_value() {
-        let settings = Settings::builder()
-            .update_channel(UpdateChannel::Unstable)
-            .build();
-        let rows = resolve_settings(&settings, &[]);
-        assert_eq!(row(&rows, "update_channel").render_value(), "unstable");
-    }
-
-    #[test]
-    fn profile_row_reflects_no_active_profile() {
-        let rows = resolve_settings(&Settings::default(), &[]);
-        assert_eq!(row(&rows, "profile").render_value(), "default");
-    }
-
     // ---- release_floor_check -------------------------------------------
 
     #[test]
@@ -1407,26 +1234,16 @@ mod tests {
     // ---- JSON report ----------------------------------------------------
 
     #[test]
-    fn json_report_carries_checks_and_informational_settings() {
+    fn json_report_carries_checks() {
         let checks = vec![missing_credentials_check("PANIC PANIC PANIC")];
-        let settings = vec![
-            Setting::new("tenant", "acme"),
-            Setting::maybe("https_proxy", None::<String>),
-        ];
         let report = Report {
             ok: false,
             checks: &checks,
-            settings: &settings,
         };
         let value = serde_json::to_value(&report).unwrap();
         assert_eq!(value["ok"], false);
         assert_eq!(value["checks"][0]["name"], "credentials");
         assert_eq!(value["checks"][0]["status"], "error");
         assert_eq!(value["checks"][0]["notes"][0]["level"], "error");
-        assert_eq!(value["settings"]["tenant"], "acme");
-        // An unset setting is JSON `null`, never the human sentinel — a script
-        // reading `.settings.https_proxy` must not see a truthy string.
-        assert!(value["settings"]["https_proxy"].is_null());
-        assert_eq!(value["settings"].as_object().unwrap().len(), 2);
     }
 }

@@ -4,13 +4,13 @@ source: tests/help_snapshots.rs
 Ignore a project settings file
 
 Records that snouty must ignore the settings file at PATH, also after its
-content changes. To use the file again, run `config trust`.
+content changes. To use the file again, run `settings trust`.
 
 Examples:
-  snouty config deny
-  snouty config deny path/to/.snouty.toml
+  snouty settings deny
+  snouty settings deny path/to/.snouty.toml
 
-Usage: snouty config deny [OPTIONS] [PATH]
+Usage: snouty settings deny [OPTIONS] [PATH]
 
 Arguments:
   [PATH]

@@ -1,11 +1,12 @@
-# snouty config show
+# snouty settings show
 #
 # Prints each setting with the value snouty resolved for it, one row each, on
-# stdout. --json prints the same as one JSON object, with null for a setting
-# that is not set.
+# stdout, then the settings files that exist. --json prints both as one JSON
+# object: `settings`, with null for a setting that is not set and has no
+# default, and `files`.
 
 # 1. With nothing configured, each setting prints its default or `not set`.
-snouty config show
+snouty settings show
 stdout '^profile +default$'
 stdout '^tenant +not set$'
 stdout '^repository +not set$'
@@ -15,13 +16,15 @@ stdout '^container_engine +auto-detect$'
 stdout '^update_channel +stable$'
 stdout '^api_cache_max_file_size +\d+$'
 stdout '^api_cache_respect_headers +true$'
+stdout '^project file +none$'
+stdout '^global file +none$'
 
 # 2. Values resolve through the usual chain. The base URL derives from the
 #    tenant.
 env ANTITHESIS_TENANT=acme
 env ANTITHESIS_HTTPS_PROXY=http://proxy.example.com:3128
 env SNOUTY_API_CACHE_MAX_FILE_SIZE=1000
-snouty --settings chosen.toml --profile staging config show
+snouty --settings chosen.toml --profile staging settings show
 stdout '^profile +staging$'
 stdout '^tenant +acme$'
 stdout '^repository +registry\.example\.com/staging$'
@@ -29,14 +32,28 @@ stdout '^base_url +https://acme\.antithesis\.com$'
 stdout '^https_proxy +http://proxy\.example\.com:3128$'
 stdout '^api_cache_max_file_size +1000$'
 
-# 3. --json prints one object, keyed by setting.
-snouty --json config show
+# 3. The human output names each settings file that exists, and why snouty
+#    read it.
+stdout '^project file +/.*/chosen\.toml \(--settings\)$'
+stdout '^global file +none$'
+set-env XDG_CONFIG_HOME ${WORK}/cfg
+snouty settings show
+stdout '^global file +/.*/cfg/snouty/settings\.toml$'
+stdout '^project file +none$'
+
+# 4. --json prints the settings, keyed by setting, and the files.
+snouty --json --settings chosen.toml settings show
+stdout '"settings": \{'
 stdout '"tenant": "acme"'
-stdout '"repository": null'
+stdout '"repository": "global-repo"'
 stdout '"profile": null'
 stdout '"api_cache_max_file_size": 1000'
 stdout '"api_cache_respect_headers": true'
+stdout '"source": "settings_flag"'
+stdout '"global": "/.*/cfg/snouty/settings\.toml"'
 
+-- cfg/snouty/settings.toml --
+repository = "global-repo"
 -- chosen.toml --
 [profile.staging]
 repository = "registry.example.com/staging"

@@ -14,7 +14,7 @@ use snouty::OutputOptions;
 use snouty::api::AntithesisApi;
 use snouty::auth::initialize_credential_store;
 use snouty::cli::{
-    Cli, Commands, ConfigCommands, DebugArgs, LaunchArgs, UpdateArgs, UpdateChannel,
+    Cli, Commands, DebugArgs, LaunchArgs, SettingsCommands, UpdateArgs, UpdateChannel,
     gated_command_error,
 };
 use snouty::compose;
@@ -116,23 +116,23 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::Update(args) => cmd_update(&args, &settings?),
         Commands::Docs { offline, command } => docs::cmd_docs(command, offline, output).await,
-        Commands::Config { command } => match command {
-            ConfigCommands::Show => snouty::settings::cmd_config_show(&settings?, output.json),
+        Commands::Settings { command } => match command {
+            SettingsCommands::Show => snouty::settings::cmd_settings_show(&settings?, output.json),
             // A named settings file needs no trust, so reject it rather than
             // act on ./.snouty.toml.
-            ConfigCommands::Trust(_) | ConfigCommands::Deny(_)
+            SettingsCommands::Trust(_) | SettingsCommands::Deny(_)
                 if snouty::settings::explicit_settings_path(settings_path.clone())?.is_some() =>
             {
                 Err(user_error(
-                    "`config trust` and `config deny` ignore --settings and SNOUTY_SETTINGS_PATH",
+                    "`settings trust` and `settings deny` ignore --settings and SNOUTY_SETTINGS_PATH",
                 )
                 .suggestion("Pass the path of the settings file as an argument."))
             }
             // These do not read settings, so they work while an untrusted
             // file blocks other commands.
-            ConfigCommands::Trust(args) => snouty::settings::trust(&args.path)
+            SettingsCommands::Trust(args) => snouty::settings::trust(&args.path)
                 .map(|path| eprintln!("Trusted {}", path.display())),
-            ConfigCommands::Deny(args) => snouty::settings::deny(&args.path)
+            SettingsCommands::Deny(args) => snouty::settings::deny(&args.path)
                 .map(|path| eprintln!("Denied {}", path.display())),
         },
         Commands::Login { tenant, repository } => {
@@ -211,10 +211,10 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
         Commands::Update(_) => Some("update"),
         Commands::Login { .. } => Some("login"),
         Commands::Mcp(_) => Some("mcp"),
-        Commands::Config { command } => match command {
-            ConfigCommands::Show => None,
-            ConfigCommands::Trust(_) => Some("config trust"),
-            ConfigCommands::Deny(_) => Some("config deny"),
+        Commands::Settings { command } => match command {
+            SettingsCommands::Show => None,
+            SettingsCommands::Trust(_) => Some("settings trust"),
+            SettingsCommands::Deny(_) => Some("settings deny"),
         },
     }
 }

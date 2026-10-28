@@ -173,8 +173,8 @@ mod tests {
             "update",
             "login",
             "mcp",
-            "config trust",
-            "config deny",
+            "settings trust",
+            "settings deny",
         ];
         for page in HelpPage::ALL {
             if !NO_JSON.contains(&page.path().join(" ").as_str()) {

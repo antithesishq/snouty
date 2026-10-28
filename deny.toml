@@ -26,6 +26,10 @@ allow = [
     "BSD-3-Clause",
     "BSL-1.0",
     "CC0-1.0",
+    # webpki-root-certs, the Mozilla root store as data, under
+    # rustls-platform-verifier on wasm32 only.
+    "CDLA-Permissive-2.0",
+    "ISC",
     "MIT",
     "MIT-0",
     "MPL-2.0",
@@ -54,6 +58,10 @@ skip = [
     # r-efi is getrandom's UEFI backend, so it splits with it.
     { crate = "getrandom@0.3", reason = "ahash 0.8, under jsonschema" },
     { crate = "r-efi@5", reason = "getrandom 0.3" },
+    # ring 0.17, the latest, is on getrandom 0.2 and, on Windows only, on
+    # windows-sys 0.52.
+    { crate = "getrandom@0.2", reason = "ring" },
+    { crate = "windows-sys@0.52", reason = "ring, on Windows" },
     { crate = "hashbrown@0.16", reason = "clru 0.6, under gix-pack" },
     # Proc-macro crates are moving from syn 2 to 3. Both run only at build
     # time, so neither reaches the binary.

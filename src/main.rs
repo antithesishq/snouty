@@ -638,7 +638,11 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         drop(listener);
 
-        let reqwest_err = reqwest::get(format!("http://{addr}/api/v0/runs"))
+        let reqwest_err = snouty::api::client_builder()
+            .build()
+            .unwrap()
+            .get(format!("http://{addr}/api/v0/runs"))
+            .send()
             .await
             .unwrap_err();
 

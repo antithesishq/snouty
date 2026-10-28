@@ -803,7 +803,7 @@ async fn fetch_github_actions_oidc_credentials(
         value: String,
     }
 
-    let client = reqwest::Client::builder()
+    let client = crate::api::client_builder()
         .timeout(OIDC_REQUEST_TIMEOUT)
         .build()?;
     let response: OidcTokenResponse = client
@@ -1171,7 +1171,7 @@ mod tests {
             profile: None,
         };
 
-        let client = reqwest::Client::new();
+        let client = crate::api::client_builder().build().unwrap();
         let new_access = refresh_and_store(
             &client,
             &server.uri(),
@@ -1235,7 +1235,7 @@ mod tests {
             })
             .unwrap();
 
-        let client = reqwest::Client::new();
+        let client = crate::api::client_builder().build().unwrap();
         let result = refresh_if_still_current(
             &client,
             &server.uri(),
@@ -1468,7 +1468,7 @@ mod tests {
             cached: Arc::new(OnceCell::new()),
         };
 
-        let client = reqwest::ClientBuilder::new().build().unwrap();
+        let client = crate::api::client_builder().build().unwrap();
         let first = auth
             .auth_header(&client, "https://snouty.example")
             .await

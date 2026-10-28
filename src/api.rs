@@ -29,8 +29,15 @@ use crate::util::{root_cause, source_error};
 use crate::vtime::VTime;
 use snouty_macros::cached;
 
-// Progenitor writes this code, so the pedantic lints do not apply to it.
-#[allow(dead_code, unused_imports, private_interfaces, clippy::pedantic)]
+// Progenitor writes this code, so the pedantic lints do not apply to it. Its
+// unused `Client::new` builds a reqwest client outside `client_builder`.
+#[allow(
+    dead_code,
+    unused_imports,
+    private_interfaces,
+    clippy::pedantic,
+    clippy::disallowed_methods
+)]
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/antithesis_api.rs"));
 }
@@ -420,6 +427,17 @@ const _: fn(RunStreamNotificationType) = |kind| match kind {
 /// Caps connection setup (DNS, TCP, TLS) so no command hangs on an unreachable host.
 /// Callers set no read or total timeout: a connected request may run for a long time.
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A reqwest builder with rustls's ring crypto provider installed. snouty
+/// ships ring rather than reqwest's default aws-lc-rs because it is ~2 MB
+/// smaller, and reqwest panics on `build` until some provider is installed,
+/// so every client must start here.
+#[allow(clippy::disallowed_methods)]
+pub fn client_builder() -> reqwest::ClientBuilder {
+    // Err means a provider is already installed, which is all we need.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    Client::builder()
+}
 
 /// How many times one API call is re-sent before its failure surfaces.
 const MAX_RETRIES: u32 = 10;
@@ -1553,7 +1571,7 @@ impl HttpClient {
         let default_headers = default_request_headers()?;
         // Only a connect timeout (see CONNECT_TIMEOUT): no read or total timeout, so a
         // slow-but-alive Antithesis request is never aborted no matter how long it runs.
-        let mut builder = Client::builder()
+        let mut builder = client_builder()
             .default_headers(default_headers)
             .connect_timeout(CONNECT_TIMEOUT);
 
@@ -2330,7 +2348,11 @@ mod tests {
     async fn read_error_body_stops_at_the_cap() {
         let mock_server =
             mock_endpoint("GET", "/api/version", 500, &"x".repeat(MAX_ERROR_BODY * 3)).await;
-        let response = reqwest::get(format!("{}/api/version", mock_server.uri()))
+        let response = client_builder()
+            .build()
+            .unwrap()
+            .get(format!("{}/api/version", mock_server.uri()))
+            .send()
             .await
             .unwrap();
 
@@ -2342,7 +2364,11 @@ mod tests {
     #[tokio::test]
     async fn read_error_body_keeps_a_short_body_intact() {
         let mock_server = mock_endpoint("GET", "/api/version", 500, "upstream is down").await;
-        let response = reqwest::get(format!("{}/api/version", mock_server.uri()))
+        let response = client_builder()
+            .build()
+            .unwrap()
+            .get(format!("{}/api/version", mock_server.uri()))
+            .send()
             .await
             .unwrap();
 
@@ -2561,7 +2587,9 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let response = reqwest::Client::new()
+        let response = client_builder()
+            .build()
+            .unwrap()
             .get(format!("{}/health", mock_server.uri()))
             .send()
             .await

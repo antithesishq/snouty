@@ -1,4 +1,3 @@
-use std::ffi::OsStr;
 use std::io::{self, ErrorKind, Write};
 use std::path::Path;
 use std::process::{Command, ExitCode};
@@ -43,20 +42,8 @@ use snouty::validate;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-fn main() -> ExitCode {
-    // Docker and Podman find the helper as an alias of this binary. Any other
-    // name, or no argv[0], runs the CLI.
-    let argv0 = std::env::args_os().next();
-    if argv0.as_deref().map(Path::new).and_then(Path::file_name)
-        == Some(OsStr::new(snouty::docker_credential::HELPER_NAME))
-    {
-        return snouty::docker_credential::main();
-    }
-    cli_main()
-}
-
 #[tokio::main(flavor = "current_thread")]
-async fn cli_main() -> ExitCode {
+async fn main() -> ExitCode {
     snouty::install_hooks();
     snouty::mcp::exit_with_server();
     let cli = snouty::cli::parse();
@@ -65,25 +52,24 @@ async fn cli_main() -> ExitCode {
     {
         eprintln!("warning: --json has no effect for `snouty {name}`");
     }
-    // Before `run`, which reads the `./.snouty.toml` that the helper must not
-    // read.
-    if let Commands::DockerCredential { action } = cli.command {
-        return snouty::docker_credential::run(action, cli.settings, cli.profile).await;
+    match run(cli).await {
+        Ok(code) => code,
+        Err(report) => {
+            // One rendering for every error: `render_report` collapses the chain
+            // index for single errors and wraps overlong prose, both printing
+            // concerns that belong here rather than in the messages. User-facing
+            // failures are built with `user_error`/4xx `suppress_backtrace`, so they
+            // print message + any `.note()`/`.suggestion()` hints with no backtrace;
+            // genuine internal faults keep theirs.
+            snouty::error::print_report(&report);
+            std::process::exit(1);
+        }
     }
-    if let Err(report) = run(cli).await {
-        // One rendering for every error: `render_report` collapses the chain
-        // index for single errors and wraps overlong prose, both printing
-        // concerns that belong here rather than in the messages. User-facing
-        // failures are built with `user_error`/4xx `suppress_backtrace`, so they
-        // print message + any `.note()`/`.suggestion()` hints with no backtrace;
-        // genuine internal faults keep theirs.
-        snouty::error::print_report(&report);
-        std::process::exit(1);
-    }
-    ExitCode::SUCCESS
 }
 
-async fn run(cli: Cli) -> Result<()> {
+/// Runs the command. `docker-credential` reports its own errors, in the form
+/// the helper protocol reads, and returns its exit status.
+async fn run(cli: Cli) -> Result<ExitCode> {
     let Cli {
         json,
         verbose,
@@ -103,11 +89,15 @@ async fn run(cli: Cli) -> Result<()> {
 
     // Resolve settings once, up front. Each command that reads settings
     // unwraps the result, so a bad settings file stops only those commands.
-    let settings = Settings::resolve(
-        settings_path.clone(),
-        DefaultProjectFile::WorkingDirectory,
-        profile.clone(),
-    );
+    //
+    // Docker starts the credential helper in any directory, such as a cloned
+    // repository, whose `./.snouty.toml` could send the credential to another
+    // host, so the helper does not read that file.
+    let project_file = match command {
+        Commands::DockerCredential { .. } => DefaultProjectFile::None,
+        _ => DefaultProjectFile::WorkingDirectory,
+    };
+    let settings = Settings::resolve(settings_path.clone(), project_file, profile.clone());
     let result = match command {
         Commands::Completions { shell } => cmd_completions(shell).map_err(Report::new),
         Commands::Version => {
@@ -145,7 +135,9 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Doctor(args) => {
             snouty::doctor::cmd_doctor(&settings?, output, args.offline).await
         }
-        Commands::DockerCredential { .. } => unreachable!("main runs the helper"),
+        Commands::DockerCredential { action } => {
+            return Ok(snouty::docker_credential::run(action, settings.ok(), settings_path).await);
+        }
         Commands::Mcp(args) => {
             // The tool calls resolve the settings again, in each child.
             settings?;
@@ -164,7 +156,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
     };
 
-    suppress_broken_pipe(result)
+    suppress_broken_pipe(result).map(|()| ExitCode::SUCCESS)
 }
 
 /// When our output is piped into something that exits early (e.g. `snouty

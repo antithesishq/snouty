@@ -226,10 +226,28 @@ jobs:
       # against both runtimes: docker, and podman (which docker-compose reaches
       # over podman's API socket via DOCKER_HOST). mise installs docker-compose,
       # and each configure step removes the other runtime.
+      #
+      # The Docker CLI reads DOCKER_AUTH_CONFIG, which `snouty launch` gives it
+      # the registry credential in, only from 28.3.0. Ubuntu 24.04 images ship
+      # Docker 28.0.4 (https://github.com/actions/runner-images/issues/14105),
+      # so an older CLI is replaced with 28.3.0, the oldest that snouty
+      # supports for this. The daemon and its socket stay the image's.
       - name: Configure Docker
         if: matrix.runtime == 'docker'
+        env:
+          CLI_DEB: docker-ce-cli_28.3.0-1~ubuntu.24.04~noble_amd64.deb
+          # The SHA256 of CLI_DEB in Docker's signed apt index for noble.
+          CLI_SHA256: e968fdea7496a9d7eb59bd7f87d6d16a64439e717b3594fb7613453d02e6c9f9
         run: |
           sudo rm -v -f "$(which podman)"
+          client=$(docker version --format '{{.Client.Version}}')
+          if [ "$(printf '%s\n' 28.3.0 "$client" | sort -V | head -n1)" != 28.3.0 ]; then
+            deb="$RUNNER_TEMP/docker-ce-cli.deb"
+            curl -fsSL --retry 3 -o "$deb" "https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/$CLI_DEB"
+            echo "$CLI_SHA256  $deb" | sha256sum -c -
+            sudo dpkg -i "$deb"
+          fi
+          docker --version
 
       - name: Configure Podman
         if: matrix.runtime == 'podman'

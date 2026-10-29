@@ -214,34 +214,30 @@ impl ValueType {
 
 /// The type of one value of `arg`, and the schema keywords for the checks
 /// that its parser makes.
-fn value_schema(arg: &Arg) -> (ValueType, JsonObject) {
+fn value_schema(arg: &Arg) -> (ValueType, Value) {
     let parsed = arg.get_value_parser().type_id();
-    let is = |types: &[TypeId]| types.iter().any(|ty| parsed == *ty);
-    let (ty, keywords) = if is(&[TypeId::of::<usize>(), TypeId::of::<u64>()]) {
+    let is = |ty: TypeId| parsed == ty;
+    if is(TypeId::of::<usize>()) || is(TypeId::of::<u64>()) {
         (ValueType::Integer, json!({ "minimum": 0 }))
-    } else if is(&[TypeId::of::<NonZeroUsize>(), TypeId::of::<NonZeroU64>()]) {
+    } else if is(TypeId::of::<NonZeroUsize>()) || is(TypeId::of::<NonZeroU64>()) {
         (ValueType::Integer, json!({ "minimum": 1 }))
-    } else if is(&[TypeId::of::<SearchLimit>()]) {
+    } else if is(TypeId::of::<SearchLimit>()) {
         let range = json!({ "minimum": 1, "maximum": SEARCH_MAX_LIMIT });
         (ValueType::Integer, range)
-    } else if is(&[TypeId::of::<VTime>()]) {
+    } else if is(TypeId::of::<VTime>()) {
         (ValueType::Number, json!({}))
-    } else if is(&[TypeId::of::<DateTime<Utc>>()]) {
+    } else if is(TypeId::of::<DateTime<Utc>>()) {
         (ValueType::String, json!({ "format": "date-time" }))
-    } else if is(&[TypeId::of::<TimeBound>()]) {
+    } else if is(TypeId::of::<TimeBound>()) {
         let formats = json!({ "anyOf": [{ "format": "date" }, { "format": "date-time" }] });
         (ValueType::String, formats)
-    } else if is(&[TypeId::of::<HumanDuration>()]) {
+    } else if is(TypeId::of::<HumanDuration>()) {
         (ValueType::String, json!({ "pattern": DURATION_PATTERN }))
-    } else if is(&[TypeId::of::<KVPair>()]) {
+    } else if is(TypeId::of::<KVPair>()) {
         (ValueType::String, json!({ "pattern": KV_PAIR_PATTERN }))
     } else {
         (ValueType::String, json!({}))
-    };
-    let Value::Object(keywords) = keywords else {
-        unreachable!("the keywords are an object")
-    };
-    (ty, keywords)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -330,7 +326,7 @@ impl ToolSpec {
 }
 
 fn input_schema(name: ToolName, params: &[Param]) -> Arc<JsonObject> {
-    let item = |param: &Param| {
+    let item = |param: &Param, ty: ValueType| {
         let values: Vec<String> = param
             .arg
             .get_possible_values()
@@ -339,9 +335,9 @@ fn input_schema(name: ToolName, params: &[Param]) -> Arc<JsonObject> {
             .map(|value| value.get_name().to_owned())
             .collect();
         if values.is_empty() {
-            let (ty, mut schema) = value_schema(param.arg);
-            schema.insert("type".to_owned(), ty.json_type().into());
-            Value::Object(schema)
+            let (_, mut schema) = value_schema(param.arg);
+            schema["type"] = ty.json_type().into();
+            schema
         } else {
             json!({ "type": "string", "enum": values })
         }
@@ -351,8 +347,8 @@ fn input_schema(name: ToolName, params: &[Param]) -> Arc<JsonObject> {
     for param in params {
         let mut schema = match param.kind {
             ParamKind::Flag => json!({ "type": "boolean" }),
-            ParamKind::One(_) => item(param),
-            ParamKind::Many(_) => json!({ "type": "array", "items": item(param) }),
+            ParamKind::One(ty) => item(param, ty),
+            ParamKind::Many(ty) => json!({ "type": "array", "items": item(param, ty) }),
         };
         if let Some(help) = param.arg.get_long_help().or(param.arg.get_help()) {
             schema["description"] = Value::String(help.to_string());

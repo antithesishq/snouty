@@ -1186,7 +1186,7 @@ mod tests {
         else {
             panic!("expected `runs events`");
         };
-        assert_eq!(limit.to_string(), "998");
+        assert_eq!(NonZeroU64::from(limit).get(), 998);
 
         // clap rejects 0 up front.
         let parsed = Cli::try_parse_from(["snouty", "runs", "events", "RUN", "-n", "0"]);
@@ -1205,7 +1205,7 @@ mod tests {
         else {
             panic!("expected `runs search`");
         };
-        assert_eq!(args.limit.map(|l| l.to_string()).as_deref(), Some("998"));
+        assert_eq!(args.limit.map(|l| NonZeroU64::from(l).get()), Some(998));
 
         let parsed = Cli::try_parse_from(["snouty", "runs", "search", "RUN", "q", "-n", "0"]);
         assert!(parsed.is_err(), "expected --limit 0 to be rejected");
@@ -1269,7 +1269,7 @@ mod tests {
         else {
             panic!("expected `runs search`");
         };
-        assert_eq!(args.limit.map(|l| l.to_string()).as_deref(), Some("7"));
+        assert_eq!(args.limit.map(|l| NonZeroU64::from(l).get()), Some(7));
         assert!(args.follow);
     }
 

@@ -366,8 +366,12 @@ async fn a_long_call_reports_progress() {
     let first = first
         .expect("progress within 20s")
         .expect("progress channel open");
-    assert_eq!(first.progress, 10.0);
-    assert_eq!(first.message.as_deref(), Some("running for 10s"));
+    // A busy machine can fire the tick late.
+    assert!(first.progress >= 10.0, "{first:?}");
+    assert_eq!(
+        first.message,
+        Some(format!("running for {}s", first.progress)),
+    );
     client.cancel().await.expect("close snouty mcp");
 }
 

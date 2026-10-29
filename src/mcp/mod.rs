@@ -191,12 +191,9 @@ impl ServerHandler for Snouty {
         };
         tokio::pin!(call);
         let progress = ctx.meta.get_progress_token();
-        let mut ticks = tokio::time::interval_at(
-            tokio::time::Instant::now() + PROGRESS_INTERVAL,
-            PROGRESS_INTERVAL,
-        );
+        let start = tokio::time::Instant::now();
+        let mut ticks = tokio::time::interval_at(start + PROGRESS_INTERVAL, PROGRESS_INTERVAL);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut seconds = 0;
         // The client sets the time limit: it cancels the call, or closes
         // stdin. Either drops `call`, which kills the child.
         loop {
@@ -204,10 +201,10 @@ impl ServerHandler for Snouty {
                 result = &mut call => return result,
                 () = ctx.ct.cancelled() => return Err(ErrorData::internal_error("cancelled", None)),
                 _ = ticks.tick(), if progress.is_some() => {
-                    let Some(token) = &progress else { continue };
-                    seconds += PROGRESS_INTERVAL.as_secs();
-                    let param = ProgressNotificationParam::new(token.clone(), seconds as f64)
-                        .with_message(format!("running for {seconds}s"));
+                    let seconds = start.elapsed().as_secs();
+                    let param =
+                        ProgressNotificationParam::new(progress.clone().unwrap(), seconds as f64)
+                            .with_message(format!("running for {seconds}s"));
                     // Await the send: the MCP spec forbids a notification
                     // after the response.
                     if let Err(e) = ctx.peer.notify_progress(param).await {

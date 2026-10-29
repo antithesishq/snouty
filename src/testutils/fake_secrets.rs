@@ -51,6 +51,9 @@ fake_secrets! {
         /// hint cannot tell their lengths apart. `MockApiServer` accepts only
         /// this key.
         FAKE_API_KEY_B = "antithesis_api_key_v2_fake-b-longer_7Qxz";
+        /// A third API key, for a test that needs a key in the environment
+        /// that differs from two stored keys.
+        FAKE_API_KEY_C = "antithesis_api_key_v2_fake-c_3Rmk";
         /// A username for basic authentication. It is not a secret, but
         /// [`FAKE_BASIC_AUTHORIZATION`] encodes it.
         FAKE_USERNAME = "fake-user";

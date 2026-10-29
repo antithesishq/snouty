@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use color_eyre::eyre::{Context, Report, Result, eyre};
 use serde::Serialize;
 
-use crate::api::AntithesisApi;
+use crate::api::{AntithesisApi, ResponseCache};
 use crate::cli::DockerCredentialAction;
 use crate::error::user_error;
 use crate::registry::{self, TenantRegistry, TenantRegistryError};
@@ -48,8 +48,8 @@ struct Credential<'a> {
 
 /// Runs one action of the protocol. `settings_path` and `profile` are the
 /// `--settings` and `--profile` flags: [`registry::select_settings`] tells
-/// from them, and from their environment variables, which settings give the
-/// credential.
+/// from them, and from their environment variables, which settings and which
+/// credential to use.
 ///
 /// The protocol reads an error from stdout, so an error prints its message
 /// there before it returns. The caller prints the full report on stderr,
@@ -87,12 +87,15 @@ async fn cmd_docker_credential(
                     return Err(user_error(format!("invalid server URL on stdin: {err}")));
                 }
             };
-            let Some(settings) =
+            let Some((settings, credential)) =
                 registry::select_settings(settings_path, profile, &tenant_registry)?
             else {
                 return Err(Report::new(CredentialsNotFound));
             };
-            let secret = registry::password(&AntithesisApi::new(&settings, false)?).await?;
+            // The selected credential, not a new lookup: for a named profile,
+            // the lookup of every command can find the default credential.
+            let api = AntithesisApi::build(&settings, credential, false, ResponseCache::Default)?;
+            let secret = registry::password(&api).await?;
             let credential = serde_json::to_string(&Credential {
                 server_url,
                 username: registry::USERNAME,

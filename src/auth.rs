@@ -375,7 +375,7 @@ impl std::fmt::Display for AuthenticationInfo {
 
 /// A place snouty reads credentials from. More than one can hold a credential
 /// at once, and the first in resolution order then wins.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CredentialOrigin<'a> {
     Environment,
     Keychain { profile: Option<&'a str> },
@@ -383,8 +383,24 @@ enum CredentialOrigin<'a> {
     GithubActionsOidc,
 }
 
+/// Whether the lookup for a named profile reads the stored credential of the
+/// default profile after its own.
+#[derive(Clone, Copy)]
+enum Fallback {
+    DefaultProfile,
+    None,
+}
+
 impl<'a> CredentialOrigin<'a> {
-    fn in_resolution_order(profile: Option<&'a str>) -> impl Iterator<Item = Self> {
+    fn in_resolution_order(
+        profile: Option<&'a str>,
+        fallback: Fallback,
+    ) -> impl Iterator<Item = Self> {
+        let default_entries = (profile.is_none() || matches!(fallback, Fallback::DefaultProfile))
+            .then_some([
+                Self::Keychain { profile: None },
+                Self::CredentialsFile { profile: None },
+            ]);
         [Self::Environment]
             .into_iter()
             .chain(profile.into_iter().flat_map(|profile| {
@@ -397,11 +413,8 @@ impl<'a> CredentialOrigin<'a> {
                     },
                 ]
             }))
-            .chain([
-                Self::Keychain { profile: None },
-                Self::CredentialsFile { profile: None },
-                Self::GithubActionsOidc,
-            ])
+            .chain(default_entries.into_iter().flatten())
+            .chain([Self::GithubActionsOidc])
     }
 
     fn resolve(self) -> Result<Option<AttributedValue<AuthenticationInfo>>> {
@@ -491,7 +504,7 @@ impl AuthenticationInfo {
         profile: Option<&str>,
         policy: PasswordPolicy,
     ) -> Result<AttributedValue<Self>> {
-        match Self::find_ambient(profile)? {
+        match Self::find(profile, Fallback::DefaultProfile)? {
             Some(found) => apply_password_policy(found, policy),
             None => Err(user_error(NO_CREDENTIALS_MESSAGE).suggestion(
                 "set ANTITHESIS_API_KEY; ask Antithesis support for an API key if you don't have one",
@@ -499,14 +512,20 @@ impl AuthenticationInfo {
         }
     }
 
-    /// The credential that ambient resolution for `profile` finds, of any
-    /// kind. It reads the environment, the keychain and the credentials file,
-    /// and makes no network call.
-    ///
-    /// The [`PasswordPolicy`] gate does not run, so only a caller that never
-    /// authenticates with the result may call it.
-    pub(crate) fn find_ambient(profile: Option<&str>) -> Result<Option<AttributedValue<Self>>> {
-        for origin in CredentialOrigin::in_resolution_order(profile) {
+    /// The credential of `profile` itself: the environment, then the
+    /// keychain entry and the credentials-file entry of `profile`, then the
+    /// GitHub Actions OIDC environment. Unlike the lookup of every command,
+    /// a named profile does not use the stored credential of the default
+    /// profile. The environment applies to every profile. It makes no network
+    /// call, and `policy` applies to a username and password.
+    pub(crate) fn find_own(profile: Option<&str>, policy: PasswordPolicy) -> Result<Option<Self>> {
+        Self::find(profile, Fallback::None)?
+            .map(|found| Ok(apply_password_policy(found, policy)?.extract()))
+            .transpose()
+    }
+
+    fn find(profile: Option<&str>, fallback: Fallback) -> Result<Option<AttributedValue<Self>>> {
+        for origin in CredentialOrigin::in_resolution_order(profile, fallback) {
             if let Some(found) = origin.resolve()? {
                 return Ok(Some(found));
             }
@@ -524,7 +543,7 @@ impl AuthenticationInfo {
         profile: Option<&str>,
     ) -> Result<Vec<AttributedValue<Self>>> {
         let mut found = Vec::new();
-        for origin in CredentialOrigin::in_resolution_order(profile) {
+        for origin in CredentialOrigin::in_resolution_order(profile, Fallback::DefaultProfile) {
             match origin.resolve() {
                 Ok(Some(credential)) => found.push(credential),
                 Ok(None) => {}
@@ -1417,5 +1436,48 @@ mod tests {
             requests.recv_timeout(Duration::from_millis(200)).is_err(),
             "second auth_header call should be served from cache, not re-fetched"
         );
+    }
+
+    #[test]
+    fn a_named_profile_uses_the_default_profile_only_with_the_fallback() {
+        use CredentialOrigin::{CredentialsFile, Environment, GithubActionsOidc, Keychain};
+        let own = [
+            Environment,
+            Keychain {
+                profile: Some("acme-prod"),
+            },
+            CredentialsFile {
+                profile: Some("acme-prod"),
+            },
+        ];
+        let default = [
+            Keychain { profile: None },
+            CredentialsFile { profile: None },
+        ];
+        assert_eq!(
+            CredentialOrigin::in_resolution_order(Some("acme-prod"), Fallback::None)
+                .collect::<Vec<_>>(),
+            [own.as_slice(), &[GithubActionsOidc]].concat(),
+        );
+        assert_eq!(
+            CredentialOrigin::in_resolution_order(Some("acme-prod"), Fallback::DefaultProfile)
+                .collect::<Vec<_>>(),
+            [own.as_slice(), &default, &[GithubActionsOidc]].concat(),
+        );
+    }
+
+    #[test]
+    fn the_default_profile_always_uses_its_own_entries() {
+        for fallback in [Fallback::None, Fallback::DefaultProfile] {
+            assert_eq!(
+                CredentialOrigin::in_resolution_order(None, fallback).collect::<Vec<_>>(),
+                [
+                    CredentialOrigin::Environment,
+                    CredentialOrigin::Keychain { profile: None },
+                    CredentialOrigin::CredentialsFile { profile: None },
+                    CredentialOrigin::GithubActionsOidc,
+                ],
+            );
+        }
     }
 }

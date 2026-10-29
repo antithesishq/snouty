@@ -121,7 +121,8 @@ async fn tools_return_detailed_output_or_json() {
     );
 
     // runs_list returns what `snouty runs list --detail` prints: a block per
-    // run, then the note on stderr that more runs may exist.
+    // run. The result also has a stderr block: the note that more runs may
+    // exist.
     let result = call(&client, "runs_list", json!({ "limit": 2 })).await;
     assert_eq!(result.is_error, Some(false));
     let stdout = &result.content[0].as_text().unwrap().text;
@@ -499,6 +500,7 @@ async fn the_server_debug_log_stays_out_of_tool_results() {
     let mut command = snouty_mcp(&server, home.path());
     command.env("RUST_LOG", "debug");
     let client = connect(command).await;
+    // runs_show prints no note on stderr, which runs_list does.
     let result = call(&client, "runs_show", json!({ "run_id": "run-1" })).await;
     assert_eq!(result.is_error, Some(false), "{result:?}");
     // One block: stdout, and no stderr.

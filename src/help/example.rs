@@ -312,8 +312,8 @@ mod tests {
         let value = tc.draw(generators::text().exclude_characters("\0<>"));
         let value = shlex::try_quote(&format!("v{value}")).unwrap().into_owned();
         let list = format!("runs list --launcher {value} --limit 5 --status completed");
-        // Whether a call without `json` adds `--detail`, which the example
-        // then gets at its end.
+        // The bool: the call adds `--detail`, so the example gets it at its
+        // end.
         let examples = [
             (format!("snouty {list}"), true),
             (format!("snouty --json {list}"), false),

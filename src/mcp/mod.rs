@@ -1,7 +1,7 @@
 //! `snouty mcp`: an MCP server on the stdio transport. Each tool runs one
-//! snouty command as a child process, with `--detail` or, when the call asks
-//! for it, `--json`, and returns what the command prints. The tool schemas
-//! come from the commands' clap definitions.
+//! snouty command as a child process and returns what it prints: the
+//! detailed human output, or JSON when the call sets `json`. The tool
+//! schemas come from the commands' clap definitions.
 
 use std::ffi::OsString;
 use std::num::NonZeroUsize;

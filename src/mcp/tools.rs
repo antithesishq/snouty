@@ -27,10 +27,10 @@ const TOOL_HELP_ABOUT: &str = "Return the full help of a tool";
 /// The one param of [`TOOL_HELP`].
 const TOOL_PARAM: &str = "tool";
 
-/// The global `--json`, a param of each tool whose command prints JSON.
+/// The global `--json`, which each tool but `docs_show` takes as a param.
 const JSON: &str = "json";
 
-/// `--detail`, which a tool call without [`JSON`] always passes.
+/// `--detail`, which a call without [`JSON`] passes when the command has it.
 const DETAIL: &str = "detail";
 
 /// What a tool's command can do, which sets the tool's annotations.
@@ -86,9 +86,8 @@ macro_rules! tools {
                 }
             }
 
-            /// Args that open a browser, stream with no end, or change
-            /// nothing, as `--json` of a command that prints the same in
-            /// both modes.
+            /// Args that open a browser, stream with no end, or have no
+            /// effect, such as `--json` of `docs show`.
             fn hidden(self) -> &'static [&'static str] {
                 match self {
                     $(ToolName::$variant => &[$($hidden),*],)*
@@ -192,11 +191,12 @@ pub(crate) fn summaries() -> Vec<(String, String)> {
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ArgRole {
     Param(&'static Param),
-    /// `--detail`, which a call without `json` passes, and `--json` of a
-    /// tool with no `json` param.
+    /// An arg that an example may carry and the call drops: `--detail`, which
+    /// a call without `json` adds, and `--json` of a tool that prints the
+    /// same in both modes.
     Implied,
-    /// The root's args, which are the server's to set, and the args that
-    /// the tool hides.
+    /// The root's args but `json`, which are the server's to set, and the
+    /// args that the tool hides, but `json`.
     Excluded,
 }
 
@@ -285,7 +285,6 @@ pub(crate) struct ToolSpec {
     pub(crate) tool: Tool,
     about: String,
     pub(crate) params: Vec<Param>,
-    /// The command's `--detail`, if it has one.
     pub(crate) detail: Option<&'static Arg>,
 }
 

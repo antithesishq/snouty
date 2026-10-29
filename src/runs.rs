@@ -2202,7 +2202,10 @@ async fn exec_when_ready(
     json: bool,
 ) -> Result<()> {
     let timeout = exec.timeout;
-    let mut renderer = exec.events.then(|| EventStreamRenderer::new(false));
+    // `runs exec` has no --detail, and a tool call gets the detailed form,
+    // as for `runs logs`.
+    let detail = crate::mcp::in_tool_call();
+    let mut renderer = exec.events.then(|| EventStreamRenderer::new(detail));
     // A cold moment is in its rewarm source, not in RUN_ID, so a debugging
     // session at that moment starts from the source.
     let (rewarm_flag, debug_target) = match &exec.rewarm {

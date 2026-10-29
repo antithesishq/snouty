@@ -535,3 +535,30 @@ async fn tool_calls_show_no_progress() {
     assert!(!blocks[1].contains("rewarming"), "{blocks:?}");
     client.cancel().await.expect("close snouty mcp");
 }
+
+/// A tool result holds plain text in the detailed form: no escape codes, even
+/// with `CLICOLOR_FORCE` set for the server, and `runs_exec` events with their
+/// full vtime, as `runs_logs` returns them.
+#[tokio::test]
+async fn tool_results_are_plain_detailed_text() {
+    let server = MockApiServer::start();
+    let home = TempDir::new().unwrap();
+    let mut command = snouty_mcp(&server, home.path());
+    command.env("CLICOLOR_FORCE", "1");
+    let client = connect(command).await;
+    let call_args = json!({
+        "run_id": "run-2",
+        "input_hash": "-3625518438076122494",
+        "vtime": 398.4898056755774,
+        "script": "with-system-logs",
+        "events": true,
+    });
+    let result = call(&client, "runs_exec", call_args).await;
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let stdout = &result.content[0].as_text().unwrap().text;
+    assert!(!stdout.contains('\x1b'), "{stdout:?}");
+    // The detailed form gives the vtime a full-width column.
+    let line = regex::Regex::new(r"(?m)^398\.491 {10,}\[bash_command\] script says hi$").unwrap();
+    assert!(line.is_match(stdout), "{stdout}");
+    client.cancel().await.expect("close snouty mcp");
+}

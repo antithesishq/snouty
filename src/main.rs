@@ -65,6 +65,12 @@ async fn main() {
         .format(|buf, record| writeln!(buf, "{}", record.args()))
         .init();
     snouty::mcp::exit_with_server();
+    // A tool result is text for a model. CLICOLOR_FORCE in the server's
+    // environment would put escape codes in it.
+    if snouty::mcp::in_tool_call() {
+        console::set_colors_enabled(false);
+        console::set_colors_enabled_stderr(false);
+    }
     let cli = snouty::cli::parse();
     if let Err(report) = run(cli).await {
         // The docker-credential helper already said "not found" on stdout,

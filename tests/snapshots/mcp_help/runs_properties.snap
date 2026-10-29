@@ -5,6 +5,8 @@ List a run's property (assertion) results.
 
 Each property has its ID, name, group, and status: passing, failing, or undetermined. An undetermined property has not triggered yet. Each property also counts its examples and its counterexamples.
 
+Each property prints as a block: its Name, ID, Group, Category, Team and Status, then its sample moments. An event property has a table of moments with STATUS (failing or passing), HASH and VTIME columns, failing first. The table is a sample, and the Examples line above it gives the totals of the run. Pass a row's HASH and VTIME as the input_hash and vtime of `runs_logs`. A property with no events shows its values under Counter-examples, Examples or Result. Thus one call gives the moments of every property that matches, and you do not need a `runs_property` call for each one.
+
 Filter by status with `passing`, `failing`, and `undetermined`. Give more than one to show each of those statuses.
 
 Narrow with `name` and/or `group`. Both are case-insensitive substring matches against the relevant fields. To show one property in full, pass its ID to `runs_property {"run_id": "<run_id>", "property_id": "<property_id>"}`.
@@ -13,4 +15,4 @@ Examples:
   runs_properties {"run_id": "<run_id>", "failing": true}
   runs_properties {"run_id": "<run_id>", "failing": true, "undetermined": true}
 
-Each property prints as one JSON object on its own line.
+With `json`, each property prints as one JSON object on its own line, without the sample moments.

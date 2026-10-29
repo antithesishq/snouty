@@ -7,7 +7,9 @@ Core-hours are the unit that Antithesis bills usage in, and that the usage cap c
 
 Each run has its ID, the start and end of its billable usage, and its core-hours.
 
-With `rollup`, each row is the total of one day, week, or month: its first and last days, its number of runs, and its core-hours. A run counts in the period in which it ended. A week starts on Monday. The rows are the `limit` periods that end with the current period, and a period with no runs shows 0.
+Columns: RUN ID, STARTED, ENDED, CORE HOURS. CORE HOURS has one decimal place.
+
+With `rollup`, each row is the total of one day, week, or month: its first and last days, its number of runs, and its core-hours. A run counts in the period in which it ended. A week starts on Monday. Columns: START, END, RUNS, CORE HOURS. The rows are the `limit` periods that end with the current period, and a period with no runs shows 0.
 
 Times and periods are in the local timezone. Add `utc` to show them in UTC.
 
@@ -25,4 +27,4 @@ Examples:
   runs_usage {"rollup": "month", "after": "2026-01-01"}
   runs_usage {"after": "2026-10-01", "before": "2026-11-01", "utc": true}
 
-Each row prints as one JSON object on its own line. The hours field holds core-hours. A run has the fields run_id, hours, start_time, and end_time; the times are RFC 3339 with the offset of the timezone. A period has the fields date, runs, and hours, with hours rounded to hundredths.
+With `json`, each row prints as one JSON object on its own line. The hours field holds core-hours. A run has the fields run_id, hours, start_time, and end_time; the times are RFC 3339 with the offset of the timezone. A period has the fields date, runs, and hours, with hours rounded to hundredths.

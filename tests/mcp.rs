@@ -87,7 +87,7 @@ fn text(result: &CallToolResult) -> &str {
 }
 
 #[tokio::test]
-async fn tools_run_their_commands_in_json_mode() {
+async fn tools_return_detailed_output_or_json() {
     let server = MockApiServer::start();
     let home = TempDir::new().unwrap();
     let client = connect(snouty_mcp(&server, home.path())).await;
@@ -120,9 +120,20 @@ async fn tools_run_their_commands_in_json_mode() {
         ]
     );
 
-    // runs_list returns what `snouty --json runs list` prints: one run per
-    // line.
+    // runs_list returns what `snouty runs list --detail` prints: a block per
+    // run, then the note on stderr that more runs may exist.
     let result = call(&client, "runs_list", json!({ "limit": 2 })).await;
+    assert_eq!(result.is_error, Some(false));
+    let stdout = &result.content[0].as_text().unwrap().text;
+    assert!(stdout.starts_with("Run ID       run-1\n"), "{stdout}");
+    assert!(
+        stdout.contains("Description  nightly smoke on main"),
+        "{stdout}"
+    );
+
+    // With `json`, it returns what `snouty --json runs list` prints: one run
+    // per line.
+    let result = call(&client, "runs_list", json!({ "limit": 2, "json": true })).await;
     assert_eq!(result.is_error, Some(false));
     let runs: Vec<Value> = text(&result)
         .lines()
@@ -133,7 +144,7 @@ async fn tools_run_their_commands_in_json_mode() {
 
     // settings_show returns the resolved settings, which doctor no longer
     // reports.
-    let result = call(&client, "settings_show", json!({})).await;
+    let result = call(&client, "settings_show", json!({ "json": true })).await;
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
     let shown: Value = serde_json::from_str(text(&result)).unwrap();
     assert!(shown["settings"]["base_url"].is_string(), "{shown}");
@@ -158,19 +169,25 @@ async fn tools_run_their_commands_in_json_mode() {
     let result = call(
         &client,
         "runs_list",
-        json!({ "status": "completed", "limit": 1 }),
+        json!({ "status": "completed", "limit": 1, "json": true }),
     )
     .await;
     let run: Value = serde_json::from_str(text(&result).trim()).unwrap();
     let call_args = json!({
         "run_id": run["run_id"],
         "property_id": "97cf5fcafa500ed62bf109d81834c5b881a2c854",
+        "json": true,
     });
     let result = call(&client, "runs_property", call_args).await;
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
     let property: Value = serde_json::from_str(text(&result)).unwrap();
     assert_eq!(property["id"], "97cf5fcafa500ed62bf109d81834c5b881a2c854");
-    let result = call(&client, "runs_usage", json!({ "limit": 1, "utc": true })).await;
+    let result = call(
+        &client,
+        "runs_usage",
+        json!({ "limit": 1, "utc": true, "json": true }),
+    )
+    .await;
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
     let usage: Value = serde_json::from_str(text(&result).trim()).unwrap();
     assert!(usage["hours"].is_number(), "{usage}");
@@ -206,7 +223,7 @@ async fn tools_run_their_commands_in_json_mode() {
     let result = call(
         &client,
         "docs_search",
-        json!({ "query": ["docker"], "offline": true }),
+        json!({ "query": ["docker"], "offline": true, "json": true }),
     )
     .await;
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
@@ -476,7 +493,7 @@ async fn the_server_debug_log_stays_out_of_tool_results() {
     let mut command = snouty_mcp(&server, home.path());
     command.env("RUST_LOG", "debug");
     let client = connect(command).await;
-    let result = call(&client, "runs_list", json!({ "limit": 1 })).await;
+    let result = call(&client, "runs_show", json!({ "run_id": "run-1" })).await;
     assert_eq!(result.is_error, Some(false), "{result:?}");
     // One block: stdout, and no stderr.
     text(&result);

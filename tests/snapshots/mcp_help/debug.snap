@@ -15,4 +15,4 @@ The response holds the new session's run ID in `runId`. The session starts at th
   runs_wait {"run_id": "<session_run_id>", "until": "ready"}
   runs_exec {"run_id": "<session_run_id>", "input_hash": "<hash>", "vtime": <vtime>, "script": "ps aux"}
 
-The response prints as one JSON object.
+With `json`, the response prints as one JSON object.

@@ -11,7 +11,7 @@ The script executes on a fresh branch of the multiverse, so it does not interact
 
 The script executes on the host, or in the container that `container` names. The command needs tenant release 64.0 or newer; `doctor` reports the tenant release.
 
-The result's first content block is the stream, one JSON object per line. Without `events`, the stream is the script's output. With `events`, it is every event of the timeline while the script executes, as `runs_logs` returns them: the script's output, the workload's logs and assertions, and Antithesis events. The last line is the exit result, and its `end_moment` is the moment to chain a follow-up call from. When the command fails, a second block says why. The command fails when the script fails, times out, or its stream ends early.
+Without `events`, the result's first content block is the script's output. With `events`, it is every event of the timeline while the script executes, as `runs_logs` returns them: the script's output, the workload's logs and assertions, and Antithesis events. A second block holds the script's error output, why the command failed when it fails, and, when the script exits, a last line `end moment: HASH VTIME`: the moment to chain a follow-up call from. The command fails when the script fails, times out, or its stream ends early.
 
 To run more at the moment that a script left, pass its end moment as the next call's input_hash and vtime:
   runs_exec {"run_id": "<run_id>", "input_hash": "<end_hash>", "vtime": <end_vtime>, "script": "cat /tmp/state"}
@@ -22,4 +22,4 @@ Examples:
   runs_exec {"run_id": "<run_id>", "input_hash": "<hash>", "vtime": <vtime>, "script": "sleep 5", "events": true}
   runs_exec {"run_id": "<run_id>", "input_hash": "<hash>", "vtime": <vtime>, "script": "ls", "source_run_id": "<other_run_id>", "timeout": "5m"}
 
-Each frame of the stream prints as one JSON object on its own line.
+With `json`, each frame of the stream prints as one JSON object on its own line. The last line is the exit result, and its `end_moment` is the moment to chain a follow-up call from.

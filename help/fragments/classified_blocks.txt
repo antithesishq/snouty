@@ -2,4 +2,6 @@ Each matching event has its moment (an input_hash and a vtime), its source, and 
 
 {% if cli %}
 Matching events print as classified blocks: a `moment HASH` divider opens each timeline segment, and each event below it renders on one line in the Antithesis event shapes — SDK assertions, faults, container lifecycle, test composer — each in their own concise form.
+{% else %}
+{% include "fragments/detailed_events.txt" %}
 {% endif %}

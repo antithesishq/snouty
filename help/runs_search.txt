@@ -78,9 +78,7 @@ Query snippets (each is a complete {{ t("query")? }}, ready to paste):
 
 {% include "fragments/classified_blocks.txt" %}
 
-{% if cli %}
-Rows reshaped by map/narrow/fold print as raw JSON.
-{% endif %}
+Rows reshaped by map/narrow/fold print as raw JSON.{% if !cli %} The output already shows the details of each assertion, so do not reshape events to read them.{% endif %}
 
 Add {{ t("--count")? }} to print how many events in the whole run match the query, instead of a sample. No limit applies.
 
@@ -100,5 +98,5 @@ With --count, the count prints as one JSON object:
     --count | jq .count
   {% endfilter %}
 {% else %}
-Each event prints as one JSON object on its own line. With `count`, the count prints as one JSON object.
+With {{ t("--json")? }}, each event prints as one JSON object on its own line, and with {{ t("--count")? }}, the count prints as one JSON object.
 {% endif %}

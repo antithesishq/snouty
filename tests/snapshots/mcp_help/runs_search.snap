@@ -81,10 +81,14 @@ Query snippets (each is a complete `query`, ready to paste):
 
 Each matching event has its moment (an input_hash and a vtime), its source, and its payload. To stream the logs of an event's timeline to its current end, pass its run ID and input_hash to `runs_logs {"run_id": "<run_id>", "input_hash": "<hash>"}`.
 
+A `moment HASH` line opens each timeline segment, and each event under it prints as one `VTIME [source] payload` line, with the full vtime. Indented lines under an event give its source location, as `@ file:function:line`, and the details that it carries, such as an SDK assertion's details, as `details {...}`.
+
+Rows reshaped by map/narrow/fold print as raw JSON. The output already shows the details of each assertion, so do not reshape events to read them.
+
 Add `count` to print how many events in the whole run match the query, instead of a sample. No limit applies.
 
 The run must be ready or complete. If it is not, the command waits until it is ready, as `runs_exec` does, and says that it waits.
 
 The command needs tenant release 62.2 or newer; `doctor` reports the tenant release.
 
-Each event prints as one JSON object on its own line. With `count`, the count prints as one JSON object.
+With `json`, each event prints as one JSON object on its own line, and with `count`, the count prints as one JSON object.

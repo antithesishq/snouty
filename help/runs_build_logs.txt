@@ -2,9 +2,7 @@ Stream a run's build and setup logs: everything the platform did before the test
 
 Each log line has a timestamp, a stream (stdout or stderr), and its text. The whole build is streamed, so expect thousands of lines on a real run. Read the stderr lines first when a launch failed.
 
-{% if cli %}
-Each line prints as `timestamp [stream] line`. Grep the stream tag to narrow it.
-{% endif %}
+Each line prints as `timestamp [stream] line`.{% if cli %} Grep the stream tag to narrow it.{% endif %}
 
 Examples:
   {{ t("snouty runs build-logs <run_id>")? }}
@@ -17,5 +15,5 @@ Examples:
 Add --json for machine-readable output. Each log line prints as one JSON object on its own line:
   {{ t("snouty --json runs build-logs <run_id> | jq -r .text")? }}
 {% else %}
-Each log line prints as one JSON object on its own line.
+With {{ t("--json")? }}, each log line prints as one JSON object on its own line.
 {% endif %}

@@ -4,6 +4,8 @@ Each run has its ID, status, creation time, launcher, and test name. For a run w
 
 {% if cli %}
 Columns: RUN ID, STATUS, CREATED, LAUNCHER, RUN. RUN is the test name, or `-` for a run with no test name and no description. Use --detail for the full description.
+{% else %}
+Each run prints as a block of `Label  value` lines, with a blank line between blocks: Run ID, Status, Created, Launcher, Test Name when the run has one, and the full Description.
 {% endif %}
 
 Pass a run's ID to `{{ t("runs show")? }}` for its details, to `{{ t("runs properties")? }}` for its property results, or to `{{ t("runs wait")? }}` to wait until it is ready or complete.
@@ -15,5 +17,5 @@ Examples:
 Add --json for machine-readable output. Each run prints as one JSON object on its own line, in the order the server returns them:
   {{ t("snouty --json runs list | jq -r .run_id")? }}
 {% else %}
-Each run prints as one JSON object on its own line, in the order the server returns them.
+With {{ t("--json")? }}, each run prints as one JSON object on its own line, in the order the server returns them.
 {% endif %}

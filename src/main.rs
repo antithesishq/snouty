@@ -342,6 +342,7 @@ async fn cmd_launch(
     if let Some((detected, registry, config_image)) = config_image_ref {
         let mut rt = container::runtime(settings)?;
         container::warn_ambiguous_engine(settings, rt.as_ref(), json);
+
         if let Some(tenant_registry) = snouty::registry::tenant_registry(settings) {
             // Podman gets the secret from the helper: for it, this is an early credential check.
             match snouty::registry::launch_secret(&api).await? {
@@ -350,7 +351,7 @@ async fn cmd_launch(
                     secret,
                     settings_path,
                     profile,
-                })?,
+                }),
                 None => log::debug!(
                     "{tenant_registry} does not accept the Antithesis credential, so the runtime pushes with its own credentials"
                 ),

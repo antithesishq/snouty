@@ -1,6 +1,5 @@
-use snouty::docker_credential::HELPER_NAME;
 use snouty::testutils::{
-    MockApiServer, OCIRegistry, available_runtimes, fake_secrets, filtered_path_without_binaries,
+    MockApiServer, OCIRegistry, available_runtimes, fake_secrets, filtered_path_without_binary,
     remove_test_images, skip_or_fail,
 };
 use std::cell::RefCell;
@@ -840,8 +839,7 @@ fn spec_tests() {
             .setup(|env| {
                 env.set_env_var("RUST_LOG", "debug");
                 set_fake_secret_vars(env);
-                if let Some(path) = filtered_path_without_binaries(&["snouty-update", HELPER_NAME])
-                {
+                if let Some(path) = filtered_path_without_binary("snouty-update") {
                     env.set_env_var("PATH", &path);
                 }
                 Ok(())

@@ -332,8 +332,7 @@ fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRu
 ///   credential, so the registry refuses the push, and the launch fails with
 ///   the error of Docker before it submits the run.
 /// - Podman gets it from `docker-credential-snouty`, which the launch links
-///   in the global settings dir and puts first on the `PATH` of podman,
-///   because no helper is on the `PATH` of the launch.
+///   in the global settings dir and puts first on the `PATH` of podman.
 ///
 /// The tenant and the repository come from the trusted `./.snouty.toml` of
 /// the launch, which each helper reads, because it runs in the working
@@ -524,15 +523,12 @@ sed '{to_host}' | exec '{helper}' "$@"
             helper = alias.path.display(),
         ),
     );
-    // Podman must not find the Docker helper of the test, or an installed
-    // helper, so that the launch links its own.
-    let path_without_helper =
-        snouty::testutils::filtered_path_without_binaries(&[HELPER_NAME]).unwrap();
+    let parent_path = std::env::var_os("PATH").unwrap();
     let path = |helper_bin: Option<PathBuf>| {
         std::env::join_paths(
             std::iter::once(wrap_bin.clone())
                 .chain(helper_bin)
-                .chain(std::env::split_paths(&path_without_helper)),
+                .chain(std::env::split_paths(&parent_path)),
         )
         .unwrap()
     };

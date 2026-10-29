@@ -544,18 +544,33 @@ fn cmd_completions(shell: Shell) -> io::Result<()> {
     let mut generated = Vec::new();
     clap_complete::generate(shell, &mut cmd, bin_name, &mut generated);
     let generated = String::from_utf8(generated).map_err(io::Error::other)?;
-    // clap_complete includes hidden arguments, but this escape hatch must only
-    // be discoverable in the contributor documentation.
-    let description = "Boot the guest and open a root shell without starting Compose";
-    let mut filtered = generated
+    // clap_complete includes hidden arguments and their value completions.
+    let platform_values = regex::Regex::new(
+        r#"(?ms)^[ \t]*--platform\)\n.*?^[ \t]*;;\n|^complete [^\n]* -l platform [^\n]* -a "[^"]*"\n"#,
+    ).map_err(io::Error::other)?;
+    let without_platform_values = platform_values.replace_all(&generated, "");
+    let descriptions = [
+        "Boot the guest and open a root shell without starting Compose",
+        "Guest and workload image platform (default",
+    ];
+    let mut filtered = without_platform_values
         .lines()
-        .filter(|line| !line.contains(description))
+        .filter(|line| {
+            !descriptions
+                .iter()
+                .any(|description| line.contains(description))
+        })
         .collect::<Vec<_>>()
         .join("\n");
     if generated.ends_with('\n') {
         filtered.push('\n');
     }
-    stdio::stdout().write_all(filtered.replace(" --shell", "").as_bytes())?;
+    stdio::stdout().write_all(
+        filtered
+            .replace(" --shell", "")
+            .replace(" --platform", "")
+            .as_bytes(),
+    )?;
     Ok(())
 }
 

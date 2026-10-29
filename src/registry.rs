@@ -29,8 +29,14 @@ const TOKEN_MIN_LIFETIME: TimeDelta = TimeDelta::hours(2);
 pub struct RegistryHost(String);
 
 impl RegistryHost {
-    pub fn for_tenant(tenant: &str) -> Self {
-        Self(format!("registry.{tenant}.antithesis.com").to_ascii_lowercase())
+    /// The tenant whose registry this host is: `acme` for
+    /// `registry.acme.antithesis.com`. `None` for any other host, and for a
+    /// tenant registry host with a port.
+    pub fn tenant(&self) -> Option<&str> {
+        self.0
+            .strip_prefix("registry.")?
+            .strip_suffix(".antithesis.com")
+            .filter(|tenant| !tenant.is_empty())
     }
 }
 
@@ -86,12 +92,19 @@ impl FromStr for RegistryHost {
 /// tenant or the repository is not set.
 pub fn tenant_registry(settings: &Settings) -> Option<RegistryHost> {
     let host: RegistryHost = settings.repository()?.parse().ok()?;
-    (host == RegistryHost::for_tenant(settings.tenant()?)).then_some(host)
+    host.tenant()?
+        .eq_ignore_ascii_case(settings.tenant()?)
+        .then_some(host)
 }
 
-/// The settings that give the credential for `host`. Settings files resolve
-/// as for every snouty command: `--settings` or `SNOUTY_SETTINGS_PATH` takes
-/// the place of `./.snouty.toml`, and the global settings file applies.
+/// The settings that give the credential for `host`. When `host` is not a
+/// tenant registry host, return `None` at once: read no settings and no
+/// credentials. So for such a host, a selected profile that fails to resolve
+/// gives `None`, not its error.
+///
+/// Otherwise, settings files resolve as for every snouty command:
+/// `--settings` or `SNOUTY_SETTINGS_PATH` takes the place of
+/// `./.snouty.toml`, and the global settings file applies.
 ///
 /// 1. When `--profile` or `ANTITHESIS_PROFILE` names a profile, use only that
 ///    profile. When it fails to resolve, fail with its error. When its tenant
@@ -112,17 +125,19 @@ pub fn select_settings(
     profile: Option<String>,
     host: &RegistryHost,
 ) -> Result<Option<Settings>> {
-    let uses_host = |settings: &Settings| tenant_registry(settings).as_ref() == Some(host);
+    if host.tenant().is_none() {
+        return Ok(None);
+    }
     let request = SettingsRequest::from_flags(project_settings_path, profile)?;
     if request.profile().is_some() {
-        return Ok(Some(request.resolve()?).filter(uses_host));
+        let settings = request.resolve()?;
+        return Ok((tenant_registry(&settings).as_ref() == Some(host)).then_some(settings));
     }
     let mut without_credential = Vec::new();
-    for settings in request
-        .resolve_every_profile()?
-        .into_iter()
-        .filter(uses_host)
-    {
+    for settings in request.resolve_every_profile()? {
+        if tenant_registry(&settings).as_ref() != Some(host) {
+            continue;
+        }
         if AuthenticationInfo::find_ambient(settings.profile())?.is_some() {
             return Ok(Some(settings));
         }
@@ -535,6 +550,27 @@ mod tests {
     }
 
     #[test]
+    fn a_tenant_registry_host_names_its_tenant() {
+        let cases = [
+            ("registry.acme.antithesis.com", Some("acme")),
+            ("https://REGISTRY.Acme.antithesis.com/v2/", Some("acme")),
+            ("registry.acme.antithesis.com:443", Some("acme")),
+            ("registry.eu.acme.antithesis.com", Some("eu.acme")),
+            ("registry.acme.antithesis.com:5000", None),
+            ("acme.antithesis.com", None),
+            ("registry.antithesis.com", None),
+            ("registry..antithesis.com", None),
+            ("docker.acme.antithesis.com", None),
+            ("registry.acme.antithesis.com.example.com", None),
+            ("registry.acme.example.com", None),
+            ("localhost:5000", None),
+        ];
+        for (url, tenant) in cases {
+            assert_eq!(host(url).tenant(), tenant, "{url}");
+        }
+    }
+
+    #[test]
     fn the_tenant_registry_is_the_repository_host_of_that_tenant() {
         let cases = [
             ("acme", "registry.acme.antithesis.com/app", true),
@@ -544,11 +580,13 @@ mod tests {
             ("acme", "us-docker.pkg.dev/acme/repo", false),
             ("acme", "registry.acme.antithesis.com:5000/app", false),
             ("acme", "registry.acme.antithesis.com:443/app", true),
+            ("ACME", "registry.acme.antithesis.com/app", true),
+            ("eu.acme", "registry.eu.acme.antithesis.com/app", true),
         ];
         for (tenant, repository, matches) in cases {
             assert_eq!(
                 tenant_registry(&settings(None, tenant, repository)),
-                matches.then(|| RegistryHost::for_tenant(tenant)),
+                matches.then(|| host(&format!("registry.{tenant}.antithesis.com"))),
                 "{tenant} {repository}"
             );
         }

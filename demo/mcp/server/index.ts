@@ -313,8 +313,8 @@ const http = createServer((req, res) => {
 // Browsers let any page open a WebSocket to loopback, and the socket can
 // call any tool, so only the demo's own page may connect. The Host check
 // stops DNS rebinding. The Origin must be the host:port the request came in
-// on (a reverse proxy names it in X-Forwarded-Host, which a page cannot set),
-// or an origin in ALLOWED_ORIGINS.
+// on, or an origin in ALLOWED_ORIGINS. Behind a reverse proxy, the Host is
+// the proxy's choice, so a proxied page must be in ALLOWED_ORIGINS.
 const ALLOWED_ORIGINS = new Set(
   (process.env.ALLOWED_ORIGINS ?? "")
     .split(",")
@@ -348,8 +348,7 @@ function allowedUpgrade(req: import("node:http").IncomingMessage): boolean {
   } catch {
     return false;
   }
-  const forwarded = String(req.headers["x-forwarded-host"] ?? "").split(",")[0].trim();
-  return originHost === req.headers.host || (forwarded !== "" && originHost === forwarded);
+  return originHost === req.headers.host;
 }
 
 const wss = new WebSocketServer({ noServer: true });

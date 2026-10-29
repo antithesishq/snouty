@@ -36,24 +36,27 @@ npm run demo                # builds the page, then serves it on port 8017
 Open <http://localhost:8017/>. Set `SNOUTY_BIN` to use another snouty binary,
 and `PORT` to use another port.
 
-The page can call any tool with your credentials, so the server guards its
-WebSocket. It listens on 127.0.0.1 only (set `HOST` to change that), and it
-accepts a WebSocket only from its own page: the Origin must be the host and
-port that the request came to, or an origin in `ALLOWED_ORIGINS` (a
-comma-separated list such as `https://demo.example.com`). The page also works
-behind a reverse proxy under a path prefix, for example at `/snouty-mcp/`. The
-proxy must pass WebSocket upgrades for `<prefix>/ws`. Either the proxy sends
-the loopback address as the Host (nginx's `proxy_pass` does by default) and the
-public host and port in `X-Forwarded-Host`, or you add the public origin to
-`ALLOWED_ORIGINS`. For example:
+The page can call any tool with your credentials, and it can spend your
+Anthropic key, so the server guards its WebSocket. It listens on 127.0.0.1 only
+(set `HOST` to change that), and it accepts a WebSocket only from its own page:
+the Origin must be the host and port that the request came to, or an origin in
+`ALLOWED_ORIGINS` (a comma-separated list such as `https://demo.example.com`).
+This stops other web pages and DNS rebinding. It does not stop a person who can
+open the page itself.
+
+To show the page from another machine, put it behind a reverse proxy that
+authenticates each user, and add the public origin to `ALLOWED_ORIGINS`. The
+page works under a path prefix, for example at `/snouty-mcp/`. The proxy must
+pass WebSocket upgrades for `<prefix>/ws`. For example, with nginx:
 
 ```nginx
 location /snouty-mcp/ {
+  auth_basic "snouty mcp demo";
+  auth_basic_user_file /etc/nginx/snouty-demo.htpasswd;
   proxy_pass http://127.0.0.1:8017/;
   proxy_http_version 1.1;
   proxy_set_header Upgrade $http_upgrade;
   proxy_set_header Connection "upgrade";
-  proxy_set_header X-Forwarded-Host $http_host;
 }
 ```
 

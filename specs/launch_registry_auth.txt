@@ -1,0 +1,242 @@
+# snouty launch --config and the tenant registry
+#
+# When the repository is on the tenant registry,
+# registry.<tenant>.antithesis.com, snouty gives the registry secret to the
+# container runtime when it pushes. The secret is an API key, a GitHub Actions
+# OIDC token, or an OAuth token, with the username snouty-token. The registry
+# does not accept a username and password, so with it snouty gives no
+# credential, and the runtime pushes with its own credentials, as for any
+# other registry.
+#
+# Docker reads the credential from DOCKER_AUTH_CONFIG. Only Docker 28.3.0 and
+# later read that variable, and an older Docker pushes with the credentials
+# of its own config.
+#
+# Podman never gets the secret in a file: it gets a temporary auth file that
+# sends it to the docker-credential-snouty helper for the registry. When the
+# helper is not on PATH, snouty links it to itself in the global settings
+# dir, which holds the credentials and which only the user can write, and
+# puts that dir first on the PATH of podman. snouty writes the link only
+# when it does not point at snouty. The helper gives the credential of the
+# settings of the launch: it runs in the working directory of the launch,
+# and the launch gives it its --settings and --profile.
+#
+# The fake engine below gives the --version banner of its engine, builds, and
+# fails each other command. Its push fails with its arguments, which
+# credential variables it got, the variables that select the settings, and an
+# auth error, unless STUB_PUSH_OK is set. When REGISTRY_AUTH_FILE is set, the
+# push also shows the auth file, the first directory of PATH and its files,
+# and what that directory's docker-credential-snouty gives for the registry
+# of the auth file, as podman runs it.
+
+cp bin/engine bin/docker
+cp bin/engine bin/podman
+chmod 755 bin/docker
+chmod 755 bin/podman
+set-env PATH ${WORK}/bin:${PATH}
+set-env XDG_CONFIG_HOME ${WORK}/config
+env REGISTRY_AUTH_FILE=
+env DOCKER_AUTH_CONFIG=
+env ANTITHESIS_TENANT=acme
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
+env ANTITHESIS_REPOSITORY=registry.acme.antithesis.com/repo
+
+# Docker gets the credential in DOCKER_AUTH_CONFIG. A failed push shows the
+# error of Docker.
+env SNOUTY_CONTAINER_ENGINE=docker
+! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30
+stderr 'Building config image'
+stderr 'fake docker: push registry.acme.antithesis.com/repo/snouty-config:\S+ REGISTRY_AUTH_FILE=\[\] DOCKER_AUTH_CONFIG=\[set\]'
+stderr 'unauthorized: authentication required'
+
+# Podman gets the auth file and the helper, which gives the secret. The
+# helper is in the global settings dir, which only the user can read or
+# write. The auth file goes away after the launch.
+env SNOUTY_CONTAINER_ENGINE=podman
+! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30
+stderr 'fake podman: push --digestfile=\S+ registry.acme.antithesis.com/repo/snouty-config:\S+ REGISTRY_AUTH_FILE=\[set\] DOCKER_AUTH_CONFIG=\[\]'
+stderr 'auth file: /\S+ \{"credHelpers":\{"registry.acme.antithesis.com":"snouty"\}\}$'
+stderr -literal 'helper dir: ${WORK}/config/snouty docker-credential-snouty'
+stderr 'settings: profile=\[\] path=\[\]$'
+stderr 'helper: \{"ServerURL":"registry\.acme\.antithesis\.com","Username":"snouty-token","Secret":"${FAKE_API_KEY_A@R}"\}'
+exists config/snouty/docker-credential-snouty
+exec ls -ld config/snouty
+stdout '^drwx------'
+
+# A helper on PATH, as after an install of snouty, is the one that podman
+# runs, and snouty links nothing.
+rm config/snouty/docker-credential-snouty
+cp bin/installed-helper bin/docker-credential-snouty
+chmod 755 bin/docker-credential-snouty
+! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30
+stderr -literal 'helper dir: ${WORK}/bin '
+stderr 'helper: installed helper$'
+! exists config/snouty/docker-credential-snouty
+rm bin/docker-credential-snouty
+
+# The helper resolves the settings of the launch: the --settings file and the
+# --profile. Without the profile, the helper would refuse, because two
+# profiles use the registry. Docker gets them too, for a helper that its
+# config runs.
+env ANTITHESIS_TENANT=
+env ANTITHESIS_REPOSITORY=
+! snouty launch --settings two-profiles.toml --profile b --launcher basic_k8s_test -c k8s_config --duration 30
+stderr 'settings: profile=\[b\] path=\[two-profiles\.toml\]$'
+stderr 'helper: \{"ServerURL":"registry\.acme\.antithesis\.com","Username":"snouty-token","Secret":"${FAKE_API_KEY_A@R}"\}'
+env SNOUTY_CONTAINER_ENGINE=docker
+! snouty launch --settings two-profiles.toml --profile b --launcher basic_k8s_test -c k8s_config --duration 30
+stderr 'DOCKER_AUTH_CONFIG=\[set\]'
+stderr 'settings: profile=\[b\] path=\[two-profiles\.toml\]$'
+env SNOUTY_CONTAINER_ENGINE=podman
+
+# The helper runs in the working directory of the launch, so it reads the
+# same ./.snouty.toml. The trust decisions are in the global settings dir, so
+# the helper also uses the file only because the user trusts it. An untrusted
+# file stops the launch before the build.
+cd project
+! snouty launch --launcher basic_k8s_test -c ../k8s_config --duration 30
+stderr 'is not trusted'
+! stderr 'fake podman'
+snouty settings trust
+! snouty launch --launcher basic_k8s_test -c ../k8s_config --duration 30
+stderr 'settings: profile=\[\] path=\[\]$'
+stderr 'helper: \{"ServerURL":"registry\.acme\.antithesis\.com","Username":"snouty-token","Secret":"${FAKE_API_KEY_A@R}"\}'
+cd .
+env ANTITHESIS_TENANT=acme
+env SNOUTY_CONTAINER_ENGINE=docker
+
+# The tenant registry does not accept a username and password, so snouty
+# gives no credential, and the runtime pushes with its own.
+env ANTITHESIS_REPOSITORY=registry.acme.antithesis.com/repo
+env ANTITHESIS_API_KEY=
+set-env ANTITHESIS_USERNAME ${FAKE_USERNAME}
+set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
+! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30
+stderr 'fake docker: push registry.acme.antithesis.com/repo/snouty-config:\S+ REGISTRY_AUTH_FILE=\[\] DOCKER_AUTH_CONFIG=\[\]'
+! stderr 'container registry does not accept'
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
+
+# A repository on a different registry, or on the tenant registry of a
+# different tenant, pushes with no credential from snouty.
+env ANTITHESIS_REPOSITORY=registry.example.com/repo
+! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30
+stderr 'fake docker: push registry.example.com/repo/snouty-config:\S+ REGISTRY_AUTH_FILE=\[\] DOCKER_AUTH_CONFIG=\[\]'
+env ANTITHESIS_REPOSITORY=registry.other.antithesis.com/repo
+env SNOUTY_CONTAINER_ENGINE=podman
+! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30
+stderr 'fake podman: push --digestfile=\S+ registry.other.antithesis.com/repo/snouty-config:\S+ REGISTRY_AUTH_FILE=\[\] DOCKER_AUTH_CONFIG=\[\]'
+
+# The cases below use the mock server and stored credentials.
+[staging] skip
+
+# A push that succeeds launches the run.
+mock-runs-server
+env ANTITHESIS_REPOSITORY=registry.testtenant.antithesis.com/repo
+env SNOUTY_CONTAINER_ENGINE=docker
+env STUB_PUSH_OK=1
+snouty launch --launcher basic_k8s_test -c k8s_config --duration 30
+stderr 'Config image pushed successfully: registry.testtenant.antithesis.com/repo/snouty-config@sha256:pushed'
+stderr 'Requesting Antithesis test run'
+env STUB_PUSH_OK=
+
+# Stored OAuth credentials give the credential too. The launch refreshes a
+# token whose expiry it cannot read, and the helper gives the new token.
+env ANTITHESIS_API_KEY=
+isolate-home oauth
+substitute ~/.config/snouty/credentials.toml
+env SNOUTY_CONTAINER_ENGINE=podman
+! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30
+stderr 'auth file: /\S+ \{"credHelpers":\{"registry.testtenant.antithesis.com":"snouty"\}\}$'
+stderr 'helper: \{"ServerURL":"registry\.testtenant\.antithesis\.com","Username":"snouty-token","Secret":"${FAKE_ACCESS_TOKEN_B@R}"\}'
+file ~/.config/snouty/credentials.toml 'antithesis_token = "${FAKE_ACCESS_TOKEN_B@R}"'
+
+# In a GitHub Actions workflow, the secret is the workflow's OIDC token. The
+# helper that podman runs gets it from the Actions token endpoint too, and
+# Docker gets it in DOCKER_AUTH_CONFIG.
+isolate-home oidc
+set-env ACTIONS_ID_TOKEN_REQUEST_URL ${ANTITHESIS_BASE_URL}/github-actions/token?api-version=2.0
+set-env ACTIONS_ID_TOKEN_REQUEST_TOKEN ${FAKE_OIDC_REQUEST_TOKEN}
+! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30
+stderr 'fake podman: push --digestfile=\S+ registry.testtenant.antithesis.com/repo/snouty-config:\S+ REGISTRY_AUTH_FILE=\[set\] DOCKER_AUTH_CONFIG=\[\]'
+stderr 'helper: \{"ServerURL":"registry\.testtenant\.antithesis\.com","Username":"snouty-token","Secret":"${FAKE_OIDC_TOKEN@R}"\}'
+env SNOUTY_CONTAINER_ENGINE=docker
+! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30
+stderr 'fake docker: push registry.testtenant.antithesis.com/repo/snouty-config:\S+ REGISTRY_AUTH_FILE=\[\] DOCKER_AUTH_CONFIG=\[set\]'
+
+# A failed token request stops the launch before the build.
+set-env ACTIONS_ID_TOKEN_REQUEST_URL ${ANTITHESIS_BASE_URL}/no-such-endpoint?api-version=2.0
+! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30
+stderr 'failed to fetch a GitHub Actions OIDC token'
+! stderr 'Building config image'
+
+# The launch resolves the credential once, so a username and password warn
+# once, also when the launch both pushes and sends the run. The mock server
+# refuses the password, after the launch has sent the run.
+isolate-home password_launch
+env ACTIONS_ID_TOKEN_REQUEST_URL=
+env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
+set-env ANTITHESIS_USERNAME ${FAKE_USERNAME}
+set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
+env STUB_PUSH_OK=1
+! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30
+stderr 'Config image pushed successfully'
+stderr 'Requesting Antithesis test run'
+stderr -count=1 'support will be removed in a future release'
+
+-- oauth/.config/snouty/credentials.toml --
+[default]
+type = "OAuth"
+antithesis_token = "${FAKE_ACCESS_TOKEN_A}"
+refresh_token = "${FAKE_REFRESH_TOKEN_A}"
+
+-- bin/engine --
+#!/bin/sh
+engine=$(basename "$0")
+case "$1" in
+  --version)
+    case "$engine" in
+      podman) echo 'podman version 4.9.3';;
+      *) echo 'Docker version 28.3.0, build 38b7060';;
+    esac;;
+  build) cat >/dev/null;;
+  push)
+    if [ -n "$STUB_PUSH_OK" ]; then
+      for arg in "$@"; do case "$arg" in --digestfile=*) printf 'sha256:pushed' > "${arg#--digestfile=}";; esac; done
+      echo 'latest: digest: sha256:pushed size: 1'
+      exit 0
+    fi
+    echo "fake $engine: $* REGISTRY_AUTH_FILE=[${REGISTRY_AUTH_FILE:+set}] DOCKER_AUTH_CONFIG=[${DOCKER_AUTH_CONFIG:+set}]" >&2
+    echo "settings: profile=[${ANTITHESIS_PROFILE-}] path=[${SNOUTY_SETTINGS_PATH-}]" >&2
+    if [ -n "$REGISTRY_AUTH_FILE" ]; then
+      echo "auth file: $REGISTRY_AUTH_FILE $(cat "$REGISTRY_AUTH_FILE")" >&2
+      helper_dir=${PATH%%:*}
+      echo "helper dir: $helper_dir" $(ls "$helper_dir") >&2
+      host=$(sed -n 's/.*"credHelpers":{"\([^"]*\)".*/\1/p' "$REGISTRY_AUTH_FILE")
+      credential=$(printf %s "$host" | "$helper_dir/docker-credential-snouty" get)
+      echo "helper: $credential" >&2
+    fi
+    echo 'unauthorized: authentication required' >&2
+    exit 1;;
+  *) echo "fake $engine: $1" >&2; exit 1;;
+esac
+-- bin/installed-helper --
+#!/bin/sh
+echo 'installed helper'
+-- two-profiles.toml --
+[profile.a]
+tenant = "acme"
+repository = "registry.acme.antithesis.com/repo"
+
+[profile.b]
+tenant = "acme"
+repository = "registry.acme.antithesis.com/repo"
+-- project/.snouty.toml --
+tenant = "acme"
+repository = "registry.acme.antithesis.com/repo"
+-- k8s_config/manifests/ns.yaml --
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo

@@ -194,6 +194,18 @@ pub async fn secret(api: &AntithesisApi) -> Result<String> {
     }
 }
 
+/// The registry secret that `snouty launch` presents: [`secret`], or `None`
+/// for a username and password, which the registry does not accept. With
+/// `None`, the container runtime pushes with its own credentials.
+pub async fn launch_secret(api: &AntithesisApi) -> Result<Option<String>> {
+    match api.authentication() {
+        AuthenticationInfo::Password { .. } => Ok(None),
+        AuthenticationInfo::ApiKey { .. }
+        | AuthenticationInfo::GithubActionsOidc(_)
+        | AuthenticationInfo::OAuth(_) => secret(api).await.map(Some),
+    }
+}
+
 /// The OAuth access token of `token`, the credential of `api`.
 ///
 /// A token that expires in more than [`TOKEN_MIN_LIFETIME`] is used as it is.
@@ -307,6 +319,25 @@ mod tests {
         };
         let err = secret(&api(NO_SERVER, auth)).await.unwrap_err();
         assert!(err.to_string().contains("set ANTITHESIS_API_KEY"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn launch_presents_no_secret_for_a_password() {
+        let auth = AuthenticationInfo::Password {
+            username: FAKE_USERNAME.to_owned(),
+            password: FAKE_PASSWORD.to_owned(),
+        };
+        assert_eq!(launch_secret(&api(NO_SERVER, auth)).await.unwrap(), None);
+        let auth = AuthenticationInfo::ApiKey {
+            api_key: FAKE_API_KEY_A.to_owned(),
+        };
+        assert_eq!(
+            launch_secret(&api(NO_SERVER, auth))
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(FAKE_API_KEY_A)
+        );
     }
 
     #[tokio::test]

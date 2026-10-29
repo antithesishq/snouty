@@ -337,6 +337,8 @@ ln -s "$(command -v snouty)" ~/.local/bin/docker-credential-snouty
 
 Then `docker push`, `docker pull`, `podman push` and `podman pull` automatically use your snouty credentials for the Antithesis docker registry.
 
+`snouty launch --config` does not need the helper. When the repository is on the tenant registry, snouty gives your credential to Docker or Podman when it pushes the images of the launch. For Docker, this needs Docker 28.3.0 or later. With an older Docker, configure the helper as shown above. For Podman, snouty gives a temporary auth file, which holds no secret, that sends Podman to `docker-credential-snouty`. When that helper is not on your `PATH`, snouty links it to itself in its config directory (`$XDG_CONFIG_HOME/snouty` or `~/.config/snouty`). A username and password does not work with the registry, so with it, Docker or Podman pushes with its own credentials.
+
 ### Username and password (deprecated)
 
 Username and password authentication is deprecated. It works with `snouty launch` and `snouty debug` only, and both print a warning that points to `snouty login`. Every other command that talks to the API refuses it. Use `snouty login` or an API key instead.

@@ -1,0 +1,35 @@
+{
+  "name": "snouty-mcp-demo",
+  "version": "1.0.0",
+  "description": "A browser demo of snouty mcp: a Claude agent that uses the snouty MCP server.",
+  "scripts": {
+    "build": "vite build",
+    "start": "tsx server/index.ts",
+    "demo": "vite build && tsx server/index.ts",
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx test/e2e.ts"
+  },
+  "type": "module",
+  "dependencies": {
+    "@antadesign/anta": "^0.3.37",
+    "@anthropic-ai/sdk": "^1.3.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "dompurify": "^3.4.17",
+    "marked": "^18.1.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/ws": "^8.18.2",
+    "@vitejs/plugin-react": "^6.1.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  },
+  "private": true
+}

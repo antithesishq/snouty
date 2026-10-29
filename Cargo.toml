@@ -36,6 +36,8 @@ description = "A CLI tool for using the Antithesis API"
 license = "Apache-2.0"
 repository = "https://github.com/antithesishq/snouty"
 default-run = "snouty"
+# The browser demo of `snouty mcp` is a Node app, not part of the crate.
+exclude = ["/demo"]
 
 [dependencies]
 base64 = "0.23"

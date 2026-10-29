@@ -18,7 +18,7 @@ mod show;
 mod trust;
 pub use files::{SettingsFile, SettingsFileType};
 pub use show::cmd_settings_show;
-pub use trust::{SETTINGS_TRUST_VAR_NAME, deny, trust};
+pub use trust::{SETTINGS_TRUST_VAR_NAME, UntrustedSettingsFile, deny, trust};
 
 pub const ANTITHESIS_PROFILE_ENV_VAR_NAME: &str = "ANTITHESIS_PROFILE";
 pub const SNOUTY_SETTINGS_PATH_VAR_NAME: &str = "SNOUTY_SETTINGS_PATH";

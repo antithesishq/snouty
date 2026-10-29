@@ -13,6 +13,7 @@ use crate::api::{AntithesisApi, ResponseCache};
 use crate::cli::DockerCredentialAction;
 use crate::error::user_error;
 use crate::registry::{self, TenantRegistry, TenantRegistryError};
+use crate::settings::UntrustedSettingsFile;
 use crate::stdio;
 
 /// The requested registry is not a tenant registry, or no profile uses it as
@@ -61,8 +62,14 @@ pub async fn run(
 ) -> Result<()> {
     let result = cmd_docker_credential(action, settings_path, profile).await;
     if let Err(report) = &result {
+        // Docker shows only this line, so for a project settings file that
+        // the user has not trusted, it also names the fix.
+        let message = match report.downcast_ref::<UntrustedSettingsFile>() {
+            Some(untrusted) => format!("{untrusted}. {}", UntrustedSettingsFile::suggestion()),
+            None => report.to_string(),
+        };
         // The returned error fails the action, so a failed write loses nothing.
-        let _ = writeln!(stdio::stdout(), "{report}");
+        let _ = writeln!(stdio::stdout(), "{message}");
     }
     result
 }

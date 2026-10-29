@@ -45,8 +45,8 @@ faults. A run explores a tree of timelines, and an event, a property example or 
 one moment of it: a run_id, an input_hash and a vtime. These tools operate on the runs \
 of an Antithesis tenant, run commands at a moment of a run, and search the Antithesis \
 documentation. Each tool returns the detailed human output of its command. Set its json param \
-to true only when you need a field that this output does not show: the JSON is several times \
-larger. tool_help returns the full help of a tool.";
+to true only when you need a field that this output does not show: the JSON is usually several \
+times larger. tool_help returns the full help of a tool.";
 
 /// The server's own options. Every tool call passes `settings`, `profile`
 /// and `verbose` to its child. A client cannot set them.

@@ -1,6 +1,6 @@
 Show one property of a run, in full: its name, ID, group, category, team, status, example totals, and sample moments{% if cli %}, as `snouty runs properties --detail` shows them{% else %}, as `{{ t("runs properties")? }}` returns each property{% endif %}.
 
-{% if cli %}The property ID is in the ID column of `snouty runs properties`, in its --detail output, and in its JSON output.{% else %}{{ t("property_id")? }} is the id field of a property that `{{ t("runs properties")? }}` returns.{% endif %} Property lookup needs a run created on release 65.3 or later.
+{% if cli %}The property ID is in the ID column of `snouty runs properties`, in its --detail output, and in its JSON output.{% else %}{{ t("property_id")? }} is the ID of a property that `{{ t("runs properties")? }}` returns.{% endif %} Property lookup needs a run created on release 65.3 or later.
 
 Examples:
 {%- if cli %}

@@ -37,8 +37,9 @@ The tools:
 
 Each tool runs its snouty command and returns what the command prints: stdout,
 then stderr in a second block when there is any. The output is the human output
-of the command, in its detailed form: a command that has --detail runs with it.
-A tool's `json` param, when true, runs the command with --json instead, and
+of the command, in its detailed form: a command that has --detail runs with it,
+unless another param conflicts with --detail, such as `count` of runs_search. A
+tool's `json` param, when true, runs the command with --json instead, and
 without --detail. docs_show has no `json` param, because its output is the same
 in both modes. The params of a tool are the other arguments of its command, by
 name. A command that fails marks the result isError.

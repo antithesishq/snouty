@@ -42,9 +42,20 @@ accepts a WebSocket only from its own page: the Origin must be the host and
 port that the request came to, or an origin in `ALLOWED_ORIGINS` (a
 comma-separated list such as `https://demo.example.com`). The page also works
 behind a reverse proxy under a path prefix, for example at `/snouty-mcp/`. The
-proxy must pass WebSocket upgrades for `<prefix>/ws`, and either set
-`X-Forwarded-Host` to the public host, or you add the public origin to
-`ALLOWED_ORIGINS`.
+proxy must pass WebSocket upgrades for `<prefix>/ws`. Either the proxy sends
+the loopback address as the Host (nginx's `proxy_pass` does by default) and the
+public host and port in `X-Forwarded-Host`, or you add the public origin to
+`ALLOWED_ORIGINS`. For example:
+
+```nginx
+location /snouty-mcp/ {
+  proxy_pass http://127.0.0.1:8017/;
+  proxy_http_version 1.1;
+  proxy_set_header Upgrade $http_upgrade;
+  proxy_set_header Connection "upgrade";
+  proxy_set_header X-Forwarded-Host $http_host;
+}
+```
 
 ## Check it before a demo
 

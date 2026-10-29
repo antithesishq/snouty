@@ -62,8 +62,8 @@ export class AgentSession {
   private approvals = new Map<string, (ok: boolean) => void>();
   private anthropic = new Anthropic();
   private turnSeq = 0;
-  // A stopped turn takes a moment to unwind. The next turn waits for it, and
-  // after a reset its last events would land in the new chat, so they drop.
+  // A stopped turn takes time to unwind; the next turn waits for it. After a
+  // reset, `muted` drops its late events.
   private finished: Promise<unknown> = Promise.resolve();
   private muted = false;
 
@@ -225,8 +225,6 @@ export class AgentSession {
       return { type: "tool_result", tool_use_id: call.id, content: forModel, is_error: isError };
     };
 
-    // The server marks the tools that only read with readOnlyHint. The user
-    // approves each call of any other tool.
     const tool = this.mcp.tools.find((t) => t.name === call.name);
     if (tool?.annotations?.readOnlyHint !== true) {
       this.emit({ type: "approval", id: call.id, name: call.name, input: call.input });

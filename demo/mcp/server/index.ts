@@ -1,6 +1,3 @@
-// The demo server: it starts `snouty mcp`, serves the browser UI, and talks
-// to each browser over one WebSocket.
-
 import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, extname, join, resolve } from "node:path";
@@ -79,7 +76,6 @@ class Client {
     if (this.ws.readyState === this.ws.OPEN) this.ws.send(JSON.stringify(msg));
   }
 
-  /** Sends a message, and adds it to the turn that is being recorded. */
   private forward(msg: unknown) {
     if (this.recording) this.recording.events.push({ t: Date.now() - this.recordStart, e: msg });
     this.send(msg);

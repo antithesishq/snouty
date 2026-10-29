@@ -1,6 +1,3 @@
-// Browser state: one reducer folds every server message into the chat, the
-// wire log and the tool stats.
-
 export interface Tool {
   name: string;
   description?: string;
@@ -19,7 +16,7 @@ export interface JsonSchema {
   items?: { type?: string };
 }
 
-/** The agent asks the user before it calls a tool that is not marked read-only. */
+/** Must match the approval check in server/agent.ts. */
 export function needsApproval(tool: Tool) {
   return tool.annotations?.readOnlyHint !== true;
 }
@@ -49,7 +46,7 @@ export interface Recording {
 
 export type ToolStatus = "pending" | "approval" | "running" | "ok" | "error" | "declined" | "cancelled";
 
-// The tool results that server/agent.ts writes for calls that did not run.
+// Must match the strings in server/agent.ts.
 const DECLINED = "The user declined this call.";
 const CANCELLED = "The user cancelled this call.";
 
@@ -137,7 +134,6 @@ export type Action =
   | { type: "local_settings"; model?: string; effort?: string }
   | { type: "clear_chat" };
 
-// Messages from the demo server. See server/index.ts.
 export type ServerMsg = { type: string; [k: string]: unknown };
 
 type AgentEvent = { type: string; [k: string]: unknown };
@@ -146,7 +142,7 @@ function updateTool(chat: ChatItem[], id: string, f: (t: Extract<ChatItem, { kin
   return chat.map((c) => (c.kind === "tool" && c.id === id ? f(c) : c));
 }
 
-/** The snouty subcommand that a tool runs: `runs_properties` → `runs properties`. */
+/** The snouty subcommand that a tool runs. */
 function commandWords(tool: string) {
   return tool.replace(/_/g, " ");
 }

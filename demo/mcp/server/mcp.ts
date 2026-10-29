@@ -35,7 +35,6 @@ class TapTransport implements Transport {
   onclose?: () => void;
   onerror?: (error: Error) => void;
   onmessage?: Transport["onmessage"];
-  /** The client sets this after `initialize`. */
   protocolVersion?: string;
 
   constructor(
@@ -97,7 +96,7 @@ export class SnoutyMcp {
       env: {
         ...(process.env as Record<string, string>),
         SNOUTY_UNSTABLE_FEATURES: "mcp",
-        // The server logs each command line it runs at debug level.
+        // src/state.ts reads the `running:` debug lines to label tool calls.
         RUST_LOG: "snouty::mcp=debug",
       },
       stderr: "pipe",

@@ -284,9 +284,7 @@ in the configured repository. No API key is required.
 
 Requires Linux or macOS and QEMU. Uses 1 CPU and 15000 MiB of memory by default.
 Use --memory to lower guest memory when the host has less RAM.
-The guest platform defaults to the host architecture. Use --platform arm64 to
-run an ARM64 guest and ARM64 workload images on an x86-64 host. ARM64 guests
-require QEMU AArch64 and EDK2 AArch64 UEFI firmware.
+The guest uses the host architecture by default.
 SSH configuration is private to this run; user configuration is not changed.
 
 Waits for setup_complete before starting test composer on each rollout.
@@ -596,7 +594,7 @@ pub struct SimulateArgs {
     pub guest_image: Option<String>,
 
     /// Guest and workload image platform (default: native host platform)
-    #[arg(long, value_enum, default_value_t = SimulatePlatform::default(), conflicts_with = "attach")]
+    #[arg(long, hide = true, value_enum, default_value_t = SimulatePlatform::default(), conflicts_with = "attach")]
     pub platform: SimulatePlatform,
 
     /// Run one rollout, then continue streaming logs until interrupted

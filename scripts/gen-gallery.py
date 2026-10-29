@@ -2210,7 +2210,7 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "Understand guest simulation",
             "I want to run a Compose setup in a guest VM and understand image "
             "selection with antithesis-guest:v66.0 in the configured repository without an API key, "
-            "and the native host default, "
+            "and the native host architecture, "
             "Linux and macOS requirements, setup_complete before test composer and fault injection start, "
             "forced fault rerandomization only on the first rollout, then a guest timer "
             "calling add_entropy independently of composer restarts, "

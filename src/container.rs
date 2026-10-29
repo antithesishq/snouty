@@ -568,6 +568,8 @@ impl ContainerRuntime for PodmanRuntime {
     }
 }
 
+/// A real Docker CLI. A `docker` that is podman (podman-docker) gets a
+/// [`PodmanRuntime`] instead (see [`docker_runtime`]).
 #[derive(Clone)]
 pub struct DockerRuntime {
     cmd: String,
@@ -642,12 +644,17 @@ pub fn generate_image_ref(registry: &str) -> String {
 /// dockerd). `--version` is answered by the client alone, so it stays instant
 /// no matter what state the daemon is in.
 pub fn is_podman_in_disguise(cmd: &str) -> bool {
-    Command::new(cmd)
-        .arg("--version")
-        .output()
+    version_stdout(cmd).is_some_and(|stdout| version_output_is_podman(&stdout))
+}
+
+/// The stdout of `cmd --version`, or `None` when it cannot run or fails.
+fn version_stdout(cmd: &str) -> Option<Vec<u8>> {
+    let mut probe = Command::new(cmd);
+    probe.arg("--version");
+    output_with_timeout(probe, DISCOVERY_COMMAND_TIMEOUT)
         .ok()
         .filter(|o| o.status.success())
-        .is_some_and(|o| version_output_is_podman(&o.stdout))
+        .map(|o| o.stdout)
 }
 
 /// Whether a `--version` banner came from podman. Split out from
@@ -657,6 +664,18 @@ fn version_output_is_podman(stdout: &[u8]) -> bool {
     String::from_utf8_lossy(stdout)
         .to_lowercase()
         .contains("podman")
+}
+
+/// The runtime for the docker CLI `cmd`, whose `cmd --version` printed
+/// `version_stdout`: a [`PodmanRuntime`] when the banner is podman's
+/// (podman-docker), else a [`DockerRuntime`].
+fn docker_runtime(cmd: &str, version_stdout: &[u8]) -> Box<dyn ContainerRuntime> {
+    if version_output_is_podman(version_stdout) {
+        log::warn!("'{cmd}' is podman, so snouty runs it as podman");
+        Box::new(PodmanRuntime::new(cmd))
+    } else {
+        Box::new(DockerRuntime::new(cmd))
+    }
 }
 
 /// Return the auto-detected global container runtime, preferring podman over docker.
@@ -670,7 +689,12 @@ pub fn runtime(settings: &Settings) -> Result<Box<dyn ContainerRuntime>> {
     if let Some(engine) = settings.container_engine() {
         return match engine {
             "podman" => Ok(Box::new(PodmanRuntime::new("podman"))),
-            "docker" => Ok(Box::new(DockerRuntime::new("docker"))),
+            // A `docker` that cannot run fails on its first real command, with
+            // that command's error.
+            "docker" => Ok(docker_runtime(
+                "docker",
+                &version_stdout("docker").unwrap_or_default(),
+            )),
             other => Err(eyre!(
                 "unsupported container engine '{other}': expected 'podman' or 'docker'"
             )),
@@ -690,14 +714,8 @@ pub fn runtime(settings: &Settings) -> Result<Box<dyn ContainerRuntime>> {
     // Fall back to docker
     match Command::new("docker").arg("--version").output() {
         Ok(output) if output.status.success() => {
-            // The banner we just captured already says whether this `docker` is
-            // really podman, so decide from it rather than asking again.
-            if version_output_is_podman(&output.stdout) {
-                log::warn!("podman not found as 'podman', but 'docker' is podman");
-                return Ok(Box::new(PodmanRuntime::new("docker")));
-            }
             log::warn!("podman not found, falling back to docker");
-            Ok(Box::new(DockerRuntime::new("docker")))
+            Ok(docker_runtime("docker", &output.stdout))
         }
         Ok(_) => Err(eyre!(
             "'docker --version' failed; unable to find working container runtime"
@@ -1270,6 +1288,57 @@ mod tests {
         // Nothing to read is not podman, and invalid UTF-8 must not panic.
         assert!(!version_output_is_podman(b""));
         assert!(!version_output_is_podman(&[0xff, 0xfe, 0xfd]));
+    }
+
+    /// A fake `docker` in `dir` that prints `banner` for `--version`. Its
+    /// `push` answers both ways: it fills a podman `--digestfile`, and it
+    /// prints docker's `digest:` line with a different digest.
+    fn fake_docker_cli(dir: &Path, banner: &str) -> (String, Vec<u8>) {
+        let cmd = dir.join("docker");
+        crate::testutils::write_script(
+            &cmd,
+            &format!(
+                r#"case "$1" in
+  --version) echo '{banner}';;
+  push) for arg; do
+      case "$arg" in --digestfile=*) echo sha256:podman > "${{arg#--digestfile=}}";; esac
+    done
+    echo 'v1: digest: sha256:docker size: 1';;
+esac
+"#
+            ),
+        );
+        let output = Command::new(&cmd).arg("--version").output().unwrap();
+        (cmd.to_str().unwrap().to_owned(), output.stdout)
+    }
+
+    /// A `docker` that is podman (podman-docker) gets a podman runtime, which
+    /// pushes with a digest file: podman prints no `digest:` line.
+    #[test]
+    fn podman_docker_gets_a_podman_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cmd, version) = fake_docker_cli(dir.path(), "podman version 5.4.0");
+        let rt = docker_runtime(&cmd, &version);
+        assert_eq!(rt.engine_kind(), "podman");
+        assert_eq!(rt.name(), cmd);
+        assert_eq!(
+            rt.image_push("registry.example/app:v1").unwrap(),
+            "registry.example/app:v1@sha256:podman"
+        );
+    }
+
+    /// A real Docker gets a Docker runtime, which reads the `digest:` line.
+    #[test]
+    fn docker_gets_a_docker_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cmd, version) = fake_docker_cli(dir.path(), "Docker version 27.4.0, build bde2b89");
+        let rt = docker_runtime(&cmd, &version);
+        assert_eq!(rt.engine_kind(), "docker");
+        assert_eq!(rt.name(), cmd);
+        assert_eq!(
+            rt.image_push("registry.example/app:v1").unwrap(),
+            "registry.example/app:v1@sha256:docker"
+        );
     }
 
     #[test]

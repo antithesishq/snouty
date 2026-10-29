@@ -231,6 +231,16 @@ stderr '^  ⚠ username/password for user \[envuser\] only works for `snouty lau
 ! stderr 'hiding your API key'
 ! stderr 'more than one credential source'
 
+# An explicit `docker` engine that is podman (podman-docker) runs as podman.
+# The fake docker-compose keeps the compose check independent of the host.
+# This case is last because it changes PATH.
+chmod 755 podman-docker/docker
+chmod 755 podman-docker/docker-compose
+set-env PATH ${WORK}/podman-docker:${PATH}
+env SNOUTY_CONTAINER_ENGINE=docker
+snouty doctor --offline
+stderr 'Container runtime: podman detected'
+
 -- credential_conflict/.config/snouty/credentials.toml --
 [default]
 type = "ApiKey"
@@ -254,3 +264,11 @@ api_key = ""
 
 -- broken_credentials/.config/snouty/credentials.toml --
 this is not valid TOML {{{
+
+-- podman-docker/docker --
+#!/bin/sh
+echo 'podman version 5.4.0'
+
+-- podman-docker/docker-compose --
+#!/bin/sh
+echo '2.30.0'

@@ -10,4 +10,4 @@ The command needs tenant release 63.0 or newer; `doctor` reports the tenant rele
 Examples:
   runs_cancel {"run_id": "<run_id>"}
 
-The cancelled run id prints as one JSON object, with the field run_id.
+With `json`, the cancelled run id prints as one JSON object, with the field run_id.

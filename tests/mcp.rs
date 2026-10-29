@@ -193,14 +193,20 @@ async fn tools_return_detailed_output_or_json() {
     assert!(usage["hours"].is_number(), "{usage}");
 
     // runs_events searches a run's events for every term of matches.
-    let call_args = json!({ "run_id": run["run_id"], "matches": ["request", "slow"] });
+    let call_args =
+        json!({ "run_id": run["run_id"], "matches": ["request", "slow"], "json": true });
     let result = call(&client, "runs_events", call_args).await;
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
     let event: Value = serde_json::from_str(text(&result).lines().next().unwrap()).unwrap();
     assert!(event["moment"]["vtime"].is_number(), "{event}");
 
     // runs_cancel cancels an in-progress run.
-    let result = call(&client, "runs_cancel", json!({ "run_id": "run-2" })).await;
+    let result = call(
+        &client,
+        "runs_cancel",
+        json!({ "run_id": "run-2", "json": true }),
+    )
+    .await;
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
     let cancelled: Value = serde_json::from_str(text(&result)).unwrap();
     assert_eq!(cancelled["run_id"], "run-2");
@@ -208,8 +214,8 @@ async fn tools_return_detailed_output_or_json() {
     let result = call(&client, "runs_cancel", json!({ "run_id": run["run_id"] })).await;
     assert_eq!(result.is_error, Some(true), "{}", text(&result));
 
-    // version returns the crate version as JSON.
-    let result = call(&client, "version", json!({})).await;
+    // With `json`, version returns the crate version as JSON.
+    let result = call(&client, "version", json!({ "json": true })).await;
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
     let version: Value = serde_json::from_str(text(&result)).unwrap();
     assert_eq!(version["version"], env!("CARGO_PKG_VERSION"));

@@ -26,5 +26,5 @@ Examples:
 Add --json for machine-readable output. Each event prints as one JSON object on its own line:
   {{ t("snouty --json runs events <run_id> -m error | jq -r .moment.vtime")? }}
 {% else %}
-Each event prints as one JSON object on its own line.
+With {{ t("--json")? }}, each event prints as one JSON object on its own line.
 {% endif %}

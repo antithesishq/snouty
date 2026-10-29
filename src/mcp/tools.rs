@@ -611,7 +611,8 @@ mod tests {
         assert_eq!(events["properties"]["matches"]["type"], "array");
         assert_eq!(events["properties"]["limit"]["type"], "integer");
         assert!(events["properties"].get("query").is_none(), "{events:?}");
-        assert_eq!(schema(ToolName::Version)["properties"], json!({}));
+        let version = schema(ToolName::Version)["properties"].as_object().unwrap();
+        assert_eq!(version.keys().collect::<Vec<_>>(), [JSON]);
         let tree = schema(ToolName::DocsTree);
         assert_eq!(tree["properties"]["depth"]["minimum"], 1);
     }

@@ -14,7 +14,7 @@ use color_eyre::eyre::Result;
 use crate::api::AntithesisApi;
 use crate::auth::AuthenticationInfo;
 use crate::error::user_error;
-use crate::settings::{Settings, SettingsRequest};
+use crate::settings::{Settings, SettingsRequest, is_valid_tenant_host};
 
 pub const USERNAME: &str = "snouty-token";
 
@@ -22,95 +22,99 @@ pub const USERNAME: &str = "snouty-token";
 /// [`password`] returns must outlive the push.
 const TOKEN_MIN_LIFETIME: TimeDelta = TimeDelta::hours(2);
 
-/// A registry host, such as `registry.acme.antithesis.com`, or
-/// `localhost:5000` with its port. It holds no scheme and no path, and its
-/// letters are lowercase, because a host name ignores case.
+/// The container registry of a tenant, `registry.<tenant>.antithesis.com`.
+/// The tenant is lowercase, because a host name ignores case.
 #[derive(Debug, PartialEq, Eq)]
-pub struct RegistryHost(String);
+pub struct TenantRegistry {
+    tenant: String,
+}
 
-impl RegistryHost {
-    /// The tenant whose registry this host is: `acme` for
-    /// `registry.acme.antithesis.com`. `None` for any other host, and for a
-    /// tenant registry host with a port.
-    pub fn tenant(&self) -> Option<&str> {
-        self.0
-            .strip_prefix("registry.")?
-            .strip_suffix(".antithesis.com")
-            .filter(|tenant| !tenant.is_empty())
+impl TenantRegistry {
+    pub fn tenant(&self) -> &str {
+        &self.tenant
     }
 }
 
-impl fmt::Display for RegistryHost {
+impl fmt::Display for TenantRegistry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        write!(f, "registry.{}.antithesis.com", self.tenant)
     }
 }
 
-/// Parses a server URL as a registry client gives it: a bare host, such as
-/// `localhost:5000`, or a URL with a scheme, a path, or both. A repository,
-/// such as `registry.acme.antithesis.com/team/app`, parses to its host.
-///
-/// The text takes the scheme `https://` in place of its own, or before it
-/// when it has none, and a URL parser reads the host and the port from that.
-/// So the parser drops a user name and lowercases the host. It drops the port
-/// 443, which a registry client uses when it names no port, whatever the
-/// scheme.
-impl FromStr for RegistryHost {
-    type Err = &'static str;
+/// Why a text does not parse as a [`TenantRegistry`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum TenantRegistryError {
+    /// The text names no host.
+    InvalidServerUrl,
+    /// The text names a host, but not a tenant registry.
+    NotTenantRegistry,
+}
+
+impl fmt::Display for TenantRegistryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::InvalidServerUrl => "the server URL names no host",
+            Self::NotTenantRegistry => "the server URL is not registry.<tenant>.antithesis.com",
+        })
+    }
+}
+
+impl std::error::Error for TenantRegistryError {}
+
+/// Parses a server URL as a registry client gives it: a host, with an
+/// optional scheme and path. A repository, such as
+/// `registry.acme.antithesis.com/team/app`, parses to its registry. The host
+/// ignores case, and may take the port 443, which a registry client uses when
+/// it names no port.
+impl FromStr for TenantRegistry {
+    type Err = TenantRegistryError;
 
     fn from_str(server_url: &str) -> Result<Self, Self::Err> {
         let server_url = server_url.trim();
-        let rest = match server_url.split_once("://") {
-            Some((scheme, rest))
-                if scheme.starts_with(|c: char| c.is_ascii_alphabetic())
-                    && scheme
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c)) =>
-            {
-                rest
-            }
-            _ => server_url,
-        };
-        // A URL parser skips the slashes that start a path, and would read
-        // the first part of the path as the host.
-        if rest.is_empty() || rest.starts_with(['/', '\\']) {
-            return Err("the server URL names no host");
+        let rest = server_url
+            .split_once("://")
+            .map_or(server_url, |(_, rest)| rest);
+        let host = rest.split('/').next().unwrap_or_default();
+        if host.is_empty() {
+            return Err(TenantRegistryError::InvalidServerUrl);
         }
-        let url = reqwest::Url::parse(&format!("https://{rest}"))
-            .map_err(|_| "the server URL does not name a valid host")?;
-        let host = url.host_str().ok_or("the server URL names no host")?;
-        Ok(Self(match url.port() {
-            Some(port) => format!("{host}:{port}"),
-            None => host.to_owned(),
-        }))
+        let host = host
+            .strip_suffix(":443")
+            .unwrap_or(host)
+            .to_ascii_lowercase();
+        let tenant = host
+            .strip_prefix("registry.")
+            .and_then(|rest| rest.strip_suffix(".antithesis.com"))
+            .filter(|tenant| is_valid_tenant_host(tenant))
+            .ok_or(TenantRegistryError::NotTenantRegistry)?;
+        Ok(Self {
+            tenant: tenant.to_owned(),
+        })
     }
 }
 
-/// The tenant registry that `settings` push to: the host of the repository,
-/// when it is `registry.<tenant>.antithesis.com` for the tenant of the same
-/// settings. `None` when the repository is on another registry, or when the
-/// tenant or the repository is not set.
-pub fn tenant_registry(settings: &Settings) -> Option<RegistryHost> {
-    let host: RegistryHost = settings.repository()?.parse().ok()?;
-    host.tenant()?
+/// The tenant registry that `settings` push to: the registry of the
+/// repository, when it is the registry of the tenant of the same settings.
+/// `None` when the repository is on another registry, or when the tenant or
+/// the repository is not set.
+pub fn tenant_registry(settings: &Settings) -> Option<TenantRegistry> {
+    let registry: TenantRegistry = settings.repository()?.parse().ok()?;
+    registry
+        .tenant
         .eq_ignore_ascii_case(settings.tenant()?)
-        .then_some(host)
+        .then_some(registry)
 }
 
-/// The settings that give the credential for `host`. When `host` is not a
-/// tenant registry host, return `None` at once: read no settings and no
-/// credentials. So for such a host, a selected profile that fails to resolve
-/// gives `None`, not its error.
-///
-/// Otherwise, settings files resolve as for every snouty command:
-/// `--settings` or `SNOUTY_SETTINGS_PATH` takes the place of
-/// `./.snouty.toml`, and the global settings file applies.
+/// The settings that give the credential for `registry`. Settings files
+/// resolve as for every snouty command: `--settings` or
+/// `SNOUTY_SETTINGS_PATH` takes the place of `./.snouty.toml`, and the global
+/// settings file applies.
 ///
 /// 1. When `--profile` or `ANTITHESIS_PROFILE` names a profile, use only that
 ///    profile. When it fails to resolve, fail with its error. When its tenant
-///    registry is not `host`, return `None`: do not search the other
+///    registry is not `registry`, return `None`: do not search the other
 ///    profiles.
-/// 2. Otherwise, use the first profile whose tenant registry is `host` and
+/// 2. Otherwise, use the first profile whose tenant registry is `registry` and
 ///    that has a credential, in the order of
 ///    [`SettingsRequest::resolve_every_profile`]: the top-level defaults
 ///    first, then the named profiles. A profile that fails to resolve is
@@ -123,19 +127,16 @@ pub fn tenant_registry(settings: &Settings) -> Option<RegistryHost> {
 pub fn select_settings(
     project_settings_path: Option<PathBuf>,
     profile: Option<String>,
-    host: &RegistryHost,
+    registry: &TenantRegistry,
 ) -> Result<Option<Settings>> {
-    if host.tenant().is_none() {
-        return Ok(None);
-    }
     let request = SettingsRequest::from_flags(project_settings_path, profile)?;
     if request.profile().is_some() {
         let settings = request.resolve()?;
-        return Ok((tenant_registry(&settings).as_ref() == Some(host)).then_some(settings));
+        return Ok((tenant_registry(&settings).as_ref() == Some(registry)).then_some(settings));
     }
     let mut without_credential = Vec::new();
     for settings in request.resolve_every_profile()? {
-        if tenant_registry(&settings).as_ref() != Some(host) {
+        if tenant_registry(&settings).as_ref() != Some(registry) {
             continue;
         }
         if AuthenticationInfo::find_ambient(settings.profile())?.is_some() {
@@ -159,7 +160,7 @@ pub fn select_settings(
         "run `snouty login --profile <name>` for one of them"
     };
     Err(user_error(format!(
-        "no profile that uses {host} has an Antithesis credential: {}; {login}, or set ANTITHESIS_API_KEY",
+        "no profile that uses {registry} has an Antithesis credential: {}; {login}, or set ANTITHESIS_API_KEY",
         names.join(", ")
     )))
 }
@@ -443,130 +444,106 @@ mod tests {
         .build()
     }
 
-    fn host(value: &str) -> RegistryHost {
+    fn registry(value: &str) -> TenantRegistry {
         value.parse().unwrap()
     }
 
-    /// A host as a registry reference spells it: DNS labels, and an optional
-    /// port. A label starts with a letter, because a URL parser reads a host
-    /// whose last label is a number as an IPv4 address.
-    fn hosts() -> impl hegel::PrintableGenerator<String> {
+    /// A tenant as a host name spells it: one or more DNS labels.
+    fn tenants() -> impl hegel::PrintableGenerator<String> {
         generators::from_regex(
-            r"[A-Za-z][A-Za-z0-9]{0,4}(-[A-Za-z0-9]{1,4})?(\.[A-Za-z][A-Za-z0-9]{0,4}(-[A-Za-z0-9]{1,4})?){0,3}(:[1-9][0-9]{0,3})?",
+            r"[A-Za-z0-9]{1,5}(-[A-Za-z0-9]{1,4})?(\.[A-Za-z0-9]{1,5}(-[A-Za-z0-9]{1,4})?){0,2}",
         )
         .fullmatch(true)
     }
 
-    /// A scheme, a user name, a path and the case of the letters do not
-    /// change the host. The port 443 drops out.
+    /// A scheme, a path, the port 443 and the case of the
+    /// letters do not change the registry.
     #[hegel::test]
-    fn a_server_url_names_its_host(tc: hegel::TestCase) {
-        let bare = tc.draw(hosts());
+    fn a_server_url_names_its_tenant_registry(tc: hegel::TestCase) {
+        let tenant = tc.draw(tenants());
         let scheme = tc.draw(generators::sampled_from(vec!["", "https://", "http://"]));
-        let user = tc.draw(generators::sampled_from(vec!["", "user@", "user:secret@"]));
+        let port = tc.draw(generators::sampled_from(vec!["", ":443"]));
         let path = tc.draw(generators::from_regex(r"(/[a-z0-9/._-]*)?").fullmatch(true));
-        let url = format!("{scheme}{user}{bare}{path}");
-        let parsed = host(&url);
-        let expected = bare.to_ascii_lowercase();
-        let expected = expected.strip_suffix(":443").unwrap_or(&expected);
-        assert_eq!(parsed.to_string(), expected, "{url}");
-        assert_eq!(parsed, host(&bare.to_ascii_uppercase()));
+        let bare = format!("registry.{tenant}.antithesis.com");
+        let url = format!("{scheme}{bare}{port}{path}");
+        let parsed = registry(&url);
+        assert_eq!(parsed.tenant(), tenant.to_ascii_lowercase(), "{url}");
+        assert_eq!(parsed.to_string(), bare.to_ascii_lowercase(), "{url}");
+        assert_eq!(parsed, registry(&bare.to_ascii_uppercase()));
     }
 
     #[test]
-    fn a_server_url_parses_as_a_url() {
+    fn a_tenant_registry_names_its_tenant() {
         let cases = [
-            ("https://index.docker.io/v1/", "index.docker.io"),
-            (
-                "registry.acme.antithesis.com/team/app",
-                "registry.acme.antithesis.com",
-            ),
-            ("localhost:5000/app", "localhost:5000"),
-            (
-                "user@registry.acme.antithesis.com",
-                "registry.acme.antithesis.com",
-            ),
-            ("https://user:secret@localhost:5000/v2/", "localhost:5000"),
-            (
-                "https://registry.acme.antithesis.com:443/",
-                "registry.acme.antithesis.com",
-            ),
-            (
-                "registry.acme.antithesis.com:443",
-                "registry.acme.antithesis.com",
-            ),
-            (
-                "http://registry.acme.antithesis.com:443",
-                "registry.acme.antithesis.com",
-            ),
-            ("http://localhost:80/v2/", "localhost:80"),
-            ("127.0.0.1:5000/app", "127.0.0.1:5000"),
-            ("[::1]:5000/app", "[::1]:5000"),
-            ("https://[0:0:0:0:0:0:0:1]/v2/", "[::1]"),
-            (
-                " registry.acme.antithesis.com\n",
-                "registry.acme.antithesis.com",
-            ),
+            ("registry.acme.antithesis.com", "acme"),
+            ("registry.acme.antithesis.com/team/app", "acme"),
+            ("https://REGISTRY.Acme.antithesis.com/v2/", "acme"),
+            ("https://registry.acme.antithesis.com:443/", "acme"),
+            ("registry.acme.antithesis.com:443", "acme"),
+            ("http://registry.acme.antithesis.com:443", "acme"),
+            ("registry.eu.acme.antithesis.com", "eu.acme"),
+            (" registry.acme.antithesis.com\n", "acme"),
         ];
-        for (url, expected) in cases {
-            assert_eq!(host(url).to_string(), expected, "{url:?}");
+        for (url, tenant) in cases {
+            assert_eq!(registry(url).tenant(), tenant, "{url:?}");
         }
     }
 
-    /// The host of any parsed text parses to itself, and holds no path.
-    #[hegel::test]
-    fn parsing_a_host_again_changes_nothing(tc: hegel::TestCase) {
-        let text = tc.draw(generators::text());
-        let Ok(once) = text.parse::<RegistryHost>() else {
-            return;
-        };
-        assert!(!once.0.contains('/'), "{text:?} gave {once}");
-        assert_eq!(host(&once.to_string()), once);
-    }
-
     #[test]
-    fn a_server_url_with_no_host_is_an_error() {
-        for url in ["", "  ", "https://", "https:///v2/", "/v2/", "\\v2"] {
+    fn a_server_url_of_another_registry_is_not_a_tenant_registry() {
+        for url in [
+            "registry.acme.antithesis.com:5000",
+            "http://registry.acme.antithesis.com:80/v2/",
+            "acme.antithesis.com",
+            "registry.antithesis.com",
+            "registry..antithesis.com",
+            "registry.a..b.antithesis.com",
+            "registry.-acme.antithesis.com",
+            "docker.acme.antithesis.com",
+            "registry.acme.antithesis.com.example.com",
+            "registry.acme.example.com",
+            "https://index.docker.io/v1/",
+            "localhost:5000",
+            "127.0.0.1:5000/app",
+            "[::1]:5000/app",
+            "user@registry.acme.antithesis.com",
+            "\\v2",
+            "a b",
+        ] {
             assert_eq!(
-                url.parse::<RegistryHost>(),
-                Err("the server URL names no host"),
+                url.parse::<TenantRegistry>(),
+                Err(TenantRegistryError::NotTenantRegistry),
                 "{url:?}"
             );
         }
     }
 
-    #[test]
-    fn a_server_url_with_an_invalid_host_is_an_error() {
-        for url in [
-            "user@",
-            "host:99999",
-            "host:port",
-            "a b",
-            "[::1",
-            "https://a b/v2/",
-        ] {
-            assert!(url.parse::<RegistryHost>().is_err(), "{url:?}");
-        }
+    /// Any text that parses prints as a registry that parses to itself.
+    #[hegel::test]
+    fn a_tenant_registry_parses_from_its_display(tc: hegel::TestCase) {
+        let text = tc.draw(generators::text());
+        let Ok(once) = text.parse::<TenantRegistry>() else {
+            return;
+        };
+        assert_eq!(registry(&once.to_string()), once, "{text:?}");
+    }
+
+    #[hegel::test]
+    fn a_tenant_registry_round_trips_through_its_display(tc: hegel::TestCase) {
+        let tenant = tc.draw(tenants()).to_ascii_lowercase();
+        let parsed = registry(&format!("registry.{tenant}.antithesis.com"));
+        assert_eq!(parsed.tenant(), tenant);
+        assert_eq!(registry(&parsed.to_string()), parsed);
     }
 
     #[test]
-    fn a_tenant_registry_host_names_its_tenant() {
-        let cases = [
-            ("registry.acme.antithesis.com", Some("acme")),
-            ("https://REGISTRY.Acme.antithesis.com/v2/", Some("acme")),
-            ("registry.acme.antithesis.com:443", Some("acme")),
-            ("registry.eu.acme.antithesis.com", Some("eu.acme")),
-            ("registry.acme.antithesis.com:5000", None),
-            ("acme.antithesis.com", None),
-            ("registry.antithesis.com", None),
-            ("registry..antithesis.com", None),
-            ("docker.acme.antithesis.com", None),
-            ("registry.acme.antithesis.com.example.com", None),
-            ("registry.acme.example.com", None),
-            ("localhost:5000", None),
-        ];
-        for (url, tenant) in cases {
-            assert_eq!(host(url).tenant(), tenant, "{url}");
+    fn a_server_url_with_no_host_is_an_error() {
+        for url in ["", "  ", "https://", "https:///v2/", "/v2/"] {
+            assert_eq!(
+                url.parse::<TenantRegistry>(),
+                Err(TenantRegistryError::InvalidServerUrl),
+                "{url:?}"
+            );
         }
     }
 
@@ -586,7 +563,7 @@ mod tests {
         for (tenant, repository, matches) in cases {
             assert_eq!(
                 tenant_registry(&settings(None, tenant, repository)),
-                matches.then(|| host(&format!("registry.{tenant}.antithesis.com"))),
+                matches.then(|| registry(&format!("registry.{tenant}.antithesis.com"))),
                 "{tenant} {repository}"
             );
         }

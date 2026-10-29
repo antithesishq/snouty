@@ -643,6 +643,20 @@ fn update_table(
 /// an unintended host. Dots are allowed so a multi-label tenant still works;
 /// set `ANTITHESIS_BASE_URL` directly for any URL this rejects.
 pub(crate) fn validate_tenant_host(tenant: &str) -> Result<()> {
+    if !is_valid_tenant_host(tenant) {
+        return Err(user_error(format!(
+            "invalid tenant `{tenant}`: a tenant must be a valid hostname \
+             (letters, digits, and hyphens) because it becomes the host in \
+             `https://{tenant}.antithesis.com`. Set ANTITHESIS_BASE_URL directly \
+             if you need a custom API URL."
+        )));
+    }
+    Ok(())
+}
+
+/// Whether `tenant` is a valid DNS hostname, as [`validate_tenant_host`]
+/// requires.
+pub(crate) fn is_valid_tenant_host(tenant: &str) -> bool {
     fn is_valid_label(label: &str) -> bool {
         !label.is_empty()
             && label.len() <= 63
@@ -653,16 +667,7 @@ pub(crate) fn validate_tenant_host(tenant: &str) -> Result<()> {
             && !label.ends_with('-')
     }
 
-    let valid = !tenant.is_empty() && tenant.len() <= 253 && tenant.split('.').all(is_valid_label);
-    if !valid {
-        return Err(user_error(format!(
-            "invalid tenant `{tenant}`: a tenant must be a valid hostname \
-             (letters, digits, and hyphens) because it becomes the host in \
-             `https://{tenant}.antithesis.com`. Set ANTITHESIS_BASE_URL directly \
-             if you need a custom API URL."
-        )));
-    }
-    Ok(())
+    !tenant.is_empty() && tenant.len() <= 253 && tenant.split('.').all(is_valid_label)
 }
 
 /// Turn a missing required setting into snouty's standard "run doctor" error.

@@ -12,10 +12,11 @@ use serde::Serialize;
 use crate::api::AntithesisApi;
 use crate::cli::DockerCredentialAction;
 use crate::error::user_error;
-use crate::registry::{self, RegistryHost};
+use crate::registry::{self, TenantRegistry, TenantRegistryError};
 use crate::stdio;
 
-/// No profile uses the requested registry as its tenant registry.
+/// The requested registry is not a tenant registry, or no profile uses it as
+/// its tenant registry.
 #[derive(Debug)]
 pub struct CredentialsNotFound;
 
@@ -75,10 +76,20 @@ async fn cmd_docker_credential(
         DockerCredentialAction::Get => {
             let server_url = read_stdin()?;
             let server_url = server_url.trim();
-            let host: RegistryHost = server_url
-                .parse()
-                .map_err(|err| user_error(format!("invalid server URL on stdin: {err}")))?;
-            let Some(settings) = registry::select_settings(settings_path, profile, &host)? else {
+            // A server URL of another registry reads no settings, so a
+            // broken profile does not fail it.
+            let tenant_registry: TenantRegistry = match server_url.parse() {
+                Ok(tenant_registry) => tenant_registry,
+                Err(TenantRegistryError::NotTenantRegistry) => {
+                    return Err(Report::new(CredentialsNotFound));
+                }
+                Err(err) => {
+                    return Err(user_error(format!("invalid server URL on stdin: {err}")));
+                }
+            };
+            let Some(settings) =
+                registry::select_settings(settings_path, profile, &tenant_registry)?
+            else {
                 return Err(Report::new(CredentialsNotFound));
             };
             let secret = registry::password(&AntithesisApi::new(&settings, false)?).await?;

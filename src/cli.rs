@@ -10,8 +10,7 @@ use chrono::{DateTime, Utc};
 use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
 use crate::api::{
-    FaultTolerance, PerformanceTier, RunStatus, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT,
-    SourceRunId, SourceSessionId,
+    FaultTolerance, PerformanceTier, RunStatus, SearchLimit, SourceRunId, SourceSessionId,
 };
 use color_eyre::Section;
 use color_eyre::eyre::Report;
@@ -27,11 +26,10 @@ use crate::vtime::VTime;
 
 pub(crate) mod tree;
 
-/// Every known `RunStatus` variant, used to enumerate valid `--status` values in
-/// error output. The generated enum offers no iteration, so this array is the
-/// source of truth; [`assert_run_statuses_complete`] forces an update here
-/// whenever the generated enum gains a variant.
-const ALL_RUN_STATUSES: [RunStatus; 6] = [
+/// The generated `RunStatus` offers no iteration, so this array lists its
+/// variants for clap. A new variant fails the build in `to_possible_value`,
+/// which is the cue to add it here too.
+static RUN_STATUSES: [RunStatus; 6] = [
     RunStatus::Starting,
     RunStatus::InProgress,
     RunStatus::Completed,
@@ -40,22 +38,24 @@ const ALL_RUN_STATUSES: [RunStatus; 6] = [
     RunStatus::Unknown,
 ];
 
-/// Compile-time guard: matching every variant with no wildcard arm makes this
-/// fail to compile when the generated `RunStatus` gains a variant, which is
-/// the cue to extend [`ALL_RUN_STATUSES`].
-const fn assert_run_statuses_complete(status: &RunStatus) {
-    match status {
-        RunStatus::Starting
-        | RunStatus::InProgress
-        | RunStatus::Completed
-        | RunStatus::Cancelled
-        | RunStatus::Incomplete
-        | RunStatus::Unknown
-        | RunStatus::Other(_) => {}
+impl ValueEnum for RunStatus {
+    fn value_variants<'a>() -> &'a [Self] {
+        &RUN_STATUSES
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        let name = match self {
+            RunStatus::Starting => "starting",
+            RunStatus::InProgress => "in_progress",
+            RunStatus::Completed => "completed",
+            RunStatus::Cancelled => "cancelled",
+            RunStatus::Incomplete => "incomplete",
+            RunStatus::Unknown => "unknown",
+            RunStatus::Other(_) => return None,
+        };
+        Some(clap::builder::PossibleValue::new(name))
     }
 }
-
-const _: () = assert_run_statuses_complete(&RunStatus::Starting);
 
 /// A `key=value` argument, such as `--param`. The value may contain `=`:
 /// only the first `=` splits.
@@ -97,15 +97,6 @@ impl std::str::FromStr for KVPair {
     }
 }
 
-/// clap value parser for `--status` that keeps a friendly, enumerated error
-/// message (the generated `RunStatus::from_str` only says "invalid value").
-fn parse_run_status(value: &str) -> Result<RunStatus, String> {
-    value.parse::<RunStatus>().map_err(|_| {
-        let valid = ALL_RUN_STATUSES.map(|s| s.to_string()).join(", ");
-        format!("invalid status: '{value}'\nvalid values: {valid}")
-    })
-}
-
 /// clap value parser for `runs wait --poll-interval`: a [`HumanDuration`] of
 /// at least 1 minute — polling faster cannot observe a run (which takes
 /// minutes to hours) any sooner, and only hammers the API.
@@ -142,17 +133,6 @@ fn parse_exec_timeout(value: &str) -> Result<HumanDuration, String> {
         return Err("must be at least 1 second".to_string());
     }
     Ok(timeout)
-}
-
-/// clap value parser for the event-search `--limit`: 1 to
-/// [`SEARCH_MAX_LIMIT`], so an out-of-range value fails before any request.
-fn parse_search_limit(value: &str) -> Result<NonZeroU64, String> {
-    value
-        .parse::<u64>()
-        .ok()
-        .filter(|limit| (1..=SEARCH_MAX_LIMIT).contains(limit))
-        .and_then(NonZeroU64::new)
-        .ok_or_else(|| format!("must be a whole number from 1 to {SEARCH_MAX_LIMIT}"))
 }
 
 #[derive(Parser)]
@@ -856,8 +836,8 @@ pub enum RunsCommands {
 
         /// Maximum number of events to print, at most 999. Raise it to make a
         /// search more exhaustive.
-        #[arg(short = 'n', long, default_value_t = SEARCH_DEFAULT_LIMIT, value_parser = parse_search_limit)]
-        limit: NonZeroU64,
+        #[arg(short = 'n', long, default_value_t = SearchLimit::DEFAULT)]
+        limit: SearchLimit,
 
         /// Substrings to match, as a positional alias for `-m` (all must match).
         /// At least one needle (via `-m` or here) is required.
@@ -910,8 +890,8 @@ pub struct RunsSearchArgs {
     pub query: String,
 
     /// Maximum number of events to print (default 50, maximum 999)
-    #[arg(short = 'n', long, value_parser = parse_search_limit)]
-    pub limit: Option<NonZeroU64>,
+    #[arg(short = 'n', long)]
+    pub limit: Option<SearchLimit>,
 
     /// Keep the connection open and print new matches as they arrive
     /// (the limit still caps the total)
@@ -953,8 +933,8 @@ pub const DEFAULT_RUNS_LIMIT: NonZeroU64 = NonZeroU64::new(10).unwrap();
 
 #[derive(Args)]
 pub struct RunsListArgs {
-    /// Filter by status (starting, in_progress, completed, cancelled, incomplete, unknown)
-    #[arg(short, long, value_parser = parse_run_status)]
+    /// Filter by status
+    #[arg(short, long, value_enum)]
     pub status: Option<RunStatus>,
 
     /// Filter by launcher name
@@ -1176,7 +1156,16 @@ mod tests {
         assert_eq!(query, vec!["request".to_string(), "slow".to_string()]);
     }
 
-    // `runs events --limit` defaults to 50; the server enforces the ceiling.
+    /// The name that clap accepts for each status is the name the API uses.
+    #[test]
+    fn run_status_values_are_the_api_names() {
+        for status in &RUN_STATUSES {
+            let value = status.to_possible_value().unwrap();
+            assert_eq!(value.get_name(), status.to_string());
+        }
+    }
+
+    // `runs events --limit` defaults to 50 and rejects 0.
     #[test]
     fn events_limit_defaults_and_rejects_zero() {
         let cli = parse(&["snouty", "runs", "events", "RUN", "-m", "request"]);
@@ -1186,7 +1175,7 @@ mod tests {
         else {
             panic!("expected `runs events`");
         };
-        assert_eq!(limit, SEARCH_DEFAULT_LIMIT);
+        assert_eq!(limit, SearchLimit::DEFAULT);
 
         let cli = parse(&[
             "snouty", "runs", "events", "RUN", "-m", "x", "--limit", "998",
@@ -1197,10 +1186,8 @@ mod tests {
         else {
             panic!("expected `runs events`");
         };
-        assert_eq!(limit.get(), 998);
+        assert_eq!(NonZeroU64::from(limit).get(), 998);
 
-        // The limit is a `NonZeroU64`, so clap rejects 0 up front with a plain
-        // message.
         let parsed = Cli::try_parse_from(["snouty", "runs", "events", "RUN", "-n", "0"]);
         assert!(parsed.is_err(), "expected --limit 0 to be rejected");
     }
@@ -1217,7 +1204,7 @@ mod tests {
         else {
             panic!("expected `runs search`");
         };
-        assert_eq!(args.limit.map(NonZeroU64::get), Some(998));
+        assert_eq!(args.limit.map(|l| NonZeroU64::from(l).get()), Some(998));
 
         let parsed = Cli::try_parse_from(["snouty", "runs", "search", "RUN", "q", "-n", "0"]);
         assert!(parsed.is_err(), "expected --limit 0 to be rejected");
@@ -1281,7 +1268,7 @@ mod tests {
         else {
             panic!("expected `runs search`");
         };
-        assert_eq!(args.limit.map(NonZeroU64::get), Some(7));
+        assert_eq!(args.limit.map(|l| NonZeroU64::from(l).get()), Some(7));
         assert!(args.follow);
     }
 

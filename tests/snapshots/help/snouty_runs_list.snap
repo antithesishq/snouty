@@ -24,8 +24,10 @@ Usage: snouty runs list [OPTIONS]
 
 Options:
   -s, --status <STATUS>
-          Filter by status (starting, in_progress, completed, cancelled,
-          incomplete, unknown)
+          Filter by status
+          
+          [possible values: starting, in_progress, completed, cancelled,
+          incomplete, unknown]
 
   -l, --launcher <LAUNCHER>
           Filter by launcher name

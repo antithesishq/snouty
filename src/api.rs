@@ -154,13 +154,46 @@ pub enum SearchMode {
     },
 }
 
-/// The server's default `limit` on the events-search endpoint, applied when
-/// the request names none.
-pub const SEARCH_DEFAULT_LIMIT: NonZeroU64 = NonZeroU64::new(50).unwrap();
-
 /// The largest `limit` the events-search endpoint accepts. The server answers
 /// 400 above it, with a message that names 1000.
 pub const SEARCH_MAX_LIMIT: u64 = 999;
+
+/// The `limit` of an events search: 1 to [`SEARCH_MAX_LIMIT`], so an
+/// out-of-range value fails before any request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SearchLimit(NonZeroU64);
+
+impl SearchLimit {
+    /// The server's default `limit` on the events-search endpoint, applied
+    /// when the request names none.
+    pub const DEFAULT: SearchLimit = SearchLimit(NonZeroU64::new(50).unwrap());
+}
+
+impl std::str::FromStr for SearchLimit {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value
+            .parse::<u64>()
+            .ok()
+            .filter(|limit| *limit <= SEARCH_MAX_LIMIT)
+            .and_then(NonZeroU64::new)
+            .map(SearchLimit)
+            .ok_or_else(|| format!("must be a whole number from 1 to {SEARCH_MAX_LIMIT}"))
+    }
+}
+
+impl std::fmt::Display for SearchLimit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl From<SearchLimit> for NonZeroU64 {
+    fn from(limit: SearchLimit) -> Self {
+        limit.0
+    }
+}
 
 /// Why a `/api/version` probe failed, classified for `snouty doctor`.
 #[derive(Debug)]

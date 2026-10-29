@@ -7,13 +7,17 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 
+use chrono::{DateTime, Utc};
 use clap::Arg;
 use color_eyre::eyre::{Result, bail, eyre};
 use rmcp::model::{JsonObject, Tool, ToolAnnotations};
 use serde_json::{Value, json};
 
-use crate::cli::tree;
+use crate::api::{SEARCH_MAX_LIMIT, SearchLimit};
+use crate::cli::{KVPair, tree};
 use crate::help::HelpPage;
+use crate::runs::usage::TimeBound;
+use crate::time::HumanDuration;
 use crate::vtime::VTime;
 
 pub(super) const TOOL_HELP: &str = "tool_help";
@@ -187,22 +191,17 @@ pub(crate) enum ValueType {
     Number,
 }
 
+/// Matches what [`HumanDuration`] accepts with
+/// [`BareUnit::Minutes`](crate::time::BareUnit). A param with bare seconds
+/// rejects a bare decimal that matches. The pattern does not check a param's
+/// minimum.
+const DURATION_PATTERN: &str = r"^\s*([0-9]+(\.[0-9]+)?|[0-9]+[hH]([0-9]+[mM])?([0-9]+[sS])?|[0-9]+[mM]([0-9]+[sS])?|[0-9]+[sS])\s*$";
+
+const KV_PAIR_PATTERN: &str = "^[^=]+=";
+
 impl ValueType {
     fn of(arg: &Arg) -> Self {
-        let parsed = arg.get_value_parser().type_id();
-        let integers = [
-            TypeId::of::<usize>(),
-            TypeId::of::<u64>(),
-            TypeId::of::<NonZeroUsize>(),
-            TypeId::of::<NonZeroU64>(),
-        ];
-        if integers.into_iter().any(|integer| parsed == integer) {
-            ValueType::Integer
-        } else if parsed == TypeId::of::<VTime>() {
-            ValueType::Number
-        } else {
-            ValueType::String
-        }
+        value_schema(arg).0
     }
 
     fn json_type(self) -> &'static str {
@@ -211,6 +210,34 @@ impl ValueType {
             ValueType::Integer => "integer",
             ValueType::Number => "number",
         }
+    }
+}
+
+/// The type of one value of `arg`, and the schema keywords for the checks
+/// that its parser makes.
+fn value_schema(arg: &Arg) -> (ValueType, Value) {
+    let parsed = arg.get_value_parser().type_id();
+    let is = |ty: TypeId| parsed == ty;
+    if is(TypeId::of::<usize>()) || is(TypeId::of::<u64>()) {
+        (ValueType::Integer, json!({ "minimum": 0 }))
+    } else if is(TypeId::of::<NonZeroUsize>()) || is(TypeId::of::<NonZeroU64>()) {
+        (ValueType::Integer, json!({ "minimum": 1 }))
+    } else if is(TypeId::of::<SearchLimit>()) {
+        let range = json!({ "minimum": 1, "maximum": SEARCH_MAX_LIMIT });
+        (ValueType::Integer, range)
+    } else if is(TypeId::of::<VTime>()) {
+        (ValueType::Number, json!({}))
+    } else if is(TypeId::of::<DateTime<Utc>>()) {
+        (ValueType::String, json!({ "format": "date-time" }))
+    } else if is(TypeId::of::<TimeBound>()) {
+        let formats = json!({ "anyOf": [{ "format": "date" }, { "format": "date-time" }] });
+        (ValueType::String, formats)
+    } else if is(TypeId::of::<HumanDuration>()) {
+        (ValueType::String, json!({ "pattern": DURATION_PATTERN }))
+    } else if is(TypeId::of::<KVPair>()) {
+        (ValueType::String, json!({ "pattern": KV_PAIR_PATTERN }))
+    } else {
+        (ValueType::String, json!({}))
     }
 }
 
@@ -309,7 +336,9 @@ fn input_schema(name: ToolName, params: &[Param]) -> Arc<JsonObject> {
             .map(|value| value.get_name().to_owned())
             .collect();
         if values.is_empty() {
-            json!({ "type": ty.json_type() })
+            let (_, mut schema) = value_schema(param.arg);
+            schema["type"] = ty.json_type().into();
+            schema
         } else {
             json!({ "type": "string", "enum": values })
         }
@@ -395,6 +424,7 @@ pub(super) fn tool_help(mut params: JsonObject) -> Result<String> {
 mod tests {
     use super::*;
     use crate::mcp::object;
+    use crate::time::BareUnit;
 
     /// The hidden and required ids name real args, so a renamed arg cannot
     /// slip past the table.
@@ -459,15 +489,24 @@ mod tests {
         );
         let search = schema(ToolName::RunsSearch);
         assert_eq!(search["properties"]["count"]["type"], "boolean");
+        assert_eq!(search["properties"]["limit"]["minimum"], 1);
+        assert_eq!(search["properties"]["limit"]["maximum"], SEARCH_MAX_LIMIT);
         let list = schema(ToolName::RunsList);
-        assert!(
-            list["properties"]["status"]["description"]
-                .as_str()
-                .unwrap()
-                .contains("completed")
+        assert_eq!(
+            list["properties"]["status"]["enum"],
+            json!([
+                "starting",
+                "in_progress",
+                "completed",
+                "cancelled",
+                "incomplete",
+                "unknown"
+            ])
         );
         assert_eq!(list["properties"]["limit"]["type"], "integer");
+        assert_eq!(list["properties"]["limit"]["minimum"], 1);
         assert_eq!(list["properties"]["limit"]["default"], 10);
+        assert_eq!(list["properties"]["created_after"]["format"], "date-time");
         assert_eq!(list["properties"]["launcher"]["type"], "string");
         let logs = schema(ToolName::RunsLogs);
         assert_eq!(logs["properties"]["input_hash"]["type"], "string");
@@ -476,6 +515,10 @@ mod tests {
         let debug = schema(ToolName::Debug);
         assert_eq!(debug["required"], json!(["input_hash", "vtime"]));
         assert_eq!(debug["properties"]["param"]["type"], "array");
+        assert_eq!(
+            debug["properties"]["param"]["items"]["pattern"],
+            KV_PAIR_PATTERN
+        );
         let property = schema(ToolName::RunsProperty);
         assert_eq!(property["required"], json!(["run_id", "property_id"]));
         let usage = schema(ToolName::RunsUsage);
@@ -483,6 +526,10 @@ mod tests {
         assert!(
             usage["properties"]["rollup"]["enum"].is_array(),
             "{usage:?}"
+        );
+        assert_eq!(
+            usage["properties"]["after"]["anyOf"],
+            json!([{ "format": "date" }, { "format": "date-time" }])
         );
         assert_eq!(usage["properties"]["utc"]["type"], "boolean");
         assert_eq!(usage["properties"]["limit"]["type"], "integer");
@@ -492,6 +539,36 @@ mod tests {
             json!(["ready", "complete"])
         );
         assert_eq!(wait["properties"]["poll_interval"]["default"], "1m");
+        assert_eq!(
+            wait["properties"]["poll_interval"]["pattern"],
+            DURATION_PATTERN
+        );
+        let tree = schema(ToolName::DocsTree);
+        assert_eq!(tree["properties"]["depth"]["minimum"], 1);
+    }
+
+    /// A string matches the pattern exactly when it parses in minutes, and
+    /// always matches when it parses in seconds. Short strings over the
+    /// duration alphabet reach every parser branch and stay clear of overflow.
+    #[hegel::test]
+    fn duration_pattern_matches_what_parses(tc: hegel::TestCase) {
+        let text = tc.draw(hegel::generators::from_regex(r"\s?[0-9hHmMsS.x]{0,8}\s?"));
+        let pattern = regex::Regex::new(DURATION_PATTERN).unwrap();
+        let matches = pattern.is_match(&text);
+        let parses = |bare| HumanDuration::parse(&text, bare).is_ok();
+        assert_eq!(matches, parses(BareUnit::Minutes), "{text:?}");
+        assert!(matches || !parses(BareUnit::Seconds), "{text:?}");
+    }
+
+    #[hegel::test]
+    fn kv_pair_pattern_matches_what_parses(tc: hegel::TestCase) {
+        let text = tc.draw(hegel::generators::from_regex("[a=]{0,4}"));
+        let pattern = regex::Regex::new(KV_PAIR_PATTERN).unwrap();
+        assert_eq!(
+            pattern.is_match(&text),
+            text.parse::<KVPair>().is_ok(),
+            "{text:?}"
+        );
     }
 
     #[test]

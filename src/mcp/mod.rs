@@ -13,9 +13,9 @@ use color_eyre::eyre::{Result, WrapErr};
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
     Implementation, ListToolsResult, PaginatedRequestParams, ProgressNotificationParam,
-    ProgressToken, ProtocolVersion, ServerCapabilities, ServerConfig, Tool,
+    ProtocolVersion, ServerCapabilities, ServerConfig, Tool,
 };
-use rmcp::service::{Peer, RequestContext, ServerInitializeError, serve_server};
+use rmcp::service::{RequestContext, ServerInitializeError, serve_server};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::Semaphore;
@@ -189,35 +189,35 @@ impl ServerHandler for Snouty {
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
             self.run(argv).await
         };
+        tokio::pin!(call);
+        let progress = ctx.meta.get_progress_token();
+        let mut ticks = tokio::time::interval_at(
+            tokio::time::Instant::now() + PROGRESS_INTERVAL,
+            PROGRESS_INTERVAL,
+        );
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut seconds = 0;
         // The client sets the time limit: it cancels the call, or closes
         // stdin. Either drops `call`, which kills the child.
-        tokio::select! {
-            result = call => result,
-            () = ctx.ct.cancelled() => Err(ErrorData::internal_error("cancelled", None)),
-            () = report_progress(ctx.peer, ctx.meta.get_progress_token()) => unreachable!(),
-        }
-    }
-}
-
-/// Sends a progress notification every [`PROGRESS_INTERVAL`], with the
-/// seconds that have elapsed as the progress, while the caller awaits
-/// something else. Without a token, the client asked for no progress.
-async fn report_progress(peer: Peer<RoleServer>, token: Option<ProgressToken>) {
-    let Some(token) = token else {
-        return std::future::pending().await;
-    };
-    let start = tokio::time::Instant::now();
-    let mut ticks = tokio::time::interval_at(start + PROGRESS_INTERVAL, PROGRESS_INTERVAL);
-    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        ticks.tick().await;
-        let elapsed = start.elapsed().as_secs();
-        #[allow(clippy::cast_precision_loss)] // A call does not run for 2^52 seconds.
-        let progress = ProgressNotificationParam::new(token.clone(), elapsed as f64)
-            .with_message(format!("running for {elapsed}s"));
-        // A client that is gone also cancels the call.
-        if let Err(e) = peer.notify_progress(progress).await {
-            log::debug!("cannot send progress: {e}");
+        loop {
+            tokio::select! {
+                result = &mut call => return result,
+                () = ctx.ct.cancelled() => return Err(ErrorData::internal_error("cancelled", None)),
+                _ = ticks.tick(), if progress.is_some() => {
+                    let Some(token) = &progress else { continue };
+                    seconds += PROGRESS_INTERVAL.as_secs();
+                    #[allow(clippy::cast_precision_loss)] // A call does not run for 2^52 seconds.
+                    let param = ProgressNotificationParam::new(token.clone(), seconds as f64)
+                        .with_message(format!("running for {seconds}s"));
+                    // rmcp returns once the notification is written. A
+                    // notification still in flight could go out after the
+                    // response, which the MCP spec forbids, so the call
+                    // waits for it.
+                    if let Err(e) = ctx.peer.notify_progress(param).await {
+                        log::debug!("cannot send progress: {e}");
+                    }
+                }
+            }
         }
     }
 }

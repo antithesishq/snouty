@@ -123,7 +123,9 @@ elif name == 'ssh':
             )
             record('configure_args', json.dumps([configure_path] + result.stdout.split('\0')[:-1]))
             if mode == 'configure-failure':
-                sys.exit('configure.py rejected configuration')
+                print('configure.py configuration details')
+                print('configure.py rejected configuration', file=sys.stderr)
+                sys.exit(42)
         elif 'fault_injector_update --pause' in script:
             record('faults_paused', 'yes')
             if mode == 'fault-pause-failure':

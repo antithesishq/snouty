@@ -1334,11 +1334,18 @@ fn configure_failure_stops_simulation_before_compose() {
     let mut simulation = Simulation::start("configure-failure");
     let output = simulation.finish();
     assert!(!output.status.success());
-    assert!(
-        simulation
-            .read("stderr")
-            .contains("configure.py rejected configuration")
-    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    for expected in [
+        "Simulation failed: configuring guest faults with configure.py",
+        "guest command failed (exit status: 42)",
+        "stdout:\nconfigure.py configuration details",
+        "stderr:\nconfigure.py rejected configuration",
+    ] {
+        assert!(
+            stderr.contains(expected),
+            "missing {expected:?} in {stderr}"
+        );
+    }
     assert!(!simulation.root().join("compose_started").exists());
 }
 
@@ -1420,5 +1427,10 @@ fn fault_pause_failure_stops_simulation_before_compose() {
     let output = simulation.finish();
     assert!(!output.status.success());
     assert_eq!(simulation.read("faults_paused"), "yes");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("Simulation failed: disabling guest faults: guest command failed (exit status: 1)\nstdout:\n\nstderr:\n"),
+        "{stderr}"
+    );
     assert!(!simulation.root().join("compose_started").exists());
 }

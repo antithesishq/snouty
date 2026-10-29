@@ -335,8 +335,14 @@ pub(super) async fn run(
             .await?,
         );
         let guest = vm.as_mut().expect("guest booted");
-        guest.run_script(SCRATCH_SETUP).await?;
-        guest.run_script(PREPARE).await?;
+        guest
+            .run_script(SCRATCH_SETUP)
+            .await
+            .wrap_err("setting up guest scratch storage")?;
+        guest
+            .run_script(PREPARE)
+            .await
+            .wrap_err("preparing guest")?;
         let mut configure = format!(
             "set -euo pipefail\n/opt/antithesis/bin/fault_scripts/randomization/configure.py --fault-tolerance {}",
             shell_quote(&args.fault_tolerance.to_string())
@@ -345,9 +351,15 @@ pub(super) async fn run(
             configure.push_str(&format!(" --fault-exclusions={}", shell_quote(exclusions)));
         }
         configure.push('\n');
-        guest.run_script(&configure).await?;
+        guest
+            .run_script(&configure)
+            .await
+            .wrap_err("configuring guest faults with configure.py")?;
         if args.fault_tolerance == super::FaultTolerance::None {
-            guest.run_script(DISABLE_FAULTS).await?;
+            guest
+                .run_script(DISABLE_FAULTS)
+                .await
+                .wrap_err("disabling guest faults")?;
         }
         std::fs::write(run_dir.path().join(ATTACH_READY), "")?;
         if output.json {
@@ -375,7 +387,12 @@ pub(super) async fn run(
                 #[serde(rename = "Id")]
                 id: ImageId,
             }
-            let remote: Vec<RemoteImage> = serde_json::from_str(&guest.run_script(&script).await?)?;
+            let remote: Vec<RemoteImage> = serde_json::from_str(
+                &guest
+                    .run_script(&script)
+                    .await
+                    .wrap_err_with(|| format!("inspecting guest image {reference}"))?,
+            )?;
             let same = remote.first().is_some_and(|image| image.id == local.id);
             if !same {
                 changed.push(reference);
@@ -394,7 +411,10 @@ pub(super) async fn run(
             "restart_enabled={}\n{START}",
             if args.disable_restart { "no" } else { "yes" }
         );
-        guest.run_script(&start).await?;
+        guest
+            .run_script(&start)
+            .await
+            .wrap_err("starting guest Compose project and restart supervisor")?;
         eprintln!("Streaming guest logs. Interrupt to stop simulation.");
         let status = if args.disable_restart {
             format!("{STATUS}\nunit=antithesis-test-composer.service\n{STATUS}")
@@ -412,16 +432,16 @@ pub(super) async fn run(
                         && matches!(event.kind, events::EventKind::SetupComplete { .. })
                     {
                         if args.fault_tolerance != super::FaultTolerance::None {
-                            guest.run_script("fault_injector_update --unpause\n").await?;
+                            guest.run_script("fault_injector_update --unpause\n").await.wrap_err("unpausing guest faults")?;
                         }
-                        guest.run_script("touch /run/antithesis-local-injection/setup-ready\n").await?;
+                        guest.run_script("touch /run/antithesis-local-injection/setup-ready\n").await.wrap_err("marking guest setup complete")?;
                     }
                     output.event(&line, &mut summary, RunPhase::Running).await?;
                     if output.closed { return Ok::<_, color_eyre::Report>(()); }
                 },
                 _ = health.tick() => {
                     if !guest.is_running()? { bail!("QEMU exited unexpectedly\n{}", guest.boot_diagnostics()); }
-                    tokio::time::timeout(Duration::from_secs(15), guest.run_script(&status)).await??;
+                    tokio::time::timeout(Duration::from_secs(15), guest.run_script(&status)).await.wrap_err("guest health check timed out")?.wrap_err("checking guest service health")?;
                 },
             }
         }
@@ -591,7 +611,10 @@ pub(super) async fn shell(args: SimulateArgs, settings: &Settings) -> Result<Exi
             Some(&scratch_disk),
         ) => result?,
     };
-    guest.run_script(SCRATCH_SETUP).await?;
+    guest
+        .run_script(SCRATCH_SETUP)
+        .await
+        .wrap_err("setting up guest scratch storage")?;
     eprintln!("Opening guest shell. Exit the shell to stop the VM.");
     let shell = tokio::select! {
         biased;

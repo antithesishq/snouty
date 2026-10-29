@@ -2203,6 +2203,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "I run `snouty debug --help` to learn how to debug a moment.",
             ["debug"],
         ),
+        # Guest command failure diagnostics need a VM or mock guest tools;
+        # tests/cli_simulate.rs covers the step, exit status, stdout, and stderr.
         _help_story(
             "help-simulate",
             "Understand guest simulation",

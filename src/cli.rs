@@ -1165,7 +1165,7 @@ mod tests {
         }
     }
 
-    // `runs events --limit` defaults to 50; the server enforces the ceiling.
+    // `runs events --limit` defaults to 50 and rejects 0.
     #[test]
     fn events_limit_defaults_and_rejects_zero() {
         let cli = parse(&["snouty", "runs", "events", "RUN", "-m", "request"]);
@@ -1188,7 +1188,6 @@ mod tests {
         };
         assert_eq!(NonZeroU64::from(limit).get(), 998);
 
-        // clap rejects 0 up front.
         let parsed = Cli::try_parse_from(["snouty", "runs", "events", "RUN", "-n", "0"]);
         assert!(parsed.is_err(), "expected --limit 0 to be rejected");
     }

@@ -1,10 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button, Card, Expander, Icon, Input, Loader, Menu, MenuItem, Tag, Text, Title, Tooltip } from "@antadesign/anta/bundle";
 import type { ChatItem, Recording, State } from "../state.ts";
 import { Code } from "./Code.tsx";
 import { Markdown } from "./Markdown.tsx";
 
-export const SUGGESTIONS = [
+const SUGGESTIONS = [
   {
     icon: "runs-history",
     title: "What's live right now?",
@@ -56,7 +56,15 @@ function Elapsed({ since }: { since: number }) {
   return <>{((Date.now() - since) / 1000).toFixed(1)}s</>;
 }
 
-function ToolCall({ item, onApprove }: { item: Extract<ChatItem, { kind: "tool" }>; onApprove: Props["onApprove"] }) {
+// The reducer replaces only the items that change, so memo skips the rest
+// while text streams in.
+const ToolCall = memo(function ToolCall({
+  item,
+  onApprove,
+}: {
+  item: Extract<ChatItem, { kind: "tool" }>;
+  onApprove: Props["onApprove"];
+}) {
   const live = item.status === "pending" || item.status === "running";
   const icon = live ? (
     <Loader size={14} tone="brand" />
@@ -139,9 +147,9 @@ function ToolCall({ item, onApprove }: { item: Extract<ChatItem, { kind: "tool" 
       )}
     </div>
   );
-}
+});
 
-function Thinking({ item }: { item: Extract<ChatItem, { kind: "thinking" }> }) {
+const Thinking = memo(function Thinking({ item }: { item: Extract<ChatItem, { kind: "thinking" }> }) {
   if (item.done && !item.text.trim()) return null;
   return (
     <div className="thinking" data-testid="thinking">
@@ -163,7 +171,7 @@ function Thinking({ item }: { item: Extract<ChatItem, { kind: "thinking" }> }) {
       </Expander>
     </div>
   );
-}
+});
 
 function EmptyState({ state, onSend, onReplay }: Pick<Props, "state" | "onSend" | "onReplay">) {
   const ready = state.mcp.state === "connected";

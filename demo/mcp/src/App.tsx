@@ -69,6 +69,8 @@ export function App() {
   const { send, call } = useServer(dispatch);
   const [dark, setDark] = useState(() => document.documentElement.classList.contains("dark"));
   const [openTool, setOpenTool] = useState<Tool | null>(null);
+  // Stable, so that memoized tool cards skip re-rendering.
+  const onApprove = useCallback((id: string, ok: boolean) => send({ type: "approve", id, ok }), [send]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -112,7 +114,7 @@ export function App() {
             send({ type: "chat", text });
           }}
           onStop={() => send({ type: "stop" })}
-          onApprove={(id, ok) => send({ type: "approve", id, ok })}
+          onApprove={onApprove}
           onReplay={(name) => {
             send({ type: "reset" });
             dispatch({ type: "clear_chat" });

@@ -7,8 +7,8 @@ import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { WebSocketServer, type WebSocket } from "ws";
-import { AgentSession, MODELS, type AgentEvent, type Effort } from "./agent.ts";
-import { SnoutyMcp, type WireEvent } from "./mcp.ts";
+import { AgentSession, EFFORTS, MODELS, type AgentEvent, type Effort } from "./agent.ts";
+import { resultText, SnoutyMcp, type WireEvent } from "./mcp.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..");
@@ -75,8 +75,10 @@ class Client {
     if (this.ws.readyState === this.ws.OPEN) this.ws.send(JSON.stringify(msg));
   }
 
-  private record(e: unknown) {
-    if (this.recording) this.recording.events.push({ t: Date.now() - this.recordStart, e });
+  /** Sends a message, and adds it to the turn that is being recorded. */
+  private forward(msg: unknown) {
+    if (this.recording) this.recording.events.push({ t: Date.now() - this.recordStart, e: msg });
+    this.send(msg);
   }
 
   wire(e: WireEvent) {
@@ -84,15 +86,11 @@ class Client {
       this.send({ type: "mcp_status", status: e.status });
       return;
     }
-    const msg = { type: "wire", event: e };
-    this.record(msg);
-    this.send(msg);
+    this.forward({ type: "wire", event: e });
   }
 
   private agentEvent(e: AgentEvent) {
-    const msg = { type: "agent", event: e };
-    this.record(msg);
-    this.send(msg);
+    this.forward({ type: "agent", event: e });
   }
 
   hello() {
@@ -122,11 +120,10 @@ class Client {
         if (mcp.status.state !== "connected") await mcp.connect().catch(() => {});
         this.recording = { prompt: text, model: this.agent.model, savedAt: "", events: [] };
         this.recordStart = Date.now();
-        await this.agent.send(text);
+        const ok = await this.agent.send(text);
         const rec = this.recording;
         this.recording = null;
-        const failed = rec.events.some((x) => (x.e as { event?: { type?: string } }).event?.type === "error");
-        if (!failed && m.record !== false) {
+        if (ok && m.record !== false) {
           saveRecording(rec);
           this.send({ type: "recordings", recordings: listRecordings() });
         }
@@ -146,7 +143,7 @@ class Client {
         return;
       case "set_model":
         if (MODELS.some((x) => x.id === m.model)) this.agent.model = String(m.model);
-        if (["low", "medium", "high"].includes(String(m.effort))) this.agent.effort = m.effort as Effort;
+        if (EFFORTS.includes(m.effort as Effort)) this.agent.effort = m.effort as Effort;
         return;
       case "restart_mcp":
         await mcp.restart().catch(() => {});
@@ -155,12 +152,11 @@ class Client {
         const started = Date.now();
         try {
           const r = await mcp.callTool(String(m.name), (m.args ?? {}) as Record<string, unknown>);
-          const content = (r.content ?? []) as Array<{ type: string; text?: string }>;
           this.send({
             type: "call_result",
             reqId: m.reqId,
             isError: r.isError === true,
-            text: content.map((c) => c.text ?? `[${c.type}]`).join("\n\n"),
+            text: resultText(r),
             ms: Date.now() - started,
           });
         } catch (e) {

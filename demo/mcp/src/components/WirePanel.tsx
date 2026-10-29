@@ -1,6 +1,6 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { memo, useLayoutEffect, useRef, useState } from "react";
 import { Icon, Switch, TabPanel, Tabs, Tag, Text, Title } from "@antadesign/anta/bundle";
-import type { State, WireEntry } from "../state.ts";
+import { RUNNING_CMD, type State, type WireEntry } from "../state.ts";
 import { Code } from "./Code.tsx";
 
 function time(ts: number) {
@@ -30,7 +30,8 @@ function gist(e: WireEntry): string {
   return "";
 }
 
-function WireRow({ e }: { e: WireEntry }) {
+// Entries never change once added, so a row renders once.
+const WireRow = memo(function WireRow({ e }: { e: WireEntry }) {
   const [open, setOpen] = useState(false);
   if (e.kind === "note") {
     return (
@@ -42,7 +43,7 @@ function WireRow({ e }: { e: WireEntry }) {
     );
   }
   if (e.kind === "log") {
-    const m = /running: (snouty .*)$/.exec(e.line ?? "");
+    const m = RUNNING_CMD.exec(e.line ?? "");
     return (
       <div className={`wire-row wire-log${m ? " is-cmd" : ""}`} data-testid="wire-log">
         <span className="wire-time">{time(e.ts)}</span>
@@ -75,7 +76,7 @@ function WireRow({ e }: { e: WireEntry }) {
       )}
     </div>
   );
-}
+});
 
 function Wire({ entries }: { entries: WireEntry[] }) {
   const [logs, setLogs] = useState(true);

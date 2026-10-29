@@ -3,7 +3,7 @@
 // go to the browser as it happens.
 
 import Anthropic from "@anthropic-ai/sdk";
-import type { SnoutyMcp } from "./mcp.ts";
+import { resultText, type SnoutyMcp } from "./mcp.ts";
 
 export const MODELS = [
   { id: "claude-opus-5-5", label: "Claude Opus 5.5" },
@@ -11,11 +11,12 @@ export const MODELS = [
   { id: "claude-haiku-5-5", label: "Claude Haiku 5.5" },
 ] as const;
 
-export type Effort = "low" | "medium" | "high";
+export const EFFORTS = ["low", "medium", "high"] as const;
+export type Effort = (typeof EFFORTS)[number];
 
-
-export const DECLINED = "The user declined this call.";
-export const CANCELLED = "The user cancelled this call.";
+// src/state.ts matches these to show a call as declined or cancelled.
+const DECLINED = "The user declined this call.";
+const CANCELLED = "The user cancelled this call.";
 
 /** The most tool output that goes back to the model in one result. */
 const MAX_RESULT_CHARS = 60_000;
@@ -40,8 +41,7 @@ export type AgentEvent =
   | { type: "turn_end"; turn: string; stopReason: string | null }
   | { type: "error"; message: string };
 
-function systemPrompt() {
-  return `You are an Antithesis triage assistant inside a live demo of \`snouty mcp\`, the MCP server of snouty, the Antithesis CLI. Your only tools are the tools of that server. Each tool runs one snouty command against the user's Antithesis tenant and returns its JSON output.
+const SYSTEM = `You are an Antithesis triage assistant inside a live demo of \`snouty mcp\`, the MCP server of snouty, the Antithesis CLI. Your only tools are the tools of that server. Each tool runs one snouty command against the user's Antithesis tenant and returns its JSON output.
 
 Work like an experienced Antithesis engineer:
 - Use the tools to answer. Do not guess at run IDs, property names or numbers. Read them.
@@ -52,7 +52,6 @@ Work like an experienced Antithesis engineer:
 - Do not call \`debug\` unless the user asks for it: it starts a session on the tenant. The user must approve each call.
 
 Write for a live audience on a projector: short paragraphs, markdown headings and tables when they help, run IDs and property names in backticks. Lead with the answer. Each user message opens with a <context> block that gives the current time.`;
-}
 
 export class AgentSession {
   messages: Anthropic.MessageParam[] = [];
@@ -61,7 +60,6 @@ export class AgentSession {
   private abort: AbortController | null = null;
   private approvals = new Map<string, (ok: boolean) => void>();
   private anthropic = new Anthropic();
-  private system = systemPrompt();
   private turnSeq = 0;
 
   constructor(
@@ -76,7 +74,6 @@ export class AgentSession {
   reset() {
     this.stop();
     this.messages = [];
-    this.system = systemPrompt();
   }
 
   stop() {
@@ -90,7 +87,8 @@ export class AgentSession {
     this.approvals.delete(id);
   }
 
-  async send(text: string) {
+  /** Runs one user turn; returns false when it failed or was stopped. */
+  async send(text: string): Promise<boolean> {
     if (this.abort) throw new Error("the agent is already running");
     const abort = new AbortController();
     this.abort = abort;
@@ -108,6 +106,7 @@ export class AgentSession {
     });
     try {
       await this.loop(abort.signal);
+      return true;
     } catch (e) {
       this.messages.length = checkpoint;
       if (abort.signal.aborted) {
@@ -115,6 +114,7 @@ export class AgentSession {
       } else {
         this.emit({ type: "error", message: describeError(e) });
       }
+      return false;
     } finally {
       this.abort = null;
     }
@@ -134,7 +134,7 @@ export class AgentSession {
         {
           model: this.model,
           max_tokens: 32_000,
-          system: this.system,
+          system: SYSTEM,
           tools,
           messages: this.messages,
           thinking: { type: "adaptive", display: "summarized" },
@@ -221,11 +221,7 @@ export class AgentSession {
     signal.addEventListener("abort", cancel, { once: true });
     try {
       const result = await this.mcp.callTool(call.name, call.input as Record<string, unknown>, callAbort.signal);
-      const content = (result.content ?? []) as Array<{ type: string; text?: string }>;
-      const text = content
-        .map((c) => (c.type === "text" ? (c.text ?? "") : `[${c.type} content]`))
-        .join("\n\n");
-      return finish(text, result.isError === true);
+      return finish(resultText(result), result.isError === true);
     } catch (e) {
       if (callAbort.signal.aborted) return finish(CANCELLED, true);
       return finish(`The MCP call failed: ${describeError(e)}`, true);

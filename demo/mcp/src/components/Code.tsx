@@ -26,7 +26,7 @@ function highlight(src: string) {
 }
 
 /** Formats JSON or JSON Lines; returns null for anything else. */
-export function prettyJson(text: string): string | null {
+function prettyJson(text: string): string | null {
   const t = text.trim();
   if (!t || !"{[".includes(t[0])) return null;
   try {
@@ -49,10 +49,11 @@ export function Code({ text, json = true, maxHeight }: { text: string; json?: bo
   const body = pretty ?? text;
   const long = body.length > PREVIEW;
   const shown = all || !long ? body : body.slice(0, PREVIEW);
+  const nodes = useMemo(() => (pretty ? highlight(shown) : shown), [pretty, shown]);
   return (
     <div className="code-wrap">
       <pre className="code" style={maxHeight ? { maxHeight } : undefined}>
-        <code>{pretty ? highlight(shown) : shown}</code>
+        <code>{nodes}</code>
         {long && !all && <span className="code-more">…</span>}
       </pre>
       {long && (

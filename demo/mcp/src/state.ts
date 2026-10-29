@@ -83,7 +83,7 @@ export interface WireEntry {
   line?: string;
 }
 
-export interface Usage {
+interface Usage {
   input: number;
   output: number;
   cacheRead: number;
@@ -147,8 +147,15 @@ function updateTool(chat: ChatItem[], id: string, f: (t: Extract<ChatItem, { kin
 }
 
 /** The snouty subcommand that a tool runs: `runs_properties` → `runs properties`. */
-export function commandWords(tool: string) {
+function commandWords(tool: string) {
   return tool.replace(/_/g, " ");
+}
+
+/** The debug line that `snouty mcp` logs for each command it runs. */
+export const RUNNING_CMD = /running: (snouty .*)$/;
+
+function finishThinking(chat: ChatItem[]): ChatItem[] {
+  return chat.map((c) => (c.kind === "thinking" ? { ...c, done: true } : c));
 }
 
 function agent(state: State, e: AgentEvent): State {
@@ -175,10 +182,9 @@ function agent(state: State, e: AgentEvent): State {
       };
     }
     case "tool_pending": {
-      const chat = state.chat.map((c) => (c.kind === "thinking" ? { ...c, done: true } : c));
       return {
         ...state,
-        chat: [...chat, { kind: "tool", id: String(e.id), name: String(e.name), status: "pending", started: Date.now() }],
+        chat: [...finishThinking(state.chat), { kind: "tool", id: String(e.id), name: String(e.name), status: "pending", started: Date.now() }],
       };
     }
     case "tool_call": {
@@ -221,7 +227,7 @@ function agent(state: State, e: AgentEvent): State {
         },
       };
     case "turn_end":
-      return { ...state, chat: state.chat.map((c) => (c.kind === "thinking" ? { ...c, done: true } : c)) };
+      return { ...state, chat: finishThinking(state.chat) };
     case "error":
       return {
         ...state,
@@ -253,7 +259,7 @@ function wire(state: State, e: { kind: string; dir?: "out" | "in"; msg?: Record<
     entry = { seq, ts: e.ts, kind: "log", dir: "log", line: e.line };
     // `running: snouty --json runs list ...` names the command of a tool
     // call. Give it to the oldest running call of that tool that has none.
-    const m = /running: (snouty .*)$/.exec(e.line ?? "");
+    const m = RUNNING_CMD.exec(e.line ?? "");
     if (m) {
       const cmd = m[1];
       const target = chat.find(

@@ -2,10 +2,11 @@
 // client. Every JSON-RPC message in either direction, and every stderr line,
 // goes to `onEvent` so the browser can show the wire.
 
+import { stripVTControlCharacters } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Transport, TransportSendOptions } from "@modelcontextprotocol/sdk/shared/transport.js";
-import type { JSONRPCMessage, Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult, JSONRPCMessage, Tool } from "@modelcontextprotocol/sdk/types.js";
 
 export type WireEvent =
   | { kind: "wire"; dir: "out" | "in"; msg: JSONRPCMessage; ts: number }
@@ -34,6 +35,8 @@ class TapTransport implements Transport {
   onclose?: () => void;
   onerror?: (error: Error) => void;
   onmessage?: Transport["onmessage"];
+  /** The client sets this after `initialize`. */
+  protocolVersion?: string;
 
   constructor(
     private inner: StdioClientTransport,
@@ -57,6 +60,10 @@ class TapTransport implements Transport {
 
   async close() {
     await this.inner.close();
+  }
+
+  setProtocolVersion(version: string) {
+    this.protocolVersion = version;
   }
 }
 
@@ -102,14 +109,11 @@ export class SnoutyMcp {
       while ((nl = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, nl).trimEnd();
         buf = buf.slice(nl + 1);
-        if (line) this.onEvent({ kind: "stderr", line: stripAnsi(line), ts: Date.now() });
+        if (line) this.onEvent({ kind: "stderr", line: stripVTControlCharacters(line), ts: Date.now() });
       }
     });
 
-    let protocolVersion: string | undefined;
     const transport = new TapTransport(inner, (dir, msg) => {
-      const result = "result" in msg ? (msg.result as { protocolVersion?: unknown }) : undefined;
-      if (typeof result?.protocolVersion === "string") protocolVersion = result.protocolVersion;
       this.onEvent({ kind: "wire", dir, msg, ts: Date.now() });
     });
     const client = new Client({ name: "snouty-mcp-demo", version: "1.0.0" });
@@ -134,7 +138,7 @@ export class SnoutyMcp {
         info: {
           name: version?.name ?? "snouty",
           version: version?.version ?? "?",
-          protocolVersion,
+          protocolVersion: transport.protocolVersion,
           instructions: client.getInstructions(),
           capabilities: client.getServerCapabilities(),
           tools,
@@ -150,9 +154,7 @@ export class SnoutyMcp {
   }
 
   async restart() {
-    const old = this.client;
-    this.client = null;
-    await old?.close().catch(() => {});
+    await this.close();
     await this.connect();
   }
 
@@ -177,7 +179,9 @@ export class SnoutyMcp {
   }
 }
 
-function stripAnsi(s: string) {
-  // eslint-disable-next-line no-control-regex
-  return s.replace(/\x1b\[[0-9;]*m/g, "");
+/** The text of a tool result, with a placeholder for each non-text part. */
+export function resultText(result: Record<string, unknown>): string {
+  return ((result.content ?? []) as CallToolResult["content"])
+    .map((c) => (c.type === "text" ? c.text : `[${c.type} content]`))
+    .join("\n\n");
 }

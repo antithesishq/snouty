@@ -17,8 +17,8 @@ use color_eyre::{
 use crate::config::ComposeConfig;
 use crate::container::{
     Architecture, ContainerRuntime, DISCOVERY_COMMAND_TIMEOUT, RemoteManifest, available_engines,
-    digests_for_repo, image_ref_tag, image_repo, is_podman_in_disguise, mirror_path,
-    normalize_repo, registry_host, strip_registry,
+    digests_for_repo, docker_is_podman, image_ref_tag, image_repo, mirror_path, normalize_repo,
+    registry_host, strip_registry,
 };
 use crate::error::user_error;
 use crate::process::{ProcessGroupChild, output_with_timeout};
@@ -154,7 +154,7 @@ impl ComposeCli {
         let program = which::which("docker").wrap_err("`docker` not found on PATH")?;
         // podman-in-disguise routes `docker compose` to a provider that may not
         // implement Compose v2; never trust it as a source.
-        if is_podman_in_disguise("docker") {
+        if docker_is_podman() {
             bail!("`docker` is podman in disguise; its `compose` is not Docker Compose v2");
         }
         let form = ComposeForm::Plugin(program);

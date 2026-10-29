@@ -355,8 +355,10 @@ impl Vm {
         let output = output_async(command, Duration::from_secs(120)).await?;
         if !output.status.success() {
             bail!(
-                "guest command failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
+                "guest command failed ({})\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout).trim_end(),
+                String::from_utf8_lossy(&output.stderr).trim_end()
             );
         }
         String::from_utf8(output.stdout).wrap_err("guest command returned invalid UTF-8")

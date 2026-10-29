@@ -4490,6 +4490,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "--session-id is only for a moment that names a session ID.",
             ["debug"],
         ),
+        # Guest command failure diagnostics need a VM or mock guest tools;
+        # tests/cli_simulate.rs covers the step, exit status, stdout, and stderr.
         _help_story(
             "help-simulate",
             "Understand guest simulation",

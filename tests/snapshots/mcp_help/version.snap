@@ -1,0 +1,11 @@
+---
+source: tests/help_snapshots.rs
+---
+Print the version of snouty, and the git commit that it was built from.
+
+The commit is the short hash of the commit, with a `-dirty` suffix when the build had uncommitted changes. A build from a source tarball has no commit.
+
+Examples:
+  version
+
+The version prints as one JSON object, with the fields version and commit. commit is null when the build has no commit.

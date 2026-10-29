@@ -1,17 +1,34 @@
 ---
 source: tests/help_snapshots.rs
 ---
-Print version information
+Print the version of snouty, and the git commit that it was built from.
+
+The commit is the short hash of the commit, with a `-dirty` suffix when the
+build had uncommitted changes. A build from a source tarball has no commit.
+
+Examples:
+  snouty version
+
+Add --json for machine-readable output. The version prints as one JSON object,
+with the fields version and commit. commit is null when the build has no commit:
+  snouty --json version | jq -r .version
 
 Usage: snouty version [OPTIONS]
 
 Options:
-  -h, --help                 Print help
-      --json                 Output JSON where supported (NDJSON for list/stream
-                             commands, pretty JSON otherwise)
-      --verbose              Log API requests to stderr (authentication tokens
-                             redacted)
-      --settings <SETTINGS>  Path to the snouty settings file (default:
-                             ./.snouty.toml; overrides SNOUTY_SETTINGS_PATH)
-      --profile <PROFILE>    Settings profile to select (overrides
-                             ANTITHESIS_PROFILE)
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --json
+          Output JSON where supported (NDJSON for list/stream commands, pretty
+          JSON otherwise)
+
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

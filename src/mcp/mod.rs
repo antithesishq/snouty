@@ -37,9 +37,9 @@ const SERVER_PID_ENV: &str = "SNOUTY_MCP_SERVER_PID";
 /// not.
 const INSTRUCTIONS: &str = "Antithesis tests software in a deterministic simulation that injects \
 faults. A run explores a tree of timelines, and an event, a property example or a failure names \
-one moment of it: a run_id, an input_hash and a vtime. These tools read the runs of an \
-Antithesis tenant, run commands at a moment of a run, and search the Antithesis documentation. \
-tool_help returns the full help of a tool.";
+one moment of it: a run_id, an input_hash and a vtime. These tools read and cancel the runs \
+of an Antithesis tenant, run commands at a moment of a run, and search the Antithesis \
+documentation. tool_help returns the full help of a tool.";
 
 /// The server's own options. Every tool call passes `settings`, `profile`
 /// and `verbose` to its child. A client cannot set them.

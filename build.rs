@@ -657,7 +657,10 @@ fn emit_version() {
     // CARGO_PKG_VERSION is provided to build scripts by cargo.
     let pkg = std::env::var("CARGO_PKG_VERSION").unwrap();
     let version = match git_sha() {
-        Some(sha) => format!("{pkg} ({sha})"),
+        Some(sha) => {
+            println!("cargo:rustc-env=SNOUTY_COMMIT={sha}");
+            format!("{pkg} ({sha})")
+        }
         None => pkg,
     };
     println!("cargo:rustc-env=SNOUTY_VERSION={version}");

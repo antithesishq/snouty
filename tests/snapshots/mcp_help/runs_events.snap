@@ -1,0 +1,20 @@
+---
+source: tests/help_snapshots.rs
+---
+Search a run's events for one or more substrings (all must match).
+
+Each item of `matches` is matched against the text an event carries: log output, an assertion's message and source function, and a test-composer command.
+
+Each matching event has its moment (an input_hash and a vtime), its source, and its payload. To stream the logs of an event's timeline to its current end, pass its run ID and input_hash to `runs_logs {"run_id": "<run_id>", "input_hash": "<hash>"}`.
+
+Matching runs server-side through the events-search API, the same route `runs_search` takes. Every term must match, case-insensitively. The result is a sample of the matching events in no fixed order, capped at `limit`. Read `tool_help {"tool": "runs_search"}` to learn how to read a sample and how the run's timelines relate the events.
+
+The run must be ready or complete. If it is not, the command waits until it is ready, as `runs_exec` does, and says that it waits.
+
+The command needs tenant release 62.2 or newer; `doctor` reports the tenant release.
+
+Examples:
+  runs_events {"run_id": "<run_id>", "matches": ["error"]}
+  runs_events {"run_id": "<run_id>", "matches": ["error", "node-0"], "limit": 100}
+
+Each event prints as one JSON object on its own line.

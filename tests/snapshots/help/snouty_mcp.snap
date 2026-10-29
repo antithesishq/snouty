@@ -17,18 +17,22 @@ The tools:
   runs_list        List recent runs
   runs_show        Show details of a specific run
   runs_wait        Wait until a run is ready or complete
+  runs_cancel      Cancel a run that has not finished
   runs_properties  List property results for a run
   runs_property    Show one property of a run, by its ID
+  runs_stream      Stream a run's property changes until the run is final
   runs_build_logs  Stream build logs for a run
   runs_logs        Stream moment logs for a run
   runs_search      Query events with the event-set DSL
   runs_usage       Show the core-hours that recent runs used
   runs_exec        Execute a command in a run that is in progress
+  runs_events      Search events in a run
   debug            Launch a debugging session
   docs_tree        Print a tree of documentation paths
   docs_show        Show full contents of a documentation page
   docs_search      Search the documentation
   doctor           Check environment configuration
+  version          Print version information
   settings_show    Print the settings that snouty resolved
   tool_help        Return the full help of a tool
 

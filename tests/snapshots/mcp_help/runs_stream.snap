@@ -1,0 +1,42 @@
+---
+source: tests/help_snapshots.rs
+---
+Stream the property events of a run as they happen, until the run is final.
+
+Each event prints as one line:
+
+  property <property id> <name>
+      A property appears for the first time.
+
+  sample <property id> example <input hash> <vtime>
+  sample <property id> counterexample <input hash> <vtime>
+      An example or a counterexample of the property, the first time it
+      arrives. A non-event property's sample is its value, as JSON.
+
+  verdict <property id> passed|failed
+      The property passed or failed. A verdict that repeats the last verdict
+      does not print.
+
+  completed <run id>
+      The run is final, and the stream ends.
+
+  unknown <type> <json>
+      A notification that snouty cannot read, printed as its JSON.
+
+The samples are a selection: the server does not send every example and counterexample that it counts. To see a property and its totals, use `runs_property {"run_id": "<run_id>", "property_id": "<property_id>"}`. To read the logs at a moment, use `runs_logs {"run_id": "<run_id>", "input_hash": "<input_hash>", "vtime": <vtime>}`.
+
+The stream shows only the events that happen after it starts. It does not show the current results. A property that passed or failed before the stream started gets no verdict line. To get the current results, read `runs_properties` and merge it with the stream's events.
+
+The stream is silent between events. For a run that is already final, the stream prints `completed` and ends. The stream of a new run opens a few minutes after the run starts, and snouty waits until it opens.
+
+If the stream ends before the run is final, snouty exits with an error. Start the stream again, then read the current results.
+
+Streaming needs a run created on release 65.3 or later.
+
+The tool returns when the run is final, so a call can take as long as the run.
+
+Examples:
+  runs_stream {"run_id": "<run_id>"}
+  runs_stream {"run_id": "<run_id>", "property_ids": ["<property_id>"]}
+
+Each event prints as one JSON object on its own line, with an `event` key and the fields above. Each vtime is a JSON number. The `data` key holds the JSON of an unknown notification.

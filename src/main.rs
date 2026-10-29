@@ -113,10 +113,20 @@ async fn run(cli: Cli) -> Result<()> {
     let result = match command {
         Commands::Completions { shell } => cmd_completions(shell).map_err(Report::new),
         Commands::Version => {
-            // SNOUTY_VERSION (set by build.rs) is the crate version plus the
-            // build's git sha when known — the same string clap's --version
-            // prints, so the two stay consistent.
-            println!("snouty {}", env!("SNOUTY_VERSION"));
+            if output.json {
+                // SNOUTY_COMMIT (set by build.rs) is absent when the build had
+                // no git checkout.
+                let version = serde_json::json!({
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "commit": option_env!("SNOUTY_COMMIT"),
+                });
+                println!("{}", serde_json::to_string_pretty(&version)?);
+            } else {
+                // SNOUTY_VERSION (set by build.rs) is the crate version plus
+                // the build's git sha when known — the same string clap's
+                // --version prints, so the two stay consistent.
+                println!("snouty {}", env!("SNOUTY_VERSION"));
+            }
             Ok(())
         }
         Commands::Update(args) => cmd_update(&args, &settings?),
@@ -205,10 +215,10 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
         | Commands::Runs { .. }
         | Commands::Docs { .. }
         | Commands::Debug { .. }
-        | Commands::Doctor(_) => None,
+        | Commands::Doctor(_)
+        | Commands::Version => None,
         Commands::Validate(_) => Some("validate"),
         Commands::Completions { .. } => Some("completions"),
-        Commands::Version => Some("version"),
         Commands::Update(_) => Some("update"),
         Commands::Login { .. } => Some("login"),
         Commands::Mcp(_) => Some("mcp"),

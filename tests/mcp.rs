@@ -80,18 +80,22 @@ async fn tools_run_their_commands_in_json_mode() {
             "runs_list",
             "runs_show",
             "runs_wait",
+            "runs_cancel",
             "runs_properties",
             "runs_property",
+            "runs_stream",
             "runs_build_logs",
             "runs_logs",
             "runs_search",
             "runs_usage",
             "runs_exec",
+            "runs_events",
             "debug",
             "docs_tree",
             "docs_show",
             "docs_search",
             "doctor",
+            "version",
             "settings_show",
             "tool_help",
         ]
@@ -151,6 +155,49 @@ async fn tools_run_their_commands_in_json_mode() {
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
     let usage: Value = serde_json::from_str(text(&result).trim()).unwrap();
     assert!(usage["hours"].is_number(), "{usage}");
+
+    // runs_events searches a run's events for every term of matches.
+    let call_args = json!({ "run_id": run["run_id"], "matches": ["request", "slow"] });
+    let result = call(&client, "runs_events", call_args).await;
+    assert_eq!(result.is_error, Some(false), "{}", text(&result));
+    let event: Value = serde_json::from_str(text(&result).lines().next().unwrap()).unwrap();
+    assert!(event["moment"]["vtime"].is_number(), "{event}");
+
+    // runs_stream returns every event once the run is final. run-2 is the
+    // mock's in-progress run.
+    let call_args = json!({
+        "run_id": "run-2",
+        "property_ids": ["27a7cb0b311c8481c4ce12f3347fadbf"],
+    });
+    let result = call(&client, "runs_stream", call_args).await;
+    assert_eq!(result.is_error, Some(false), "{}", text(&result));
+    // The second block is stderr, which says that the stream is open.
+    let stdout = &result.content[0].as_text().expect("a text block").text;
+    let events: Vec<Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(events.last().unwrap()["event"], "completed", "{events:?}");
+    assert!(
+        events[..events.len() - 1]
+            .iter()
+            .all(|event| event["property_id"] == "27a7cb0b311c8481c4ce12f3347fadbf"),
+        "{events:?}"
+    );
+
+    // runs_cancel cancels an in-progress run, and fails on a finished one.
+    let result = call(&client, "runs_cancel", json!({ "run_id": "run-2" })).await;
+    assert_eq!(result.is_error, Some(false), "{}", text(&result));
+    let cancelled: Value = serde_json::from_str(text(&result)).unwrap();
+    assert_eq!(cancelled["run_id"], "run-2");
+    let result = call(&client, "runs_cancel", json!({ "run_id": run["run_id"] })).await;
+    assert_eq!(result.is_error, Some(true), "{}", text(&result));
+
+    // version returns the crate version as JSON.
+    let result = call(&client, "version", json!({})).await;
+    assert_eq!(result.is_error, Some(false), "{}", text(&result));
+    let version: Value = serde_json::from_str(text(&result)).unwrap();
+    assert_eq!(version["version"], env!("CARGO_PKG_VERSION"));
 
     // tool_help returns a tool's help page without running a command.
     let result = call(&client, "tool_help", json!({ "tool": "runs_logs" })).await;

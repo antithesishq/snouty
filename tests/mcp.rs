@@ -50,6 +50,21 @@ fn snouty_mcp_from(exe: &Path, server: &MockApiServer, home: &Path) -> tokio::pr
     command
 }
 
+/// [`snouty_mcp`], with an API that accepts connections and never answers.
+/// The listener must outlive the command.
+fn snouty_mcp_silent(
+    server: &MockApiServer,
+    home: &Path,
+) -> (tokio::process::Command, std::net::TcpListener) {
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut command = snouty_mcp(server, home);
+    command.env(
+        "ANTITHESIS_BASE_URL",
+        format!("http://{}", silent.local_addr().unwrap()),
+    );
+    (command, silent)
+}
+
 async fn connect(command: tokio::process::Command) -> RunningService<RoleClient, ()> {
     let transport = TokioChildProcess::new(command).expect("spawn snouty mcp");
     ().serve(transport).await.expect("initialize snouty mcp")
@@ -283,15 +298,9 @@ fn children(pid: u32) -> Vec<u32> {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_cancelled_call_kills_its_command() {
-    // An API that accepts connections and never answers.
-    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let server = MockApiServer::start();
     let home = TempDir::new().unwrap();
-    let mut command = snouty_mcp(&server, home.path());
-    command.env(
-        "ANTITHESIS_BASE_URL",
-        format!("http://{}", silent.local_addr().unwrap()),
-    );
+    let (command, _silent) = snouty_mcp_silent(&server, home.path());
     let transport = TokioChildProcess::new(command).expect("spawn snouty mcp");
     let pid = transport.id().unwrap();
     let client = ().serve(transport).await.expect("initialize snouty mcp");
@@ -339,14 +348,9 @@ impl ClientHandler for ProgressClient {
 /// resets its time limit on progress keeps the call.
 #[tokio::test]
 async fn a_long_call_reports_progress() {
-    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let server = MockApiServer::start();
     let home = TempDir::new().unwrap();
-    let mut command = snouty_mcp(&server, home.path());
-    command.env(
-        "ANTITHESIS_BASE_URL",
-        format!("http://{}", silent.local_addr().unwrap()),
-    );
+    let (command, _silent) = snouty_mcp_silent(&server, home.path());
     let (sender, mut progress) = tokio::sync::mpsc::unbounded_channel();
     let transport = TokioChildProcess::new(command).expect("spawn snouty mcp");
     let client = ProgressClient(sender)
@@ -357,15 +361,15 @@ async fn a_long_call_reports_progress() {
     // rmcp's client puts a progress token on each request.
     let params = CallToolRequestParams::new("runs_show")
         .with_arguments(JsonObject::from_iter([("run_id".to_owned(), json!("r"))]));
-    let mut call = Box::pin(client.call_tool_once(params));
     let first = tokio::select! {
-        result = &mut call => panic!("the call returned: {result:?}"),
+        result = client.call_tool_once(params) => panic!("the call returned: {result:?}"),
         first = tokio::time::timeout(Duration::from_secs(20), progress.recv()) => first,
     };
-    let first = first.expect("a progress notification").unwrap();
+    let first = first
+        .expect("progress within 20s")
+        .expect("progress channel open");
     assert_eq!(first.progress, 10.0);
     assert_eq!(first.message.as_deref(), Some("running for 10s"));
-    drop(call);
     client.cancel().await.expect("close snouty mcp");
 }
 
@@ -374,14 +378,9 @@ async fn a_long_call_reports_progress() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_command_exits_when_its_server_is_killed() {
-    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let server = MockApiServer::start();
     let home = TempDir::new().unwrap();
-    let mut command = snouty_mcp(&server, home.path());
-    command.env(
-        "ANTITHESIS_BASE_URL",
-        format!("http://{}", silent.local_addr().unwrap()),
-    );
+    let (command, _silent) = snouty_mcp_silent(&server, home.path());
     let transport = TokioChildProcess::new(command).expect("spawn snouty mcp");
     let pid = transport.id().unwrap();
     let client = ().serve(transport).await.expect("initialize snouty mcp");

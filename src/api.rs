@@ -13,7 +13,7 @@ use reqwest::{Client, Proxy};
 use serde::de::DeserializeOwned;
 
 use crate::api_cache::{self, ApiCache, CachePolicy};
-use crate::auth::{AuthenticationInfo, PasswordPolicy, RefreshableOAuthToken};
+use crate::auth::{AuthenticationInfo, PasswordPolicy};
 use crate::env;
 use crate::error::{ApiError, user_error};
 use crate::params::{
@@ -828,10 +828,12 @@ impl AntithesisApi {
         &self.client.inner().authn_info
     }
 
-    /// Refreshes `token`, the OAuth credential of the client, through
-    /// [`RefreshableOAuthToken::refresh`].
-    pub(crate) async fn refresh_oauth_token(&self, token: &RefreshableOAuthToken) -> Result<()> {
-        token.refresh(self.client.client(), &self.base_url).await
+    /// Refreshes the credential of the client, through
+    /// [`AuthenticationInfo::refresh`].
+    pub(crate) async fn refresh_authentication(&self) -> Result<()> {
+        self.authentication()
+            .refresh(self.client.client(), &self.base_url)
+            .await
     }
 
     pub async fn launch_test(&self, launcher: &str, params: &Params) -> Result<LaunchResponse> {
@@ -1276,19 +1278,16 @@ impl ClientHooks<ClientState> for generated::Client {
         _info: &OperationInfo,
     ) -> std::result::Result<(), ClientError<E>> {
         let auth = &self.inner().authn_info;
-        // An expired OAuth token is replaced first. When it cannot be, the
-        // request fails with the reason, rather than meet a 401.
-        if let AuthenticationInfo::OAuth(token) = auth
-            && token.expired()
-        {
-            token
-                .refresh(self.client(), self.baseurl())
+        // An expired credential is refreshed first, and a GitHub Actions
+        // OIDC credential is expired until its first token. When the refresh
+        // fails, the request fails with the reason, rather than meet a 401.
+        if auth.expired() {
+            auth.refresh(self.client(), self.baseurl())
                 .await
                 .map_err(|e| ClientError::Custom(e.to_string()))?;
         }
         let header = auth
             .auth_header()
-            .await
             .map_err(|e| ClientError::Custom(e.to_string()))?;
         request
             .headers_mut()
@@ -1304,27 +1303,26 @@ impl ClientHooks<ClientState> for generated::Client {
         let state = self.inner();
         let http = &state.http;
 
-        // Keep a resendable copy so that, when an OAuth request gets a 401, a
-        // newer or refreshed token can retry it once.
-        let retry_request = match &state.authn_info {
-            AuthenticationInfo::OAuth(token) => request.try_clone().map(|request| (token, request)),
-            _ => None,
-        };
+        // Keep a resendable copy so that, when a request gets a 401, a
+        // refreshed credential can retry it once. The 401 also covers a token
+        // that expired while `execute_with_retry` waited out a 429.
+        let retry_request = request.try_clone();
 
         http.log_request(&request, LoggedBody::Shown);
         let mut budget = RetryBudget::default();
         let result = execute_with_retry(self.client(), http.verbose, &mut budget, request).await;
 
         let result = match (result, retry_request) {
-            (Ok(response), Some((token, mut retry_request)))
+            (Ok(response), Some(mut retry_request))
                 if response.status() == reqwest::StatusCode::UNAUTHORIZED =>
             {
-                // When the refresh fails, such as for want of a refresh
-                // token, the 401 surfaces.
-                let refreshed = match token.refresh(self.client(), self.baseurl()).await {
-                    Ok(()) => state.authn_info.auth_header().await,
-                    Err(err) => Err(err),
-                };
+                // When the refresh fails, such as for an API key or for want
+                // of a refresh token, the 401 surfaces.
+                let auth = &state.authn_info;
+                let refreshed = auth
+                    .refresh(self.client(), self.baseurl())
+                    .await
+                    .and_then(|()| auth.auth_header());
                 match refreshed {
                     Ok(header) => {
                         retry_request
@@ -1335,7 +1333,7 @@ impl ClientHooks<ClientState> for generated::Client {
                             .await
                     }
                     Err(err) => {
-                        log::warn!("reactive OAuth token refresh failed: {err:#}");
+                        log::warn!("cannot refresh the credential after a 401: {err:#}");
                         Ok(response)
                     }
                 }
@@ -2099,12 +2097,13 @@ fn error_body_message(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::GithubActionsOidcToken;
     use crate::params::{ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID};
-    use crate::testutils::auth::{oauth_credential_in, paseto_expiring_in};
+    use crate::testutils::auth::{jwt_expiring_in, oauth_credential_in, paseto_expiring_in};
     use crate::testutils::fake_secrets::{
         FAKE_ACCESS_TOKEN_A, FAKE_ACCESS_TOKEN_B, FAKE_API_KEY_A, FAKE_BASIC_AUTHORIZATION,
-        FAKE_OAUTH_FLOW_TOKEN, FAKE_PASSWORD, FAKE_REFRESH_TOKEN_A, FAKE_REFRESH_TOKEN_B,
-        FAKE_SESSION_COOKIE, FAKE_USERNAME, MARKER,
+        FAKE_OAUTH_FLOW_TOKEN, FAKE_OIDC_REQUEST_TOKEN, FAKE_PASSWORD, FAKE_REFRESH_TOKEN_A,
+        FAKE_REFRESH_TOKEN_B, FAKE_SESSION_COOKIE, FAKE_USERNAME, MARKER,
     };
     use hegel::{Generator, generators};
     use std::sync::Arc;
@@ -4636,7 +4635,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        // An API key can't refresh: no clone, no retry, no refresh call.
+        // An API key can't refresh, so the 401 surfaces without a retry.
         let api = AntithesisApi::build(
             &Settings::for_test_base_url(&mock_server.uri()),
             AuthenticationInfo::ApiKey {
@@ -4648,11 +4647,99 @@ mod tests {
         .unwrap();
 
         let result = api.get_run("run-1").await;
-        assert!(result.is_err());
+        assert_eq!(
+            crate::error::api_error_status(&result.unwrap_err()),
+            Some(401)
+        );
 
         let requests = mock_server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 1, "an API key can't refresh, so no retry");
         assert_eq!(requests[0].url.path(), "/api/v0/runs/run-1");
+    }
+
+    /// An API client whose GitHub Actions OIDC credential fetches from a
+    /// token endpoint on `server`. The endpoint gives `first` on the first
+    /// fetch, and `second` on the second.
+    async fn oidc_api(server: &MockServer, first: &str, second: &str) -> AntithesisApi {
+        for (token, priority) in [(first, 1), (second, 2)] {
+            Mock::given(method("GET"))
+                .and(path("/token"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({ "value": token })),
+                )
+                .up_to_n_times(1)
+                .with_priority(priority)
+                .expect(1)
+                .mount(server)
+                .await;
+        }
+        let auth = AuthenticationInfo::GithubActionsOidc(GithubActionsOidcToken::new(
+            format!("{}/token?api-version=2.0", server.uri()),
+            FAKE_OIDC_REQUEST_TOKEN.to_owned(),
+        ));
+        AntithesisApi::build(
+            &Settings::for_test_base_url(&server.uri()),
+            auth,
+            false,
+            ResponseCache::Disabled,
+        )
+        .unwrap()
+    }
+
+    /// Mount a run endpoint that answers a request with `token` with
+    /// `status`, and expects one such request.
+    async fn mount_run_for_oidc_token(server: &MockServer, token: &str, status: u16) {
+        use wiremock::matchers::header;
+
+        Mock::given(path("/api/v0/runs/run-1"))
+            .and(header("authorization", format!("GHA {token}")))
+            .respond_with(
+                ResponseTemplate::new(status).set_body_json(serde_json::json!({
+                    "run_id": "run-1",
+                    "status": "completed",
+                    "created_at": "2025-03-20T02:00:00Z",
+                    "launcher": "nightly"
+                })),
+            )
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn oidc_401_fetches_a_new_token_and_retries_once() {
+        let server = MockServer::start().await;
+        let first = jwt_expiring_in(chrono::TimeDelta::minutes(5));
+        let second = jwt_expiring_in(chrono::TimeDelta::minutes(6));
+        let api = oidc_api(&server, &first, &second).await;
+        mount_run_for_oidc_token(&server, &first, 401).await;
+        mount_run_for_oidc_token(&server, &second, 200).await;
+
+        api.get_run("run-1").await.unwrap();
+        server.verify().await;
+    }
+
+    // A re-send after a 429 wait carries the token of the first send. When
+    // that token expired during the wait, its 401 refreshes the credential
+    // and retries the request.
+    #[tokio::test]
+    async fn a_token_that_expires_during_a_rate_limit_wait_is_refreshed_after_its_401() {
+        let server = MockServer::start().await;
+        let first = jwt_expiring_in(chrono::TimeDelta::minutes(5));
+        let second = jwt_expiring_in(chrono::TimeDelta::minutes(6));
+        let api = oidc_api(&server, &first, &second).await;
+        Mock::given(path("/api/v0/runs/run-1"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        mount_run_for_oidc_token(&server, &first, 401).await;
+        mount_run_for_oidc_token(&server, &second, 200).await;
+
+        api.get_run("run-1").await.unwrap();
+        server.verify().await;
     }
 
     #[tokio::test]

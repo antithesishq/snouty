@@ -1,13 +1,16 @@
 //! GitHub Actions OIDC credentials: a token that the Actions token endpoint
 //! gives for the Antithesis audience.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, PoisonError, RwLock},
+    time::Duration,
+};
 
+use chrono::{DateTime, Utc};
 use color_eyre::eyre::{Context, Result};
 use serde::Deserialize;
-use tokio::sync::OnceCell;
 
-use super::AuthenticationInfo;
+use super::{AuthenticationInfo, claims::try_get_expiry_from_jwt};
 use crate::{attributed_value::AttributedValue, env};
 
 pub(super) const OIDC_URL_VAR_NAME: &str = "ACTIONS_ID_TOKEN_REQUEST_URL";
@@ -21,11 +24,10 @@ impl AuthenticationInfo {
             && let Some(actions_id_url) = env::var(OIDC_URL_VAR_NAME)?
         {
             return Ok(Some(AttributedValue::EnvironmentVariable {
-                value: Self::GithubActionsOidc {
-                    url: actions_id_url,
-                    request_token: actions_id_request_token,
-                    cached: Arc::new(OnceCell::new()),
-                },
+                value: Self::GithubActionsOidc(GithubActionsOidcToken::new(
+                    actions_id_url,
+                    actions_id_request_token,
+                )),
                 environment_variable_names: vec![OIDC_URL_VAR_NAME, OIDC_TOKEN_VAR_NAME],
             }));
         }
@@ -34,22 +36,88 @@ impl AuthenticationInfo {
     }
 }
 
-/// The token of a `GithubActionsOidc` credential: fetched on the first call,
-/// and kept in `cached` for the later calls.
-pub(crate) async fn cached_github_actions_oidc_token<'a>(
-    url: &str,
-    request_token: &str,
-    cached: &'a OnceCell<String>,
-) -> Result<&'a str> {
-    Ok(cached
-        .get_or_try_init(|| fetch_github_actions_oidc_credentials(url, request_token))
-        .await?)
+/// A GitHub Actions OIDC credential: the request token that the Actions token
+/// endpoint at `url` takes, and the last token that the endpoint gave. Clones
+/// share the token: a refresh through any clone gives every clone the new
+/// token.
+#[derive(Clone)]
+pub struct GithubActionsOidcToken {
+    url: String,
+    request_token: String,
+    /// Never held across an `await`: a refresh fetches with no lock held,
+    /// and then takes the write lock to store the token.
+    fetched: Arc<RwLock<Option<FetchedToken>>>,
+}
+
+#[derive(Clone)]
+struct FetchedToken {
+    token: String,
+    /// The `exp` claim of the token, when snouty can read it.
+    expires_at: Option<DateTime<Utc>>,
+}
+
+impl std::fmt::Debug for GithubActionsOidcToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GithubActionsOidcToken")
+            .field("url", &self.url)
+            .field("request_token", &"[REDACTED]")
+            .field(
+                "expires_at",
+                &self.current().map(|fetched| fetched.expires_at),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl GithubActionsOidcToken {
+    pub(crate) fn new(url: String, request_token: String) -> Self {
+        Self {
+            url,
+            request_token,
+            fetched: Arc::default(),
+        }
+    }
+
+    fn current(&self) -> Option<FetchedToken> {
+        self.fetched
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The token that the last refresh fetched, or `None` before the first
+    /// refresh.
+    pub(crate) fn token(&self) -> Option<String> {
+        self.current().map(|fetched| fetched.token)
+    }
+
+    /// Whether the credential needs a new token: it has none, its `exp` is in
+    /// the past, or snouty cannot read its `exp`. A token with no readable
+    /// `exp` is thus used for one request, and not again.
+    pub(crate) fn expired(&self) -> bool {
+        self.current().is_none_or(|fetched| {
+            fetched
+                .expires_at
+                .is_none_or(|expires_at| Utc::now() >= expires_at)
+        })
+    }
+
+    /// Replaces the token with a new one from the Actions token endpoint, in
+    /// every clone. Concurrent refreshes each fetch, and the last to finish
+    /// sets the token: a fetch is idempotent and costs nothing.
+    pub(crate) async fn refresh(&self) -> Result<()> {
+        let token = fetch_github_actions_oidc_credentials(&self.url, &self.request_token).await?;
+        let expires_at = try_get_expiry_from_jwt(&token);
+        *self.fetched.write().unwrap_or_else(PoisonError::into_inner) =
+            Some(FetchedToken { token, expires_at });
+        Ok(())
+    }
 }
 
 /// Exchange the GitHub Actions OIDC *request* token for an Antithesis-audience
 /// OIDC token by calling the Actions token endpoint.
 ///
-/// Split out from [`Credentials::try_from_github_actions_environment`] so the
+/// Split out from [`GithubActionsOidcToken::refresh`] so the
 /// HTTP exchange can be unit-tested against a local server without mutating the
 /// process environment (which would race other tests under threaded
 /// `cargo test`). The request URL already carries a query string, so the
@@ -82,6 +150,7 @@ async fn fetch_github_actions_oidc_credentials(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutils::auth::{jwt_expiring_in, jwt_with_claims};
     use crate::testutils::fake_secrets::{FAKE_OIDC_REQUEST_TOKEN, FAKE_OIDC_TOKEN};
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
@@ -197,33 +266,83 @@ mod tests {
         assert!(result.is_err(), "expected an error for a 403 response");
     }
 
+    /// A wiremock Actions token endpoint that gives `token`, and that
+    /// expects `fetches` requests. It returns the endpoint and a credential
+    /// that fetches from it.
+    async fn oidc_credential_fetching(
+        token: &str,
+        fetches: u64,
+    ) -> (wiremock::MockServer, AuthenticationInfo) {
+        use wiremock::matchers::{header, method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/token"))
+            .and(query_param("audience", "antithesis"))
+            .and(header(
+                "authorization",
+                format!("Bearer {FAKE_OIDC_REQUEST_TOKEN}"),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"count": 1, "value": token})),
+            )
+            .expect(fetches)
+            .mount(&server)
+            .await;
+        let auth = AuthenticationInfo::GithubActionsOidc(GithubActionsOidcToken::new(
+            format!("{}/token?api-version=2.0", server.uri()),
+            FAKE_OIDC_REQUEST_TOKEN.to_owned(),
+        ));
+        (server, auth)
+    }
+
+    /// The `Authorization` header of `auth` for one request, as each API
+    /// request gets it: a refresh when the credential is expired, then the
+    /// header.
+    async fn header_for_one_request(auth: &AuthenticationInfo) -> String {
+        if auth.expired() {
+            // The OIDC refresh calls neither the API client nor the API.
+            auth.refresh(&crate::testutils::test_client(), "http://unused.invalid")
+                .await
+                .unwrap();
+        }
+        auth.auth_header().unwrap().to_str().unwrap().to_owned()
+    }
+
+    /// Two requests with `auth`, which must both present `token`.
+    async fn two_requests(auth: &AuthenticationInfo, token: &str) {
+        for _ in 0..2 {
+            assert_eq!(header_for_one_request(auth).await, format!("GHA {token}"));
+        }
+    }
+
     #[tokio::test]
-    async fn github_actions_oidc_token_is_fetched_once_and_cached() {
-        // The mock server accepts exactly one connection and then shuts down, so
-        // a second exchange would fail with a connection error. Both
-        // `auth_header` calls succeeding proves the token is reused from the
-        // cache rather than re-fetched per request.
-        let (url, requests) = spawn_oidc_token_server("200 OK", &oidc_token_body());
+    async fn github_actions_oidc_token_is_reused_before_its_exp() {
+        let token = jwt_expiring_in(chrono::TimeDelta::minutes(5));
+        let (server, auth) = oidc_credential_fetching(&token, 1).await;
+        two_requests(&auth, &token).await;
+        server.verify().await;
+    }
 
-        let auth = AuthenticationInfo::GithubActionsOidc {
-            url,
-            request_token: FAKE_OIDC_REQUEST_TOKEN.to_owned(),
-            cached: Arc::new(OnceCell::new()),
-        };
+    #[tokio::test]
+    async fn github_actions_oidc_token_is_fetched_again_past_its_exp() {
+        let token = jwt_expiring_in(-chrono::TimeDelta::minutes(1));
+        let (server, auth) = oidc_credential_fetching(&token, 2).await;
+        two_requests(&auth, &token).await;
+        server.verify().await;
+    }
 
-        let first = auth.auth_header().await.unwrap();
-        let second = auth.auth_header().await.unwrap();
-        assert_eq!(first.to_str().unwrap(), format!("GHA {FAKE_OIDC_TOKEN}"));
-        assert_eq!(first, second);
-
-        // Exactly one request reached the server: the first fetch is captured,
-        // and no second request ever arrives.
-        requests
-            .recv_timeout(Duration::from_secs(5))
-            .expect("first fetch should hit the server");
-        assert!(
-            requests.recv_timeout(Duration::from_millis(200)).is_err(),
-            "second auth_header call should be served from cache, not re-fetched"
-        );
+    #[tokio::test]
+    async fn github_actions_oidc_token_without_a_readable_exp_is_used_once() {
+        for token in [
+            FAKE_OIDC_TOKEN.to_owned(),
+            jwt_with_claims(br#"{"sub":"repo:acme/app"}"#),
+        ] {
+            let (server, auth) = oidc_credential_fetching(&token, 2).await;
+            two_requests(&auth, &token).await;
+            server.verify().await;
+        }
     }
 }

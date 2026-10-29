@@ -1,6 +1,6 @@
-//! Credentials for the unit tests: PASETO access tokens with a chosen expiry,
-//! and OAuth credentials whose origin is a credentials file in a temporary
-//! directory.
+//! Credentials for the unit tests: PASETO access tokens and JWTs with a
+//! chosen expiry, and OAuth credentials whose origin is a credentials file in
+//! a temporary directory.
 
 use std::path::Path;
 
@@ -22,6 +22,22 @@ pub(crate) fn public_paseto_with_claims(claims_json: &[u8]) -> String {
 pub(crate) fn paseto_expiring_in(lifetime: chrono::TimeDelta) -> String {
     let exp = (Utc::now() + lifetime).to_rfc3339();
     public_paseto_with_claims(serde_json::json!({ "exp": exp }).to_string().as_bytes())
+}
+
+/// A JWT with the claims `claims_json`, a header with no algorithm, and no
+/// signature, in the form of a GitHub Actions OIDC token.
+pub(crate) fn jwt_with_claims(claims_json: &[u8]) -> String {
+    format!(
+        "{}.{}.",
+        BASE64_URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#),
+        BASE64_URL_SAFE_NO_PAD.encode(claims_json),
+    )
+}
+
+/// A JWT whose numeric `exp` claim is `lifetime` after now.
+pub(crate) fn jwt_expiring_in(lifetime: chrono::TimeDelta) -> String {
+    let exp = (Utc::now() + lifetime).timestamp();
+    jwt_with_claims(serde_json::json!({ "exp": exp }).to_string().as_bytes())
 }
 
 /// The origin `credentials.toml` in `dir`, for the default profile.

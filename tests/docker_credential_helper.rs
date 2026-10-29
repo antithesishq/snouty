@@ -524,13 +524,15 @@ sed '{to_host}' | exec '{helper}' "$@"
             helper = alias.path.display(),
         ),
     );
-    // Podman must not find the Docker helper of the test, so that the launch
-    // links its own.
+    // Podman must not find the Docker helper of the test, or an installed
+    // helper, so that the launch links its own.
+    let path_without_helper =
+        snouty::testutils::filtered_path_without_binaries(&[HELPER_NAME]).unwrap();
     let path = |helper_bin: Option<PathBuf>| {
         std::env::join_paths(
             std::iter::once(wrap_bin.clone())
                 .chain(helper_bin)
-                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+                .chain(std::env::split_paths(&path_without_helper)),
         )
         .unwrap()
     };

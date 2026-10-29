@@ -564,10 +564,11 @@ fn describe_pull_failure(output: &std::process::Output) -> String {
     format!("{} ({})", truncated + ellipsis, output.status)
 }
 
-pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
+/// `PATH` without each directory that holds one of `binaries`.
+pub fn filtered_path_without_binaries(binaries: &[&str]) -> Option<String> {
     let path = std::env::var_os("PATH")?;
     let filtered = std::env::split_paths(&path)
-        .filter(|dir| !dir.join(binary).is_file())
+        .filter(|dir| !binaries.iter().any(|binary| dir.join(binary).is_file()))
         .collect::<Vec<_>>();
     std::env::join_paths(filtered)
         .ok()

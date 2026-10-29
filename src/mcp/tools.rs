@@ -191,8 +191,10 @@ pub(crate) enum ValueType {
     Number,
 }
 
-/// The pattern of a [`HumanDuration`], with a bare number in either
-/// [`BareUnit`](crate::time::BareUnit).
+/// The pattern of a [`HumanDuration`]. Each duration param has this one
+/// pattern, so it allows a bare decimal, which only
+/// [`BareUnit::Minutes`](crate::time::BareUnit) accepts. The pattern does not
+/// check a param's minimum.
 const DURATION_PATTERN: &str = r"^\s*([0-9]+(\.[0-9]+)?|[0-9]+[hH]([0-9]+[mM])?([0-9]+[sS])?|[0-9]+[mM]([0-9]+[sS])?|[0-9]+[sS])\s*$";
 
 /// The pattern of a [`KVPair`].
@@ -546,17 +548,17 @@ mod tests {
         assert_eq!(tree["properties"]["depth"]["minimum"], 1);
     }
 
-    /// A duration matches the pattern exactly when it parses, with either
-    /// bare unit. Short strings of the duration alphabet reach every branch
+    /// A duration matches the pattern exactly when it parses in minutes, and
+    /// a duration that parses in seconds always matches. Short strings of the duration alphabet reach every branch
     /// of the parser, and stay clear of overflow.
     #[hegel::test]
     fn duration_pattern_matches_what_parses(tc: hegel::TestCase) {
         let text = tc.draw(hegel::generators::from_regex(r"\s?[0-9hHmMsS.x]{0,8}\s?"));
         let pattern = regex::Regex::new(DURATION_PATTERN).unwrap();
-        let parses = [BareUnit::Minutes, BareUnit::Seconds]
-            .into_iter()
-            .any(|bare| HumanDuration::parse(&text, bare).is_ok());
-        assert_eq!(pattern.is_match(&text), parses, "{text:?}");
+        let matches = pattern.is_match(&text);
+        let parses = |bare| HumanDuration::parse(&text, bare).is_ok();
+        assert_eq!(matches, parses(BareUnit::Minutes), "{text:?}");
+        assert!(matches || !parses(BareUnit::Seconds), "{text:?}");
     }
 
     #[hegel::test]

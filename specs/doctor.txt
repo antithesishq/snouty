@@ -242,7 +242,7 @@ set-env PATH ${WORK}/podman-docker
 env SNOUTY_CONTAINER_ENGINE=docker
 ! snouty doctor --offline
 stderr '^  ✗ Container runtime not detected$'
-stderr '^      ERROR: the container engine is set to docker, but .docker. is podman \(podman-docker\)$'
+stderr '^      ERROR: the container engine is set to docker, but docker is podman \(podman-docker\)$'
 
 # Auto-detection runs that `docker` as podman.
 env SNOUTY_CONTAINER_ENGINE=

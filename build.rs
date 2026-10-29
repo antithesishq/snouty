@@ -667,6 +667,12 @@ fn emit_version() {
 }
 
 fn git_sha() -> Option<String> {
+    // A crate tarball unpacked inside another repository has no `.git` of its
+    // own, and git would report the outer repository. `.git` is a file in a
+    // worktree.
+    if !Path::new(".git").exists() {
+        return None;
+    }
     let output = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
         .output()

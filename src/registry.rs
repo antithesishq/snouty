@@ -9,12 +9,10 @@
 use std::{fmt, path::PathBuf, str::FromStr};
 
 use chrono::{TimeDelta, Utc};
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{OptionExt, Result};
 
 use crate::api::AntithesisApi;
-use crate::auth::{
-    AuthenticationInfo, PasswordPolicy, RefreshableOAuthToken, cached_github_actions_oidc_token,
-};
+use crate::auth::{AuthenticationInfo, PasswordPolicy, RefreshableOAuthToken};
 use crate::error::user_error;
 use crate::settings::{Settings, SettingsRequest, is_valid_tenant_host};
 
@@ -179,13 +177,16 @@ fn first_with_own_credential(
 pub async fn secret(api: &AntithesisApi) -> Result<String> {
     match api.authentication() {
         AuthenticationInfo::ApiKey { api_key } => Ok(api_key.clone()),
-        AuthenticationInfo::GithubActionsOidc {
-            url,
-            request_token,
-            cached,
-        } => Ok(cached_github_actions_oidc_token(url, request_token, cached)
-            .await?
-            .to_owned()),
+        // The same step as before each API request: a refresh when the
+        // credential is expired, then its token.
+        AuthenticationInfo::GithubActionsOidc(token) => {
+            if token.expired() {
+                api.refresh_authentication().await?;
+            }
+            token
+                .token()
+                .ok_or_eyre("no GitHub Actions OIDC token was fetched")
+        }
         AuthenticationInfo::OAuth(token) => oauth_secret(api, token).await,
         auth @ AuthenticationInfo::Password { .. } => Err(user_error(format!(
             "the Antithesis container registry does not accept a {auth}; set ANTITHESIS_API_KEY, or run `snouty login`"
@@ -202,7 +203,7 @@ async fn oauth_secret(api: &AntithesisApi, token: &RefreshableOAuthToken) -> Res
     let near_expiry = token
         .expires_at()
         .is_none_or(|expires_at| expires_at - Utc::now() <= TOKEN_MIN_LIFETIME);
-    if near_expiry && let Err(err) = api.refresh_oauth_token(token).await {
+    if near_expiry && let Err(err) = api.refresh_authentication().await {
         if token.expired() {
             return Err(err);
         }
@@ -219,6 +220,7 @@ async fn oauth_secret(api: &AntithesisApi, token: &RefreshableOAuthToken) -> Res
 mod tests {
     use super::*;
     use crate::api::ResponseCache;
+    use crate::auth::GithubActionsOidcToken;
     use crate::testutils::auth::{oauth_credential_in, paseto_expiring_in};
     use crate::testutils::fake_secrets::{
         FAKE_ACCESS_TOKEN_A, FAKE_ACCESS_TOKEN_B, FAKE_API_KEY_A, FAKE_API_KEY_B,
@@ -286,11 +288,10 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let auth = AuthenticationInfo::GithubActionsOidc {
-            url: format!("{}/token?api-version=2.0", server.uri()),
-            request_token: FAKE_OIDC_REQUEST_TOKEN.to_owned(),
-            cached: std::sync::Arc::default(),
-        };
+        let auth = AuthenticationInfo::GithubActionsOidc(GithubActionsOidcToken::new(
+            format!("{}/token?api-version=2.0", server.uri()),
+            FAKE_OIDC_REQUEST_TOKEN.to_owned(),
+        ));
 
         assert_eq!(
             secret(&api(NO_SERVER, auth)).await.unwrap(),

@@ -7,11 +7,6 @@ use serde::Deserialize;
 
 /// Try to parse the supplied string as a PASETO token and return the `exp` claim
 pub(super) fn try_get_expiry_from_token(token: &str) -> Option<DateTime<Utc>> {
-    #[derive(Deserialize)]
-    struct PasetoClaims {
-        exp: Option<serde_json::Value>,
-    }
-
     let mut parts = token.splitn(4, '.');
     let _version = parts.next()?;
     let purpose = parts.next()?;
@@ -19,13 +14,27 @@ pub(super) fn try_get_expiry_from_token(token: &str) -> Option<DateTime<Utc>> {
     if purpose != "public" {
         return None;
     }
+    expiry_of_claims(payload)
+}
+
+/// The `exp` claim of a JWT, such as a GitHub Actions OIDC token.
+pub(super) fn try_get_expiry_from_jwt(token: &str) -> Option<DateTime<Utc>> {
+    expiry_of_claims(token.split('.').nth(1)?)
+}
+
+/// The `exp` claim of `payload`, the base64url claims of a token. The JSON
+/// object can be followed by other bytes, such as the signature of a PASETO.
+fn expiry_of_claims(payload: &str) -> Option<DateTime<Utc>> {
+    #[derive(Deserialize)]
+    struct Claims {
+        exp: Option<serde_json::Value>,
+    }
 
     let bytes = BASE64_URL_SAFE_NO_PAD.decode(payload).ok()?;
     let claims = serde_json::Deserializer::from_slice(&bytes)
-        .into_iter::<PasetoClaims>()
+        .into_iter::<Claims>()
         .next()?
         .ok()?;
-
     parse_exp_claim(&claims.exp?)
 }
 
@@ -42,8 +51,8 @@ fn parse_exp_claim(exp: &serde_json::Value) -> Option<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutils::auth::public_paseto_with_claims;
-    use crate::testutils::fake_secrets::{FAKE_PASETO_A, FAKE_PASETO_B};
+    use crate::testutils::auth::{jwt_with_claims, public_paseto_with_claims};
+    use crate::testutils::fake_secrets::{FAKE_OIDC_TOKEN, FAKE_PASETO_A, FAKE_PASETO_B};
 
     #[test]
     fn expiry_parsed_from_public_paseto_rfc3339_exp() {
@@ -116,6 +125,30 @@ mod tests {
         assert_eq!(
             try_get_expiry_from_token(FAKE_PASETO_B),
             DateTime::from_timestamp(CANONICAL_VECTOR_EXP_UNIX, 0)
+        );
+    }
+
+    #[hegel::test]
+    fn expiry_parsed_from_jwt_numeric_exp(tc: hegel::TestCase) {
+        let exp = tc.draw(hegel::generators::integers::<u32>());
+        let token = jwt_with_claims(serde_json::json!({ "exp": exp }).to_string().as_bytes());
+        assert_eq!(
+            try_get_expiry_from_jwt(&token),
+            DateTime::from_timestamp(i64::from(exp), 0)
+        );
+    }
+
+    #[test]
+    fn expiry_is_none_for_a_jwt_without_a_readable_exp() {
+        assert_eq!(try_get_expiry_from_jwt(FAKE_OIDC_TOKEN), None);
+        assert_eq!(try_get_expiry_from_jwt("a.@@@@.b"), None);
+        assert_eq!(
+            try_get_expiry_from_jwt(&jwt_with_claims(br#"{"sub":"repo:acme/app"}"#)),
+            None
+        );
+        assert_eq!(
+            try_get_expiry_from_jwt(&jwt_with_claims(br#"{"exp":"whenever"}"#)),
+            None
         );
     }
 }

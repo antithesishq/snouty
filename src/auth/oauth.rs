@@ -444,7 +444,7 @@ mod tests {
         assert!(token.expired());
         let auth = AuthenticationInfo::OAuth(token);
 
-        let header = auth.auth_header().await.unwrap();
+        let header = auth.auth_header().unwrap();
 
         assert_eq!(header, format!("Bearer {expired_token}"));
     }

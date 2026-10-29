@@ -9,21 +9,18 @@ mod oidc;
 mod password;
 mod store;
 
-use std::sync::Arc;
-
 use base64::{Engine, prelude::BASE64_STANDARD};
 use color_eyre::{
     Section,
-    eyre::{Context, Result},
+    eyre::{Context, OptionExt, Result, eyre},
 };
 use http::HeaderValue;
-use tokio::sync::OnceCell;
 
 use crate::{attributed_value::AttributedValue, env, error::user_error};
 
 pub(crate) use api_key::{API_KEY_VAR_NAME, is_blank_api_key};
 pub use oauth::{OAuthRefreshInfo, RefreshableOAuthToken};
-pub(crate) use oidc::cached_github_actions_oidc_token;
+pub use oidc::GithubActionsOidcToken;
 #[cfg(test)]
 use oidc::{OIDC_TOKEN_VAR_NAME, OIDC_URL_VAR_NAME};
 use password::apply_password_policy;
@@ -48,20 +45,10 @@ pub(crate) const NO_CREDENTIALS_MESSAGE: &str = "No Antithesis credentials found
 
 #[derive(Clone)]
 pub enum AuthenticationInfo {
-    ApiKey {
-        api_key: String,
-    },
-    GithubActionsOidc {
-        url: String,
-        request_token: String,
-        // Feels pretty sus to stick our secrets on the heap
-        cached: Arc<OnceCell<String>>,
-    },
+    ApiKey { api_key: String },
+    GithubActionsOidc(GithubActionsOidcToken),
     OAuth(RefreshableOAuthToken),
-    Password {
-        username: String,
-        password: String,
-    },
+    Password { username: String, password: String },
 }
 
 impl std::fmt::Debug for AuthenticationInfo {
@@ -71,12 +58,9 @@ impl std::fmt::Debug for AuthenticationInfo {
                 .debug_struct("ApiKey")
                 .field("api_key", &"[REDACTED]")
                 .finish(),
-            Self::GithubActionsOidc { url, cached, .. } => f
-                .debug_struct("GithubActionsOidc")
-                .field("url", url)
-                .field("request_token", &"[REDACTED]")
-                .field("cached", &cached.initialized())
-                .finish(),
+            Self::GithubActionsOidc(token) => {
+                f.debug_tuple("GithubActionsOidc").field(token).finish()
+            }
             Self::OAuth(token) => f.debug_tuple("OAuth").field(token).finish(),
             Self::Password { username, .. } => f
                 .debug_struct("Password")
@@ -92,7 +76,7 @@ impl std::fmt::Display for AuthenticationInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::ApiKey { .. } => "API key",
-            Self::GithubActionsOidc { .. } => "GitHub Actions OIDC token",
+            Self::GithubActionsOidc(_) => "GitHub Actions OIDC token",
             Self::OAuth(_) => "OAuth credentials",
             Self::Password { .. } => "username and password",
         })
@@ -265,23 +249,46 @@ impl AuthenticationInfo {
         Ok(Self::for_ambient_configuration_with_attribution(profile, policy)?.extract())
     }
 
-    /// The `Authorization` header for the current credential. It never
-    /// refreshes: an expired OAuth access token gives its header as it is.
-    /// The first call for a GitHub Actions OIDC credential fetches its token.
-    pub(crate) async fn auth_header(&self) -> Result<HeaderValue> {
+    /// Whether the credential needs a [`refresh`](Self::refresh) before its
+    /// next request. An API key and a password never expire.
+    pub(crate) fn expired(&self) -> bool {
+        match self {
+            Self::ApiKey { .. } | Self::Password { .. } => false,
+            Self::GithubActionsOidc(token) => token.expired(),
+            Self::OAuth(token) => token.expired(),
+        }
+    }
+
+    /// Replaces the token of the credential with a newer one, in every clone.
+    /// An OAuth credential calls the refresh endpoint at `base_url` with
+    /// `client`, and a GitHub Actions OIDC credential fetches a new token
+    /// from the Actions token endpoint.
+    ///
+    /// Fails when there is no newer token. An API key and a password always
+    /// fail, because nothing replaces them.
+    pub(crate) async fn refresh(&self, client: &reqwest::Client, base_url: &str) -> Result<()> {
+        match self {
+            Self::ApiKey { .. } | Self::Password { .. } => {
+                Err(eyre!("a {self} cannot be refreshed"))
+            }
+            Self::GithubActionsOidc(token) => token.refresh().await,
+            Self::OAuth(token) => token.refresh(client, base_url).await,
+        }
+    }
+
+    /// The `Authorization` header for the current token of the credential. It
+    /// never refreshes: an expired token gives its header as it is. A GitHub
+    /// Actions OIDC credential has no token, and no header, until its first
+    /// refresh.
+    pub(crate) fn auth_header(&self) -> Result<HeaderValue> {
         match self {
             Self::ApiKey { api_key } => to_header_value(&format!("Bearer {api_key}"), true),
-            Self::GithubActionsOidc {
-                url,
-                request_token,
-                cached,
-            } => to_header_value(
-                &format!(
-                    "GHA {}",
-                    cached_github_actions_oidc_token(url, request_token, cached).await?
-                ),
-                true,
-            ),
+            Self::GithubActionsOidc(token) => {
+                let token = token
+                    .token()
+                    .ok_or_eyre("no GitHub Actions OIDC token was fetched")?;
+                to_header_value(&format!("GHA {token}"), true)
+            }
             Self::OAuth(token) => {
                 to_header_value(&format!("Bearer {}", token.access_token()), true)
             }

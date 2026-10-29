@@ -35,6 +35,8 @@ enum Effect {
     Reads,
     /// Starts an Antithesis session, which uses the tenant's resources.
     StartsSessions,
+    /// Ends a run, which cannot be undone.
+    Destroys,
 }
 
 impl Effect {
@@ -45,6 +47,7 @@ impl Effect {
         match self {
             Effect::Reads => annotations.read_only(true),
             Effect::StartsSessions => annotations.read_only(false).destructive(false),
+            Effect::Destroys => annotations.read_only(false).destructive(true),
         }
     }
 }
@@ -106,6 +109,7 @@ tools! {
     RunsList => "runs_list", Reads, hidden: ["detail"], required: [];
     RunsShow => "runs_show", Reads, hidden: ["web"], required: [];
     RunsWait => "runs_wait", Reads, hidden: [], required: [];
+    RunsCancel => "runs_cancel", Destroys, hidden: [], required: [];
     RunsProperties => "runs_properties", Reads, hidden: ["detail"], required: [];
     RunsProperty => "runs_property", Reads, hidden: [], required: [];
     RunsBuildLogs => "runs_build_logs", Reads, hidden: [], required: [];
@@ -115,11 +119,15 @@ tools! {
     // With no script, `runs exec` reads it from stdin, and a child's stdin is
     // null.
     RunsExec => "runs_exec", Reads, hidden: [], required: ["script"];
+    // `query` repeats `match` as a positional. The command needs one of
+    // them, so the tool requires `matches`.
+    RunsEvents => "runs_events", Reads, hidden: ["query", "detail"], required: ["matches"];
     Debug => "debug", StartsSessions, hidden: [], required: [];
     DocsTree => "docs_tree", Reads, hidden: [], required: [];
     DocsShow => "docs_show", Reads, hidden: [], required: [];
     DocsSearch => "docs_search", Reads, hidden: [], required: [];
     Doctor => "doctor", Reads, hidden: [], required: [];
+    Version => "version", Reads, hidden: [], required: [];
     SettingsShow => "settings_show", Reads, hidden: [], required: [];
 }
 
@@ -459,10 +467,11 @@ mod tests {
         }
     }
 
-    /// The root's globals are the server's to set, and every tool but debug
-    /// is read-only.
+    /// The root's globals are the server's to set, every tool but `debug`
+    /// and `runs_cancel` is read-only, and only `runs_cancel` is
+    /// destructive.
     #[test]
-    fn tools_expose_no_globals_and_only_debug_writes() {
+    fn tools_expose_no_globals_and_only_debug_and_cancel_write() {
         for name in ToolName::ALL {
             let tool = &name.spec().tool;
             let properties = tool.input_schema["properties"].as_object().unwrap();
@@ -473,8 +482,13 @@ mod tests {
                 assert!(!properties.contains_key(*hidden), "{name}: {hidden}");
             }
             let annotations = tool.annotations.as_ref().unwrap();
-            let read_only = name != ToolName::Debug;
+            let (read_only, destructive) = match name {
+                ToolName::Debug => (false, Some(false)),
+                ToolName::RunsCancel => (false, Some(true)),
+                _ => (true, None),
+            };
             assert_eq!(annotations.read_only_hint, Some(read_only), "{name}");
+            assert_eq!(annotations.destructive_hint, destructive, "{name}");
             assert_eq!(annotations.open_world_hint, Some(false), "{name}");
         }
     }
@@ -543,6 +557,12 @@ mod tests {
             wait["properties"]["poll_interval"]["pattern"],
             DURATION_PATTERN
         );
+        let events = schema(ToolName::RunsEvents);
+        assert_eq!(events["required"], json!(["run_id", "matches"]));
+        assert_eq!(events["properties"]["matches"]["type"], "array");
+        assert_eq!(events["properties"]["limit"]["type"], "integer");
+        assert!(events["properties"].get("query").is_none(), "{events:?}");
+        assert_eq!(schema(ToolName::Version)["properties"], json!({}));
         let tree = schema(ToolName::DocsTree);
         assert_eq!(tree["properties"]["depth"]["minimum"], 1);
     }

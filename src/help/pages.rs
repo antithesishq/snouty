@@ -83,6 +83,7 @@ help_pages! {
     Completions => "completions.txt", ["completions"];
     Validate => "validate.txt", ["validate"];
     Doctor => "doctor.txt", ["doctor"];
+    Version => "version.txt", ["version"];
     Update => "update.txt", ["update"];
     Docs => "docs.txt", ["docs"];
     Login => "login.txt", ["login"];

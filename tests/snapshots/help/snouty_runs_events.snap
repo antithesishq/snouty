@@ -34,6 +34,10 @@ For log output, the equivalent search is:
 with each term in lower case. `snouty --verbose runs events ...` prints the
 exact query, which also matches assertion messages and test-composer commands.
 
+Examples:
+  snouty runs events <run_id> -m error
+  snouty runs events <run_id> -m error -m node-0 -n 100
+
 Add --json for machine-readable output. Each event prints as one JSON object on
 its own line:
   snouty --json runs events <run_id> -m error | jq -r .moment.vtime

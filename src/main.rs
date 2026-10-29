@@ -112,13 +112,7 @@ async fn run(cli: Cli) -> Result<()> {
     let settings = Settings::resolve(settings_path.clone(), profile.clone());
     let result = match command {
         Commands::Completions { shell } => cmd_completions(shell).map_err(Report::new),
-        Commands::Version => {
-            // SNOUTY_VERSION (set by build.rs) is the crate version plus the
-            // build's git sha when known — the same string clap's --version
-            // prints, so the two stay consistent.
-            println!("snouty {}", env!("SNOUTY_VERSION"));
-            Ok(())
-        }
+        Commands::Version => cmd_version(output.json),
         Commands::Update(args) => cmd_update(&args, &settings?),
         Commands::Docs { offline, command } => docs::cmd_docs(command, offline, output).await,
         Commands::Settings { command } => match command {
@@ -207,10 +201,10 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
         | Commands::Runs { .. }
         | Commands::Docs { .. }
         | Commands::Debug { .. }
-        | Commands::Doctor(_) => None,
+        | Commands::Doctor(_)
+        | Commands::Version => None,
         Commands::Validate(_) => Some("validate"),
         Commands::Completions { .. } => Some("completions"),
-        Commands::Version => Some("version"),
         Commands::Update(_) => Some("update"),
         Commands::Login { .. } => Some("login"),
         Commands::Mcp(_) => Some("mcp"),
@@ -554,6 +548,21 @@ async fn cmd_debug(
         println!("Debugging session started: run_id (unknown)");
     }
 
+    Ok(())
+}
+
+fn cmd_version(json: bool) -> Result<()> {
+    if json {
+        // build.rs sets SNOUTY_COMMIT only when the build has a git checkout.
+        let version = serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "commit": option_env!("SNOUTY_COMMIT"),
+        });
+        println!("{}", serde_json::to_string_pretty(&version)?);
+    } else {
+        // clap's --version prints the same SNOUTY_VERSION string.
+        println!("snouty {}", env!("SNOUTY_VERSION"));
+    }
     Ok(())
 }
 

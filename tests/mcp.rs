@@ -100,6 +100,7 @@ async fn tools_run_their_commands_in_json_mode() {
             "runs_list",
             "runs_show",
             "runs_wait",
+            "runs_cancel",
             "runs_properties",
             "runs_property",
             "runs_build_logs",
@@ -107,11 +108,13 @@ async fn tools_run_their_commands_in_json_mode() {
             "runs_search",
             "runs_usage",
             "runs_exec",
+            "runs_events",
             "debug",
             "docs_tree",
             "docs_show",
             "docs_search",
             "doctor",
+            "version",
             "settings_show",
             "tool_help",
         ]
@@ -171,6 +174,28 @@ async fn tools_run_their_commands_in_json_mode() {
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
     let usage: Value = serde_json::from_str(text(&result).trim()).unwrap();
     assert!(usage["hours"].is_number(), "{usage}");
+
+    // runs_events searches a run's events for every term of matches.
+    let call_args = json!({ "run_id": run["run_id"], "matches": ["request", "slow"] });
+    let result = call(&client, "runs_events", call_args).await;
+    assert_eq!(result.is_error, Some(false), "{}", text(&result));
+    let event: Value = serde_json::from_str(text(&result).lines().next().unwrap()).unwrap();
+    assert!(event["moment"]["vtime"].is_number(), "{event}");
+
+    // runs_cancel cancels an in-progress run.
+    let result = call(&client, "runs_cancel", json!({ "run_id": "run-2" })).await;
+    assert_eq!(result.is_error, Some(false), "{}", text(&result));
+    let cancelled: Value = serde_json::from_str(text(&result)).unwrap();
+    assert_eq!(cancelled["run_id"], "run-2");
+    // `run` is completed, so cancelling it fails.
+    let result = call(&client, "runs_cancel", json!({ "run_id": run["run_id"] })).await;
+    assert_eq!(result.is_error, Some(true), "{}", text(&result));
+
+    // version returns the crate version as JSON.
+    let result = call(&client, "version", json!({})).await;
+    assert_eq!(result.is_error, Some(false), "{}", text(&result));
+    let version: Value = serde_json::from_str(text(&result)).unwrap();
+    assert_eq!(version["version"], env!("CARGO_PKG_VERSION"));
 
     // tool_help returns a tool's help page without running a command.
     let result = call(&client, "tool_help", json!({ "tool": "runs_logs" })).await;

@@ -36,6 +36,10 @@ function useServer(dispatch: (a: Parameters<typeof reducer>[1]) => void) {
       };
       sock.onclose = () => {
         dispatch({ type: "socket", state: "closed" });
+        for (const resolve of calls.current.values()) {
+          resolve({ isError: true, text: "Lost the connection to the demo server.", ms: 0 });
+        }
+        calls.current.clear();
         if (!closed) retry = setTimeout(open, 1500);
       };
     };
@@ -48,7 +52,9 @@ function useServer(dispatch: (a: Parameters<typeof reducer>[1]) => void) {
   }, [dispatch]);
 
   const send = useCallback((msg: Record<string, unknown>) => {
-    ws.current?.send(JSON.stringify(msg));
+    if (ws.current?.readyState !== WebSocket.OPEN) return false;
+    ws.current.send(JSON.stringify(msg));
+    return true;
   }, []);
 
   const call = useCallback(
@@ -56,7 +62,10 @@ function useServer(dispatch: (a: Parameters<typeof reducer>[1]) => void) {
       new Promise<CallResult>((resolve) => {
         const reqId = ++seq.current;
         calls.current.set(reqId, resolve);
-        send({ type: "call_tool", reqId, name, args });
+        if (!send({ type: "call_tool", reqId, name, args })) {
+          calls.current.delete(reqId);
+          resolve({ isError: true, text: "Not connected to the demo server.", ms: 0 });
+        }
       }),
     [send],
   );

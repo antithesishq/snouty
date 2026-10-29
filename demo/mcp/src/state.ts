@@ -202,6 +202,11 @@ function agent(state: State, e: AgentEvent): State {
     }
     case "approval":
       return { ...state, chat: updateTool(state.chat, String(e.id), (t) => ({ ...t, status: "approval" })) };
+    case "approved":
+      return {
+        ...state,
+        chat: updateTool(state.chat, String(e.id), (t) => ({ ...t, status: "running", started: Date.now() })),
+      };
     case "tool_result": {
       const text = String(e.text);
       return {

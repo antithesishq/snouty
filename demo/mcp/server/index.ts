@@ -16,7 +16,9 @@ const repo = resolve(root, "../..");
 const dist = join(root, "dist");
 const recordings = join(root, "recordings");
 const PORT = Number(process.env.PORT ?? 8017);
-const HOST = process.env.HOST ?? "0.0.0.0";
+// The WebSocket can call any tool with your credentials, so listen on
+// loopback only, behind a reverse proxy, unless HOST says otherwise.
+const HOST = process.env.HOST ?? "127.0.0.1";
 
 function findSnouty(): string {
   if (process.env.SNOUTY_BIN) return process.env.SNOUTY_BIN;
@@ -65,6 +67,8 @@ class Client {
   private recording: Recording | null = null;
   private recordStart = 0;
   private replaying: AbortController | null = null;
+  private chatting = false;
+  private chatSeq = 0;
 
   constructor(private ws: WebSocket) {
     this.agent = new AgentSession(mcp, (e) => this.agentEvent(e));
@@ -116,12 +120,18 @@ class Client {
     switch (m.type) {
       case "chat": {
         const text = String(m.text ?? "").trim();
-        if (!text || this.agent.running || this.replaying) return;
-        if (mcp.status.state !== "connected") await mcp.connect().catch(() => {});
-        this.recording = { prompt: text, model: this.agent.model, savedAt: "", events: [] };
+        if (!text || this.chatting || this.replaying) return;
+        // A reset or a newer chat makes this one stale: it no longer owns
+        // the recording or the idle message.
+        const seq = ++this.chatSeq;
+        this.chatting = true;
+        const rec: Recording = { prompt: text, model: this.agent.model, savedAt: "", events: [] };
+        this.recording = rec;
         this.recordStart = Date.now();
+        if (mcp.status.state !== "connected") await mcp.connect().catch(() => {});
         const ok = await this.agent.send(text);
-        const rec = this.recording;
+        if (seq !== this.chatSeq) return;
+        this.chatting = false;
         this.recording = null;
         if (ok && m.record !== false) {
           saveRecording(rec);
@@ -135,6 +145,9 @@ class Client {
         this.stopReplay();
         return;
       case "reset":
+        this.chatSeq++;
+        this.chatting = false;
+        this.recording = null;
         this.agent.reset();
         this.stopReplay();
         return;
@@ -171,7 +184,7 @@ class Client {
   }
 
   private async replay(name: string) {
-    if (this.agent.running || this.replaying) return;
+    if (this.chatting || this.replaying) return;
     const file = join(recordings, name);
     if (!name.endsWith(".json") || name.includes("/") || !existsSync(file)) return;
     const rec = JSON.parse(readFileSync(file, "utf8")) as Recording;
@@ -227,9 +240,13 @@ function listRecordings() {
   if (!existsSync(recordings)) return [];
   return readdirSync(recordings)
     .filter((f) => f.endsWith(".json"))
-    .map((f) => {
-      const rec = JSON.parse(readFileSync(join(recordings, f), "utf8")) as Recording;
-      return { name: f, prompt: rec.prompt, model: rec.model, savedAt: rec.savedAt };
+    .flatMap((f) => {
+      try {
+        const rec = JSON.parse(readFileSync(join(recordings, f), "utf8")) as Recording;
+        return [{ name: f, prompt: rec.prompt, model: rec.model, savedAt: rec.savedAt }];
+      } catch {
+        return []; // A broken file must not break every connection.
+      }
     })
     .sort((a, b) => b.savedAt.localeCompare(a.savedAt));
 }
@@ -251,7 +268,12 @@ const http = createServer((req, res) => {
     res.end(JSON.stringify({ ok: true, mcp: mcp.status.state, clients: clients.size }));
     return;
   }
-  let path = join(dist, decodeURIComponent(url.pathname));
+  let path = dist;
+  try {
+    path = join(dist, decodeURIComponent(url.pathname));
+  } catch {
+    // A malformed escape; serve the page.
+  }
   if (!path.startsWith(dist) || !existsSync(path) || statSync(path).isDirectory()) {
     path = join(dist, "index.html");
   }
@@ -273,7 +295,9 @@ http.on("upgrade", (req, socket, head) => {
   wss.handleUpgrade(req, socket, head, (ws) => {
     const client = new Client(ws);
     clients.add(client);
-    ws.on("message", (data) => void client.onMessage(data.toString()));
+    ws.on("message", (data) =>
+      client.onMessage(data.toString()).catch((e) => console.error(`message failed: ${e}`)),
+    );
     ws.on("close", () => {
       clients.delete(client);
       client.close();

@@ -29,6 +29,7 @@ export type AgentEvent =
   | { type: "tool_pending"; turn: string; id: string; name: string }
   | { type: "tool_call"; turn: string; id: string; name: string; input: unknown }
   | { type: "approval"; id: string; name: string; input: unknown }
+  | { type: "approved"; id: string }
   | {
       type: "tool_result";
       id: string;
@@ -61,18 +62,27 @@ export class AgentSession {
   private approvals = new Map<string, (ok: boolean) => void>();
   private anthropic = new Anthropic();
   private turnSeq = 0;
+  // A stopped turn takes a moment to unwind. The next turn waits for it, and
+  // after a reset its last events would land in the new chat, so they drop.
+  private finished: Promise<unknown> = Promise.resolve();
+  private muted = false;
 
   constructor(
     private mcp: SnoutyMcp,
-    private emit: (e: AgentEvent) => void,
+    private sink: (e: AgentEvent) => void,
   ) {}
 
+  private emit(e: AgentEvent) {
+    if (!this.muted) this.sink(e);
+  }
+
   get running() {
-    return this.abort !== null;
+    return this.abort !== null && !this.abort.signal.aborted;
   }
 
   reset() {
     this.stop();
+    if (this.abort) this.muted = true;
     this.messages = [];
   }
 
@@ -89,15 +99,25 @@ export class AgentSession {
 
   /** Runs one user turn; returns false when it failed or was stopped. */
   async send(text: string): Promise<boolean> {
-    if (this.abort) throw new Error("the agent is already running");
+    if (this.running) throw new Error("the agent is already running");
+    await this.finished;
+    const run = this.run(text);
+    this.finished = run;
+    return run;
+  }
+
+  private async run(text: string): Promise<boolean> {
+    this.muted = false;
     const abort = new AbortController();
     this.abort = abort;
     // On a failed or stopped turn, roll back to here so that the history
-    // stays a valid alternation of user and assistant messages.
-    const checkpoint = this.messages.length;
+    // stays a valid alternation of user and assistant messages. A reset
+    // replaces `messages`, so roll back the array this turn started with.
+    const history = this.messages;
+    const checkpoint = history.length;
     // The model has no clock, and run timestamps mean little without one.
     const now = new Date().toISOString().replace(/\.\d+Z$/, "Z");
-    this.messages.push({
+    history.push({
       role: "user",
       content: [
         { type: "text", text: `<context>The time is ${now}.</context>` },
@@ -108,7 +128,7 @@ export class AgentSession {
       await this.loop(abort.signal);
       return true;
     } catch (e) {
-      this.messages.length = checkpoint;
+      history.length = checkpoint;
       if (abort.signal.aborted) {
         this.emit({ type: "error", message: "Stopped by the user." });
       } else {
@@ -212,6 +232,7 @@ export class AgentSession {
       this.emit({ type: "approval", id: call.id, name: call.name, input: call.input });
       const ok = await new Promise<boolean>((resolve) => this.approvals.set(call.id, resolve));
       if (!ok) return finish(DECLINED, true);
+      this.emit({ type: "approved", id: call.id });
     }
 
     // The MCP SDK keeps its abort listener after a response, so a turn-wide

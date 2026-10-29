@@ -639,7 +639,9 @@ impl ContainerRuntime for PodmanRuntime {
         let path = match podman_path(&path, crate::settings::global_settings_dir()) {
             Ok(path) => path,
             Err(err) => {
-                log::warn!("{err:#}, so podman pushes with its own credentials");
+                // A bare eprintln, not log::warn!: the notice must reach stderr
+                // independent of RUST_LOG.
+                eprintln!("warning: {err:#}, so podman pushes with its own credentials");
                 return Ok(());
             }
         };

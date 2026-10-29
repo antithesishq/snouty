@@ -74,6 +74,14 @@ stderr 'helper: installed helper$'
 ! exists config/snouty/docker-credential-snouty
 rm bin/docker-credential-snouty
 
+# When snouty cannot link the helper, it prints a warning, and podman pushes
+# with its own credentials.
+chmod 500 config/snouty
+! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30
+stderr '^warning: failed to link the credential helper to snouty: .*, so podman pushes with its own credentials$'
+stderr 'fake podman: push --digestfile=\S+ registry.acme.antithesis.com/repo/snouty-config:\S+ REGISTRY_AUTH_FILE=\[\] DOCKER_AUTH_CONFIG=\[\]'
+chmod 700 config/snouty
+
 # The helper resolves the settings of the launch: the --settings file and the
 # --profile. Without the profile, the helper would refuse, because two
 # profiles use the registry. Docker gets them too, for a helper that its

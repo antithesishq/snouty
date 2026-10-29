@@ -9,7 +9,7 @@ Each event has its moment (an input_hash and a vtime), its source, and its paylo
 {% if cli %}
 Output: a `moment HASH` divider opens each timeline segment, and each event under it renders on one line as `VTIME [source] payload`, each event shape in its own concise form.
 {% else %}
-{% include "fragments/detailed_events.txt" %}
+A `moment HASH` line opens each timeline segment, and each event under it prints as one `VTIME [source] payload` line, with the full vtime. Indented lines under an event give its source location, as `@ file:function:line`, and the details that it carries, such as an SDK assertion's details, as `details {...}`.
 {% endif %}
 
 {% if cli %}

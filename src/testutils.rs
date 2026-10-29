@@ -8,7 +8,7 @@ use std::time::Duration;
 pub mod auth;
 pub mod fake_secrets;
 
-use crate::container::{ContainerRuntime, DockerRuntime, PodmanRuntime, is_podman_in_disguise};
+use crate::container::{ContainerRuntime, DockerRuntime, PodmanRuntime, docker_is_podman};
 
 /// A reqwest client with default settings.
 pub fn test_client() -> reqwest::Client {
@@ -42,7 +42,7 @@ pub fn available_runtimes() -> Vec<Box<dyn ContainerRuntime>> {
             .arg("info")
             .output()
             .is_ok_and(|o| o.status.success())
-        && !is_podman_in_disguise("docker")
+        && !docker_is_podman()
     {
         runtimes.push(Box::new(DockerRuntime::new("docker")));
     }

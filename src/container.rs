@@ -633,9 +633,9 @@ pub fn generate_image_ref(registry: &str) -> String {
     )
 }
 
-/// Check whether a binary is genuinely docker or podman-in-disguise.
-pub fn is_podman_in_disguise(cmd: &str) -> bool {
-    CliKind::probe(cmd) == CliKind::Podman
+/// Whether the `docker` binary is podman.
+pub fn docker_is_podman() -> bool {
+    CliKind::probe("docker") == CliKind::Podman
 }
 
 /// Whether a `--version` banner came from podman.

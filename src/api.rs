@@ -1318,14 +1318,11 @@ impl ClientHooks<ClientState> for generated::Client {
             {
                 // When the refresh fails, such as for an API key or for want
                 // of a refresh token, the 401 surfaces.
-                let refreshed = match state
-                    .authn_info
+                let auth = &state.authn_info;
+                let refreshed = auth
                     .refresh(self.client(), self.baseurl())
                     .await
-                {
-                    Ok(()) => state.authn_info.auth_header(),
-                    Err(err) => Err(err),
-                };
+                    .and_then(|()| auth.auth_header());
                 match refreshed {
                     Ok(header) => {
                         retry_request

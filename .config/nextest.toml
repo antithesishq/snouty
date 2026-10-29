@@ -30,6 +30,7 @@ filter = """
    + test(=compose::tests::config_json_hermetic_env_keeps_only_antithesis_variables)
    + test(/^compose::tests::pin_images_/)
    + test(=container::tests::build_and_push_to_mock_registry)
+   + test(=engines_push_with_the_registry_auth)
    + test(=engines_push_and_pull_through_the_helper)
    + test(/_engine_.*_specs$/)
 """
@@ -43,8 +44,9 @@ test-group = "container"
 priority = 100
 
 # The slowest tests that do NOT need an engine, started first for the same
-# reason. Both run on the arm64 leg, where they are the two longest by far:
-# 30s and roughly 6s, against under 4s for everything else.
+# reason. All three run on the arm64 leg, where they are the longest by far:
+# 30s, roughly 13s (it waits for the first 10s MCP progress notification)
+# and roughly 6s, against under 4s for everything else.
 #
 # `spec_tests` drives every file in `specs/`. It is not in the group above
 # because it needs a runtime to be *detected*, not to work — `specs/doctor.txt`
@@ -54,6 +56,7 @@ priority = 100
 [[profile.default.overrides]]
 filter = """
      test(=process::tests::output_with_timeout_kills_and_errors_on_overrun)
+   + test(=a_long_call_reports_progress)
    + test(=spec_tests)
 """
 priority = 100

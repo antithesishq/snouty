@@ -6,9 +6,14 @@
 use std::path::Path;
 use std::time::Duration;
 
-use rmcp::model::{CacheScope, CallToolRequestParams, CallToolResult, JsonObject, ProtocolVersion};
+use rmcp::ClientHandler;
+use rmcp::model::{
+    CacheScope, CallToolRequestParams, CallToolResult, JsonObject, ProgressNotificationParam,
+    ProtocolVersion,
+};
 use rmcp::service::{
-    ClientLifecycleMode, ClientServiceExt, RoleClient, RunningService, ServiceExt,
+    ClientLifecycleMode, ClientServiceExt, NotificationContext, RoleClient, RunningService,
+    ServiceExt,
 };
 use rmcp::transport::TokioChildProcess;
 use serde_json::{Value, json};
@@ -43,6 +48,21 @@ fn snouty_mcp_from(exe: &Path, server: &MockApiServer, home: &Path) -> tokio::pr
         .env("ANTITHESIS_BASE_URL", server.url())
         .env("ANTITHESIS_API_KEY", server.token());
     command
+}
+
+/// [`snouty_mcp`], with an API that accepts connections and never answers.
+/// The listener must outlive the command.
+fn snouty_mcp_silent(
+    server: &MockApiServer,
+    home: &Path,
+) -> (tokio::process::Command, std::net::TcpListener) {
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut command = snouty_mcp(server, home);
+    command.env(
+        "ANTITHESIS_BASE_URL",
+        format!("http://{}", silent.local_addr().unwrap()),
+    );
+    (command, silent)
 }
 
 async fn connect(command: tokio::process::Command) -> RunningService<RoleClient, ()> {
@@ -303,15 +323,9 @@ fn children(pid: u32) -> Vec<u32> {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_cancelled_call_kills_its_command() {
-    // An API that accepts connections and never answers.
-    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let server = MockApiServer::start();
     let home = TempDir::new().unwrap();
-    let mut command = snouty_mcp(&server, home.path());
-    command.env(
-        "ANTITHESIS_BASE_URL",
-        format!("http://{}", silent.local_addr().unwrap()),
-    );
+    let (command, _silent) = snouty_mcp_silent(&server, home.path());
     let transport = TokioChildProcess::new(command).expect("spawn snouty mcp");
     let pid = transport.id().unwrap();
     let client = ().serve(transport).await.expect("initialize snouty mcp");
@@ -342,19 +356,58 @@ async fn a_cancelled_call_kills_its_command() {
     assert!(killed, "the command outlived its cancelled call");
 }
 
+struct ProgressClient(tokio::sync::mpsc::UnboundedSender<ProgressNotificationParam>);
+
+impl ClientHandler for ProgressClient {
+    async fn on_progress(
+        &self,
+        params: ProgressNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        let _ = self.0.send(params);
+    }
+}
+
+/// A long tool call sends its first progress notification after 10 seconds.
+#[tokio::test]
+async fn a_long_call_reports_progress() {
+    let server = MockApiServer::start();
+    let home = TempDir::new().unwrap();
+    let (command, _silent) = snouty_mcp_silent(&server, home.path());
+    let (sender, mut progress) = tokio::sync::mpsc::unbounded_channel();
+    let transport = TokioChildProcess::new(command).expect("spawn snouty mcp");
+    let client = ProgressClient(sender)
+        .serve(transport)
+        .await
+        .expect("initialize snouty mcp");
+
+    // rmcp's client puts a progress token on each request.
+    let params = CallToolRequestParams::new("runs_show")
+        .with_arguments(JsonObject::from_iter([("run_id".to_owned(), json!("r"))]));
+    let first = tokio::select! {
+        result = client.call_tool_once(params) => panic!("the call returned: {result:?}"),
+        first = tokio::time::timeout(Duration::from_secs(20), progress.recv()) => first,
+    };
+    let first = first
+        .expect("progress within 20s")
+        .expect("progress channel open");
+    // A busy machine can fire the tick late.
+    assert!(first.progress >= 10.0, "{first:?}");
+    assert_eq!(
+        first.message,
+        Some(format!("running for {}s", first.progress)),
+    );
+    client.cancel().await.expect("close snouty mcp");
+}
+
 /// A command exits when its server is killed, which leaves no time to kill
 /// the command.
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_command_exits_when_its_server_is_killed() {
-    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let server = MockApiServer::start();
     let home = TempDir::new().unwrap();
-    let mut command = snouty_mcp(&server, home.path());
-    command.env(
-        "ANTITHESIS_BASE_URL",
-        format!("http://{}", silent.local_addr().unwrap()),
-    );
+    let (command, _silent) = snouty_mcp_silent(&server, home.path());
     let transport = TokioChildProcess::new(command).expect("spawn snouty mcp");
     let pid = transport.id().unwrap();
     let client = ().serve(transport).await.expect("initialize snouty mcp");

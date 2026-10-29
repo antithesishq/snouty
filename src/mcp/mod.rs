@@ -12,8 +12,8 @@ use std::time::Duration;
 use color_eyre::eyre::{Result, WrapErr};
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
-    Implementation, ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities,
-    ServerConfig, Tool,
+    Implementation, ListToolsResult, PaginatedRequestParams, ProgressNotificationParam,
+    ProtocolVersion, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::{RequestContext, ServerInitializeError, serve_server};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
@@ -32,6 +32,10 @@ use tools::{TOOL_HELP, tool_help, tool_help_tool};
 /// The server sets this to its own PID on each tool call's child. See
 /// [`exit_with_server`].
 const SERVER_PID_ENV: &str = "SNOUTY_MCP_SERVER_PID";
+
+/// How often a tool call reports progress. Many clients end a request
+/// after 60 seconds unless progress resets their time limit.
+const PROGRESS_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Context for the client. The tool list describes each tool, so this does
 /// not.
@@ -185,11 +189,29 @@ impl ServerHandler for Snouty {
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
             self.run(argv).await
         };
+        tokio::pin!(call);
+        let progress = ctx.meta.get_progress_token();
+        let start = tokio::time::Instant::now();
+        let mut ticks = tokio::time::interval_at(start + PROGRESS_INTERVAL, PROGRESS_INTERVAL);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // The client sets the time limit: it cancels the call, or closes
         // stdin. Either drops `call`, which kills the child.
-        tokio::select! {
-            result = call => result,
-            () = ctx.ct.cancelled() => Err(ErrorData::internal_error("cancelled", None)),
+        loop {
+            tokio::select! {
+                result = &mut call => return result,
+                () = ctx.ct.cancelled() => return Err(ErrorData::internal_error("cancelled", None)),
+                _ = ticks.tick(), if progress.is_some() => {
+                    let seconds = start.elapsed().as_secs();
+                    let param =
+                        ProgressNotificationParam::new(progress.clone().unwrap(), seconds as f64)
+                            .with_message(format!("running for {seconds}s"));
+                    // Await the send: the MCP spec forbids a notification
+                    // after the response.
+                    if let Err(e) = ctx.peer.notify_progress(param).await {
+                        log::debug!("cannot send progress: {e}");
+                    }
+                }
+            }
         }
     }
 }

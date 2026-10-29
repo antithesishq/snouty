@@ -21,7 +21,7 @@ use chrono::{DateTime, Utc};
 use crate::api::{
     AntithesisApi, Event, EventProperty, ExecRequest, MIN_STREAM_RELEASE, Moment, NonEventProperty,
     Property, PropertyStatus, RewarmSource, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
-    SEARCH_DEFAULT_LIMIT, SearchMode,
+    SearchLimit, SearchMode,
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs, WaitUntil};
 use crate::error::{api_error_message, api_error_status, user_error};
@@ -266,7 +266,15 @@ pub async fn cmd_runs(
             // `query` is a backward-compatible alias whose terms are additional
             // needles. Merge both into a single needle list.
             matches.extend(query);
-            cmd_runs_events(&run_id, &matches, limit, settings, output.verbose, mode).await
+            cmd_runs_events(
+                &run_id,
+                &matches,
+                limit.into(),
+                settings,
+                output.verbose,
+                mode,
+            )
+            .await
         }
         Some(RunsCommands::Search(args)) => {
             cmd_runs_search(args, settings, output.verbose, mode).await
@@ -1712,7 +1720,7 @@ async fn cmd_runs_search(
     // watch an in-progress run, so the stream stays open.
     let limit = match (args.follow, args.limit) {
         (true, None) => None,
-        (_, limit) => Some(limit.unwrap_or(SEARCH_DEFAULT_LIMIT)),
+        (_, limit) => Some(limit.unwrap_or(SearchLimit::DEFAULT).into()),
     };
     let search = SearchMode::Query {
         stream: args.follow,

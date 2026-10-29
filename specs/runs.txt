@@ -88,6 +88,12 @@ mock-runs-server
 mock-runs-server
 [!staging] snouty runs list --status incomplete
 [!staging] stdout '^run-3 +incomplete +.* nightly recovery \(no faults\) +recovery probe$'
+
+# An unknown status fails before any request, and names the valid ones.
+! snouty runs list --status bogus
+stderr 'invalid value .bogus. for .--status <STATUS>.'
+stderr 'possible values: starting, in_progress, completed, cancelled, incomplete, unknown'
+
 mock-runs-server
 [!staging] snouty runs list --launcher nightly
 [!staging] stdout '^run-1 +completed +.* nightly +nightly smoke on main$'

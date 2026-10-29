@@ -206,7 +206,6 @@ impl ServerHandler for Snouty {
                 _ = ticks.tick(), if progress.is_some() => {
                     let Some(token) = &progress else { continue };
                     seconds += PROGRESS_INTERVAL.as_secs();
-                    #[allow(clippy::cast_precision_loss)] // A call does not run for 2^52 seconds.
                     let param = ProgressNotificationParam::new(token.clone(), seconds as f64)
                         .with_message(format!("running for {seconds}s"));
                     // Await the send: the MCP spec forbids a notification

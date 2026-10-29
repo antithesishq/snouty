@@ -312,37 +312,44 @@ const http = createServer((req, res) => {
 
 // Browsers let any page open a WebSocket to loopback, and the socket can
 // call any tool, so only the demo's own page may connect. The Host check
-// stops DNS rebinding; the Origin check stops other sites. A reverse proxy
-// names the public host in X-Forwarded-Host, which a page cannot set.
-const ALLOWED_HOSTS = new Set([
-  "localhost",
-  "127.0.0.1",
-  "[::1]",
-  ...(process.env.ALLOWED_HOSTS ?? "").split(",").map((h) => h.trim()).filter(Boolean),
-]);
-
-function hostname(hostHeader: string | undefined): string | undefined {
+// stops DNS rebinding. The Origin must be the host:port the request came in
+// on (a reverse proxy names it in X-Forwarded-Host, which a page cannot set),
+// or an origin in ALLOWED_ORIGINS.
+const ALLOWED_ORIGINS = new Set(
+  (process.env.ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((o) => o.trim().replace(/\/+$/, ""))
+    .filter(Boolean),
+);
+const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+for (const origin of ALLOWED_ORIGINS) {
   try {
-    return hostHeader ? new URL(`http://${hostHeader}`).hostname : undefined;
+    ALLOWED_HOSTS.add(new URL(origin).hostname);
   } catch {
-    return undefined;
+    console.error(`ignoring the malformed ALLOWED_ORIGINS entry ${origin}`);
   }
 }
 
 function allowedUpgrade(req: import("node:http").IncomingMessage): boolean {
-  const host = hostname(req.headers.host);
-  if (!host || !ALLOWED_HOSTS.has(host)) return false;
-  const origin = req.headers.origin;
-  // Only browsers send Origin; other local clients can reach the tenant anyway.
-  if (!origin) return true;
-  let originHost: string;
+  let host: URL;
   try {
-    originHost = new URL(origin).hostname;
+    host = new URL(`http://${req.headers.host}`);
   } catch {
     return false;
   }
-  const forwarded = hostname(String(req.headers["x-forwarded-host"] ?? "").split(",")[0].trim());
-  return ALLOWED_HOSTS.has(originHost) || originHost === forwarded;
+  if (!ALLOWED_HOSTS.has(host.hostname)) return false;
+  const origin = req.headers.origin;
+  // Only browsers send Origin; other local clients can reach the tenant anyway.
+  if (!origin) return true;
+  if (ALLOWED_ORIGINS.has(origin)) return true;
+  let originHost: string;
+  try {
+    originHost = new URL(origin).host;
+  } catch {
+    return false;
+  }
+  const forwarded = String(req.headers["x-forwarded-host"] ?? "").split(",")[0].trim();
+  return originHost === req.headers.host || (forwarded !== "" && originHost === forwarded);
 }
 
 const wss = new WebSocketServer({ noServer: true });

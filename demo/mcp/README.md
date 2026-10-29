@@ -38,11 +38,13 @@ and `PORT` to use another port.
 
 The page can call any tool with your credentials, so the server guards its
 WebSocket. It listens on 127.0.0.1 only (set `HOST` to change that), and it
-accepts a WebSocket only from a page on `localhost`, `127.0.0.1` or a host in
-`ALLOWED_HOSTS` (a comma-separated list). The page also works behind a reverse
-proxy under a path prefix, for example at `/snouty-mcp/`. The proxy must pass
-WebSocket upgrades for `<prefix>/ws`, and either set `X-Forwarded-Host` to the
-public host or you add that host to `ALLOWED_HOSTS`.
+accepts a WebSocket only from its own page: the Origin must be the host and
+port that the request came to, or an origin in `ALLOWED_ORIGINS` (a
+comma-separated list such as `https://demo.example.com`). The page also works
+behind a reverse proxy under a path prefix, for example at `/snouty-mcp/`. The
+proxy must pass WebSocket upgrades for `<prefix>/ws`, and either set
+`X-Forwarded-Host` to the public host, or you add the public origin to
+`ALLOWED_ORIGINS`.
 
 ## Check it before a demo
 

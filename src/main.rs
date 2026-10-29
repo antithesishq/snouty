@@ -112,23 +112,7 @@ async fn run(cli: Cli) -> Result<()> {
     let settings = Settings::resolve(settings_path.clone(), profile.clone());
     let result = match command {
         Commands::Completions { shell } => cmd_completions(shell).map_err(Report::new),
-        Commands::Version => {
-            if output.json {
-                // SNOUTY_COMMIT (set by build.rs) is absent when the build had
-                // no git checkout.
-                let version = serde_json::json!({
-                    "version": env!("CARGO_PKG_VERSION"),
-                    "commit": option_env!("SNOUTY_COMMIT"),
-                });
-                println!("{}", serde_json::to_string_pretty(&version)?);
-            } else {
-                // SNOUTY_VERSION (set by build.rs) is the crate version plus
-                // the build's git sha when known — the same string clap's
-                // --version prints, so the two stay consistent.
-                println!("snouty {}", env!("SNOUTY_VERSION"));
-            }
-            Ok(())
-        }
+        Commands::Version => cmd_version(output.json),
         Commands::Update(args) => cmd_update(&args, &settings?),
         Commands::Docs { offline, command } => docs::cmd_docs(command, offline, output).await,
         Commands::Settings { command } => match command {
@@ -544,6 +528,25 @@ async fn cmd_debug(
         println!("Debugging session started: run_id (unknown)");
     }
 
+    Ok(())
+}
+
+/// Prints the version, or with `--json` the version and the commit.
+fn cmd_version(json: bool) -> Result<()> {
+    if json {
+        // SNOUTY_COMMIT (set by build.rs) is absent when the build had no git
+        // checkout.
+        let version = serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "commit": option_env!("SNOUTY_COMMIT"),
+        });
+        println!("{}", serde_json::to_string_pretty(&version)?);
+    } else {
+        // SNOUTY_VERSION (set by build.rs) is the crate version plus the
+        // build's git sha when known — the same string clap's --version
+        // prints, so the two stay consistent.
+        println!("snouty {}", env!("SNOUTY_VERSION"));
+    }
     Ok(())
 }
 

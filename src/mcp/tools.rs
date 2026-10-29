@@ -453,12 +453,13 @@ mod tests {
                 assert!(!properties.contains_key(*hidden), "{name}: {hidden}");
             }
             let annotations = tool.annotations.as_ref().unwrap();
-            let destructive = name == ToolName::RunsCancel;
-            let read_only = name != ToolName::Debug && !destructive;
+            let (read_only, destructive) = match name {
+                ToolName::Debug => (false, Some(false)),
+                ToolName::RunsCancel => (false, Some(true)),
+                _ => (true, None),
+            };
             assert_eq!(annotations.read_only_hint, Some(read_only), "{name}");
-            if !read_only {
-                assert_eq!(annotations.destructive_hint, Some(destructive), "{name}");
-            }
+            assert_eq!(annotations.destructive_hint, destructive, "{name}");
             assert_eq!(annotations.open_world_hint, Some(false), "{name}");
         }
     }

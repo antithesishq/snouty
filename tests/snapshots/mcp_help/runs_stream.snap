@@ -33,10 +33,10 @@ If the stream ends before the run is final, snouty exits with an error. Start th
 
 Streaming needs a run created on release 65.3 or later.
 
-The tool returns when the run is final, so a call can take as long as the run.
-
 Examples:
   runs_stream {"run_id": "<run_id>"}
   runs_stream {"run_id": "<run_id>", "property_ids": ["<property_id>"]}
 
 Each event prints as one JSON object on its own line, with an `event` key and the fields above. Each vtime is a JSON number. The `data` key holds the JSON of an unknown notification.
+
+The tool returns when the run is final, so a call can take as long as the run.

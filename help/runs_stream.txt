@@ -22,7 +22,7 @@ Each event prints as one line:
 
 The samples are a selection: the server does not send every example and counterexample that it counts. To see a property and its totals, use `{{ t("snouty runs property <run_id> <property_id>")? }}`. To read the logs at a moment, use `{{ t("snouty runs logs <run_id> <input_hash> <vtime>")? }}`.
 
-The stream shows only the events that happen after it starts. It does not show the current results. A property that passed or failed before the stream started gets no verdict line. {% if cli %}To get the current results and follow them, start the stream first. When stderr says `the stream of run <run_id> is open` (or, on a terminal, the spinner says `streaming run`), read `snouty runs properties <run_id>` and merge the two. This order makes sure that you do not miss an event.{% else %}To get the current results, read `{{ t("runs properties")? }}` and merge it with the stream's events.{% endif %}
+The stream shows only the events that happen after it starts. It does not show the current results. A property that passed or failed before the stream started gets no verdict line. {% if cli %}To get the current results and follow them, start the stream first. When stderr says `the stream of run <run_id> is open` (or, on a terminal, the spinner says `streaming run`), read `{{ t("snouty runs properties <run_id>")? }}` and merge the two. This order makes sure that you do not miss an event.{% else %}To get the current results, read `{{ t("runs properties")? }}` and merge it with the stream's events.{% endif %}
 
 The stream is silent between events. For a run that is already final, the stream prints `completed` and ends. The stream of a new run opens a few minutes after the run starts, and snouty waits until it opens.
 
@@ -30,9 +30,7 @@ If the stream ends before the run is final, snouty exits with an error. Start th
 
 Streaming needs a run created on release 65.3 or later.
 
-{% if !cli %}The tool returns when the run is final, so a call can take as long as the run.
-
-{% endif %}Examples:
+Examples:
   {{ t("snouty runs stream <run_id>")? }}
   {{ t("snouty runs stream <run_id> --property <property_id>")? }}
 
@@ -41,4 +39,6 @@ Add --json for machine-readable output. Each event prints as one JSON object, wi
   {{ t("snouty --json runs stream <run_id> | jq -r 'select(.event == \"verdict\" and .verdict == \"failed\") | .property_id'")? }}
 {% else %}
 Each event prints as one JSON object on its own line, with an `event` key and the fields above. Each vtime is a JSON number. The `data` key holds the JSON of an unknown notification.
+
+The tool returns when the run is final, so a call can take as long as the run.
 {% endif %}

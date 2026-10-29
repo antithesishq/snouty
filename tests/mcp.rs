@@ -177,10 +177,10 @@ async fn tools_run_their_commands_in_json_mode() {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    assert_eq!(events.last().unwrap()["event"], "completed", "{events:?}");
+    let (last, rest) = events.split_last().expect("at least one event");
+    assert_eq!(last["event"], "completed", "{events:?}");
     assert!(
-        events[..events.len() - 1]
-            .iter()
+        rest.iter()
             .all(|event| event["property_id"] == "27a7cb0b311c8481c4ce12f3347fadbf"),
         "{events:?}"
     );

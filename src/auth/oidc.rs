@@ -44,9 +44,9 @@ impl AuthenticationInfo {
 pub struct GithubActionsOidcToken {
     url: String,
     request_token: String,
+    /// Never held across an `await`: a refresh fetches with no lock held,
+    /// and then takes the write lock to store the token.
     fetched: Arc<RwLock<Option<FetchedToken>>>,
-    /// Held during a fetch, so that concurrent refreshes fetch once.
-    fetch_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Clone)]
@@ -75,7 +75,6 @@ impl GithubActionsOidcToken {
             url,
             request_token,
             fetched: Arc::default(),
-            fetch_lock: Arc::default(),
         }
     }
 
@@ -104,14 +103,9 @@ impl GithubActionsOidcToken {
     }
 
     /// Replaces the token with a new one from the Actions token endpoint, in
-    /// every clone. When a concurrent refresh replaced the token while this
-    /// one waited for it, the token of that refresh is kept.
+    /// every clone. Concurrent refreshes each fetch, and the last to finish
+    /// sets the token: a fetch is idempotent and costs nothing.
     pub(crate) async fn refresh(&self) -> Result<()> {
-        let held = self.token();
-        let _fetching = self.fetch_lock.lock().await;
-        if self.token() != held {
-            return Ok(());
-        }
         let token = fetch_github_actions_oidc_credentials(&self.url, &self.request_token).await?;
         let expires_at = try_get_expiry_from_jwt(&token);
         *self.fetched.write().unwrap_or_else(PoisonError::into_inner) =
@@ -350,16 +344,5 @@ mod tests {
             two_requests(&auth, &token).await;
             server.verify().await;
         }
-    }
-
-    #[tokio::test]
-    async fn concurrent_requests_with_a_github_actions_oidc_credential_fetch_once() {
-        let token = jwt_expiring_in(chrono::TimeDelta::minutes(5));
-        let (server, auth) = oidc_credential_fetching(&token, 1).await;
-        let (first, second) =
-            tokio::join!(header_for_one_request(&auth), header_for_one_request(&auth));
-        assert_eq!(first, format!("GHA {token}"));
-        assert_eq!(first, second);
-        server.verify().await;
     }
 }

@@ -96,7 +96,7 @@ async fn cmd_docker_credential(
         // Docker and Podman call store only for a login. Snouty owns the
         // credential, so store fails and tells why.
         DockerCredentialAction::Store => Err(user_error(
-            "snouty gives the credential for this registry, so a login is not necessary; to sign in, run `snouty login` or set ANTITHESIS_API_KEY",
+            "snouty provides credentials for this registry; to sign in, run `snouty login` or set ANTITHESIS_API_KEY",
         )),
         // Erase changes nothing, but it must succeed: when it fails,
         // `podman logout --all` keeps the credentials of every registry, and

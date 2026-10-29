@@ -153,7 +153,7 @@ fn a_closed_stdout_fails_get_without_a_panic() {
 fn store_and_list_fail_with_status_1() {
     let home = TempDir::new().unwrap();
     for (action, message) in [
-        ("store", "snouty gives the credential for this registry"),
+        ("store", "snouty provides credentials for this registry"),
         ("list", "list is not necessary"),
     ] {
         helper(&Alias::symlink(), &home)

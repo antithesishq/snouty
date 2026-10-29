@@ -2151,6 +2151,10 @@ services:
             unreachable!("the fake answers remote_manifest itself")
         }
 
+        fn use_registry_auth(&mut self, _auth: crate::container::RegistryAuth) -> Result<()> {
+            unreachable!("pin_images never sets the registry auth")
+        }
+
         fn remote_manifest(&self, image_ref: &str) -> RemoteManifest {
             self.remote_manifests
                 .get(image_ref)

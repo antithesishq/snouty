@@ -271,15 +271,14 @@ fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRu
     }
 
     let run = |config: &Path, action: &str| -> Output {
-        let mut command = if runtime.engine_kind() == "podman" {
-            let mut command = runtime.command(&[action, "--tls-verify=false", &image]);
+        let mut command = std::process::Command::new(runtime.name());
+        if runtime.engine_kind() == "podman" {
+            command.args([action, "--tls-verify=false", &image]);
             command.env("REGISTRY_AUTH_FILE", config.join("config.json"));
-            command
         } else {
-            let mut command = runtime.command(&[action, &image]);
+            command.args([action, &image]);
             command.env("DOCKER_CONFIG", config);
-            command
-        };
+        }
         command.env("PATH", &path).output().unwrap()
     };
     let describe = |output: &Output| {

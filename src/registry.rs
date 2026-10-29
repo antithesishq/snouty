@@ -24,7 +24,7 @@ const TOKEN_MIN_LIFETIME: TimeDelta = TimeDelta::hours(2);
 
 /// The container registry of a tenant, `registry.<tenant>.antithesis.com`.
 /// The tenant is lowercase, because a host name ignores case.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TenantRegistry {
     tenant: String,
 }

@@ -40,21 +40,43 @@ impl fmt::Display for RegistryHost {
     }
 }
 
-/// Parses a server URL as a registry client gives it: a bare host, or a URL
-/// with a scheme, a path, or both.
+/// Parses a server URL as a registry client gives it: a bare host, such as
+/// `localhost:5000`, or a URL with a scheme, a path, or both. A repository,
+/// such as `registry.acme.antithesis.com/team/app`, parses to its host.
+///
+/// The text takes the scheme `https://` in place of its own, or before it
+/// when it has none, and a URL parser reads the host and the port from that.
+/// So the parser drops a user name and lowercases the host. It drops the port
+/// 443, which a registry client uses when it names no port, whatever the
+/// scheme.
 impl FromStr for RegistryHost {
     type Err = &'static str;
 
     fn from_str(server_url: &str) -> Result<Self, Self::Err> {
+        let server_url = server_url.trim();
         let rest = match server_url.split_once("://") {
-            Some((scheme, rest)) if !scheme.contains('/') => rest,
+            Some((scheme, rest))
+                if scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+                    && scheme
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c)) =>
+            {
+                rest
+            }
             _ => server_url,
         };
-        let host = rest.split('/').next().unwrap_or_default().trim();
-        if host.is_empty() {
+        // A URL parser skips the slashes that start a path, and would read
+        // the first part of the path as the host.
+        if rest.is_empty() || rest.starts_with(['/', '\\']) {
             return Err("the server URL names no host");
         }
-        Ok(Self(host.to_ascii_lowercase()))
+        let url = reqwest::Url::parse(&format!("https://{rest}"))
+            .map_err(|_| "the server URL does not name a valid host")?;
+        let host = url.host_str().ok_or("the server URL names no host")?;
+        Ok(Self(match url.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host.to_owned(),
+        }))
     }
 }
 
@@ -411,22 +433,69 @@ mod tests {
     }
 
     /// A host as a registry reference spells it: DNS labels, and an optional
-    /// port.
+    /// port. A label starts with a letter, because a URL parser reads a host
+    /// whose last label is a number as an IPv4 address.
     fn hosts() -> impl hegel::PrintableGenerator<String> {
-        generators::from_regex(r"[A-Za-z0-9-]{1,10}(\.[A-Za-z0-9-]{1,10}){0,3}(:[0-9]{1,5})?")
-            .fullmatch(true)
+        generators::from_regex(
+            r"[A-Za-z][A-Za-z0-9]{0,4}(-[A-Za-z0-9]{1,4})?(\.[A-Za-z][A-Za-z0-9]{0,4}(-[A-Za-z0-9]{1,4})?){0,3}(:[1-9][0-9]{0,3})?",
+        )
+        .fullmatch(true)
     }
 
-    /// A scheme, a path and the case of the letters do not change the host.
+    /// A scheme, a user name, a path and the case of the letters do not
+    /// change the host. The port 443 drops out.
     #[hegel::test]
     fn a_server_url_names_its_host(tc: hegel::TestCase) {
         let bare = tc.draw(hosts());
         let scheme = tc.draw(generators::sampled_from(vec!["", "https://", "http://"]));
+        let user = tc.draw(generators::sampled_from(vec!["", "user@", "user:secret@"]));
         let path = tc.draw(generators::from_regex(r"(/[a-z0-9/._-]*)?").fullmatch(true));
-        let url = format!("{scheme}{bare}{path}");
+        let url = format!("{scheme}{user}{bare}{path}");
         let parsed = host(&url);
-        assert_eq!(parsed.to_string(), bare.to_ascii_lowercase(), "{url}");
+        let expected = bare.to_ascii_lowercase();
+        let expected = expected.strip_suffix(":443").unwrap_or(&expected);
+        assert_eq!(parsed.to_string(), expected, "{url}");
         assert_eq!(parsed, host(&bare.to_ascii_uppercase()));
+    }
+
+    #[test]
+    fn a_server_url_parses_as_a_url() {
+        let cases = [
+            ("https://index.docker.io/v1/", "index.docker.io"),
+            (
+                "registry.acme.antithesis.com/team/app",
+                "registry.acme.antithesis.com",
+            ),
+            ("localhost:5000/app", "localhost:5000"),
+            (
+                "user@registry.acme.antithesis.com",
+                "registry.acme.antithesis.com",
+            ),
+            ("https://user:secret@localhost:5000/v2/", "localhost:5000"),
+            (
+                "https://registry.acme.antithesis.com:443/",
+                "registry.acme.antithesis.com",
+            ),
+            (
+                "registry.acme.antithesis.com:443",
+                "registry.acme.antithesis.com",
+            ),
+            (
+                "http://registry.acme.antithesis.com:443",
+                "registry.acme.antithesis.com",
+            ),
+            ("http://localhost:80/v2/", "localhost:80"),
+            ("127.0.0.1:5000/app", "127.0.0.1:5000"),
+            ("[::1]:5000/app", "[::1]:5000"),
+            ("https://[0:0:0:0:0:0:0:1]/v2/", "[::1]"),
+            (
+                " registry.acme.antithesis.com\n",
+                "registry.acme.antithesis.com",
+            ),
+        ];
+        for (url, expected) in cases {
+            assert_eq!(host(url).to_string(), expected, "{url:?}");
+        }
     }
 
     /// The host of any parsed text parses to itself, and holds no path.
@@ -442,7 +511,25 @@ mod tests {
 
     #[test]
     fn a_server_url_with_no_host_is_an_error() {
-        for url in ["", "  ", "https://", "https:///v2/", "/v2/"] {
+        for url in ["", "  ", "https://", "https:///v2/", "/v2/", "\\v2"] {
+            assert_eq!(
+                url.parse::<RegistryHost>(),
+                Err("the server URL names no host"),
+                "{url:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_server_url_with_an_invalid_host_is_an_error() {
+        for url in [
+            "user@",
+            "host:99999",
+            "host:port",
+            "a b",
+            "[::1",
+            "https://a b/v2/",
+        ] {
             assert!(url.parse::<RegistryHost>().is_err(), "{url:?}");
         }
     }
@@ -456,6 +543,7 @@ mod tests {
             ("acme", "registry.other.antithesis.com/app", false),
             ("acme", "us-docker.pkg.dev/acme/repo", false),
             ("acme", "registry.acme.antithesis.com:5000/app", false),
+            ("acme", "registry.acme.antithesis.com:443/app", true),
         ];
         for (tenant, repository, matches) in cases {
             assert_eq!(

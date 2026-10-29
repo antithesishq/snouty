@@ -16,8 +16,8 @@ stdout 'simulate +Run a Compose setup'
 snouty simulate --help
 stdout 'guest-image'
 ! stdout 'SNOUTY_SIMULATE_GUEST_ISO'
-stdout '\-\-platform <PLATFORM>'
-stdout 'native host platform'
+! stdout '\-\-platform'
+stdout 'The guest uses the host architecture by default'
 stdout 'Requires Linux or macOS and QEMU'
 stdout 'antithesis-guest:v66\.0'
 stdout 'No API key is required'
@@ -83,12 +83,24 @@ stderr 'cannot be used with'
 
 snouty completions bash
 ! stdout '\-\-shell'
+! stdout '\-\-platform'
+! stdout 'arm64'
 snouty completions zsh
 ! stdout '\-\-shell'
+! stdout '\-\-platform'
+! stdout 'arm64'
 snouty completions fish
 ! stdout '\-l shell'
+! stdout '\-l platform'
+! stdout 'arm64'
 snouty completions elvish
 ! stdout 'cand \-\-shell'
+! stdout 'cand \-\-platform'
+! stdout 'arm64'
+snouty completions powershell
+! stdout '\-\-shell'
+! stdout '\-\-platform'
+! stdout 'arm64'
 
 ! snouty simulate empty
 stderr 'does not contain.*docker-compose.yaml.*manifests/'

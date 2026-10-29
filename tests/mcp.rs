@@ -6,9 +6,14 @@
 use std::path::Path;
 use std::time::Duration;
 
-use rmcp::model::{CacheScope, CallToolRequestParams, CallToolResult, JsonObject, ProtocolVersion};
+use rmcp::ClientHandler;
+use rmcp::model::{
+    CacheScope, CallToolRequestParams, CallToolResult, JsonObject, ProgressNotificationParam,
+    ProtocolVersion,
+};
 use rmcp::service::{
-    ClientLifecycleMode, ClientServiceExt, RoleClient, RunningService, ServiceExt,
+    ClientLifecycleMode, ClientServiceExt, NotificationContext, RoleClient, RunningService,
+    ServiceExt,
 };
 use rmcp::transport::TokioChildProcess;
 use serde_json::{Value, json};
@@ -315,6 +320,53 @@ async fn a_cancelled_call_kills_its_command() {
     }
     client.cancel().await.expect("close snouty mcp");
     assert!(killed, "the command outlived its cancelled call");
+}
+
+/// A client that passes on each progress notification.
+struct ProgressClient(tokio::sync::mpsc::UnboundedSender<ProgressNotificationParam>);
+
+impl ClientHandler for ProgressClient {
+    async fn on_progress(
+        &self,
+        params: ProgressNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        let _ = self.0.send(params);
+    }
+}
+
+/// A long tool call reports progress every 10 seconds, so a client that
+/// resets its time limit on progress keeps the call.
+#[tokio::test]
+async fn a_long_call_reports_progress() {
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = MockApiServer::start();
+    let home = TempDir::new().unwrap();
+    let mut command = snouty_mcp(&server, home.path());
+    command.env(
+        "ANTITHESIS_BASE_URL",
+        format!("http://{}", silent.local_addr().unwrap()),
+    );
+    let (sender, mut progress) = tokio::sync::mpsc::unbounded_channel();
+    let transport = TokioChildProcess::new(command).expect("spawn snouty mcp");
+    let client = ProgressClient(sender)
+        .serve(transport)
+        .await
+        .expect("initialize snouty mcp");
+
+    // rmcp's client puts a progress token on each request.
+    let params = CallToolRequestParams::new("runs_show")
+        .with_arguments(JsonObject::from_iter([("run_id".to_owned(), json!("r"))]));
+    let mut call = Box::pin(client.call_tool_once(params));
+    let first = tokio::select! {
+        result = &mut call => panic!("the call returned: {result:?}"),
+        first = tokio::time::timeout(Duration::from_secs(20), progress.recv()) => first,
+    };
+    let first = first.expect("a progress notification").unwrap();
+    assert_eq!(first.progress, 10.0);
+    assert_eq!(first.message.as_deref(), Some("running for 10s"));
+    drop(call);
+    client.cancel().await.expect("close snouty mcp");
 }
 
 /// A command exits when its server is killed, which leaves no time to kill

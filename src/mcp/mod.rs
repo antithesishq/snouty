@@ -12,10 +12,10 @@ use std::time::Duration;
 use color_eyre::eyre::{Result, WrapErr};
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
-    Implementation, ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities,
-    ServerConfig, Tool,
+    Implementation, ListToolsResult, PaginatedRequestParams, ProgressNotificationParam,
+    ProgressToken, ProtocolVersion, ServerCapabilities, ServerConfig, Tool,
 };
-use rmcp::service::{RequestContext, ServerInitializeError, serve_server};
+use rmcp::service::{Peer, RequestContext, ServerInitializeError, serve_server};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::Semaphore;
@@ -32,6 +32,10 @@ use tools::{TOOL_HELP, tool_help, tool_help_tool};
 /// The server sets this to its own PID on each tool call's child. See
 /// [`exit_with_server`].
 const SERVER_PID_ENV: &str = "SNOUTY_MCP_SERVER_PID";
+
+/// How often a tool call reports progress. Many clients end a request
+/// after 60 seconds unless progress resets their time limit.
+const PROGRESS_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Context for the client. The tool list describes each tool, so this does
 /// not.
@@ -190,6 +194,30 @@ impl ServerHandler for Snouty {
         tokio::select! {
             result = call => result,
             () = ctx.ct.cancelled() => Err(ErrorData::internal_error("cancelled", None)),
+            () = report_progress(ctx.peer, ctx.meta.get_progress_token()) => unreachable!(),
+        }
+    }
+}
+
+/// Sends a progress notification every [`PROGRESS_INTERVAL`], with the
+/// seconds that have elapsed as the progress, while the caller awaits
+/// something else. Without a token, the client asked for no progress.
+async fn report_progress(peer: Peer<RoleServer>, token: Option<ProgressToken>) {
+    let Some(token) = token else {
+        return std::future::pending().await;
+    };
+    let start = tokio::time::Instant::now();
+    let mut ticks = tokio::time::interval_at(start + PROGRESS_INTERVAL, PROGRESS_INTERVAL);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        ticks.tick().await;
+        let elapsed = start.elapsed().as_secs();
+        #[allow(clippy::cast_precision_loss)] // A call does not run for 2^52 seconds.
+        let progress = ProgressNotificationParam::new(token.clone(), elapsed as f64)
+            .with_message(format!("running for {elapsed}s"));
+        // A client that is gone also cancels the call.
+        if let Err(e) = peer.notify_progress(progress).await {
+            log::debug!("cannot send progress: {e}");
         }
     }
 }

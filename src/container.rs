@@ -70,7 +70,7 @@ impl std::fmt::Display for Architecture {
 /// `settings_path` and `profile` are the `--settings` and `--profile` flags
 /// of the launch. A `docker-credential-snouty` that the engine runs gets them
 /// in its environment, so that it resolves the settings of the launch.
-pub struct RegistryAuth {
+pub struct TenantRegistryAuth {
     pub registry: TenantRegistry,
     pub secret: String,
     pub settings_path: Option<PathBuf>,
@@ -78,10 +78,10 @@ pub struct RegistryAuth {
 }
 
 /// The environment of each push and manifest round trip to `registry`, which
-/// [`ContainerRuntime::use_registry_auth`] prepares. Other round trips get
+/// [`ContainerRuntime::use_tenant_registry_auth`] prepares. Other round trips get
 /// none of it: podman with `REGISTRY_AUTH_FILE` ignores its own auth files.
 #[derive(Clone)]
-struct RegistryEnv {
+struct TenantRegistryEnv {
     registry: TenantRegistry,
     env: Vec<(&'static str, OsString)>,
     /// The podman auth file that `env` names, deleted with the last clone of
@@ -89,10 +89,10 @@ struct RegistryEnv {
     _auth_file: Option<Arc<tempfile::NamedTempFile>>,
 }
 
-impl RegistryEnv {
+impl TenantRegistryEnv {
     /// `env`, plus the `--settings` and `--profile` flags of `auth`.
     fn new(
-        auth: RegistryAuth,
+        auth: TenantRegistryAuth,
         mut env: Vec<(&'static str, OsString)>,
         auth_file: Option<tempfile::NamedTempFile>,
     ) -> Self {
@@ -155,7 +155,7 @@ pub trait ContainerRuntime: Send + Sync {
 
     /// Present `auth` on each [`image_push`](Self::image_push) and
     /// [`remote_manifest`](Self::remote_manifest) to the registry of `auth`.
-    fn use_registry_auth(&mut self, auth: RegistryAuth);
+    fn use_tenant_registry_auth(&mut self, auth: TenantRegistryAuth);
 
     /// Push the image to the registry, returning the pinned image reference
     /// (e.g. `example.com/foo/image@sha256:...`).
@@ -482,7 +482,7 @@ fn stderr_indicates_missing_source(stderr: &str) -> bool {
 #[derive(Clone)]
 pub struct PodmanRuntime {
     cmd: String,
-    registry_env: Option<RegistryEnv>,
+    registry_env: Option<TenantRegistryEnv>,
 }
 
 impl PodmanRuntime {
@@ -607,7 +607,7 @@ impl ContainerRuntime for PodmanRuntime {
     }
 
     /// Without the registry env, podman pushes with its own credentials.
-    fn use_registry_auth(&mut self, auth: RegistryAuth) {
+    fn use_tenant_registry_auth(&mut self, auth: TenantRegistryAuth) {
         match podman_registry_env(auth, crate::settings::global_settings_dir()) {
             Ok(env) => self.registry_env = Some(env),
             // A bare eprintln, not log::warn!: the notice must reach stderr
@@ -683,7 +683,10 @@ const PATH_ENV: &str = "PATH";
 /// there gives no new trust to anyone. The `PATH` entry is absolute because
 /// podman does not run a helper that it finds through a relative entry, such
 /// as one from a relative `XDG_CONFIG_HOME`.
-fn podman_registry_env(auth: RegistryAuth, config_dir: Option<PathBuf>) -> Result<RegistryEnv> {
+fn podman_registry_env(
+    auth: TenantRegistryAuth,
+    config_dir: Option<PathBuf>,
+) -> Result<TenantRegistryEnv> {
     let dir = config_dir.ok_or_eyre(
         "cannot find the snouty config directory for the credential helper; set XDG_CONFIG_HOME or HOME",
     )?;
@@ -703,7 +706,7 @@ fn podman_registry_env(auth: RegistryAuth, config_dir: Option<PathBuf>) -> Resul
         (REGISTRY_AUTH_FILE_ENV, auth_file.path().into()),
         (PATH_ENV, path),
     ];
-    Ok(RegistryEnv::new(auth, env, Some(auth_file)))
+    Ok(TenantRegistryEnv::new(auth, env, Some(auth_file)))
 }
 
 /// Link [`HELPER_NAME`] in `dir` to the running snouty, unless a link to it
@@ -728,7 +731,7 @@ fn link_credential_helper(dir: &Path) -> Result<()> {
 #[derive(Clone)]
 pub struct DockerRuntime {
     cmd: String,
-    registry_env: Option<RegistryEnv>,
+    registry_env: Option<TenantRegistryEnv>,
 }
 
 impl DockerRuntime {
@@ -759,13 +762,13 @@ impl ContainerRuntime for DockerRuntime {
 
     /// Docker gets the credential in `DOCKER_AUTH_CONFIG`, which only adds
     /// an entry for the registry of `auth` to its own credentials.
-    fn use_registry_auth(&mut self, auth: RegistryAuth) {
+    fn use_tenant_registry_auth(&mut self, auth: TenantRegistryAuth) {
         // Only the `auth` field: the Docker CLI rejects other fields here.
         let basic = BASE64_STANDARD.encode(format!("{}:{}", registry::USERNAME, auth.secret));
         let config =
             serde_json::json!({ "auths": { auth.registry.to_string(): { "auth": basic } } });
         let env = vec![(DOCKER_AUTH_CONFIG_ENV, config.to_string().into())];
-        self.registry_env = Some(RegistryEnv::new(auth, env, None));
+        self.registry_env = Some(TenantRegistryEnv::new(auth, env, None));
     }
 
     fn remote_manifest(&self, image_ref: &str) -> RemoteManifest {
@@ -1393,8 +1396,8 @@ mod tests {
 
     const TENANT_HOST: &str = "registry.acme.antithesis.com";
 
-    fn tenant_auth() -> RegistryAuth {
-        RegistryAuth {
+    fn tenant_auth() -> TenantRegistryAuth {
+        TenantRegistryAuth {
             registry: TENANT_HOST.parse().unwrap(),
             secret: FAKE_API_KEY_A.to_string(),
             settings_path: Some(PathBuf::from("launch.toml")),
@@ -1430,7 +1433,7 @@ mod tests {
     }
 
     /// The value of `name` in `env`.
-    fn env_var<'a>(env: &'a RegistryEnv, name: &str) -> &'a OsStr {
+    fn env_var<'a>(env: &'a TenantRegistryEnv, name: &str) -> &'a OsStr {
         env.env
             .iter()
             .find_map(|(var, value)| (*var == name).then_some(value.as_os_str()))
@@ -1463,7 +1466,7 @@ esac
             ),
         );
         let mut rt = DockerRuntime::new(cmd.to_str().unwrap());
-        rt.use_registry_auth(tenant_auth());
+        rt.use_tenant_registry_auth(tenant_auth());
 
         let pinned = rt
             .image_push(&format!("{TENANT_HOST}/repo/app:v1"))

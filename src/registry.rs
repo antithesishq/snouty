@@ -119,7 +119,7 @@ pub fn tenant_registry(settings: &Settings) -> Option<TenantRegistry> {
 ///    [`SettingsRequest::resolve_every_profile`]: the top-level defaults
 ///    first, then the named profiles. A profile that fails to resolve is
 ///    skipped. When no profile matches, return `None`. When profiles match
-///    but none has a credential, fail with an error that names them.
+///    but none has a credential, fail.
 ///
 /// A profile has a credential when the lookup of every command finds one for
 /// it: in the environment, or in the keychain or the credentials file, for
@@ -134,7 +134,7 @@ pub fn select_settings(
         let settings = request.resolve()?;
         return Ok((tenant_registry(&settings).as_ref() == Some(registry)).then_some(settings));
     }
-    let mut without_credential = Vec::new();
+    let mut matched = false;
     for settings in request.resolve_every_profile()? {
         if tenant_registry(&settings).as_ref() != Some(registry) {
             continue;
@@ -142,27 +142,14 @@ pub fn select_settings(
         if AuthenticationInfo::find_ambient(settings.profile())?.is_some() {
             return Ok(Some(settings));
         }
-        without_credential.push(settings.profile().map(str::to_owned));
+        matched = true;
     }
-    if without_credential.is_empty() {
-        return Ok(None);
+    if matched {
+        return Err(user_error(
+            "no credential found; run `snouty login` or set ANTITHESIS_API_KEY",
+        ));
     }
-    let names: Vec<_> = without_credential
-        .iter()
-        .map(|profile| match profile {
-            Some(name) => format!("`{name}`"),
-            None => "the default profile".to_owned(),
-        })
-        .collect();
-    let login = if without_credential.contains(&None) {
-        "run `snouty login`, or `snouty login --profile <name>` for a named profile"
-    } else {
-        "run `snouty login --profile <name>` for one of them"
-    };
-    Err(user_error(format!(
-        "no profile that uses {registry} has an Antithesis credential: {}; {login}, or set ANTITHESIS_API_KEY",
-        names.join(", ")
-    )))
+    Ok(None)
 }
 
 /// The password that the registry takes with [`USERNAME`]: the API key, the
@@ -180,7 +167,7 @@ pub async fn password(api: &AntithesisApi) -> Result<String> {
     }
     let Some(stored) = auth.bearer_token() else {
         return Err(user_error(format!(
-            "the Antithesis container registry does not accept a {auth}; set ANTITHESIS_API_KEY, or run `snouty login` to store an API key or OAuth credentials"
+            "the Antithesis container registry does not accept a {auth}; set ANTITHESIS_API_KEY, or run `snouty login`"
         )));
     };
     let expired = auth.expired();

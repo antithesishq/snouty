@@ -4,6 +4,8 @@ use std::process::{Child, Command, Stdio};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+#[cfg(test)]
+pub mod auth;
 pub mod fake_secrets;
 
 use crate::container::{ContainerRuntime, DockerRuntime, PodmanRuntime, is_podman_in_disguise};

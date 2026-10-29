@@ -82,7 +82,7 @@ pub struct RefreshableOAuthToken {
 }
 
 impl RefreshableOAuthToken {
-    fn new(
+    pub(crate) fn new(
         origin: OAuthRefreshInfo,
         antithesis_token: String,
         refresh_token: Option<String>,
@@ -599,38 +599,6 @@ impl AuthenticationInfo {
     }
 }
 
-/// Build a `v4.public` PASETO whose payload is `claims_json ‖ signature`,
-/// mirroring the real wire format (a 64-byte Ed25519 signature stand-in
-/// trails the JSON claims).
-#[cfg(test)]
-pub(crate) fn public_paseto_with_claims(claims_json: &[u8]) -> String {
-    let mut payload = claims_json.to_vec();
-    payload.extend_from_slice(&[0u8; 64]);
-    format!("v4.public.{}", BASE64_URL_SAFE_NO_PAD.encode(&payload))
-}
-
-/// A `v4.public` PASETO whose `exp` claim is `lifetime` after now.
-#[cfg(test)]
-pub(crate) fn paseto_expiring_in(lifetime: chrono::TimeDelta) -> String {
-    let exp = (Utc::now() + lifetime).to_rfc3339();
-    public_paseto_with_claims(serde_json::json!({ "exp": exp }).to_string().as_bytes())
-}
-
-#[cfg(test)]
-impl AuthenticationInfo {
-    pub(crate) fn oauth_for_test(
-        antithesis_token: impl Into<String>,
-        refresh_token: Option<&str>,
-        refresh_info: OAuthRefreshInfo,
-    ) -> Self {
-        Self::OAuth(RefreshableOAuthToken::new(
-            refresh_info,
-            antithesis_token.into(),
-            refresh_token.map(str::to_owned),
-        ))
-    }
-}
-
 /// Best-effort cross-process advisory lock serializing refreshes for a
 /// credential, held for as long as the returned file is kept alive. The lock
 /// file is a filesystem sidecar (on disk even when the credential lives in the
@@ -1064,6 +1032,9 @@ impl CredentialsFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutils::auth::{
+        credentials_file_in, paseto_expiring_in, public_paseto_with_claims,
+    };
     use crate::testutils::fake_secrets::{
         FAKE_ACCESS_TOKEN_A, FAKE_ACCESS_TOKEN_B, FAKE_OIDC_REQUEST_TOKEN, FAKE_OIDC_TOKEN,
         FAKE_PASETO_A, FAKE_PASETO_B, FAKE_REFRESH_TOKEN_A, FAKE_REFRESH_TOKEN_B,
@@ -1092,10 +1063,7 @@ mod tests {
 
         let creds_dir = tempfile::TempDir::new().unwrap();
         let token = RefreshableOAuthToken::new(
-            OAuthRefreshInfo::CredentialsFile {
-                path: creds_dir.path().join("credentials.toml"),
-                profile: None,
-            },
+            credentials_file_in(creds_dir.path()),
             FAKE_ACCESS_TOKEN_A.to_owned(),
             Some(FAKE_REFRESH_TOKEN_A.to_owned()),
         );
@@ -1137,10 +1105,7 @@ mod tests {
         // The origin already holds a newer credential — as though a *different*
         // snouty process refreshed while we held the stale one.
         let creds_dir = tempfile::TempDir::new().unwrap();
-        let refresh_info = OAuthRefreshInfo::CredentialsFile {
-            path: creds_dir.path().join("credentials.toml"),
-            profile: None,
-        };
+        let refresh_info = credentials_file_in(creds_dir.path());
         refresh_info
             .persist(PersistableCredentials::OAuth {
                 antithesis_token: FAKE_ACCESS_TOKEN_B.to_owned(),
@@ -1186,10 +1151,7 @@ mod tests {
         // The origin holds a newer credential, which `auth_header` must not
         // adopt either.
         let creds_dir = tempfile::TempDir::new().unwrap();
-        let refresh_info = OAuthRefreshInfo::CredentialsFile {
-            path: creds_dir.path().join("credentials.toml"),
-            profile: None,
-        };
+        let refresh_info = credentials_file_in(creds_dir.path());
         refresh_info
             .persist(PersistableCredentials::OAuth {
                 antithesis_token: FAKE_ACCESS_TOKEN_B.to_owned(),

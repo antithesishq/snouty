@@ -198,7 +198,7 @@ async fn oauth_password(api: &AntithesisApi, token: &RefreshableOAuthToken) -> R
 mod tests {
     use super::*;
     use crate::api::ResponseCache;
-    use crate::auth::{OAuthRefreshInfo, paseto_expiring_in};
+    use crate::testutils::auth::{oauth_credential_in, paseto_expiring_in};
     use crate::testutils::fake_secrets::{
         FAKE_ACCESS_TOKEN_A, FAKE_ACCESS_TOKEN_B, FAKE_API_KEY_A, FAKE_OIDC_REQUEST_TOKEN,
         FAKE_OIDC_TOKEN, FAKE_PASSWORD, FAKE_REFRESH_TOKEN_A, FAKE_REFRESH_TOKEN_B, FAKE_USERNAME,
@@ -218,19 +218,6 @@ mod tests {
             ResponseCache::Disabled,
         )
         .unwrap()
-    }
-
-    /// An OAuth credential whose origin is a credentials file in `dir`.
-    fn oauth(
-        dir: &tempfile::TempDir,
-        access_token: &str,
-        refresh_token: Option<&str>,
-    ) -> AuthenticationInfo {
-        let refresh_info = OAuthRefreshInfo::CredentialsFile {
-            path: dir.path().join("credentials.toml"),
-            profile: None,
-        };
-        AuthenticationInfo::oauth_for_test(access_token, refresh_token, refresh_info)
     }
 
     /// Mount a refresh endpoint that [`FAKE_REFRESH_TOKEN_A`] must call
@@ -308,7 +295,7 @@ mod tests {
         mount_refresh(&server, FAKE_ACCESS_TOKEN_A, 0).await;
         let dir = tempfile::TempDir::new().unwrap();
         let fresh = paseto_expiring_in(TimeDelta::minutes(125));
-        let auth = oauth(&dir, &fresh, Some(FAKE_REFRESH_TOKEN_A));
+        let auth = oauth_credential_in(dir.path(), &fresh, Some(FAKE_REFRESH_TOKEN_A));
 
         assert_eq!(password(&api(&server.uri(), auth)).await.unwrap(), fresh);
     }
@@ -318,9 +305,9 @@ mod tests {
         let server = MockServer::start().await;
         mount_refresh(&server, FAKE_ACCESS_TOKEN_A, 1).await;
         let dir = tempfile::TempDir::new().unwrap();
-        let auth = oauth(
-            &dir,
-            &paseto_expiring_in(TimeDelta::minutes(119)),
+        let auth = oauth_credential_in(
+            dir.path(),
+            paseto_expiring_in(TimeDelta::minutes(119)),
             Some(FAKE_REFRESH_TOKEN_A),
         );
 
@@ -337,7 +324,7 @@ mod tests {
         let server = MockServer::start().await;
         mount_refresh(&server, FAKE_ACCESS_TOKEN_B, 1).await;
         let dir = tempfile::TempDir::new().unwrap();
-        let auth = oauth(&dir, FAKE_ACCESS_TOKEN_A, Some(FAKE_REFRESH_TOKEN_A));
+        let auth = oauth_credential_in(dir.path(), FAKE_ACCESS_TOKEN_A, Some(FAKE_REFRESH_TOKEN_A));
 
         let secret = password(&api(&server.uri(), auth)).await.unwrap();
 
@@ -351,11 +338,11 @@ mod tests {
             paseto_expiring_in(TimeDelta::days(1000)),
             paseto_expiring_in(TimeDelta::minutes(119)),
         ] {
-            let auth = oauth(&dir, &valid, None);
+            let auth = oauth_credential_in(dir.path(), &valid, None);
             assert_eq!(password(&api(NO_SERVER, auth)).await.unwrap(), valid);
         }
 
-        let auth = oauth(&dir, &paseto_expiring_in(-TimeDelta::days(1)), None);
+        let auth = oauth_credential_in(dir.path(), paseto_expiring_in(-TimeDelta::days(1)), None);
         let err = password(&api(NO_SERVER, auth)).await.unwrap_err();
         assert_eq!(
             err.to_string(),
@@ -382,9 +369,9 @@ mod tests {
             ),
         )
         .unwrap();
-        let auth = oauth(
-            &dir,
-            &paseto_expiring_in(TimeDelta::minutes(119)),
+        let auth = oauth_credential_in(
+            dir.path(),
+            paseto_expiring_in(TimeDelta::minutes(119)),
             Some(FAKE_REFRESH_TOKEN_A),
         );
 
@@ -405,11 +392,11 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
 
         let valid = paseto_expiring_in(TimeDelta::minutes(119));
-        let auth = oauth(&dir, &valid, Some(FAKE_REFRESH_TOKEN_A));
+        let auth = oauth_credential_in(dir.path(), &valid, Some(FAKE_REFRESH_TOKEN_A));
         assert_eq!(password(&api(&server.uri(), auth)).await.unwrap(), valid);
 
         let expired = paseto_expiring_in(-TimeDelta::days(1));
-        let auth = oauth(&dir, &expired, Some(FAKE_REFRESH_TOKEN_A));
+        let auth = oauth_credential_in(dir.path(), &expired, Some(FAKE_REFRESH_TOKEN_A));
         let err = password(&api(&server.uri(), auth)).await.unwrap_err();
         assert!(err.to_string().contains("snouty login"), "{err}");
     }

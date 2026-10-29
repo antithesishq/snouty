@@ -2100,6 +2100,7 @@ fn error_body_message(body: &str) -> String {
 mod tests {
     use super::*;
     use crate::params::{ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID};
+    use crate::testutils::auth::{oauth_credential_in, paseto_expiring_in};
     use crate::testutils::fake_secrets::{
         FAKE_ACCESS_TOKEN_A, FAKE_ACCESS_TOKEN_B, FAKE_API_KEY_A, FAKE_BASIC_AUTHORIZATION,
         FAKE_OAUTH_FLOW_TOKEN, FAKE_PASSWORD, FAKE_REFRESH_TOKEN_A, FAKE_REFRESH_TOKEN_B,
@@ -4262,13 +4263,10 @@ mod tests {
         // write-back can be checked without touching the real config.
         let creds_dir = TempDir::new().unwrap();
         let creds_path = creds_dir.path().join("credentials.toml");
-        let auth = AuthenticationInfo::oauth_for_test(
+        let auth = oauth_credential_in(
+            creds_dir.path(),
             FAKE_ACCESS_TOKEN_A,
             Some(FAKE_REFRESH_TOKEN_A),
-            crate::auth::OAuthRefreshInfo::CredentialsFile {
-                path: creds_path.clone(),
-                profile: None,
-            },
         );
 
         let api = AntithesisApi::build(
@@ -4344,13 +4342,10 @@ mod tests {
             .mount(&mock_server)
             .await;
         let creds_dir = TempDir::new().unwrap();
-        let auth = AuthenticationInfo::oauth_for_test(
-            crate::auth::paseto_expiring_in(-chrono::TimeDelta::minutes(1)),
+        let auth = oauth_credential_in(
+            creds_dir.path(),
+            paseto_expiring_in(-chrono::TimeDelta::minutes(1)),
             Some(FAKE_REFRESH_TOKEN_A),
-            crate::auth::OAuthRefreshInfo::CredentialsFile {
-                path: creds_dir.path().join("credentials.toml"),
-                profile: None,
-            },
         );
         let api = AntithesisApi::build(
             &Settings::for_test_base_url(&mock_server.uri()),
@@ -4382,13 +4377,10 @@ mod tests {
             .mount(&mock_server)
             .await;
         let creds_dir = TempDir::new().unwrap();
-        let auth = AuthenticationInfo::oauth_for_test(
-            crate::auth::paseto_expiring_in(-chrono::TimeDelta::minutes(1)),
+        let auth = oauth_credential_in(
+            creds_dir.path(),
+            paseto_expiring_in(-chrono::TimeDelta::minutes(1)),
             None,
-            crate::auth::OAuthRefreshInfo::CredentialsFile {
-                path: creds_dir.path().join("credentials.toml"),
-                profile: None,
-            },
         );
         let api = AntithesisApi::build(
             &Settings::for_test_base_url(&mock_server.uri()),
@@ -4432,14 +4424,7 @@ mod tests {
             format!("[default]\ntype = \"OAuth\"\nantithesis_token = \"{FAKE_ACCESS_TOKEN_B}\"\n"),
         )
         .unwrap();
-        AuthenticationInfo::oauth_for_test(
-            access_token,
-            None,
-            crate::auth::OAuthRefreshInfo::CredentialsFile {
-                path,
-                profile: None,
-            },
-        )
+        oauth_credential_in(creds_dir.path(), access_token, None)
     }
 
     #[tokio::test]
@@ -4466,7 +4451,7 @@ mod tests {
         let creds_dir = TempDir::new().unwrap();
         let auth = oauth_with_newer_stored_token(
             &creds_dir,
-            crate::auth::paseto_expiring_in(-chrono::TimeDelta::minutes(1)),
+            paseto_expiring_in(-chrono::TimeDelta::minutes(1)),
         );
         let api = AntithesisApi::build(
             &Settings::for_test_base_url(&mock_server.uri()),
@@ -4574,13 +4559,10 @@ mod tests {
         .mount(&mock_server)
         .await;
         let creds_dir = TempDir::new().unwrap();
-        let auth = AuthenticationInfo::oauth_for_test(
+        let auth = oauth_credential_in(
+            creds_dir.path(),
             FAKE_ACCESS_TOKEN_A,
             Some(FAKE_REFRESH_TOKEN_A),
-            crate::auth::OAuthRefreshInfo::CredentialsFile {
-                path: creds_dir.path().join("credentials.toml"),
-                profile: None,
-            },
         );
         let api = AntithesisApi::build(
             &Settings::for_test_base_url(&mock_server.uri()),
@@ -4619,14 +4601,7 @@ mod tests {
         // OAuth, with no refresh token and nothing newer stored, so the 401
         // passes straight through.
         let creds_dir = TempDir::new().unwrap();
-        let auth = AuthenticationInfo::oauth_for_test(
-            "access-token",
-            None,
-            crate::auth::OAuthRefreshInfo::CredentialsFile {
-                path: creds_dir.path().join("credentials.toml"),
-                profile: None,
-            },
-        );
+        let auth = oauth_credential_in(creds_dir.path(), "access-token", None);
         let api = AntithesisApi::build(
             &Settings::for_test_base_url(&mock_server.uri()),
             auth,

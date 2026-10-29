@@ -1844,10 +1844,32 @@ enum ExecProgress {
     Rewarming { percent_complete: u8 },
 }
 
+/// How a command shows progress on stderr.
+enum ProgressMode {
+    /// A redrawn bar or spinner, on a terminal.
+    Redraw,
+    /// A line for each step, off a terminal, because a redrawn bar garbles a
+    /// log.
+    Lines,
+    /// Nothing, in an MCP tool call.
+    Hidden,
+}
+
+impl ProgressMode {
+    fn of_stderr() -> Self {
+        if crate::mcp::in_tool_call() {
+            Self::Hidden
+        } else if stdio::stderr().is_terminal() {
+            Self::Redraw
+        } else {
+            Self::Lines
+        }
+    }
+}
+
 /// Shows rewarm progress on stderr, to keep stdout for the script's output.
-/// Off a terminal it prints one line per new percentage, because a redrawn
-/// bar garbles a log.
 enum RewarmDisplay {
+    Hidden,
     Bar(ProgressBar),
     /// The last percentage printed. The server repeats a percentage across
     /// many records, and a line for each floods the log.
@@ -1856,8 +1878,10 @@ enum RewarmDisplay {
 
 impl Default for RewarmDisplay {
     fn default() -> Self {
-        if !stdio::stderr().is_terminal() {
-            return Self::Lines(None);
+        match ProgressMode::of_stderr() {
+            ProgressMode::Hidden => return Self::Hidden,
+            ProgressMode::Lines => return Self::Lines(None),
+            ProgressMode::Redraw => {}
         }
         let style = ProgressStyle::with_template("rewarming moment [{bar:40}] {pos}%")
             .expect("the template is valid")
@@ -1882,6 +1906,7 @@ impl Drop for RewarmDisplay {
 impl RewarmDisplay {
     fn show(&mut self, percent_complete: u8) {
         match self {
+            Self::Hidden => {}
             Self::Bar(bar) => {
                 bar.set_position(percent_complete.into());
                 // A finished bar keeps the cursor on its line, so clear the
@@ -1915,6 +1940,7 @@ fn spinner(message: impl Into<std::borrow::Cow<'static, str>>) -> ProgressBar {
 /// What a command shows on stderr while it waits: a spinner on a terminal,
 /// else a line at once and a line each whole minute.
 enum ReadyDisplay {
+    Hidden,
     Spinner(ProgressBar),
     Lines {
         waiting: &'static str,
@@ -1926,14 +1952,15 @@ enum ReadyDisplay {
 
 impl ReadyDisplay {
     fn new(waiting: &'static str) -> Self {
-        if !stdio::stderr().is_terminal() {
-            return Self::Lines {
+        match ProgressMode::of_stderr() {
+            ProgressMode::Hidden => Self::Hidden,
+            ProgressMode::Lines => Self::Lines {
                 waiting,
                 start: Instant::now(),
                 last_minutes: None,
-            };
+            },
+            ProgressMode::Redraw => Self::Spinner(spinner(waiting)),
         }
-        Self::Spinner(spinner(waiting))
     }
 
     fn show(&mut self) {
@@ -1957,7 +1984,7 @@ impl ReadyDisplay {
     /// line: the error that follows names its status.
     fn finish(self, run: &RunDetail) {
         self.clear();
-        if run.is_ready() {
+        if run.is_ready() && !matches!(self, Self::Hidden) {
             eprintln!("run {} is ready", run.run_id);
         }
     }

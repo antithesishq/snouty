@@ -507,3 +507,31 @@ async fn the_server_debug_log_stays_out_of_tool_results() {
     text(&result);
     client.cancel().await.expect("close snouty mcp");
 }
+
+/// A tool call's command shows no progress: its result arrives only when the
+/// call ends, and the server sends progress notifications of its own.
+#[tokio::test]
+async fn tool_calls_show_no_progress() {
+    let server = MockApiServer::start();
+    let home = TempDir::new().unwrap();
+    let client = connect(snouty_mcp(&server, home.path())).await;
+    // A moment of another run, which the server rewarms first.
+    let call_args = json!({
+        "run_id": "run-2",
+        "input_hash": "1002528785118888238",
+        "vtime": 278.1311443040613,
+        "script": "uname -a",
+        "source_run_id": "1f1211ea49946d4f63a92d65ee42476d-64-0",
+    });
+    let result = call(&client, "runs_exec", call_args).await;
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let blocks: Vec<&str> = result
+        .content
+        .iter()
+        .map(|block| block.as_text().unwrap().text.as_str())
+        .collect();
+    assert!(blocks[0].contains("Linux antithesis"), "{blocks:?}");
+    assert!(blocks[1].contains("end moment:"), "{blocks:?}");
+    assert!(!blocks[1].contains("rewarming"), "{blocks:?}");
+    client.cancel().await.expect("close snouty mcp");
+}

@@ -259,6 +259,13 @@ pub async fn cmd_mcp(globals: Globals) -> Result<()> {
     Ok(())
 }
 
+/// Whether this process is a tool call's child. A tool result arrives only
+/// when the call ends, and the server sends its own progress notifications,
+/// so a child shows no progress.
+pub(crate) fn in_tool_call() -> bool {
+    std::env::var_os(SERVER_PID_ENV).is_some()
+}
+
 /// In a tool call's child, exits when the server that started it is gone.
 ///
 /// `kill_on_drop` kills the children of a server that stops in order. A

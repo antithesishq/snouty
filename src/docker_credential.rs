@@ -95,7 +95,7 @@ async fn cmd_docker_credential(
             // The selected credential, not a new lookup: for a named profile,
             // the lookup of every command can find the default credential.
             let api = AntithesisApi::build(&settings, credential, false, ResponseCache::Default)?;
-            let secret = registry::password(&api).await?;
+            let secret = registry::secret(&api).await?;
             let credential = serde_json::to_string(&Credential {
                 server_url,
                 username: registry::USERNAME,

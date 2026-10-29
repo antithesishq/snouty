@@ -20,8 +20,8 @@ use crate::settings::{Settings, SettingsRequest, is_valid_tenant_host};
 
 pub const USERNAME: &str = "snouty-token";
 
-/// A registry client uses one password for a whole push, so a token that
-/// [`password`] returns must outlive the push.
+/// A registry client uses one secret for a whole push, so a token that
+/// [`secret`] returns must outlive the push.
 const TOKEN_MIN_LIFETIME: TimeDelta = TimeDelta::hours(2);
 
 /// The container registry of a tenant, `registry.<tenant>.antithesis.com`.
@@ -172,10 +172,11 @@ fn first_with_own_credential(
     Ok(None)
 }
 
-/// The password that the registry takes with [`USERNAME`], from the
-/// credential of `api`: the API key, the GitHub Actions OIDC token, or the
-/// OAuth access token. A username and password is an error.
-pub async fn password(api: &AntithesisApi) -> Result<String> {
+/// The registry secret, which the credential helper returns as `Secret` with
+/// [`USERNAME`], from the credential of `api`: the API key, the GitHub
+/// Actions OIDC token, or the OAuth access token. A username and password is
+/// an error.
+pub async fn secret(api: &AntithesisApi) -> Result<String> {
     match api.authentication() {
         AuthenticationInfo::ApiKey { api_key } => Ok(api_key.clone()),
         AuthenticationInfo::GithubActionsOidc {
@@ -185,7 +186,7 @@ pub async fn password(api: &AntithesisApi) -> Result<String> {
         } => Ok(cached_github_actions_oidc_token(url, request_token, cached)
             .await?
             .to_owned()),
-        AuthenticationInfo::OAuth(token) => oauth_password(api, token).await,
+        AuthenticationInfo::OAuth(token) => oauth_secret(api, token).await,
         auth @ AuthenticationInfo::Password { .. } => Err(user_error(format!(
             "the Antithesis container registry does not accept a {auth}; set ANTITHESIS_API_KEY, or run `snouty login`"
         ))),
@@ -197,7 +198,7 @@ pub async fn password(api: &AntithesisApi) -> Result<String> {
 /// A token that expires in more than [`TOKEN_MIN_LIFETIME`] is used as it is.
 /// A token that expires sooner, or whose expiry is unknown, is refreshed.
 /// When the refresh fails, the stored token is used until it expires.
-async fn oauth_password(api: &AntithesisApi, token: &RefreshableOAuthToken) -> Result<String> {
+async fn oauth_secret(api: &AntithesisApi, token: &RefreshableOAuthToken) -> Result<String> {
     let near_expiry = token
         .expires_at()
         .is_none_or(|expires_at| expires_at - Utc::now() <= TOKEN_MIN_LIFETIME);
@@ -261,18 +262,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_password_is_the_api_key() {
+    async fn the_secret_is_the_api_key() {
         let auth = AuthenticationInfo::ApiKey {
             api_key: FAKE_API_KEY_A.to_owned(),
         };
-        assert_eq!(
-            password(&api(NO_SERVER, auth)).await.unwrap(),
-            FAKE_API_KEY_A
-        );
+        assert_eq!(secret(&api(NO_SERVER, auth)).await.unwrap(), FAKE_API_KEY_A);
     }
 
     #[tokio::test]
-    async fn the_password_is_the_github_actions_oidc_token() {
+    async fn the_secret_is_the_github_actions_oidc_token() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/token"))
@@ -295,7 +293,7 @@ mod tests {
         };
 
         assert_eq!(
-            password(&api(NO_SERVER, auth)).await.unwrap(),
+            secret(&api(NO_SERVER, auth)).await.unwrap(),
             FAKE_OIDC_TOKEN
         );
     }
@@ -306,7 +304,7 @@ mod tests {
             username: FAKE_USERNAME.to_owned(),
             password: FAKE_PASSWORD.to_owned(),
         };
-        let err = password(&api(NO_SERVER, auth)).await.unwrap_err();
+        let err = secret(&api(NO_SERVER, auth)).await.unwrap_err();
         assert!(err.to_string().contains("set ANTITHESIS_API_KEY"), "{err}");
     }
 
@@ -318,7 +316,7 @@ mod tests {
         let fresh = paseto_expiring_in(TimeDelta::minutes(125));
         let auth = oauth_credential_in(dir.path(), &fresh, Some(FAKE_REFRESH_TOKEN_A));
 
-        assert_eq!(password(&api(&server.uri(), auth)).await.unwrap(), fresh);
+        assert_eq!(secret(&api(&server.uri(), auth)).await.unwrap(), fresh);
     }
 
     #[tokio::test]
@@ -332,7 +330,7 @@ mod tests {
             Some(FAKE_REFRESH_TOKEN_A),
         );
 
-        let secret = password(&api(&server.uri(), auth)).await.unwrap();
+        let secret = secret(&api(&server.uri(), auth)).await.unwrap();
 
         assert_eq!(secret, FAKE_ACCESS_TOKEN_A);
         let persisted = std::fs::read_to_string(dir.path().join("credentials.toml")).unwrap();
@@ -347,7 +345,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let auth = oauth_credential_in(dir.path(), FAKE_ACCESS_TOKEN_A, Some(FAKE_REFRESH_TOKEN_A));
 
-        let secret = password(&api(&server.uri(), auth)).await.unwrap();
+        let secret = secret(&api(&server.uri(), auth)).await.unwrap();
 
         assert_eq!(secret, FAKE_ACCESS_TOKEN_B);
     }
@@ -360,11 +358,11 @@ mod tests {
             paseto_expiring_in(TimeDelta::minutes(119)),
         ] {
             let auth = oauth_credential_in(dir.path(), &valid, None);
-            assert_eq!(password(&api(NO_SERVER, auth)).await.unwrap(), valid);
+            assert_eq!(secret(&api(NO_SERVER, auth)).await.unwrap(), valid);
         }
 
         let auth = oauth_credential_in(dir.path(), paseto_expiring_in(-TimeDelta::days(1)), None);
-        let err = password(&api(NO_SERVER, auth)).await.unwrap_err();
+        let err = secret(&api(NO_SERVER, auth)).await.unwrap_err();
         assert_eq!(
             err.to_string(),
             "the stored OAuth token cannot be refreshed, because there is no refresh token; run `snouty login`"
@@ -396,7 +394,7 @@ mod tests {
             Some(FAKE_REFRESH_TOKEN_A),
         );
 
-        let secret = password(&api(&server.uri(), auth)).await.unwrap();
+        let secret = secret(&api(&server.uri(), auth)).await.unwrap();
 
         assert_eq!(secret, FAKE_ACCESS_TOKEN_A);
     }
@@ -414,11 +412,11 @@ mod tests {
 
         let valid = paseto_expiring_in(TimeDelta::minutes(119));
         let auth = oauth_credential_in(dir.path(), &valid, Some(FAKE_REFRESH_TOKEN_A));
-        assert_eq!(password(&api(&server.uri(), auth)).await.unwrap(), valid);
+        assert_eq!(secret(&api(&server.uri(), auth)).await.unwrap(), valid);
 
         let expired = paseto_expiring_in(-TimeDelta::days(1));
         let auth = oauth_credential_in(dir.path(), &expired, Some(FAKE_REFRESH_TOKEN_A));
-        let err = password(&api(&server.uri(), auth)).await.unwrap_err();
+        let err = secret(&api(&server.uri(), auth)).await.unwrap_err();
         assert!(err.to_string().contains("snouty login"), "{err}");
     }
 

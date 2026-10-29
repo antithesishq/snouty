@@ -26,7 +26,7 @@ Each event prints as one line:
 The samples are a selection: the server does not send every example and
 counterexample that it counts. To see a property and its totals, use
 `snouty runs property <run_id> <property_id>`. To read the logs at a moment, use
-`snouty runs logs <run_id> <input_hash> <vtime>`.
+`snouty runs logs <run_id> <input hash> <vtime>`.
 
 The stream shows only the events that happen after it starts. It does not show
 the current results. A property that passed or failed before the stream started

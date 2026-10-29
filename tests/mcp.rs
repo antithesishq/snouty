@@ -83,7 +83,6 @@ async fn tools_run_their_commands_in_json_mode() {
             "runs_cancel",
             "runs_properties",
             "runs_property",
-            "runs_stream",
             "runs_build_logs",
             "runs_logs",
             "runs_search",
@@ -162,30 +161,6 @@ async fn tools_run_their_commands_in_json_mode() {
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
     let event: Value = serde_json::from_str(text(&result).lines().next().unwrap()).unwrap();
     assert!(event["moment"]["vtime"].is_number(), "{event}");
-
-    // runs_stream returns once the run is final. run-2 is the mock's
-    // in-progress run. The mock keeps no state, so runs_cancel below can
-    // still cancel it.
-    let call_args = json!({
-        "run_id": "run-2",
-        "property_ids": ["27a7cb0b311c8481c4ce12f3347fadbf"],
-    });
-    let result = call(&client, "runs_stream", call_args).await;
-    assert_eq!(result.is_error, Some(false), "{}", text(&result));
-    // content[0] is stdout. The second block is stderr, which reports the
-    // open stream.
-    let stdout = &result.content[0].as_text().expect("a text block").text;
-    let events: Vec<Value> = stdout
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    let (last, rest) = events.split_last().expect("at least one event");
-    assert_eq!(last["event"], "completed", "{events:?}");
-    assert!(
-        rest.iter()
-            .all(|event| event["property_id"] == "27a7cb0b311c8481c4ce12f3347fadbf"),
-        "{events:?}"
-    );
 
     // runs_cancel cancels an in-progress run.
     let result = call(&client, "runs_cancel", json!({ "run_id": "run-2" })).await;

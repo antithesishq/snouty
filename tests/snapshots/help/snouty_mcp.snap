@@ -20,7 +20,6 @@ The tools:
   runs_cancel      Cancel a run that has not finished
   runs_properties  List property results for a run
   runs_property    Show one property of a run, by its ID
-  runs_stream      Stream a run's property changes until the run is final
   runs_build_logs  Stream build logs for a run
   runs_logs        Stream moment logs for a run
   runs_search      Query events with the event-set DSL

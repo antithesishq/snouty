@@ -108,7 +108,6 @@ tools! {
     RunsCancel => "runs_cancel", Destroys, hidden: [], required: [];
     RunsProperties => "runs_properties", Reads, hidden: ["detail"], required: [];
     RunsProperty => "runs_property", Reads, hidden: [], required: [];
-    RunsStream => "runs_stream", Reads, hidden: [], required: [];
     RunsBuildLogs => "runs_build_logs", Reads, hidden: [], required: [];
     RunsLogs => "runs_logs", Reads, hidden: ["detail"], required: [];
     RunsSearch => "runs_search", Reads, hidden: ["follow", "detail"], required: [];
@@ -512,8 +511,6 @@ mod tests {
         assert_eq!(events["properties"]["matches"]["type"], "array");
         assert_eq!(events["properties"]["limit"]["type"], "integer");
         assert!(events["properties"].get("query").is_none(), "{events:?}");
-        let stream = schema(ToolName::RunsStream);
-        assert_eq!(stream["properties"]["property_ids"]["type"], "array");
         assert_eq!(schema(ToolName::Version)["properties"], json!({}));
     }
 

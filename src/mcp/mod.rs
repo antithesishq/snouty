@@ -41,7 +41,7 @@ const PROGRESS_INTERVAL: Duration = Duration::from_secs(10);
 /// not.
 const INSTRUCTIONS: &str = "Antithesis tests software in a deterministic simulation that injects \
 faults. A run explores a tree of timelines, and an event, a property example or a failure names \
-one moment of it: a run_id, an input_hash and a vtime. These tools read and cancel the runs \
+one moment of it: a run_id, an input_hash and a vtime. These tools operate on the runs \
 of an Antithesis tenant, run commands at a moment of a run, and search the Antithesis \
 documentation. tool_help returns the full help of a tool.";
 

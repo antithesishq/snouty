@@ -58,29 +58,9 @@ pub(crate) const NO_CREDENTIALS_MESSAGE: &str = "No Antithesis credentials found
 const OIDC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
-pub struct OAuthCredential {
+struct OAuthCredential {
     antithesis_token: String,
     refresh_token: Option<String>,
-}
-
-impl OAuthCredential {
-    /// A copy of the credential that `active` holds now.
-    pub(crate) fn current(active: &RwLock<Self>) -> Self {
-        active
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-    }
-
-    pub(crate) fn access_token(&self) -> &str {
-        &self.antithesis_token
-    }
-
-    /// When the expiry of the access token is known, the time at which it
-    /// expires: its `exp` claim.
-    pub(crate) fn expires_at(&self) -> Option<DateTime<Utc>> {
-        try_get_expiry_from_token(&self.antithesis_token)
-    }
 }
 
 impl std::fmt::Debug for OAuthCredential {
@@ -89,6 +69,122 @@ impl std::fmt::Debug for OAuthCredential {
             .field("antithesis_token", &"[REDACTED]")
             .field("refresh_token", &"[REDACTED]")
             .finish()
+    }
+}
+
+/// An OAuth access token and the refresh token that replaces it, with the
+/// origin that stores them. Clones share one credential: a refresh through
+/// any clone gives every clone the new token.
+#[derive(Clone, Debug)]
+pub struct RefreshableOAuthToken {
+    origin: OAuthRefreshInfo,
+    credential: Arc<RwLock<OAuthCredential>>,
+}
+
+impl RefreshableOAuthToken {
+    fn new(
+        origin: OAuthRefreshInfo,
+        antithesis_token: String,
+        refresh_token: Option<String>,
+    ) -> Self {
+        Self {
+            origin,
+            credential: Arc::new(RwLock::new(OAuthCredential {
+                antithesis_token,
+                refresh_token,
+            })),
+        }
+    }
+
+    fn current(&self) -> OAuthCredential {
+        self.credential
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn store(&self, credential: OAuthCredential) {
+        *self
+            .credential
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = credential;
+    }
+
+    /// The current access token.
+    pub(crate) fn access_token(&self) -> String {
+        self.current().antithesis_token
+    }
+
+    /// When the expiry of the access token is known, the time at which it
+    /// expires: its `exp` claim.
+    pub(crate) fn expires_at(&self) -> Option<DateTime<Utc>> {
+        try_get_expiry_from_token(&self.current().antithesis_token)
+    }
+
+    /// Whether the expiry of the access token is known and in the past.
+    pub(crate) fn expired(&self) -> bool {
+        self.expires_at()
+            .is_some_and(|expires_at| Utc::now() >= expires_at)
+    }
+
+    /// Replaces the access token with a newer one, in every clone: the one
+    /// that the origin holds, when another process or refresh stored it, or
+    /// else a new one from the refresh endpoint at `base_url`, which the
+    /// origin then stores. An advisory file lock serializes refreshes across
+    /// processes, so that two do not both spend one refresh token.
+    ///
+    /// Fails when there is no newer token: the origin holds the same token,
+    /// and there is no refresh token, or the refresh fails.
+    pub(crate) async fn refresh(&self, client: &reqwest::Client, base_url: &str) -> Result<()> {
+        let held_access_token = self.access_token();
+
+        // Best-effort cross-process lock, held across the reload + refresh. If
+        // we can't take it we proceed unserialized rather than fail; the lock
+        // is released when `_lock` drops at the end of this scope.
+        let _lock = acquire_refresh_lock(&self.origin).await;
+
+        // Adopt whatever is currently persisted — another process may have
+        // refreshed while we waited for the lock — so any refresh below uses
+        // the latest token.
+        if let Ok(Some(PersistableCredentials::OAuth {
+            antithesis_token,
+            refresh_token,
+        })) = self.origin.load()
+        {
+            self.store(OAuthCredential {
+                antithesis_token,
+                refresh_token,
+            });
+        }
+
+        let current = self.current();
+        // Someone (another process, or an earlier refresh) already replaced
+        // the held token — use theirs instead of refreshing again.
+        if current.antithesis_token != held_access_token {
+            return Ok(());
+        }
+        let Some(refresh_token) = current.refresh_token else {
+            return Err(user_error(
+                "the stored OAuth token cannot be refreshed, because there is no refresh token; run `snouty login`",
+            ));
+        };
+
+        let refreshed = refresh_oauth_token(client, base_url, &refresh_token).await?;
+        let refreshed = OAuthCredential {
+            antithesis_token: refreshed.antithesis_token,
+            // Per RFC 6749 §6, a refresh response without a new refresh token
+            // means that the previous token is still valid.
+            refresh_token: Some(refreshed.refresh_token.unwrap_or(refresh_token)),
+        };
+        self.store(refreshed.clone());
+        // Persist back to the origin so the refreshed tokens survive across runs.
+        if let Err(err) = self.origin.persist(PersistableCredentials::OAuth {
+            antithesis_token: refreshed.antithesis_token,
+            refresh_token: refreshed.refresh_token,
+        }) {
+            warn!("Unable to persist refreshed OAuth credential to durable storage: {err:#}");
+        }
+        Ok(())
     }
 }
 
@@ -235,10 +331,7 @@ pub enum AuthenticationInfo {
         // Feels pretty sus to stick our secrets on the heap
         cached: Arc<OnceCell<String>>,
     },
-    OAuth {
-        refresh_info: OAuthRefreshInfo,
-        active_credential: Arc<RwLock<OAuthCredential>>,
-    },
+    OAuth(RefreshableOAuthToken),
     Password {
         username: String,
         password: String,
@@ -258,15 +351,7 @@ impl std::fmt::Debug for AuthenticationInfo {
                 .field("request_token", &"[REDACTED]")
                 .field("cached", &cached.initialized())
                 .finish(),
-            Self::OAuth {
-                refresh_info,
-                active_credential,
-                ..
-            } => f
-                .debug_struct("OAuth")
-                .field("refresh_info", refresh_info)
-                .field("active_credential", active_credential)
-                .finish(),
+            Self::OAuth(token) => f.debug_tuple("OAuth").field(token).finish(),
             Self::Password { username, .. } => f
                 .debug_struct("Password")
                 .field("username", username)
@@ -282,7 +367,7 @@ impl std::fmt::Display for AuthenticationInfo {
         f.write_str(match self {
             Self::ApiKey { .. } => "API key",
             Self::GithubActionsOidc { .. } => "GitHub Actions OIDC token",
-            Self::OAuth { .. } => "OAuth credentials",
+            Self::OAuth(_) => "OAuth credentials",
             Self::Password { .. } => "username and password",
         })
     }
@@ -502,15 +587,8 @@ impl AuthenticationInfo {
                 ),
                 true,
             ),
-            Self::OAuth {
-                active_credential, ..
-            } => {
-                let access_token = active_credential
-                    .read()
-                    .map_err(|err| eyre!("the OAuth credential lock is poisoned: {err}"))?
-                    .antithesis_token
-                    .clone();
-                to_header_value(&format!("Bearer {access_token}"), true)
+            Self::OAuth(token) => {
+                to_header_value(&format!("Bearer {}", token.access_token()), true)
             }
             Self::Password { username, password } => {
                 let credentials = format!("{username}:{password}");
@@ -518,24 +596,6 @@ impl AuthenticationInfo {
                 to_header_value(&format!("Basic {encoded}"), true)
             }
         }
-    }
-
-    /// When the expiry of the credential is known, the time at which it
-    /// expires: the `exp` claim of an OAuth access token. `None` for every
-    /// other credential.
-    fn expires_at(&self) -> Option<DateTime<Utc>> {
-        match self {
-            Self::OAuth {
-                active_credential, ..
-            } => OAuthCredential::current(active_credential).expires_at(),
-            Self::ApiKey { .. } | Self::GithubActionsOidc { .. } | Self::Password { .. } => None,
-        }
-    }
-
-    /// Whether the expiry of the credential is known and in the past.
-    pub(crate) fn expired(&self) -> bool {
-        self.expires_at()
-            .is_some_and(|expires_at| Utc::now() >= expires_at)
     }
 }
 
@@ -563,96 +623,12 @@ impl AuthenticationInfo {
         refresh_token: Option<&str>,
         refresh_info: OAuthRefreshInfo,
     ) -> Self {
-        Self::OAuth {
+        Self::OAuth(RefreshableOAuthToken::new(
             refresh_info,
-            active_credential: Arc::new(RwLock::new(OAuthCredential {
-                antithesis_token: antithesis_token.into(),
-                refresh_token: refresh_token.map(str::to_owned),
-            })),
-        }
+            antithesis_token.into(),
+            refresh_token.map(str::to_owned),
+        ))
     }
-}
-
-/// The one path that refreshes a credential. Refresh the OAuth access token
-/// of `auth`, serialized *across processes* by an advisory file lock and
-/// reconciled against the persisted credential, and store the result in
-/// `auth` and in its origin.
-///
-/// A refresh happens only while the persisted token is still the one that
-/// `auth` held when the call started. A different persisted token is one
-/// that another process or refresh stored meanwhile, and it is used instead,
-/// so that two callers do not both spend one refresh token.
-///
-/// Returns `Some` with the refreshed credential, which shares its state with
-/// `auth`, to (re)try with: its token is freshly minted, or one that another
-/// process/refresh already produced. Returns `None` when nothing better is
-/// available: `auth` is not OAuth, or has no refresh token on hand.
-pub(crate) async fn refresh(
-    client: &reqwest::Client,
-    base_url: &str,
-    auth: &AuthenticationInfo,
-) -> Result<Option<AuthenticationInfo>> {
-    let AuthenticationInfo::OAuth {
-        refresh_info,
-        active_credential,
-    } = auth
-    else {
-        return Ok(None);
-    };
-    let held_access_token = active_credential
-        .read()
-        .map_err(|err| eyre!("the OAuth credential lock is poisoned: {err}"))?
-        .antithesis_token
-        .clone();
-
-    // Best-effort cross-process lock, held across the reload + refresh. If we
-    // can't take it we proceed unserialized rather than fail the request; the
-    // lock is released when `_lock` drops at the end of this scope.
-    let _lock = acquire_refresh_lock(refresh_info).await;
-
-    // Adopt whatever is currently persisted — another process may have refreshed
-    // while we waited for the lock — so any refresh below uses the latest token.
-    if let Ok(Some(PersistableCredentials::OAuth {
-        antithesis_token,
-        refresh_token,
-    })) = refresh_info.load()
-    {
-        let mut writer = active_credential
-            .write()
-            .map_err(|err| eyre!("the OAuth credential lock is poisoned: {err}"))?;
-        writer.antithesis_token = antithesis_token;
-        writer.refresh_token = refresh_token;
-    }
-
-    let (current_access_token, current_refresh_token) = {
-        let current = active_credential
-            .read()
-            .map_err(|err| eyre!("the OAuth credential lock is poisoned: {err}"))?;
-        (
-            current.antithesis_token.clone(),
-            current.refresh_token.clone(),
-        )
-    };
-
-    // Someone (another process, or an earlier refresh) already replaced the token
-    // we were unhappy with — use theirs instead of refreshing again.
-    if current_access_token != held_access_token {
-        return Ok(Some(auth.clone()));
-    }
-
-    let Some(refresh_token) = current_refresh_token else {
-        return Ok(None);
-    };
-
-    refresh_and_store(
-        client,
-        base_url,
-        refresh_info,
-        active_credential,
-        &refresh_token,
-    )
-    .await?;
-    Ok(Some(auth.clone()))
 }
 
 /// Best-effort cross-process advisory lock serializing refreshes for a
@@ -681,45 +657,6 @@ async fn acquire_refresh_lock(refresh_info: &OAuthRefreshInfo) -> Option<std::fs
     .await
     .ok()
     .flatten()
-}
-
-/// Refresh the access token using `refresh_token`, swap the new tokens into
-/// `active_credential`, persist them back to their origin, and return the new
-/// access token.
-async fn refresh_and_store(
-    client: &reqwest::Client,
-    base_url: &str,
-    refresh_info: &OAuthRefreshInfo,
-    active_credential: &Arc<RwLock<OAuthCredential>>,
-    refresh_token: &str,
-) -> Result<String> {
-    let refreshed = refresh_oauth_token(client, base_url, refresh_token).await?;
-    let new_access_token = refreshed.antithesis_token;
-    // Per RFC 6749 §6, a refresh response without a new refresh token means that the previous token is still valid
-    let new_refresh_token = Some(
-        refreshed
-            .refresh_token
-            .unwrap_or_else(|| refresh_token.to_owned()),
-    );
-
-    // Swap the new tokens into memory under a short-lived write lock.
-    {
-        let mut writer = active_credential
-            .write()
-            .map_err(|err| eyre!("the OAuth credential lock is poisoned: {err}"))?;
-        writer.antithesis_token.clone_from(&new_access_token);
-        writer.refresh_token.clone_from(&new_refresh_token);
-    }
-
-    // Persist back to the origin so the refreshed tokens survive across runs
-    if let Err(err) = refresh_info.persist(PersistableCredentials::OAuth {
-        antithesis_token: new_access_token.clone(),
-        refresh_token: new_refresh_token,
-    }) {
-        warn!("Unable to persist refreshed OAuth credential to durable storage: {err:#}");
-    }
-
-    Ok(new_access_token)
 }
 
 async fn refresh_oauth_token(
@@ -867,13 +804,11 @@ impl PersistableCredentials {
             Self::OAuth {
                 antithesis_token,
                 refresh_token,
-            } => AuthenticationInfo::OAuth {
+            } => AuthenticationInfo::OAuth(RefreshableOAuthToken::new(
                 refresh_info,
-                active_credential: Arc::new(RwLock::new(OAuthCredential {
-                    antithesis_token,
-                    refresh_token,
-                })),
-            },
+                antithesis_token,
+                refresh_token,
+            )),
             Self::Password { username, password } => {
                 AuthenticationInfo::Password { username, password }
             }
@@ -1131,7 +1066,7 @@ mod tests {
     use super::*;
     use crate::testutils::fake_secrets::{
         FAKE_ACCESS_TOKEN_A, FAKE_ACCESS_TOKEN_B, FAKE_OIDC_REQUEST_TOKEN, FAKE_OIDC_TOKEN,
-        FAKE_PASETO_A, FAKE_PASETO_B, FAKE_REFRESH_TOKEN_A, FAKE_REFRESH_TOKEN_B, FAKE_USERNAME,
+        FAKE_PASETO_A, FAKE_PASETO_B, FAKE_REFRESH_TOKEN_A, FAKE_REFRESH_TOKEN_B,
     };
     use std::io::{BufRead, BufReader};
     use std::net::TcpListener;
@@ -1155,31 +1090,20 @@ mod tests {
             .mount(&server)
             .await;
 
-        let active_credential = Arc::new(RwLock::new(OAuthCredential {
-            antithesis_token: FAKE_ACCESS_TOKEN_A.to_owned(),
-            refresh_token: Some(FAKE_REFRESH_TOKEN_A.to_owned()),
-        }));
-
         let creds_dir = tempfile::TempDir::new().unwrap();
-        let refresh_info = OAuthRefreshInfo::CredentialsFile {
-            path: creds_dir.path().join("credentials.toml"),
-            profile: None,
-        };
+        let token = RefreshableOAuthToken::new(
+            OAuthRefreshInfo::CredentialsFile {
+                path: creds_dir.path().join("credentials.toml"),
+                profile: None,
+            },
+            FAKE_ACCESS_TOKEN_A.to_owned(),
+            Some(FAKE_REFRESH_TOKEN_A.to_owned()),
+        );
 
         let client = crate::testutils::test_client();
-        let new_access = refresh_and_store(
-            &client,
-            &server.uri(),
-            &refresh_info,
-            &active_credential,
-            FAKE_REFRESH_TOKEN_A,
-        )
-        .await
-        .unwrap();
+        token.refresh(&client, &server.uri()).await.unwrap();
 
-        assert_eq!(new_access, FAKE_ACCESS_TOKEN_B);
-
-        let in_memory = active_credential.read().unwrap();
+        let in_memory = token.current();
         assert_eq!(in_memory.antithesis_token, FAKE_ACCESS_TOKEN_B);
         assert_eq!(
             in_memory.refresh_token.as_deref(),
@@ -1210,12 +1134,6 @@ mod tests {
             .mount(&server)
             .await;
 
-        // In-memory holds the stale token (as if it just expired / 401'd).
-        let active_credential = Arc::new(RwLock::new(OAuthCredential {
-            antithesis_token: FAKE_ACCESS_TOKEN_A.to_owned(),
-            refresh_token: Some(FAKE_REFRESH_TOKEN_A.to_owned()),
-        }));
-
         // The origin already holds a newer credential — as though a *different*
         // snouty process refreshed while we held the stale one.
         let creds_dir = tempfile::TempDir::new().unwrap();
@@ -1230,22 +1148,23 @@ mod tests {
             })
             .unwrap();
 
-        let auth = AuthenticationInfo::OAuth {
+        // The token holds the stale token (as if it just expired / 401'd).
+        let token = RefreshableOAuthToken::new(
             refresh_info,
-            active_credential: active_credential.clone(),
-        };
+            FAKE_ACCESS_TOKEN_A.to_owned(),
+            Some(FAKE_REFRESH_TOKEN_A.to_owned()),
+        );
+        let clone = token.clone();
         let client = crate::testutils::test_client();
-        let refreshed = refresh(&client, &server.uri(), &auth).await.unwrap();
+        token.refresh(&client, &server.uri()).await.unwrap();
 
-        // Adopted the persisted token; no network refresh happened. The
-        // network assertion runs before the read lock is taken, so no guard
-        // is held across an await point (clippy::await_holding_lock).
-        assert!(refreshed.is_some());
+        // Adopted the persisted token, in every clone; no network refresh
+        // happened.
         assert!(
             server.received_requests().await.unwrap().is_empty(),
             "must not refresh when the origin already holds a newer token"
         );
-        let in_memory = active_credential.read().unwrap();
+        let in_memory = clone.current();
         assert_eq!(in_memory.antithesis_token, FAKE_ACCESS_TOKEN_B);
         assert_eq!(
             in_memory.refresh_token.as_deref(),
@@ -1278,13 +1197,14 @@ mod tests {
             })
             .unwrap();
         let expired_token = paseto_expiring_in(-chrono::TimeDelta::minutes(1));
-        let auth = AuthenticationInfo::oauth_for_test(
-            expired_token.clone(),
-            Some(FAKE_REFRESH_TOKEN_A),
+        let token = RefreshableOAuthToken::new(
             refresh_info,
+            expired_token.clone(),
+            Some(FAKE_REFRESH_TOKEN_A.to_owned()),
         );
+        assert!(token.expired());
+        let auth = AuthenticationInfo::OAuth(token);
 
-        assert!(auth.expired());
         let header = auth.auth_header().await.unwrap();
 
         assert_eq!(header, format!("Bearer {expired_token}"));
@@ -1296,10 +1216,10 @@ mod tests {
             entry_name: "unused".to_owned(),
         };
         let oauth = |token: String| {
-            AuthenticationInfo::oauth_for_test(
-                token,
-                Some(FAKE_REFRESH_TOKEN_A),
+            RefreshableOAuthToken::new(
                 refresh_info.clone(),
+                token,
+                Some(FAKE_REFRESH_TOKEN_A.to_owned()),
             )
         };
         assert!(oauth(paseto_expiring_in(-chrono::TimeDelta::minutes(1))).expired());
@@ -1333,37 +1253,14 @@ mod tests {
             entry_name: "unused".to_owned(),
         };
         let token = public_paseto_with_claims(br#"{"exp":"2039-01-01T00:00:00+00:00"}"#);
-        let oauth = AuthenticationInfo::oauth_for_test(token, None, refresh_info.clone());
+        let oauth = RefreshableOAuthToken::new(refresh_info.clone(), token, None);
         assert_eq!(
             oauth.expires_at(),
             Some("2039-01-01T00:00:00Z".parse().unwrap())
         );
         // An access token whose expiry cannot be read.
-        let opaque = AuthenticationInfo::oauth_for_test(FAKE_ACCESS_TOKEN_A, None, refresh_info);
+        let opaque = RefreshableOAuthToken::new(refresh_info, FAKE_ACCESS_TOKEN_A.to_owned(), None);
         assert_eq!(opaque.expires_at(), None);
-    }
-
-    #[test]
-    fn every_other_credential_has_no_expiry_and_is_not_expired() {
-        // Each holds a PASETO whose `exp` is in the past.
-        let others = [
-            AuthenticationInfo::ApiKey {
-                api_key: FAKE_PASETO_A.to_owned(),
-            },
-            AuthenticationInfo::GithubActionsOidc {
-                url: "http://127.0.0.1:9".to_owned(),
-                request_token: FAKE_OIDC_REQUEST_TOKEN.to_owned(),
-                cached: Arc::new(OnceCell::new_with(Some(FAKE_PASETO_A.to_owned()))),
-            },
-            AuthenticationInfo::Password {
-                username: FAKE_USERNAME.to_owned(),
-                password: FAKE_PASETO_A.to_owned(),
-            },
-        ];
-        for auth in others {
-            assert_eq!(auth.expires_at(), None, "{auth}");
-            assert!(!auth.expired(), "{auth}");
-        }
     }
 
     #[test]

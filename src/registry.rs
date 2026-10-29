@@ -6,13 +6,13 @@
 //! Antithesis API team gave this contract before the registry went live, so
 //! no response from it has been observed yet.
 
-use std::{fmt, path::PathBuf, str::FromStr, sync::RwLock};
+use std::{fmt, path::PathBuf, str::FromStr};
 
 use chrono::{TimeDelta, Utc};
 use color_eyre::eyre::Result;
 
 use crate::api::AntithesisApi;
-use crate::auth::{AuthenticationInfo, OAuthCredential, cached_github_actions_oidc_token};
+use crate::auth::{AuthenticationInfo, RefreshableOAuthToken, cached_github_actions_oidc_token};
 use crate::error::user_error;
 use crate::settings::{Settings, SettingsRequest, is_valid_tenant_host};
 
@@ -165,57 +165,33 @@ pub async fn password(api: &AntithesisApi) -> Result<String> {
         } => Ok(cached_github_actions_oidc_token(url, request_token, cached)
             .await?
             .to_owned()),
-        AuthenticationInfo::OAuth {
-            active_credential, ..
-        } => oauth_password(api, active_credential).await,
+        AuthenticationInfo::OAuth(token) => oauth_password(api, token).await,
         auth @ AuthenticationInfo::Password { .. } => Err(user_error(format!(
             "the Antithesis container registry does not accept a {auth}; set ANTITHESIS_API_KEY, or run `snouty login`"
         ))),
     }
 }
 
-/// The OAuth access token of `api`, whose credential `active_credential` holds.
+/// The OAuth access token of `token`, the credential of `api`.
 ///
 /// A token that expires in more than [`TOKEN_MIN_LIFETIME`] is used as it is.
 /// A token that expires sooner, or whose expiry is unknown, is refreshed.
-/// When there is no refresh token, or the refresh fails, the stored token is
-/// used until it expires.
-async fn oauth_password(
-    api: &AntithesisApi,
-    active_credential: &RwLock<OAuthCredential>,
-) -> Result<String> {
-    let stored = OAuthCredential::current(active_credential);
-    let expires_at = stored.expires_at();
-    let expired = expires_at.is_some_and(|expires_at| Utc::now() >= expires_at);
-    let near_expiry =
-        expires_at.is_none_or(|expires_at| expires_at - Utc::now() <= TOKEN_MIN_LIFETIME);
-    if near_expiry {
-        // `refresh_authentication` gives `Ok(None)` or `Err` only while the
-        // persisted token is still the stored one.
-        match api.refresh_authentication().await {
-            Ok(Some(_)) => {
-                return Ok(OAuthCredential::current(active_credential)
-                    .access_token()
-                    .to_owned());
-            }
-            Ok(None) => {}
-            Err(err) if expired => return Err(err),
-            Err(err) => {
-                // A bare eprintln, not log::warn!: the notice must reach
-                // stderr independent of RUST_LOG.
-                eprintln!(
-                    "warning: the OAuth token refresh failed, so the stored token is used until it expires: {err:#}"
-                );
-                return Ok(stored.access_token().to_owned());
-            }
+/// When the refresh fails, the stored token is used until it expires.
+async fn oauth_password(api: &AntithesisApi, token: &RefreshableOAuthToken) -> Result<String> {
+    let near_expiry = token
+        .expires_at()
+        .is_none_or(|expires_at| expires_at - Utc::now() <= TOKEN_MIN_LIFETIME);
+    if near_expiry && let Err(err) = api.refresh_oauth_token(token).await {
+        if token.expired() {
+            return Err(err);
         }
+        // A bare eprintln, not log::warn!: the notice must reach stderr
+        // independent of RUST_LOG.
+        eprintln!(
+            "warning: the OAuth token refresh failed, so the stored token is used until it expires: {err:#}"
+        );
     }
-    if expired {
-        return Err(user_error(
-            "the stored OAuth token has expired, and there is no refresh token to replace it; run `snouty login`",
-        ));
-    }
-    Ok(stored.access_token().to_owned())
+    Ok(token.access_token())
 }
 
 #[cfg(test)]
@@ -383,7 +359,7 @@ mod tests {
         let err = password(&api(NO_SERVER, auth)).await.unwrap_err();
         assert_eq!(
             err.to_string(),
-            "the stored OAuth token has expired, and there is no refresh token to replace it; run `snouty login`"
+            "the stored OAuth token cannot be refreshed, because there is no refresh token; run `snouty login`"
         );
     }
 

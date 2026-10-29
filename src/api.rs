@@ -13,7 +13,7 @@ use reqwest::{Client, Proxy};
 use serde::de::DeserializeOwned;
 
 use crate::api_cache::{self, ApiCache, CachePolicy};
-use crate::auth::{self, AuthenticationInfo, PasswordPolicy};
+use crate::auth::{AuthenticationInfo, PasswordPolicy, RefreshableOAuthToken};
 use crate::env;
 use crate::error::{ApiError, user_error};
 use crate::params::{
@@ -828,9 +828,10 @@ impl AntithesisApi {
         &self.client.inner().authn_info
     }
 
-    /// Refreshes the credential of the client through [`auth::refresh`].
-    pub(crate) async fn refresh_authentication(&self) -> Result<Option<AuthenticationInfo>> {
-        auth::refresh(self.client.client(), &self.base_url, self.authentication()).await
+    /// Refreshes `token`, the OAuth credential of the client, through
+    /// [`RefreshableOAuthToken::refresh`].
+    pub(crate) async fn refresh_oauth_token(&self, token: &RefreshableOAuthToken) -> Result<()> {
+        token.refresh(self.client.client(), &self.base_url).await
     }
 
     pub async fn launch_test(&self, launcher: &str, params: &Params) -> Result<LaunchResponse> {
@@ -1275,11 +1276,13 @@ impl ClientHooks<ClientState> for generated::Client {
         _info: &OperationInfo,
     ) -> std::result::Result<(), ClientError<E>> {
         let auth = &self.inner().authn_info;
-        if auth.expired() {
-            // `refresh` adopts a newer persisted token, or refreshes. When it
-            // gives nothing, the expired token is sent: the server rejects it,
-            // and the 401 path in `exec` takes over.
-            auth::refresh(self.client(), self.baseurl(), auth)
+        // An expired OAuth token is replaced first. When it cannot be, the
+        // request fails with the reason, rather than meet a 401.
+        if let AuthenticationInfo::OAuth(token) = auth
+            && token.expired()
+        {
+            token
+                .refresh(self.client(), self.baseurl())
                 .await
                 .map_err(|e| ClientError::Custom(e.to_string()))?;
         }
@@ -1303,10 +1306,9 @@ impl ClientHooks<ClientState> for generated::Client {
 
         // Keep a resendable copy so that, when an OAuth request gets a 401, a
         // newer or refreshed token can retry it once.
-        let retry_request = if matches!(state.authn_info, AuthenticationInfo::OAuth { .. }) {
-            request.try_clone()
-        } else {
-            None
+        let retry_request = match &state.authn_info {
+            AuthenticationInfo::OAuth(token) => request.try_clone().map(|request| (token, request)),
+            _ => None,
         };
 
         http.log_request(&request, LoggedBody::Shown);
@@ -1314,19 +1316,17 @@ impl ClientHooks<ClientState> for generated::Client {
         let result = execute_with_retry(self.client(), http.verbose, &mut budget, request).await;
 
         let result = match (result, retry_request) {
-            (Ok(response), Some(mut retry_request))
+            (Ok(response), Some((token, mut retry_request)))
                 if response.status() == reqwest::StatusCode::UNAUTHORIZED =>
             {
-                // `None`: no newer persisted token and no refresh token, so
-                // the 401 surfaces.
-                let refreshed =
-                    match auth::refresh(self.client(), self.baseurl(), &state.authn_info).await {
-                        Ok(Some(refreshed)) => refreshed.auth_header().await.map(Some),
-                        Ok(None) => Ok(None),
-                        Err(err) => Err(err),
-                    };
+                // When the refresh fails, such as for want of a refresh
+                // token, the 401 surfaces.
+                let refreshed = match token.refresh(self.client(), self.baseurl()).await {
+                    Ok(()) => state.authn_info.auth_header().await,
+                    Err(err) => Err(err),
+                };
                 match refreshed {
-                    Ok(Some(header)) => {
+                    Ok(header) => {
                         retry_request
                             .headers_mut()
                             .insert(reqwest::header::AUTHORIZATION, header);
@@ -1334,7 +1334,6 @@ impl ClientHooks<ClientState> for generated::Client {
                         execute_with_retry(self.client(), http.verbose, &mut budget, retry_request)
                             .await
                     }
-                    Ok(None) => Ok(response),
                     Err(err) => {
                         log::warn!("reactive OAuth token refresh failed: {err:#}");
                         Ok(response)
@@ -4374,18 +4373,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_expired_access_token_without_a_refresh_token_is_sent() {
+    async fn an_expired_access_token_without_a_refresh_token_fails_before_the_request() {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1"))
             .respond_with(ResponseTemplate::new(401))
-            .expect(1)
+            .expect(0)
             .mount(&mock_server)
             .await;
-        let expired_token = crate::auth::paseto_expiring_in(-chrono::TimeDelta::minutes(1));
         let creds_dir = TempDir::new().unwrap();
         let auth = AuthenticationInfo::oauth_for_test(
-            expired_token.clone(),
+            crate::auth::paseto_expiring_in(-chrono::TimeDelta::minutes(1)),
             None,
             crate::auth::OAuthRefreshInfo::CredentialsFile {
                 path: creds_dir.path().join("credentials.toml"),
@@ -4402,13 +4400,13 @@ mod tests {
 
         let report = api.get_run("run-1").await.unwrap_err();
 
-        assert_eq!(crate::error::api_error_status(&report), Some(401));
-        let requests = mock_server.received_requests().await.unwrap();
-        assert_eq!(requests.len(), 1, "no refresh and no retry");
-        assert_eq!(
-            requests[0].headers.get("authorization").unwrap(),
-            format!("Bearer {expired_token}").as_str()
+        assert!(
+            format!("{report:#}").contains(
+                "the stored OAuth token cannot be refreshed, because there is no refresh token; run `snouty login`"
+            ),
+            "{report:#}"
         );
+        assert!(mock_server.received_requests().await.unwrap().is_empty());
     }
 
     /// A response that `get_run` accepts.

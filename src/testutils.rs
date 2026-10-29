@@ -4,6 +4,8 @@ use std::process::{Child, Command, Stdio};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+#[cfg(test)]
+pub mod auth;
 pub mod fake_secrets;
 
 use crate::container::{ContainerRuntime, DockerRuntime, PodmanRuntime, is_podman_in_disguise};
@@ -124,6 +126,18 @@ impl OCIRegistry {
             return None;
         }
 
+        Self::start_container(runtime, None)
+    }
+
+    /// A fresh registry container that takes HTTP basic auth for every
+    /// request. `htpasswd` is one `user:bcrypt-hash` line. It never uses the
+    /// [`TEST_REGISTRY_VAR`] registry, which takes no auth. Returns `None` when
+    /// the container cannot start.
+    pub fn start_with_basic_auth(runtime: &dyn ContainerRuntime, htpasswd: &str) -> Option<Self> {
+        Self::start_container(runtime, Some(htpasswd))
+    }
+
+    fn start_container(runtime: &dyn ContainerRuntime, htpasswd: Option<&str>) -> Option<Self> {
         if !runtime_supports_linux_registry_image(runtime.name()) {
             eprintln!(
                 "skipping: OCI registry image requires Linux containers for {}",
@@ -149,17 +163,34 @@ impl OCIRegistry {
 
         // Let the engine pick the host port. Asking the kernel for a free port
         // first and publishing it by number leaves a window where another test
-        // takes it before the engine binds.
-        let child = Command::new(&runtime_name)
-            .args([
-                "run",
-                "--rm",
-                "-p",
-                "127.0.0.1:0:5000",
-                "--name",
-                &container_name,
-                "registry:2",
-            ])
+        // takes it before the engine binds. The host port is empty, not 0,
+        // because podman 4 rejects port 0.
+        let mut command = Command::new(&runtime_name);
+        command.args([
+            "run",
+            "--rm",
+            "-p",
+            "127.0.0.1::5000",
+            "--name",
+            &container_name,
+        ]);
+        if let Some(htpasswd) = htpasswd {
+            // The image reads htpasswd only from a file. Writing it in the
+            // container avoids a bind mount, which a podman machine only
+            // supports for some host directories.
+            command
+                .args(["-e", &format!("HTPASSWD={htpasswd}")])
+                .args(["-e", "REGISTRY_AUTH=htpasswd"])
+                .args(["-e", "REGISTRY_AUTH_HTPASSWD_REALM=snouty-test"])
+                .args(["-e", "REGISTRY_AUTH_HTPASSWD_PATH=/tmp/htpasswd"])
+                .args(["--entrypoint", "/bin/sh", "registry:2", "-c"])
+                .arg(
+                    r#"printf '%s\n' "$HTPASSWD" > /tmp/htpasswd && exec registry serve /etc/docker/registry/config.yml"#,
+                );
+        } else {
+            command.arg("registry:2");
+        }
+        let child = command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(
@@ -179,7 +210,9 @@ impl OCIRegistry {
                 log,
             }),
         };
-        match registry.wait_until_ready() {
+        // A registry that takes auth answers `/v2/` without auth with 401.
+        let ready_status = if htpasswd.is_some() { 401 } else { 200 };
+        match registry.wait_until_ready(ready_status) {
             Ok(host_port) => {
                 registry.host_port = host_port;
                 Some(registry)
@@ -206,10 +239,10 @@ impl OCIRegistry {
             == Some(200)
     }
 
-    /// Wait for the container to publish its port and answer `/v2/`, returning
-    /// the `host:port` it landed on. `Err` carries what the container said, so a
-    /// failure to start explains itself.
-    fn wait_until_ready(&mut self) -> Result<String, String> {
+    /// Wait for the container to publish its port and answer `/v2/` with
+    /// `ready_status`, returning the `host:port` it landed on. `Err` carries
+    /// what the container said, so a failure to start explains itself.
+    fn wait_until_ready(&mut self, ready_status: u16) -> Result<String, String> {
         let owned = self
             .owned
             .as_mut()
@@ -220,7 +253,7 @@ impl OCIRegistry {
                 host_port = published_host_port(&owned.runtime, &owned.container_name);
             }
             if let Some(addr) = &host_port
-                && registry_v2_ping_addr(addr)
+                && registry_v2_get_status(addr, "/v2/") == Some(ready_status)
             {
                 return Ok(addr.clone());
             }
@@ -330,6 +363,26 @@ pub fn unique_image_prefix(label: &str) -> String {
     )
 }
 
+/// Removes images that a test built, pushed or pulled, except on CI.
+///
+/// The engine tests run in parallel and share one local image store. In
+/// podman, removing an image while another process runs `podman build` can
+/// fail that build in its cache check with "getting top layer info: layer not
+/// known" (issue #136). So no test removes an image while the others run: on
+/// CI, whose runner is thrown away after the job, nothing is removed. Locally
+/// the images are removed, so that a developer's store does not fill up, and a
+/// build can still fail in that race.
+pub fn remove_test_images(runtime: &str, images: &[&str]) {
+    if is_ci() {
+        return;
+    }
+    // One image at a time, so that a name that is gone does not keep the
+    // others.
+    for image in images {
+        let _ = Command::new(runtime).args(["rmi", "-f", image]).output();
+    }
+}
+
 /// Returns `true` when running inside GitHub Actions (or any CI that sets `CI=true`).
 pub fn is_ci() -> bool {
     std::env::var("CI").is_ok_and(|v| v == "true" || v == "1")
@@ -347,6 +400,14 @@ pub fn skip_or_fail(msg: &str) {
 /// `docker-compose` binary or the `docker compose` CLI plugin).
 pub fn has_compose() -> bool {
     crate::compose::DockerCompose::probe().is_ok()
+}
+
+/// Writes an executable `#!/bin/sh` script with `body` to `path`.
+#[cfg(unix)]
+pub fn write_script(path: &std::path::Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, format!("#!/bin/sh\n{body}")).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 /// Return available runtimes, or skip/fail if none are found.
@@ -435,17 +496,29 @@ const REGISTRY_PULL_ATTEMPTS: u32 = 3;
 /// rate-limiting registry a moment to recover.
 const REGISTRY_PULL_RETRY_DELAY: Duration = Duration::from_secs(1);
 
-/// Pull `registry:2`, retrying a failed pull before giving up.
+/// Pull `registry:2` unless it is already in the local store, retrying a failed
+/// pull before giving up.
+///
+/// A pull asks Docker Hub for the manifest even when the image is local, and
+/// every registry-backed test starts a registry, so pulling each time runs into
+/// Docker Hub's rate limit for anonymous pulls.
 ///
 /// One attempt is enough on a healthy machine, but on the macOS podman runner
 /// the pull crosses the VM's network proxy and intermittently fails outright,
-/// which fails every registry-backed test in the run at once. Retrying is close
-/// to free — after a success the image is local, so a later pull is a no-op —
-/// and turns a transient blip into a slower success.
+/// which fails every registry-backed test in the run at once. Retrying turns a
+/// transient blip into a slower success.
 ///
 /// Returns the last failure's own words on `Err`, so the skip explains what went
 /// wrong rather than only that something did.
 fn ensure_registry_image_available(runtime: &str) -> Result<(), String> {
+    let local = Command::new(runtime)
+        .args(["image", "inspect", "registry:2"])
+        .stdin(Stdio::null())
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if local {
+        return Ok(());
+    }
     let mut last_failure = String::new();
     for attempt in 1..=REGISTRY_PULL_ATTEMPTS {
         if attempt > 1 {
@@ -514,9 +587,14 @@ pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
 ///   for any other known run, 404 for an unknown run
 /// - `GET  /api/v0/usage` — paginated usage entries
 /// - `GET  /auth/cli/config` — `{"port_strategy":"disabled"}`
+/// - `POST /auth/cli/refresh` — [`fake_secrets::FAKE_ACCESS_TOKEN_B`]
+/// - `GET  /github-actions/token` — the GitHub Actions OIDC token endpoint:
+///   [`fake_secrets::FAKE_OIDC_TOKEN`] for the `antithesis` audience
 ///
 /// Every route but the OAuth routes (`/auth/cli/`) requires the bearer token.
-/// The OAuth routes take none, as on the real server.
+/// The OAuth routes take none, as on the real server. The GitHub Actions
+/// route takes [`fake_secrets::FAKE_OIDC_REQUEST_TOKEN`] instead, and no
+/// User-Agent.
 pub struct MockApiServer {
     url: String,
     handle: Option<JoinHandle<()>>,
@@ -562,17 +640,25 @@ impl MockApiServer {
                 };
 
                 let (method, path) = mock_parse_request_line(&request);
+                // The GitHub Actions route stands for GitHub's server, which
+                // does not require a User-Agent.
+                let github_actions = path.starts_with(MOCK_GITHUB_ACTIONS_TOKEN_PATH);
+                let bearer_token = if github_actions {
+                    Some(fake_secrets::FAKE_OIDC_REQUEST_TOKEN)
+                } else if path.starts_with("/auth/cli/") {
+                    None
+                } else {
+                    Some(fake_secrets::FAKE_API_KEY_B)
+                };
                 let (status, body, content_type, cache_control) =
-                    if !mock_check_user_agent(&request) {
+                    if !github_actions && !mock_check_user_agent(&request) {
                         (
                             400,
                             r#"{"message":"Missing User-Agent header."}"#.to_string(),
                             "application/json",
                             NO_CACHE_CACHE_CONTROL,
                         )
-                    } else if !path.starts_with("/auth/cli/")
-                        && !mock_check_auth(&request, fake_secrets::FAKE_API_KEY_B)
-                    {
+                    } else if bearer_token.is_some_and(|token| !mock_check_auth(&request, token)) {
                         (
                             401,
                             r#"{"message":"Invalid or expired bearer token."}"#.to_string(),
@@ -611,6 +697,8 @@ pub const CACHEABLE_CACHE_CONTROL: &str = "private, max-age=3600";
 /// The `Cache-Control` the real API sends on everything else — writes,
 /// listings, errors (same observation).
 const NO_CACHE_CACHE_CONTROL: &str = "no-cache";
+
+const MOCK_GITHUB_ACTIONS_TOKEN_PATH: &str = "/github-actions/token";
 
 /// Read one HTTP request off the socket: headers, then as many body bytes as
 /// Content-Length declares. A single `read` is not enough — the client may
@@ -712,6 +800,27 @@ fn mock_route(
         ("GET", "/auth/cli/config") => (
             200,
             r#"{"port_strategy":"disabled"}"#.to_string(),
+            json,
+            NO_CACHE_CACHE_CONTROL,
+        ),
+        ("GET", MOCK_GITHUB_ACTIONS_TOKEN_PATH)
+            if mock_query_param(query, "audience").as_deref() == Some("antithesis") =>
+        {
+            (
+                200,
+                serde_json::json!({"count": 1, "value": fake_secrets::FAKE_OIDC_TOKEN}).to_string(),
+                json,
+                NO_CACHE_CACHE_CONTROL,
+            )
+        }
+        // The real route takes the refresh token as a bearer token; the mock
+        // takes any, and always mints the same access token.
+        ("POST", "/auth/cli/refresh") => (
+            200,
+            format!(
+                r#"{{"antithesis_token":"{}"}}"#,
+                fake_secrets::FAKE_ACCESS_TOKEN_B
+            ),
             json,
             NO_CACHE_CACHE_CONTROL,
         ),
@@ -1805,9 +1914,6 @@ mod tests {
     use super::*;
     use std::fs;
 
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
-
     #[test]
     fn extract_quoted_literals_resolves_escapes() {
         assert_eq!(
@@ -2007,17 +2113,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("runtime.log");
         let runtime_path = dir.path().join("stub-runtime.sh");
-        fs::write(
+        write_script(
             &runtime_path,
-            format!(
-                "#!/bin/sh\nprintf '%s\n' \"$*\" >> \"{}\"\nexit 0\n",
+            &format!(
+                "printf '%s\n' \"$*\" >> \"{}\"\nexit 0\n",
                 log_path.display()
             ),
-        )
-        .unwrap();
-        let mut perms = fs::metadata(&runtime_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&runtime_path, perms).unwrap();
+        );
 
         let child = Command::new("sh").args(["-c", "sleep 30"]).spawn().unwrap();
         let container_name = "snouty-test-registry-drop".to_string();
@@ -2042,40 +2144,54 @@ mod tests {
         );
     }
 
+    /// A stub runtime that logs its arguments, and has `registry:2` in its
+    /// store when `local` is true. Returns the runtime and its log.
+    #[cfg(unix)]
+    fn stub_registry_runtime(dir: &std::path::Path, local: bool) -> (String, std::path::PathBuf) {
+        let log_path = dir.join("runtime.log");
+        let runtime_path = dir.join("stub-runtime.sh");
+        let inspect_status = u8::from(!local);
+        write_script(
+            &runtime_path,
+            &format!(
+                "printf '%s\n' \"$*\" >> \"{}\"\n\
+                 [ \"$1\" = image ] && exit {inspect_status}\nexit 0\n",
+                log_path.display()
+            ),
+        );
+        (runtime_path.to_str().unwrap().to_string(), log_path)
+    }
+
     #[cfg(unix)]
     #[test]
     fn ensure_registry_image_available_pulls_registry_image() {
         let dir = tempfile::tempdir().unwrap();
-        let log_path = dir.path().join("runtime.log");
-        let runtime_path = dir.path().join("stub-runtime.sh");
-        fs::write(
-            &runtime_path,
-            format!(
-                "#!/bin/sh\nprintf '%s\n' \"$*\" >> \"{}\"\nexit 0\n",
-                log_path.display()
-            ),
-        )
-        .unwrap();
-        let mut perms = fs::metadata(&runtime_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&runtime_path, perms).unwrap();
+        let (runtime, log_path) = stub_registry_runtime(dir.path(), false);
 
-        assert_eq!(
-            ensure_registry_image_available(runtime_path.to_str().unwrap()),
-            Ok(())
-        );
+        assert_eq!(ensure_registry_image_available(&runtime), Ok(()));
 
         let log = fs::read_to_string(log_path).unwrap();
-        assert!(
-            log.lines().any(|line| line == "pull registry:2"),
-            "expected registry pull command in log, got: {log}"
-        );
         assert_eq!(
             log.lines()
                 .filter(|line| *line == "pull registry:2")
                 .count(),
             1,
             "a pull that works must not be retried, got: {log}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_registry_image_available_skips_the_pull_of_a_local_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, log_path) = stub_registry_runtime(dir.path(), true);
+
+        assert_eq!(ensure_registry_image_available(&runtime), Ok(()));
+
+        let log = fs::read_to_string(log_path).unwrap();
+        assert!(
+            !log.lines().any(|line| line.starts_with("pull")),
+            "expected no pull, got: {log}"
         );
     }
 }

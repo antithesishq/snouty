@@ -18,7 +18,7 @@ mod show;
 mod trust;
 pub use files::{SettingsFile, SettingsFileType};
 pub use show::cmd_settings_show;
-pub use trust::{SETTINGS_TRUST_VAR_NAME, deny, trust};
+pub use trust::{SETTINGS_TRUST_VAR_NAME, UntrustedSettingsFile, deny, trust};
 
 pub const ANTITHESIS_PROFILE_ENV_VAR_NAME: &str = "ANTITHESIS_PROFILE";
 pub const SNOUTY_SETTINGS_PATH_VAR_NAME: &str = "SNOUTY_SETTINGS_PATH";
@@ -129,6 +129,25 @@ impl Settings {
         project_settings_path: Option<PathBuf>,
         profile: Option<String>,
     ) -> Result<Self> {
+        SettingsRequest::from_flags(project_settings_path, profile)?.resolve()
+    }
+}
+
+/// The settings file and the profile that the user names, by flag or by
+/// environment variable.
+pub struct SettingsRequest {
+    project_settings_path: Option<PathBuf>,
+    profile: Option<String>,
+}
+
+impl SettingsRequest {
+    /// The `--settings` flag, else `SNOUTY_SETTINGS_PATH`; the `--profile`
+    /// flag, else `ANTITHESIS_PROFILE`.
+    pub fn from_flags(
+        project_settings_path: Option<PathBuf>,
+        profile: Option<String>,
+    ) -> Result<Self> {
+        let project_settings_path = explicit_settings_path(project_settings_path)?;
         // An empty value means "unset", not "a profile named the empty string".
         // `env::var` already collapses an empty env var to `None`; the trailing
         // filter also covers an explicitly-empty `--profile ""` flag.
@@ -137,20 +156,60 @@ impl Settings {
             None => env::var(ANTITHESIS_PROFILE_ENV_VAR_NAME)?,
         }
         .filter(|profile| !profile.is_empty());
+        Ok(Self {
+            project_settings_path,
+            profile,
+        })
+    }
 
-        let explicit = explicit_settings_path(project_settings_path)?;
+    /// The profile that the user names.
+    pub fn profile(&self) -> Option<&str> {
+        self.profile.as_deref()
+    }
 
+    /// See [`Settings::resolve`].
+    pub fn resolve(self) -> Result<Settings> {
+        SettingsFiles::load(self.project_settings_path.as_deref())?.resolve(self.profile)
+    }
+
+    /// The settings of the top-level defaults, then of each named profile:
+    /// first the profiles of the project settings file, then the other
+    /// profiles of the global settings file, each file in name order. This
+    /// reads the same files as [`Self::resolve`], in the same order: a value
+    /// in the project file wins over the same value in the global file. An
+    /// environment variable still overrides every profile. The profile that
+    /// the user names is not used.
+    ///
+    /// A profile that fails to resolve, such as one with an invalid tenant, is
+    /// left out: a caller that searches the profiles must not fail on a
+    /// profile it does not use.
+    pub fn resolve_every_profile(&self) -> Result<Vec<Settings>> {
+        SettingsFiles::load(self.project_settings_path.as_deref())?.resolve_every_profile()
+    }
+}
+
+struct SettingsFiles {
+    project: Option<Table>,
+    global: Option<Table>,
+    /// The files that were read, most specific first.
+    files: Vec<SettingsFile>,
+}
+
+impl SettingsFiles {
+    /// Loads the project file at `project_settings_path`, else the optional
+    /// `./.snouty.toml`, and the global settings file.
+    fn load(project_settings_path: Option<&Path>) -> Result<Self> {
         // Parse this even without a project file, so a bad value fails in
         // every directory.
         let trust_override = trust::TrustOverride::from_env()?;
         // A named project file must exist and needs no trust; the default
         // `./.snouty.toml` is optional and needs trust. (Climbing the directory
         // tree, if ever wanted, would go here.)
-        let (project, project_path) = match explicit {
-            Some(path) => (load_settings_file(&path, true)?, path),
+        let (project, project_path) = match project_settings_path {
+            Some(path) => (load_settings_file(path, true)?, path),
             None => (
                 load_default_project_file(trust_override)?,
-                PathBuf::from(PROJECT_SETTINGS_FILENAME),
+                Path::new(PROJECT_SETTINGS_FILENAME),
             ),
         };
         let global_path = global_settings_dir().map(|dir| dir.join(GLOBAL_SETTINGS_FILENAME));
@@ -162,7 +221,7 @@ impl Settings {
         let files = [
             project
                 .is_some()
-                .then(|| SettingsFile::new(SettingsFileType::Project, &project_path)),
+                .then(|| SettingsFile::new(SettingsFileType::Project, project_path)),
             global_path
                 .filter(|_| global.is_some())
                 .map(|path| SettingsFile::new(SettingsFileType::Global, &path)),
@@ -170,14 +229,37 @@ impl Settings {
         .into_iter()
         .flatten()
         .collect();
+        Ok(Self {
+            project,
+            global,
+            files,
+        })
+    }
 
+    /// See [`SettingsRequest::resolve_every_profile`].
+    fn resolve_every_profile(&self) -> Result<Vec<Settings>> {
+        let mut names: Vec<&String> = Vec::new();
+        for table in [&self.project, &self.global].into_iter().flatten() {
+            for name in profiles(table)?.into_iter().flat_map(Table::keys) {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+        Ok(std::iter::once(None)
+            .chain(names.into_iter().map(|name| Some(name.clone())))
+            .filter_map(|profile| self.resolve(profile).ok())
+            .collect())
+    }
+
+    fn resolve(&self, profile: Option<String>) -> Result<Settings> {
         let resolve = |key: &str, env_var: &str| {
             resolve_value(
                 key,
                 env_var,
                 profile.as_deref(),
-                project.as_ref(),
-                global.as_ref(),
+                self.project.as_ref(),
+                self.global.as_ref(),
             )
         };
 
@@ -204,8 +286,8 @@ impl Settings {
             "api_cache_max_file_size",
             API_CACHE_MAX_FILE_SIZE_VAR_NAME,
             profile.as_deref(),
-            project.as_ref(),
-            global.as_ref(),
+            self.project.as_ref(),
+            self.global.as_ref(),
         )?
         .map(|value| parse_byte_size("api_cache_max_file_size", &value))
         .transpose()?;
@@ -217,8 +299,8 @@ impl Settings {
             "api_cache_respect_headers",
             API_CACHE_RESPECT_HEADERS_VAR_NAME,
             profile.as_deref(),
-            project.as_ref(),
-            global.as_ref(),
+            self.project.as_ref(),
+            self.global.as_ref(),
         )?
         .map(|value| parse_boolean("api_cache_respect_headers", &value))
         .transpose()?;
@@ -246,11 +328,13 @@ impl Settings {
             update_channel,
             api_cache_max_file_size,
             api_cache_respect_headers,
-            files,
+            files: self.files.clone(),
         }
         .build())
     }
+}
 
+impl Settings {
     /// The resolved tenant, or `None` if unset. Call sites that require it turn
     /// the `None` into an error (see [`require`]); doctor reports it as-is.
     pub fn tenant(&self) -> Option<&str> {
@@ -559,6 +643,20 @@ fn update_table(
 /// an unintended host. Dots are allowed so a multi-label tenant still works;
 /// set `ANTITHESIS_BASE_URL` directly for any URL this rejects.
 pub(crate) fn validate_tenant_host(tenant: &str) -> Result<()> {
+    if !is_valid_tenant_host(tenant) {
+        return Err(user_error(format!(
+            "invalid tenant `{tenant}`: a tenant must be a valid hostname \
+             (letters, digits, and hyphens) because it becomes the host in \
+             `https://{tenant}.antithesis.com`. Set ANTITHESIS_BASE_URL directly \
+             if you need a custom API URL."
+        )));
+    }
+    Ok(())
+}
+
+/// Whether `tenant` is a valid DNS hostname, as [`validate_tenant_host`]
+/// requires.
+pub(crate) fn is_valid_tenant_host(tenant: &str) -> bool {
     fn is_valid_label(label: &str) -> bool {
         !label.is_empty()
             && label.len() <= 63
@@ -569,16 +667,7 @@ pub(crate) fn validate_tenant_host(tenant: &str) -> Result<()> {
             && !label.ends_with('-')
     }
 
-    let valid = !tenant.is_empty() && tenant.len() <= 253 && tenant.split('.').all(is_valid_label);
-    if !valid {
-        return Err(user_error(format!(
-            "invalid tenant `{tenant}`: a tenant must be a valid hostname \
-             (letters, digits, and hyphens) because it becomes the host in \
-             `https://{tenant}.antithesis.com`. Set ANTITHESIS_BASE_URL directly \
-             if you need a custom API URL."
-        )));
-    }
-    Ok(())
+    !tenant.is_empty() && tenant.len() <= 253 && tenant.split('.').all(is_valid_label)
 }
 
 /// Turn a missing required setting into snouty's standard "run doctor" error.
@@ -711,6 +800,19 @@ fn resolve_value_with(
     Ok(None)
 }
 
+/// The `profile` table of a settings file. `Ok(None)` when it is absent; an
+/// error when it is present but not a table.
+fn profiles(table: &Table) -> Result<Option<&Table>> {
+    table
+        .get(PROFILE_KEY)
+        .map(|profiles| {
+            profiles
+                .as_table()
+                .ok_or_else(|| eyre!("`{PROFILE_KEY}` must be a table of profiles"))
+        })
+        .transpose()
+}
+
 /// A `[profile.<name>]` value: `profile.<profile>.<key>`. `Ok(None)` when the
 /// `profile` section, the named profile, or the key is absent; an error when
 /// `profile`/`profile.<name>` is present but not a table, or the value fails
@@ -721,12 +823,9 @@ fn profile_value(
     key: &str,
     read: ValueReader,
 ) -> Result<Option<String>> {
-    let Some(profiles) = table.get(PROFILE_KEY) else {
+    let Some(profiles) = profiles(table)? else {
         return Ok(None);
     };
-    let profiles = profiles
-        .as_table()
-        .ok_or_else(|| eyre!("`{PROFILE_KEY}` must be a table of profiles"))?;
     let Some(selected) = profiles.get(profile) else {
         return Ok(None);
     };
@@ -1114,6 +1213,40 @@ mod tests {
             resolve_tenant(None, Some(&project), None).as_deref(),
             Some("proj-default")
         );
+    }
+
+    // ---- resolve_every_profile -----------------------------------------
+
+    /// The profiles that `resolve_every_profile` gives, in order, with
+    /// `defaults` for the top-level defaults.
+    fn every_profile(project: &str, global: &str) -> Vec<String> {
+        SettingsFiles {
+            project: Some(settings_file(project)),
+            global: Some(settings_file(global)),
+            files: Vec::new(),
+        }
+        .resolve_every_profile()
+        .unwrap()
+        .iter()
+        .map(|settings| settings.profile().unwrap_or("defaults").to_owned())
+        .collect()
+    }
+
+    #[test]
+    fn every_profile_is_the_defaults_then_the_project_then_the_global_profiles() {
+        let project = "[profile.zulu]\n[profile.mike]\n";
+        let global = "[profile.alpha]\n[profile.zulu]\n[profile.kilo]\n";
+        assert_eq!(
+            every_profile(project, global),
+            ["defaults", "mike", "zulu", "alpha", "kilo"]
+        );
+    }
+
+    #[test]
+    fn every_profile_skips_a_profile_that_fails_to_resolve() {
+        let project =
+            "[profile.a]\n[profile.broken]\napi_cache_max_file_size = \"lots\"\n[profile.c]\n";
+        assert_eq!(every_profile(project, ""), ["defaults", "a", "c"]);
     }
 
     // ---- accessors -----------------------------------------------------

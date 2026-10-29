@@ -1,7 +1,10 @@
 // The doc comments here are clap help text, where backticks print literally.
 #![allow(clippy::doc_markdown)]
 
+use std::ffi::{OsStr, OsString};
+use std::io::Write;
 use std::num::NonZeroU64;
+use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
@@ -13,10 +16,12 @@ use crate::api::{
 use color_eyre::Section;
 use color_eyre::eyre::Report;
 
+use crate::docker_credential::HELPER_NAME;
 use crate::error::user_error;
 use crate::features::{self, Feature};
 use crate::help::{self, Attach};
 use crate::runs::usage::{Rollup, TimeBound};
+use crate::stdio;
 use crate::time::{BareUnit, HumanDuration, ParseDurationError};
 use crate::vtime::VTime;
 
@@ -243,6 +248,12 @@ pub enum Commands {
         repository: Option<String>,
     },
 
+    /// Give Docker or Podman the credential for the tenant's container registry
+    DockerCredential {
+        /// The credential helper action that the engine requests
+        action: DockerCredentialAction,
+    },
+
     /// Serve snouty's run, docs, doctor and settings commands to AI agents over MCP
     #[command(
         hide = !features::is_enabled(Feature::Mcp)
@@ -258,9 +269,31 @@ pub fn command() -> clap::Command {
 
 /// Parses the command line, with the long help of [`command`]. The long help
 /// is rendered at run time, so the derive's `Cli::parse` cannot set it.
+///
+/// Docker and Podman run [`HELPER_NAME`], an alias of `snouty`: when the file
+/// name of argv[0] is that name, the command line is `snouty
+/// docker-credential` and the rest of the arguments.
 pub fn parse() -> Cli {
-    let matches = command().get_matches();
-    Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.format(&mut command()).exit())
+    let mut args: Vec<OsString> = std::env::args_os().collect();
+    let as_helper =
+        args.first().map(Path::new).and_then(Path::file_name) == Some(OsStr::new(HELPER_NAME));
+    if as_helper {
+        args.splice(..1, ["snouty", "docker-credential"].map(OsString::from));
+    }
+    let parsed = command().try_get_matches_from(args).and_then(|matches| {
+        Cli::from_arg_matches(&matches).map_err(|err| err.format(&mut command()))
+    });
+    match parsed {
+        Ok(cli) => cli,
+        // The helper protocol reads an error from stdout. The exit status
+        // still fails the action when stdout is closed.
+        Err(err) if as_helper && err.use_stderr() => {
+            let _ = write!(stdio::stdout(), "{err}");
+            std::process::exit(1)
+        }
+        // --help and --version, and every error of the CLI.
+        Err(err) => err.exit(),
+    }
 }
 
 /// Refuses a gated command while its feature is off. A hidden subcommand is
@@ -268,18 +301,7 @@ pub fn parse() -> Cli {
 pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Report> {
     let feature = match command {
         Commands::Mcp(_) => Feature::Mcp,
-        Commands::Launch(_)
-        | Commands::Run(_)
-        | Commands::Runs { .. }
-        | Commands::Debug(_)
-        | Commands::Docs { .. }
-        | Commands::Validate(_)
-        | Commands::Completions { .. }
-        | Commands::Version
-        | Commands::Update(_)
-        | Commands::Doctor(_)
-        | Commands::Settings { .. }
-        | Commands::Login { .. } => return None,
+        _ => return None,
     };
     if enabled.contains(&feature) {
         return None;
@@ -319,6 +341,19 @@ fn parse_path_segment(value: &str, what: &str) -> Result<String, String> {
         return Err(format!("invalid {what}: '{value}'"));
     }
     Ok(value.to_owned())
+}
+
+/// The actions of the Docker credential helper protocol.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum DockerCredentialAction {
+    /// Print the credential for the server URL on stdin
+    Get,
+    /// Fail: snouty provides credentials for this registry
+    Store,
+    /// Read a server URL from stdin and erase nothing
+    Erase,
+    /// Fail: snouty is not a general-purpose credential store
+    List,
 }
 
 fn validate_non_empty(value: &str) -> Result<String, String> {

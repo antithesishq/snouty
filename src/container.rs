@@ -1187,8 +1187,7 @@ mod tests {
                 rt.name()
             );
 
-            // Clean up the local image.
-            let _ = Command::new(rt.name()).args(["rmi", &image_ref]).output();
+            crate::testutils::remove_test_images(rt.name(), &[&image_ref]);
         }
     }
 

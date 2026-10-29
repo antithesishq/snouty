@@ -23,6 +23,7 @@ Snouty provides the following subcommands. Invoke `snouty <command> --help` to f
 - `snouty validate`: locally run and validate your docker-compose.yaml setup.
 - `snouty doctor`: check your environment is configured correctly.
 - `snouty docs`: search the Antithesis documentation locally (auto-refreshes the local copy over the network; pass `--offline` to skip).
+- `snouty docker-credential <action>`: the Docker and Podman credential helper for your tenant registry. See [Docker credential helper](#docker-credential-helper).
 - `snouty completions <shell>`: generate shell completion scripts.
 - `snouty version`: print version and build information.
 - `snouty update`: install the latest version. Set `update_channel = "unstable"` (or `SNOUTY_UPDATE_CHANNEL=unstable`) to also consider pre-releases; override the setting for one run with `--channel stable|unstable`.
@@ -88,7 +89,7 @@ cargo install snouty
 ### Uninstalling
 
 ```
-cargo uninstall snouty || rm -f "$(which snouty)" "$(which snouty-update)"
+cargo uninstall snouty || rm -f "$(which snouty)" "$(which snouty-update)" "$(which docker-credential-snouty)"
 ```
 
 If you set up [shell completions](#shell-completions), also remove the snouty line from your shell's startup file.
@@ -311,6 +312,30 @@ Three things to know:
 ```sh
 export ANTITHESIS_EXTRA_HEADERS="X-Proxy-Token: abc123"
 ```
+
+### Docker credential helper
+
+`docker-credential-snouty` gives Docker and Podman your snouty credentials for your tenant's container registry, `registry.<tenant>.antithesis.com`.
+
+To set it up, add the registry to `credHelpers` in `~/.docker/config.json` for Docker, or in `~/.config/containers/auth.json` for Podman:
+
+```json
+{
+  "credHelpers": {
+    "registry.<tenant>.antithesis.com": "snouty"
+  }
+}
+```
+
+The helper uses the same [settings](#settings-files) as snouty in the directory where Docker runs it, including `./.snouty.toml`. As for every command, the helper uses `./.snouty.toml` only after you trust it with `snouty settings trust`, and ignores it after `snouty settings deny`. Until you decide, the helper fails. With `--profile` or `ANTITHESIS_PROFILE`, the helper uses only that profile. Otherwise it uses the first profile whose `repository` is on `registry.<tenant>.antithesis.com` and that has its own credential. A named profile does not use the credential of the default profile, but `ANTITHESIS_API_KEY` applies to every profile.
+
+The shell script installer and the Nix package install `docker-credential-snouty`, an alias of `snouty`. For another install method, make the alias yourself, in a directory on your `PATH`:
+
+```sh
+ln -s "$(command -v snouty)" ~/.local/bin/docker-credential-snouty
+```
+
+Then `docker push`, `docker pull`, `podman push` and `podman pull` automatically use your snouty credentials for the Antithesis docker registry.
 
 ### Username and password (deprecated)
 

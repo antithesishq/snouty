@@ -91,6 +91,7 @@ help_pages! {
     SettingsTrust => "settings_trust.txt", ["settings", "trust"];
     SettingsDeny => "settings_deny.txt", ["settings", "deny"];
     Mcp => "mcp.txt", ["mcp"];
+    DockerCredential => "docker_credential.txt", ["docker-credential"];
     DocsSearch => "docs_search.txt", ["docs", "search"];
     DocsTree => "docs_tree.txt", ["docs", "tree"];
     DocsShow => "docs_show.txt", ["docs", "show"];

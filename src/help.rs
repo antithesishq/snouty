@@ -167,7 +167,7 @@ mod tests {
     /// never raises the subject.
     #[test]
     fn every_page_says_what_json_does() {
-        const NO_JSON: [&str; 8] = [
+        const NO_JSON: [&str; 9] = [
             "validate",
             "completions",
             "update",
@@ -177,6 +177,7 @@ mod tests {
             "settings deny",
             // A group page; `settings show` says what --json does.
             "settings",
+            "docker-credential",
         ];
         for page in HelpPage::ALL {
             if !NO_JSON.contains(&page.path().join(" ").as_str()) {

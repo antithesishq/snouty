@@ -67,6 +67,11 @@ async fn main() {
     snouty::mcp::exit_with_server();
     let cli = snouty::cli::parse();
     if let Err(report) = run(cli).await {
+        // The docker-credential helper already said "not found" on stdout,
+        // which is all that the helper protocol permits for it.
+        if report.is::<snouty::docker_credential::CredentialsNotFound>() {
+            std::process::exit(1);
+        }
         // One rendering for every error: `render_report` collapses the chain
         // index for single errors and wraps overlong prose, both printing
         // concerns that belong here rather than in the messages. User-facing
@@ -142,6 +147,12 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Doctor(args) => {
             snouty::doctor::cmd_doctor(&settings?, output, args.offline).await
         }
+        // The credential helper selects its settings itself, from the flags
+        // and their environment variables (see `registry::select_settings`),
+        // so it ignores `settings`.
+        Commands::DockerCredential { action } => {
+            snouty::docker_credential::run(action, settings_path, profile).await
+        }
         Commands::Mcp(args) => {
             // The tool calls resolve the settings again, in each child.
             settings?;
@@ -206,6 +217,7 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
             SettingsCommands::Trust(_) => Some("settings trust"),
             SettingsCommands::Deny(_) => Some("settings deny"),
         },
+        Commands::DockerCredential { .. } => Some("docker-credential"),
     }
 }
 

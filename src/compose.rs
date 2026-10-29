@@ -2095,9 +2095,7 @@ services:
                 rt.name()
             );
 
-            let _ = Command::new(rt.name())
-                .args(["rmi", local, &format!("{addr}/{local}")])
-                .output();
+            crate::testutils::remove_test_images(rt.name(), &[local, &format!("{addr}/{local}")]);
         }
     }
     #[derive(Clone, Default)]

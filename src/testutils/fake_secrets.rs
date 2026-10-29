@@ -51,6 +51,9 @@ fake_secrets! {
         /// hint cannot tell their lengths apart. `MockApiServer` accepts only
         /// this key.
         FAKE_API_KEY_B = "antithesis_api_key_v2_fake-b-longer_7Qxz";
+        /// A third API key, for a test that needs a key in the environment
+        /// that differs from two stored keys.
+        FAKE_API_KEY_C = "antithesis_api_key_v2_fake-c_3Rmk";
         /// A username for basic authentication. It is not a secret, but
         /// [`FAKE_BASIC_AUTHORIZATION`] encodes it.
         FAKE_USERNAME = "fake-user";
@@ -92,6 +95,10 @@ fake_secrets! {
         /// A second PASETO: test vector 2-S-2, the claims of 2-S-1 with a
         /// footer. A published test vector must not change.
         FAKE_PASETO_B = "v2.public.eyJkYXRhIjoidGhpcyBpcyBhIHNpZ25lZCBtZXNzYWdlIiwiZXhwIjoiMjAxOS0wMS0wMVQwMDowMDowMCswMDowMCJ9flsZsx_gYCR0N_Ec2QxJFFpvQAs7h9HtKwbVK2n1MJ3Rz-hwe8KUqjnd8FAnIJZ601tp7lGkguU63oGbomhoBw.UGFyYWdvbiBJbml0aWF0aXZlIEVudGVycHJpc2Vz";
+        /// A bcrypt hash of [`FAKE_API_KEY_A`], as `htpasswd -nbB` writes it.
+        /// A registry that takes basic auth checks the password against it.
+        /// The bcrypt alphabet has no `-`, so the hash cannot hold the marker.
+        FAKE_BCRYPT_HASH = "$2a$05$yRFGtJWb.wl2LdCdaVID2uSguCuAvEbdNxKLKaoZPKB4rx29cM26e";
     }
 }
 

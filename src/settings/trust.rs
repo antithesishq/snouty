@@ -8,7 +8,7 @@
 
 use std::{
     collections::BTreeMap,
-    fs,
+    fmt, fs,
     io::ErrorKind,
     path::{Path, PathBuf},
     str::FromStr,
@@ -123,17 +123,53 @@ pub(super) fn verdict(
     match TrustStore::load(&dir)?.files.get(&path) {
         Some(Decision::Deny) => Ok(Verdict::Ignore),
         Some(Decision::Trust { sha256 }) if *sha256 == digest(contents) => Ok(Verdict::Use),
-        Some(Decision::Trust { .. }) => Err(untrusted(&path, "changed since you trusted it")),
-        None => Err(untrusted(&path, "is not trusted")),
+        Some(Decision::Trust { .. }) => Err(untrusted(path, Untrusted::Changed)),
+        None => Err(untrusted(path, Untrusted::Unknown)),
     }
 }
 
-fn untrusted(path: &Path, problem: &str) -> Report {
-    user_error(format!("the settings file {} {problem}", path.display()))
-        .suggestion(format!(
+/// A project settings file that snouty does not use until the user trusts or
+/// denies it.
+#[derive(Debug)]
+pub struct UntrustedSettingsFile {
+    path: PathBuf,
+    reason: Untrusted,
+}
+
+#[derive(Debug)]
+enum Untrusted {
+    /// The user has not trusted or denied the file.
+    Unknown,
+    /// The content changed since the user trusted the file.
+    Changed,
+}
+
+impl UntrustedSettingsFile {
+    /// What the user can do to continue.
+    pub fn suggestion() -> String {
+        format!(
             "Review the file. Then run `snouty settings trust` to use it, or `snouty settings deny` \
              to ignore it. To skip this check, for example in CI, set {SETTINGS_TRUST_VAR_NAME}=all."
-        ))
+        )
+    }
+}
+
+impl fmt::Display for UntrustedSettingsFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let problem = match self.reason {
+            Untrusted::Unknown => "is not trusted",
+            Untrusted::Changed => "changed since you trusted it",
+        };
+        write!(f, "the settings file {} {problem}", self.path.display())
+    }
+}
+
+impl std::error::Error for UntrustedSettingsFile {}
+
+fn untrusted(path: PathBuf, reason: Untrusted) -> Report {
+    Report::new(UntrustedSettingsFile { path, reason })
+        .suppress_backtrace(true)
+        .suggestion(UntrustedSettingsFile::suggestion())
 }
 
 /// Trust the settings file at `path` with its current content. Returns the

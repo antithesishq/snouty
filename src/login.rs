@@ -419,7 +419,7 @@ fn confirm_replacement(
 ) -> Result<bool> {
     match (stored, new) {
         // Signing in again only renews the session that the stored tokens hold.
-        (None, _) | (Some(AuthenticationInfo::OAuth { .. }), AuthSetupType::OAuth) => Ok(true),
+        (None, _) | (Some(AuthenticationInfo::OAuth(_)), AuthSetupType::OAuth) => Ok(true),
         (Some(stored), _) => prompter.confirm(&format!("Replace your stored {stored}?")),
     }
 }

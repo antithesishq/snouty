@@ -6,18 +6,21 @@ CLI for the Antithesis API
 Usage: snouty [OPTIONS] <COMMAND>
 
 Commands:
-  launch       Launch a test run
-  runs         Interact with test runs
-  debug        Launch a debugging session
-  completions  Output shell completions
-  validate     Validate local Antithesis setup
-  doctor       Check environment configuration
-  version      Print version information
-  update       Check for and install updates
-  docs         Search Antithesis documentation
-  settings     Show snouty's settings, and trust or deny a project settings file
-  login        Sign in and store your snouty configuration
-  help         Print this message or the help of the given subcommand(s)
+  launch             Launch a test run
+  runs               Interact with test runs
+  debug              Launch a debugging session
+  completions        Output shell completions
+  validate           Validate local Antithesis setup
+  doctor             Check environment configuration
+  version            Print version information
+  update             Check for and install updates
+  docs               Search Antithesis documentation
+  settings           Show snouty's settings, and trust or deny a project
+                     settings file
+  login              Sign in and store your snouty configuration
+  docker-credential  Give Docker or Podman the credential for the tenant's
+                     container registry
+  help               Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help                 Print help

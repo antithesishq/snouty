@@ -1,6 +1,6 @@
 use snouty::testutils::{
     MockApiServer, OCIRegistry, available_runtimes, fake_secrets, filtered_path_without_binary,
-    skip_or_fail,
+    remove_test_images, skip_or_fail,
 };
 use std::cell::RefCell;
 use std::io::{Read, Write};
@@ -47,12 +47,13 @@ fn resolve_spec_path(
 /// regex `<pattern>`, mirroring the built-in `stdout`/`stderr` matchers (combine
 /// with a leading `!` to assert the pattern is absent). `<path>` may start with
 /// `~` to reference the test's isolated `$HOME` (see [`resolve_spec_path`]).
+/// `<pattern>` takes `${VAR}` and `${VAR@R}`, as `stdout` does.
 fn cmd_file(
     env: &mut testscript_rs::TestEnvironment,
     args: &[String],
 ) -> testscript_rs::Result<()> {
     let (path_arg, pattern) = match args {
-        [path, rest @ ..] if !rest.is_empty() => (path, rest.join(" ")),
+        [path, rest @ ..] if !rest.is_empty() => (path, env.substitute_env_vars(&rest.join(" "))),
         _ => return Err(err("file requires <path> <pattern>".to_string())),
     };
     let path = resolve_spec_path(env, path_arg)?;
@@ -124,6 +125,17 @@ struct EngineContext {
 struct EngineSpecCase {
     file: &'static str,
     needs_registry: bool,
+}
+
+/// Installs color-eyre's handler, without colors, so that a report keeps the
+/// sections that `with_section` attaches. Under eyre's default handler they are
+/// dropped, and a failed `podman build` reports no stderr.
+#[ctor::ctor(unsafe)]
+fn init_eyre() {
+    let _ = color_eyre::config::HookBuilder::default()
+        .theme(color_eyre::config::Theme::new())
+        .display_env_section(false)
+        .install();
 }
 
 thread_local! {
@@ -692,9 +704,11 @@ fn cmd_build_image(
         let dir = env.work_dir.join(dir_arg);
         let dockerfile = dir.join("Dockerfile");
         let dockerfile = dockerfile.exists().then_some(dockerfile.as_path());
+        // `{e:?}` prints the report's sections too, among them the engine's
+        // stdout and stderr; `{e}` prints only "'podman build' failed".
         ctx.engine
             .build_image(&dir, &image_ref, dockerfile, platform.as_deref())
-            .map_err(|e| err(format!("build-image: {e}")))?;
+            .map_err(|e| err(format!("build-image: {e:?}")))?;
         eprintln!(
             "[{:.1}s] build-image {label}",
             start.elapsed().as_secs_f64()
@@ -726,33 +740,20 @@ fn find_runtime(runtime_name: &str) -> Option<Box<dyn snouty::container::Contain
 }
 
 fn cleanup_engine_images(runtime_name: &str, built_images: &[String], registry_addr: Option<&str>) {
-    // The engine spec cases run as separate `#[test]` processes in parallel and
-    // share one local `containers/storage`. A forced image removal here mutates
-    // that store's layer database while a sibling test's `podman build` is
-    // enumerating images for its build-cache check ("getting top layer info"),
-    // intermittently yielding `layer not known` (issue #136). On CI the runner
-    // is ephemeral and thrown away after the job, so there is nothing to clean
-    // up — skip the `rmi` entirely there to remove the writer that races those
-    // concurrent builds. Locally we still clean up so a dev's image store does
-    // not accumulate junk across runs. TODO: clean up on CI too once `podman
-    // build` no longer races `rmi` (#136).
-    if std::env::var_os("CI").is_some() {
-        eprintln!(
-            "CI is set: skipping {runtime_name} image cleanup (ephemeral runner; avoids racing concurrent builds, issue #136)"
-        );
-        return;
-    }
-    for image in built_images {
-        let _ = std::process::Command::new(runtime_name)
-            .args(["rmi", "-f", image])
-            .output();
-        if let Some(registry_addr) = registry_addr {
-            let prefixed = format!("{registry_addr}/{image}");
-            let _ = std::process::Command::new(runtime_name)
-                .args(["rmi", "-f", &prefixed])
-                .output();
-        }
-    }
+    let prefixed: Vec<String> = registry_addr
+        .map(|addr| {
+            built_images
+                .iter()
+                .map(|image| format!("{addr}/{image}"))
+                .collect()
+        })
+        .unwrap_or_default();
+    let images: Vec<&str> = built_images
+        .iter()
+        .chain(&prefixed)
+        .map(String::as_str)
+        .collect();
+    remove_test_images(runtime_name, &images);
 }
 
 fn run_engine_spec_case(runtime_name: &'static str, case: EngineSpecCase) {

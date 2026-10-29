@@ -26,7 +26,7 @@ impl fmt::Display for SettingsFileType {
 }
 
 /// A settings file that snouty read.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct SettingsFile {
     #[serde(rename = "type")]
     pub file_type: SettingsFileType,

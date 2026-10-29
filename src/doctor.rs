@@ -237,7 +237,7 @@ fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
                 credentials,
             )]
         }
-        AuthenticationInfo::OAuth { .. } => {
+        AuthenticationInfo::OAuth(_) => {
             vec![enrich_with_origin(
                 Check::ok("oauth_credentials", "OAuth credentials used"),
                 credentials,
@@ -387,7 +387,7 @@ fn shadowed_credentials_check(
         let credential = match other.value() {
             AuthenticationInfo::ApiKey { .. } => "an API key is",
             AuthenticationInfo::GithubActionsOidc { .. } => "a GitHub Actions OIDC token is",
-            AuthenticationInfo::OAuth { .. } => "OAuth credentials are",
+            AuthenticationInfo::OAuth(_) => "OAuth credentials are",
             AuthenticationInfo::Password { .. } => "a username and password are",
         };
         let origin = match other {

@@ -123,7 +123,10 @@ export class SnoutyMcp {
         this.client = null;
         this.setStatus({ state: "disconnected", error: "snouty mcp exited" });
         this.onEvent({ kind: "note", line: "snouty mcp exited; restarting it", ts: Date.now() });
-        setTimeout(() => void this.connect().catch(() => {}), 1500);
+        setTimeout(() => {
+          // Something else may have reconnected in the meantime.
+          if (!this.client && !this.connecting) void this.connect().catch(() => {});
+        }, 1500);
       }
     };
     try {

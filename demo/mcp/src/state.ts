@@ -142,9 +142,10 @@ function updateTool(chat: ChatItem[], id: string, f: (t: Extract<ChatItem, { kin
   return chat.map((c) => (c.kind === "tool" && c.id === id ? f(c) : c));
 }
 
-/** The snouty subcommand that a tool runs. */
-function commandWords(tool: string) {
-  return tool.replace(/_/g, " ");
+/** Matches the snouty subcommand that a tool runs: `runs_build_logs` is
+ * `runs build-logs`. */
+function commandPattern(tool: string) {
+  return new RegExp(` ${tool.split("_").join("[ -]")}( |$)`);
 }
 
 /** The debug line that `snouty mcp` logs for each command it runs. */
@@ -264,7 +265,7 @@ function wire(state: State, e: { kind: string; dir?: "out" | "in"; msg?: Record<
     if (m) {
       const cmd = m[1];
       const target = chat.find(
-        (c) => c.kind === "tool" && !c.command && c.status === "running" && new RegExp(` ${commandWords(c.name)}( |$)`).test(cmd),
+        (c) => c.kind === "tool" && !c.command && c.status === "running" && commandPattern(c.name).test(cmd),
       );
       if (target) chat = chat.map((c) => (c === target ? { ...c, command: cmd } : c));
     }

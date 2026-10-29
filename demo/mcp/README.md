@@ -34,10 +34,15 @@ npm run demo                # builds the page, then serves it on port 8017
 ```
 
 Open <http://localhost:8017/>. Set `SNOUTY_BIN` to use another snouty binary,
-and `PORT` to use another port. The server listens on 127.0.0.1 only, because
-the page can call any tool with your credentials; set `HOST` to change that. The page also works behind a reverse proxy
-under a path prefix, for example at `/snouty-mcp/`. The proxy must pass
-WebSocket upgrades for `<prefix>/ws`.
+and `PORT` to use another port.
+
+The page can call any tool with your credentials, so the server guards its
+WebSocket. It listens on 127.0.0.1 only (set `HOST` to change that), and it
+accepts a WebSocket only from a page on `localhost`, `127.0.0.1` or a host in
+`ALLOWED_HOSTS` (a comma-separated list). The page also works behind a reverse
+proxy under a path prefix, for example at `/snouty-mcp/`. The proxy must pass
+WebSocket upgrades for `<prefix>/ws`, and either set `X-Forwarded-Host` to the
+public host or you add that host to `ALLOWED_HOSTS`.
 
 ## Check it before a demo
 

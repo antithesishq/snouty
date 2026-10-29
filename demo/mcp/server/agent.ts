@@ -2,6 +2,7 @@
 // a manual streaming loop so that every delta, tool call and tool result can
 // go to the browser as it happens.
 
+import { randomUUID } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { resultText, type SnoutyMcp } from "./mcp.ts";
 
@@ -62,6 +63,9 @@ export class AgentSession {
   private approvals = new Map<string, (ok: boolean) => void>();
   private anthropic = new Anthropic();
   private turnSeq = 0;
+  // Block ids must not repeat across sessions: the browser keeps a chat over
+  // a reconnect, and a replay brings back ids from an older session.
+  private sessionId = randomUUID().slice(0, 8);
   // A stopped turn takes time to unwind; the next turn waits for it. After a
   // reset, `muted` drops its late events.
   private finished: Promise<unknown> = Promise.resolve();
@@ -148,7 +152,7 @@ export class AgentSession {
     }));
 
     for (;;) {
-      const turn = `t${++this.turnSeq}`;
+      const turn = `${this.sessionId}-t${++this.turnSeq}`;
       this.emit({ type: "turn_start", turn, model: this.model });
       const stream = this.anthropic.messages.stream(
         {

@@ -125,6 +125,7 @@ class Client {
         this.recording = rec;
         this.recordStart = Date.now();
         if (mcp.status.state !== "connected") await mcp.connect().catch(() => {});
+        if (seq !== this.chatSeq) return;
         const ok = await this.agent.send(text);
         if (seq !== this.chatSeq) return;
         this.chatting = false;
@@ -183,7 +184,9 @@ class Client {
     if (this.chatting || this.replaying) return;
     const file = join(recordings, name);
     if (!name.endsWith(".json") || name.includes("/") || !existsSync(file)) return;
-    const rec = JSON.parse(readFileSync(file, "utf8")) as Recording;
+    const rec = readRecording(file);
+    if (!rec) return;
+    const replayId = ++replaySeq;
     const abort = new AbortController();
     this.replaying = abort;
     this.send({ type: "replay_start", prompt: rec.prompt, model: rec.model });
@@ -194,7 +197,7 @@ class Client {
       last = t;
       if (gap > 0) await sleep(gap, abort.signal);
       if (abort.signal.aborted) break;
-      this.send(e);
+      this.send(withReplayIds(e, replayId));
     }
     // A reset during the replay already let a new chat or replay start.
     if (this.replaying !== abort) return;
@@ -232,19 +235,44 @@ function saveRecording(rec: Recording) {
   writeFileSync(join(recordings, `${rec.savedAt.replace(/[:.]/g, "-")}-${slug}.json`), JSON.stringify(rec));
 }
 
+/** Reads a recording; returns undefined for a file that is not one. */
+function readRecording(file: string): Recording | undefined {
+  try {
+    const rec = JSON.parse(readFileSync(file, "utf8")) as Partial<Recording>;
+    const ok =
+      typeof rec.prompt === "string" &&
+      typeof rec.model === "string" &&
+      typeof rec.savedAt === "string" &&
+      Array.isArray(rec.events);
+    return ok ? (rec as Recording) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function listRecordings() {
   if (!existsSync(recordings)) return [];
   return readdirSync(recordings)
     .filter((f) => f.endsWith(".json"))
     .flatMap((f) => {
-      try {
-        const rec = JSON.parse(readFileSync(join(recordings, f), "utf8")) as Recording;
-        return [{ name: f, prompt: rec.prompt, model: rec.model, savedAt: rec.savedAt }];
-      } catch {
-        return []; // A broken file must not break every connection.
-      }
+      const rec = readRecording(join(recordings, f));
+      return rec ? [{ name: f, prompt: rec.prompt, model: rec.model, savedAt: rec.savedAt }] : [];
     })
     .sort((a, b) => b.savedAt.localeCompare(a.savedAt));
+}
+
+let replaySeq = 0;
+
+/** Gives the ids in a replayed agent event a prefix, so that two replays of
+ * one recording, or a replay and a live turn, never share an id. */
+function withReplayIds(msg: unknown, replayId: number): unknown {
+  const m = msg as { type?: string; event?: Record<string, unknown> };
+  if (m.type !== "agent" || !m.event) return msg;
+  const event = { ...m.event };
+  for (const key of ["turn", "block", "id"]) {
+    if (typeof event[key] === "string") event[key] = `r${replayId}-${event[key]}`;
+  }
+  return { ...m, event };
 }
 
 const TYPES: Record<string, string> = {
@@ -282,9 +310,45 @@ const http = createServer((req, res) => {
   createReadStream(path).pipe(res);
 });
 
+// Browsers let any page open a WebSocket to loopback, and the socket can
+// call any tool, so only the demo's own page may connect. The Host check
+// stops DNS rebinding; the Origin check stops other sites. A reverse proxy
+// names the public host in X-Forwarded-Host, which a page cannot set.
+const ALLOWED_HOSTS = new Set([
+  "localhost",
+  "127.0.0.1",
+  "[::1]",
+  ...(process.env.ALLOWED_HOSTS ?? "").split(",").map((h) => h.trim()).filter(Boolean),
+]);
+
+function hostname(hostHeader: string | undefined): string | undefined {
+  try {
+    return hostHeader ? new URL(`http://${hostHeader}`).hostname : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function allowedUpgrade(req: import("node:http").IncomingMessage): boolean {
+  const host = hostname(req.headers.host);
+  if (!host || !ALLOWED_HOSTS.has(host)) return false;
+  const origin = req.headers.origin;
+  // Only browsers send Origin; other local clients can reach the tenant anyway.
+  if (!origin) return true;
+  let originHost: string;
+  try {
+    originHost = new URL(origin).hostname;
+  } catch {
+    return false;
+  }
+  const forwarded = hostname(String(req.headers["x-forwarded-host"] ?? "").split(",")[0].trim());
+  return ALLOWED_HOSTS.has(originHost) || originHost === forwarded;
+}
+
 const wss = new WebSocketServer({ noServer: true });
 http.on("upgrade", (req, socket, head) => {
-  if (!new URL(req.url ?? "/", "http://x").pathname.endsWith("/ws")) {
+  if (!new URL(req.url ?? "/", "http://x").pathname.endsWith("/ws") || !allowedUpgrade(req)) {
+    socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
     socket.destroy();
     return;
   }

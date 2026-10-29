@@ -1,17 +1,25 @@
+use std::ffi::{OsStr, OsString};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use std::time::Duration;
 
+use base64::{Engine as _, prelude::BASE64_STANDARD};
 use chrono::Utc;
 use color_eyre::{
     Section, SectionExt,
-    eyre::{Context, Result, eyre},
+    eyre::{Context, OptionExt, Result, eyre},
 };
 
+use crate::docker_credential::{CRED_HELPER, HELPER_NAME};
 use crate::error::user_error;
 use crate::process::output_with_timeout;
-use crate::settings::{CONTAINER_ENGINE_VAR_NAME, Settings};
+use crate::registry::{self, TenantRegistry};
+use crate::settings::{
+    ANTITHESIS_PROFILE_ENV_VAR_NAME, CONTAINER_ENGINE_VAR_NAME, SNOUTY_SETTINGS_PATH_VAR_NAME,
+    Settings, mkdir,
+};
 
 /// Wall-clock budget for each synchronous docker/podman call made while
 /// discovering test commands (`ps`, `exec test -d`, `cp`). Discovery runs on
@@ -57,6 +65,64 @@ impl std::fmt::Display for Architecture {
     }
 }
 
+/// The tenant registry credential that `snouty launch` presents when it
+/// pushes: [`registry::USERNAME`] and `secret`, for `registry`.
+/// `settings_path` and `profile` are the `--settings` and `--profile` flags
+/// of the launch. A `docker-credential-snouty` that the engine runs gets them
+/// in its environment, so that it resolves the settings of the launch.
+pub struct TenantRegistryAuth {
+    pub registry: TenantRegistry,
+    pub secret: String,
+    pub settings_path: Option<PathBuf>,
+    pub profile: Option<String>,
+}
+
+/// The environment of each push and manifest round trip to `registry`, which
+/// [`ContainerRuntime::use_tenant_registry_auth`] prepares. Other round trips get
+/// none of it: podman with `REGISTRY_AUTH_FILE` ignores its own auth files.
+#[derive(Clone)]
+struct TenantRegistryEnv {
+    registry: TenantRegistry,
+    env: Vec<(&'static str, OsString)>,
+    /// The podman auth file that `env` names, deleted with the last clone of
+    /// the runtime.
+    _auth_file: Option<Arc<tempfile::NamedTempFile>>,
+}
+
+impl TenantRegistryEnv {
+    /// `env`, plus the `--settings` and `--profile` flags of `auth`.
+    fn new(
+        auth: TenantRegistryAuth,
+        mut env: Vec<(&'static str, OsString)>,
+        auth_file: Option<tempfile::NamedTempFile>,
+    ) -> Self {
+        env.extend(
+            auth.settings_path
+                .map(|path| (SNOUTY_SETTINGS_PATH_VAR_NAME, path.into_os_string())),
+        );
+        env.extend(
+            auth.profile
+                .map(|profile| (ANTITHESIS_PROFILE_ENV_VAR_NAME, profile.into())),
+        );
+        Self {
+            registry: auth.registry,
+            env,
+            _auth_file: auth_file.map(Arc::new),
+        }
+    }
+
+    /// The environment for a round trip to the registry of `image_ref`.
+    fn env_for(&self, image_ref: &str) -> impl Iterator<Item = (&'static str, &OsStr)> {
+        let covers = image_ref
+            .parse::<TenantRegistry>()
+            .is_ok_and(|registry| registry == self.registry);
+        self.env
+            .iter()
+            .filter(move |_| covers)
+            .map(|(name, value)| (*name, value.as_os_str()))
+    }
+}
+
 /// Trait representing a container runtime (podman or docker).
 pub trait ContainerRuntime: Send + Sync {
     /// The CLI command name (e.g. "podman" or "docker").
@@ -71,14 +137,8 @@ pub trait ContainerRuntime: Send + Sync {
     /// Clone into a boxed trait object.
     fn clone_box(&self) -> Box<dyn ContainerRuntime>;
 
-    /// Return a `Command` pre-configured with the runtime binary and given args.
-    fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new(self.name());
-        cmd.args(args);
-        cmd
-    }
-
-    /// Like [`command`](Self::command) but returns a [`tokio::process::Command`].
+    /// Return a [`tokio::process::Command`] pre-configured with the runtime
+    /// binary and given args.
     fn tokio_command(&self, args: &[&str]) -> tokio::process::Command {
         let mut cmd = tokio::process::Command::new(self.name());
         cmd.args(args);
@@ -92,6 +152,10 @@ pub trait ContainerRuntime: Send + Sync {
     fn engine_docker_host(&self) -> Result<Option<String>> {
         Ok(None)
     }
+
+    /// Present `auth` on each [`image_push`](Self::image_push) and
+    /// [`remote_manifest`](Self::remote_manifest) to the registry of `auth`.
+    fn use_tenant_registry_auth(&mut self, auth: TenantRegistryAuth);
 
     /// Push the image to the registry, returning the pinned image reference
     /// (e.g. `example.com/foo/image@sha256:...`).
@@ -180,25 +244,16 @@ pub trait ContainerRuntime: Send + Sync {
 
     /// Ask the registry named by `image_ref` (typically `repo@sha256:...`)
     /// whether it serves that manifest — a manifest-only API round trip via
-    /// `{runtime} manifest inspect`, using the runtime's own auth and TLS
-    /// configuration. Never pulls or pushes anything.
+    /// `{runtime} manifest inspect`, with the registry auth when it covers
+    /// that registry, and else the runtime's own auth. The runtime's own TLS
+    /// configuration applies. Never pulls or pushes anything.
     ///
     /// Every failure (missing manifest, auth, unreachable registry, or a
     /// runtime that can't inspect this manifest kind — podman errors on
     /// single-platform manifests) maps to [`RemoteManifest::NotFound`]:
     /// callers fall back to pushing, so degraded networks or runtime quirks
     /// can only cause extra uploads, never a bad pin.
-    fn remote_manifest(&self, image_ref: &str) -> RemoteManifest {
-        let mut args = vec!["manifest", "inspect"];
-        if is_plain_http_registry(image_ref) {
-            args.push(self.insecure_registry_flag());
-        }
-        args.push(image_ref);
-        match self.command(&args).output() {
-            Ok(output) if output.status.success() => classify_manifest_json(&output.stdout),
-            _ => RemoteManifest::NotFound,
-        }
-    }
+    fn remote_manifest(&self, image_ref: &str) -> RemoteManifest;
 
     /// The runtime's flag that lets `manifest inspect` and `push` reach a
     /// plain-HTTP registry.
@@ -363,6 +418,19 @@ pub trait ContainerRuntime: Send + Sync {
     }
 }
 
+/// `{runtime} manifest inspect image_ref` with `command`, which has the
+/// registry env for `image_ref` (see [`ContainerRuntime::remote_manifest`]).
+fn manifest_inspect(mut command: Command, insecure_flag: &str, image_ref: &str) -> RemoteManifest {
+    command.args(["manifest", "inspect"]);
+    if is_plain_http_registry(image_ref) {
+        command.arg(insecure_flag);
+    }
+    match command.arg(image_ref).output() {
+        Ok(output) if output.status.success() => classify_manifest_json(&output.stdout),
+        _ => RemoteManifest::NotFound,
+    }
+}
+
 /// Write `data` to the stdin of a build. A build that exits before it reads
 /// stdin breaks the pipe. Ignore `BrokenPipe`: the build's exit status and
 /// stderr then report the failure, which tells the user more than a broken
@@ -414,11 +482,15 @@ fn stderr_indicates_missing_source(stderr: &str) -> bool {
 #[derive(Clone)]
 pub struct PodmanRuntime {
     cmd: String,
+    registry_env: Option<TenantRegistryEnv>,
 }
 
 impl PodmanRuntime {
     pub fn new(cmd: impl Into<String>) -> Self {
-        Self { cmd: cmd.into() }
+        Self {
+            cmd: cmd.into(),
+            registry_env: None,
+        }
     }
 
     /// The host-side path of the podman machine's forwarded API socket, or
@@ -534,6 +606,26 @@ impl ContainerRuntime for PodmanRuntime {
         "--tls-verify=false"
     }
 
+    /// Without the registry env, podman pushes with its own credentials.
+    fn use_tenant_registry_auth(&mut self, auth: TenantRegistryAuth) {
+        match podman_registry_env(auth, crate::settings::global_settings_dir()) {
+            Ok(env) => self.registry_env = Some(env),
+            // A bare eprintln, not log::warn!: the notice must reach stderr
+            // independent of RUST_LOG.
+            Err(err) => eprintln!("warning: {err:#}, so podman pushes with its own credentials"),
+        }
+    }
+
+    fn remote_manifest(&self, image_ref: &str) -> RemoteManifest {
+        let mut command = Command::new(&self.cmd);
+        command.envs(
+            self.registry_env
+                .iter()
+                .flat_map(|env| env.env_for(image_ref)),
+        );
+        manifest_inspect(command, self.insecure_registry_flag(), image_ref)
+    }
+
     fn image_push(&self, image_ref: &str) -> Result<String> {
         let mut args = vec!["push"];
         if is_plain_http_registry(image_ref) {
@@ -548,6 +640,11 @@ impl ContainerRuntime for PodmanRuntime {
         args.push(image_ref);
 
         let output = Command::new(&self.cmd)
+            .envs(
+                self.registry_env
+                    .iter()
+                    .flat_map(|env| env.env_for(image_ref)),
+            )
             .args(&args)
             .output()
             .wrap_err(format!("failed to run '{} push'", self.cmd))?;
@@ -568,16 +665,81 @@ impl ContainerRuntime for PodmanRuntime {
     }
 }
 
+/// The variable that podman reads the path of its auth file from.
+const REGISTRY_AUTH_FILE_ENV: &str = "REGISTRY_AUTH_FILE";
+
+/// The variable that Docker CLI 28.3.0 and later read registry credentials
+/// from, in the `auths` format of `config.json` (docker/cli#6008).
+const DOCKER_AUTH_CONFIG_ENV: &str = "DOCKER_AUTH_CONFIG";
+
+/// The variable that podman searches for its credential helpers.
+const PATH_ENV: &str = "PATH";
+
+/// The registry env of podman. Podman never gets the secret in a file: it
+/// gets an auth file that sends it to the credential helper [`HELPER_NAME`],
+/// which writes the secret to a pipe, and a `PATH` with `config_dir` first,
+/// after a link of the helper to snouty there. `config_dir` already holds the
+/// credentials, so a user who can write it can already read them, and a link
+/// there gives no new trust to anyone. The `PATH` entry is absolute because
+/// podman does not run a helper that it finds through a relative entry, such
+/// as one from a relative `XDG_CONFIG_HOME`.
+fn podman_registry_env(
+    auth: TenantRegistryAuth,
+    config_dir: Option<PathBuf>,
+) -> Result<TenantRegistryEnv> {
+    let dir = config_dir.ok_or_eyre(
+        "cannot find the snouty config directory for the credential helper; set XDG_CONFIG_HOME or HOME",
+    )?;
+    let dir = std::path::absolute(&dir)
+        .wrap_err_with(|| format!("cannot make {} an absolute path", dir.display()))?;
+    mkdir(&dir, true, 0o700).wrap_err_with(|| format!("failed to create {}", dir.display()))?;
+    link_credential_helper(&dir)?;
+    let path = std::env::var_os(PATH_ENV).unwrap_or_default();
+    let path = std::env::join_paths(std::iter::once(dir).chain(std::env::split_paths(&path)))
+        .wrap_err("cannot add the credential helper to PATH")?;
+    let contents = serde_json::json!({ "credHelpers": { auth.registry.to_string(): CRED_HELPER } })
+        .to_string();
+    let auth_file = tempfile::NamedTempFile::new()
+        .and_then(|mut file| file.write_all(contents.as_bytes()).map(|()| file))
+        .wrap_err("failed to write the registry auth file")?;
+    let env = vec![
+        (REGISTRY_AUTH_FILE_ENV, auth_file.path().into()),
+        (PATH_ENV, path),
+    ];
+    Ok(TenantRegistryEnv::new(auth, env, Some(auth_file)))
+}
+
+/// Link [`HELPER_NAME`] in `dir` to the running snouty, unless a link to it
+/// is there. The rename is atomic, so a concurrent launch always finds a
+/// complete link.
+fn link_credential_helper(dir: &Path) -> Result<()> {
+    let snouty = std::env::current_exe()
+        .wrap_err("cannot find the snouty executable for the credential helper")?;
+    let link = dir.join(HELPER_NAME);
+    if std::fs::read_link(&link).is_ok_and(|target| target == snouty) {
+        return Ok(());
+    }
+    tempfile::Builder::new()
+        .make_in(dir, |path| std::os::unix::fs::symlink(&snouty, path))
+        .and_then(|temp| temp.persist(&link).map_err(std::io::Error::from))
+        .wrap_err("failed to link the credential helper to snouty")?;
+    Ok(())
+}
+
 /// A real Docker CLI. A `docker` that is podman (podman-docker) gets a
 /// [`PodmanRuntime`] instead (see [`select_runtime`]).
 #[derive(Clone)]
 pub struct DockerRuntime {
     cmd: String,
+    registry_env: Option<TenantRegistryEnv>,
 }
 
 impl DockerRuntime {
     pub fn new(cmd: impl Into<String>) -> Self {
-        Self { cmd: cmd.into() }
+        Self {
+            cmd: cmd.into(),
+            registry_env: None,
+        }
     }
 }
 
@@ -598,8 +760,34 @@ impl ContainerRuntime for DockerRuntime {
         "--insecure"
     }
 
+    /// Docker gets the credential in `DOCKER_AUTH_CONFIG`, which only adds
+    /// an entry for the registry of `auth` to its own credentials.
+    fn use_tenant_registry_auth(&mut self, auth: TenantRegistryAuth) {
+        // Only the `auth` field: the Docker CLI rejects other fields here.
+        let basic = BASE64_STANDARD.encode(format!("{}:{}", registry::USERNAME, auth.secret));
+        let config =
+            serde_json::json!({ "auths": { auth.registry.to_string(): { "auth": basic } } });
+        let env = vec![(DOCKER_AUTH_CONFIG_ENV, config.to_string().into())];
+        self.registry_env = Some(TenantRegistryEnv::new(auth, env, None));
+    }
+
+    fn remote_manifest(&self, image_ref: &str) -> RemoteManifest {
+        let mut command = Command::new(&self.cmd);
+        command.envs(
+            self.registry_env
+                .iter()
+                .flat_map(|env| env.env_for(image_ref)),
+        );
+        manifest_inspect(command, self.insecure_registry_flag(), image_ref)
+    }
+
     fn image_push(&self, image_ref: &str) -> Result<String> {
         let output = Command::new(&self.cmd)
+            .envs(
+                self.registry_env
+                    .iter()
+                    .flat_map(|env| env.env_for(image_ref)),
+            )
             .args(["push", image_ref])
             .output()
             .wrap_err(format!("failed to run '{} push'", self.cmd))?;
@@ -1093,7 +1281,8 @@ fn image_inspect_reports_missing_image(stderr: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutils::{OCIRegistry, require_runtimes};
+    use crate::testutils::fake_secrets::FAKE_API_KEY_A;
+    use crate::testutils::{OCIRegistry, require_runtimes, write_script};
     use hegel::generators::{self, Generator};
 
     use std::os::unix::process::ExitStatusExt;
@@ -1203,6 +1392,234 @@ mod tests {
     fn parse_docker_push_digest_never_panics(tc: hegel::TestCase) {
         let stdout = tc.draw(generators::text());
         let _ = parse_docker_push_digest(&stdout);
+    }
+
+    const TENANT_HOST: &str = "registry.acme.antithesis.com";
+
+    fn tenant_auth() -> TenantRegistryAuth {
+        TenantRegistryAuth {
+            registry: TENANT_HOST.parse().unwrap(),
+            secret: FAKE_API_KEY_A.to_string(),
+            settings_path: Some(PathBuf::from("launch.toml")),
+            profile: Some("acme".to_string()),
+        }
+    }
+
+    /// The value of the variable `name` in the environment of this test, as
+    /// the fake engines log it.
+    fn parent_var(name: &str) -> String {
+        std::env::var(name).unwrap_or_else(|_| "unset".to_string())
+    }
+
+    /// How the fake engines log a registry auth variable that does not have
+    /// the value that snouty sets: `other` when this test has it, else
+    /// `unset`. They never log its value, which can hold a credential of the
+    /// developer.
+    fn parent_auth_state(name: &str) -> &'static str {
+        if std::env::var_os(name).is_some() {
+            "other"
+        } else {
+            "unset"
+        }
+    }
+
+    /// The fields of each line that a fake engine logged to `log`.
+    fn read_log(log: &Path) -> Vec<Vec<String>> {
+        std::fs::read_to_string(log)
+            .unwrap()
+            .lines()
+            .map(|line| line.split('|').map(str::to_string).collect())
+            .collect()
+    }
+
+    /// The value of `name` in `env`.
+    fn env_var<'a>(env: &'a TenantRegistryEnv, name: &str) -> &'a OsStr {
+        env.env
+            .iter()
+            .find_map(|(var, value)| (*var == name).then_some(value.as_os_str()))
+            .unwrap()
+    }
+
+    /// Docker gets the credential in `DOCKER_AUTH_CONFIG`, and the settings
+    /// flags of the launch, on the push and the manifest round trip to the
+    /// tenant registry, and on no other round trip.
+    #[test]
+    fn docker_presents_the_registry_auth_only_to_its_host() {
+        let basic = BASE64_STANDARD.encode(format!("{}:{FAKE_API_KEY_A}", registry::USERNAME));
+        let auth_config = serde_json::json!({ "auths": { TENANT_HOST: { "auth": basic } } });
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        let cmd = dir.path().join("docker");
+        write_script(
+            &cmd,
+            &format!(
+                r#"if [ -z "${{DOCKER_AUTH_CONFIG+x}}" ]; then auth=unset
+elif [ "$DOCKER_AUTH_CONFIG" = '{auth_config}' ]; then auth=expected
+else auth=other; fi
+printf '%s|%s|%s|%s\n' "$1" "$auth" "${{ANTITHESIS_PROFILE-unset}}" "${{SNOUTY_SETTINGS_PATH-unset}}" >> '{log}'
+case "$1" in
+  push) echo 'latest: digest: sha256:pushed size: 1';;
+  manifest) echo '{{"schemaVersion":2}}';;
+esac
+"#,
+                log = log.display()
+            ),
+        );
+        let mut rt = DockerRuntime::new(cmd.to_str().unwrap());
+        rt.use_tenant_registry_auth(tenant_auth());
+
+        let pinned = rt
+            .image_push(&format!("{TENANT_HOST}/repo/app:v1"))
+            .unwrap();
+        assert_eq!(pinned, format!("{TENANT_HOST}/repo/app:v1@sha256:pushed"));
+        assert_eq!(
+            rt.remote_manifest(&format!("{TENANT_HOST}/repo/app@sha256:abc")),
+            RemoteManifest::Single
+        );
+        rt.remote_manifest("docker.io/library/redis@sha256:abc");
+        rt.image_push("registry.other.antithesis.com/org/app:v1")
+            .unwrap();
+
+        let log = read_log(&log);
+        let commands: Vec<&str> = log.iter().map(|fields| fields[0].as_str()).collect();
+        assert_eq!(commands, ["push", "manifest", "manifest", "push"]);
+        for fields in &log[..2] {
+            assert_eq!(fields[1..], ["expected", "acme", "launch.toml"]);
+        }
+        for fields in &log[2..] {
+            assert_eq!(
+                fields[1..],
+                [
+                    parent_auth_state(DOCKER_AUTH_CONFIG_ENV).to_string(),
+                    parent_var(ANTITHESIS_PROFILE_ENV_VAR_NAME),
+                    parent_var(SNOUTY_SETTINGS_PATH_VAR_NAME)
+                ]
+            );
+        }
+    }
+
+    /// On the push and the manifest round trip to the tenant registry, podman
+    /// gets an auth file that sends it to the snouty credential helper, finds
+    /// the helper, a link to snouty in the config dir, first on its `PATH`,
+    /// and gets the settings flags of the launch. Neither file holds the
+    /// secret, and the link replaces a stale link of a past launch. The auth
+    /// file goes away with the runtime. Other round trips get none of this.
+    #[test]
+    fn podman_gets_the_credential_from_the_snouty_helper() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        let cmd = dir.path().join("podman");
+        let config_dir = dir.path().join("config/snouty");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::os::unix::fs::symlink("/stale/snouty", config_dir.join(HELPER_NAME)).unwrap();
+        let env = podman_registry_env(tenant_auth(), Some(config_dir.clone())).unwrap();
+        let auth_file = PathBuf::from(env_var(&env, REGISTRY_AUTH_FILE_ENV));
+        write_script(
+            &cmd,
+            &format!(
+                r#"if [ -z "${{REGISTRY_AUTH_FILE+x}}" ]; then auth=unset
+elif [ "$REGISTRY_AUTH_FILE" = '{auth_file}' ]; then auth=$(cat "$REGISTRY_AUTH_FILE")
+else auth=other; fi
+helper_dir=${{PATH%%:*}}
+printf '%s|%s|%s|%s|%s|%s\n' "$1" "$auth" "$helper_dir" "$(readlink "$helper_dir/{HELPER_NAME}")" "${{ANTITHESIS_PROFILE-unset}}" "${{SNOUTY_SETTINGS_PATH-unset}}" >> '{log}'
+case "$1" in
+  push) for arg in "$@"; do case "$arg" in --digestfile=*) printf 'sha256:pushed' > "${{arg#--digestfile=}}";; esac; done;;
+  manifest) echo '{{"manifests":[]}}';;
+esac
+"#,
+                auth_file = auth_file.display(),
+                log = log.display()
+            ),
+        );
+        let mut rt = PodmanRuntime::new(cmd.to_str().unwrap());
+        rt.registry_env = Some(env);
+
+        rt.image_push(&format!("{TENANT_HOST}/repo/app:v1"))
+            .unwrap();
+        assert_eq!(
+            rt.remote_manifest(&format!("{TENANT_HOST}/repo/app@sha256:abc")),
+            RemoteManifest::List { has_amd64: false }
+        );
+        rt.remote_manifest("docker.io/library/redis@sha256:abc");
+        rt.image_push("registry.other.antithesis.com/org/app:v1")
+            .unwrap();
+        drop(rt);
+
+        let log = read_log(&log);
+        let commands: Vec<&str> = log.iter().map(|fields| fields[0].as_str()).collect();
+        assert_eq!(commands, ["push", "manifest", "manifest", "push"]);
+        let snouty = std::env::current_exe().unwrap();
+        for fields in &log[..2] {
+            assert_eq!(
+                fields[1],
+                format!(r#"{{"credHelpers":{{"{TENANT_HOST}":"snouty"}}}}"#)
+            );
+            assert_eq!(Path::new(&fields[2]), config_dir);
+            assert_eq!(Path::new(&fields[3]), snouty);
+            assert_eq!(fields[4..], ["acme", "launch.toml"]);
+        }
+        assert!(!auth_file.exists(), "{}", auth_file.display());
+        let parent_path = parent_var(PATH_ENV);
+        for fields in &log[2..] {
+            assert_eq!(fields[1], parent_auth_state(REGISTRY_AUTH_FILE_ENV));
+            assert_eq!(fields[2], parent_path.split(':').next().unwrap());
+            assert_eq!(
+                fields[4..],
+                [
+                    parent_var(ANTITHESIS_PROFILE_ENV_VAR_NAME),
+                    parent_var(SNOUTY_SETTINGS_PATH_VAR_NAME)
+                ]
+            );
+        }
+    }
+
+    /// A link to the running snouty stays as it is.
+    #[test]
+    fn podman_registry_env_keeps_a_correct_link() {
+        use std::os::unix::fs::MetadataExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let link = tmp.path().join(HELPER_NAME);
+        std::os::unix::fs::symlink(std::env::current_exe().unwrap(), &link).unwrap();
+        let inode = || std::fs::symlink_metadata(&link).unwrap().ino();
+        let before = inode();
+
+        podman_registry_env(tenant_auth(), Some(tmp.path().to_path_buf())).unwrap();
+        assert_eq!(inode(), before);
+    }
+
+    /// A relative path that leads from `from` to the absolute `to`.
+    fn relative_path(from: &Path, to: &Path) -> PathBuf {
+        from.components()
+            .skip(1)
+            .map(|_| "..")
+            .collect::<PathBuf>()
+            .join(to.strip_prefix("/").unwrap())
+    }
+
+    /// The config dir is created with its parents, only the user can read or
+    /// write it, and a relative config dir, as from a relative
+    /// `XDG_CONFIG_HOME`, goes on `PATH` absolute. With no config dir,
+    /// podman gets no registry env.
+    #[test]
+    fn podman_registry_env_puts_a_private_absolute_config_dir_first() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        let relative = relative_path(&cwd, &tmp.path().join("config/snouty"));
+
+        let env = podman_registry_env(tenant_auth(), Some(relative.clone())).unwrap();
+        let dir = std::env::split_paths(env_var(&env, PATH_ENV))
+            .next()
+            .unwrap();
+        assert!(dir.is_absolute(), "{}", dir.display());
+        assert_eq!(dir, cwd.join(relative));
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+        assert!(dir.join(HELPER_NAME).exists());
+
+        assert!(podman_registry_env(tenant_auth(), None).is_err());
     }
 
     #[tokio::test]

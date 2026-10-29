@@ -271,15 +271,14 @@ fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRu
     }
 
     let run = |config: &Path, action: &str| -> Output {
-        let mut command = if runtime.engine_kind() == "podman" {
-            let mut command = runtime.command(&[action, "--tls-verify=false", &image]);
+        let mut command = std::process::Command::new(runtime.name());
+        if runtime.engine_kind() == "podman" {
+            command.args([action, "--tls-verify=false", &image]);
             command.env("REGISTRY_AUTH_FILE", config.join("config.json"));
-            command
         } else {
-            let mut command = runtime.command(&[action, &image]);
+            command.args([action, &image]);
             command.env("DOCKER_CONFIG", config);
-            command
-        };
+        }
         command.env("PATH", &path).output().unwrap()
     };
     let describe = |output: &Output| {
@@ -318,4 +317,344 @@ fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRu
         describe(&output)
     );
     snouty::testutils::remove_test_images(engine, &[&image]);
+}
+
+/// `snouty launch --config` pushes the config image to the tenant registry
+/// with the credential of the launch, in each way that the engine can get it:
+///
+/// - Docker 28.3.0 and later get it in `DOCKER_AUTH_CONFIG`. On an older
+///   Docker, the test skips this case.
+/// - A Docker before 28.3.0, which the engine script simulates on any Docker
+///   as 28.0.4, ignores that variable, and gets it from
+///   `docker-credential-snouty` through `"credHelpers": {"<registry>":
+///   "snouty"}` in the `config.json` of `DOCKER_CONFIG`.
+/// - That old Docker with no entry for the registry in its config has no
+///   credential, so the registry refuses the push, and the launch fails with
+///   the error of Docker before it submits the run.
+/// - Podman gets it from `docker-credential-snouty`, which the launch links
+///   in the global settings dir and puts first on the `PATH` of podman.
+///
+/// The tenant and the repository come from the trusted `./.snouty.toml` of
+/// the launch, which each helper reads, because it runs in the working
+/// directory of the launch. During the push, no file in `TMPDIR` (where
+/// snouty keeps the auth file), `$XDG_CONFIG_HOME` (where it links the
+/// helper) or the working directory holds the secret.
+///
+/// The registry is at `127.0.0.1`, but the credential is only for
+/// `registry.acme.antithesis.com`. So the engine that snouty finds on PATH is
+/// a script that changes the host to the address in each argument, in
+/// `DOCKER_AUTH_CONFIG`, in the test's Docker config, and in the auth file,
+/// and then runs the real engine. Each `docker-credential-snouty` of the test
+/// changes the address back on stdin. For podman, the script puts that helper
+/// first on PATH, and the helper then runs the helper of the directory that is
+/// next on PATH, which must be the one snouty added.
+#[test]
+fn engines_push_with_the_registry_auth() {
+    for runtime in snouty::testutils::require_runtimes() {
+        launch_pushes_with_the_registry_auth(runtime.as_ref());
+    }
+}
+
+const TENANT_HOST: &str = "registry.acme.antithesis.com";
+
+/// How the engine of a launch gets the credential.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum AuthCase {
+    Podman,
+    /// The real Docker, with `DOCKER_AUTH_CONFIG`.
+    DockerAuthConfig,
+    /// A simulated old Docker, with a `credHelpers` entry in its config.
+    OldDockerCredHelpers,
+    /// A simulated old Docker, with no entry for the registry in its config.
+    OldDockerNoCredential,
+}
+
+impl AuthCase {
+    fn old_docker(self) -> bool {
+        matches!(
+            self,
+            Self::OldDockerCredHelpers | Self::OldDockerNoCredential
+        )
+    }
+}
+
+fn launch_pushes_with_the_registry_auth(runtime: &dyn snouty::container::ContainerRuntime) {
+    use base64::{Engine as _, prelude::BASE64_STANDARD};
+
+    let engine = runtime.name();
+    let Some(registry) = snouty::testutils::OCIRegistry::start_with_basic_auth(
+        runtime,
+        &format!("snouty-token:{FAKE_BCRYPT_HASH}"),
+    ) else {
+        return;
+    };
+    let addr = registry.host_port();
+    let real_engine = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|dir| dir.join(engine))
+        .find(|path| path.is_file())
+        .unwrap();
+    let dir = TempDir::new().unwrap();
+    let [
+        work,
+        wrap_bin,
+        rewrite_bin,
+        docker_helper_bin,
+        tmp,
+        xdg_config,
+        cred_helpers_config,
+        engine_cred_helpers_config,
+        empty_config,
+    ] = [
+        "work",
+        "wrap-bin",
+        "rewrite-bin",
+        "docker-helper-bin",
+        "tmp",
+        "xdg-config",
+        "cred-helpers-config",
+        "engine-cred-helpers-config",
+        "empty-config",
+    ]
+    .map(|name| {
+        let path = dir.path().join(name);
+        std::fs::create_dir(&path).unwrap();
+        path
+    });
+    std::fs::write(
+        cred_helpers_config.join("config.json"),
+        serde_json::json!({"credHelpers": {TENANT_HOST: "snouty"}}).to_string(),
+    )
+    .unwrap();
+    // Rootless podman reads its configuration, such as its storage, here.
+    if let Some(home) = std::env::var_os("HOME") {
+        let containers = Path::new(&home).join(".config/containers");
+        if containers.is_dir() {
+            std::os::unix::fs::symlink(containers, xdg_config.join("containers")).unwrap();
+        }
+    }
+    let manifests = work.join("k8s_config/manifests");
+    std::fs::create_dir_all(&manifests).unwrap();
+    std::fs::write(manifests.join("ns.yaml"), "kind: Namespace\n").unwrap();
+    let repo = snouty::testutils::unique_image_prefix(&format!("launch-auth-{engine}"));
+    std::fs::write(
+        work.join(".snouty.toml"),
+        format!("tenant = \"acme\"\nrepository = \"{TENANT_HOST}/{repo}\"\n"),
+    )
+    .unwrap();
+    // The launch and each helper use ./.snouty.toml only because the user
+    // trusts it: the trust decisions are in the global settings dir, which
+    // both read.
+    let trust = std::process::Command::new(SNOUTY)
+        .current_dir(&work)
+        .env("XDG_CONFIG_HOME", &xdg_config)
+        .env_remove("SNOUTY_SETTINGS_TRUST")
+        .args(["settings", "trust"])
+        .output()
+        .unwrap();
+    assert!(
+        trust.status.success(),
+        "{}",
+        String::from_utf8_lossy(&trust.stderr)
+    );
+
+    let to_addr = format!("s/{}/{addr}/g", TENANT_HOST.replace('.', r"\."));
+    let to_host = format!("s/{}/{TENANT_HOST}/", addr.replace('.', r"\."));
+    let found = dir.path().join("secret-found");
+    let helper_log = dir.path().join("docker-helper-log");
+    let basic_auth = BASE64_STANDARD.encode(format!("snouty-token:{FAKE_API_KEY_A}"));
+    let write_engine = |case: AuthCase| {
+        let old_docker = if case.old_docker() {
+            "if [ \"$1\" = --version ]; then echo 'Docker version 28.0.4, build b8034c0'; exit; fi\n\
+             unset DOCKER_AUTH_CONFIG\n"
+        } else {
+            ""
+        };
+        snouty::testutils::write_script(
+            &wrap_bin.join(engine),
+            &format!(
+                r#"{old_docker}for arg; do shift; set -- "$@" "$(printf '%s' "$arg" | sed '{to_addr}')"; done
+if [ -n "${{DOCKER_AUTH_CONFIG-}}" ]; then
+  DOCKER_AUTH_CONFIG=$(printf '%s' "$DOCKER_AUTH_CONFIG" | sed '{to_addr}')
+fi
+if [ "${{DOCKER_CONFIG-}}" = '{cred_helpers_config}' ]; then
+  sed '{to_addr}' '{cred_helpers_config}/config.json' > '{engine_cred_helpers_config}/config.json'
+  DOCKER_CONFIG='{engine_cred_helpers_config}'
+fi
+if [ -n "${{REGISTRY_AUTH_FILE-}}" ]; then
+  sed '{to_addr}' "$REGISTRY_AUTH_FILE" > '{auth}'
+  REGISTRY_AUTH_FILE='{auth}'
+  PATH='{rewrite_bin}':$PATH
+  if [ "$1" = push ]; then shift; set -- push --tls-verify=false "$@"; fi
+fi
+if [ "$1" = push ]; then
+  grep -rlF -D skip -e '{FAKE_API_KEY_A}' -e '{basic_auth}' "$TMPDIR" "$XDG_CONFIG_HOME" '{work}' >> '{found}'
+fi
+exec '{real}' "$@"
+"#,
+                cred_helpers_config = cred_helpers_config.display(),
+                engine_cred_helpers_config = engine_cred_helpers_config.display(),
+                auth = dir.path().join("auth.json").display(),
+                rewrite_bin = rewrite_bin.display(),
+                found = found.display(),
+                work = work.display(),
+                real = real_engine.display(),
+            ),
+        );
+    };
+    snouty::testutils::write_script(
+        &rewrite_bin.join(HELPER_NAME),
+        &format!(
+            r#"PATH=${{PATH#'{rewrite_bin}':}}
+sed '{to_host}' | exec "${{PATH%%:*}}/{HELPER_NAME}" "$@"
+"#,
+            rewrite_bin = rewrite_bin.display(),
+        ),
+    );
+    // Docker runs the helper of a credHelpers entry with the environment and
+    // the working directory of the launch.
+    let alias = Alias::symlink();
+    snouty::testutils::write_script(
+        &docker_helper_bin.join(HELPER_NAME),
+        &format!(
+            r#"printf '%s\n' "$1" >> '{log}'
+sed '{to_host}' | exec '{helper}' "$@"
+"#,
+            log = helper_log.display(),
+            helper = alias.path.display(),
+        ),
+    );
+    let parent_path = std::env::var_os("PATH").unwrap();
+    let path = |helper_bin: Option<PathBuf>| {
+        std::env::join_paths(
+            std::iter::once(wrap_bin.clone())
+                .chain(helper_bin)
+                .chain(std::env::split_paths(&parent_path)),
+        )
+        .unwrap()
+    };
+
+    let cases = if runtime.engine_kind() == "podman" {
+        vec![AuthCase::Podman]
+    } else if docker_reads_auth_config(&real_engine) {
+        vec![
+            AuthCase::DockerAuthConfig,
+            AuthCase::OldDockerCredHelpers,
+            AuthCase::OldDockerNoCredential,
+        ]
+    } else {
+        eprintln!(
+            "note: skip the DockerAuthConfig case: Docker before 28.3.0 ignores DOCKER_AUTH_CONFIG"
+        );
+        vec![
+            AuthCase::OldDockerCredHelpers,
+            AuthCase::OldDockerNoCredential,
+        ]
+    };
+    let mut built_images = Vec::new();
+    for case in cases {
+        write_engine(case);
+        let mut command = std::process::Command::new(SNOUTY);
+        for var in [
+            "ANTITHESIS_TENANT",
+            "ANTITHESIS_REPOSITORY",
+            "ANTITHESIS_PROFILE",
+            "ANTITHESIS_USERNAME",
+            "ANTITHESIS_PASSWORD",
+            "ANTITHESIS_HTTPS_PROXY",
+            "SNOUTY_SETTINGS_PATH",
+            "SNOUTY_SETTINGS_TRUST",
+            "REGISTRY_AUTH_FILE",
+            "DOCKER_AUTH_CONFIG",
+        ] {
+            command.env_remove(var);
+        }
+        match case {
+            AuthCase::OldDockerCredHelpers => {
+                command.env("DOCKER_CONFIG", &cred_helpers_config);
+            }
+            AuthCase::OldDockerNoCredential => {
+                command.env("DOCKER_CONFIG", &empty_config);
+            }
+            AuthCase::Podman | AuthCase::DockerAuthConfig => {}
+        }
+        let output = command
+            .current_dir(&work)
+            .env(
+                "PATH",
+                path((case != AuthCase::Podman).then(|| docker_helper_bin.clone())),
+            )
+            .env("TMPDIR", &tmp)
+            .env("XDG_CONFIG_HOME", &xdg_config)
+            .env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1")
+            .env("SNOUTY_CONTAINER_ENGINE", engine)
+            .env("ANTITHESIS_API_KEY", FAKE_API_KEY_A)
+            // Nothing answers there, so the launch fails after the push.
+            .env("ANTITHESIS_BASE_URL", "http://127.0.0.1:9")
+            .args([
+                "launch",
+                "--launcher",
+                "basic_k8s_test",
+                "-c",
+                "k8s_config",
+                "--duration",
+                "30",
+            ])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // The engine script stores each config image under the registry address.
+        built_images.extend(
+            stderr
+                .lines()
+                .find_map(|line| line.strip_prefix("Building config image: "))
+                .map(|image| image.replace(TENANT_HOST, &addr)),
+        );
+        if case == AuthCase::OldDockerNoCredential {
+            // The error of the push ends the launch, so it submits no run.
+            assert!(
+                !output.status.success()
+                    && stderr.contains("Error: 'docker push' failed")
+                    && stderr.contains("no basic auth credentials")
+                    && !stderr.contains("Config image pushed successfully"),
+                "{engine} {case:?}: a push with no credential\n{stderr}"
+            );
+            continue;
+        }
+        assert!(
+            stderr.contains("Config image pushed successfully"),
+            "{engine} {case:?}: a push with the key\n{stderr}"
+        );
+        // Only the credHelpers entry makes Docker run the helper of the test.
+        let calls = std::fs::read_to_string(&helper_log).unwrap_or_default();
+        if case == AuthCase::OldDockerCredHelpers {
+            assert!(
+                calls.lines().any(|action| action == "get"),
+                "{engine} {case:?}: Docker did not get the credential from the helper: {calls:?}"
+            );
+        } else {
+            assert_eq!(calls, "", "{engine} {case:?}: calls to the Docker helper");
+        }
+    }
+
+    let built_images: Vec<&str> = built_images.iter().map(String::as_str).collect();
+    snouty::testutils::remove_test_images(engine, &built_images);
+
+    let found = std::fs::read_to_string(&found).unwrap_or_default();
+    assert_eq!(
+        found, "",
+        "{engine}: files that hold the secret during the push"
+    );
+}
+
+/// Whether the Docker client at `docker` is 28.3.0 or later, and so reads
+/// `DOCKER_AUTH_CONFIG`.
+fn docker_reads_auth_config(docker: &Path) -> bool {
+    let output = std::process::Command::new(docker)
+        .args(["version", "--format", "{{.Client.Version}}"])
+        .output()
+        .unwrap();
+    let version = String::from_utf8_lossy(&output.stdout);
+    let version = semver::Version::parse(version.trim())
+        .unwrap_or_else(|err| panic!("Docker client version {version:?}: {err}"));
+    version >= semver::Version::new(28, 3, 0)
 }

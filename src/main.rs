@@ -1,5 +1,5 @@
 use std::io::{self, ErrorKind, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use clap::CommandFactory;
@@ -133,10 +133,12 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Login { tenant, repository } => {
             cmd_login(tenant, repository, profile.as_deref(), &settings?, output).await
         }
-        Commands::Launch(args) => cmd_launch(args, &settings?, output).await,
+        Commands::Launch(args) => {
+            cmd_launch(args, &settings?, settings_path, profile, output).await
+        }
         Commands::Run(args) => {
             eprintln!("warning: `snouty run` is deprecated, use `snouty launch` instead");
-            cmd_launch(args, &settings?, output).await
+            cmd_launch(args, &settings?, settings_path, profile, output).await
         }
         Commands::Runs { command } => snouty::runs::cmd_runs(command, &settings?, output).await,
         Commands::Debug(args) => {
@@ -221,9 +223,13 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
     }
 }
 
+/// `settings_path` and `profile` are the `--settings` and `--profile` flags,
+/// which `settings` resolved.
 async fn cmd_launch(
     args: LaunchArgs,
     settings: &Settings,
+    settings_path: Option<PathBuf>,
+    profile: Option<String>,
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
     let launcher = match args.webhook {
@@ -332,9 +338,25 @@ async fn cmd_launch(
         .suggestion("pass --config or --config-image"));
     }
 
+    let api = AntithesisApi::new_for_launch(settings, verbose)?;
     if let Some((detected, registry, config_image)) = config_image_ref {
-        let rt = container::runtime(settings)?;
+        let mut rt = container::runtime(settings)?;
         container::warn_ambiguous_engine(settings, rt.as_ref(), json);
+
+        if let Some(tenant_registry) = snouty::registry::tenant_registry(settings) {
+            // Podman gets the secret from the helper: for it, this is an early credential check.
+            match snouty::registry::launch_secret(&api).await? {
+                Some(secret) => rt.use_tenant_registry_auth(container::TenantRegistryAuth {
+                    registry: tenant_registry,
+                    secret,
+                    settings_path,
+                    profile,
+                }),
+                None => log::debug!(
+                    "{tenant_registry} does not accept the Antithesis credential, so the runtime pushes with its own credentials"
+                ),
+            }
+        }
 
         // k8s configs reference images by name in the manifests and the
         // platform pulls them itself.
@@ -375,7 +397,7 @@ async fn cmd_launch(
         );
     }
 
-    let response = submit_launch(&launcher, params, settings, verbose).await?;
+    let response = submit_launch(&launcher, params, &api).await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -431,8 +453,7 @@ fn detect_vcs_params(dir: &Path) -> Params {
 async fn submit_launch(
     launcher: &str,
     params: Params,
-    settings: &Settings,
-    verbose: bool,
+    api: &AntithesisApi,
 ) -> Result<snouty::api::LaunchResponse> {
     params.validate_test_params()?;
 
@@ -441,7 +462,6 @@ async fn submit_launch(
         serde_json::to_string_pretty(&params.to_redacted_map())?
     );
 
-    let api = AntithesisApi::new_for_launch(settings, verbose)?;
     api.launch_test(launcher, &params).await
 }
 

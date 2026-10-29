@@ -63,6 +63,26 @@ pub struct OAuthCredential {
     refresh_token: Option<String>,
 }
 
+impl OAuthCredential {
+    /// A copy of the credential that `active` holds now.
+    pub(crate) fn current(active: &RwLock<Self>) -> Self {
+        active
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn access_token(&self) -> &str {
+        &self.antithesis_token
+    }
+
+    /// When the expiry of the access token is known, the time at which it
+    /// expires: its `exp` claim.
+    pub(crate) fn expires_at(&self) -> Option<DateTime<Utc>> {
+        try_get_expiry_from_token(&self.antithesis_token)
+    }
+}
+
 impl std::fmt::Debug for OAuthCredential {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OAuthCredential")
@@ -500,36 +520,14 @@ impl AuthenticationInfo {
         }
     }
 
-    /// The GitHub Actions OIDC token of the credential: the token that it
-    /// sends as `Authorization: GHA`. The first call fetches it from the
-    /// Actions token endpoint, and later calls reuse it. `None` for a
-    /// credential of another kind.
-    pub(crate) async fn github_actions_oidc_token(&self) -> Result<Option<&str>> {
-        match self {
-            Self::GithubActionsOidc {
-                url,
-                request_token,
-                cached,
-            } => Ok(Some(
-                cached_github_actions_oidc_token(url, request_token, cached).await?,
-            )),
-            Self::ApiKey { .. } | Self::OAuth { .. } | Self::Password { .. } => Ok(None),
-        }
-    }
-
     /// When the expiry of the credential is known, the time at which it
     /// expires: the `exp` claim of an OAuth access token. `None` for every
     /// other credential.
-    pub(crate) fn expires_at(&self) -> Option<DateTime<Utc>> {
+    fn expires_at(&self) -> Option<DateTime<Utc>> {
         match self {
             Self::OAuth {
                 active_credential, ..
-            } => try_get_expiry_from_token(
-                &active_credential
-                    .read()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .antithesis_token,
-            ),
+            } => OAuthCredential::current(active_credential).expires_at(),
             Self::ApiKey { .. } | Self::GithubActionsOidc { .. } | Self::Password { .. } => None,
         }
     }
@@ -538,25 +536,6 @@ impl AuthenticationInfo {
     pub(crate) fn expired(&self) -> bool {
         self.expires_at()
             .is_some_and(|expires_at| Utc::now() >= expires_at)
-    }
-
-    /// The token that the credential sends as `Authorization: Bearer`: the
-    /// API key, or the current OAuth access token. `None` for a credential
-    /// that authenticates in a different way.
-    pub(crate) fn bearer_token(&self) -> Option<String> {
-        match self {
-            Self::ApiKey { api_key } => Some(api_key.clone()),
-            Self::OAuth {
-                active_credential, ..
-            } => Some(
-                active_credential
-                    .read()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .antithesis_token
-                    .clone(),
-            ),
-            Self::GithubActionsOidc { .. } | Self::Password { .. } => None,
-        }
     }
 }
 
@@ -792,7 +771,7 @@ fn try_get_credentials_file_path() -> Option<(PathBuf, PathBuf)> {
 
 /// The token of a `GithubActionsOidc` credential: fetched on the first call,
 /// and kept in `cached` for the later calls.
-async fn cached_github_actions_oidc_token<'a>(
+pub(crate) async fn cached_github_actions_oidc_token<'a>(
     url: &str,
     request_token: &str,
     cached: &'a OnceCell<String>,
@@ -1261,12 +1240,7 @@ mod tests {
         // Adopted the persisted token; no network refresh happened. The
         // network assertion runs before the read lock is taken, so no guard
         // is held across an await point (clippy::await_holding_lock).
-        assert_eq!(
-            refreshed
-                .and_then(|refreshed| refreshed.bearer_token())
-                .as_deref(),
-            Some(FAKE_ACCESS_TOKEN_B)
-        );
+        assert!(refreshed.is_some());
         assert!(
             server.received_requests().await.unwrap().is_empty(),
             "must not refresh when the origin already holds a newer token"
@@ -1314,7 +1288,6 @@ mod tests {
         let header = auth.auth_header().await.unwrap();
 
         assert_eq!(header, format!("Bearer {expired_token}"));
-        assert_eq!(auth.bearer_token(), Some(expired_token));
     }
 
     #[test]

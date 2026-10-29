@@ -6,13 +6,13 @@
 //! Antithesis API team gave this contract before the registry went live, so
 //! no response from it has been observed yet.
 
-use std::{fmt, path::PathBuf, str::FromStr};
+use std::{fmt, path::PathBuf, str::FromStr, sync::RwLock};
 
 use chrono::{TimeDelta, Utc};
 use color_eyre::eyre::Result;
 
 use crate::api::AntithesisApi;
-use crate::auth::AuthenticationInfo;
+use crate::auth::{AuthenticationInfo, OAuthCredential, cached_github_actions_oidc_token};
 use crate::error::user_error;
 use crate::settings::{Settings, SettingsRequest, is_valid_tenant_host};
 
@@ -152,37 +152,53 @@ pub fn select_settings(
     Ok(None)
 }
 
-/// The password that the registry takes with [`USERNAME`]: the API key, the
-/// OAuth access token, or the GitHub Actions OIDC token of the credential of
-/// `api`. A username and password is an error.
+/// The password that the registry takes with [`USERNAME`], from the
+/// credential of `api`: the API key, the GitHub Actions OIDC token, or the
+/// OAuth access token. A username and password is an error.
+pub async fn password(api: &AntithesisApi) -> Result<String> {
+    match api.authentication() {
+        AuthenticationInfo::ApiKey { api_key } => Ok(api_key.clone()),
+        AuthenticationInfo::GithubActionsOidc {
+            url,
+            request_token,
+            cached,
+        } => Ok(cached_github_actions_oidc_token(url, request_token, cached)
+            .await?
+            .to_owned()),
+        AuthenticationInfo::OAuth {
+            active_credential, ..
+        } => oauth_password(api, active_credential).await,
+        auth @ AuthenticationInfo::Password { .. } => Err(user_error(format!(
+            "the Antithesis container registry does not accept a {auth}; set ANTITHESIS_API_KEY, or run `snouty login`"
+        ))),
+    }
+}
+
+/// The OAuth access token of `api`, whose credential `active_credential` holds.
 ///
-/// An OAuth token that expires in more than [`TOKEN_MIN_LIFETIME`] is used as it
-/// is. A token that expires sooner, or whose expiry is unknown, is refreshed.
+/// A token that expires in more than [`TOKEN_MIN_LIFETIME`] is used as it is.
+/// A token that expires sooner, or whose expiry is unknown, is refreshed.
 /// When there is no refresh token, or the refresh fails, the stored token is
 /// used until it expires.
-pub async fn password(api: &AntithesisApi) -> Result<String> {
-    let auth = api.authentication();
-    if let Some(token) = auth.github_actions_oidc_token().await? {
-        return Ok(token.to_owned());
-    }
-    let Some(stored) = auth.bearer_token() else {
-        return Err(user_error(format!(
-            "the Antithesis container registry does not accept a {auth}; set ANTITHESIS_API_KEY, or run `snouty login`"
-        )));
-    };
-    let expired = auth.expired();
-    let near_expiry = auth
-        .expires_at()
-        .is_none_or(|expires_at| expires_at - Utc::now() <= TOKEN_MIN_LIFETIME);
+async fn oauth_password(
+    api: &AntithesisApi,
+    active_credential: &RwLock<OAuthCredential>,
+) -> Result<String> {
+    let stored = OAuthCredential::current(active_credential);
+    let expires_at = stored.expires_at();
+    let expired = expires_at.is_some_and(|expires_at| Utc::now() >= expires_at);
+    let near_expiry =
+        expires_at.is_none_or(|expires_at| expires_at - Utc::now() <= TOKEN_MIN_LIFETIME);
     if near_expiry {
         // `refresh_authentication` gives `Ok(None)` or `Err` only while the
         // persisted token is still the stored one.
         match api.refresh_authentication().await {
-            Ok(refreshed) => {
-                if let Some(token) = refreshed.and_then(|refreshed| refreshed.bearer_token()) {
-                    return Ok(token);
-                }
+            Ok(Some(_)) => {
+                return Ok(OAuthCredential::current(active_credential)
+                    .access_token()
+                    .to_owned());
             }
+            Ok(None) => {}
             Err(err) if expired => return Err(err),
             Err(err) => {
                 // A bare eprintln, not log::warn!: the notice must reach
@@ -190,7 +206,7 @@ pub async fn password(api: &AntithesisApi) -> Result<String> {
                 eprintln!(
                     "warning: the OAuth token refresh failed, so the stored token is used until it expires: {err:#}"
                 );
-                return Ok(stored);
+                return Ok(stored.access_token().to_owned());
             }
         }
     }
@@ -199,7 +215,7 @@ pub async fn password(api: &AntithesisApi) -> Result<String> {
             "the stored OAuth token has expired, and there is no refresh token to replace it; run `snouty login`",
         ));
     }
-    Ok(stored)
+    Ok(stored.access_token().to_owned())
 }
 
 #[cfg(test)]

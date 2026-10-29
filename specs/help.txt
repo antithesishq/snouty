@@ -4,8 +4,7 @@
 snouty version
 stdout 'snouty \d+\.\d+\.\d+'
 
-# --json prints the version and the commit as one JSON object, with no
-# warning that --json has no effect.
+# --json prints the version and the commit as JSON, with no warning.
 snouty --json version
 stdout '"version": "\d+\.\d+\.\d+'
 stdout '"commit": '

@@ -163,16 +163,17 @@ async fn tools_run_their_commands_in_json_mode() {
     let event: Value = serde_json::from_str(text(&result).lines().next().unwrap()).unwrap();
     assert!(event["moment"]["vtime"].is_number(), "{event}");
 
-    // runs_stream returns every event once the stream says the run is
-    // final. run-2 is the mock's in-progress run. The mock keeps no state, so
-    // run-2 is still in progress for runs_cancel below.
+    // runs_stream returns once the run is final. run-2 is the mock's
+    // in-progress run. The mock keeps no state, so runs_cancel below can
+    // still cancel it.
     let call_args = json!({
         "run_id": "run-2",
         "property_ids": ["27a7cb0b311c8481c4ce12f3347fadbf"],
     });
     let result = call(&client, "runs_stream", call_args).await;
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
-    // The second block is stderr, which says that the stream is open.
+    // content[0] is stdout. The second block is stderr, which reports the
+    // open stream.
     let stdout = &result.content[0].as_text().expect("a text block").text;
     let events: Vec<Value> = stdout
         .lines()
@@ -186,11 +187,12 @@ async fn tools_run_their_commands_in_json_mode() {
         "{events:?}"
     );
 
-    // runs_cancel cancels an in-progress run, and fails on a finished one.
+    // runs_cancel cancels an in-progress run.
     let result = call(&client, "runs_cancel", json!({ "run_id": "run-2" })).await;
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
     let cancelled: Value = serde_json::from_str(text(&result)).unwrap();
     assert_eq!(cancelled["run_id"], "run-2");
+    // `run` is completed, so cancelling it fails.
     let result = call(&client, "runs_cancel", json!({ "run_id": run["run_id"] })).await;
     assert_eq!(result.is_error, Some(true), "{}", text(&result));
 

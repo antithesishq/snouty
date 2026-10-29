@@ -116,8 +116,8 @@ tools! {
     // With no script, `runs exec` reads it from stdin, and a child's stdin is
     // null.
     RunsExec => "runs_exec", Reads, hidden: [], required: ["script"];
-    // `query` repeats `match` as a positional, and the command needs one of
-    // them.
+    // `query` repeats `match` as a positional. The command needs one of
+    // them, so the tool requires `matches`.
     RunsEvents => "runs_events", Reads, hidden: ["query", "detail"], required: ["matches"];
     Debug => "debug", StartsSessions, hidden: [], required: [];
     DocsTree => "docs_tree", Reads, hidden: [], required: [];

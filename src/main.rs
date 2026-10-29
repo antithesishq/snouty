@@ -531,20 +531,16 @@ async fn cmd_debug(
     Ok(())
 }
 
-/// Prints the version, or with `--json` the version and the commit.
 fn cmd_version(json: bool) -> Result<()> {
     if json {
-        // SNOUTY_COMMIT (set by build.rs) is absent when the build had no git
-        // checkout.
+        // build.rs sets SNOUTY_COMMIT only when the build has a git checkout.
         let version = serde_json::json!({
             "version": env!("CARGO_PKG_VERSION"),
             "commit": option_env!("SNOUTY_COMMIT"),
         });
         println!("{}", serde_json::to_string_pretty(&version)?);
     } else {
-        // SNOUTY_VERSION (set by build.rs) is the crate version plus the
-        // build's git sha when known — the same string clap's --version
-        // prints, so the two stay consistent.
+        // clap's --version prints the same SNOUTY_VERSION string.
         println!("snouty {}", env!("SNOUTY_VERSION"));
     }
     Ok(())

@@ -505,7 +505,7 @@ impl PodmanRuntime {
     /// `PATH`, and the settings flags of the launch. The helper runs in the
     /// working directory of snouty, so it resolves the settings of the launch.
     fn registry_command(&self, image_ref: &str) -> Command {
-        let mut command = Command::new(&self.cmd);
+        let mut command = registry_engine_command(&self.cmd);
         if let Some(podman) = self
             .registry_auth
             .as_ref()
@@ -697,6 +697,24 @@ const REGISTRY_AUTH_FILE_ENV: &str = "REGISTRY_AUTH_FILE";
 /// from, in the `auths` format of `config.json` (docker/cli#6008).
 const DOCKER_AUTH_CONFIG_ENV: &str = "DOCKER_AUTH_CONFIG";
 
+/// A command for a round trip to a registry with the engine `cmd`.
+#[cfg(not(test))]
+fn registry_engine_command(cmd: &str) -> Command {
+    Command::new(cmd)
+}
+
+/// Under test, the engine is a fake, and gets no registry auth variable from
+/// the environment of the test, so that it sees only the variables that
+/// snouty sets, and never a credential of the developer.
+#[cfg(test)]
+fn registry_engine_command(cmd: &str) -> Command {
+    let mut command = Command::new(cmd);
+    command
+        .env_remove(DOCKER_AUTH_CONFIG_ENV)
+        .env_remove(REGISTRY_AUTH_FILE_ENV);
+    command
+}
+
 /// The variable that podman searches for its credential helpers.
 const PATH_ENV: &str = "PATH";
 
@@ -767,7 +785,7 @@ impl DockerRuntime {
     /// `DOCKER_AUTH_CONFIG`, and the settings flags of the launch, for a
     /// `docker-credential-snouty` that a `credHelpers` entry runs.
     fn registry_command(&self, image_ref: &str) -> Command {
-        let mut command = Command::new(&self.cmd);
+        let mut command = registry_engine_command(&self.cmd);
         if let Some(auth) = self.registry_auth.as_ref().filter(|a| a.covers(image_ref)) {
             // Only the `auth` field: the Docker CLI rejects other fields here.
             let basic = BASE64_STANDARD.encode(format!("{}:{}", registry::USERNAME, auth.secret));

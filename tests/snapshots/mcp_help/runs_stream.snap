@@ -25,7 +25,7 @@ Each event prints as one line:
 
 The samples are a selection: the server does not send every example and counterexample that it counts. To see a property and its totals, use `runs_property {"run_id": "<run_id>", "property_id": "<property_id>"}`. To read the logs at a moment, use `runs_logs {"run_id": "<run_id>", "input_hash": "<input_hash>", "vtime": <vtime>}`.
 
-The stream shows only the events that happen after it starts. It does not show the current results. A property that passed or failed before the stream started gets no verdict line. To get the current results, read `runs_properties` and merge it with the stream's events.
+The stream shows only the events that happen after it starts. It does not show the current results. A property that passed or failed before the stream started gets no verdict line. The tool returns once the run is final, so its output cannot be merged with results read while the stream was open. To get the final results, call `runs_properties` after the tool returns.
 
 The stream is silent between events. For a run that is already final, the stream prints `completed` and ends. The stream of a new run opens a few minutes after the run starts, and snouty waits until it opens.
 
@@ -39,4 +39,4 @@ Examples:
 
 Each event prints as one JSON object on its own line, with an `event` key and the fields above. Each vtime is a JSON number. The `data` key holds the JSON of an unknown notification.
 
-The tool returns when the run is final, so a call can take as long as the run.
+A call takes as long as the run. To wait for the run without its events, use `runs_wait`, which takes a timeout.

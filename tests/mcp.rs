@@ -163,8 +163,9 @@ async fn tools_run_their_commands_in_json_mode() {
     let event: Value = serde_json::from_str(text(&result).lines().next().unwrap()).unwrap();
     assert!(event["moment"]["vtime"].is_number(), "{event}");
 
-    // runs_stream returns every event once the run is final. run-2 is the
-    // mock's in-progress run.
+    // runs_stream returns every event once the stream says the run is
+    // final. run-2 is the mock's in-progress run. The mock keeps no state, so
+    // run-2 is still in progress for runs_cancel below.
     let call_args = json!({
         "run_id": "run-2",
         "property_ids": ["27a7cb0b311c8481c4ce12f3347fadbf"],

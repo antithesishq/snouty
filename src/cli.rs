@@ -352,7 +352,7 @@ pub enum DockerCredentialAction {
     Store,
     /// Read a server URL from stdin and erase nothing
     Erase,
-    /// Fail: Docker and Podman do not call it for a "credHelpers" entry
+    /// Fail: snouty is not a general-purpose credential store
     List,
 }
 

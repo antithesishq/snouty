@@ -105,9 +105,10 @@ async fn cmd_docker_credential(
             read_stdin()?;
             Ok(())
         }
-        // Neither engine calls list for a "credHelpers" entry.
+        // Docker and Podman call list only for a "credsStore" helper, which
+        // serves every registry, and never for a "credHelpers" entry.
         DockerCredentialAction::List => Err(user_error(
-            "list is not necessary: Docker and Podman do not call it for a \"credHelpers\" entry",
+            "the snouty credential helper is not a general-purpose credential store; use it only as a \"credHelpers\" entry for registry.<tenant>.antithesis.com, not as \"credsStore\"",
         )),
     }
 }

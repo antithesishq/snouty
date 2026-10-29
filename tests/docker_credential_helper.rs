@@ -154,7 +154,10 @@ fn store_and_list_fail_with_status_1() {
     let home = TempDir::new().unwrap();
     for (action, message) in [
         ("store", "snouty provides credentials for this registry"),
-        ("list", "list is not necessary"),
+        (
+            "list",
+            "the snouty credential helper is not a general-purpose",
+        ),
     ] {
         helper(&Alias::symlink(), &home)
             .arg(action)

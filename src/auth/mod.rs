@@ -268,9 +268,7 @@ impl AuthenticationInfo {
     /// fail, because nothing replaces them.
     pub(crate) async fn refresh(&self, client: &reqwest::Client, base_url: &str) -> Result<()> {
         match self {
-            Self::ApiKey { .. } | Self::Password { .. } => {
-                Err(eyre!("a {self} cannot be refreshed"))
-            }
+            Self::ApiKey { .. } | Self::Password { .. } => Err(eyre!("cannot refresh the {self}")),
             Self::GithubActionsOidc(token) => token.refresh().await,
             Self::OAuth(token) => token.refresh(client, base_url).await,
         }

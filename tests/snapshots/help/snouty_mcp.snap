@@ -49,7 +49,10 @@ client cancels a call or closes stdin, the server kills the call's command. A
 command also exits when its server is gone. When the client sends a progress
 token with a call, the server sends a progress notification every 10 seconds
 until the call ends, so a client that resets its time limit on progress does not
-end a long call. Up to --max-concurrent-calls tool calls run at the same time.
+end a long call. The commands themselves show no progress, such as that of a
+rewarm or of a wait until a run is ready, because a tool result arrives only
+when the call ends. Up to --max-concurrent-calls tool calls run at the same
+time.
 
 --settings, --profile and --verbose, and the ANTITHESIS_* environment variables,
 apply to every tool call as they do for the other commands. With RUST_LOG=debug,

@@ -28,8 +28,10 @@ function useServer(dispatch: (a: Parameters<typeof reducer>[1]) => void) {
       sock.onmessage = (ev) => {
         const msg = JSON.parse(ev.data) as ServerMsg;
         if (msg.type === "call_result") {
-          calls.current.get(msg.reqId as number)?.(msg as unknown as CallResult);
-          calls.current.delete(msg.reqId as number);
+          const reqId = typeof msg.reqId === "number" ? msg.reqId : NaN;
+          const resolve = calls.current.get(reqId);
+          calls.current.delete(reqId);
+          if (typeof resolve === "function") resolve(msg as unknown as CallResult);
           return;
         }
         dispatch({ type: "server", msg });

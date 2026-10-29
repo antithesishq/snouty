@@ -209,10 +209,8 @@ impl ServerHandler for Snouty {
                     #[allow(clippy::cast_precision_loss)] // A call does not run for 2^52 seconds.
                     let param = ProgressNotificationParam::new(token.clone(), seconds as f64)
                         .with_message(format!("running for {seconds}s"));
-                    // rmcp returns once the notification is written. A
-                    // notification still in flight could go out after the
-                    // response, which the MCP spec forbids, so the call
-                    // waits for it.
+                    // Await the send: the MCP spec forbids a notification
+                    // after the response.
                     if let Err(e) = ctx.peer.notify_progress(param).await {
                         log::debug!("cannot send progress: {e}");
                     }

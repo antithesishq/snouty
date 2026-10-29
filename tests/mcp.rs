@@ -331,7 +331,6 @@ async fn a_cancelled_call_kills_its_command() {
     assert!(killed, "the command outlived its cancelled call");
 }
 
-/// A client that passes on each progress notification.
 struct ProgressClient(tokio::sync::mpsc::UnboundedSender<ProgressNotificationParam>);
 
 impl ClientHandler for ProgressClient {
@@ -344,8 +343,7 @@ impl ClientHandler for ProgressClient {
     }
 }
 
-/// A long tool call reports progress every 10 seconds, so a client that
-/// resets its time limit on progress keeps the call.
+/// A long tool call sends its first progress notification after 10 seconds.
 #[tokio::test]
 async fn a_long_call_reports_progress() {
     let server = MockApiServer::start();

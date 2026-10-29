@@ -231,13 +231,21 @@ stderr '^  ⚠ username/password for user \[envuser\] only works for `snouty lau
 ! stderr 'hiding your API key'
 ! stderr 'more than one credential source'
 
-# An explicit `docker` engine that is podman (podman-docker) runs as podman.
-# The fake docker-compose keeps the compose check independent of the host.
-# This case is last because it changes PATH.
+# An explicit `docker` engine that is podman (podman-docker) fails: the user
+# asked for Docker, and this `docker` is not Docker. Only the fake CLIs are on
+# PATH, so the host's engines do not change the result. The fake
+# docker-compose keeps the compose check independent of the host. These cases
+# are last because they change PATH.
 chmod 755 podman-docker/docker
 chmod 755 podman-docker/docker-compose
-set-env PATH ${WORK}/podman-docker:${PATH}
+set-env PATH ${WORK}/podman-docker
 env SNOUTY_CONTAINER_ENGINE=docker
+! snouty doctor --offline
+stderr '^  ✗ Container runtime not detected$'
+stderr '^      ERROR: the container engine is set to docker, but .docker. is podman \(podman-docker\)$'
+
+# Auto-detection runs that `docker` as podman.
+env SNOUTY_CONTAINER_ENGINE=
 snouty doctor --offline
 stderr 'Container runtime: podman detected'
 

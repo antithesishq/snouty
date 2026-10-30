@@ -98,10 +98,8 @@ command, named for its path below `snouty` with `_` between the parts:
   takes no mark.
 - A `t()` error is a test failure: `tests/help_snapshots.rs` renders every
   page for both readers, and the error names the page.
-- Put text that two or more pages share in `help/fragments/`, and add it with
-  `{% include "fragments/<name>.txt" %}` on a line of its own.
-  askama drops the final newline of each template file, so the line becomes
-  the lines of the included file.
+- Write each page's whole text in its own file. When two pages share a
+  paragraph, copy it into both: a reviewer reads a page as one file.
 - `tests/help_snapshots.rs` keeps an [insta](https://insta.rs) snapshot of
   every command's `--help` as it prints off a terminal, in
   `tests/snapshots/help/`, and of each MCP tool's `tool_help`, in

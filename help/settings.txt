@@ -2,7 +2,13 @@ Show snouty's settings, and trust or deny a project settings file
 
 `{{ t("settings show")? }}` prints the settings that snouty resolved, and the settings files it read. `{{ t("settings trust")? }}` and `{{ t("settings deny")? }}` decide whether snouty uses a project settings file (./.snouty.toml).
 
-{% include "fragments/settings_trust_risk.txt" %}
+snouty reads two settings files. The global settings file holds your own settings, and `{{ t("snouty login")? }}` writes it. It is settings.toml in $XDG_CONFIG_HOME/snouty, or in ~/.config/snouty when XDG_CONFIG_HOME is not set. The project settings file holds the settings of one project. It is .snouty.toml in the current directory, and snouty does not look for it in parent directories. A value in the project settings file overrides the same value in the global settings file.
+
+To use another project settings file in place of ./.snouty.toml, name it with {{ t("--settings")? }} or SNOUTY_SETTINGS_PATH. A file that you name must exist, and snouty uses it without asking you to trust it.
+
+Each settings file can hold top-level settings and named profiles, as [profile.NAME] tables. Select a profile with {{ t("--profile")? }} or ANTITHESIS_PROFILE. For each setting, snouty uses the first value that it finds: the environment variable, such as ANTITHESIS_TENANT, then the selected profile in the project settings file, the selected profile in the global settings file, the top-level value in the project settings file, then the top-level value in the global settings file.
+
+A project settings file can set any setting, at the top level or in a profile, including base_url, https_proxy and repository. snouty sends your API key to base_url, sends its requests through https_proxy, and pushes your images to repository, so a settings file from a cloned repository could send your credentials or images to another server. Read the whole file, with every profile in it, before you trust it. If you do not want snouty to use the file, run `{{ t("snouty settings deny")? }}`.
 
 Examples:
   {{ t("snouty settings show")? }}

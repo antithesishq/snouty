@@ -4,7 +4,7 @@ snouty uses a project settings file (./.snouty.toml) only after you trust it. Un
 
 Records that you trust the settings file at {{ t("path")? }} with its current content. When the content changes, you must trust the file again.
 
-{% include "fragments/settings_trust_risk.txt" %}
+A project settings file can set any setting, at the top level or in a profile, including base_url, https_proxy and repository. snouty sends your API key to base_url, sends its requests through https_proxy, and pushes your images to repository, so a settings file from a cloned repository could send your credentials or images to another server. Read the whole file, with every profile in it, before you trust it. If you do not want snouty to use the file, run `{{ t("snouty settings deny")? }}`.
 
 snouty trusts a file that you name with {{ t("--settings")? }} or SNOUTY_SETTINGS_PATH, and the global settings file. Set SNOUTY_SETTINGS_TRUST=all to use every project settings file without a check, for example in CI.
 

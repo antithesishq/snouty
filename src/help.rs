@@ -124,6 +124,21 @@ mod tests {
         assert_eq!(files, pages);
     }
 
+    /// No page includes another file, so each page reads as one file.
+    #[test]
+    fn no_template_includes_a_file() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("help");
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            assert!(path.is_file(), "{} is not a page", path.display());
+            let text = std::fs::read_to_string(&path).unwrap();
+            let includes = ["{% include", "{%- include"]
+                .iter()
+                .any(|tag| text.contains(tag));
+            assert!(!includes, "{} includes a file", path.display());
+        }
+    }
+
     /// Each page is the long help of its own command, and no command has a
     /// long help that is not a page.
     #[test]

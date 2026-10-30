@@ -79,7 +79,7 @@ Query snippets (each is a complete {{ t("query")? }}, ready to paste):
 Each matching event has its moment (an input_hash and a vtime), its source, and its payload: log output, an SDK assertion, a fault, a container lifecycle change, or a test composer command. To stream the logs of an event's timeline to its current end, pass its run ID and input_hash to `{{ t("snouty runs logs <run_id> <hash>")? }}`.
 
 {% if cli %}
-Output: a `moment HASH` divider opens each timeline segment, and each event under it renders on one line as `VTIME [source] payload`, each event shape in its own concise form. VTIME is cut, never rounded, to fit its column, and a long source label ends in `…`. With {{ t("--detail")? }}, VTIME and the source print whole, and indented lines under an event give its source location, as `@ file:function:line`, and the details that it carries, such as an SDK assertion's details, as `details {...}`.
+Output: a `moment HASH` divider opens each timeline segment, and each event under it renders on one line as `VTIME [source] payload`, each event shape in its own concise form. VTIME is truncated to fit its column, and a long source label ends in `…`. With {{ t("--detail")? }}, VTIME and the source print whole, and indented lines under an event give its source location, as `@ file:function:line`, and the details that it carries, such as an SDK assertion's details, as `details {...}`.
 {% else %}
 A `moment HASH` line opens each timeline segment, and each event under it prints as one `VTIME [source] payload` line, with the full vtime. Indented lines under an event give its source location, as `@ file:function:line`, and the details that it carries, such as an SDK assertion's details, as `details {...}`.
 {% endif %}

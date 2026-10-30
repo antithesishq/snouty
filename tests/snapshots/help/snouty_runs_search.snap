@@ -112,11 +112,11 @@ its current end, pass its run ID and input_hash to
 
 Output: a `moment HASH` divider opens each timeline segment, and each event
 under it renders on one line as `VTIME [source] payload`, each event shape in
-its own concise form. VTIME is cut, never rounded, to fit its column, and a long
-source label ends in `…`. With --detail, VTIME and the source print whole, and
-indented lines under an event give its source location, as
-`@ file:function:line`, and the details that it carries, such as an SDK
-assertion's details, as `details {...}`.
+its own concise form. VTIME is truncated to fit its column, and a long source
+label ends in `…`. With --detail, VTIME and the source print whole, and indented
+lines under an event give its source location, as `@ file:function:line`, and
+the details that it carries, such as an SDK assertion's details, as
+`details {...}`.
 
 Rows reshaped by map/narrow/fold print as raw JSON.
 

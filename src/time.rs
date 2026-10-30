@@ -90,10 +90,7 @@ impl HumanDuration {
     }
 
     /// The duration as a number of minutes, rounded to 2 decimal places — the
-    /// form the API wants. The hundredths are computed (and rounded) in integer
-    /// space rather than dividing as floats, so a second-granular value stays
-    /// clean instead of turning into a long repeating decimal: e.g. 7s is
-    /// `0.12`, not `0.11666…`.
+    /// form the API wants: e.g. 7s is `0.12`, not `0.11666…`.
     pub fn minutes(&self) -> f64 {
         self.in_units_of(SECS_PER_MINUTE)
     }
@@ -105,6 +102,8 @@ impl HumanDuration {
     }
 
     fn in_units_of(&self, secs_per_unit: u64) -> f64 {
+        // Rounded in integer space, not by dividing floats, so a second-granular
+        // value does not become a long repeating decimal.
         let per_unit = u128::from(secs_per_unit);
         let hundredths = (u128::from(self.seconds()) * 100 + per_unit / 2) / per_unit;
         hundredths as f64 / 100.0

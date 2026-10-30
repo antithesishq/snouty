@@ -56,8 +56,7 @@ mock-server 200 '{}'
 stderr 'invalid value .*not-a-number.*'
 stderr 'vtime is not a finite decimal number'
 
-# --duration takes minutes, or h/m units, from 30 minutes to 6 hours. A
-#    value out of that range is rejected before any API call.
+# --duration outside 30 minutes to 6 hours fails before any API call.
 ! snouty debug --input-hash abc --run-id run-1 --vtime 1 --duration 29m
 stderr 'invalid value .29m. for .--duration.*must be from 30 minutes to 6 hours'
 ! snouty debug --input-hash abc --run-id run-1 --vtime 1 --duration 6h1m
@@ -103,7 +102,7 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --duration 30
 stderr '"antithesis.debugging.length_hours": "0.5"'
 
-# Without --duration, the length is not sent, and the server sets it.
+# Without --duration, snouty does not send length_hours.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
 ! stderr 'length_hours'

@@ -2,18 +2,18 @@ use std::collections::BTreeSet;
 use std::io::{BufRead, IsTerminal, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use color_eyre::eyre::{Context, OptionExt, Result, bail, eyre};
-use futures_util::{Stream, StreamExt};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use super::{
     events::{self, Event, Failure},
     images::{ImageId, Images},
+    serial::{LogStream, MAX_RECORD_BYTES, serial_lines},
     vm::{BootOutput, GuestConnection, Vm},
 };
 use crate::{
@@ -119,9 +119,6 @@ pub(super) fn attach(id: SimulationId) -> Result<ExitCode> {
     }
     GuestConnection::new(&path).exec_interactive_shell()
 }
-
-type LogStream = Pin<Box<dyn Stream<Item = Result<(u64, String)>> + Send>>;
-const MAX_RECORD_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -711,34 +708,6 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn serial_lines(path: &Path, start: u64) -> Result<LogStream> {
-    let mut file = std::fs::File::open(path)?;
-    file.seek(SeekFrom::Start(start))?;
-    Ok(Box::pin(futures_util::stream::try_unfold(
-        (file, Vec::<u8>::new(), start),
-        |(mut file, mut pending, mut offset)| async move {
-            loop {
-                if let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
-                    let bytes: Vec<_> = pending.drain(..=end).collect();
-                    let line = String::from_utf8_lossy(&bytes[..end]).into_owned();
-                    offset += bytes.len() as u64;
-                    return Ok(Some(((offset, line), (file, pending, offset))));
-                }
-                let mut buffer = [0; 8192];
-                let count = file.read(&mut buffer)?;
-                if count == 0 {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                } else {
-                    pending.extend_from_slice(&buffer[..count]);
-                    if pending.len() > MAX_RECORD_BYTES {
-                        bail!("instrumentation line exceeds 4 MiB");
-                    }
-                }
-            }
-        },
-    )))
-}
-
 async fn drain(
     path: &Path,
     consumed: u64,
@@ -811,42 +780,6 @@ mod tests {
                 assert_eq!(summary.exit_code(reason), ExitCode::FAILURE);
             }
         }
-    }
-
-    #[tokio::test]
-    async fn tail_preserves_partial_lines_across_cancelled_reads() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(file.path(), "old boot event\n").unwrap();
-        let mut stream =
-            serial_lines(file.path(), std::fs::metadata(file.path()).unwrap().len()).unwrap();
-        let mut writer = std::fs::OpenOptions::new()
-            .append(true)
-            .open(file.path())
-            .unwrap();
-        write!(writer, "10 [workload] [INFO] 'part").unwrap();
-        assert!(
-            tokio::time::timeout(Duration::from_millis(80), stream.next())
-                .await
-                .is_err()
-        );
-        writeln!(writer, "ial'").unwrap();
-        let line = tokio::time::timeout(Duration::from_secs(1), stream.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        assert_eq!(line.1, "10 [workload] [INFO] 'partial'");
-        assert!(events::parse_line(&line.1).unwrap().is_some());
-    }
-
-    #[tokio::test]
-    async fn tail_ends_after_an_oversized_record() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        let mut stream =
-            serial_lines(file.path(), std::fs::metadata(file.path()).unwrap().len()).unwrap();
-        std::fs::write(file.path(), vec![b'x'; 4 * 1024 * 1024 + 1]).unwrap();
-        assert!(stream.next().await.unwrap().is_err());
-        assert!(stream.next().await.is_none());
     }
 
     #[tokio::test]

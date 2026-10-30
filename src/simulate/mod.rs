@@ -5,6 +5,8 @@ mod events;
 mod firmware;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod images;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod serial;
 mod ssh_proxy;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod vm;

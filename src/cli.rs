@@ -288,9 +288,9 @@ The guest uses the host architecture by default.
 SSH configuration is private to this run; user configuration is not changed.
 
 Waits for setup_complete before starting test composer on each rollout.
-Forces a new fault configuration before the first rollout. A guest timer then
-calls add_entropy every 30 seconds, independent of composer restarts. Later
-calls use the guest's normal rerandomization chance.
+After the composer watch is ready, calls add_entropy with a fresh random seed
+and force=true. Repeats every 30 seconds while composer runs. Pauses faults
+before stack recreation and waits for setup_complete on the next rollout.
 Uses the guest's configure.py to apply --fault-tolerance and --fault-exclusions
 before the first rollout. Fault tolerance defaults to resilient. Omitted fault
 exclusions keep the guest setting.

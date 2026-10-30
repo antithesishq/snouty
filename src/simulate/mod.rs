@@ -1,4 +1,4 @@
-//! Local guest simulation. The guest owns Compose and test-composer execution.
+//! Local guest simulation. The host controls workload cycles and entropy.
 
 mod events;
 #[cfg(any(target_os = "linux", target_os = "macos"))]

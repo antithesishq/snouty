@@ -928,12 +928,12 @@ fn ssh_authentication_failure_stops_qemu_without_waiting_for_timeout() {
 }
 
 #[test]
-fn supervisor_failure_is_reported_after_workload_start() {
-    let mut simulation = Simulation::start("supervisor-failure");
+fn composer_failure_is_reported_after_workload_start() {
+    let mut simulation = Simulation::start("composer-failure");
     let output = simulation.finish();
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("supervisor failed fixture"), "{stderr}");
+    assert!(stderr.contains("composer failed fixture"), "{stderr}");
     assert!(simulation.root().join("rollout_started").exists());
     let events: Vec<serde_json::Value> = String::from_utf8(output.stdout)
         .unwrap()
@@ -964,7 +964,6 @@ fn clean_single_rollout_keeps_streaming_and_preserves_signal_exit_status() {
     simulation.wait_for("stdout", "workload running");
     assert!(simulation.child.try_wait().unwrap().is_none());
     assert_eq!(simulation.read("thread_pause_enabled"), "yes");
-    assert_eq!(simulation.read("restart_mode"), "restart_enabled=no");
     assert!(
         simulation
             .read("start_script")
@@ -1247,6 +1246,8 @@ fn composer_waits_for_setup_complete_and_wait_is_interruptible() {
     assert!(simulation.root().join("compose_started").exists());
     assert!(!simulation.root().join("rollout_started").exists());
     assert!(!simulation.root().join("faults_unpaused").exists());
+    assert!(simulation.read("entropy_calls").is_empty());
+    assert_eq!(simulation.read("faults_paused"), "yes");
     let log = Path::new(&simulation.read("run_dir")).join("instrumentation.log");
     use std::io::Write;
     writeln!(
@@ -1256,7 +1257,7 @@ fn composer_waits_for_setup_complete_and_wait_is_interruptible() {
     .unwrap();
     simulation.wait_for("rollout_started", "yes");
     assert_eq!(simulation.read("faults_unpaused"), "yes");
-    assert!(!simulation.root().join("faults_paused").exists());
+    assert_eq!(simulation.read("faults_paused"), "yes");
     kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
     simulation.finish();
 
@@ -1302,7 +1303,7 @@ fn fault_configuration_is_forwarded_before_compose() {
         ]
     );
     simulation.wait_for("faults_unpaused", "yes");
-    assert!(!simulation.root().join("faults_paused").exists());
+    assert_eq!(simulation.read("faults_paused"), "yes");
     kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
     simulation.finish();
 
@@ -1323,7 +1324,7 @@ fn fault_configuration_is_forwarded_before_compose() {
             ]
         );
         simulation.wait_for("faults_unpaused", "yes");
-        assert!(!simulation.root().join("faults_paused").exists());
+        assert_eq!(simulation.read("faults_paused"), "yes");
         kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
         simulation.finish();
     }
@@ -1433,4 +1434,137 @@ fn fault_pause_failure_stops_simulation_before_compose() {
         "{stderr}"
     );
     assert!(!simulation.root().join("compose_started").exists());
+}
+
+#[test]
+fn entropy_waits_for_composer_readiness_and_wakes_it_immediately() {
+    let mut simulation = Simulation::start("readiness-blocked");
+    simulation.wait_for("composer_starting", "yes");
+    assert!(simulation.read("entropy_calls").is_empty());
+    let ready = Instant::now();
+    fs::write(simulation.root().join("ready"), "").unwrap();
+    simulation.wait_for("entropy_calls", "true");
+    assert!(ready.elapsed() < Duration::from_secs(2));
+    let events = simulation.read("cycle_events");
+    assert!(
+        events.starts_with("pause\nunpause\ncomposer-start\ncomposer-ready\nentropy "),
+        "{events}"
+    );
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    simulation.finish();
+    assert_eq!(simulation.read("entropy_calls").lines().count(), 1);
+}
+
+#[test]
+fn composer_readiness_failure_never_adds_entropy() {
+    let mut simulation = Simulation::start("readiness-failure");
+    assert!(!simulation.finish().status.success());
+    assert!(simulation.read("entropy_calls").is_empty());
+}
+
+#[test]
+fn composer_readiness_wait_is_interruptible() {
+    let mut simulation = Simulation::start("readiness-blocked");
+    simulation.wait_for("composer_starting", "yes");
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    simulation.finish();
+    assert!(simulation.read("entropy_calls").is_empty());
+}
+
+#[test]
+fn entropy_is_forced_every_thirty_seconds_and_stops_on_shutdown() {
+    let mut simulation = Simulation::start("periodic-entropy");
+    simulation.wait_for("entropy_calls", "true");
+    std::thread::sleep(Duration::from_secs(31));
+    let calls = simulation.read("entropy_calls");
+    let calls: Vec<Vec<&str>> = calls
+        .lines()
+        .map(|line| line.split_whitespace().collect())
+        .collect();
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    let elapsed = calls[1][0].parse::<f64>().unwrap() - calls[0][0].parse::<f64>().unwrap();
+    assert!((30.0..31.0).contains(&elapsed), "{elapsed}");
+    assert_ne!(calls[0][1], calls[1][1]);
+    assert!(
+        calls
+            .iter()
+            .all(|call| call[1].parse::<u64>().is_ok() && call[2] == "true")
+    );
+    // Composer owns the first_ and terminal fault pauses between entropy calls.
+    assert_eq!(
+        simulation
+            .read("cycle_events")
+            .lines()
+            .filter(|line| *line == "unpause")
+            .count(),
+        1
+    );
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    simulation.finish();
+    assert_eq!(simulation.read("entropy_calls").lines().count(), 2);
+}
+
+#[test]
+fn entropy_stops_after_exit_until_next_setup_and_readiness() {
+    let mut simulation = Simulation::start("entropy-restart");
+    simulation.wait_for("entropy_calls", "true");
+    fs::write(simulation.root().join("composer_exit"), "").unwrap();
+    simulation.wait_for("recreate_started", "yes");
+    std::thread::sleep(Duration::from_secs(31));
+    assert_eq!(simulation.read("entropy_calls").lines().count(), 1);
+    let events = simulation.read("cycle_events");
+    assert!(events.contains("true\npause\nrecreate\n"), "{events}");
+    assert_eq!(events.lines().filter(|line| *line == "unpause").count(), 1);
+    fs::remove_file(simulation.root().join("composer_exit")).unwrap();
+    let log = Path::new(&simulation.read("run_dir")).join("instrumentation.log");
+    use std::io::Write;
+    writeln!(
+        fs::OpenOptions::new().append(true).open(log).unwrap(),
+        "14 [workload] [JSON] '{{\"antithesis_setup\":{{\"status\":\"complete\"}}}}'"
+    )
+    .unwrap();
+    simulation.wait_for(
+        "cycle_events",
+        "recreate\nunpause\ncomposer-start\ncomposer-ready\nentropy ",
+    );
+    assert_eq!(simulation.read("entropy_calls").lines().count(), 2);
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    simulation.finish();
+}
+
+#[test]
+fn restart_wait_cancels_entropy_and_is_interruptible() {
+    let mut simulation = Simulation::start("restart-blocked");
+    simulation.wait_for("entropy_calls", "true");
+    fs::write(simulation.root().join("composer_exit"), "").unwrap();
+    simulation.wait_for("recreate_started", "yes");
+    std::thread::sleep(Duration::from_secs(31));
+    assert_eq!(simulation.read("entropy_calls").lines().count(), 1);
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    simulation.finish();
+    assert_eq!(simulation.read("entropy_calls").lines().count(), 1);
+}
+
+#[test]
+fn completed_single_rollout_and_empty_commands_cancel_entropy() {
+    let mut simulations = Vec::new();
+    for mode in ["clean-once", "no-commands"] {
+        let mut simulation = Simulation::start(mode);
+        simulation.wait_for("entropy_calls", "true");
+        fs::write(simulation.root().join("composer_exit"), "").unwrap();
+        simulation.wait_for("cycle_events", "true\npause\n");
+        if mode == "clean-once" {
+            assert!(!simulation.root().join("recreate_started").exists());
+        } else {
+            simulation.wait_for("recreate_started", "yes");
+        }
+        simulations.push(simulation);
+    }
+    std::thread::sleep(Duration::from_secs(31));
+    for mut simulation in simulations {
+        assert!(simulation.child.try_wait().unwrap().is_none());
+        kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+        simulation.finish();
+        assert_eq!(simulation.read("entropy_calls").lines().count(), 1);
+    }
 }

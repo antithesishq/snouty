@@ -19,7 +19,7 @@ Extra parameters can be passed with {{ t("--param")? }}{% if cli %}, as for `sno
     --param attrs.team=payments
   {% endfilter %}
 
-The response holds the new session's run ID in `runId`. The session starts at the moment that it debugs. Wait until it is ready, then run commands at that moment:
+The new session's run ID is the `run_id` value in the output, or `runId` with {{ t("--json")? }}. The session starts at the moment that it debugs. Wait until it is ready, then run commands at that moment:
   {{ t("snouty runs wait <session_run_id> --until ready")? }}
   {{ t("snouty runs exec <session_run_id> <hash> <vtime> 'ps aux'")? }}
 

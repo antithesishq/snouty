@@ -20,9 +20,9 @@ cannot replace the value of a dedicated flag, such as --title:
   snouty debug --run-id <run_id> --input-hash <hash> --vtime <vtime> \
     --param attrs.team=payments
 
-The response holds the new session's run ID in `runId`. The session starts at
-the moment that it debugs. Wait until it is ready, then run commands at that
-moment:
+The new session's run ID is the `run_id` value in the output, or `runId` with
+--json. The session starts at the moment that it debugs. Wait until it is ready,
+then run commands at that moment:
   snouty runs wait <session_run_id> --until ready
   snouty runs exec <session_run_id> <hash> <vtime> 'ps aux'
 

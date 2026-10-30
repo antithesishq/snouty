@@ -57,6 +57,8 @@ elif name == 'docker':
     else:
         sys.exit('unexpected engine command: ' + repr(args))
 elif name == 'ssh':
+    record('ssh_invoked', 'yes')
+    assert (root / 'ssh_ready').exists(), 'SSH invoked before readiness marker'
     assert args[0] == '-F', args
     config = Path(args[1])
     record('ssh_config', config.read_text())
@@ -90,6 +92,13 @@ elif name == 'ssh':
         record('readiness_options', json.dumps(options))
         if not (root / 'ssh_ready').exists():
             sys.exit(255)
+        if mode == 'slow-login':
+            time.sleep(6)
+        if mode == 'login-timeout':
+            time.sleep(60)
+        if mode == 'login-qemu-exit':
+            os.kill(int((root / 'qemu_pid').read_text()), signal.SIGTERM)
+            time.sleep(60)
         if mode == 'ssh-retry':
             first_attempt = root / 'first_ssh_attempt'
             if not first_attempt.exists():
@@ -145,20 +154,23 @@ elif name == 'ssh':
         elif 'up -d' in script:
             record('start_script', script)
             log = Path.cwd() / 'instrumentation.log'
-            log.write_text("11.2 [workload] [JSON] '{\"antithesis_assert\":{\"message\":\"balance stays positive\",\"assert_type\":\"always\",\"must_hit\":true,\"hit\":true,\"condition\":false}}'\n12.0 [workload] [STDOUT] 'still running after assertion'\n")
+            contents = "11.2 [workload] [JSON] '{\"antithesis_assert\":{\"message\":\"balance stays positive\",\"assert_type\":\"always\",\"must_hit\":true,\"hit\":true,\"condition\":false}}'\n12.0 [workload] [STDOUT] 'still running after assertion'\n"
             if mode == 'fault-annotation':
-                log.write_text("11.0 [fault_injector] [JSON] '{\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"workload\"],\"max_duration\":2}}'\n11.1 [fault_injector] [JSON] '{\"fault\":{\"name\":\"kill\",\"type\":\"node\",\"affected_nodes\":[\"echo-server\"],\"max_duration\":2}}'\n11.2 [workload] [JSON] '{\"antithesis_assert\":{\"message\":\"balance stays positive\",\"assert_type\":\"always\",\"must_hit\":true,\"hit\":true,\"condition\":false}}'\n")
+                contents = "11.0 [fault_injector] [JSON] '{\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"workload\"],\"max_duration\":2}}'\n11.1 [fault_injector] [JSON] '{\"fault\":{\"name\":\"kill\",\"type\":\"node\",\"affected_nodes\":[\"echo-server\"],\"max_duration\":2}}'\n11.2 [workload] [JSON] '{\"antithesis_assert\":{\"message\":\"balance stays positive\",\"assert_type\":\"always\",\"must_hit\":true,\"hit\":true,\"condition\":false}}'\n"
             if mode == 'malformed-json':
-                log.write_text("12.0 [workload] [JSON] '{broken json}'\n")
+                contents = "12.0 [workload] [JSON] '{broken json}'\n"
             if mode in ('composer-failure', 'clean-once', 'missing-guest', 'default-image', 'human', 'arm64', 'poweroff-fails', 'poweroff-hangs', 'poweroff-second-interrupt'):
-                log.write_text('12.0 [workload] [STDOUT] \'workload running\'\n')
+                contents = '12.0 [workload] [STDOUT] \'workload running\'\n'
             if mode.startswith('blocked-output'):
-                with log.open('w') as output:
+                contents = ''
+                with log.open('a') as output:
                     for _ in range(1024):
                         output.write("12 [workload] [STDOUT] '" + 'x' * 8192 + "'\n")
                     if mode == 'blocked-output-failures':
                         output.write('13 [antithesis_test_composer] [JSON] ' + json.dumps({'task_status': 'finished', 'command': 'test', 'command_return_code': 1}) + '\n')
                         output.write('14 [workload] [JSON] ' + json.dumps({'antithesis_assert': {'assert_type': 'always', 'hit': True, 'condition': False, 'message': 'late violation'}}))
+            with log.open('a') as output:
+                output.write(contents)
             record('compose_started', 'yes')
             if mode != 'waiting-setup':
                 with log.open('a') as output:
@@ -265,7 +277,24 @@ elif name in ('qemu-system-x86_64', 'qemu-system-aarch64'):
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     if mode != 'shell-booting':
-        record('ssh_ready', 'yes')
+        with Path('instrumentation.log').open('a') as output:
+            output.write("1 [boot] [JSON] '{\"antithesis_setup\":{\"status\":\"complete\"}}'\n")
+            output.flush()
+            if mode == 'fragmented-ready':
+                record('marker_pending', 'yes')
+                while not (root / 'emit_marker').exists():
+                    time.sleep(0.01)
+            marker = "2 [antithesis/ssh-ready.json] [JSON] '{\"antithesis_host\":{\"status\":\"ssh_ready\"}}'\n"
+            record('ssh_ready', 'yes')
+            if mode == 'fragmented-ready':
+                output.write(marker[:-1])
+                output.flush()
+                record('marker_partial', 'yes')
+                while not (root / 'finish_marker').exists():
+                    time.sleep(0.01)
+                output.write(marker[-1:])
+            else:
+                output.write(marker)
     while True:
         time.sleep(1)
 else:

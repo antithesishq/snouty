@@ -7,12 +7,17 @@ use std::time::Duration;
 
 use crate::process::output_async;
 use color_eyre::eyre::{Context, Result, bail, eyre};
+use futures_util::StreamExt;
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use tokio::time::{Instant, sleep, timeout};
 
-use super::SimulatePlatform;
 use super::firmware::platform_firmware;
+use super::{
+    SimulatePlatform,
+    events::{self, EventKind},
+    serial::serial_lines,
+};
 
 const AUTHORIZED_KEY_FW_CFG: &str = "opt/antithesis/authorized_key";
 const SSH_READY_RETRY_INTERVAL: Duration = Duration::from_millis(100);
@@ -269,33 +274,76 @@ impl Vm {
             run_dir: run_dir.clone(),
         };
         let mut boot_console = BootConsole::new(boot_output);
-        let result = timeout(
-            deadline.saturating_duration_since(Instant::now()),
-            vm.wait_ready(&mut boot_console),
-        )
-        .await;
+        let result = vm.wait_ready(&mut boot_console, deadline).await;
         boot_console.flush(&vm.run_dir.join("boot.log"))?;
         boot_console.filter.finish();
         match result {
-            Ok(Ok(())) => Ok(vm),
-            Ok(Err(error)) => Err(error).wrap_err(vm.boot_diagnostics()),
-            Err(_) => bail!(
-                "guest startup timed out after {} seconds\n{}",
-                startup_timeout.as_secs(),
-                vm.boot_diagnostics()
-            ),
+            Ok(()) => Ok(vm),
+            Err(error) => Err(error).wrap_err(vm.boot_diagnostics()),
         }
     }
 
-    async fn wait_ready(&mut self, boot_console: &mut BootConsole) -> Result<()> {
+    async fn wait_ready(
+        &mut self,
+        boot_console: &mut BootConsole,
+        deadline: Instant,
+    ) -> Result<()> {
+        tokio::time::timeout_at(deadline, async {
+            let mut lines = loop {
+                boot_console.flush(&self.run_dir.join("boot.log"))?;
+                if !self.is_running()? {
+                    bail!("QEMU exited before SSH became ready");
+                }
+                if self.instrumentation.try_exists()? {
+                    break serial_lines(&self.instrumentation, 0)?;
+                }
+                sleep(Duration::from_millis(50)).await;
+            };
+            loop {
+                boot_console.flush(&self.run_dir.join("boot.log"))?;
+                if !self.is_running()? {
+                    bail!("QEMU exited before SSH became ready");
+                }
+                tokio::select! {
+                    line = lines.next() => {
+                        let (_, line) = line.ok_or_else(|| eyre!("instrumentation stream ended before SSH readiness"))??;
+                        if matches!(events::parse_line(&line)?, Some(event) if matches!(event.kind, EventKind::SshReady)) {
+                            return Ok(());
+                        }
+                    }
+                    _ = sleep(Duration::from_millis(50)) => {}
+                }
+            }
+        }).await.map_err(|_| eyre!("guest startup timed out waiting for SSH readiness marker (antithesis_host.status=ssh_ready)"))??;
+        tokio::time::timeout_at(deadline, self.wait_ssh_login(boot_console))
+            .await
+            .map_err(|_| {
+                eyre!("guest startup timed out waiting for SSH login after readiness marker")
+            })?
+    }
+
+    async fn wait_ssh_login(&mut self, boot_console: &mut BootConsole) -> Result<()> {
         loop {
             boot_console.flush(&self.run_dir.join("boot.log"))?;
             if !self.is_running()? {
                 bail!("QEMU exited before SSH became ready");
             }
             let mut command = self.ssh();
-            command.args(["-o", "ConnectTimeout=1", "true"]);
-            let output = match output_async(command, Duration::from_secs(5)).await {
+            command.args(["-o", "ConnectTimeout=30", "true"]);
+            let output = output_async(command, Duration::from_secs(60));
+            tokio::pin!(output);
+            let result = loop {
+                tokio::select! {
+                    result = &mut output => break result,
+                    _ = sleep(Duration::from_millis(50)) => {
+                        boot_console.flush(&self.run_dir.join("boot.log"))?;
+                        if !self.is_running()? {
+                            bail!("QEMU exited before SSH became ready");
+                        }
+                    }
+                }
+            };
+            let output = match result {
                 Ok(output) => output,
                 Err(error) => {
                     log::debug!("guest SSH readiness check failed: {error:#}");

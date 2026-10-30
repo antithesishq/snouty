@@ -197,7 +197,7 @@ impl Simulation {
             ])
             .args([
                 "--timeout",
-                if mode == "startup-timeout" {
+                if matches!(mode, "startup-timeout" | "login-timeout") {
                     "1s"
                 } else {
                     "10s"
@@ -973,14 +973,58 @@ fn catastrophic_startup_reports_hidden_boot_console() {
 }
 
 #[test]
+fn ssh_waits_for_a_complete_readiness_record() {
+    let mut simulation = Simulation::start("fragmented-ready");
+    simulation.wait_for("marker_pending", "yes");
+    std::thread::sleep(Duration::from_millis(150));
+    assert!(!simulation.root().join("ssh_invoked").exists());
+    fs::write(simulation.root().join("emit_marker"), "").unwrap();
+    simulation.wait_for("marker_partial", "yes");
+    std::thread::sleep(Duration::from_millis(150));
+    assert!(!simulation.root().join("ssh_invoked").exists());
+    fs::write(simulation.root().join("finish_marker"), "").unwrap();
+    simulation.wait_for("rollout_started", "yes");
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    let output = simulation.finish();
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("ssh_ready"));
+}
+
+#[test]
 fn ssh_readiness_retries_promptly_after_a_failed_connection() {
     let mut simulation = Simulation::start("ssh-retry");
     simulation.wait_for("rollout_started", "yes");
     let delay: f64 = simulation.read("ssh_retry_delay").parse().unwrap();
     assert!(delay < 0.8, "SSH retry took {delay} seconds");
     let options: Vec<String> = serde_json::from_str(&simulation.read("readiness_options")).unwrap();
-    assert_eq!(options, ["-o", "ConnectTimeout=1"]);
+    assert_eq!(options, ["-o", "ConnectTimeout=30"]);
     assert!(simulation.read("ssh_config").contains("ConnectTimeout 2"));
+}
+
+#[test]
+fn first_ssh_login_can_take_longer_than_five_seconds() {
+    let mut simulation = Simulation::start("slow-login");
+    simulation.wait_for("rollout_started", "yes");
+    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    simulation.finish();
+}
+
+#[test]
+fn ssh_login_keeps_startup_deadline_and_qemu_exit_detection() {
+    for (mode, expected) in [
+        (
+            "login-timeout",
+            "guest startup timed out waiting for SSH login after readiness marker",
+        ),
+        ("login-qemu-exit", "QEMU exited before SSH became ready"),
+    ] {
+        let mut simulation = Simulation::start(mode);
+        let output = simulation.finish();
+        assert_eq!(output.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{stderr}");
+        assert!(stderr.contains("private boot console"), "{stderr}");
+        assert!(!simulation.root().join("rollout_started").exists());
+    }
 }
 
 #[test]
@@ -1216,7 +1260,7 @@ fn startup_timeout_reaps_qemu_and_reports_boot_diagnostics() {
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains("guest startup timed out after 1 seconds"),
+        stderr.contains("guest startup timed out waiting for SSH readiness marker"),
         "{stderr}"
     );
     assert!(stderr.contains("private boot console"), "{stderr}");
@@ -1226,6 +1270,7 @@ fn startup_timeout_reaps_qemu_and_reports_boot_diagnostics() {
         "QEMU survived startup timeout"
     );
     assert!(!simulation.root().join("rollout_started").exists());
+    assert!(!simulation.root().join("ssh_invoked").exists());
 }
 
 #[test]

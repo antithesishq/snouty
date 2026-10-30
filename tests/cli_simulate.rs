@@ -342,6 +342,64 @@ fn guest_has_no_unused_default_devices() {
 }
 
 #[test]
+fn openssh_connects_through_snouty_fd_proxy() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+
+    let mut simulation = Simulation::start("clean-once");
+    simulation.wait_for("ssh_config", "ProxyCommand");
+    let config = simulation.read("ssh_config");
+    let args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
+    let socket = args
+        .iter()
+        .find_map(|arg| {
+            arg.strip_prefix("user,id=net0,hostfwd=unix:")
+                .and_then(|arg| arg.strip_suffix("-:22,restrict=yes"))
+        })
+        .unwrap();
+    let listener = UnixListener::bind(socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let server = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "SSH proxy did not connect");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream.write_all(b"SSH-2.0-snouty_test\r\n").unwrap();
+        let mut banner = String::new();
+        BufReader::new(stream).read_line(&mut banner).unwrap();
+        assert!(banner.starts_with("SSH-2.0-"), "{banner:?}");
+    });
+    let config_path = simulation.root().join("proxy_config");
+    fs::write(&config_path, config).unwrap();
+    let output = Command::new("ssh")
+        .arg("-F")
+        .arg(config_path)
+        .args(["guest_vm", "true"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    // The fake server closes after the SSH banner exchange, before key exchange.
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(!error.contains("mm_receive_fd"), "{error}");
+    assert!(
+        !error.contains("failed to pass guest SSH socket"),
+        "{error}"
+    );
+}
+
+#[test]
 fn guest_uses_q35_with_acceleration_fallback() {
     let mut simulation = Simulation::start("clean-once");
     simulation.wait_for("qemu_args", "i8042=off");
@@ -850,7 +908,8 @@ fn assertion_failure_is_latched_until_interruption_and_children_are_reaped() {
     assert!(
         qemu_args
             .iter()
-            .any(|arg| arg.contains("hostfwd=tcp:127.0.0.1:") && arg.ends_with("-:22,restrict=yes"))
+            .any(|arg| arg.contains("hostfwd=unix:/tmp/snouty")
+                && arg.ends_with("-:22,restrict=yes"))
     );
     let ssh_config = simulation.read("image_load_ssh_config");
     assert!(ssh_config.contains("IdentitiesOnly yes"));
@@ -859,6 +918,18 @@ fn assertion_failure_is_latched_until_interruption_and_children_are_reaped() {
     assert!(ssh_config.contains("UserKnownHostsFile /dev/null"));
     assert!(ssh_config.contains("GlobalKnownHostsFile /dev/null"));
     assert!(ssh_config.contains("Compression no"));
+    assert!(ssh_config.contains("ProxyUseFdpass yes"));
+    assert!(ssh_config.contains(" internal-ssh-proxy "));
+    assert!(!ssh_config.contains("\n Port "));
+    let socket = qemu_args
+        .iter()
+        .find_map(|arg| {
+            arg.strip_prefix("user,id=net0,hostfwd=unix:")
+                .and_then(|arg| arg.strip_suffix("-:22,restrict=yes"))
+        })
+        .unwrap();
+    assert!(ssh_config.contains(socket));
+    assert!(!Path::new(socket).parent().unwrap().exists());
     assert!(!ssh_config.contains(".pub"));
     assert!(!simulation.read("qemu_args").contains("-qmp"));
 }

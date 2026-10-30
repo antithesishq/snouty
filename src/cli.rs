@@ -282,7 +282,8 @@ Kubernetes configurations are not supported. Workload images must exist in
 the local container engine. The guest image defaults to antithesis-guest:v66.0
 in the configured repository. No API key is required.
 
-Requires Linux or macOS and QEMU. Uses 1 CPU and 15000 MiB of memory by default.
+Requires Linux or macOS and QEMU 10.2 or later, built with libslirp 4.7 or later.
+Uses 1 CPU and 15000 MiB of memory by default.
 Use --memory to lower guest memory when the host has less RAM.
 The guest uses the host architecture by default.
 SSH configuration is private to this run; user configuration is not changed.
@@ -315,6 +316,9 @@ Example:
   SNOUTY_UNSTABLE_FEATURES=simulate snouty simulate ./config"#
     )]
     Simulate(SimulateArgs),
+
+    #[command(hide = true)]
+    InternalSshProxy { socket: std::path::PathBuf },
 
     /// Check environment configuration
     #[command(long_about = r#"Check environment configuration

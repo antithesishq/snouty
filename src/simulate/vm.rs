@@ -1,6 +1,5 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::net::TcpListener;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -109,6 +108,7 @@ impl SeaBiosConsoleFilter {
 
 pub struct Vm {
     child: Child,
+    _socket_directory: tempfile::TempDir,
     client_key: Option<ClientKey>,
     ssh_config: PathBuf,
     run_dir: PathBuf,
@@ -181,116 +181,110 @@ impl Vm {
         let deadline = Instant::now()
             .checked_add(startup_timeout)
             .ok_or_else(|| eyre!("guest startup timeout is too large"))?;
-        for attempt in 0..5 {
-            let client_key = ClientKey::generate(&run_dir).await?;
-            let listener = TcpListener::bind(("127.0.0.1", 0))?;
-            let port = listener.local_addr()?.port();
-            let ssh_config = run_dir.join("ssh_config");
-            fs::write(
-                &ssh_config,
-                format!(
-                    "Host guest_vm\n HostName 127.0.0.1\n Port {port}\n User root\n IdentityFile {}\n IdentitiesOnly yes\n IdentityAgent none\n UserKnownHostsFile /dev/null\n GlobalKnownHostsFile /dev/null\n StrictHostKeyChecking no\n UpdateHostKeys no\n LogLevel ERROR\n BatchMode yes\n ConnectTimeout 2\n ServerAliveInterval 5\n ServerAliveCountMax 3\n Compression no\n ControlMaster no\n ControlPath none\n",
-                    client_key.identity_file.display()
-                ),
-            )?;
-            let mut command = Command::new(match platform {
-                SimulatePlatform::Amd64 => "qemu-system-x86_64",
-                SimulatePlatform::Arm64 => "qemu-system-aarch64",
-            });
-            command
-                .current_dir(&run_dir)
-                .args(["-cpu", "max", "-machine"])
-                .arg(format!(
-                    "{},accel={QEMU_ACCELERATOR}",
-                    match platform {
-                        SimulatePlatform::Amd64 => "q35,i8042=off",
-                        SimulatePlatform::Arm64 => "virt,gic-version=max",
-                    }
-                ))
-                .args(["-nodefaults", "-smp", "1", "-m"])
-                .arg(memory_mib.to_string());
-            if let Some(scratch_disk) = scratch_disk {
+        let client_key = ClientKey::generate(&run_dir).await?;
+        // QEMU 10.2 splits hostfwd at the first hyphen. Keep the path short
+        // and free of hyphens, including when the cache path is long.
+        let socket_directory = tempfile::Builder::new()
+            .prefix("snouty")
+            .tempdir_in("/tmp")?;
+        let socket = socket_directory.path().join("ssh.sock");
+        let proxy = super::ssh_proxy::proxy_command(&std::env::current_exe()?, &socket)?;
+        let ssh_config = run_dir.join("ssh_config");
+        fs::write(
+            &ssh_config,
+            format!(
+                "Host guest_vm\n ProxyCommand {proxy}\n ProxyUseFdpass yes\n User root\n IdentityFile {}\n IdentitiesOnly yes\n IdentityAgent none\n UserKnownHostsFile /dev/null\n GlobalKnownHostsFile /dev/null\n StrictHostKeyChecking no\n UpdateHostKeys no\n LogLevel ERROR\n BatchMode yes\n ConnectTimeout 2\n ServerAliveInterval 5\n ServerAliveCountMax 3\n Compression no\n ControlMaster no\n ControlPath none\n",
+                client_key.identity_file.display()
+            ),
+        )?;
+        let mut command = Command::new(match platform {
+            SimulatePlatform::Amd64 => "qemu-system-x86_64",
+            SimulatePlatform::Arm64 => "qemu-system-aarch64",
+        });
+        command
+            .current_dir(&run_dir)
+            .args(["-cpu", "max", "-machine"])
+            .arg(format!(
+                "{},accel={QEMU_ACCELERATOR}",
+                match platform {
+                    SimulatePlatform::Amd64 => "q35,i8042=off",
+                    SimulatePlatform::Arm64 => "virt,gic-version=max",
+                }
+            ))
+            .args(["-nodefaults", "-smp", "1", "-m"])
+            .arg(memory_mib.to_string());
+        if let Some(scratch_disk) = scratch_disk {
+            command.args([
+                "-drive",
+                &format!("file={},if=virtio,format=qcow2", scratch_disk.display()),
+            ]);
+        }
+        if let Some(code) = &firmware {
+            command.arg("-bios").arg(code);
+        }
+        command.args(["-boot", "d", "-cdrom"]).arg(iso).args([
+            "-display",
+            "none",
+            "-vga",
+            "none",
+            "-monitor",
+            "none",
+            "-serial",
+            "file:boot.log",
+        ]);
+        match platform {
+            SimulatePlatform::Amd64 => {
+                command.args(["-serial", "file:instrumentation.log"]);
+            }
+            SimulatePlatform::Arm64 => {
                 command.args([
-                    "-drive",
-                    &format!("file={},if=virtio,format=qcow2", scratch_disk.display()),
+                    "-chardev",
+                    "file,id=instrumentation,path=instrumentation.log",
+                    "-device",
+                    "pci-serial,chardev=instrumentation",
                 ]);
             }
-            if let Some(code) = &firmware {
-                command.arg("-bios").arg(code);
-            }
-            command.args(["-boot", "d", "-cdrom"]).arg(iso).args([
-                "-display",
-                "none",
-                "-vga",
-                "none",
-                "-monitor",
-                "none",
-                "-serial",
-                "file:boot.log",
-            ]);
-            match platform {
-                SimulatePlatform::Amd64 => {
-                    command.args(["-serial", "file:instrumentation.log"]);
-                }
-                SimulatePlatform::Arm64 => {
-                    command.args([
-                        "-chardev",
-                        "file,id=instrumentation,path=instrumentation.log",
-                        "-device",
-                        "pci-serial,chardev=instrumentation",
-                    ]);
-                }
-            }
-            command
-                .arg("-fw_cfg")
-                .arg(format!(
-                    "name={AUTHORIZED_KEY_FW_CFG},file={}",
-                    client_key.public_key.display()
-                ))
-                .args(["-device", "virtio-net-pci,netdev=net0", "-netdev"])
-                .arg(format!(
-                    "user,id=net0,hostfwd=tcp:127.0.0.1:{port}-:22,restrict=yes"
-                ))
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(File::create(run_dir.join("qemu.log"))?)
-                .process_group(0);
-            drop(listener);
-            let mut vm = Self {
-                child: command.spawn().wrap_err("failed to start QEMU")?,
-                client_key: Some(client_key),
-                ssh_config,
-                instrumentation: run_dir.join("instrumentation.log"),
-                run_dir: run_dir.clone(),
-            };
-            let mut boot_console = BootConsole::new(boot_output);
-            let result = timeout(
-                deadline.saturating_duration_since(Instant::now()),
-                vm.wait_ready(&mut boot_console),
-            )
-            .await;
-            boot_console.flush(&vm.run_dir.join("boot.log"))?;
-            boot_console.filter.finish();
-            match result {
-                Ok(Ok(())) => return Ok(vm),
-                Ok(Err(error)) => {
-                    if attempt < 4
-                        && !vm.is_running()?
-                        && TcpListener::bind(("127.0.0.1", port))
-                            .is_err_and(|error| error.kind() == std::io::ErrorKind::AddrInUse)
-                    {
-                        continue;
-                    }
-                    return Err(error).wrap_err(vm.boot_diagnostics());
-                }
-                Err(_) => bail!(
-                    "guest startup timed out after {} seconds\n{}",
-                    startup_timeout.as_secs(),
-                    vm.boot_diagnostics()
-                ),
-            }
         }
-        unreachable!("the final startup attempt returns its error")
+        command
+            .arg("-fw_cfg")
+            .arg(format!(
+                "name={AUTHORIZED_KEY_FW_CFG},file={}",
+                client_key.public_key.display()
+            ))
+            .args(["-device", "virtio-net-pci,netdev=net0", "-netdev"])
+            .arg(format!(
+                "user,id=net0,hostfwd=unix:{}-:22,restrict=yes",
+                socket.display()
+            ))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(File::create(run_dir.join("qemu.log"))?)
+            .process_group(0);
+        let mut vm = Self {
+            child: command.spawn().wrap_err("failed to start QEMU")?,
+            _socket_directory: socket_directory,
+            client_key: Some(client_key),
+            ssh_config,
+            instrumentation: run_dir.join("instrumentation.log"),
+            run_dir: run_dir.clone(),
+        };
+        let mut boot_console = BootConsole::new(boot_output);
+        let result = timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            vm.wait_ready(&mut boot_console),
+        )
+        .await;
+        boot_console.flush(&vm.run_dir.join("boot.log"))?;
+        boot_console.filter.finish();
+        match result {
+            Ok(Ok(())) => Ok(vm),
+            Ok(Err(error)) => Err(error).wrap_err(vm.boot_diagnostics()),
+            Err(_) => bail!(
+                "guest startup timed out after {} seconds\n{}",
+                startup_timeout.as_secs(),
+                vm.boot_diagnostics()
+            ),
+        }
     }
 
     async fn wait_ready(&mut self, boot_console: &mut BootConsole) -> Result<()> {
@@ -574,6 +568,7 @@ mod tests {
         let pid = Pid::from_raw(child.id() as i32);
         let vm = Vm {
             child,
+            _socket_directory: tempfile::tempdir().unwrap(),
             client_key: Some(ClientKey {
                 _directory: tempfile::tempdir_in(run_dir.path()).unwrap(),
                 identity_file: PathBuf::new(),
@@ -599,6 +594,7 @@ mod tests {
         child.wait().unwrap();
         let mut vm = Vm {
             child,
+            _socket_directory: tempfile::tempdir().unwrap(),
             client_key: Some(ClientKey {
                 _directory: key_directory,
                 identity_file: PathBuf::new(),

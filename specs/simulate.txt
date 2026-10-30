@@ -2,6 +2,7 @@
 env SNOUTY_UNSTABLE_FEATURES=
 snouty --help
 ! stdout 'simulate +Run'
+! stdout 'internal-ssh-proxy'
 ! snouty simulate empty --guest-image guest:latest
 stderr 'is an unstable feature and is not enabled'
 stderr 'SNOUTY_UNSTABLE_FEATURES=simulate'
@@ -18,7 +19,8 @@ stdout 'guest-image'
 ! stdout 'SNOUTY_SIMULATE_GUEST_ISO'
 ! stdout '\-\-platform'
 stdout 'The guest uses the host architecture by default'
-stdout 'Requires Linux or macOS and QEMU'
+stdout 'Requires Linux or macOS and QEMU 10\.2 or later'
+stdout 'libslirp 4\.7 or later'
 stdout 'antithesis-guest:v66\.0'
 stdout 'No API key is required'
 ! stdout '/api/version'
@@ -149,6 +151,13 @@ stderr 'both docker-compose.yaml and a manifests/ subdirectory'
 stderr 'not a directory'
 ! snouty simulate kubernetes --guest-image guest:latest
 stderr 'Kubernetes.*not supported'
+
+# The internal SSH proxy is available without the simulate feature or settings.
+env SNOUTY_UNSTABLE_FEATURES=
+! snouty --settings missing.toml internal-ssh-proxy /nonexistent/guest.sock
+stderr 'failed to connect to guest SSH socket'
+! snouty internal-ssh-proxy
+stderr '<SOCKET>'
 
 -- empty/.keep --
 -- yml_dir/docker-compose.yml --

@@ -313,7 +313,8 @@ Compose setup in a local guest VM:
 SNOUTY_UNSTABLE_FEATURES=simulate snouty simulate ./config
 ```
 
-Install QEMU (including `qemu-img`), OpenSSH, tar, and the container engine and
+Install QEMU 10.2 or later (including `qemu-img`), built with libslirp 4.7 or
+later, OpenSSH, tar, and the container engine and
 Compose tools described above. Simulation uses a sparse 16 GiB qcow2 scratch
 disk for Podman image-copy temporary files and image storage. It lives under
 `$XDG_CACHE_HOME/snouty/simulate` (default `$HOME/.cache/snouty/simulate`) and

@@ -90,6 +90,10 @@ async fn run(cli: Cli) -> Result<std::process::ExitCode> {
         profile,
         command,
     } = cli;
+    if let Commands::InternalSshProxy { socket } = &command {
+        snouty::simulate::pass_ssh_socket(socket)?;
+        return Ok(std::process::ExitCode::SUCCESS);
+    }
     if json && let Some(name) = json_unaware_command_name(&command) {
         eprintln!("warning: --json has no effect for `snouty {name}`");
     }
@@ -113,6 +117,7 @@ async fn run(cli: Cli) -> Result<std::process::ExitCode> {
     // don't read settings. That keeps dispatch a single flat match.
     let settings = Settings::resolve(settings_path, profile.clone());
     let result = match command {
+        Commands::InternalSshProxy { .. } => unreachable!("SSH proxy is handled before settings"),
         Commands::Completions { shell } => cmd_completions(shell),
         Commands::Version => {
             // SNOUTY_VERSION (set by build.rs) is the crate version plus the
@@ -179,7 +184,8 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
         | Commands::Docs { .. }
         | Commands::Debug { .. }
         | Commands::Doctor(_)
-        | Commands::Simulate(_) => None,
+        | Commands::Simulate(_)
+        | Commands::InternalSshProxy { .. } => None,
         Commands::Validate(_) => Some("validate"),
         Commands::Completions { .. } => Some("completions"),
         Commands::Version => Some("version"),

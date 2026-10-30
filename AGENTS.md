@@ -5,7 +5,9 @@ CLI tool for the Antithesis API. Written in Rust.
 ## Key Directories
 
 - `specs/` — feature specs
-- `src/` — all source code
+- `specs_engine/` — specs that need a container engine
+- `src/` — the CLI source code
+- `snouty-macros/` — the proc-macro crate, the other workspace member
 - `help/` — long-help templates (see Help text)
 - `tests/` — integration tests
 - `scripts/` — maintenance/dev scripts (Python run via `uv`, plus a few bash scripts such as the Stop hooks `check-cargo.sh`, `check-typos.sh`, `check-python.sh` and `check-shell.sh`)
@@ -19,6 +21,72 @@ for all features in the project.
 Any new subcommands or flags must have a spec accompanying them. Having to change
 an existing spec is a good sign of backward-incompatible breakage, which will
 be subject to extra review.
+
+`specs_engine/` holds the specs that need a container engine. Each file runs
+once with podman and once with docker, from the `*_engine_*_specs` tests in
+`tests/spec.rs`.
+
+## Writing specs
+
+A spec is a [testscript](https://pkg.go.dev/github.com/rogpeppe/go-internal/testscript)
+file, which `tests/spec.rs` runs with our fork of testscript-rs (the
+`testscript-rs` git dependency in `Cargo.toml`). A `-- name --` line starts a
+fixture file, which lands in `$WORK`. A blank line in a fixture drops out.
+
+- A `stdout` or `stderr` pattern is always a regex, with Go's flags: `^` and
+  `$` match at line boundaries, and `.` stops at a newline. Write `(?s)` for a
+  `.` that must cross lines. Nothing guesses from the pattern.
+- `-literal` matches plain text. Use it for fixed text, such as a
+  `Suggestion:` line or a command with flags and quotes.
+- `-count=N` requires exactly N matches, and N must be at least 1. Write
+  `! stdout 'x'` for no match.
+- Quotes: in single quotes, the parser still turns `\\`, `\'`, `\n`, `\t` and
+  `\r` into escapes before the regex sees the pattern. Double quotes and bare
+  words also turn `\"` into an escape. So a literal backslash is `\\` with
+  `-literal`, and `\\\\` in a regex. In a regex, `'a\\b'` becomes `a\b`, which
+  is a word boundary, not a backslash. Prefer `-literal` to `\x5c`.
+- The match runs on the output with its trailing whitespace removed. `\n`
+  matches a newline between lines, but the last line has no `\n` after it:
+  `stdout 'one\ntwo$'` matches the output `one\ntwo\n`, and
+  `stdout 'two\n'` does not.
+- A pattern that is the name of a file in the work directory matches the
+  contents of that file instead.
+- `${VAR}` expands in a pattern, also with `-literal`. `${VAR@R}` expands to
+  the value with its regex characters escaped.
+- `snouty` fails the line on a non-zero exit. Write `! snouty ...` for a
+  command that must fail.
+- `[cond] line` runs the line only when the condition holds, and
+  `[!cond] line` only when it does not. A skipped line does not run, so
+  `[cond] ! stdout 'x'` passes when the condition does not hold. The
+  conditions are the built-in ones (`unix`, `linux`, `darwin`, `net`,
+  `exec:<program>`, `env:<VAR>`), `staging` in `specs/`, and `docker` in
+  `specs_engine/`. For `[!staging]` and `[staging] skip`, see
+  [Running spec tests against a staging backend](#running-spec-tests-against-a-staging-backend).
+
+`tests/spec.rs` adds these commands:
+
+- `snouty <args>`: run the binary under test, with a clean environment and
+  an isolated config dir.
+- `snouty-bg <args>`: run it in the background.
+- `mock-server [-header '<name>: <value>'] [-rate-limit <n>] <status> <body>`:
+  answer every request with one response, and point snouty at it.
+- `mock-runs-server [empty]`: start the mock Antithesis API, with its fixture
+  runs or with none. Against staging, it passes the real credentials through.
+- `mock-proxy`: start the mock API behind an HTTP proxy, and set
+  `ANTITHESIS_HTTPS_PROXY`.
+- `env_from_json <line> <key>`: store a key of one NDJSON stdout line as
+  `$R_<key>`.
+- `env_from_json_find <key> <filter>...`: store a key of the first NDJSON line
+  that matches each filter, as `$R_<key>`.
+- `file <path> <pattern>`: match a file's contents against a regex. The
+  pattern does not get the `(?m)` flag, and `~` in the path is the test's
+  `$HOME`.
+- `set-env <KEY> <value>`: set a variable, with `${VAR}` expanded in the value.
+- `substitute <path>`: expand `${VAR}` in a fixture file.
+- `isolate-home <name>`: give the section a fresh `$HOME`, for `snouty login`.
+- `setup-docs-db`: seed the docs cache with `tests/fixtures/docs.db`.
+- `build-image [--platform <platform>] <name:tag> <dir>`: build a test image,
+  in `specs_engine/` only.
 
 ## Help text
 
@@ -280,8 +348,8 @@ checks run against staging — a file that would mutate tenant state stops at a
 `[staging] skip` line, which skips everything below it.
 
 The `staging` job in `build.yml` runs this suite on every pull request and
-gates the merge. It skips on a fork's pull request, because GitHub does not
-pass secrets there. Two rules follow:
+gates the merge. It skips on a pull request from a fork or from Dependabot,
+because GitHub does not pass secrets there. Two rules follow:
 
 - An unprefixed assertion must hold against any tenant. Put
   `stdout 'Run ID +[^ ]'` unprefixed and `stdout 'Run ID .*run-1'` behind
@@ -289,11 +357,6 @@ pass secrets there. Two rules follow:
 - The tenant must have a completed run from a launcher other than `debugging`
   among its 100 newest completed runs. `runs.txt` captures that run's id and
   every later command uses it.
-
-A `stdout` or `stderr` pattern is always a regex, with Go's flags: `^` and
-`$` match at line boundaries, and `.` stops at a newline. State `(?s)` for a
-pattern that spans lines, and `-literal` for plain-text matching. `-count=N`
-requires N >= 1; write `! stdout 'x'` for the zero-match assertion.
 
 ## Scripts
 

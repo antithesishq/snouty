@@ -88,9 +88,7 @@ Rows reshaped by map/narrow/fold print as raw JSON.{% if !cli %} The output alre
 
 Add {{ t("--count")? }} to print how many events in the whole run match the query, instead of a sample. No limit applies.
 
-{% include "fragments/ready_wait_search.txt" %}
-
-{% include "fragments/events_search_release.txt" %}
+The run must be ready or complete. If it is not, the command waits until it is ready, as `{{ t("snouty runs exec")? }}` does, and says that it waits.
 
 {% if cli %}
 Add --json for machine-readable output. Each event prints as one JSON object on its own line:

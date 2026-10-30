@@ -12,9 +12,7 @@ A `moment HASH` line opens each timeline segment, and each event under it prints
 
 Matching runs server-side through the events-search API, the same route `{{ t("snouty runs search")? }}` takes. Every term must match, case-insensitively. The result is a sample of the matching events in no fixed order, capped at {{ t("--limit")? }}. Read {% if cli %}`snouty runs search --help`{% else %}`tool_help {"tool": "runs_search"}`{% endif %} to learn how to read a sample and how the run's timelines relate the events.
 
-{% include "fragments/ready_wait_search.txt" %}
-
-{% include "fragments/events_search_release.txt" %}
+The run must be ready or complete. If it is not, the command waits until it is ready, as `{{ t("snouty runs exec")? }}` does, and says that it waits.
 
 {% if cli %}
 For log output, the equivalent search is:

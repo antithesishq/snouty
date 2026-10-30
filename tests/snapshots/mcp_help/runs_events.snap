@@ -13,8 +13,6 @@ Matching runs server-side through the events-search API, the same route `runs_se
 
 The run must be ready or complete. If it is not, the command waits until it is ready, as `runs_exec` does, and says that it waits.
 
-The command needs tenant release 62.2 or newer; `doctor` reports the tenant release.
-
 Examples:
   runs_events {"run_id": "<run_id>", "matches": ["error"]}
   runs_events {"run_id": "<run_id>", "matches": ["error", "node-0"], "limit": 100}

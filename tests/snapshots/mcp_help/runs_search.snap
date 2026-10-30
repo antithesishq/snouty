@@ -89,6 +89,4 @@ Add `count` to print how many events in the whole run match the query, instead o
 
 The run must be ready or complete. If it is not, the command waits until it is ready, as `runs_exec` does, and says that it waits.
 
-The command needs tenant release 62.2 or newer; `doctor` reports the tenant release.
-
 With `json`, each event prints as one JSON object on its own line, and with `count`, the count prints as one JSON object.

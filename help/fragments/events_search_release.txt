@@ -1,1 +1,0 @@
-The command needs tenant release 62.2 or newer; `{{ t("snouty doctor")? }}` reports the tenant release.

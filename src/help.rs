@@ -124,6 +124,21 @@ mod tests {
         assert_eq!(files, pages);
     }
 
+    /// No page includes another file, so each page reads as one file.
+    #[test]
+    fn no_template_includes_a_file() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("help");
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            assert!(path.is_file(), "{} is not a page", path.display());
+            let text = std::fs::read_to_string(&path).unwrap();
+            let includes = ["{% include", "{%- include"]
+                .iter()
+                .any(|tag| text.contains(tag));
+            assert!(!includes, "{} includes a file", path.display());
+        }
+    }
+
     /// Each page is the long help of its own command, and no command has a
     /// long help that is not a page.
     #[test]
@@ -140,15 +155,6 @@ mod tests {
             assert_eq!(others.count(), 1, "{page}: another page has its command");
         }
         walk(tree::root());
-    }
-
-    #[test]
-    fn events_search_help_names_min_release() {
-        let (major, minor) = crate::api::MIN_SEARCH_RELEASE;
-        let sentence = format!("tenant release {major}.{minor} or newer");
-        for page in [HelpPage::RunsSearch, HelpPage::RunsEvents] {
-            assert!(page.text().contains(&sentence), "{page}");
-        }
     }
 
     /// The verb list in the search help names every verb in

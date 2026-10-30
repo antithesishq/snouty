@@ -6,16 +6,16 @@ Use a project settings file while its content stays the same
 snouty uses a project settings file (./.snouty.toml) only after you trust it.
 Until you trust or deny the file, each command that reads the settings fails.
 
-A project settings file can set any setting, including base_url, https_proxy and
-repository. snouty sends your API key to base_url, sends its requests through
-https_proxy, and pushes your images to repository, so a settings file from a
-cloned repository could send your credentials or images to another server. Read
-the file, or run `snouty --settings ./.snouty.toml settings show` to see the
-settings that snouty would resolve with it, before you trust it. If you do not
-want snouty to use the file, run `snouty settings deny`.
-
 Records that you trust the settings file at PATH with its current content. When
 the content changes, you must trust the file again.
+
+A project settings file can set any setting, at the top level or in a profile,
+including base_url, https_proxy and repository. snouty sends your API key to
+base_url, sends its requests through https_proxy, and pushes your images to
+repository, so a settings file from a cloned repository could send your
+credentials or images to another server. Read the whole file, with every profile
+in it, before you trust it. If you do not want snouty to use the file, run
+`snouty settings deny`.
 
 snouty trusts a file that you name with --settings or SNOUTY_SETTINGS_PATH, and
 the global settings file. Set SNOUTY_SETTINGS_TRUST=all to use every project
@@ -24,7 +24,6 @@ settings file without a check, for example in CI.
 snouty keeps the record in trust.toml, in the global settings directory.
 
 Examples:
-  snouty --settings ./.snouty.toml settings show
   snouty settings trust
   snouty settings trust path/to/.snouty.toml
 

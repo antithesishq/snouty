@@ -1,8 +1,8 @@
 //! Trust on first use for the project settings file.
 //!
 //! A project settings file can set `base_url` and `https_proxy`, which decide
-//! where snouty sends the user's credentials, and a cloned repository can ship
-//! one. So snouty uses `./.snouty.toml` only after the user trusts it, and asks
+//! where snouty sends the user's credentials, and `repository`, which decides
+//! where it pushes the user's images. A cloned repository can ship one, so snouty uses `./.snouty.toml` only after the user trusts it, and asks
 //! again when its content changes. The decisions live in the global settings
 //! dir, keyed by the file's canonical path.
 

@@ -5,6 +5,6 @@ Show snouty's settings, and trust or deny a project settings file
 {% include "fragments/settings_trust_risk.txt" %}
 
 Examples:
-  {{ t("snouty --settings ./.snouty.toml settings show")? }}
+  {{ t("snouty settings show")? }}
   {{ t("snouty settings trust")? }}
   {{ t("snouty settings deny")? }}

@@ -40,12 +40,14 @@ Arguments:
 
 Options:
       --poll-interval <POLL_INTERVAL>
-          Time between status checks, at least 1 minute (e.g. 90s, 5m)
+          Time between status checks, at least 1 minute (e.g. 90s, 5m). A bare
+          number counts minutes
           
           [default: 1m]
 
       --timeout <TIMEOUT>
-          Give up after this long (e.g. 2h); without it the wait is unbounded
+          Give up after this long (e.g. 2h); without it the wait is unbounded. A
+          bare number counts minutes
 
       --until <UNTIL>
           The status to wait for; a later status also ends the wait

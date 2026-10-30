@@ -100,7 +100,7 @@ Options:
       --timeout <TIMEOUT>
           Maximum time the server waits for the script to exit before reporting
           a timeout (e.g. 90s, 5m) [default: the server's, 10m as of release
-          64.0]
+          64.0]. A bare number counts seconds
 
   -h, --help
           Print help (see a summary with '-h')

@@ -864,10 +864,11 @@ fn ensure_services_have_images(contents: &ComposeContents) -> Result<()> {
 ///
 /// Symlinks are recreated as-is (not dereferenced): a `docker build` context
 /// tars symlinks verbatim too, so the staged tree produces the same image
-/// content as building from `config_dir` directly. The one exception is
-/// `docker-compose.yaml`: the staged copy is always a regular file, because a
-/// write through a recreated symlink would overwrite the link's target. A
-/// regular file is written in place, so it keeps the mode of the source.
+/// content as building from `config_dir` directly.
+///
+/// The staged `docker-compose.yaml` is always a regular file, so the pinned
+/// write never reaches a symlink's target. It keeps the source file's mode
+/// unless the source is a symlink.
 pub fn stage_pinned_config(config_dir: &Path, pinned_yaml: &str) -> Result<tempfile::TempDir> {
     let staged = tempfile::tempdir().wrap_err("failed to create config staging directory")?;
     crate::util::copy_dir_recursive(config_dir, staged.path())?;

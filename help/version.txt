@@ -9,5 +9,5 @@ Examples:
 Add --json for machine-readable output. The version prints as one JSON object, with the fields version and commit. commit is null when the build has no commit:
   {{ t("snouty --json version | jq -r .version")? }}
 {% else %}
-The version prints as one JSON object, with the fields version and commit. commit is null when the build has no commit.
+With {{ t("--json")? }}, the version prints as one JSON object, with the fields version and commit. commit is null when the build has no commit.
 {% endif %}

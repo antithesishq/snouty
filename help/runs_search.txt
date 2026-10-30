@@ -76,11 +76,15 @@ Query snippets (each is a complete {{ t("query")? }}, ready to paste):
   contains({output_text: "error"})
     .fold((s, ev) => [[ev.add_fields({n: s.n + 1})], {n: s.n + 1}], {"n": 0})
 
-{% include "fragments/classified_blocks.txt" %}
+Each matching event has its moment (an input_hash and a vtime), its source, and its payload. To stream the logs of an event's timeline to its current end, pass its run ID and input_hash to `{{ t("snouty runs logs <run_id> <hash>")? }}`.
 
 {% if cli %}
-Rows reshaped by map/narrow/fold print as raw JSON.
+Matching events print as classified blocks: a `moment HASH` divider opens each timeline segment, and each event below it renders on one line in the Antithesis event shapes — SDK assertions, faults, container lifecycle, test composer — each in their own concise form.
+{% else %}
+A `moment HASH` line opens each timeline segment, and each event under it prints as one `VTIME [source] payload` line, with the full vtime. Indented lines under an event give its source location, as `@ file:function:line`, and the details that it carries, such as an SDK assertion's details, as `details {...}`.
 {% endif %}
+
+Rows reshaped by map/narrow/fold print as raw JSON.{% if !cli %} The output already shows the details of each assertion, so do not reshape events to read them.{% endif %}
 
 Add {{ t("--count")? }} to print how many events in the whole run match the query, instead of a sample. No limit applies.
 
@@ -100,5 +104,5 @@ With --count, the count prints as one JSON object:
     --count | jq .count
   {% endfilter %}
 {% else %}
-Each event prints as one JSON object on its own line. With `count`, the count prints as one JSON object.
+With {{ t("--json")? }}, each event prints as one JSON object on its own line, and with {{ t("--count")? }}, the count prints as one JSON object.
 {% endif %}

@@ -103,7 +103,7 @@ impl PartialEq for VTime {
 impl Eq for VTime {}
 
 /// Print with zmij — the same shortest-round-trip formatter `serde_json`
-/// uses for numbers — so the human-visible text always agrees byte-for-byte
+/// uses for numbers — so the text output always agrees byte-for-byte
 /// with the JSON output; a hegel property pins the agreement over all finite
 /// values. (std's `{}` float formatting differs: it prints `402` where JSON
 /// needs `402.0`; ryu differs at the extremes: `1e16` where JSON prints
@@ -359,7 +359,7 @@ mod tests {
         assert_eq!((reparsed.as_seconds() * TICKS_PER_SECOND) as u64, ticks);
     }
 
-    /// The human-visible `Display` text and the JSON number are the same
+    /// The `Display` text and the JSON number are the same
     /// bytes for every finite value — the assumption that lets tables print
     /// `Display` and stay copy-paste exact against the `--json` output.
     #[hegel::test]

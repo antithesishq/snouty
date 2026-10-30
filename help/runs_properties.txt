@@ -4,6 +4,8 @@ Each property has its ID, name, group, and status: passing, failing, or undeterm
 
 {% if cli %}
 Each table is headed by its group; columns are STATUS, ✓, ✗, ID, NAME (failing first). STATUS is pass, fail, or unseen, for undetermined. ✓ is the example count and ✗ is the counterexample count; large counts are shortened, as in 186k. ID is the property ID.
+{% else %}
+Each property prints as a block: its Name, ID, Group, Category, Team and Status, then its sample moments. An event property has a table of moments with STATUS (failing or passing), HASH and VTIME columns, failing first. The table is a sample, and the Examples line above it gives the totals of the run. Pass a row's HASH and VTIME as the input_hash and vtime of `{{ t("runs logs")? }}`. A property with no events shows its values under Counter-examples, Examples or Result. Thus one call gives the moments of every property that matches, and you do not need a `{{ t("runs property")? }}` call for each one.
 {% endif %}
 
 Filter by status with {{ t("--passing")? }}, {{ t("--failing")? }}, and {{ t("--undetermined")? }}. Give more than one to show each of those statuses.
@@ -22,5 +24,5 @@ Examples:
 Add --json for machine-readable output. Each property prints as one JSON object on its own line. --json is mutually exclusive with --detail:
   {{ t("snouty --json runs properties <run_id> --failing | jq -r .name")? }}
 {% else %}
-Each property prints as one JSON object on its own line.
+With {{ t("--json")? }}, each property prints as one JSON object on its own line, without the sample moments.
 {% endif %}

@@ -41,9 +41,9 @@ pub(super) enum EventOutput {
     /// event is annotated with the faults active at its moment
     /// (`annotate_faults` — meaningless with `raw`, which touches nothing).
     Json { raw: bool, annotate_faults: bool },
-    /// Human rendering through the shared [`EventStreamRenderer`]; `detail`
+    /// Text rendering through the shared [`EventStreamRenderer`]; `detail`
     /// adds a full-width vtime, source locations, and details JSON.
-    Human { detail: bool },
+    Text { detail: bool },
 }
 
 impl EventOutput {
@@ -78,7 +78,7 @@ pub(super) fn render_event_stream(
                 })
                 .boxed()
         }
-        EventOutput::Human { detail } => {
+        EventOutput::Text { detail } => {
             let mut renderer = EventStreamRenderer::new(detail);
             event_lines(stream, error_rows)
                 .map_ok(move |entry| renderer.render_entry(&entry))

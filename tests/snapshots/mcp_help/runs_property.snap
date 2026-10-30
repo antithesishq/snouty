@@ -1,11 +1,11 @@
 ---
 source: tests/help_snapshots.rs
 ---
-Show one property of a run, in full: its name, ID, group, category, team, status, example totals, and sample moments.
+Show one property of a run, in full: its name, ID, group, category, team, status, example totals, and sample moments, as `runs_properties` returns each property.
 
-`property_id` is the id field of a property that `runs_properties` returns. Property lookup needs a run created on release 65.3 or later.
+`property_id` is the ID of a property that `runs_properties` returns. Property lookup needs a run created on release 65.3 or later.
 
 Examples:
   runs_property {"run_id": "<run_id>", "property_id": "<property_id>"}
 
-The property prints as one JSON object.
+With `json`, the property prints as one JSON object.

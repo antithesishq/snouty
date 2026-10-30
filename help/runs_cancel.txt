@@ -11,5 +11,5 @@ Examples:
 Add --json for machine-readable output. The cancelled run id prints as one JSON object:
   {{ t("snouty --json runs cancel <run_id> | jq -r .run_id")? }}
 {% else %}
-The cancelled run id prints as one JSON object, with the field run_id.
+With {{ t("--json")? }}, the cancelled run id prints as one JSON object, with the field run_id.
 {% endif %}

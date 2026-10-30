@@ -1,6 +1,7 @@
 //! `snouty mcp`: an MCP server on the stdio transport. Each tool runs one
-//! snouty command as a child process, in JSON mode, and returns what the
-//! command prints. The tool schemas come from the commands' clap definitions.
+//! snouty command as a child process and returns what it prints: the
+//! detailed text output, or JSON when the call sets `json`. The tool
+//! schemas come from the commands' clap definitions.
 
 use std::ffi::OsString;
 use std::num::NonZeroUsize;
@@ -43,7 +44,9 @@ const INSTRUCTIONS: &str = "Antithesis tests software in a deterministic simulat
 faults. A run explores a tree of timelines, and an event, a property example or a failure names \
 one moment of it: a run_id, an input_hash and a vtime. These tools operate on the runs \
 of an Antithesis tenant, run commands at a moment of a run, and search the Antithesis \
-documentation. tool_help returns the full help of a tool.";
+documentation. Each tool returns the detailed text output of its command. Set its json param \
+to true only when you need a field that this output does not show: the JSON is usually several \
+times larger. tool_help returns the full help of a tool.";
 
 /// The server's own options. Every tool call passes `settings`, `profile`
 /// and `verbose` to its child. A client cannot set them.
@@ -254,6 +257,13 @@ pub async fn cmd_mcp(globals: Globals) -> Result<()> {
     };
     quit.wrap_err("MCP server failed")?;
     Ok(())
+}
+
+/// Whether this process is a tool call's child. A tool result arrives only
+/// when the call ends, and the server sends its own progress notifications,
+/// so a child shows no progress.
+pub fn in_tool_call() -> bool {
+    std::env::var_os(SERVER_PID_ENV).is_some()
 }
 
 /// In a tool call's child, exits when the server that started it is gone.

@@ -53,8 +53,8 @@ impl Effect {
 }
 
 /// One row per tool: the variant, which also names its [`HelpPage`] and so
-/// its command, the tool name, its effect, the args that the tool leaves
-/// out, and the args that the tool requires although the command does not.
+/// its command, the tool name, its effect, the args that the tool leaves out,
+/// and the args that the tool requires although the command does not.
 macro_rules! tools {
     ($(
         $variant:ident => $name:literal, $effect:ident,
@@ -80,8 +80,8 @@ macro_rules! tools {
                 }
             }
 
-            /// Args that open a browser, stream with no end, or print human
-            /// output only.
+            /// Args that open a browser, stream with no end, or have no
+            /// effect, such as `--json` of `docs show`.
             fn hidden(self) -> &'static [&'static str] {
                 match self {
                     $(ToolName::$variant => &[$($hidden),*],)*
@@ -106,25 +106,25 @@ macro_rules! tools {
 }
 
 tools! {
-    RunsList => "runs_list", Reads, hidden: ["detail"], required: [];
+    RunsList => "runs_list", Reads, hidden: [], required: [];
     RunsShow => "runs_show", Reads, hidden: ["web"], required: [];
     RunsWait => "runs_wait", Reads, hidden: [], required: [];
     RunsCancel => "runs_cancel", Destroys, hidden: [], required: [];
-    RunsProperties => "runs_properties", Reads, hidden: ["detail"], required: [];
+    RunsProperties => "runs_properties", Reads, hidden: [], required: [];
     RunsProperty => "runs_property", Reads, hidden: [], required: [];
     RunsBuildLogs => "runs_build_logs", Reads, hidden: [], required: [];
-    RunsLogs => "runs_logs", Reads, hidden: ["detail"], required: [];
-    RunsSearch => "runs_search", Reads, hidden: ["follow", "detail"], required: [];
+    RunsLogs => "runs_logs", Reads, hidden: [], required: [];
+    RunsSearch => "runs_search", Reads, hidden: ["follow"], required: [];
     RunsUsage => "runs_usage", Reads, hidden: [], required: [];
     // With no script, `runs exec` reads it from stdin, and a child's stdin is
     // null.
     RunsExec => "runs_exec", Reads, hidden: [], required: ["script"];
     // `query` repeats `match` as a positional. The command needs one of
     // them, so the tool requires `matches`.
-    RunsEvents => "runs_events", Reads, hidden: ["query", "detail"], required: ["matches"];
+    RunsEvents => "runs_events", Reads, hidden: ["query"], required: ["matches"];
     Debug => "debug", StartsSessions, hidden: [], required: [];
     DocsTree => "docs_tree", Reads, hidden: [], required: [];
-    DocsShow => "docs_show", Reads, hidden: [], required: [];
+    DocsShow => "docs_show", Reads, hidden: ["json"], required: [];
     DocsSearch => "docs_search", Reads, hidden: [], required: [];
     Doctor => "doctor", Reads, hidden: [], required: [];
     Version => "version", Reads, hidden: [], required: [];
@@ -167,7 +167,7 @@ impl ToolName {
     pub(crate) fn role(self, id: &str) -> ArgRole {
         match self.spec().param(id) {
             Some(param) => ArgRole::Param(param),
-            None if id == "json" => ArgRole::Implied,
+            None if id == "json" || id == "detail" => ArgRole::Implied,
             None => ArgRole::Excluded,
         }
     }
@@ -185,10 +185,12 @@ pub(crate) fn summaries() -> Vec<(String, String)> {
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ArgRole {
     Param(&'static Param),
-    /// `--json`: every tool call runs in JSON mode.
+    /// An arg that an example may carry and the call drops: `--detail`, which
+    /// a call without `json` adds, and `--json` of a tool that prints the
+    /// same in both modes.
     Implied,
-    /// The root's args, which are the server's to set, and the args that
-    /// the tool hides.
+    /// The root's args but `json`, which are the server's to set, and the
+    /// args that the tool hides, but `json`.
     Excluded,
 }
 
@@ -274,6 +276,9 @@ pub(crate) struct ToolSpec {
     pub(crate) tool: Tool,
     about: String,
     pub(crate) params: Vec<Param>,
+    /// Whether the command has `--detail`, which a call without `json`
+    /// passes.
+    pub(crate) supports_detail: bool,
 }
 
 impl ToolSpec {
@@ -281,13 +286,16 @@ impl ToolSpec {
         let command = tree::find(name.path())
             .unwrap_or_else(|| panic!("{name}: no command at {:?}", name.path()));
         let root = tree::root();
+        let supports_detail = command.get_arguments().any(|arg| arg.get_id() == "detail");
         let params: Vec<Param> = command
             .get_arguments()
             .filter(|arg| {
                 let id = arg.get_id().as_str();
+                let global = root.get_arguments().any(|root| root.get_id() == id);
                 id != "help"
+                    && id != "detail"
                     && !arg.is_hide_set()
-                    && root.get_arguments().all(|root| root.get_id() != id)
+                    && (!global || id == "json")
                     && !name.hidden().contains(&id)
             })
             .map(|arg| {
@@ -317,8 +325,8 @@ impl ToolSpec {
             .map(ToString::to_string)
             .unwrap_or_default();
         let description = format!(
-            "{about}. Returns what `snouty --json {}` prints.",
-            name.path().join(" ")
+            "{about}. Returns what {} prints.",
+            command_lines(name, supports_detail, &params)
         );
         let tool = Tool::new(name.to_string(), description, input_schema(name, &params))
             .with_annotations(name.effect().annotations());
@@ -326,6 +334,7 @@ impl ToolSpec {
             tool,
             about,
             params,
+            supports_detail,
         }
     }
 
@@ -387,6 +396,19 @@ fn input_schema(name: ToolName, params: &[Param]) -> Arc<JsonObject> {
     Arc::new(schema)
 }
 
+/// The command lines that a call of `name` runs, as its description and its
+/// help name them.
+fn command_lines(name: ToolName, detail: bool, params: &[Param]) -> String {
+    let path = name.path().join(" ");
+    let detail = if detail { " --detail" } else { "" };
+    let default = format!("`snouty {path}{detail}`");
+    if params.iter().any(|param| param.id() == "json") {
+        format!("{default}, or with `json`, `snouty --json {path}`")
+    } else {
+        default
+    }
+}
+
 pub(super) fn tool_help_tool() -> Tool {
     let names: Vec<String> = ToolName::ALL.iter().map(ToString::to_string).collect();
     let schema = json!({
@@ -421,9 +443,10 @@ pub(super) fn tool_help(mut params: JsonObject) -> Result<String> {
         bail!("unknown param: {key}");
     }
     let name: ToolName = tool.parse()?;
+    let spec = name.spec();
     Ok(format!(
-        "The help of {name}, which runs `snouty --json {}`.\n\n{}",
-        name.path().join(" "),
+        "The help of {name}, which runs {}.\n\n{}",
+        command_lines(name, spec.supports_detail, &spec.params),
         name.help().mcp()
     ))
 }
@@ -467,17 +490,22 @@ mod tests {
         }
     }
 
-    /// The root's globals are the server's to set, every tool but `debug`
-    /// and `runs_cancel` is read-only, and only `runs_cancel` is
-    /// destructive.
+    /// `detail` and the root's globals but `json` are the server's to set,
+    /// every tool but `debug` and `runs_cancel` is read-only, and only
+    /// `runs_cancel` is destructive.
     #[test]
     fn tools_expose_no_globals_and_only_debug_and_cancel_write() {
         for name in ToolName::ALL {
             let tool = &name.spec().tool;
             let properties = tool.input_schema["properties"].as_object().unwrap();
-            for global in ["json", "verbose", "settings", "profile", "help"] {
+            for global in ["verbose", "settings", "profile", "help", "detail"] {
                 assert!(!properties.contains_key(global), "{name}: {global}");
             }
+            assert_eq!(
+                properties.contains_key("json"),
+                name != ToolName::DocsShow,
+                "{name}"
+            );
             for hidden in name.hidden() {
                 assert!(!properties.contains_key(*hidden), "{name}: {hidden}");
             }
@@ -562,7 +590,8 @@ mod tests {
         assert_eq!(events["properties"]["matches"]["type"], "array");
         assert_eq!(events["properties"]["limit"]["type"], "integer");
         assert!(events["properties"].get("query").is_none(), "{events:?}");
-        assert_eq!(schema(ToolName::Version)["properties"], json!({}));
+        let version = schema(ToolName::Version)["properties"].as_object().unwrap();
+        assert_eq!(version.keys().collect::<Vec<_>>(), ["json"]);
         let tree = schema(ToolName::DocsTree);
         assert_eq!(tree["properties"]["depth"]["minimum"], 1);
     }
@@ -599,7 +628,10 @@ mod tests {
         }
         let help = tool_help(object(json!({ "tool": "runs_logs" }))).unwrap();
         assert!(
-            help.starts_with("The help of runs_logs, which runs `snouty --json runs logs`."),
+            help.starts_with(
+                "The help of runs_logs, which runs `snouty runs logs --detail`, or with `json`, \
+                 `snouty --json runs logs`."
+            ),
             "{help}"
         );
         let cases = [

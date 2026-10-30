@@ -17,7 +17,7 @@ class TerminalCapture(unittest.TestCase):
         self.snouty = gallery.Snouty(Path(sys.executable))
         self.addCleanup(self.snouty.cleanup)
 
-    def test_human_capture_uses_terminal_dimensions_and_preserves_wrapping(self):
+    def test_text_capture_uses_terminal_dimensions_and_preserves_wrapping(self):
         result = self.snouty.run(
             [
                 "-c",

@@ -16,4 +16,4 @@ Examples:
   docs_search {"query": ["sdk", "setup"]}
   docs_search {"match": true, "query": ["sdk NOT java"]}
 
-The matches print as one JSON array of {path, title, snippet} objects, or of paths with `list`.
+With `json`, the matches print as one JSON array of {path, title, snippet} objects, or of paths with `list`.

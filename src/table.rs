@@ -1,4 +1,4 @@
-//! Borderless tables for human-facing output.
+//! Borderless tables for text output.
 
 use console::{Alignment, measure_text_width, pad_str, truncate_str};
 

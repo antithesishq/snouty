@@ -9,7 +9,7 @@ version = "0.0.0"
 description = "Python helper scripts for snouty, run via uv."
 requires-python = ">=3.11"
 dependencies = [
-    # The gallery captures human output on a real pseudo-terminal and replays
+    # The gallery captures text output on a real pseudo-terminal and replays
     # what it drew. `pexpect` runs commands and interactive dialogues;
     # `pyte` emulates the terminal, turning the raw byte stream (ANSI escapes
     # and one re-render per keystroke) back into the screen the user saw.

@@ -201,6 +201,23 @@ stdout '398.49.* \[bash_command\] fuzzpipe Command received$'
 stdout '398.49.* \[bash_command\] script says hi'
 stdout '398.49.* \[workload\] workload says hi'
 stderr 'end moment: -8206006569229276678 398.492'
+# The events print in the concise form, with the vtime in a narrow cell.
+stdout '^398\.491   \[bash_command\] script says hi$'
+
+# --detail prints the events as `runs logs --detail` does: the full vtime in
+# a wide cell on every line.
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 with-system-logs --events --detail
+stdout '^398\.491 {10,}\[bash_command\] script says hi$'
+stderr 'end moment: -8206006569229276678 398.492'
+
+# --detail renders events, so it requires --events.
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --detail
+stderr 'the following required arguments were not provided'
+stderr '--events'
+
+# --detail formats text output, so it cannot combine with --json.
+! snouty --json runs exec run-2 -3625518438076122494 398.4898056755774 with-system-logs --events --detail
+stderr '--detail and --json cannot be combined'
 
 # With --events and --json, every event passes through as NDJSON, then the
 # result.
@@ -320,7 +337,7 @@ stdout '\{"status":"exited","exit_code":0,"end_moment":\{"input_hash":"-82060065
 ! snouty --json runs exec run-2 -3625518438076122494 398.4898056755774 'sleep 60'
 stdout '\{"status":"timed_out","last_moment":\{"input_hash":"-8206006569229276678","vtime":398.491\}\}'
 
-# --json exit semantics match human mode: a non-zero exit code still fails
+# --json exit semantics match text mode: a non-zero exit code still fails
 # snouty, and the exited event is still emitted for scripts to parse.
 ! snouty --json runs exec run-2 -3625518438076122494 398.4898056755774 'exit 5'
 stdout '"exit_code":5'

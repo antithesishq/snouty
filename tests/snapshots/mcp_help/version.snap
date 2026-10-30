@@ -8,4 +8,4 @@ The commit is the short hash of the commit, with a `-dirty` suffix when the buil
 Examples:
   version
 
-The version prints as one JSON object, with the fields version and commit. commit is null when the build has no commit.
+With `json`, the version prints as one JSON object, with the fields version and commit. commit is null when the build has no commit.

@@ -9,6 +9,7 @@ use serde_json::Value;
 
 use super::Globals;
 use super::tools::{ParamKind, ToolName};
+use crate::cli::tree;
 
 /// The command line of a tool call, after `snouty`.
 ///
@@ -16,6 +17,10 @@ use super::tools::{ParamKind, ToolName};
 /// request names. Each param must be an exposed arg of that command. An option
 /// goes in as one `--long=value` token and the positionals go after `--`, so a
 /// value never becomes a flag or a subcommand.
+///
+/// A call without `json` passes `--detail` when the command has it and the
+/// command line still parses with it: a param can conflict with `--detail`,
+/// and `--detail` can require a param.
 pub(crate) fn command_args(
     tool: ToolName,
     globals: &Globals,
@@ -27,6 +32,7 @@ pub(crate) fn command_args(
             bail!("missing param: {}", param.id());
         }
     }
+    let json = params.get("json") == Some(&Value::Bool(true));
     let mut options: Vec<OsString> = Vec::new();
     let mut positionals: Vec<(usize, Vec<String>)> = Vec::new();
     for (key, value) in params {
@@ -73,7 +79,7 @@ pub(crate) fn command_args(
         }
     }
 
-    let mut argv: Vec<OsString> = vec!["--json".into()];
+    let mut argv: Vec<OsString> = Vec::new();
     if globals.verbose {
         argv.push("--verbose".into());
     }
@@ -87,6 +93,7 @@ pub(crate) fn command_args(
     }
     argv.extend(tool.path().iter().map(OsString::from));
     argv.extend(options);
+    let separator = argv.len();
     argv.push("--".into());
     argv.extend(
         positionals
@@ -94,7 +101,22 @@ pub(crate) fn command_args(
             .flat_map(|(_, values)| values)
             .map(OsString::from),
     );
+    if spec.supports_detail && !json {
+        let mut with_detail = argv.clone();
+        with_detail.insert(separator, "--detail".into());
+        if parses(&with_detail) {
+            argv = with_detail;
+        }
+    }
     Ok(argv)
+}
+
+/// Whether snouty's clap definition accepts `snouty <argv>`.
+fn parses(argv: &[OsString]) -> bool {
+    tree::root()
+        .clone()
+        .try_get_matches_from(std::iter::once(OsString::from("snouty")).chain(argv.iter().cloned()))
+        .is_ok()
 }
 
 fn long(arg: &Arg) -> &str {
@@ -167,7 +189,7 @@ mod tests {
         let value = tc.draw(generators::text().exclude_characters("\0"));
         let argv = args(ToolName::RunsList, &globals(), json!({ "launcher": value }));
         let cli = parse(argv.unwrap());
-        assert!(cli.json && cli.settings.is_none() && cli.profile.is_none());
+        assert!(!cli.json && cli.settings.is_none() && cli.profile.is_none());
         let Commands::Runs {
             command: Some(RunsCommands::List(args)),
         } = cli.command
@@ -186,7 +208,7 @@ mod tests {
             "run_id": "r", "input_hash": "-1", "vtime": 1.5, "script": script,
         });
         let cli = parse(args(ToolName::RunsExec, &globals(), call).unwrap());
-        assert!(cli.json && cli.settings.is_none() && cli.profile.is_none());
+        assert!(!cli.json && cli.settings.is_none() && cli.profile.is_none());
         let Commands::Runs {
             command:
                 Some(RunsCommands::Exec {
@@ -231,6 +253,16 @@ mod tests {
                 ToolName::RunsList,
                 json!({ "settings": "x" }),
                 "unknown param: settings",
+            ),
+            (
+                ToolName::RunsList,
+                json!({ "detail": true }),
+                "unknown param: detail",
+            ),
+            (
+                ToolName::DocsShow,
+                json!({ "path": "p", "json": true }),
+                "unknown param: json",
             ),
             (
                 ToolName::RunsSearch,
@@ -278,6 +310,61 @@ mod tests {
             let result = args(name, &globals(), call.clone());
             let error_text = result.err().map(|e| e.to_string());
             assert_eq!(error_text.as_deref(), Some(error), "{name} {call}");
+        }
+    }
+
+    /// A call prints detailed text output, or JSON with `json`.
+    #[test]
+    fn json_picks_the_output() {
+        let cases = [
+            (
+                ToolName::RunsProperties,
+                json!({ "run_id": "r" }),
+                "runs properties --detail",
+            ),
+            (
+                ToolName::RunsProperties,
+                json!({ "run_id": "r", "json": false }),
+                "runs properties --detail",
+            ),
+            (
+                ToolName::RunsProperties,
+                json!({ "run_id": "r", "json": true }),
+                "runs properties --json",
+            ),
+            // `count` conflicts with `--detail`.
+            (
+                ToolName::RunsSearch,
+                json!({ "run_id": "r", "query": "q", "count": true }),
+                "runs search --count",
+            ),
+            (
+                ToolName::RunsSearch,
+                json!({ "run_id": "r", "query": "q", "count": false }),
+                "runs search --detail",
+            ),
+            (ToolName::RunsShow, json!({ "run_id": "r" }), "runs show"),
+            // `--detail` requires `--events`.
+            (
+                ToolName::RunsExec,
+                json!({ "run_id": "r", "input_hash": "h", "vtime": 1, "script": "s" }),
+                "runs exec",
+            ),
+            (
+                ToolName::RunsExec,
+                json!({ "run_id": "r", "input_hash": "h", "vtime": 1, "script": "s", "events": true }),
+                "runs exec --events --detail",
+            ),
+        ];
+        for (name, call, line) in cases {
+            let argv = args(name, &globals(), call.clone()).unwrap();
+            let options: Vec<&str> = argv
+                .iter()
+                .map(|arg| arg.to_str().unwrap())
+                .take_while(|arg| *arg != "--")
+                .collect();
+            assert_eq!(options.join(" "), line, "{name} {call}");
+            parse(argv);
         }
     }
 

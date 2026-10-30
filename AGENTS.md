@@ -72,15 +72,22 @@ command, named for its path below `snouty` with `_` between the parts:
   leaves out, and a shell pipeline or redirect.
 - Do not write that `--json` prints JSON: the flag documents itself. Name
   JSON in help only to describe the shape of the output, or a meaning that
-  callers must know. An MCP tool call always runs with `--json`, so word
-  such text to suit both readers.
-- Put text that only one reader needs, such as the `--json` paragraph or a
-  pipeline example, in `{% if cli %}…{% else %}…{% endif %}`. The other
+  callers must know.
+- A command has two output modes: text output, the default, and JSON, with
+  `--json`. Do not call the default "human output".
+- An MCP tool call returns the command's text output, with `--detail` when
+  the command has that flag, and its `json` param runs it with `--json`
+  instead. So the MCP reader needs the layout of the detailed output, and
+  the JSON shape as what `json` returns: `With {{ t("--json")? }}, each run
+  prints as one JSON object`.
+- Put text that only one reader needs, such as the CLI's `--json` paragraph,
+  a pipeline example, or a layout that only the default (not `--detail`)
+  output has, in `{% if cli %}…{% else %}…{% endif %}`. The other
   reader's branch is not rendered, so `t()` does not check it for that
   reader. `{{ tool_table() }}` is the list of MCP tools.
-- Describe what a command reports in words that suit both readers, and put
-  only the terminal layout (columns, dividers, the `--json` paragraph) in a
-  `{% if cli %}` block. Say that a command succeeds or fails; name exit
+- Describe what a command reports in words that suit both readers. Put a
+  layout that both readers see, such as the columns of a command with no
+  `--detail`, outside a block. Say that a command succeeds or fails; name exit
   codes, stdout and stderr only in a CLI block.
 - A line that holds only a block tag (`if`, `else`, `endif`) prints as a
   blank line, and the render collapses each run of blank lines into one. So
@@ -376,7 +383,7 @@ All code must be simple and idiomatic.
 - A module that drives an external tool exposes a typed API: one method per
   subcommand, typed arguments in, typed values out. It never returns or accepts
   `Command`, argument vectors, or raw process handles. Read the tool's
-  machine-readable output; never parse its human-facing text. Detect a version
+  machine-readable output; never parse its text output. Detect a version
   by parsing a version number.
 
 ### The server boundary

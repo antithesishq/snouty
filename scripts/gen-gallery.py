@@ -9,7 +9,7 @@ story is also gated by a programmatic check; a degenerate example (an empty
 table, an unintended error, a filter that didn't narrow) fails the run rather
 than being silently emitted.
 
-Human output, including help and isolated configuration stories, runs in a
+Text output, including help and isolated configuration stories, runs in a
 120-column, 40-row terminal. Markdown contains the terminal's text and full
 scrollback; adjacent asciinema recordings preserve colors and redraws. JSON
 commands use pipes so their structured output stays separate from stderr. A
@@ -3475,6 +3475,17 @@ def build_ready_stories(d: Discovery, x: GalleryRun, wait_ready: Result) -> list
             "the end-moment trailer. Exit 0.",
             [*exec_at, "--events", 'echo "first line"; echo "second line"'],
             succeeds_with("first line", "second line", "end moment:"),
+        ),
+        exec_story(
+            "runs-exec--events--detail",
+            "See the full detail of the events while my command executes",
+            "I want the timeline while my script executes with every event in full: the "
+            "exact vtime, where each assertion is in the source, and its details.",
+            "Events print as `runs logs --detail` prints them: a full-width vtime on every "
+            "line, with source locations and details on indented lines, the script's output "
+            "among them, then the end-moment trailer. Exit 0.",
+            [*exec_at, "--events", "--detail", 'echo "first line"'],
+            succeeds_with("first line", "end moment:"),
         ),
         exec_story(
             "runs-exec--json",

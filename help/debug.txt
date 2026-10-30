@@ -30,5 +30,5 @@ Add --json for machine-readable output. The response prints as one JSON object:
     jq -r .runId
   {% endfilter %}
 {% else %}
-The response prints as one JSON object.
+With {{ t("--json")? }}, the response prints as one JSON object.
 {% endif %}

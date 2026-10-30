@@ -49,7 +49,7 @@ use event_search::EventOutput;
 /// It only applies when the server filled the limit. Fewer rows than asked for
 /// means the result set is exhausted, and the note would send the user back for
 /// rows that do not exist, so `shown` below `limit` prints nothing. Callers
-/// print it in human mode only. `blank_line_before` sets the note apart from
+/// print it in text mode only. `blank_line_before` sets the note apart from
 /// output whose blocks are separated by blank lines.
 fn limit_note(shown: usize, limit: NonZeroU64, noun: &str, blank_line_before: bool) {
     if (shown as u64) < limit.get() {
@@ -61,12 +61,12 @@ fn limit_note(shown: usize, limit: NonZeroU64, noun: &str, blank_line_before: bo
     eprintln!("Showing up to {limit} {noun}. Additional {noun} may be available.");
 }
 
-/// Print a rendered event stream, then the human-mode commentary under it.
+/// Print a rendered event stream, then the text-mode commentary under it.
 /// Rows go out one at a time, because the search backend holds the connection
 /// open on an in-progress run and a row that sits in a buffer waiting for EOF
 /// may never be seen.
 ///
-/// Commentary goes to stderr and only in human mode: under `--json` the rows
+/// Commentary goes to stderr and only in text mode: under `--json` the rows
 /// are the whole answer. An empty stream gets `empty_message`; any other gets
 /// the limit note when the request named a `limit`.
 async fn print_event_lines(
@@ -114,14 +114,16 @@ pub async fn cmd_runs(
     settings: &Settings,
     output: OutputOptions,
 ) -> Result<()> {
-    // `--detail` produces human formatting, so it can't combine with
+    // `--detail` produces text formatting, so it can't combine with
     // `--json`; `--raw` is a JSON output shape, so it requires `--json`.
     // Both flags ride on more than one subcommand, and a global `--json` vs
     // a per-subcommand flag can't be expressed with clap's `conflicts_with`,
     // so the two rules are checked once here.
     let (raw, detail) = match &command {
         Some(RunsCommands::List(args)) => (false, args.detail),
-        Some(RunsCommands::Properties { detail, .. }) => (false, *detail),
+        Some(RunsCommands::Properties { detail, .. } | RunsCommands::Exec { detail, .. }) => {
+            (false, *detail)
+        }
         Some(RunsCommands::Logs { render, .. } | RunsCommands::Events { render, .. }) => {
             (render.raw, render.detail)
         }
@@ -144,7 +146,7 @@ pub async fn cmd_runs(
             annotate_faults: !raw && matches!(&command, Some(RunsCommands::Logs { .. })),
         }
     } else {
-        EventOutput::Human { detail }
+        EventOutput::Text { detail }
     };
 
     match command {
@@ -211,7 +213,7 @@ pub async fn cmd_runs(
                     annotate_faults: false,
                 }
             } else {
-                EventOutput::Human { detail: false }
+                EventOutput::Text { detail: false }
             };
             cmd_runs_build_logs(&run_id, settings, output.verbose, mode).await
         }
@@ -240,6 +242,7 @@ pub async fn cmd_runs(
             events,
             source_run_id,
             source_session_id,
+            ..
         }) => {
             // clap makes the two flags mutually exclusive.
             let rewarm = source_run_id
@@ -253,7 +256,7 @@ pub async fn cmd_runs(
                 events,
                 rewarm,
             };
-            cmd_runs_exec(&run_id, exec, settings, output).await
+            cmd_runs_exec(&run_id, exec, settings, output.verbose, mode).await
         }
         Some(RunsCommands::Events {
             run_id,
@@ -313,7 +316,7 @@ async fn cmd_runs_list(
         return Ok(());
     }
 
-    // The table sizes its columns from the rows it holds, so the human modes
+    // The table sizes its columns from the rows it holds, so the text modes
     // collect first.
     let mut runs: Vec<RunSummary> = Vec::new();
     while let Some(run) = stream.try_next().await? {
@@ -610,7 +613,7 @@ struct PropertyFilter<'a> {
     group: Option<&'a str>,
 }
 
-/// `--detail` formats human output, so it conflicts with `--json` (which always
+/// `--detail` formats text output, so it conflicts with `--json` (which always
 /// emits the full structured data). Reject the combination with a clear error
 /// rather than silently ignoring one. Called once from [`cmd_runs`] for whichever
 /// subcommand carries `--detail` (`runs list`, `runs properties`).
@@ -1402,7 +1405,7 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
     let failure = run.real_failure_moment();
     let mut rows: Vec<(&str, String)> = Vec::new();
 
-    // Lead with the identifier; the human labels follow.
+    // Lead with the identifier; the other labels follow.
     rows.push(("Run ID", run.run_id.clone()));
     if let Some(name) = run.test_name() {
         rows.push(("Test Name", name.to_string()));
@@ -1563,7 +1566,7 @@ fn render_runs_detail(runs: &[RunSummary]) -> String {
 }
 
 /// The refusal for `--raw` without `--json`. Raw output is the server's
-/// events as JSON lines; there is no raw human rendering to fall back to.
+/// events as JSON lines; there is no raw text rendering to fall back to.
 fn raw_requires_json_error() -> color_eyre::eyre::Report {
     user_error("--raw requires --json")
         .note("--raw prints the server's events untouched, one JSON object per line")
@@ -1795,7 +1798,7 @@ async fn cmd_runs_logs(
         Err(err) => return Err(explain_logs_error(&api, run_id, err).await),
     };
     // A moment with no logs (e.g. a manually-supplied 0/0 placeholder)
-    // yields an empty stream; the pipeline says so in human mode rather
+    // yields an empty stream; the pipeline says so in text mode rather
     // than printing nothing.
     let any_lines = AtomicBool::new(false);
     let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode)
@@ -1844,10 +1847,32 @@ enum ExecProgress {
     Rewarming { percent_complete: u8 },
 }
 
+/// How a command shows progress on stderr.
+enum ProgressMode {
+    /// A redrawn bar or spinner, on a terminal.
+    Redraw,
+    /// A line for each step, off a terminal, because a redrawn bar garbles a
+    /// log.
+    Lines,
+    /// Nothing, in an MCP tool call.
+    Hidden,
+}
+
+impl ProgressMode {
+    fn of_stderr() -> Self {
+        if crate::mcp::in_tool_call() {
+            Self::Hidden
+        } else if stdio::stderr().is_terminal() {
+            Self::Redraw
+        } else {
+            Self::Lines
+        }
+    }
+}
+
 /// Shows rewarm progress on stderr, to keep stdout for the script's output.
-/// Off a terminal it prints one line per new percentage, because a redrawn
-/// bar garbles a log.
 enum RewarmDisplay {
+    Hidden,
     Bar(ProgressBar),
     /// The last percentage printed. The server repeats a percentage across
     /// many records, and a line for each floods the log.
@@ -1856,8 +1881,10 @@ enum RewarmDisplay {
 
 impl Default for RewarmDisplay {
     fn default() -> Self {
-        if !stdio::stderr().is_terminal() {
-            return Self::Lines(None);
+        match ProgressMode::of_stderr() {
+            ProgressMode::Hidden => return Self::Hidden,
+            ProgressMode::Lines => return Self::Lines(None),
+            ProgressMode::Redraw => {}
         }
         let style = ProgressStyle::with_template("rewarming moment [{bar:40}] {pos}%")
             .expect("the template is valid")
@@ -1882,6 +1909,7 @@ impl Drop for RewarmDisplay {
 impl RewarmDisplay {
     fn show(&mut self, percent_complete: u8) {
         match self {
+            Self::Hidden => {}
             Self::Bar(bar) => {
                 bar.set_position(percent_complete.into());
                 // A finished bar keeps the cursor on its line, so clear the
@@ -1915,6 +1943,7 @@ fn spinner(message: impl Into<std::borrow::Cow<'static, str>>) -> ProgressBar {
 /// What a command shows on stderr while it waits: a spinner on a terminal,
 /// else a line at once and a line each whole minute.
 enum ReadyDisplay {
+    Hidden,
     Spinner(ProgressBar),
     Lines {
         waiting: &'static str,
@@ -1926,14 +1955,15 @@ enum ReadyDisplay {
 
 impl ReadyDisplay {
     fn new(waiting: &'static str) -> Self {
-        if !stdio::stderr().is_terminal() {
-            return Self::Lines {
+        match ProgressMode::of_stderr() {
+            ProgressMode::Hidden => Self::Hidden,
+            ProgressMode::Lines => Self::Lines {
                 waiting,
                 start: Instant::now(),
                 last_minutes: None,
-            };
+            },
+            ProgressMode::Redraw => Self::Spinner(spinner(waiting)),
         }
-        Self::Spinner(spinner(waiting))
     }
 
     fn show(&mut self) {
@@ -1957,7 +1987,7 @@ impl ReadyDisplay {
     /// line: the error that follows names its status.
     fn finish(self, run: &RunDetail) {
         self.clear();
-        if run.is_ready() {
+        if run.is_ready() && !matches!(self, Self::Hidden) {
             eprintln!("run {} is ready", run.run_id);
         }
     }
@@ -2136,11 +2166,12 @@ async fn cmd_runs_exec(
     run_id: &str,
     exec: ExecRequest,
     settings: &Settings,
-    OutputOptions { json, verbose }: OutputOptions,
+    verbose: bool,
+    mode: EventOutput,
 ) -> Result<()> {
     debug!("executing command in run: {run_id}");
     let api = AntithesisApi::new(settings, verbose)?;
-    exec_when_ready(&api, run_id, exec, READY_POLL, json).await
+    exec_when_ready(&api, run_id, exec, READY_POLL, mode).await
 }
 
 /// How often a command that needs a ready run polls a run that is not ready.
@@ -2172,10 +2203,14 @@ async fn exec_when_ready(
     run_id: &str,
     exec: ExecRequest,
     poll: Duration,
-    json: bool,
+    mode: EventOutput,
 ) -> Result<()> {
     let timeout = exec.timeout;
-    let mut renderer = exec.events.then(|| EventStreamRenderer::new(false));
+    let (json, detail) = match mode {
+        EventOutput::Json { .. } => (true, false),
+        EventOutput::Text { detail } => (false, detail),
+    };
+    let mut renderer = exec.events.then(|| EventStreamRenderer::new(detail));
     // A cold moment is in its rewarm source, not in RUN_ID, so a debugging
     // session at that moment starts from the source.
     let (rewarm_flag, debug_target) = match &exec.rewarm {
@@ -5429,7 +5464,11 @@ mod tests {
                 rewarm: None,
             };
 
-            exec_when_ready(&api, "run-w", exec, FAST_POLL, true)
+            let json = EventOutput::Json {
+                raw: false,
+                annotate_faults: false,
+            };
+            exec_when_ready(&api, "run-w", exec, FAST_POLL, json)
                 .await
                 .unwrap();
 

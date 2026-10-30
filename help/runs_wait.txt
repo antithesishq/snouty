@@ -23,5 +23,5 @@ Examples:
 Add --json for machine-readable output. The final status prints as one JSON object:
   {{ t("snouty --json runs wait <run_id> | jq -r .status")? }}
 {% else %}
-The final status prints as one JSON object.
+With {{ t("--json")? }}, the final status prints as one JSON object.
 {% endif %}

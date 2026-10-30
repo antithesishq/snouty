@@ -304,18 +304,35 @@ mod tests {
     }
 
     /// An example runs as its tool call does: the command line of the call
-    /// parses as the example does.
+    /// parses as the example does, with `--detail` where a call without
+    /// `json` adds it.
     #[hegel::test]
     fn an_example_runs_as_its_tool_call(tc: hegel::TestCase) {
         // A word that starts with `-` is a flag on the command line.
         let value = tc.draw(generators::text().exclude_characters("\0<>"));
         let value = shlex::try_quote(&format!("v{value}")).unwrap().into_owned();
+        let list = format!("runs list --launcher {value} --limit 5 --status completed");
+        // The bool: the call adds `--detail`, so the example gets it at its
+        // end.
         let examples = [
-            format!("snouty runs list --launcher {value} --limit 5 --status completed"),
-            format!("snouty runs exec r -1 1.5 --events --container c {value}"),
-            format!("snouty runs search r --count {value}"),
-            format!("snouty debug --run-id r --input-hash h --vtime 2.5 --param a={value}"),
-            format!("snouty docs search --offline {value} x"),
+            (format!("snouty {list}"), true),
+            (format!("snouty --json {list}"), false),
+            (
+                format!("snouty runs list --detail --launcher {value}"),
+                false,
+            ),
+            (
+                format!("snouty runs exec r -1 1.5 --events --container c {value}"),
+                true,
+            ),
+            // `--count` conflicts with `--detail`.
+            (format!("snouty runs search r --count {value}"), false),
+            (format!("snouty runs search r {value}"), true),
+            (
+                format!("snouty debug --run-id r --input-hash h --vtime 2.5 --param a={value}"),
+                false,
+            ),
+            (format!("snouty docs search --offline {value} x"), false),
         ];
         let globals = Globals {
             settings: None,
@@ -323,14 +340,19 @@ mod tests {
             verbose: false,
             max_concurrent_calls: NonZeroUsize::new(1).unwrap(),
         };
-        for text in examples {
+        for (text, adds_detail) in examples {
             let example = parse(&text).unwrap();
             let call = example.to_call(&text).unwrap();
             let argv = command_args(call.tool, &globals, call.to_json()).unwrap();
             let from_call = Cli::command()
                 .try_get_matches_from(std::iter::once("snouty".into()).chain(argv))
                 .unwrap();
-            let words = shlex::split(&text.replacen("snouty", "snouty --json", 1)).unwrap();
+            let runs = if adds_detail {
+                format!("{text} --detail")
+            } else {
+                text.clone()
+            };
+            let words = shlex::split(&runs).unwrap();
             let from_example = Cli::command().try_get_matches_from(words).unwrap();
             assert_eq!(
                 values(&from_call, tree::root()),

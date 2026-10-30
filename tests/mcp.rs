@@ -87,7 +87,7 @@ fn text(result: &CallToolResult) -> &str {
 }
 
 #[tokio::test]
-async fn tools_run_their_commands_in_json_mode() {
+async fn tools_return_detailed_output_or_json() {
     let server = MockApiServer::start();
     let home = TempDir::new().unwrap();
     let client = connect(snouty_mcp(&server, home.path())).await;
@@ -120,9 +120,21 @@ async fn tools_run_their_commands_in_json_mode() {
         ]
     );
 
-    // runs_list returns what `snouty --json runs list` prints: one run per
-    // line.
+    // runs_list returns what `snouty runs list --detail` prints: a block per
+    // run. The result also has a stderr block: the note that more runs may
+    // exist.
     let result = call(&client, "runs_list", json!({ "limit": 2 })).await;
+    assert_eq!(result.is_error, Some(false));
+    let stdout = &result.content[0].as_text().unwrap().text;
+    assert!(stdout.starts_with("Run ID       run-1\n"), "{stdout}");
+    assert!(
+        stdout.contains("Description  nightly smoke on main"),
+        "{stdout}"
+    );
+
+    // With `json`, it returns what `snouty --json runs list` prints: one run
+    // per line.
+    let result = call(&client, "runs_list", json!({ "limit": 2, "json": true })).await;
     assert_eq!(result.is_error, Some(false));
     let runs: Vec<Value> = text(&result)
         .lines()
@@ -133,7 +145,7 @@ async fn tools_run_their_commands_in_json_mode() {
 
     // settings_show returns the resolved settings, which doctor no longer
     // reports.
-    let result = call(&client, "settings_show", json!({})).await;
+    let result = call(&client, "settings_show", json!({ "json": true })).await;
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
     let shown: Value = serde_json::from_str(text(&result)).unwrap();
     assert!(shown["settings"]["base_url"].is_string(), "{shown}");
@@ -158,32 +170,44 @@ async fn tools_run_their_commands_in_json_mode() {
     let result = call(
         &client,
         "runs_list",
-        json!({ "status": "completed", "limit": 1 }),
+        json!({ "status": "completed", "limit": 1, "json": true }),
     )
     .await;
     let run: Value = serde_json::from_str(text(&result).trim()).unwrap();
     let call_args = json!({
         "run_id": run["run_id"],
         "property_id": "97cf5fcafa500ed62bf109d81834c5b881a2c854",
+        "json": true,
     });
     let result = call(&client, "runs_property", call_args).await;
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
     let property: Value = serde_json::from_str(text(&result)).unwrap();
     assert_eq!(property["id"], "97cf5fcafa500ed62bf109d81834c5b881a2c854");
-    let result = call(&client, "runs_usage", json!({ "limit": 1, "utc": true })).await;
+    let result = call(
+        &client,
+        "runs_usage",
+        json!({ "limit": 1, "utc": true, "json": true }),
+    )
+    .await;
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
     let usage: Value = serde_json::from_str(text(&result).trim()).unwrap();
     assert!(usage["hours"].is_number(), "{usage}");
 
     // runs_events searches a run's events for every term of matches.
-    let call_args = json!({ "run_id": run["run_id"], "matches": ["request", "slow"] });
+    let call_args =
+        json!({ "run_id": run["run_id"], "matches": ["request", "slow"], "json": true });
     let result = call(&client, "runs_events", call_args).await;
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
     let event: Value = serde_json::from_str(text(&result).lines().next().unwrap()).unwrap();
     assert!(event["moment"]["vtime"].is_number(), "{event}");
 
     // runs_cancel cancels an in-progress run.
-    let result = call(&client, "runs_cancel", json!({ "run_id": "run-2" })).await;
+    let result = call(
+        &client,
+        "runs_cancel",
+        json!({ "run_id": "run-2", "json": true }),
+    )
+    .await;
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
     let cancelled: Value = serde_json::from_str(text(&result)).unwrap();
     assert_eq!(cancelled["run_id"], "run-2");
@@ -191,8 +215,8 @@ async fn tools_run_their_commands_in_json_mode() {
     let result = call(&client, "runs_cancel", json!({ "run_id": run["run_id"] })).await;
     assert_eq!(result.is_error, Some(true), "{}", text(&result));
 
-    // version returns the crate version as JSON.
-    let result = call(&client, "version", json!({})).await;
+    // With `json`, version returns the crate version as JSON.
+    let result = call(&client, "version", json!({ "json": true })).await;
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
     let version: Value = serde_json::from_str(text(&result)).unwrap();
     assert_eq!(version["version"], env!("CARGO_PKG_VERSION"));
@@ -206,7 +230,7 @@ async fn tools_run_their_commands_in_json_mode() {
     let result = call(
         &client,
         "docs_search",
-        json!({ "query": ["docker"], "offline": true }),
+        json!({ "query": ["docker"], "offline": true, "json": true }),
     )
     .await;
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
@@ -476,9 +500,65 @@ async fn the_server_debug_log_stays_out_of_tool_results() {
     let mut command = snouty_mcp(&server, home.path());
     command.env("RUST_LOG", "debug");
     let client = connect(command).await;
-    let result = call(&client, "runs_list", json!({ "limit": 1 })).await;
+    // runs_show prints no note on stderr, which runs_list does.
+    let result = call(&client, "runs_show", json!({ "run_id": "run-1" })).await;
     assert_eq!(result.is_error, Some(false), "{result:?}");
     // One block: stdout, and no stderr.
     text(&result);
+    client.cancel().await.expect("close snouty mcp");
+}
+
+/// A tool call's command shows no progress: its result arrives only when the
+/// call ends, and the server sends progress notifications of its own.
+#[tokio::test]
+async fn tool_calls_show_no_progress() {
+    let server = MockApiServer::start();
+    let home = TempDir::new().unwrap();
+    let client = connect(snouty_mcp(&server, home.path())).await;
+    // A moment of another run, which the server rewarms first.
+    let call_args = json!({
+        "run_id": "run-2",
+        "input_hash": "1002528785118888238",
+        "vtime": 278.1311443040613,
+        "script": "uname -a",
+        "source_run_id": "1f1211ea49946d4f63a92d65ee42476d-64-0",
+    });
+    let result = call(&client, "runs_exec", call_args).await;
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let blocks: Vec<&str> = result
+        .content
+        .iter()
+        .map(|block| block.as_text().unwrap().text.as_str())
+        .collect();
+    assert!(blocks[0].contains("Linux antithesis"), "{blocks:?}");
+    assert!(blocks[1].contains("end moment:"), "{blocks:?}");
+    assert!(!blocks[1].contains("rewarming"), "{blocks:?}");
+    client.cancel().await.expect("close snouty mcp");
+}
+
+/// A tool result holds plain text in the detailed form: no escape codes, even
+/// with `CLICOLOR_FORCE` set for the server, and `runs_exec` events with their
+/// full vtime, as `runs_logs` returns them.
+#[tokio::test]
+async fn tool_results_are_plain_detailed_text() {
+    let server = MockApiServer::start();
+    let home = TempDir::new().unwrap();
+    let mut command = snouty_mcp(&server, home.path());
+    command.env("CLICOLOR_FORCE", "1");
+    let client = connect(command).await;
+    let call_args = json!({
+        "run_id": "run-2",
+        "input_hash": "-3625518438076122494",
+        "vtime": 398.4898056755774,
+        "script": "with-system-logs",
+        "events": true,
+    });
+    let result = call(&client, "runs_exec", call_args).await;
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    let stdout = &result.content[0].as_text().unwrap().text;
+    assert!(!stdout.contains('\x1b'), "{stdout:?}");
+    // The detailed form gives the vtime a full-width column.
+    let line = regex::Regex::new(r"(?m)^398\.491 {10,}\[bash_command\] script says hi$").unwrap();
+    assert!(line.is_match(stdout), "{stdout}");
     client.cancel().await.expect("close snouty mcp");
 }

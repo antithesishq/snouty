@@ -7,9 +7,9 @@ Starts a Model Context Protocol server on stdin and stdout. An agent starts `sno
 The tools:
 {{ tool_table() }}
 
-Each tool runs its snouty command in JSON mode and returns what the command prints: stdout, then stderr in a second block when there is any. The params of a tool are the arguments of its command, by name. A command that fails marks the result isError.
+Each tool runs its snouty command and returns what the command prints: stdout, then stderr in a second block when there is any. The output is the text output of the command, in its detailed form: a command that has --detail runs with it, unless another param conflicts with --detail, such as `count` of runs_search. A tool's `json` param, when true, runs the command with --json instead, and without --detail. docs_show has no `json` param, because its output is the same in both modes. The params of a tool are the other arguments of its command, by name. A command that fails marks the result isError.
 
-The server sets no time limit and no output limit on a tool call. When the client cancels a call or closes stdin, the server kills the call's command. A command also exits when its server is gone. When the client sends a progress token with a call, the server sends a progress notification every 10 seconds until the call ends, so a client that resets its time limit on progress does not end a long call. Up to --max-concurrent-calls tool calls run at the same time.
+The server sets no time limit and no output limit on a tool call. When the client cancels a call or closes stdin, the server kills the call's command. A command also exits when its server is gone. When the client sends a progress token with a call, the server sends a progress notification every 10 seconds until the call ends, so a client that resets its time limit on progress does not end a long call. The commands themselves show no progress, such as that of a rewarm or of a wait until a run is ready, because a tool result arrives only when the call ends. Up to --max-concurrent-calls tool calls run at the same time.
 
 --settings, --profile and --verbose, and the ANTITHESIS_* environment variables, apply to every tool call as they do for the other commands. With RUST_LOG=debug, the server logs each command line that it runs to stderr.
 

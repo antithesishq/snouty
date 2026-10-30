@@ -356,7 +356,7 @@ fn unrequire_exec_timeout_default(spec: &mut serde_json::Value) {
     );
 }
 
-/// snouty does not show a property's description, in its human output or in
+/// snouty does not show a property's description, in its text output or in
 /// `--json`, so drop the field from the generated property types.
 fn drop_property_description(spec: &mut serde_json::Value) {
     remove_schema_key(

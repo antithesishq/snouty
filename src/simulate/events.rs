@@ -97,6 +97,7 @@ pub struct Event {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EventKind {
+    SshReady,
     SetupComplete {
         message: Option<String>,
     },
@@ -173,6 +174,7 @@ impl Event {
                 .unwrap_or_default()
         };
         match &self.kind {
+            EventKind::SshReady => "Guest SSH ready".into(),
             EventKind::SetupComplete { message } => {
                 let suffix = message
                     .as_ref()
@@ -361,6 +363,9 @@ pub fn parse_line(line: &str) -> Result<Option<Event>> {
     if kind == "JSON" || source == "processes_terminated_with_signal" {
         let value: Value = serde_json::from_str(payload)
             .wrap_err_with(|| format!("invalid instrumentation JSON from {source}"))?;
+        if value["antithesis_host"]["status"] == "ssh_ready" {
+            return Ok(event(EventKind::SshReady));
+        }
         let string = |key: &str| value[key].as_str().unwrap_or_default().to_owned();
         if let Some(assertion) = value.get("antithesis_assert") {
             let a: AssertionPayload =
@@ -521,6 +526,33 @@ mod tests {
     use crate::runs::FaultAnnotator;
     use hegel::generators;
     use serde_json::json;
+
+    #[hegel::test]
+    fn host_readiness_and_workload_setup_are_distinct(tc: hegel::TestCase) {
+        let status = tc.draw(generators::sampled_from(vec![
+            "ssh_ready",
+            "complete",
+            "starting",
+        ]));
+        let message = tc.draw(generators::text());
+        for (key, ready) in [
+            ("antithesis_host", status == "ssh_ready"),
+            ("antithesis_setup", false),
+        ] {
+            let payload = json!({key: {"status": status, "message": message}});
+            let event = parse_line(&format!("1 [antithesis/ssh-ready.json] [JSON] '{payload}'"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(matches!(event.kind, EventKind::SshReady), ready);
+            if key == "antithesis_setup" && status == "complete" {
+                assert!(
+                    matches!(event.kind, EventKind::SetupComplete { message: Some(actual) } if actual == message)
+                );
+            } else {
+                assert!(!matches!(event.kind, EventKind::SetupComplete { .. }));
+            }
+        }
+    }
 
     #[test]
     fn reference_fixture_matches() {

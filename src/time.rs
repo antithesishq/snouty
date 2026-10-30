@@ -8,9 +8,11 @@
 //! A bare number is read as a (possibly fractional) count of minutes and
 //! rounded to whole seconds — the finest resolution we keep. A flag that has
 //! always taken seconds reads a bare number as whole seconds instead, and an
-//! MCP param refuses a bare number; see [`BareUnit`]. Unit forms use
-//! whole-number components (`h`/`m`/`s`, in that order); fractional components
-//! like `1.5h` are rejected, since the bare-minutes form already covers that.
+//! MCP param refuses a bare number; see [`BareUnit`]. A bare number is
+//! deprecated on the command line, and the docs give only the unit forms
+//! ([`DURATION_FORMAT`]). Unit forms use whole-number components (`h`/`m`/`s`,
+//! in that order); fractional components like `1.5h` are rejected, since the
+//! bare-minutes form already covers that.
 
 use chrono::{DateTime, FixedOffset, Local, TimeZone, Utc};
 
@@ -21,6 +23,19 @@ use std::time::Duration;
 
 const SECS_PER_MINUTE: u64 = 60;
 const SECS_PER_HOUR: u64 = 60 * SECS_PER_MINUTE;
+
+/// The duration format, as every duration flag and param documents it. A
+/// macro, so that a clap `help` attribute can `concat!` it.
+macro_rules! duration_format {
+    () => {
+        "A duration is a whole number with an h, m or s unit, or several in that \
+         order, such as 90s, 5m or 1h30m; a bare number is not permitted"
+    };
+}
+pub(crate) use duration_format;
+
+/// [`duration_format!`] as a value.
+pub const DURATION_FORMAT: &str = duration_format!();
 
 /// A duration in the forms people type (`90`, `1h30m`, `30s`), held as a
 /// [`Duration`] rounded to whole seconds. Carried in the `antithesis.duration`
@@ -73,7 +88,16 @@ impl HumanDuration {
         } else {
             parse_units(&s).map(Self::from_seconds)
         };
-        parsed.ok_or(ParseDurationError(bare))
+        parsed.ok_or(ParseDurationError)
+    }
+
+    /// Parse `s` as a duration flag does: a bare number still counts `bare`
+    /// units, but is deprecated, so the result also says whether `s` was one.
+    pub fn parse_flag(s: &str, bare: BareUnit) -> Result<(Self, bool), ParseDurationError> {
+        match Self::parse(s, BareUnit::Refused) {
+            Ok(duration) => Ok((duration, false)),
+            Err(_) => Self::parse(s, bare).map(|duration| (duration, true)),
+        }
     }
 
     /// Build from a whole number of seconds.
@@ -160,27 +184,18 @@ impl FromStr for HumanDuration {
     }
 }
 
-/// Error from parsing a [`HumanDuration`]. Its message lists the accepted
-/// forms; clap prefixes it with the offending value and flag name.
+/// Error from parsing a [`HumanDuration`]. Its message gives the documented
+/// format, which leaves out the deprecated bare number; clap prefixes it with
+/// the offending value and flag name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ParseDurationError(BareUnit);
+pub struct ParseDurationError;
 
 impl fmt::Display for ParseDurationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self.0 {
-            BareUnit::Minutes => {
-                "must be a number of minutes (e.g. `30`) or use h/m units \
-                 (e.g. `90m`, `2h`, `1h30m`)"
-            }
-            BareUnit::Seconds => {
-                "must be a whole number of seconds (e.g. `120`) or use h/m/s units \
-                 (e.g. `90s`, `2m`, `1h`)"
-            }
-            BareUnit::Refused => {
-                "must use whole-number h/m/s units, in that order (e.g. `90s`, `5m`, \
-                 `1h30m`); a bare number is refused"
-            }
-        })
+        f.write_str(
+            "must be a whole number with an h, m or s unit, or several in that order \
+             (e.g. `90s`, `5m`, `1h30m`); a bare number is not permitted",
+        )
     }
 }
 
@@ -338,7 +353,7 @@ mod tests {
         ] {
             assert_eq!(
                 bad.parse::<HumanDuration>(),
-                Err(ParseDurationError(BareUnit::Minutes)),
+                Err(ParseDurationError),
                 "expected {bad:?} to be rejected"
             );
         }
@@ -357,7 +372,7 @@ mod tests {
         for bad in ["1.5", "abc", "1.5h", "1h30", ""] {
             assert_eq!(
                 seconds(bad),
-                Err(ParseDurationError(BareUnit::Seconds)),
+                Err(ParseDurationError),
                 "expected {bad:?} to be rejected"
             );
         }
@@ -372,10 +387,23 @@ mod tests {
         for bad in ["30", "0", "1.5", "1.5h", ""] {
             assert_eq!(
                 seconds(bad),
-                Err(ParseDurationError(BareUnit::Refused)),
+                Err(ParseDurationError),
                 "expected {bad:?} to be rejected"
             );
         }
+    }
+
+    #[test]
+    fn parse_flag_marks_a_bare_number() {
+        let flag =
+            |s: &str, bare| HumanDuration::parse_flag(s, bare).map(|(d, b)| (d.seconds(), b));
+        assert_eq!(flag("30", BareUnit::Minutes), Ok((1800, true)));
+        assert_eq!(flag("1.5", BareUnit::Minutes), Ok((90, true)));
+        assert_eq!(flag(" 45 ", BareUnit::Seconds), Ok((45, true)));
+        assert_eq!(flag("30m", BareUnit::Minutes), Ok((1800, false)));
+        assert_eq!(flag("45s", BareUnit::Seconds), Ok((45, false)));
+        assert_eq!(flag("1.5", BareUnit::Seconds), Err(ParseDurationError));
+        assert_eq!(flag("1.5h", BareUnit::Minutes), Err(ParseDurationError));
     }
 
     #[test]

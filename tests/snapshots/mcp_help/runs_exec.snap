@@ -17,7 +17,7 @@ A second block holds the script's error output, why the command failed when it f
 
 The command fails when the script fails, times out, or its stream ends early.
 
-`timeout` takes h/m/s units, in that order, such as 90s, 5m or 1h30m. A bare number is refused.
+`timeout` takes a duration. A duration is a whole number with an h, m or s unit, or several in that order, such as 90s, 5m or 1h30m; a bare number is not permitted.
 
 To run more at the moment that a script left, pass its end moment as the next call's input_hash and vtime:
   runs_exec {"run_id": "<run_id>", "input_hash": "<end_hash>", "vtime": <end_vtime>, "script": "cat /tmp/state"}

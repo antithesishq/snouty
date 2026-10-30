@@ -9,13 +9,9 @@ The status is a minimum. A run can only move forward, and a complete run never s
 
 When the run reaches the status, the command prints the run's current status and succeeds, whatever that status is. A run that reports status `unknown` fails the command: snouty cannot tell whether such a run will still make progress.
 
-The wait is unbounded unless {{ t("--timeout")? }} is given. The command is safe to interrupt and re-run: it holds no state beyond the run id.
+The wait is unbounded unless {{ t("--timeout")? }} is given. The command is safe to interrupt and re-run: it holds no state beyond the run id.{% if !cli %}
 
-{% if cli %}
-{{ t("--timeout")? }} and {{ t("--poll-interval")? }} take h/m/s units, in that order, such as 90s, 5m or 1h30m. A bare number counts minutes.
-{% else %}
-{{ t("--timeout")? }} and {{ t("--poll-interval")? }} take h/m/s units, in that order, such as 90s, 5m or 1h30m. A bare number is refused.
-{% endif %}
+{{ t("--timeout")? }} and {{ t("--poll-interval")? }} take durations. {{ duration_format() }}.{% endif %}
 
 Examples:
   {{ t("snouty runs wait <run_id>")? }}

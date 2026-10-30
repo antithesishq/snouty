@@ -236,14 +236,15 @@ fn launch_duration_rejects_non_numeric() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("--duration"))
-        .stderr(predicate::str::contains("number of minutes"));
+        .stderr(predicate::str::contains("a bare number is not permitted"));
 }
 
 #[test]
 fn launch_duration_accepts_fractional() {
     let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
-    // Fractional minutes are kept for backwards compatibility (1.05 -> 63s).
+    // Fractional minutes are kept for backwards compatibility (1.05 -> 63s),
+    // with a deprecation warning that writes the value with units.
     snouty_with_mock(&mock_url)
         .args([
             "launch",
@@ -256,7 +257,10 @@ fn launch_duration_accepts_fractional() {
         ])
         .assert()
         .success()
-        .stderr(predicate::str::contains(r#""antithesis.duration": "1.05""#));
+        .stderr(predicate::str::contains(r#""antithesis.duration": "1.05""#))
+        .stderr(predicate::str::contains(
+            "warning: a bare number for --duration is deprecated; write 1m3s",
+        ));
 }
 
 #[test]

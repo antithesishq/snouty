@@ -69,7 +69,7 @@ Launch a 15-minute run. snouty pushes the config image and the two images
 that the compose file names:
 
 ```sh
-snouty launch --launcher basic_test --config examples/antithesis --duration 15 \
+snouty launch --launcher basic_test --config examples/antithesis --duration 15m \
   --test-name snouty-example \
   --description "snouty example project: a tiny bank with one deliberate bug"
 ```

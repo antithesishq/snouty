@@ -311,14 +311,14 @@ mod tests {
             (
                 ToolName::RunsWait,
                 json!({ "run_id": "r", "timeout": "30" }),
-                "timeout: must use whole-number h/m/s units, in that order (e.g. `90s`, `5m`, \
-                 `1h30m`); a bare number is refused",
+                "timeout: must be a whole number with an h, m or s unit, or several in that \
+                 order (e.g. `90s`, `5m`, `1h30m`); a bare number is not permitted",
             ),
             (
                 ToolName::RunsWait,
                 json!({ "run_id": "r", "poll_interval": 2 }),
-                "poll_interval: must use whole-number h/m/s units, in that order (e.g. `90s`, \
-                 `5m`, `1h30m`); a bare number is refused",
+                "poll_interval: must be a whole number with an h, m or s unit, or several in that \
+                 order (e.g. `90s`, `5m`, `1h30m`); a bare number is not permitted",
             ),
             (
                 ToolName::RunsExec,
@@ -326,8 +326,8 @@ mod tests {
                     "run_id": "r", "input_hash": "-1", "vtime": 1, "script": "ls",
                     "timeout": "1.5",
                 }),
-                "timeout: must use whole-number h/m/s units, in that order (e.g. `90s`, `5m`, \
-                 `1h30m`); a bare number is refused",
+                "timeout: must be a whole number with an h, m or s unit, or several in that \
+                 order (e.g. `90s`, `5m`, `1h30m`); a bare number is not permitted",
             ),
         ];
         for (name, call, error) in cases {

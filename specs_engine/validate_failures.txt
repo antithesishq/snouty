@@ -2,14 +2,14 @@
 
 # Unknown prefix file — validate errors.
 build-image unknown-prefix-failures:latest unknown_prefix
-! snouty validate config_unknown --timeout 30
+! snouty validate config_unknown --timeout 30s
 stderr 'Unrecognized command names.*'
 stderr 'suite/readme.txt.*'
 stderr 'rename each command to start with a recognized prefix.*'
 
 # Non-executable test command — validate detects missing executable bit.
 build-image noexec-failures:latest noexec
-! snouty validate config_noexec --timeout 30
+! snouty validate config_noexec --timeout 30s
 stderr 'not executable.*'
 stderr 'suite/first_noexec.*'
 stderr 'chmod \+x the listed commands.*'
@@ -17,7 +17,7 @@ stderr 'chmod \+x the listed commands.*'
 # A build-only service has no explicit image:. Antithesis runs compose under
 # its own project name, so the default build tag names no image there, and
 # validate rejects the service before it starts any container.
-! snouty validate config_buildonly --timeout 30
+! snouty validate config_buildonly --timeout 30s
 stderr 'every compose service needs an explicit `image:` reference'
 stderr 'service .app. has no `image:` field'
 

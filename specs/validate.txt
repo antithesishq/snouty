@@ -23,21 +23,27 @@ stderr '.*rename.*'
 ! snouty validate ambiguous
 stderr '.*both docker-compose.yaml and a manifests/ subdirectory.*'
 
-# A bare number (seconds) and h/m/s units parse. The command then fails on
-# the missing directory, not on the flag.
-! snouty validate /nonexistent/path --timeout 90
-stderr 'not a directory.*'
+# h/m/s units parse. The command then fails on the missing directory, not on
+# the flag.
 ! snouty validate /nonexistent/path --timeout 90s
 stderr 'not a directory.*'
+! stderr 'is deprecated; write'
 ! snouty validate /nonexistent/path --timeout 2m
 stderr 'not a directory.*'
+! stderr 'is deprecated; write'
 
-# A value that is not seconds or h/m/s units fails, and the error lists the
-# accepted forms.
+# A bare number still counts seconds, but is deprecated: a warning shows the
+# value with a unit.
+! snouty validate /nonexistent/path --timeout 90
+stderr '^warning: a bare number for --timeout is deprecated; write 1m30s$'
+stderr 'not a directory.*'
+
+# A value that is not h/m/s units fails, and the error gives the format.
 ! snouty validate empty --timeout 2x
-stderr 'invalid value .2x. for .--timeout <TIMEOUT>.: must be a whole number of seconds \(e\.g\. `120`\) or use h/m/s units'
+stderr 'invalid value .2x. for .--timeout <TIMEOUT>.: must be a whole number with an h, m or s unit, or several in that order \(e\.g\. `90s`, `5m`, `1h30m`\); a bare number is not permitted'
 ! snouty validate empty --timeout 1.5
-stderr 'must be a whole number of seconds'
+stderr 'a bare number is not permitted'
+! stderr 'is deprecated; write'
 -- empty/.keep --
 -- yml_dir/docker-compose.yml --
 -- ambiguous/docker-compose.yaml --

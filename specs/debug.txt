@@ -95,11 +95,16 @@ stderr 'warning: username/password authentication is deprecated'
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --duration 90m
 stderr '"antithesis.debugging.length_hours": "1.5"'
+! stderr 'is deprecated; write'
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --duration 6h
 stderr '"antithesis.debugging.length_hours": "6"'
+
+# A bare --duration still counts minutes, but is deprecated: a warning shows
+#    the value with a unit.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --duration 30
+stderr '^warning: a bare number for --duration is deprecated; write 30m$'
 stderr '"antithesis.debugging.length_hours": "0.5"'
 
 # Without --duration, snouty does not send length_hours.

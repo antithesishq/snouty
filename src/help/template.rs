@@ -36,6 +36,13 @@ impl Context {
         Name::resolve(self.page, text)?.write(self.page, self.reader, text)
     }
 
+    /// The duration format, as each duration flag's help gives it. A page
+    /// gives it to an MCP reader, whose tool help has no flag list.
+    #[allow(clippy::unused_self, reason = "a template calls it as a method")]
+    pub(super) fn duration_format(self) -> &'static str {
+        crate::time::DURATION_FORMAT
+    }
+
     /// One line for each MCP tool: its name and what it does.
     #[allow(clippy::unused_self, reason = "a template calls it as a method")]
     pub(super) fn tool_table(self) -> String {

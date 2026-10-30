@@ -165,7 +165,7 @@ async fn tools_return_detailed_output_or_json() {
     assert_eq!(result.is_error, Some(true));
     assert_eq!(text(&result), "invalid params: unknown param: web");
 
-    // A duration param needs a unit: a bare number is refused.
+    // A duration param needs a unit: a bare number is not permitted.
     let result = call(
         &client,
         "runs_wait",
@@ -174,7 +174,7 @@ async fn tools_return_detailed_output_or_json() {
     .await;
     assert_eq!(result.is_error, Some(true));
     assert!(
-        text(&result).starts_with("invalid params: timeout: must use whole-number h/m/s units"),
+        text(&result).starts_with("invalid params: timeout: must be a whole number with an h, m"),
         "{}",
         text(&result)
     );

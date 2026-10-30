@@ -1380,7 +1380,7 @@ def gallery_launch_args(description: str) -> list[str]:
         "--config",
         str(EXAMPLE_DIR),
         "--duration",
-        str(GALLERY_RUN_MINUTES),
+        f"{GALLERY_RUN_MINUTES}m",
         "--test-name",
         GALLERY_RUN_TEST_NAME,
         "--description",
@@ -2738,6 +2738,19 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "this run is already completed.",
             ["runs", "wait", d.success],
             contains_all(d.success, "completed"),
+            json_capable=False,
+        ),
+        Story(
+            "runs-wait-bare-timeout",
+            "Wait with a timeout written as a bare number",
+            "My old script passes --timeout 90, with no unit.",
+            "The wait works as before, counting 90 minutes, and a warning on stderr says a "
+            "bare number is deprecated and shows the value with a unit: 1h30m. Exit 0.",
+            ["runs", "wait", d.success, "--timeout", "90"],
+            succeeds_with(
+                "warning: a bare number for --timeout is deprecated; write 1h30m",
+                "completed",
+            ),
             json_capable=False,
         ),
         # -- properties -----------------------------------------------------

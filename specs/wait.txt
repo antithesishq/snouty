@@ -18,13 +18,12 @@ stderr 'No Antithesis credentials found.*'
 ! snouty runs wait
 stderr '.*RUN_ID.*'
 
-# The poll interval takes the same duration forms as `launch --duration`
-# (minutes, or h/m/s units) and has a 1-minute floor: polling faster cannot
-# observe a run (which takes minutes to hours) any sooner.
+# The poll interval takes h/m/s units and has a 1-minute floor: polling faster
+# cannot observe a run (which takes minutes to hours) any sooner.
 ! snouty runs wait some-run --poll-interval 30s
 stderr 'poll interval must be at least 1 minute'
 ! snouty runs wait some-run --poll-interval abc
-stderr 'must be a number of minutes'
+stderr 'a bare number is not permitted'
 
 # A run that is already terminal returns immediately: the final status is the
 # whole output, exit 0.
@@ -42,6 +41,20 @@ mock-runs-server
 snouty --json runs wait $R_run_id
 stdout '"run_id".*"$R_run_id"'
 [!staging] stdout '"status".*"completed"'
+
+# A bare number for --timeout or --poll-interval still counts minutes, but is
+# deprecated: a warning on stderr shows the value with a unit. The JSON on
+# stdout is as without the warning.
+mock-runs-server
+snouty --json runs wait $R_run_id --timeout 90 --poll-interval 2
+stderr '^warning: a bare number for --timeout is deprecated; write 1h30m$'
+stderr '^warning: a bare number for --poll-interval is deprecated; write 2m$'
+stdout '^\{'
+stdout '"run_id".*"$R_run_id"'
+! stdout 'warning'
+mock-runs-server
+snouty --json runs wait $R_run_id --timeout 90m --poll-interval 2m
+! stderr 'is deprecated; write'
 
 # incomplete is a terminal state too: the wait succeeds and reports it.
 # run-3 is the mock's incomplete fixture.
@@ -73,7 +86,7 @@ stderr '.*run not found: no-such-run.*'
 # --timeout bounds the whole wait, in-flight request included. run-2 stays
 # in_progress on the mock, so a zero timeout fails immediately.
 mock-runs-server
-[!staging] ! snouty runs wait run-2 --timeout 0
+[!staging] ! snouty runs wait run-2 --timeout 0s
 [!staging] stderr 'timed out waiting for run run-2'
 
 # --until takes one of two points in the run's lifecycle.
@@ -114,5 +127,5 @@ mock-runs-server
 
 # `--until complete` is the default: it waits for a terminal state.
 mock-runs-server
-[!staging] ! snouty runs wait run-2 --until complete --timeout 0
+[!staging] ! snouty runs wait run-2 --until complete --timeout 0s
 [!staging] stderr 'timed out waiting for run run-2'

@@ -148,7 +148,7 @@ fn prose_width_of(term: &console::Term) -> Option<usize> {
 }
 
 /// Whether [`wrap_text`] keeps a backtick-delimited span on one line.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CodeSpans {
     /// Keep each span whole. For prose that snouty writes, where every
     /// backtick has a pair.
@@ -165,9 +165,10 @@ pub(crate) enum CodeSpans {
 /// already fits passes through byte-identical, which keeps aligned content
 /// (tables, caret markers, indented listings) exactly as built. So does a
 /// paragraph directly above a caret line (one that trims to `^`), whatever its
-/// width: the caret points at one of its columns. So does a line of a command
-/// continued over several lines (one that ends in `\`, or follows one that
-/// does), because a break inside it would split the pasted command. An overlong
+/// width: the caret points at one of its columns. With [`CodeSpans::Keep`], so
+/// does a line of a command continued over several lines (one that ends in
+/// `\`, or follows one that does), because a break inside it would split the
+/// pasted command; text snouty did not build wraps as usual. An overlong
 /// paragraph keeps its leading-space indent on every wrapped line, has tabs
 /// normalized to spaces (textwrap's separator only breaks on spaces), and
 /// never splits a word — an overlong token overflows instead. With
@@ -184,7 +185,7 @@ pub(crate) fn wrap_text(text: &str, width: usize, spans: CodeSpans) -> Vec<Strin
         // keeps its layout even when it overflows.
         let marked = paragraphs.get(i + 1).is_some_and(|next| next.trim() == "^");
         if marked
-            || continues_a_command(&paragraphs, i)
+            || (spans == CodeSpans::Keep && continues_a_command(&paragraphs, i))
             || textwrap::core::display_width(paragraph) <= width
         {
             lines.push(paragraph.to_string());
@@ -364,6 +365,12 @@ mod tests {
         let mut want = vec!["start a", "session", "with:"];
         want.extend(command.lines());
         assert_eq!(wrap_text(&text, 10, CodeSpans::Keep), want);
+        // Text snouty did not build, such as a run description, wraps as usual
+        // even when a line ends in a backslash.
+        assert_eq!(
+            wrap_text("a run description \\\nends here", 10, CodeSpans::Ignore),
+            vec!["a run", "description", "\\", "ends here"],
+        );
     }
 
     #[test]

@@ -105,12 +105,18 @@ Query snippets (each is a complete QUERY, ready to paste):
     .fold((s, ev) => [[ev.add_fields({n: s.n + 1})], {n: s.n + 1}], {"n": 0})
 
 Each matching event has its moment (an input_hash and a vtime), its source, and
-its payload. To stream the logs of an event's timeline to its current end, pass
-its run ID and input_hash to `snouty runs logs <run_id> <hash>`.
+its payload: log output, an SDK assertion, a fault, a container lifecycle
+change, or a test composer command. To stream the logs of an event's timeline to
+its current end, pass its run ID and input_hash to
+`snouty runs logs <run_id> <hash>`.
 
 Output: a `moment HASH` divider opens each timeline segment, and each event
 under it renders on one line as `VTIME [source] payload`, each event shape in
-its own concise form.
+its own concise form. VTIME is cut, never rounded, to fit its column, and a long
+source label ends in `…`. With --detail, VTIME and the source print whole, and
+indented lines under an event give its source location, as
+`@ file:function:line`, and the details that it carries, such as an SDK
+assertion's details, as `details {...}`.
 
 Rows reshaped by map/narrow/fold print as raw JSON.
 

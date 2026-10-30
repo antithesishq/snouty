@@ -484,4 +484,22 @@ mod tests {
         let expected_hundredths = (u128::from(seconds) * 100 + 30) / 60;
         assert_eq!((d.minutes() * 100.0).round() as u128, expected_hundredths);
     }
+
+    /// Over the `debug --duration` range, `hours()` prints as a plain decimal
+    /// within half a hundredth of the exact hour count.
+    #[hegel::test]
+    fn hours_is_close_and_short(tc: hegel::TestCase) {
+        let seconds = tc.draw(
+            generators::integers::<u64>()
+                .min_value(1800)
+                .max_value(21600),
+        );
+        let hours = HumanDuration::from_seconds(seconds).hours();
+        assert!((hours - seconds as f64 / 3600.0).abs() <= 0.005);
+        let text = hours.to_string();
+        assert!(
+            text.split_once('.').is_none_or(|(_, frac)| frac.len() <= 2),
+            "{text}"
+        );
+    }
 }

@@ -201,6 +201,18 @@ stdout '398.49.* \[bash_command\] fuzzpipe Command received$'
 stdout '398.49.* \[bash_command\] script says hi'
 stdout '398.49.* \[workload\] workload says hi'
 stderr 'end moment: -8206006569229276678 398.492'
+# The events print in the concise form, with the vtime in a narrow cell.
+stdout '^398\.491   \[bash_command\] script says hi$'
+
+# --detail prints the events as `runs logs --detail` does: the full vtime in
+# a wide cell on every line.
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 with-system-logs --events --detail
+stdout '^398\.491 {10,}\[bash_command\] script says hi$'
+stderr 'end moment: -8206006569229276678 398.492'
+
+# --detail formats text output, so it cannot combine with --json.
+! snouty --json runs exec run-2 -3625518438076122494 398.4898056755774 with-system-logs --events --detail
+stderr '--detail and --json cannot be combined'
 
 # With --events and --json, every event passes through as NDJSON, then the
 # result.

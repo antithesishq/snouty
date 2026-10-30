@@ -30,15 +30,15 @@ pub(crate) fn command_args(
             bail!("missing param: {}", param.id());
         }
     }
-    let mut detail = spec.detail;
+    let mut detail = spec.supports_detail;
     let mut options: Vec<OsString> = Vec::new();
     let mut positionals: Vec<(usize, Vec<String>)> = Vec::new();
     for (key, value) in params {
         let param = spec
             .param(&key)
             .ok_or_else(|| eyre!("unknown param: {key}"))?;
-        if param.drops_detail && !matches!(value, Value::Null | Value::Bool(false)) {
-            detail = None;
+        if param.conflicts_with_detail && !matches!(value, Value::Null | Value::Bool(false)) {
+            detail = false;
         }
         let values = match (param.kind, value) {
             (ParamKind::Flag, Value::Bool(true)) => {
@@ -80,8 +80,8 @@ pub(crate) fn command_args(
         }
     }
 
-    if let Some(detail) = detail {
-        options.push(format!("--{}", long(detail)).into());
+    if detail {
+        options.push("--detail".into());
     }
 
     let mut argv: Vec<OsString> = Vec::new();

@@ -27,12 +27,6 @@ const TOOL_HELP_ABOUT: &str = "Return the full help of a tool";
 /// The one param of [`TOOL_HELP`].
 const TOOL_PARAM: &str = "tool";
 
-/// The global `--json`, which each tool but `docs_show` takes as a param.
-const JSON: &str = "json";
-
-/// `--detail`, which a call without [`JSON`] passes when the command has it.
-const DETAIL: &str = "detail";
-
 /// What a tool's command can do, which sets the tool's annotations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Effect {
@@ -173,7 +167,7 @@ impl ToolName {
     pub(crate) fn role(self, id: &str) -> ArgRole {
         match self.spec().param(id) {
             Some(param) => ArgRole::Param(param),
-            None if id == JSON || id == DETAIL => ArgRole::Implied,
+            None if id == "json" || id == "detail" => ArgRole::Implied,
             None => ArgRole::Excluded,
         }
     }
@@ -270,9 +264,9 @@ pub(crate) struct Param {
     pub(crate) arg: &'static Arg,
     pub(crate) kind: ParamKind,
     pub(crate) required: bool,
-    /// Whether setting the param drops `--detail`: it is `json`, or it
-    /// conflicts with `--detail`.
-    pub(crate) drops_detail: bool,
+    /// Whether the param conflicts with `--detail`, so that setting it
+    /// drops `--detail` from the call. `json` does.
+    pub(crate) conflicts_with_detail: bool,
 }
 
 impl Param {
@@ -285,7 +279,9 @@ pub(crate) struct ToolSpec {
     pub(crate) tool: Tool,
     about: String,
     pub(crate) params: Vec<Param>,
-    pub(crate) detail: Option<&'static Arg>,
+    /// Whether the command has `--detail`, which a call without `json`
+    /// passes.
+    pub(crate) supports_detail: bool,
 }
 
 impl ToolSpec {
@@ -293,16 +289,16 @@ impl ToolSpec {
         let command = tree::find(name.path())
             .unwrap_or_else(|| panic!("{name}: no command at {:?}", name.path()));
         let root = tree::root();
-        let detail = command.get_arguments().find(|arg| arg.get_id() == DETAIL);
+        let detail = command.get_arguments().find(|arg| arg.get_id() == "detail");
         let params: Vec<Param> = command
             .get_arguments()
             .filter(|arg| {
                 let id = arg.get_id().as_str();
                 let global = root.get_arguments().any(|root| root.get_id() == id);
                 id != "help"
-                    && id != DETAIL
+                    && id != "detail"
                     && !arg.is_hide_set()
-                    && (!global || id == JSON)
+                    && (!global || id == "json")
                     && !name.hidden().contains(&id)
             })
             .map(|arg| {
@@ -320,13 +316,13 @@ impl ToolSpec {
                 };
                 let required =
                     arg.is_required_set() || name.required().contains(&arg.get_id().as_str());
-                let drops_detail = arg.get_id() == JSON
+                let conflicts_with_detail = arg.get_id() == "json"
                     || detail.is_some_and(|detail| conflicts(command, arg, detail));
                 Param {
                     arg,
                     kind,
                     required,
-                    drops_detail,
+                    conflicts_with_detail,
                 }
             })
             .collect();
@@ -344,7 +340,7 @@ impl ToolSpec {
             tool,
             about,
             params,
-            detail,
+            supports_detail: detail.is_some(),
         }
     }
 
@@ -422,8 +418,8 @@ fn command_lines(name: ToolName, detail: bool, params: &[Param]) -> String {
     let path = name.path().join(" ");
     let detail = if detail { " --detail" } else { "" };
     let default = format!("`snouty {path}{detail}`");
-    if params.iter().any(|param| param.id() == JSON) {
-        format!("{default}, or with `{JSON}`, `snouty --json {path}`")
+    if params.iter().any(|param| param.id() == "json") {
+        format!("{default}, or with `json`, `snouty --json {path}`")
     } else {
         default
     }
@@ -466,7 +462,7 @@ pub(super) fn tool_help(mut params: JsonObject) -> Result<String> {
     let spec = name.spec();
     Ok(format!(
         "The help of {name}, which runs {}.\n\n{}",
-        command_lines(name, spec.detail.is_some(), &spec.params),
+        command_lines(name, spec.supports_detail, &spec.params),
         name.help().mcp()
     ))
 }
@@ -522,7 +518,7 @@ mod tests {
                 assert!(!properties.contains_key(global), "{name}: {global}");
             }
             assert_eq!(
-                properties.contains_key(JSON),
+                properties.contains_key("json"),
                 name != ToolName::DocsShow,
                 "{name}"
             );
@@ -611,7 +607,7 @@ mod tests {
         assert_eq!(events["properties"]["limit"]["type"], "integer");
         assert!(events["properties"].get("query").is_none(), "{events:?}");
         let version = schema(ToolName::Version)["properties"].as_object().unwrap();
-        assert_eq!(version.keys().collect::<Vec<_>>(), [JSON]);
+        assert_eq!(version.keys().collect::<Vec<_>>(), ["json"]);
         let tree = schema(ToolName::DocsTree);
         assert_eq!(tree["properties"]["depth"]["minimum"], 1);
     }

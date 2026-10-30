@@ -805,6 +805,11 @@ pub enum RunsCommands {
         #[arg(long)]
         events: bool,
 
+        /// Detailed rendering of the events: a full-width vtime on every
+        /// line, source locations, and each event's attached details JSON
+        #[arg(short = 'd', long)]
+        detail: bool,
+
         /// Run that a cold moment comes from; the server loads the moment
         /// into the run. Omit it in a debugging session for a moment of the
         /// run that the debugging session was launched from

@@ -121,7 +121,9 @@ pub async fn cmd_runs(
     // so the two rules are checked once here.
     let (raw, detail) = match &command {
         Some(RunsCommands::List(args)) => (false, args.detail),
-        Some(RunsCommands::Properties { detail, .. }) => (false, *detail),
+        Some(RunsCommands::Properties { detail, .. } | RunsCommands::Exec { detail, .. }) => {
+            (false, *detail)
+        }
         Some(RunsCommands::Logs { render, .. } | RunsCommands::Events { render, .. }) => {
             (render.raw, render.detail)
         }
@@ -240,6 +242,7 @@ pub async fn cmd_runs(
             events,
             source_run_id,
             source_session_id,
+            ..
         }) => {
             // clap makes the two flags mutually exclusive.
             let rewarm = source_run_id
@@ -253,7 +256,7 @@ pub async fn cmd_runs(
                 events,
                 rewarm,
             };
-            cmd_runs_exec(&run_id, exec, settings, output).await
+            cmd_runs_exec(&run_id, exec, settings, output.verbose, mode).await
         }
         Some(RunsCommands::Events {
             run_id,
@@ -2163,11 +2166,12 @@ async fn cmd_runs_exec(
     run_id: &str,
     exec: ExecRequest,
     settings: &Settings,
-    OutputOptions { json, verbose }: OutputOptions,
+    verbose: bool,
+    mode: EventOutput,
 ) -> Result<()> {
     debug!("executing command in run: {run_id}");
     let api = AntithesisApi::new(settings, verbose)?;
-    exec_when_ready(&api, run_id, exec, READY_POLL, json).await
+    exec_when_ready(&api, run_id, exec, READY_POLL, mode).await
 }
 
 /// How often a command that needs a ready run polls a run that is not ready.
@@ -2199,12 +2203,13 @@ async fn exec_when_ready(
     run_id: &str,
     exec: ExecRequest,
     poll: Duration,
-    json: bool,
+    mode: EventOutput,
 ) -> Result<()> {
     let timeout = exec.timeout;
-    // `runs exec` has no --detail, and a tool call gets the detailed form,
-    // as for `runs logs`.
-    let detail = crate::mcp::in_tool_call();
+    let (json, detail) = match mode {
+        EventOutput::Json { .. } => (true, false),
+        EventOutput::Text { detail } => (false, detail),
+    };
     let mut renderer = exec.events.then(|| EventStreamRenderer::new(detail));
     // A cold moment is in its rewarm source, not in RUN_ID, so a debugging
     // session at that moment starts from the source.
@@ -5459,7 +5464,11 @@ mod tests {
                 rewarm: None,
             };
 
-            exec_when_ready(&api, "run-w", exec, FAST_POLL, true)
+            let json = EventOutput::Json {
+                raw: false,
+                annotate_faults: false,
+            };
+            exec_when_ready(&api, "run-w", exec, FAST_POLL, json)
                 .await
                 .unwrap();
 

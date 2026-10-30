@@ -29,8 +29,9 @@ release.
 Without --events, the script's stdout and stderr stream to snouty's stdout and
 stderr. With --events, snouty prints every event of the timeline to stdout while
 the script executes, as `snouty runs logs` prints them: the script's output, the
-workload's logs and assertions, and Antithesis events. On exit, a trailer on
-stderr documents the branch's end moment, to chain a follow-up command from. The
+workload's logs and assertions, and Antithesis events. Add --detail to print the
+events as `snouty runs logs --detail` does. On exit, a trailer on stderr
+documents the branch's end moment, to chain a follow-up command from. The
 command fails when the script fails, times out, or its stream ends early.
 
 To run more at the moment that a script left, pass its end moment as the next
@@ -76,6 +77,10 @@ Options:
 
       --events
           Emit every event rather than just the script's output
+
+  -d, --detail
+          Detailed rendering of the events: a full-width vtime on every line,
+          source locations, and each event's attached details JSON
 
       --source-run-id <SOURCE_RUN_ID>
           Run that a cold moment comes from; the server loads the moment into

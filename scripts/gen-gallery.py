@@ -3477,6 +3477,17 @@ def build_ready_stories(d: Discovery, x: GalleryRun, wait_ready: Result) -> list
             succeeds_with("first line", "second line", "end moment:"),
         ),
         exec_story(
+            "runs-exec--events--detail",
+            "See the full detail of the events while my command executes",
+            "I want the timeline while my script executes with every event in full: the "
+            "exact vtime, where each assertion is in the source, and its details.",
+            "Events print as `runs logs --detail` prints them: a full-width vtime on every "
+            "line, with source locations and details on indented lines, the script's output "
+            "among them, then the end-moment trailer. Exit 0.",
+            [*exec_at, "--events", "--detail", 'echo "first line"'],
+            succeeds_with("first line", "end moment:"),
+        ),
+        exec_story(
             "runs-exec--json",
             "Read a command's output from a script",
             "I want machine-readable output, to read the script's output and exit code with jq.",

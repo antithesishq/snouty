@@ -323,7 +323,7 @@ mod tests {
             ),
             (
                 format!("snouty runs exec r -1 1.5 --events --container c {value}"),
-                false,
+                true,
             ),
             // `--count` conflicts with `--detail`.
             (format!("snouty runs search r --count {value}"), false),

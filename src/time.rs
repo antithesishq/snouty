@@ -95,8 +95,18 @@ impl HumanDuration {
     /// clean instead of turning into a long repeating decimal: e.g. 7s is
     /// `0.12`, not `0.11666…`.
     pub fn minutes(&self) -> f64 {
-        let per_min = u128::from(SECS_PER_MINUTE);
-        let hundredths = (u128::from(self.seconds()) * 100 + per_min / 2) / per_min;
+        self.in_units_of(SECS_PER_MINUTE)
+    }
+
+    /// The duration as a number of hours, rounded to 2 decimal places as
+    /// [`minutes()`](Self::minutes) is: e.g. 50m is `0.83`.
+    pub fn hours(&self) -> f64 {
+        self.in_units_of(SECS_PER_HOUR)
+    }
+
+    fn in_units_of(&self, secs_per_unit: u64) -> f64 {
+        let per_unit = u128::from(secs_per_unit);
+        let hundredths = (u128::from(self.seconds()) * 100 + per_unit / 2) / per_unit;
         hundredths as f64 / 100.0
     }
 
@@ -277,6 +287,18 @@ mod tests {
         assert_eq!(HumanDuration::from_seconds(5445).minutes(), 90.75);
         // ...and the string sent to the API stays clean.
         assert_eq!(HumanDuration::from_seconds(7).minutes().to_string(), "0.12");
+    }
+
+    #[test]
+    fn hours_rounds_to_two_decimals() {
+        assert_eq!(seconds("30m"), 1800);
+        assert_eq!("30m".parse::<HumanDuration>().unwrap().hours(), 0.5);
+        assert_eq!("1h30m".parse::<HumanDuration>().unwrap().hours(), 1.5);
+        assert_eq!("6h".parse::<HumanDuration>().unwrap().hours(), 6.0);
+        assert_eq!(
+            "50m".parse::<HumanDuration>().unwrap().hours().to_string(),
+            "0.83"
+        );
     }
 
     #[test]

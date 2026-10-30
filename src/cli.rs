@@ -118,6 +118,16 @@ fn parse_launch_duration(value: &str) -> Result<HumanDuration, String> {
     Ok(duration)
 }
 
+/// clap value parser for `debug --duration`: a [`HumanDuration`] in the range
+/// that the API accepts for `antithesis.debugging.length_hours`.
+fn parse_debug_duration(value: &str) -> Result<HumanDuration, String> {
+    let duration = value.parse::<HumanDuration>().map_err(|e| e.to_string())?;
+    if !(30 * 60..=6 * 60 * 60).contains(&duration.seconds()) {
+        return Err("must be from 30 minutes to 6 hours".to_string());
+    }
+    Ok(duration)
+}
+
 /// clap value parser for `validate --timeout`: a [`HumanDuration`] whose bare
 /// number counts seconds, as the flag has always taken.
 fn parse_timeout_seconds(value: &str) -> Result<HumanDuration, ParseDurationError> {
@@ -626,6 +636,13 @@ pub struct DebugArgs {
     /// Virtual time identifying the moment to debug
     #[arg(long)]
     pub vtime: VTime,
+
+    /// How long the session stays available, in minutes, or h/m units (e.g.
+    /// 90m, 2h); from 30 minutes to 6 hours. Runs from releases before 67
+    /// ignore it
+    // We send it to the API as `.hours().to_string()`.
+    #[arg(long, value_parser = parse_debug_duration)]
+    pub duration: Option<HumanDuration>,
 
     /// Debugging session title, shown as the test name in the run list
     #[arg(long)]

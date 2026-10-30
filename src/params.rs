@@ -59,6 +59,7 @@ pub const ANT_DEBUGGING_SESSION_ID: &str = "antithesis.debugging.session_id";
 pub const ANT_DEBUGGING_RUN_ID: &str = "antithesis.debugging.run_id";
 pub const ANT_DEBUGGING_INPUT_HASH: &str = "antithesis.debugging.input_hash";
 pub const ANT_DEBUGGING_VTIME: &str = "antithesis.debugging.vtime";
+pub const ANT_DEBUGGING_LENGTH_HOURS: &str = "antithesis.debugging.length_hours";
 
 /// The key that both sides of [`Params::extend_checked`] set.
 #[derive(Debug)]

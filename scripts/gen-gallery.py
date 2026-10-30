@@ -3121,6 +3121,27 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             json_capable=False,
             env=guarded,
         ),
+        Story(
+            "debug-bad-duration",
+            "Debug with a session length that is out of range",
+            f"I ask for an 8-hour debugging session of run {d.success}.",
+            "snouty fails and says that --duration must be from 30 minutes to 6 "
+            "hours. It starts no session. Non-zero exit.",
+            [
+                "debug",
+                "--run-id",
+                d.success,
+                "--input-hash",
+                UNKNOWN_HASH,
+                "--vtime",
+                "100",
+                "--duration",
+                "8h",
+            ],
+            fails_before_launch(guard, d.success, "must be from 30 minutes to 6 hours"),
+            json_capable=False,
+            env=guarded,
+        ),
         # -- doctor (one story per distinct auth output) --------------------
         Story(
             "doctor-api-key",

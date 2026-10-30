@@ -26,9 +26,9 @@ use snouty::features;
 use snouty::git::{self, GitHubRepo};
 use snouty::login::cmd_login;
 use snouty::params::{
-    ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_RUN_ID, ANT_DEBUGGING_SESSION_ID,
-    ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION, ANT_EVENT_DESCRIPTION,
-    ANT_FAULT_EXCLUSIONS, ANT_FAULT_TOLERANCE, ANT_FILTER_LOGS_MATCHING,
+    ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_LENGTH_HOURS, ANT_DEBUGGING_RUN_ID,
+    ANT_DEBUGGING_SESSION_ID, ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION,
+    ANT_EVENT_DESCRIPTION, ANT_FAULT_EXCLUSIONS, ANT_FAULT_TOLERANCE, ANT_FILTER_LOGS_MATCHING,
     ANT_FILTER_SOURCE_MATCHING, ANT_IS_EPHEMERAL, ANT_PERFORMANCE_TIER, ANT_REPORT_RECIPIENTS,
     ANT_SOURCE, ANT_TEST_NAME, DuplicateKey, Params, RUN_CALLER_TYPE, VCS_PARAMS, VCS_REPO_BRANCH,
     VCS_REPO_NAME, VCS_REPO_OWNER, VCS_REPO_TYPE, VCS_VERSION_ID, VCS_VERSION_LINK,
@@ -476,6 +476,9 @@ fn debug_typed_params(args: &DebugArgs) -> Params {
     }
     params.insert(ANT_DEBUGGING_INPUT_HASH, args.input_hash.as_str());
     params.insert(ANT_DEBUGGING_VTIME, args.vtime.to_string());
+    if let Some(duration) = args.duration {
+        params.insert(ANT_DEBUGGING_LENGTH_HOURS, duration.hours().to_string());
+    }
     if let Some(title) = &args.title {
         params.insert(ANT_TEST_NAME, title.as_str());
     }

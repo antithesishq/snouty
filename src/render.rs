@@ -54,10 +54,9 @@ pub(crate) fn indent_lines(text: &str, prefix: &str) -> String {
         .join("\n")
 }
 
-/// A command for the user to copy: `program`, then each flag and its value.
-/// With two or more flags, each flag goes on its own line after a shell line
-/// continuation, so a long command fits the terminal and still pastes as one
-/// command. A command with one flag stays on one line.
+/// Format a command for the user to copy. With two or more flags, each flag
+/// goes on its own line after a shell line continuation, so a long command
+/// fits the terminal and still pastes as one command.
 pub(crate) fn shell_command(program: &str, flags: &[(&str, &str)]) -> String {
     let separator = if flags.len() > 1 { " \\\n  " } else { " " };
     let mut command = program.to_string();

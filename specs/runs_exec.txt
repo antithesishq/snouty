@@ -386,7 +386,7 @@ stderr 'stream ended before the command reported completion.*'
 # with the server's error (verbatim from orbitinghail, release 65.0, for a
 # completed `basic_test` run), then snouty gives the run's status and the
 # `snouty debug` command that starts a debugging session at the same moment,
-# one flag per line after a line continuation (`\x5c` is the backslash).
+# one flag per line after a line continuation (`\x5c` matches the backslash).
 ! snouty runs exec run-1 -3625518438076122494 398.4898056755774 'uname -a'
 stderr '^Error: API error: 400 Bad Request — Run run-1 has ended\. Commands require an active run\.$'
 stderr '^Note: `runs exec` needs a run that is in progress\. This run is completed$'

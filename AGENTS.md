@@ -16,14 +16,19 @@ CLI tool for the Antithesis API. Written in Rust.
 ## Specs
 
 This project uses spec-driven development. The `./specs` folder contains specs
-for all features in the project.
+for all features in the project, and `./specs_engine` the specs that need a
+container engine.
 
 Any new subcommands or flags must have a spec accompanying them. Having to change
 an existing spec is a good sign of backward-incompatible breakage, which will
 be subject to extra review.
 
-The `*_engine_*_specs` tests in `tests/spec.rs` run each `specs_engine/` file
-once with podman and once with docker.
+`spec_tests` finds each file in `specs/` by itself. A file in `specs_engine/`
+does not run until you add it to `tests/spec.rs` by hand: one
+`engine_spec_case_test!` entry for podman, and one for docker. Such a test
+does nothing when `SNOUTY_TEST_RUNTIME` names the other runtime. When its
+runtime is not installed, it skips, except in CI, where it fails. The engine
+runner has no `staging` condition, and `skip` fails the test.
 
 ## Writing specs
 
@@ -63,7 +68,7 @@ fixture.
   conditions are the built-in ones, such as `linux`, `darwin`, `net`,
   `exec:<program>` and `env:<VAR>` (which reads the environment of the test
   process, not `set-env`), plus `staging` in `specs/` and `docker` in
-  `specs_engine/`. For `[!staging]` and `[staging] skip`, see
+  `specs_engine/`. For `[!staging]` and `[staging] skip` (`specs/` only), see
   [Running spec tests against a staging backend](#running-spec-tests-against-a-staging-backend).
 
 `tests/spec.rs` adds these commands. `specs_engine/` has only `snouty`,
@@ -71,14 +76,18 @@ fixture.
 
 - `snouty <args>`: run the binary under test, with a clean environment and
   an isolated config dir.
-- `snouty-bg <args>`: run it in the background. It does not expand `${VAR}`.
+- `snouty-bg <args>`: run it in the background. It does not expand `${VAR}`,
+  and it does not pass `stdin` through.
 - `mock-server [-header '<name>: <value>'] [-rate-limit <n>] <status> <body>`:
   answer every request with one response, and set snouty's API URL to it.
   Against staging, it forwards the real credentials.
 - `mock-runs-server [empty]`: start the mock Antithesis API, with its fixture
-  runs or with none. Against staging, it forwards the real credentials.
+  runs or with none. It replaces the last output with the mock's API key, so
+  a `stdout` line right after it checks that key. Against staging, it forwards
+  the real credentials, and `empty` fails, so put `[!staging]` on it.
 - `mock-proxy`: start the mock API behind an HTTP proxy, and set
-  `ANTITHESIS_HTTPS_PROXY`.
+  `ANTITHESIS_HTTPS_PROXY`. It fails against staging, so put `[!staging]` on
+  it.
 - `env_from_json <line> <key>`: store a key of one NDJSON stdout line as
   `$R_<key>`.
 - `env_from_json_find <key> <filter>...`: store a key of the first NDJSON line

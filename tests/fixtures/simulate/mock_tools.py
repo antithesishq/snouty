@@ -11,6 +11,10 @@ args = sys.argv[1:]
 name = Path(sys.argv[0]).name
 mode = (root / 'mode').read_text()
 
+def event(value):
+    with (root / 'cycle_events').open('a') as output:
+        output.write(value + '\n')
+
 def record(name, value):
     (root / name).write_text(str(value))
 
@@ -126,20 +130,27 @@ elif name == 'ssh':
                 print('configure.py configuration details')
                 print('configure.py rejected configuration', file=sys.stderr)
                 sys.exit(42)
-        elif 'fault_injector_update --pause' in script:
+        elif 'fault_injector_update --pause' in script and '--property=Result' not in script:
             record('faults_paused', 'yes')
+            event('pause')
             if mode == 'fault-pause-failure':
                 sys.exit(1)
+        elif 'composer_has_runnable_commands()' in script:
+            event('recreate')
+            record('recreate_started', 'yes')
+            if mode == 'restart-blocked':
+                while True:
+                    time.sleep(1)
+            print(json.dumps('idle' if mode == 'no-commands' else 'restarted'))
         elif 'up -d' in script:
             record('start_script', script)
-            record('restart_mode', script.splitlines()[0])
             log = Path.cwd() / 'instrumentation.log'
             log.write_text("11.2 [workload] [JSON] '{\"antithesis_assert\":{\"message\":\"balance stays positive\",\"assert_type\":\"always\",\"must_hit\":true,\"hit\":true,\"condition\":false}}'\n12.0 [workload] [STDOUT] 'still running after assertion'\n")
             if mode == 'fault-annotation':
                 log.write_text("11.0 [fault_injector] [JSON] '{\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"workload\"],\"max_duration\":2}}'\n11.1 [fault_injector] [JSON] '{\"fault\":{\"name\":\"kill\",\"type\":\"node\",\"affected_nodes\":[\"echo-server\"],\"max_duration\":2}}'\n11.2 [workload] [JSON] '{\"antithesis_assert\":{\"message\":\"balance stays positive\",\"assert_type\":\"always\",\"must_hit\":true,\"hit\":true,\"condition\":false}}'\n")
             if mode == 'malformed-json':
                 log.write_text("12.0 [workload] [JSON] '{broken json}'\n")
-            if mode in ('supervisor-failure', 'clean-once', 'missing-guest', 'default-image', 'human', 'arm64', 'poweroff-fails', 'poweroff-hangs', 'poweroff-second-interrupt'):
+            if mode in ('composer-failure', 'clean-once', 'missing-guest', 'default-image', 'human', 'arm64', 'poweroff-fails', 'poweroff-hangs', 'poweroff-second-interrupt'):
                 log.write_text('12.0 [workload] [STDOUT] \'workload running\'\n')
             if mode.startswith('blocked-output'):
                 with log.open('w') as output:
@@ -154,14 +165,37 @@ elif name == 'ssh':
                     output.write("13 [workload] [JSON] '{\"antithesis_setup\":{\"status\":\"complete\"}}'\n")
         elif script == 'fault_injector_update --unpause\n':
             record('faults_unpaused', 'yes')
+            event('unpause')
             if mode == 'fault-injector-failure':
                 sys.exit(1)
-        elif script == 'touch /run/antithesis-local-injection/setup-ready\n':
+        elif 'composer_cgroup=' in script:
+            event('composer-start')
+            record('composer_starting', 'yes')
+            if mode == 'readiness-blocked':
+                while not (root / 'ready').exists():
+                    time.sleep(0.05)
+            if mode == 'readiness-failure':
+                sys.exit('composer not ready')
+            event('composer-ready')
             record('rollout_started', 'yes')
+        elif script.startswith('/etc/fuzzing/add_entropy '):
+            assert (root / 'rollout_started').exists()
+            seed, force = script.split()[1:]
+            assert 0 <= int(seed) < 2**64 and force == 'true'
+            event('entropy ' + seed + ' ' + force)
+            with (root / 'entropy_calls').open('a') as output:
+                output.write(str(time.monotonic()) + ' ' + seed + ' ' + force + '\n')
+        elif '--property=Result' in script:
+            if mode == 'composer-failure':
+                event('pause')
+                sys.exit('composer failed fixture')
+            if (root / 'composer_exit').exists():
+                event('pause')
+                print(json.dumps('completed'))
+            else:
+                print(json.dumps('running'))
         elif 'podman image exists' in script:
             print('[]')
-        elif '--property=Result' in script and mode == 'supervisor-failure' and (root / 'rollout_started').exists():
-            sys.exit('supervisor failed fixture')
     elif command.startswith('tar '):
         sys.stdin.buffer.read()
         if mode.endswith('blocked-upload'):

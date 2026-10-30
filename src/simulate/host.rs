@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use color_eyre::eyre::{Context, OptionExt, Result, bail};
+use color_eyre::eyre::{Context, OptionExt, Result, bail, eyre};
 use futures_util::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::signal::unix::{Signal, SignalKind, signal};
@@ -28,10 +28,46 @@ use crate::{
 const PREPARE: &str = include_str!("assets/prepare.sh");
 const DISABLE_FAULTS: &str = include_str!("assets/disable-faults.sh");
 const START: &str = include_str!("assets/start.sh");
+const START_COMPOSER: &str = include_str!("assets/start-composer.sh");
+const RECREATE: &str = include_str!("assets/recreate.sh");
 const STATUS: &str = include_str!("assets/status.sh");
 const ATTACH_READY: &str = "attach-ready";
 const GUEST_VERSION: &str = "v66.0";
 const GUEST_ISO_ENV: &str = "SNOUTY_SIMULATE_GUEST_ISO";
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ComposerStatus {
+    Running,
+    Completed,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RecreateStatus {
+    Restarted,
+    Idle,
+}
+
+enum WorkloadCycle {
+    WaitingForSetup,
+    Running { entropy_at: tokio::time::Instant },
+    Finished,
+}
+
+async fn add_entropy(guest: &Vm) -> Result<tokio::time::Instant> {
+    let mut bytes = [0; 8];
+    getrandom::fill(&mut bytes).map_err(|error| eyre!("generating entropy seed: {error}"))?;
+    let next = tokio::time::Instant::now() + Duration::from_secs(30);
+    guest
+        .run_script(&format!(
+            "/etc/fuzzing/add_entropy {} true\n",
+            u64::from_ne_bytes(bytes)
+        ))
+        .await
+        .wrap_err("adding guest entropy")?;
+    Ok(next)
+}
 
 fn session_root() -> Result<PathBuf> {
     let base = crate::settings::cache_dir()
@@ -360,6 +396,11 @@ pub(super) async fn run(
                 .run_script(DISABLE_FAULTS)
                 .await
                 .wrap_err("disabling guest faults")?;
+        } else {
+            guest
+                .run_script("fault_injector_update --pause\n")
+                .await
+                .wrap_err("pausing guest faults before setup")?;
         }
         std::fs::write(run_dir.path().join(ATTACH_READY), "")?;
         if output.json {
@@ -407,20 +448,12 @@ pub(super) async fn run(
         instrumentation = Some(guest.instrumentation_log().to_owned());
         consumed = std::fs::metadata(guest.instrumentation_log())?.len();
         logs = Some(serial_lines(guest.instrumentation_log(), consumed)?);
-        let start = format!(
-            "restart_enabled={}\n{START}",
-            if args.disable_restart { "no" } else { "yes" }
-        );
         guest
-            .run_script(&start)
+            .run_script(START)
             .await
-            .wrap_err("starting guest Compose project and restart supervisor")?;
+            .wrap_err("starting guest Compose project")?;
         eprintln!("Streaming guest logs. Interrupt to stop simulation.");
-        let status = if args.disable_restart {
-            format!("{STATUS}\nunit=antithesis-test-composer.service\n{STATUS}")
-        } else {
-            STATUS.to_owned()
-        };
+        let mut cycle = WorkloadCycle::WaitingForSetup;
         let mut health = tokio::time::interval(Duration::from_secs(2));
         let logs = logs.as_mut().expect("log stream opened");
         loop {
@@ -430,18 +463,49 @@ pub(super) async fn run(
                     consumed = end;
                     if let Some(event) = events::parse_line(&line)?
                         && matches!(event.kind, events::EventKind::SetupComplete { .. })
+                        && matches!(cycle, WorkloadCycle::WaitingForSetup)
                     {
                         if args.fault_tolerance != super::FaultTolerance::None {
                             guest.run_script("fault_injector_update --unpause\n").await.wrap_err("unpausing guest faults")?;
                         }
-                        guest.run_script("touch /run/antithesis-local-injection/setup-ready\n").await.wrap_err("marking guest setup complete")?;
+                        guest.run_script(START_COMPOSER).await.wrap_err("starting guest test composer")?;
+                        cycle = WorkloadCycle::Running { entropy_at: add_entropy(guest).await? };
                     }
                     output.event(&line, &mut summary, RunPhase::Running).await?;
                     if output.closed { return Ok::<_, color_eyre::Report>(()); }
                 },
-                _ = health.tick() => {
+                _ = async {
+                    tokio::select! {
+                        _ = health.tick() => {},
+                        _ = async {
+                            match cycle {
+                                WorkloadCycle::Running { entropy_at } => tokio::time::sleep_until(entropy_at).await,
+                                _ => std::future::pending().await,
+                            }
+                        } => {},
+                    }
+                } => {
                     if !guest.is_running()? { bail!("QEMU exited unexpectedly\n{}", guest.boot_diagnostics()); }
-                    tokio::time::timeout(Duration::from_secs(15), guest.run_script(&status)).await.wrap_err("guest health check timed out")?.wrap_err("checking guest service health")?;
+                    if let WorkloadCycle::Running { entropy_at } = cycle {
+                        let status = tokio::time::timeout(Duration::from_secs(15), guest.run_script(STATUS)).await.wrap_err("guest health check timed out")?.wrap_err("checking guest service health")?;
+                        match serde_json::from_str::<ComposerStatus>(&status).wrap_err("reading test composer status")? {
+                            ComposerStatus::Running => {
+                                if tokio::time::Instant::now() >= entropy_at {
+                                    cycle = WorkloadCycle::Running { entropy_at: add_entropy(guest).await? };
+                                }
+                            },
+                            ComposerStatus::Completed => {
+                                cycle = WorkloadCycle::Finished;
+                                if !args.disable_restart {
+                                    let status = guest.run_script(RECREATE).await.wrap_err("recreating guest Compose project")?;
+                                    match serde_json::from_str::<RecreateStatus>(&status).wrap_err("reading Compose recreation status")? {
+                                        RecreateStatus::Restarted => cycle = WorkloadCycle::WaitingForSetup,
+                                        RecreateStatus::Idle => eprintln!("Test composer exited without runnable commands; leaving the local Compose project running"),
+                                    }
+                                }
+                            },
+                        }
+                    }
                 },
             }
         }

@@ -145,8 +145,8 @@ command, named for its path below `snouty` with `_` between the parts:
     {% endfilter %}
   ```
 
-  Over MCP, a placeholder for a number param prints unquoted, as in
-  `"vtime": <vtime>`.
+  Over MCP, a filter block's call puts one param on each line, and a
+  placeholder for a number param prints unquoted, as in `"vtime": <vtime>`.
 
   A name that does not exist, an example that clap refuses, or a literal
   value that its parser refuses is an error. A `<placeholder>` can stand for

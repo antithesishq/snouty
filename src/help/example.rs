@@ -131,6 +131,22 @@ impl fmt::Display for ToolCall {
     }
 }
 
+impl ToolCall {
+    /// The call with one param on each line, for an example that spans
+    /// lines. `indent` is the indent of the call's first line.
+    pub(super) fn to_multiline(&self, indent: &str) -> String {
+        if self.params.is_empty() {
+            return self.tool.to_string();
+        }
+        let params: Vec<String> = self
+            .params
+            .iter()
+            .map(|(id, value)| format!("{indent}  {}: {value}", Value::String((*id).to_owned())))
+            .collect();
+        format!("{} {{\n{}\n{indent}}}", self.tool, params.join(",\n"))
+    }
+}
+
 impl fmt::Display for ParamValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -301,6 +317,18 @@ mod tests {
             ));
         }
         values
+    }
+
+    #[test]
+    fn a_multiline_call_puts_one_param_on_each_line() {
+        let text = "snouty runs list --limit <limit> --launcher nightly";
+        let call = parse(text).unwrap().to_call(text).unwrap();
+        assert_eq!(
+            call.to_multiline("  "),
+            "runs_list {\n    \"launcher\": \"nightly\",\n    \"limit\": <limit>\n  }"
+        );
+        let call = parse("snouty doctor").unwrap().to_call("").unwrap();
+        assert_eq!(call.to_multiline("  "), "doctor");
     }
 
     /// An example runs as its tool call does: the command line of the call

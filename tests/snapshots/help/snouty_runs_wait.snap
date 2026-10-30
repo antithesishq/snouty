@@ -18,6 +18,9 @@ command: snouty cannot tell whether such a run will still make progress.
 The wait is unbounded unless --timeout is given. The command is safe to
 interrupt and re-run: it holds no state beyond the run id.
 
+--timeout and --poll-interval take h/m/s units, such as 90s, 5m or 1h30m. A bare
+number counts minutes.
+
 Examples:
   snouty runs wait <run_id>
   snouty runs wait <run_id> --timeout 2h
@@ -37,14 +40,14 @@ Arguments:
 
 Options:
       --poll-interval <POLL_INTERVAL>
-          Time between status checks, in minutes or h/m/s units (e.g. 90s;
-          minimum 1 minute)
+          Time between status checks, at least 1 minute (e.g. 90s, 5m). A bare
+          number counts minutes
           
           [default: 1m]
 
       --timeout <TIMEOUT>
-          Give up after this long (minutes, or h/m/s units, e.g. 2h); without it
-          the wait is unbounded
+          Give up after this long (e.g. 2h); without it the wait is unbounded. A
+          bare number counts minutes
 
       --until <UNTIL>
           The status to wait for; a later status also ends the wait

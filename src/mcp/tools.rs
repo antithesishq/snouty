@@ -671,7 +671,10 @@ mod tests {
             let schema = &name.spec().tool.input_schema["properties"][id];
             assert_eq!(schema["pattern"], DURATION_PATTERN, "{name}.{id}");
             let description = schema["description"].as_str().unwrap();
-            assert!(description.ends_with(DURATION_UNITS), "{name}.{id}: {description}");
+            assert!(
+                description.ends_with(DURATION_UNITS),
+                "{name}.{id}: {description}"
+            );
             assert!(!description.contains("bare number counts"), "{name}.{id}");
         }
     }

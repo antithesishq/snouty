@@ -82,9 +82,11 @@ fixture.
   answer every request with one response, and set snouty's API URL to it.
   Against staging, it forwards the real credentials.
 - `mock-runs-server [empty]`: start the mock Antithesis API, with its fixture
-  runs or with none. It replaces the last output with the mock's API key, so
-  a `stdout` line right after it checks that key. Against staging, it forwards
-  the real credentials, and `empty` fails, so put `[!staging]` on it.
+  runs or with none. Against the mock, it replaces the last output with the
+  mock's API key, so a `stdout` line right after it checks that key. Against
+  staging, it forwards the real credentials and leaves the last output alone,
+  so put `[!staging]` on a line that checks the key. `empty` fails against
+  staging, so put `[!staging]` on it too.
 - `mock-proxy`: start the mock API behind an HTTP proxy, and set
   `ANTITHESIS_HTTPS_PROXY`. It fails against staging, so put `[!staging]` on
   it.

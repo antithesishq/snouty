@@ -867,14 +867,26 @@ fn ensure_services_have_images(contents: &ComposeContents) -> Result<()> {
 /// content as building from `config_dir` directly.
 ///
 /// The staged `docker-compose.yaml` is always a regular file, so the pinned
-/// write never reaches a symlink's target. It keeps the source file's mode
-/// unless the source is a symlink.
+/// write never reaches a symlink's target. It keeps the source file's mode,
+/// plus owner write, unless the source is a symlink.
 pub fn stage_pinned_config(config_dir: &Path, pinned_yaml: &str) -> Result<tempfile::TempDir> {
+    use std::os::unix::fs::PermissionsExt;
+
     let staged = tempfile::tempdir().wrap_err("failed to create config staging directory")?;
     crate::util::copy_dir_recursive(config_dir, staged.path())?;
     let compose = staged.path().join("docker-compose.yaml");
-    if std::fs::symlink_metadata(&compose).is_ok_and(|m| m.is_symlink()) {
-        std::fs::remove_file(&compose).wrap_err("failed to remove staged docker-compose.yaml")?;
+    if let Ok(meta) = std::fs::symlink_metadata(&compose) {
+        if meta.is_symlink() {
+            std::fs::remove_file(&compose)
+                .wrap_err("failed to remove staged docker-compose.yaml")?;
+        } else {
+            // `std::fs::copy` keeps a read-only source (such as a Nix store
+            // file) read-only.
+            let mut perms = meta.permissions();
+            perms.set_mode(perms.mode() | 0o200);
+            std::fs::set_permissions(&compose, perms)
+                .wrap_err("failed to make staged docker-compose.yaml writable")?;
+        }
     }
     std::fs::write(&compose, pinned_yaml).wrap_err("failed to write pinned docker-compose.yaml")?;
     Ok(staged)
@@ -1196,6 +1208,23 @@ mod tests {
         let compose = staged.path().join("docker-compose.yaml");
         assert!(std::fs::symlink_metadata(&compose).unwrap().is_file());
         assert_eq!(std::fs::read_to_string(&compose).unwrap(), "PINNED\n");
+    }
+
+    #[test]
+    fn stage_pinned_config_writes_over_read_only_compose() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let cfg = tempfile::tempdir().unwrap();
+        let source = cfg.path().join("docker-compose.yaml");
+        std::fs::write(&source, "services: {}\n").unwrap();
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        let staged = stage_pinned_config(cfg.path(), "PINNED\n").unwrap();
+
+        let compose = staged.path().join("docker-compose.yaml");
+        assert_eq!(std::fs::read_to_string(&compose).unwrap(), "PINNED\n");
+        let mode = std::fs::metadata(&compose).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o644);
     }
 
     fn cc(service: &str, id: &str, state: ContainerState) -> ComposeContainer {

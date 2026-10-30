@@ -1,3 +1,0 @@
-Each matching event has its moment (an input_hash and a vtime), its source, and its payload: log output, an SDK assertion, a fault, a container lifecycle change, or a test composer command. To stream the logs of an event's timeline to its current end, pass its run ID and input_hash to `{{ t("snouty runs logs <run_id> <hash>")? }}`.
-
-{% include "fragments/event_lines.txt" %}

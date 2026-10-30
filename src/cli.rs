@@ -807,7 +807,7 @@ pub enum RunsCommands {
 
         /// Detailed rendering of the events: a full-width vtime on every
         /// line, source locations, and each event's attached details JSON
-        #[arg(short = 'd', long)]
+        #[arg(short = 'd', long, requires = "events")]
         detail: bool,
 
         /// Run that a cold moment comes from; the server loads the moment

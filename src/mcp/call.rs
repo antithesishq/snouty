@@ -9,6 +9,7 @@ use serde_json::Value;
 
 use super::Globals;
 use super::tools::{ParamKind, ToolName};
+use crate::cli::tree;
 
 /// The command line of a tool call, after `snouty`.
 ///
@@ -17,8 +18,9 @@ use super::tools::{ParamKind, ToolName};
 /// goes in as one `--long=value` token and the positionals go after `--`, so a
 /// value never becomes a flag or a subcommand.
 ///
-/// A call without `json` passes `--detail` when the command has it and no
-/// param conflicts with it.
+/// A call without `json` passes `--detail` when the command has it and the
+/// command line still parses with it: a param can conflict with `--detail`,
+/// and `--detail` can require a param.
 pub(crate) fn command_args(
     tool: ToolName,
     globals: &Globals,
@@ -30,16 +32,13 @@ pub(crate) fn command_args(
             bail!("missing param: {}", param.id());
         }
     }
-    let mut detail = spec.supports_detail;
+    let json = params.get("json") == Some(&Value::Bool(true));
     let mut options: Vec<OsString> = Vec::new();
     let mut positionals: Vec<(usize, Vec<String>)> = Vec::new();
     for (key, value) in params {
         let param = spec
             .param(&key)
             .ok_or_else(|| eyre!("unknown param: {key}"))?;
-        if param.conflicts_with_detail && !matches!(value, Value::Null | Value::Bool(false)) {
-            detail = false;
-        }
         let values = match (param.kind, value) {
             (ParamKind::Flag, Value::Bool(true)) => {
                 options.push(format!("--{}", long(param.arg)).into());
@@ -80,10 +79,6 @@ pub(crate) fn command_args(
         }
     }
 
-    if detail {
-        options.push("--detail".into());
-    }
-
     let mut argv: Vec<OsString> = Vec::new();
     if globals.verbose {
         argv.push("--verbose".into());
@@ -98,6 +93,7 @@ pub(crate) fn command_args(
     }
     argv.extend(tool.path().iter().map(OsString::from));
     argv.extend(options);
+    let separator = argv.len();
     argv.push("--".into());
     argv.extend(
         positionals
@@ -105,7 +101,22 @@ pub(crate) fn command_args(
             .flat_map(|(_, values)| values)
             .map(OsString::from),
     );
+    if spec.supports_detail && !json {
+        let mut with_detail = argv.clone();
+        with_detail.insert(separator, "--detail".into());
+        if parses(&with_detail) {
+            argv = with_detail;
+        }
+    }
     Ok(argv)
+}
+
+/// Whether snouty's clap definition accepts `snouty <argv>`.
+fn parses(argv: &[OsString]) -> bool {
+    tree::root()
+        .clone()
+        .try_get_matches_from(std::iter::once(OsString::from("snouty")).chain(argv.iter().cloned()))
+        .is_ok()
 }
 
 fn long(arg: &Arg) -> &str {
@@ -333,6 +344,17 @@ mod tests {
                 "runs search --detail",
             ),
             (ToolName::RunsShow, json!({ "run_id": "r" }), "runs show"),
+            // `--detail` requires `--events`.
+            (
+                ToolName::RunsExec,
+                json!({ "run_id": "r", "input_hash": "h", "vtime": 1, "script": "s" }),
+                "runs exec",
+            ),
+            (
+                ToolName::RunsExec,
+                json!({ "run_id": "r", "input_hash": "h", "vtime": 1, "script": "s", "events": true }),
+                "runs exec --events --detail",
+            ),
         ];
         for (name, call, line) in cases {
             let argv = args(name, &globals(), call.clone()).unwrap();

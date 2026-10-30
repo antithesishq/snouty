@@ -210,6 +210,11 @@ snouty runs exec run-2 -3625518438076122494 398.4898056755774 with-system-logs -
 stdout '^398\.491 {10,}\[bash_command\] script says hi$'
 stderr 'end moment: -8206006569229276678 398.492'
 
+# --detail renders events, so it requires --events.
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --detail
+stderr 'the following required arguments were not provided'
+stderr '--events'
+
 # --detail formats text output, so it cannot combine with --json.
 ! snouty --json runs exec run-2 -3625518438076122494 398.4898056755774 with-system-logs --events --detail
 stderr '--detail and --json cannot be combined'

@@ -8,7 +8,7 @@ use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 
 use chrono::{DateTime, Utc};
-use clap::{Arg, Command};
+use clap::Arg;
 use color_eyre::eyre::{Result, bail, eyre};
 use rmcp::model::{JsonObject, Tool, ToolAnnotations};
 use serde_json::{Value, json};
@@ -264,9 +264,6 @@ pub(crate) struct Param {
     pub(crate) arg: &'static Arg,
     pub(crate) kind: ParamKind,
     pub(crate) required: bool,
-    /// Whether the param conflicts with `--detail`, so that setting it
-    /// drops `--detail` from the call. `json` does.
-    pub(crate) conflicts_with_detail: bool,
 }
 
 impl Param {
@@ -289,7 +286,7 @@ impl ToolSpec {
         let command = tree::find(name.path())
             .unwrap_or_else(|| panic!("{name}: no command at {:?}", name.path()));
         let root = tree::root();
-        let detail = command.get_arguments().find(|arg| arg.get_id() == "detail");
+        let supports_detail = command.get_arguments().any(|arg| arg.get_id() == "detail");
         let params: Vec<Param> = command
             .get_arguments()
             .filter(|arg| {
@@ -316,13 +313,10 @@ impl ToolSpec {
                 };
                 let required =
                     arg.is_required_set() || name.required().contains(&arg.get_id().as_str());
-                let conflicts_with_detail = arg.get_id() == "json"
-                    || detail.is_some_and(|detail| conflicts(command, arg, detail));
                 Param {
                     arg,
                     kind,
                     required,
-                    conflicts_with_detail,
                 }
             })
             .collect();
@@ -332,7 +326,7 @@ impl ToolSpec {
             .unwrap_or_default();
         let description = format!(
             "{about}. Returns what {} prints.",
-            command_lines(name, detail.is_some(), &params)
+            command_lines(name, supports_detail, &params)
         );
         let tool = Tool::new(name.to_string(), description, input_schema(name, &params))
             .with_annotations(name.effect().annotations());
@@ -340,7 +334,7 @@ impl ToolSpec {
             tool,
             about,
             params,
-            supports_detail: detail.is_some(),
+            supports_detail,
         }
     }
 
@@ -400,16 +394,6 @@ fn input_schema(name: ToolName, params: &[Param]) -> Arc<JsonObject> {
     schema.insert("required".to_owned(), required.into());
     schema.insert("additionalProperties".to_owned(), false.into());
     Arc::new(schema)
-}
-
-fn conflicts(command: &Command, a: &Arg, b: &Arg) -> bool {
-    let named = |x: &Arg, y: &Arg| {
-        command
-            .get_arg_conflicts_with(x)
-            .iter()
-            .any(|arg| arg.get_id() == y.get_id())
-    };
-    named(a, b) || named(b, a)
 }
 
 /// The command lines that a call of `name` runs, as its description and its

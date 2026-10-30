@@ -29,7 +29,8 @@ use crate::event_render::{EventStreamRenderer, normalize_terminal_text, strip_an
 use crate::event_set_dsl;
 use crate::jsonl::JsonStream;
 use crate::render::{
-    CodeSpans, OutputOptions, indent_lines, render_kv, sanitize, sanitize_multiline, wrap_text,
+    CodeSpans, OutputOptions, indent_lines, render_kv, sanitize, sanitize_multiline, shell_command,
+    wrap_text,
 };
 use crate::settings::Settings;
 use crate::stdio;
@@ -2060,7 +2061,8 @@ fn explain_exec_error(
                 "`runs exec` needs a run that is in progress. This run is {run_status}"
             ))
             .suggestion(format!(
-                "start a debugging session at this moment with `{debug_command}`"
+                "start a debugging session at this moment with:\n{}",
+                indent_lines(debug_command, "  ")
             ));
     }
     let cold = api_error_message(&err)
@@ -2213,17 +2215,20 @@ async fn exec_when_ready(
     let mut renderer = exec.events.then(|| EventStreamRenderer::new(detail));
     // A cold moment is in its rewarm source, not in RUN_ID, so a debugging
     // session at that moment starts from the source.
-    let (rewarm_flag, debug_target) = match &exec.rewarm {
-        Some(RewarmSource::Run(id)) => (Some("--source-run-id"), format!("--run-id {}", **id)),
-        Some(RewarmSource::Session(id)) => (
-            Some("--source-session-id"),
-            format!("--session-id {}", **id),
-        ),
-        None => (None, format!("--run-id {run_id}")),
+    let (rewarm_flag, target_flag, target) = match &exec.rewarm {
+        Some(RewarmSource::Run(id)) => (Some("--source-run-id"), "--run-id", id.as_str()),
+        Some(RewarmSource::Session(id)) => {
+            (Some("--source-session-id"), "--session-id", id.as_str())
+        }
+        None => (None, "--run-id", run_id),
     };
-    let debug_command = format!(
-        "snouty debug {debug_target} --input-hash {} --vtime {}",
-        exec.moment.input_hash, exec.moment.vtime
+    let debug_command = shell_command(
+        "snouty debug",
+        &[
+            (target_flag, target),
+            ("--input-hash", &exec.moment.input_hash),
+            ("--vtime", &exec.moment.vtime.to_string()),
+        ],
     );
     let run = wait_until_ready(api, run_id, poll).await?;
     let stream = api

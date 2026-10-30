@@ -385,11 +385,16 @@ stderr 'stream ended before the command reported completion.*'
 # `runs exec` needs a run that is in progress. A run that has stopped fails
 # with the server's error (verbatim from orbitinghail, release 65.0, for a
 # completed `basic_test` run), then snouty gives the run's status and the
-# `snouty debug` command that starts a debugging session at the same moment.
+# `snouty debug` command that starts a debugging session at the same moment,
+# one flag per line after a line continuation (`\x5c` is the backslash).
 ! snouty runs exec run-1 -3625518438076122494 398.4898056755774 'uname -a'
 stderr '^Error: API error: 400 Bad Request — Run run-1 has ended\. Commands require an active run\.$'
 stderr '^Note: `runs exec` needs a run that is in progress\. This run is completed$'
-stderr '^Suggestion: start a debugging session at this moment with `snouty debug --run-id run-1 --input-hash -3625518438076122494 --vtime 398\.4898056755774`$'
+stderr '^Suggestion: start a debugging session at this moment with:$'
+stderr '^  snouty debug \x5c$'
+stderr '^    --run-id run-1 \x5c$'
+stderr '^    --input-hash -3625518438076122494 \x5c$'
+stderr '^    --vtime 398\.4898056755774$'
 ! stderr 'source-run-id'
 ! stderr 'not ready'
 
@@ -399,11 +404,13 @@ stderr '^Suggestion: start a debugging session at this moment with `snouty debug
 # source.
 ! snouty runs exec run-3 1002528785118888238 278.1311443040613 'true' --source-run-id run-1
 stderr '^Note: `runs exec` needs a run that is in progress\. This run is incomplete$'
-stderr '`snouty debug --run-id run-1 --input-hash 1002528785118888238 --vtime 278\.1311443040613`$'
+stderr '^    --run-id run-1 \x5c$'
+stderr '^    --input-hash 1002528785118888238 \x5c$'
+stderr '^    --vtime 278\.1311443040613$'
 ! stderr 'names the run the moment comes from'
 
 ! snouty runs exec run-3 1002528785118888238 278.1311443040613 'true' --source-session-id ba4ebf3181dd342334b86c58941813c6-64-0
-stderr '`snouty debug --session-id ba4ebf3181dd342334b86c58941813c6-64-0 --input-hash 1002528785118888238 --vtime 278\.1311443040613`$'
+stderr '^    --session-id ba4ebf3181dd342334b86c58941813c6-64-0 \x5c$'
 
 # An unknown run id is the shared "run not found" error every run-scoped
 # command reports. The endpoint's own 404 body is an unhelpful "Resource not

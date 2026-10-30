@@ -54,6 +54,19 @@ pub(crate) fn indent_lines(text: &str, prefix: &str) -> String {
         .join("\n")
 }
 
+/// A command for the user to copy: `program`, then each flag and its value.
+/// With two or more flags, each flag goes on its own line after a shell line
+/// continuation, so a long command fits the terminal and still pastes as one
+/// command. A command with one flag stays on one line.
+pub(crate) fn shell_command(program: &str, flags: &[(&str, &str)]) -> String {
+    let separator = if flags.len() > 1 { " \\\n  " } else { " " };
+    let mut command = program.to_string();
+    for (flag, value) in flags {
+        let _ = write!(command, "{separator}{flag} {value}");
+    }
+    command
+}
+
 /// Escape one character into `out` under the control-character policy that
 /// [`sanitize`] and [`sanitize_multiline`] share. Tab passes through, and every
 /// other Unicode control (Cc) except `\n` and `\r` becomes `\xNN`.
@@ -400,6 +413,19 @@ mod tests {
         let words_in: Vec<&str> = text.split_whitespace().collect();
         let words_out: Vec<&str> = lines.iter().flat_map(|l| l.split_whitespace()).collect();
         assert_eq!(words_in, words_out);
+    }
+
+    #[test]
+    fn shell_command_puts_each_of_several_flags_on_its_own_line() {
+        assert_eq!(
+            shell_command("snouty debug", &[("--run-id", "r-1"), ("--vtime", "2.5")]),
+            "snouty debug \\\n  --run-id r-1 \\\n  --vtime 2.5"
+        );
+        assert_eq!(
+            shell_command("snouty runs show", &[("--run-id", "r-1")]),
+            "snouty runs show --run-id r-1"
+        );
+        assert_eq!(shell_command("snouty doctor", &[]), "snouty doctor");
     }
 
     #[test]

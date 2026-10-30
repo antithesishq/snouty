@@ -266,6 +266,10 @@ mod tests {
         s.parse::<HumanDuration>().unwrap().seconds()
     }
 
+    fn hours(s: &str) -> f64 {
+        s.parse::<HumanDuration>().unwrap().hours()
+    }
+
     #[test]
     fn parses_bare_number_as_minutes() {
         assert_eq!(minutes("30"), 30.0);
@@ -291,14 +295,10 @@ mod tests {
 
     #[test]
     fn hours_rounds_to_two_decimals() {
-        assert_eq!(seconds("30m"), 1800);
-        assert_eq!("30m".parse::<HumanDuration>().unwrap().hours(), 0.5);
-        assert_eq!("1h30m".parse::<HumanDuration>().unwrap().hours(), 1.5);
-        assert_eq!("6h".parse::<HumanDuration>().unwrap().hours(), 6.0);
-        assert_eq!(
-            "50m".parse::<HumanDuration>().unwrap().hours().to_string(),
-            "0.83"
-        );
+        assert_eq!(hours("30m"), 0.5);
+        assert_eq!(hours("1h30m"), 1.5);
+        assert_eq!(hours("6h"), 6.0);
+        assert_eq!(hours("50m").to_string(), "0.83");
     }
 
     #[test]

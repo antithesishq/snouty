@@ -640,7 +640,8 @@ pub struct DebugArgs {
     /// How long the session stays available, in minutes, or h/m units (e.g.
     /// 90m, 2h); from 30 minutes to 6 hours. Runs from releases before 67
     /// ignore it
-    // We send it to the API as `.hours().to_string()`.
+    // We send it to the API as `.hours().to_string()`, the (possibly
+    // fractional) hour count that `antithesis.debugging.length_hours` wants.
     #[arg(long, value_parser = parse_debug_duration)]
     pub duration: Option<HumanDuration>,
 

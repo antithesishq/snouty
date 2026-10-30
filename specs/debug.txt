@@ -56,6 +56,12 @@ mock-server 200 '{}'
 stderr 'invalid value .*not-a-number.*'
 stderr 'vtime is not a finite decimal number'
 
+# --duration outside 30 minutes to 6 hours fails before any API call.
+! snouty debug --input-hash abc --run-id run-1 --vtime 1 --duration 29m
+stderr 'invalid value .29m. for .--duration.*must be from 30 minutes to 6 hours'
+! snouty debug --input-hash abc --run-id run-1 --vtime 1 --duration 6h1m
+stderr 'invalid value .6h1m. for .--duration.*must be from 30 minutes to 6 hours'
+
 # Old-style raw --antithesis.* args are not accepted by `debug`.
 ! snouty debug --antithesis.debugging.input_hash abc --antithesis.debugging.run_id run --antithesis.debugging.vtime 123
 stderr 'unexpected argument.*'
@@ -83,6 +89,24 @@ stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 # deprecated — the launch warns and steers the user to `snouty login`.
 stderr 'warning: username/password authentication is deprecated'
 
+# --duration sends antithesis.debugging.length_hours, the number of hours
+#    that the session stays available. Runs from releases before 67 ignore
+#    it.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --duration 90m
+stderr '"antithesis.debugging.length_hours": "1.5"'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --duration 6h
+stderr '"antithesis.debugging.length_hours": "6"'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --duration 30
+stderr '"antithesis.debugging.length_hours": "0.5"'
+
+# Without --duration, snouty does not send length_hours.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
+! stderr 'length_hours'
+
 # --param adds custom parameters to the session. Unknown keys, antithesis.*
 #    or user-defined, pass through. snouty redacts sensitive values in the
 #    printed parameters.
@@ -98,6 +122,10 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 ! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --title mine --param antithesis.test_name=other
 stderr "'antithesis.test_name' cannot be overridden via --param"
 ! stderr 'Requesting the Antithesis multiverse debugger'
+
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --duration 2h --param antithesis.debugging.length_hours=3
+stderr "'antithesis.debugging.length_hours' cannot be overridden via --param"
 
 # --param cannot add a second target: clap takes exactly one of --run-id
 #    and --session-id, and a --param for the other one is refused before any

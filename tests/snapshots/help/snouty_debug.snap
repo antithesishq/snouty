@@ -13,7 +13,12 @@ Example:
     --vtime 329.8037810830865 \
     --title "stalled leader election" \
     --description "debug this moment" \
-    --recipients "team@example.com"
+    --recipients "team@example.com" \
+    --duration 2h
+
+The session stays available for the time that --duration gives, from 30 minutes
+to 6 hours. Without it, the server sets the time. Runs from releases before 67
+ignore it.
 
 Extra parameters can be passed with --param, as for `snouty launch`. A --param
 cannot replace the value of a dedicated flag, such as --title:
@@ -46,6 +51,11 @@ Options:
 
       --vtime <VTIME>
           Virtual time identifying the moment to debug
+
+      --duration <DURATION>
+          How long the session stays available, in minutes, or h/m units (e.g.
+          90m, 2h); from 30 minutes to 6 hours. Runs from releases before 67
+          ignore it
 
       --title <TITLE>
           Debugging session title, shown as the test name in the run list

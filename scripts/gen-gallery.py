@@ -93,6 +93,9 @@ import pyte
 
 # A syntactically-valid but nonexistent run id, for clean-error stories.
 UNKNOWN_RUN = "ffffffffffffffffffffffffffffffff-54-5"
+# A run ID that only the `debug-bad-duration` story names, so that the guard
+# does not count another story's refused launch against it.
+DURATION_RUN = "debug-bad-duration-run"
 # An input hash that no run reaches, for the `snouty debug` error stories.
 UNKNOWN_HASH = "1234567890123456789"
 # A property ID that no run has, for the property lookup error story.
@@ -3121,6 +3124,29 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             ],
             fails_before_launch(
                 guard, d.success, f"no moment matches input hash {UNKNOWN_HASH}"
+            ),
+            json_capable=False,
+            env=guarded,
+        ),
+        Story(
+            "debug-bad-duration",
+            "Debug with a session length that is out of range",
+            "I ask for an 8-hour debugging session.",
+            "snouty fails and says that --duration must be from 30 minutes to 6 "
+            "hours. It starts no session. Non-zero exit.",
+            [
+                "debug",
+                "--run-id",
+                DURATION_RUN,
+                "--input-hash",
+                UNKNOWN_HASH,
+                "--vtime",
+                "100",
+                "--duration",
+                "8h",
+            ],
+            fails_before_launch(
+                guard, DURATION_RUN, "must be from 30 minutes to 6 hours"
             ),
             json_capable=False,
             env=guarded,

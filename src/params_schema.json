@@ -105,6 +105,11 @@
           "type": "string",
           "description": "The vtime at which to start debugging, from the copy moment button in triage report"
         },
+        "antithesis.debugging.length_hours": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)?$",
+          "description": "How long the debugging session stays available, in hours, from 0.5 to 6. Runs from releases before 67 ignore it."
+        },
         "antithesis.event_description": {
           "type": "string",
           "description": "Description for the debugging event/session"

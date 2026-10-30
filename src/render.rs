@@ -56,11 +56,13 @@ pub(crate) fn indent_lines(text: &str, prefix: &str) -> String {
 
 /// Format a command for the user to copy. With two or more flags, each flag
 /// goes on its own line after a shell line continuation, so a long command
-/// fits the terminal and still pastes as one command.
+/// fits the terminal and still pastes as one command. Each value is quoted
+/// for the shell.
 pub(crate) fn shell_command(program: &str, flags: &[(&str, &str)]) -> String {
     let separator = if flags.len() > 1 { " \\\n  " } else { " " };
     let mut command = program.to_string();
     for (flag, value) in flags {
+        let value = shlex::try_quote(value).unwrap_or((*value).into());
         let _ = write!(command, "{separator}{flag} {value}");
     }
     command
@@ -163,7 +165,9 @@ pub(crate) enum CodeSpans {
 /// already fits passes through byte-identical, which keeps aligned content
 /// (tables, caret markers, indented listings) exactly as built. So does a
 /// paragraph directly above a caret line (one that trims to `^`), whatever its
-/// width: the caret points at one of its columns. An overlong
+/// width: the caret points at one of its columns. So does a line of a command
+/// continued over several lines (one that ends in `\`, or follows one that
+/// does), because a break inside it would split the pasted command. An overlong
 /// paragraph keeps its leading-space indent on every wrapped line, has tabs
 /// normalized to spaces (textwrap's separator only breaks on spaces), and
 /// never splits a word — an overlong token overflows instead. With
@@ -179,7 +183,10 @@ pub(crate) fn wrap_text(text: &str, width: usize, spans: CodeSpans) -> Vec<Strin
         // A caret marker points at a column of the line above it, so that line
         // keeps its layout even when it overflows.
         let marked = paragraphs.get(i + 1).is_some_and(|next| next.trim() == "^");
-        if marked || textwrap::core::display_width(paragraph) <= width {
+        if marked
+            || continues_a_command(&paragraphs, i)
+            || textwrap::core::display_width(paragraph) <= width
+        {
             lines.push(paragraph.to_string());
             continue;
         }
@@ -206,6 +213,13 @@ pub(crate) fn wrap_text(text: &str, width: usize, spans: CodeSpans) -> Vec<Strin
         }
     }
     lines
+}
+
+/// Whether line `i` of `lines` is part of a shell command continued over
+/// several lines: it ends in a backslash, or the line before it does.
+fn continues_a_command<S: AsRef<str>>(lines: &[S], i: usize) -> bool {
+    let continued = |line: &S| line.as_ref().ends_with('\\');
+    continued(&lines[i]) || i.checked_sub(1).is_some_and(|prev| continued(&lines[prev]))
 }
 
 /// Split `line` at spaces like `WordSeparator::AsciiSpace`, but join the words
@@ -298,6 +312,7 @@ mod tests {
             let marked = lines.get(i + 1).is_some_and(|next| next.trim() == "^");
             assert!(
                 marked
+                    || continues_a_command(&lines, i)
                     || textwrap::core::display_width(line) <= effective
                     || find_words_keeping_code_spans(line.trim_start()).count() == 1,
                 "line {line:?} exceeds width {effective} but holds more than one word",
@@ -340,6 +355,15 @@ mod tests {
             wrap_text(&text, 80, CodeSpans::Keep),
             [query.as_str(), caret.as_str(), "invalid word"]
         );
+    }
+
+    #[test]
+    fn wrap_text_keeps_the_lines_of_a_continued_command() {
+        let command = "  snouty debug \\\n    --session-id a-long-session-id \\\n    --vtime 2.5";
+        let text = format!("start a session with:\n{command}");
+        let mut want = vec!["start a", "session", "with:"];
+        want.extend(command.lines());
+        assert_eq!(wrap_text(&text, 10, CodeSpans::Keep), want);
     }
 
     #[test]
@@ -425,6 +449,10 @@ mod tests {
             "snouty runs show --run-id r-1"
         );
         assert_eq!(shell_command("snouty doctor", &[]), "snouty doctor");
+        assert_eq!(
+            shell_command("snouty runs show", &[("--run-id", "a b;c")]),
+            "snouty runs show --run-id 'a b;c'"
+        );
     }
 
     #[test]

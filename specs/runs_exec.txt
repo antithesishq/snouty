@@ -390,11 +390,7 @@ stderr 'stream ended before the command reported completion.*'
 ! snouty runs exec run-1 -3625518438076122494 398.4898056755774 'uname -a'
 stderr '^Error: API error: 400 Bad Request — Run run-1 has ended\. Commands require an active run\.$'
 stderr '^Note: `runs exec` needs a run that is in progress\. This run is completed$'
-stderr '^Suggestion: start a debugging session at this moment with:$'
-stderr '^  snouty debug \x5c$'
-stderr '^    --run-id run-1 \x5c$'
-stderr '^    --input-hash -3625518438076122494 \x5c$'
-stderr '^    --vtime 398\.4898056755774$'
+stderr '^Suggestion: start a debugging session at this moment with:\n  snouty debug \x5c\n    --run-id run-1 \x5c\n    --input-hash -3625518438076122494 \x5c\n    --vtime 398\.4898056755774$'
 ! stderr 'source-run-id'
 ! stderr 'not ready'
 
@@ -404,13 +400,11 @@ stderr '^    --vtime 398\.4898056755774$'
 # source.
 ! snouty runs exec run-3 1002528785118888238 278.1311443040613 'true' --source-run-id run-1
 stderr '^Note: `runs exec` needs a run that is in progress\. This run is incomplete$'
-stderr '^    --run-id run-1 \x5c$'
-stderr '^    --input-hash 1002528785118888238 \x5c$'
-stderr '^    --vtime 278\.1311443040613$'
+stderr '^  snouty debug \x5c\n    --run-id run-1 \x5c\n    --input-hash 1002528785118888238 \x5c\n    --vtime 278\.1311443040613$'
 ! stderr 'names the run the moment comes from'
 
 ! snouty runs exec run-3 1002528785118888238 278.1311443040613 'true' --source-session-id ba4ebf3181dd342334b86c58941813c6-64-0
-stderr '^    --session-id ba4ebf3181dd342334b86c58941813c6-64-0 \x5c$'
+stderr '^  snouty debug \x5c\n    --session-id ba4ebf3181dd342334b86c58941813c6-64-0 \x5c\n    --input-hash 1002528785118888238 \x5c\n    --vtime 278\.1311443040613$'
 
 # An unknown run id is the shared "run not found" error every run-scoped
 # command reports. The endpoint's own 404 body is an unhelpful "Resource not

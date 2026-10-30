@@ -10,7 +10,7 @@ Each property prints as a block: its Name, ID, Group, Category, Team and Status,
 
 Filter by status with {{ t("--passing")? }}, {{ t("--failing")? }}, and {{ t("--undetermined")? }}. Give more than one to show each of those statuses.
 
-Narrow with {{ t("--name")? }} and/or {{ t("--group")? }}. Both are case-insensitive substring matches against the relevant fields.{% if cli %} Add --detail to expand the matches into their examples and counter-example moments instead of the table. Pass a moment to `{{ t("snouty runs logs <run_id> <hash> <vtime>")? }}` to read the logs leading up to it.{% endif %} To show one property in full, pass its ID to `{{ t("snouty runs property <run_id> <property_id>")? }}`.
+Narrow with {{ t("--name")? }} and/or {{ t("--group")? }}. Both are case-insensitive substring matches against the relevant fields.{% if cli %} Add --detail to expand the matches into their examples and counter-example moments instead of the table. Pass a moment to `{{ t("snouty runs logs <run_id> <input_hash> <vtime>")? }}` to read the logs leading up to it.{% endif %} To show one property in full, pass its ID to `{{ t("snouty runs property <run_id> <property_id>")? }}`.
 
 Examples:
   {{ t("snouty runs properties <run_id> --failing")? }}

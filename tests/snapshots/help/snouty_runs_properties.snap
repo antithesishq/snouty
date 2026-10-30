@@ -18,8 +18,8 @@ one to show each of those statuses.
 Narrow with --name and/or --group. Both are case-insensitive substring matches
 against the relevant fields. Add --detail to expand the matches into their
 examples and counter-example moments instead of the table. Pass a moment to
-`snouty runs logs <run_id> <hash> <vtime>` to read the logs leading up to it. To
-show one property in full, pass its ID to
+`snouty runs logs <run_id> <input_hash> <vtime>` to read the logs leading up to
+it. To show one property in full, pass its ID to
 `snouty runs property <run_id> <property_id>`.
 
 Examples:

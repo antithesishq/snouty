@@ -1,3 +1,23 @@
+# Version 0.9.0-rc.1 (2026-10-29)
+
+- **Breaking**: snouty uses a project settings file, `.snouty.toml` in the current directory, only after you trust it. The global settings file in your home directory needs no trust. Until you run `snouty settings trust` or `snouty settings deny`, every command that reads settings stops with an error when the current directory has a `.snouty.toml`, and a trusted file must be trusted again after it changes. A file named with `--settings` or `SNOUTY_SETTINGS_PATH` needs no trust; in CI, set `SNOUTY_SETTINGS_TRUST=all` ([#524](https://github.com/antithesishq/snouty/pull/524))
+- **Breaking**: `snouty doctor` no longer prints the resolved settings, and `snouty doctor --json` has no `settings` key. Use the new `snouty settings show`, which prints each resolved setting and the settings files snouty read, with `--json` too ([#524](https://github.com/antithesishq/snouty/pull/524))
+- **Breaking**: the Linux release binaries are static musl builds only; the glibc (`-unknown-linux-gnu`) archives are gone. The shell installer and cargo-binstall pick the musl build on glibc hosts ([#456](https://github.com/antithesishq/snouty/pull/456))
+- **Breaking**: an explicit `SNOUTY_CONTAINER_ENGINE=docker` fails when `docker` is podman (podman-docker). Unset it to let auto-detection run that `docker` as podman ([#529](https://github.com/antithesishq/snouty/pull/529))
+- Add `snouty mcp`, a Model Context Protocol server on stdio that serves most of snouty's commands as tools to AI agents. It is behind the `mcp` unstable feature: set `SNOUTY_UNSTABLE_FEATURES=mcp`. See the README for setup ([#466](https://github.com/antithesishq/snouty/pull/466), [#467](https://github.com/antithesishq/snouty/pull/467), [#504](https://github.com/antithesishq/snouty/pull/504), [#536](https://github.com/antithesishq/snouty/pull/536), [#537](https://github.com/antithesishq/snouty/pull/537), [#539](https://github.com/antithesishq/snouty/pull/539), [#540](https://github.com/antithesishq/snouty/pull/540))
+- Add `snouty docker-credential`, a Docker and Podman credential helper for the tenant registry, `registry.<tenant>.antithesis.com`. The shell installer and the Nix package install it as `docker-credential-snouty` ([#511](https://github.com/antithesishq/snouty/pull/511))
+- `snouty launch --config` gives your snouty credential to Docker (28.3.0 or later) or Podman when it pushes to the tenant registry, so the push no longer needs a separate registry login ([#515](https://github.com/antithesishq/snouty/pull/515))
+- Add `snouty runs stream`: stream a run's property events until the run is final ([#470](https://github.com/antithesishq/snouty/pull/470), [#506](https://github.com/antithesishq/snouty/pull/506))
+- Add `snouty runs usage`: show the usage core-hours of runs, or with `--rollup` the total per day, week, or month ([#474](https://github.com/antithesishq/snouty/pull/474), [#507](https://github.com/antithesishq/snouty/pull/507))
+- Add `snouty runs property <run_id> <property_id>`: show one property in full ([#469](https://github.com/antithesishq/snouty/pull/469))
+- `snouty runs properties` takes `--undetermined`, the status filters combine, and `--detail` shows each property's category and team ([#468](https://github.com/antithesishq/snouty/pull/468), [#469](https://github.com/antithesishq/snouty/pull/469))
+- `snouty launch` takes `--fault-tolerance` and `--fault-exclusions` ([#513](https://github.com/antithesishq/snouty/pull/513))
+- `snouty runs exec --events` takes `--detail` ([#540](https://github.com/antithesishq/snouty/pull/540))
+- `snouty docs tree --json` prints the tree as JSON ([#464](https://github.com/antithesishq/snouty/pull/464))
+- Requests that the server answers with 429 Too Many Requests are retried with backoff, honoring `Retry-After`; `--verbose` logs each retry ([#459](https://github.com/antithesishq/snouty/pull/459))
+- A run status, or any other enum value, that this build does not know no longer fails a command; snouty shows it as the server sent it. `snouty runs list --status` rejects an unknown status before any request ([#519](https://github.com/antithesishq/snouty/pull/519), [#537](https://github.com/antithesishq/snouty/pull/537))
+- Smaller release binaries, and faster musl builds with mimalloc ([#456](https://github.com/antithesishq/snouty/pull/456), [#522](https://github.com/antithesishq/snouty/pull/522))
+
 # Version 0.8.0 (2026-10-14)
 
 - **Breaking**: `snouty runs events` requires tenant release 62.2 or newer ([#309](https://github.com/antithesishq/snouty/pull/309), [#319](https://github.com/antithesishq/snouty/pull/319), [#427](https://github.com/antithesishq/snouty/pull/427))

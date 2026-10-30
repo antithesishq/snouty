@@ -7,8 +7,8 @@
 //!
 //! A bare number is read as a (possibly fractional) count of minutes and
 //! rounded to whole seconds — the finest resolution we keep. A flag that has
-//! always taken seconds reads a bare number as whole seconds instead; see
-//! [`BareUnit`]. Unit forms use
+//! always taken seconds reads a bare number as whole seconds instead, and an
+//! MCP param refuses a bare number; see [`BareUnit`]. Unit forms use
 //! whole-number components (`h`/`m`/`s`, in that order); fractional components
 //! like `1.5h` are rejected, since the bare-minutes form already covers that.
 
@@ -44,26 +44,26 @@ const SECS_PER_HOUR: u64 = 60 * SECS_PER_MINUTE;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct HumanDuration(Duration);
 
-/// The unit that a bare number (no `h`/`m`/`s` suffix) counts.
+/// How to read a bare number (no `h`/`m`/`s` suffix).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BareUnit {
     /// A possibly fractional count of minutes: the [`FromStr`] form.
     Minutes,
     /// A whole count of seconds, for flags that have always taken seconds.
     Seconds,
-    /// No unit: a bare number is an error. An MCP param takes this, so that a
-    /// bare number cannot count minutes in one tool and seconds in another.
+    /// A bare number is an error. MCP params use this, so that a bare number
+    /// cannot mean minutes in one tool and seconds in another.
     Refused,
 }
 
 impl HumanDuration {
-    /// Parse `s`, reading a bare number in `bare` units. Unit forms parse
-    /// the same with either unit.
+    /// Parse `s`, reading a bare number as `bare` says. Unit forms parse the
+    /// same with every [`BareUnit`].
     pub fn parse(s: &str, bare: BareUnit) -> Result<Self, ParseDurationError> {
         let s = s.trim().to_ascii_lowercase();
 
-        // A bare number keeps the unit its flag has always taken; otherwise
-        // expect whole-number `h`/`m`/`s` components.
+        // `bare` decides a bare number; other input needs whole-number
+        // `h`/`m`/`s` components.
         let parsed = if is_decimal(&s) {
             match bare {
                 BareUnit::Minutes => s.parse().ok().and_then(Self::from_minutes),

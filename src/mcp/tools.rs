@@ -201,8 +201,8 @@ pub(crate) enum ValueType {
     Number,
 }
 
-/// Matches what [`HumanDuration`] accepts with [`BareUnit::Refused`]: an MCP
-/// duration param needs a unit. The pattern does not check a param's minimum.
+/// Matches what [`HumanDuration`] accepts with [`BareUnit::Refused`]. The
+/// pattern does not check a param's minimum.
 const DURATION_PATTERN: &str =
     r"^\s*([0-9]+[hH]([0-9]+[mM])?([0-9]+[sS])?|[0-9]+[mM]([0-9]+[sS])?|[0-9]+[sS])\s*$";
 
@@ -270,8 +270,8 @@ impl Param {
         self.arg.get_id().as_str()
     }
 
-    /// Checks a value of a [`HumanDuration`] param, which over MCP needs a
-    /// unit. Other params pass.
+    /// Rejects a value of a [`HumanDuration`] param that has no unit. A value
+    /// of any other param passes.
     pub(crate) fn check(&self, value: &str) -> Result<()> {
         if is_duration(self.arg) {
             HumanDuration::parse(value, BareUnit::Refused)
@@ -608,10 +608,10 @@ mod tests {
         assert_eq!(tree["properties"]["depth"]["minimum"], 1);
     }
 
-    /// A string matches the pattern exactly when it parses with a unit, and
-    /// then it parses to the same duration with either unit of a bare
-    /// number. Short strings over the duration alphabet reach every parser
-    /// branch and stay clear of overflow.
+    /// The pattern matches a string exactly when it parses with
+    /// [`BareUnit::Refused`], and a string that matches parses to the same
+    /// duration with every [`BareUnit`]. Short strings over the duration
+    /// alphabet reach every parser branch and do not overflow.
     #[hegel::test]
     fn duration_pattern_matches_what_parses(tc: hegel::TestCase) {
         let text = tc.draw(hegel::generators::from_regex(r"\s?[0-9hHmMsS.x]{0,8}\s?"));
@@ -625,8 +625,8 @@ mod tests {
         }
     }
 
-    /// Every duration param, whatever its CLI reads a bare number as, needs a
-    /// unit over MCP, which its schema pattern enforces.
+    /// The table names every duration param, and the schema of each one has
+    /// the unit pattern.
     #[test]
     fn duration_params_need_a_unit() {
         let durations = [

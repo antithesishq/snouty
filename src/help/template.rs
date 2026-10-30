@@ -33,18 +33,13 @@ impl Context {
     /// positional arg of it, and anything else a command or an example. Each
     /// is written for the reader.
     pub(super) fn t(self, text: &str) -> askama::Result<String> {
-        Name::resolve(self.page, text)?.write(self.page, self.reader, text)
+        Name::resolve(self.page, text)?.write(self.page, self.reader, text, None)
     }
 
-    /// `t()` of an example that spans lines. Over MCP, its call puts one
-    /// param on each line, below a first line indented by `indent`.
+    /// `t()` of an example that spans lines, whose first line is indented
+    /// by `indent`. Over MCP, its call puts one param on each line.
     pub(super) fn t_multiline(self, text: &str, indent: &str) -> askama::Result<String> {
-        match (Name::resolve(self.page, text)?, self.reader) {
-            (Name::Example(example), Reader::Mcp) => {
-                Ok(example.to_call(text)?.to_multiline(indent))
-            }
-            (name, reader) => name.write(self.page, reader, text),
-        }
+        Name::resolve(self.page, text)?.write(self.page, self.reader, text, Some(indent))
     }
 
     /// One line for each MCP tool: its name and what it does.
@@ -66,8 +61,8 @@ impl Context {
 )]
 pub(super) mod filters {
     /// `{% filter cmd %}…{% endfilter %}` is `t_multiline()` of the block's
-    /// text, for an example that spans lines. The tags can stand on lines of their
-    /// own: the whitespace around the text drops out.
+    /// text, for an example that spans lines. The tags can stand on lines of
+    /// their own: the whitespace around the text drops out.
     #[askama::filter_fn]
     pub fn cmd(
         text: impl std::fmt::Display,
@@ -75,8 +70,8 @@ pub(super) mod filters {
     ) -> askama::Result<String> {
         let context: &super::Context = askama::get_value(values, "context")?;
         let text = text.to_string();
-        let first_line = text.lines().find(|line| !line.trim().is_empty());
-        let indent = first_line.map_or("", |line| &line[..line.len() - line.trim_start().len()]);
-        context.t_multiline(text.trim(), indent)
+        let body = text.trim_start_matches(['\n', '\r']);
+        let indent = &body[..body.len() - body.trim_start().len()];
+        context.t_multiline(body.trim(), indent)
     }
 }

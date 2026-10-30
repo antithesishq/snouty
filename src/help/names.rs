@@ -51,12 +51,14 @@ impl Name {
     /// The text that names `self` to the reader of `page`. On the command
     /// line, a name stays as `text` writes it, but a positional arg is its
     /// value name. Over MCP, an arg is its param, a command its tool, and an
-    /// example a call of its tool.
+    /// example a call of its tool. With an `indent`, the indent of an
+    /// example's first line, the call puts one param on each line.
     pub(super) fn write(
         &self,
         page: HelpPage,
         reader: Reader,
         text: &str,
+        indent: Option<&str>,
     ) -> askama::Result<String> {
         match (self, reader) {
             (Name::Positional(arg), Reader::Cli) => Ok(arg
@@ -88,7 +90,13 @@ impl Name {
                         path.join(" ")
                     ))
                 }),
-            (Name::Example(example), Reader::Mcp) => Ok(example.to_call(text)?.to_string()),
+            (Name::Example(example), Reader::Mcp) => {
+                let call = example.to_call(text)?;
+                Ok(match indent {
+                    None => call.to_string(),
+                    Some(indent) => format!("{call:#}").replace('\n', &format!("\n{indent}")),
+                })
+            }
         }
     }
 }
@@ -140,7 +148,7 @@ mod tests {
 
     fn t(page: HelpPage, reader: Reader, text: &str) -> Result<String, String> {
         Name::resolve(page, text)
-            .and_then(|name| name.write(page, reader, text))
+            .and_then(|name| name.write(page, reader, text, None))
             .map_err(|err| err.to_string())
     }
 

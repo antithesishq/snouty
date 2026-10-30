@@ -117,33 +117,23 @@ impl ParamValue {
 }
 
 impl fmt::Display for ToolCall {
+    /// `{call}` writes the call on one line. `{call:#}` puts one param on
+    /// each line, indented two spaces, with the closing brace unindented.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.tool)?;
-        for (i, (id, value)) in self.params.iter().enumerate() {
-            let open = if i == 0 { " {" } else { ", " };
-            write!(f, "{open}{}: {value}", Value::String((*id).to_owned()))?;
-        }
         if self.params.is_empty() {
-            Ok(())
+            return Ok(());
+        }
+        let (open, sep, close) = if f.alternate() {
+            (" {\n  ", ",\n  ", "\n}")
         } else {
-            f.write_str("}")
+            (" {", ", ", "}")
+        };
+        for (i, (id, value)) in self.params.iter().enumerate() {
+            let lead = if i == 0 { open } else { sep };
+            write!(f, "{lead}{}: {value}", Value::String((*id).to_owned()))?;
         }
-    }
-}
-
-impl ToolCall {
-    /// The call with one param on each line, for an example that spans
-    /// lines. `indent` is the indent of the call's first line.
-    pub(super) fn to_multiline(&self, indent: &str) -> String {
-        if self.params.is_empty() {
-            return self.tool.to_string();
-        }
-        let params: Vec<String> = self
-            .params
-            .iter()
-            .map(|(id, value)| format!("{indent}  {}: {value}", Value::String((*id).to_owned())))
-            .collect();
-        format!("{} {{\n{}\n{indent}}}", self.tool, params.join(",\n"))
+        f.write_str(close)
     }
 }
 
@@ -324,11 +314,11 @@ mod tests {
         let text = "snouty runs list --limit <limit> --launcher nightly";
         let call = parse(text).unwrap().to_call(text).unwrap();
         assert_eq!(
-            call.to_multiline("  "),
-            "runs_list {\n    \"launcher\": \"nightly\",\n    \"limit\": <limit>\n  }"
+            format!("{call:#}"),
+            "runs_list {\n  \"launcher\": \"nightly\",\n  \"limit\": <limit>\n}"
         );
         let call = parse("snouty doctor").unwrap().to_call("").unwrap();
-        assert_eq!(call.to_multiline("  "), "doctor");
+        assert_eq!(format!("{call:#}"), "doctor");
     }
 
     /// An example runs as its tool call does: the command line of the call

@@ -5,6 +5,7 @@ mod events;
 mod firmware;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod images;
+mod ssh_proxy;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod vm;
 
@@ -13,6 +14,8 @@ use crate::{
     cli::{SimulateArgs, SimulationId},
     settings::Settings,
 };
+pub use ssh_proxy::pass_ssh_socket;
+
 use color_eyre::eyre::Result;
 use std::process::ExitCode;
 

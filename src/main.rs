@@ -102,6 +102,10 @@ async fn run(cli: Cli) -> Result<std::process::ExitCode> {
         profile,
         command,
     } = cli;
+    if let Commands::InternalSshProxy { socket } = &command {
+        snouty::simulate::pass_ssh_socket(socket)?;
+        return Ok(std::process::ExitCode::SUCCESS);
+    }
     // The global output flags travel together from here on; every command
     // takes them as one value instead of a swappable positional bool pair.
     let output = OutputOptions { json, verbose };
@@ -118,6 +122,7 @@ async fn run(cli: Cli) -> Result<std::process::ExitCode> {
     // unwraps the result, so a bad settings file stops only those commands.
     let settings = Settings::resolve(settings_path.clone(), profile.clone());
     let result = match command {
+        Commands::InternalSshProxy { .. } => unreachable!("SSH proxy is handled before settings"),
         Commands::Completions { shell } => cmd_completions(shell).map_err(Report::new),
         Commands::Version => cmd_version(output.json),
         Commands::Update(args) => cmd_update(&args, &settings?),

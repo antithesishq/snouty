@@ -7,7 +7,7 @@ CLI tool for the Antithesis API. Written in Rust.
 - `specs/` — feature specs
 - `specs_engine/` — specs that need a container engine
 - `src/` — the CLI source code
-- `snouty-macros/` — the proc-macro crate, the other workspace member
+- `snouty-macros/` — the proc-macro crate (the second workspace member)
 - `help/` — long-help templates (see Help text)
 - `tests/` — integration tests
 - `scripts/` — maintenance/dev scripts (Python run via `uv`, plus a few bash scripts such as the Stop hooks `check-cargo.sh`, `check-typos.sh`, `check-python.sh` and `check-shell.sh`)
@@ -22,56 +22,61 @@ Any new subcommands or flags must have a spec accompanying them. Having to chang
 an existing spec is a good sign of backward-incompatible breakage, which will
 be subject to extra review.
 
-`specs_engine/` holds the specs that need a container engine. Each file runs
-once with podman and once with docker, from the `*_engine_*_specs` tests in
-`tests/spec.rs`.
+The `*_engine_*_specs` tests in `tests/spec.rs` run each `specs_engine/` file
+once with podman and once with docker.
 
 ## Writing specs
 
 A spec is a [testscript](https://pkg.go.dev/github.com/rogpeppe/go-internal/testscript)
 file, which `tests/spec.rs` runs with our fork of testscript-rs (the
 `testscript-rs` git dependency in `Cargo.toml`). A `-- name --` line starts a
-fixture file, which lands in `$WORK`. A blank line in a fixture drops out.
+fixture file, which lands in `$WORK`. The parser removes blank lines from a
+fixture.
 
 - A `stdout` or `stderr` pattern is always a regex, with Go's flags: `^` and
   `$` match at line boundaries, and `.` stops at a newline. Write `(?s)` for a
-  `.` that must cross lines. Nothing guesses from the pattern.
+  `.` that must cross lines.
 - `-literal` matches plain text. Use it for fixed text, such as a
   `Suggestion:` line or a command with flags and quotes.
 - `-count=N` requires exactly N matches, and N must be at least 1. Write
   `! stdout 'x'` for no match.
-- Quotes: in single quotes, the parser still turns `\\`, `\'`, `\n`, `\t` and
-  `\r` into escapes before the regex sees the pattern. Double quotes and bare
-  words also turn `\"` into an escape. So a literal backslash is `\\` with
-  `-literal`, and `\\\\` in a regex. In a regex, `'a\\b'` becomes `a\b`, which
-  is a word boundary, not a backslash. Prefer `-literal` to `\x5c`.
+- Quotes: the parser reads escapes before the regex gets the pattern. In
+  single quotes, it reads `\\`, `\'`, `\n`, `\t` and `\r`. In double quotes
+  and outside quotes, it also reads `\"`. It keeps every other backslash.
+- So a literal backslash is `\\` with `-literal`, and `\\\\` in a regex. In a
+  regex, `'a\\b'` becomes `a\b`, which is a word boundary, not a backslash.
+  Prefer `-literal` to `\x5c`.
 - The match runs on the output with its trailing whitespace removed. `\n`
   matches a newline between lines, but the last line has no `\n` after it:
   `stdout 'one\ntwo$'` matches the output `one\ntwo\n`, and
   `stdout 'two\n'` does not.
-- A pattern that is the name of a file in the work directory matches the
-  contents of that file instead.
+- When a pattern is the name of a file in `$WORK`, the contents of the file
+  become the pattern.
 - `${VAR}` expands in a pattern, also with `-literal`. `${VAR@R}` expands to
-  the value with its regex characters escaped.
+  the value with its regex characters escaped. Bare `$VAR` also expands, and
+  `$$` becomes `$`. Write `${VAR}`.
 - `snouty` fails the line on a non-zero exit. Write `! snouty ...` for a
   command that must fail.
 - `[cond] line` runs the line only when the condition holds, and
-  `[!cond] line` only when it does not. A skipped line does not run, so
-  `[cond] ! stdout 'x'` passes when the condition does not hold. The
-  conditions are the built-in ones (`unix`, `linux`, `darwin`, `net`,
-  `exec:<program>`, `env:<VAR>`), `staging` in `specs/`, and `docker` in
+  `[!cond] line` only when it does not. `[cond] ! stdout 'x'` passes when the
+  condition does not hold, because the line does not run. The
+  conditions are the built-in ones, such as `linux`, `darwin`, `net`,
+  `exec:<program>` and `env:<VAR>` (which reads the environment of the test
+  process, not `set-env`), plus `staging` in `specs/` and `docker` in
   `specs_engine/`. For `[!staging]` and `[staging] skip`, see
   [Running spec tests against a staging backend](#running-spec-tests-against-a-staging-backend).
 
-`tests/spec.rs` adds these commands:
+`tests/spec.rs` adds these commands. `specs_engine/` has only `snouty`,
+`mock-server`, `env_from_json`, `set-env`, `substitute` and `build-image`.
 
 - `snouty <args>`: run the binary under test, with a clean environment and
   an isolated config dir.
-- `snouty-bg <args>`: run it in the background.
+- `snouty-bg <args>`: run it in the background. It does not expand `${VAR}`.
 - `mock-server [-header '<name>: <value>'] [-rate-limit <n>] <status> <body>`:
-  answer every request with one response, and point snouty at it.
+  answer every request with one response, and set snouty's API URL to it.
+  Against staging, it forwards the real credentials.
 - `mock-runs-server [empty]`: start the mock Antithesis API, with its fixture
-  runs or with none. Against staging, it passes the real credentials through.
+  runs or with none. Against staging, it forwards the real credentials.
 - `mock-proxy`: start the mock API behind an HTTP proxy, and set
   `ANTITHESIS_HTTPS_PROXY`.
 - `env_from_json <line> <key>`: store a key of one NDJSON stdout line as
@@ -79,14 +84,14 @@ fixture file, which lands in `$WORK`. A blank line in a fixture drops out.
 - `env_from_json_find <key> <filter>...`: store a key of the first NDJSON line
   that matches each filter, as `$R_<key>`.
 - `file <path> <pattern>`: match a file's contents against a regex. The
-  pattern does not get the `(?m)` flag, and `~` in the path is the test's
-  `$HOME`.
+  pattern does not get the `(?m)` flag. After `isolate-home`, `~` in the path
+  is that `$HOME`.
 - `set-env <KEY> <value>`: set a variable, with `${VAR}` expanded in the value.
 - `substitute <path>`: expand `${VAR}` in a fixture file.
 - `isolate-home <name>`: give the section a fresh `$HOME`, for `snouty login`.
 - `setup-docs-db`: seed the docs cache with `tests/fixtures/docs.db`.
-- `build-image [--platform <platform>] <name:tag> <dir>`: build a test image,
-  in `specs_engine/` only.
+- `build-image [--platform <platform>] <name:tag> <dir>`: build a test image
+  (`specs_engine/` only).
 
 ## Help text
 

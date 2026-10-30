@@ -17,7 +17,8 @@ INPUT_HASH identifies the timeline: the hash of every input Antithesis sent from
 the root to that point. Logs stream from the root (or --begin-vtime) to the
 timeline's current end; a run in progress can extend the timeline, so the same
 INPUT_HASH can return more logs later. Give VTIME to end the stream at that
-moment instead.
+moment instead. Find a moment with `runs properties --detail`, `runs events`,
+`runs search`, or the failure moment of an incomplete run in `runs show`.
 
 Each event has its moment (an input_hash and a vtime), its source, and its
 payload: log output, an SDK assertion, a fault, a container lifecycle change, or

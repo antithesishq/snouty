@@ -90,13 +90,7 @@ impl Name {
                         path.join(" ")
                     ))
                 }),
-            (Name::Example(example), Reader::Mcp) => {
-                let call = example.to_call(text)?;
-                Ok(match indent {
-                    None => call.to_string(),
-                    Some(indent) => format!("{call:#}").replace('\n', &format!("\n{indent}")),
-                })
-            }
+            (Name::Example(example), Reader::Mcp) => Ok(example.to_call(text)?.render(indent)),
         }
     }
 }

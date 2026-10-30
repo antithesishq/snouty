@@ -17,7 +17,7 @@ use crate::api::{SEARCH_MAX_LIMIT, SearchLimit};
 use crate::cli::{KVPair, tree};
 use crate::help::HelpPage;
 use crate::runs::usage::TimeBound;
-use crate::time::HumanDuration;
+use crate::time::{BareUnit, HumanDuration};
 use crate::vtime::VTime;
 
 pub(super) const TOOL_HELP: &str = "tool_help";
@@ -201,11 +201,15 @@ pub(crate) enum ValueType {
     Number,
 }
 
-/// Matches what [`HumanDuration`] accepts with
-/// [`BareUnit::Minutes`](crate::time::BareUnit). A param with bare seconds
-/// rejects a bare decimal that matches. The pattern does not check a param's
-/// minimum.
-const DURATION_PATTERN: &str = r"^\s*([0-9]+(\.[0-9]+)?|[0-9]+[hH]([0-9]+[mM])?([0-9]+[sS])?|[0-9]+[mM]([0-9]+[sS])?|[0-9]+[sS])\s*$";
+/// Matches what [`HumanDuration`] accepts with [`BareUnit::Refused`]: an MCP
+/// duration param needs a unit. The pattern does not check a param's minimum.
+const DURATION_PATTERN: &str =
+    r"^\s*([0-9]+[hH]([0-9]+[mM])?([0-9]+[sS])?|[0-9]+[mM]([0-9]+[sS])?|[0-9]+[sS])\s*$";
+
+/// What an MCP duration param takes, in place of the unit of a bare number
+/// that its CLI help names.
+const DURATION_UNITS: &str =
+    "Use h/m/s units, in that order, such as 90s, 5m or 1h30m; a bare number is refused";
 
 const KV_PAIR_PATTERN: &str = "^[^=]+=";
 
@@ -242,7 +246,7 @@ fn value_schema(arg: &Arg) -> (ValueType, Value) {
     } else if is(TypeId::of::<TimeBound>()) {
         let formats = json!({ "anyOf": [{ "format": "date" }, { "format": "date-time" }] });
         (ValueType::String, formats)
-    } else if is(TypeId::of::<HumanDuration>()) {
+    } else if is_duration(arg) {
         (ValueType::String, json!({ "pattern": DURATION_PATTERN }))
     } else if is(TypeId::of::<KVPair>()) {
         (ValueType::String, json!({ "pattern": KV_PAIR_PATTERN }))
@@ -270,6 +274,20 @@ impl Param {
     pub(crate) fn id(&self) -> &'static str {
         self.arg.get_id().as_str()
     }
+
+    /// Checks a value of a [`HumanDuration`] param, which over MCP needs a
+    /// unit. Other params pass.
+    pub(crate) fn check(&self, value: &str) -> Result<()> {
+        if is_duration(self.arg) {
+            HumanDuration::parse(value, BareUnit::Refused)
+                .map_err(|e| eyre!("{}: {e}", self.id()))?;
+        }
+        Ok(())
+    }
+}
+
+fn is_duration(arg: &Arg) -> bool {
+    arg.get_value_parser().type_id() == TypeId::of::<HumanDuration>()
 }
 
 pub(crate) struct ToolSpec {
@@ -369,7 +387,12 @@ fn input_schema(name: ToolName, params: &[Param]) -> Arc<JsonObject> {
             ParamKind::Many(ty) => json!({ "type": "array", "items": item(param, ty) }),
         };
         if let Some(help) = param.arg.get_long_help().or(param.arg.get_help()) {
-            schema["description"] = Value::String(help.to_string());
+            let help = help.to_string();
+            schema["description"] = Value::String(if is_duration(param.arg) {
+                duration_description(name, param.id(), &help)
+            } else {
+                help
+            });
         }
         if let ParamKind::One(ty) | ParamKind::Many(ty) = param.kind
             && let [default, ..] = param.arg.get_default_values()
@@ -394,6 +417,19 @@ fn input_schema(name: ToolName, params: &[Param]) -> Arc<JsonObject> {
     schema.insert("required".to_owned(), required.into());
     schema.insert("additionalProperties".to_owned(), false.into());
     Arc::new(schema)
+}
+
+/// The CLI help of a duration param, with its last sentence, which names the
+/// unit of a bare number, swapped for [`DURATION_UNITS`].
+fn duration_description(name: ToolName, id: &str, help: &str) -> String {
+    let help = help.trim_end_matches('.');
+    let rest = ["minutes", "seconds"]
+        .into_iter()
+        .find_map(|unit| help.strip_suffix(&format!(" A bare number counts {unit}")))
+        .unwrap_or_else(|| {
+            panic!("{name}: the help of {id} does not end with the unit of a bare number")
+        });
+    format!("{rest} {DURATION_UNITS}")
 }
 
 /// The command lines that a call of `name` runs, as its description and its
@@ -455,7 +491,6 @@ pub(super) fn tool_help(mut params: JsonObject) -> Result<String> {
 mod tests {
     use super::*;
     use crate::mcp::object;
-    use crate::time::BareUnit;
 
     /// The hidden and required ids name real args, so a renamed arg cannot
     /// slip past the table.
@@ -596,17 +631,49 @@ mod tests {
         assert_eq!(tree["properties"]["depth"]["minimum"], 1);
     }
 
-    /// A string matches the pattern exactly when it parses in minutes, and
-    /// always matches when it parses in seconds. Short strings over the
-    /// duration alphabet reach every parser branch and stay clear of overflow.
+    /// A string matches the pattern exactly when it parses with a unit, and
+    /// then it parses to the same duration with either unit of a bare
+    /// number. Short strings over the duration alphabet reach every parser
+    /// branch and stay clear of overflow.
     #[hegel::test]
     fn duration_pattern_matches_what_parses(tc: hegel::TestCase) {
         let text = tc.draw(hegel::generators::from_regex(r"\s?[0-9hHmMsS.x]{0,8}\s?"));
         let pattern = regex::Regex::new(DURATION_PATTERN).unwrap();
-        let matches = pattern.is_match(&text);
-        let parses = |bare| HumanDuration::parse(&text, bare).is_ok();
-        assert_eq!(matches, parses(BareUnit::Minutes), "{text:?}");
-        assert!(matches || !parses(BareUnit::Seconds), "{text:?}");
+        let parsed = HumanDuration::parse(&text, BareUnit::Refused).ok();
+        assert_eq!(pattern.is_match(&text), parsed.is_some(), "{text:?}");
+        if let Some(parsed) = parsed {
+            for bare in [BareUnit::Minutes, BareUnit::Seconds] {
+                assert_eq!(HumanDuration::parse(&text, bare), Ok(parsed), "{text:?}");
+            }
+        }
+    }
+
+    /// Every duration param, whatever its CLI reads a bare number as, needs a
+    /// unit over MCP, and its description says so.
+    #[test]
+    fn duration_params_need_a_unit() {
+        let durations = [
+            (ToolName::RunsWait, "poll_interval"),
+            (ToolName::RunsWait, "timeout"),
+            (ToolName::RunsExec, "timeout"),
+        ];
+        for name in ToolName::ALL {
+            for param in &name.spec().params {
+                assert_eq!(
+                    is_duration(param.arg),
+                    durations.contains(&(name, param.id())),
+                    "{name}.{}",
+                    param.id()
+                );
+            }
+        }
+        for (name, id) in durations {
+            let schema = &name.spec().tool.input_schema["properties"][id];
+            assert_eq!(schema["pattern"], DURATION_PATTERN, "{name}.{id}");
+            let description = schema["description"].as_str().unwrap();
+            assert!(description.ends_with(DURATION_UNITS), "{name}.{id}: {description}");
+            assert!(!description.contains("bare number counts"), "{name}.{id}");
+        }
     }
 
     #[hegel::test]

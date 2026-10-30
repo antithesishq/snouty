@@ -51,6 +51,9 @@ pub enum BareUnit {
     Minutes,
     /// A whole count of seconds, for flags that have always taken seconds.
     Seconds,
+    /// No unit: a bare number is an error. An MCP param takes this, so that a
+    /// bare number cannot count minutes in one tool and seconds in another.
+    Refused,
 }
 
 impl HumanDuration {
@@ -65,6 +68,7 @@ impl HumanDuration {
             match bare {
                 BareUnit::Minutes => s.parse().ok().and_then(Self::from_minutes),
                 BareUnit::Seconds => s.parse().ok().map(Self::from_seconds),
+                BareUnit::Refused => None,
             }
         } else {
             parse_units(&s).map(Self::from_seconds)
@@ -171,6 +175,10 @@ impl fmt::Display for ParseDurationError {
             BareUnit::Seconds => {
                 "must be a whole number of seconds (e.g. `120`) or use h/m/s units \
                  (e.g. `90s`, `2m`, `1h`)"
+            }
+            BareUnit::Refused => {
+                "must use h/m/s units, in that order (e.g. `90s`, `5m`, `1h30m`); \
+                 a bare number is refused"
             }
         })
     }
@@ -350,6 +358,21 @@ mod tests {
             assert_eq!(
                 seconds(bad),
                 Err(ParseDurationError(BareUnit::Seconds)),
+                "expected {bad:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn refused_bare_unit_takes_only_unit_forms() {
+        let seconds = |s: &str| HumanDuration::parse(s, BareUnit::Refused).map(|d| d.seconds());
+        assert_eq!(seconds("90s"), Ok(90));
+        assert_eq!(seconds(" 5M "), Ok(300));
+        assert_eq!(seconds("1h30m"), Ok(5400));
+        for bad in ["30", "0", "1.5", "1.5h", ""] {
+            assert_eq!(
+                seconds(bad),
+                Err(ParseDurationError(BareUnit::Refused)),
                 "expected {bad:?} to be rejected"
             );
         }

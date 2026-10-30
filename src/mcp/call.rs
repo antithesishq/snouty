@@ -53,6 +53,9 @@ pub(crate) fn command_args(
                 .collect::<Result<_>>()?,
             (_, value) => vec![scalar(&key, value)?],
         };
+        for value in &values {
+            param.check(value)?;
+        }
         if let Some(index) = param.arg.get_index() {
             positionals.push((index, values));
         } else {
@@ -305,6 +308,27 @@ mod tests {
                 json!({ "limit": 1e300 }),
                 "limit: the number is too large, pass it as a string",
             ),
+            (
+                ToolName::RunsWait,
+                json!({ "run_id": "r", "timeout": "30" }),
+                "timeout: must use h/m/s units, in that order (e.g. `90s`, `5m`, `1h30m`); a \
+                 bare number is refused",
+            ),
+            (
+                ToolName::RunsWait,
+                json!({ "run_id": "r", "poll_interval": 2 }),
+                "poll_interval: must use h/m/s units, in that order (e.g. `90s`, `5m`, \
+                 `1h30m`); a bare number is refused",
+            ),
+            (
+                ToolName::RunsExec,
+                json!({
+                    "run_id": "r", "input_hash": "-1", "vtime": 1, "script": "ls",
+                    "timeout": "1.5",
+                }),
+                "timeout: must use h/m/s units, in that order (e.g. `90s`, `5m`, `1h30m`); a \
+                 bare number is refused",
+            ),
         ];
         for (name, call, error) in cases {
             let result = args(name, &globals(), call.clone());
@@ -344,6 +368,11 @@ mod tests {
                 "runs search --detail",
             ),
             (ToolName::RunsShow, json!({ "run_id": "r" }), "runs show"),
+            (
+                ToolName::RunsWait,
+                json!({ "run_id": "r", "timeout": "1h30m" }),
+                "runs wait --timeout=1h30m",
+            ),
             // `--detail` requires `--events`.
             (
                 ToolName::RunsExec,

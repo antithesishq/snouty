@@ -684,13 +684,13 @@ pub enum RunsCommands {
         #[arg(value_parser = parse_run_id)]
         run_id: String,
 
-        /// Time between status checks, in minutes or h/m/s units (e.g. 90s;
-        /// minimum 1 minute)
+        /// Time between status checks, at least 1 minute (e.g. 90s, 5m). A
+        /// bare number counts minutes
         #[arg(long, default_value = "1m", value_parser = parse_poll_interval)]
         poll_interval: HumanDuration,
 
-        /// Give up after this long (minutes, or h/m/s units, e.g. 2h);
-        /// without it the wait is unbounded
+        /// Give up after this long (e.g. 2h); without it the wait is
+        /// unbounded. A bare number counts minutes
         #[arg(long)]
         timeout: Option<HumanDuration>,
 
@@ -841,8 +841,8 @@ pub enum RunsCommands {
         source_session_id: Option<SourceSessionId>,
 
         /// Maximum time the server waits for the script to exit before
-        /// reporting a timeout, in seconds or h/m/s units (e.g. 90s, 5m)
-        /// [default: the server's, 10m as of release 64.0]
+        /// reporting a timeout (e.g. 90s, 5m) [default: the server's, 10m as
+        /// of release 64.0]. A bare number counts seconds
         #[arg(long, value_parser = parse_exec_timeout)]
         timeout: Option<HumanDuration>,
     },

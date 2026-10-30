@@ -90,8 +90,6 @@ Add {{ t("--count")? }} to print how many events in the whole run match the quer
 
 The run must be ready or complete. If it is not, the command waits until it is ready, as `{{ t("snouty runs exec")? }}` does, and says that it waits.
 
-The command needs tenant release 62.2 or newer; `{{ t("snouty doctor")? }}` reports the tenant release.
-
 {% if cli %}
 Add --json for machine-readable output. Each event prints as one JSON object on its own line:
   {% filter cmd %}

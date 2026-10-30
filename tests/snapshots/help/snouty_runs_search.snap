@@ -121,9 +121,6 @@ of a sample. No limit applies.
 The run must be ready or complete. If it is not, the command waits until it is
 ready, as `snouty runs exec` does, and says that it waits.
 
-The command needs tenant release 62.2 or newer; `snouty doctor` reports the
-tenant release.
-
 Add --json for machine-readable output. Each event prints as one JSON object on
 its own line:
   snouty --json runs search <run_id> 'contains({output_text: "err"})' \

@@ -157,15 +157,6 @@ mod tests {
         walk(tree::root());
     }
 
-    #[test]
-    fn events_search_help_names_min_release() {
-        let (major, minor) = crate::api::MIN_SEARCH_RELEASE;
-        let sentence = format!("tenant release {major}.{minor} or newer");
-        for page in [HelpPage::RunsSearch, HelpPage::RunsEvents] {
-            assert!(page.text().contains(&sentence), "{page}");
-        }
-    }
-
     /// The verb list in the search help names every verb in
     /// [`crate::event_set_dsl::VERBS`].
     #[test]

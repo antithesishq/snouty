@@ -14,8 +14,6 @@ Matching runs server-side through the events-search API, the same route `{{ t("s
 
 The run must be ready or complete. If it is not, the command waits until it is ready, as `{{ t("snouty runs exec")? }}` does, and says that it waits.
 
-The command needs tenant release 62.2 or newer; `{{ t("snouty doctor")? }}` reports the tenant release.
-
 {% if cli %}
 For log output, the equivalent search is:
   snouty runs search <run_id> \

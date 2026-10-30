@@ -10,6 +10,8 @@ Example:
 
 The session stays available for the time that `duration` gives, from 30 minutes to 6 hours. Without it, the server sets the time. Runs from releases before 67 ignore it.
 
+`duration` takes h/m/s units, in that order, such as 90m or 2h. A bare number is refused.
+
 Extra parameters can be passed with `param`. A `param` cannot replace the value of a dedicated param, such as `title`:
   debug {"run_id": "<run_id>", "input_hash": "<hash>", "vtime": <vtime>, "param": ["attrs.team=payments"]}
 

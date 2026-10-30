@@ -637,9 +637,9 @@ pub struct DebugArgs {
     #[arg(long)]
     pub vtime: VTime,
 
-    /// How long the session stays available, in minutes, or h/m units (e.g.
-    /// 90m, 2h); from 30 minutes to 6 hours. Runs from releases before 67
-    /// ignore it
+    /// How long the session stays available, from 30 minutes to 6 hours (e.g.
+    /// 90m, 2h); runs from releases before 67 ignore it. A bare number counts
+    /// minutes
     // We send it to the API as `.hours().to_string()`, the (possibly
     // fractional) hour count that `antithesis.debugging.length_hours` wants.
     #[arg(long, value_parser = parse_debug_duration)]

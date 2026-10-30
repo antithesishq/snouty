@@ -206,11 +206,6 @@ pub(crate) enum ValueType {
 const DURATION_PATTERN: &str =
     r"^\s*([0-9]+[hH]([0-9]+[mM])?([0-9]+[sS])?|[0-9]+[mM]([0-9]+[sS])?|[0-9]+[sS])\s*$";
 
-/// What an MCP duration param takes, in place of the unit of a bare number
-/// that its CLI help names.
-const DURATION_UNITS: &str =
-    "Use h/m/s units, in that order, such as 90s, 5m or 1h30m; a bare number is refused";
-
 const KV_PAIR_PATTERN: &str = "^[^=]+=";
 
 impl ValueType {
@@ -387,12 +382,7 @@ fn input_schema(name: ToolName, params: &[Param]) -> Arc<JsonObject> {
             ParamKind::Many(ty) => json!({ "type": "array", "items": item(param, ty) }),
         };
         if let Some(help) = param.arg.get_long_help().or(param.arg.get_help()) {
-            let help = help.to_string();
-            schema["description"] = Value::String(if is_duration(param.arg) {
-                duration_description(name, param.id(), &help)
-            } else {
-                help
-            });
+            schema["description"] = Value::String(help.to_string());
         }
         if let ParamKind::One(ty) | ParamKind::Many(ty) = param.kind
             && let [default, ..] = param.arg.get_default_values()
@@ -417,19 +407,6 @@ fn input_schema(name: ToolName, params: &[Param]) -> Arc<JsonObject> {
     schema.insert("required".to_owned(), required.into());
     schema.insert("additionalProperties".to_owned(), false.into());
     Arc::new(schema)
-}
-
-/// The CLI help of a duration param, with its last sentence, which names the
-/// unit of a bare number, swapped for [`DURATION_UNITS`].
-fn duration_description(name: ToolName, id: &str, help: &str) -> String {
-    let help = help.trim_end_matches('.');
-    let rest = ["minutes", "seconds"]
-        .into_iter()
-        .find_map(|unit| help.strip_suffix(&format!(" A bare number counts {unit}")))
-        .unwrap_or_else(|| {
-            panic!("{name}: the help of {id} does not end with the unit of a bare number")
-        });
-    format!("{rest} {DURATION_UNITS}")
 }
 
 /// The command lines that a call of `name` runs, as its description and its
@@ -649,7 +626,7 @@ mod tests {
     }
 
     /// Every duration param, whatever its CLI reads a bare number as, needs a
-    /// unit over MCP, and its description says so.
+    /// unit over MCP, which its schema pattern enforces.
     #[test]
     fn duration_params_need_a_unit() {
         let durations = [
@@ -670,12 +647,6 @@ mod tests {
         for (name, id) in durations {
             let schema = &name.spec().tool.input_schema["properties"][id];
             assert_eq!(schema["pattern"], DURATION_PATTERN, "{name}.{id}");
-            let description = schema["description"].as_str().unwrap();
-            assert!(
-                description.ends_with(DURATION_UNITS),
-                "{name}.{id}: {description}"
-            );
-            assert!(!description.contains("bare number counts"), "{name}.{id}");
         }
     }
 

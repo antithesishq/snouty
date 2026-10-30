@@ -3023,12 +3023,16 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "I copy a moment from a completed run and try to run a shell command at it.",
             "A clean error: `runs exec` needs a run that is in progress, and this run is "
             "completed. A suggestion gives the `snouty debug` command that starts a "
-            "debugging session at the same moment. Non-zero exit.",
+            "debugging session at the same moment, one flag per line with shell line "
+            "continuations, so it fits the terminal and pastes as one command. "
+            "Non-zero exit.",
             ["runs", "exec", d.success, d.logs_hash, d.logs_vtime, "uname -n"],
             fails_with(
                 "Note: `runs exec` needs a run that is in progress. This run is completed",
-                f"snouty debug --run-id {d.success} --input-hash {d.logs_hash} "
-                f"--vtime {d.logs_vtime}",
+                "snouty debug \\\n"
+                f"    --run-id {d.success} \\\n"
+                f"    --input-hash {d.logs_hash} \\\n"
+                f"    --vtime {d.logs_vtime}",
             ),
             json_capable=False,
             expect_ok=False,

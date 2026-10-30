@@ -18,9 +18,7 @@ Without `events`, the result's first content block is the script's output. With 
 A second block holds the script's error output, why the command failed when it fails, and, when the script exits, a last line `end moment: HASH VTIME`: the moment to chain a follow-up call from. The two blocks do not keep the order of the output and the error output; set `json` to get one stream in order.
 {% endif %}
 
-The command fails when the script fails, times out, or its stream ends early.{% if !cli %}
-
-{{ t("--timeout")? }} takes a duration. {{ duration_format() }}.{% endif %}
+The command fails when the script fails, times out, or its stream ends early.
 
 To run more at the moment that a script left, pass its end moment as the next call's input_hash and vtime:
   {{ t("snouty runs exec <run_id> <end_hash> <end_vtime> 'cat /tmp/state'")? }}

@@ -8,7 +8,7 @@ Identify the target run with `run_id`. Use `session_id` in its place only for a 
 Example:
   debug {"run_id": "9043254f65c9c65d63fe043a0abfc7fc-53-1", "input_hash": "6057726200491963783", "vtime": 329.8037810830865, "duration": "2h", "title": "stalled leader election", "description": "debug this moment", "recipients": "team@example.com"}
 
-The session stays available for the time that `duration` gives, from 30 minutes to 6 hours. Without it, the server sets the time. Runs from releases before 67 ignore it. A duration is a whole number with an h, m or s unit, or several in that order, such as 90s, 5m or 1h30m; a bare number is not permitted.
+The session stays available for the time that `duration` gives, from 30 minutes to 6 hours. Without it, the server sets the time. Runs from releases before 67 ignore it.
 
 Extra parameters can be passed with `param`. A `param` cannot replace the value of a dedicated param, such as `title`:
   debug {"run_id": "<run_id>", "input_hash": "<hash>", "vtime": <vtime>, "param": ["attrs.team=payments"]}

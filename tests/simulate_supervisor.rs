@@ -18,16 +18,16 @@ fn run_case(mode: &str) {
 }
 
 #[test]
-fn long_running_workload_gets_periodic_entropy() {
-    run_case("long-running");
+fn composer_start_waits_for_inotify_watch() {
+    run_case("readiness");
 }
 
 #[test]
-fn single_rollout_keeps_entropy_timer_after_supervisor_exit() {
-    run_case("once");
+fn composer_exit_pauses_faults_on_success_and_failure() {
+    run_case("status");
 }
 
 #[test]
-fn composer_workload_gets_entropy_after_restart() {
-    run_case("composer");
+fn recreation_requires_commands_and_removes_volumes_and_stale_registrations() {
+    run_case("recreate");
 }

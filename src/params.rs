@@ -5,10 +5,27 @@ use serde_json::{Map, Value};
 use color_eyre::Section;
 use color_eyre::eyre::Result;
 
+use crate::api::PerformanceTier;
 use crate::cli::KVPair;
 use crate::error::user_error;
 
 const SCHEMA: &str = include_str!("params_schema.json");
+
+/// The setup timeout that the launcher uses when a launch sets none.
+const DEFAULT_SETUP_TIMEOUT_MINUTES: u64 = 5;
+/// The shortest exploration that the launcher accepts, after the full setup
+/// timeout comes out of the run's length.
+const MIN_EXPLORATION_MINUTES: u64 = 15;
+
+/// The cores that a run on `tier` uses, which sets how fast it spends its
+/// compute hours.
+fn tier_cores(tier: PerformanceTier) -> u64 {
+    match tier {
+        PerformanceTier::Standard => 48,
+        PerformanceTier::Fast => 96,
+        PerformanceTier::Turbo => 192,
+    }
+}
 
 // Launch-parameter key names.
 //
@@ -18,6 +35,8 @@ const SCHEMA: &str = include_str!("params_schema.json");
 pub const ANT_TEST_NAME: &str = "antithesis.test_name";
 pub const ANT_DESCRIPTION: &str = "antithesis.description";
 pub const ANT_DURATION: &str = "antithesis.duration";
+pub const ANT_MAX_COMPUTE_HOURS: &str = "antithesis.max_compute_hours";
+pub const ANT_SETUP_TIMEOUT: &str = "antithesis.setup_timeout";
 pub const ANT_CONFIG_IMAGE: &str = "antithesis.config_image";
 pub const ANT_IMAGES: &str = "antithesis.images";
 pub const ANT_SOURCE: &str = "antithesis.source";
@@ -108,7 +127,49 @@ impl Params {
         if let Some(value) = self.inner.get(ANT_FAULT_EXCLUSIONS).and_then(Value::as_str) {
             validate_fault_exclusions(value)?;
         }
-        Ok(())
+        self.validate_compute_budget()
+    }
+
+    /// Check that `antithesis.max_compute_hours` leaves room for the full
+    /// setup timeout plus the minimum exploration time, on the tier's cores.
+    /// The launcher refuses a smaller budget. The schema check has already
+    /// made each value a whole number. A tier that this snouty does not know
+    /// skips the check, and the server decides.
+    fn validate_compute_budget(&self) -> Result<()> {
+        let number = |key| {
+            self.inner
+                .get(key)
+                .and_then(Value::as_str)
+                .and_then(|v| v.parse::<u64>().ok())
+        };
+        let Some(hours) = number(ANT_MAX_COMPUTE_HOURS) else {
+            return Ok(());
+        };
+        let tier = match self.inner.get(ANT_PERFORMANCE_TIER).and_then(Value::as_str) {
+            Some(tier) => match tier.parse::<PerformanceTier>() {
+                Ok(tier) => tier,
+                Err(_) => return Ok(()),
+            },
+            None => PerformanceTier::Standard,
+        };
+        let cores = tier_cores(tier);
+        // The launcher raises a setup timeout below 1 minute to 1.
+        let setup = number(ANT_SETUP_TIMEOUT)
+            .unwrap_or(DEFAULT_SETUP_TIMEOUT_MINUTES)
+            .max(1);
+        let needed_minutes = setup + MIN_EXPLORATION_MINUTES;
+        if hours * 60 >= needed_minutes * cores {
+            return Ok(());
+        }
+        let min_hours = (needed_minutes * cores).div_ceil(60);
+        Err(user_error(format!(
+            "--max-compute-hours {hours} is too low: on the {tier} tier ({cores} cores) with a \
+             {setup}m setup timeout, a run needs at least {min_hours} compute hours ({setup}m \
+             setup + {MIN_EXPLORATION_MINUTES}m minimum exploration)"
+        ))
+        .suggestion(format!(
+            "raise --max-compute-hours to at least {min_hours}, or lower --setup-timeout"
+        )))
     }
 
     /// Validate params against the debugging params schema.
@@ -330,6 +391,37 @@ mod tests {
                 .unwrap(),
             FAKE_GITHUB_TOKEN
         );
+    }
+
+    /// The smallest budget for each setup timeout and tier, from the
+    /// launcher's sizing table, passes, and one compute hour less fails.
+    #[test]
+    fn compute_budget_minimum_matches_the_launcher_table() {
+        let fits = |hours: u64, setup: u64, tier: &str| {
+            Params::from_key_value_pairs([
+                format!("antithesis.max_compute_hours={hours}"),
+                format!("antithesis.setup_timeout={setup}"),
+                format!("antithesis.performance_tier={tier}"),
+            ])
+            .unwrap()
+            .validate_compute_budget()
+            .is_ok()
+        };
+        for (setup, standard, fast, turbo) in [
+            (1, 13, 26, 52),
+            (5, 16, 32, 64),
+            (10, 20, 40, 80),
+            (30, 36, 72, 144),
+        ] {
+            for (tier, min) in [("standard", standard), ("fast", fast), ("turbo", turbo)] {
+                assert!(fits(min, setup, tier), "{min}h, {setup}m, {tier}");
+                assert!(
+                    !fits(min - 1, setup, tier),
+                    "{}h, {setup}m, {tier}",
+                    min - 1
+                );
+            }
+        }
     }
 
     #[test]

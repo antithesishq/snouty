@@ -18,8 +18,8 @@ use crate::env;
 use crate::error::{ApiError, user_error};
 use crate::params::{
     ANT_CONFIG_IMAGE, ANT_DESCRIPTION, ANT_DURATION, ANT_EVENT_DESCRIPTION, ANT_IMAGES,
-    ANT_IS_EPHEMERAL, ANT_REPORT_RECIPIENTS, ANT_SOURCE, ANT_TEST_NAME, ATTRS_PREFIX, Params,
-    VCS_PARAMS,
+    ANT_IS_EPHEMERAL, ANT_MAX_COMPUTE_HOURS, ANT_REPORT_RECIPIENTS, ANT_SETUP_TIMEOUT, ANT_SOURCE,
+    ANT_TEST_NAME, ATTRS_PREFIX, Params, VCS_PARAMS,
 };
 use crate::render::{indent_lines, sanitize_multiline};
 use crate::settings::Settings;
@@ -309,6 +309,26 @@ impl RunDetail {
     /// distinct from the wall-clock time derived from the run's timestamps.
     pub(crate) fn requested_duration(&self) -> Option<&str> {
         self.parameters.as_ref()?.antithesis_duration.as_deref()
+    }
+
+    /// The compute budget the run was launched with
+    /// (`antithesis.max_compute_hours`), if it recorded one.
+    pub(crate) fn max_compute_hours(&self) -> Option<&str> {
+        self.parameters
+            .as_ref()?
+            .extra
+            .get(ANT_MAX_COMPUTE_HOURS)
+            .map(String::as_str)
+    }
+
+    /// The setup timeout the run was launched with (`antithesis.setup_timeout`,
+    /// a count of minutes), if it recorded one.
+    pub(crate) fn setup_timeout(&self) -> Option<&str> {
+        self.parameters
+            .as_ref()?
+            .extra
+            .get(ANT_SETUP_TIMEOUT)
+            .map(String::as_str)
     }
 
     /// The source the run was launched from (`antithesis.source`), if recorded.

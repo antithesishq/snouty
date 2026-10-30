@@ -13,7 +13,7 @@
 # -w / --webhook is a deprecated alias for --launcher. Help hides it, and it
 #    conflicts with --launcher.
 ! stdout 'webhook'
-! snouty launch --launcher basic_test --webhook basic_test --duration 30m
+! snouty launch --launcher basic_test --webhook basic_test --max-compute-hours 24
 stderr 'cannot be used with'
 
 # An invalid --duration fails at flag-parse time with a message attributed to
@@ -35,6 +35,73 @@ stderr 'must be at least 1 minute'
 ! snouty launch --launcher basic_test --config-image config:latest --duration 59s
 stderr 'must be at least 1 minute'
 
+# --max-compute-hours must be a whole number, at most 1000. A value out of
+#    range fails at flag-parse time, before any request.
+! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 0
+stderr 'invalid value .0. for .--max-compute-hours <MAX_COMPUTE_HOURS>.: 0 is not in 1..=1000'
+! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 1001
+stderr '1001 is not in 1..=1000'
+! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 48.5
+stderr 'invalid value .48\.5. for .--max-compute-hours'
+
+# --setup-timeout takes h/m units only. A bare number fails at flag-parse
+#    time, because a reader cannot tell its unit. The timeout must be whole
+#    minutes, and at least 1 minute.
+! snouty launch --launcher basic_test --config-image config:latest --setup-timeout 10
+stderr 'invalid value .10. for .--setup-timeout <SETUP_TIMEOUT>.: must be a whole number with an h, m or s unit'
+stderr 'a bare number is not permitted'
+! snouty launch --launcher basic_test --config-image config:latest --setup-timeout 90s
+stderr 'must be a whole number of minutes'
+! snouty launch --launcher basic_test --config-image config:latest --setup-timeout 0m
+stderr 'must be at least 1 minute'
+! snouty launch --launcher basic_test --config-image config:latest --setup-timeout 30s
+stderr 'must be at least 1 minute'
+
+# The budget must leave room for the full setup timeout plus 15 minutes of
+#    exploration, on the tier's cores: standard 48, fast 96, turbo 192. The
+#    setup timeout defaults to 5 minutes, and the tier to standard. A budget
+#    below the minimum fails before any request, and the error names the
+#    minimum and how it was worked out.
+! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 15
+stderr 'Error: --max-compute-hours 15 is too low: on the standard tier \(48 cores\) with a 5m setup timeout, a run needs at least 16 compute hours \(5m setup \+ 15m minimum exploration\)'
+stderr 'Suggestion: raise --max-compute-hours to at least 16, or lower --setup-timeout'
+! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 16 --performance-tier fast
+stderr 'on the fast tier \(96 cores\) with a 5m setup timeout, a run needs at least 32 compute hours'
+! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 63 --performance-tier turbo
+stderr 'on the turbo tier \(192 cores\) with a 5m setup timeout, a run needs at least 64 compute hours'
+! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 19 --setup-timeout 10m
+stderr 'with a 10m setup timeout, a run needs at least 20 compute hours \(10m setup \+ 15m minimum exploration\)'
+
+# The same check applies to values from --param. A setup timeout below 1
+#    minute counts as 1, as the launcher raises it. A tier that this snouty
+#    does not know skips the check, and the server decides.
+! snouty launch --launcher basic_test --config-image config:latest --param antithesis.max_compute_hours=12
+stderr 'needs at least 16 compute hours'
+! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --param antithesis.performance_tier=fast
+stderr 'on the fast tier \(96 cores\)'
+! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 12 --param antithesis.setup_timeout=0
+stderr 'with a 1m setup timeout, a run needs at least 13 compute hours'
+! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 12 --param antithesis.performance_tier=ultra
+! stderr 'too low'
+stderr 'No Antithesis credentials found'
+
+# --duration and --max-compute-hours cannot be used together.
+! snouty launch --launcher basic_test --config-image config:latest --duration 30m --max-compute-hours 24
+stderr 'cannot be used with'
+
+# From --param, antithesis.max_compute_hours and antithesis.setup_timeout
+#    must be whole numbers, and the schema check names a field that is not.
+#    The schema does not check a range: the server sets it, and a tenant can
+#    have a higher limit. So a value outside the flag's range reaches the
+#    credentials check.
+! snouty launch --launcher basic_test --config-image config:latest --param antithesis.max_compute_hours=lots
+stderr 'antithesis\.max_compute_hours: .*'
+! snouty launch --launcher basic_test --config-image config:latest --param antithesis.max_compute_hours=5000
+! stderr 'validation failed'
+stderr 'No Antithesis credentials found'
+! snouty launch --launcher basic_test --config-image config:latest --param antithesis.setup_timeout=10m
+stderr 'antithesis\.setup_timeout: .*'
+
 # Parameters are validated against the testParams schema before any API
 #    call. The error for a bad antithesis.* value names the field.
 ! snouty launch --launcher basic_test --param antithesis.duration=asdf --param antithesis.source=ci
@@ -44,47 +111,47 @@ stderr 'antithesis\.duration: .*'
 
 # `antithesis.filter_logs_matching` is validated client-side before any API
 #    call. The platform rejects a bad pattern only after the run has started.
-! snouty launch --launcher basic_test --duration 30m --filter-logs-matching '('
+! snouty launch --launcher basic_test --max-compute-hours 24 --filter-logs-matching '('
 stderr 'antithesis\.filter_logs_matching is not a valid regular expression.*'
 
 # A pattern that matches the empty string would suppress every log line.
-! snouty launch --launcher basic_test --duration 30m --filter-logs-matching 'x*'
+! snouty launch --launcher basic_test --max-compute-hours 24 --filter-logs-matching 'x*'
 stderr 'antithesis\.filter_logs_matching matches the empty string, which would suppress every log line'
 
 # An empty pattern makes the platform skip filtering silently.
-! snouty launch --launcher basic_test --duration 30m --param antithesis.filter_logs_matching=
+! snouty launch --launcher basic_test --max-compute-hours 24 --param antithesis.filter_logs_matching=
 stderr 'antithesis\.filter_logs_matching is empty'
 
 # `antithesis.filter_source_matching` gets the same client-side checks.
-! snouty launch --launcher basic_test --duration 30m --filter-source-matching '('
+! snouty launch --launcher basic_test --max-compute-hours 24 --filter-source-matching '('
 stderr 'antithesis\.filter_source_matching is not a valid regular expression.*'
-! snouty launch --launcher basic_test --duration 30m --filter-source-matching '(foo)?'
+! snouty launch --launcher basic_test --max-compute-hours 24 --filter-source-matching '(foo)?'
 stderr 'antithesis\.filter_source_matching matches the empty string, which would suppress the output of every source'
-! snouty launch --launcher basic_test --duration 30m --param antithesis.filter_source_matching=' '
+! snouty launch --launcher basic_test --max-compute-hours 24 --param antithesis.filter_source_matching=' '
 stderr 'antithesis\.filter_source_matching is empty'
 
 # --performance-tier accepts only the tiers in the vendored OpenAPI spec.
-! snouty launch --launcher basic_test --duration 30m --performance-tier ultra
+! snouty launch --launcher basic_test --max-compute-hours 24 --performance-tier ultra
 stderr 'invalid value .ultra. for .--performance-tier'
 stderr 'possible values: standard, fast, turbo'
 
 # --fault-tolerance accepts only the levels in the vendored OpenAPI spec, by
 #    their wire names.
-! snouty launch --launcher basic_test --duration 30m --fault-tolerance high-availability
+! snouty launch --launcher basic_test --max-compute-hours 24 --fault-tolerance high-availability
 stderr 'invalid value .high-availability. for .--fault-tolerance'
 stderr 'possible values: none, resilient, high_availability, legacy'
 
 # `antithesis.fault_exclusions` must be a non-empty, valid Rust regex, from
 #    the flag or from --param.
-! snouty launch --launcher basic_test --duration 30m --fault-exclusions '(?=raft)'
+! snouty launch --launcher basic_test --max-compute-hours 24 --fault-exclusions '(?=raft)'
 stderr 'antithesis\.fault_exclusions is not a valid regular expression.*'
-! snouty launch --launcher basic_test --duration 30m --param antithesis.fault_exclusions='('
+! snouty launch --launcher basic_test --max-compute-hours 24 --param antithesis.fault_exclusions='('
 stderr 'antithesis\.fault_exclusions is not a valid regular expression.*'
-! snouty launch --launcher basic_test --duration 30m --fault-exclusions ''
+! snouty launch --launcher basic_test --max-compute-hours 24 --fault-exclusions ''
 stderr 'antithesis\.fault_exclusions is empty'
 
 # `launch` does not accept --stdin.
-! snouty launch --launcher basic_test --stdin --duration 30m
+! snouty launch --launcher basic_test --stdin --max-compute-hours 24
 stderr 'unexpected argument.*'
 
 # Old-style raw --antithesis.* args are not accepted by `launch`.
@@ -93,18 +160,18 @@ stderr 'unexpected argument.*'
 # The basic_test and basic_k8s_test launchers need a config image. Without
 #    --config, --config-image, or --param antithesis.config_image, the command
 #    fails before any API call and names the flags that supply one.
-! snouty launch --launcher basic_test --duration 30m
+! snouty launch --launcher basic_test --max-compute-hours 24
 stderr 'the basic_test launcher requires a config image'
 stderr 'pass --config or --config-image'
-! snouty launch --launcher basic_k8s_test --duration 30m
+! snouty launch --launcher basic_k8s_test --max-compute-hours 24
 stderr 'the basic_k8s_test launcher requires a config image'
-! snouty launch --duration 30m
+! snouty launch --max-compute-hours 24
 stderr 'the basic_test launcher requires a config image'
 
 # The command authenticates with the Antithesis API using either
 #    ANTITHESIS_API_KEY and ANTITHESIS_TENANT, or
 #    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT.
-! snouty launch --launcher basic_test --config-image config:latest --duration 30m
+! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24
 stderr 'No Antithesis credentials found.*'
 
 # Everything below runs against the mock only. The skip sits above the first
@@ -115,12 +182,12 @@ stderr 'No Antithesis credentials found.*'
 
 # --param cannot override typed flag values.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-! snouty launch --launcher basic_test --duration 30m --param antithesis.duration=60
+! snouty launch --launcher basic_test --max-compute-hours 24 --param antithesis.max_compute_hours=60
 stderr 'cannot be overridden via --param.*'
 
 # A --param value must be a key=value pair. snouty rejects any other form
 #    before any API call.
-! snouty launch --launcher basic_test --duration 30m --param no-equals-sign
+! snouty launch --launcher basic_test --max-compute-hours 24 --param no-equals-sign
 stderr 'invalid value .no-equals-sign. for .--param.*expected key=value'
 
 # At least one source of parameters must be provided; otherwise the
@@ -130,16 +197,16 @@ mock-server 200 '{}'
 stderr 'no parameters provided.*'
 
 # Parameters are provided as --key value typed flags
-#    (e.g. --duration 30, --test-name my-test). Before sending, the resolved
-#    parameters are printed to stderr with sensitive values (tokens, email
+#    (e.g. --max-compute-hours 24, --test-name my-test). Before sending, the
+#    resolved parameters are printed to stderr with sensitive values (tokens, email
 #    recipients) redacted. On success, a one-line confirmation with the
 #    run_id is printed to stdout.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --test-name my-test --description 'nightly test run' --config-image config:latest --duration 30m --recipients team@example.com --source ci-pipeline
+snouty launch --launcher basic_test --test-name my-test --description 'nightly test run' --config-image config:latest --max-compute-hours 24 --recipients team@example.com --source ci-pipeline
 stderr '"antithesis.test_name": "my-test"'
 stderr '"antithesis.description": "nightly test run"'
 stderr '"antithesis.config_image": "config:latest"'
-stderr '"antithesis.duration": "30"'
+stderr '"antithesis.max_compute_hours": "24"'
 stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 stderr '"antithesis.source": "ci-pipeline"'
 stderr '"run.caller_type": "snouty"'
@@ -153,7 +220,7 @@ stdout '(?s)Or interact with the run once it is ready:\n  snouty runs wait run-1
 
 # A --param value replaces the default run.caller_type.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30m --param run.caller_type=ci
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --param run.caller_type=ci
 stderr '"run.caller_type": "ci"'
 ! stderr '"run.caller_type": "snouty"'
 
@@ -161,7 +228,7 @@ stderr '"run.caller_type": "ci"'
 # is deprecated: a warning on stderr steers the user to `snouty login`. The
 # mock-server directive configures username/password credentials.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30m --source ci-pipeline
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --source ci-pipeline
 stderr 'warning: username/password authentication is deprecated'
 stderr 'snouty login'
 stdout 'Test run started: run_id run-123'
@@ -171,7 +238,7 @@ stdout 'Test run started: run_id run-123'
 # rest of the file.)
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
-snouty launch --launcher basic_test --config-image config:latest --duration 30m --source ci-pipeline
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --source ci-pipeline
 ! stderr 'deprecated'
 stdout 'Test run started: run_id run-123'
 env ANTITHESIS_API_KEY=
@@ -182,7 +249,7 @@ env ANTITHESIS_API_KEY=
 # with the response anyway (the mock answers HTTP 200 saying 202). Use --verbose
 # to see the response as it arrived.
 mock-server 200 '{"runId":"run-123","statusCode":202}'
-snouty --json launch --launcher basic_test --config-image config:latest --duration 30m --source ci-pipeline
+snouty --json launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --source ci-pipeline
 stdout '\s*"runId": "run-123".*'
 ! stdout '.*statusCode.*'
 ! stdout 'Test run started.*'
@@ -190,38 +257,71 @@ stdout '\s*"runId": "run-123".*'
 
 # 6b. --ephemeral flag sets antithesis.is_ephemeral to "true".
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30m --ephemeral
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --ephemeral
 stderr '"antithesis.is_ephemeral": "true"'
 
 # 6c. Without --source, is_ephemeral is set automatically and an info message is shown.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30m
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24
 stderr '"antithesis.is_ephemeral": "true"'
 stderr 'Starting an ephemeral run; its findings will not be retained.*'
 
 # 6c2. With --source, is_ephemeral is not set unless --ephemeral is passed.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30m --source ci-pipeline
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --source ci-pipeline
 ! stderr 'is_ephemeral.*'
 ! stderr 'Starting an ephemeral run.*'
 
-# 6c3. --duration accepts h/m unit suffixes, normalized to bare minutes for the
-#    API (1h30m -> 90).
+# 6c3. --duration is deprecated, and prints a warning that names
+#    --max-compute-hours. It still sends `antithesis.duration`, and accepts h/m
+#    unit suffixes, normalized to bare minutes for the API (1h30m -> 90).
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch --launcher basic_test --config-image config:latest --duration 1h30m --source ci-pipeline
+stderr '^warning: --duration is deprecated, use --max-compute-hours instead$'
 stderr '"antithesis.duration": "90"'
-! stderr 'is deprecated; write'
+! stderr 'a bare number for --duration'
+stdout 'Test run started: run_id run-123'
 
-# 6c4. A bare number still counts minutes, but is deprecated: a warning shows
-#    the value with a unit, and the run gets the same duration.
+# A bare number still counts minutes, but is deprecated too: a second warning
+#    shows the value with a unit, and the run gets the same duration.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch --launcher basic_test --config-image config:latest --duration 90 --source ci-pipeline
 stderr '^warning: a bare number for --duration is deprecated; write 1h30m$'
+stderr '^warning: --duration is deprecated, use --max-compute-hours instead$'
 stderr '"antithesis.duration": "90"'
+
+# 6c4. Without --duration, no deprecation warning is shown.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --source ci-pipeline
+! stderr 'duration'
+
+# 6c5. --max-compute-hours sends `antithesis.max_compute_hours`. The minimum
+#    passes: 16 on standard with the default setup timeout, 13 with a 1-minute
+#    setup timeout, and 32 on fast.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 16 --source ci-pipeline
+stderr '"antithesis.max_compute_hours": "16"'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 13 --setup-timeout 1m --source ci-pipeline
+stderr '"antithesis.max_compute_hours": "13"'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 32 --performance-tier fast --source ci-pipeline
+stderr '"antithesis.max_compute_hours": "32"'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 1000 --source ci-pipeline
+stderr '"antithesis.max_compute_hours": "1000"'
+
+# 6c6. --setup-timeout sends `antithesis.setup_timeout` as whole minutes.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --setup-timeout 10m --source ci-pipeline
+stderr '"antithesis.setup_timeout": "10"'
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher basic_test --config-image config:latest --setup-timeout 1h30m --source ci-pipeline
+stderr '"antithesis.setup_timeout": "90"'
 
 # 6d. --param flag passes custom properties.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30m --param my.custom.prop=value --param antithesis.integrations.github.callback_url=https://example.com/cb
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --param my.custom.prop=value --param antithesis.integrations.github.callback_url=https://example.com/cb
 stderr '"my.custom.prop": "value"'
 stderr '"antithesis.integrations.github.callback_url": "https://example.com/cb"'
 
@@ -229,7 +329,7 @@ stderr '"antithesis.integrations.github.callback_url": "https://example.com/cb"'
 #    before snouty learns about them (#211). Known params keep their value
 #    checks (see the antithesis.duration=asdf case above).
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30m --param antithesis.brand_new_param=on
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --param antithesis.brand_new_param=on
 stderr '"antithesis.brand_new_param": "on"'
 stdout 'Test run started: run_id run-123'
 
@@ -237,7 +337,7 @@ stdout 'Test run started: run_id run-123'
 #    images (e.g. an image referenced only in a CRD field) that the config
 #    parser can't discover. Semicolon-delimited [REGISTRY/]NAME(:TAG|@DIGEST).
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30m --param 'antithesis.images=app@sha256:abc;db:latest'
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --param 'antithesis.images=app@sha256:abc;db:latest'
 stderr '"antithesis.images": "app@sha256:abc;db:latest"'
 
 # A 404 from the launch endpoint means that the launcher does not exist. Its
@@ -245,7 +345,7 @@ stderr '"antithesis.images": "app@sha256:abc;db:latest"'
 # verified against the live API, with no message text. The command names the
 # launcher and tells the user to ask support for the launchers on the tenant.
 mock-server 404 '{"statusCode":404,"runId":null}'
-! snouty launch --launcher no_such_launcher --duration 30m
+! snouty launch --launcher no_such_launcher --max-compute-hours 24
 stderr 'unknown launcher: no_such_launcher'
 stderr 'ask support@antithesis\.com for the launchers on your tenant'
 ! stderr 'API error'
@@ -253,7 +353,7 @@ stderr 'ask support@antithesis\.com for the launchers on your tenant'
 # A 404 without the envelope, such as an HTML page from a wrong host, keeps
 # the generic API error, because it does not show that the launcher is unknown.
 mock-server 404 '<html><body>404 Not Found</body></html>'
-! snouty launch --launcher basic_test --config-image config:latest --duration 30m
+! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24
 stderr 'API error: 404 Not Found'
 ! stderr 'unknown launcher'
 
@@ -261,18 +361,18 @@ stderr 'API error: 404 Not Found'
 # (The launcher does no request validation beyond auth, so it never returns a
 # 400.) TODO: test a 400 here once the launcher validates requests.
 mock-server 500 '{"statusCode":500,"runId":null}'
-! snouty launch --launcher basic_test --config-image config:latest --duration 30m
+! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24
 stderr 'API error: 500 Internal Server Error.*'
 
 # `snouty run` still works but prints a deprecation warning.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty run --launcher basic_test --config-image config:latest --duration 30m
+snouty run --launcher basic_test --config-image config:latest --max-compute-hours 24
 stderr 'snouty run.*is deprecated.*snouty launch'
 
 # Without --launcher, the run goes to the basic_test launcher. The --verbose
 # log names the auth scheme, but no part of the username and password.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty --verbose launch --config-image config:latest --duration 30m
+snouty --verbose launch --config-image config:latest --max-compute-hours 24
 stderr '^> POST .*/api/v1/launch/basic_test$'
 stderr '^> authorization: Basic \[redacted\]$'
 ! stderr 'dGVz'
@@ -281,61 +381,61 @@ stdout 'Test run started: run_id run-123'
 
 # --launcher selects the launcher.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty --verbose launch --launcher basic_k8s_test --config-image config:latest --duration 30m
+snouty --verbose launch --launcher basic_k8s_test --config-image config:latest --max-compute-hours 24
 stderr '^> POST .*/api/v1/launch/basic_k8s_test$'
 
 # --webhook and -w still select the launcher, but print a deprecation warning.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty --verbose launch --webhook basic_k8s_test --config-image config:latest --duration 30m
+snouty --verbose launch --webhook basic_k8s_test --config-image config:latest --max-compute-hours 24
 stderr '^warning: --webhook is deprecated, use --launcher instead$'
 stderr '^> POST .*/api/v1/launch/basic_k8s_test$'
 stdout 'Test run started: run_id run-123'
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch -w basic_test --config-image config:latest --duration 30m
+snouty launch -w basic_test --config-image config:latest --max-compute-hours 24
 stderr '^warning: --webhook is deprecated, use --launcher instead$'
 stdout 'Test run started: run_id run-123'
 
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30m --filter-logs-matching debug
-stderr '"antithesis.duration": "30"'
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --filter-logs-matching debug
+stderr '"antithesis.max_compute_hours": "24"'
 stderr '"antithesis.filter_logs_matching": "debug"'
 stdout 'Test run started: run_id run-123'
 
 # --filter-source-matching sends `antithesis.filter_source_matching`.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30m --filter-source-matching '^metrics-agent$'
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --filter-source-matching '^metrics-agent$'
 stderr '"antithesis.filter_source_matching": "\^metrics-agent\$"'
 stdout 'Test run started: run_id run-123'
 
 # --performance-tier sends `antithesis.performance_tier`.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30m --performance-tier turbo
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 64 --performance-tier turbo
 stderr '"antithesis.performance_tier": "turbo"'
 stdout 'Test run started: run_id run-123'
 
 # The raw --param form sends any tier, so a tier newer than this snouty works.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30m --param antithesis.performance_tier=ultra
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --param antithesis.performance_tier=ultra
 stderr '"antithesis.performance_tier": "ultra"'
 stdout 'Test run started: run_id run-123'
 
 # --fault-tolerance sends `antithesis.fault_tolerance`, and
 #    --fault-exclusions sends `antithesis.fault_exclusions`.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30m --fault-tolerance high_availability --fault-exclusions '^(raft-client|raft-monitor)$'
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --fault-tolerance high_availability --fault-exclusions '^(raft-client|raft-monitor)$'
 stderr '"antithesis.fault_tolerance": "high_availability"'
 stderr '"antithesis.fault_exclusions": "\^\(raft-client\|raft-monitor\)\$"'
 stdout 'Test run started: run_id run-123'
 
 # The raw --param form sends any fault tolerance level.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30m --param antithesis.fault_tolerance=extreme
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --param antithesis.fault_tolerance=extreme
 stderr '"antithesis.fault_tolerance": "extreme"'
 stdout 'Test run started: run_id run-123'
 
 # --param antithesis.config_image also supplies the config image.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --duration 30m --param antithesis.config_image=config:latest
+snouty launch --launcher basic_test --max-compute-hours 24 --param antithesis.config_image=config:latest
 stderr '"antithesis.config_image": "config:latest"'
 stdout 'Test run started: run_id run-123'
 
@@ -349,7 +449,7 @@ exec git init -q -b feature/vcs checkout
 cd checkout
 exec git -c user.name=snouty -c user.email=snouty@example.com commit -q --allow-empty -m init
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher advanced_test --duration 30m
+snouty launch --launcher advanced_test --max-compute-hours 24
 stderr '"vcs.repo_branch": "feature/vcs"'
 stderr '"vcs.version_id": "[0-9a-f]{40}"'
 ! stderr 'vcs.repo_type'
@@ -357,7 +457,7 @@ stderr '"vcs.version_id": "[0-9a-f]{40}"'
 
 exec git remote add origin git@github.com:acme/widget.git
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher advanced_test --duration 30m
+snouty launch --launcher advanced_test --max-compute-hours 24
 stderr '"vcs.repo_type": "github"'
 stderr '"vcs.repo_owner": "acme"'
 stderr '"vcs.repo_name": "widget"'
@@ -369,20 +469,20 @@ stderr '"vcs.version_link": "https://github.com/acme/widget/commit/[0-9a-f]{40}"
 #    not hold its source, so it turns the detection off. `--param vcs.*`
 #    values are still sent.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30m
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24
 ! stderr 'vcs\.'
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --duration 30m --param antithesis.config_image=config:latest
+snouty launch --launcher basic_test --max-compute-hours 24 --param antithesis.config_image=config:latest
 ! stderr 'vcs\.'
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30m --param vcs.version_id=abc123
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --param vcs.version_id=abc123
 stderr '"vcs.version_id": "abc123"'
 ! stderr 'vcs.repo_owner'
 
 # A --param for a detected key turns the detection off, so that a detected
 #    commit link cannot sit next to a different commit.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher advanced_test --duration 30m --param vcs.version_id=abc123
+snouty launch --launcher advanced_test --max-compute-hours 24 --param vcs.version_id=abc123
 stderr '"vcs.version_id": "abc123"'
 ! stderr 'vcs.version_link'
 ! stderr 'vcs.repo_branch'
@@ -390,7 +490,7 @@ stderr '"vcs.version_id": "abc123"'
 # A --param for a `vcs.*` key that snouty does not detect is sent with the
 #    detected values.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher advanced_test --duration 30m --param vcs.system_name=widget
+snouty launch --launcher advanced_test --max-compute-hours 24 --param vcs.system_name=widget
 stderr '"vcs.system_name": "widget"'
 stderr '"vcs.repo_owner": "acme"'
 stderr '"vcs.version_id": "[0-9a-f]{40}"'
@@ -403,18 +503,18 @@ stderr 'no parameters provided.*'
 
 # --no-vcs turns the detection off.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher advanced_test --duration 30m --no-vcs
+snouty launch --launcher advanced_test --max-compute-hours 24 --no-vcs
 ! stderr 'vcs\.'
 
 # A detached HEAD has no branch.
 exec git checkout -q --detach
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher advanced_test --duration 30m
+snouty launch --launcher advanced_test --max-compute-hours 24
 ! stderr 'vcs.repo_branch'
 stderr '"vcs.version_id": "[0-9a-f]{40}"'
 
 # A GIT_DIR from a git hook does not redirect the detection.
 env GIT_DIR=/nonexistent
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher advanced_test --duration 30m
+snouty launch --launcher advanced_test --max-compute-hours 24
 stderr '"vcs.repo_owner": "acme"'

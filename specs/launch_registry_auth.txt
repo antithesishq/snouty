@@ -46,7 +46,7 @@ env ANTITHESIS_REPOSITORY=registry.acme.antithesis.com/repo
 # Docker gets the credential in DOCKER_AUTH_CONFIG. A failed push shows the
 # error of Docker.
 env SNOUTY_CONTAINER_ENGINE=docker
-! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30m
+! snouty launch --launcher basic_k8s_test -c k8s_config --max-compute-hours 24
 stderr 'Building config image'
 stderr 'fake docker: push registry.acme.antithesis.com/repo/snouty-config:\S+ REGISTRY_AUTH_FILE=\[\] DOCKER_AUTH_CONFIG=\[set\]'
 stderr 'unauthorized: authentication required'
@@ -55,7 +55,7 @@ stderr 'unauthorized: authentication required'
 # helper is in the global settings dir, which only the user can read or
 # write. The auth file goes away after the launch.
 env SNOUTY_CONTAINER_ENGINE=podman
-! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30m
+! snouty launch --launcher basic_k8s_test -c k8s_config --max-compute-hours 24
 stderr 'fake podman: push --digestfile=\S+ registry.acme.antithesis.com/repo/snouty-config:\S+ REGISTRY_AUTH_FILE=\[set\] DOCKER_AUTH_CONFIG=\[\]'
 stderr 'auth file: /\S+ \{"credHelpers":\{"registry.acme.antithesis.com":"snouty"\}\}$'
 stderr -literal 'helper dir: ${WORK}/config/snouty docker-credential-snouty'
@@ -69,7 +69,7 @@ stdout '^drwx------'
 # name, it prints a warning, and podman pushes with its own credentials.
 rm config/snouty/docker-credential-snouty
 mkdir config/snouty/docker-credential-snouty
-! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30m
+! snouty launch --launcher basic_k8s_test -c k8s_config --max-compute-hours 24
 stderr '^warning: failed to link the credential helper to snouty: .*Is a directory.*, so podman pushes with its own credentials$'
 stderr 'fake podman: push --digestfile=\S+ registry.acme.antithesis.com/repo/snouty-config:\S+ REGISTRY_AUTH_FILE=\[\] DOCKER_AUTH_CONFIG=\[\]'
 rm config/snouty/docker-credential-snouty
@@ -80,11 +80,11 @@ rm config/snouty/docker-credential-snouty
 # config runs.
 env ANTITHESIS_TENANT=
 env ANTITHESIS_REPOSITORY=
-! snouty launch --settings two-profiles.toml --profile b --launcher basic_k8s_test -c k8s_config --duration 30m
+! snouty launch --settings two-profiles.toml --profile b --launcher basic_k8s_test -c k8s_config --max-compute-hours 24
 stderr 'settings: profile=\[b\] path=\[two-profiles\.toml\]$'
 stderr 'helper: \{"ServerURL":"registry\.acme\.antithesis\.com","Username":"snouty-token","Secret":"${FAKE_API_KEY_A@R}"\}'
 env SNOUTY_CONTAINER_ENGINE=docker
-! snouty launch --settings two-profiles.toml --profile b --launcher basic_k8s_test -c k8s_config --duration 30m
+! snouty launch --settings two-profiles.toml --profile b --launcher basic_k8s_test -c k8s_config --max-compute-hours 24
 stderr 'DOCKER_AUTH_CONFIG=\[set\]'
 stderr 'settings: profile=\[b\] path=\[two-profiles\.toml\]$'
 env SNOUTY_CONTAINER_ENGINE=podman
@@ -94,11 +94,11 @@ env SNOUTY_CONTAINER_ENGINE=podman
 # the helper also uses the file only because the user trusts it. An untrusted
 # file stops the launch before the build.
 cd project
-! snouty launch --launcher basic_k8s_test -c ../k8s_config --duration 30m
+! snouty launch --launcher basic_k8s_test -c ../k8s_config --max-compute-hours 24
 stderr 'is not trusted'
 ! stderr 'fake podman'
 snouty settings trust
-! snouty launch --launcher basic_k8s_test -c ../k8s_config --duration 30m
+! snouty launch --launcher basic_k8s_test -c ../k8s_config --max-compute-hours 24
 stderr 'settings: profile=\[\] path=\[\]$'
 stderr 'helper: \{"ServerURL":"registry\.acme\.antithesis\.com","Username":"snouty-token","Secret":"${FAKE_API_KEY_A@R}"\}'
 cd .
@@ -111,7 +111,7 @@ env ANTITHESIS_REPOSITORY=registry.acme.antithesis.com/repo
 env ANTITHESIS_API_KEY=
 set-env ANTITHESIS_USERNAME ${FAKE_USERNAME}
 set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
-! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30m
+! snouty launch --launcher basic_k8s_test -c k8s_config --max-compute-hours 24
 stderr 'fake docker: push registry.acme.antithesis.com/repo/snouty-config:\S+ REGISTRY_AUTH_FILE=\[\] DOCKER_AUTH_CONFIG=\[\]'
 ! stderr 'container registry does not accept'
 env ANTITHESIS_USERNAME=
@@ -121,11 +121,11 @@ set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 # A repository on a different registry, or on the tenant registry of a
 # different tenant, pushes with no credential from snouty.
 env ANTITHESIS_REPOSITORY=registry.example.com/repo
-! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30m
+! snouty launch --launcher basic_k8s_test -c k8s_config --max-compute-hours 24
 stderr 'fake docker: push registry.example.com/repo/snouty-config:\S+ REGISTRY_AUTH_FILE=\[\] DOCKER_AUTH_CONFIG=\[\]'
 env ANTITHESIS_REPOSITORY=registry.other.antithesis.com/repo
 env SNOUTY_CONTAINER_ENGINE=podman
-! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30m
+! snouty launch --launcher basic_k8s_test -c k8s_config --max-compute-hours 24
 stderr 'fake podman: push --digestfile=\S+ registry.other.antithesis.com/repo/snouty-config:\S+ REGISTRY_AUTH_FILE=\[\] DOCKER_AUTH_CONFIG=\[\]'
 
 # The cases below use the mock server and stored credentials.
@@ -136,7 +136,7 @@ mock-runs-server
 env ANTITHESIS_REPOSITORY=registry.testtenant.antithesis.com/repo
 env SNOUTY_CONTAINER_ENGINE=docker
 env STUB_PUSH_OK=1
-snouty launch --launcher basic_k8s_test -c k8s_config --duration 30m
+snouty launch --launcher basic_k8s_test -c k8s_config --max-compute-hours 24
 stderr 'Config image pushed successfully: registry.testtenant.antithesis.com/repo/snouty-config@sha256:pushed'
 stderr 'Requesting Antithesis test run'
 env STUB_PUSH_OK=
@@ -147,7 +147,7 @@ env ANTITHESIS_API_KEY=
 isolate-home oauth
 substitute ~/.config/snouty/credentials.toml
 env SNOUTY_CONTAINER_ENGINE=podman
-! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30m
+! snouty launch --launcher basic_k8s_test -c k8s_config --max-compute-hours 24
 stderr 'auth file: /\S+ \{"credHelpers":\{"registry.testtenant.antithesis.com":"snouty"\}\}$'
 stderr 'helper: \{"ServerURL":"registry\.testtenant\.antithesis\.com","Username":"snouty-token","Secret":"${FAKE_ACCESS_TOKEN_B@R}"\}'
 file ~/.config/snouty/credentials.toml 'antithesis_token = "${FAKE_ACCESS_TOKEN_B@R}"'
@@ -158,16 +158,16 @@ file ~/.config/snouty/credentials.toml 'antithesis_token = "${FAKE_ACCESS_TOKEN_
 isolate-home oidc
 set-env ACTIONS_ID_TOKEN_REQUEST_URL ${ANTITHESIS_BASE_URL}/github-actions/token?api-version=2.0
 set-env ACTIONS_ID_TOKEN_REQUEST_TOKEN ${FAKE_OIDC_REQUEST_TOKEN}
-! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30m
+! snouty launch --launcher basic_k8s_test -c k8s_config --max-compute-hours 24
 stderr 'fake podman: push --digestfile=\S+ registry.testtenant.antithesis.com/repo/snouty-config:\S+ REGISTRY_AUTH_FILE=\[set\] DOCKER_AUTH_CONFIG=\[\]'
 stderr 'helper: \{"ServerURL":"registry\.testtenant\.antithesis\.com","Username":"snouty-token","Secret":"${FAKE_OIDC_TOKEN@R}"\}'
 env SNOUTY_CONTAINER_ENGINE=docker
-! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30m
+! snouty launch --launcher basic_k8s_test -c k8s_config --max-compute-hours 24
 stderr 'fake docker: push registry.testtenant.antithesis.com/repo/snouty-config:\S+ REGISTRY_AUTH_FILE=\[\] DOCKER_AUTH_CONFIG=\[set\]'
 
 # A failed token request stops the launch before the build.
 set-env ACTIONS_ID_TOKEN_REQUEST_URL ${ANTITHESIS_BASE_URL}/no-such-endpoint?api-version=2.0
-! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30m
+! snouty launch --launcher basic_k8s_test -c k8s_config --max-compute-hours 24
 stderr 'failed to fetch a GitHub Actions OIDC token'
 ! stderr 'Building config image'
 
@@ -180,7 +180,7 @@ env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
 set-env ANTITHESIS_USERNAME ${FAKE_USERNAME}
 set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
 env STUB_PUSH_OK=1
-! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30m
+! snouty launch --launcher basic_k8s_test -c k8s_config --max-compute-hours 24
 stderr 'Config image pushed successfully'
 stderr 'Requesting Antithesis test run'
 stderr -count=1 'support will be removed in a future release'

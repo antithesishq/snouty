@@ -29,9 +29,10 @@ use snouty::params::{
     ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_LENGTH_HOURS, ANT_DEBUGGING_RUN_ID,
     ANT_DEBUGGING_SESSION_ID, ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION,
     ANT_EVENT_DESCRIPTION, ANT_FAULT_EXCLUSIONS, ANT_FAULT_TOLERANCE, ANT_FILTER_LOGS_MATCHING,
-    ANT_FILTER_SOURCE_MATCHING, ANT_IS_EPHEMERAL, ANT_PERFORMANCE_TIER, ANT_REPORT_RECIPIENTS,
-    ANT_SOURCE, ANT_TEST_NAME, DuplicateKey, Params, RUN_CALLER_TYPE, VCS_PARAMS, VCS_REPO_BRANCH,
-    VCS_REPO_NAME, VCS_REPO_OWNER, VCS_REPO_TYPE, VCS_VERSION_ID, VCS_VERSION_LINK,
+    ANT_FILTER_SOURCE_MATCHING, ANT_IS_EPHEMERAL, ANT_MAX_COMPUTE_HOURS, ANT_PERFORMANCE_TIER,
+    ANT_REPORT_RECIPIENTS, ANT_SETUP_TIMEOUT, ANT_SOURCE, ANT_TEST_NAME, DuplicateKey, Params,
+    RUN_CALLER_TYPE, VCS_PARAMS, VCS_REPO_BRANCH, VCS_REPO_NAME, VCS_REPO_OWNER, VCS_REPO_TYPE,
+    VCS_VERSION_ID, VCS_VERSION_LINK,
 };
 use snouty::settings::Settings;
 use snouty::stdio::{self, StreamClosed};
@@ -250,8 +251,15 @@ async fn cmd_launch(
         params.insert(ANT_DESCRIPTION, description);
     }
     if let Some(duration) = args.duration {
+        eprintln!("warning: --duration is deprecated, use --max-compute-hours instead");
         // The API wants a bare minute count, not the human `1h30m` Display form.
         params.insert(ANT_DURATION, duration.minutes().to_string());
+    }
+    if let Some(hours) = args.max_compute_hours {
+        params.insert(ANT_MAX_COMPUTE_HOURS, hours.to_string());
+    }
+    if let Some(minutes) = args.setup_timeout {
+        params.insert(ANT_SETUP_TIMEOUT, minutes.to_string());
     }
     let has_source = if let Some(source) = args.source {
         params.insert(ANT_SOURCE, source);

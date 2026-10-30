@@ -369,19 +369,17 @@ fn relative_time(then: DateTime<Utc>) -> String {
     format!("{value}{unit} ago")
 }
 
-/// The requested run duration (`antithesis.duration`, a count of minutes),
-/// rendered in the same `1h30m` vocabulary the launcher accepts via
-/// [`HumanDuration`]. A value the backend somehow stored in a form we can't
-/// parse falls back to the raw string, so it still shows something truthful
-/// rather than vanishing.
-fn format_requested_duration(raw: &str) -> String {
+/// A launch parameter that counts minutes, such as `antithesis.setup_timeout`,
+/// rendered in the `1h30m` vocabulary of [`HumanDuration`]. A value in a form
+/// we can't parse falls back to the raw string, so it still shows something
+/// truthful rather than vanishing.
+fn format_minutes(raw: &str) -> String {
     raw.parse::<HumanDuration>()
         .map_or_else(|_| raw.to_string(), |d| d.to_string())
 }
 
 /// Wall-clock time the run was (or has been) active, rendered through
-/// [`HumanDuration`] in the same `h`/`m`/`s` units as the requested duration
-/// beside it. A still-running run counts up to `end` (`Utc::now()` at the call
+/// [`HumanDuration`] in `h`/`m`/`s` units. A still-running run counts up to `end` (`Utc::now()` at the call
 /// site). Returns `None` on clock skew (a negative span).
 fn elapsed_duration(started: DateTime<Utc>, end: DateTime<Utc>) -> Option<HumanDuration> {
     let secs = (end - started).num_seconds();
@@ -1422,11 +1420,14 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         rows.push(("Completed", format_local_with_offset(t)));
     }
 
-    // Requested vs. actual run time. "Duration" is the configured workload
-    // length; "Elapsed" is wall-clock (which also spans provisioning, setup and
-    // teardown), so the two legitimately differ — they aren't a mismatch.
-    if let Some(raw) = run.requested_duration() {
-        rows.push(("Duration", format_requested_duration(raw)));
+    // The JSON output keeps `antithesis.duration`, which the server still
+    // records, but the text output leaves it out because the parameter is
+    // deprecated.
+    if let Some(hours) = run.max_compute_hours() {
+        rows.push(("Max Compute Hours", hours.to_string()));
+    }
+    if let Some(raw) = run.setup_timeout() {
+        rows.push(("Setup Timeout", format_minutes(raw)));
     }
     if let Some(started) = run.started_at
         && let Some(elapsed) = elapsed_duration(started, run.completed_at.unwrap_or_else(Utc::now))
@@ -4745,15 +4746,12 @@ mod tests {
     }
 
     #[test]
-    fn requested_duration_renders_via_human_duration() {
-        // Whole minutes, the launcher's h/m vocabulary, and a fractional minute
-        // count from older runs all render through HumanDuration.
-        assert_eq!(format_requested_duration("30"), "30m");
-        assert_eq!(format_requested_duration("90"), "1h30m");
-        assert_eq!(format_requested_duration("15.5"), "15m30s");
+    fn minutes_render_via_human_duration() {
+        assert_eq!(format_minutes("30"), "30m");
+        assert_eq!(format_minutes("90"), "1h30m");
         // A value we can't parse falls back to the raw string rather than
         // dropping the row entirely.
-        assert_eq!(format_requested_duration("soon"), "soon");
+        assert_eq!(format_minutes("soon"), "soon");
     }
 
     #[test]

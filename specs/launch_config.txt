@@ -4,46 +4,46 @@
 # docker-compose.yaml file that will be pushed as a config image.
 
 # Requires ANTITHESIS_REPOSITORY when --config is used.
-! snouty launch --launcher basic_test -c config --duration 30m
+! snouty launch --launcher basic_test -c config --max-compute-hours 24
 stderr 'Could not resolve Antithesis repository.*'
 
 # Kubernetes config directories (manifests/ subdirectory) are also accepted
 # by --config and likewise require ANTITHESIS_REPOSITORY.
-! snouty launch --launcher basic_k8s_test -c k8s_config --duration 30m
+! snouty launch --launcher basic_k8s_test -c k8s_config --max-compute-hours 24
 stderr 'Could not resolve Antithesis repository.*'
 
 env ANTITHESIS_REPOSITORY=registry.example.com/repo
 
 # Rejects a nonexistent directory.
-! snouty launch --launcher basic_test -c /nonexistent/path --duration 30m
+! snouty launch --launcher basic_test -c /nonexistent/path --max-compute-hours 24
 stderr 'not a directory.*'
 
 # 2b. Long flag --config also accepted.
-! snouty launch --launcher basic_test --config /nonexistent/path --duration 30m
+! snouty launch --launcher basic_test --config /nonexistent/path --max-compute-hours 24
 stderr 'not a directory.*'
 
 # Rejects a directory without docker-compose.yaml or manifests/.
-! snouty launch --launcher basic_test -c empty --duration 30m
+! snouty launch --launcher basic_test -c empty --max-compute-hours 24
 stderr '.*does not contain.*docker-compose.yaml.*manifests/.*'
 
 # Rejects docker-compose.yml (wrong extension).
-! snouty launch --launcher basic_test -c yml_dir --duration 30m
+! snouty launch --launcher basic_test -c yml_dir --max-compute-hours 24
 stderr '.*rename it to docker-compose.yaml.*'
 
 # Rejects an ambiguous directory containing both compose and manifests/.
-! snouty launch --launcher basic_test -c ambiguous --duration 30m
+! snouty launch --launcher basic_test -c ambiguous --max-compute-hours 24
 stderr '.*both docker-compose.yaml and a manifests/ subdirectory.*'
 
 # --config conflicts with --config-image (clap).
-! snouty launch --launcher basic_test -c config --config-image some-image:latest --duration 30m
+! snouty launch --launcher basic_test -c config --config-image some-image:latest --max-compute-hours 24
 stderr '--config.*'
 
 # --allow-remote-images only applies to a local config dir, so it requires
 # --config and conflicts with --config-image.
-! snouty launch --launcher basic_test --allow-remote-images --duration 30m
+! snouty launch --launcher basic_test --allow-remote-images --max-compute-hours 24
 stderr 'the following required arguments were not provided'
 stderr '--config <CONFIG>'
-! snouty launch --launcher basic_test --allow-remote-images --config-image some-image:latest --duration 30m
+! snouty launch --launcher basic_test --allow-remote-images --config-image some-image:latest --max-compute-hours 24
 stderr '--allow-remote-images.* cannot be used with .--config-image'
 
 # --config conflicts with --param antithesis.config_image.

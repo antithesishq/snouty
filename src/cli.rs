@@ -144,6 +144,21 @@ fn parse_launch_duration(value: &str) -> Result<HumanDuration, String> {
     })
 }
 
+/// clap value parser for `launch --setup-timeout`. Returns whole minutes. A
+/// bare number is an error, because a reader could expect seconds.
+fn parse_setup_timeout(value: &str) -> Result<u64, String> {
+    let seconds = HumanDuration::parse(value, BareUnit::Refused)
+        .map_err(|e| e.to_string())?
+        .seconds();
+    if seconds < 60 {
+        return Err("must be at least 1 minute".to_string());
+    }
+    if seconds % 60 != 0 {
+        return Err("must be a whole number of minutes".to_string());
+    }
+    Ok(seconds / 60)
+}
+
 /// clap value parser for `debug --duration`: a [`HumanDuration`] in the range
 /// that the API accepts for `antithesis.debugging.length_hours`.
 fn parse_debug_duration(value: &str) -> Result<HumanDuration, String> {
@@ -573,9 +588,31 @@ pub struct LaunchArgs {
     #[arg(
         long,
         value_parser = parse_launch_duration,
-        help = concat!("Test duration, at least 1 minute. ", duration_format!()),
+        conflicts_with = "max_compute_hours",
+        help = concat!(
+            "Deprecated: use --max-compute-hours. Test duration, at least 1 minute. ",
+            duration_format!(),
+        ),
     )]
     pub duration: Option<HumanDuration>,
+
+    /// Compute hours to spend on the run, at most 1000. One compute hour is one
+    /// core running for one hour. The minimum depends on --performance-tier
+    /// and --setup-timeout: 16 on the standard tier with the default setup
+    /// timeout. The server default is 48.
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..=1000))]
+    pub max_compute_hours: Option<u16>,
+
+    #[arg(
+        long,
+        value_parser = parse_setup_timeout,
+        help = concat!(
+            "Fail the run immediately if the system does not reach setup complete within \
+             this time, in whole minutes, such as 10m or 30m. The default is 5m. ",
+            duration_format!(),
+        ),
+    )]
+    pub setup_timeout: Option<u64>,
 
     /// Mark the test run as ephemeral, so it does not appear in future reports
     /// as a historic result. A launch without --source is ephemeral already.

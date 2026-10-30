@@ -7,7 +7,7 @@ Example:
   snouty launch --launcher basic_test --config ./config \
     --test-name "my-test" \
     --description "nightly test run" \
-    --duration 30m \
+    --max-compute-hours 24 \
     --recipients "team@example.com"
 
 The -c/--config flag points at a local directory containing docker-compose.yaml
@@ -19,16 +19,41 @@ for images that are not on this machine.
 Alternatively, pass a pre-built config image directly:
   snouty launch --launcher basic_test \
     --config-image us-central1-docker.pkg.dev/proj/repo/config:latest \
-    --duration 30m
+    --max-compute-hours 24
+
+--max-compute-hours sets how much compute the run can use, up to 1000 compute
+hours. One compute hour is one core running for one hour. Without the flag, the
+server gives the run 48 compute hours.
+
+The tier (--performance-tier) sets how many cores the run uses: 48 on standard
+(the default), 96 on fast and 192 on turbo. The run lasts max compute hours × 60
+÷ cores minutes. The full setup timeout comes out of that time, even when setup
+finishes early, and exploration gets the rest. A faster tier does not add
+compute: it spends the same budget on more cores, in less wall-clock time. On
+the standard tier, 24 compute hours is a 30-minute run, which gives about 25
+minutes of testing with the default setup timeout.
+
+A run needs room for its full setup timeout plus 15 minutes of exploration, so
+the minimum is (setup timeout + 15) × cores ÷ 60 compute hours, rounded up. With
+the default 5-minute setup timeout, that is 16 compute hours on standard, 32 on
+fast and 64 on turbo. snouty refuses a launch below the minimum, and names it.
+
+--setup-timeout makes the run fail immediately if the system does not reach
+setup complete in the given time. Use it to fail fast, and to debug a setup that
+takes too long. It takes a number of minutes with the unit, such as 10m or 30m,
+and not a bare number. The default is 5 minutes, and the minimum is 1 minute.
+Set it a little above how long setup takes: the full timeout comes out of the
+budget, so a timeout that is too long takes compute hours from exploration.
+  snouty launch --launcher basic_test --config ./config --setup-timeout 10m
 
 Extra parameters can be passed with --param:
-  snouty launch --launcher basic_test --config ./config --duration 30m \
+  snouty launch --launcher basic_test --config ./config \
     --param antithesis.integrations.github.token=TOKEN \
     --param my.custom.property=value
 
 User-defined attributes are params with an `attrs.` prefix. The server records
 them on the run and `snouty runs show` lists them:
-  snouty launch --launcher basic_test --config ./config --duration 30m \
+  snouty launch --launcher basic_test --config ./config \
     --param attrs.team=payments \
     --param attrs.branch=main \
     --param attrs.build=12345
@@ -43,12 +68,12 @@ Additional container images that the config parser can't discover (e.g. an image
 referenced only in a Kubernetes CRD field) can be registered with the
 antithesis.images param, a semicolon-delimited [REGISTRY/]NAME(:TAG|@DIGEST)
 list:
-  snouty launch --launcher basic_k8s_test --config ./config --duration 30m \
+  snouty launch --launcher basic_k8s_test --config ./config \
     --param 'antithesis.images=app@sha256:...;db:latest'
 
 Add --json for machine-readable output. The launch response prints as one JSON
 object:
-  snouty launch --json --launcher basic_test --config ./config --duration 30m |
+  snouty launch --json --launcher basic_test --config ./config |
     jq -r .runId
 
 Next, wait for the run to finish with `snouty runs wait <run_id>`. The run ID is
@@ -96,9 +121,21 @@ Options:
           Test description
 
       --duration <DURATION>
-          Test duration, at least 1 minute. A duration is a whole number with an
-          h, m or s unit, or several in that order, such as 90s, 5m or 1h30m; a
-          bare number is not permitted
+          Deprecated: use --max-compute-hours. Test duration, at least 1 minute.
+          A duration is a whole number with an h, m or s unit, or several in
+          that order, such as 90s, 5m or 1h30m; a bare number is not permitted
+
+      --max-compute-hours <MAX_COMPUTE_HOURS>
+          Compute hours to spend on the run, at most 1000. One compute hour is
+          one core running for one hour. The minimum depends on
+          --performance-tier and --setup-timeout: 16 on the standard tier with
+          the default setup timeout. The server default is 48
+
+      --setup-timeout <SETUP_TIMEOUT>
+          Fail the run immediately if the system does not reach setup complete
+          within this time, in whole minutes, such as 10m or 30m. The default is
+          5m. A duration is a whole number with an h, m or s unit, or several in
+          that order, such as 90s, 5m or 1h30m; a bare number is not permitted
 
       --ephemeral
           Mark the test run as ephemeral, so it does not appear in future

@@ -96,6 +96,9 @@ UNKNOWN_RUN = "ffffffffffffffffffffffffffffffff-54-5"
 # A run ID that only the `debug-bad-duration` story names, so that the guard
 # does not count another story's refused launch against it.
 DURATION_RUN = "debug-bad-duration-run"
+# A config image that only the `launch-bare-setup-timeout` story names, so
+# that the guard counts only that story's refused launch against it.
+SETUP_TIMEOUT_IMAGE = "launch-bare-setup-timeout:latest"
 # An input hash that no run reaches, for the `snouty debug` error stories.
 UNKNOWN_HASH = "1234567890123456789"
 # A property ID that no run has, for the property lookup error story.
@@ -1269,7 +1272,10 @@ EXAMPLE_DIR = Path(__file__).resolve().parent.parent / "examples" / "antithesis"
 # RUN_TIER. A rewarm source must be on the same tier as the run that loads its
 # moment: the API spec says so for the exec endpoint (src/openapi.json).
 GALLERY_RUN_LAUNCHER = "basic_test"
-GALLERY_RUN_MINUTES = 15
+# The smallest run the launcher accepts on RUN_TIER with the default setup
+# timeout. It lasts GALLERY_RUN_MINUTES on RUN_TIER's 48 cores.
+GALLERY_RUN_COMPUTE_HOURS = 16
+GALLERY_RUN_MINUTES = 20
 # The oldest gallery run that a new gallery reuses. A run reports ready a few
 # minutes after it starts, and its test then lasts GALLERY_RUN_MINUTES; an
 # older run can end before the ready stories run.
@@ -1379,8 +1385,8 @@ def gallery_launch_args(description: str) -> list[str]:
         GALLERY_RUN_LAUNCHER,
         "--config",
         str(EXAMPLE_DIR),
-        "--duration",
-        f"{GALLERY_RUN_MINUTES}m",
+        "--max-compute-hours",
+        str(GALLERY_RUN_COMPUTE_HOURS),
         "--test-name",
         GALLERY_RUN_TEST_NAME,
         "--description",
@@ -3164,6 +3170,28 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             json_capable=False,
             env=guarded,
         ),
+        Story(
+            "launch-bare-setup-timeout",
+            "Launch with a setup timeout that has no unit",
+            "I want the run to fail fast if setup takes more than 10 minutes, and I "
+            "pass a bare 10.",
+            "snouty fails and says that --setup-timeout needs a unit, and that a bare "
+            "number is not permitted. It starts no run. Non-zero exit.",
+            [
+                "launch",
+                "--launcher",
+                GALLERY_RUN_LAUNCHER,
+                "--config-image",
+                SETUP_TIMEOUT_IMAGE,
+                "--setup-timeout",
+                "10",
+            ],
+            fails_before_launch(
+                guard, SETUP_TIMEOUT_IMAGE, "a bare number is not permitted"
+            ),
+            json_capable=False,
+            env=guarded,
+        ),
         # -- doctor (one story per distinct auth output) --------------------
         Story(
             "doctor-api-key",
@@ -3416,8 +3444,8 @@ def build_launch_stories(x: GalleryRun) -> list[Story]:
         Story(
             "launch",
             "Launch a run of my project",
-            f"My project validates, and I want a {GALLERY_RUN_MINUTES}-minute run of it on "
-            "Antithesis, with a test name, a description, and a custom attrs.source "
+            f"My project validates, and I want a {GALLERY_RUN_COMPUTE_HOURS}-compute-hour run "
+            "of it on Antithesis, with a test name, a description, and a custom attrs.source "
             "parameter. My script reads the run ID from the JSON output.",
             "snouty pushes the project's images and the config image, with the progress on "
             "stderr, and stdout is one JSON object with the new run's `runId`. Exit 0.",

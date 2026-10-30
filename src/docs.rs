@@ -320,7 +320,7 @@ enum QueryMode {
 /// Options for [`search`], mirroring the CLI flags. `json` and `list` combine
 /// freely: `--json --list` prints a JSON array of paths.
 struct SearchOptions {
-    /// Global `--json`: structured output instead of human rendering.
+    /// Global `--json`: structured output instead of text rendering.
     json: bool,
     /// `--list`: print only the matching page paths.
     list: bool,

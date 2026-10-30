@@ -1,11 +1,11 @@
 ---
 name: Satisfaction Review
-description: This skill should be used when the user asks to "review snouty's output", "run a satisfaction review", "judge the gallery", "how good is snouty's CLI output", or wants an LLM-driven subjective review of snouty's human-facing command output. Reviews each gallery story for user satisfaction (correctness, follow-up readiness, terminal rendering) and writes a per-story + overall report.
+description: This skill should be used when the user asks to "review snouty's output", "run a satisfaction review", "judge the gallery", "how good is snouty's CLI output", or wants an LLM-driven subjective review of snouty's text output. Reviews each gallery story for user satisfaction (correctness, follow-up readiness, terminal rendering) and writes a per-story + overall report.
 ---
 
 # Satisfaction Review
 
-This is an **LLM-run test of snouty's subjective, human-facing output**. The
+This is an **LLM-run test of snouty's subjective, text output**. The
 automated checks in `scripts/gen-gallery.py` already prove each command is
 *correct* (non-empty table, right status, clean error). Your job is different
 and complementary: judge whether a real human, with the goal stated in each
@@ -55,11 +55,11 @@ uv run scripts/gen-gallery.py --out "$OUT"
 Record the gallery directory and the number of stories (`ls "$OUT"/*.md | wc -l`)
 for the report header.
 
-Check the capture mode stated in each story. Current human-output captures use
+Check the capture mode stated in each story. Current text-output captures use
 a 120-column terminal and preserve the screen and scrollback in plain text.
 Interactive login stories show prompt frames at the same terminal size.
 Replay the linked `.cast` file to inspect colors or redraws. JSON captures use
-pipes. Older galleries can also use pipes for human output: do not infer
+pipes. Older galleries can also use pipes for text output: do not infer
 terminal wrapping, truncation, or alignment from those captures. Use a new
 terminal capture before reporting a layout defect.
 
@@ -354,7 +354,7 @@ Guidance for a high-signal report:
 - The gallery is pinned to whatever live run IDs were fresh at generation time,
   so exact IDs/values differ between runs. Judge the *shape and quality* of the
   output, not the specific data.
-- Human output runs on a real terminal at 120 columns and 40 rows. The capture
+- Text output runs on a real terminal at 120 columns and 40 rows. The capture
   includes wrapping at that width. Judge whether the layout helps the reader;
   width alone is not a defect. JSON captures use pipes and do not show terminal
   layout. When a report renders the captures as HTML, keep the captured line

@@ -5,7 +5,7 @@ sketch that gets the job done — no error handling, no defensive checks. Fill i
 the details your script actually needs.
 
 Recipes read snouty's `--json` output, which is the stable surface for
-automation. Human output is for humans and may be reformatted at any time.
+automation. Text output is for people and may be reformatted at any time.
 
 ## Recipes
 

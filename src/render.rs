@@ -1,4 +1,4 @@
-//! Terminal-safe rendering helpers shared across human-facing output: aligned
+//! Terminal-safe rendering helpers shared across text output: aligned
 //! key/value blocks and control-character sanitization.
 use std::fmt::Write as _;
 
@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 /// threading positionally, where a swapped pair compiles silently.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OutputOptions {
-    /// Emit machine-readable JSON instead of human-facing text.
+    /// Emit machine-readable JSON instead of text output.
     pub json: bool,
     /// Log HTTP request/response detail to stderr.
     pub verbose: bool,

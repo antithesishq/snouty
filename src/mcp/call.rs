@@ -302,7 +302,7 @@ mod tests {
         }
     }
 
-    /// A call prints detailed human output, or JSON with `json`.
+    /// A call prints detailed text output, or JSON with `json`.
     #[test]
     fn json_picks_the_output() {
         let cases = [

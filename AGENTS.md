@@ -73,7 +73,9 @@ command, named for its path below `snouty` with `_` between the parts:
 - Do not write that `--json` prints JSON: the flag documents itself. Name
   JSON in help only to describe the shape of the output, or a meaning that
   callers must know.
-- An MCP tool call returns the command's human output, with `--detail` when
+- A command has two output modes: text output, the default, and JSON, with
+  `--json`. Do not call the default "human output".
+- An MCP tool call returns the command's text output, with `--detail` when
   the command has that flag, and its `json` param runs it with `--json`
   instead. So the MCP reader needs the layout of the detailed output, and
   the JSON shape as what `json` returns: `With {{ t("--json")? }}, each run
@@ -381,7 +383,7 @@ All code must be simple and idiomatic.
 - A module that drives an external tool exposes a typed API: one method per
   subcommand, typed arguments in, typed values out. It never returns or accepts
   `Command`, argument vectors, or raw process handles. Read the tool's
-  machine-readable output; never parse its human-facing text. Detect a version
+  machine-readable output; never parse its text output. Detect a version
   by parsing a version number.
 
 ### The server boundary

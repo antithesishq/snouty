@@ -31,7 +31,7 @@ stdout '^base_url +https://acme\.antithesis\.com$'
 stdout '^https_proxy +http://proxy\.example\.com:3128$'
 stdout '^api_cache_max_file_size +1000$'
 
-# 3. The human output is a table of the settings files that snouty read:
+# 3. The text output is a table of the settings files that snouty read:
 #    the project file, which overrides the global one, then the global file.
 stdout '^TYPE +PATH$'
 stdout '^project +/.*/chosen\.toml$'

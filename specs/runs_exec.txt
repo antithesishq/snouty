@@ -320,7 +320,7 @@ stdout '\{"status":"exited","exit_code":0,"end_moment":\{"input_hash":"-82060065
 ! snouty --json runs exec run-2 -3625518438076122494 398.4898056755774 'sleep 60'
 stdout '\{"status":"timed_out","last_moment":\{"input_hash":"-8206006569229276678","vtime":398.491\}\}'
 
-# --json exit semantics match human mode: a non-zero exit code still fails
+# --json exit semantics match text mode: a non-zero exit code still fails
 # snouty, and the exited event is still emitted for scripts to parse.
 ! snouty --json runs exec run-2 -3625518438076122494 398.4898056755774 'exit 5'
 stdout '"exit_code":5'

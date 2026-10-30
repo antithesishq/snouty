@@ -9,7 +9,7 @@ story is also gated by a programmatic check; a degenerate example (an empty
 table, an unintended error, a filter that didn't narrow) fails the run rather
 than being silently emitted.
 
-Human output, including help and isolated configuration stories, runs in a
+Text output, including help and isolated configuration stories, runs in a
 120-column, 40-row terminal. Markdown contains the terminal's text and full
 scrollback; adjacent asciinema recordings preserve colors and redraws. JSON
 commands use pipes so their structured output stays separate from stderr. A

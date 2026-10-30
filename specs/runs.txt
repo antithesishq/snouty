@@ -517,7 +517,7 @@ stderr '^warning: --raw is deprecated, use --json alone instead$'
 # An incomplete run carries the failure moment (input_hash + vtime) in its detail
 #    response. Filter the list with --status incomplete so we know the run we
 #    inspect actually entered the incomplete terminal state, then assert that
-#    the human-readable view shows "Failure VTime" / "Failure Hash" and the
+#    the text output shows "Failure VTime" / "Failure Hash" and the
 #    --json view exposes failure_moment with input_hash and vtime. Below the
 #    skip, because a tenant may hold no incomplete run at all.
 mock-runs-server
@@ -639,7 +639,7 @@ mock-runs-server
 stderr '.*run not found: no-such-run.*'
 ! stderr '.*API error.*'
 
-# A successful but empty build-logs stream prints an explicit note in human
+# A successful but empty build-logs stream prints an explicit note in text
 # mode, so the user isn't left wondering whether anything happened.
 mock-runs-server
 snouty runs build-logs run-empty
@@ -725,7 +725,7 @@ stdout '^ +@ control\.go:get:87$'
 # --detail shows every composer value whole.
 stdout '(?s)\n +new_command_path=core/parallel_driver_fetch\n +container_id=d700ef3d05a263\n +new_command=d700ef3d05a263_parallel_driver_fetch\n'
 
-# `--detail` formats human output, so it cannot combine with `--json` (same
+# `--detail` formats text output, so it cannot combine with `--json` (same
 # rule as `runs list`/`runs properties`; `runs events` and `runs search`
 # share the check).
 mock-runs-server
@@ -759,7 +759,7 @@ stderr '^warning: --raw is deprecated, use --json alone instead$'
 ! stdout 'deprecated'
 
 # `--raw` means the server's events as JSON lines, so it requires --json;
-# there is no raw human rendering.
+# there is no raw text rendering.
 mock-runs-server
 ! snouty runs logs --raw run-1 -123 1.0
 stderr '--raw requires --json'
@@ -865,7 +865,7 @@ snouty --json runs events $R_run_id --match parallel_driver_fetch --limit 1
 [!staging] stdout '"vtime":400\.5'
 [!staging] ! stdout '"vtime":401\.75'
 
-# Human mode prints the same note.
+# Text mode prints the same note.
 mock-runs-server
 [!staging] snouty runs events $R_run_id --match parallel_driver_fetch --limit 1
 [!staging] stdout '400\.5'
@@ -938,7 +938,7 @@ snouty --json runs search $R_run_id 'contains({output_text: "parallel_driver_fet
 [!staging] stdout '"vtime":400\.5'
 [!staging] ! stdout '"vtime":401\.75'
 
-# In human mode a note on stderr names the limit.
+# In text mode a note on stderr names the limit.
 mock-runs-server
 [!staging] snouty runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --limit 1
 [!staging] stdout '400\.5'
@@ -1084,7 +1084,7 @@ snouty runs events run-stream-error --match starting --limit 1
 stdout '\[app\] \{"level":"info","msg":"starting"\}'
 ! stderr 'mid-stream'
 
-# `runs logs`, human mode: the error must not render as a blank-columned log
+# `runs logs`, text mode: the error must not render as a blank-columned log
 # line. (Column formatting itself is pinned by the run-1 block above; here it
 # is enough that the data line printed.)
 mock-runs-server

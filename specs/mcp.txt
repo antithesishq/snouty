@@ -31,7 +31,7 @@ stdin empty.txt
 snouty mcp
 ! stdout .
 
-# 6. A tool call returns what its command prints in the detailed human
+# 6. A tool call returns what its command prints in the detailed text
 #    form: `runs list` prints a block per run. With `json`, the call returns
 #    what the command prints with --json: one JSON object per run.
 # The spec engine drops the final newline of a file, so the server never

@@ -1,4 +1,4 @@
-//! The one renderer for human-facing event streams (`runs logs`,
+//! The one renderer for event streams in text output (`runs logs`,
 //! `runs events`, `runs search`, `runs build-logs`, and any future stream of
 //! events).
 //!

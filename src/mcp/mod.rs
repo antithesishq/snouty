@@ -1,6 +1,6 @@
 //! `snouty mcp`: an MCP server on the stdio transport. Each tool runs one
 //! snouty command as a child process and returns what it prints: the
-//! detailed human output, or JSON when the call sets `json`. The tool
+//! detailed text output, or JSON when the call sets `json`. The tool
 //! schemas come from the commands' clap definitions.
 
 use std::ffi::OsString;
@@ -44,7 +44,7 @@ const INSTRUCTIONS: &str = "Antithesis tests software in a deterministic simulat
 faults. A run explores a tree of timelines, and an event, a property example or a failure names \
 one moment of it: a run_id, an input_hash and a vtime. These tools operate on the runs \
 of an Antithesis tenant, run commands at a moment of a run, and search the Antithesis \
-documentation. Each tool returns the detailed human output of its command. Set its json param \
+documentation. Each tool returns the detailed text output of its command. Set its json param \
 to true only when you need a field that this output does not show: the JSON is usually several \
 times larger. tool_help returns the full help of a tool.";
 

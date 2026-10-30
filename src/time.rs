@@ -177,8 +177,8 @@ impl fmt::Display for ParseDurationError {
                  (e.g. `90s`, `2m`, `1h`)"
             }
             BareUnit::Refused => {
-                "must use h/m/s units, in that order (e.g. `90s`, `5m`, `1h30m`); \
-                 a bare number is refused"
+                "must use whole-number h/m/s units, in that order (e.g. `90s`, `5m`, \
+                 `1h30m`); a bare number is refused"
             }
         })
     }

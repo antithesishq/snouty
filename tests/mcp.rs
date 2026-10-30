@@ -165,6 +165,20 @@ async fn tools_return_detailed_output_or_json() {
     assert_eq!(result.is_error, Some(true));
     assert_eq!(text(&result), "invalid params: unknown param: web");
 
+    // A duration param needs a unit: a bare number is refused.
+    let result = call(
+        &client,
+        "runs_wait",
+        json!({ "run_id": "run-1", "timeout": "30" }),
+    )
+    .await;
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        text(&result).starts_with("invalid params: timeout: must use whole-number h/m/s units"),
+        "{}",
+        text(&result)
+    );
+
     // runs_property reads one property of a completed run, and runs_usage the
     // usage hours of runs.
     let result = call(

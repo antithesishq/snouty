@@ -21,7 +21,7 @@ A second block holds the script's error output, why the command failed when it f
 The command fails when the script fails, times out, or its stream ends early.
 
 {% if cli %}
-{{ t("--timeout")? }} takes h/m/s units, such as 90s, 5m or 1h30m. A bare number counts seconds.
+{{ t("--timeout")? }} takes h/m/s units, in that order, such as 90s, 5m or 1h30m. A bare number counts seconds.
 {% else %}
 {{ t("--timeout")? }} takes h/m/s units, in that order, such as 90s, 5m or 1h30m. A bare number is refused.
 {% endif %}

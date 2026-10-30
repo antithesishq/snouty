@@ -37,8 +37,8 @@ follow-up command from.
 
 The command fails when the script fails, times out, or its stream ends early.
 
---timeout takes h/m/s units, such as 90s, 5m or 1h30m. A bare number counts
-seconds.
+--timeout takes h/m/s units, in that order, such as 90s, 5m or 1h30m. A bare
+number counts seconds.
 
 To run more at the moment that a script left, pass its end moment as the next
 call's input_hash and vtime:

@@ -18,8 +18,8 @@ command: snouty cannot tell whether such a run will still make progress.
 The wait is unbounded unless --timeout is given. The command is safe to
 interrupt and re-run: it holds no state beyond the run id.
 
---timeout and --poll-interval take h/m/s units, such as 90s, 5m or 1h30m. A bare
-number counts minutes.
+--timeout and --poll-interval take h/m/s units, in that order, such as 90s, 5m
+or 1h30m. A bare number counts minutes.
 
 Examples:
   snouty runs wait <run_id>

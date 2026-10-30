@@ -1,10 +1,10 @@
 Check environment configuration
 
-Verifies that your environment is properly configured for Antithesis testing. Runs health checks — container runtime, docker compose, your credentials ({% if cli %}stored by `snouty login`, or {% endif %}set in the ANTITHESIS_* environment variables), and API connectivity. To see the settings that snouty resolved, run `{{ t("settings show")? }}`.
+Verifies that your environment is properly configured for Antithesis testing. Runs health checks — container runtime, docker compose, the tenant and repository settings, and your credentials ({% if cli %}stored by `snouty login`, or {% endif %}set in the ANTITHESIS_* environment variables). A missing tenant fails the check; a missing repository is a warning, because only {% if cli %}`snouty launch`{% else %}a launch{% endif %} needs it. doctor also warns when more than one credential source is available. To see the settings that snouty resolved, run `{{ t("snouty settings show")? }}`.
 
 snouty prefers an API key (full API access); a username and password is deprecated auth, accepted only by {% if cli %}`snouty launch` and {% endif %}`{{ t("snouty debug")? }}`.
 
-When credentials are configured, doctor also contacts the Antithesis API to report the API and tenant versions and confirm connectivity. Pass {{ t("--offline")? }} to skip that network call.
+doctor also contacts the Antithesis API. When credentials are configured, it reports the API and tenant versions and confirms connectivity, and it warns when the tenant release is too old for an API that some commands use. It also warns when CLI OAuth login is not enabled for the tenant. Pass {{ t("--offline")? }} to skip these network calls.
 
 The command fails if any required check fails.{% if cli %} Pass --json for a machine-readable report (e.g. to gate CI).{% else %} With {{ t("--json")? }}, the report is one JSON object.{% endif %}
 

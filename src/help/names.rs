@@ -51,8 +51,8 @@ impl Name {
     /// The text that names `self` to the reader of `page`. On the command
     /// line, a name stays as `text` writes it, but a positional arg is its
     /// value name. Over MCP, an arg is its param, a command its tool, and an
-    /// example a call of its tool. With an `indent`, the indent of an
-    /// example's first line, the call puts one param on each line.
+    /// example a call of its tool. With `indent`, the call puts one param on
+    /// each line and starts each line after the first with `indent`.
     pub(super) fn write(
         &self,
         page: HelpPage,

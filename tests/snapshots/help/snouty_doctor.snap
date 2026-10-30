@@ -4,16 +4,20 @@ source: tests/help_snapshots.rs
 Check environment configuration
 
 Verifies that your environment is properly configured for Antithesis testing.
-Runs health checks — container runtime, docker compose, your credentials (stored
-by `snouty login`, or set in the ANTITHESIS_* environment variables), and API
-connectivity. To see the settings that snouty resolved, run `settings show`.
+Runs health checks — container runtime, docker compose, the tenant and
+repository settings, and your credentials (stored by `snouty login`, or set in
+the ANTITHESIS_* environment variables). A missing tenant fails the check; a
+missing repository is a warning, because only `snouty launch` needs it. doctor
+also warns when more than one credential source is available. To see the
+settings that snouty resolved, run `snouty settings show`.
 
 snouty prefers an API key (full API access); a username and password is
 deprecated auth, accepted only by `snouty launch` and `snouty debug`.
 
 When credentials are configured, doctor also contacts the Antithesis API to
-report the API and tenant versions and confirm connectivity. Pass --offline to
-skip that network call.
+report the API and tenant versions and confirm connectivity. It warns when the
+tenant release is too old for an API that some commands use, and when CLI OAuth
+login is not enabled for the tenant. Pass --offline to skip these network calls.
 
 The command fails if any required check fails. Pass --json for a
 machine-readable report (e.g. to gate CI).

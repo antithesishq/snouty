@@ -108,10 +108,9 @@ Each matching event has its moment (an input_hash and a vtime), its source, and
 its payload. To stream the logs of an event's timeline to its current end, pass
 its run ID and input_hash to `snouty runs logs <run_id> <hash>`.
 
-Matching events print as classified blocks: a `moment HASH` divider opens each
-timeline segment, and each event below it renders on one line in the Antithesis
-event shapes — SDK assertions, faults, container lifecycle, test composer — each
-in their own concise form.
+Output: a `moment HASH` divider opens each timeline segment, and each event
+under it renders on one line as `VTIME [source] payload`, each event shape in
+its own concise form.
 
 Rows reshaped by map/narrow/fold print as raw JSON.
 

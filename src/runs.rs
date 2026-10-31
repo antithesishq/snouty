@@ -2236,8 +2236,8 @@ async fn execute_when_accepted(
 }
 
 /// Wait until the run is ready or complete, and until the server accepts the
-/// command, then execute. The wait has no time limit. A complete run executes at once, and the server answers with
-/// an error.
+/// command, then execute. The wait has no time limit. A complete run executes
+/// at once, and the server answers with an error.
 async fn exec_when_ready(
     api: &AntithesisApi,
     run_id: &str,
@@ -5330,6 +5330,36 @@ mod tests {
         /// clap's, `wait_for_run` takes any interval.
         const FAST_POLL: Duration = Duration::from_millis(10);
 
+        const JSON: EventOutput = EventOutput::Json {
+            raw: false,
+            annotate_faults: false,
+        };
+
+        /// A request that runs `true` in run-w.
+        fn true_exec() -> ExecRequest {
+            ExecRequest {
+                moment: Moment {
+                    input_hash: "1".to_owned(),
+                    vtime: "2.5".parse().unwrap(),
+                },
+                script: "true".to_owned(),
+                container: None,
+                timeout: None,
+                events: false,
+                rewarm: None,
+            }
+        }
+
+        /// Answer every command in run-w with an exit status of 0.
+        async fn mount_exec_exited(server: &MockServer) {
+            let result = crate::testutils::mock_exec_exited(Some(0));
+            Mock::given(method("POST"))
+                .and(path("/api/v0/runs/run-w/command"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(format!("{result}\n")))
+                .mount(server)
+                .await;
+        }
+
         /// The stream of `run_id` answers `404 Resource not found` `misses`
         /// times, then opens with one `RUN_FINALIZED` line.
         async fn mount_stream(server: &MockServer, run_id: &str, misses: u64) {
@@ -5484,30 +5514,9 @@ mod tests {
                 ready_run_body(),
             ];
             mount_get_run_bodies(&server, bodies).await;
-            let result = crate::testutils::mock_exec_exited(Some(0));
-            Mock::given(method("POST"))
-                .and(path("/api/v0/runs/run-w/command"))
-                .respond_with(ResponseTemplate::new(200).set_body_string(format!("{result}\n")))
-                .mount(&server)
-                .await;
+            mount_exec_exited(&server).await;
             let api = test_api(&server.uri());
-            let exec = ExecRequest {
-                moment: Moment {
-                    input_hash: "1".to_owned(),
-                    vtime: "2.5".parse().unwrap(),
-                },
-                script: "true".to_owned(),
-                container: None,
-                timeout: None,
-                events: false,
-                rewarm: None,
-            };
-
-            let json = EventOutput::Json {
-                raw: false,
-                annotate_faults: false,
-            };
-            exec_when_ready(&api, "run-w", exec, FAST_POLL, json)
+            exec_when_ready(&api, "run-w", true_exec(), FAST_POLL, JSON)
                 .await
                 .unwrap();
 
@@ -5529,30 +5538,9 @@ mod tests {
                 .with_priority(1)
                 .mount(&server)
                 .await;
-            let result = crate::testutils::mock_exec_exited(Some(0));
-            Mock::given(method("POST"))
-                .and(path("/api/v0/runs/run-w/command"))
-                .respond_with(ResponseTemplate::new(200).set_body_string(format!("{result}\n")))
-                .mount(&server)
-                .await;
+            mount_exec_exited(&server).await;
             let api = test_api(&server.uri());
-            let exec = ExecRequest {
-                moment: Moment {
-                    input_hash: "1".to_owned(),
-                    vtime: "2.5".parse().unwrap(),
-                },
-                script: "true".to_owned(),
-                container: None,
-                timeout: None,
-                events: false,
-                rewarm: None,
-            };
-
-            let json = EventOutput::Json {
-                raw: false,
-                annotate_faults: false,
-            };
-            exec_when_ready(&api, "run-w", exec, FAST_POLL, json)
+            exec_when_ready(&api, "run-w", true_exec(), FAST_POLL, JSON)
                 .await
                 .unwrap();
 
@@ -5572,23 +5560,7 @@ mod tests {
                 .mount(&server)
                 .await;
             let api = test_api(&server.uri());
-            let exec = ExecRequest {
-                moment: Moment {
-                    input_hash: "1".to_owned(),
-                    vtime: "2.5".parse().unwrap(),
-                },
-                script: "true".to_owned(),
-                container: None,
-                timeout: None,
-                events: false,
-                rewarm: None,
-            };
-
-            let json = EventOutput::Json {
-                raw: false,
-                annotate_faults: false,
-            };
-            let exec = exec_when_ready(&api, "run-w", exec, FAST_POLL, json);
+            let exec = exec_when_ready(&api, "run-w", true_exec(), FAST_POLL, JSON);
             let err = tokio::time::timeout(Duration::from_secs(5), exec)
                 .await
                 .expect("an ended run must not keep the command waiting")

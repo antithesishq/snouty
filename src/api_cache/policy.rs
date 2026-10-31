@@ -115,6 +115,32 @@ mod tests {
         assert_eq!(lifetime("99999999999999999999"), None);
     }
 
+    // The lifetime is max-age less Age while that is positive, and a
+    // malformed Age leaves max-age as it is.
+    #[hegel::test]
+    fn the_lifetime_is_max_age_less_age(tc: hegel::TestCase) {
+        use hegel::generators;
+
+        let max_age = tc.draw(generators::integers::<u32>());
+        let age = tc.draw(generators::integers::<u64>());
+        let cache_control = format!("max-age={max_age}");
+        let lifetime = |age: &str| {
+            freshness_lifetime(&headers(&[
+                ("cache-control", cache_control.as_str()),
+                ("age", age),
+            ]))
+        };
+        let expected = u64::from(max_age)
+            .checked_sub(age)
+            .filter(|left| *left > 0)
+            .map(Duration::from_secs);
+        assert_eq!(lifetime(&age.to_string()), expected);
+
+        let malformed = tc.draw(generators::text().alphabet("ab -.+"));
+        let expected = (max_age > 0).then(|| Duration::from_secs(max_age.into()));
+        assert_eq!(lifetime(&malformed), expected);
+    }
+
     #[test]
     fn absent_or_non_positive_headers_deny_caching() {
         assert_eq!(freshness_lifetime(&http::HeaderMap::new()), None);

@@ -9,7 +9,11 @@
 # Not tested here (kept in Rust — require HTTP header inspection or
 # stateful mock server):
 #   - Unless --offline is passed, the command checks for an updated
-#     documentation database before running the requested subcommand.
+#     documentation database before running the requested subcommand, at
+#     most once every 5 minutes. A check that finds the database unchanged
+#     restarts the 5 minutes; a failed check does not, so the next command
+#     retries. The ETag file's mtime records the last check, and a time in
+#     the future counts as stale.
 #   - Documentation update requests send a User-Agent header in the form
 #     snouty/<version> (<os>; <arch>; rust<rust-version>). When an AI agent
 #     harness runs snouty, the header ends with `; agent=<value>` inside the

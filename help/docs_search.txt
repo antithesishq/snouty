@@ -1,6 +1,6 @@
 Search the documentation
 
-Uses full-text search across the Antithesis documentation database. The database is updated before each search unless you pass {{ t("--offline")? }}.
+Uses full-text search across the Antithesis documentation database. The database is refreshed automatically unless you pass {{ t("--offline")? }}.
 
 Prints ranked matches (title and page path); pass a path to `{{ t("snouty docs show")? }}`. Use {{ t("--list")? }} to print only the paths.
 

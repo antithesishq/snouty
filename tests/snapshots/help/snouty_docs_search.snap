@@ -4,7 +4,7 @@ source: tests/help_snapshots.rs
 Search the documentation
 
 Uses full-text search across the Antithesis documentation database. The database
-is updated before each search unless you pass --offline.
+is refreshed automatically unless you pass --offline.
 
 Prints ranked matches (title and page path); pass a path to `snouty docs show`.
 Use --list to print only the paths.

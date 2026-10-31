@@ -866,29 +866,19 @@ fn ensure_services_have_images(contents: &ComposeContents) -> Result<()> {
 /// tars symlinks verbatim too, so the staged tree produces the same image
 /// content as building from `config_dir` directly.
 ///
-/// The staged `docker-compose.yaml` is always a regular file, so the pinned
-/// write never reaches a symlink's target. It keeps the source file's mode,
-/// plus owner write, unless the source is a symlink.
+/// The staged `docker-compose.yaml` is always a new regular file with mode
+/// 0644, whatever the source is: a symlink, a read-only file, or a file with
+/// any other mode.
 pub fn stage_pinned_config(config_dir: &Path, pinned_yaml: &str) -> Result<tempfile::TempDir> {
     use std::os::unix::fs::PermissionsExt;
 
     let staged = tempfile::tempdir().wrap_err("failed to create config staging directory")?;
     crate::util::copy_dir_recursive(config_dir, staged.path())?;
     let compose = staged.path().join("docker-compose.yaml");
-    if let Ok(meta) = std::fs::symlink_metadata(&compose) {
-        if meta.is_symlink() {
-            std::fs::remove_file(&compose)
-                .wrap_err("failed to remove staged docker-compose.yaml")?;
-        } else {
-            // `std::fs::copy` keeps a read-only source (such as a Nix store
-            // file) read-only.
-            let mut perms = meta.permissions();
-            perms.set_mode(perms.mode() | 0o200);
-            std::fs::set_permissions(&compose, perms)
-                .wrap_err("failed to make staged docker-compose.yaml writable")?;
-        }
-    }
+    std::fs::remove_file(&compose).wrap_err("failed to remove staged docker-compose.yaml")?;
     std::fs::write(&compose, pinned_yaml).wrap_err("failed to write pinned docker-compose.yaml")?;
+    std::fs::set_permissions(&compose, std::fs::Permissions::from_mode(0o644))
+        .wrap_err("failed to set the mode of pinned docker-compose.yaml")?;
     Ok(staged)
 }
 #[derive(Debug, Clone, PartialEq, Eq)]

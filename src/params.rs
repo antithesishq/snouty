@@ -17,13 +17,15 @@ pub const MAX_SETUP_TIMEOUT_MINUTES: u64 = 30;
 /// for fuzzing time.
 const MIN_FUZZING_MINUTES: u64 = 15;
 
-/// The cores that a run on `tier` uses, which sets how fast it spends its
-/// compute hours.
-fn tier_cores(tier: PerformanceTier) -> u64 {
-    match tier {
-        PerformanceTier::Standard => 48,
-        PerformanceTier::Fast => 96,
-        PerformanceTier::Turbo => 192,
+impl PerformanceTier {
+    /// The cores that a run on this tier uses, which sets how fast it spends
+    /// its compute hours.
+    pub fn cores(self) -> u64 {
+        match self {
+            Self::Standard => 48,
+            Self::Fast => 96,
+            Self::Turbo => 192,
+        }
     }
 }
 
@@ -143,7 +145,7 @@ impl Params {
             && number(ANT_SETUP_TIMEOUT) > Some(MAX_SETUP_TIMEOUT_MINUTES)
         {
             return Err(user_error(format!(
-                "{ANT_SETUP_TIMEOUT} {setup} is above the maximum of \
+                "--setup-timeout {setup} is above the maximum of \
                  {MAX_SETUP_TIMEOUT_MINUTES} minutes"
             )));
         }
@@ -155,7 +157,7 @@ impl Params {
             Some(Ok(tier)) => tier,
             Some(Err(_)) => return Ok(()),
         };
-        let cores = tier_cores(tier);
+        let cores = tier.cores();
         let min_hours = (MIN_FUZZING_MINUTES * cores).div_ceil(60);
         if hours >= min_hours {
             return Ok(());

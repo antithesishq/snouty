@@ -83,9 +83,9 @@ stderr 'needs at least 12 compute hours'
 ! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 12 --param antithesis.performance_tier=fast
 stderr 'too low for the fast tier'
 ! snouty launch --launcher basic_test --config-image config:latest --param antithesis.setup_timeout=31
-stderr 'Error: antithesis.setup_timeout 31 is above the maximum of 30 minutes'
+stderr 'Error: --setup-timeout 31 is above the maximum of 30 minutes'
 ! snouty launch --launcher basic_test --config-image config:latest --param antithesis.setup_timeout=99999999999999999999999
-stderr 'antithesis.setup_timeout 99999999999999999999999 is above the maximum of 30 minutes'
+stderr '--setup-timeout 99999999999999999999999 is above the maximum of 30 minutes'
 ! snouty launch --launcher basic_test --config-image config:latest --param antithesis.setup_timeout=0
 ! stderr 'setup_timeout'
 stderr 'No Antithesis credentials found'

@@ -366,15 +366,13 @@ async fn prompt_for_auth(
         && let Some(transport) = err.downcast_ref::<reqwest::Error>()
         && (transport.is_connect() || (transport.is_timeout() && !transport.is_body()))
     {
-        eprintln!(
-            "{}",
-            wrap_if_tty(&format!(
-                "warning: could not reach {base_url}{CLI_CONFIG_PATH} to check for single \
-                 sign-on: {}. Check that the tenant name `{tenant}` is correct. Login \
-                 continues with an API key.",
-                root_cause(transport)
-            ))
-        );
+        let warning = wrap_if_tty(&format!(
+            "warning: could not reach {base_url}{CLI_CONFIG_PATH} to check for single \
+             sign-on: {}. Check that the tenant name `{tenant}` is correct. Login \
+             continues with an API key.",
+            root_cause(transport)
+        ));
+        eprintln!("{}", console::style(warning).yellow().for_stderr());
     }
 
     let oauth_offered = oauth_config

@@ -240,10 +240,13 @@ stdout '(?s)^see property results:\n  snouty runs properties $R_run_id\n\nview t
 
 # `snouty --json runs show --web` prints the run page URL, the tenant's
 # `/run?run_id=<run_id>`, without launching a browser, so a script can capture
-# it. (Plain `--web` would shell out to a browser, so it's not exercised here.)
+# it. The page is on the tenant host even when ANTITHESIS_BASE_URL names
+# another host, such as the mock server or an API proxy. (Plain `--web` would
+# shell out to a browser, so it's not exercised here.)
 mock-runs-server
 snouty --json runs show $R_run_id --web
 stdout '^\{"url":"http.*/run\?run_id=${R_run_id@R}"\}$'
+[!staging] stdout '^\{"url":"https://testtenant\.antithesis\.com/run\?'
 
 # `snouty --json runs show` outputs JSON.
 mock-runs-server

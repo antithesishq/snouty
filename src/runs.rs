@@ -21,7 +21,7 @@ use chrono::{DateTime, Utc};
 use crate::api::{
     AntithesisApi, Event, EventProperty, ExecRequest, MIN_STREAM_RELEASE, Moment, NonEventProperty,
     Property, PropertyStatus, RewarmSource, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
-    SearchLimit, SearchMode,
+    SearchLimit, SearchMode, normalize_base_url,
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs, WaitUntil};
 use crate::error::{api_error_message, api_error_status, user_error};
@@ -32,7 +32,7 @@ use crate::render::{
     CodeSpans, OutputOptions, indent_lines, render_kv, sanitize, sanitize_multiline, shell_command,
     wrap_text,
 };
-use crate::settings::Settings;
+use crate::settings::{Settings, require};
 use crate::stdio;
 use crate::table::{Align, Column, Fit, Table};
 use crate::time::{HumanDuration, format_local_with_offset};
@@ -403,7 +403,8 @@ async fn cmd_runs_show(
     };
 
     if web {
-        return open_run_page(api.base_url(), &run.run_id, json);
+        let web_url = normalize_base_url(require(settings.web_url().as_deref(), "tenant")?);
+        return open_run_page(&web_url, &run.run_id, json);
     }
 
     if json {

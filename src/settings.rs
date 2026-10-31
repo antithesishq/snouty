@@ -353,6 +353,16 @@ impl Settings {
         self.base_url.as_deref()
     }
 
+    /// The host of the tenant's web UI. An explicit `base_url` can be an API
+    /// proxy that a browser cannot use, so the tenant host comes first, and
+    /// `base_url` serves only when no tenant is set.
+    pub fn web_url(&self) -> Option<String> {
+        self.tenant
+            .as_deref()
+            .map(tenant_url)
+            .or_else(|| self.base_url.clone())
+    }
+
     pub fn https_proxy(&self) -> Option<&str> {
         self.https_proxy.as_deref()
     }
@@ -485,11 +495,9 @@ impl SettingsBuilder {
     /// [`Settings::resolve`] and the test constructors both finish here, so the
     /// derivation is exercised the same way everywhere.
     pub fn build(self) -> Settings {
-        let base_url = self.base_url.or_else(|| {
-            self.tenant
-                .as_ref()
-                .map(|tenant| format!("https://{tenant}.antithesis.com"))
-        });
+        let base_url = self
+            .base_url
+            .or_else(|| self.tenant.as_deref().map(tenant_url));
 
         Settings {
             profile: self.profile,
@@ -674,6 +682,10 @@ pub(crate) fn is_valid_tenant_host(tenant: &str) -> bool {
 /// The `Option` accessors stay the single source of truth; the few call sites
 /// that cannot proceed without a value funnel the `None` through here, so the
 /// message lives in one place instead of being duplicated per accessor.
+fn tenant_url(tenant: &str) -> String {
+    format!("https://{tenant}.antithesis.com")
+}
+
 pub fn require<'a>(value: Option<&'a str>, setting: &str) -> Result<&'a str> {
     value
         .ok_or_else(|| eyre!("Could not resolve Antithesis {setting}. Run snouty doctor to debug."))
@@ -1277,6 +1289,24 @@ mod tests {
             .base_url("https://example.test")
             .build();
         assert_eq!(settings.base_url(), Some("https://example.test"));
+    }
+
+    #[test]
+    fn web_url_prefers_the_tenant_host_to_an_explicit_base_url() {
+        let settings = Settings::builder()
+            .tenant("acme")
+            .base_url("https://proxy.example.test")
+            .build();
+        assert_eq!(
+            settings.web_url().as_deref(),
+            Some("https://acme.antithesis.com")
+        );
+    }
+
+    #[test]
+    fn web_url_without_tenant_is_the_base_url() {
+        let settings = Settings::builder().base_url("https://example.test").build();
+        assert_eq!(settings.web_url().as_deref(), Some("https://example.test"));
     }
 
     #[test]

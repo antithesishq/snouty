@@ -25,9 +25,10 @@ short ones (`-l`). This communicates the intent more clearly.
 
 ## Testing
 
-New commands and options must be accompanied by [expect style tests](tests/cli_general.rs).
-Having to change an existing test is a good sign of backwards incompatible breakage,
-which will be subject to extra review.
+Cover each behavior change with the test that fits its job, as the "Tests"
+section of [AGENTS.md](AGENTS.md) describes. A removed or renamed flag, a
+changed JSON key, or a changed exit status is a breaking change, which will be
+subject to extra review.
 
 ## Dependencies & distribution
 

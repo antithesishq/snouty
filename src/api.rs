@@ -1102,7 +1102,6 @@ impl AntithesisApi {
         const MAX_PAGE_LIMIT: NonZeroU64 = NonZeroU64::new(100).unwrap();
         let run_id = run_id.to_string();
         let statuses = statuses.to_vec();
-        // Looked up once, on the first page.
         let terminal = std::rc::Rc::new(tokio::sync::OnceCell::new());
         paginate_exhaust(move |after| {
             let run_id = run_id.clone();
@@ -4181,8 +4180,7 @@ mod tests {
         })
     }
 
-    /// Mount the run detail that `stream_run_properties` reads, `expect`ed
-    /// that many times.
+    /// `stream_run_properties` reads the run detail to decide whether to cache.
     async fn mount_run_1_detail(mock_server: &MockServer, status: &str, expect: u64) {
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1"))
@@ -4231,8 +4229,7 @@ mod tests {
         }
     }
 
-    // A run that is still in progress records more properties, so each
-    // listing asks the server again, despite cacheable headers.
+    // Cacheable headers do not make an in-progress run's pages cacheable.
     #[tokio::test]
     async fn live_run_properties_are_not_cached() {
         let mock_server = MockServer::start().await;

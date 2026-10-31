@@ -2183,8 +2183,45 @@ async fn wait_until_ready(api: &AntithesisApi, run_id: &str, poll: Duration) -> 
     Ok(run)
 }
 
-/// Wait until the run is ready or complete, then execute. The wait has no
-/// time limit. A complete run executes at once, and the server answers with
+/// The marker in a 400's message that the run does not accept commands yet.
+/// On orbitinghail (release 67.0), a run that reports the `Ready` sub-status
+/// can still answer `Run <id> is not ready yet. Try again shortly.` for a few
+/// minutes.
+const RUN_NOT_READY: &str = "is not ready yet";
+
+/// Execute the command, and retry every `poll` while the server answers that
+/// the run is not ready yet.
+async fn execute_when_accepted(
+    api: &AntithesisApi,
+    run_id: &str,
+    exec: ExecRequest,
+    poll: Duration,
+) -> Result<JsonStream> {
+    let mut waiting: Option<ReadyDisplay> = None;
+    loop {
+        let err = match api.execute_command(run_id, exec.clone()).await {
+            Ok(stream) => {
+                if let Some(waiting) = waiting {
+                    waiting.clear();
+                }
+                return Ok(stream);
+            }
+            Err(err) => err,
+        };
+        let not_ready = api_error_status(&err) == Some(400)
+            && api_error_message(&err).is_some_and(|m| m.contains(RUN_NOT_READY));
+        if !not_ready {
+            return Err(err);
+        }
+        waiting
+            .get_or_insert_with(|| ReadyDisplay::new("waiting for the run to accept commands"))
+            .show();
+        tokio::time::sleep(poll).await;
+    }
+}
+
+/// Wait until the run is ready or complete, and until the server accepts the
+/// command, then execute. The wait has no time limit. A complete run executes at once, and the server answers with
 /// an error.
 async fn exec_when_ready(
     api: &AntithesisApi,
@@ -2217,8 +2254,7 @@ async fn exec_when_ready(
         ],
     );
     let run = wait_until_ready(api, run_id, poll).await?;
-    let stream = api
-        .execute_command(run_id, exec)
+    let stream = execute_when_accepted(api, run_id, exec, poll)
         .await
         .map_err(|err| explain_exec_error(&run.status, &debug_command, rewarm_flag, err))?;
 
@@ -5472,6 +5508,89 @@ mod tests {
             let requests = server.received_requests().await.unwrap();
             let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
             assert_eq!(methods, ["GET", "GET", "GET", "POST"]);
+        }
+
+        #[tokio::test]
+        async fn exec_retries_while_a_ready_run_is_not_ready_yet() {
+            let server = MockServer::start().await;
+            mount_get_run_bodies(&server, vec![ready_run_body()]).await;
+            // Verbatim from orbitinghail (release 67.0).
+            let not_ready = r#"{"message":"Run run-w is not ready yet. Try again shortly."}"#;
+            Mock::given(method("POST"))
+                .and(path("/api/v0/runs/run-w/command"))
+                .respond_with(ResponseTemplate::new(400).set_body_string(not_ready))
+                .up_to_n_times(2)
+                .with_priority(1)
+                .mount(&server)
+                .await;
+            let result = crate::testutils::mock_exec_exited(Some(0));
+            Mock::given(method("POST"))
+                .and(path("/api/v0/runs/run-w/command"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(format!("{result}\n")))
+                .mount(&server)
+                .await;
+            let api = test_api(&server.uri());
+            let exec = ExecRequest {
+                moment: Moment {
+                    input_hash: "1".to_owned(),
+                    vtime: "2.5".parse().unwrap(),
+                },
+                script: "true".to_owned(),
+                container: None,
+                timeout: None,
+                events: false,
+                rewarm: None,
+            };
+
+            let json = EventOutput::Json {
+                raw: false,
+                annotate_faults: false,
+            };
+            exec_when_ready(&api, "run-w", exec, FAST_POLL, json)
+                .await
+                .unwrap();
+
+            let requests = server.received_requests().await.unwrap();
+            let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
+            assert_eq!(methods, ["GET", "POST", "POST", "POST"]);
+        }
+
+        #[tokio::test]
+        async fn exec_does_not_retry_another_400() {
+            let server = MockServer::start().await;
+            mount_get_run_bodies(&server, vec![ready_run_body()]).await;
+            let ended = r#"{"message":"Run run-w has ended. Commands require an active run."}"#;
+            Mock::given(method("POST"))
+                .and(path("/api/v0/runs/run-w/command"))
+                .respond_with(ResponseTemplate::new(400).set_body_string(ended))
+                .mount(&server)
+                .await;
+            let api = test_api(&server.uri());
+            let exec = ExecRequest {
+                moment: Moment {
+                    input_hash: "1".to_owned(),
+                    vtime: "2.5".parse().unwrap(),
+                },
+                script: "true".to_owned(),
+                container: None,
+                timeout: None,
+                events: false,
+                rewarm: None,
+            };
+
+            let json = EventOutput::Json {
+                raw: false,
+                annotate_faults: false,
+            };
+            let exec = exec_when_ready(&api, "run-w", exec, FAST_POLL, json);
+            let err = tokio::time::timeout(Duration::from_secs(5), exec)
+                .await
+                .expect("an ended run must not keep the command waiting")
+                .unwrap_err();
+
+            assert_eq!(api_error_status(&err), Some(400));
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 2);
         }
 
         #[tokio::test]

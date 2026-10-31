@@ -104,6 +104,9 @@ pub const MIN_CANCEL_RELEASE: (u64, u64) = (63, 0);
 /// container.
 const EXEC_HOST_CONTAINER: &str = "_ANTITHESIS_HOST";
 
+/// The launcher of a debugging session.
+pub(crate) const DEBUGGING_LAUNCHER: &str = "debugging";
+
 impl ApiVersion {
     /// Parses `release_version` eagerly, so no consumer ever parses it.
     pub fn new(latest_api_version: String, release_version: String) -> Self {
@@ -1102,26 +1105,13 @@ impl AntithesisApi {
         const MAX_PAGE_LIMIT: NonZeroU64 = NonZeroU64::new(100).unwrap();
         let run_id = run_id.to_string();
         let statuses = statuses.to_vec();
-        let terminal = std::rc::Rc::new(tokio::sync::OnceCell::new());
         paginate_exhaust(move |after| {
             let run_id = run_id.clone();
             let statuses = statuses.clone();
-            let terminal = terminal.clone();
             async move {
                 ensure_resource_supported(&run_id, MIN_PROPERTIES_VERSION, "run properties")?;
-                let terminal = *terminal
-                    .get_or_try_init(|| async {
-                        Ok::<_, Report>(self.get_run(&run_id).await?.untag().status.is_terminal())
-                    })
-                    .await?;
                 let page = self
-                    .fetch_run_properties_page(
-                        &run_id,
-                        after.as_deref(),
-                        &statuses,
-                        MAX_PAGE_LIMIT,
-                        terminal,
-                    )
+                    .fetch_run_properties_page(&run_id, after.as_deref(), &statuses, MAX_PAGE_LIMIT)
                     .await?
                     .untag();
                 let normalized = page
@@ -1302,7 +1292,9 @@ impl AntithesisApi {
     }
 
     /// A run records properties until it reaches a terminal status, so only
-    /// a page of a `terminal` run is immutable.
+    /// a page of a terminal run is immutable. The run detail is read only
+    /// when the headers already allow the page, and a failed read leaves the
+    /// page uncached.
     #[cached(value)]
     async fn fetch_run_properties_page(
         &self,
@@ -1310,7 +1302,6 @@ impl AntithesisApi {
         after: Option<&str>,
         statuses: &[PropertyStatus],
         limit: NonZeroU64,
-        terminal: bool,
     ) -> Result<Tagged<generated::types::PropertyListResponse, CachePolicy>> {
         let mut request = self
             .client
@@ -1325,10 +1316,14 @@ impl AntithesisApi {
         }
         match request.send().await {
             Ok(response) => {
-                let policy = self
-                    .cache
-                    .headers_policy(response.headers())
-                    .and(CachePolicy::cache_if(terminal));
+                let mut policy = self.cache.headers_policy(response.headers());
+                if matches!(policy, CachePolicy::Cacheable) {
+                    let terminal = self
+                        .get_run(run_id)
+                        .await
+                        .is_ok_and(|run| run.untag().status.is_terminal());
+                    policy = CachePolicy::cache_if(terminal);
+                }
                 Ok(response.into_inner().with_tag(policy))
             }
             Err(err) => Err(format_api_client_error(err).await),
@@ -4229,6 +4224,24 @@ mod tests {
         }
     }
 
+    // A page the headers forbid caching needs no run detail.
+    #[tokio::test]
+    async fn uncacheable_property_page_skips_the_run_detail() {
+        let mock_server = MockServer::start().await;
+        mount_run_1_detail(&mock_server, "completed", 0).await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1/properties"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(property_page("first", None)))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
+
+        assert_eq!(property_names(&api).await, ["first"]);
+    }
+
     // Cacheable headers do not make an in-progress run's pages cacheable.
     #[tokio::test]
     async fn live_run_properties_are_not_cached() {
@@ -4848,7 +4861,6 @@ mod tests {
     #[tokio::test]
     async fn stream_run_properties_follows_next_cursor() {
         let mock_server = MockServer::start().await;
-        mount_run_1_detail(&mock_server, "completed", 1).await;
 
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/properties"))
@@ -4916,7 +4928,6 @@ mod tests {
     #[tokio::test]
     async fn stream_run_properties_forwards_status_filter() {
         let mock_server = MockServer::start().await;
-        mount_run_1_detail(&mock_server, "completed", 1).await;
 
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/properties"))

@@ -1136,7 +1136,7 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
             "run_id": run_id,
             "status": status,
             "created_at": chrono::Utc::now().to_rfc3339(),
-            "launcher": "debugging",
+            "launcher": crate::api::DEBUGGING_LAUNCHER,
         });
         if let Some(sub_status) = sub_status {
             body["sub_status"] = serde_json::json!(sub_status);

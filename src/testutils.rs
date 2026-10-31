@@ -1183,7 +1183,7 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
     // description. run-2 exercises the absent-field path.
     if run_id == "run-1" {
         fields.push(
-            r#""parameters":{"antithesis.duration":"30","antithesis.source":"demo-harness","attrs.team":"payments","attrs.branch":"main","vcs.repo_type":"github","vcs.repo_owner":"acme","vcs.repo_name":"widgets","vcs.repo_branch":"main","vcs.version_id":"abc123","vcs.version_link":"https://github.com/acme/widgets/commit/abc123"}"#
+            r#""parameters":{"antithesis.max_compute_hours":"24","antithesis.setup_timeout":"10","antithesis.source":"demo-harness","attrs.team":"payments","attrs.branch":"main","vcs.repo_type":"github","vcs.repo_owner":"acme","vcs.repo_name":"widgets","vcs.repo_branch":"main","vcs.version_id":"abc123","vcs.version_link":"https://github.com/acme/widgets/commit/abc123"}"#
                 .to_string(),
         );
     }

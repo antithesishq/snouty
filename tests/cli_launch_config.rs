@@ -22,8 +22,8 @@ fn launch_config_rejects_nonexistent_dir() {
             "basic_test",
             "-c",
             "/nonexistent/path",
-            "--duration",
-            "30",
+            "--max-compute-hours",
+            "24",
         ])
         .assert()
         .failure()
@@ -42,8 +42,8 @@ fn launch_config_rejects_dir_without_compose() {
             "basic_test",
             "-c",
             dir.path().to_str().unwrap(),
-            "--duration",
-            "30",
+            "--max-compute-hours",
+            "24",
         ])
         .assert()
         .failure()
@@ -63,8 +63,8 @@ fn launch_config_rejects_yml_extension() {
             "basic_test",
             "-c",
             dir.path().to_str().unwrap(),
-            "--duration",
-            "30",
+            "--max-compute-hours",
+            "24",
         ])
         .assert()
         .failure()
@@ -86,8 +86,8 @@ fn launch_config_conflicts_with_config_image_param() {
             dir.path().to_str().unwrap(),
             "--config-image",
             "some-image:latest",
-            "--duration",
-            "30",
+            "--max-compute-hours",
+            "24",
         ])
         .assert()
         .failure()
@@ -106,8 +106,8 @@ fn launch_config_requires_registry_env() {
             "basic_test",
             "-c",
             dir.path().to_str().unwrap(),
-            "--duration",
-            "30",
+            "--max-compute-hours",
+            "24",
         ])
         .assert()
         .failure()
@@ -126,8 +126,8 @@ fn launch_config_long_flag_accepted() {
             "basic_test",
             "--config",
             "/nonexistent/path",
-            "--duration",
-            "30",
+            "--max-compute-hours",
+            "24",
         ])
         .assert()
         .failure()
@@ -169,8 +169,8 @@ fn launch_config_k8s_dir_is_accepted() {
             "basic_k8s_test",
             "-c",
             dir.path().to_str().unwrap(),
-            "--duration",
-            "30",
+            "--max-compute-hours",
+            "24",
         ])
         .assert()
         .failure()
@@ -192,8 +192,8 @@ fn launch_config_rejects_empty_manifests_dir() {
             "basic_k8s_test",
             "-c",
             dir.path().to_str().unwrap(),
-            "--duration",
-            "30",
+            "--max-compute-hours",
+            "24",
         ])
         .assert()
         .failure()
@@ -214,8 +214,8 @@ fn launch_config_rejects_ambiguous_dir() {
             "basic_test",
             "-c",
             dir.path().to_str().unwrap(),
-            "--duration",
-            "30",
+            "--max-compute-hours",
+            "24",
         ])
         .assert()
         .failure()

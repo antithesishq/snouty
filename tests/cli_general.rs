@@ -86,8 +86,8 @@ fn launch_with_typed_flags() {
             "nightly test run",
             "--config-image",
             "config:latest",
-            "--duration",
-            "30",
+            "--max-compute-hours",
+            "24",
             "--recipients",
             "team@example.com",
             "--source",
@@ -104,7 +104,9 @@ fn launch_with_typed_flags() {
         .stderr(predicate::str::contains(
             r#""antithesis.config_image": "config:latest""#,
         ))
-        .stderr(predicate::str::contains(r#""antithesis.duration": "30""#))
+        .stderr(predicate::str::contains(
+            r#""antithesis.max_compute_hours": "24""#,
+        ))
         .stderr(predicate::str::contains(
             r#""antithesis.report.recipients": "[REDACTED]""#,
         ))
@@ -125,8 +127,8 @@ fn launch_with_ephemeral_flag() {
             "basic_test",
             "--config-image",
             "config:latest",
-            "--duration",
-            "30",
+            "--max-compute-hours",
+            "24",
             "--ephemeral",
         ])
         .assert()
@@ -147,8 +149,8 @@ fn launch_without_source_sets_ephemeral() {
             "basic_test",
             "--config-image",
             "config:latest",
-            "--duration",
-            "30",
+            "--max-compute-hours",
+            "24",
         ])
         .assert()
         .success()
@@ -171,8 +173,8 @@ fn launch_with_source_omits_ephemeral() {
             "basic_test",
             "--config-image",
             "config:latest",
-            "--duration",
-            "30",
+            "--max-compute-hours",
+            "24",
             "--source",
             "ci",
         ])
@@ -193,8 +195,8 @@ fn launch_with_param_flag() {
             "basic_test",
             "--config-image",
             "config:latest",
-            "--duration",
-            "30",
+            "--max-compute-hours",
+            "24",
             "--param",
             "my.custom.prop=value",
             "--param",
@@ -217,10 +219,10 @@ fn launch_param_cannot_override_typed_flag() {
             "launch",
             "--launcher",
             "basic_test",
-            "--duration",
-            "30",
+            "--max-compute-hours",
+            "24",
             "--param",
-            "antithesis.duration=60",
+            "antithesis.max_compute_hours=60",
         ])
         .assert()
         .failure()
@@ -291,8 +293,8 @@ fn launch_no_stdin_flag() {
             "--launcher",
             "basic_test",
             "--stdin",
-            "--duration",
-            "30",
+            "--max-compute-hours",
+            "24",
         ])
         .assert()
         .failure()
@@ -339,8 +341,8 @@ fn launch_reports_api_errors() {
             "launch",
             "--launcher",
             "no_such_launcher",
-            "--duration",
-            "30",
+            "--max-compute-hours",
+            "24",
         ])
         .assert()
         .failure()
@@ -358,8 +360,8 @@ fn launch_fails_without_credentials() {
             "basic_test",
             "--config-image",
             "config:latest",
-            "--duration",
-            "30",
+            "--max-compute-hours",
+            "24",
         ])
         .assert()
         .failure()
@@ -377,8 +379,8 @@ fn run_prints_deprecation_warning() {
             "basic_test",
             "--config-image",
             "config:latest",
-            "--duration",
-            "30",
+            "--max-compute-hours",
+            "24",
         ])
         .assert()
         .success()
@@ -593,8 +595,8 @@ fn launch_exits_cleanly_when_stdout_closes_early() {
             "launch",
             "--launcher",
             "advanced_test",
-            "--duration",
-            "30",
+            "--max-compute-hours",
+            "24",
             "--source",
             "ci",
             "--no-vcs",

@@ -41,7 +41,17 @@
         "antithesis.duration": {
           "type": "string",
           "pattern": "^[0-9]+(\\.[0-9]+)?$",
-          "description": "Desired test duration, in minutes"
+          "description": "Deprecated: use antithesis.max_compute_hours. Desired test duration, in minutes"
+        },
+        "antithesis.max_compute_hours": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "Compute hours to spend on the run, a whole number. One compute hour is one core running for one hour. The server sets the range and the default"
+        },
+        "antithesis.setup_timeout": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "Minutes that the system has to reach setup complete. If it does not, the run fails immediately"
         },
         "antithesis.images": {
           "type": "string",

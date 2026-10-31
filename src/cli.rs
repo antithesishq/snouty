@@ -19,6 +19,7 @@ use crate::docker_credential::HELPER_NAME;
 use crate::error::user_error;
 use crate::features::{self, Feature};
 use crate::help::{self, Attach};
+use crate::params::MAX_SETUP_TIMEOUT_MINUTES;
 use crate::runs::usage::{Rollup, TimeBound};
 use crate::stdio;
 use crate::time::{BareUnit, HumanDuration, duration_format};
@@ -142,6 +143,23 @@ fn parse_launch_duration(value: &str) -> Result<HumanDuration, String> {
             .then_some(())
             .ok_or("must be at least 1 minute")
     })
+}
+
+/// clap value parser for `launch --setup-timeout`. Returns whole minutes. A
+/// bare number is an error, because a reader could expect seconds.
+fn parse_setup_timeout(value: &str) -> Result<u64, String> {
+    let seconds = HumanDuration::parse(value, BareUnit::Refused)
+        .map_err(|e| e.to_string())?
+        .seconds();
+    if !(60..=MAX_SETUP_TIMEOUT_MINUTES * 60).contains(&seconds) {
+        return Err(format!(
+            "must be from 1 to {MAX_SETUP_TIMEOUT_MINUTES} minutes"
+        ));
+    }
+    if seconds % 60 != 0 {
+        return Err("must be a whole number of minutes".to_string());
+    }
+    Ok(seconds / 60)
 }
 
 /// clap value parser for `debug --duration`: a [`HumanDuration`] in the range
@@ -573,9 +591,31 @@ pub struct LaunchArgs {
     #[arg(
         long,
         value_parser = parse_launch_duration,
-        help = concat!("Test duration, at least 1 minute. ", duration_format!()),
+        conflicts_with = "max_compute_hours",
+        help = concat!(
+            "Deprecated: use --max-compute-hours. Test duration, at least 1 minute. ",
+            duration_format!(),
+        ),
     )]
     pub duration: Option<HumanDuration>,
+
+    /// Compute hours of fuzzing for the run, at most 1000. One compute hour is
+    /// one core running for one hour. The minimum depends on
+    /// --performance-tier: 12 on standard, 24 on fast, 48 on turbo. The server
+    /// default is 48.
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..=1000))]
+    pub max_compute_hours: Option<u16>,
+
+    #[arg(
+        long,
+        value_parser = parse_setup_timeout,
+        help = concat!(
+            "Fail the run immediately if setup takes longer than this, in whole minutes \
+             from 1m to 30m. The default is 5m. ",
+            duration_format!(),
+        ),
+    )]
+    pub setup_timeout: Option<u64>,
 
     /// Mark the test run as ephemeral, so it does not appear in future reports
     /// as a historic result. A launch without --source is ephemeral already.

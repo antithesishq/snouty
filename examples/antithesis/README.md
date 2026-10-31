@@ -65,11 +65,12 @@ docker compose -f examples/antithesis/docker-compose.yaml build
 snouty validate examples/antithesis
 ```
 
-Launch a 15-minute run. snouty pushes the config image and the two images
-that the compose file names:
+Launch a run with 12 compute hours, the minimum on the standard tier: 15
+minutes of fuzzing. snouty pushes the config image and the two images that the
+compose file names:
 
 ```sh
-snouty launch --launcher basic_test --config examples/antithesis --duration 15m \
+snouty launch --launcher basic_test --config examples/antithesis --max-compute-hours 12 \
   --test-name snouty-example \
   --description "snouty example project: a tiny bank with one deliberate bug"
 ```

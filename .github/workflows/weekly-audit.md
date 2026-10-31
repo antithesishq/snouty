@@ -34,15 +34,15 @@ tools:
 
 # The agent reaches the tenant only through this tool, and the API key stays on
 # the runner. The tool offers all of snouty but enforces a per-run budget for
-# what costs money or touches other people's runs: 2 launches of at most 15
-# minutes, 1 debugging session, and 30 `runs exec` calls. It records each run it
+# what costs money or touches other people's runs: 2 launches of 12 compute
+# hours, 1 debugging session, and 30 `runs exec` calls. It records each run it
 # creates in a ledger on the runner, and the post-step cancels them all.
 mcp-scripts:
   snouty:
     description: >-
       Run snouty, built from the commit under test, against the Antithesis
       tenant. Pass the arguments after `snouty`, e.g. `runs list --limit 5
-      --json`. Each audit allows 2 `launch` runs of at most 15 minutes, 1
+      --json`. Each audit allows 2 `launch` runs of 12 compute hours, 1
       `debug` session and 30 `runs exec` calls; the result's `budget` shows
       what is left. Runs the audit creates are cancelled when it ends.
       `runs exec` refuses other people's debugging sessions, and `runs cancel`
@@ -57,14 +57,15 @@ mcp-scripts:
     # the MCP gateway's config in gh-aw v0.91.7, so stay under it.
     timeout: 55
     py: |
-      import fcntl, json, os, re, shlex, subprocess, tempfile
+      import fcntl, json, os, shlex, subprocess, tempfile
 
       # Per-audit budget. A launch or debug counts from the moment it is sent, and
       # only a clean failure refunds it, because a call that dies midway may still
       # have created a run.
       LIMITS = {"launch": 2, "debug": 1, "exec": 30}
       ATTEMPTS = 6
-      MAX_MINUTES = 15
+      # The smallest run that the launcher accepts on the standard tier.
+      MAX_COMPUTE_HOURS = 12
       # Each call must finish well inside the tool's 55s timeout. If the handler
       # killed this process instead, the ledger would miss the call.
       LOOKUP_TIMEOUT = 10
@@ -113,12 +114,6 @@ mcp-scripts:
           return {**result, "exit_code": p.returncode, "stdout": p.stdout[:LIMIT],
                   "stderr": p.stderr[:LIMIT],
                   "truncated": max(len(p.stdout), len(p.stderr)) > LIMIT}
-
-      def minutes(value):
-          m = re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m?)?", value)
-          if not value or not m:
-              return None
-          return int(m.group(1) or 0) * 60 + int(m.group(2) or 0)
 
       def option(args, name):
           for i, a in enumerate(args):
@@ -176,13 +171,16 @@ mcp-scripts:
               return {"error": "launch from --config-image or a webhook, not a local --config directory"}
           params = [v for k, v in zip(args, args[1:]) if k == "--param"]
           params += [a.split("=", 1)[1] for a in args if a.startswith("--param=")]
-          if any(p.startswith("antithesis.duration") for p in params):
-              return {"error": "set the duration with --duration, at most 15 minutes"}
-          _, duration = option(args, "--duration")
-          if duration is None:
-              args += ["--duration", str(MAX_MINUTES)]
-          elif (minutes(duration) or MAX_MINUTES + 1) > MAX_MINUTES:
-              return {"error": f"--duration must be at most {MAX_MINUTES} minutes, such as 15 or 15m"}
+          size = f"size the run with --max-compute-hours, at most {MAX_COMPUTE_HOURS}"
+          if any(p.startswith(("antithesis.duration", "antithesis.max_compute_hours")) for p in params):
+              return {"error": size}
+          if option(args, "--duration")[0] is not None:
+              return {"error": f"--duration is deprecated: {size}"}
+          _, hours = option(args, "--max-compute-hours")
+          if hours is None:
+              args += ["--max-compute-hours", str(MAX_COMPUTE_HOURS)]
+          elif not hours.isdigit() or int(hours) > MAX_COMPUTE_HOURS:
+              return {"error": f"--max-compute-hours must be at most {MAX_COMPUTE_HOURS}"}
           if "--ephemeral" not in args:
               args.append("--ephemeral")
           if "--json" not in args:
@@ -460,7 +458,7 @@ For each entry, decide whether the condition it states still holds.
   does what it asks.
 
 The `snouty` tool can also launch runs, open a debugging session and run
-`runs exec`, within a budget for each audit: 2 launches of at most 15 minutes, 1
+`runs exec`, within a budget for each audit: 2 launches of 12 compute hours, 1
 debugging session and 30 exec calls. Spend it on comments that need it, such as
 cancel semantics, launch responses, `runs exec` behavior and session readiness,
 and plan the checks that share one session before you open it. A completed run

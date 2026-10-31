@@ -5424,6 +5424,25 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn a_stream_error_outlives_a_failed_run_read() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/api/v0/runs/run-w/stream"))
+                .respond_with(ResponseTemplate::new(403).set_body_json(json!({"message": "no"})))
+                .mount(&server)
+                .await;
+            mount_get_run_statuses(&server, &["unknown"]).await;
+            let api = test_api(&server.uri());
+
+            let err = open_run_stream(&api, "run-w", &[], FAST_POLL)
+                .await
+                .err()
+                .unwrap();
+
+            assert_eq!(api_error_status(&err), Some(403));
+        }
+
+        #[tokio::test]
         async fn a_run_with_status_unknown_is_an_error() {
             let server = MockServer::start().await;
             mount_get_run_statuses(&server, &["unknown"]).await;

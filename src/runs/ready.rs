@@ -11,6 +11,7 @@ use color_eyre::eyre::{Report, Result};
 
 use crate::api::{AntithesisApi, RunDetail};
 use crate::cli::WaitUntil;
+use crate::error::api_error_status;
 
 use super::{ReadyDisplay, look_at_run, wait_for_run};
 
@@ -95,7 +96,13 @@ where
         };
         let run = match ready_run {
             Some(run) => run,
-            None => look_at_run(api, run_id).await?,
+            None => match look_at_run(api, run_id).await {
+                Ok(run) => run,
+                // A 404 can mean a bad run ID, which the read names. Any
+                // other error is the endpoint's own.
+                Err(read_err) if api_error_status(&err) == Some(404) => return Err(read_err),
+                Err(_) => return Err(err),
+            },
         };
         if run.status.is_terminal() || (endpoint.retry_policy)(&run, &err) == RetryPolicy::Fail {
             return Err(explain(&run, err));

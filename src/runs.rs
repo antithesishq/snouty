@@ -2162,7 +2162,8 @@ async fn cmd_runs_exec(
     exec_when_ready(&api, run_id, exec, READY_POLL, mode).await
 }
 
-/// How often a command that needs a ready run polls a run that is not ready.
+/// How often a command that needs a ready run polls a run that is not ready,
+/// or retries a command the run does not accept yet.
 /// A debugging session becomes ready minutes after it starts, so a one-minute
 /// poll (the `runs wait` floor) could delay the command by most of a minute.
 const READY_POLL: Duration = Duration::from_secs(10);
@@ -5336,7 +5337,7 @@ mod tests {
             annotate_faults: false,
         };
 
-        /// A request that runs `true` in run-w.
+        /// A request that runs `true`.
         fn true_exec() -> ExecRequest {
             ExecRequest {
                 moment: Moment {
@@ -5547,7 +5548,6 @@ mod tests {
 
             let requests = server.received_requests().await.unwrap();
             let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
-            // Each retry reads the run again.
             assert_eq!(methods, ["GET", "POST", "GET", "POST", "GET", "POST"]);
         }
 
@@ -5568,7 +5568,6 @@ mod tests {
                 .expect("an ended run must not keep the command waiting")
                 .unwrap_err();
 
-            // The note names the status the run ended with.
             let report = format!("{err:?}");
             assert!(report.contains("This run is completed"), "got: {report}");
             let requests = server.received_requests().await.unwrap();
@@ -5580,7 +5579,7 @@ mod tests {
         async fn exec_does_not_retry_another_400() {
             for message in [
                 "Run run-w has ended. Commands require an active run.",
-                // Not ready, but about something other than the run.
+                // Not ready, but names a session, not the run.
                 "Session s-1 is not ready yet. Try again shortly.",
             ] {
                 let server = MockServer::start().await;

@@ -2195,8 +2195,8 @@ fn run_not_ready_yet(run_id: &str, err: &color_eyre::eyre::Report) -> bool {
 }
 
 /// Execute the command in `run`, which [`wait_until_ready`] returned. While
-/// the run stays ready and the server answers that it is not ready yet, read
-/// the run again and retry every `poll`. `explain` annotates a failure with
+/// the server answers that the run is not ready yet, wait every `poll` until
+/// the run is ready again and retry, and stop once the run has ended. `explain` annotates a failure with
 /// the run's latest status.
 async fn execute_when_accepted(
     api: &AntithesisApi,
@@ -2223,7 +2223,7 @@ async fn execute_when_accepted(
             .get_or_insert_with(|| ReadyDisplay::new("waiting for the run to accept commands"))
             .show();
         tokio::time::sleep(poll).await;
-        run = api.get_run(&run.run_id).await?.untag();
+        run = wait_until_ready(api, &run.run_id, poll).await?;
     }
 }
 
@@ -5549,6 +5549,30 @@ mod tests {
             let requests = server.received_requests().await.unwrap();
             let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
             assert_eq!(methods, ["GET", "POST", "GET", "POST", "GET", "POST"]);
+        }
+
+        #[tokio::test]
+        async fn exec_waits_again_when_the_run_leaves_ready() {
+            let server = MockServer::start().await;
+            let bodies = vec![ready_run_body(), run_body("in_progress"), ready_run_body()];
+            mount_get_run_bodies(&server, bodies).await;
+            let not_ready = r#"{"message":"Run run-w is not ready yet. Try again shortly."}"#;
+            Mock::given(method("POST"))
+                .and(path("/api/v0/runs/run-w/command"))
+                .respond_with(ResponseTemplate::new(400).set_body_string(not_ready))
+                .up_to_n_times(1)
+                .with_priority(1)
+                .mount(&server)
+                .await;
+            mount_exec_exited(&server).await;
+            let api = test_api(&server.uri());
+            exec_when_ready(&api, "run-w", true_exec(), FAST_POLL, JSON)
+                .await
+                .unwrap();
+
+            let requests = server.received_requests().await.unwrap();
+            let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
+            assert_eq!(methods, ["GET", "POST", "GET", "GET", "POST"]);
         }
 
         #[tokio::test]

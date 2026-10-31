@@ -89,8 +89,7 @@ fn print_notes(notes: &[Note]) {
     }
 }
 
-/// The kind of credential the `credentials` check reports, as its `--json`
-/// `kind` field.
+/// The `kind` field of the `credentials` check.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum CredentialKind {
@@ -249,9 +248,9 @@ fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
         .filter(|s| !s.value().has_blank_api_key())
         .collect();
 
+    let kind = CredentialKind::from(credentials.value());
     // A username and password in use while they hide a credential the API
     // accepts: the one thing to do is free that credential (issue #292).
-    let kind = CredentialKind::from(credentials.value());
     if let AuthenticationInfo::Password { .. } = credentials.value()
         && let Some(hidden) = shadowed
             .iter()
@@ -288,9 +287,7 @@ fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
     checks
 }
 
-/// The check that reports the credential in use, or the shortfall: no
-/// credential at all, an empty API key, or only the deprecated username and
-/// password. Its name is the same in every state.
+/// The name of the credentials check. It is the same in every state.
 const CREDENTIALS_CHECK_NAME: &str = "credentials";
 
 fn missing_credentials_check(message: impl Into<String>) -> Check {
@@ -1258,8 +1255,6 @@ mod tests {
         assert!(check.notes.iter().any(|n| n.text.contains("429")));
     }
 
-    /// The credentials check keeps one name in every state, so a script can
-    /// find it by name; the credential found is in `kind`.
     #[test]
     fn the_credentials_check_has_one_name_and_reports_the_kind() {
         let env = |value: AuthenticationInfo| AttributedValue::EnvironmentVariable {

@@ -43,7 +43,6 @@ stderr '^      NOTE: run `snouty login` to store an API key, then `unset ANTITHE
 ! stderr 'snouty login. to sign in'
 # One source only, so doctor says nothing about a conflict.
 ! stderr '.*more than one credential source.*'
-# The check keeps its name, and `kind` names the credential.
 ! snouty doctor --json
 stdout '"name": "credentials",\s*"status": "warn",\s*"kind": "password"'
 
@@ -213,13 +212,11 @@ env ANTITHESIS_PASSWORD=
 snouty doctor --offline
 stderr '^  ✓ API key provided$'
 ! stderr '(?s).*credentials.toml.*'
-# The check is named `credentials` when it passes too, so a script finds it by
-# one name.
 snouty doctor --offline --json
 stdout '"name": "credentials",\s*"status": "ok",\s*"kind": "api_key",\s*"message": "API key provided"'
 ! stdout '"name": "api_key"'
 
-# OAuth credentials from `snouty login`: the check is still `credentials`.
+# OAuth credentials from `snouty login`.
 isolate-home stored_oauth
 env ANTITHESIS_API_KEY=
 substitute ~/.config/snouty/credentials.toml

@@ -2028,8 +2028,6 @@ def doctor_json_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     )
     if not well_formed:
         return (False, "checks need string names/messages and ok/warn/error statuses")
-    # The credentials check has one name in every state; `kind` names the
-    # credential found, and is absent when there is none.
     expected = (
         {"tenant": ("ok", None), "credentials": ("ok", "api_key")}
         if sr.story.expect_ok

@@ -483,8 +483,8 @@ fn refused_base_url() -> String {
     format!("http://{}", listener.local_addr().expect("local address"))
 }
 
-/// The rendered text of `seen` as one line, so that a match does not depend
-/// on where the terminal wrapped it.
+/// The rendered text of `seen` on one line, so a match ignores terminal
+/// wrapping.
 fn flat(seen: &str) -> String {
     rendered_lines(seen).join(" ")
 }

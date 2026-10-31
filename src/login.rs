@@ -38,6 +38,9 @@ use crate::{
     util::root_cause,
 };
 
+/// The endpoint that tells whether the tenant offers CLI single sign-on.
+const CLI_CONFIG_PATH: &str = "/auth/cli/config";
+
 const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long to wait for the browser to redirect back to the loopback server
@@ -356,16 +359,17 @@ async fn prompt_for_auth(
         .unwrap_or_else(|| format!("https://{tenant}.antithesis.com"));
     let oauth_config = fetch_cli_config(client, &base_url).await;
 
-    // No answer at all most often means a misspelled tenant. An HTTP answer,
-    // such as 403 or `disabled`, means the tenant exists.
+    // A connect error or timeout most often means a misspelled tenant. Any
+    // HTTP answer, such as 403, means the tenant exists. A body error comes
+    // after an answer.
     if let Err(err) = &oauth_config
         && let Some(transport) = err.downcast_ref::<reqwest::Error>()
-        && (transport.is_connect() || transport.is_timeout())
+        && (transport.is_connect() || (transport.is_timeout() && !transport.is_body()))
     {
         eprintln!(
             "{}",
             wrap_if_tty(&format!(
-                "warning: could not reach {base_url}/auth/cli/config to check for single \
+                "warning: could not reach {base_url}{CLI_CONFIG_PATH} to check for single \
                  sign-on: {}. Check that the tenant name `{tenant}` is correct. Login \
                  continues with an API key.",
                 root_cause(transport)
@@ -582,7 +586,7 @@ pub(crate) async fn fetch_cli_config(
     client: &HttpClient,
     base_url: &str,
 ) -> Result<CliOAuthConfig> {
-    let response = send_oauth(client, client.get(format!("{base_url}/auth/cli/config")))
+    let response = send_oauth(client, client.get(format!("{base_url}{CLI_CONFIG_PATH}")))
         .await
         .wrap_err("failed to contact the tenant's OAuth configuration endpoint")?;
 

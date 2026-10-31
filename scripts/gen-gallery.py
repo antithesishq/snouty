@@ -1461,8 +1461,8 @@ def _first_post_setup_moment(sn: Snouty, run: str) -> dict:
     deadline = time.monotonic() + MOMENT_SEARCH_DEADLINE
     args = ["--json", "runs", "search", run, POST_SETUP_QUERY, "-n", "100"]
     while True:
-        # Search answers 404 for a minute or two after the run is ready
-        # (orbitinghail, release 66.0), and then finds nothing for a while.
+        # Search finds nothing for a while after the run is ready. snouty
+        # itself waits out the 404 that comes before that.
         res = sn.run(args)
         moments: list[dict] = []
         if res.ok:

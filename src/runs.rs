@@ -5819,34 +5819,75 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn search_404_names_the_release_only_for_an_old_run() {
-            let old = crate::testutils::MOCK_OLD_RELEASE_RUN;
-            let new = "0df9ac1f5155c14f88ea41f5ad503e07-64-0";
-            for (run_id, hint) in [(old, true), (new, false)] {
-                let server = MockServer::start().await;
-                // A run from before release 64.0 has no sub-status, so it is
-                // ready while in progress.
-                let mut body = if hint {
-                    run_body("in_progress")
-                } else {
-                    ready_run_body()
-                };
-                body["run_id"] = json!(run_id);
-                mount_get_run_bodies(&server, vec![body]).await;
-                mount_count(&server, run_id, false).await;
-                let api = test_api(&server.uri());
+        async fn search_404_names_the_release_for_an_old_run() {
+            let run_id = crate::testutils::MOCK_OLD_RELEASE_RUN;
+            let server = MockServer::start().await;
+            // A run from before release 64.0 has no sub-status, so it is
+            // ready while in progress.
+            let mut body = run_body("in_progress");
+            body["run_id"] = json!(run_id);
+            mount_get_run_bodies(&server, vec![body]).await;
+            mount_count(&server, run_id, false).await;
+            let api = test_api(&server.uri());
 
-                let err = count_when_ready(&api, run_id).await.unwrap_err();
+            let err = count_when_ready(&api, run_id).await.unwrap_err();
 
-                assert_eq!(api_error_status(&err), Some(404));
-                let report = format!("{err:?}");
-                assert_eq!(
-                    report.contains("tenant releases before 62.2 do not serve the events-search"),
-                    hint,
-                    "got: {report}"
-                );
-                assert_eq!(request_methods(&server).await, ["GET", "POST"]);
-            }
+            assert_eq!(api_error_status(&err), Some(404));
+            let report = format!("{err:?}");
+            assert!(
+                report.contains("tenant releases before 62.2 do not serve the events-search"),
+                "got: {report}"
+            );
+            assert_eq!(request_methods(&server).await, ["GET", "POST"]);
+        }
+
+        #[tokio::test]
+        async fn search_retries_a_404_while_a_new_run_is_ready() {
+            let run_id = "0df9ac1f5155c14f88ea41f5ad503e07-64-0";
+            let server = MockServer::start().await;
+            let mut body = ready_run_body();
+            body["run_id"] = json!(run_id);
+            mount_get_run_bodies(&server, vec![body]).await;
+            Mock::given(method("POST"))
+                .and(path(format!("/api/v0/runs/{run_id}/events/search/count")))
+                .respond_with(
+                    ResponseTemplate::new(404)
+                        .set_body_raw(crate::testutils::MOCK_BARE_404_BODY, "application/json"),
+                )
+                .up_to_n_times(1)
+                .with_priority(1)
+                .mount(&server)
+                .await;
+            mount_count(&server, run_id, true).await;
+            let api = test_api(&server.uri());
+
+            let count = count_when_ready(&api, run_id).await.unwrap();
+
+            assert_eq!(count, 3);
+            assert_eq!(
+                request_methods(&server).await,
+                ["GET", "POST", "GET", "POST"]
+            );
+        }
+
+        #[tokio::test]
+        async fn search_stops_retrying_once_the_run_ends() {
+            let server = MockServer::start().await;
+            mount_get_run_bodies(&server, vec![ready_run_body(), run_body("completed")]).await;
+            mount_count(&server, "run-w", false).await;
+            let api = test_api(&server.uri());
+
+            let count = count_when_ready(&api, "run-w");
+            let err = tokio::time::timeout(Duration::from_secs(5), count)
+                .await
+                .expect("an ended run must not keep the search waiting")
+                .unwrap_err();
+
+            assert_eq!(api_error_status(&err), Some(404));
+            assert_eq!(
+                request_methods(&server).await,
+                ["GET", "POST", "GET", "POST"]
+            );
         }
 
         #[tokio::test]

@@ -131,11 +131,20 @@ pub(super) async fn count_query(
     Ok(())
 }
 
-/// The events search, its count, and its query check.
+/// The events search, its count, and its query check. On orbitinghail
+/// (releases 66.0 and 67.0), a ready run answers 404 `Resource not found` for
+/// a minute or two. A release before [`MIN_SEARCH_RELEASE`] answers 404 for
+/// every run.
 const SEARCH: Endpoint = Endpoint {
     needs: Needs::Ready,
     waiting: "waiting for the run's events to be searchable",
-    retry_policy: |_, _| RetryPolicy::Fail,
+    retry_policy: |run, err| {
+        if api_error_status(err) == Some(404) && run.created_on_or_after(MIN_SEARCH_RELEASE) {
+            RetryPolicy::Retry
+        } else {
+            RetryPolicy::Fail
+        }
+    },
 };
 
 /// Send an events-search request with `send` once the run is ready or

@@ -207,7 +207,7 @@ pub(crate) fn cached_docs_db_path(cache_home: &TempDir) -> PathBuf {
     cache_home.path().join("snouty").join("docs.db")
 }
 
-/// The ETag file next to [`cached_docs_db_path`]. Its mtime records the last
+/// The `ETag` file next to [`cached_docs_db_path`]. Its mtime records the last
 /// update check.
 pub(crate) fn cached_docs_etag_path(cache_home: &TempDir) -> PathBuf {
     cache_home.path().join("snouty").join("docs.db.etag")

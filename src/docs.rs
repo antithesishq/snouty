@@ -48,7 +48,7 @@ fn db_path() -> Result<PathBuf> {
     Ok(cache_dir()?.join("docs.db"))
 }
 
-/// The ETag of the cached database. Its mtime is the time of the last
+/// The `ETag` of the cached database. Its mtime is the time of the last
 /// successful update check.
 fn etag_path() -> Result<PathBuf> {
     Ok(cache_dir()?.join("docs.db.etag"))
@@ -59,7 +59,7 @@ fn etag_path() -> Result<PathBuf> {
 const DOCS_CHECK_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 /// Whether the cached database was checked for an update within
-/// [`DOCS_CHECK_INTERVAL`]. A missing database, a missing or unreadable ETag
+/// [`DOCS_CHECK_INTERVAL`]. A missing database, a missing or unreadable `ETag`
 /// file, or an mtime in the future all mean it is due.
 fn checked_recently() -> bool {
     let Ok(db) = db_path() else { return false };

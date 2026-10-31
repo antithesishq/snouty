@@ -54,11 +54,15 @@ fn freshness_lifetime(headers: &http::HeaderMap) -> Option<Duration> {
     if cache_control.no_store() || cache_control.no_cache() || cache_control.must_revalidate() {
         return None;
     }
-    // A malformed `Age` is ignored (RFC 9111 §5.1).
+    // A malformed `Age` is ignored, and one too large to represent is
+    // treated as the largest age (RFC 9111 §1.2.2, §5.1).
     let age = headers
         .get(http::header::AGE)
-        .and_then(|value| value.to_str().ok()?.parse().ok())
-        .map_or(Duration::ZERO, Duration::from_secs);
+        .and_then(|value| value.to_str().ok())
+        .filter(|text| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
+        .map_or(Duration::ZERO, |text| {
+            Duration::from_secs(text.parse().unwrap_or(u64::MAX))
+        });
     cache_control
         .max_age()?
         .checked_sub(age)
@@ -109,6 +113,7 @@ mod tests {
         assert_eq!(lifetime("3600"), None);
         assert_eq!(lifetime("7200"), None);
         assert_eq!(lifetime("soon"), Some(Duration::from_secs(3600)));
+        assert_eq!(lifetime("99999999999999999999"), None);
     }
 
     #[test]

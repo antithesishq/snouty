@@ -249,6 +249,12 @@ impl ApiCache {
             _ => {
                 debug!("API cache entry for {key} has expired");
                 self.evict(key).await;
+                // Removing the key leaves its content behind; drop that too, so
+                // entries that expire and are rewritten do not pile up in the
+                // runtime dir.
+                if let Some(dir) = &self.dir {
+                    let _ = cacache::remove_hash(dir, &metadata.integrity).await;
+                }
                 None
             }
         }
@@ -640,6 +646,11 @@ mod tests {
             CachePolicy::Cacheable(lifetime),
         );
         cache.store_value(&key, &tagged).await;
+        let integrity = cacache::metadata(dir.path(), &key.key)
+            .await
+            .unwrap()
+            .unwrap()
+            .integrity;
 
         clock.advance(Duration::from_secs(59));
         let hit = cache
@@ -652,8 +663,10 @@ mod tests {
 
         clock.advance(Duration::from_secs(1));
         assert!(cache.lookup_value::<Value>(&key).await.is_none());
-        // The expired entry was evicted, so a clock moved back finds nothing.
+        // The expired entry was evicted, content and all, so a clock moved
+        // back finds nothing.
         assert!(test_cache(&dir).lookup_value::<Value>(&key).await.is_none());
+        assert!(cacache::read_hash(dir.path(), &integrity).await.is_err());
     }
 
     #[tokio::test]

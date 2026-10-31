@@ -135,37 +135,51 @@ pub struct ApiCache {
     /// Announce each hit on stderr (the `--verbose` request log has no
     /// request to show for a hit, so that line takes its place).
     verbose: bool,
-    clock: Clock,
+    clock: Arc<dyn Clock>,
 }
 
-/// The wall clock that stamps and checks expiry. Entries outlive the
-/// process, so expiry is wall-clock time. Tests swap in a clock they can
-/// advance.
-#[derive(Clone)]
-struct Clock(Arc<dyn Fn() -> SystemTime + Send + Sync>);
+/// Mints the expiry stored with each entry, and checks it. An expiry is an
+/// opaque `u64` that only the clock interprets.
+trait Clock: std::fmt::Debug + Send + Sync {
+    /// The expiry of an entry that lives for `lifetime` from now.
+    fn expiry(&self, lifetime: Duration) -> u64;
 
-impl Clock {
-    /// Now, in milliseconds since the Unix epoch.
-    fn now_ms(&self) -> u64 {
-        (self.0)()
+    /// The time left before `expiry`, or `None` once it has passed.
+    fn remaining(&self, expiry: u64) -> Option<Duration>;
+}
+
+/// Wall-clock time in milliseconds since the Unix epoch. Entries outlive the
+/// process, so a monotonic clock would not do.
+#[derive(Debug)]
+struct SystemClock;
+
+impl SystemClock {
+    fn now_ms() -> u64 {
+        SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0, duration_ms)
+            .map_or(0, millis)
     }
 }
 
-impl std::fmt::Debug for Clock {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Clock")
+impl Clock for SystemClock {
+    fn expiry(&self, lifetime: Duration) -> u64 {
+        Self::now_ms().saturating_add(millis(lifetime))
+    }
+
+    fn remaining(&self, expiry: u64) -> Option<Duration> {
+        expiry
+            .checked_sub(Self::now_ms())
+            .filter(|left| *left > 0)
+            .map(Duration::from_millis)
     }
 }
 
 /// `duration` in whole milliseconds, saturating at `u64::MAX`.
-fn duration_ms(duration: Duration) -> u64 {
+fn millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// The entry metadata field that holds the expiry, in milliseconds since
-/// the Unix epoch.
+/// The entry metadata field that holds the expiry (see [`Clock`]).
 const EXPIRES_AT: &str = "expires_at";
 
 impl ApiCache {
@@ -175,15 +189,15 @@ impl ApiCache {
             max_file_size,
             base_url,
             verbose,
-            clock: Clock(Arc::new(SystemTime::now)),
+            clock: Arc::new(SystemClock),
         }
     }
 
-    /// The same cache, reading time from `now`.
+    /// The same cache, minting and checking expiry with `clock`.
     #[cfg(test)]
-    fn with_clock(self, now: impl Fn() -> SystemTime + Send + Sync + 'static) -> Self {
+    fn with_clock(self, clock: impl Clock + 'static) -> Self {
         Self {
-            clock: Clock(Arc::new(now)),
+            clock: Arc::new(clock),
             ..self
         }
     }
@@ -241,26 +255,25 @@ impl ApiCache {
                 return None;
             }
         };
-        let now = self.clock.now_ms();
-        match metadata.metadata[EXPIRES_AT].as_u64() {
-            Some(expires_at) if expires_at > now => {
-                Some((metadata.integrity, Duration::from_millis(expires_at - now)))
-            }
-            _ => {
-                debug!("API cache entry for {key} has expired");
-                // The content stays: other keys may share it (content is
-                // stored by hash), and an unchanged response rewritten under
-                // this key reuses it.
-                self.evict(key).await;
-                None
-            }
+        let remaining = metadata.metadata[EXPIRES_AT]
+            .as_u64()
+            .and_then(|expiry| self.clock.remaining(expiry));
+        if let Some(remaining) = remaining {
+            Some((metadata.integrity, remaining))
+        } else {
+            debug!("API cache entry for {key} has expired");
+            // The content stays: other keys may share it (content is
+            // stored by hash), and an unchanged response rewritten under
+            // this key reuses it.
+            self.evict(key).await;
+            None
         }
     }
 
     /// The options that write an entry which expires after `lifetime`.
     fn write_opts(&self, lifetime: Duration) -> cacache::WriteOpts {
-        let expires_at = self.clock.now_ms().saturating_add(duration_ms(lifetime));
-        cacache::WriteOpts::new().metadata(serde_json::json!({ EXPIRES_AT: expires_at }))
+        let expiry = self.clock.expiry(lifetime);
+        cacache::WriteOpts::new().metadata(serde_json::json!({ EXPIRES_AT: expiry }))
     }
 
     /// The cached value under `key`, deserialized. Returns `None` if the key
@@ -608,31 +621,41 @@ mod tests {
         assert!(cache.lookup_value::<Value>(&key).await.is_none());
     }
 
-    /// A clock that starts at a fixed time and moves only when told to.
-    #[derive(Clone)]
-    struct TestClock(Arc<std::sync::Mutex<SystemTime>>);
+    /// A clock in milliseconds that moves only when told to.
+    #[derive(Clone, Debug, Default)]
+    struct TestClock(Arc<std::sync::atomic::AtomicU64>);
 
     impl TestClock {
-        fn new() -> Self {
-            Self(Arc::new(std::sync::Mutex::new(
-                SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000),
-            )))
+        fn now(&self) -> u64 {
+            self.0.load(Ordering::Relaxed)
         }
 
         fn advance(&self, by: Duration) {
-            *self.0.lock().unwrap() += by;
+            self.0.fetch_add(millis(by), Ordering::Relaxed);
         }
 
         fn cache(&self, dir: &TempDir) -> ApiCache {
-            let clock = self.clone();
-            test_cache(dir).with_clock(move || *clock.0.lock().unwrap())
+            test_cache(dir).with_clock(self.clone())
+        }
+    }
+
+    impl Clock for TestClock {
+        fn expiry(&self, lifetime: Duration) -> u64 {
+            self.now().saturating_add(millis(lifetime))
+        }
+
+        fn remaining(&self, expiry: u64) -> Option<Duration> {
+            expiry
+                .checked_sub(self.now())
+                .filter(|left| *left > 0)
+                .map(Duration::from_millis)
         }
     }
 
     #[tokio::test]
     async fn a_value_expires_after_its_lifetime() {
         let dir = TempDir::new().unwrap();
-        let clock = TestClock::new();
+        let clock = TestClock::default();
         let cache = clock.cache(&dir);
         let key = CacheKey::new("http://t", "get_run", &("run-1"));
         let lifetime = Duration::from_secs(60);
@@ -654,15 +677,20 @@ mod tests {
 
         clock.advance(Duration::from_secs(1));
         assert!(cache.lookup_value::<Value>(&key).await.is_none());
-        // Expiry removed the entry, so a cache on the real clock (earlier
-        // than the test clock) also misses.
-        assert!(test_cache(&dir).lookup_value::<Value>(&key).await.is_none());
+        // Expiry removed the entry, so even a clock moved back misses.
+        assert!(
+            TestClock::default()
+                .cache(&dir)
+                .lookup_value::<Value>(&key)
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
     async fn a_stream_expires_after_its_lifetime() {
         let dir = TempDir::new().unwrap();
-        let clock = TestClock::new();
+        let clock = TestClock::default();
         let cache = clock.cache(&dir);
         let key = || CacheKey::new("http://t", "get_run_logs", &("run-1"));
         let values = [serde_json::json!({"text": "one"})];
@@ -680,7 +708,7 @@ mod tests {
     #[tokio::test]
     async fn a_complete_stream_never_expires() {
         let dir = TempDir::new().unwrap();
-        let clock = TestClock::new();
+        let clock = TestClock::default();
         let cache = clock.cache(&dir);
         let key = || CacheKey::new("http://t", "get_run_logs", &("run-1"));
         let values = [serde_json::json!({"text": "one"})];

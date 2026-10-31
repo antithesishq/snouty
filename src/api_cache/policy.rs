@@ -1,7 +1,7 @@
 //! [`CachePolicy`] — an admission verdict on a fetched API response.
 
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use headers::{CacheControl, HeaderMapExt};
@@ -33,6 +33,10 @@ impl CachePolicy {
     }
 }
 
+/// An `Age` value, or the first member of a list of them.
+static AGE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"^[ \t]*([0-9]+)[ \t]*(?:,|$)").unwrap());
+
 /// The response's remaining freshness lifetime: `max-age` less `Age`, or
 /// `None` when that is not positive or a directive forbids caching (see
 /// [`CachePolicy::from_headers`]).
@@ -58,12 +62,9 @@ fn freshness_lifetime(headers: &http::HeaderMap) -> Option<Duration> {
     // largest age (RFC 9111 §1.2.2, §5.1).
     let age = headers
         .get(http::header::AGE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|text| text.split(',').next())
-        .map(str::trim)
-        .filter(|text| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
-        .map_or(Duration::ZERO, |text| {
-            Duration::from_secs(text.parse().unwrap_or(u64::MAX))
+        .and_then(|value| AGE.captures(value.to_str().ok()?))
+        .map_or(Duration::ZERO, |age| {
+            Duration::from_secs(age[1].parse().unwrap_or(u64::MAX))
         });
     cache_control
         .max_age()?

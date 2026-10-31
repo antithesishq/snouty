@@ -381,7 +381,7 @@ steps:
     working-directory: /tmp/gh-aw/agent/weekly-audit
     run: |
       "$RUNNER_TEMP/snouty/snouty" doctor --json > doctor.json || true
-      jq -er '.checks[] | select(.name == "api") | .notes[]?.text
+      jq -er '.checks[] | select(.id == "api") | .notes[]?.text
         | select(startswith("tenant release version: "))
         | ltrimstr("tenant release version: ")' doctor.json > release.txt || {
         echo "snouty doctor reported no tenant release version" >&2

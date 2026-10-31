@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use headers::{CacheControl, HeaderMapExt};
 
@@ -10,32 +11,33 @@ use headers::{CacheControl, HeaderMapExt};
 /// [`crate::api_cache::ApiCache::headers_policy`]).
 #[derive(Clone, Debug)]
 pub enum CachePolicy {
-    Cacheable,
-    /// A stream that may be stored only if the flag is set by the time it
-    /// ends. A value with this tag is never stored.
+    /// Store the value and serve it for this long.
+    Cacheable(Duration),
+    /// A stream that never changes once complete: stored for good, but only
+    /// if the flag is set by the time it ends. A value with this tag is never
+    /// stored.
     CacheableOnceComplete(Arc<AtomicBool>),
     Uncacheable,
 }
 
 impl CachePolicy {
-    /// The verdict `Cache-Control` gives a private client cache. Entries are
-    /// never revalidated and never expire, so any directive that demands
-    /// revalidation means [`CachePolicy::Uncacheable`]; an absent or
-    /// malformed header grants nothing. `private` is fine — the cache
-    /// directory is per-user.
+    /// For a value that never changes.
+    pub const IMMUTABLE: Self = Self::Cacheable(Duration::MAX);
+
+    /// The verdict `Cache-Control` and `Age` give a private client cache:
+    /// cacheable for the response's remaining freshness lifetime. Entries are
+    /// never revalidated, so any directive that demands revalidation means
+    /// [`CachePolicy::Uncacheable`]; an absent or malformed header grants
+    /// nothing. `private` is fine — the cache directory is per-user.
     pub fn from_headers(headers: &http::HeaderMap) -> Self {
-        if cache_headers_allow(headers) {
-            Self::Cacheable
-        } else {
-            Self::Uncacheable
-        }
+        freshness_lifetime(headers).map_or(Self::Uncacheable, Self::Cacheable)
     }
 }
 
-/// Whether `Cache-Control` lets the cache hold the response: a positive
-/// freshness lifetime and no revalidation demand (see
+/// The response's remaining freshness lifetime: `max-age` less `Age`, or
+/// `None` when that is not positive or a directive forbids caching (see
 /// [`CachePolicy::from_headers`]).
-fn cache_headers_allow(headers: &http::HeaderMap) -> bool {
+fn freshness_lifetime(headers: &http::HeaderMap) -> Option<Duration> {
     // Directive names are case-insensitive (RFC 9111 §5.2) but the parser
     // matches lowercase only — a `No-Cache` veto would pass unrecognized.
     // Lowercase each value first; none of the inspected directives carries a
@@ -46,65 +48,88 @@ fn cache_headers_allow(headers: &http::HeaderMap) -> bool {
             .to_str()
             .ok()
             .and_then(|text| text.to_ascii_lowercase().parse().ok());
-        match normalized {
-            Some(value) => lowered.append(http::header::CACHE_CONTROL, value),
-            None => return false,
-        };
+        lowered.append(http::header::CACHE_CONTROL, normalized?);
     }
-    let Some(cache_control) = lowered.typed_get::<CacheControl>() else {
-        return false;
-    };
+    let cache_control = lowered.typed_get::<CacheControl>()?;
     if cache_control.no_store() || cache_control.no_cache() || cache_control.must_revalidate() {
-        return false;
+        return None;
     }
-    cache_control.immutable() || cache_control.max_age().is_some_and(|age| !age.is_zero())
+    // A malformed `Age` is ignored (RFC 9111 §5.1).
+    let age = headers
+        .get(http::header::AGE)
+        .and_then(|value| value.to_str().ok()?.parse().ok())
+        .map_or(Duration::ZERO, Duration::from_secs);
+    cache_control
+        .max_age()?
+        .checked_sub(age)
+        .filter(|lifetime| !lifetime.is_zero())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn cache_control(value: &str) -> http::HeaderMap {
+    fn headers(pairs: &[(&'static str, &str)]) -> http::HeaderMap {
         let mut headers = http::HeaderMap::new();
-        headers.insert("cache-control", value.parse().unwrap());
+        for (name, value) in pairs {
+            headers.append(*name, value.parse().unwrap());
+        }
         headers
     }
 
+    fn lifetime(cache_control: &str) -> Option<Duration> {
+        freshness_lifetime(&headers(&[("cache-control", cache_control)]))
+    }
+
     #[test]
-    fn a_positive_freshness_lifetime_allows_caching() {
+    fn the_lifetime_is_max_age() {
         // The exact header the live API sends on cacheable reads.
-        assert!(cache_headers_allow(&cache_control(
-            crate::testutils::CACHEABLE_CACHE_CONTROL
-        )));
-        assert!(cache_headers_allow(&cache_control("max-age=1")));
-        assert!(cache_headers_allow(&cache_control("immutable")));
+        assert_eq!(
+            lifetime(crate::testutils::CACHEABLE_CACHE_CONTROL),
+            Some(Duration::from_secs(3600))
+        );
+        assert_eq!(lifetime("max-age=1"), Some(Duration::from_secs(1)));
+        assert_eq!(
+            lifetime("max-age=60, immutable"),
+            Some(Duration::from_secs(60))
+        );
         // Mixed case grants too, not only vetoes.
-        assert!(cache_headers_allow(&cache_control("Private, Max-Age=3600")));
+        assert_eq!(
+            lifetime("Private, Max-Age=3600"),
+            Some(Duration::from_secs(3600))
+        );
+    }
+
+    #[test]
+    fn age_shortens_the_lifetime() {
+        let lifetime = |age: &str| {
+            freshness_lifetime(&headers(&[("cache-control", "max-age=3600"), ("age", age)]))
+        };
+        assert_eq!(lifetime("600"), Some(Duration::from_secs(3000)));
+        assert_eq!(lifetime("3600"), None);
+        assert_eq!(lifetime("7200"), None);
+        assert_eq!(lifetime("soon"), Some(Duration::from_secs(3600)));
     }
 
     #[test]
     fn absent_or_non_positive_headers_deny_caching() {
-        assert!(!cache_headers_allow(&http::HeaderMap::new()));
-        assert!(!cache_headers_allow(&cache_control("max-age=0")));
-        assert!(!cache_headers_allow(&cache_control("private")));
-        assert!(!cache_headers_allow(&cache_control("not a directive ===")));
+        assert_eq!(freshness_lifetime(&http::HeaderMap::new()), None);
+        assert_eq!(lifetime("max-age=0"), None);
+        assert_eq!(lifetime("private"), None);
+        // `immutable` describes a lifetime; it does not grant one.
+        assert_eq!(lifetime("immutable"), None);
+        assert_eq!(lifetime("not a directive ==="), None);
     }
 
     #[test]
     fn revalidation_directives_deny_caching() {
-        assert!(!cache_headers_allow(&cache_control("no-cache")));
-        assert!(!cache_headers_allow(&cache_control("no-store")));
-        assert!(!cache_headers_allow(&cache_control(
-            "no-cache, max-age=3600"
-        )));
-        assert!(!cache_headers_allow(&cache_control("no-store, immutable")));
-        assert!(!cache_headers_allow(&cache_control(
-            "max-age=3600, must-revalidate"
-        )));
+        assert_eq!(lifetime("no-cache"), None);
+        assert_eq!(lifetime("no-store"), None);
+        assert_eq!(lifetime("no-cache, max-age=3600"), None);
+        assert_eq!(lifetime("no-store, max-age=3600, immutable"), None);
+        assert_eq!(lifetime("max-age=3600, must-revalidate"), None);
         // Directive names are case-insensitive (RFC 9111 §5.2): a mixed-case
         // veto must still veto.
-        assert!(!cache_headers_allow(&cache_control(
-            "No-Cache, max-age=3600"
-        )));
+        assert_eq!(lifetime("No-Cache, max-age=3600"), None);
     }
 }

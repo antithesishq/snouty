@@ -865,11 +865,15 @@ fn ensure_services_have_images(contents: &ComposeContents) -> Result<()> {
 /// Symlinks are recreated as-is (not dereferenced): a `docker build` context
 /// tars symlinks verbatim too, so the staged tree produces the same image
 /// content as building from `config_dir` directly.
+///
+/// The staged `docker-compose.yaml` is always a new regular file, whatever the
+/// source is: a symlink, a read-only file, or any other file.
 pub fn stage_pinned_config(config_dir: &Path, pinned_yaml: &str) -> Result<tempfile::TempDir> {
     let staged = tempfile::tempdir().wrap_err("failed to create config staging directory")?;
     crate::util::copy_dir_recursive(config_dir, staged.path())?;
-    std::fs::write(staged.path().join("docker-compose.yaml"), pinned_yaml)
-        .wrap_err("failed to write pinned docker-compose.yaml")?;
+    let compose = staged.path().join("docker-compose.yaml");
+    std::fs::remove_file(&compose).wrap_err("failed to remove staged docker-compose.yaml")?;
+    std::fs::write(&compose, pinned_yaml).wrap_err("failed to write pinned docker-compose.yaml")?;
     Ok(staged)
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1173,6 +1177,38 @@ mod tests {
     use crate::container::pinned_image_ref;
     use crate::testutils::{OCIRegistry, has_compose, require_runtimes_with_compose, skip_or_fail};
     use std::path::PathBuf;
+
+    #[test]
+    fn stage_pinned_config_replaces_symlinked_compose() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = root.path().join("cfg");
+        std::fs::create_dir(&cfg).unwrap();
+        let real = root.path().join("project-compose.yaml");
+        std::fs::write(&real, "services: {}\n").unwrap();
+        std::os::unix::fs::symlink(&real, cfg.join("docker-compose.yaml")).unwrap();
+
+        let staged = stage_pinned_config(&cfg, "PINNED\n").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "services: {}\n");
+        let compose = staged.path().join("docker-compose.yaml");
+        assert!(std::fs::symlink_metadata(&compose).unwrap().is_file());
+        assert_eq!(std::fs::read_to_string(&compose).unwrap(), "PINNED\n");
+    }
+
+    #[test]
+    fn stage_pinned_config_writes_over_read_only_compose() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let cfg = tempfile::tempdir().unwrap();
+        let source = cfg.path().join("docker-compose.yaml");
+        std::fs::write(&source, "services: {}\n").unwrap();
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        let staged = stage_pinned_config(cfg.path(), "PINNED\n").unwrap();
+
+        let compose = staged.path().join("docker-compose.yaml");
+        assert_eq!(std::fs::read_to_string(&compose).unwrap(), "PINNED\n");
+    }
 
     fn cc(service: &str, id: &str, state: ContainerState) -> ComposeContainer {
         ComposeContainer {

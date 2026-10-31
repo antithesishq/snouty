@@ -34,10 +34,7 @@ implement.
 
 ## 2. Implement
 
-Follow AGENTS.md, section "AI Coding Workflow": specs for new subcommands or
-flags, tests for all user-visible changes, gallery updates, targeted mutation
-testing, then `cargo nextest run`, `cargo clippy`, `cargo fmt`. Commit as you
-go.
+Follow AGENTS.md, section "Workflow". Commit as you go.
 
 ## 3. Pre-PR gauntlet
 
@@ -53,8 +50,7 @@ one so the next step reviews a clean diff.
 3. **Comments**: launch a subagent with the prompt "Invoke the
    simplify-comments skill on the current branch's diff against origin/main
    and report the findings." Fix the real findings yourself and commit.
-4. Re-run `cargo nextest run`, `cargo clippy`, `cargo fmt`, and commit any
-   remaining changes.
+4. Run `mise run lint` and `mise run test`, and commit any remaining changes.
 
 ## 4. Submit the PR
 

@@ -610,8 +610,8 @@ pub struct LaunchArgs {
         long,
         value_parser = parse_setup_timeout,
         help = concat!(
-            "Fail the run immediately if the system does not reach setup complete within \
-             this time, in whole minutes from 1m to 30m. The default is 5m. ",
+            "Fail the run immediately if setup takes longer than this, in whole minutes \
+             from 1m to 30m. The default is 5m. ",
             duration_format!(),
         ),
     )]

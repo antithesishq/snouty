@@ -13,8 +13,8 @@ const SCHEMA: &str = include_str!("params_schema.json");
 
 /// The longest setup timeout that the launcher accepts.
 pub const MAX_SETUP_TIMEOUT_MINUTES: u64 = 30;
-/// The shortest fuzzing campaign that the launcher accepts. Setup time does
-/// not come out of the budget.
+/// The shortest fuzzing campaign that the launcher accepts. The budget pays
+/// for fuzzing time.
 const MIN_FUZZING_MINUTES: u64 = 15;
 
 /// The cores that a run on `tier` uses, which sets how fast it spends its

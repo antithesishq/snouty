@@ -14,13 +14,13 @@ Alternatively, pass a pre-built config image directly:
     --config-image us-central1-docker.pkg.dev/proj/repo/config:latest \
     --max-compute-hours 24
 
-{{ t("--max-compute-hours")? }} sets how much fuzzing the run buys, up to 1000 compute hours. One compute hour is one core running for one hour. Compute hours pay for fuzzing only: setup is not charged. Without the flag, the server gives the run 48 compute hours.
+{{ t("--max-compute-hours")? }} sets how much fuzzing the run buys, up to 1000 compute hours. One compute hour is one core running for one hour, and compute hours pay for fuzzing time. Without the flag, the server gives the run 48 compute hours.
 
-The tier ({{ t("--performance-tier")? }}) sets how many cores the run uses: 48 on standard (the default), 96 on fast and 192 on turbo. The run fuzzes for max compute hours × 60 ÷ cores minutes, after setup. For example, 24 compute hours on standard is 30 minutes of fuzzing, plus the time that setup takes. A faster tier does not add compute: it spends the same budget on more cores, so it fuzzes for less wall-clock time.
+The tier ({{ t("--performance-tier")? }}) sets how many cores the run uses: 48 on standard (the default), 96 on fast and 192 on turbo. The run fuzzes for max compute hours × 60 ÷ cores minutes, after setup. For example, 24 compute hours on standard is 30 minutes of fuzzing, plus the time that setup takes. A faster tier spends the same budget on more cores, so it fuzzes for less wall-clock time.
 
 A run must fuzz for at least 15 minutes, so the minimum budget doubles with each tier: 12 compute hours on standard, 24 on fast and 48 on turbo. snouty refuses a launch below the minimum, and names it.
 
-{{ t("--setup-timeout")? }} sets how long setup can take before the run fails immediately. Use it to fail fast, and to debug a setup that takes too long. It takes a number of minutes with the unit, such as 10m, and not a bare number. The default is 5 minutes, and the range is 1 to 30 minutes. A setup that takes more than 10 minutes fails a default property in the report, even when the timeout allows it, so make a slow setup faster rather than only raise the timeout.
+{{ t("--setup-timeout")? }} sets how long setup can take before the run fails immediately. Use it to fail fast, and to debug a setup that takes too long. It takes a number of minutes with the unit, such as 10m. The default is 5 minutes, and the range is 1 to 30 minutes. A setup that takes more than 10 minutes fails a default property in the report, so make a slow setup faster.
   {{ t("snouty launch --launcher basic_test --config ./config --setup-timeout 10m")? }}
 
 Extra parameters can be passed with --param:

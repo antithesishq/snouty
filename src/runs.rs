@@ -541,7 +541,7 @@ fn unclassified_status_error(run_id: &str, status: &RunStatus) -> color_eyre::ey
 /// Poll `get_run` every `poll_interval` until the run reaches the `until`
 /// point, and call `on_wait` with each poll that has not reached it. The first
 /// poll is at once. An unclassified run fails the wait (see
-/// [`RunStatus::is_unclassified`]). The polls bypass the response cache, so each one observes fresh state.
+/// [`RunStatus::is_unclassified`]).
 ///
 /// Never returns on its own — the caller bounds it with `tokio::time::timeout`.
 async fn wait_for_run(
@@ -571,11 +571,11 @@ async fn wait_for_run(
     }
 }
 
-/// Read the run, bypassing the response cache. A 404 means a bad run ID, so
-/// it fails rather than poll a typo. An unclassified run fails too (see
+/// Read the run. A 404 means a bad run ID, so it fails rather than poll a
+/// typo. An unclassified run fails too (see
 /// [`RunStatus::is_unclassified`]).
 async fn look_at_run(api: &AntithesisApi, run_id: &str) -> Result<RunDetail> {
-    let run = match api.uncached().get_run(run_id).await {
+    let run = match api.get_run(run_id).await {
         Ok(run) => run.untag(),
         Err(err) => return Err(explain_run_not_found(run_id, err)),
     };
@@ -5900,7 +5900,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn ready_wait_bypasses_the_cache_and_the_search_does_not() {
+        async fn ready_wait_follows_the_cache_headers() {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
                 .and(path("/api/v0/runs/run-w"))
@@ -5922,16 +5922,16 @@ mod tests {
             )
             .unwrap();
 
-            // The search stand-in is a cacheable read, so the test can see
-            // which client sends it.
+            // The search stand-in reads the same cacheable run.
             for _ in 0..2 {
                 event_search::search_when_ready(&api, "run-w", FAST_POLL, || api.get_run("run-w"))
                     .await
                     .unwrap();
             }
 
-            // Both waits reach the server. The second search reads the cache.
-            assert_eq!(request_methods(&server).await, ["GET", "GET", "GET"]);
+            // The completed run is cacheable, so only the first wait reaches
+            // the server.
+            assert_eq!(request_methods(&server).await, ["GET"]);
         }
 
         #[tokio::test]

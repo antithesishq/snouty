@@ -705,8 +705,7 @@ pub(crate) enum ResponseCache {
     /// `$XDG_RUNTIME_DIR/snouty/api-cache-v4`, falling back to a per-user
     /// directory under the system temp dir — the default for every command.
     Default,
-    /// No response cache: every request reaches the server. Code outside tests
-    /// uses [`AntithesisApi::uncached`].
+    /// No response cache: every request reaches the server.
     #[cfg(test)]
     Disabled,
     /// Cache under this directory.
@@ -797,17 +796,6 @@ impl AntithesisApi {
             verbose,
             ResponseCache::Default,
         )
-    }
-
-    /// A copy of this client with its response cache disabled: every request
-    /// reaches the server.
-    #[must_use]
-    pub fn uncached(&self) -> Self {
-        Self {
-            client: self.client.clone(),
-            base_url: self.base_url.clone(),
-            cache: self.cache.disabled(),
-        }
     }
 
     /// Like [`AntithesisApi::new`], but accepts the deprecated

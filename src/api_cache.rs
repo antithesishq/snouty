@@ -146,15 +146,6 @@ impl ApiCache {
         }
     }
 
-    /// The same cache, disabled: every lookup misses and every store is a
-    /// no-op.
-    pub fn disabled(&self) -> Self {
-        Self {
-            dir: None,
-            ..self.clone()
-        }
-    }
-
     /// The admission verdict for a response's headers. A disabled cache
     /// returns [`CachePolicy::Uncacheable`] without parsing them.
     pub fn headers_policy(&self, headers: &http::HeaderMap) -> CachePolicy {

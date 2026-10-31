@@ -146,8 +146,7 @@ const SEARCH: Endpoint = Endpoint {
 };
 
 /// Send an events-search request with `send` once the run is ready or
-/// terminal, and retry while [`SEARCH`] allows it. The wait bypasses the response cache by itself, so pass the
-/// cached client.
+/// terminal, and retry while [`SEARCH`] allows it.
 pub(super) async fn search_when_ready<T, Fut>(
     api: &AntithesisApi,
     run_id: &str,

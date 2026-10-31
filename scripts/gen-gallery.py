@@ -1462,8 +1462,9 @@ def _first_post_setup_moment(sn: Snouty, run: str) -> dict:
     args = ["--json", "runs", "search", run, POST_SETUP_QUERY, "-n", "100"]
     while True:
         # Search finds nothing for a while after the run is ready
-        # (orbitinghail, release 66.0). snouty retries the 404 that comes first.
-        res = sn.run(args)
+        # (orbitinghail, release 66.0). snouty retries the 404 that comes first,
+        # with no time limit, so the deadline bounds each search too.
+        res = sn.run(args, timeout=max(1, deadline - time.monotonic()))
         moments: list[dict] = []
         if res.ok:
             moments = earliest_moments(_ndjson(res.stdout), SHALLOW_MOMENTS)

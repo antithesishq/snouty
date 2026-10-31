@@ -37,7 +37,9 @@ Examples:
   snouty validate ./config --timeout 5m
   snouty validate ./k8s-config
 
-Next, launch the config with `snouty launch --config ./config`.
+Next, launch the config with `snouty launch --config ./config`. A Kubernetes
+config needs the Kubernetes launcher:
+`snouty launch --launcher basic_k8s_test --config ./k8s-config`.
 
 Usage: snouty validate [OPTIONS] <CONFIG>
 

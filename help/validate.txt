@@ -17,4 +17,4 @@ Examples:
   {{ t("snouty validate ./config --timeout 5m")? }}
   {{ t("snouty validate ./k8s-config")? }}
 
-Next, launch the config with `{{ t("snouty launch --config ./config")? }}`.
+Next, launch the config with `{{ t("snouty launch --config ./config")? }}`. A Kubernetes config needs the Kubernetes launcher: `{{ t("snouty launch --launcher basic_k8s_test --config ./k8s-config")? }}`.

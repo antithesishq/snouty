@@ -415,7 +415,6 @@ async fn cmd_runs_show(
     Ok(())
 }
 
-/// The tenant's web page for a run: `{base_url}/run?run_id=<run_id>`.
 fn run_page_url(base_url: &str, run_id: &str) -> Result<reqwest::Url> {
     reqwest::Url::parse_with_params(&format!("{base_url}/run"), [("run_id", run_id)])
         .map_err(|err| eyre!("invalid run page URL: {err}"))
@@ -1471,8 +1470,7 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         }
     }
 
-    // Hand the user the exact command to read logs at the failure moment, the
-    // same way the `--web` hint below hands over the run page.
+    // Hand the user the exact command to read logs at the failure moment.
     if let Some(moment) = failure {
         outln!(
             "\nview logs at the failure moment:\n  snouty runs logs {} {} {}",

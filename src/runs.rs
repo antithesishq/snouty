@@ -32,7 +32,7 @@ use crate::render::{
     CodeSpans, OutputOptions, indent_lines, render_kv, sanitize, sanitize_multiline, shell_command,
     wrap_text,
 };
-use crate::settings::{Settings, require};
+use crate::settings::{Settings, require_setting};
 use crate::stdio;
 use crate::table::{Align, Column, Fit, Table};
 use crate::time::{HumanDuration, format_local_with_offset};
@@ -397,7 +397,7 @@ async fn cmd_runs_show(
     // The run page is on the tenant host, never on an explicit base_url, which
     // can be an API proxy that a browser cannot use. Check before the request.
     let web_tenant = web
-        .then(|| require(settings.tenant(), "tenant"))
+        .then(|| require_setting(settings.tenant(), "tenant"))
         .transpose()?;
 
     let api = AntithesisApi::new(settings, verbose)?;

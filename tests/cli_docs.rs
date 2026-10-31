@@ -62,6 +62,7 @@ fn docs_update_failure_with_cached_db_warns_and_uses_cache() {
         .assert()
         .success()
         .stdout(predicate::str::contains("/docs/guides/docker_basics/"));
+    backdate_docs_check(&cache_dir);
 
     set_docs_cache_env(&mut snouty(), &cache_dir)
         .env("ANTITHESIS_DOCS_URL", "http://127.0.0.1:1")
@@ -84,6 +85,7 @@ fn docs_update_that_never_connects_times_out_and_uses_cache() {
         .args(["docs", "search", "docker"])
         .assert()
         .success();
+    backdate_docs_check(&cache_dir);
 
     // The kernel accepts the TCP connection into the listener's backlog, and
     // nothing ever answers the TLS handshake, so the connect never completes.
@@ -120,6 +122,7 @@ fn docs_auto_update_reuses_cached_db_until_etag_changes() {
         .assert()
         .success()
         .stdout(predicate::str::contains("/docs/guides/docker_basics/"));
+    backdate_docs_check(&cache_dir);
 
     set_docs_cache_env(&mut snouty(), &cache_dir)
         .env("ANTITHESIS_DOCS_URL", mock_server.url())
@@ -127,6 +130,7 @@ fn docs_auto_update_reuses_cached_db_until_etag_changes() {
         .assert()
         .success()
         .stdout(predicate::str::contains("/docs/guides/docker_basics/"));
+    backdate_docs_check(&cache_dir);
 
     mock_server.set_etag("test-etag-2");
 
@@ -148,6 +152,88 @@ fn docs_auto_update_reuses_cached_db_until_etag_changes() {
 
     let etag_path = cache_dir.path().join("snouty").join("docs.db.etag");
     assert_eq!(std::fs::read_to_string(etag_path).unwrap(), "test-etag-2");
+}
+
+fn docs_search(cache_dir: &TempDir, docs_url: &str) -> assert_cmd::assert::Assert {
+    set_docs_cache_env(&mut snouty(), cache_dir)
+        .env("ANTITHESIS_DOCS_URL", docs_url)
+        .args(["docs", "search", "docker"])
+        .assert()
+        .success()
+}
+
+fn etag_mtime(cache_dir: &TempDir) -> std::time::SystemTime {
+    std::fs::metadata(cached_docs_etag_path(cache_dir))
+        .unwrap()
+        .modified()
+        .unwrap()
+}
+
+// A command within five minutes of the last update check reuses the cached
+// database without asking the server.
+#[test]
+fn docs_update_check_runs_at_most_once_per_interval() {
+    let cache_dir = TempDir::new().unwrap();
+    let mock_server = MockDocsServer::start();
+
+    docs_search(&cache_dir, mock_server.url());
+    docs_search(&cache_dir, mock_server.url());
+
+    assert_eq!(mock_server.if_none_match_headers().len(), 1);
+}
+
+// An unchanged database (304) still counts as a check, so the next command
+// within the interval skips the server.
+#[test]
+fn docs_unchanged_check_restarts_the_interval() {
+    let cache_dir = TempDir::new().unwrap();
+    let mock_server = MockDocsServer::start();
+
+    docs_search(&cache_dir, mock_server.url());
+    backdate_docs_check(&cache_dir);
+    let backdated = etag_mtime(&cache_dir);
+    docs_search(&cache_dir, mock_server.url());
+    assert!(etag_mtime(&cache_dir) > backdated);
+    docs_search(&cache_dir, mock_server.url());
+
+    assert_eq!(mock_server.if_none_match_headers().len(), 2);
+}
+
+// A failed check leaves the last-check time alone, so the next command
+// retries.
+#[test]
+fn docs_failed_check_does_not_restart_the_interval() {
+    let cache_dir = TempDir::new().unwrap();
+    let mock_server = MockDocsServer::start();
+
+    docs_search(&cache_dir, mock_server.url());
+    backdate_docs_check(&cache_dir);
+    let backdated = etag_mtime(&cache_dir);
+    docs_search(&cache_dir, "http://127.0.0.1:1").stderr(predicate::str::contains(
+        "Warning: failed to update docs, falling back to cached docs",
+    ));
+    assert_eq!(etag_mtime(&cache_dir), backdated);
+
+    docs_search(&cache_dir, mock_server.url());
+    assert_eq!(mock_server.if_none_match_headers().len(), 2);
+}
+
+// A last-check time in the future is not trusted.
+#[test]
+fn docs_check_time_in_the_future_is_stale() {
+    let cache_dir = TempDir::new().unwrap();
+    let mock_server = MockDocsServer::start();
+
+    docs_search(&cache_dir, mock_server.url());
+    std::fs::File::options()
+        .write(true)
+        .open(cached_docs_etag_path(&cache_dir))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(3600))
+        .unwrap();
+    docs_search(&cache_dir, mock_server.url());
+
+    assert_eq!(mock_server.if_none_match_headers().len(), 2);
 }
 
 #[test]

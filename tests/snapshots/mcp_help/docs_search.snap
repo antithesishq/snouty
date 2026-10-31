@@ -3,7 +3,7 @@ source: tests/help_snapshots.rs
 ---
 Search the documentation
 
-Uses full-text search across the Antithesis documentation database. The database is updated before each search unless you pass `offline`.
+Uses full-text search across the Antithesis documentation database. The database is checked for updates before a search, at most once every 5 minutes, unless you pass `offline`.
 
 Prints ranked matches (title and page path); pass a path to `docs_show`. Use `list` to print only the paths.
 

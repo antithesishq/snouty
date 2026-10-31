@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write as _;
 use std::path::PathBuf;
+use std::time::{Duration, SystemTime};
 
 use color_eyre::Section;
 use color_eyre::eyre::{OptionExt, Result, bail};
@@ -47,8 +48,29 @@ fn db_path() -> Result<PathBuf> {
     Ok(cache_dir()?.join("docs.db"))
 }
 
+/// The ETag of the cached database. Its mtime is the time of the last
+/// successful update check.
 fn etag_path() -> Result<PathBuf> {
     Ok(cache_dir()?.join("docs.db.etag"))
+}
+
+/// How long a successful update check holds before the next command checks
+/// again.
+const DOCS_CHECK_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
+/// Whether the cached database was checked for an update within
+/// [`DOCS_CHECK_INTERVAL`]. A missing database, a missing or unreadable ETag
+/// file, or an mtime in the future all mean it is due.
+fn checked_recently() -> bool {
+    let Ok(db) = db_path() else { return false };
+    if !db.exists() {
+        return false;
+    }
+    etag_path()
+        .and_then(|path| Ok(fs::metadata(path)?.modified()?))
+        .ok()
+        .and_then(|checked| SystemTime::now().duration_since(checked).ok())
+        .is_some_and(|age| age < DOCS_CHECK_INTERVAL)
 }
 
 pub async fn cmd_docs(
@@ -56,7 +78,7 @@ pub async fn cmd_docs(
     offline: bool,
     OutputOptions { json, .. }: OutputOptions,
 ) -> Result<()> {
-    if !offline {
+    if !offline && !checked_recently() {
         update_with_fallback().await?;
     }
 
@@ -125,9 +147,16 @@ fn ensure_docs_db_available(offline: bool) -> Result<()> {
 }
 
 async fn download_and_cache_db() -> Result<()> {
-    if let Some((bytes, etag)) = fetch_db_if_changed().await? {
-        atomic_write_db(&bytes)?;
-        fs::write(etag_path()?, etag)?;
+    match fetch_db_if_changed().await? {
+        Some((bytes, etag)) => {
+            atomic_write_db(&bytes)?;
+            fs::write(etag_path()?, etag)?;
+        }
+        // Unchanged: touch the ETag file to record the time of this check.
+        None => fs::File::options()
+            .write(true)
+            .open(etag_path()?)?
+            .set_modified(SystemTime::now())?,
     }
     Ok(())
 }

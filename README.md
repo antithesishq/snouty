@@ -22,7 +22,7 @@ Snouty provides the following subcommands. Invoke `snouty <command> --help` to f
 - `snouty debug`: start a debug session.
 - `snouty validate`: locally run and validate your docker-compose.yaml setup.
 - `snouty doctor`: check your environment is configured correctly.
-- `snouty docs`: search the Antithesis documentation locally (auto-refreshes the local copy over the network; pass `--offline` to skip).
+- `snouty docs`: search the Antithesis documentation locally (checks the network for a newer copy at most every 5 minutes; pass `--offline` to skip).
 - `snouty docker-credential <action>`: the Docker and Podman credential helper for your tenant registry. See [Docker credential helper](#docker-credential-helper).
 - `snouty completions <shell>`: generate shell completion scripts.
 - `snouty version`: print version and build information.

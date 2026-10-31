@@ -207,6 +207,24 @@ pub(crate) fn cached_docs_db_path(cache_home: &TempDir) -> PathBuf {
     cache_home.path().join("snouty").join("docs.db")
 }
 
+/// The ETag file next to [`cached_docs_db_path`]. Its mtime records the last
+/// update check.
+pub(crate) fn cached_docs_etag_path(cache_home: &TempDir) -> PathBuf {
+    cache_home.path().join("snouty").join("docs.db.etag")
+}
+
+/// Move the last docs update check ten minutes into the past, so the next
+/// command checks again.
+pub(crate) fn backdate_docs_check(cache_home: &TempDir) {
+    let ten_minutes_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(10 * 60);
+    std::fs::File::options()
+        .write(true)
+        .open(cached_docs_etag_path(cache_home))
+        .unwrap()
+        .set_modified(ten_minutes_ago)
+        .unwrap();
+}
+
 pub(crate) fn fixture_db() -> String {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/docs.db")

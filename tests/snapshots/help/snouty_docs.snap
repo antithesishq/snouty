@@ -3,8 +3,8 @@ source: tests/help_snapshots.rs
 ---
 Search Antithesis documentation
 
-Full-text search over a local copy of the Antithesis docs, auto-updated before
-each use unless --offline.
+Full-text search over a local copy of the Antithesis docs, checked for updates
+at most every 5 minutes unless --offline.
 
 Search for a page, browse the tree to find one, then show it. `sqlite` prints
 the path to the local database for querying it directly.

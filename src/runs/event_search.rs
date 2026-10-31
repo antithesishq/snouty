@@ -28,7 +28,8 @@ use crate::event_render::EventStreamRenderer;
 use crate::jsonl::JsonStream;
 use crate::stdio;
 
-use super::{ErrorRows, FaultAnnotator, READY_POLL, event_lines, raw_lines, wait_until_ready};
+use super::ready::{self, Endpoint, Needs, RetryPolicy};
+use super::{ErrorRows, FaultAnnotator, READY_POLL, event_lines, raw_lines};
 
 /// How an event-stream command prints its rows. The illegal flag
 /// combinations (`--raw` without `--json`, `--detail` with `--json`) are
@@ -130,20 +131,26 @@ pub(super) async fn count_query(
     Ok(())
 }
 
-/// Wait until the run is ready or terminal, then send one events-search
-/// request with `send`. The wait bypasses the response cache by itself, so
-/// pass the cached client.
+/// The events search, its count, and its query check.
+const SEARCH: Endpoint = Endpoint {
+    needs: Needs::Ready,
+    waiting: "waiting for the run's events to be searchable",
+    retry_policy: |_, _| RetryPolicy::Fail,
+};
+
+/// Send an events-search request with `send` once the run is ready or
+/// terminal. The wait bypasses the response cache by itself, so pass the
+/// cached client.
 pub(super) async fn search_when_ready<T, Fut>(
     api: &AntithesisApi,
     run_id: &str,
     poll: Duration,
-    send: impl FnOnce() -> Fut,
+    send: impl FnMut() -> Fut,
 ) -> Result<T>
 where
     Fut: Future<Output = Result<T>>,
 {
-    let run = wait_until_ready(api, run_id, poll).await?;
-    send().await.map_err(|err| explain_search_error(&run, err))
+    ready::send_when_ready(api, run_id, poll, SEARCH, send, explain_search_error).await
 }
 
 /// Annotate an events-search error for `run`. `run` must exist and be ready

@@ -2175,22 +2175,6 @@ async fn cmd_runs_exec(
 /// poll (the `runs wait` floor) could delay the command by most of a minute.
 const READY_POLL: Duration = Duration::from_secs(10);
 
-/// Wait until the run is ready or terminal, and show a [`ReadyDisplay`] on
-/// stderr while it is not. The wait has no time limit.
-async fn wait_until_ready(api: &AntithesisApi, run_id: &str, poll: Duration) -> Result<RunDetail> {
-    let mut waiting: Option<ReadyDisplay> = None;
-    let run = wait_for_run(api, run_id, poll, WaitUntil::Ready, |_| {
-        waiting
-            .get_or_insert_with(|| ReadyDisplay::new("waiting for the run to be ready"))
-            .show();
-    })
-    .await?;
-    if let Some(waiting) = waiting {
-        waiting.finish(&run);
-    }
-    Ok(run)
-}
-
 /// `runs exec`. On orbitinghail (release 67.0), a run that reports the
 /// `Ready` sub-status can still answer 400 `Run <id> is not ready yet. Try
 /// again shortly.` for a few minutes.

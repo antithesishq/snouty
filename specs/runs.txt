@@ -264,6 +264,14 @@ stdout '^\{"url":"http.*/run\?run_id=${R_run_id@R}"\}$'
 [!staging] env ANTITHESIS_TENANT=
 [!staging] ! snouty runs show $R_run_id --web
 [!staging] stderr 'Could not resolve Antithesis tenant'
+
+# The tenant becomes the page host, so `--web` rejects a tenant that is not a
+# hostname, even though an explicit ANTITHESIS_BASE_URL lets other commands
+# skip that check.
+[!staging] env ANTITHESIS_TENANT=evil.example/x#
+[!staging] ! snouty runs show $R_run_id --web
+[!staging] stderr 'invalid tenant `evil.example/x#`'
+[!staging] ! stdout .
 [!staging] env ANTITHESIS_TENANT=testtenant
 
 # `snouty --json runs show` outputs JSON.

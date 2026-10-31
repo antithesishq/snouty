@@ -37,21 +37,18 @@ jobs:
           "$npins/bin/npins" update rust-overlay
 
       # rust-toolchain.toml names `stable`, which the updated overlay resolves
-      # to its newest stable release. Taking the MSRV from there keeps it no
-      # newer than the compiler that nix builds with.
+      # to its newest stable release.
       - name: Set rust-version
-        id: msrv
         run: |
           version=$(nix-instantiate --eval --json -E '(import ./nixpkgs.nix { }).rustToolchain.version' | jq -r .)
           msrv=${version%.*}
           sed -i "s/^rust-version = \".*\"$/rust-version = \"$msrv\"/" Cargo.toml
           grep -qx "rust-version = \"$msrv\"" Cargo.toml
-          echo "msrv=$msrv" >> "$GITHUB_OUTPUT"
+          echo "MSRV=$msrv" >> "$GITHUB_ENV"
 
       - name: Open or update the pull request
         env:
           GH_TOKEN: ${{ github.token }}
-          MSRV: ${{ steps.msrv.outputs.msrv }}
         run: |
           if git diff --quiet; then
             echo "Already on Rust $MSRV with the newest rust-overlay"

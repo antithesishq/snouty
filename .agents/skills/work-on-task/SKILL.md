@@ -50,8 +50,8 @@ one so the next step reviews a clean diff.
 3. **Comments**: launch a subagent with the prompt "Invoke the
    simplify-comments skill on the current branch's diff against origin/main
    and report the findings." Fix the real findings yourself and commit.
-4. Run the checks that AGENTS.md "Workflow" names before a push, and commit
-   any remaining changes.
+4. Run `mise run test` and the checks that AGENTS.md "Workflow" names before
+   a push, and commit any remaining changes.
 
 ## 4. Submit the PR
 

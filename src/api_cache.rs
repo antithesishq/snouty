@@ -481,9 +481,9 @@ mod tests {
         )
     }
 
-    fn values_stream(values: &[Value]) -> Tagged<JsonStream, CachePolicy> {
+    fn values_stream(values: &[Value], policy: CachePolicy) -> Tagged<JsonStream, CachePolicy> {
         let items: Vec<color_eyre::Result<Value>> = values.iter().cloned().map(Ok).collect();
-        Tagged::new(futures_util::stream::iter(items).boxed(), HOUR)
+        Tagged::new(futures_util::stream::iter(items).boxed(), policy)
     }
 
     // The key separates tenants, operations, and every parameter; only a
@@ -512,7 +512,9 @@ mod tests {
             serde_json::json!({"text": "two"}),
         ];
 
-        let teed = cache.store_stream(key(), values_stream(&values)).untag();
+        let teed = cache
+            .store_stream(key(), values_stream(&values, HOUR))
+            .untag();
         assert_eq!(teed.try_collect::<Vec<_>>().await.unwrap(), values);
 
         let replay = cache.lookup_stream(&key()).await.expect("a cache hit");
@@ -662,10 +664,7 @@ mod tests {
         let key = || CacheKey::new("http://t", "get_run_logs", &("run-1"));
         let values = [serde_json::json!({"text": "one"})];
 
-        let stream = Tagged::new(
-            values_stream(&values).untag(),
-            CachePolicy::Cacheable(Duration::from_secs(60)),
-        );
+        let stream = values_stream(&values, CachePolicy::Cacheable(Duration::from_secs(60)));
         let teed = cache.store_stream(key(), stream).untag();
         teed.try_collect::<Vec<_>>().await.unwrap();
 
@@ -684,8 +683,8 @@ mod tests {
         let key = || CacheKey::new("http://t", "get_run_logs", &("run-1"));
         let values = [serde_json::json!({"text": "one"})];
 
-        let stream = Tagged::new(
-            values_stream(&values).untag(),
+        let stream = values_stream(
+            &values,
             CachePolicy::CacheableOnceComplete(Arc::new(AtomicBool::new(true))),
         );
         let teed = cache.store_stream(key(), stream).untag();

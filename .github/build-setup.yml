@@ -1,0 +1,5 @@
+# Steps that dist runs in release.yml before each build (`github-build-setup`
+# in dist-workspace.toml). rust-version tracks the newest stable Rust
+# (bump-rust.yml), and the runner image's Rust can lag it.
+- name: Update Rust
+  run: rustup update stable --no-self-update

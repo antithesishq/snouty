@@ -19,6 +19,8 @@ install-updater = true
 publish-jobs = ["./publish-crates"]
 # Publish -rc.N tags to crates.io as well as stable tags
 publish-prereleases = true
+# Steps to run before each build, relative to .github/workflows
+github-build-setup = "../build-setup.yml"
 # Produce build provenance attestations for the released artifacts
 github-attestations = true
 

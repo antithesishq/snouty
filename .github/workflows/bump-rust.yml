@@ -1,0 +1,74 @@
+name: bump rust
+
+# Keeps the MSRV at the newest stable Rust. Once a week this updates the
+# rust-overlay pin in npins, then sets `rust-version` in Cargo.toml to the
+# stable release that overlay provides, the toolchain that nix builds with. It
+# opens a pull request with both changes, or updates the one already open.
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+
+permissions: {}
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      # To start CI on the pull request; see the last step.
+      actions: write
+    steps:
+      - uses: samueldr/lix-gha-installer-action@a0fee77b2a98bb7c5c0ed7ae6d6ad4903dbdad0d # v2026-06-15
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Update rust-overlay
+        run: |
+          npins=$(nix-build nixpkgs.nix -A npins --no-out-link)
+          "$npins/bin/npins" update rust-overlay
+
+      # rust-toolchain.toml names `stable`, which the updated overlay resolves
+      # to its newest stable release. Taking the MSRV from there keeps it no
+      # newer than the compiler that nix builds with.
+      - name: Set rust-version
+        id: msrv
+        run: |
+          version=$(nix-instantiate --eval --json -E '(import ./nixpkgs.nix { }).rustToolchain.version' | jq -r .)
+          msrv=${version%.*}
+          sed -i "s/^rust-version = \".*\"$/rust-version = \"$msrv\"/" Cargo.toml
+          grep -qx "rust-version = \"$msrv\"" Cargo.toml
+          echo "msrv=$msrv" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MSRV: ${{ steps.msrv.outputs.msrv }}
+        run: |
+          if git diff --quiet; then
+            echo "Already on Rust $MSRV with the newest rust-overlay"
+            exit 0
+          fi
+          branch=bump-rust
+          title="Bump the MSRV to Rust $MSRV, and rust-overlay with it"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "$title"
+          git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
+          if [ -z "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
+            gh pr create --base main --head "$branch" --title "$title" --body "Sets \`rust-version\` to Rust $MSRV, the newest stable release in the updated rust-overlay pin. Opened by \`.github/workflows/bump-rust.yml\`."
+          fi
+          # A push or pull request made with GITHUB_TOKEN starts no workflow, but
+          # a dispatch does. build.yml reports the required tests-passed check
+          # on the branch's head commit, and slow-tests.yml builds with nix.
+          gh workflow run build.yml --ref "$branch"
+          gh workflow run slow-tests.yml --ref "$branch"

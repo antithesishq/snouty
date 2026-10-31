@@ -266,8 +266,11 @@ The Python scripts share one set of dependencies, in the top-level
 
 The `msrv` CI job checks the workspace on the MSRV, the `rust-version` in the
 `[workspace.package]` table of `Cargo.toml`, which both crates use. CI checks
-the linux-gnu and linux-musl targets on it, but not macOS. To change the MSRV,
-change only that line. To run the check yourself:
+the linux-gnu and linux-musl targets on it, but not macOS. The MSRV tracks the
+newest stable Rust: each week, `.github/workflows/bump-rust.yml` updates the
+rust-overlay pin and sets that line to the overlay's stable release, in a pull
+request. To change the MSRV by hand, change only that line. To run the check
+yourself:
 
 ```
 cargo +<rust-version> check --workspace --all-targets --locked

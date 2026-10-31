@@ -1,13 +1,19 @@
 //! [`CachePolicy`] — an admission verdict on a fetched API response.
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
 use headers::{CacheControl, HeaderMapExt};
 
 /// Whether the cache may store a fetched value. Each `#[cached]` handler
 /// tags its value with the verdict from its response's headers (see
 /// [`crate::api_cache::ApiCache::headers_policy`]).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum CachePolicy {
     Cacheable,
+    /// A stream that may be stored only if the flag is set by the time it
+    /// ends. A value with this tag is never stored.
+    CacheableOnceComplete(Arc<AtomicBool>),
     Uncacheable,
 }
 

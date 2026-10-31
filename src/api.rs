@@ -1,6 +1,8 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::num::NonZeroU64;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use color_eyre::eyre::{Context, Report, Result, eyre};
@@ -710,9 +712,13 @@ pub(crate) enum ResponseCache {
 /// End `stream` at the first line whose `moment.vtime` is past `end`. The
 /// endpoint streams in chronological order, so nothing at or before the end
 /// follows a line past it. A line with no vtime (a `Stream_Error`) is never
-/// past the end: error objects must reach the user.
-fn truncate_at_end_vtime(stream: JsonStream, end: VTime) -> JsonStream {
-    stream
+/// past the end: error objects must reach the user. The flag is set once a
+/// line past the end arrives, which proves the stream holds every line up to
+/// the end.
+fn truncate_at_end_vtime(stream: JsonStream, end: VTime) -> (JsonStream, Arc<AtomicBool>) {
+    let passed_end = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&passed_end);
+    let stream = stream
         .take_while(move |item| {
             let keep = match item {
                 Ok(value) => {
@@ -720,9 +726,13 @@ fn truncate_at_end_vtime(stream: JsonStream, end: VTime) -> JsonStream {
                 }
                 Err(_) => true,
             };
+            if !keep {
+                flag.store(true, Ordering::Relaxed);
+            }
             futures_util::future::ready(keep)
         })
-        .boxed()
+        .boxed();
+    (stream, passed_end)
 }
 
 pub struct ExecRequest {
@@ -1017,10 +1027,13 @@ impl AntithesisApi {
     ///
     /// The endpoint streams the branch's logs past the moment's vtime, so a
     /// nonzero vtime is enforced here as the stream's end, upstream of the
-    /// `#[cached]` tee. Logs between fixed vtimes never change, so that
-    /// stream is cached whatever the headers say. The `0` placeholder asks
-    /// for the branch's current end, which grows while the run is live, so
-    /// the headers decide.
+    /// `#[cached]` tee. Logs up to a fixed vtime never change once the
+    /// timeline has passed it, so a stream that reached a line past the end
+    /// is cached even when the headers say `no-cache`, as they do for a live
+    /// run. A stream that stops short of the end, on a timeline that has not
+    /// got there yet, is not. The `0` placeholder asks for the branch's
+    /// current end, which grows while the run is live, so the headers
+    /// decide.
     #[cached(stream)]
     pub async fn get_run_logs(
         &self,
@@ -1041,14 +1054,18 @@ impl AntithesisApi {
 
         match request.send().await {
             Ok(response) => {
-                let policy = match end {
-                    Some(_) => CachePolicy::Cacheable,
-                    None => self.cache.headers_policy(response.headers()),
-                };
+                let policy = self.cache.headers_policy(response.headers());
                 let stream = json_lines(response.into_inner().into_inner());
-                let stream = match end {
-                    Some(end) => truncate_at_end_vtime(stream, end),
-                    None => stream,
+                let (stream, policy) = match end {
+                    Some(end) => {
+                        let (stream, passed_end) = truncate_at_end_vtime(stream, end);
+                        let policy = match policy {
+                            CachePolicy::Cacheable => CachePolicy::Cacheable,
+                            _ => CachePolicy::CacheableOnceComplete(passed_end),
+                        };
+                        (stream, policy)
+                    }
+                    None => (stream, policy),
                 };
                 Ok(stream.with_tag(policy))
             }
@@ -3912,14 +3929,31 @@ mod tests {
         }
     }
 
+    /// A log line at `vtime`, as the server sends it.
+    fn log_line(vtime: &str) -> String {
+        format!(r#"{{"text":"at {vtime}","moment":{{"input_hash":"-1","vtime":"{vtime}"}}}}"#)
+    }
+
+    fn end_moment() -> Moment {
+        Moment {
+            input_hash: "-1".to_owned(),
+            vtime: "2.0".parse().unwrap(),
+        }
+    }
+
     #[tokio::test]
-    async fn run_logs_between_fixed_vtimes_are_cached_despite_no_cache() {
-        // A live run's logs carry `no-cache`, but logs up to a fixed end
-        // vtime never change.
+    async fn run_logs_past_a_fixed_end_are_cached_despite_no_cache() {
+        // A live run's logs carry `no-cache`, but a stream that reached a
+        // line past the end holds every line up to it, and those never
+        // change.
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/logs"))
-            .respond_with(no_cache().set_body_string("{\"text\":\"log line\"}\n"))
+            .respond_with(no_cache().set_body_string(format!(
+                "{}\n{}\n",
+                log_line("1.0"),
+                log_line("3.0")
+            )))
             .expect(1)
             .mount(&mock_server)
             .await;
@@ -3928,14 +3962,28 @@ mod tests {
         let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
 
         for _ in 0..2 {
-            let stream = api
-                .get_run_logs("run-1", logs_moment(), None)
-                .await
-                .unwrap();
-            assert_eq!(
-                read_stream(stream.untag()).await,
-                [serde_json::json!({"text": "log line"})]
-            );
+            let stream = api.get_run_logs("run-1", end_moment(), None).await.unwrap();
+            assert_eq!(read_stream(stream.untag()).await, [log_value("1.0")]);
+        }
+    }
+
+    #[tokio::test]
+    async fn run_logs_short_of_a_fixed_end_are_not_cached_under_no_cache() {
+        // The timeline has not reached the end yet, so it can still grow.
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1/logs"))
+            .respond_with(no_cache().set_body_string(format!("{}\n", log_line("1.0"))))
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
+
+        for _ in 0..2 {
+            let stream = api.get_run_logs("run-1", end_moment(), None).await.unwrap();
+            assert_eq!(read_stream(stream.untag()).await, [log_value("1.0")]);
         }
     }
 
@@ -4023,7 +4071,7 @@ mod tests {
             panic!("the source was polled past the truncation point")
         }))
         .boxed();
-        let kept = read_stream(truncate_at_end_vtime(source, "2.0".parse().unwrap())).await;
+        let kept = read_stream(truncate_at_end_vtime(source, "2.0".parse().unwrap()).0).await;
         // The end vtime is inclusive: the moment's own events must print.
         assert_eq!(kept, [log_value("1.0"), log_value("2.0")]);
     }
@@ -4034,7 +4082,7 @@ mod tests {
         // swallowed by the truncation.
         let error_line = serde_json::json!({"error": "boom"});
         let source = stream::iter([Ok(log_value("1.0")), Ok(error_line.clone())]).boxed();
-        let kept = read_stream(truncate_at_end_vtime(source, "5.0".parse().unwrap())).await;
+        let kept = read_stream(truncate_at_end_vtime(source, "5.0".parse().unwrap()).0).await;
         assert_eq!(kept, [log_value("1.0"), error_line]);
     }
 

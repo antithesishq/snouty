@@ -6,8 +6,9 @@
 //! resource that can no longer change — a terminal run's detail, its logs,
 //! and a finished build's logs — and sends `no-cache` for everything else
 //! (observed on the antithesis-orbitinghail tenant, release 67.0). The one
-//! exception is logs between fixed vtimes, which never change and are
-//! cached whatever the headers say (see `AntithesisApi::get_run_logs`).
+//! exception is logs up to a fixed vtime, which never change once the
+//! timeline has passed it and are then cached whatever the headers say (see
+//! `AntithesisApi::get_run_logs`).
 //! There is no per-entry expiration — the header's lifetime is read as a
 //! yes/no permission, and the cache lives in a transient per-user directory
 //! (`XDG_RUNTIME_DIR`; the user temp dir on macOS) that the OS clears
@@ -25,6 +26,8 @@
 //! build may not match the next build's types.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
 use futures_util::StreamExt;
@@ -256,7 +259,10 @@ impl ApiCache {
     /// Tee a [`CachePolicy::Cacheable`]-tagged stream into the cache as the
     /// caller reads it, committing the entry only once the stream ends
     /// without an error (a stream the caller abandons partway, or that fails
-    /// mid-way, is never committed). Anything else passes through untouched.
+    /// mid-way, is never committed). A
+    /// [`CachePolicy::CacheableOnceComplete`] stream also needs its flag set
+    /// by then. An [`CachePolicy::Uncacheable`] stream passes through
+    /// untouched.
     /// Never fails: an oversized or unwritable entry is dropped and the
     /// caller keeps streaming.
     pub fn store_stream(
@@ -267,14 +273,17 @@ impl ApiCache {
         let Some(dir) = self.dir.clone() else {
             return tagged;
         };
-        if !matches!(tagged.tag(), CachePolicy::Cacheable) {
-            return tagged;
-        }
+        let complete = match tagged.tag() {
+            CachePolicy::Cacheable => None,
+            CachePolicy::CacheableOnceComplete(complete) => Some(Arc::clone(complete)),
+            CachePolicy::Uncacheable => return tagged,
+        };
         let tee = Some(Tee {
             dir,
             key,
             writer: None,
             remaining: self.max_file_size,
+            complete,
         });
         let teed = futures_util::stream::unfold(
             (tagged.untag(), tee),
@@ -286,11 +295,15 @@ impl ApiCache {
                     if let Some(Tee {
                         key,
                         writer: Some(writer),
+                        complete,
                         ..
                     }) = tee
-                        && let Err(err) = writer.commit().await
                     {
-                        warn!("API cache commit failed for {key}: {err}");
+                        if complete.is_some_and(|complete| !complete.load(Ordering::Relaxed)) {
+                            debug!("API cache entry for {key} is incomplete, not caching");
+                        } else if let Err(err) = writer.commit().await {
+                            warn!("API cache commit failed for {key}: {err}");
+                        }
                     }
                     return None;
                 };
@@ -321,6 +334,9 @@ struct Tee {
     writer: Option<cacache::Writer>,
     /// Size budget left before the entry is abandoned as too large.
     remaining: u64,
+    /// For a [`CachePolicy::CacheableOnceComplete`] stream, the flag that
+    /// must be set for the entry to commit.
+    complete: Option<Arc<AtomicBool>>,
 }
 
 impl Tee {

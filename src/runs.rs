@@ -5518,7 +5518,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn wait_until_ready_stops_once_the_run_is_ready() {
+        async fn wait_for_ready_stops_once_the_run_is_ready() {
             let server = MockServer::start().await;
             let bodies = vec![
                 run_body("starting"),
@@ -5660,7 +5660,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn wait_until_ready_stops_at_a_complete_run() {
+        async fn wait_for_ready_stops_at_a_complete_run() {
             let server = MockServer::start().await;
             mount_get_run_statuses(&server, &["starting", "incomplete"]).await;
             let api = test_api(&server.uri());

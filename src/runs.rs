@@ -2183,23 +2183,30 @@ async fn wait_until_ready(api: &AntithesisApi, run_id: &str, poll: Duration) -> 
     Ok(run)
 }
 
-/// The marker in a 400's message that the run does not accept commands yet.
-/// On orbitinghail (release 67.0), a run that reports the `Ready` sub-status
-/// can still answer `Run <id> is not ready yet. Try again shortly.` for a few
+/// Whether a 400 says that `run_id` does not accept commands yet. On
+/// orbitinghail (release 67.0), a run that reports the `Ready` sub-status can
+/// still answer `Run <id> is not ready yet. Try again shortly.` for a few
 /// minutes.
-const RUN_NOT_READY: &str = "is not ready yet";
+fn run_not_ready_yet(run_id: &str, err: &color_eyre::eyre::Report) -> bool {
+    api_error_status(err) == Some(400)
+        && api_error_message(err)
+            .is_some_and(|m| m.contains(&format!("Run {run_id} is not ready yet")))
+}
 
-/// Execute the command, and retry every `poll` while the server answers that
-/// the run is not ready yet.
+/// Execute the command in `run`, which [`wait_until_ready`] returned. While
+/// the run stays ready and the server answers that it is not ready yet, read
+/// the run again and retry every `poll`. `explain` annotates a failure with
+/// the run's latest status.
 async fn execute_when_accepted(
     api: &AntithesisApi,
-    run_id: &str,
+    mut run: RunDetail,
     exec: ExecRequest,
     poll: Duration,
+    explain: impl Fn(&RunStatus, color_eyre::eyre::Report) -> color_eyre::eyre::Report,
 ) -> Result<JsonStream> {
     let mut waiting: Option<ReadyDisplay> = None;
     loop {
-        let err = match api.execute_command(run_id, exec.clone()).await {
+        let err = match api.execute_command(&run.run_id, exec.clone()).await {
             Ok(stream) => {
                 if let Some(waiting) = waiting {
                     waiting.clear();
@@ -2208,15 +2215,14 @@ async fn execute_when_accepted(
             }
             Err(err) => err,
         };
-        let not_ready = api_error_status(&err) == Some(400)
-            && api_error_message(&err).is_some_and(|m| m.contains(RUN_NOT_READY));
-        if !not_ready {
-            return Err(err);
+        if !(run.is_ready() && run_not_ready_yet(&run.run_id, &err)) {
+            return Err(explain(&run.status, err));
         }
         waiting
             .get_or_insert_with(|| ReadyDisplay::new("waiting for the run to accept commands"))
             .show();
         tokio::time::sleep(poll).await;
+        run = api.get_run(&run.run_id).await?.untag();
     }
 }
 
@@ -2254,9 +2260,10 @@ async fn exec_when_ready(
         ],
     );
     let run = wait_until_ready(api, run_id, poll).await?;
-    let stream = execute_when_accepted(api, run_id, exec, poll)
-        .await
-        .map_err(|err| explain_exec_error(&run.status, &debug_command, rewarm_flag, err))?;
+    let stream = execute_when_accepted(api, run, exec, poll, |status, err| {
+        explain_exec_error(status, &debug_command, rewarm_flag, err)
+    })
+    .await?;
 
     // Only the last line can be the terminal result. A line that parses as
     // one is held until the next line arrives, and is shown as an event if one
@@ -5540,17 +5547,18 @@ mod tests {
 
             let requests = server.received_requests().await.unwrap();
             let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
-            assert_eq!(methods, ["GET", "POST", "POST", "POST"]);
+            // Each retry reads the run again.
+            assert_eq!(methods, ["GET", "POST", "GET", "POST", "GET", "POST"]);
         }
 
         #[tokio::test]
-        async fn exec_does_not_retry_another_400() {
+        async fn exec_stops_retrying_once_the_run_ends() {
             let server = MockServer::start().await;
-            mount_get_run_bodies(&server, vec![ready_run_body()]).await;
-            let ended = r#"{"message":"Run run-w has ended. Commands require an active run."}"#;
+            mount_get_run_bodies(&server, vec![ready_run_body(), run_body("completed")]).await;
+            let not_ready = r#"{"message":"Run run-w is not ready yet. Try again shortly."}"#;
             Mock::given(method("POST"))
                 .and(path("/api/v0/runs/run-w/command"))
-                .respond_with(ResponseTemplate::new(400).set_body_string(ended))
+                .respond_with(ResponseTemplate::new(400).set_body_string(not_ready))
                 .mount(&server)
                 .await;
             let api = test_api(&server.uri());
@@ -5560,9 +5568,41 @@ mod tests {
                 .expect("an ended run must not keep the command waiting")
                 .unwrap_err();
 
-            assert_eq!(api_error_status(&err), Some(400));
+            // The note names the status the run ended with.
+            let report = format!("{err:?}");
+            assert!(report.contains("This run is completed"), "got: {report}");
             let requests = server.received_requests().await.unwrap();
-            assert_eq!(requests.len(), 2);
+            let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
+            assert_eq!(methods, ["GET", "POST", "GET", "POST"]);
+        }
+
+        #[tokio::test]
+        async fn exec_does_not_retry_another_400() {
+            for message in [
+                "Run run-w has ended. Commands require an active run.",
+                // Not ready, but about something other than the run.
+                "Session s-1 is not ready yet. Try again shortly.",
+            ] {
+                let server = MockServer::start().await;
+                mount_get_run_bodies(&server, vec![ready_run_body()]).await;
+                Mock::given(method("POST"))
+                    .and(path("/api/v0/runs/run-w/command"))
+                    .respond_with(
+                        ResponseTemplate::new(400).set_body_json(json!({ "message": message })),
+                    )
+                    .mount(&server)
+                    .await;
+                let api = test_api(&server.uri());
+                let exec = exec_when_ready(&api, "run-w", true_exec(), FAST_POLL, JSON);
+                let err = tokio::time::timeout(Duration::from_secs(5), exec)
+                    .await
+                    .expect("the command must not keep waiting")
+                    .unwrap_err();
+
+                assert_eq!(api_error_status(&err), Some(400));
+                let requests = server.received_requests().await.unwrap();
+                assert_eq!(requests.len(), 2, "message: {message}");
+            }
         }
 
         #[tokio::test]

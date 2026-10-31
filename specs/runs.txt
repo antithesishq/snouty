@@ -242,6 +242,17 @@ mock-runs-server
 snouty runs show $R_run_id
 stdout '(?s)^see property results:\n  snouty runs properties $R_run_id\n\nview the report in your browser:\n'
 
+# A run that is still in progress can have property results too, so it gets
+# the same hint. A debugging session records no properties of its own, and a
+# starting run none yet, so neither does.
+[!staging] snouty runs show run-2
+[!staging] stdout '^  snouty runs properties run-2$'
+[!staging] snouty runs show session-loading
+[!staging] ! stdout 'see property results'
+[!staging] snouty runs show run-starting
+[!staging] stdout 'Status +starting$'
+[!staging] ! stdout 'see property results'
+
 # `snouty --json runs show --web` resolves the report URL without launching a
 # browser, so a script can capture it. (Plain `--web` would shell out to a
 # browser, so it's not exercised here.)
@@ -534,8 +545,8 @@ snouty runs show $R_run_id
 stdout 'Failure VTime.*'
 stdout 'Failure Hash.*'
 stdout 'Failure Reason +the workload container exited early'
-# An incomplete run has no property results, so there is no properties hint.
-! stdout 'snouty runs properties'
+# An incomplete run keeps the properties it recorded, so it gets the hint.
+stdout '^  snouty runs properties ${R_run_id}$'
 
 mock-runs-server
 snouty --json runs show $R_run_id
@@ -597,12 +608,15 @@ stderr '^Error: API error: 400.*'
 [!staging] stdout '^No properties found\.$'
 [!staging] ! stderr '^Error:'
 
-# A run that is not complete has an empty list, not a 404. run-3 is the
-# incomplete fixture.
+# A run that is not complete lists the properties it has recorded so far, as
+# on release 67.0. run-2 is in progress and run-3 is incomplete.
 [!staging] mock-runs-server
+[!staging] snouty runs properties run-2
+[!staging] stdout '^fail .*Counter value stays below limit$'
 [!staging] snouty runs properties run-3
-[!staging] stdout '^No properties found\.$'
-[!staging] ! stderr '^Error:'
+[!staging] stdout '^fail .*Counter value stays below limit$'
+[!staging] snouty runs property run-2 97cf5fcafa500ed62bf109d81834c5b881a2c854
+[!staging] stdout 'Counter value stays below limit'
 
 # A filtered empty result names the filters.
 mock-runs-server

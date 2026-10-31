@@ -754,7 +754,7 @@ pub enum RunsCommands {
         #[arg(value_parser = parse_run_id)]
         run_id: String,
 
-        /// Open the run's triage report in a browser instead of printing details
+        /// Open the run's page in a browser instead of printing details
         #[arg(short = 'w', long)]
         web: bool,
     },

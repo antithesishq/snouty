@@ -2686,18 +2686,18 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "Peek at the metadata for a completed run",
             "I want the metadata for one specific run.",
             "Shows the run id, status, timestamps, launcher, and links, then hints at "
-            "`runs properties` for the property results and `--web` for the report.",
+            "`runs properties` for the property results and `--web` for the run page.",
             ["runs", "show", d.success],
             contains_all(d.success, "completed", f"snouty runs properties {d.success}"),
             json_capable=False,
         ),
         Story(
             "runs-show--web",
-            "Jump straight to the triage report in the browser",
-            "I want to open this run's triage report in my browser.",
-            "Prints the report URL and exits cleanly (the browser is shimmed to a no-op here).",
+            "Jump straight to the run page in the browser",
+            "I want to open this run's page in my browser.",
+            "Prints the run page URL and exits cleanly (the browser is shimmed to a no-op here).",
             ["runs", "show", d.success, "--web"],
-            succeeds_with("http"),
+            succeeds_with(f"/run?run_id={d.success}"),
             json_capable=False,
         ),
         Story(

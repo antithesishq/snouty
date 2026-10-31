@@ -185,16 +185,13 @@ stderr '.*'
 #    A multiverse-debugging session completes with launcher `debugging` and
 #    has no build logs, so skip it. Staging has more launchers without build
 #    logs, such as `debug_experiment_runner`, so staging picks only a run from
-#    a test launcher. A staging run can complete without a report link, and
-#    then `runs show` omits the `--web` hint, so staging also skips a run with
-#    no `links.triage_report`. The tenant must have a run from a test
-#    launcher, with a report link, among its 100 newest completed runs. (The
-#    mock list omits `links`, and every mock run has a report.)
+#    a test launcher. The tenant must have a run from a test launcher among
+#    its 100 newest completed runs.
 mock-runs-server
 snouty --json runs list --status completed --limit 100
 [!staging] stdout '"run_id":"run-.*'
 [!staging] env_from_json_find run_id launcher!=debugging
-[staging] env_from_json_find run_id launcher=basic_test|basic_k8s_test|advanced_test|advanced_k8s_test links.triage_report
+[staging] env_from_json_find run_id launcher=basic_test|basic_k8s_test|advanced_test|advanced_k8s_test
 
 # `snouty runs show` displays run details in key-value format. Max Compute
 # Hours (from antithesis.max_compute_hours) and Setup Timeout (from
@@ -228,26 +225,25 @@ stdout '^Created +\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \+00:00$'
 snouty runs list --detail -n 1
 stdout '^Created +\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \+00:00$'
 
-# `snouty runs show` doesn't print the raw report URL — `snouty runs show --web`
-# is the way to follow that link. The hint is shown only when a report link
-# exists (mock runs all carry one), since `--web` errors without it.
+# `snouty runs show` doesn't print the run page URL — `snouty runs show --web`
+# opens it.
 mock-runs-server
 snouty runs show $R_run_id
-! stdout 'Report.*https'
-[!staging] stdout 'snouty runs show .*--web'
+! stdout 'https://.*/run\?'
+stdout '^view the run in your browser:\n  snouty runs show ${R_run_id@R} --web$'
 
 # A completed run has property results, so `snouty runs show` points at
 # `snouty runs properties`, above the `--web` hint.
 mock-runs-server
 snouty runs show $R_run_id
-stdout '(?s)^see property results:\n  snouty runs properties $R_run_id\n\nview the report in your browser:\n'
+stdout '(?s)^see property results:\n  snouty runs properties $R_run_id\n\nview the run in your browser:\n'
 
-# `snouty --json runs show --web` resolves the report URL without launching a
-# browser, so a script can capture it. (Plain `--web` would shell out to a
-# browser, so it's not exercised here.)
+# `snouty --json runs show --web` prints the run page URL, the tenant's
+# `/run?run_id=<run_id>`, without launching a browser, so a script can capture
+# it. (Plain `--web` would shell out to a browser, so it's not exercised here.)
 mock-runs-server
 snouty --json runs show $R_run_id --web
-[!staging] stdout '"url":.*https.*reports'
+stdout '^\{"url":"http.*/run\?run_id=${R_run_id@R}"\}$'
 
 # `snouty --json runs show` outputs JSON.
 mock-runs-server

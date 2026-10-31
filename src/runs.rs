@@ -1622,62 +1622,65 @@ async fn cmd_runs_stream(
     result
 }
 
-/// Open the run's status stream, and wait while the run has none yet. The
-/// server answers 404 until the run's stream opens, minutes after the run
-/// reports that it is ready (observed on the antithesis-orbitinghail tenant,
-/// release 65.3: ready at 73 s, stream at 241 s). A 404 is an error when the
-/// run does not exist, has finished, has status "unknown", or was created
-/// before release 65.3.
+/// `runs stream`. The server answers 404 until the run's stream opens,
+/// minutes after the run reports that it is ready (observed on the
+/// antithesis-orbitinghail tenant, release 65.3: ready at 73 s, stream at
+/// 241 s). A tenant before release 65.3 has no stream route and answers 404
+/// for every run; the run ID names the release that created the run.
+const STREAM: Endpoint = Endpoint {
+    needs: Needs::Live,
+    waiting: "waiting for the run's stream to open",
+    retry_policy: |run, err| {
+        if api_error_status(err) == Some(404) && run.created_on_or_after(MIN_STREAM_RELEASE) {
+            RetryPolicy::Retry
+        } else {
+            RetryPolicy::Fail
+        }
+    },
+};
+
+/// Open the run's status stream, and wait while the run has none yet.
 async fn open_run_stream(
     api: &AntithesisApi,
     run_id: &str,
     property_ids: &[String],
     poll: Duration,
 ) -> Result<JsonStream> {
-    let mut waiting: Option<ReadyDisplay> = None;
-    loop {
-        let err = match api.stream_run_status(run_id, property_ids).await {
-            Ok(stream) => {
-                if let Some(waiting) = waiting {
-                    waiting.clear();
-                }
-                return Ok(stream);
-            }
-            Err(err) => err,
-        };
-        if api_error_status(&err) != Some(404) {
-            return Err(err);
-        }
-        match probe_run(api, run_id).await {
-            RunProbe::NotFound => return Err(user_error(format!("run not found: {run_id}"))),
-            RunProbe::ProbeFailed(probe_err) => return Err(probe_err),
-            // A tenant before release 65.3 has no stream route and answers 404
-            // for every run. The run ID names the release that created the run.
-            RunProbe::Exists(run) if !run.created_on_or_after(MIN_STREAM_RELEASE) => {
-                let (major, minor) = MIN_STREAM_RELEASE;
-                return Err(
-                    user_error(format!("run {run_id} has no status stream")).note(format!(
-                        "streaming needs a run created on release {major}.{minor} or later"
-                    )),
-                );
-            }
-            RunProbe::Exists(run) if run.status.is_unclassified() => {
-                return Err(unclassified_status_error(run_id, &run.status));
-            }
-            RunProbe::Exists(run) if run.status.is_terminal() => {
-                return Err(user_error(format!(
-                    "run {run_id} has finished, and has no status stream"
-                ))
-                .suggestion(format!(
-                    "read the results with `snouty runs properties {run_id}`"
-                )));
-            }
-            RunProbe::Exists(_) => {}
-        }
-        waiting
-            .get_or_insert_with(|| ReadyDisplay::new("waiting for the run's stream to open"))
-            .show();
-        tokio::time::sleep(poll).await;
+    ready::send_when_ready(
+        api,
+        run_id,
+        poll,
+        STREAM,
+        || api.stream_run_status(run_id, property_ids),
+        explain_stream_error,
+    )
+    .await
+}
+
+/// Annotate a stream error for `run`: a 404 from a run that will never have
+/// a stream.
+fn explain_stream_error(
+    run: &RunDetail,
+    err: color_eyre::eyre::Report,
+) -> color_eyre::eyre::Report {
+    if api_error_status(&err) != Some(404) {
+        return err;
+    }
+    let run_id = &run.run_id;
+    if !run.created_on_or_after(MIN_STREAM_RELEASE) {
+        let (major, minor) = MIN_STREAM_RELEASE;
+        user_error(format!("run {run_id} has no status stream")).note(format!(
+            "streaming needs a run created on release {major}.{minor} or later"
+        ))
+    } else if run.status.is_terminal() {
+        user_error(format!(
+            "run {run_id} has finished, and has no status stream"
+        ))
+        .suggestion(format!(
+            "read the results with `snouty runs properties {run_id}`"
+        ))
+    } else {
+        err
     }
 }
 
@@ -5114,7 +5117,11 @@ mod tests {
             .unwrap()
         }
 
-        async fn mock_get_run(run_id: &str, status: u16, body: serde_json::Value) -> MockServer {
+        pub(super) async fn mock_get_run(
+            run_id: &str,
+            status: u16,
+            body: serde_json::Value,
+        ) -> MockServer {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
                 .and(path(format!("/api/v0/runs/{run_id}")))
@@ -5370,6 +5377,60 @@ mod tests {
             let line = stream.try_next().await.unwrap().unwrap();
 
             assert_eq!(line["type"], "RUN_FINALIZED");
+        }
+
+        #[tokio::test]
+        async fn the_stream_reads_the_run_before_each_attempt() {
+            let server = MockServer::start().await;
+            mount_get_run_statuses(&server, &["in_progress"]).await;
+            mount_stream(&server, "run-w", 2).await;
+            let api = test_api(&server.uri());
+
+            let _stream = open_run_stream(&api, "run-w", &[], FAST_POLL)
+                .await
+                .unwrap();
+
+            let requests = server.received_requests().await.unwrap();
+            let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
+            assert_eq!(methods, ["GET", "POST", "GET", "POST", "GET", "POST"]);
+        }
+
+        #[tokio::test]
+        async fn the_stream_of_an_unknown_run_sends_nothing() {
+            let server =
+                super::run_scoped_errors::mock_get_run("BAD-ID", 404, json!({"message": "nope"}))
+                    .await;
+            let api = test_api(&server.uri());
+
+            let err = open_run_stream(&api, "BAD-ID", &[], FAST_POLL)
+                .await
+                .err()
+                .unwrap();
+
+            assert_eq!(err.to_string(), "run not found: BAD-ID");
+            let requests = server.received_requests().await.unwrap();
+            let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
+            assert_eq!(methods, ["GET"]);
+        }
+
+        #[tokio::test]
+        async fn the_stream_stops_waiting_once_the_run_ends() {
+            let server = MockServer::start().await;
+            mount_get_run_statuses(&server, &["in_progress", "completed"]).await;
+            mount_stream(&server, "run-w", u64::MAX).await;
+            let api = test_api(&server.uri());
+
+            let open = open_run_stream(&api, "run-w", &[], FAST_POLL);
+            let err = tokio::time::timeout(Duration::from_secs(5), open)
+                .await
+                .expect("an ended run must not keep the stream waiting")
+                .err()
+                .unwrap();
+
+            assert_eq!(
+                err.to_string(),
+                "run run-w has finished, and has no status stream"
+            );
         }
 
         #[tokio::test]

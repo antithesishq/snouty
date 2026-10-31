@@ -111,7 +111,11 @@ struct Waiting(Option<(&'static str, ReadyDisplay)>);
 impl Waiting {
     /// Show `message`. A different message ends the current display first.
     fn show(&mut self, message: &'static str) {
-        if self.0.as_ref().is_none_or(|(current, _)| *current != message) {
+        if self
+            .0
+            .as_ref()
+            .is_none_or(|(current, _)| *current != message)
+        {
             self.clear();
         }
         self.0
@@ -123,7 +127,10 @@ impl Waiting {
     /// End a wait for the run to be ready, which says that the run is
     /// ready when it is.
     fn reached(&mut self, run: &RunDetail) {
-        if self.0.as_ref().is_some_and(|(current, _)| *current == READY_WAITING)
+        if self
+            .0
+            .as_ref()
+            .is_some_and(|(current, _)| *current == READY_WAITING)
             && let Some((_, display)) = self.0.take()
         {
             display.finish(run);

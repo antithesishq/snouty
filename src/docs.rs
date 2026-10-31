@@ -54,7 +54,7 @@ fn etag_path() -> Result<PathBuf> {
     Ok(cache_dir()?.join("docs.db.etag"))
 }
 
-const DOCS_CHECK_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const DOCS_CHECK_INTERVAL: Duration = Duration::from_mins(5);
 
 /// Whether the last update check is younger than [`DOCS_CHECK_INTERVAL`].
 /// False when the database or the `ETag` file is missing or unreadable, or

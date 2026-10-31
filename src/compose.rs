@@ -866,19 +866,14 @@ fn ensure_services_have_images(contents: &ComposeContents) -> Result<()> {
 /// tars symlinks verbatim too, so the staged tree produces the same image
 /// content as building from `config_dir` directly.
 ///
-/// The staged `docker-compose.yaml` is always a new regular file with mode
-/// 0644, whatever the source is: a symlink, a read-only file, or a file with
-/// any other mode.
+/// The staged `docker-compose.yaml` is always a new regular file, whatever the
+/// source is: a symlink, a read-only file, or any other file.
 pub fn stage_pinned_config(config_dir: &Path, pinned_yaml: &str) -> Result<tempfile::TempDir> {
-    use std::os::unix::fs::PermissionsExt;
-
     let staged = tempfile::tempdir().wrap_err("failed to create config staging directory")?;
     crate::util::copy_dir_recursive(config_dir, staged.path())?;
     let compose = staged.path().join("docker-compose.yaml");
     std::fs::remove_file(&compose).wrap_err("failed to remove staged docker-compose.yaml")?;
     std::fs::write(&compose, pinned_yaml).wrap_err("failed to write pinned docker-compose.yaml")?;
-    std::fs::set_permissions(&compose, std::fs::Permissions::from_mode(0o644))
-        .wrap_err("failed to set the mode of pinned docker-compose.yaml")?;
     Ok(staged)
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1213,8 +1208,6 @@ mod tests {
 
         let compose = staged.path().join("docker-compose.yaml");
         assert_eq!(std::fs::read_to_string(&compose).unwrap(), "PINNED\n");
-        let mode = std::fs::metadata(&compose).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o644);
     }
 
     fn cc(service: &str, id: &str, state: ContainerState) -> ComposeContainer {

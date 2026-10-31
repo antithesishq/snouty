@@ -553,21 +553,11 @@ async fn wait_for_run(
     // A poll delayed by a slow response schedules the next one a full
     // interval later, instead of firing early to catch up.
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let api = api.uncached();
 
     loop {
         poll.tick().await;
 
-        let run = match api.get_run(run_id).await {
-            Ok(run) => run.untag(),
-            // A 404 here is unambiguous, exactly as in `runs show`: the run id
-            // is bad, so fail now rather than poll a typo until the timeout.
-            Err(err) => return Err(explain_run_not_found(run_id, err)),
-        };
-
-        if run.status.is_unclassified() {
-            return Err(unclassified_status_error(run_id, &run.status));
-        }
+        let run = look_at_run(api, run_id).await?;
         let reached = match until {
             WaitUntil::Ready => run.is_ready_or_terminal(),
             WaitUntil::Complete => run.status.is_terminal(),
@@ -577,6 +567,21 @@ async fn wait_for_run(
         }
         on_wait(&run);
     }
+}
+
+/// Read the run once, bypassing the response cache. A 404 is unambiguous,
+/// exactly as in `runs show`: the run ID is bad, so the caller fails now
+/// rather than poll a typo. An unclassified run fails too (see
+/// [`RunStatus::is_unclassified`]).
+async fn look_at_run(api: &AntithesisApi, run_id: &str) -> Result<RunDetail> {
+    let run = match api.uncached().get_run(run_id).await {
+        Ok(run) => run.untag(),
+        Err(err) => return Err(explain_run_not_found(run_id, err)),
+    };
+    if run.status.is_unclassified() {
+        return Err(unclassified_status_error(run_id, &run.status));
+    }
+    Ok(run)
 }
 
 /// The warning line for a run active for more than twice its scheduled

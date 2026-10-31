@@ -145,16 +145,25 @@ fn ensure_docs_db_available(offline: bool) -> Result<()> {
 }
 
 async fn download_and_cache_db() -> Result<()> {
-    match fetch_db_if_changed().await? {
-        Some((bytes, etag)) => {
-            atomic_write_db(&bytes)?;
-            fs::write(etag_path()?, etag)?;
-        }
-        // A 304: touch the ETag file to record this check.
-        None => fs::File::options()
+    if let Some((bytes, etag)) = fetch_db_if_changed().await? {
+        // Drop the old ETag first: if writing the new one fails, the next
+        // command downloads afresh instead of pairing the new database with
+        // the old ETag.
+        let etag_path = etag_path()?;
+        let _ = fs::remove_file(&etag_path);
+        atomic_write_db(&bytes)?;
+        fs::write(etag_path, etag)?;
+    } else {
+        // A 304: touch the ETag file to record this check. A cache the user
+        // cannot write still holds current docs, so a failed touch only means
+        // the next command checks again.
+        let touched = fs::File::options()
             .write(true)
-            .open(etag_path()?)?
-            .set_modified(SystemTime::now())?,
+            .open(etag_path()?)
+            .and_then(|file| file.set_modified(SystemTime::now()));
+        if let Err(err) = touched {
+            log::debug!("could not record the docs update check: {err}");
+        }
     }
     Ok(())
 }
@@ -169,7 +178,10 @@ async fn fetch_db_if_changed() -> Result<Option<(Vec<u8>, String)>> {
         .build()?;
     let mut request = client.get(format!("{}/sqlite.db", docs_url()));
 
-    if let Ok(etag) = fs::read_to_string(etag_path()?) {
+    // Without the database, a 304 would leave nothing to read.
+    if db_path()?.exists()
+        && let Ok(etag) = fs::read_to_string(etag_path()?)
+    {
         request = request.header("If-None-Match", etag.trim());
     }
 

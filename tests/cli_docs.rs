@@ -216,6 +216,39 @@ fn docs_failed_check_does_not_restart_the_interval() {
     assert_eq!(mock_server.if_none_match_headers().len(), 2);
 }
 
+// A database the user deleted is downloaded again, even while its ETag file
+// remains.
+#[test]
+fn docs_missing_db_is_downloaded_despite_a_leftover_etag() {
+    let cache_dir = TempDir::new().unwrap();
+    let mock_server = MockDocsServer::start();
+
+    docs_search(&cache_dir, mock_server.url());
+    std::fs::remove_file(cached_docs_db_path(&cache_dir)).unwrap();
+    docs_search(&cache_dir, mock_server.url());
+
+    assert_eq!(mock_server.if_none_match_headers(), vec![None, None]);
+}
+
+// A 304 whose check cannot be recorded is still a success: the cached docs
+// are current.
+#[cfg(unix)]
+#[test]
+fn docs_unchanged_check_in_a_read_only_cache_does_not_warn() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let cache_dir = TempDir::new().unwrap();
+    let mock_server = MockDocsServer::start();
+
+    docs_search(&cache_dir, mock_server.url());
+    backdate_docs_check(&cache_dir);
+    let etag = cached_docs_etag_path(&cache_dir);
+    std::fs::set_permissions(&etag, std::fs::Permissions::from_mode(0o444)).unwrap();
+    docs_search(&cache_dir, mock_server.url()).stderr(predicate::str::contains("Warning").not());
+
+    assert_eq!(mock_server.if_none_match_headers().len(), 2);
+}
+
 #[test]
 fn docs_check_time_in_the_future_is_stale() {
     let cache_dir = TempDir::new().unwrap();

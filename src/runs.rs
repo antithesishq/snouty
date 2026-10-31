@@ -39,9 +39,11 @@ use crate::time::{HumanDuration, format_local_with_offset};
 use crate::vtime::VTime;
 
 mod event_search;
+mod ready;
 mod run_stream;
 
 use event_search::EventOutput;
+use ready::{Endpoint, Needs, RetryPolicy};
 
 /// The note a limited command prints to stderr under its output. The command
 /// asks the server for at most `limit` rows and cannot tell whether more
@@ -2189,48 +2191,23 @@ async fn wait_until_ready(api: &AntithesisApi, run_id: &str, poll: Duration) -> 
     Ok(run)
 }
 
-/// Whether a 400 says that `run_id` does not accept commands yet. On
-/// orbitinghail (release 67.0), a run that reports the `Ready` sub-status can
-/// still answer `Run <id> is not ready yet. Try again shortly.` for a few
-/// minutes.
-fn run_not_ready_yet(run_id: &str, err: &color_eyre::eyre::Report) -> bool {
-    api_error_status(err) == Some(400)
-        && api_error_message(err)
-            .is_some_and(|m| m.contains(&format!("Run {run_id} is not ready yet")))
-}
-
-/// Execute the command in `run`, which [`wait_until_ready`] returned. While
-/// the server answers that the run is not ready yet, wait every `poll` until
-/// the run is ready again and retry, and stop once the run has ended. `explain` annotates a failure with
-/// the run's latest status.
-async fn execute_when_accepted(
-    api: &AntithesisApi,
-    mut run: RunDetail,
-    exec: ExecRequest,
-    poll: Duration,
-    explain: impl Fn(&RunStatus, color_eyre::eyre::Report) -> color_eyre::eyre::Report,
-) -> Result<JsonStream> {
-    let mut waiting: Option<ReadyDisplay> = None;
-    loop {
-        let err = match api.execute_command(&run.run_id, exec.clone()).await {
-            Ok(stream) => {
-                if let Some(waiting) = waiting {
-                    waiting.clear();
-                }
-                return Ok(stream);
-            }
-            Err(err) => err,
-        };
-        if !(run.is_ready() && run_not_ready_yet(&run.run_id, &err)) {
-            return Err(explain(&run.status, err));
+/// `runs exec`. On orbitinghail (release 67.0), a run that reports the
+/// `Ready` sub-status can still answer 400 `Run <id> is not ready yet. Try
+/// again shortly.` for a few minutes.
+const EXEC: Endpoint = Endpoint {
+    needs: Needs::Ready,
+    waiting: "waiting for the run to accept commands",
+    retry_policy: |run, err| {
+        let not_ready = format!("Run {} is not ready yet", run.run_id);
+        if api_error_status(err) == Some(400)
+            && api_error_message(err).is_some_and(|m| m.contains(&not_ready))
+        {
+            RetryPolicy::Retry
+        } else {
+            RetryPolicy::Fail
         }
-        waiting
-            .get_or_insert_with(|| ReadyDisplay::new("waiting for the run to accept commands"))
-            .show();
-        tokio::time::sleep(poll).await;
-        run = wait_until_ready(api, &run.run_id, poll).await?;
-    }
-}
+    },
+};
 
 /// Wait until the run is ready or complete, and until the server accepts the
 /// command, then execute. The wait has no time limit. A complete run executes
@@ -2265,10 +2242,14 @@ async fn exec_when_ready(
             ("--vtime", &exec.moment.vtime.to_string()),
         ],
     );
-    let run = wait_until_ready(api, run_id, poll).await?;
-    let stream = execute_when_accepted(api, run, exec, poll, |status, err| {
-        explain_exec_error(status, &debug_command, rewarm_flag, err)
-    })
+    let stream = ready::send_when_ready(
+        api,
+        run_id,
+        poll,
+        EXEC,
+        || api.execute_command(run_id, exec.clone()),
+        |run, err| explain_exec_error(&run.status, &debug_command, rewarm_flag, err),
+    )
     .await?;
 
     // Only the last line can be the terminal result. A line that parses as

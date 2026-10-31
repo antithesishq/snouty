@@ -413,11 +413,8 @@ fn cmd_env_from_json_find(
     //   <field>!=<value>  <field> is a string other than <value>.
     //   <field>=<a>|<b>   <field> is a string equal to one of the values
     //                     that `|` separates.
-    //   <path>            the line has a non-null value at <path>, a
-    //                     dot-separated list of object keys, such as
-    //                     `links.triage_report`.
-    // Every line must carry the <field> of a `!=` or `=` filter as a string,
-    // so a misspelled field fails instead of matching every line.
+    // Every line must carry each filter's <field> as a string, so a misspelled
+    // field fails instead of matching every line.
     let usage = || err("env_from_json_find requires <json_key> <filter>...".to_string());
     let [key, filters @ ..] = args else {
         return Err(usage());
@@ -442,10 +439,9 @@ fn cmd_env_from_json_find(
                 let actual = string_field(field)?;
                 allowed.split('|').any(|a| a == actual)
             } else {
-                filter
-                    .split('.')
-                    .try_fold(&value, |v, k| v.get(k))
-                    .is_some_and(|v| !v.is_null())
+                return Err(err(format!(
+                    "env_from_json_find filter '{filter}' must be <field>!=<value> or <field>=<values>"
+                )));
             };
             if !matches {
                 continue 'lines;

@@ -3,7 +3,7 @@ source: tests/help_snapshots.rs
 ---
 Check environment configuration
 
-Verifies that your environment is properly configured for Antithesis testing. Runs health checks — container runtime, docker compose, the tenant and repository settings, and your credentials (set in the ANTITHESIS_* environment variables). A missing tenant fails the check; a missing repository is a warning, because only a launch needs it. doctor also warns when more than one credential source is available. To see the settings that snouty resolved, run `settings_show`.
+Verifies that your environment is properly configured for Antithesis testing. Runs health checks — container runtime, docker compose, the tenant and repository settings, and your credentials (stored by snouty login, which the user runs in a terminal, or set in the ANTITHESIS_* environment variables). A missing tenant fails the check; a missing repository is a warning, because only a launch needs it. doctor also warns when more than one credential source is available. To see the settings that snouty resolved, run `settings_show`.
 
 snouty prefers an API key (full API access); a username and password is deprecated auth, accepted only by `debug`.
 

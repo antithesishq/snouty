@@ -6,7 +6,7 @@ snouty prefers an API key (full API access); a username and password is deprecat
 
 doctor also contacts the Antithesis API. When credentials are configured, it reports the API and tenant versions and confirms connectivity, and it warns when the tenant release is too old for an API that some commands use. It also warns when CLI OAuth login is not enabled for the tenant. Pass {{ t("--offline")? }} to skip these network calls.
 
-The command fails if any required check fails.{% if cli %} Pass --json for a machine-readable report (e.g. to gate CI).{% else %} With {{ t("--json")? }}, the report is one JSON object.{% endif %}
+The command fails if any required check fails.{% if cli %} Pass --json for a machine-readable report (e.g. to gate CI).{% else %} With {{ t("--json")? }}, the report is one JSON object.{% endif %} Each check in the report has a `name` that stays the same whatever its status. The `credentials` check also has a `kind` when snouty finds a credential: `api_key`, `oauth`, `github_actions_oidc`, or `password`.
 
 Examples:
   {{ t("snouty doctor")? }}

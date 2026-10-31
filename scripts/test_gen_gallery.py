@@ -208,7 +208,12 @@ class DoctorGalleryChecks(unittest.TestCase):
             "ok": True,
             "checks": [
                 {"name": "tenant", "status": "ok", "message": "tenant is set"},
-                {"name": "api_key", "status": "ok", "message": "API key provided"},
+                {
+                    "name": "credentials",
+                    "status": "ok",
+                    "kind": "api_key",
+                    "message": "API key provided",
+                },
             ],
         }
         self.missing = {
@@ -264,6 +269,21 @@ class DoctorGalleryChecks(unittest.TestCase):
         )
         passed, _ = self.check("doctor-json-ready", json.dumps(self.missing), 1)
         self.assertFalse(passed, "an error report does not exercise a ready setup")
+
+    def test_json_requires_the_credential_kind(self):
+        for kind in (None, "oauth"):
+            with self.subTest(kind=kind):
+                changed = copy.deepcopy(self.ready)
+                changed["checks"][1].pop("kind")
+                if kind:
+                    changed["checks"][1]["kind"] = kind
+                passed, _ = self.check("doctor-json-ready", json.dumps(changed), 0)
+                self.assertFalse(passed, "the ready story sets an API key")
+
+        changed = copy.deepcopy(self.missing)
+        changed["checks"][1]["kind"] = "api_key"
+        passed, _ = self.check("doctor-json", json.dumps(changed), 1)
+        self.assertFalse(passed, "no credential means no kind")
 
     def test_json_requires_the_correct_checks_and_statuses(self):
         for slug, report, returncode in (

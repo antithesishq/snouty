@@ -2028,15 +2028,15 @@ def doctor_json_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     )
     if not well_formed:
         return (False, "checks need string names/messages and ok/warn/error statuses")
+    # The credentials check has one name in every state; `kind` names the
+    # credential found, and is absent when there is none.
     expected = (
-        {"tenant": "ok", "api_key": "ok"}
+        {"tenant": ("ok", None), "credentials": ("ok", "api_key")}
         if sr.story.expect_ok
-        else {"tenant": "error", "credentials": "error"}
+        else {"tenant": ("error", None), "credentials": ("error", None)}
     )
-    statuses = {c["name"]: c["status"] for c in checks}
-    required_match = all(
-        statuses.get(name) == status for name, status in expected.items()
-    )
+    found = {c["name"]: (c["status"], c.get("kind")) for c in checks}
+    required_match = all(found.get(name) == want for name, want in expected.items())
     consistent = data["ok"] == all(c["status"] != "error" for c in checks)
     passed = (
         data["ok"] == sr.result.ok == sr.story.expect_ok
@@ -3421,7 +3421,8 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "I have configured my tenant, repository, and API key. I want a script "
             "to confirm my local setup without a network request.",
             "`doctor --json --offline` prints `ok: true` and exits zero. Its checks "
-            "array contains successful tenant and api_key checks and no errors. "
+            "array contains successful tenant and credentials checks, the credentials "
+            "check has kind api_key, and there are no errors. "
             "The report's ok field agrees with both the check statuses and the exit status.",
             ["doctor", "--json", "--offline"],
             doctor_json_check,

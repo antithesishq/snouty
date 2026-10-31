@@ -14,14 +14,14 @@ Attributes and Version Control.
 
 An incomplete run also has its failure moment (Failure Hash/VTime), to pass to
 `runs logs`, and a failure reason when the run reports one. Use --web to open
-the triage report in a browser.
+the run's page in a browser.
 
 Examples:
   snouty runs show <run_id>
   snouty runs show <run_id> --web
 
 Add --json for machine-readable output. The run prints as one JSON object. With
---web it prints the report URL as {"url": ...} and opens no browser:
+--web it prints the run page URL as {"url": ...} and opens no browser:
   snouty --json runs show <run_id> | jq -r .status
 
 Usage: snouty runs show [OPTIONS] <RUN_ID>
@@ -32,7 +32,7 @@ Arguments:
 
 Options:
   -w, --web
-          Open the run's triage report in a browser instead of printing details
+          Open the run's page in a browser instead of printing details
 
   -h, --help
           Print help (see a summary with '-h')

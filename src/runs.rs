@@ -21,7 +21,7 @@ use chrono::{DateTime, Utc};
 use crate::api::{
     AntithesisApi, Event, EventProperty, ExecRequest, MIN_STREAM_RELEASE, Moment, NonEventProperty,
     Property, PropertyStatus, RewarmSource, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
-    SearchLimit, SearchMode,
+    SearchLimit, SearchMode, normalize_base_url,
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs, WaitUntil};
 use crate::error::{api_error_message, api_error_status, user_error};
@@ -32,7 +32,7 @@ use crate::render::{
     CodeSpans, OutputOptions, indent_lines, render_kv, sanitize, sanitize_multiline, shell_command,
     wrap_text,
 };
-use crate::settings::Settings;
+use crate::settings::{Settings, require};
 use crate::stdio;
 use crate::table::{Align, Column, Fit, Table};
 use crate::time::{HumanDuration, format_local_with_offset};
@@ -403,7 +403,8 @@ async fn cmd_runs_show(
     };
 
     if web {
-        return open_run_report(&run, json);
+        let web_url = normalize_base_url(require(settings.web_url().as_deref(), "tenant")?);
+        return open_run_page(&web_url, &run.run_id, json);
     }
 
     if json {
@@ -415,32 +416,28 @@ async fn cmd_runs_show(
     Ok(())
 }
 
-/// `runs show --web`: open the run's triage report in a browser. With `--json`,
-/// emit the URL instead of launching anything so scripts can capture it.
-fn open_run_report(run: &RunDetail, json: bool) -> Result<()> {
-    let url = run
-        .links
-        .as_ref()
-        .and_then(|l| l.triage_report.as_deref())
-        .ok_or_else(|| {
-            user_error(format!("no report available for run {}", run.run_id)).note(format!(
-                "reports are generated when a run completes; this run is {}",
-                run.status
-            ))
-        })?;
+fn run_page_url(base_url: &str, run_id: &str) -> Result<reqwest::Url> {
+    reqwest::Url::parse_with_params(&format!("{base_url}/run"), [("run_id", run_id)])
+        .map_err(|err| eyre!("invalid run page URL: {err}"))
+}
+
+/// `runs show --web`: open the run's page in a browser. With `--json`, emit the
+/// URL instead of launching anything so scripts can capture it.
+fn open_run_page(base_url: &str, run_id: &str, json: bool) -> Result<()> {
+    let url = run_page_url(base_url, run_id)?;
 
     if json {
-        outln!("{}", serde_json::json!({ "url": url }))?;
+        outln!("{}", serde_json::json!({ "url": url.as_str() }))?;
         return Ok(());
     }
 
-    let launched = crate::browser::open_in_browser(url).is_ok();
+    let launched = crate::browser::open_in_browser(url.as_str()).is_ok();
     if launched {
-        outln!("Opening report for run {}…", run.run_id)?;
+        outln!("Opening run {run_id}…")?;
         outln!("If your browser didn't open, manually visit:")?;
         outln!("  {url}")?;
     } else {
-        outln!("Open this URL to view the report:")?;
+        outln!("Open this URL to view the run:")?;
         outln!("  {url}")?;
     }
     Ok(())
@@ -1474,9 +1471,7 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         }
     }
 
-    // Hand the user the exact command to read logs at the failure moment, the
-    // same way the `--web` hint below hands over the report link. Both can fire
-    // when an incomplete run still has a report — they're complementary.
+    // Hand the user the exact command to read logs at the failure moment.
     if let Some(moment) = failure {
         outln!(
             "\nview logs at the failure moment:\n  snouty runs logs {} {} {}",
@@ -1487,7 +1482,7 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
     }
 
     // Only a completed run has property results: the properties endpoint gives
-    // none for an incomplete or in-progress run, even one with a report link.
+    // none for an incomplete or in-progress run.
     if run.status == RunStatus::Completed {
         outln!(
             "\nsee property results:\n  snouty runs properties {}",
@@ -1495,20 +1490,10 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         )?;
     }
 
-    // Point at the obvious next step instead of dumping the huge signed report
-    // URL into the metadata block — but only when a triage report actually
-    // exists, since `--web` errors out otherwise (e.g. for incomplete runs).
-    let has_report = run
-        .links
-        .as_ref()
-        .and_then(|l| l.triage_report.as_deref())
-        .is_some();
-    if has_report {
-        outln!(
-            "\nview the report in your browser:\n  snouty runs show {} --web",
-            run.run_id
-        )?;
-    }
+    outln!(
+        "\nview the run in your browser:\n  snouty runs show {} --web",
+        run.run_id
+    )?;
     Ok(())
 }
 
@@ -2784,6 +2769,15 @@ mod tests {
     use super::*;
     use crate::testutils::fake_secrets::{FAKE_API_KEY_A, FAKE_PASSWORD};
     use hegel::generators;
+
+    #[test]
+    fn run_page_url_encodes_query_characters() {
+        let url = run_page_url("https://acme.antithesis.com", "a&b#c d").unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://acme.antithesis.com/run?run_id=a%26b%23c+d"
+        );
+    }
 
     /// Column indexes of the runs table.
     const RUNS_TABLE_LAUNCHER: usize = 3;

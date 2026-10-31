@@ -471,7 +471,7 @@ class GalleryRunHelpers(unittest.TestCase):
                 )
 
     def story(self, slug):
-        x = gallery.GalleryRun(run=self.RUN, launch=gallery.Result([], "", "", 0))
+        x = gallery.GalleryRun(run=self.RUN)
         stories = gallery.build_final_stories(x, gallery._LISTED_FINAL)
         return next(s for s in stories if s.slug == slug)
 
@@ -482,32 +482,24 @@ class GalleryRunHelpers(unittest.TestCase):
 
     def test_terminal_stream_story_needs_the_stream_to_open(self):
         story = self.story("runs-stream-run")
-        cast = self.cast(f"streaming run {self.RUN}")
-        run = gallery.StoryRun(
-            story, gallery.Result([], self.transcript(), "", 0, cast=cast), None
-        )
-        self.assertTrue(story.check(run, gallery.Registry())[0])
-        # Without a property line, only the wait or the spinner shows the
-        # stream opened. The bug's verdict still needs its property, so this
-        # checks `opened` through the detail.
-        no_property = "\n".join(
-            line
-            for line in self.transcript().splitlines()
-            if not line.startswith("property")
-        )
-        for name, cast, opened in [
+        for name, cast, ok in [
             ("waited", self.cast(gallery.STREAM_WAITING), True),
-            ("opened at once", self.cast(f"streaming run {self.RUN}"), True),
-            ("another run's spinner", self.cast("streaming run other"), False),
+            (
+                "opened at once",
+                self.cast(gallery.STREAM_SPINNER.format(run=self.RUN)),
+                True,
+            ),
+            (
+                "another run",
+                self.cast(gallery.STREAM_SPINNER.format(run="other")),
+                False,
+            ),
             ("never opened", None, False),
         ]:
             with self.subTest(name):
-                result = gallery.Result([], no_property, "", 0, cast=cast)
-                ok, detail = story.check(
-                    gallery.StoryRun(story, result, None), gallery.Registry()
-                )
-                self.assertFalse(ok)
-                self.assertIn(f"opened={opened}", detail)
+                result = gallery.Result([], self.transcript(), "", 0, cast=cast)
+                run = gallery.StoryRun(story, result, None)
+                self.assertEqual(story.check(run, gallery.Registry())[0], ok)
         failed = gallery.Result(
             [], self.transcript(), "", 1, cast=self.cast(gallery.STREAM_WAITING)
         )
@@ -529,33 +521,17 @@ class GalleryRunHelpers(unittest.TestCase):
         ]
         stdout = "".join(json.dumps(r) + "\n" for r in rows)
         story = self.story("runs-stream-run--json")
-        for name, stderr in [
-            ("waited", f"{gallery.STREAM_WAITING} (5s)\n"),
-            ("opened at once", f"the stream of run {self.RUN} is open\n"),
-            ("property line", ""),
+        for name, stderr, ok in [
+            ("waited", f"{gallery.STREAM_WAITING} (5s)\n", True),
+            ("opened at once", gallery.STREAM_OPEN.format(run=self.RUN) + "\n", True),
+            ("another run", gallery.STREAM_OPEN.format(run="other") + "\n", False),
+            ("never opened", "", False),
         ]:
             with self.subTest(name):
                 run = gallery.StoryRun(
                     story, gallery.Result([], stdout, stderr, 0), None
                 )
-                self.assertTrue(story.check(run, gallery.Registry())[0])
-        # Without a property line, only the wait or the "is open" line shows
-        # the stream opened. The bug's verdict still needs its property, so
-        # this checks `opened` through the detail.
-        no_property = "".join(json.dumps(r) + "\n" for r in rows[1:])
-        for name, stderr, opened in [
-            ("waited", f"{gallery.STREAM_WAITING} (5s)\n", True),
-            ("opened at once", f"the stream of run {self.RUN} is open\n", True),
-            ("another run", "the stream of run other is open\n", False),
-            ("never opened", "", False),
-        ]:
-            with self.subTest(name):
-                run = gallery.StoryRun(
-                    story, gallery.Result([], no_property, stderr, 0), None
-                )
-                ok, detail = story.check(run, gallery.Registry())
-                self.assertFalse(ok)
-                self.assertIn(f"opened={opened}", detail)
+                self.assertEqual(story.check(run, gallery.Registry())[0], ok)
         run = gallery.StoryRun(story, gallery.Result([], "not json\n", "", 0), None)
         self.assertFalse(story.check(run, gallery.Registry())[0])
 

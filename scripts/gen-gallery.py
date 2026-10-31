@@ -2242,6 +2242,10 @@ _STREAM_SECOND_KEY = {"sample": "kind", "verdict": "verdict"}
 
 # What `runs stream` shows while the run has no stream yet.
 STREAM_WAITING = "waiting for the run's stream to open"
+# What `runs stream` shows once the stream is open: the spinner, or with
+# `--json`, a line on stderr.
+STREAM_SPINNER = "streaming run {run}"
+STREAM_OPEN = "the stream of run {run} is open"
 
 
 def stream_events(text: str) -> list[dict]:
@@ -2311,11 +2315,9 @@ def _cast_text(cast: str | None) -> str:
 
 
 def stream_run(run: str, *, json_output: bool):
-    """A `runs stream` story that lasts the whole run. The stream must have
-    opened: snouty waited for it, or said it is open (the "streaming run"
-    spinner, or the "is open" line on stderr with `--json`), or a property
-    line arrived. The server can open the stream at once, even while the run
-    is starting, so the wait is not required."""
+    """A `runs stream` story that lasts the whole run. The output must show
+    that the stream opened: the wait, or the open notice. The server can open
+    the stream at once, even while the run is starting."""
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         if json_output:
@@ -2323,19 +2325,19 @@ def stream_run(run: str, *, json_output: bool):
                 rows = _ndjson(sr.result.stdout)
             except json.JSONDecodeError as e:
                 return (False, f"stdout is not NDJSON: {e}")
-            waited = STREAM_WAITING in sr.result.stderr
-            open_line = f"the stream of run {run} is open" in sr.result.stderr
+            text, notice = sr.result.stderr, STREAM_OPEN
         else:
             rows = stream_events(sr.result.combined)
-            screen = _cast_text(sr.result.cast)
-            waited = STREAM_WAITING in screen
-            open_line = f"streaming run {run}" in screen
-        has_property = any(r.get("event") == "property" for r in rows)
-        opened = waited or open_line or has_property
-        ok, detail = stream_verdict(rows, run, EXAMPLE_BUG_PROPERTY, opened)
+            text, notice = _cast_text(sr.result.cast), STREAM_SPINNER
+        waited = STREAM_WAITING in text
+        open_line = notice.format(run=run) in text
+        ok, detail = stream_verdict(
+            rows, run, EXAMPLE_BUG_PROPERTY, waited or open_line
+        )
         return (
             ok and sr.result.ok,
-            f"exit={sr.result.returncode}, waited={waited}, {detail}",
+            f"exit={sr.result.returncode}, waited={waited}, "
+            f"open notice={open_line}, {detail}",
         )
 
     return chk

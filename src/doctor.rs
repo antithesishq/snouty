@@ -766,8 +766,9 @@ pub async fn cmd_doctor(
 
 #[cfg(test)]
 mod tests {
-    use crate::auth::GithubActionsOidcToken;
-    use crate::auth::{API_KEY_VAR_NAME, PASSWORD_VAR_NAME, USERNAME_VAR_NAME};
+    use crate::auth::{
+        API_KEY_VAR_NAME, GithubActionsOidcToken, PASSWORD_VAR_NAME, USERNAME_VAR_NAME,
+    };
     use crate::testutils::auth::oauth_credential_in;
     use crate::testutils::fake_secrets::{
         FAKE_ACCESS_TOKEN_A, FAKE_API_KEY_A, FAKE_OIDC_REQUEST_TOKEN, FAKE_PASSWORD,

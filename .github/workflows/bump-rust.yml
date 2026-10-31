@@ -44,24 +44,34 @@ jobs:
           grep -qx "rust-version = \"$msrv\"" Cargo.toml
           echo "MSRV=$msrv" >> "$GITHUB_ENV"
 
-      - name: Open or update the pull request
+      - name: Open the pull request
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          branch=bump-rust
+          # Leave an open pull request alone: a force-push would drop any fix
+          # pushed to it. The next run after it merges bumps again.
+          if [ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
+            echo "A $branch pull request is already open"
+            exit 0
+          fi
           if git diff --quiet; then
             echo "Already on Rust $MSRV with the newest rust-overlay"
             exit 0
           fi
-          branch=bump-rust
-          title="Bump the MSRV to Rust $MSRV, and rust-overlay with it"
+          if git diff --quiet Cargo.toml; then
+            title="Bump rust-overlay"
+            body="Updates the rust-overlay pin. The newest stable Rust is still $MSRV, so \`rust-version\` does not change."
+          else
+            title="Bump the MSRV to Rust $MSRV, and rust-overlay with it"
+            body="Sets \`rust-version\` to Rust $MSRV, the newest stable release in the updated rust-overlay pin."
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
           git commit -am "$title"
           git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
-          if [ -z "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
-            gh pr create --base main --head "$branch" --title "$title" --body "Sets \`rust-version\` to Rust $MSRV, the newest stable release in the updated rust-overlay pin. Opened by \`.github/workflows/bump-rust.yml\`."
-          fi
+          gh pr create --base main --head "$branch" --title "$title" --body "$body Opened by \`.github/workflows/bump-rust.yml\`."
           # A push or pull request made with GITHUB_TOKEN starts no workflow, but
           # a dispatch does. build.yml reports the required tests-passed check.
           # slow-tests.yml runs the nix build.

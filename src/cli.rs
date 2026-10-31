@@ -21,7 +21,7 @@ use crate::features::{self, Feature};
 use crate::help::{self, Attach};
 use crate::runs::usage::{Rollup, TimeBound};
 use crate::stdio;
-use crate::time::{BareUnit, HumanDuration, ParseDurationError};
+use crate::time::{BareUnit, HumanDuration, duration_format};
 use crate::vtime::VTime;
 
 pub(crate) mod tree;
@@ -97,52 +97,79 @@ impl std::str::FromStr for KVPair {
     }
 }
 
+/// Parses the value of the duration flag `flag`. A bare number still counts
+/// `bare` units, as the flag has always taken, but is deprecated: once `check`
+/// passes, a warning on stderr shows the value with a unit.
+fn parse_duration_flag(
+    value: &str,
+    flag: &str,
+    bare: BareUnit,
+    check: impl FnOnce(HumanDuration) -> Result<(), &'static str>,
+) -> Result<HumanDuration, String> {
+    let (duration, was_bare) = HumanDuration::parse_flag(value, bare).map_err(|e| e.to_string())?;
+    check(duration)?;
+    if was_bare {
+        eprintln!("{}", bare_number_warning(flag, duration));
+    }
+    Ok(duration)
+}
+
+fn bare_number_warning(flag: &str, duration: HumanDuration) -> String {
+    format!("warning: a bare number for {flag} is deprecated; write {duration}")
+}
+
 /// clap value parser for `runs wait --poll-interval`: a [`HumanDuration`] of
 /// at least 1 minute — polling faster cannot observe a run (which takes
 /// minutes to hours) any sooner, and only hammers the API.
 fn parse_poll_interval(value: &str) -> Result<HumanDuration, String> {
-    let interval = value.parse::<HumanDuration>().map_err(|e| e.to_string())?;
-    if interval.seconds() < 60 {
-        return Err("poll interval must be at least 1 minute".to_string());
-    }
-    Ok(interval)
+    parse_duration_flag(value, "--poll-interval", BareUnit::Minutes, |interval| {
+        (interval.seconds() >= 60)
+            .then_some(())
+            .ok_or("poll interval must be at least 1 minute")
+    })
+}
+
+/// clap value parser for `runs wait --timeout`.
+fn parse_wait_timeout(value: &str) -> Result<HumanDuration, String> {
+    parse_duration_flag(value, "--timeout", BareUnit::Minutes, |_| Ok(()))
 }
 
 /// clap value parser for `launch --duration`: a [`HumanDuration`] of at least
 /// 1 minute, so that a typo such as `0` fails before it starts a run.
 fn parse_launch_duration(value: &str) -> Result<HumanDuration, String> {
-    let duration = value.parse::<HumanDuration>().map_err(|e| e.to_string())?;
-    if duration.seconds() < 60 {
-        return Err("must be at least 1 minute".to_string());
-    }
-    Ok(duration)
+    parse_duration_flag(value, "--duration", BareUnit::Minutes, |duration| {
+        (duration.seconds() >= 60)
+            .then_some(())
+            .ok_or("must be at least 1 minute")
+    })
 }
 
 /// clap value parser for `debug --duration`: a [`HumanDuration`] in the range
 /// that the API accepts for `antithesis.debugging.length_hours`.
 fn parse_debug_duration(value: &str) -> Result<HumanDuration, String> {
-    let duration = value.parse::<HumanDuration>().map_err(|e| e.to_string())?;
-    if !(30 * 60..=6 * 60 * 60).contains(&duration.seconds()) {
-        return Err("must be from 30 minutes to 6 hours".to_string());
-    }
-    Ok(duration)
+    parse_duration_flag(value, "--duration", BareUnit::Minutes, |duration| {
+        (30 * 60..=6 * 60 * 60)
+            .contains(&duration.seconds())
+            .then_some(())
+            .ok_or("must be from 30 minutes to 6 hours")
+    })
 }
 
-/// clap value parser for `validate --timeout`: a [`HumanDuration`] whose bare
-/// number counts seconds, as the flag has always taken.
-fn parse_timeout_seconds(value: &str) -> Result<HumanDuration, ParseDurationError> {
-    HumanDuration::parse(value, BareUnit::Seconds)
+/// clap value parser for `validate --timeout`, whose bare number counts
+/// seconds.
+fn parse_validate_timeout(value: &str) -> Result<HumanDuration, String> {
+    parse_duration_flag(value, "--timeout", BareUnit::Seconds, |_| Ok(()))
 }
 
-/// clap value parser for `runs exec --timeout`: as [`parse_timeout_seconds`],
-/// with a floor of 1 second, because a 0-second timeout always times out. The
-/// server sets the ceiling.
+/// clap value parser for `runs exec --timeout`, whose bare number counts
+/// seconds. Its floor is 1 second, because a 0-second timeout always times
+/// out. The server sets the ceiling.
 fn parse_exec_timeout(value: &str) -> Result<HumanDuration, String> {
-    let timeout = parse_timeout_seconds(value).map_err(|e| e.to_string())?;
-    if timeout.seconds() == 0 {
-        return Err("must be at least 1 second".to_string());
-    }
-    Ok(timeout)
+    parse_duration_flag(value, "--timeout", BareUnit::Seconds, |timeout| {
+        (timeout.seconds() > 0)
+            .then_some(())
+            .ok_or("must be at least 1 second")
+    })
 }
 
 #[derive(Parser)]
@@ -480,9 +507,15 @@ pub struct ValidateArgs {
     /// manifests/ subdirectory (Kubernetes manifests).
     pub config: std::path::PathBuf,
 
-    /// Maximum time to wait for containers to start and reach setup-complete,
-    /// in seconds or h/m/s units (e.g. 90s, 5m)
-    #[arg(long, default_value = "2m", value_parser = parse_timeout_seconds)]
+    #[arg(
+        long,
+        default_value = "2m",
+        value_parser = parse_validate_timeout,
+        help = concat!(
+            "Maximum time to wait for containers to start and reach setup-complete. ",
+            duration_format!(),
+        ),
+    )]
     pub timeout: HumanDuration,
 
     /// Leave containers running after validation for manual inspection
@@ -535,10 +568,13 @@ pub struct LaunchArgs {
     #[arg(long)]
     pub description: Option<String>,
 
-    /// Test duration in minutes, or h/m units (e.g. 90m, 2h, 1h30m); at least 1 minute
     // We send it to the API as `.minutes().to_string()`, the (possibly
     // fractional) minute count it wants.
-    #[arg(long, value_parser = parse_launch_duration)]
+    #[arg(
+        long,
+        value_parser = parse_launch_duration,
+        help = concat!("Test duration, at least 1 minute. ", duration_format!()),
+    )]
     pub duration: Option<HumanDuration>,
 
     /// Mark the test run as ephemeral, so it does not appear in future reports
@@ -637,12 +673,17 @@ pub struct DebugArgs {
     #[arg(long)]
     pub vtime: VTime,
 
-    /// How long the session stays available, in minutes, or h/m units (e.g.
-    /// 90m, 2h); from 30 minutes to 6 hours. Runs from releases before 67
-    /// ignore it
     // We send it to the API as `.hours().to_string()`, the (possibly
     // fractional) hour count that `antithesis.debugging.length_hours` wants.
-    #[arg(long, value_parser = parse_debug_duration)]
+    #[arg(
+        long,
+        value_parser = parse_debug_duration,
+        help = concat!(
+            "How long the session stays available, from 30 minutes to 6 hours; runs from \
+             releases before 67 ignore it. ",
+            duration_format!(),
+        ),
+    )]
     pub duration: Option<HumanDuration>,
 
     /// Debugging session title, shown as the test name in the run list
@@ -684,14 +725,22 @@ pub enum RunsCommands {
         #[arg(value_parser = parse_run_id)]
         run_id: String,
 
-        /// Time between status checks, in minutes or h/m/s units (e.g. 90s;
-        /// minimum 1 minute)
-        #[arg(long, default_value = "1m", value_parser = parse_poll_interval)]
+        #[arg(
+            long,
+            default_value = "1m",
+            value_parser = parse_poll_interval,
+            help = concat!("Time between status checks, at least 1 minute. ", duration_format!()),
+        )]
         poll_interval: HumanDuration,
 
-        /// Give up after this long (minutes, or h/m/s units, e.g. 2h);
-        /// without it the wait is unbounded
-        #[arg(long)]
+        #[arg(
+            long,
+            value_parser = parse_wait_timeout,
+            help = concat!(
+                "Give up after this long; without it the wait is unbounded. ",
+                duration_format!(),
+            ),
+        )]
         timeout: Option<HumanDuration>,
 
         /// The status to wait for; a later status also ends the wait
@@ -840,10 +889,15 @@ pub enum RunsCommands {
         #[arg(long)]
         source_session_id: Option<SourceSessionId>,
 
-        /// Maximum time the server waits for the script to exit before
-        /// reporting a timeout, in seconds or h/m/s units (e.g. 90s, 5m)
-        /// [default: the server's, 10m as of release 64.0]
-        #[arg(long, value_parser = parse_exec_timeout)]
+        #[arg(
+            long,
+            value_parser = parse_exec_timeout,
+            help = concat!(
+                "Maximum time the server waits for the script to exit before reporting a \
+                 timeout [default: the server's, 10m as of release 64.0]. ",
+                duration_format!(),
+            ),
+        )]
         timeout: Option<HumanDuration>,
     },
 
@@ -1033,8 +1087,8 @@ mod tests {
 
     #[test]
     fn duration_flag_parses_into_human_duration() {
-        // Parsing/validation lives in `crate::time`; here we just confirm clap
-        // wires `--duration` through `HumanDuration: FromStr`.
+        // Parsing lives in `crate::time`; here we just confirm clap wires
+        // `--duration` through it.
         let cli = parse(&[
             "snouty",
             "launch",
@@ -1064,7 +1118,21 @@ mod tests {
         .expect("invalid duration should fail to parse")
         .to_string();
         assert!(err.contains("--duration"), "got: {err}");
-        assert!(err.contains("number of minutes"), "got: {err}");
+        assert!(err.contains("a bare number is not permitted"), "got: {err}");
+    }
+
+    #[test]
+    fn bare_number_warning_shows_the_value_with_a_unit() {
+        let warning =
+            |seconds| bare_number_warning("--timeout", HumanDuration::from_seconds(seconds));
+        assert_eq!(
+            warning(1800),
+            "warning: a bare number for --timeout is deprecated; write 30m"
+        );
+        assert_eq!(
+            warning(90),
+            "warning: a bare number for --timeout is deprecated; write 1m30s"
+        );
     }
 
     #[test]

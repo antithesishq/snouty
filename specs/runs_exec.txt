@@ -148,7 +148,7 @@ stderr 'command exited without reporting an exit code'
 # snouty reports as a failure. Output produced before the timeout is still
 # shown. The result carries no end moment — its `last_moment` is informational,
 # the command may still be running — so there is no trailer.
-! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'sleep 60' --timeout 30
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'sleep 60' --timeout 30s
 stdout 'still working'
 stderr 'command timed out after 30s'
 ! stderr 'end moment'
@@ -163,12 +163,17 @@ stderr 'set a longer timeout with --timeout'
 # --timeout is forwarded to the server as timeout_seconds (the mock echoes
 # back the value it received). Without it, the request leaves out
 # timeout_seconds, so the server's default applies.
-snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --timeout 45
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --timeout 45s
 stdout 'timeout_seconds=45'
-
-# A bare number counts seconds, and h/m/s units work too.
+! stderr 'is deprecated; write'
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --timeout 2m
 stdout 'timeout_seconds=120'
+
+# A bare number still counts seconds, but is deprecated: a warning shows the
+# value with a unit.
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --timeout 45
+stdout 'timeout_seconds=45'
+stderr '^warning: a bare number for --timeout is deprecated; write 45s$'
 
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --timeout 90s
 stdout 'timeout_seconds=90'
@@ -429,10 +434,10 @@ stderr 'must be at least 1 second'
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'uname -a' --timeout 0s
 stderr 'must be at least 1 second'
 
-# A value that is not seconds or h/m/s units fails before any API call, and
-# the error lists the accepted forms.
+# A value that is not h/m/s units fails before any API call, and the error
+# gives the format.
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'uname -a' --timeout 1.5
-stderr 'invalid value .1\.5. for .--timeout <TIMEOUT>.: must be a whole number of seconds \(e\.g\. `120`\) or use h/m/s units \(e\.g\. `90s`, `2m`, `1h`\)'
+stderr 'invalid value .1\.5. for .--timeout <TIMEOUT>.: must be a whole number with an h, m or s unit, or several in that order \(e\.g\. `90s`, `5m`, `1h30m`\); a bare number is not permitted'
 
 -- exec_script.txt --
 uname -a

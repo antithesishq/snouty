@@ -54,7 +54,7 @@ The `timeout/` sample never emits the setup-complete event, so give it a short
 deadline instead of waiting the full default:
 
 ```sh
-snouty validate tests/fixtures/validate/timeout --timeout 5
+snouty validate tests/fixtures/validate/timeout --timeout 5s
 ```
 
 ## Launch
@@ -73,6 +73,6 @@ ANTITHESIS_API_KEY=… \
     --config tests/fixtures/validate/valid \
     --test-name "snouty-valid-sample" \
     --description "snouty valid sample harness" \
-    --duration 15 \
+    --duration 15m \
     --ephemeral
 ```

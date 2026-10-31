@@ -54,13 +54,11 @@ fn etag_path() -> Result<PathBuf> {
     Ok(cache_dir()?.join("docs.db.etag"))
 }
 
-/// How long a successful update check holds before the next command checks
-/// again.
 const DOCS_CHECK_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
-/// Whether the cached database was checked for an update within
-/// [`DOCS_CHECK_INTERVAL`]. A missing database, a missing or unreadable `ETag`
-/// file, or an mtime in the future all mean it is due.
+/// Whether the last update check is younger than [`DOCS_CHECK_INTERVAL`].
+/// False when the database or the `ETag` file is missing or unreadable, or
+/// when the mtime is in the future.
 fn checked_recently() -> bool {
     let Ok(db) = db_path() else { return false };
     if !db.exists() {
@@ -152,7 +150,7 @@ async fn download_and_cache_db() -> Result<()> {
             atomic_write_db(&bytes)?;
             fs::write(etag_path()?, etag)?;
         }
-        // Unchanged: touch the ETag file to record the time of this check.
+        // A 304: touch the ETag file to record this check.
         None => fs::File::options()
             .write(true)
             .open(etag_path()?)?

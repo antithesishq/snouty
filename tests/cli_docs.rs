@@ -169,8 +169,6 @@ fn etag_mtime(cache_dir: &TempDir) -> std::time::SystemTime {
         .unwrap()
 }
 
-// A command within five minutes of the last update check reuses the cached
-// database without asking the server.
 #[test]
 fn docs_update_check_runs_at_most_once_per_interval() {
     let cache_dir = TempDir::new().unwrap();
@@ -218,7 +216,6 @@ fn docs_failed_check_does_not_restart_the_interval() {
     assert_eq!(mock_server.if_none_match_headers().len(), 2);
 }
 
-// A last-check time in the future is not trusted.
 #[test]
 fn docs_check_time_in_the_future_is_stale() {
     let cache_dir = TempDir::new().unwrap();

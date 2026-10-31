@@ -2,7 +2,8 @@
 #
 # An MCP server on the stdio transport, gated behind the `mcp` unstable
 # feature. tests/mcp.rs drives the server with an MCP client, and covers
-# what a tool call returns. This spec covers the gate and the params.
+# what a tool call returns. This spec covers the command, its gate, and the
+# params of a tool.
 
 # 1. With the feature off, snouty refuses the command, names the variable
 #    that enables it, and points to its help.
@@ -33,6 +34,7 @@ snouty mcp
 
 # 6. A command that prints the same in both forms has no `json` param, and
 #    `detail` is never a param. A bad param fails before any command runs.
+#    `version` needs no API, and with `json` returns the version as JSON.
 # Stdin closes as soon as the server reads calls.jsonl, and a call still
 # running then can lose its response. So no call here may reach the API.
 # The spec engine drops the final newline of a file, so the server never
@@ -41,11 +43,13 @@ stdin calls.jsonl
 snouty mcp
 stdout '"id":2,.*"text":"invalid params: unknown param: json"'
 stdout '"id":3,.*"text":"invalid params: unknown param: detail"'
+stdout '"id":4,"result":\{"content":\[\{"type":"text","text":"\{\\\\n +\\\\"version\\\\": \\\\"[0-9].*"isError":false'
 
 -- calls.jsonl --
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"spec","version":"1"}}}
 {"jsonrpc":"2.0","method":"notifications/initialized"}
 {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"docs_show","arguments":{"path":"x","json":true}}}
 {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"runs_list","arguments":{"detail":true}}}
-{"jsonrpc":"2.0","id":4,"method":"ping"}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"version","arguments":{"json":true}}}
+{"jsonrpc":"2.0","id":5,"method":"ping"}
 -- empty.txt --

@@ -470,34 +470,40 @@ class GalleryRunHelpers(unittest.TestCase):
                     gallery.stream_verdict(rows, self.RUN, self.BUG, True)[0]
                 )
 
-    def story(self, slug, launched=True):
-        launch = gallery.Result([], "", "", 0) if launched else None
-        x = gallery.GalleryRun(run=self.RUN, launch=launch)
+    def story(self, slug):
+        x = gallery.GalleryRun(run=self.RUN)
         stories = gallery.build_final_stories(x, gallery._LISTED_FINAL)
         return next(s for s in stories if s.slug == slug)
 
-    def test_terminal_stream_story_needs_the_wait_in_the_recording(self):
-        cast = "\n".join(
-            [
-                json.dumps({"version": 2}),
-                json.dumps([0.1, "o", f"\u280b {gallery.STREAM_WAITING}\r"]),
-            ]
+    def cast(self, line):
+        return "\n".join(
+            [json.dumps({"version": 2}), json.dumps([0.1, "o", f"\u280b {line}\r"])]
         )
-        result = gallery.Result([], self.transcript(), "", 0, cast=cast)
+
+    def test_terminal_stream_story_needs_the_stream_to_open(self):
         story = self.story("runs-stream-run")
-        run = gallery.StoryRun(story, result, None)
-        self.assertTrue(story.check(run, gallery.Registry())[0])
-        run.result = gallery.Result([], self.transcript(), "", 0, cast=None)
-        self.assertFalse(story.check(run, gallery.Registry())[0])
-        # A reused run can be past the wait; a property line shows the stream
-        # opened.
-        reused = self.story("runs-stream-run", launched=False)
-        self.assertTrue(
-            reused.check(
-                gallery.StoryRun(reused, run.result, None), gallery.Registry()
-            )[0]
+        for name, cast, ok in [
+            ("waited", self.cast(gallery.STREAM_WAITING), True),
+            (
+                "opened at once",
+                self.cast(gallery.STREAM_SPINNER.format(run=self.RUN)),
+                True,
+            ),
+            (
+                "another run",
+                self.cast(gallery.STREAM_SPINNER.format(run="other")),
+                False,
+            ),
+            ("never opened", None, False),
+        ]:
+            with self.subTest(name):
+                result = gallery.Result([], self.transcript(), "", 0, cast=cast)
+                run = gallery.StoryRun(story, result, None)
+                self.assertEqual(story.check(run, gallery.Registry())[0], ok)
+        failed = gallery.Result(
+            [], self.transcript(), "", 1, cast=self.cast(gallery.STREAM_WAITING)
         )
-        run.result = gallery.Result([], self.transcript(), "", 1, cast=cast)
+        run = gallery.StoryRun(story, failed, None)
         self.assertFalse(story.check(run, gallery.Registry())[0])
 
     def test_json_stream_story_reads_ndjson_and_stderr(self):
@@ -514,13 +520,19 @@ class GalleryRunHelpers(unittest.TestCase):
             {"event": "completed", "run_id": self.RUN},
         ]
         stdout = "".join(json.dumps(r) + "\n" for r in rows)
-        stderr = f"{gallery.STREAM_WAITING} (5s)\n"
         story = self.story("runs-stream-run--json")
-        run = gallery.StoryRun(story, gallery.Result([], stdout, stderr, 0), None)
-        self.assertTrue(story.check(run, gallery.Registry())[0])
-        run.result.stderr = ""
-        self.assertFalse(story.check(run, gallery.Registry())[0])
-        run.result = gallery.Result([], "not json\n", stderr, 0)
+        for name, stderr, ok in [
+            ("waited", f"{gallery.STREAM_WAITING} (5s)\n", True),
+            ("opened at once", gallery.STREAM_OPEN.format(run=self.RUN) + "\n", True),
+            ("another run", gallery.STREAM_OPEN.format(run="other") + "\n", False),
+            ("never opened", "", False),
+        ]:
+            with self.subTest(name):
+                run = gallery.StoryRun(
+                    story, gallery.Result([], stdout, stderr, 0), None
+                )
+                self.assertEqual(story.check(run, gallery.Registry())[0], ok)
+        run = gallery.StoryRun(story, gallery.Result([], "not json\n", "", 0), None)
         self.assertFalse(story.check(run, gallery.Registry())[0])
 
     def test_timeout_keeps_the_output_of_a_killed_command(self):

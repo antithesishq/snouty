@@ -106,6 +106,9 @@ pub const MIN_CANCEL_RELEASE: (u64, u64) = (63, 0);
 /// container.
 const EXEC_HOST_CONTAINER: &str = "_ANTITHESIS_HOST";
 
+/// The launcher of a debugging session.
+pub(crate) const DEBUGGING_LAUNCHER: &str = "debugging";
+
 impl ApiVersion {
     /// Parses `release_version` eagerly, so no consumer ever parses it.
     pub fn new(latest_api_version: String, release_version: String) -> Self {

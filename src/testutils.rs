@@ -580,8 +580,7 @@ pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
 /// - `GET  /api/v0/runs` — paginated run listing
 /// - `GET  /api/v0/runs/{run_id}` — run detail (keyed by run id; 404 unknown)
 /// - `GET  /api/v0/runs/{run_id}/{properties,logs,build_logs}` — nested
-///   run resources (404 for an unknown run id, like the real API; properties
-///   additionally 404 for runs that aren't `completed`)
+///   run resources (404 for an unknown run id, like the real API)
 /// - `POST /api/v1/launch/{launcher_name}` — returns a mock launch response
 /// - `POST /api/v0/runs/{run_id}/cancel` — 200 for an in-progress run, 409
 ///   for any other known run, 404 for an unknown run
@@ -1099,8 +1098,6 @@ fn mock_run_known(run_id: &str) -> bool {
     MOCK_RUNS.iter().any(|(id, ..)| *id == run_id)
 }
 
-/// Whether `run_id` is a `completed` run in `MOCK_RUNS`, the only kind with
-/// properties.
 fn mock_run_completed(run_id: &str) -> bool {
     MOCK_RUNS
         .iter()
@@ -1147,20 +1144,25 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
             "run_id": run_id,
             "status": status,
             "created_at": chrono::Utc::now().to_rfc3339(),
-            "launcher": "debugging",
+            "launcher": crate::api::DEBUGGING_LAUNCHER,
         });
         if let Some(sub_status) = sub_status {
             body["sub_status"] = serde_json::json!(sub_status);
         }
         return (200, body.to_string());
     }
-    // `run-unknown-status` is kept out of MOCK_RUNS so the list-oriented specs
-    // don't see it.
-    if run_id == "run-unknown-status" {
+    // These runs stay out of MOCK_RUNS so the list-oriented specs don't see
+    // them.
+    if let Some(status) = match run_id {
+        "run-unknown-status" => Some("unknown"),
+        "run-starting" => Some("starting"),
+        _ => None,
+    } {
         return (
             200,
-            r#"{"run_id":"run-unknown-status","status":"unknown","created_at":"2025-03-20T02:00:00Z","launcher":"nightly"}"#
-                .to_string(),
+            format!(
+                r#"{{"run_id":"{run_id}","status":"{status}","created_at":"2025-03-20T02:00:00Z","launcher":"nightly"}}"#
+            ),
         );
     }
     let Some(&(_, status, created, launcher, description)) =
@@ -1301,7 +1303,7 @@ fn mock_route_get_run_logs(run_id: &str) -> (u16, String) {
     (200, lines.join("\n") + "\n")
 }
 
-/// The properties a completed run reports, in the order `[failing,
+/// The properties every run in `MOCK_RUNS` reports, in the order `[failing,
 /// failing_nonevent, undetermined, passing]`. The list route pages over them
 /// and the lookup route finds one by ID.
 ///
@@ -1313,7 +1315,7 @@ fn mock_route_get_run_logs(run_id: &str) -> (u16, String) {
 /// the satisfying `examples`. Runs created on release 65.3 or later report
 /// `Undetermined` until a property resolves (observed on the
 /// antithesis-orbitinghail tenant).
-const MOCK_COMPLETED_PROPERTIES: [&str; 4] = [
+const MOCK_PROPERTIES: [&str; 4] = [
     r#"{"id":"97cf5fcafa500ed62bf109d81834c5b881a2c854","name":"Safety: Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"group":"Safety","category":"Antithesis SDK","team":"Storage","example_count":12,"counterexample_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"398.4898056755774"}}],"counterexamples":[{"moment":{"input_hash":"-200","vtime":"313.15126806590706"}},{"moment":{"input_hash":"-100","vtime":"45.334635781589895"}}]}"#,
     r#"{"id":"d2558d97fabac81ba7eb4676e47a0cba558263f8","name":"Peak memory stays below cap","description":"Peak memory never exceeds the configured limit","category":"","status":"Failing","is_event":false,"group":"Resources","example_count":2,"counterexample_count":1,"examples":[820,910],"counterexamples":[1340]}"#,
     r#"{"id":"27a7cb0b311c8481c4ce12f3347fadbf","name":"Balance stays nonnegative","status":"Undetermined","is_event":true,"example_count":0,"counterexample_count":0,"examples":[],"counterexamples":[]}"#,
@@ -1328,15 +1330,14 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
         );
     }
 
-    // On release 64.0 the properties endpoint 404s only for an unknown run id.
-    // A run that is not `completed` answers 200 with an empty list.
-    let has_properties = match MOCK_RUNS.iter().find(|(id, ..)| *id == run_id) {
-        Some(&(_, status, ..)) => status == "completed",
-        None if run_id == "run-empty" => false,
-        None => return mock_run_not_found(run_id),
-    };
-    if !has_properties {
+    // The endpoint 404s only for an unknown run id, and lists the properties a
+    // run of any status has recorded so far (antithesis-orbitinghail tenant,
+    // release 67.0). `run-empty` stands in for a run that has recorded none.
+    if run_id == "run-empty" {
         return (200, r#"{"data":[],"next_cursor":null}"#.to_string());
+    }
+    if !mock_run_known(run_id) {
+        return mock_run_not_found(run_id);
     }
 
     // The status filter repeats: `status=Passing&status=Failing`.
@@ -1346,7 +1347,7 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
         .collect();
     let after = mock_query_param(query, "after");
 
-    let [failing, failing_nonevent, undetermined, passing] = MOCK_COMPLETED_PROPERTIES;
+    let [failing, failing_nonevent, undetermined, passing] = MOCK_PROPERTIES;
 
     let (data, next_cursor) = match after.as_deref() {
         _ if !statuses.is_empty() => {
@@ -1377,16 +1378,15 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
     )
 }
 
-/// One property from [`MOCK_COMPLETED_PROPERTIES`], by ID. Only a completed
-/// run has them; any other run or property gets the bare 404 that orbitinghail
+/// One property from [`MOCK_PROPERTIES`], by ID, for any run in
+/// `MOCK_RUNS`. Any other run or property gets the bare 404 that orbitinghail
 /// sends on release 65.3.
 fn mock_route_get_run_property(run_id: &str, property_id: &str) -> (u16, String) {
-    let completed = mock_run_completed(run_id);
-    let property = MOCK_COMPLETED_PROPERTIES.into_iter().find(|property| {
+    let property = MOCK_PROPERTIES.into_iter().find(|property| {
         serde_json::from_str::<serde_json::Value>(property).unwrap()["id"] == property_id
     });
     match property {
-        Some(property) if completed => (200, property.to_string()),
+        Some(property) if mock_run_known(run_id) => (200, property.to_string()),
         _ => (404, MOCK_BARE_404_BODY.to_string()),
     }
 }
@@ -1420,7 +1420,7 @@ fn mock_route_stream_run_status(run_id: &str, req_body: &str) -> (u16, String) {
     let ids = request["property_filter"].as_array();
     let types = request["notification_type_filter"].as_array();
     let [failing, failing_nonevent, undetermined, mut passing] =
-        MOCK_COMPLETED_PROPERTIES.map(|p| serde_json::from_str::<Value>(p).unwrap());
+        MOCK_PROPERTIES.map(|p| serde_json::from_str::<Value>(p).unwrap());
     // Every property on the stream has an ID (release 65.3 and later).
     passing["id"] = json!(MOCK_STREAM_PASSING_ID);
     let mut resolved = undetermined.clone();

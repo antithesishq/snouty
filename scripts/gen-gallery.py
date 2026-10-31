@@ -2242,6 +2242,10 @@ _STREAM_SECOND_KEY = {"sample": "kind", "verdict": "verdict"}
 
 # What `runs stream` shows while the run has no stream yet.
 STREAM_WAITING = "waiting for the run's stream to open"
+# What `runs stream` shows once the stream is open: the spinner, or with
+# `--json`, a line on stderr.
+STREAM_SPINNER = "streaming run {run}"
+STREAM_OPEN = "the stream of run {run} is open"
 
 
 def stream_events(text: str) -> list[dict]:
@@ -2310,11 +2314,10 @@ def _cast_text(cast: str | None) -> str:
     return "".join(json.loads(line)[2] for line in lines if line.strip())
 
 
-def stream_run(run: str, launched: bool, *, json_output: bool):
-    """A `runs stream` story that lasts the whole run. On a run that the
-    gallery launched, the output must show the wait for the stream to open. A
-    reused run can be past that wait, so on it a property line, or the
-    "stream … is open" line on stderr with `--json`, is sufficient."""
+def stream_run(run: str, *, json_output: bool):
+    """A `runs stream` story that lasts the whole run. The output must show
+    that the stream opened: the wait, or the open notice. The server can open
+    the stream at once, even while the run is starting."""
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         if json_output:
@@ -2322,18 +2325,19 @@ def stream_run(run: str, launched: bool, *, json_output: bool):
                 rows = _ndjson(sr.result.stdout)
             except json.JSONDecodeError as e:
                 return (False, f"stdout is not NDJSON: {e}")
-            waited = STREAM_WAITING in sr.result.stderr
-            open_line = f"the stream of run {run} is open" in sr.result.stderr
+            text, notice = sr.result.stderr, STREAM_OPEN
         else:
             rows = stream_events(sr.result.combined)
-            waited = STREAM_WAITING in _cast_text(sr.result.cast)
-            open_line = False
-        has_property = any(r.get("event") == "property" for r in rows)
-        opened = waited or (not launched and (open_line or has_property))
-        ok, detail = stream_verdict(rows, run, EXAMPLE_BUG_PROPERTY, opened)
+            text, notice = _cast_text(sr.result.cast), STREAM_SPINNER
+        waited = STREAM_WAITING in text
+        open_line = notice.format(run=run) in text
+        ok, detail = stream_verdict(
+            rows, run, EXAMPLE_BUG_PROPERTY, waited or open_line
+        )
         return (
             ok and sr.result.ok,
-            f"exit={sr.result.returncode}, waited={waited}, {detail}",
+            f"exit={sr.result.returncode}, waited={waited}, "
+            f"open notice={open_line}, {detail}",
         )
 
     return chk
@@ -3700,13 +3704,14 @@ def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
             "Follow my run's properties as they happen",
             "I just launched a run, and I want to watch its properties pass and fail "
             "live, from the start of the run to its end.",
-            "snouty waits for the run's stream to open, then prints one line per event "
+            "If the run's stream is not open yet, snouty waits for it. Then it prints "
+            "one line per event "
             "as it happens: a `property` line when a property appears, `sample` lines "
             "with moments, and `verdict` lines, including the failed verdict of "
             f"{EXAMPLE_BUG_PROPERTY!r}, the example's deliberate bug. It ends with "
             "`completed <run id>` once the run is final. Exit 0.",
             stream_args(x.run),
-            stream_run(x.run, x.launch is not None, json_output=False),
+            stream_run(x.run, json_output=False),
             json_capable=False,
             precaptured=f.stream,
         ),
@@ -3717,9 +3722,10 @@ def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
             "end, to react to a failed verdict.",
             "One JSON object per event, with an `event` key: property, sample, and "
             "verdict events, including a failed verdict, then a `completed` event with "
-            "the run ID. The wait for the stream to open is on stderr. Exit 0.",
+            "the run ID. stderr says when the stream is open, after a wait if it was "
+            "not open yet. Exit 0.",
             ["--json", *stream_args(x.run)],
-            stream_run(x.run, x.launch is not None, json_output=True),
+            stream_run(x.run, json_output=True),
             json_capable=False,
             precaptured=f.stream_json,
         ),

@@ -207,16 +207,21 @@ class DoctorGalleryChecks(unittest.TestCase):
         self.ready = {
             "ok": True,
             "checks": [
-                {"name": "tenant", "status": "ok", "message": "tenant is set"},
-                {"name": "api_key", "status": "ok", "message": "API key provided"},
+                {"id": "tenant", "status": "ok", "message": "tenant is set"},
+                {
+                    "id": "credentials",
+                    "status": "ok",
+                    "kind": "api_key",
+                    "message": "API key provided",
+                },
             ],
         }
         self.missing = {
             "ok": False,
             "checks": [
-                {"name": "tenant", "status": "error", "message": "tenant is not set"},
+                {"id": "tenant", "status": "error", "message": "tenant is not set"},
                 {
-                    "name": "credentials",
+                    "id": "credentials",
                     "status": "error",
                     "message": "No Antithesis credentials found",
                 },
@@ -239,7 +244,7 @@ class DoctorGalleryChecks(unittest.TestCase):
                 self.assertTrue(passed, detail)
 
         self.ready["checks"].append(
-            {"name": "repository", "status": "warn", "message": "repository is not set"}
+            {"id": "repository", "status": "warn", "message": "repository is not set"}
         )
         passed, detail = self.check("doctor-json-ready", json.dumps(self.ready), 0)
         self.assertTrue(passed, detail)
@@ -265,6 +270,21 @@ class DoctorGalleryChecks(unittest.TestCase):
         passed, _ = self.check("doctor-json-ready", json.dumps(self.missing), 1)
         self.assertFalse(passed, "an error report does not exercise a ready setup")
 
+    def test_json_requires_the_credential_kind(self):
+        for kind in (None, "oauth"):
+            with self.subTest(kind=kind):
+                changed = copy.deepcopy(self.ready)
+                changed["checks"][1].pop("kind")
+                if kind:
+                    changed["checks"][1]["kind"] = kind
+                passed, _ = self.check("doctor-json-ready", json.dumps(changed), 0)
+                self.assertFalse(passed, "the ready story sets an API key")
+
+        changed = copy.deepcopy(self.missing)
+        changed["checks"][1]["kind"] = "api_key"
+        passed, _ = self.check("doctor-json", json.dumps(changed), 1)
+        self.assertFalse(passed, "no credential means no kind")
+
     def test_json_requires_the_correct_checks_and_statuses(self):
         for slug, report, returncode in (
             ("doctor-json", self.missing, 1),
@@ -277,7 +297,7 @@ class DoctorGalleryChecks(unittest.TestCase):
                         if mutation == "remove":
                             changed["checks"].pop(index)
                         elif mutation == "rename":
-                            changed["checks"][index]["name"] = "unrelated"
+                            changed["checks"][index]["id"] = "unrelated"
                         else:
                             changed["checks"][index]["status"] = "warn"
                         passed, _ = self.check(slug, json.dumps(changed), returncode)
@@ -286,7 +306,7 @@ class DoctorGalleryChecks(unittest.TestCase):
                         )
 
         self.ready["checks"].append(
-            {"name": "container_runtime", "status": "error", "message": "no runtime"}
+            {"id": "container_runtime", "status": "error", "message": "no runtime"}
         )
         passed, _ = self.check("doctor-json-ready", json.dumps(self.ready), 0)
         self.assertFalse(passed, "an error check must make the overall report fail")
@@ -309,7 +329,7 @@ class DoctorGalleryChecks(unittest.TestCase):
             '{"ok": false, "checks": [null]}',
             '{"ok": false, "checks": [{}]}',
         ]
-        for key, value in (("name", 1), ("status", "failed"), ("message", None)):
+        for key, value in (("id", 1), ("status", "failed"), ("message", None)):
             changed = copy.deepcopy(self.missing)
             changed["checks"][0][key] = value
             invalid.append(json.dumps(changed))

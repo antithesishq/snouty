@@ -89,15 +89,40 @@ fn print_notes(notes: &[Note]) {
     }
 }
 
+/// The `kind` field of the `credentials` check.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CredentialKind {
+    ApiKey,
+    #[serde(rename = "oauth")]
+    OAuth,
+    GithubActionsOidc,
+    Password,
+}
+
+impl From<&AuthenticationInfo> for CredentialKind {
+    fn from(credential: &AuthenticationInfo) -> Self {
+        match credential {
+            AuthenticationInfo::ApiKey { .. } => Self::ApiKey,
+            AuthenticationInfo::OAuth(_) => Self::OAuth,
+            AuthenticationInfo::GithubActionsOidc(_) => Self::GithubActionsOidc,
+            AuthenticationInfo::Password { .. } => Self::Password,
+        }
+    }
+}
+
 /// One health check: local tooling, settings validity, authentication, and
 /// API connectivity. The headline `message` states the bare fact; the `notes`
-/// carry explanations and how-tos. `name` is a stable `snake_case` `--json` key.
-/// Checks own all of doctor's pass/warn/fail semantics — the settings table is
-/// purely informational.
+/// carry explanations and how-tos. `name` is a stable `snake_case` `--json` key
+/// that does not change with the check's status. Checks own all of doctor's
+/// pass/warn/fail semantics — the settings table is purely informational.
 #[derive(Serialize)]
 struct Check {
     name: &'static str,
     status: Status,
+    /// Set only on the `credentials` check, when a credential is found.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<CredentialKind>,
     message: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     notes: Vec<Note>,
@@ -108,6 +133,7 @@ impl Check {
         Self {
             name,
             status,
+            kind: None,
             message: message.into(),
             notes: Vec::new(),
         }
@@ -123,6 +149,11 @@ impl Check {
 
     fn fail(name: &'static str, message: impl Into<String>) -> Self {
         Self::new(name, Status::Error, message)
+    }
+
+    fn kind(mut self, kind: CredentialKind) -> Self {
+        self.kind = Some(kind);
+        self
     }
 
     /// Attach an explanatory line, returning `self` for chaining. Prefer several
@@ -217,6 +248,7 @@ fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
         .filter(|s| !s.value().has_blank_api_key())
         .collect();
 
+    let kind = CredentialKind::from(credentials.value());
     // A username and password in use while they hide a credential the API
     // accepts: the one thing to do is free that credential (issue #292).
     if let AuthenticationInfo::Password { .. } = credentials.value()
@@ -224,51 +256,38 @@ fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
             .iter()
             .find(|s| !matches!(s.value(), AuthenticationInfo::Password { .. }))
     {
-        return vec![hidden_credential_check(credentials, hidden)];
+        return vec![hidden_credential_check(credentials, hidden).kind(kind)];
     }
 
-    let mut checks = match credentials.value() {
-        AuthenticationInfo::GithubActionsOidc(_) => {
-            vec![enrich_with_origin(
-                Check::ok(
-                    "github_actions_oidc_token",
-                    "Github Actions OIDC token provided",
-                ),
-                credentials,
-            )]
-        }
-        AuthenticationInfo::OAuth(_) => {
-            vec![enrich_with_origin(
-                Check::ok("oauth_credentials", "OAuth credentials used"),
-                credentials,
-            )]
-        }
-        credential if credential.has_blank_api_key() => {
-            vec![enrich_with_origin(
-                with_credential_remedy(
-                    Check::fail(CREDENTIALS_CHECK_NAME, "the API key is empty")
-                        .note(Level::Error, "an empty API key cannot authenticate"),
-                ),
-                credentials,
-            )]
-        }
-        AuthenticationInfo::ApiKey { .. } => {
-            vec![enrich_with_origin(
-                Check::ok("api_key", "API key provided"),
-                credentials,
-            )]
-        }
-        AuthenticationInfo::Password { username, .. } => {
-            vec![password_only_check(credentials, username)]
-        }
+    let check = match credentials.value() {
+        AuthenticationInfo::GithubActionsOidc(_) => enrich_with_origin(
+            Check::ok(CREDENTIALS_CHECK_NAME, "GitHub Actions OIDC token provided"),
+            credentials,
+        ),
+        AuthenticationInfo::OAuth(_) => enrich_with_origin(
+            Check::ok(CREDENTIALS_CHECK_NAME, "OAuth credentials used"),
+            credentials,
+        ),
+        credential if credential.has_blank_api_key() => enrich_with_origin(
+            with_credential_remedy(
+                Check::fail(CREDENTIALS_CHECK_NAME, "the API key is empty")
+                    .note(Level::Error, "an empty API key cannot authenticate"),
+            ),
+            credentials,
+        ),
+        AuthenticationInfo::ApiKey { .. } => enrich_with_origin(
+            Check::ok(CREDENTIALS_CHECK_NAME, "API key provided"),
+            credentials,
+        ),
+        AuthenticationInfo::Password { username, .. } => password_only_check(credentials, username),
     };
 
+    let mut checks = vec![check.kind(kind)];
     checks.extend(shadowed_credentials_check(credentials, &shadowed));
     checks
 }
 
-/// The check that reports a credential shortfall: no credential at all, an
-/// empty API key, or only the deprecated username and password.
+/// The name of the credentials check. It is the same in every state.
 const CREDENTIALS_CHECK_NAME: &str = "credentials";
 
 fn missing_credentials_check(message: impl Into<String>) -> Check {
@@ -744,8 +763,13 @@ pub async fn cmd_doctor(
 
 #[cfg(test)]
 mod tests {
-    use crate::auth::{API_KEY_VAR_NAME, PASSWORD_VAR_NAME, USERNAME_VAR_NAME};
-    use crate::testutils::fake_secrets::{FAKE_API_KEY_A, FAKE_PASSWORD};
+    use crate::auth::{
+        API_KEY_VAR_NAME, GithubActionsOidcToken, PASSWORD_VAR_NAME, USERNAME_VAR_NAME,
+    };
+    use crate::testutils::auth::oauth_credential_in;
+    use crate::testutils::fake_secrets::{
+        FAKE_ACCESS_TOKEN_A, FAKE_API_KEY_A, FAKE_OIDC_REQUEST_TOKEN, FAKE_PASSWORD,
+    };
 
     use super::*;
 
@@ -1229,6 +1253,64 @@ mod tests {
         let check = version_check("tenant.antithesis.com", Err(VersionError::Http(429)));
         assert_eq!(check.status, Status::Error);
         assert!(check.notes.iter().any(|n| n.text.contains("429")));
+    }
+
+    #[test]
+    fn the_credentials_check_has_one_name_and_reports_the_kind() {
+        let env = |value: AuthenticationInfo| AttributedValue::EnvironmentVariable {
+            value,
+            environment_variable_names: vec![API_KEY_VAR_NAME],
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let cases = [
+            (vec![], Status::Error, None),
+            (
+                vec![env(AuthenticationInfo::ApiKey {
+                    api_key: FAKE_API_KEY_A.to_owned(),
+                })],
+                Status::Ok,
+                Some("api_key"),
+            ),
+            (
+                vec![env(AuthenticationInfo::ApiKey {
+                    api_key: String::new(),
+                })],
+                Status::Error,
+                Some("api_key"),
+            ),
+            (
+                vec![env(oauth_credential_in(
+                    dir.path(),
+                    FAKE_ACCESS_TOKEN_A,
+                    None,
+                ))],
+                Status::Ok,
+                Some("oauth"),
+            ),
+            (
+                vec![env(AuthenticationInfo::GithubActionsOidc(
+                    GithubActionsOidcToken::new(
+                        "http://127.0.0.1:1/token".to_owned(),
+                        FAKE_OIDC_REQUEST_TOKEN.to_owned(),
+                    ),
+                ))],
+                Status::Ok,
+                Some("github_actions_oidc"),
+            ),
+            (vec![env_password_source()], Status::Warn, Some("password")),
+            (
+                vec![env_password_source(), file_api_key_source()],
+                Status::Warn,
+                Some("password"),
+            ),
+        ];
+        for (sources, status, kind) in cases {
+            let checks = authn_checks(&sources);
+            let value = serde_json::to_value(&checks[0]).unwrap();
+            assert_eq!(value["name"], "credentials", "{value}");
+            assert_eq!(checks[0].status, status, "{value}");
+            assert_eq!(value.get("kind").and_then(|k| k.as_str()), kind, "{value}");
+        }
     }
 
     // ---- JSON report ----------------------------------------------------

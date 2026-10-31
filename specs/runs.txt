@@ -249,30 +249,13 @@ stdout '(?s)^see property results:\n  snouty runs properties $R_run_id\n\nview t
 [!staging] stdout 'Status +starting$'
 [!staging] ! stdout 'see property results'
 
-# `snouty --json runs show --web` prints the run page URL, the tenant's
+# `snouty --json runs show --web` prints the run page URL, the base URL's
 # `/run?run_id=<run_id>`, without launching a browser, so a script can capture
-# it. The page is on the tenant host even when ANTITHESIS_BASE_URL names
-# another host, such as the mock server or an API proxy. (Plain `--web` would
-# shell out to a browser, so it's not exercised here.)
+# it. (Plain `--web` would shell out to a browser, so it's not exercised here.)
 mock-runs-server
 snouty --json runs show $R_run_id --web
 stdout '^\{"url":"http.*/run\?run_id=${R_run_id@R}"\}$'
-[!staging] stdout '^\{"url":"https://testtenant\.antithesis\.com/run\?'
-
-# Without a tenant, `--web` has no page host, so it fails even when
-# ANTITHESIS_BASE_URL is set, rather than open that API host.
-[!staging] env ANTITHESIS_TENANT=
-[!staging] ! snouty runs show $R_run_id --web
-[!staging] stderr 'Could not resolve Antithesis tenant'
-
-# The tenant becomes the page host, so `--web` rejects a tenant that is not a
-# hostname, even though an explicit ANTITHESIS_BASE_URL lets other commands
-# skip that check.
-[!staging] env ANTITHESIS_TENANT=evil.example/x#
-[!staging] ! snouty runs show $R_run_id --web
-[!staging] stderr 'invalid tenant `evil.example/x#`'
-[!staging] ! stdout .
-[!staging] env ANTITHESIS_TENANT=testtenant
+[!staging] stdout '^\{"url":"${ANTITHESIS_BASE_URL@R}/run\?'
 
 # `snouty --json runs show` outputs JSON.
 mock-runs-server

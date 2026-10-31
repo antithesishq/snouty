@@ -8,7 +8,7 @@
 # backend. Unprefixed assertions are structural and run in both modes.
 #
 # Run-id scoped read responses may be cached under
-# $XDG_RUNTIME_DIR/snouty/api-cache-v3 (under the user temp dir on macOS).
+# $XDG_RUNTIME_DIR/snouty/api-cache-v4 (under the user temp dir on macOS).
 # Caching is internal and must not change command output or required arguments.
 # Two failures are retried. One is a GET that fails at the transport level
 # (connect errors, resets, DNS failures). Mutations (launch, debug, exec, and

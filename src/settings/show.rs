@@ -37,11 +37,6 @@ fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, 
             json!(settings.api_cache_max_file_size()),
             NOT_SET,
         ),
-        (
-            "api_cache_respect_headers",
-            json!(settings.api_cache_respect_headers()),
-            NOT_SET,
-        ),
     ];
     if !features.is_empty() {
         let ids: Vec<String> = features.iter().map(Feature::to_string).collect();

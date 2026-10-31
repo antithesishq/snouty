@@ -15,7 +15,6 @@ stdout '^https_proxy +not set$'
 stdout '^container_engine +auto-detect$'
 stdout '^update_channel +stable$'
 stdout '^api_cache_max_file_size +\d+$'
-stdout '^api_cache_respect_headers +true$'
 stdout '^settings files: none$'
 
 # 2. Values resolve through the usual chain. The base URL derives from the
@@ -46,7 +45,6 @@ stdout '"tenant": "acme"'
 stdout '"repository": "global-repo"'
 stdout '"profile": null'
 stdout '"api_cache_max_file_size": 1000'
-stdout '"api_cache_respect_headers": true'
 stdout '(?s)"files": \[.*"type": "project",\n +"path": "/[^\n]*/chosen\.toml".*"type": "global",\n +"path": "/[^\n]*/cfg/snouty/settings\.toml"'
 
 -- cfg/snouty/settings.toml --

@@ -1,42 +1,33 @@
 //! [`CachePolicy`] — an admission verdict on a fetched API response.
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
 use headers::{CacheControl, HeaderMapExt};
 
-/// A handler's admission verdict on the value it fetched. The cache stores
-/// nothing untagged: `#[cached]` requires the handler body to return a
-/// [`crate::tag::Tagged`] value, so admission lives in the handler — next to
-/// the response, whose headers carry the other half of the verdict (see
+/// Whether the cache may store a fetched value. Each `#[cached]` handler
+/// tags its value with the verdict from its response's headers (see
 /// [`crate::api_cache::ApiCache::headers_policy`]).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum CachePolicy {
     Cacheable,
+    /// A stream that may be stored only if the flag is set by the time it
+    /// ends. A value with this tag is never stored.
+    CacheableOnceComplete(Arc<AtomicBool>),
     Uncacheable,
 }
 
 impl CachePolicy {
-    /// [`CachePolicy::Cacheable`] when `cacheable` is true.
-    pub fn cache_if(cacheable: bool) -> Self {
-        if cacheable {
-            Self::Cacheable
-        } else {
-            Self::Uncacheable
-        }
-    }
-
     /// The verdict `Cache-Control` gives a private client cache. Entries are
     /// never revalidated and never expire, so any directive that demands
     /// revalidation means [`CachePolicy::Uncacheable`]; an absent or
     /// malformed header grants nothing. `private` is fine — the cache
     /// directory is per-user.
     pub fn from_headers(headers: &http::HeaderMap) -> Self {
-        Self::cache_if(cache_headers_allow(headers))
-    }
-
-    /// [`CachePolicy::Cacheable`] only when both verdicts are.
-    pub fn and(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Cacheable, Self::Cacheable) => Self::Cacheable,
-            _ => Self::Uncacheable,
+        if cache_headers_allow(headers) {
+            Self::Cacheable
+        } else {
+            Self::Uncacheable
         }
     }
 }

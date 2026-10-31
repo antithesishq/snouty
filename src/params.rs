@@ -11,11 +11,11 @@ use crate::error::user_error;
 
 const SCHEMA: &str = include_str!("params_schema.json");
 
-/// The setup timeout that the launcher uses when a launch sets none.
-const DEFAULT_SETUP_TIMEOUT_MINUTES: u64 = 5;
-/// The shortest exploration that the launcher accepts, after the full setup
-/// timeout comes out of the run's length.
-const MIN_EXPLORATION_MINUTES: u64 = 15;
+/// The longest setup timeout that the launcher accepts.
+pub const MAX_SETUP_TIMEOUT_MINUTES: u64 = 30;
+/// The shortest fuzzing campaign that the launcher accepts. Setup time does
+/// not come out of the budget.
+const MIN_FUZZING_MINUTES: u64 = 15;
 
 /// The cores that a run on `tier` uses, which sets how fast it spends its
 /// compute hours.
@@ -127,49 +127,45 @@ impl Params {
         if let Some(value) = self.inner.get(ANT_FAULT_EXCLUSIONS).and_then(Value::as_str) {
             validate_fault_exclusions(value)?;
         }
-        self.validate_compute_budget()
+        self.validate_run_sizing()
     }
 
-    /// Check that `antithesis.max_compute_hours` leaves room for the full
-    /// setup timeout plus the minimum exploration time, on the tier's cores.
-    /// The launcher refuses a smaller budget. The schema check has already
-    /// made each value a whole number. A tier that this snouty does not know
-    /// skips the check, and the server decides.
-    fn validate_compute_budget(&self) -> Result<()> {
-        let number = |key| {
-            self.inner
-                .get(key)
-                .and_then(Value::as_str)
-                .and_then(|v| v.parse::<u64>().ok())
-        };
+    /// Check the run sizing that the launcher would refuse after snouty has
+    /// pushed images: a budget below 15 minutes of fuzzing on the tier's
+    /// cores, and a setup timeout above 30 minutes. The schema check has
+    /// already made each value a whole number. A tier that this snouty does
+    /// not know skips the budget check, and the server decides.
+    fn validate_run_sizing(&self) -> Result<()> {
+        let value = |key| self.inner.get(key).and_then(Value::as_str);
+        // A whole number too big for u64 is above every limit.
+        let number = |key| value(key).map(|v| v.parse::<u64>().unwrap_or(u64::MAX));
+        if let Some(setup) = value(ANT_SETUP_TIMEOUT)
+            && number(ANT_SETUP_TIMEOUT) > Some(MAX_SETUP_TIMEOUT_MINUTES)
+        {
+            return Err(user_error(format!(
+                "{ANT_SETUP_TIMEOUT} {setup} is above the maximum of \
+                 {MAX_SETUP_TIMEOUT_MINUTES} minutes"
+            )));
+        }
         let Some(hours) = number(ANT_MAX_COMPUTE_HOURS) else {
             return Ok(());
         };
-        let tier = match self.inner.get(ANT_PERFORMANCE_TIER).and_then(Value::as_str) {
-            Some(tier) => match tier.parse::<PerformanceTier>() {
-                Ok(tier) => tier,
-                Err(_) => return Ok(()),
-            },
+        let tier = match value(ANT_PERFORMANCE_TIER).map(str::parse::<PerformanceTier>) {
             None => PerformanceTier::Standard,
+            Some(Ok(tier)) => tier,
+            Some(Err(_)) => return Ok(()),
         };
         let cores = tier_cores(tier);
-        // The launcher raises a setup timeout below 1 minute to 1.
-        let setup = number(ANT_SETUP_TIMEOUT)
-            .unwrap_or(DEFAULT_SETUP_TIMEOUT_MINUTES)
-            .max(1);
-        let needed_minutes = setup + MIN_EXPLORATION_MINUTES;
-        if hours * 60 >= needed_minutes * cores {
+        let min_hours = (MIN_FUZZING_MINUTES * cores).div_ceil(60);
+        if hours >= min_hours {
             return Ok(());
         }
-        let min_hours = (needed_minutes * cores).div_ceil(60);
         Err(user_error(format!(
-            "--max-compute-hours {hours} is too low: on the {tier} tier ({cores} cores) with a \
-             {setup}m setup timeout, a run needs at least {min_hours} compute hours ({setup}m \
-             setup + {MIN_EXPLORATION_MINUTES}m minimum exploration)"
+            "--max-compute-hours {hours} is too low for the {tier} tier: {tier} runs on \
+             {cores} cores, so {MIN_FUZZING_MINUTES} minutes of fuzzing needs at least \
+             {min_hours} compute hours"
         ))
-        .suggestion(format!(
-            "raise --max-compute-hours to at least {min_hours}, or lower --setup-timeout"
-        )))
+        .suggestion(format!("raise --max-compute-hours to at least {min_hours}")))
     }
 
     /// Validate params against the debugging params schema.
@@ -393,35 +389,46 @@ mod tests {
         );
     }
 
-    /// The smallest budget for each setup timeout and tier, from the
-    /// launcher's sizing table, passes, and one compute hour less fails.
+    /// The smallest budget for each tier, from the launcher's sizing table,
+    /// passes, and one compute hour less fails. The setup timeout does not
+    /// change it.
     #[test]
-    fn compute_budget_minimum_matches_the_launcher_table() {
-        let fits = |hours: u64, setup: u64, tier: &str| {
+    fn run_sizing_minimum_matches_the_launcher_table() {
+        let fits = |hours: u64, tier: &str, setup: u64| {
             Params::from_key_value_pairs([
                 format!("antithesis.max_compute_hours={hours}"),
-                format!("antithesis.setup_timeout={setup}"),
                 format!("antithesis.performance_tier={tier}"),
+                format!("antithesis.setup_timeout={setup}"),
             ])
             .unwrap()
-            .validate_compute_budget()
+            .validate_run_sizing()
             .is_ok()
         };
-        for (setup, standard, fast, turbo) in [
-            (1, 13, 26, 52),
-            (5, 16, 32, 64),
-            (10, 20, 40, 80),
-            (30, 36, 72, 144),
-        ] {
-            for (tier, min) in [("standard", standard), ("fast", fast), ("turbo", turbo)] {
-                assert!(fits(min, setup, tier), "{min}h, {setup}m, {tier}");
+        for (tier, min) in [("standard", 12), ("fast", 24), ("turbo", 48)] {
+            for setup in [0, 5, 30] {
+                assert!(fits(min, tier, setup), "{min}h, {tier}, {setup}m");
                 assert!(
-                    !fits(min - 1, setup, tier),
-                    "{}h, {setup}m, {tier}",
+                    !fits(min - 1, tier, setup),
+                    "{}h, {tier}, {setup}m",
                     min - 1
                 );
             }
         }
+    }
+
+    /// Every budget at or above the tier's minimum passes, up to the largest
+    /// whole number the schema accepts, which overflows no arithmetic.
+    #[hegel::test]
+    fn run_sizing_accepts_any_budget_above_the_minimum(tc: hegel::TestCase) {
+        let hours = tc.draw(generators::integers::<u64>().min_value(48));
+        let digits = tc.draw(generators::integers::<u8>().max_value(40));
+        let hours = format!("{hours}{}", "9".repeat(usize::from(digits)));
+        let params = Params::from_key_value_pairs([
+            format!("antithesis.max_compute_hours={hours}"),
+            "antithesis.performance_tier=turbo".to_string(),
+        ])
+        .unwrap();
+        assert!(params.validate_run_sizing().is_ok(), "{hours}");
     }
 
     #[test]

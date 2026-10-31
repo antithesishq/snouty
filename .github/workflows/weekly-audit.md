@@ -34,7 +34,7 @@ tools:
 
 # The agent reaches the tenant only through this tool, and the API key stays on
 # the runner. The tool offers all of snouty but enforces a per-run budget for
-# what costs money or touches other people's runs: 2 launches of 16 compute
+# what costs money or touches other people's runs: 2 launches of 12 compute
 # hours, 1 debugging session, and 30 `runs exec` calls. It records each run it
 # creates in a ledger on the runner, and the post-step cancels them all.
 mcp-scripts:
@@ -42,7 +42,7 @@ mcp-scripts:
     description: >-
       Run snouty, built from the commit under test, against the Antithesis
       tenant. Pass the arguments after `snouty`, e.g. `runs list --limit 5
-      --json`. Each audit allows 2 `launch` runs of 16 compute hours, 1
+      --json`. Each audit allows 2 `launch` runs of 12 compute hours, 1
       `debug` session and 30 `runs exec` calls; the result's `budget` shows
       what is left. Runs the audit creates are cancelled when it ends.
       `runs exec` refuses other people's debugging sessions, and `runs cancel`
@@ -64,9 +64,8 @@ mcp-scripts:
       # have created a run.
       LIMITS = {"launch": 2, "debug": 1, "exec": 30}
       ATTEMPTS = 6
-      # The smallest run that the launcher accepts on the standard tier with the
-      # default setup timeout.
-      MAX_COMPUTE_HOURS = 16
+      # The smallest run that the launcher accepts on the standard tier.
+      MAX_COMPUTE_HOURS = 12
       # Each call must finish well inside the tool's 55s timeout. If the handler
       # killed this process instead, the ledger would miss the call.
       LOOKUP_TIMEOUT = 10
@@ -459,7 +458,7 @@ For each entry, decide whether the condition it states still holds.
   does what it asks.
 
 The `snouty` tool can also launch runs, open a debugging session and run
-`runs exec`, within a budget for each audit: 2 launches of 16 compute hours, 1
+`runs exec`, within a budget for each audit: 2 launches of 12 compute hours, 1
 debugging session and 30 exec calls. Spend it on comments that need it, such as
 cancel semantics, launch responses, `runs exec` behavior and session readiness,
 and plan the checks that share one session before you open it. A completed run

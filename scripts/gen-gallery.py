@@ -1272,10 +1272,10 @@ EXAMPLE_DIR = Path(__file__).resolve().parent.parent / "examples" / "antithesis"
 # RUN_TIER. A rewarm source must be on the same tier as the run that loads its
 # moment: the API spec says so for the exec endpoint (src/openapi.json).
 GALLERY_RUN_LAUNCHER = "basic_test"
-# The smallest run the launcher accepts on RUN_TIER with the default setup
-# timeout. It lasts GALLERY_RUN_MINUTES on RUN_TIER's 48 cores.
-GALLERY_RUN_COMPUTE_HOURS = 16
-GALLERY_RUN_MINUTES = 20
+# The smallest run the launcher accepts on RUN_TIER. It fuzzes for
+# GALLERY_RUN_MINUTES on RUN_TIER's 48 cores, after setup.
+GALLERY_RUN_COMPUTE_HOURS = 12
+GALLERY_RUN_MINUTES = 15
 # The oldest gallery run that a new gallery reuses. A run reports ready a few
 # minutes after it starts, and its test then lasts GALLERY_RUN_MINUTES; an
 # older run can end before the ready stories run.

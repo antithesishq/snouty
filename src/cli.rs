@@ -19,6 +19,7 @@ use crate::docker_credential::HELPER_NAME;
 use crate::error::user_error;
 use crate::features::{self, Feature};
 use crate::help::{self, Attach};
+use crate::params::MAX_SETUP_TIMEOUT_MINUTES;
 use crate::runs::usage::{Rollup, TimeBound};
 use crate::stdio;
 use crate::time::{BareUnit, HumanDuration, duration_format};
@@ -150,8 +151,10 @@ fn parse_setup_timeout(value: &str) -> Result<u64, String> {
     let seconds = HumanDuration::parse(value, BareUnit::Refused)
         .map_err(|e| e.to_string())?
         .seconds();
-    if seconds < 60 {
-        return Err("must be at least 1 minute".to_string());
+    if !(60..=MAX_SETUP_TIMEOUT_MINUTES * 60).contains(&seconds) {
+        return Err(format!(
+            "must be from 1 to {MAX_SETUP_TIMEOUT_MINUTES} minutes"
+        ));
     }
     if seconds % 60 != 0 {
         return Err("must be a whole number of minutes".to_string());
@@ -596,10 +599,10 @@ pub struct LaunchArgs {
     )]
     pub duration: Option<HumanDuration>,
 
-    /// Compute hours to spend on the run, at most 1000. One compute hour is one
-    /// core running for one hour. The minimum depends on --performance-tier
-    /// and --setup-timeout: 16 on the standard tier with the default setup
-    /// timeout. The server default is 48.
+    /// Compute hours of fuzzing for the run, at most 1000. One compute hour is
+    /// one core running for one hour. The minimum depends on
+    /// --performance-tier: 12 on standard, 24 on fast, 48 on turbo. The server
+    /// default is 48.
     #[arg(long, value_parser = clap::value_parser!(u16).range(1..=1000))]
     pub max_compute_hours: Option<u16>,
 
@@ -608,7 +611,7 @@ pub struct LaunchArgs {
         value_parser = parse_setup_timeout,
         help = concat!(
             "Fail the run immediately if the system does not reach setup complete within \
-             this time, in whole minutes, such as 10m or 30m. The default is 5m. ",
+             this time, in whole minutes from 1m to 30m. The default is 5m. ",
             duration_format!(),
         ),
     )]

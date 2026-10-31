@@ -46,41 +46,49 @@ stderr 'invalid value .48\.5. for .--max-compute-hours'
 
 # --setup-timeout takes h/m units only. A bare number fails at flag-parse
 #    time, because a reader cannot tell its unit. The timeout must be whole
-#    minutes, and at least 1 minute.
+#    minutes, from 1 to 30.
 ! snouty launch --launcher basic_test --config-image config:latest --setup-timeout 10
 stderr 'invalid value .10. for .--setup-timeout <SETUP_TIMEOUT>.: must be a whole number with an h, m or s unit'
 stderr 'a bare number is not permitted'
 ! snouty launch --launcher basic_test --config-image config:latest --setup-timeout 90s
 stderr 'must be a whole number of minutes'
 ! snouty launch --launcher basic_test --config-image config:latest --setup-timeout 0m
-stderr 'must be at least 1 minute'
+stderr 'must be from 1 to 30 minutes'
 ! snouty launch --launcher basic_test --config-image config:latest --setup-timeout 30s
-stderr 'must be at least 1 minute'
+stderr 'must be from 1 to 30 minutes'
+! snouty launch --launcher basic_test --config-image config:latest --setup-timeout 31m
+stderr 'invalid value .31m. for .--setup-timeout <SETUP_TIMEOUT>.: must be from 1 to 30 minutes'
+! snouty launch --launcher basic_test --config-image config:latest --setup-timeout 1h
+stderr 'must be from 1 to 30 minutes'
 
-# The budget must leave room for the full setup timeout plus 15 minutes of
-#    exploration, on the tier's cores: standard 48, fast 96, turbo 192. The
-#    setup timeout defaults to 5 minutes, and the tier to standard. A budget
-#    below the minimum fails before any request, and the error names the
-#    minimum and how it was worked out.
-! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 15
-stderr 'Error: --max-compute-hours 15 is too low: on the standard tier \(48 cores\) with a 5m setup timeout, a run needs at least 16 compute hours \(5m setup \+ 15m minimum exploration\)'
-stderr 'Suggestion: raise --max-compute-hours to at least 16, or lower --setup-timeout'
-! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 16 --performance-tier fast
-stderr 'on the fast tier \(96 cores\) with a 5m setup timeout, a run needs at least 32 compute hours'
-! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 63 --performance-tier turbo
-stderr 'on the turbo tier \(192 cores\) with a 5m setup timeout, a run needs at least 64 compute hours'
-! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 19 --setup-timeout 10m
-stderr 'with a 10m setup timeout, a run needs at least 20 compute hours \(10m setup \+ 15m minimum exploration\)'
+# The budget must buy at least 15 minutes of fuzzing on the tier's cores:
+#    standard 48, fast 96, turbo 192, so 12, 24 and 48 compute hours. The tier
+#    defaults to standard, and the setup timeout does not change the minimum.
+#    A budget below the minimum fails before any request, and the error names
+#    the tier and the minimum.
+! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 11
+stderr 'Error: --max-compute-hours 11 is too low for the standard tier: standard runs on 48 cores, so 15 minutes of fuzzing needs at least 12 compute hours'
+stderr 'Suggestion: raise --max-compute-hours to at least 12'
+! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 12 --performance-tier fast
+stderr 'Error: --max-compute-hours 12 is too low for the fast tier: fast runs on 96 cores, so 15 minutes of fuzzing needs at least 24 compute hours'
+! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --performance-tier turbo
+stderr 'too low for the turbo tier: turbo runs on 192 cores, so 15 minutes of fuzzing needs at least 48 compute hours'
 
-# The same check applies to values from --param. A setup timeout below 1
-#    minute counts as 1, as the launcher raises it. A tier that this snouty
-#    does not know skips the check, and the server decides.
-! snouty launch --launcher basic_test --config-image config:latest --param antithesis.max_compute_hours=12
-stderr 'needs at least 16 compute hours'
-! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --param antithesis.performance_tier=fast
-stderr 'on the fast tier \(96 cores\)'
-! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 12 --param antithesis.setup_timeout=0
-stderr 'with a 1m setup timeout, a run needs at least 13 compute hours'
+# The same checks apply to values from --param. A setup timeout above 30
+#    minutes fails. One below 1 minute passes, because the launcher raises it
+#    to 1. A tier that this snouty does not know skips the budget check, and
+#    the server decides.
+! snouty launch --launcher basic_test --config-image config:latest --param antithesis.max_compute_hours=11
+stderr 'needs at least 12 compute hours'
+! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 12 --param antithesis.performance_tier=fast
+stderr 'too low for the fast tier'
+! snouty launch --launcher basic_test --config-image config:latest --param antithesis.setup_timeout=31
+stderr 'Error: antithesis.setup_timeout 31 is above the maximum of 30 minutes'
+! snouty launch --launcher basic_test --config-image config:latest --param antithesis.setup_timeout=99999999999999999999999
+stderr 'antithesis.setup_timeout 99999999999999999999999 is above the maximum of 30 minutes'
+! snouty launch --launcher basic_test --config-image config:latest --param antithesis.setup_timeout=0
+! stderr 'setup_timeout'
+stderr 'No Antithesis credentials found'
 ! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 12 --param antithesis.performance_tier=ultra
 ! stderr 'too low'
 stderr 'No Antithesis credentials found'
@@ -296,17 +304,18 @@ snouty launch --launcher basic_test --config-image config:latest --max-compute-h
 ! stderr 'duration'
 
 # 6c5. --max-compute-hours sends `antithesis.max_compute_hours`. The minimum
-#    passes: 16 on standard with the default setup timeout, 13 with a 1-minute
-#    setup timeout, and 32 on fast.
+#    of each tier passes, with any setup timeout up to 30 minutes, and so does
+#    the maximum of 1000.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 16 --source ci-pipeline
-stderr '"antithesis.max_compute_hours": "16"'
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 12 --setup-timeout 30m --source ci-pipeline
+stderr '"antithesis.max_compute_hours": "12"'
+stderr '"antithesis.setup_timeout": "30"'
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 13 --setup-timeout 1m --source ci-pipeline
-stderr '"antithesis.max_compute_hours": "13"'
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --performance-tier fast --source ci-pipeline
+stderr '"antithesis.max_compute_hours": "24"'
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 32 --performance-tier fast --source ci-pipeline
-stderr '"antithesis.max_compute_hours": "32"'
+snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 48 --performance-tier turbo --source ci-pipeline
+stderr '"antithesis.max_compute_hours": "48"'
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 1000 --source ci-pipeline
 stderr '"antithesis.max_compute_hours": "1000"'
@@ -316,8 +325,8 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch --launcher basic_test --config-image config:latest --setup-timeout 10m --source ci-pipeline
 stderr '"antithesis.setup_timeout": "10"'
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --setup-timeout 1h30m --source ci-pipeline
-stderr '"antithesis.setup_timeout": "90"'
+snouty launch --launcher basic_test --config-image config:latest --setup-timeout 25m --source ci-pipeline
+stderr '"antithesis.setup_timeout": "25"'
 
 # 6d. --param flag passes custom properties.
 mock-server 200 '{"message":"Success","runId":"run-123"}'

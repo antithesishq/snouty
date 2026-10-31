@@ -73,6 +73,6 @@ ANTITHESIS_API_KEY=… \
     --config tests/fixtures/validate/valid \
     --test-name "snouty-valid-sample" \
     --description "snouty valid sample harness" \
-    --max-compute-hours 16 \
+    --max-compute-hours 12 \
     --ephemeral
 ```

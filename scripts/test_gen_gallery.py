@@ -388,7 +388,7 @@ class GalleryRunHelpers(unittest.TestCase):
         args = gallery.gallery_launch_args("snouty gen-gallery end-to-end run now")
         self.assertEqual(args[:2], ["--json", "launch"])
         self.assertIn("attrs.source=snouty-gallery", args)
-        self.assertEqual(args[args.index("--max-compute-hours") + 1], "16")
+        self.assertEqual(args[args.index("--max-compute-hours") + 1], "12")
         self.assertNotIn("--duration", args)
         self.assertTrue(
             args[args.index("--description") + 1].startswith(

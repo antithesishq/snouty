@@ -2021,20 +2021,20 @@ def doctor_json_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         return (False, "report needs a boolean ok and a non-empty checks array")
     well_formed = all(
         isinstance(c, dict)
-        and isinstance(c.get("name"), str)
+        and isinstance(c.get("id"), str)
         and c.get("status") in ("ok", "warn", "error")
         and isinstance(c.get("message"), str)
         for c in checks
     )
     if not well_formed:
-        return (False, "checks need string names/messages and ok/warn/error statuses")
+        return (False, "checks need string ids/messages and ok/warn/error statuses")
     expected = (
         {"tenant": ("ok", None), "credentials": ("ok", "api_key")}
         if sr.story.expect_ok
         else {"tenant": ("error", None), "credentials": ("error", None)}
     )
-    found = {c["name"]: (c["status"], c.get("kind")) for c in checks}
-    required_match = all(found.get(name) == want for name, want in expected.items())
+    found = {c["id"]: (c["status"], c.get("kind")) for c in checks}
+    required_match = all(found.get(id_) == want for id_, want in expected.items())
     consistent = data["ok"] == all(c["status"] != "error" for c in checks)
     passed = (
         data["ok"] == sr.result.ok == sr.story.expect_ok
@@ -3402,7 +3402,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "I want CI to stop when my tenant and credentials are missing, and I want "
             "a structured report that explains the failures.",
             "`doctor --json` prints `ok: false` and exits non-zero. Its checks array "
-            "contains tenant and credentials errors, each with name/status/message. "
+            "contains tenant and credentials errors, each with id/status/message. "
             "The report's ok field agrees with both the check statuses and the exit status.",
             ["doctor", "--json"],
             doctor_json_check,

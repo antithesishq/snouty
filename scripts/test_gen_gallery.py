@@ -207,9 +207,9 @@ class DoctorGalleryChecks(unittest.TestCase):
         self.ready = {
             "ok": True,
             "checks": [
-                {"name": "tenant", "status": "ok", "message": "tenant is set"},
+                {"id": "tenant", "status": "ok", "message": "tenant is set"},
                 {
-                    "name": "credentials",
+                    "id": "credentials",
                     "status": "ok",
                     "kind": "api_key",
                     "message": "API key provided",
@@ -219,9 +219,9 @@ class DoctorGalleryChecks(unittest.TestCase):
         self.missing = {
             "ok": False,
             "checks": [
-                {"name": "tenant", "status": "error", "message": "tenant is not set"},
+                {"id": "tenant", "status": "error", "message": "tenant is not set"},
                 {
-                    "name": "credentials",
+                    "id": "credentials",
                     "status": "error",
                     "message": "No Antithesis credentials found",
                 },
@@ -244,7 +244,7 @@ class DoctorGalleryChecks(unittest.TestCase):
                 self.assertTrue(passed, detail)
 
         self.ready["checks"].append(
-            {"name": "repository", "status": "warn", "message": "repository is not set"}
+            {"id": "repository", "status": "warn", "message": "repository is not set"}
         )
         passed, detail = self.check("doctor-json-ready", json.dumps(self.ready), 0)
         self.assertTrue(passed, detail)
@@ -297,7 +297,7 @@ class DoctorGalleryChecks(unittest.TestCase):
                         if mutation == "remove":
                             changed["checks"].pop(index)
                         elif mutation == "rename":
-                            changed["checks"][index]["name"] = "unrelated"
+                            changed["checks"][index]["id"] = "unrelated"
                         else:
                             changed["checks"][index]["status"] = "warn"
                         passed, _ = self.check(slug, json.dumps(changed), returncode)
@@ -306,7 +306,7 @@ class DoctorGalleryChecks(unittest.TestCase):
                         )
 
         self.ready["checks"].append(
-            {"name": "container_runtime", "status": "error", "message": "no runtime"}
+            {"id": "container_runtime", "status": "error", "message": "no runtime"}
         )
         passed, _ = self.check("doctor-json-ready", json.dumps(self.ready), 0)
         self.assertFalse(passed, "an error check must make the overall report fail")
@@ -329,7 +329,7 @@ class DoctorGalleryChecks(unittest.TestCase):
             '{"ok": false, "checks": [null]}',
             '{"ok": false, "checks": [{}]}',
         ]
-        for key, value in (("name", 1), ("status", "failed"), ("message", None)):
+        for key, value in (("id", 1), ("status", "failed"), ("message", None)):
             changed = copy.deepcopy(self.missing)
             changed["checks"][0][key] = value
             invalid.append(json.dumps(changed))

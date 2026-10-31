@@ -15,7 +15,7 @@ stderr '.*ask Antithesis support.*'
 # required credential is missing (so CI can gate on it).
 ! snouty doctor --json
 stdout '.*"ok": false.*'
-stdout '"name": "credentials",\s*"status": "error",\s*"message"'
+stdout '"id": "credentials",\s*"status": "error",\s*"message"'
 stdout '.*"level": "error".*'
 # No credential, so no kind.
 ! stdout '"kind"'
@@ -44,7 +44,7 @@ stderr '^      NOTE: run `snouty login` to store an API key, then `unset ANTITHE
 # One source only, so doctor says nothing about a conflict.
 ! stderr '.*more than one credential source.*'
 ! snouty doctor --json
-stdout '"name": "credentials",\s*"status": "warn",\s*"kind": "password"'
+stdout '"id": "credentials",\s*"kind": "password",\s*"status": "warn"'
 
 # --- API connectivity + version check (issue #146) ---
 # Cases that fabricate a status via mock-server are [!staging]-gated: under
@@ -70,9 +70,9 @@ stdout '"name": "credentials",\s*"status": "warn",\s*"kind": "password"'
 [!staging] stderr 'tenant release is too old for the execute-command .container. field'
 [!staging] stderr 'release 64.0\) — .runs exec. fails'
 [!staging] snouty doctor --json
-[!staging] stdout '"name": "events_search",\s*"status": "warn"'
-[!staging] stdout '"name": "cancel_run",\s*"status": "warn"'
-[!staging] stdout '"name": "execute_command",\s*"status": "warn"'
+[!staging] stdout '"id": "events_search",\s*"status": "warn"'
+[!staging] stdout '"id": "cancel_run",\s*"status": "warn"'
+[!staging] stdout '"id": "execute_command",\s*"status": "warn"'
 
 # 404: typically an older tenant predating the version endpoint, but possibly a
 # proxy/route intercepting the request — either way it's still reachable and
@@ -136,7 +136,7 @@ env ANTITHESIS_API_KEY=
 [!staging] snouty doctor
 [!staging] stderr '^  ⚠ CLI OAuth login is not enabled for this tenant$'
 [!staging] snouty doctor --json
-[!staging] stdout '"name": "oauth_configured",\s*"status": "warn"'
+[!staging] stdout '"id": "oauth_configured",\s*"status": "warn"'
 
 # doctor does not warn on an answer it cannot read: it cannot tell whether
 # OAuth is enabled.
@@ -168,10 +168,10 @@ stderr '^      NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the 
 ! stderr 'Using password credentials'
 
 snouty doctor --json
-stdout '"name": "credentials",\s*"status": "warn",\s*"kind": "password"'
+stdout '"id": "credentials",\s*"kind": "password",\s*"status": "warn"'
 stdout '"text": "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in .*credentials\.toml"'
-! stdout '"name": "credential_sources"'
-! stdout '"name": "basic_auth"'
+! stdout '"id": "credential_sources"'
+! stdout '"id": "basic_auth"'
 ! stdout '${FAKE_API_KEY_A@R}|${FAKE_PASSWORD@R}'
 
 # A username and password stored in the credentials file: `snouty login`
@@ -190,8 +190,8 @@ stderr '^      NOTE: run `snouty login` to replace it with an API key$'
 ! stderr 'Using password credentials'
 
 snouty doctor --json
-stdout '"name": "credentials",\s*"status": "warn"'
-! stdout '"name": "basic_auth"'
+stdout '"id": "credentials",\s*"kind": "password",\s*"status": "warn"'
+! stdout '"id": "basic_auth"'
 ! stdout '${FAKE_PASSWORD@R}'
 
 # A bare `snouty login` writes the default profile, so for a password stored
@@ -213,8 +213,8 @@ snouty doctor --offline
 stderr '^  ✓ API key provided$'
 ! stderr '(?s).*credentials.toml.*'
 snouty doctor --offline --json
-stdout '"name": "credentials",\s*"status": "ok",\s*"kind": "api_key",\s*"message": "API key provided"'
-! stdout '"name": "api_key"'
+stdout '"id": "credentials",\s*"kind": "api_key",\s*"status": "ok",\s*"message": "API key provided"'
+! stdout '"name"'
 
 # OAuth credentials from `snouty login`.
 isolate-home stored_oauth
@@ -226,7 +226,7 @@ snouty doctor --offline
 stderr '^  ✓ OAuth credentials used$'
 stderr '^      NOTE: read from the \[default\] profile in .+credentials\.toml$'
 snouty doctor --offline --json
-stdout '"name": "credentials",\s*"status": "ok",\s*"kind": "oauth"'
+stdout '"id": "credentials",\s*"kind": "oauth",\s*"status": "ok"'
 ! stdout '${FAKE_ACCESS_TOKEN_A@R}'
 
 # A GitHub Actions OIDC token, which doctor --offline never fetches.
@@ -236,7 +236,7 @@ set-env ACTIONS_ID_TOKEN_REQUEST_TOKEN ${FAKE_OIDC_REQUEST_TOKEN}
 snouty doctor --offline
 stderr '^  ✓ GitHub Actions OIDC token provided$'
 snouty doctor --offline --json
-stdout '"name": "credentials",\s*"status": "ok",\s*"kind": "github_actions_oidc"'
+stdout '"id": "credentials",\s*"kind": "github_actions_oidc",\s*"status": "ok"'
 ! stdout '${FAKE_OIDC_REQUEST_TOKEN@R}'
 env ACTIONS_ID_TOKEN_REQUEST_URL=
 env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
@@ -253,7 +253,7 @@ stderr '^  ✗ the API key is empty$'
 stderr '^      NOTE: read from the \[default\] profile in .+credentials\.toml$'
 ! stderr 'API key provided'
 ! snouty doctor --offline --json
-stdout '"name": "credentials",\s*"status": "error",\s*"kind": "api_key"'
+stdout '"id": "credentials",\s*"kind": "api_key",\s*"status": "error"'
 
 # Doctor does not offer an empty key as a source to fall back on, because an
 # empty key cannot authenticate.

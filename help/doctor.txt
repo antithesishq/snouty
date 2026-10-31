@@ -1,6 +1,6 @@
 Check environment configuration
 
-Verifies that your environment is properly configured for Antithesis testing. Runs health checks — container runtime, docker compose, the tenant and repository settings, and your credentials (stored by {% if cli %}`snouty login`,{% else %}snouty login, which the user runs in a terminal,{% endif %} or set in the ANTITHESIS_* environment variables). A missing tenant fails the check; a missing repository is a warning, because only {% if cli %}`snouty launch`{% else %}a launch{% endif %} needs it. doctor also warns when more than one credential source is available. To see the settings that snouty resolved, run `{{ t("snouty settings show")? }}`.
+Verifies that your environment is properly configured for Antithesis testing. Runs health checks — container runtime, docker compose, the tenant and repository settings, and your credentials (stored by {% if cli %}`{{ t("snouty login")? }}`,{% else %}snouty login, which the user runs in a terminal,{% endif %} or set in the ANTITHESIS_* environment variables). A missing tenant fails the check; a missing repository is a warning, because only {% if cli %}`snouty launch`{% else %}a launch{% endif %} needs it. doctor also warns when more than one credential source is available. To see the settings that snouty resolved, run `{{ t("snouty settings show")? }}`.
 
 snouty prefers an API key (full API access); a username and password is deprecated auth, accepted only by {% if cli %}`snouty launch` and {% endif %}`{{ t("snouty debug")? }}`.
 

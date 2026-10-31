@@ -21,10 +21,7 @@ when CLI OAuth login is not enabled for the tenant. Pass --offline to skip these
 network calls.
 
 The command fails if any required check fails. Pass --json for a
-machine-readable report (e.g. to gate CI). Each check in the report has an `id`
-that stays the same whatever its status. The `credentials` check also has a
-`kind` when snouty finds a credential: `api_key`, `oauth`,
-`github_actions_oidc`, or `password`.
+machine-readable report (e.g. to gate CI).
 
 Examples:
   snouty doctor

@@ -1376,12 +1376,11 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
 /// `MOCK_RUNS`. Any other run or property gets the bare 404 that orbitinghail
 /// sends on release 65.3.
 fn mock_route_get_run_property(run_id: &str, property_id: &str) -> (u16, String) {
-    let known = mock_run_known(run_id);
     let property = MOCK_PROPERTIES.into_iter().find(|property| {
         serde_json::from_str::<serde_json::Value>(property).unwrap()["id"] == property_id
     });
     match property {
-        Some(property) if known => (200, property.to_string()),
+        Some(property) if mock_run_known(run_id) => (200, property.to_string()),
         _ => (404, MOCK_BARE_404_BODY.to_string()),
     }
 }

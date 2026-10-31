@@ -1486,9 +1486,10 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         )?;
     }
 
-    // Only a completed run has property results: the properties endpoint gives
-    // none for an incomplete or in-progress run, even one with a report link.
-    if run.status == RunStatus::Completed {
+    // On release 67.0 a run of any status lists the properties it has recorded
+    // so far. A starting run has recorded none, and a debugging session never
+    // records any of its own.
+    if run.status != RunStatus::Starting && run.launcher != "debugging" {
         outln!(
             "\nsee property results:\n  snouty runs properties {}",
             run.run_id

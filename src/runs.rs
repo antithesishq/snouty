@@ -2177,7 +2177,8 @@ async fn cmd_runs_exec(
     exec_when_ready(&api, run_id, exec, READY_POLL, mode).await
 }
 
-/// How often a command that needs a ready run polls a run that is not ready.
+/// How often a command that needs a ready run polls a run that is not ready,
+/// or retries a command the run does not accept yet.
 /// A debugging session becomes ready minutes after it starts, so a one-minute
 /// poll (the `runs wait` floor) could delay the command by most of a minute.
 const READY_POLL: Duration = Duration::from_secs(10);
@@ -2198,9 +2199,52 @@ async fn wait_until_ready(api: &AntithesisApi, run_id: &str, poll: Duration) -> 
     Ok(run)
 }
 
-/// Wait until the run is ready or complete, then execute. The wait has no
-/// time limit. A complete run executes at once, and the server answers with
-/// an error.
+/// Whether a 400 says that `run_id` does not accept commands yet. On
+/// orbitinghail (release 67.0), a run that reports the `Ready` sub-status can
+/// still answer `Run <id> is not ready yet. Try again shortly.` for a few
+/// minutes.
+fn run_not_ready_yet(run_id: &str, err: &color_eyre::eyre::Report) -> bool {
+    api_error_status(err) == Some(400)
+        && api_error_message(err)
+            .is_some_and(|m| m.contains(&format!("Run {run_id} is not ready yet")))
+}
+
+/// Execute the command in `run`, which [`wait_until_ready`] returned. While
+/// the server answers that the run is not ready yet, wait every `poll` until
+/// the run is ready again and retry, and stop once the run has ended. `explain` annotates a failure with
+/// the run's latest status.
+async fn execute_when_accepted(
+    api: &AntithesisApi,
+    mut run: RunDetail,
+    exec: ExecRequest,
+    poll: Duration,
+    explain: impl Fn(&RunStatus, color_eyre::eyre::Report) -> color_eyre::eyre::Report,
+) -> Result<JsonStream> {
+    let mut waiting: Option<ReadyDisplay> = None;
+    loop {
+        let err = match api.execute_command(&run.run_id, exec.clone()).await {
+            Ok(stream) => {
+                if let Some(waiting) = waiting {
+                    waiting.clear();
+                }
+                return Ok(stream);
+            }
+            Err(err) => err,
+        };
+        if !(run.is_ready() && run_not_ready_yet(&run.run_id, &err)) {
+            return Err(explain(&run.status, err));
+        }
+        waiting
+            .get_or_insert_with(|| ReadyDisplay::new("waiting for the run to accept commands"))
+            .show();
+        tokio::time::sleep(poll).await;
+        run = wait_until_ready(api, &run.run_id, poll).await?;
+    }
+}
+
+/// Wait until the run is ready or complete, and until the server accepts the
+/// command, then execute. The wait has no time limit. A complete run executes
+/// at once, and the server answers with an error.
 async fn exec_when_ready(
     api: &AntithesisApi,
     run_id: &str,
@@ -2232,10 +2276,10 @@ async fn exec_when_ready(
         ],
     );
     let run = wait_until_ready(api, run_id, poll).await?;
-    let stream = api
-        .execute_command(run_id, exec)
-        .await
-        .map_err(|err| explain_exec_error(&run.status, &debug_command, rewarm_flag, err))?;
+    let stream = execute_when_accepted(api, run, exec, poll, |status, err| {
+        explain_exec_error(status, &debug_command, rewarm_flag, err)
+    })
+    .await?;
 
     // Only the last line can be the terminal result. A line that parses as
     // one is held until the next line arrives, and is shown as an event if one
@@ -5294,6 +5338,36 @@ mod tests {
         /// clap's, `wait_for_run` takes any interval.
         const FAST_POLL: Duration = Duration::from_millis(10);
 
+        const JSON: EventOutput = EventOutput::Json {
+            raw: false,
+            annotate_faults: false,
+        };
+
+        /// A request that runs `true`.
+        fn true_exec() -> ExecRequest {
+            ExecRequest {
+                moment: Moment {
+                    input_hash: "1".to_owned(),
+                    vtime: "2.5".parse().unwrap(),
+                },
+                script: "true".to_owned(),
+                container: None,
+                timeout: None,
+                events: false,
+                rewarm: None,
+            }
+        }
+
+        /// Answer every command in run-w with an exit status of 0.
+        async fn mount_exec_exited(server: &MockServer) {
+            let result = crate::testutils::mock_exec_exited(Some(0));
+            Mock::given(method("POST"))
+                .and(path("/api/v0/runs/run-w/command"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(format!("{result}\n")))
+                .mount(server)
+                .await;
+        }
+
         /// The stream of `run_id` answers `404 Resource not found` `misses`
         /// times, then opens with one `RUN_FINALIZED` line.
         async fn mount_stream(server: &MockServer, run_id: &str, misses: u64) {
@@ -5448,36 +5522,116 @@ mod tests {
                 ready_run_body(),
             ];
             mount_get_run_bodies(&server, bodies).await;
-            let result = crate::testutils::mock_exec_exited(Some(0));
-            Mock::given(method("POST"))
-                .and(path("/api/v0/runs/run-w/command"))
-                .respond_with(ResponseTemplate::new(200).set_body_string(format!("{result}\n")))
-                .mount(&server)
-                .await;
+            mount_exec_exited(&server).await;
             let api = test_api(&server.uri());
-            let exec = ExecRequest {
-                moment: Moment {
-                    input_hash: "1".to_owned(),
-                    vtime: "2.5".parse().unwrap(),
-                },
-                script: "true".to_owned(),
-                container: None,
-                timeout: None,
-                events: false,
-                rewarm: None,
-            };
-
-            let json = EventOutput::Json {
-                raw: false,
-                annotate_faults: false,
-            };
-            exec_when_ready(&api, "run-w", exec, FAST_POLL, json)
+            exec_when_ready(&api, "run-w", true_exec(), FAST_POLL, JSON)
                 .await
                 .unwrap();
 
             let requests = server.received_requests().await.unwrap();
             let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
             assert_eq!(methods, ["GET", "GET", "GET", "POST"]);
+        }
+
+        #[tokio::test]
+        async fn exec_retries_while_a_ready_run_is_not_ready_yet() {
+            let server = MockServer::start().await;
+            mount_get_run_bodies(&server, vec![ready_run_body()]).await;
+            // Verbatim from orbitinghail (release 67.0).
+            let not_ready = r#"{"message":"Run run-w is not ready yet. Try again shortly."}"#;
+            Mock::given(method("POST"))
+                .and(path("/api/v0/runs/run-w/command"))
+                .respond_with(ResponseTemplate::new(400).set_body_string(not_ready))
+                .up_to_n_times(2)
+                .with_priority(1)
+                .mount(&server)
+                .await;
+            mount_exec_exited(&server).await;
+            let api = test_api(&server.uri());
+            exec_when_ready(&api, "run-w", true_exec(), FAST_POLL, JSON)
+                .await
+                .unwrap();
+
+            let requests = server.received_requests().await.unwrap();
+            let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
+            assert_eq!(methods, ["GET", "POST", "GET", "POST", "GET", "POST"]);
+        }
+
+        #[tokio::test]
+        async fn exec_waits_again_when_the_run_leaves_ready() {
+            let server = MockServer::start().await;
+            let bodies = vec![ready_run_body(), run_body("in_progress"), ready_run_body()];
+            mount_get_run_bodies(&server, bodies).await;
+            let not_ready = r#"{"message":"Run run-w is not ready yet. Try again shortly."}"#;
+            Mock::given(method("POST"))
+                .and(path("/api/v0/runs/run-w/command"))
+                .respond_with(ResponseTemplate::new(400).set_body_string(not_ready))
+                .up_to_n_times(1)
+                .with_priority(1)
+                .mount(&server)
+                .await;
+            mount_exec_exited(&server).await;
+            let api = test_api(&server.uri());
+            exec_when_ready(&api, "run-w", true_exec(), FAST_POLL, JSON)
+                .await
+                .unwrap();
+
+            let requests = server.received_requests().await.unwrap();
+            let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
+            assert_eq!(methods, ["GET", "POST", "GET", "GET", "POST"]);
+        }
+
+        #[tokio::test]
+        async fn exec_stops_retrying_once_the_run_ends() {
+            let server = MockServer::start().await;
+            mount_get_run_bodies(&server, vec![ready_run_body(), run_body("completed")]).await;
+            let not_ready = r#"{"message":"Run run-w is not ready yet. Try again shortly."}"#;
+            Mock::given(method("POST"))
+                .and(path("/api/v0/runs/run-w/command"))
+                .respond_with(ResponseTemplate::new(400).set_body_string(not_ready))
+                .mount(&server)
+                .await;
+            let api = test_api(&server.uri());
+            let exec = exec_when_ready(&api, "run-w", true_exec(), FAST_POLL, JSON);
+            let err = tokio::time::timeout(Duration::from_secs(5), exec)
+                .await
+                .expect("an ended run must not keep the command waiting")
+                .unwrap_err();
+
+            let report = format!("{err:?}");
+            assert!(report.contains("This run is completed"), "got: {report}");
+            let requests = server.received_requests().await.unwrap();
+            let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
+            assert_eq!(methods, ["GET", "POST", "GET", "POST"]);
+        }
+
+        #[tokio::test]
+        async fn exec_does_not_retry_another_400() {
+            for message in [
+                "Run run-w has ended. Commands require an active run.",
+                // Not ready, but names a session, not the run.
+                "Session s-1 is not ready yet. Try again shortly.",
+            ] {
+                let server = MockServer::start().await;
+                mount_get_run_bodies(&server, vec![ready_run_body()]).await;
+                Mock::given(method("POST"))
+                    .and(path("/api/v0/runs/run-w/command"))
+                    .respond_with(
+                        ResponseTemplate::new(400).set_body_json(json!({ "message": message })),
+                    )
+                    .mount(&server)
+                    .await;
+                let api = test_api(&server.uri());
+                let exec = exec_when_ready(&api, "run-w", true_exec(), FAST_POLL, JSON);
+                let err = tokio::time::timeout(Duration::from_secs(5), exec)
+                    .await
+                    .expect("the command must not keep waiting")
+                    .unwrap_err();
+
+                assert_eq!(api_error_status(&err), Some(400));
+                let requests = server.received_requests().await.unwrap();
+                assert_eq!(requests.len(), 2, "message: {message}");
+            }
         }
 
         #[tokio::test]

@@ -6,16 +6,15 @@ use std::time::Duration;
 
 use headers::{CacheControl, HeaderMapExt};
 
-/// Whether the cache may store a fetched value. Each `#[cached]` handler
+/// Whether, and for how long, the cache may store a fetched value. Each `#[cached]` handler
 /// tags its value with the verdict from its response's headers (see
 /// [`crate::api_cache::ApiCache::headers_policy`]).
 #[derive(Clone, Debug)]
 pub enum CachePolicy {
     /// Store the value and serve it for this long.
     Cacheable(Duration),
-    /// A stream that never changes once complete: stored for good, but only
-    /// if the flag is set by the time it ends. A value with this tag is never
-    /// stored.
+    /// A stream that never changes once complete. It is stored for good only
+    /// if the flag is set when it ends. A value with this tag is never stored.
     CacheableOnceComplete(Arc<AtomicBool>),
     Uncacheable,
 }

@@ -9,8 +9,8 @@
 //! exception is logs up to a fixed vtime, which never change once the
 //! timeline has passed it and are then cached whatever the headers say (see
 //! `AntithesisApi::get_run_logs`).
-//! An entry expires when that lifetime runs out, and is never revalidated:
-//! an expired entry is a miss and the request goes to the server. The
+//! An entry expires when its freshness lifetime runs out. The cache never
+//! revalidates: an expired entry is a miss. The
 //! cache lives in a transient per-user directory (`XDG_RUNTIME_DIR`; the
 //! user temp dir on macOS) that the OS clears periodically.
 //!
@@ -249,9 +249,8 @@ impl ApiCache {
             _ => {
                 debug!("API cache entry for {key} has expired");
                 self.evict(key).await;
-                // Removing the key leaves its content behind; drop that too, so
-                // entries that expire and are rewritten do not pile up in the
-                // runtime dir.
+                // Removing the key keeps its content; remove that too, so
+                // rewritten entries do not pile up.
                 if let Some(dir) = &self.dir {
                     let _ = cacache::remove_hash(dir, &metadata.integrity).await;
                 }
@@ -424,7 +423,7 @@ impl ApiCache {
 struct Tee {
     dir: PathBuf,
     key: CacheKey,
-    /// The options the writer opens with, taken when it opens.
+    /// Write options for the entry; `None` once the writer has opened.
     opts: Option<cacache::WriteOpts>,
     writer: Option<cacache::Writer>,
     /// Size budget left before the entry is abandoned as too large.
@@ -632,7 +631,6 @@ mod tests {
         }
     }
 
-    // An entry is served for its lifetime, then misses.
     #[tokio::test]
     async fn a_value_expires_after_its_lifetime() {
         let dir = TempDir::new().unwrap();
@@ -663,8 +661,8 @@ mod tests {
 
         clock.advance(Duration::from_secs(1));
         assert!(cache.lookup_value::<Value>(&key).await.is_none());
-        // The expired entry was evicted, content and all, so a clock moved
-        // back finds nothing.
+        // Expiry removed the entry and its content, so a cache on the real
+        // clock (earlier than the test clock) also misses.
         assert!(test_cache(&dir).lookup_value::<Value>(&key).await.is_none());
         assert!(cacache::read_hash(dir.path(), &integrity).await.is_err());
     }
@@ -687,7 +685,6 @@ mod tests {
         assert!(cache.lookup_stream(&key()).await.is_none());
     }
 
-    // A stream that never changes once complete is kept for good.
     #[tokio::test]
     async fn a_complete_stream_never_expires() {
         let dir = TempDir::new().unwrap();
@@ -707,7 +704,7 @@ mod tests {
         assert!(cache.lookup_stream(&key()).await.is_some());
     }
 
-    // An entry without an expiry, as an older build could write, is a miss.
+    // Older builds wrote entries without an expiry.
     #[tokio::test]
     async fn an_entry_without_an_expiry_misses() {
         let dir = TempDir::new().unwrap();

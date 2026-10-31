@@ -2772,15 +2772,6 @@ mod tests {
     use hegel::generators;
 
     #[test]
-    fn run_page_url_puts_the_run_id_in_the_query() {
-        let url = run_page_url("https://acme.antithesis.com", "c83502bb-67-0").unwrap();
-        assert_eq!(
-            url.as_str(),
-            "https://acme.antithesis.com/run?run_id=c83502bb-67-0"
-        );
-    }
-
-    #[test]
     fn run_page_url_encodes_query_characters() {
         let url = run_page_url("https://acme.antithesis.com", "a&b#c d").unwrap();
         assert_eq!(

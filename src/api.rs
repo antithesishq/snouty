@@ -1291,10 +1291,6 @@ impl AntithesisApi {
         )
     }
 
-    /// A run records properties until it reaches a terminal status, so only
-    /// a page of a terminal run is immutable. The run detail is read only
-    /// when the headers already allow the page, and a failed read leaves the
-    /// page uncached.
     #[cached(value)]
     async fn fetch_run_properties_page(
         &self,
@@ -1316,14 +1312,7 @@ impl AntithesisApi {
         }
         match request.send().await {
             Ok(response) => {
-                let mut policy = self.cache.headers_policy(response.headers());
-                if matches!(policy, CachePolicy::Cacheable) {
-                    let terminal = self
-                        .get_run(run_id)
-                        .await
-                        .is_ok_and(|run| run.untag().status.is_terminal());
-                    policy = CachePolicy::cache_if(terminal);
-                }
+                let policy = self.cache.headers_policy(response.headers());
                 Ok(response.into_inner().with_tag(policy))
             }
             Err(err) => Err(format_api_client_error(err).await),
@@ -4175,16 +4164,6 @@ mod tests {
         })
     }
 
-    /// `stream_run_properties` reads the run detail to decide whether to cache.
-    async fn mount_run_1_detail(mock_server: &MockServer, status: &str, expect: u64) {
-        Mock::given(method("GET"))
-            .and(path("/api/v0/runs/run-1"))
-            .respond_with(cacheable().set_body_json(run_detail_body(status)))
-            .expect(expect)
-            .mount(mock_server)
-            .await;
-    }
-
     async fn property_names(api: &AntithesisApi) -> Vec<String> {
         api.stream_run_properties("run-1", &[])
             .try_collect::<Vec<_>>()
@@ -4200,7 +4179,6 @@ mod tests {
     #[tokio::test]
     async fn run_properties_replay_from_the_cache_per_page() {
         let mock_server = MockServer::start().await;
-        mount_run_1_detail(&mock_server, "completed", 1).await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/properties"))
             .and(query_param_is_missing("after"))
@@ -4221,44 +4199,6 @@ mod tests {
 
         for _ in 0..2 {
             assert_eq!(property_names(&api).await, ["first", "second"]);
-        }
-    }
-
-    // A page the headers forbid caching needs no run detail.
-    #[tokio::test]
-    async fn uncacheable_property_page_skips_the_run_detail() {
-        let mock_server = MockServer::start().await;
-        mount_run_1_detail(&mock_server, "completed", 0).await;
-        Mock::given(method("GET"))
-            .and(path("/api/v0/runs/run-1/properties"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(property_page("first", None)))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let cache_dir = TempDir::new().unwrap();
-        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
-
-        assert_eq!(property_names(&api).await, ["first"]);
-    }
-
-    // Cacheable headers do not make an in-progress run's pages cacheable.
-    #[tokio::test]
-    async fn live_run_properties_are_not_cached() {
-        let mock_server = MockServer::start().await;
-        mount_run_1_detail(&mock_server, "in_progress", 2).await;
-        Mock::given(method("GET"))
-            .and(path("/api/v0/runs/run-1/properties"))
-            .respond_with(cacheable().set_body_json(property_page("first", None)))
-            .expect(2)
-            .mount(&mock_server)
-            .await;
-
-        let cache_dir = TempDir::new().unwrap();
-        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
-
-        for _ in 0..2 {
-            assert_eq!(property_names(&api).await, ["first"]);
         }
     }
 

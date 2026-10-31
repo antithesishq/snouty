@@ -1148,7 +1148,6 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
     if let Some(status) = match run_id {
         "run-unknown-status" => Some("unknown"),
         "run-starting" => Some("starting"),
-        "run-empty" | "run-no-events" => Some("completed"),
         _ => None,
     } {
         return (

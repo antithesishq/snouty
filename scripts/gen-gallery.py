@@ -4510,8 +4510,8 @@ _SEED_SETTINGS_TOML = f'tenant = "{_TENANT}"\nrepository = "{_REPO}"\n'
 # A `credentials.toml` exactly as `snouty login` writes it.
 _SEED_CREDS_TOML = f'[default]\ntype = "ApiKey"\napi_key = "{_FAKE_API_KEY_A}"\n'
 
-# Prompts the dialogues wait for. The gallery's tenant has no CLI OAuth, so
-# login asks for the API key with no credential menu.
+# The gallery's tenant does not resolve, so login asks for the API key with no
+# credential menu.
 _ASK_TENANT = "What Antithesis tenant"
 _ASK_REPO = "What container repository"
 _ASK_CREDENTIALS = "What kind of credentials"

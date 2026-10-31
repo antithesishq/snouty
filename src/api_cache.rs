@@ -4,7 +4,10 @@
 //! `Cache-Control` header grants a positive freshness lifetime (see
 //! [`CachePolicy::from_headers`]). The live API grants one only for a
 //! resource that can no longer change — a terminal run's detail, its logs,
-//! and a finished build's logs — and sends `no-cache` for everything else.
+//! and a finished build's logs — and sends `no-cache` for everything else
+//! (observed on the antithesis-orbitinghail tenant, release 67.0). The one
+//! exception is logs between fixed vtimes, which never change and are
+//! cached whatever the headers say (see `AntithesisApi::get_run_logs`).
 //! There is no per-entry expiration — the header's lifetime is read as a
 //! yes/no permission, and the cache lives in a transient per-user directory
 //! (`XDG_RUNTIME_DIR`; the user temp dir on macOS) that the OS clears
@@ -40,8 +43,8 @@ mod policy;
 pub use policy::CachePolicy;
 
 /// Cache directory name under the runtime dir. Bump the version when the
-/// on-disk format changes, or when admission tightens and existing entries
-/// may no longer qualify, so stale entries are simply abandoned.
+/// on-disk format changes or admission tightens; old entries are then
+/// abandoned.
 const CACHE_DIR_NAME: &str = "api-cache-v4";
 
 /// Bodies larger than this are not cached (see
@@ -149,10 +152,8 @@ impl ApiCache {
         }
     }
 
-    /// Admission for a response: [`CachePolicy::from_headers`]. A disabled
-    /// cache short-circuits to [`CachePolicy::Uncacheable`] — there is
-    /// nothing to store into, so the parse is skipped (`get_run` runs on
-    /// every `runs wait` poll).
+    /// The admission verdict for a response's headers. A disabled cache
+    /// returns [`CachePolicy::Uncacheable`] without parsing them.
     pub fn headers_policy(&self, headers: &http::HeaderMap) -> CachePolicy {
         if self.dir.is_none() {
             return CachePolicy::Uncacheable;

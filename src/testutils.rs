@@ -779,8 +779,7 @@ fn mock_parse_request_line(request: &str) -> (String, String) {
 /// (observed on the antithesis-orbitinghail tenant, release 67.0): a
 /// terminal run's detail and logs, and a finished build's logs, carry
 /// [`CACHEABLE_CACHE_CONTROL`]. A live run's detail and logs, properties,
-/// the run list, errors, and everything else carry `no-cache`. The response
-/// cache follows these headers alone, so the mock must get them right.
+/// the run list, errors, and everything else carry `no-cache`.
 fn mock_route(
     method: &str,
     path: &str,
@@ -836,10 +835,8 @@ fn mock_route(
         ),
         ("GET", p) if p.starts_with("/api/v0/runs/") => {
             let rest = &p["/api/v0/runs/".len()..];
-            // Which successful reads the server marks cacheable: a finished
-            // build's logs, and a terminal run's detail and logs. Properties
-            // are always `no-cache`. Every mock run's build has finished, so
-            // its build logs are always cacheable.
+            // Every mock run's build has finished, so its build logs are
+            // always cacheable.
             let (s, b, ct, cacheable) = if let Some(run_id) = rest.strip_suffix("/build_logs") {
                 let (s, b) = mock_route_get_run_build_logs(run_id);
                 (s, b, ndjson, true)
@@ -1110,8 +1107,7 @@ fn mock_run_completed(run_id: &str) -> bool {
         .any(|&(id, status, ..)| id == run_id && status == "completed")
 }
 
-/// Whether the run detail route reports `run_id` in a terminal status, for
-/// the routes whose `Cache-Control` depends on it.
+/// Whether the run detail route reports `run_id` in a terminal status.
 fn mock_run_terminal(run_id: &str) -> bool {
     let (_, body) = mock_route_get_run(run_id);
     serde_json::from_str::<crate::api::RunDetail>(&body)
@@ -1926,8 +1922,6 @@ mod tests {
     use super::*;
     use std::fs;
 
-    // The response cache follows the server's headers alone, so the mock must
-    // send `no-cache` wherever the real API does (see `mock_route`).
     #[test]
     fn mock_cache_headers_follow_the_run_status() {
         let cache_control = |path: &str| mock_route("GET", path, "", false).3;

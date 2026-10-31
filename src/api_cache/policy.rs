@@ -2,11 +2,9 @@
 
 use headers::{CacheControl, HeaderMapExt};
 
-/// The admission verdict on a fetched value, read from its response's
-/// headers (see [`crate::api_cache::ApiCache::headers_policy`]). The cache
-/// stores nothing untagged: `#[cached]` requires the handler body to return
-/// a [`crate::tag::Tagged`] value, so each handler tags its value next to
-/// the response it came from.
+/// Whether the cache may store a fetched value. Each `#[cached]` handler
+/// tags its value with the verdict from its response's headers (see
+/// [`crate::api_cache::ApiCache::headers_policy`]).
 #[derive(Clone, Copy, Debug)]
 pub enum CachePolicy {
     Cacheable,

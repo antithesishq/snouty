@@ -1113,12 +1113,8 @@ fn mock_run_completed(run_id: &str) -> bool {
 /// the routes whose `Cache-Control` depends on it.
 fn mock_run_terminal(run_id: &str) -> bool {
     let (_, body) = mock_route_get_run(run_id);
-    serde_json::from_str::<serde_json::Value>(&body).is_ok_and(|detail| {
-        matches!(
-            detail["status"].as_str(),
-            Some("completed" | "cancelled" | "incomplete")
-        )
-    })
+    serde_json::from_str::<crate::api::RunDetail>(&body)
+        .is_ok_and(|detail| detail.status.is_terminal())
 }
 
 fn mock_run_not_found(run_id: &str) -> (u16, String) {

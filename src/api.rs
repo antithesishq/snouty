@@ -3769,7 +3769,7 @@ mod tests {
         assert_eq!(rendered, "API error: 400 Bad Request — vtime out of range");
     }
 
-    // ---- logical response cache ------------------------------------------
+    // ---- response cache --------------------------------------------------
     //
     // Key construction and the stream tee are unit-tested in
     // `crate::api_cache`; these tests pin each handler's caching end to end:

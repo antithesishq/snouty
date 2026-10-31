@@ -394,9 +394,10 @@ async fn cmd_runs_show(
 ) -> Result<()> {
     debug!("showing run: {run_id}");
 
-    // `--web` needs the tenant for the page host, so check it before the request.
-    let web_url = web
-        .then(|| require(settings.web_url().as_deref(), "tenant").map(str::to_owned))
+    // The run page is on the tenant host, never on an explicit base_url, which
+    // can be an API proxy that a browser cannot use. Check before the request.
+    let web_tenant = web
+        .then(|| require(settings.tenant(), "tenant"))
         .transpose()?;
 
     let api = AntithesisApi::new(settings, verbose)?;
@@ -407,8 +408,8 @@ async fn cmd_runs_show(
         Err(err) => return Err(explain_run_not_found(run_id, err)),
     };
 
-    if let Some(web_url) = web_url {
-        return open_run_page(&web_url, &run.run_id, json);
+    if let Some(tenant) = web_tenant {
+        return open_run_page(tenant, &run.run_id, json);
     }
 
     if json {
@@ -420,15 +421,18 @@ async fn cmd_runs_show(
     Ok(())
 }
 
-fn run_page_url(base_url: &str, run_id: &str) -> Result<reqwest::Url> {
-    reqwest::Url::parse_with_params(&format!("{base_url}/run"), [("run_id", run_id)])
-        .map_err(|err| eyre!("invalid run page URL: {err}"))
+fn run_page_url(tenant: &str, run_id: &str) -> Result<reqwest::Url> {
+    reqwest::Url::parse_with_params(
+        &format!("https://{tenant}.antithesis.com/run"),
+        [("run_id", run_id)],
+    )
+    .map_err(|err| eyre!("invalid run page URL: {err}"))
 }
 
 /// `runs show --web`: open the run's page in a browser. With `--json`, emit the
 /// URL instead of launching anything so scripts can capture it.
-fn open_run_page(base_url: &str, run_id: &str, json: bool) -> Result<()> {
-    let url = run_page_url(base_url, run_id)?;
+fn open_run_page(tenant: &str, run_id: &str, json: bool) -> Result<()> {
+    let url = run_page_url(tenant, run_id)?;
 
     if json {
         outln!("{}", serde_json::json!({ "url": url.as_str() }))?;
@@ -2777,7 +2781,7 @@ mod tests {
 
     #[test]
     fn run_page_url_encodes_query_characters() {
-        let url = run_page_url("https://acme.antithesis.com", "a&b#c d").unwrap();
+        let url = run_page_url("acme", "a&b#c d").unwrap();
         assert_eq!(
             url.as_str(),
             "https://acme.antithesis.com/run?run_id=a%26b%23c+d"

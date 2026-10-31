@@ -2704,11 +2704,12 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-show-incomplete",
             "Inspect a run that aborted early",
             "A run ended incomplete; I want to see where it died (failure vtime/hash).",
-            "Status is incomplete and the failure moment (vtime/hash) is shown.",
+            "Status is incomplete, the failure moment (vtime/hash) is shown, and it "
+            "points at `snouty runs properties` for the properties the run recorded.",
             ["runs", "show", d.fail],
             # The rubric promises a failure moment; assert the real hash renders so
             # a run without one (the 0/0 sentinel) can't pass silently.
-            contains_all("incomplete", d.fail_hash),
+            contains_all("incomplete", d.fail_hash, f"snouty runs properties {d.fail}"),
             json_capable=False,
         ),
         Story(

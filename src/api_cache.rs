@@ -1,10 +1,10 @@
-//! A logical, domain-aware cache for Antithesis API responses.
+//! A domain-aware cache for Antithesis API responses.
 //!
-//! Admission takes two signals, both required: the server's `Cache-Control`
-//! header must grant a positive freshness lifetime (see
-//! [`CachePolicy::from_headers`]; `api_cache_respect_headers = false` drops
-//! this requirement), and the `AntithesisApi` handler must judge its resource
-//! immutable (logs addressed by moment, properties, terminal run details).
+//! Admission follows the server: a response is stored only when its
+//! `Cache-Control` header grants a positive freshness lifetime (see
+//! [`CachePolicy::from_headers`]). The live API grants one only for a
+//! resource that can no longer change — a terminal run's detail, its logs,
+//! and a finished build's logs — and sends `no-cache` for everything else.
 //! There is no per-entry expiration — the header's lifetime is read as a
 //! yes/no permission, and the cache lives in a transient per-user directory
 //! (`XDG_RUNTIME_DIR`; the user temp dir on macOS) that the OS clears
@@ -39,24 +39,26 @@ use crate::tag::Tagged;
 mod policy;
 pub use policy::CachePolicy;
 
-/// Cache directory name under the runtime dir. The `v3` names the on-disk
-/// format (re-serialized values keyed by handler parameters); bump it when
-/// the format changes so stale layouts are simply abandoned.
-const CACHE_DIR_NAME: &str = "api-cache-v3";
+/// Cache directory name under the runtime dir. Bump the version when the
+/// on-disk format changes, or when admission tightens and existing entries
+/// may no longer qualify, so stale entries are simply abandoned. `v4` drops
+/// the entries `api_cache_respect_headers = false` admitted against the
+/// server's headers.
+const CACHE_DIR_NAME: &str = "api-cache-v4";
 
 /// Bodies larger than this are not cached (see
 /// [`crate::settings::Settings::api_cache_max_file_size`] to override).
 pub const DEFAULT_MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
 
 /// Env var that overrides the cache directory outright (used as-is, no
-/// `snouty/api-cache-v3` suffix). This exists for test harnesses, which need
+/// `snouty/api-cache-v4` suffix). This exists for test harnesses, which need
 /// an isolated cache but cannot repoint `XDG_RUNTIME_DIR`: rootless podman
 /// resolves its API socket under that variable, so overriding it breaks any
 /// container command snouty spawns.
 const API_CACHE_DIR_VAR_NAME: &str = "SNOUTY_API_CACHE_DIR";
 
 /// The default cache directory: `$SNOUTY_API_CACHE_DIR` if set, else
-/// `$XDG_RUNTIME_DIR/snouty/api-cache-v3` — except on macOS, where
+/// `$XDG_RUNTIME_DIR/snouty/api-cache-v4` — except on macOS, where
 /// `XDG_RUNTIME_DIR` is normally unset and the per-user temp dir
 /// (`std::env::temp_dir`) takes its place. `None` disables caching.
 pub fn default_dir() -> Option<PathBuf> {
@@ -116,18 +118,13 @@ impl std::fmt::Display for CacheKey {
     }
 }
 
-/// The logical API response cache. Cheap to clone; all state is on disk.
+/// The API response cache. Cheap to clone; all state is on disk.
 #[derive(Clone, Debug)]
 pub struct ApiCache {
     /// `None` disables the cache: every lookup misses and every store is a
     /// no-op.
     dir: Option<PathBuf>,
     max_file_size: u64,
-    /// Require the server's cache headers to allow caching (the
-    /// `api_cache_respect_headers` setting). Off, [`ApiCache::headers_policy`]
-    /// is always neutral and admission falls back to the handlers' logical
-    /// checks alone — the escape hatch for a tenant with faulty headers.
-    respect_headers: bool,
     /// The tenant every key is bound to.
     base_url: String,
     /// Announce each hit on stderr (the `--verbose` request log has no
@@ -136,17 +133,10 @@ pub struct ApiCache {
 }
 
 impl ApiCache {
-    pub fn new(
-        dir: Option<PathBuf>,
-        max_file_size: u64,
-        respect_headers: bool,
-        base_url: String,
-        verbose: bool,
-    ) -> Self {
+    pub fn new(dir: Option<PathBuf>, max_file_size: u64, base_url: String, verbose: bool) -> Self {
         Self {
             dir,
             max_file_size,
-            respect_headers,
             base_url,
             verbose,
         }
@@ -161,20 +151,13 @@ impl ApiCache {
         }
     }
 
-    /// The header half of admission: [`CachePolicy::from_headers`] on the
-    /// response, for handlers to [`CachePolicy::and`] with their own logical
-    /// verdict. A disabled cache short-circuits to
-    /// [`CachePolicy::Uncacheable`] — there is nothing to store into, so the
-    /// parse is skipped (`get_run` runs on every `runs wait` poll). The
-    /// `api_cache_respect_headers` opt-out turns the header signal off:
-    /// neutral ([`CachePolicy::Cacheable`]) so the logical verdict alone
-    /// decides.
+    /// Admission for a response: [`CachePolicy::from_headers`]. A disabled
+    /// cache short-circuits to [`CachePolicy::Uncacheable`] — there is
+    /// nothing to store into, so the parse is skipped (`get_run` runs on
+    /// every `runs wait` poll).
     pub fn headers_policy(&self, headers: &http::HeaderMap) -> CachePolicy {
         if self.dir.is_none() {
             return CachePolicy::Uncacheable;
-        }
-        if !self.respect_headers {
-            return CachePolicy::Cacheable;
         }
         let policy = CachePolicy::from_headers(headers);
         if matches!(policy, CachePolicy::Uncacheable) {
@@ -387,7 +370,6 @@ mod tests {
         ApiCache::new(
             Some(dir.path().to_path_buf()),
             DEFAULT_MAX_FILE_SIZE,
-            true,
             "http://t".to_owned(),
             false,
         )

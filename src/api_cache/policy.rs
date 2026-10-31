@@ -2,11 +2,11 @@
 
 use headers::{CacheControl, HeaderMapExt};
 
-/// A handler's admission verdict on the value it fetched. The cache stores
-/// nothing untagged: `#[cached]` requires the handler body to return a
-/// [`crate::tag::Tagged`] value, so admission lives in the handler — next to
-/// the response, whose headers carry the other half of the verdict (see
-/// [`crate::api_cache::ApiCache::headers_policy`]).
+/// The admission verdict on a fetched value, read from its response's
+/// headers (see [`crate::api_cache::ApiCache::headers_policy`]). The cache
+/// stores nothing untagged: `#[cached]` requires the handler body to return
+/// a [`crate::tag::Tagged`] value, so each handler tags its value next to
+/// the response it came from.
 #[derive(Clone, Copy, Debug)]
 pub enum CachePolicy {
     Cacheable,
@@ -14,29 +14,16 @@ pub enum CachePolicy {
 }
 
 impl CachePolicy {
-    /// [`CachePolicy::Cacheable`] when `cacheable` is true.
-    pub fn cache_if(cacheable: bool) -> Self {
-        if cacheable {
-            Self::Cacheable
-        } else {
-            Self::Uncacheable
-        }
-    }
-
     /// The verdict `Cache-Control` gives a private client cache. Entries are
     /// never revalidated and never expire, so any directive that demands
     /// revalidation means [`CachePolicy::Uncacheable`]; an absent or
     /// malformed header grants nothing. `private` is fine — the cache
     /// directory is per-user.
     pub fn from_headers(headers: &http::HeaderMap) -> Self {
-        Self::cache_if(cache_headers_allow(headers))
-    }
-
-    /// [`CachePolicy::Cacheable`] only when both verdicts are.
-    pub fn and(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Cacheable, Self::Cacheable) => Self::Cacheable,
-            _ => Self::Uncacheable,
+        if cache_headers_allow(headers) {
+            Self::Cacheable
+        } else {
+            Self::Uncacheable
         }
     }
 }

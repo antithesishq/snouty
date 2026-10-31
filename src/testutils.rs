@@ -776,11 +776,11 @@ fn mock_parse_request_line(request: &str) -> (String, String) {
 }
 
 /// Each route states its own `Cache-Control`, mirroring the real API
-/// (observed on tenant release 61): successful run-scoped GET reads carry
-/// [`CACHEABLE_CACHE_CONTROL`]; the run list, errors, and everything else
-/// carry `no-cache`. The real API also sends `no-cache` for a non-terminal
-/// run's detail; the mock skips that distinction — snouty's own admission
-/// checks already keep a non-terminal detail out of the cache.
+/// (observed on the antithesis-orbitinghail tenant, release 67.0): a
+/// terminal run's detail and logs, and a finished build's logs, carry
+/// [`CACHEABLE_CACHE_CONTROL`]. A live run's detail and logs, properties,
+/// the run list, errors, and everything else carry `no-cache`. The response
+/// cache follows these headers alone, so the mock must get them right.
 fn mock_route(
     method: &str,
     path: &str,
@@ -836,9 +836,12 @@ fn mock_route(
         ),
         ("GET", p) if p.starts_with("/api/v0/runs/") => {
             let rest = &p["/api/v0/runs/".len()..];
-            let (s, b, ct) = if let Some(run_id) = rest.strip_suffix("/build_logs") {
+            // Which successful reads the server marks cacheable: a finished
+            // build's logs, and a terminal run's detail and logs. Properties
+            // are always `no-cache`.
+            let (s, b, ct, cacheable) = if let Some(run_id) = rest.strip_suffix("/build_logs") {
                 let (s, b) = mock_route_get_run_build_logs(run_id);
-                (s, b, ndjson)
+                (s, b, ndjson, true)
             } else if let Some(run_id) = rest.strip_suffix("/logs") {
                 // The gallery observes a 404 for hash 0, vtime 999999.0 on
                 // orbitinghail release 62.1.
@@ -848,18 +851,18 @@ fn mock_route(
                     return (404, MOCK_BARE_404_BODY.into(), json, NO_CACHE_CACHE_CONTROL);
                 }
                 let (s, b) = mock_route_get_run_logs(run_id);
-                (s, b, ndjson)
+                (s, b, ndjson, mock_run_terminal(run_id))
             } else if let Some(run_id) = rest.strip_suffix("/properties") {
                 let (s, b) = mock_route_list_run_properties(run_id, query);
-                (s, b, json)
+                (s, b, json, false)
             } else if let Some((run_id, property_id)) = rest.split_once("/properties/") {
                 let (s, b) = mock_route_get_run_property(run_id, property_id);
-                (s, b, json)
+                (s, b, json, false)
             } else {
                 let (s, b) = mock_route_get_run(rest);
-                (s, b, json)
+                (s, b, json, mock_run_terminal(rest))
             };
-            let cache_control = if s == 200 {
+            let cache_control = if s == 200 && cacheable {
                 CACHEABLE_CACHE_CONTROL
             } else {
                 NO_CACHE_CACHE_CONTROL
@@ -1104,6 +1107,18 @@ fn mock_run_completed(run_id: &str) -> bool {
     MOCK_RUNS
         .iter()
         .any(|&(id, status, ..)| id == run_id && status == "completed")
+}
+
+/// Whether the run detail route reports `run_id` in a terminal status, for
+/// the routes whose `Cache-Control` depends on it.
+fn mock_run_terminal(run_id: &str) -> bool {
+    let (_, body) = mock_route_get_run(run_id);
+    serde_json::from_str::<serde_json::Value>(&body).is_ok_and(|detail| {
+        matches!(
+            detail["status"].as_str(),
+            Some("completed" | "cancelled" | "incomplete")
+        )
+    })
 }
 
 fn mock_run_not_found(run_id: &str) -> (u16, String) {
@@ -1913,6 +1928,35 @@ pub fn names_a_flag_or_command(text: &str) -> bool {
 mod tests {
     use super::*;
     use std::fs;
+
+    // The response cache follows the server's headers alone, so the mock must
+    // send `no-cache` wherever the real API does (see `mock_route`).
+    #[test]
+    fn mock_cache_headers_follow_the_run_status() {
+        let cache_control = |path: &str| mock_route("GET", path, "", false).3;
+        // run-1 is completed, run-2 in progress.
+        for (path, expected) in [
+            ("/api/v0/runs/run-1", CACHEABLE_CACHE_CONTROL),
+            ("/api/v0/runs/run-2", NO_CACHE_CACHE_CONTROL),
+            (
+                "/api/v0/runs/run-1/logs?input_hash=1&vtime=0.0",
+                CACHEABLE_CACHE_CONTROL,
+            ),
+            (
+                "/api/v0/runs/run-2/logs?input_hash=1&vtime=0.0",
+                NO_CACHE_CACHE_CONTROL,
+            ),
+            (
+                "/api/v0/runs/run-2/logs?input_hash=1&vtime=5.0",
+                NO_CACHE_CACHE_CONTROL,
+            ),
+            ("/api/v0/runs/run-2/build_logs", CACHEABLE_CACHE_CONTROL),
+            ("/api/v0/runs/run-1/properties", NO_CACHE_CACHE_CONTROL),
+            ("/api/v0/runs/run-unknown", NO_CACHE_CACHE_CONTROL),
+        ] {
+            assert_eq!(cache_control(path), expected, "{path}");
+        }
+    }
 
     #[test]
     fn extract_quoted_literals_resolves_escapes() {

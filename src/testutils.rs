@@ -838,7 +838,8 @@ fn mock_route(
             let rest = &p["/api/v0/runs/".len()..];
             // Which successful reads the server marks cacheable: a finished
             // build's logs, and a terminal run's detail and logs. Properties
-            // are always `no-cache`.
+            // are always `no-cache`. Every mock run's build has finished, so
+            // its build logs are always cacheable.
             let (s, b, ct, cacheable) = if let Some(run_id) = rest.strip_suffix("/build_logs") {
                 let (s, b) = mock_route_get_run_build_logs(run_id);
                 (s, b, ndjson, true)

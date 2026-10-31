@@ -41,9 +41,7 @@ pub use policy::CachePolicy;
 
 /// Cache directory name under the runtime dir. Bump the version when the
 /// on-disk format changes, or when admission tightens and existing entries
-/// may no longer qualify, so stale entries are simply abandoned. `v4` drops
-/// the entries `api_cache_respect_headers = false` admitted against the
-/// server's headers.
+/// may no longer qualify, so stale entries are simply abandoned.
 const CACHE_DIR_NAME: &str = "api-cache-v4";
 
 /// Bodies larger than this are not cached (see

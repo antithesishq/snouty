@@ -1102,13 +1102,27 @@ impl AntithesisApi {
         const MAX_PAGE_LIMIT: NonZeroU64 = NonZeroU64::new(100).unwrap();
         let run_id = run_id.to_string();
         let statuses = statuses.to_vec();
+        // Looked up once, on the first page.
+        let terminal = std::rc::Rc::new(tokio::sync::OnceCell::new());
         paginate_exhaust(move |after| {
             let run_id = run_id.clone();
             let statuses = statuses.clone();
+            let terminal = terminal.clone();
             async move {
                 ensure_resource_supported(&run_id, MIN_PROPERTIES_VERSION, "run properties")?;
+                let terminal = *terminal
+                    .get_or_try_init(|| async {
+                        Ok::<_, Report>(self.get_run(&run_id).await?.untag().status.is_terminal())
+                    })
+                    .await?;
                 let page = self
-                    .fetch_run_properties_page(&run_id, after.as_deref(), &statuses, MAX_PAGE_LIMIT)
+                    .fetch_run_properties_page(
+                        &run_id,
+                        after.as_deref(),
+                        &statuses,
+                        MAX_PAGE_LIMIT,
+                        terminal,
+                    )
                     .await?
                     .untag();
                 let normalized = page
@@ -1288,6 +1302,8 @@ impl AntithesisApi {
         )
     }
 
+    /// A run records properties until it reaches a terminal status, so only
+    /// a page of a `terminal` run is immutable.
     #[cached(value)]
     async fn fetch_run_properties_page(
         &self,
@@ -1295,6 +1311,7 @@ impl AntithesisApi {
         after: Option<&str>,
         statuses: &[PropertyStatus],
         limit: NonZeroU64,
+        terminal: bool,
     ) -> Result<Tagged<generated::types::PropertyListResponse, CachePolicy>> {
         let mut request = self
             .client
@@ -1309,7 +1326,10 @@ impl AntithesisApi {
         }
         match request.send().await {
             Ok(response) => {
-                let policy = self.cache.headers_policy(response.headers());
+                let policy = self
+                    .cache
+                    .headers_policy(response.headers())
+                    .and(CachePolicy::cache_if(terminal));
                 Ok(response.into_inner().with_tag(policy))
             }
             Err(err) => Err(format_api_client_error(err).await),
@@ -4161,6 +4181,17 @@ mod tests {
         })
     }
 
+    /// Mount the run detail that `stream_run_properties` reads, `expect`ed
+    /// that many times.
+    async fn mount_run_1_detail(mock_server: &MockServer, status: &str, expect: u64) {
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1"))
+            .respond_with(cacheable().set_body_json(run_detail_body(status)))
+            .expect(expect)
+            .mount(mock_server)
+            .await;
+    }
+
     async fn property_names(api: &AntithesisApi) -> Vec<String> {
         api.stream_run_properties("run-1", &[])
             .try_collect::<Vec<_>>()
@@ -4176,6 +4207,7 @@ mod tests {
     #[tokio::test]
     async fn run_properties_replay_from_the_cache_per_page() {
         let mock_server = MockServer::start().await;
+        mount_run_1_detail(&mock_server, "completed", 1).await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/properties"))
             .and(query_param_is_missing("after"))
@@ -4196,6 +4228,27 @@ mod tests {
 
         for _ in 0..2 {
             assert_eq!(property_names(&api).await, ["first", "second"]);
+        }
+    }
+
+    // A run that is still in progress records more properties, so each
+    // listing asks the server again, despite cacheable headers.
+    #[tokio::test]
+    async fn live_run_properties_are_not_cached() {
+        let mock_server = MockServer::start().await;
+        mount_run_1_detail(&mock_server, "in_progress", 2).await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1/properties"))
+            .respond_with(cacheable().set_body_json(property_page("first", None)))
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
+
+        for _ in 0..2 {
+            assert_eq!(property_names(&api).await, ["first"]);
         }
     }
 
@@ -4798,6 +4851,7 @@ mod tests {
     #[tokio::test]
     async fn stream_run_properties_follows_next_cursor() {
         let mock_server = MockServer::start().await;
+        mount_run_1_detail(&mock_server, "completed", 1).await;
 
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/properties"))
@@ -4865,6 +4919,7 @@ mod tests {
     #[tokio::test]
     async fn stream_run_properties_forwards_status_filter() {
         let mock_server = MockServer::start().await;
+        mount_run_1_detail(&mock_server, "completed", 1).await;
 
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1/properties"))

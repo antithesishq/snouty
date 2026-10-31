@@ -1144,12 +1144,13 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
         }
         return (200, body.to_string());
     }
-    // `run-unknown-status` and `run-starting`, a test run that has not
-    // started, are kept out of MOCK_RUNS so the list-oriented specs don't see
-    // them.
+    // `run-unknown-status`, `run-starting` (a test run that has not started),
+    // `run-empty` and `run-no-events` are kept out of MOCK_RUNS so the
+    // list-oriented specs don't see them.
     if let Some(status) = match run_id {
         "run-unknown-status" => Some("unknown"),
         "run-starting" => Some("starting"),
+        "run-empty" | "run-no-events" => Some("completed"),
         _ => None,
     } {
         return (
@@ -1324,9 +1325,10 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
         );
     }
 
-    // On release 67.0 the properties endpoint 404s only for an unknown run id.
-    // A run of any status lists the properties it has recorded so far, and
-    // `run-empty`, like a run that has just started, has recorded none.
+    // The properties endpoint 404s only for an unknown run id. A run of any
+    // status lists the properties it has recorded so far, and an in-progress
+    // run a minute after it became ready lists none (observed on the
+    // antithesis-orbitinghail tenant, release 67.0). `run-empty` has none.
     if run_id == "run-empty" {
         return (200, r#"{"data":[],"next_cursor":null}"#.to_string());
     }

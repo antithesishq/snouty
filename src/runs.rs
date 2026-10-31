@@ -1486,9 +1486,9 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         )?;
     }
 
-    // On release 67.0 a run of any status lists the properties it has recorded
-    // so far. A starting run has recorded none, and a debugging session never
-    // records any of its own.
+    // A run lists the properties it has recorded so far, whatever its status. A
+    // starting run has recorded none, and a debugging session lists none of its
+    // own (observed on the antithesis-orbitinghail tenant, release 67.0).
     if run.status != RunStatus::Starting && run.launcher != "debugging" {
         outln!(
             "\nsee property results:\n  snouty runs properties {}",

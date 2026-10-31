@@ -477,14 +477,62 @@ fn esc_at_the_api_key_prompt_skips_credential_storage() {
     );
 }
 
+/// A base URL whose port refuses connections: bound, then released.
+fn refused_base_url() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a port");
+    format!("http://{}", listener.local_addr().expect("local address"))
+}
+
+/// The rendered text of `seen` as one line, so that a match does not depend
+/// on where the terminal wrapped it.
+fn flat(seen: &str) -> String {
+    rendered_lines(seen).join(" ")
+}
+
+/// When the OAuth configuration probe gets no response, login warns that the
+/// tenant may be wrong, offers only an API key, and saves the tenant.
+#[test]
+fn an_unreachable_tenant_warns_and_login_continues() {
+    let refused = refused_base_url();
+    let (home, mut session) = spawn_login(&Login {
+        base_url: Some(&refused),
+        ..Login::default()
+    });
+
+    let seen = flat(&expect(&mut session, "Please enter your API Key"));
+    for needle in [
+        format!("warning: could not reach {refused}/auth/cli/config to check for single sign-on: "),
+        "Check that the tenant name `pty-tenant` is correct.".to_owned(),
+        "Login continues with an API key.".to_owned(),
+    ] {
+        assert!(seen.contains(&needle), "missing {needle:?} in {seen}");
+    }
+    send(&mut session, FAKE_API_KEY_A);
+    send(&mut session, "\r");
+    finish(session);
+
+    let settings = std::fs::read_to_string(home.path().join(".config/snouty/settings.toml"))
+        .expect("read settings.toml");
+    assert!(settings.contains(r#"tenant = "pty-tenant""#), "{settings}");
+    assert!(credentials(home.path()).contains(FAKE_API_KEY_A));
+}
+
+/// A tenant that answers that single sign-on is disabled gets the API key
+/// prompt with no warning.
+#[test]
+fn a_tenant_without_oauth_gets_no_warning() {
+    let (_home, mut session) = start_login();
+    let seen = flat(&expect(&mut session, "Please enter your API Key"));
+    assert!(!seen.contains("warning"), "{seen}");
+    send(&mut session, "\x1b");
+    finish(session);
+}
+
 /// When the OAuth configuration probe gets no response, login offers only an
 /// API key, and `--verbose` says why the probe failed.
 #[test]
 fn verbose_logs_why_the_oauth_probe_failed() {
-    // A port that refuses connections: bound, then released.
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a port");
-    let refused = format!("http://{}", listener.local_addr().expect("local address"));
-    drop(listener);
+    let refused = refused_base_url();
     let (_home, mut session) = spawn_login(&Login {
         base_url: Some(&refused),
         args: &["--verbose"],

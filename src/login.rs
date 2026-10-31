@@ -30,11 +30,12 @@ use crate::{
     auth::{AuthenticationInfo, PersistableCredentials, is_blank_api_key, persist},
     env,
     error::user_error,
-    render::{OutputOptions, sanitize},
+    render::{OutputOptions, sanitize, wrap_if_tty},
     settings::{
         ANTITHESIS_PROFILE_ENV_VAR_NAME, Settings, update_settings_in_global_file,
         validate_tenant_host,
     },
+    util::root_cause,
 };
 
 const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -354,6 +355,23 @@ async fn prompt_for_auth(
     let base_url = env::var(settings::ANTITHESIS_BASE_URL_VAR_NAME)?
         .unwrap_or_else(|| format!("https://{tenant}.antithesis.com"));
     let oauth_config = fetch_cli_config(client, &base_url).await;
+
+    // No answer at all most often means a misspelled tenant. An HTTP answer,
+    // such as 403 or `disabled`, means the tenant exists.
+    if let Err(err) = &oauth_config
+        && let Some(transport) = err.downcast_ref::<reqwest::Error>()
+        && (transport.is_connect() || transport.is_timeout())
+    {
+        eprintln!(
+            "{}",
+            wrap_if_tty(&format!(
+                "warning: could not reach {base_url}/auth/cli/config to check for single \
+                 sign-on: {}. Check that the tenant name `{tenant}` is correct. Login \
+                 continues with an API key.",
+                root_cause(transport)
+            ))
+        );
+    }
 
     let oauth_offered = oauth_config
         .as_ref()

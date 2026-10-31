@@ -28,7 +28,7 @@ use crate::event_render::EventStreamRenderer;
 use crate::jsonl::JsonStream;
 use crate::stdio;
 
-use super::ready::{self, Endpoint, Needs, RetryPolicy};
+use super::ready::{self, Needs, RetryDecision, RetryPolicy};
 use super::{ErrorRows, FaultAnnotator, READY_POLL, event_lines, raw_lines};
 
 /// How an event-stream command prints its rows. The illegal flag
@@ -135,18 +135,18 @@ pub(super) async fn count_query(
 /// (releases 66.0 and 67.0), a ready run answers 404 `Resource not found` for
 /// a minute or two. A release before [`MIN_SEARCH_RELEASE`] answers 404 for
 /// every run.
-const SEARCH: Endpoint = Endpoint {
+const SEARCH_RETRY: RetryPolicy = RetryPolicy {
     needs: Needs::Ready,
     waiting: "waiting for the run's events to be searchable",
-    retry_policy: |run, err| {
-        RetryPolicy::retry_if(
+    decide: |run, err| {
+        RetryDecision::retry_if(
             api_error_status(err) == Some(404) && run.created_on_or_after(MIN_SEARCH_RELEASE),
         )
     },
 };
 
 /// Send an events-search request with `send` once the run is ready or
-/// terminal, and retry while [`SEARCH`] allows it.
+/// terminal, and retry while [`SEARCH_RETRY`] allows it.
 pub(super) async fn search_when_ready<T, Fut>(
     api: &AntithesisApi,
     run_id: &str,
@@ -156,7 +156,7 @@ pub(super) async fn search_when_ready<T, Fut>(
 where
     Fut: Future<Output = Result<T>>,
 {
-    ready::send_when_ready(api, run_id, poll, SEARCH, send, explain_search_error).await
+    ready::send_when_ready(api, run_id, poll, SEARCH_RETRY, send, explain_search_error).await
 }
 
 /// Annotate an events-search error for `run`. `run` must exist and be ready

@@ -43,7 +43,7 @@ mod ready;
 mod run_stream;
 
 use event_search::EventOutput;
-use ready::{Endpoint, Needs, RetryPolicy};
+use ready::{Needs, RetryDecision, RetryPolicy};
 
 /// The note a limited command prints to stderr under its output. The command
 /// asks the server for at most `limit` rows and cannot tell whether more
@@ -1626,11 +1626,11 @@ async fn cmd_runs_stream(
 /// antithesis-orbitinghail tenant, release 65.3: ready at 73 s, stream at
 /// 241 s). A tenant before release 65.3 has no stream route and answers 404
 /// for every run; the run ID names the release that created the run.
-const STREAM: Endpoint = Endpoint {
+const STREAM_RETRY: RetryPolicy = RetryPolicy {
     needs: Needs::Live,
     waiting: "waiting for the run's stream to open",
-    retry_policy: |run, err| {
-        RetryPolicy::retry_if(
+    decide: |run, err| {
+        RetryDecision::retry_if(
             api_error_status(err) == Some(404) && run.created_on_or_after(MIN_STREAM_RELEASE),
         )
     },
@@ -1647,7 +1647,7 @@ async fn open_run_stream(
         api,
         run_id,
         poll,
-        STREAM,
+        STREAM_RETRY,
         || api.stream_run_status(run_id, property_ids),
         explain_stream_error,
     )
@@ -2178,12 +2178,12 @@ const READY_POLL: Duration = Duration::from_secs(10);
 /// `runs exec`. On orbitinghail (release 67.0), a run that reports the
 /// `Ready` sub-status can still answer 400 `Run <id> is not ready yet. Try
 /// again shortly.` for a few minutes.
-const EXEC: Endpoint = Endpoint {
+const EXEC_RETRY: RetryPolicy = RetryPolicy {
     needs: Needs::Ready,
     waiting: "waiting for the run to accept commands",
-    retry_policy: |run, err| {
+    decide: |run, err| {
         let not_ready = format!("Run {} is not ready yet", run.run_id);
-        RetryPolicy::retry_if(
+        RetryDecision::retry_if(
             api_error_status(err) == Some(400)
                 && api_error_message(err).is_some_and(|m| m.contains(&not_ready)),
         )
@@ -2227,7 +2227,7 @@ async fn exec_when_ready(
         api,
         run_id,
         poll,
-        EXEC,
+        EXEC_RETRY,
         || api.execute_command(run_id, exec.clone()),
         |run, err| explain_exec_error(&run.status, &debug_command, rewarm_flag, err),
     )

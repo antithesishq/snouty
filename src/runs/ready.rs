@@ -1,8 +1,8 @@
 //! Send a run-scoped request once the run can serve it.
 //!
 //! Some endpoints refuse a run for a while after it starts or reports that it
-//! is ready. Each one is an [`Endpoint`], and [`send_when_ready`] is the only
-//! loop that waits and retries. Add an endpoint, not a loop.
+//! is ready. Each one has a [`RetryPolicy`], and [`send_when_ready`] is the
+//! only loop that waits and retries. Add a policy, not a loop.
 
 use std::future::Future;
 use std::time::Duration;
@@ -26,38 +26,38 @@ pub(super) enum Needs {
 
 /// What to do after an endpoint answers with an error.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum RetryPolicy {
+pub(super) enum RetryDecision {
     /// The error means "try again shortly".
     Retry,
     Fail,
 }
 
-impl RetryPolicy {
+impl RetryDecision {
     pub(super) fn retry_if(retry: bool) -> Self {
         if retry { Self::Retry } else { Self::Fail }
     }
 }
 
-/// A run-scoped request that the run may not serve yet.
+/// How to retry a run-scoped request that the run may not serve yet.
 #[derive(Clone, Copy)]
-pub(super) struct Endpoint {
+pub(super) struct RetryPolicy {
     pub needs: Needs,
-    /// Shown on stderr while the endpoint answers [`RetryPolicy::Retry`].
+    /// Shown on stderr while the endpoint answers [`RetryDecision::Retry`].
     pub waiting: &'static str,
     /// Whether an error from the endpoint is worth a retry, given the run as
     /// last read. A run that has ended never retries.
-    pub retry_policy: fn(&RunDetail, &Report) -> RetryPolicy,
+    pub decide: fn(&RunDetail, &Report) -> RetryDecision,
 }
 
-/// Send `send` once the run meets `endpoint.needs`, and send again every
-/// `poll` while the run has not ended and the endpoint's retry policy says
-/// [`RetryPolicy::Retry`]. The wait has no time limit. `explain` annotates
+/// Send `send` once the run meets `policy.needs`, and send again every
+/// `poll` while the run has not ended and `policy` decides
+/// [`RetryDecision::Retry`]. The wait has no time limit. `explain` annotates
 /// the final error, with the run as last read.
 pub(super) async fn send_when_ready<T, Fut>(
     api: &AntithesisApi,
     run_id: &str,
     poll: Duration,
-    endpoint: Endpoint,
+    policy: RetryPolicy,
     mut send: impl FnMut() -> Fut,
     explain: impl FnOnce(&RunDetail, Report) -> Report,
 ) -> Result<T>
@@ -66,7 +66,7 @@ where
 {
     let mut retrying: Option<ReadyDisplay> = None;
     loop {
-        let ready_run = match endpoint.needs {
+        let ready_run = match policy.needs {
             Needs::Ready => {
                 let mut waiting: Option<ReadyDisplay> = None;
                 let run = wait_for_run(api, run_id, poll, WaitUntil::Ready, |_| {
@@ -104,11 +104,11 @@ where
                 Err(_) => return Err(err),
             },
         };
-        if run.status.is_terminal() || (endpoint.retry_policy)(&run, &err) == RetryPolicy::Fail {
+        if run.status.is_terminal() || (policy.decide)(&run, &err) == RetryDecision::Fail {
             return Err(explain(&run, err));
         }
         retrying
-            .get_or_insert_with(|| ReadyDisplay::new(endpoint.waiting))
+            .get_or_insert_with(|| ReadyDisplay::new(policy.waiting))
             .show();
         tokio::time::sleep(poll).await;
     }

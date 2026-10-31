@@ -260,9 +260,11 @@ impl RunSummary {
 }
 
 impl RunDetail {
-    /// Whether the run accepts commands: it is in progress, with the `Ready`
-    /// sub-status (observed on orbitinghail, release 64.0). A run from before [`MIN_SUB_STATUS_RELEASE`] has no
-    /// sub-status, so it is ready while it is in progress.
+    /// Whether the run should accept commands: it is in progress, with the
+    /// `Ready` sub-status (observed on orbitinghail, release 64.0). A run from
+    /// before [`MIN_SUB_STATUS_RELEASE`] has no sub-status, so it is ready
+    /// while it is in progress. On release 67.0, the command endpoint can still
+    /// answer 400 "not ready yet" for a few minutes after the run turns ready.
     pub(crate) fn is_ready(&self) -> bool {
         let in_progress = self.status == RunStatus::InProgress;
         match run_release(&self.run_id) {
@@ -727,6 +729,7 @@ fn truncate_at_end_vtime(stream: JsonStream, end: VTime) -> JsonStream {
         .boxed()
 }
 
+#[derive(Clone)]
 pub struct ExecRequest {
     pub moment: Moment,
     pub script: String,
@@ -743,6 +746,7 @@ pub struct ExecRequest {
 
 /// The run that a cold moment comes from, by run ID or by session ID. The
 /// server rewarms the moment by replaying its inputs.
+#[derive(Clone)]
 pub enum RewarmSource {
     Run(SourceRunId),
     Session(SourceSessionId),

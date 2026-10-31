@@ -1,9 +1,7 @@
 name: bump rust
 
-# Keeps the MSRV at the newest stable Rust. Once a week this updates the
-# rust-overlay pin in npins, then sets `rust-version` in Cargo.toml to the
-# stable release that overlay provides, the toolchain that nix builds with. It
-# opens a pull request with both changes, or updates the one already open.
+# Keeps `rust-version` in Cargo.toml at the stable Rust that the rust-overlay
+# pin provides, the toolchain that nix builds with.
 on:
   schedule:
     - cron: "0 8 * * 1"
@@ -65,7 +63,7 @@ jobs:
             gh pr create --base main --head "$branch" --title "$title" --body "Sets \`rust-version\` to Rust $MSRV, the newest stable release in the updated rust-overlay pin. Opened by \`.github/workflows/bump-rust.yml\`."
           fi
           # A push or pull request made with GITHUB_TOKEN starts no workflow, but
-          # a dispatch does. build.yml reports the required tests-passed check
-          # on the branch's head commit, and slow-tests.yml builds with nix.
+          # a dispatch does. build.yml reports the required tests-passed check.
+          # slow-tests.yml runs the nix build.
           gh workflow run build.yml --ref "$branch"
           gh workflow run slow-tests.yml --ref "$branch"

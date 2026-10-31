@@ -1,7 +1,7 @@
 # Writing specs
 
-Read this file before you add or change a file in `specs/` or `specs_engine/`.
-The root `AGENTS.md` section "Tests" says when a spec is the right test.
+These rules cover `specs/` and `specs_engine/`. The root `AGENTS.md` section
+"Tests" says when a spec is the right test.
 
 ## What a spec asserts
 
@@ -17,7 +17,8 @@ paragraph.
   rewrite every case.
 - A comment says in one line which contract the case checks. Server history,
   release numbers and reasons go in the commit message.
-- A new case must fail without your change. Check it once.
+- Use only the fake secrets: `set-env` with `${FAKE_<TYPE>}` for a variable,
+  `substitute <path>` for a fixture file, and `${FAKE_<TYPE>@R}` in a pattern.
 
 ## Running specs
 

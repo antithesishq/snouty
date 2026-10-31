@@ -83,9 +83,8 @@ _Automated check: PASS|FAIL — <detail>_
 the default output, and every variant.)
 
 Judge a help page against the "User-facing text" section of `AGENTS.md`. Flag
-text that it says to leave out, such as internals or a tenant release floor.
-Do not propose more detail unless a user would otherwise call the command
-wrongly.
+text that it says to leave out, such as how snouty works inside. Do not
+propose more detail unless a user would otherwise call the command wrongly.
 
 **MCP tool help stories** (the `mcp-help-*` slugs) have a different shape.
 They show what an AI agent reads about one `snouty mcp` tool, from a JSON-RPC

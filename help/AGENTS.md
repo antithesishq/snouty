@@ -1,6 +1,8 @@
 # Help templates
 
-Read this file before you change a page in `help/`, `src/help/`, or the help of an MCP tool. The root `AGENTS.md` section "User-facing text" says what to write. This file says how the templates work.
+These rules cover the pages in `help/`, `src/help/`, and the help of an MCP
+tool. The root `AGENTS.md` section "User-facing text" says what to write.
+This file says how the templates work.
 
 Each command's long help (`--help`) is a template in `help/`, one file per
 command, named for its path below `snouty` with `_` between the parts:

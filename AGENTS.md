@@ -6,9 +6,10 @@ CLI tool for the Antithesis API. Written in Rust.
 
 - `src/` — the CLI source code
 - `snouty-macros/` — the proc-macro crate (the second workspace member)
-- `help/` — long-help templates. Read `help/AGENTS.md` before you edit one.
+- `help/` — long-help templates. Read `help/AGENTS.md` before you change a
+  page, `src/help/`, or the help of an MCP tool.
 - `specs/` — end-to-end tests of the binary. Read `specs/AGENTS.md` before
-  you edit one.
+  you change a spec here or in `specs_engine/`.
 - `specs_engine/` — specs that need a container engine
 - `tests/` — integration, PTY, MCP and help snapshot tests
 - `scripts/` — maintenance and dev scripts: Python run through `uv`, the
@@ -17,15 +18,12 @@ CLI tool for the Antithesis API. Written in Rust.
 
 ## Workflow
 
-1. Follow the Rust coding conventions and the rules for user-facing text
-   below.
-2. Cover each behavior change with the test that "Tests" names for its job.
-   A change that only rewords output updates the help snapshots, and edits a
-   spec only where a spec asserts the token that changed.
-3. Edit `scripts/gen-gallery.py` when you add a command (add a story), or when
+1. Cover each behavior change with the test that "Tests" names for its job.
+2. Edit `scripts/gen-gallery.py` when you add a command (add a story), or when
    a gallery check names text that you changed.
-4. Before a `git push`, run `mise run lint` and `mise run test`. The Stop hooks
-   run the lints when you stop, but not before a push in the same turn.
+3. Run `mise run test` before you finish. Before a `git push`, also run the
+   checks that the Stop hooks run (see "Checks and lints") and `mise run lint`:
+   a hook does not run until you stop.
 
 ## Rust coding conventions
 
@@ -100,8 +98,9 @@ All code must be simple and idiomatic.
 
 - Send only what the user asked for. Never send a field to set the server's own
   default; strip the field in `build.rs` when the generated type forces a value.
-- Make one request where one will do. Never send a request only to explain or
-  check another response: print a hint that names the command to run next.
+- Make one request where one will do. Outside a diagnostic command such as
+  `doctor`, never send a request only to explain or check another response:
+  print a hint that names the command to run next.
 - Handle only response shapes you have observed or found in the spec. A fixture
   you wrote yourself is not evidence. Record the observation — endpoint, tenant,
   actual response — in the PR or a doc comment.
@@ -134,7 +133,7 @@ Leave out:
 - why a limit exists, or that snouty enforces it. State the limit;
 - what a name already says: that `--json` prints JSON, that `--timeout` sets
   a timeout;
-- tenant release floors, deprecated flags, and facts about other commands;
+- deprecated flags, and facts about other commands;
 - edge cases that the command reports in its own error.
 
 Examples from review:
@@ -145,7 +144,6 @@ Examples from review:
 | A run must fuzz for at least 15 minutes, a quarter of an hour, so the minimum budget is a quarter of the tier's cores. snouty refuses a launch below the minimum, and names it. | The minimum budget is a quarter of the tier's cores: 12 compute hours on standard, 24 on fast and 48 on turbo. |
 | For a moment off the session's own timeline, name the run it comes from with --source-run-id. | Use --source-run-id to load a moment from a different run. |
 | Then docker push signs in with your snouty credential, and docker login is not necessary. Podman also reads `${XDG_RUNTIME_DIR}/containers/auth.json`… | Then `docker push`, `docker pull`, `podman push` and `podman pull` automatically use your snouty credentials for the Antithesis docker registry. |
-| The command needs tenant release 62.2 or newer; `snouty doctor` reports the tenant release. | (deleted) |
 
 - An error or a warning says what is wrong and the one action to take. It does
   not name status codes, server responses or internal checks, and it does not
@@ -168,6 +166,8 @@ breaks.
   asserts help prose.
 - Terminal-only behavior (prompts, wrapping, progress): a PTY test,
   `tests/*_pty.rs`.
+- Behavior that a spec cannot set up, such as a real file system layout or a
+  helper protocol: an integration test in `tests/`.
 - The MCP protocol: `tests/mcp.rs`.
 - The contract of the binary: a spec. That is the exit status, stdout against
   stderr, JSON keys, the request that a flag sends, flags that conflict, how
@@ -191,13 +191,8 @@ break the logic (a branch, a condition, a request field), not a string.
 - A test helper with more than three parameters takes a builder or `Default`.
 - Code whose only callers are tests lives in the test harness: the mock server,
   a test module, or behind `#[cfg(test)]`.
-- Tests use only the fake secrets in `src/testutils/fake_secrets.rs`: API
-  keys, passwords, tokens, and all other credentials, named `FAKE_<TYPE>`,
-  with `_A`, `_B` and so on when a test needs more than one of a type. Its
-  module doc tells how to add one, and its `scan` test fails on any other
-  secret-shaped literal. A spec writes `${FAKE_<TYPE>}`: `set-env` for a
-  variable, `substitute <path>` for a fixture file, and `${FAKE_<TYPE>@R}` in
-  a pattern.
+- Tests use only the fake secrets in `src/testutils/fake_secrets.rs`. Its
+  module doc tells how to add one.
 
 ## Comments, changelog, and prose
 
@@ -257,14 +252,22 @@ mise tasks              # list the tasks, such as lint:zizmor
 
 Fix each lint finding in the code. When a fix is wrong, suppress the finding
 on the item, with a comment that tells why: `#[allow(clippy::<lint>)]`, a
-shellcheck directive, an entry in `[package.metadata.cargo-shear] ignored`, or
-a cargo-deny ignore with a link. Clippy runs with the `pedantic` group, and CI
-denies all warnings. Do not fix a zizmor finding in a generated workflow by
-hand; change its generator.
+shellcheck directive, or an entry in `[package.metadata.cargo-shear] ignored`.
+Clippy runs with the `pedantic` group, and `[workspace.lints.clippy]` in
+`Cargo.toml` gives a reason for each pedantic lint that is off. Fix a
+cargo-deny advisory with an upgrade; ignore it in `deny.toml` only when no
+upgrade exists, with a reason and a link. A pull request fails on licenses,
+bans and sources; only the nightly run fails on advisories. Do not fix a
+zizmor finding in a generated workflow by hand; change its generator, as
+`.github/zizmor.yml` describes.
+
+The Python scripts share one set of dependencies, in the top-level
+`pyproject.toml` and `uv.lock`. Do not declare dependencies in a script.
 
 The `msrv` CI job checks the workspace on the MSRV, the `rust-version` in the
-`[workspace.package]` table of `Cargo.toml`. To change the MSRV, change only
-that line. To run the check yourself:
+`[workspace.package]` table of `Cargo.toml`, which both crates use. CI checks
+the linux-gnu and linux-musl targets on it, but not macOS. To change the MSRV,
+change only that line. To run the check yourself:
 
 ```
 cargo +<rust-version> check --workspace --all-targets --locked
@@ -292,7 +295,7 @@ the `digest` that GitHub shows for each `mise-v<version>-<platform>` asset.
 
 The Stop hooks in `.claude/settings.json` run these checks each time the agent
 stops, and wake the agent with the errors when a check fails. Do not run them
-yourself while you work, except before a push (see "Workflow").
+yourself while you work, except before a push.
 
 - `scripts/check-cargo.sh`: `cargo fmt`, then
   `cargo clippy --all-targets -- -D warnings`.
@@ -309,5 +312,5 @@ through `mise exec`, which installs the tool on first use.
 
 Write a rule here only when it applies to most tasks. A rule for one kind of
 file goes in the `AGENTS.md` next to those files. When a review corrects one
-case, write the general rule, not the one fix. Delete a rule that a build, a
-test or a hook already enforces.
+case, write the general rule, not the one fix. Do not restate what a build, a
+test or a lint error already tells the agent.

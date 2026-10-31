@@ -300,7 +300,7 @@ async fn cmd_launch(
 
     let config_image_ref = if let Some(config_dir) = &args.config {
         let detected = config::detect_config(config_dir)?;
-        let registry = snouty::settings::require(settings.repository(), "repository")?;
+        let registry = snouty::settings::require_setting(settings.repository(), "repository")?;
 
         let image_ref = container::generate_image_ref(registry);
         params.insert(ANT_CONFIG_IMAGE, &image_ref);

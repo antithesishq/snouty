@@ -826,7 +826,10 @@ impl AntithesisApi {
         // base_url() is None exactly when neither an explicit base_url nor a
         // tenant resolved; surface the tenant diagnostic, since that's what a
         // user normally sets.
-        let base_url = normalize_base_url(crate::settings::require(settings.base_url(), "tenant")?);
+        let base_url = normalize_base_url(crate::settings::require_setting(
+            settings.base_url(),
+            "tenant",
+        )?);
         debug!("initializing API client for {base_url}");
 
         let http = HttpClient::new(settings, verbose)?;

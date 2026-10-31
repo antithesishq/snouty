@@ -336,7 +336,7 @@ impl SettingsFiles {
 
 impl Settings {
     /// The resolved tenant, or `None` if unset. Call sites that require it turn
-    /// the `None` into an error (see [`require`]); doctor reports it as-is.
+    /// the `None` into an error (see [`require_setting`]); doctor reports it as-is.
     pub fn tenant(&self) -> Option<&str> {
         self.tenant.as_deref()
     }
@@ -674,7 +674,7 @@ pub(crate) fn is_valid_tenant_host(tenant: &str) -> bool {
 /// The `Option` accessors stay the single source of truth; the few call sites
 /// that cannot proceed without a value funnel the `None` through here, so the
 /// message lives in one place instead of being duplicated per accessor.
-pub fn require<'a>(value: Option<&'a str>, setting: &str) -> Result<&'a str> {
+pub fn require_setting<'a>(value: Option<&'a str>, setting: &str) -> Result<&'a str> {
     value
         .ok_or_else(|| eyre!("Could not resolve Antithesis {setting}. Run snouty doctor to debug."))
 }
@@ -1252,16 +1252,16 @@ mod tests {
     // ---- accessors -----------------------------------------------------
 
     #[test]
-    fn require_missing_setting_points_at_doctor() {
-        let err = require(None, "tenant").unwrap_err();
+    fn require_setting_missing_points_at_doctor() {
+        let err = require_setting(None, "tenant").unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("tenant"), "unexpected error: {msg}");
         assert!(msg.contains("snouty doctor"), "unexpected error: {msg}");
     }
 
     #[test]
-    fn require_passes_a_present_setting_through() {
-        assert_eq!(require(Some("acme"), "tenant").unwrap(), "acme");
+    fn require_setting_passes_a_present_value_through() {
+        assert_eq!(require_setting(Some("acme"), "tenant").unwrap(), "acme");
     }
 
     #[test]

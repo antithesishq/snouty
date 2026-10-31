@@ -40,6 +40,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # rust-version tracks the newest stable Rust (bump-rust.yml), and the
+      # runner image's Rust can lag it.
+      - name: Update Rust
+        run: rustup update stable --no-self-update
       - name: Get a crates.io token
         id: auth
         uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6

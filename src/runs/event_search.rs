@@ -139,16 +139,14 @@ const SEARCH: Endpoint = Endpoint {
     needs: Needs::Ready,
     waiting: "waiting for the run's events to be searchable",
     retry_policy: |run, err| {
-        if api_error_status(err) == Some(404) && run.created_on_or_after(MIN_SEARCH_RELEASE) {
-            RetryPolicy::Retry
-        } else {
-            RetryPolicy::Fail
-        }
+        RetryPolicy::retry_if(
+            api_error_status(err) == Some(404) && run.created_on_or_after(MIN_SEARCH_RELEASE),
+        )
     },
 };
 
 /// Send an events-search request with `send` once the run is ready or
-/// terminal. The wait bypasses the response cache by itself, so pass the
+/// terminal, and retry while [`SEARCH`] allows it. The wait bypasses the response cache by itself, so pass the
 /// cached client.
 pub(super) async fn search_when_ready<T, Fut>(
     api: &AntithesisApi,

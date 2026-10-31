@@ -571,9 +571,8 @@ async fn wait_for_run(
     }
 }
 
-/// Read the run once, bypassing the response cache. A 404 is unambiguous,
-/// exactly as in `runs show`: the run ID is bad, so the caller fails now
-/// rather than poll a typo. An unclassified run fails too (see
+/// Read the run, bypassing the response cache. A 404 means a bad run ID, so
+/// it fails rather than poll a typo. An unclassified run fails too (see
 /// [`RunStatus::is_unclassified`]).
 async fn look_at_run(api: &AntithesisApi, run_id: &str) -> Result<RunDetail> {
     let run = match api.uncached().get_run(run_id).await {
@@ -792,10 +791,10 @@ pub async fn ensure_input_hash_exists(
 ) -> Result<()> {
     let run_id = &run.run_id;
     let query = event_set_dsl::input_hash_filter(input_hash);
-    let count = api
-        .count_run_events_query(run_id, &query)
-        .await
-        .map_err(|err| event_search::explain_search_error(run, err))?;
+    let count = event_search::search_when_ready(api, run_id, READY_POLL, || {
+        api.count_run_events_query(run_id, &query)
+    })
+    .await?;
     if count == 0 {
         return Err(user_error(format!(
             "no moment matches input hash {input_hash} in run {run_id}"
@@ -1631,11 +1630,9 @@ const STREAM: Endpoint = Endpoint {
     needs: Needs::Live,
     waiting: "waiting for the run's stream to open",
     retry_policy: |run, err| {
-        if api_error_status(err) == Some(404) && run.created_on_or_after(MIN_STREAM_RELEASE) {
-            RetryPolicy::Retry
-        } else {
-            RetryPolicy::Fail
-        }
+        RetryPolicy::retry_if(
+            api_error_status(err) == Some(404) && run.created_on_or_after(MIN_STREAM_RELEASE),
+        )
     },
 };
 
@@ -2172,8 +2169,8 @@ async fn cmd_runs_exec(
     exec_when_ready(&api, run_id, exec, READY_POLL, mode).await
 }
 
-/// How often a command that needs a ready run polls a run that is not ready,
-/// or retries a command the run does not accept yet.
+/// How often a command polls a run that is not ready, or retries a request
+/// the run does not serve yet.
 /// A debugging session becomes ready minutes after it starts, so a one-minute
 /// poll (the `runs wait` floor) could delay the command by most of a minute.
 const READY_POLL: Duration = Duration::from_secs(10);
@@ -2186,13 +2183,10 @@ const EXEC: Endpoint = Endpoint {
     waiting: "waiting for the run to accept commands",
     retry_policy: |run, err| {
         let not_ready = format!("Run {} is not ready yet", run.run_id);
-        if api_error_status(err) == Some(400)
-            && api_error_message(err).is_some_and(|m| m.contains(&not_ready))
-        {
-            RetryPolicy::Retry
-        } else {
-            RetryPolicy::Fail
-        }
+        RetryPolicy::retry_if(
+            api_error_status(err) == Some(400)
+                && api_error_message(err).is_some_and(|m| m.contains(&not_ready)),
+        )
     },
 };
 
@@ -5314,7 +5308,6 @@ mod tests {
             annotate_faults: false,
         };
 
-        /// A request that runs `true`.
         fn true_exec() -> ExecRequest {
             ExecRequest {
                 moment: Moment {
@@ -5380,7 +5373,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn the_stream_reads_the_run_before_each_attempt() {
+        async fn the_stream_reads_the_run_after_each_miss() {
             let server = MockServer::start().await;
             mount_get_run_statuses(&server, &["in_progress"]).await;
             mount_stream(&server, "run-w", 2).await;
@@ -5392,11 +5385,11 @@ mod tests {
 
             let requests = server.received_requests().await.unwrap();
             let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
-            assert_eq!(methods, ["GET", "POST", "GET", "POST", "GET", "POST"]);
+            assert_eq!(methods, ["POST", "GET", "POST", "GET", "POST"]);
         }
 
         #[tokio::test]
-        async fn the_stream_of_an_unknown_run_sends_nothing() {
+        async fn the_stream_of_an_unknown_run_is_not_found() {
             let server =
                 super::run_scoped_errors::mock_get_run("BAD-ID", 404, json!({"message": "nope"}))
                     .await;
@@ -5408,9 +5401,6 @@ mod tests {
                 .unwrap();
 
             assert_eq!(err.to_string(), "run not found: BAD-ID");
-            let requests = server.received_requests().await.unwrap();
-            let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
-            assert_eq!(methods, ["GET"]);
         }
 
         #[tokio::test]

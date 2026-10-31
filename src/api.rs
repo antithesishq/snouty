@@ -268,8 +268,8 @@ impl RunDetail {
     /// Whether the run should accept commands: it is in progress, with the
     /// `Ready` sub-status (observed on orbitinghail, release 64.0). A run from
     /// before [`MIN_SUB_STATUS_RELEASE`] has no sub-status, so it is ready
-    /// while it is in progress. A ready run can still refuse commands for a few
-    /// minutes: see the `Endpoint` retry policies in `runs/ready.rs`.
+    /// while it is in progress. A ready run can still refuse a command for a
+    /// few minutes.
     pub(crate) fn is_ready(&self) -> bool {
         let in_progress = self.status == RunStatus::InProgress;
         match run_release(&self.run_id) {

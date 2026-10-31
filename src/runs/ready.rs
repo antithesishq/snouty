@@ -1,10 +1,8 @@
 //! Send a run-scoped request once the run can serve it.
 //!
-//! Some endpoints refuse a run for a while after it starts, or after it
-//! reports that it is ready. Each such endpoint is an [`Endpoint`]: what it
-//! needs from the run, what to show while it waits, and which of its errors
-//! mean "try again shortly". [`send_when_ready`] is the one loop that waits,
-//! sends, and retries. Add an endpoint, not a loop.
+//! Some endpoints refuse a run for a while after it starts or reports that it
+//! is ready. Each one is an [`Endpoint`], and [`send_when_ready`] is the only
+//! loop that waits and retries. Add an endpoint, not a loop.
 
 use std::future::Future;
 use std::time::Duration;
@@ -16,25 +14,13 @@ use crate::cli::WaitUntil;
 
 use super::{ReadyDisplay, look_at_run, wait_for_run};
 
-/// What an endpoint needs from the run, before it sends and while it retries.
+/// What an endpoint needs from the run before it sends.
 #[derive(Clone, Copy)]
 pub(super) enum Needs {
-    /// Wait until the run is ready or has ended, then send. Retry only while
-    /// the run stays ready.
+    /// Wait until the run is ready or has ended, then send.
     Ready,
-    /// Send at once. Retry only while the run has not ended.
+    /// Send at once, and read the run only after an error.
     Live,
-}
-
-impl Needs {
-    /// Whether a retry can still succeed. Checked here, so no retry policy
-    /// can keep retrying a run that has ended.
-    fn can_retry(self, run: &RunDetail) -> bool {
-        match self {
-            Needs::Ready => run.is_ready(),
-            Needs::Live => !run.status.is_terminal(),
-        }
-    }
 }
 
 /// What to do after an endpoint answers with an error.
@@ -45,24 +31,27 @@ pub(super) enum RetryPolicy {
     Fail,
 }
 
+impl RetryPolicy {
+    pub(super) fn retry_if(retry: bool) -> Self {
+        if retry { Self::Retry } else { Self::Fail }
+    }
+}
+
 /// A run-scoped request that the run may not serve yet.
 #[derive(Clone, Copy)]
 pub(super) struct Endpoint {
     pub needs: Needs,
     /// Shown on stderr while the endpoint answers [`RetryPolicy::Retry`].
     pub waiting: &'static str,
-    /// Whether an error from the endpoint is worth a retry, for the run as
-    /// last read. [`Needs`] still decides whether the run can get there.
+    /// Whether an error from the endpoint is worth a retry, given the run as
+    /// last read. A run that has ended never retries.
     pub retry_policy: fn(&RunDetail, &Report) -> RetryPolicy,
 }
 
-const READY_WAITING: &str = "waiting for the run to be ready";
-
-/// Send `send` once the run meets `endpoint.needs`. While the endpoint
-/// answers an error that its retry policy retries, and the run can still get
-/// there, wait `poll`, read the run again, and send again. The wait has no
-/// time limit. `explain` annotates the final error, with the run as last
-/// read before that send.
+/// Send `send` once the run meets `endpoint.needs`, and send again every
+/// `poll` while the run has not ended and the endpoint's retry policy says
+/// [`RetryPolicy::Retry`]. The wait has no time limit. `explain` annotates
+/// the final error, with the run as last read.
 pub(super) async fn send_when_ready<T, Fut>(
     api: &AntithesisApi,
     run_id: &str,
@@ -74,72 +63,46 @@ pub(super) async fn send_when_ready<T, Fut>(
 where
     Fut: Future<Output = Result<T>>,
 {
-    let mut waiting = Waiting::default();
+    let mut retrying: Option<ReadyDisplay> = None;
     loop {
-        let run = match endpoint.needs {
+        let ready_run = match endpoint.needs {
             Needs::Ready => {
+                let mut waiting: Option<ReadyDisplay> = None;
                 let run = wait_for_run(api, run_id, poll, WaitUntil::Ready, |_| {
-                    waiting.show(READY_WAITING);
+                    if let Some(retrying) = retrying.take() {
+                        retrying.clear();
+                    }
+                    waiting
+                        .get_or_insert_with(|| ReadyDisplay::new("waiting for the run to be ready"))
+                        .show();
                 })
                 .await?;
-                waiting.reached(&run);
-                run
+                if let Some(waiting) = waiting {
+                    waiting.finish(&run);
+                }
+                Some(run)
             }
-            Needs::Live => look_at_run(api, run_id).await?,
+            Needs::Live => None,
         };
         let err = match send().await {
             Ok(value) => {
-                waiting.clear();
+                if let Some(retrying) = retrying {
+                    retrying.clear();
+                }
                 return Ok(value);
             }
             Err(err) => err,
         };
-        if !(endpoint.needs.can_retry(&run)
-            && (endpoint.retry_policy)(&run, &err) == RetryPolicy::Retry)
-        {
+        let run = match ready_run {
+            Some(run) => run,
+            None => look_at_run(api, run_id).await?,
+        };
+        if run.status.is_terminal() || (endpoint.retry_policy)(&run, &err) == RetryPolicy::Fail {
             return Err(explain(&run, err));
         }
-        waiting.show(endpoint.waiting);
-        tokio::time::sleep(poll).await;
-    }
-}
-
-/// The one [`ReadyDisplay`] on stderr, for whichever wait is current.
-#[derive(Default)]
-struct Waiting(Option<(&'static str, ReadyDisplay)>);
-
-impl Waiting {
-    /// Show `message`. A different message ends the current display first.
-    fn show(&mut self, message: &'static str) {
-        if self
-            .0
-            .as_ref()
-            .is_none_or(|(current, _)| *current != message)
-        {
-            self.clear();
-        }
-        self.0
-            .get_or_insert_with(|| (message, ReadyDisplay::new(message)))
-            .1
+        retrying
+            .get_or_insert_with(|| ReadyDisplay::new(endpoint.waiting))
             .show();
-    }
-
-    /// End a wait for the run to be ready, which says that the run is
-    /// ready when it is.
-    fn reached(&mut self, run: &RunDetail) {
-        if self
-            .0
-            .as_ref()
-            .is_some_and(|(current, _)| *current == READY_WAITING)
-            && let Some((_, display)) = self.0.take()
-        {
-            display.finish(run);
-        }
-    }
-
-    fn clear(&mut self) {
-        if let Some((_, display)) = self.0.take() {
-            display.clear();
-        }
+        tokio::time::sleep(poll).await;
     }
 }

@@ -259,6 +259,13 @@ snouty --json runs show $R_run_id --web
 stdout '^\{"url":"http.*/run\?run_id=${R_run_id@R}"\}$'
 [!staging] stdout '^\{"url":"https://testtenant\.antithesis\.com/run\?'
 
+# Without a tenant, `--web` has no page host, so it fails even when
+# ANTITHESIS_BASE_URL is set, rather than open that API host.
+[!staging] env ANTITHESIS_TENANT=
+[!staging] ! snouty runs show $R_run_id --web
+[!staging] stderr 'Could not resolve Antithesis tenant'
+[!staging] env ANTITHESIS_TENANT=testtenant
+
 # `snouty --json runs show` outputs JSON.
 mock-runs-server
 snouty --json runs show $R_run_id

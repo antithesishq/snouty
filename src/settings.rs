@@ -353,14 +353,10 @@ impl Settings {
         self.base_url.as_deref()
     }
 
-    /// The host of the tenant's web UI. An explicit `base_url` can be an API
-    /// proxy that a browser cannot use, so the tenant host comes first, and
-    /// `base_url` serves only when no tenant is set.
+    /// The host of the tenant's web UI, or `None` if the tenant is unset. It
+    /// ignores `base_url`, which can be an API proxy that a browser cannot use.
     pub fn web_url(&self) -> Option<String> {
-        self.tenant
-            .as_deref()
-            .map(tenant_url)
-            .or_else(|| self.base_url.clone())
+        self.tenant.as_deref().map(tenant_url)
     }
 
     pub fn https_proxy(&self) -> Option<&str> {
@@ -1304,9 +1300,9 @@ mod tests {
     }
 
     #[test]
-    fn web_url_without_tenant_is_the_base_url() {
+    fn web_url_without_tenant_is_none() {
         let settings = Settings::builder().base_url("https://example.test").build();
-        assert_eq!(settings.web_url().as_deref(), Some("https://example.test"));
+        assert_eq!(settings.web_url(), None);
     }
 
     #[test]

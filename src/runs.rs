@@ -21,7 +21,7 @@ use chrono::{DateTime, Utc};
 use crate::api::{
     AntithesisApi, Event, EventProperty, ExecRequest, MIN_STREAM_RELEASE, Moment, NonEventProperty,
     Property, PropertyStatus, RewarmSource, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
-    SearchLimit, SearchMode, normalize_base_url,
+    SearchLimit, SearchMode,
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs, WaitUntil};
 use crate::error::{api_error_message, api_error_status, user_error};
@@ -394,6 +394,11 @@ async fn cmd_runs_show(
 ) -> Result<()> {
     debug!("showing run: {run_id}");
 
+    // `--web` needs the tenant for the page host, so check it before the request.
+    let web_url = web
+        .then(|| require(settings.web_url().as_deref(), "tenant").map(str::to_owned))
+        .transpose()?;
+
     let api = AntithesisApi::new(settings, verbose)?;
     let run = match api.get_run(run_id).await {
         Ok(run) => run.untag(),
@@ -402,8 +407,7 @@ async fn cmd_runs_show(
         Err(err) => return Err(explain_run_not_found(run_id, err)),
     };
 
-    if web {
-        let web_url = normalize_base_url(require(settings.web_url().as_deref(), "tenant")?);
+    if let Some(web_url) = web_url {
         return open_run_page(&web_url, &run.run_id, json);
     }
 

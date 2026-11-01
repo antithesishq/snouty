@@ -1905,9 +1905,9 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hegeltest"
-version = "0.48.1"
+version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ed0fc71c55858ebb058e4efdcf71ff8f3757e89167506564e707e0469c8c314"
+checksum = "81e656493068afe662e9812a45f58e93503da5b8a748fb1757e4f11b6d4c516a"
 dependencies = [
  "hegeltest-c",
  "hegeltest-macros",
@@ -1916,9 +1916,9 @@ dependencies = [
 
 [[package]]
 name = "hegeltest-c"
-version = "0.44.1"
+version = "0.48.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c50379a7e74866dddc1dac3e8efc51f5360c66ed32bc7294c8891193ffdb5e1"
+checksum = "2a256cdc3ada9f8e207abbf05e695aceefd302856ea98599bd242fbd20a19634"
 dependencies = [
  "dashu-int",
  "hashbrown 0.17.1",
@@ -1934,9 +1934,9 @@ dependencies = [
 
 [[package]]
 name = "hegeltest-macros"
-version = "0.48.1"
+version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "817951a827dd75d23c21f92fecf3a62e2f2c2930c0031a93099e16eb33de6896"
+checksum = "800a8e9e904889fb4776f8017b29a7e475e8bf135206116d530c235f5598c773"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -7,7 +7,7 @@ Verifies that your environment is properly configured for Antithesis testing. Ru
 
 snouty prefers an API key (full API access); a username and password is deprecated auth, accepted only by `debug`.
 
-doctor also contacts the Antithesis API. When credentials are configured, it reports the API and tenant versions and confirms connectivity, and it warns when the tenant release is too old for an API that some commands use. It also warns when CLI OAuth login is not enabled for the tenant. Pass `offline` to skip these network calls.
+doctor also contacts the Antithesis API. When credentials are configured, it reports the API and tenant versions and confirms connectivity, and it warns when the tenant release is too old for an API or a flag that some commands use. It also warns when CLI OAuth login is not enabled for the tenant. Pass `offline` to skip these network calls.
 
 The command fails if any required check fails. Pass `json` for a machine-readable report (e.g. to gate CI).
 

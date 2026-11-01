@@ -22,6 +22,7 @@ jobs:
     permissions:
       contents: write
       issues: write
+      pull-requests: read
     steps:
       - uses: samueldr/lix-gha-installer-action@a0fee77b2a98bb7c5c0ed7ae6d6ad4903dbdad0d # v2026-06-15
 
@@ -52,8 +53,10 @@ jobs:
         run: |
           branch=bump-rust
           # Leave an open pull request alone: a force-push would drop any fix
-          # pushed to it. The next run after it merges bumps again.
-          if [ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
+          # pushed to it. The next run after it merges bumps again. The lookup
+          # is on its own line, so that a failed one stops the step.
+          open_pr=$(gh pr list --head "$branch" --state open --json number --jq '.[].number')
+          if [ -n "$open_pr" ]; then
             echo "A $branch pull request is already open"
             exit 0
           fi

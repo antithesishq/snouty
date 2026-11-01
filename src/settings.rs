@@ -836,13 +836,14 @@ fn parse_byte_size(setting: &str, value: &str) -> Result<u64> {
         })
 }
 
-/// `bytes` in the largest unit that holds it exactly, such as `10 MiB` or
-/// `10 MB`, so that a size prints as the user wrote it. The inverse of
-/// `parse_byte_size`. The `Display` of `ByteSize` rounds: it prints a size set
-/// as `10 MB` as `9.5 MiB`.
+/// Formats `bytes` in the largest unit that divides it exactly, such as
+/// `10 MiB` or `10 MB`, so that the text parses back to the same size with
+/// `parse_byte_size`. The `Display` of `ByteSize` rounds.
 fn exact_byte_size(bytes: u64) -> String {
-    use bytesize::{GB, GIB, KB, KIB, MB, MIB, PB, PIB, TB, TIB};
-    const UNITS: [(u64, &str); 10] = [
+    use bytesize::{EB, EIB, GB, GIB, KB, KIB, MB, MIB, PB, PIB, TB, TIB};
+    const UNITS: [(u64, &str); 12] = [
+        (EIB, "EiB"),
+        (EB, "EB"),
         (PIB, "PiB"),
         (PB, "PB"),
         (TIB, "TiB"),

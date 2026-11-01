@@ -1888,7 +1888,7 @@ def settings_show_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     if not ok:
         return (ok, detail)
     if not re.search(
-        r"^api_cache_max_file_size +\d+ (?:[KMGTP]i?B|B)$",
+        r"^api_cache_max_file_size +\d+ [A-Za-z]*B$",
         sr.result.combined,
         re.MULTILINE,
     ):

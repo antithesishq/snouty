@@ -24,7 +24,7 @@ updates:
       # build.rs hands typify a schemars SchemaObject, so this must match the
       # schemars progenitor/typify resolve, which is still 0.8.
       - dependency-name: "schemars"
-        versions: [">= 1"]
+        versions: [">= 0.9"]
       # cacache still uses sha2 0.10, and deny.toml rejects a second sha2.
       - dependency-name: "sha2"
         versions: [">= 0.11"]

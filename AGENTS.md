@@ -257,7 +257,7 @@ Clippy runs with the `pedantic` group, and `[workspace.lints.clippy]` in
 `Cargo.toml` gives a reason for each pedantic lint that is off. Fix a
 cargo-deny advisory with an upgrade; ignore it in `deny.toml` only when no
 upgrade exists, with a reason and a link. A pull request fails on licenses,
-bans and sources; only the nightly run fails on advisories. Do not fix a
+bans and sources; only the nightly and manual runs fail on advisories. Do not fix a
 zizmor finding in a generated workflow by hand; change its generator, as
 `.github/zizmor.yml` describes.
 

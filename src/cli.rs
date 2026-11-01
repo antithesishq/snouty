@@ -169,10 +169,11 @@ const SETUP_TIMEOUT: DurationFlag = DurationFlag {
     examples: &["10m", "30m"],
     check: |timeout| {
         let seconds = timeout.seconds();
-        require(
-            (60..=MAX_SETUP_TIMEOUT_MINUTES * 60).contains(&seconds),
-            &format!("must be from 1 to {MAX_SETUP_TIMEOUT_MINUTES} minutes"),
-        )?;
+        if !(60..=MAX_SETUP_TIMEOUT_MINUTES * 60).contains(&seconds) {
+            return Err(format!(
+                "must be from 1 to {MAX_SETUP_TIMEOUT_MINUTES} minutes"
+            ));
+        }
         require(seconds % 60 == 0, "must be a whole number of minutes")
     },
 };

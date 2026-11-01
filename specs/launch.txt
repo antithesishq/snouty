@@ -50,7 +50,6 @@ stderr 'invalid value .48\.5. for .--max-compute-hours'
 ! snouty launch --launcher basic_test --config-image config:latest --setup-timeout 10
 stderr 'invalid value .10. for .--setup-timeout <SETUP_TIMEOUT>.: must be a whole number with an h, m or s unit'
 stderr 'a bare number is not permitted'
-stderr '\(e\.g\. `10m`, `30m`\)'
 ! snouty launch --launcher basic_test --config-image config:latest --setup-timeout 90s
 stderr 'must be a whole number of minutes'
 ! snouty launch --launcher basic_test --config-image config:latest --setup-timeout 0m

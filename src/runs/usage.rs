@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::num::NonZeroU64;
 
-use chrono::{DateTime, Datelike, Days, FixedOffset, Months, NaiveDate, TimeDelta, Utc};
+use chrono::{DateTime, Datelike, Days, Months, NaiveDate, TimeDelta, Utc};
 use clap::ValueEnum;
 use color_eyre::eyre::Result;
 use futures_util::TryStreamExt;
@@ -19,7 +19,10 @@ use crate::error::user_error;
 use crate::render::{OutputOptions, sanitize};
 use crate::settings::Settings;
 use crate::table::{Align, Column, Table};
-use crate::time::{format_dense, local, local_midnight};
+use crate::time::{
+    format_timestamp_for_display, local_calendar_date, serialize_with_local_offset,
+    start_of_local_calendar_day,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Rollup {
@@ -28,22 +31,25 @@ pub enum Rollup {
     Month,
 }
 
-/// The usage entry of a run, with its times in the local timezone.
+/// The usage entry of a run, as a row of the output. The JSON shows its times
+/// with the local UTC offset.
 #[derive(Serialize)]
-struct LocalUsageEntry {
+struct UsageRow {
     run_id: String,
     hours: f64,
-    start_time: DateTime<FixedOffset>,
-    end_time: DateTime<FixedOffset>,
+    #[serde(serialize_with = "serialize_with_local_offset")]
+    start_time: DateTime<Utc>,
+    #[serde(serialize_with = "serialize_with_local_offset")]
+    end_time: DateTime<Utc>,
 }
 
-impl From<UsageEntry> for LocalUsageEntry {
+impl From<UsageEntry> for UsageRow {
     fn from(entry: UsageEntry) -> Self {
         Self {
             run_id: entry.run_id,
             hours: entry.hours,
-            start_time: local(entry.start_time),
-            end_time: local(entry.end_time),
+            start_time: entry.start_time,
+            end_time: entry.end_time,
         }
     }
 }
@@ -139,8 +145,6 @@ pub(super) async fn cmd_runs_usage(
         before,
         limit,
     } = args;
-    let after = after.map(|bound| bound.0);
-    let before = before.map(|bound| bound.0);
     let selection = match (after, before, limit) {
         (Some(_), Some(_), Some(_)) => {
             return Err(user_error(
@@ -168,8 +172,7 @@ pub(super) async fn cmd_runs_usage(
                     .await?
             }
         };
-        let entries: Vec<LocalUsageEntry> =
-            entries.into_iter().map(LocalUsageEntry::from).collect();
+        let entries: Vec<UsageRow> = entries.into_iter().map(UsageRow::from).collect();
         return print_rows(
             &entries,
             json,
@@ -182,28 +185,28 @@ pub(super) async fn cmd_runs_usage(
     // A run counts in the period in which it ended, as the usage summary and
     // the usage cap count it. `before` is exclusive, so the newest period is
     // the one that holds the instant before it.
-    let date = |time: DateTime<Utc>| local(time).date_naive();
-    let newest = date(before.map_or_else(Utc::now, |time| time - TimeDelta::nanoseconds(1)));
+    let newest =
+        local_calendar_date(before.map_or_else(Utc::now, |time| time - TimeDelta::nanoseconds(1)));
     let ends = match selection {
         Selection::Newest(limit) => periods_back(rollup, newest, FIRST_DAY, Some(limit)),
-        Selection::Oldest(after, limit) => periods_forward(rollup, date(after), newest, limit),
-        Selection::All(after) => periods_back(rollup, newest, date(after), None),
+        Selection::Oldest(after, limit) => {
+            periods_forward(rollup, local_calendar_date(after), newest, limit)
+        }
+        Selection::All(after) => periods_back(rollup, newest, local_calendar_date(after), None),
     };
     let mut totals: BTreeMap<NaiveDate, (u64, f64)> =
         ends.iter().map(|end| (*end, (0, 0.0))).collect();
     // One window of end times holds every period, so the page order does not
     // matter.
     if let (Some(newest_end), Some(oldest_end)) = (ends.first(), ends.last()) {
-        let start = local_midnight(rollup.period_start(*oldest_end));
-        let end = local_midnight(*newest_end + Days::new(1));
+        let start = start_of_local_calendar_day(rollup.period_start(*oldest_end));
+        let end = start_of_local_calendar_day(*newest_end + Days::new(1));
         let after = after.map_or(start, |time| time.max(start));
         let before = before.map_or(end, |time| time.min(end));
         let entries = api.stream_usage(Some(after), Some(before), None);
         let mut entries = std::pin::pin!(entries);
         while let Some(entry) = entries.try_next().await? {
-            let date = rollup.period_end(date(entry.end_time));
-            // The midnight of a skipped clock change can let in a run from
-            // just outside the window, which has no period here.
+            let date = rollup.period_end(local_calendar_date(entry.end_time));
             if let Some((runs, hours)) = totals.get_mut(&date) {
                 *runs += 1;
                 *hours += entry.hours;
@@ -324,14 +327,14 @@ fn format_hours(hours: f64) -> String {
     format!("{hours:.1}")
 }
 
-fn render_usage_table(entries: &[LocalUsageEntry], width: usize) -> String {
+fn render_usage_table(entries: &[UsageRow], width: usize) -> String {
     let rows = entries
         .iter()
         .map(|entry| {
             vec![
                 sanitize(&entry.run_id),
-                format_dense(entry.start_time),
-                format_dense(entry.end_time),
+                format_timestamp_for_display(entry.start_time),
+                format_timestamp_for_display(entry.end_time),
                 format_hours(entry.hours),
             ]
         })

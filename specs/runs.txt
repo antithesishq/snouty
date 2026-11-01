@@ -243,6 +243,15 @@ env TZ=Asia/Tokyo
 [!staging] stdout '"run_id":"run-1"'
 [!staging] ! stdout '"run_id":"run-2"'
 
+# Around a clock change, a local time that the clock skips moves forward by
+# the gap, and a time that it shows twice is the earlier instant.
+mock-runs-server
+env TZ=America/New_York
+[!staging] snouty --verbose runs list --created-after '2026-03-08 02:30:00'
+[!staging] stderr 'created_after=2026-03-08T07%3A30%3A00Z'
+[!staging] snouty --verbose runs list --created-after '2026-11-01 01:30:00'
+[!staging] stderr 'created_after=2026-11-01T05%3A30%3A00Z'
+
 # A bad time names the forms that the flag takes.
 ! snouty runs list --created-after '2025-03-20 11:00'
 stderr '2026-10-01 12:00:00'

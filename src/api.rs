@@ -1262,11 +1262,11 @@ impl AntithesisApi {
         if let Some(ref launcher) = opts.launcher {
             request = request.launcher(launcher.clone());
         }
-        if let Some(ts) = opts.created_after {
-            request = request.created_after(ts);
+        if let Some(ref ts) = opts.created_after {
+            request = request.created_after(*ts);
         }
-        if let Some(ts) = opts.created_before {
-            request = request.created_before(ts);
+        if let Some(ref ts) = opts.created_before {
+            request = request.created_before(*ts);
         }
 
         match request.send().await {

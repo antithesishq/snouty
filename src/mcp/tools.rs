@@ -7,6 +7,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 
+use chrono::{DateTime, Utc};
 use clap::Arg;
 use color_eyre::eyre::{Result, bail, eyre};
 use rmcp::model::{JsonObject, Tool, ToolAnnotations};
@@ -15,7 +16,7 @@ use serde_json::{Value, json};
 use crate::api::{SEARCH_MAX_LIMIT, SearchLimit};
 use crate::cli::{KVPair, tree};
 use crate::help::HelpPage;
-use crate::time::{BareUnit, HumanDuration, TimeBound};
+use crate::time::{BareUnit, HumanDuration};
 use crate::vtime::VTime;
 
 pub(super) const TOOL_HELP: &str = "tool_help";
@@ -206,8 +207,8 @@ const DURATION_PATTERN: &str =
 
 const KV_PAIR_PATTERN: &str = "^[^=]+=";
 
-/// Matches a [`TimeBound`] time without a zone, as snouty prints it.
-const WALL_TIME_PATTERN: &str = r"^\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d(\.\d+)?$";
+/// Matches a timestamp without an offset, as snouty prints it.
+const TIMESTAMP_PATTERN: &str = r"^\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d(\.\d+)?$";
 
 impl ValueType {
     fn of(arg: &Arg) -> Self {
@@ -237,11 +238,11 @@ fn value_schema(arg: &Arg) -> (ValueType, Value) {
         (ValueType::Integer, range)
     } else if is(TypeId::of::<VTime>()) {
         (ValueType::Number, json!({}))
-    } else if is(TypeId::of::<TimeBound>()) {
+    } else if is(TypeId::of::<DateTime<Utc>>()) {
         let formats = json!({ "anyOf": [
             { "format": "date" },
             { "format": "date-time" },
-            { "pattern": WALL_TIME_PATTERN },
+            { "pattern": TIMESTAMP_PATTERN },
         ] });
         (ValueType::String, formats)
     } else if is_duration(arg) {
@@ -537,11 +538,11 @@ mod tests {
         }
     }
 
-    fn time_bound_formats() -> Value {
+    fn timestamp_formats() -> Value {
         json!([
             { "format": "date" },
             { "format": "date-time" },
-            { "pattern": WALL_TIME_PATTERN },
+            { "pattern": TIMESTAMP_PATTERN },
         ])
     }
 
@@ -574,7 +575,7 @@ mod tests {
         assert_eq!(list["properties"]["limit"]["default"], 10);
         assert_eq!(
             list["properties"]["created_after"]["anyOf"],
-            time_bound_formats()
+            timestamp_formats()
         );
         assert_eq!(list["properties"]["launcher"]["type"], "string");
         let logs = schema(ToolName::RunsLogs);
@@ -596,7 +597,7 @@ mod tests {
             usage["properties"]["rollup"]["enum"].is_array(),
             "{usage:?}"
         );
-        assert_eq!(usage["properties"]["after"]["anyOf"], time_bound_formats());
+        assert_eq!(usage["properties"]["after"]["anyOf"], timestamp_formats());
         assert_eq!(usage["properties"]["limit"]["type"], "integer");
         let wait = schema(ToolName::RunsWait);
         assert_eq!(

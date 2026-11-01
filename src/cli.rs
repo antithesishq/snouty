@@ -6,6 +6,7 @@ use std::io::Write;
 use std::num::NonZeroU64;
 use std::path::Path;
 
+use chrono::{DateTime, Utc};
 use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
 use crate::api::{
@@ -21,7 +22,7 @@ use crate::help::{self, Attach};
 use crate::params::MAX_SETUP_TIMEOUT_MINUTES;
 use crate::runs::usage::Rollup;
 use crate::stdio;
-use crate::time::{BareUnit, HumanDuration, TimeBound, duration_format};
+use crate::time::{BareUnit, HumanDuration, duration_format, parse_timestamp_arg};
 use crate::vtime::VTime;
 
 pub(crate) mod tree;
@@ -978,13 +979,13 @@ pub struct RunsUsageArgs {
 
     /// Only show runs that ended at or after this date (e.g. 2026-10-01),
     /// time (e.g. 2026-10-01 12:00:00) or RFC 3339 time
-    #[arg(long)]
-    pub after: Option<TimeBound>,
+    #[arg(long, value_parser = parse_timestamp_arg)]
+    pub after: Option<DateTime<Utc>>,
 
     /// Only show runs that ended before this date (e.g. 2026-11-01), time
     /// (e.g. 2026-11-01 12:00:00) or RFC 3339 time
-    #[arg(long)]
-    pub before: Option<TimeBound>,
+    #[arg(long, value_parser = parse_timestamp_arg)]
+    pub before: Option<DateTime<Utc>>,
 
     /// Maximum number of rows to display: runs, or periods with a rollup
     /// [default: 10; not allowed with both an after and a before time]
@@ -1055,13 +1056,13 @@ pub struct RunsListArgs {
 
     /// Only show runs created after this date (e.g. 2026-10-01), time
     /// (e.g. 2026-10-01 12:00:00) or RFC 3339 time
-    #[arg(long)]
-    pub created_after: Option<TimeBound>,
+    #[arg(long, value_parser = parse_timestamp_arg)]
+    pub created_after: Option<DateTime<Utc>>,
 
     /// Only show runs created at or before this date (e.g. 2026-11-01), time
     /// (e.g. 2026-11-01 12:00:00) or RFC 3339 time
-    #[arg(long)]
-    pub created_before: Option<TimeBound>,
+    #[arg(long, value_parser = parse_timestamp_arg)]
+    pub created_before: Option<DateTime<Utc>>,
 
     /// Maximum number of runs to display
     #[arg(short = 'n', long, default_value_t = DEFAULT_RUNS_LIMIT)]

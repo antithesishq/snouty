@@ -81,7 +81,7 @@ mod tests {
 
     #[test]
     fn an_unparsable_timestamp_renders_with_escape_bytes_escaped() {
-        // `format_local_str` cannot parse this timestamp, so it falls back
+        // `format_rfc3339_for_display` cannot parse this timestamp, so it falls back
         // to the raw string — the sanitize here is what keeps the carried
         // escape bytes from reaching the terminal.
         console::set_colors_enabled(false);

@@ -10,7 +10,7 @@
 //! always taken seconds reads a bare number as whole seconds instead, and an
 //! MCP param refuses a bare number; see [`BareUnit`]. A bare number is
 //! deprecated on the command line, and the docs give only the unit forms
-//! ([`DURATION_FORMAT`]). Unit forms use whole-number components (`h`/`m`/`s`,
+//! ([`duration_help`]). Unit forms use whole-number components (`h`/`m`/`s`,
 //! in that order); fractional components like `1.5h` are rejected, since the
 //! bare-minutes form already covers that.
 
@@ -24,18 +24,32 @@ use std::time::Duration;
 const SECS_PER_MINUTE: u64 = 60;
 const SECS_PER_HOUR: u64 = 60 * SECS_PER_MINUTE;
 
-/// The duration format, as every duration flag and param documents it. A
-/// macro, so that a clap `help` attribute can `concat!` it.
-macro_rules! duration_format {
-    () => {
-        "A duration is a whole number with an h, m or s unit, or several in that \
-         order, such as 90s, 5m or 1h30m; a bare number is not permitted"
-    };
-}
-pub(crate) use duration_format;
+const FORMAT: &str = "a whole number with an h, m or s unit, or several in that order";
 
-/// [`duration_format!`] as a value.
-pub const DURATION_FORMAT: &str = duration_format!();
+const NO_BARE_NUMBER: &str = "a bare number is not permitted";
+
+/// Use these only for a flag whose range accepts each one.
+pub const DURATION_EXAMPLES: &[&str] = &["90s", "5m", "1h30m"];
+
+/// `examples` must hold at least two values that the flag accepts.
+pub fn duration_help(examples: &[&str]) -> String {
+    let (last, rest) = examples
+        .split_last()
+        .filter(|(_, rest)| !rest.is_empty())
+        .expect("at least two examples");
+    let rest = rest.join(", ");
+    format!("A duration is {FORMAT}, such as {rest} or {last}; {NO_BARE_NUMBER}")
+}
+
+/// `examples` must hold values that the flag accepts.
+pub fn duration_error(examples: &[&str]) -> String {
+    let examples = examples
+        .iter()
+        .map(|example| format!("`{example}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("must be {FORMAT} (e.g. {examples}); {NO_BARE_NUMBER}")
+}
 
 /// A duration in the forms people type (`90`, `1h30m`, `30s`), held as a
 /// [`Duration`] rounded to whole seconds. Carried in the `antithesis.duration`
@@ -185,17 +199,14 @@ impl FromStr for HumanDuration {
 }
 
 /// Error from parsing a [`HumanDuration`]. Its message gives the documented
-/// format, which leaves out the deprecated bare number; clap prefixes it with
-/// the offending value and flag name.
+/// format, without the deprecated bare number. It gives no examples, because a
+/// flag's range can refuse them; see [`duration_error`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParseDurationError;
 
 impl fmt::Display for ParseDurationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(
-            "must be a whole number with an h, m or s unit, or several in that order \
-             (e.g. `90s`, `5m`, `1h30m`); a bare number is not permitted",
-        )
+        write!(f, "must be {FORMAT}; {NO_BARE_NUMBER}")
     }
 }
 

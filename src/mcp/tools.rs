@@ -468,7 +468,6 @@ pub(super) fn tool_help(mut params: JsonObject) -> Result<String> {
 mod tests {
     use super::*;
     use crate::mcp::object;
-    use crate::time::DURATION_FORMAT;
 
     /// The hidden and required ids name real args, so a renamed arg cannot
     /// slip past the table.
@@ -627,7 +626,7 @@ mod tests {
     }
 
     /// The table names every duration param, and the schema of each one has
-    /// the unit pattern and a description that ends with the duration format.
+    /// the unit pattern and a description that gives the duration format.
     #[test]
     fn duration_params_need_a_unit() {
         let durations = [
@@ -651,7 +650,7 @@ mod tests {
             assert_eq!(schema["pattern"], DURATION_PATTERN, "{name}.{id}");
             let description = schema["description"].as_str().unwrap();
             assert!(
-                description.ends_with(DURATION_FORMAT),
+                description.contains("A duration is "),
                 "{name}.{id}: {description}"
             );
         }

@@ -688,7 +688,7 @@ fn version_check(host: &str, result: std::result::Result<ApiVersion, VersionErro
 
 pub async fn cmd_doctor(
     settings: &Settings,
-    OutputOptions { json, verbose }: OutputOptions,
+    OutputOptions { json, verbose, .. }: OutputOptions,
     offline: bool,
 ) -> Result<()> {
     let mut checks = collect_checks(settings);

@@ -14,7 +14,7 @@
 //! in that order); fractional components like `1.5h` are rejected, since the
 //! bare-minutes form already covers that.
 
-use chrono::{DateTime, FixedOffset, Local, TimeZone, Utc};
+use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveTime, TimeZone, Utc};
 
 use std::error::Error;
 use std::fmt;
@@ -250,46 +250,55 @@ fn split_unit(s: &str, unit: char) -> Option<(u64, &str)> {
     Some((number.parse().ok()?, &rest[unit.len_utf8()..]))
 }
 
-/// Format an absolute timestamp in the user's local timezone, without a
-/// timezone suffix, for dense output such as build-log lines. Example:
-/// `2026-05-27 08:25:13`.
-pub(crate) fn format_local(dt: DateTime<Utc>) -> String {
-    format_dense(dt.with_timezone(&Local).fixed_offset())
+/// The time zone of the timestamps in text output: local, or UTC with the
+/// global `--utc`. The help of each command that prints a time names it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Zone {
+    #[default]
+    Local,
+    Utc,
 }
 
-/// [`format_local`] for a timestamp already in the time zone to show.
+impl Zone {
+    pub(crate) fn time(self, time: DateTime<Utc>) -> DateTime<FixedOffset> {
+        match self {
+            Zone::Local => time.with_timezone(&Local).fixed_offset(),
+            Zone::Utc => time.fixed_offset(),
+        }
+    }
+
+    /// The start of `date`. Where a clock change skips local midnight, this
+    /// is UTC midnight, which is off by at most the size of the change.
+    pub(crate) fn midnight(self, date: NaiveDate) -> DateTime<Utc> {
+        let midnight = date.and_time(NaiveTime::MIN);
+        match self {
+            Zone::Local => Local.from_local_datetime(&midnight).earliest(),
+            Zone::Utc => None,
+        }
+        .map_or(midnight.and_utc(), |time| time.to_utc())
+    }
+
+    /// `time` in this zone, without the zone. Example: `2026-05-27 08:25:13`.
+    pub(crate) fn format(self, time: DateTime<Utc>) -> String {
+        format_dense(self.time(time))
+    }
+
+    /// [`Zone::format`] for an RFC 3339 string. Falls back to the original
+    /// string if it can't be parsed.
+    pub(crate) fn format_rfc3339(self, raw: &str) -> String {
+        DateTime::parse_from_rfc3339(raw)
+            .map_or_else(|_| raw.to_string(), |time| self.format(time.to_utc()))
+    }
+}
+
+/// Format a timestamp in the zone that it carries, without the zone.
 pub(crate) fn format_dense(dt: DateTime<FixedOffset>) -> String {
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
-}
-
-/// Format an absolute timestamp in the user's local timezone with its UTC
-/// offset, a form `--created-after`/`--created-before` read back as the same
-/// instant. Example: `2026-05-27 08:25:13 -07:00`.
-pub(crate) fn format_local_with_offset(dt: DateTime<Utc>) -> String {
-    format_with_offset(&dt.with_timezone(&Local))
-}
-
-/// [`format_local_with_offset`] for a timestamp already in its timezone.
-fn format_with_offset<Tz: TimeZone>(dt: &DateTime<Tz>) -> String
-where
-    Tz::Offset: fmt::Display,
-{
-    dt.format("%Y-%m-%d %H:%M:%S %:z").to_string()
-}
-
-/// Reformat an RFC 3339 timestamp string into the local, suffix-less format.
-/// Falls back to the original string if it can't be parsed.
-pub(crate) fn format_local_str(raw: &str) -> String {
-    match DateTime::parse_from_rfc3339(raw) {
-        Ok(dt) => format_local(dt.with_timezone(&Utc)),
-        Err(_) => raw.to_string(),
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::FixedOffset;
 
     fn minutes(s: &str) -> f64 {
         s.parse::<HumanDuration>().unwrap().minutes()
@@ -482,28 +491,15 @@ mod tests {
         );
     }
 
-    /// A timestamp `runs show` prints parses back, as `--created-after` and
-    /// `--created-before` parse it, to the same instant, under any UTC offset
-    /// of whole minutes (every zone in use today).
-    #[hegel::test]
-    fn format_with_offset_round_trips(tc: hegel::TestCase) {
-        // 1970 through 2100, at whole seconds as the format prints them.
-        let seconds = tc.draw(
-            generators::integers::<i64>()
-                .min_value(0)
-                .max_value(4_102_444_800),
+    /// `--utc` prints the instant in UTC, whatever offset the server's string
+    /// carries. An unparsable string prints as it is.
+    #[test]
+    fn utc_formats_an_rfc3339_string_in_utc() {
+        assert_eq!(
+            Zone::Utc.format_rfc3339("2025-03-20T11:01:12+09:00"),
+            "2025-03-20 02:01:12"
         );
-        // UTC-12:00 through UTC+14:00, the span of real zones.
-        let minutes = tc.draw(
-            generators::integers::<i32>()
-                .min_value(-12 * 60)
-                .max_value(14 * 60),
-        );
-        let offset = FixedOffset::east_opt(minutes * 60).expect("in range");
-        let dt = DateTime::from_timestamp(seconds, 0).expect("in range");
-        let printed = format_with_offset(&dt.with_timezone(&offset));
-        let parsed: DateTime<Utc> = printed.parse().expect("the printed form must parse");
-        assert_eq!(parsed, dt, "{printed:?}");
+        assert_eq!(Zone::Utc.format_rfc3339("not a time"), "not a time");
     }
 
     /// Parsing arbitrary text must never panic — it returns `Ok` or

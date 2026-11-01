@@ -163,6 +163,31 @@ impl ToolName {
         &specs[self as usize]
     }
 
+    /// Whether the tool's text output has timestamps, and so a `utc` param.
+    fn prints_times(self) -> bool {
+        match self {
+            ToolName::RunsList
+            | ToolName::RunsShow
+            | ToolName::RunsBuildLogs
+            | ToolName::RunsUsage => true,
+            ToolName::RunsWait
+            | ToolName::RunsCancel
+            | ToolName::RunsProperties
+            | ToolName::RunsProperty
+            | ToolName::RunsLogs
+            | ToolName::RunsSearch
+            | ToolName::RunsExec
+            | ToolName::RunsEvents
+            | ToolName::Debug
+            | ToolName::DocsTree
+            | ToolName::DocsShow
+            | ToolName::DocsSearch
+            | ToolName::Doctor
+            | ToolName::Version
+            | ToolName::SettingsShow => false,
+        }
+    }
+
     /// What an arg of the tool's command is to the tool.
     pub(crate) fn role(self, id: &str) -> ArgRole {
         match self.spec().param(id) {
@@ -308,7 +333,7 @@ impl ToolSpec {
                 id != "help"
                     && id != "detail"
                     && !arg.is_hide_set()
-                    && (!global || id == "json")
+                    && (!global || id == "json" || (id == "utc" && name.prints_times()))
                     && !name.hidden().contains(&id)
             })
             .map(|arg| {
@@ -586,6 +611,8 @@ mod tests {
             json!([{ "format": "date" }, { "format": "date-time" }])
         );
         assert_eq!(usage["properties"]["utc"]["type"], "boolean");
+        let show = schema(ToolName::RunsShow);
+        assert_eq!(show["properties"]["utc"]["type"], "boolean");
         assert_eq!(usage["properties"]["limit"]["type"], "integer");
         let wait = schema(ToolName::RunsWait);
         assert_eq!(

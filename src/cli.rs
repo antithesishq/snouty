@@ -220,16 +220,20 @@ pub struct Cli {
     #[arg(long, global = true, display_order = 1000)]
     pub json: bool,
 
-    /// Log API requests to stderr (authentication tokens redacted)
+    /// Show times in UTC instead of the local timezone
     #[arg(long, global = true, display_order = 1001)]
+    pub utc: bool,
+
+    /// Log API requests to stderr (authentication tokens redacted)
+    #[arg(long, global = true, display_order = 1002)]
     pub verbose: bool,
 
     /// Path to the snouty settings file (default: ./.snouty.toml; overrides SNOUTY_SETTINGS_PATH)
-    #[arg(long, global = true, display_order = 1002)]
+    #[arg(long, global = true, display_order = 1003)]
     pub settings: Option<std::path::PathBuf>,
 
     /// Settings profile to select (overrides ANTITHESIS_PROFILE)
-    #[arg(long, global = true, value_parser = validate_non_empty, display_order = 1003)]
+    #[arg(long, global = true, value_parser = validate_non_empty, display_order = 1004)]
     pub profile: Option<String>,
 
     #[command(subcommand)]
@@ -999,10 +1003,6 @@ pub struct RunsUsageArgs {
     /// 3339 time
     #[arg(long)]
     pub before: Option<TimeBound>,
-
-    /// Show times and periods in UTC instead of the local timezone
-    #[arg(long)]
-    pub utc: bool,
 
     /// Maximum number of rows to display: runs, or periods with a rollup
     /// [default: 10; not allowed with both an after and a before time]

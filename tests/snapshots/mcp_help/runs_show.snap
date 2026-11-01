@@ -3,6 +3,8 @@ source: tests/help_snapshots.rs
 ---
 Show a run's metadata: id, status, timestamps, launcher, and description.
 
+Created, Started and Completed are in the local timezone. Add `utc` to show them in UTC.
+
 Max Compute Hours and Setup Timeout are the values that the launch requested, when the run has them. One compute hour is one core running for one hour. Elapsed is wall-clock time, which also spans provisioning, setup and teardown. Source is the `antithesis.source` the run was launched from, when the launcher recorded one. The run also has its user-defined attributes (`attrs.<name>` params at launch) and the `vcs.*` parameters that the Antithesis GitHub trigger action records (repository, branch, and commit), under Attributes and Version Control.
 
 An incomplete run also has its failure moment (Failure Hash/VTime), to pass to `runs_logs`, and a failure reason when the run reports one.

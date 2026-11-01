@@ -63,9 +63,6 @@ Options:
           Only show runs that ended before this date (e.g. 2026-11-01) or RFC
           3339 time
 
-      --utc
-          Show times and periods in UTC instead of the local timezone
-
   -n, --limit <LIMIT>
           Maximum number of rows to display: runs, or periods with a rollup
           [default: 10; not allowed with both an after and a before time]
@@ -76,6 +73,9 @@ Options:
       --json
           Output JSON where supported (NDJSON for list/stream commands, pretty
           JSON otherwise)
+
+      --utc
+          Show times in UTC instead of the local timezone
 
       --verbose
           Log API requests to stderr (authentication tokens redacted)

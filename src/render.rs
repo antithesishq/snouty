@@ -2,9 +2,11 @@
 //! key/value blocks and control-character sanitization.
 use std::fmt::Write as _;
 
-/// The global output flags (`--json`, `--verbose`), resolved once at the
-/// dispatch boundary in main.rs and passed by value through the command
-/// layer. Carrying them as one named-field struct keeps the two bools from
+use crate::time::Zone;
+
+/// The global output flags (`--json`, `--verbose`, `--utc`), resolved once at
+/// the dispatch boundary in main.rs and passed by value through the command
+/// layer. Carrying them as one named-field struct keeps the bools from
 /// threading positionally, where a swapped pair compiles silently.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OutputOptions {
@@ -12,6 +14,8 @@ pub struct OutputOptions {
     pub json: bool,
     /// Log HTTP request/response detail to stderr.
     pub verbose: bool,
+    /// The time zone of the timestamps in text output.
+    pub zone: Zone,
 }
 
 /// Render aligned `Label  value` lines, sqlite `.mode line`–style. Each line is

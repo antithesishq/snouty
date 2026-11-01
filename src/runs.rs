@@ -35,7 +35,7 @@ use crate::render::{
 use crate::settings::Settings;
 use crate::stdio;
 use crate::table::{Align, Column, Fit, Table};
-use crate::time::{HumanDuration, format_local_with_offset};
+use crate::time::{HumanDuration, Zone};
 use crate::vtime::VTime;
 
 mod event_search;
@@ -149,7 +149,10 @@ pub async fn cmd_runs(
             annotate_faults: !raw && matches!(&command, Some(RunsCommands::Logs { .. })),
         }
     } else {
-        EventOutput::Text { detail }
+        EventOutput::Text {
+            detail,
+            zone: output.zone,
+        }
     };
 
     match command {
@@ -216,7 +219,10 @@ pub async fn cmd_runs(
                     annotate_faults: false,
                 }
             } else {
-                EventOutput::Text { detail: false }
+                EventOutput::Text {
+                    detail: false,
+                    zone: output.zone,
+                }
             };
             cmd_runs_build_logs(&run_id, settings, output.verbose, mode).await
         }
@@ -292,7 +298,11 @@ pub async fn cmd_runs(
 async fn cmd_runs_list(
     args: RunsListArgs,
     settings: &Settings,
-    OutputOptions { json, verbose }: OutputOptions,
+    OutputOptions {
+        json,
+        verbose,
+        zone,
+    }: OutputOptions,
 ) -> Result<()> {
     debug!("listing runs");
 
@@ -332,7 +342,7 @@ async fn cmd_runs_list(
     }
 
     if args.detail {
-        out!("{}", render_runs_detail(&runs))?;
+        out!("{}", render_runs_detail(&runs, zone))?;
     } else {
         let width = terminal_width();
         outln!("{}", render_runs_table(&runs, width))?;
@@ -392,7 +402,11 @@ async fn cmd_runs_show(
     run_id: &str,
     web: bool,
     settings: &Settings,
-    OutputOptions { json, verbose }: OutputOptions,
+    OutputOptions {
+        json,
+        verbose,
+        zone,
+    }: OutputOptions,
 ) -> Result<()> {
     debug!("showing run: {run_id}");
 
@@ -406,7 +420,7 @@ async fn cmd_runs_show(
     if json {
         outln!("{}", serde_json::to_string_pretty(&run)?)?;
     } else {
-        print_run_detail(&run)?;
+        print_run_detail(&run, zone)?;
     }
 
     Ok(())
@@ -449,7 +463,7 @@ async fn cmd_runs_wait(
     timeout: Option<HumanDuration>,
     until: WaitUntil,
     settings: &Settings,
-    OutputOptions { json, verbose }: OutputOptions,
+    OutputOptions { json, verbose, .. }: OutputOptions,
 ) -> Result<()> {
     debug!("waiting for run: {run_id}");
 
@@ -499,7 +513,7 @@ async fn cmd_runs_wait(
 async fn cmd_runs_cancel(
     run_id: &str,
     settings: &Settings,
-    OutputOptions { json, verbose }: OutputOptions,
+    OutputOptions { json, verbose, .. }: OutputOptions,
 ) -> Result<()> {
     debug!("cancelling run: {run_id}");
 
@@ -630,7 +644,7 @@ async fn cmd_runs_properties(
     filter: PropertyFilter<'_>,
     detail: bool,
     settings: &Settings,
-    OutputOptions { json, verbose }: OutputOptions,
+    OutputOptions { json, verbose, .. }: OutputOptions,
 ) -> Result<()> {
     debug!("listing properties for run: {run_id}");
 
@@ -678,7 +692,7 @@ async fn cmd_runs_property(
     run_id: &str,
     property_id: &str,
     settings: &Settings,
-    OutputOptions { json, verbose }: OutputOptions,
+    OutputOptions { json, verbose, .. }: OutputOptions,
 ) -> Result<()> {
     debug!("fetching property {property_id} for run: {run_id}");
 
@@ -1349,7 +1363,7 @@ fn print_kv_block<'a>(
     Ok(())
 }
 
-fn print_run_detail(run: &RunDetail) -> Result<()> {
+fn print_run_detail(run: &RunDetail, zone: Zone) -> Result<()> {
     // Bound once and reused for both the Failure Hash/VTime rows and the deferred
     // "view logs" hint below, so the two can't drift apart (a placeholder 0/0
     // moment is treated as no moment — see `RunDetail::real_failure_moment`).
@@ -1363,13 +1377,13 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
     }
 
     rows.push(("Status", run.status_label()));
-    rows.push(("Created", format_local_with_offset(run.created_at)));
+    rows.push(("Created", zone.format(run.created_at)));
 
     if let Some(t) = run.started_at {
-        rows.push(("Started", format_local_with_offset(t)));
+        rows.push(("Started", zone.format(t)));
     }
     if let Some(t) = run.completed_at {
-        rows.push(("Completed", format_local_with_offset(t)));
+        rows.push(("Completed", zone.format(t)));
     }
 
     // The JSON output keeps `antithesis.duration`, which the server still
@@ -1455,14 +1469,14 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
 
 /// `runs list --detail`: one aligned key-value block per run (no table),
 /// separated by blank lines. Empty optional fields are omitted.
-fn render_runs_detail(runs: &[RunSummary]) -> String {
+fn render_runs_detail(runs: &[RunSummary], zone: Zone) -> String {
     let blocks: Vec<String> = runs
         .iter()
         .map(|run| {
             let mut rows: Vec<(&str, String)> = vec![
                 ("Run ID", run.run_id.clone()),
                 ("Status", run.status.to_string()),
-                ("Created", format_local_with_offset(run.created_at)),
+                ("Created", zone.format(run.created_at)),
                 ("Launcher", run.launcher.clone()),
             ];
             if let Some(name) = run.test_name() {
@@ -1520,7 +1534,7 @@ async fn cmd_runs_stream(
     run_id: &str,
     property_ids: Vec<String>,
     settings: &Settings,
-    OutputOptions { json, verbose }: OutputOptions,
+    OutputOptions { json, verbose, .. }: OutputOptions,
 ) -> Result<()> {
     debug!("streaming status for run: {run_id}");
 
@@ -2151,11 +2165,11 @@ async fn exec_when_ready(
     mode: EventOutput,
 ) -> Result<()> {
     let timeout = exec.timeout;
-    let (json, detail) = match mode {
-        EventOutput::Json { .. } => (true, false),
-        EventOutput::Text { detail } => (false, detail),
+    let (json, detail, zone) = match mode {
+        EventOutput::Json { .. } => (true, false, Zone::default()),
+        EventOutput::Text { detail, zone } => (false, detail, zone),
     };
-    let mut renderer = exec.events.then(|| EventStreamRenderer::new(detail));
+    let mut renderer = exec.events.then(|| EventStreamRenderer::new(detail, zone));
     // A cold moment is in its rewarm source, not in RUN_ID, so a debugging
     // session at that moment starts from the source.
     let (rewarm_flag, target_flag, target) = match &exec.rewarm {
@@ -4780,7 +4794,7 @@ mod tests {
             ),
         ];
 
-        let out = render_runs_detail(&runs);
+        let out = render_runs_detail(&runs, Zone::Utc);
         // No table header — each field sits on its own aligned line. Every
         // block reserves the "Description" label whether or not it has one, so
         // the two blocks align with each other.
@@ -4963,7 +4977,7 @@ mod tests {
     #[test]
     fn runs_detail_shows_full_event_description_when_description_missing() {
         let run = with_event_description(debugging_run(None), "debug this moment\nand the next");
-        let out = render_runs_detail(&[run]);
+        let out = render_runs_detail(&[run], Zone::Utc);
         assert!(out.contains("Description  debug this moment"), "got: {out}");
         assert!(out.contains("and the next"), "got: {out}");
     }
@@ -4971,7 +4985,7 @@ mod tests {
     #[test]
     fn runs_detail_prefers_description_over_event_description() {
         let run = with_event_description(debugging_run(Some("probe the stall")), "debug this");
-        let out = render_runs_detail(&[run]);
+        let out = render_runs_detail(&[run], Zone::Utc);
         assert!(out.contains("Description  probe the stall"), "got: {out}");
         assert!(!out.contains("debug this"), "got: {out}");
     }
@@ -4979,7 +4993,7 @@ mod tests {
     #[test]
     fn runs_detail_shows_event_description_when_description_blank() {
         let run = with_event_description(debugging_run(Some(" \n ")), "debug this");
-        let out = render_runs_detail(&[run]);
+        let out = render_runs_detail(&[run], Zone::Utc);
         assert!(out.contains("Description  debug this"), "got: {out}");
     }
 

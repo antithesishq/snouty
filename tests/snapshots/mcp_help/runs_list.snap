@@ -5,7 +5,7 @@ List recent runs.
 
 Each run has its ID, status, creation time, launcher, and test name. For a run with no test name, the name is the first line of its description.
 
-Each run prints as a block of `Label  value` lines, with a blank line between blocks: Run ID, Status, Created, Launcher, Test Name when the run has one, and the full Description.
+Each run prints as a block of `Label  value` lines, with a blank line between blocks: Run ID, Status, Created, Launcher, Test Name when the run has one, and the full Description. Created is in the local timezone. Add `utc` to show it in UTC.
 
 Pass a run's ID to `runs_show` for its details, to `runs_properties` for its property results, or to `runs_wait` to wait until it is ready or complete.
 

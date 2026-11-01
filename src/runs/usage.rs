@@ -5,10 +5,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::num::NonZeroU64;
 
-use chrono::{
-    DateTime, Datelike, Days, FixedOffset, Local, Months, NaiveDate, NaiveTime, TimeDelta,
-    TimeZone, Utc,
-};
+use chrono::{DateTime, Datelike, Days, FixedOffset, Months, NaiveDate, TimeDelta, Utc};
 use clap::ValueEnum;
 use color_eyre::eyre::Result;
 use futures_util::TryStreamExt;
@@ -22,41 +19,13 @@ use crate::error::user_error;
 use crate::render::{OutputOptions, sanitize};
 use crate::settings::Settings;
 use crate::table::{Align, Column, Table};
-use crate::time::format_dense;
+use crate::time::{Zone, format_dense};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Rollup {
     Day,
     Week,
     Month,
-}
-
-/// The time zone of the output: of the times, and of the periods that runs
-/// are totaled in.
-#[derive(Clone, Copy)]
-enum Zone {
-    Local,
-    Utc,
-}
-
-impl Zone {
-    fn time(self, time: DateTime<Utc>) -> DateTime<FixedOffset> {
-        match self {
-            Zone::Local => time.with_timezone(&Local).fixed_offset(),
-            Zone::Utc => time.fixed_offset(),
-        }
-    }
-
-    /// The start of `date`. Where a clock change skips local midnight, this
-    /// is UTC midnight, which is off by at most the size of the change.
-    fn midnight(self, date: NaiveDate) -> DateTime<Utc> {
-        let midnight = date.and_time(NaiveTime::MIN);
-        match self {
-            Zone::Local => Local.from_local_datetime(&midnight).earliest(),
-            Zone::Utc => None,
-        }
-        .map_or(midnight.and_utc(), |time| time.to_utc())
-    }
 }
 
 /// A `--after` or `--before` value: a date, which means the start of that
@@ -193,17 +162,19 @@ impl Selection {
 pub(super) async fn cmd_runs_usage(
     args: RunsUsageArgs,
     settings: &Settings,
-    OutputOptions { json, verbose }: OutputOptions,
+    OutputOptions {
+        json,
+        verbose,
+        zone,
+    }: OutputOptions,
 ) -> Result<()> {
     debug!("listing usage");
     let RunsUsageArgs {
         rollup,
         after,
         before,
-        utc,
         limit,
     } = args;
-    let zone = if utc { Zone::Utc } else { Zone::Local };
     let after = after.map(|bound| bound.resolve(zone));
     let before = before.map(|bound| bound.resolve(zone));
     let selection = match (after, before, limit) {

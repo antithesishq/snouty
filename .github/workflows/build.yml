@@ -35,10 +35,7 @@ jobs:
     outputs:
       should_skip: ${{ steps.skip_check.outputs.should_skip }}
     steps:
-      # A queue entry's parent is the entry ahead of it, not main, so a diff
-      # against that parent can call a group docs-only when it is not.
       - id: skip_check
-        if: github.event_name != 'merge_group'
         uses: fkirc/skip-duplicate-actions@b974a9395958c231af965b70070979a577efa578 # v5.3.2
         with:
           paths_ignore: '["**.md"]'

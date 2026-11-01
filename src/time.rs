@@ -14,7 +14,7 @@
 //! in that order); fractional components like `1.5h` are rejected, since the
 //! bare-minutes form already covers that.
 
-use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveTime, TimeZone, Utc};
+use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 
 use std::error::Error;
 use std::fmt;
@@ -256,18 +256,25 @@ impl Zone {
         }
     }
 
-    /// The start of `date`. Where a clock change skips local midnight, this
-    /// is UTC midnight, which is off by at most the size of the change.
+    /// The start of `date`.
     pub(crate) fn midnight(self, date: NaiveDate) -> DateTime<Utc> {
-        let midnight = date.and_time(NaiveTime::MIN);
+        self.instant(date.and_time(NaiveTime::MIN))
+    }
+
+    /// The instant that the wall time `time` names in this zone. Where a
+    /// clock change repeats the time, this is the earlier instant. Where it
+    /// skips the time, this is the time read as UTC, which is off by at most
+    /// the size of the change.
+    pub(crate) fn instant(self, time: NaiveDateTime) -> DateTime<Utc> {
         match self {
-            Zone::Local => Local.from_local_datetime(&midnight).earliest(),
+            Zone::Local => Local.from_local_datetime(&time).earliest(),
             Zone::Utc => None,
         }
-        .map_or(midnight.and_utc(), |time| time.to_utc())
+        .map_or(time.and_utc(), |time| time.to_utc())
     }
 
     /// `time` in this zone, without the zone. Example: `2026-05-27 08:25:13`.
+    /// [`TimeBound`] reads this form back.
     pub(crate) fn format(self, time: DateTime<Utc>) -> String {
         format_dense(self.time(time))
     }
@@ -282,7 +289,53 @@ impl Zone {
 
 /// Format a timestamp in the zone that it carries, without the zone.
 pub(crate) fn format_dense(dt: DateTime<FixedOffset>) -> String {
-    dt.format("%Y-%m-%d %H:%M:%S").to_string()
+    dt.format(WALL_TIME).to_string()
+}
+
+/// The form of a time that snouty prints, and that [`TimeBound`] reads.
+const WALL_TIME: &str = "%Y-%m-%d %H:%M:%S";
+
+/// A time that a flag such as `--created-after` takes. A date means the
+/// start of that day, and a date and time without a zone (the form that
+/// snouty prints) is read in the display zone, which is known only after
+/// the parse: see [`TimeBound::resolve`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TimeBound {
+    Date(NaiveDate),
+    WallTime(NaiveDateTime),
+    Time(DateTime<Utc>),
+}
+
+impl FromStr for TimeBound {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        if let Ok(time) = text.parse() {
+            return Ok(TimeBound::Time(time));
+        }
+        if let Ok(date) = NaiveDate::parse_from_str(text, "%Y-%m-%d") {
+            return Ok(TimeBound::Date(date));
+        }
+        // `NaiveDateTime`'s own parser reads the `T` form, and a fraction.
+        NaiveDateTime::parse_from_str(text, WALL_TIME)
+            .or_else(|_| text.parse())
+            .map(TimeBound::WallTime)
+            .map_err(|_| {
+                "expected a date (2026-10-01), a time as snouty prints it \
+                 (2026-10-01 12:00:00), or an RFC 3339 time (2026-10-01T12:00:00Z)"
+                    .to_string()
+            })
+    }
+}
+
+impl TimeBound {
+    pub(crate) fn resolve(self, zone: Zone) -> DateTime<Utc> {
+        match self {
+            TimeBound::Date(date) => zone.midnight(date),
+            TimeBound::WallTime(time) => zone.instant(time),
+            TimeBound::Time(time) => time,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -489,6 +542,35 @@ mod tests {
             "2025-03-20 02:01:12"
         );
         assert_eq!(Zone::Utc.format_rfc3339("not a time"), "not a time");
+    }
+
+    /// A time that snouty prints reads back as the same instant, in the
+    /// space form, in the `T` form, and as RFC 3339. A date reads as the
+    /// start of its day.
+    #[hegel::test]
+    fn time_bound_reads_back_what_snouty_prints(tc: hegel::TestCase) {
+        let seconds = tc.draw(
+            generators::integers::<i64>()
+                .min_value(0)
+                .max_value(250_000_000_000),
+        );
+        let time = DateTime::from_timestamp(seconds, 0).unwrap();
+        let printed = Zone::Utc.format(time);
+        let resolve = |text: &str| text.parse::<TimeBound>().map(|b| b.resolve(Zone::Utc));
+        assert_eq!(resolve(&printed), Ok(time), "{printed}");
+        assert_eq!(resolve(&printed.replace(' ', "T")), Ok(time), "{printed}");
+        assert_eq!(resolve(&time.to_rfc3339()), Ok(time));
+        let date = time.date_naive();
+        assert_eq!(
+            date.format("%Y-%m-%d").to_string().parse::<TimeBound>(),
+            Ok(TimeBound::Date(date))
+        );
+    }
+
+    #[test]
+    fn time_bound_names_the_forms_it_accepts() {
+        let err = "2026-10-01 12:00".parse::<TimeBound>().unwrap_err();
+        assert!(err.contains("2026-10-01 12:00:00"), "{err}");
     }
 
     /// Parsing arbitrary text must never panic — it returns `Ok` or

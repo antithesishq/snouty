@@ -7,7 +7,6 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 
-use chrono::{DateTime, Utc};
 use clap::Arg;
 use color_eyre::eyre::{Result, bail, eyre};
 use rmcp::model::{JsonObject, Tool, ToolAnnotations};
@@ -16,8 +15,8 @@ use serde_json::{Value, json};
 use crate::api::{SEARCH_MAX_LIMIT, SearchLimit};
 use crate::cli::{KVPair, tree};
 use crate::help::HelpPage;
-use crate::runs::usage::TimeBound;
-use crate::time::{BareUnit, HumanDuration};
+
+use crate::time::{BareUnit, HumanDuration, TimeBound};
 use crate::vtime::VTime;
 
 pub(super) const TOOL_HELP: &str = "tool_help";
@@ -233,6 +232,9 @@ const DURATION_PATTERN: &str =
 
 const KV_PAIR_PATTERN: &str = "^[^=]+=";
 
+/// Matches a [`TimeBound`] time without a zone, as snouty prints it.
+const WALL_TIME_PATTERN: &str = r"^\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d(\.\d+)?$";
+
 impl ValueType {
     fn of(arg: &Arg) -> Self {
         value_schema(arg).0
@@ -261,10 +263,12 @@ fn value_schema(arg: &Arg) -> (ValueType, Value) {
         (ValueType::Integer, range)
     } else if is(TypeId::of::<VTime>()) {
         (ValueType::Number, json!({}))
-    } else if is(TypeId::of::<DateTime<Utc>>()) {
-        (ValueType::String, json!({ "format": "date-time" }))
     } else if is(TypeId::of::<TimeBound>()) {
-        let formats = json!({ "anyOf": [{ "format": "date" }, { "format": "date-time" }] });
+        let formats = json!({ "anyOf": [
+            { "format": "date" },
+            { "format": "date-time" },
+            { "pattern": WALL_TIME_PATTERN },
+        ] });
         (ValueType::String, formats)
     } else if is_duration(arg) {
         (ValueType::String, json!({ "pattern": DURATION_PATTERN }))
@@ -559,6 +563,14 @@ mod tests {
         }
     }
 
+    fn time_bound_formats() -> Value {
+        json!([
+            { "format": "date" },
+            { "format": "date-time" },
+            { "pattern": WALL_TIME_PATTERN },
+        ])
+    }
+
     #[test]
     fn schemas_follow_the_clap_args() {
         let schema = |name: ToolName| &name.spec().tool.input_schema;
@@ -586,7 +598,10 @@ mod tests {
         assert_eq!(list["properties"]["limit"]["type"], "integer");
         assert_eq!(list["properties"]["limit"]["minimum"], 1);
         assert_eq!(list["properties"]["limit"]["default"], 10);
-        assert_eq!(list["properties"]["created_after"]["format"], "date-time");
+        assert_eq!(
+            list["properties"]["created_after"]["anyOf"],
+            time_bound_formats()
+        );
         assert_eq!(list["properties"]["launcher"]["type"], "string");
         let logs = schema(ToolName::RunsLogs);
         assert_eq!(logs["properties"]["input_hash"]["type"], "string");
@@ -607,10 +622,7 @@ mod tests {
             usage["properties"]["rollup"]["enum"].is_array(),
             "{usage:?}"
         );
-        assert_eq!(
-            usage["properties"]["after"]["anyOf"],
-            json!([{ "format": "date" }, { "format": "date-time" }])
-        );
+        assert_eq!(usage["properties"]["after"]["anyOf"], time_bound_formats());
         assert_eq!(usage["properties"]["utc"]["type"], "boolean");
         let show = schema(ToolName::RunsShow);
         assert_eq!(show["properties"]["utc"]["type"], "boolean");

@@ -28,38 +28,6 @@ pub enum Rollup {
     Month,
 }
 
-/// A `--after` or `--before` value: a date, which means the start of that
-/// day in the output time zone, or an RFC 3339 time.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum TimeBound {
-    Date(NaiveDate),
-    Time(DateTime<Utc>),
-}
-
-impl std::str::FromStr for TimeBound {
-    type Err = String;
-
-    fn from_str(text: &str) -> Result<Self, Self::Err> {
-        if let Ok(date) = NaiveDate::parse_from_str(text, "%Y-%m-%d") {
-            return Ok(TimeBound::Date(date));
-        }
-        text.parse().map(TimeBound::Time).map_err(|_| {
-            "expected a date such as 2026-10-01, or an RFC 3339 time such as \
-             2026-10-01T12:00:00Z"
-                .to_string()
-        })
-    }
-}
-
-impl TimeBound {
-    fn resolve(self, zone: Zone) -> DateTime<Utc> {
-        match self {
-            TimeBound::Date(date) => zone.midnight(date),
-            TimeBound::Time(time) => time,
-        }
-    }
-}
-
 /// The usage entry of a run, with its times in the output time zone.
 #[derive(Serialize)]
 struct ZonedUsageEntry {
@@ -441,26 +409,6 @@ mod tests {
             Rollup::Week.period_end(date("2026-10-25")),
             date("2026-10-25")
         );
-    }
-
-    /// A date parses as a date, and an RFC 3339 time as the same instant.
-    #[hegel::test]
-    fn time_bound_parses_dates_and_times(tc: hegel::TestCase) {
-        let days = tc.draw(generators::integers::<u64>().max_value(3_000_000));
-        let date = date("0001-01-01") + Days::new(days);
-        let text = date.format("%Y-%m-%d").to_string();
-        assert_eq!(text.parse::<TimeBound>(), Ok(TimeBound::Date(date)));
-        let seconds = tc.draw(
-            generators::integers::<i64>()
-                .min_value(0)
-                .max_value(250_000_000_000),
-        );
-        let time = DateTime::from_timestamp(seconds, 0).unwrap();
-        assert_eq!(
-            time.to_rfc3339().parse::<TimeBound>(),
-            Ok(TimeBound::Time(time))
-        );
-        assert!("2026-10-01 12:00".parse::<TimeBound>().is_err());
     }
 
     fn dates(texts: &[&str]) -> Vec<NaiveDate> {

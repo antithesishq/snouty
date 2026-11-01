@@ -14,7 +14,7 @@ stderr 'possible values: day, week, month'
 
 # --after and --before take a date or an RFC 3339 time.
 ! snouty runs usage --after 2026-13-01
-stderr 'expected a date such as 2026-10-01, or an RFC 3339 time'
+stderr 'expected a date \(2026-10-01\), a time as snouty prints it'
 
 # The mock usage entries fall on different days in UTC and in UTC+9, so a
 # fixed timezone makes the expected times and periods exact.

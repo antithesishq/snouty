@@ -1262,11 +1262,18 @@ impl AntithesisApi {
         if let Some(ref launcher) = opts.launcher {
             request = request.launcher(launcher.clone());
         }
-        if let Some(ref ts) = opts.created_after {
-            request = request.created_after(*ts);
+        // The server excludes a run created at `created_after` and includes
+        // one created at `created_before` (observed on the
+        // antithesis-orbitinghail tenant, release 67, which stores whole
+        // seconds and reads microseconds). One microsecond earlier turns
+        // that into the half-open range that RunsFilterOptions promises.
+        let earlier =
+            |time: &chrono::DateTime<chrono::Utc>| *time - chrono::TimeDelta::microseconds(1);
+        if let Some(ts) = &opts.created_after {
+            request = request.created_after(earlier(ts));
         }
-        if let Some(ref ts) = opts.created_before {
-            request = request.created_before(*ts);
+        if let Some(ts) = &opts.created_before {
+            request = request.created_before(earlier(ts));
         }
 
         match request.send().await {
@@ -1541,7 +1548,9 @@ fn redact_sensitive_value(name: &HeaderName, value: &str) -> &'static str {
 pub struct RunsFilterOptions {
     pub status: Option<RunStatus>,
     pub launcher: Option<String>,
+    /// Runs created at or after this time.
     pub created_after: Option<chrono::DateTime<chrono::Utc>>,
+    /// Runs created before this time.
     pub created_before: Option<chrono::DateTime<chrono::Utc>>,
 }
 

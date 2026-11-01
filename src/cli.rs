@@ -6,7 +6,6 @@ use std::io::Write;
 use std::num::NonZeroU64;
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
 use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
 use crate::api::{
@@ -20,9 +19,9 @@ use crate::error::user_error;
 use crate::features::{self, Feature};
 use crate::help::{self, Attach};
 use crate::params::MAX_SETUP_TIMEOUT_MINUTES;
-use crate::runs::usage::{Rollup, TimeBound};
+use crate::runs::usage::Rollup;
 use crate::stdio;
-use crate::time::{BareUnit, HumanDuration, duration_format};
+use crate::time::{BareUnit, HumanDuration, TimeBound, duration_format};
 use crate::vtime::VTime;
 
 pub(crate) mod tree;
@@ -981,13 +980,13 @@ pub struct RunsUsageArgs {
     #[arg(long, value_enum)]
     pub rollup: Option<Rollup>,
 
-    /// Only show runs that ended at or after this date (e.g. 2026-10-01) or
-    /// RFC 3339 time
+    /// Only show runs that ended at or after this date (e.g. 2026-10-01),
+    /// time (e.g. 2026-10-01 12:00:00) or RFC 3339 time
     #[arg(long)]
     pub after: Option<TimeBound>,
 
-    /// Only show runs that ended before this date (e.g. 2026-11-01) or RFC
-    /// 3339 time
+    /// Only show runs that ended before this date (e.g. 2026-11-01), time
+    /// (e.g. 2026-11-01 12:00:00) or RFC 3339 time
     #[arg(long)]
     pub before: Option<TimeBound>,
 
@@ -1058,13 +1057,15 @@ pub struct RunsListArgs {
     #[arg(short, long)]
     pub launcher: Option<String>,
 
-    /// Only show runs created after this timestamp (ISO 8601)
+    /// Only show runs created at or after this date (e.g. 2026-10-01), time
+    /// (e.g. 2026-10-01 12:00:00) or RFC 3339 time
     #[arg(long)]
-    pub created_after: Option<DateTime<Utc>>,
+    pub created_after: Option<TimeBound>,
 
-    /// Only show runs created before this timestamp (ISO 8601)
+    /// Only show runs created before this date (e.g. 2026-11-01), time (e.g.
+    /// 2026-11-01 12:00:00) or RFC 3339 time
     #[arg(long)]
-    pub created_before: Option<DateTime<Utc>>,
+    pub created_before: Option<TimeBound>,
 
     /// Maximum number of runs to display
     #[arg(short = 'n', long, default_value_t = DEFAULT_RUNS_LIMIT)]

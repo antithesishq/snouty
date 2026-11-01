@@ -11,6 +11,13 @@ for a run with no test name and no description. CREATED is the age of the run,
 such as `2h ago`. Use --detail for the full description and the creation time,
 which is in the local timezone. Add --utc to show it in UTC.
 
+--created-after and --created-before take a date, which is the start of that
+day, a time as snouty prints it, such as `2026-10-01 12:00:00`, or an RFC 3339
+time. A date or a time without a zone is in the local timezone, or in UTC with
+--utc. --created-after includes a run created at that time, and --created-before
+does not. So a run's Created time with --created-after selects that run and the
+runs after it, and with --created-before the runs before it.
+
 Pass a run's ID to `runs show` for its details, to `runs properties` for its
 property results, or to `runs wait` to wait until it is ready or complete.
 
@@ -34,10 +41,12 @@ Options:
           Filter by launcher name
 
       --created-after <CREATED_AFTER>
-          Only show runs created after this timestamp (ISO 8601)
+          Only show runs created at or after this date (e.g. 2026-10-01), time
+          (e.g. 2026-10-01 12:00:00) or RFC 3339 time
 
       --created-before <CREATED_BEFORE>
-          Only show runs created before this timestamp (ISO 8601)
+          Only show runs created before this date (e.g. 2026-11-01), time (e.g.
+          2026-11-01 12:00:00) or RFC 3339 time
 
   -n, --limit <LIMIT>
           Maximum number of runs to display

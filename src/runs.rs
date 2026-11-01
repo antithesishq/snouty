@@ -313,8 +313,8 @@ async fn cmd_runs_list(
     let opts = RunsFilterOptions {
         status: args.status,
         launcher: args.launcher,
-        created_after: args.created_after,
-        created_before: args.created_before,
+        created_after: args.created_after.map(|bound| bound.resolve(zone)),
+        created_before: args.created_before.map(|bound| bound.resolve(zone)),
     };
 
     // The server returns runs newest first, so every mode prints them in the

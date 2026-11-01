@@ -23,9 +23,11 @@ Times and periods are in the local timezone. Add --utc to show them in UTC.
 
 --after and --before select runs by the time that they ended: --after includes a
 run that ended at that time, and --before does not. Each takes a date, which is
-the start of that day, or an RFC 3339 time. With --rollup, a period is in the
-output when it holds a selected time. When a filter cuts a period, the total of
-that period includes only the runs inside the filter.
+the start of that day, a time such as `2026-10-01 12:00:00`, or an RFC 3339
+time. A date or a time without a zone is in the local timezone, or in UTC with
+--utc. With --rollup, a period is in the output when it holds a selected time.
+When a filter cuts a period, the total of that period includes only the runs
+inside the filter.
 
 --limit counts rows: runs, or periods with --rollup. The default is 10. The
 filters select which rows the limit keeps:
@@ -56,12 +58,12 @@ Options:
           [possible values: day, week, month]
 
       --after <AFTER>
-          Only show runs that ended at or after this date (e.g. 2026-10-01) or
-          RFC 3339 time
+          Only show runs that ended at or after this date (e.g. 2026-10-01),
+          time (e.g. 2026-10-01 12:00:00) or RFC 3339 time
 
       --before <BEFORE>
-          Only show runs that ended before this date (e.g. 2026-11-01) or RFC
-          3339 time
+          Only show runs that ended before this date (e.g. 2026-11-01), time
+          (e.g. 2026-11-01 12:00:00) or RFC 3339 time
 
   -n, --limit <LIMIT>
           Maximum number of rows to display: runs, or periods with a rollup

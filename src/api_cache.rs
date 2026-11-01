@@ -9,10 +9,10 @@
 //! exception is logs up to a fixed vtime, which never change once the
 //! timeline has passed it and are then cached whatever the headers say (see
 //! `AntithesisApi::get_run_logs`).
-//! There is no per-entry expiration — the header's lifetime is read as a
-//! yes/no permission, and the cache lives in a transient per-user directory
-//! (`XDG_RUNTIME_DIR`; the user temp dir on macOS) that the OS clears
-//! periodically.
+//! An entry expires when its freshness lifetime runs out. The cache never
+//! revalidates: an expired entry is a miss. The
+//! cache lives in a transient per-user directory (`XDG_RUNTIME_DIR`; the
+//! user temp dir on macOS) that the OS clears periodically.
 //!
 //! The cache is infallible by construction: every cache error — unreadable
 //! entry, unwritable directory, corrupt index — degrades to a cache miss and
@@ -28,6 +28,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, SystemTime};
 
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
 use futures_util::StreamExt;
@@ -134,7 +135,46 @@ pub struct ApiCache {
     /// Announce each hit on stderr (the `--verbose` request log has no
     /// request to show for a hit, so that line takes its place).
     verbose: bool,
+    clock: Arc<dyn Clock>,
 }
+
+/// Mints the expiry stored with each entry, and checks it. An expiry is an
+/// opaque `u64` that only the clock interprets.
+trait Clock: std::fmt::Debug + Send + Sync {
+    /// The expiry of an entry that lives for `lifetime` from now.
+    fn expiry(&self, lifetime: Duration) -> u64;
+
+    /// The time left before `expiry`, or `None` once it has passed.
+    fn remaining(&self, expiry: u64) -> Option<Duration>;
+}
+
+/// Wall-clock time in whole seconds since the Unix epoch, the unit of
+/// `max-age`. Entries outlive the process, so a monotonic clock would not do.
+#[derive(Debug)]
+struct SystemClock;
+
+impl SystemClock {
+    fn now() -> Duration {
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+    }
+}
+
+impl Clock for SystemClock {
+    fn expiry(&self, lifetime: Duration) -> u64 {
+        Self::now().as_secs().saturating_add(lifetime.as_secs())
+    }
+
+    fn remaining(&self, expiry: u64) -> Option<Duration> {
+        Duration::from_secs(expiry)
+            .checked_sub(Self::now())
+            .filter(|left| !left.is_zero())
+    }
+}
+
+/// The entry metadata field that holds the expiry (see [`Clock`]).
+const EXPIRES_AT: &str = "expires_at";
 
 impl ApiCache {
     pub fn new(dir: Option<PathBuf>, max_file_size: u64, base_url: String, verbose: bool) -> Self {
@@ -143,6 +183,16 @@ impl ApiCache {
             max_file_size,
             base_url,
             verbose,
+            clock: Arc::new(SystemClock),
+        }
+    }
+
+    /// The same cache, minting and checking expiry with `clock`.
+    #[cfg(test)]
+    fn with_clock(self, clock: impl Clock + 'static) -> Self {
+        Self {
+            clock: Arc::new(clock),
+            ..self
         }
     }
 
@@ -187,15 +237,48 @@ impl ApiCache {
         let _ = cacache::remove(dir, &key.key).await;
     }
 
+    /// The content and remaining lifetime of the entry under `key`, or
+    /// `None` when there is none or it has expired. An expired or unusable
+    /// entry is evicted.
+    async fn fresh_entry(&self, key: &CacheKey) -> Option<(cacache::Integrity, Duration)> {
+        let metadata = match cacache::metadata(self.dir.as_ref()?, &key.key).await {
+            Ok(metadata) => metadata?,
+            Err(err) => {
+                warn!("API cache read failed for {key}, bypassing cache: {err}");
+                self.evict(key).await;
+                return None;
+            }
+        };
+        let remaining = metadata.metadata[EXPIRES_AT]
+            .as_u64()
+            .and_then(|expiry| self.clock.remaining(expiry));
+        if let Some(remaining) = remaining {
+            Some((metadata.integrity, remaining))
+        } else {
+            debug!("API cache entry for {key} has expired");
+            // The content stays: other keys may share it (content is
+            // stored by hash), and an unchanged response rewritten under
+            // this key reuses it.
+            self.evict(key).await;
+            None
+        }
+    }
+
+    /// The options that write an entry which expires after `lifetime`.
+    fn write_opts(&self, lifetime: Duration) -> cacache::WriteOpts {
+        let expiry = self.clock.expiry(lifetime);
+        cacache::WriteOpts::new().metadata(serde_json::json!({ EXPIRES_AT: expiry }))
+    }
+
     /// The cached value under `key`, deserialized. Returns `None` if the key
-    /// doesn't exist or is unusable.
+    /// doesn't exist, has expired, or is unusable.
     pub async fn lookup_value<T: DeserializeOwned>(
         &self,
         key: &CacheKey,
     ) -> Option<Tagged<T, CachePolicy>> {
-        let bytes = match cacache::read(self.dir.as_ref()?, &key.key).await {
+        let (integrity, remaining) = self.fresh_entry(key).await?;
+        let bytes = match cacache::read_hash(self.dir.as_ref()?, &integrity).await {
             Ok(bytes) => bytes,
-            Err(cacache::Error::EntryNotFound(..)) => return None,
             Err(err) => {
                 warn!("API cache read failed for {key}, bypassing cache: {err}");
                 self.evict(key).await;
@@ -205,7 +288,7 @@ impl ApiCache {
         match serde_json::from_slice(&bytes) {
             Ok(value) => {
                 self.note_hit(key);
-                Some(Tagged::new(value, CachePolicy::Cacheable))
+                Some(Tagged::new(value, CachePolicy::Cacheable(remaining)))
             }
             Err(err) => {
                 warn!("API cache entry for {key} does not parse, evicting: {err}");
@@ -220,15 +303,25 @@ impl ApiCache {
     /// dropped and the caller keeps the value it already has.
     pub async fn store_value<T: Serialize>(&self, key: &CacheKey, tagged: &Tagged<T, CachePolicy>) {
         let Some(dir) = &self.dir else { return };
-        if !matches!(tagged.tag(), CachePolicy::Cacheable) {
+        let CachePolicy::Cacheable(lifetime) = *tagged.tag() else {
             return;
-        }
+        };
         match serde_json::to_vec(tagged.value()) {
             Ok(bytes) if bytes.len() as u64 > self.max_file_size => {
                 debug!("API cache entry over the size limit, not caching");
             }
             Ok(bytes) => {
-                if let Err(err) = cacache::write(dir, &key.key, bytes).await {
+                let written = async {
+                    let mut writer = self
+                        .write_opts(lifetime)
+                        .size(bytes.len())
+                        .open(dir, &key.key)
+                        .await?;
+                    writer.write_all(&bytes).await?;
+                    writer.commit().await?;
+                    Ok::<_, color_eyre::Report>(())
+                };
+                if let Err(err) = written.await {
                     warn!("API cache write failed for {key}, bypassing cache: {err}");
                 }
             }
@@ -237,12 +330,12 @@ impl ApiCache {
     }
 
     /// Replay the stream cached under `key`, or `None` if the key doesn't
-    /// exist or is unusable at open. The entry streams from disk; a read
-    /// failure after open fails the replayed stream.
+    /// exist, has expired, or is unusable at open. The entry streams from
+    /// disk; a read failure after open fails the replayed stream.
     pub async fn lookup_stream(&self, key: &CacheKey) -> Option<Tagged<JsonStream, CachePolicy>> {
-        let reader = match cacache::Reader::open(self.dir.as_ref()?, &key.key).await {
+        let (integrity, remaining) = self.fresh_entry(key).await?;
+        let reader = match cacache::Reader::open_hash(self.dir.as_ref()?, integrity).await {
             Ok(reader) => reader,
-            Err(cacache::Error::EntryNotFound(..)) => return None,
             Err(err) => {
                 warn!("API cache read failed for {key}, bypassing cache: {err}");
                 self.evict(key).await;
@@ -252,7 +345,7 @@ impl ApiCache {
         self.note_hit(key);
         Some(Tagged::new(
             json_lines(tokio_util::io::ReaderStream::new(reader)),
-            CachePolicy::Cacheable,
+            CachePolicy::Cacheable(remaining),
         ))
     }
 
@@ -273,14 +366,18 @@ impl ApiCache {
         let Some(dir) = self.dir.clone() else {
             return tagged;
         };
-        let complete = match tagged.tag() {
-            CachePolicy::Cacheable => None,
-            CachePolicy::CacheableOnceComplete(complete) => Some(Arc::clone(complete)),
+        let (lifetime, complete) = match tagged.tag() {
+            CachePolicy::Cacheable(lifetime) => (*lifetime, None),
+            CachePolicy::CacheableOnceComplete(complete) => {
+                (Duration::MAX, Some(Arc::clone(complete)))
+            }
             CachePolicy::Uncacheable => return tagged,
         };
+        let tag = tagged.tag().clone();
         let tee = Some(Tee {
             dir,
             key,
+            opts: Some(self.write_opts(lifetime)),
             writer: None,
             remaining: self.max_file_size,
             complete,
@@ -321,7 +418,7 @@ impl ApiCache {
         )
         .fuse()
         .boxed();
-        Tagged::new(teed, CachePolicy::Cacheable)
+        Tagged::new(teed, tag)
     }
 }
 
@@ -331,6 +428,8 @@ impl ApiCache {
 struct Tee {
     dir: PathBuf,
     key: CacheKey,
+    /// Write options for the entry; `None` once the writer has opened.
+    opts: Option<cacache::WriteOpts>,
     writer: Option<cacache::Writer>,
     /// Size budget left before the entry is abandoned as too large.
     remaining: u64,
@@ -350,8 +449,8 @@ impl Tee {
             return None;
         }
         self.remaining -= line.len() as u64;
-        if self.writer.is_none() {
-            match cacache::Writer::create(&self.dir, &self.key.key).await {
+        if let Some(opts) = self.opts.take() {
+            match opts.open(&self.dir, &self.key.key).await {
                 Ok(writer) => self.writer = Some(writer),
                 Err(err) => {
                     warn!(
@@ -381,6 +480,8 @@ mod tests {
     use serde_json::Value;
     use tempfile::TempDir;
 
+    const HOUR: CachePolicy = CachePolicy::Cacheable(Duration::from_secs(3600));
+
     fn test_cache(dir: &TempDir) -> ApiCache {
         ApiCache::new(
             Some(dir.path().to_path_buf()),
@@ -390,12 +491,9 @@ mod tests {
         )
     }
 
-    fn values_stream(values: &[Value]) -> Tagged<JsonStream, CachePolicy> {
+    fn values_stream(values: &[Value], policy: CachePolicy) -> Tagged<JsonStream, CachePolicy> {
         let items: Vec<color_eyre::Result<Value>> = values.iter().cloned().map(Ok).collect();
-        Tagged::new(
-            futures_util::stream::iter(items).boxed(),
-            CachePolicy::Cacheable,
-        )
+        Tagged::new(futures_util::stream::iter(items).boxed(), policy)
     }
 
     // The key separates tenants, operations, and every parameter; only a
@@ -424,7 +522,9 @@ mod tests {
             serde_json::json!({"text": "two"}),
         ];
 
-        let teed = cache.store_stream(key(), values_stream(&values)).untag();
+        let teed = cache
+            .store_stream(key(), values_stream(&values, HOUR))
+            .untag();
         assert_eq!(teed.try_collect::<Vec<_>>().await.unwrap(), values);
 
         let replay = cache.lookup_stream(&key()).await.expect("a cache hit");
@@ -448,10 +548,7 @@ mod tests {
         let mut teed = cache
             .store_stream(
                 key(),
-                Tagged::new(
-                    futures_util::stream::iter(items).boxed(),
-                    CachePolicy::Cacheable,
-                ),
+                Tagged::new(futures_util::stream::iter(items).boxed(), HOUR),
             )
             .untag();
         // Drain past the error to the stream's end: even a caller that keeps
@@ -472,10 +569,7 @@ mod tests {
         let key = CacheKey::new("http://t", "get_run", &("run-1"));
 
         assert!(cache.lookup_value::<Value>(&key).await.is_none());
-        let tagged = Tagged::new(
-            serde_json::json!({"run_id": "run-1"}),
-            CachePolicy::Cacheable,
-        );
+        let tagged = Tagged::new(serde_json::json!({"run_id": "run-1"}), HOUR);
         cache.store_value(&key, &tagged).await;
         assert_eq!(
             cache.lookup_value::<Value>(&key).await.map(Tagged::untag),
@@ -515,12 +609,125 @@ mod tests {
         let key = CacheKey::new("http://t", "get_run", &("run-1"));
 
         cache
-            .store_value(
-                &key,
-                &Tagged::new(serde_json::json!("a string"), CachePolicy::Cacheable),
-            )
+            .store_value(&key, &Tagged::new(serde_json::json!("a string"), HOUR))
             .await;
         assert!(cache.lookup_value::<Object>(&key).await.is_none());
+        assert!(cache.lookup_value::<Value>(&key).await.is_none());
+    }
+
+    /// A clock in whole seconds that moves only when told to.
+    #[derive(Clone, Debug, Default)]
+    struct TestClock(Arc<std::sync::atomic::AtomicU64>);
+
+    impl TestClock {
+        fn now(&self) -> u64 {
+            self.0.load(Ordering::Relaxed)
+        }
+
+        fn advance(&self, by: Duration) {
+            self.0.fetch_add(by.as_secs(), Ordering::Relaxed);
+        }
+
+        fn cache(&self, dir: &TempDir) -> ApiCache {
+            test_cache(dir).with_clock(self.clone())
+        }
+    }
+
+    impl Clock for TestClock {
+        fn expiry(&self, lifetime: Duration) -> u64 {
+            self.now().saturating_add(lifetime.as_secs())
+        }
+
+        fn remaining(&self, expiry: u64) -> Option<Duration> {
+            expiry
+                .checked_sub(self.now())
+                .filter(|left| *left > 0)
+                .map(Duration::from_secs)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_value_expires_after_its_lifetime() {
+        let dir = TempDir::new().unwrap();
+        let clock = TestClock::default();
+        let cache = clock.cache(&dir);
+        let key = CacheKey::new("http://t", "get_run", &("run-1"));
+        let lifetime = Duration::from_secs(60);
+
+        let tagged = Tagged::new(
+            serde_json::json!({"run_id": "run-1"}),
+            CachePolicy::Cacheable(lifetime),
+        );
+        cache.store_value(&key, &tagged).await;
+
+        clock.advance(Duration::from_secs(59));
+        let hit = cache
+            .lookup_value::<Value>(&key)
+            .await
+            .expect("a fresh hit");
+        assert!(
+            matches!(hit.tag(), CachePolicy::Cacheable(left) if *left == Duration::from_secs(1))
+        );
+
+        clock.advance(Duration::from_secs(1));
+        assert!(cache.lookup_value::<Value>(&key).await.is_none());
+        // Expiry removed the entry, so even a clock moved back misses.
+        assert!(
+            TestClock::default()
+                .cache(&dir)
+                .lookup_value::<Value>(&key)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stream_expires_after_its_lifetime() {
+        let dir = TempDir::new().unwrap();
+        let clock = TestClock::default();
+        let cache = clock.cache(&dir);
+        let key = || CacheKey::new("http://t", "get_run_logs", &("run-1"));
+        let values = [serde_json::json!({"text": "one"})];
+
+        let stream = values_stream(&values, CachePolicy::Cacheable(Duration::from_secs(60)));
+        let teed = cache.store_stream(key(), stream).untag();
+        teed.try_collect::<Vec<_>>().await.unwrap();
+
+        clock.advance(Duration::from_secs(59));
+        assert!(cache.lookup_stream(&key()).await.is_some());
+        clock.advance(Duration::from_secs(1));
+        assert!(cache.lookup_stream(&key()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_complete_stream_never_expires() {
+        let dir = TempDir::new().unwrap();
+        let clock = TestClock::default();
+        let cache = clock.cache(&dir);
+        let key = || CacheKey::new("http://t", "get_run_logs", &("run-1"));
+        let values = [serde_json::json!({"text": "one"})];
+
+        let stream = values_stream(
+            &values,
+            CachePolicy::CacheableOnceComplete(Arc::new(AtomicBool::new(true))),
+        );
+        let teed = cache.store_stream(key(), stream).untag();
+        teed.try_collect::<Vec<_>>().await.unwrap();
+
+        clock.advance(Duration::from_secs(100 * 365 * 24 * 3600));
+        assert!(cache.lookup_stream(&key()).await.is_some());
+    }
+
+    // Older builds wrote entries without an expiry.
+    #[tokio::test]
+    async fn an_entry_without_an_expiry_misses() {
+        let dir = TempDir::new().unwrap();
+        let cache = test_cache(&dir);
+        let key = CacheKey::new("http://t", "get_run", &("run-1"));
+
+        cacache::write(dir.path(), &key.key, br#"{"run_id":"run-1"}"#)
+            .await
+            .unwrap();
         assert!(cache.lookup_value::<Value>(&key).await.is_none());
     }
 }

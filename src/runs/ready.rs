@@ -11,12 +11,10 @@ use color_eyre::eyre::{Report, Result};
 
 use crate::api::{AntithesisApi, RunDetail};
 use crate::cli::WaitUntil;
-use crate::error::api_error_status;
 
-use super::{ReadyDisplay, fetch_run, unclassified_status_error, wait_for_run};
+use super::{ReadyDisplay, fetch_run_after, unclassified_status_error, wait_for_run};
 
 /// What an endpoint needs from the run before it sends.
-#[derive(Clone, Copy)]
 pub(super) enum Needs {
     /// Wait until the run is ready or has ended, then send.
     Ready,
@@ -39,7 +37,6 @@ impl RetryDecision {
 }
 
 /// How to retry a run-scoped request that the run may not serve yet.
-#[derive(Clone, Copy)]
 pub(super) struct RetryPolicy {
     pub needs: Needs,
     /// Shown on stderr while the endpoint answers [`RetryDecision::Retry`].
@@ -94,20 +91,15 @@ where
             }
             Err(err) => err,
         };
-        let run = match ready_run {
-            Some(run) => run,
-            None => match fetch_run(api, run_id).await {
-                Ok(run) => run,
-                // A 404 can mean a bad run ID, which the read names. Any
-                // other error is the endpoint's own.
-                Err(read_err) if api_error_status(&err) == Some(404) => return Err(read_err),
-                Err(_) => return Err(err),
-            },
+        let (run, err) = match ready_run {
+            Some(run) => (run, err),
+            None => fetch_run_after(api, run_id, err).await?,
         };
         if run.status.is_terminal() || (policy.decide)(&run, &err) == RetryDecision::Fail {
             return Err(explain(&run, err));
         }
-        // A status this build does not know may never end.
+        // A status this build does not know may never end. Only a Live read
+        // can see one: the ready wait already fails it.
         if run.status.is_unclassified() {
             return Err(unclassified_status_error(run_id, &run.status));
         }

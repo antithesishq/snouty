@@ -164,7 +164,7 @@ where
 /// endpoint and answer 404 with an unhelpful "Resource not found", so the
 /// error gets a suggestion that names the release. A 400 comes from the query
 /// or from an out-of-range `limit`, so its note does not blame the query alone.
-pub(super) fn explain_search_error(
+fn explain_search_error(
     run: &RunDetail,
     err: color_eyre::eyre::Report,
 ) -> color_eyre::eyre::Report {

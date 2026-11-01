@@ -579,6 +579,21 @@ async fn fetch_run(api: &AntithesisApi, run_id: &str) -> Result<RunDetail> {
     }
 }
 
+/// Read the run after `err`, an error from one of its endpoints. When the
+/// read fails, a 404 gets the read's error, which names a bad run ID; any
+/// other error stays the endpoint's own.
+async fn fetch_run_after(
+    api: &AntithesisApi,
+    run_id: &str,
+    err: color_eyre::eyre::Report,
+) -> Result<(RunDetail, color_eyre::eyre::Report), color_eyre::eyre::Report> {
+    match fetch_run(api, run_id).await {
+        Ok(run) => Ok((run, err)),
+        Err(read_err) if api_error_status(&err) == Some(404) => Err(read_err),
+        Err(_) => Err(err),
+    }
+}
+
 /// The warning line for a run active for more than twice its scheduled
 /// duration (`antithesis.duration`); the wall clock also spans provisioning,
 /// setup, and teardown, so some overshoot is normal. Runs that haven't started
@@ -730,7 +745,7 @@ fn no_properties_message(filter: &PropertyFilter) -> String {
 /// also gives an error: before a run is ready, its events search and count
 /// answer 404 `Resource not found` (observed on tenant orbitinghail, release
 /// 64.0), so its input hash cannot be checked.
-pub async fn ensure_run_debuggable(api: &AntithesisApi, run_id: &str) -> Result<RunDetail> {
+pub async fn ensure_run_debuggable(api: &AntithesisApi, run_id: &str) -> Result<()> {
     let run = fetch_run(api, run_id).await?;
     if !run.is_ready_or_terminal() {
         return Err(user_error(format!(
@@ -741,21 +756,19 @@ pub async fn ensure_run_debuggable(api: &AntithesisApi, run_id: &str) -> Result<
             "wait for it with `snouty runs wait {run_id} --until ready`"
         )));
     }
-    Ok(run)
+    Ok(())
 }
 
-/// Fail unless `run` has an event under `input_hash`. The launch endpoint
-/// accepts a hash that the run never reached and starts a billable session,
-/// so check the hash first. `run` must be ready or terminal, as
-/// [`ensure_run_debuggable`] checks. Use the count: on a run in progress, a
+/// Fail unless run `run_id` has an event under `input_hash`. The launch
+/// endpoint accepts a hash that the run never reached and starts a billable
+/// session, so check the hash first. Use the count: on a run in progress, a
 /// search for a hash with no event ran 10 minutes without an answer
 /// (orbitinghail, release 64.0).
 pub async fn ensure_input_hash_exists(
     api: &AntithesisApi,
-    run: &RunDetail,
+    run_id: &str,
     input_hash: &str,
 ) -> Result<()> {
-    let run_id = &run.run_id;
     let query = event_set_dsl::input_hash_filter(input_hash);
     let count = event_search::search_when_ready(api, run_id, READY_POLL, || {
         api.count_run_events_query(run_id, &query)
@@ -801,11 +814,10 @@ async fn explain_run_scoped_error(
     if api_error_status(&err) != Some(404) {
         return err;
     }
-    match fetch_run(api, run_id).await {
-        // The run exists but the endpoint still 404'd — surface the original
-        // error rather than guessing why.
-        Ok(_) => err,
-        Err(fetch_err) => fetch_err,
+    // A run that exists but whose endpoint still 404'd keeps the original
+    // error rather than a guess at why.
+    match fetch_run_after(api, run_id, err).await {
+        Ok((_, err)) | Err(err) => err,
     }
 }
 
@@ -5287,10 +5299,21 @@ mod tests {
             }
         }
 
-        /// The answer of a ready run that does not accept commands yet,
-        /// verbatim from orbitinghail (release 67.0).
-        const NOT_READY_BODY: &str =
-            r#"{"message":"Run run-w is not ready yet. Try again shortly."}"#;
+        /// Answer commands in run-w as a ready run that does not accept them
+        /// yet, verbatim from orbitinghail (release 67.0): `times` times, or
+        /// always. A limited answer takes priority over [`mount_exec_exited`].
+        async fn mount_exec_not_ready(server: &MockServer, times: Option<u64>) {
+            let body = r#"{"message":"Run run-w is not ready yet. Try again shortly."}"#;
+            let mock = Mock::given(method("POST"))
+                .and(path("/api/v0/runs/run-w/command"))
+                .respond_with(ResponseTemplate::new(400).set_body_string(body));
+            match times {
+                Some(times) => mock.up_to_n_times(times).with_priority(1),
+                None => mock,
+            }
+            .mount(server)
+            .await;
+        }
 
         /// Answer every command in run-w with an exit status of 0.
         async fn mount_exec_exited(server: &MockServer) {
@@ -5353,9 +5376,10 @@ mod tests {
                 .await
                 .unwrap();
 
-            let requests = server.received_requests().await.unwrap();
-            let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
-            assert_eq!(methods, ["POST", "GET", "POST", "GET", "POST"]);
+            assert_eq!(
+                request_methods(&server).await,
+                ["POST", "GET", "POST", "GET", "POST"]
+            );
         }
 
         #[tokio::test]
@@ -5538,31 +5562,27 @@ mod tests {
                 .await
                 .unwrap();
 
-            let requests = server.received_requests().await.unwrap();
-            let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
-            assert_eq!(methods, ["GET", "GET", "GET", "POST"]);
+            assert_eq!(
+                request_methods(&server).await,
+                ["GET", "GET", "GET", "POST"]
+            );
         }
 
         #[tokio::test]
         async fn exec_retries_while_a_ready_run_is_not_ready_yet() {
             let server = MockServer::start().await;
             mount_get_run_bodies(&server, vec![ready_run_body()]).await;
-            Mock::given(method("POST"))
-                .and(path("/api/v0/runs/run-w/command"))
-                .respond_with(ResponseTemplate::new(400).set_body_string(NOT_READY_BODY))
-                .up_to_n_times(2)
-                .with_priority(1)
-                .mount(&server)
-                .await;
+            mount_exec_not_ready(&server, Some(2)).await;
             mount_exec_exited(&server).await;
             let api = test_api(&server.uri());
             exec_when_ready(&api, "run-w", true_exec(), FAST_POLL, JSON)
                 .await
                 .unwrap();
 
-            let requests = server.received_requests().await.unwrap();
-            let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
-            assert_eq!(methods, ["GET", "POST", "GET", "POST", "GET", "POST"]);
+            assert_eq!(
+                request_methods(&server).await,
+                ["GET", "POST", "GET", "POST", "GET", "POST"]
+            );
         }
 
         #[tokio::test]
@@ -5570,33 +5590,24 @@ mod tests {
             let server = MockServer::start().await;
             let bodies = vec![ready_run_body(), run_body("in_progress"), ready_run_body()];
             mount_get_run_bodies(&server, bodies).await;
-            Mock::given(method("POST"))
-                .and(path("/api/v0/runs/run-w/command"))
-                .respond_with(ResponseTemplate::new(400).set_body_string(NOT_READY_BODY))
-                .up_to_n_times(1)
-                .with_priority(1)
-                .mount(&server)
-                .await;
+            mount_exec_not_ready(&server, Some(1)).await;
             mount_exec_exited(&server).await;
             let api = test_api(&server.uri());
             exec_when_ready(&api, "run-w", true_exec(), FAST_POLL, JSON)
                 .await
                 .unwrap();
 
-            let requests = server.received_requests().await.unwrap();
-            let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
-            assert_eq!(methods, ["GET", "POST", "GET", "GET", "POST"]);
+            assert_eq!(
+                request_methods(&server).await,
+                ["GET", "POST", "GET", "GET", "POST"]
+            );
         }
 
         #[tokio::test]
         async fn exec_stops_retrying_once_the_run_ends() {
             let server = MockServer::start().await;
             mount_get_run_bodies(&server, vec![ready_run_body(), run_body("completed")]).await;
-            Mock::given(method("POST"))
-                .and(path("/api/v0/runs/run-w/command"))
-                .respond_with(ResponseTemplate::new(400).set_body_string(NOT_READY_BODY))
-                .mount(&server)
-                .await;
+            mount_exec_not_ready(&server, None).await;
             let api = test_api(&server.uri());
             let exec = exec_when_ready(&api, "run-w", true_exec(), FAST_POLL, JSON);
             let err = tokio::time::timeout(Duration::from_secs(5), exec)
@@ -5606,9 +5617,10 @@ mod tests {
 
             let report = format!("{err:?}");
             assert!(report.contains("This run is completed"), "got: {report}");
-            let requests = server.received_requests().await.unwrap();
-            let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
-            assert_eq!(methods, ["GET", "POST", "GET", "POST"]);
+            assert_eq!(
+                request_methods(&server).await,
+                ["GET", "POST", "GET", "POST"]
+            );
         }
 
         #[tokio::test]

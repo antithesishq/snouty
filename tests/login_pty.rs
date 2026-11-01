@@ -58,6 +58,12 @@ const EMPTY_REFUSED: &str = "An empty value is not valid.";
 
 const RETAINED: &str = "Retained your previously stored credentials";
 
+/// The answered API key line when a bare Enter keeps the stored key.
+const KEPT_ANSWER: &str = "Please enter your API Key (********9Pgw) kept";
+
+/// The answered API key line when a new key replaces the stored key.
+const NEW_KEY_ANSWER: &str = "Please enter your API Key (********9Pgw) ********";
+
 /// Spawn `snouty login --tenant … --repository …` on a PTY against an
 /// isolated `$HOME` and a mock backend that answers the `/auth/cli/config`
 /// probe with [`OAUTH_DISABLED`].
@@ -284,6 +290,13 @@ fn bare_enter_keeps_the_stored_api_key() {
     );
     assert!(seen.contains(RETAINED), "{seen}");
     assert!(!seen.contains("replacing"), "{seen}");
+    // The answered line says the key was kept, not masked as a new one.
+    let lines = rendered_lines(&seen);
+    assert!(
+        lines.iter().any(|line| line.ends_with(KEPT_ANSWER)),
+        "{seen}"
+    );
+    assert!(!seen.contains(NEW_KEY_ANSWER), "{seen}");
 }
 
 /// A bare Enter at the API key prompt is refused, and the prompt asks again.
@@ -354,9 +367,9 @@ fn a_different_api_key_asks_before_it_replaces_the_stored_key() {
         start_login_with(&[(CREDENTIALS_FILE, &api_key_credentials(FAKE_API_KEY_A))]);
     expect(&mut session, "Please enter your API Key (********9Pgw)");
     send(&mut session, &format!("{FAKE_API_KEY_B}\r"));
-    expect(&mut session, "Replace your stored API key?");
+    let mut seen = expect(&mut session, "Replace your stored API key?");
     send(&mut session, "y\r");
-    let seen = finish(session);
+    seen += &finish(session);
 
     assert!(
         rendered_lines(&seen)
@@ -364,6 +377,8 @@ fn a_different_api_key_asks_before_it_replaces_the_stored_key() {
             .contains("credentials.toml, replacing your stored API key."),
         "{seen}"
     );
+    assert!(seen.contains(NEW_KEY_ANSWER), "{seen}");
+    assert!(!seen.contains(KEPT_ANSWER), "{seen}");
     let creds = credentials(home.path());
     assert!(creds.contains(&api_key_line(FAKE_API_KEY_B)), "{creds}");
 }

@@ -18,7 +18,7 @@ use super::{ReadyDisplay, fetch_run_after, unclassified_status_error, wait_for_r
 pub(super) enum Needs {
     /// Wait until the run is ready or has ended, then send.
     Ready,
-    /// Send at once, and read the run only after an error.
+    /// Send at once.
     Live,
 }
 
@@ -42,14 +42,15 @@ pub(super) struct RetryPolicy {
     /// Shown on stderr while the endpoint answers [`RetryDecision::Retry`].
     pub waiting: &'static str,
     /// Whether an error from the endpoint is worth a retry, given the run as
-    /// last read. A run that has ended never retries.
+    /// read after it. A run that has ended never retries.
     pub decide: fn(&RunDetail, &Report) -> RetryDecision,
 }
 
 /// Send `send` once the run meets `policy.needs`, and send again every
 /// `poll` while the run has not ended and `policy` decides
-/// [`RetryDecision::Retry`]. The wait has no time limit. `explain` annotates
-/// the final error, with the run as last read.
+/// [`RetryDecision::Retry`]. The run is read after each error, for `decide`
+/// and for `explain`, which annotates the final error. The wait has no time
+/// limit.
 pub(super) async fn send_when_ready<T, Fut>(
     api: &AntithesisApi,
     run_id: &str,
@@ -61,27 +62,21 @@ pub(super) async fn send_when_ready<T, Fut>(
 where
     Fut: Future<Output = Result<T>>,
 {
+    // A run never leaves Ready, so one wait before the first send is enough.
+    if let Needs::Ready = policy.needs {
+        let mut waiting: Option<ReadyDisplay> = None;
+        let run = wait_for_run(api, run_id, poll, WaitUntil::Ready, |_| {
+            waiting
+                .get_or_insert_with(|| ReadyDisplay::new("waiting for the run to be ready"))
+                .show();
+        })
+        .await?;
+        if let Some(waiting) = waiting {
+            waiting.finish(&run);
+        }
+    }
     let mut retrying: Option<ReadyDisplay> = None;
     loop {
-        let ready_run = match policy.needs {
-            Needs::Ready => {
-                let mut waiting: Option<ReadyDisplay> = None;
-                let run = wait_for_run(api, run_id, poll, WaitUntil::Ready, |_| {
-                    if let Some(retrying) = retrying.take() {
-                        retrying.clear();
-                    }
-                    waiting
-                        .get_or_insert_with(|| ReadyDisplay::new("waiting for the run to be ready"))
-                        .show();
-                })
-                .await?;
-                if let Some(waiting) = waiting {
-                    waiting.finish(&run);
-                }
-                Some(run)
-            }
-            Needs::Live => None,
-        };
         let err = match send().await {
             Ok(value) => {
                 if let Some(retrying) = retrying {
@@ -91,15 +86,11 @@ where
             }
             Err(err) => err,
         };
-        let (run, err) = match ready_run {
-            Some(run) => (run, err),
-            None => fetch_run_after(api, run_id, err).await?,
-        };
+        let (run, err) = fetch_run_after(api, run_id, err).await?;
         if run.status.is_terminal() || (policy.decide)(&run, &err) == RetryDecision::Fail {
             return Err(explain(&run, err));
         }
-        // A status this build does not know may never end. Only a Live read
-        // can see one: the ready wait already fails it.
+        // A status this build does not know may never end.
         if run.status.is_unclassified() {
             return Err(unclassified_status_error(run_id, &run.status));
         }

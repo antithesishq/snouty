@@ -5586,27 +5586,10 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn exec_waits_again_when_the_run_leaves_ready() {
-            let server = MockServer::start().await;
-            let bodies = vec![ready_run_body(), run_body("in_progress"), ready_run_body()];
-            mount_get_run_bodies(&server, bodies).await;
-            mount_exec_not_ready(&server, Some(1)).await;
-            mount_exec_exited(&server).await;
-            let api = test_api(&server.uri());
-            exec_when_ready(&api, "run-w", true_exec(), FAST_POLL, JSON)
-                .await
-                .unwrap();
-
-            assert_eq!(
-                request_methods(&server).await,
-                ["GET", "POST", "GET", "GET", "POST"]
-            );
-        }
-
-        #[tokio::test]
         async fn exec_stops_retrying_once_the_run_ends() {
             let server = MockServer::start().await;
-            mount_get_run_bodies(&server, vec![ready_run_body(), run_body("completed")]).await;
+            let bodies = vec![ready_run_body(), ready_run_body(), run_body("completed")];
+            mount_get_run_bodies(&server, bodies).await;
             mount_exec_not_ready(&server, None).await;
             let api = test_api(&server.uri());
             let exec = exec_when_ready(&api, "run-w", true_exec(), FAST_POLL, JSON);
@@ -5619,8 +5602,29 @@ mod tests {
             assert!(report.contains("This run is completed"), "got: {report}");
             assert_eq!(
                 request_methods(&server).await,
-                ["GET", "POST", "GET", "POST"]
+                ["GET", "POST", "GET", "POST", "GET"]
             );
+        }
+
+        #[tokio::test]
+        async fn exec_explains_a_run_that_ends_before_the_command() {
+            let server = MockServer::start().await;
+            mount_get_run_bodies(&server, vec![ready_run_body(), run_body("completed")]).await;
+            let ended = "Run run-w has ended. Commands require an active run.";
+            Mock::given(method("POST"))
+                .and(path("/api/v0/runs/run-w/command"))
+                .respond_with(ResponseTemplate::new(400).set_body_json(json!({ "message": ended })))
+                .mount(&server)
+                .await;
+            let api = test_api(&server.uri());
+
+            let err = exec_when_ready(&api, "run-w", true_exec(), FAST_POLL, JSON)
+                .await
+                .unwrap_err();
+
+            // The note reads the run after the refusal, not before the send.
+            let report = format!("{err:?}");
+            assert!(report.contains("This run is completed"), "got: {report}");
         }
 
         #[tokio::test]
@@ -5647,8 +5651,8 @@ mod tests {
                     .unwrap_err();
 
                 assert_eq!(api_error_status(&err), Some(400));
-                let requests = server.received_requests().await.unwrap();
-                assert_eq!(requests.len(), 2, "message: {message}");
+                let methods = request_methods(&server).await;
+                assert_eq!(methods, ["GET", "POST", "GET"], "message: {message}");
             }
         }
 
@@ -5831,7 +5835,7 @@ mod tests {
                 report.contains("tenant releases before 62.2 do not serve the events-search"),
                 "got: {report}"
             );
-            assert_eq!(request_methods(&server).await, ["GET", "POST"]);
+            assert_eq!(request_methods(&server).await, ["GET", "POST", "GET"]);
         }
 
         #[tokio::test]
@@ -5866,7 +5870,8 @@ mod tests {
         #[tokio::test]
         async fn search_stops_retrying_once_the_run_ends() {
             let server = MockServer::start().await;
-            mount_get_run_bodies(&server, vec![ready_run_body(), run_body("completed")]).await;
+            let bodies = vec![ready_run_body(), ready_run_body(), run_body("completed")];
+            mount_get_run_bodies(&server, bodies).await;
             mount_count(&server, "run-w", false).await;
             let api = test_api(&server.uri());
 
@@ -5882,7 +5887,7 @@ mod tests {
             assert!(!report.contains("tenant releases before"), "got: {report}");
             assert_eq!(
                 request_methods(&server).await,
-                ["GET", "POST", "GET", "POST"]
+                ["GET", "POST", "GET", "POST", "GET"]
             );
         }
 

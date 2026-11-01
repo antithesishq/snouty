@@ -4,7 +4,8 @@ use serde::Serialize;
 
 use crate::api::{
     AntithesisApi, ApiVersion, HttpClient, MIN_CANCEL_RELEASE, MIN_EXEC_RELEASE,
-    MIN_SEARCH_RELEASE, VersionError, normalize_base_url,
+    MIN_LAUNCH_PARAMS_RELEASE, MIN_SEARCH_RELEASE, MIN_STREAM_RELEASE, VersionError,
+    normalize_base_url,
 };
 use crate::attributed_value::AttributedValue;
 use crate::auth::AuthenticationInfo;
@@ -129,6 +130,8 @@ enum CheckId {
     EventsSearch,
     ExecuteCommand,
     CancelRun,
+    LaunchParams,
+    RunStream,
     OauthConfigured,
 }
 
@@ -556,8 +559,8 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
     checks
 }
 
-/// An API that some commands assume the tenant serves, from a minimum tenant
-/// release, instead of probing for it.
+/// An API or a flag that some commands assume the tenant serves, from a
+/// minimum tenant release, instead of probing for it.
 struct ReleaseFloor {
     id: CheckId,
     serves: &'static str,
@@ -565,7 +568,7 @@ struct ReleaseFloor {
     consequence: &'static str,
 }
 
-const RELEASE_FLOORS: [ReleaseFloor; 3] = [
+const RELEASE_FLOORS: [ReleaseFloor; 5] = [
     ReleaseFloor {
         id: CheckId::EventsSearch,
         serves: "the events-search API",
@@ -583,6 +586,19 @@ const RELEASE_FLOORS: [ReleaseFloor; 3] = [
         serves: "the cancel-run API",
         min: MIN_CANCEL_RELEASE,
         consequence: "`runs cancel` fails",
+    },
+    ReleaseFloor {
+        id: CheckId::LaunchParams,
+        serves: "the compute-hours, setup-timeout and debug-duration params",
+        min: MIN_LAUNCH_PARAMS_RELEASE,
+        consequence: "`launch --max-compute-hours`, `launch --setup-timeout` and \
+                      `debug --duration` have no effect",
+    },
+    ReleaseFloor {
+        id: CheckId::RunStream,
+        serves: "property streaming",
+        min: MIN_STREAM_RELEASE,
+        consequence: "`runs stream` is not available",
     },
 ];
 
@@ -1132,7 +1148,7 @@ mod tests {
     #[test]
     fn release_floor_check_fires_only_on_a_known_gap() {
         let version = |release: &str| ApiVersion::new("v1".into(), release.into());
-        let [search, exec, cancel] = &RELEASE_FLOORS;
+        let [search, exec, cancel, launch_params, run_stream] = &RELEASE_FLOORS;
         assert!(release_floor_check(&version("62.2"), search).is_none());
         assert!(release_floor_check(&version("63.0"), search).is_none());
         // 58.11 ships the endpoint but not its contract, so it is too old.
@@ -1167,6 +1183,22 @@ mod tests {
             "{}",
             check.notes[0].text
         );
+
+        assert!(release_floor_check(&version("66.0"), launch_params).is_none());
+        let check = release_floor_check(&version("65.9"), launch_params).unwrap();
+        assert!(
+            check.notes[0].text.contains("`debug --duration`"),
+            "{}",
+            check.notes[0].text
+        );
+
+        assert!(release_floor_check(&version("65.3"), run_stream).is_none());
+        let check = release_floor_check(&version("65.2"), run_stream).unwrap();
+        assert!(
+            check.notes[0].text.contains("`runs stream`"),
+            "{}",
+            check.notes[0].text
+        );
     }
 
     #[test]
@@ -1178,8 +1210,12 @@ mod tests {
                 .collect()
         };
         let (major, minor) = MIN_EXEC_RELEASE;
-        assert_eq!(ids(format!("{}.99", major - 1)), [CheckId::ExecuteCommand]);
-        assert!(ids(format!("{major}.{minor}")).is_empty());
+        let newer = [CheckId::LaunchParams, CheckId::RunStream];
+        assert_eq!(
+            ids(format!("{}.99", major - 1)),
+            [&[CheckId::ExecuteCommand][..], &newer].concat()
+        );
+        assert_eq!(ids(format!("{major}.{minor}")), newer);
     }
 
     #[test]

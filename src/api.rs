@@ -102,6 +102,10 @@ pub const MIN_EXEC_RELEASE: (u64, u64) = (64, 0);
 /// floor and its doctor check once every supported tenant runs 63.0 or later.
 pub const MIN_CANCEL_RELEASE: (u64, u64) = (63, 0);
 
+/// The first tenant release that honors `launch --max-compute-hours`,
+/// `launch --setup-timeout` and `debug --duration`. `snouty doctor` checks it.
+pub const MIN_LAUNCH_PARAMS_RELEASE: (u64, u64) = (66, 0);
+
 /// The `container` value that executes a command on the host instead of in a
 /// container.
 const EXEC_HOST_CONTAINER: &str = "_ANTITHESIS_HOST";

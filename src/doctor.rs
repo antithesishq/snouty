@@ -4,7 +4,8 @@ use serde::Serialize;
 
 use crate::api::{
     AntithesisApi, ApiVersion, HttpClient, MIN_CANCEL_RELEASE, MIN_EXEC_RELEASE,
-    MIN_LAUNCH_PARAMS_RELEASE, MIN_SEARCH_RELEASE, VersionError, normalize_base_url,
+    MIN_LAUNCH_PARAMS_RELEASE, MIN_SEARCH_RELEASE, MIN_STREAM_RELEASE, VersionError,
+    normalize_base_url,
 };
 use crate::attributed_value::AttributedValue;
 use crate::auth::AuthenticationInfo;
@@ -596,7 +597,7 @@ const RELEASE_FLOORS: [ReleaseFloor; 5] = [
     ReleaseFloor {
         id: CheckId::RunStream,
         serves: "property streaming",
-        min: MIN_LAUNCH_PARAMS_RELEASE,
+        min: MIN_STREAM_RELEASE,
         consequence: "`runs stream` is not available",
     },
 ];
@@ -1191,8 +1192,8 @@ mod tests {
             check.notes[0].text
         );
 
-        assert!(release_floor_check(&version("66.0"), run_stream).is_none());
-        let check = release_floor_check(&version("65.9"), run_stream).unwrap();
+        assert!(release_floor_check(&version("65.3"), run_stream).is_none());
+        let check = release_floor_check(&version("65.2"), run_stream).unwrap();
         assert!(
             check.notes[0].text.contains("`runs stream`"),
             "{}",

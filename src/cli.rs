@@ -1057,12 +1057,12 @@ pub struct RunsListArgs {
     #[arg(short, long)]
     pub launcher: Option<String>,
 
-    /// Only show runs created at or after this date (e.g. 2026-10-01), time
+    /// Only show runs created after this date (e.g. 2026-10-01), time
     /// (e.g. 2026-10-01 12:00:00) or RFC 3339 time
     #[arg(long)]
     pub created_after: Option<TimeBound>,
 
-    /// Only show runs created before this date (e.g. 2026-11-01), time (e.g.
+    /// Only show runs created at or before this date (e.g. 2026-11-01), time (e.g.
     /// 2026-11-01 12:00:00) or RFC 3339 time
     #[arg(long)]
     pub created_before: Option<TimeBound>,

@@ -7,7 +7,7 @@ Each run has its ID, status, creation time, launcher, and test name. For a run w
 
 Each run prints as a block of `Label  value` lines, with a blank line between blocks: Run ID, Status, Created, Launcher, Test Name when the run has one, and the full Description. Created is in the local timezone. Add `utc` to show it in UTC.
 
-`created_after` and `created_before` take a date, which is the start of that day, a time as snouty prints it, such as `2026-10-01 12:00:00`, or an RFC 3339 time. A date or a time without a zone is in the local timezone, or in UTC with `utc`. `created_after` includes a run created at that time, and `created_before` does not. So a run's Created time with `created_after` selects that run and the runs after it, and with `created_before` the runs before it.
+`created_after` and `created_before` take a date, which is the start of that day, a time as snouty prints it, such as `2026-10-01 12:00:00`, or an RFC 3339 time. A date or a time without a zone is in the local timezone, or in UTC with `utc`. `created_after` lists the runs created after that time, and `created_before` the runs created at or before it. So a run's Created time with `created_after` leaves that run out, and with `created_before` includes it.
 
 Pass a run's ID to `runs_show` for its details, to `runs_properties` for its property results, or to `runs_wait` to wait until it is ready or complete.
 

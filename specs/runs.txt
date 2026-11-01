@@ -230,29 +230,26 @@ stdout '^Created +\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$'
 snouty runs list --detail -n 1 --utc
 stdout '^Created +\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$'
 
-# A run's Created time, pasted into --created-after, selects that run and the
-# newer ones, and into --created-before, the older ones. The pasted time is in
-# the display zone: local, or UTC with --utc.
+# A run's Created time pastes back into the created filters, read in the
+# display zone: local, or UTC with --utc. --created-after leaves out a run
+# created at that time, and --created-before includes it.
 mock-runs-server
 env TZ=Asia/Tokyo
 [!staging] snouty runs list --detail
 [!staging] stdout '^Created +2025-03-20 11:00:00$'
 [!staging] snouty --json runs list --created-after '2025-03-20 11:00:00'
-[!staging] stdout '"run_id":"run-1"'
-[!staging] ! stdout '"run_id":"run-2"'
-[!staging] snouty --json runs list --created-before '2025-03-20 11:00:00'
 [!staging] ! stdout '"run_id":"run-1"'
-[!staging] stdout '"run_id":"run-2"'
-[!staging] snouty --json runs list --created-after 2025-03-20T11:00:00
+[!staging] snouty --json runs list --created-before '2025-03-20 11:00:00'
 [!staging] stdout '"run_id":"run-1"'
+[!staging] stdout '"run_id":"run-2"'
+[!staging] snouty --json runs list --created-before 2025-03-20T10:59:59
+[!staging] ! stdout '"run_id":"run-1"'
 [!staging] snouty --utc runs list --detail
 [!staging] stdout '^Created +2025-03-20 02:00:00$'
-[!staging] snouty --json runs list --utc --created-after '2025-03-20 02:00:00'
+[!staging] snouty --json runs list --utc --created-after '2025-03-20 01:59:59'
 [!staging] stdout '"run_id":"run-1"'
-[!staging] ! stdout '"run_id":"run-2"'
 [!staging] snouty --json runs list --utc --created-before '2025-03-20 02:00:00'
-[!staging] ! stdout '"run_id":"run-1"'
-[!staging] stdout '"run_id":"run-2"'
+[!staging] stdout '"run_id":"run-1"'
 
 # A bad time names the forms that the flag takes.
 ! snouty runs list --created-after '2025-03-20 11:00'

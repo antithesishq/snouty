@@ -421,16 +421,27 @@ class ExecJsonCheck(unittest.TestCase):
         setup = self.line("ContainerCreating", command_id="setup-1", name="setup")
         passed, detail = self.check([setup, *self.script_lines()], system_events=True)
         self.assertTrue(passed, detail)
+        self.assertIn("1 from the run, not the script", detail)
 
-    def test_events_fail_with_only_script_lines(self):
-        passed, detail = self.check(self.script_lines(), system_events=True)
+    def test_events_fail_with_only_the_scripts_events(self):
+        received = {"moment": {}, "source": {"meta_for": "echidna-cmd-1"}}
+        rewarm = {"status": "rewarming", "percent_complete": 50}
+        rows = [rewarm, received, *self.script_lines()]
+        passed, detail = self.check(rows, system_events=True)
         self.assertFalse(passed, detail)
+
+    def test_fails_without_the_scripts_command_id(self):
+        line = self.line("hello from the run", name="bash_command", stream="info")
+        passed, detail = self.check([line], system_events=False)
+        self.assertFalse(passed, detail)
+        passed, _ = self.check([{"moment": {}, "source": None}], system_events=False)
+        self.assertFalse(passed)
 
     def test_without_events_only_script_lines_pass(self):
         passed, detail = self.check(self.script_lines(), system_events=False)
         self.assertTrue(passed, detail)
-        meta = {"moment": {}, "source": {"meta_for": "echidna-cmd-1"}}
-        passed, _ = self.check([meta, *self.script_lines()], system_events=False)
+        workload = self.line("workload: up", container="workload", name="workload")
+        passed, _ = self.check([workload, *self.script_lines()], system_events=False)
         self.assertFalse(passed, "a run event must not appear without --events")
 
 

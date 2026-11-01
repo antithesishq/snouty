@@ -2390,9 +2390,12 @@ def logs_begin_at(begin: str):
 
 def exec_json(needle: str, *, system_events: bool):
     """Check a `--json runs exec` story. With `--events`, events that the
-    script did not print appear. The script's events share one `command_id`;
-    other commands, such as setup, have a different one, and the run's
-    events have none."""
+    script did not print appear. The script's events share one `command_id`
+    (its lifecycle events name it in `meta_for`); other commands, such as
+    setup, have a different one, and the run's events have none."""
+
+    def source(row: dict) -> dict:
+        return row.get("source") or {}
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         try:
@@ -2401,22 +2404,30 @@ def exec_json(needle: str, *, system_events: bool):
             return (False, f"stdout is not NDJSON: {e}")
         if not rows:
             return (False, "no rows")
-        *events, result = rows
+        *rows, result = rows
+        # Rewarm progress rows have no moment; every event has one.
+        events = [e for e in rows if "moment" in e]
         exited = result.get("status") == "exited" and result.get("exit_code") == 0
-        script = next(
-            (e for e in events if needle in (e.get("output_text") or "")), None
+        script_id = next(
+            (
+                source(e).get("command_id")
+                for e in events
+                if needle in (e.get("output_text") or "")
+                and source(e).get("command_id")
+            ),
+            None,
         )
-        found = script is not None
-        script_id = (script or {}).get("source", {}).get("command_id")
+        if script_id is None:
+            return (False, f"no event with a command_id prints {needle!r}")
         system = sum(
-            script_id is None or e.get("source", {}).get("command_id") != script_id
+            script_id not in (source(e).get("command_id"), source(e).get("meta_for"))
             for e in events
         )
-        ok = sr.result.ok and exited and found and (system > 0) == system_events
+        ok = sr.result.ok and exited and (system > 0) == system_events
         return (
             ok,
             f"exit={sr.result.returncode}, {len(events)} events ({system} from the "
-            f"run, not the script), exited 0={exited}, {needle!r} found={found}",
+            f"run, not the script), exited 0={exited}, {needle!r} found",
         )
 
     return chk

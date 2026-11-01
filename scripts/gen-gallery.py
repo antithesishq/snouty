@@ -2369,22 +2369,17 @@ def logs_non_empty(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     return (n > 0, f"{n} log lines")
 
 
-# A log line's leading time. The group holds its UTC offset, when it has one.
-_LINE_TIME = re.compile(
-    r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d (?:([+-]\d\d:\d\d) )?\[", re.MULTILINE
-)
+# A log line's leading time, in the form snouty prints it: no zone.
+_LINE_TIME = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \[", re.MULTILINE)
 
 
-def build_logs_with_offset(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-    """Log lines, and each line's time carries its UTC offset. Every log
+def build_logs_with_times(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+    """Log lines, and each line starts with a well-formed time. Every log
     line counts, so a line whose time has another form fails the check."""
     ok, detail = logs_non_empty(sr, reg)
-    with_offset = sum(1 for o in _LINE_TIME.findall(sr.result.stdout) if o)
+    timed = len(_LINE_TIME.findall(sr.result.stdout))
     lines = len(sr.rows or [])
-    return (
-        ok and with_offset == lines,
-        f"{detail}, {with_offset}/{lines} times with an offset",
-    )
+    return (ok and timed == lines, f"{detail}, {timed}/{lines} lines with a time")
 
 
 def logs_with_footer(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
@@ -3095,10 +3090,10 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-build-logs",
             "Stream the build logs to see how a run was set up",
             "I want to see the build/setup logs for a run.",
-            "At least one build-log line is streamed, and each line's time is local, with "
-            "its UTC offset.",
+            "At least one build-log line is streamed, and each line starts with its local "
+            "time.",
             ["runs", "build-logs", d.success],
-            build_logs_with_offset,
+            build_logs_with_times,
         ),
         Story(
             "runs-stream-final",

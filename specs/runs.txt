@@ -216,14 +216,19 @@ stdout 'Run ID.*$R_run_id'
 [!staging] stdout '(?s)^Version Control\n  Repo Type    github\n  Repo Owner   acme\n  Repo Name    widgets\n  Branch       main\n  Commit       abc123\n  Commit Link  https://github.com/acme/widgets/commit/abc123\n\n'
 [!staging] ! stdout 'vcs\.'
 
-# Timestamps carry the local UTC offset, so one pastes back into
-# `--created-after`/`--created-before` as the same instant.
+# Timestamps are in the local timezone, without a zone, or in UTC with the
+# global --utc, which also works after the subcommand.
 mock-runs-server
-env TZ=UTC
+env TZ=Asia/Tokyo
 snouty runs show $R_run_id
-stdout '^Created +\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \+00:00$'
+stdout '^Created +\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$'
+[!staging] stdout '^Started +2025-03-20 11:01:12$'
+snouty --utc runs show $R_run_id
+[!staging] stdout '^Started +2025-03-20 02:01:12$'
 snouty runs list --detail -n 1
-stdout '^Created +\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \+00:00$'
+stdout '^Created +\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$'
+snouty runs list --detail -n 1 --utc
+stdout '^Created +\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$'
 
 # `snouty runs show` doesn't print the run page URL — `snouty runs show --web`
 # opens it.
@@ -427,14 +432,16 @@ stderr 'detail.*json'
 stderr 'detail.*json'
 
 # `snouty runs build-logs` prints each line's timestamp in the local timezone,
-# with its UTC offset. TZ is not UTC, so both the shifted hour and the offset show.
+# or in UTC with --utc. TZ is not UTC, so the two differ.
 mock-runs-server
 env TZ=Asia/Tokyo
 snouty runs build-logs $R_run_id
-stdout '^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \+09:00 \[[a-z]+\]'
-[!staging] stdout '2025-03-20 11:01:12 \+09:00 \[stdout\] Building image payments-service\.\.\.'
-[!staging] stdout '2025-03-20 11:01:15 \+09:00 \[stderr\] Warning: deprecated feature'
-[!staging] stdout '2025-03-20 11:01:20 \+09:00 \[stdout\] Build complete'
+stdout '^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \[[a-z]+\]'
+[!staging] stdout '^2025-03-20 11:01:12 \[stdout\] Building image payments-service\.\.\.'
+[!staging] stdout '^2025-03-20 11:01:15 \[stderr\] Warning: deprecated feature'
+[!staging] stdout '^2025-03-20 11:01:20 \[stdout\] Build complete'
+snouty runs build-logs $R_run_id --utc
+[!staging] stdout '^2025-03-20 02:01:12 \[stdout\] Building image payments-service\.\.\.'
 
 # `snouty --json runs build-logs` outputs raw NDJSON.
 mock-runs-server
@@ -1064,7 +1071,7 @@ stderr 'run not found: no-such-run'
 mock-runs-server
 env TZ=UTC
 ! snouty runs build-logs run-stream-error
-stdout -literal '2025-03-20 02:01:12 +00:00 [stdout] Building image payments-service...'
+stdout -literal '2025-03-20 02:01:12 [stdout] Building image payments-service...'
 stderr 'the server reported an error mid-stream: mock stream failure'
 stderr 'output produced before the error may be incomplete'
 

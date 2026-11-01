@@ -8,8 +8,8 @@ with no test name, the name is the first line of its description.
 
 Columns: RUN ID, STATUS, CREATED, LAUNCHER, RUN. RUN is the test name, or `-`
 for a run with no test name and no description. CREATED is the age of the run,
-such as `2h ago`. Use --detail for the full description, and for the creation
-time in the local timezone, with the UTC offset.
+such as `2h ago`. Use --detail for the full description and the creation time,
+which is in the local timezone. Add --utc to show it in UTC.
 
 Pass a run's ID to `runs show` for its details, to `runs properties` for its
 property results, or to `runs wait` to wait until it is ready or complete.
@@ -54,6 +54,9 @@ Options:
       --json
           Output JSON where supported (NDJSON for list/stream commands, pretty
           JSON otherwise)
+
+      --utc
+          Show times in UTC instead of the local timezone
 
       --verbose
           Log API requests to stderr (authentication tokens redacted)

@@ -10,8 +10,8 @@ stderr lines first when a launch failed.
 
 Each line prints as `timestamp [stream] line`. Grep the stream tag to narrow it.
 
-The timestamp is in the local timezone, with the UTC offset. Timestamps inside
-the line text stay as the build tools wrote them.
+The timestamp is in the local timezone. Add --utc to show it in UTC. Timestamps
+inside the line text stay as the build tools wrote them.
 
 Examples:
   snouty runs build-logs <run_id>
@@ -35,6 +35,9 @@ Options:
       --json
           Output JSON where supported (NDJSON for list/stream commands, pretty
           JSON otherwise)
+
+      --utc
+          Show times in UTC instead of the local timezone
 
       --verbose
           Log API requests to stderr (authentication tokens redacted)

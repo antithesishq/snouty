@@ -61,7 +61,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::render::sanitize;
-use crate::time::format_local_str;
+use crate::time::Zone;
 use crate::vtime::VTime;
 
 /// The vtime cell is a fixed character budget, truncated — never rounded — so
@@ -452,15 +452,18 @@ fn render_source(entry: &Value, detail: bool) -> String {
 /// separation included, no trailing newline.
 pub(crate) struct EventStreamRenderer {
     detail: bool,
+    /// The time zone of build-log timestamps.
+    zone: Zone,
     /// The current segment's hash; `Some` also means at least one block was
     /// written, so the next divider needs a blank line above it.
     last_input_hash: Option<String>,
 }
 
 impl EventStreamRenderer {
-    pub(crate) fn new(detail: bool) -> Self {
+    pub(crate) fn new(detail: bool, zone: Zone) -> Self {
         Self {
             detail,
+            zone,
             last_input_hash: None,
         }
     }
@@ -491,7 +494,7 @@ impl EventStreamRenderer {
             {
                 // `stream` is optional in the build-log schema.
                 let stream = entry["stream"].as_str().unwrap_or("out");
-                log::render_build_log(out, &format_local_str(timestamp), stream, text)?;
+                log::render_build_log(out, &self.zone.format_rfc3339(timestamp), stream, text)?;
             } else {
                 write!(out, "{}", sanitize(&entry.to_string()))?;
             }
@@ -558,7 +561,7 @@ pub(super) mod testkit {
     /// environment can't flake the suite.
     pub(crate) fn renderer(detail: bool) -> EventStreamRenderer {
         console::set_colors_enabled(false);
-        EventStreamRenderer::new(detail)
+        EventStreamRenderer::new(detail, super::Zone::Utc)
     }
 
     pub(crate) fn render_one(entry: &Value) -> String {

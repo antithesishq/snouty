@@ -38,6 +38,9 @@ Options:
           Output JSON where supported (NDJSON for list/stream commands, pretty
           JSON otherwise)
 
+      --utc
+          Show times in UTC instead of the local timezone
+
       --verbose
           Log API requests to stderr (authentication tokens redacted)
 

@@ -3,8 +3,8 @@ source: tests/help_snapshots.rs
 ---
 Show a run's metadata: id, status, timestamps, launcher, and description.
 
-The times Created, Started and Completed are in the local timezone, with the UTC
-offset.
+Created, Started and Completed are in the local timezone. Add --utc to show them
+in UTC.
 
 Max Compute Hours and Setup Timeout are the values that the launch requested,
 when the run has them. One compute hour is one core running for one hour.
@@ -43,6 +43,9 @@ Options:
       --json
           Output JSON where supported (NDJSON for list/stream commands, pretty
           JSON otherwise)
+
+      --utc
+          Show times in UTC instead of the local timezone
 
       --verbose
           Log API requests to stderr (authentication tokens redacted)

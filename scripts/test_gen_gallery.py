@@ -573,27 +573,26 @@ class RunReuse(unittest.TestCase):
         self.assertFalse(gallery.young_enough(old, now))
 
 
-class BuildLogsOffsetCheck(unittest.TestCase):
+class BuildLogsTimeCheck(unittest.TestCase):
     def check(self, stdout: str, rows: int) -> tuple[bool, str]:
-        story = gallery.Story("s", "t", "g", "j", [], gallery.build_logs_with_offset)
+        story = gallery.Story("s", "t", "g", "j", [], gallery.build_logs_with_times)
         result = gallery.Result(story.args, stdout, "", 0)
         run = gallery.StoryRun(story, result, [{}] * rows)
-        return gallery.build_logs_with_offset(run, gallery.Registry())
+        return gallery.build_logs_with_times(run, gallery.Registry())
 
-    def test_passes_when_every_line_has_an_offset(self):
-        stdout = (
-            "2026-10-31 18:38:50 -07:00 [stdout] one\n"
-            "2026-10-31 18:38:51 -07:00 [stderr] two\n"
-        )
+    def test_passes_when_every_line_has_a_time(self):
+        stdout = "2026-10-31 18:38:50 [stdout] one\n2026-10-31 18:38:51 [stderr] two\n"
         passed, detail = self.check(stdout, rows=2)
         self.assertTrue(passed, detail)
 
     def test_fails_when_a_line_falls_back_to_the_raw_time(self):
-        stdout = (
-            "2026-10-31 18:38:50 -07:00 [stdout] one\n"
-            "2025-03-20T02:01:12Z [stdout] two\n"
-        )
+        stdout = "2026-10-31 18:38:50 [stdout] one\n2025-03-20T02:01:12Z [stdout] two\n"
         passed, detail = self.check(stdout, rows=2)
+        self.assertFalse(passed, detail)
+
+    def test_fails_when_a_line_has_an_offset(self):
+        stdout = "2026-10-31 18:38:50 -07:00 [stdout] one\n"
+        passed, detail = self.check(stdout, rows=1)
         self.assertFalse(passed, detail)
 
 

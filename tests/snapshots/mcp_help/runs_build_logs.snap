@@ -7,7 +7,7 @@ Each log line has a timestamp, a stream (stdout or stderr), and its text. The wh
 
 Each line prints as `timestamp [stream] line`.
 
-The timestamp is in the local timezone, with the UTC offset. Timestamps inside the line text stay as the build tools wrote them.
+The timestamp is in the local timezone. Add `utc` to show it in UTC. Timestamps inside the line text stay as the build tools wrote them.
 
 Examples:
   runs_build_logs {"run_id": "<run_id>"}

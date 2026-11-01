@@ -32,15 +32,12 @@ const NO_BARE_NUMBER: &str = "a bare number is not permitted";
 /// Example values for a duration flag whose range takes each of them.
 pub const DURATION_EXAMPLES: &[&str] = &["90s", "5m", "1h30m"];
 
-/// The help text of a duration flag, with `examples` that the flag accepts.
+/// The help text of a duration flag, with at least two `examples` that the
+/// flag accepts.
 pub fn duration_help(examples: &[&str]) -> String {
-    let (last, rest) = examples.split_last().expect("at least one example");
-    let examples = if rest.is_empty() {
-        (*last).to_string()
-    } else {
-        format!("{} or {last}", rest.join(", "))
-    };
-    format!("A duration is {FORMAT}, such as {examples}; {NO_BARE_NUMBER}")
+    let (last, rest) = examples.split_last().expect("at least two examples");
+    let rest = rest.join(", ");
+    format!("A duration is {FORMAT}, such as {rest} or {last}; {NO_BARE_NUMBER}")
 }
 
 /// The error of a duration flag, with `examples` that the flag accepts.

@@ -1,14 +1,20 @@
-# To get started with Dependabot version updates, you'll need to specify which
-# package ecosystems to update and where the package manifests are located.
-# Please see the documentation for all configuration options:
-# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+# Options reference:
+# https://docs.github.com/code-security/dependabot/working-with-dependabot/dependabot-options-reference
 
 version: 2
+
+# Every version update, cargo and github-actions alike, lands in one pull
+# request a week. Security updates still open their own pull requests.
+multi-ecosystem-groups:
+  dependencies:
+    schedule:
+      interval: "weekly"
+
 updates:
   - package-ecosystem: "cargo"
     directory: "/"
-    schedule:
-      interval: "weekly"
+    multi-ecosystem-group: "dependencies"
+    patterns: ["*"]
     cooldown:
       default-days: 7
     # package.nix pins this git dependency's source by hash, which Dependabot
@@ -16,21 +22,17 @@ updates:
     # hand and update that hash.
     ignore:
       - dependency-name: "testscript-rs"
-  # The workflows pin every action to a commit. This keeps those pins current,
-  # in one grouped pull request a week. It does not update the tools in
-  # mise.toml; AGENTS.md says how to bump those.
+  # The workflows pin every action to a commit. This keeps those pins current.
+  # It does not update the tools in mise.toml; AGENTS.md says how to bump those.
   - package-ecosystem: "github-actions"
     # "/" covers .github/workflows; the local composite actions need their own.
     directories: ["/", "/.github/actions/*"]
+    multi-ecosystem-group: "dependencies"
+    patterns: ["*"]
     # Generated workflows. Update their pins through `dist init` and
     # `gh aw compile`; a hand edit breaks dist's check or is overwritten.
     exclude-paths:
       - ".github/workflows/release.yml"
       - ".github/workflows/weekly-audit.lock.yml"
-    schedule:
-      interval: "weekly"
     cooldown:
       default-days: 7
-    groups:
-      github-actions:
-        patterns: ["*"]

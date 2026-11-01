@@ -397,7 +397,7 @@ async fn cmd_runs_show(
     debug!("showing run: {run_id}");
 
     let api = AntithesisApi::new(settings, verbose)?;
-    let run = fetch_run(&api, run_id).await?;
+    let run = api.get_run(run_id).await?.untag();
 
     if web {
         return open_run_page(api.base_url(), &run.run_id, json);
@@ -554,7 +554,7 @@ async fn wait_for_run(
     loop {
         poll.tick().await;
 
-        let run = fetch_run(api, run_id).await?;
+        let run = api.get_run(run_id).await?.untag();
         if run.status.is_unclassified() {
             return Err(unclassified_status_error(run_id, &run.status));
         }
@@ -569,16 +569,6 @@ async fn wait_for_run(
     }
 }
 
-/// Read the run. A 404 from `get_run` is unambiguous: the run ID is bad, so
-/// say "run not found" instead of a bare "API error: 404 Not Found". Other
-/// errors pass through untouched.
-async fn fetch_run(api: &AntithesisApi, run_id: &str) -> Result<RunDetail> {
-    match api.get_run(run_id).await {
-        Ok(run) => Ok(run.untag()),
-        Err(err) => Err(explain_run_not_found(run_id, err)),
-    }
-}
-
 /// Read the run after `err`, an error from one of its endpoints. When the
 /// read fails, a 404 gets the read's error, which names a bad run ID; any
 /// other error stays the endpoint's own.
@@ -587,8 +577,8 @@ async fn fetch_run_after(
     run_id: &str,
     err: color_eyre::eyre::Report,
 ) -> Result<(RunDetail, color_eyre::eyre::Report), color_eyre::eyre::Report> {
-    match fetch_run(api, run_id).await {
-        Ok(run) => Ok((run, err)),
+    match api.get_run(run_id).await {
+        Ok(run) => Ok((run.untag(), err)),
         Err(read_err) if api_error_status(&err) == Some(404) => Err(read_err),
         Err(_) => Err(err),
     }
@@ -648,8 +638,7 @@ async fn cmd_runs_properties(
     let mut properties = api
         .stream_run_properties(run_id, &filter.statuses)
         .try_collect::<Vec<_>>()
-        .await
-        .map_err(|err| explain_run_not_found(run_id, err))?;
+        .await?;
 
     if let Some(group) = filter.group {
         let needle = group.to_lowercase();
@@ -746,7 +735,7 @@ fn no_properties_message(filter: &PropertyFilter) -> String {
 /// answer 404 `Resource not found` (observed on tenant orbitinghail, release
 /// 64.0), so its input hash cannot be checked.
 pub async fn ensure_run_debuggable(api: &AntithesisApi, run_id: &str) -> Result<()> {
-    let run = fetch_run(api, run_id).await?;
+    let run = api.get_run(run_id).await?.untag();
     if !run.is_ready_or_terminal() {
         return Err(user_error(format!(
             "run {run_id} is not ready yet: its status is {}",
@@ -785,23 +774,7 @@ pub async fn ensure_input_hash_exists(
     Ok(())
 }
 
-/// Translate an error from a run-scoped endpoint (show/build-logs/events/logs)
-/// into the shared friendly "run not found: X" message when the failure is a
-/// 404 for a bad run id. Any non-404 error passes through untouched (full
-/// report), so genuine server faults are never masked.
-///
-/// `show` calls `get_run` directly, so its 404 is already unambiguous; the
-/// streaming endpoints get the same treatment so every run-scoped subcommand
-/// reports a bad run id identically.
-fn explain_run_not_found(run_id: &str, err: color_eyre::eyre::Report) -> color_eyre::eyre::Report {
-    if api_error_status(&err) == Some(404) {
-        user_error(format!("run not found: {run_id}"))
-    } else {
-        err
-    }
-}
-
-/// Like [`explain_run_not_found`] but for endpoints whose 404 is ambiguous: it
+/// Explain the 404 of an endpoint whose 404 is ambiguous: it
 /// can mean a bad run id *or* a real run whose nested resource isn't available
 /// yet. Probes the run with `get_run` to disambiguate, falling back to "run not
 /// found: X" when the run is genuinely missing and otherwise to the original
@@ -5100,23 +5073,6 @@ mod tests {
                 .mount(&server)
                 .await;
             server
-        }
-
-        #[test]
-        fn run_not_found_rewrites_only_404() {
-            let rewritten = explain_run_not_found("BAD-ID", api_error(404, "API error: 404"));
-            let msg = format!("{rewritten:#}");
-            assert_eq!(msg, "run not found: BAD-ID");
-        }
-
-        #[test]
-        fn run_not_found_passes_through_non_404() {
-            // A 500 whose body mentions 404 must NOT be rewritten — it's a real
-            // server fault, not a missing run.
-            let original = api_error(500, "API error: 500 — upstream 404 page");
-            let result = explain_run_not_found("run-1", original);
-            assert_eq!(api_error_status(&result), Some(500));
-            assert!(format!("{result:#}").contains("upstream 404 page"));
         }
 
         #[tokio::test]

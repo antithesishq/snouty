@@ -209,6 +209,14 @@ fn rendered_lines(seen: &str) -> Vec<String> {
         .collect()
 }
 
+/// Whether `lines` hold `answer` as an answered prompt. inquire marks an
+/// answered prompt with `> `, and a prompt being typed in with `? `.
+fn answered(lines: &[String], answer: &str) -> bool {
+    lines
+        .iter()
+        .any(|line| line.ends_with(&format!("> {answer}")))
+}
+
 fn credentials(home: &Path) -> String {
     std::fs::read_to_string(home.join(CREDENTIALS_FILE)).unwrap_or_default()
 }
@@ -290,9 +298,9 @@ fn bare_enter_keeps_the_stored_api_key() {
     );
     assert!(seen.contains(RETAINED), "{seen}");
     assert!(!seen.contains("replacing"), "{seen}");
-    let shown = rendered_lines(&seen).join("\n");
-    assert!(shown.contains(KEPT_ANSWER), "{shown}");
-    assert!(!shown.contains(NEW_KEY_ANSWER), "{shown}");
+    let lines = rendered_lines(&seen);
+    assert!(answered(&lines, KEPT_ANSWER), "{lines:#?}");
+    assert!(!answered(&lines, NEW_KEY_ANSWER), "{lines:#?}");
 }
 
 /// A bare Enter at the API key prompt is refused, and the prompt asks again.
@@ -372,8 +380,9 @@ fn a_different_api_key_asks_before_it_replaces_the_stored_key() {
         shown.contains("credentials.toml, replacing your stored API key."),
         "{seen}"
     );
-    assert!(shown.contains(NEW_KEY_ANSWER), "{shown}");
-    assert!(!shown.contains(KEPT_ANSWER), "{shown}");
+    let lines = rendered_lines(&seen);
+    assert!(answered(&lines, NEW_KEY_ANSWER), "{lines:#?}");
+    assert!(!answered(&lines, KEPT_ANSWER), "{lines:#?}");
     let creds = credentials(home.path());
     assert!(creds.contains(&api_key_line(FAKE_API_KEY_B)), "{creds}");
 }

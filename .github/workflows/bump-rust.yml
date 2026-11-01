@@ -1,7 +1,10 @@
 name: bump rust
 
 # Keeps `rust-version` in Cargo.toml at the stable Rust that the rust-overlay
-# pin provides, the toolchain that nix builds with.
+# pin provides, the toolchain that nix builds with. The org does not let
+# GITHUB_TOKEN open pull requests, so this pushes the `bump-rust` branch and
+# files an issue with a link that opens the pull request. A pull request that a
+# person opens runs CI as usual.
 on:
   schedule:
     - cron: "0 8 * * 1"
@@ -18,9 +21,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write
-      pull-requests: write
-      # To start CI on the pull request; see the last step.
-      actions: write
+      issues: write
     steps:
       - uses: samueldr/lix-gha-installer-action@a0fee77b2a98bb7c5c0ed7ae6d6ad4903dbdad0d # v2026-06-15
 
@@ -45,7 +46,7 @@ jobs:
           grep -qx "rust-version = \"$msrv\"" Cargo.toml
           echo "MSRV=$msrv" >> "$GITHUB_ENV"
 
-      - name: Open the pull request
+      - name: Push the branch and file the issue
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -72,9 +73,18 @@ jobs:
           git switch -c "$branch"
           git commit -am "$title"
           git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
-          gh pr create --base main --head "$branch" --title "$title" --body "$body Opened by \`.github/workflows/bump-rust.yml\`."
-          # A push or pull request made with GITHUB_TOKEN starts no workflow, but
-          # a dispatch does. build.yml reports the required tests-passed check.
-          # slow-tests.yml runs the nix build.
-          gh workflow run build.yml --ref "$branch"
-          gh workflow run slow-tests.yml --ref "$branch"
+
+          # One open issue at a time: a later run updates it.
+          issue_title="Open the Rust bump pull request"
+          issue=$(gh issue list --state open --search "in:title \"$issue_title\"" --json number,title \
+            --jq "map(select(.title == \"$issue_title\")) | .[0].number // empty")
+          if [ -z "$issue" ]; then
+            issue=$(gh issue create --title "$issue_title" --body "Filed by \`.github/workflows/bump-rust.yml\`." | sed 's|.*/||')
+          fi
+          pr_body="$body Pushed by \`.github/workflows/bump-rust.yml\`."$'\n\n'"fixes #$issue"
+          link="https://github.com/${GITHUB_REPOSITORY}/compare/main...$branch?expand=1&title=$(jq -rn --arg v "$title" '$v|@uri')&body=$(jq -rn --arg v "$pr_body" '$v|@uri')"
+          gh issue edit "$issue" --body "The \`$branch\` branch is ready: $body
+
+          [Open the pull request]($link). Its title and description are filled in, and merging it closes this issue.
+
+          Filed by \`.github/workflows/bump-rust.yml\`, because the org does not let GITHUB_TOKEN open pull requests."

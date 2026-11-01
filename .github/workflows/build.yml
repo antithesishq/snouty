@@ -148,10 +148,9 @@ jobs:
         run: mise run lint:deny
 
       # A new advisory can appear with no change here, so it fails only the
-      # nightly and manual runs, not a pull request. bump-rust.yml starts CI on
-      # its pull request with a dispatch, so that branch counts as a pull request.
+      # nightly and manual runs, not a pull request.
       - name: cargo-deny advisories
-        if: ${{ !cancelled() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref_name != 'bump-rust')) }}
+        if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
         run: mise run lint:advisories
   # Checks the workspace on the exact `rust-version` in Cargo.toml, so a bump
   # there is the only edit this job needs.

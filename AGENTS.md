@@ -268,8 +268,8 @@ The `msrv` CI job checks the workspace on the MSRV, the `rust-version` in the
 `[workspace.package]` table of `Cargo.toml`, which both crates use. CI checks
 the linux-gnu and linux-musl targets on it, but not macOS. The MSRV tracks the
 newest stable Rust: each week, `.github/workflows/bump-rust.yml` updates the
-rust-overlay pin and sets that line to the overlay's stable release, in a pull
-request. To change the MSRV by hand, change only that line. To run the check
+rust-overlay pin, sets that line to the overlay's stable release, pushes the
+`bump-rust` branch, and files an issue with a link that opens its pull request. To change the MSRV by hand, change only that line. To run the check
 yourself:
 
 ```

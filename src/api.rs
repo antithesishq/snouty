@@ -1066,7 +1066,7 @@ impl AntithesisApi {
                     Some(end) => {
                         let (stream, passed_end) = truncate_at_end_vtime(stream, end);
                         let policy = match policy {
-                            CachePolicy::Cacheable => CachePolicy::Cacheable,
+                            CachePolicy::Cacheable(_) => CachePolicy::IMMUTABLE,
                             _ => CachePolicy::CacheableOnceComplete(passed_end),
                         };
                         (stream, policy)

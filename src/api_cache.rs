@@ -148,35 +148,29 @@ trait Clock: std::fmt::Debug + Send + Sync {
     fn remaining(&self, expiry: u64) -> Option<Duration>;
 }
 
-/// Wall-clock time in milliseconds since the Unix epoch. Entries outlive the
-/// process, so a monotonic clock would not do.
+/// Wall-clock time in whole seconds since the Unix epoch, the unit of
+/// `max-age`. Entries outlive the process, so a monotonic clock would not do.
 #[derive(Debug)]
 struct SystemClock;
 
 impl SystemClock {
-    fn now_ms() -> u64 {
+    fn now() -> Duration {
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0, millis)
+            .unwrap_or_default()
     }
 }
 
 impl Clock for SystemClock {
     fn expiry(&self, lifetime: Duration) -> u64 {
-        Self::now_ms().saturating_add(millis(lifetime))
+        Self::now().as_secs().saturating_add(lifetime.as_secs())
     }
 
     fn remaining(&self, expiry: u64) -> Option<Duration> {
-        expiry
-            .checked_sub(Self::now_ms())
-            .filter(|left| *left > 0)
-            .map(Duration::from_millis)
+        Duration::from_secs(expiry)
+            .checked_sub(Self::now())
+            .filter(|left| !left.is_zero())
     }
-}
-
-/// `duration` in whole milliseconds, saturating at `u64::MAX`.
-fn millis(duration: Duration) -> u64 {
-    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// The entry metadata field that holds the expiry (see [`Clock`]).
@@ -621,7 +615,7 @@ mod tests {
         assert!(cache.lookup_value::<Value>(&key).await.is_none());
     }
 
-    /// A clock in milliseconds that moves only when told to.
+    /// A clock in whole seconds that moves only when told to.
     #[derive(Clone, Debug, Default)]
     struct TestClock(Arc<std::sync::atomic::AtomicU64>);
 
@@ -631,7 +625,7 @@ mod tests {
         }
 
         fn advance(&self, by: Duration) {
-            self.0.fetch_add(millis(by), Ordering::Relaxed);
+            self.0.fetch_add(by.as_secs(), Ordering::Relaxed);
         }
 
         fn cache(&self, dir: &TempDir) -> ApiCache {
@@ -641,14 +635,14 @@ mod tests {
 
     impl Clock for TestClock {
         fn expiry(&self, lifetime: Duration) -> u64 {
-            self.now().saturating_add(millis(lifetime))
+            self.now().saturating_add(lifetime.as_secs())
         }
 
         fn remaining(&self, expiry: u64) -> Option<Duration> {
             expiry
                 .checked_sub(self.now())
                 .filter(|left| *left > 0)
-                .map(Duration::from_millis)
+                .map(Duration::from_secs)
         }
     }
 

@@ -191,7 +191,9 @@ mock-runs-server
 snouty --json runs list --status completed --limit 100
 [!staging] stdout '"run_id":"run-.*'
 [!staging] env_from_json_find run_id launcher!=debugging
-[staging] env_from_json_find run_id launcher=basic_test|basic_k8s_test|advanced_test|advanced_k8s_test
+# TODO: drop `Basic Test` and `Advanced Docker Compose test` once the server
+#    returns launcher ids again, not display names (issue #599).
+[staging] env_from_json_find run_id 'launcher=basic_test|basic_k8s_test|advanced_test|advanced_k8s_test|Basic Test|Advanced Docker Compose test'
 
 # `snouty runs show` displays run details in key-value format. Max Compute
 # Hours (from antithesis.max_compute_hours) and Setup Timeout (from

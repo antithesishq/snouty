@@ -2376,13 +2376,14 @@ _LINE_TIME = re.compile(
 
 
 def build_logs_with_offset(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-    """Log lines, and each line's time carries its UTC offset."""
+    """Log lines, and each line's time carries its UTC offset. Every log
+    line counts, so a line whose time has another form fails the check."""
     ok, detail = logs_non_empty(sr, reg)
-    offsets = _LINE_TIME.findall(sr.result.stdout)
-    with_offset = sum(1 for o in offsets if o)
+    with_offset = sum(1 for o in _LINE_TIME.findall(sr.result.stdout) if o)
+    lines = len(sr.rows or [])
     return (
-        ok and bool(offsets) and with_offset == len(offsets),
-        f"{detail}, {with_offset}/{len(offsets)} times with an offset",
+        ok and with_offset == lines,
+        f"{detail}, {with_offset}/{lines} times with an offset",
     )
 
 

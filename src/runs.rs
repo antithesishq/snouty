@@ -5287,6 +5287,11 @@ mod tests {
             }
         }
 
+        /// The answer of a ready run that does not accept commands yet,
+        /// verbatim from orbitinghail (release 67.0).
+        const NOT_READY_BODY: &str =
+            r#"{"message":"Run run-w is not ready yet. Try again shortly."}"#;
+
         /// Answer every command in run-w with an exit status of 0.
         async fn mount_exec_exited(server: &MockServer) {
             let result = crate::testutils::mock_exec_exited(Some(0));
@@ -5396,7 +5401,11 @@ mod tests {
                 .respond_with(ResponseTemplate::new(403).set_body_json(json!({"message": "no"})))
                 .mount(&server)
                 .await;
-            mount_get_run_statuses(&server, &["unknown"]).await;
+            Mock::given(method("GET"))
+                .and(path("/api/v0/runs/run-w"))
+                .respond_with(ResponseTemplate::new(500).set_body_json(json!({"message": "boom"})))
+                .mount(&server)
+                .await;
             let api = test_api(&server.uri());
 
             let err = open_run_stream(&api, "run-w", &[], FAST_POLL)
@@ -5538,11 +5547,9 @@ mod tests {
         async fn exec_retries_while_a_ready_run_is_not_ready_yet() {
             let server = MockServer::start().await;
             mount_get_run_bodies(&server, vec![ready_run_body()]).await;
-            // Verbatim from orbitinghail (release 67.0).
-            let not_ready = r#"{"message":"Run run-w is not ready yet. Try again shortly."}"#;
             Mock::given(method("POST"))
                 .and(path("/api/v0/runs/run-w/command"))
-                .respond_with(ResponseTemplate::new(400).set_body_string(not_ready))
+                .respond_with(ResponseTemplate::new(400).set_body_string(NOT_READY_BODY))
                 .up_to_n_times(2)
                 .with_priority(1)
                 .mount(&server)
@@ -5563,10 +5570,9 @@ mod tests {
             let server = MockServer::start().await;
             let bodies = vec![ready_run_body(), run_body("in_progress"), ready_run_body()];
             mount_get_run_bodies(&server, bodies).await;
-            let not_ready = r#"{"message":"Run run-w is not ready yet. Try again shortly."}"#;
             Mock::given(method("POST"))
                 .and(path("/api/v0/runs/run-w/command"))
-                .respond_with(ResponseTemplate::new(400).set_body_string(not_ready))
+                .respond_with(ResponseTemplate::new(400).set_body_string(NOT_READY_BODY))
                 .up_to_n_times(1)
                 .with_priority(1)
                 .mount(&server)
@@ -5586,10 +5592,9 @@ mod tests {
         async fn exec_stops_retrying_once_the_run_ends() {
             let server = MockServer::start().await;
             mount_get_run_bodies(&server, vec![ready_run_body(), run_body("completed")]).await;
-            let not_ready = r#"{"message":"Run run-w is not ready yet. Try again shortly."}"#;
             Mock::given(method("POST"))
                 .and(path("/api/v0/runs/run-w/command"))
-                .respond_with(ResponseTemplate::new(400).set_body_string(not_ready))
+                .respond_with(ResponseTemplate::new(400).set_body_string(NOT_READY_BODY))
                 .mount(&server)
                 .await;
             let api = test_api(&server.uri());
@@ -5860,6 +5865,9 @@ mod tests {
                 .unwrap_err();
 
             assert_eq!(api_error_status(&err), Some(404));
+            // A run from a release that serves the search gets no release hint.
+            let report = format!("{err:?}");
+            assert!(!report.contains("tenant releases before"), "got: {report}");
             assert_eq!(
                 request_methods(&server).await,
                 ["GET", "POST", "GET", "POST"]

@@ -4616,9 +4616,9 @@ def build_tty_stories() -> list[Story]:
                 (_ASK_KEY, ENTER),
             ),
             tty_persisted(
-                prompts=(_TENANT, _REPO),
-                # Keeping the stored key replaces nothing.
-                absent_prompts=("replacing your stored",),
+                prompts=(_TENANT, _REPO, f"{_ASK_KEY} (********9Pgw) kept"),
+                # Keeping the stored key replaces nothing, and shows no new mask.
+                absent_prompts=("replacing your stored", "(********9Pgw) ********"),
                 files=(
                     (_SETTINGS, (f'tenant = "{_TENANT}"', f'repository = "{_REPO}"')),
                     # Every answer was a bare Enter, so the stored key must survive.

@@ -58,6 +58,12 @@ const EMPTY_REFUSED: &str = "An empty value is not valid.";
 
 const RETAINED: &str = "Retained your previously stored credentials";
 
+/// The answered API key line when a bare Enter keeps the stored key.
+const KEPT_ANSWER: &str = "Please enter your API Key (********9Pgw) kept";
+
+/// The answered API key line when a new key replaces the stored key.
+const NEW_KEY_ANSWER: &str = "Please enter your API Key (********9Pgw) ********";
+
 /// Spawn `snouty login --tenant … --repository …` on a PTY against an
 /// isolated `$HOME` and a mock backend that answers the `/auth/cli/config`
 /// probe with [`OAUTH_DISABLED`].
@@ -203,6 +209,14 @@ fn rendered_lines(seen: &str) -> Vec<String> {
         .collect()
 }
 
+/// Whether `lines` hold `answer` as an answered prompt. inquire marks an
+/// answered prompt with `> `, and a prompt being typed in with `? `.
+fn answered(lines: &[String], answer: &str) -> bool {
+    lines
+        .iter()
+        .any(|line| line.ends_with(&format!("> {answer}")))
+}
+
 fn credentials(home: &Path) -> String {
     std::fs::read_to_string(home.join(CREDENTIALS_FILE)).unwrap_or_default()
 }
@@ -284,6 +298,9 @@ fn bare_enter_keeps_the_stored_api_key() {
     );
     assert!(seen.contains(RETAINED), "{seen}");
     assert!(!seen.contains("replacing"), "{seen}");
+    let lines = rendered_lines(&seen);
+    assert!(answered(&lines, KEPT_ANSWER), "{lines:#?}");
+    assert!(!answered(&lines, NEW_KEY_ANSWER), "{lines:#?}");
 }
 
 /// A bare Enter at the API key prompt is refused, and the prompt asks again.
@@ -354,16 +371,18 @@ fn a_different_api_key_asks_before_it_replaces_the_stored_key() {
         start_login_with(&[(CREDENTIALS_FILE, &api_key_credentials(FAKE_API_KEY_A))]);
     expect(&mut session, "Please enter your API Key (********9Pgw)");
     send(&mut session, &format!("{FAKE_API_KEY_B}\r"));
-    expect(&mut session, "Replace your stored API key?");
+    let mut seen = expect(&mut session, "Replace your stored API key?");
     send(&mut session, "y\r");
-    let seen = finish(session);
+    seen += &finish(session);
 
+    let shown = rendered_lines(&seen).join(" ");
     assert!(
-        rendered_lines(&seen)
-            .join(" ")
-            .contains("credentials.toml, replacing your stored API key."),
+        shown.contains("credentials.toml, replacing your stored API key."),
         "{seen}"
     );
+    let lines = rendered_lines(&seen);
+    assert!(answered(&lines, NEW_KEY_ANSWER), "{lines:#?}");
+    assert!(!answered(&lines, KEPT_ANSWER), "{lines:#?}");
     let creds = credentials(home.path());
     assert!(creds.contains(&api_key_line(FAKE_API_KEY_B)), "{creds}");
 }

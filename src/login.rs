@@ -111,10 +111,20 @@ impl Prompter for InquirePrompter {
             None => "hit Esc to skip",
         };
         let keeps_stored = hint.is_some();
+        // The validator accepts an empty answer only when it keeps the stored
+        // secret.
+        let formatter = |input: &str| {
+            if input.is_empty() {
+                "kept".to_owned()
+            } else {
+                Password::DEFAULT_FORMATTER(input)
+            }
+        };
         let password = Password::new(&message)
             .with_display_mode(PasswordDisplayMode::Masked)
             .without_confirmation()
             .with_help_message(help)
+            .with_formatter(&formatter)
             .with_validator(move |input: &str| {
                 Ok(if refuses_blank_secret(input, keeps_stored) {
                     Validation::Invalid("An empty value is not valid.".into())

@@ -216,7 +216,7 @@ pub(crate) fn cached_docs_etag_path(cache_home: &TempDir) -> PathBuf {
 /// Move the last docs update check ten minutes into the past, so the next
 /// command checks again.
 pub(crate) fn backdate_docs_check(cache_home: &TempDir) {
-    let ten_minutes_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(10 * 60);
+    let ten_minutes_ago = std::time::SystemTime::now() - std::time::Duration::from_mins(10);
     std::fs::File::options()
         .write(true)
         .open(cached_docs_etag_path(cache_home))

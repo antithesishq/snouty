@@ -257,21 +257,22 @@ Clippy runs with the `pedantic` group, and `[workspace.lints.clippy]` in
 `Cargo.toml` gives a reason for each pedantic lint that is off. Fix a
 cargo-deny advisory with an upgrade; ignore it in `deny.toml` only when no
 upgrade exists, with a reason and a link. A pull request fails on licenses,
-bans and sources; only the nightly run fails on advisories. Do not fix a
+bans and sources; only the nightly and manual runs fail on advisories. Do not fix a
 zizmor finding in a generated workflow by hand; change its generator, as
 `.github/zizmor.yml` describes.
 
 The Python scripts share one set of dependencies, in the top-level
 `pyproject.toml` and `uv.lock`. Do not declare dependencies in a script.
 
-The `msrv` CI job checks the workspace on the MSRV, the `rust-version` in the
-`[workspace.package]` table of `Cargo.toml`, which both crates use. CI checks
-the linux-gnu and linux-musl targets on it, but not macOS. To change the MSRV,
-change only that line. To run the check yourself:
-
-```
-cargo +<rust-version> check --workspace --all-targets --locked
-```
+`rust-toolchain.toml` pins the exact Rust that CI, the release builds, nix and
+local builds use, and its minor version is the MSRV, the `rust-version` in the
+`[workspace.package]` table of `Cargo.toml`, which both crates use. Both track
+the newest stable Rust: each week, `.github/workflows/bump-rust.yml` updates the
+rust-overlay pin, sets both to the overlay's newest stable release, and, when
+that is a new release, pushes the `bump-rust` branch and files an issue with a
+link that opens its pull request. To change the Rust version by hand, change
+both lines, and update the rust-overlay pin (`npins update rust-overlay`) when
+it does not have that release yet.
 
 On a system that cannot run mise's prebuilt binaries, such as NixOS, use the
 nix shell (`nix-shell`, or direnv with `.envrc`) instead. It has the same

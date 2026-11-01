@@ -112,13 +112,13 @@ mod tests {
         let lifetime = |age: &str| {
             freshness_lifetime(&headers(&[("cache-control", "max-age=3600"), ("age", age)]))
         };
-        assert_eq!(lifetime("600"), Some(Duration::from_secs(3000)));
+        assert_eq!(lifetime("600"), Some(Duration::from_mins(50)));
         assert_eq!(lifetime("3600"), None);
         assert_eq!(lifetime("7200"), None);
         assert_eq!(lifetime("soon"), Some(Duration::from_secs(3600)));
         assert_eq!(lifetime("99999999999999999999"), None);
-        assert_eq!(lifetime("600, 30"), Some(Duration::from_secs(3000)));
-        assert_eq!(lifetime(" 600 "), Some(Duration::from_secs(3000)));
+        assert_eq!(lifetime("600, 30"), Some(Duration::from_mins(50)));
+        assert_eq!(lifetime(" 600 "), Some(Duration::from_mins(50)));
     }
 
     // The lifetime is max-age less Age while that is positive, and a

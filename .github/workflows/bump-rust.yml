@@ -1,0 +1,91 @@
+name: bump rust
+
+# Keeps the toolchain in rust-toolchain.toml, and `rust-version` in Cargo.toml
+# with it, at the newest stable Rust that the rust-overlay pin provides. The org does not let
+# GITHUB_TOKEN open pull requests, so this pushes the `bump-rust` branch and
+# files an issue with a link that opens the pull request. A pull request that a
+# person opens runs CI as usual.
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+
+permissions: {}
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: read
+    steps:
+      - uses: samueldr/lix-gha-installer-action@a0fee77b2a98bb7c5c0ed7ae6d6ad4903dbdad0d # v2026-06-15
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Update rust-overlay
+        run: |
+          npins=$(nix-build nixpkgs.nix -A npins --no-out-link)
+          "$npins/bin/npins" update rust-overlay
+
+      - name: Set the toolchain and rust-version
+        run: |
+          json=$(nix-instantiate --eval --json -E '(import ./nixpkgs.nix { }).rust-bin.stable.latest.default.version')
+          version=$(jq -r . <<< "$json")
+          [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "unexpected Rust version: $json" >&2; exit 1; }
+          msrv=${version%.*}
+          sed -i "s/^channel = \".*\"$/channel = \"$version\"/" rust-toolchain.toml
+          grep -qx "channel = \"$version\"" rust-toolchain.toml
+          sed -i "s/^rust-version = \".*\"$/rust-version = \"$msrv\"/" Cargo.toml
+          grep -qx "rust-version = \"$msrv\"" Cargo.toml
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Push the branch and file the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch=bump-rust
+          # Leave an open pull request alone: a force-push would drop any fix
+          # pushed to it. The next run after it merges bumps again. The lookup
+          # is on its own line, so that a failed one stops the step.
+          open_pr=$(gh pr list --head "$branch" --state open --json number --jq '.[].number')
+          if [ -n "$open_pr" ]; then
+            echo "A $branch pull request is already open"
+            exit 0
+          fi
+          # The overlay pin moves only with a new Rust release, so that a week
+          # with no release asks nothing of anyone.
+          if git diff --quiet rust-toolchain.toml; then
+            echo "Already on Rust $VERSION"
+            exit 0
+          fi
+          title="Bump Rust to $VERSION, and rust-overlay with it"
+          body="Pins the toolchain to Rust $VERSION, the newest stable release in the updated rust-overlay pin, and sets \`rust-version\` to ${VERSION%.*}."
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "$title"
+          git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
+
+          # One open issue at a time: a later run updates it.
+          issue_title="Open the Rust bump pull request"
+          issue=$(gh issue list --state open --search "in:title \"$issue_title\"" --json number,title \
+            --jq "map(select(.title == \"$issue_title\")) | .[0].number // empty")
+          if [ -z "$issue" ]; then
+            issue=$(gh issue create --title "$issue_title" --body "Filed by \`.github/workflows/bump-rust.yml\`." | sed 's|.*/||')
+          fi
+          pr_body="$body Pushed by \`.github/workflows/bump-rust.yml\`."$'\n\n'"fixes #$issue"
+          link="https://github.com/${GITHUB_REPOSITORY}/compare/main...$branch?expand=1&title=$(jq -rn --arg v "$title" '$v|@uri')&body=$(jq -rn --arg v "$pr_body" '$v|@uri')"
+          gh issue edit "$issue" --body "The \`$branch\` branch is ready: $body
+
+          [Open the pull request]($link). Its title and description are filled in, and merging it closes this issue.
+
+          Filed by \`.github/workflows/bump-rust.yml\`, because the org does not let GITHUB_TOKEN open pull requests."

@@ -5,12 +5,17 @@
 
 version: 2
 updates:
-  - package-ecosystem: "rust-toolchain"
+  - package-ecosystem: "cargo"
     directory: "/"
     schedule:
       interval: "weekly"
     cooldown:
       default-days: 7
+    # package.nix pins this git dependency's source by hash, which Dependabot
+    # does not update, and PR CI does not run the nix build. Bump its commit by
+    # hand and update that hash.
+    ignore:
+      - dependency-name: "testscript-rs"
   # The workflows pin every action to a commit. This keeps those pins current,
   # in one grouped pull request a week. It does not update the tools in
   # mise.toml; AGENTS.md says how to bump those.

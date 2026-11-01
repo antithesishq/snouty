@@ -1,0 +1,5 @@
+# Steps that dist runs in release.yml before each build (`github-build-setup`
+# in dist-workspace.toml). Installs the toolchain that rust-toolchain.toml pins,
+# which the runner image may not have.
+- name: Install Rust
+  run: rustup toolchain install --no-self-update

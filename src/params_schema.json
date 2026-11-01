@@ -82,7 +82,7 @@
         },
         "antithesis.performance_tier": {
           "type": "string",
-          "description": "Performance tier for the run. Higher tiers explore system states faster through more parallelism. They also consume core hours faster. Defaults to standard. A plain string, so a tier newer than this snouty passes through."
+          "description": "Performance tier for the run. Higher tiers explore system states faster through more parallelism. They also consume compute hours faster. Defaults to standard. A plain string, so a tier newer than this snouty passes through."
         },
         "antithesis.fault_tolerance": {
           "type": "string",

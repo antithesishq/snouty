@@ -22,7 +22,7 @@ use crate::help::{self, Attach};
 use crate::params::MAX_SETUP_TIMEOUT_MINUTES;
 use crate::runs::usage::{Rollup, TimeBound};
 use crate::stdio;
-use crate::time::{BareUnit, HumanDuration, duration_format};
+use crate::time::{BareUnit, DURATION_EXAMPLES, HumanDuration, duration_error, duration_help};
 use crate::vtime::VTime;
 
 pub(crate) mod tree;
@@ -98,16 +98,25 @@ impl std::str::FromStr for KVPair {
     }
 }
 
-/// Parses the value of the duration flag `flag`. A bare number still counts
-/// `bare` units, as the flag has always taken, but is deprecated: once `check`
-/// passes, a warning on stderr shows the value with a unit.
+/// The examples of `launch --setup-timeout`, whole minutes from 1 to 30.
+const SETUP_TIMEOUT_EXAMPLES: &[&str] = &["10m", "30m"];
+
+/// The examples of `debug --duration`, from 30 minutes to 6 hours.
+const DEBUG_DURATION_EXAMPLES: &[&str] = &["45m", "2h", "1h30m"];
+
+/// Parses the value of the duration flag `flag`, whose error gives
+/// `examples`. A bare number still counts `bare` units, as the flag has always
+/// taken, but is deprecated: once `check` passes, a warning on stderr shows the
+/// value with a unit.
 fn parse_duration_flag(
     value: &str,
     flag: &str,
     bare: BareUnit,
+    examples: &[&str],
     check: impl FnOnce(HumanDuration) -> Result<(), &'static str>,
 ) -> Result<HumanDuration, String> {
-    let (duration, was_bare) = HumanDuration::parse_flag(value, bare).map_err(|e| e.to_string())?;
+    let (duration, was_bare) =
+        HumanDuration::parse_flag(value, bare).map_err(|_| duration_error(examples))?;
     check(duration)?;
     if was_bare {
         eprintln!("{}", bare_number_warning(flag, duration));
@@ -123,33 +132,51 @@ fn bare_number_warning(flag: &str, duration: HumanDuration) -> String {
 /// at least 1 minute — polling faster cannot observe a run (which takes
 /// minutes to hours) any sooner, and only hammers the API.
 fn parse_poll_interval(value: &str) -> Result<HumanDuration, String> {
-    parse_duration_flag(value, "--poll-interval", BareUnit::Minutes, |interval| {
-        (interval.seconds() >= 60)
-            .then_some(())
-            .ok_or("poll interval must be at least 1 minute")
-    })
+    parse_duration_flag(
+        value,
+        "--poll-interval",
+        BareUnit::Minutes,
+        DURATION_EXAMPLES,
+        |interval| {
+            (interval.seconds() >= 60)
+                .then_some(())
+                .ok_or("poll interval must be at least 1 minute")
+        },
+    )
 }
 
 /// clap value parser for `runs wait --timeout`.
 fn parse_wait_timeout(value: &str) -> Result<HumanDuration, String> {
-    parse_duration_flag(value, "--timeout", BareUnit::Minutes, |_| Ok(()))
+    parse_duration_flag(
+        value,
+        "--timeout",
+        BareUnit::Minutes,
+        DURATION_EXAMPLES,
+        |_| Ok(()),
+    )
 }
 
 /// clap value parser for `launch --duration`: a [`HumanDuration`] of at least
 /// 1 minute, so that a typo such as `0` fails before it starts a run.
 fn parse_launch_duration(value: &str) -> Result<HumanDuration, String> {
-    parse_duration_flag(value, "--duration", BareUnit::Minutes, |duration| {
-        (duration.seconds() >= 60)
-            .then_some(())
-            .ok_or("must be at least 1 minute")
-    })
+    parse_duration_flag(
+        value,
+        "--duration",
+        BareUnit::Minutes,
+        DURATION_EXAMPLES,
+        |duration| {
+            (duration.seconds() >= 60)
+                .then_some(())
+                .ok_or("must be at least 1 minute")
+        },
+    )
 }
 
 /// clap value parser for `launch --setup-timeout`. Returns whole minutes. A
 /// bare number is an error, because a reader could expect seconds.
 fn parse_setup_timeout(value: &str) -> Result<u64, String> {
     let seconds = HumanDuration::parse(value, BareUnit::Refused)
-        .map_err(|e| e.to_string())?
+        .map_err(|_| duration_error(SETUP_TIMEOUT_EXAMPLES))?
         .seconds();
     if !(60..=MAX_SETUP_TIMEOUT_MINUTES * 60).contains(&seconds) {
         return Err(format!(
@@ -165,29 +192,47 @@ fn parse_setup_timeout(value: &str) -> Result<u64, String> {
 /// clap value parser for `debug --duration`: a [`HumanDuration`] in the range
 /// that the API accepts for `antithesis.debugging.length_hours`.
 fn parse_debug_duration(value: &str) -> Result<HumanDuration, String> {
-    parse_duration_flag(value, "--duration", BareUnit::Minutes, |duration| {
-        (30 * 60..=6 * 60 * 60)
-            .contains(&duration.seconds())
-            .then_some(())
-            .ok_or("must be from 30 minutes to 6 hours")
-    })
+    parse_duration_flag(
+        value,
+        "--duration",
+        BareUnit::Minutes,
+        DEBUG_DURATION_EXAMPLES,
+        |duration| {
+            (30 * 60..=6 * 60 * 60)
+                .contains(&duration.seconds())
+                .then_some(())
+                .ok_or("must be from 30 minutes to 6 hours")
+        },
+    )
 }
 
 /// clap value parser for `validate --timeout`, whose bare number counts
 /// seconds.
 fn parse_validate_timeout(value: &str) -> Result<HumanDuration, String> {
-    parse_duration_flag(value, "--timeout", BareUnit::Seconds, |_| Ok(()))
+    parse_duration_flag(
+        value,
+        "--timeout",
+        BareUnit::Seconds,
+        DURATION_EXAMPLES,
+        |_| Ok(()),
+    )
 }
 
 /// clap value parser for `runs exec --timeout`, whose bare number counts
 /// seconds. Its floor is 1 second, because a 0-second timeout always times
 /// out. The server sets the ceiling.
 fn parse_exec_timeout(value: &str) -> Result<HumanDuration, String> {
-    parse_duration_flag(value, "--timeout", BareUnit::Seconds, |timeout| {
-        (timeout.seconds() > 0)
-            .then_some(())
-            .ok_or("must be at least 1 second")
-    })
+    parse_duration_flag(
+        value,
+        "--timeout",
+        BareUnit::Seconds,
+        DURATION_EXAMPLES,
+        |timeout| {
+            (timeout.seconds() > 0)
+                .then_some(())
+                .ok_or("must be at least 1 second")
+        },
+    )
 }
 
 #[derive(Parser)]
@@ -529,9 +574,9 @@ pub struct ValidateArgs {
         long,
         default_value = "2m",
         value_parser = parse_validate_timeout,
-        help = concat!(
-            "Maximum time to wait for containers to start and reach setup-complete. ",
-            duration_format!(),
+        help = format!(
+            "Maximum time to wait for containers to start and reach setup-complete. {}",
+            duration_help(DURATION_EXAMPLES),
         ),
     )]
     pub timeout: HumanDuration,
@@ -592,9 +637,9 @@ pub struct LaunchArgs {
         long,
         value_parser = parse_launch_duration,
         conflicts_with = "max_compute_hours",
-        help = concat!(
-            "Deprecated: use --max-compute-hours. Test duration, at least 1 minute. ",
-            duration_format!(),
+        help = format!(
+            "Deprecated: use --max-compute-hours. Test duration, at least 1 minute. {}",
+            duration_help(DURATION_EXAMPLES),
         ),
     )]
     pub duration: Option<HumanDuration>,
@@ -609,10 +654,10 @@ pub struct LaunchArgs {
     #[arg(
         long,
         value_parser = parse_setup_timeout,
-        help = concat!(
+        help = format!(
             "Fail the run immediately if setup takes longer than this, in whole minutes \
-             from 1m to 30m. The default is 5m. ",
-            duration_format!(),
+             from 1m to 30m. The default is 5m. {}",
+            duration_help(SETUP_TIMEOUT_EXAMPLES),
         ),
     )]
     pub setup_timeout: Option<u64>,
@@ -649,7 +694,7 @@ pub struct LaunchArgs {
     pub filter_source_matching: Option<String>,
 
     /// Performance tier for the run. Higher tiers explore system states faster
-    /// through more parallelism. They also consume core hours faster. The
+    /// through more parallelism. They also consume compute hours faster. The
     /// server default is `standard`. To send a tier that is not listed, use
     /// `--param=antithesis.performance_tier=TIER`.
     #[arg(long, value_enum)]
@@ -718,10 +763,10 @@ pub struct DebugArgs {
     #[arg(
         long,
         value_parser = parse_debug_duration,
-        help = concat!(
+        help = format!(
             "How long the session stays available, from 30 minutes to 6 hours; runs from \
-             releases before 67 ignore it. ",
-            duration_format!(),
+             releases before 67 ignore it. {}",
+            duration_help(DEBUG_DURATION_EXAMPLES),
         ),
     )]
     pub duration: Option<HumanDuration>,
@@ -769,16 +814,19 @@ pub enum RunsCommands {
             long,
             default_value = "1m",
             value_parser = parse_poll_interval,
-            help = concat!("Time between status checks, at least 1 minute. ", duration_format!()),
+            help = format!(
+                "Time between status checks, at least 1 minute. {}",
+                duration_help(DURATION_EXAMPLES),
+            ),
         )]
         poll_interval: HumanDuration,
 
         #[arg(
             long,
             value_parser = parse_wait_timeout,
-            help = concat!(
-                "Give up after this long; without it the wait is unbounded. ",
-                duration_format!(),
+            help = format!(
+                "Give up after this long; without it the wait is unbounded. {}",
+                duration_help(DURATION_EXAMPLES),
             ),
         )]
         timeout: Option<HumanDuration>,
@@ -932,10 +980,10 @@ pub enum RunsCommands {
         #[arg(
             long,
             value_parser = parse_exec_timeout,
-            help = concat!(
+            help = format!(
                 "Maximum time the server waits for the script to exit before reporting a \
-                 timeout [default: the server's, 10m as of release 64.0]. ",
-                duration_format!(),
+                 timeout [default: the server's, 10m as of release 64.0]. {}",
+                duration_help(DURATION_EXAMPLES),
             ),
         )]
         timeout: Option<HumanDuration>,
@@ -1091,6 +1139,7 @@ impl Default for RunsListArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::any::TypeId;
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("args should parse")
@@ -1412,5 +1461,58 @@ mod tests {
             "snouty", "runs", "search", "RUN", "q", "--check", "--follow",
         ]);
         assert!(parsed.is_err(), "expected --check --follow to conflict");
+    }
+
+    /// Each example in the help and the error of a duration flag parses for
+    /// that flag, so it lies in the flag's range.
+    #[test]
+    fn duration_examples_parse_for_their_flag() {
+        fn parse(path: &[&str], flag: &str, value: &str) -> Result<(), clap::Error> {
+            let argv = path.iter().copied().chain([flag, value]);
+            match Cli::command().try_get_matches_from(argv) {
+                Err(e) if e.kind() == clap::error::ErrorKind::ValueValidation => Err(e),
+                _ => Ok(()),
+            }
+        }
+
+        fn visit(command: &clap::Command, path: &[&str], found: &mut Vec<String>) {
+            for arg in command.get_arguments() {
+                let flag = format!("--{}", arg.get_long().unwrap_or_default());
+                let name = format!("{} {flag}", path.join(" "));
+                let help = arg.get_help().map(ToString::to_string).unwrap_or_default();
+                let Some((_, format)) = help.split_once("A duration is ") else {
+                    assert!(
+                        arg.get_value_parser().type_id() != TypeId::of::<HumanDuration>(),
+                        "{name} does not give the duration format: {help}"
+                    );
+                    continue;
+                };
+                let examples = format.split_once("such as ").unwrap().1;
+                let examples = examples.split_once(';').unwrap().0;
+                let examples = examples
+                    .split([',', ' '])
+                    .filter(|e| !e.is_empty() && *e != "or");
+                let error = parse(path, &flag, "1.5h").unwrap_err().to_string();
+                let error_examples = error.split_once("(e.g. ").unwrap().1;
+                let error_examples = error_examples.split_once(')').unwrap().0;
+                let error_examples = error_examples.split(", ").map(|e| e.trim_matches('`'));
+                for example in examples.chain(error_examples) {
+                    if let Err(e) = parse(path, &flag, example) {
+                        panic!("{name} refuses its example {example}: {e}");
+                    }
+                }
+                found.push(name);
+            }
+            for sub in command.get_subcommands() {
+                let path = [path, &[sub.get_name()]].concat();
+                visit(sub, &path, found);
+            }
+        }
+
+        let mut found = Vec::new();
+        visit(tree::root(), &["snouty"], &mut found);
+        for name in ["snouty launch --setup-timeout", "snouty debug --duration"] {
+            assert!(found.iter().any(|f| f == name), "{name} not in {found:?}");
+        }
     }
 }

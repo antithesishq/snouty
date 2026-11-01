@@ -3180,7 +3180,8 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "I want the run to fail fast if setup takes more than 10 minutes, and I "
             "pass a bare 10.",
             "snouty fails and says that --setup-timeout needs a unit, and that a bare "
-            "number is not permitted. It starts no run. Non-zero exit.",
+            "number is not permitted. Each example it gives, such as 10m, is a value "
+            "that --setup-timeout accepts. It starts no run. Non-zero exit.",
             [
                 "launch",
                 "--launcher",

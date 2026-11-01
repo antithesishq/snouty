@@ -55,7 +55,7 @@ Options:
       --duration <DURATION>
           How long the session stays available, from 30 minutes to 6 hours; runs
           from releases before 67 ignore it. A duration is a whole number with
-          an h, m or s unit, or several in that order, such as 90s, 5m or 1h30m;
+          an h, m or s unit, or several in that order, such as 45m, 2h or 1h30m;
           a bare number is not permitted
 
       --title <TITLE>

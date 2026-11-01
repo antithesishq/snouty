@@ -24,23 +24,24 @@ use std::time::Duration;
 const SECS_PER_MINUTE: u64 = 60;
 const SECS_PER_HOUR: u64 = 60 * SECS_PER_MINUTE;
 
-/// The duration format, which every duration flag and param documents.
 const FORMAT: &str = "a whole number with an h, m or s unit, or several in that order";
 
 const NO_BARE_NUMBER: &str = "a bare number is not permitted";
 
-/// Example values for a duration flag whose range takes each of them.
+/// Use these only for a flag whose range accepts each one.
 pub const DURATION_EXAMPLES: &[&str] = &["90s", "5m", "1h30m"];
 
-/// The help text of a duration flag, with at least two `examples` that the
-/// flag accepts.
+/// `examples` must hold at least two values that the flag accepts.
 pub fn duration_help(examples: &[&str]) -> String {
-    let (last, rest) = examples.split_last().expect("at least two examples");
+    let (last, rest) = examples
+        .split_last()
+        .filter(|(_, rest)| !rest.is_empty())
+        .expect("at least two examples");
     let rest = rest.join(", ");
     format!("A duration is {FORMAT}, such as {rest} or {last}; {NO_BARE_NUMBER}")
 }
 
-/// The error of a duration flag, with `examples` that the flag accepts.
+/// `examples` must hold values that the flag accepts.
 pub fn duration_error(examples: &[&str]) -> String {
     let examples = examples
         .iter()
@@ -198,8 +199,8 @@ impl FromStr for HumanDuration {
 }
 
 /// Error from parsing a [`HumanDuration`]. Its message gives the documented
-/// format, which leaves out the deprecated bare number. It gives no examples,
-/// because a flag's range can refuse them: a flag uses [`duration_error`].
+/// format, without the deprecated bare number. It gives no examples, because a
+/// flag's range can refuse them; see [`duration_error`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParseDurationError;
 

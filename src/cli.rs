@@ -98,10 +98,9 @@ impl std::str::FromStr for KVPair {
     }
 }
 
-/// A duration flag. A bare number still counts `bare` units, as the flag has
-/// always taken, but is deprecated; with [`BareUnit::Refused`] it is an error.
-/// The help and the parse error give the same `examples`, which `check`
-/// accepts.
+/// A bare number counts `bare` units and prints a deprecation warning;
+/// [`BareUnit::Refused`] makes it an error. `check` must accept each of
+/// `examples`, which the help and the parse error both show.
 struct DurationFlag {
     name: &'static str,
     bare: BareUnit,
@@ -110,13 +109,10 @@ struct DurationFlag {
 }
 
 impl DurationFlag {
-    /// The help text: `about`, then the duration format with the examples.
     fn help(&self, about: &str) -> String {
         format!("{about} {}", duration_help(self.examples))
     }
 
-    /// clap value parser. Once `check` passes, a bare number prints a warning
-    /// on stderr that shows the value with a unit.
     fn parse(&self, value: &str) -> Result<HumanDuration, String> {
         let (duration, was_bare) = HumanDuration::parse_flag(value, self.bare)
             .map_err(|_| duration_error(self.examples))?;
@@ -132,14 +128,12 @@ fn bare_number_warning(flag: &str, duration: HumanDuration) -> String {
     format!("warning: a bare number for {flag} is deprecated; write {duration}")
 }
 
-/// `Ok` if `ok`, else `message` as the error.
 fn require(ok: bool, message: &str) -> Result<(), String> {
     ok.then_some(()).ok_or_else(|| message.to_string())
 }
 
-/// `runs wait --poll-interval`: at least 1 minute — polling faster cannot
-/// observe a run (which takes minutes to hours) any sooner, and only hammers
-/// the API.
+/// A run takes minutes to hours, so polling more often than once a minute
+/// sees nothing sooner and only loads the API.
 const POLL_INTERVAL: DurationFlag = DurationFlag {
     name: "--poll-interval",
     bare: BareUnit::Minutes,
@@ -152,7 +146,6 @@ const POLL_INTERVAL: DurationFlag = DurationFlag {
     },
 };
 
-/// `runs wait --timeout`.
 const WAIT_TIMEOUT: DurationFlag = DurationFlag {
     name: "--timeout",
     bare: BareUnit::Minutes,
@@ -160,8 +153,8 @@ const WAIT_TIMEOUT: DurationFlag = DurationFlag {
     check: |_| Ok(()),
 };
 
-/// `launch --duration`: at least 1 minute, so that a typo such as `0` fails
-/// before it starts a run.
+/// At least 1 minute, so that a typo such as `0` fails before it starts a
+/// run.
 const LAUNCH_DURATION: DurationFlag = DurationFlag {
     name: "--duration",
     bare: BareUnit::Minutes,
@@ -169,9 +162,7 @@ const LAUNCH_DURATION: DurationFlag = DurationFlag {
     check: |duration| require(duration.seconds() >= 60, "must be at least 1 minute"),
 };
 
-/// `launch --setup-timeout`: whole minutes from 1 to
-/// [`MAX_SETUP_TIMEOUT_MINUTES`]. A bare number is an error, because a reader
-/// could expect seconds.
+/// Refuses a bare number, because a reader could expect seconds.
 const SETUP_TIMEOUT: DurationFlag = DurationFlag {
     name: "--setup-timeout",
     bare: BareUnit::Refused,
@@ -186,8 +177,7 @@ const SETUP_TIMEOUT: DurationFlag = DurationFlag {
     },
 };
 
-/// `debug --duration`: the range that the API accepts for
-/// `antithesis.debugging.length_hours`.
+/// The range that the API accepts for `antithesis.debugging.length_hours`.
 const DEBUG_DURATION: DurationFlag = DurationFlag {
     name: "--duration",
     bare: BareUnit::Minutes,
@@ -200,7 +190,6 @@ const DEBUG_DURATION: DurationFlag = DurationFlag {
     },
 };
 
-/// `validate --timeout`, whose bare number counts seconds.
 const VALIDATE_TIMEOUT: DurationFlag = DurationFlag {
     name: "--timeout",
     bare: BareUnit::Seconds,
@@ -208,9 +197,8 @@ const VALIDATE_TIMEOUT: DurationFlag = DurationFlag {
     check: |_| Ok(()),
 };
 
-/// `runs exec --timeout`, whose bare number counts seconds. Its floor is 1
-/// second, because a 0-second timeout always times out. The server sets the
-/// ceiling.
+/// The floor is 1 second, because a 0-second timeout always times out. The
+/// server sets the ceiling.
 const EXEC_TIMEOUT: DurationFlag = DurationFlag {
     name: "--timeout",
     bare: BareUnit::Seconds,
@@ -1439,8 +1427,8 @@ mod tests {
         assert!(parsed.is_err(), "expected --check --follow to conflict");
     }
 
-    /// Each example in the help and the error of a duration flag parses for
-    /// that flag, so it lies in the flag's range.
+    /// Each duration flag gives the duration format, and each example in its
+    /// help and its error is a value that the flag accepts.
     #[test]
     fn duration_examples_parse_for_their_flag() {
         fn parse(path: &[&str], flag: &str, value: &str) -> Result<(), clap::Error> {

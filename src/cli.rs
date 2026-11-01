@@ -1428,56 +1428,59 @@ mod tests {
         assert!(parsed.is_err(), "expected --check --follow to conflict");
     }
 
-    /// Each duration flag gives the duration format, and each example in its
-    /// help and its error is a value that the flag accepts.
+    /// Every duration flag, with the path of its command.
+    const DURATION_FLAGS: [(&[&str], DurationFlag); 9] = [
+        (&["validate"], VALIDATE_TIMEOUT),
+        (&["launch"], LAUNCH_DURATION),
+        (&["launch"], SETUP_TIMEOUT),
+        (&["run"], LAUNCH_DURATION),
+        (&["run"], SETUP_TIMEOUT),
+        (&["debug"], DEBUG_DURATION),
+        (&["runs", "wait"], POLL_INTERVAL),
+        (&["runs", "wait"], WAIT_TIMEOUT),
+        (&["runs", "exec"], EXEC_TIMEOUT),
+    ];
+
+    /// Each example of a duration flag, which its help and its error show,
+    /// passes the flag's own parser and the parser of its clap arg, so it lies
+    /// in the flag's range.
     #[test]
-    fn duration_examples_parse_for_their_flag() {
-        fn parse(path: &[&str], flag: &str, value: &str) -> Result<(), clap::Error> {
-            let argv = path.iter().copied().chain([flag, value]);
-            match Cli::command().try_get_matches_from(argv) {
-                Err(e) if e.kind() == clap::error::ErrorKind::ValueValidation => Err(e),
-                _ => Ok(()),
+    fn duration_examples_pass_their_flag() {
+        for (path, flag) in &DURATION_FLAGS {
+            for example in flag.examples {
+                if let Err(e) = flag.parse(example) {
+                    panic!("{path:?} {} refuses its example {example}: {e}", flag.name);
+                }
+                let argv = ["snouty"].iter().chain(*path).chain([&flag.name, example]);
+                if let Err(e) = Cli::command().try_get_matches_from(argv)
+                    && e.kind() == clap::error::ErrorKind::ValueValidation
+                {
+                    panic!("{path:?} {} refuses its example {example}: {e}", flag.name);
+                }
             }
         }
+    }
 
-        fn visit(command: &clap::Command, path: &[&str], found: &mut Vec<String>) {
+    /// Each arg that parses into a [`HumanDuration`] is in [`DURATION_FLAGS`].
+    #[test]
+    fn duration_flags_lists_every_duration_arg() {
+        fn visit(command: &clap::Command, path: &[&str]) {
             for arg in command.get_arguments() {
-                let flag = format!("--{}", arg.get_long().unwrap_or_default());
-                let name = format!("{} {flag}", path.join(" "));
-                let help = arg.get_help().map(ToString::to_string).unwrap_or_default();
-                let Some((_, format)) = help.split_once("A duration is ") else {
-                    assert!(
-                        arg.get_value_parser().type_id() != TypeId::of::<HumanDuration>(),
-                        "{name} does not give the duration format: {help}"
-                    );
+                if arg.get_value_parser().type_id() != TypeId::of::<HumanDuration>() {
                     continue;
-                };
-                let examples = format.split_once("such as ").unwrap().1;
-                let examples = examples.split_once(';').unwrap().0;
-                let examples = examples
-                    .split([',', ' '])
-                    .filter(|e| !e.is_empty() && *e != "or");
-                let error = parse(path, &flag, "1.5h").unwrap_err().to_string();
-                let error_examples = error.split_once("(e.g. ").unwrap().1;
-                let error_examples = error_examples.split_once(')').unwrap().0;
-                let error_examples = error_examples.split(", ").map(|e| e.trim_matches('`'));
-                for example in examples.chain(error_examples) {
-                    if let Err(e) = parse(path, &flag, example) {
-                        panic!("{name} refuses its example {example}: {e}");
-                    }
                 }
-                found.push(name);
+                let flag = format!("--{}", arg.get_long().unwrap_or_default());
+                assert!(
+                    DURATION_FLAGS
+                        .iter()
+                        .any(|(p, f)| *p == path && f.name == flag),
+                    "{path:?} {flag} is not in DURATION_FLAGS"
+                );
             }
             for sub in command.get_subcommands() {
-                let path = [path, &[sub.get_name()]].concat();
-                visit(sub, &path, found);
+                visit(sub, &[path, &[sub.get_name()]].concat());
             }
         }
-
-        let mut found = Vec::new();
-        visit(tree::root(), &["snouty"], &mut found);
-        for name in ["snouty launch --setup-timeout", "snouty debug --duration"] {
-            assert!(found.iter().any(|f| f == name), "{name} not in {found:?}");
-        }
+        visit(tree::root(), &[]);
     }
 }

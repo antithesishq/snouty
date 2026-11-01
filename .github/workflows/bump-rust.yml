@@ -57,17 +57,14 @@ jobs:
             echo "A $branch pull request is already open"
             exit 0
           fi
-          if git diff --quiet; then
-            echo "Already on Rust $MSRV with the newest rust-overlay"
+          # The overlay pin moves only with a new Rust release, so that a week
+          # with no release asks nothing of anyone.
+          if git diff --quiet Cargo.toml; then
+            echo "Already on Rust $MSRV"
             exit 0
           fi
-          if git diff --quiet Cargo.toml; then
-            title="Bump rust-overlay"
-            body="Updates the rust-overlay pin. The newest stable Rust is still $MSRV, so \`rust-version\` does not change."
-          else
-            title="Bump the MSRV to Rust $MSRV, and rust-overlay with it"
-            body="Sets \`rust-version\` to Rust $MSRV, the newest stable release in the updated rust-overlay pin."
-          fi
+          title="Bump the MSRV to Rust $MSRV, and rust-overlay with it"
+          body="Sets \`rust-version\` to Rust $MSRV, the newest stable release in the updated rust-overlay pin."
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"

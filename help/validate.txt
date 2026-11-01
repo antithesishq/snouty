@@ -3,14 +3,14 @@ Validate local Antithesis setup
 Compose configs:
 Starts the compose config locally and waits for the setup-complete event. All images must be available locally.
 
-Then validate checks that each test command in /opt/antithesis/test/v1 has a recognized prefix and is executable, and prints how many test commands of each type it found. Test commands are not executed.
+Validation fails before anything starts when docker-compose.yaml depends on your shell environment, such as a ${VAR} that resolves differently in the Antithesis environment. Use {{ t("--allow-compose-divergence")? }} to make that a warning.
 
-Validate fails when docker-compose.yaml depends on your shell environment, such as a ${VAR} that resolves differently in the Antithesis environment. Use {{ t("--allow-compose-divergence")? }} to make that a warning.
+Once setup is complete, each test command in /opt/antithesis/test/v1/<test_name>/ must have a recognized prefix and be executable. Validation prints how many test commands of each type it found. Test commands are not executed.
 
-If your container engine runs in a VM, set SNOUTY_TEMP_DIR to a directory that the VM shares with write access.
+If your container engine runs in a VM that does not share this machine's temp directory, validation times out waiting for the setup-complete event. Set SNOUTY_TEMP_DIR to a directory that the VM shares with write access.
 
 Kubernetes configs:
-Checks the manifests in the manifests/ directory without starting anything. {{ t("--timeout")? }}, {{ t("--keep-running")? }} and {{ t("--allow-compose-divergence")? }} do not apply.
+Checks the manifests in the manifests/ directory without deploying them. {{ t("--timeout")? }}, {{ t("--keep-running")? }} and {{ t("--allow-compose-divergence")? }} do not apply.
 
 Examples:
   {{ t("snouty validate ./config")? }}

@@ -131,8 +131,8 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
-      - name: "Update Rust"
-        run: "rustup update stable --no-self-update"
+      - name: "Install Rust"
+        run: "rustup toolchain install --no-self-update"
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest

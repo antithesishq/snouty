@@ -1,6 +1,6 @@
 name: Set up tools
 description: >-
-  Install the stable Rust toolchain and restore the cargo cache. Install mise,
+  Install the Rust toolchain that rust-toolchain.toml pins and restore the cargo cache. Install mise,
   checked against a SHA-256 for the runner platform, and the mise.toml tools at
   the versions in mise.lock, which mise-action caches. Every later step finds
   the tools on PATH, from any directory. Check out the repository first.
@@ -17,9 +17,13 @@ inputs:
 runs:
   using: composite
   steps:
+    - id: toolchain
+      shell: bash
+      run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+
     - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
       with:
-        toolchain: stable
+        toolchain: ${{ steps.toolchain.outputs.channel }}
         targets: ${{ inputs.targets }}
         components: ${{ inputs.components }}
 

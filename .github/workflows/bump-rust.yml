@@ -1,7 +1,7 @@
 name: bump rust
 
-# Keeps `rust-version` in Cargo.toml at the stable Rust that the rust-overlay
-# pin provides, the toolchain that nix builds with. The org does not let
+# Keeps the toolchain in rust-toolchain.toml, and `rust-version` in Cargo.toml
+# with it, at the newest stable Rust that the rust-overlay pin provides. The org does not let
 # GITHUB_TOKEN open pull requests, so this pushes the `bump-rust` branch and
 # files an issue with a link that opens the pull request. A pull request that a
 # person opens runs CI as usual.
@@ -36,16 +36,17 @@ jobs:
           npins=$(nix-build nixpkgs.nix -A npins --no-out-link)
           "$npins/bin/npins" update rust-overlay
 
-      # rust-toolchain.toml names `stable`, which the updated overlay resolves
-      # to its newest stable release.
-      - name: Set rust-version
+      - name: Set the toolchain and rust-version
         run: |
-          version=$(nix-instantiate --eval --json -E '(import ./nixpkgs.nix { }).rustToolchain.version')
-          msrv=$(jq -r . <<< "$version" | cut -d. -f1,2)
-          [[ $msrv =~ ^[0-9]+\.[0-9]+$ ]] || { echo "unexpected Rust version: $version" >&2; exit 1; }
+          json=$(nix-instantiate --eval --json -E '(import ./nixpkgs.nix { }).rust-bin.stable.latest.default.version')
+          version=$(jq -r . <<< "$json")
+          [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "unexpected Rust version: $json" >&2; exit 1; }
+          msrv=${version%.*}
+          sed -i "s/^channel = \".*\"$/channel = \"$version\"/" rust-toolchain.toml
+          grep -qx "channel = \"$version\"" rust-toolchain.toml
           sed -i "s/^rust-version = \".*\"$/rust-version = \"$msrv\"/" Cargo.toml
           grep -qx "rust-version = \"$msrv\"" Cargo.toml
-          echo "MSRV=$msrv" >> "$GITHUB_ENV"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Push the branch and file the issue
         env:
@@ -62,12 +63,12 @@ jobs:
           fi
           # The overlay pin moves only with a new Rust release, so that a week
           # with no release asks nothing of anyone.
-          if git diff --quiet Cargo.toml; then
-            echo "Already on Rust $MSRV"
+          if git diff --quiet rust-toolchain.toml; then
+            echo "Already on Rust $VERSION"
             exit 0
           fi
-          title="Bump the MSRV to Rust $MSRV, and rust-overlay with it"
-          body="Sets \`rust-version\` to Rust $MSRV, the newest stable release in the updated rust-overlay pin."
+          title="Bump Rust to $VERSION, and rust-overlay with it"
+          body="Pins the toolchain to Rust $VERSION, the newest stable release in the updated rust-overlay pin, and sets \`rust-version\` to ${VERSION%.*}."
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"

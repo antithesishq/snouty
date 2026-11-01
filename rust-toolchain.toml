@@ -1,3 +1,6 @@
+# The Rust that CI, the release builds, nix and local builds all use. Its minor
+# version is the MSRV, `rust-version` in Cargo.toml. bump-rust.yml moves both to
+# the newest stable release each week.
 [toolchain]
-channel = "stable"
+channel = "1.99.1"
 components = ["clippy", "llvm-tools", "rustfmt"]

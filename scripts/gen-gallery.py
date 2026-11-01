@@ -2390,9 +2390,9 @@ def logs_begin_at(begin: str):
 
 def exec_json(needle: str, *, system_events: bool):
     """Check a `--json runs exec` story. With `--events`, events that the
-    script did not print appear. The script's lines carry its `command_id`,
-    taken from the line with `needle`; other commands, such as setup, carry
-    their own, and the run's events carry none."""
+    script did not print appear. The script's events share one `command_id`;
+    other commands, such as setup, have a different one, and the run's
+    events have none."""
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         try:

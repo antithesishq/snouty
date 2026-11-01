@@ -13,7 +13,7 @@ use crate::api::{AntithesisApi, RunDetail};
 use crate::cli::WaitUntil;
 use crate::error::api_error_status;
 
-use super::{ReadyDisplay, look_at_run, wait_for_run};
+use super::{ReadyDisplay, fetch_run, unclassified_status_error, wait_for_run};
 
 /// What an endpoint needs from the run before it sends.
 #[derive(Clone, Copy)]
@@ -96,7 +96,7 @@ where
         };
         let run = match ready_run {
             Some(run) => run,
-            None => match look_at_run(api, run_id).await {
+            None => match fetch_run(api, run_id).await {
                 Ok(run) => run,
                 // A 404 can mean a bad run ID, which the read names. Any
                 // other error is the endpoint's own.
@@ -106,6 +106,10 @@ where
         };
         if run.status.is_terminal() || (policy.decide)(&run, &err) == RetryDecision::Fail {
             return Err(explain(&run, err));
+        }
+        // A status this build does not know may never end.
+        if run.status.is_unclassified() {
+            return Err(unclassified_status_error(run_id, &run.status));
         }
         retrying
             .get_or_insert_with(|| ReadyDisplay::new(policy.waiting))

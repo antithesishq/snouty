@@ -397,12 +397,7 @@ async fn cmd_runs_show(
     debug!("showing run: {run_id}");
 
     let api = AntithesisApi::new(settings, verbose)?;
-    let run = match api.get_run(run_id).await {
-        Ok(run) => run.untag(),
-        // A 404 here is unambiguous: the run id is bad. Say so instead of leaking
-        // a bare "API error: 404 Not Found". Other errors pass through untouched.
-        Err(err) => return Err(explain_run_not_found(run_id, err)),
-    };
+    let run = fetch_run(&api, run_id).await?;
 
     if web {
         return open_run_page(api.base_url(), &run.run_id, json);
@@ -559,7 +554,10 @@ async fn wait_for_run(
     loop {
         poll.tick().await;
 
-        let run = look_at_run(api, run_id).await?;
+        let run = fetch_run(api, run_id).await?;
+        if run.status.is_unclassified() {
+            return Err(unclassified_status_error(run_id, &run.status));
+        }
         let reached = match until {
             WaitUntil::Ready => run.is_ready_or_terminal(),
             WaitUntil::Complete => run.status.is_terminal(),
@@ -571,18 +569,14 @@ async fn wait_for_run(
     }
 }
 
-/// Read the run. A 404 means a bad run ID, so it fails rather than poll a
-/// typo. An unclassified run fails too (see
-/// [`RunStatus::is_unclassified`]).
-async fn look_at_run(api: &AntithesisApi, run_id: &str) -> Result<RunDetail> {
-    let run = match api.get_run(run_id).await {
-        Ok(run) => run.untag(),
-        Err(err) => return Err(explain_run_not_found(run_id, err)),
-    };
-    if run.status.is_unclassified() {
-        return Err(unclassified_status_error(run_id, &run.status));
+/// Read the run. A 404 from `get_run` is unambiguous: the run ID is bad, so
+/// say "run not found" instead of a bare "API error: 404 Not Found". Other
+/// errors pass through untouched.
+async fn fetch_run(api: &AntithesisApi, run_id: &str) -> Result<RunDetail> {
+    match api.get_run(run_id).await {
+        Ok(run) => Ok(run.untag()),
+        Err(err) => Err(explain_run_not_found(run_id, err)),
     }
-    Ok(run)
 }
 
 /// The warning line for a run active for more than twice its scheduled
@@ -731,51 +725,23 @@ fn no_properties_message(filter: &PropertyFilter) -> String {
     }
 }
 
-/// Outcome of probing a run-scoped 404 with `get_run`: does the run itself not
-/// exist, or does it exist (with a known status) but the nested endpoint has no
-/// data yet? Any non-404 `get_run` failure is reported as a propagating error
-/// rather than misattributed to a missing run.
-enum RunProbe {
-    /// The run id is bad: `get_run` also returned a structured 404.
-    NotFound,
-    /// The run exists; carries its full detail so callers can tailor the message
-    /// to its status. Boxed to keep the enum small.
-    Exists(Box<RunDetail>),
-    /// `get_run` failed for some other reason (timeout, 502, auth). Propagate
-    /// this rather than claiming the run doesn't exist.
-    ProbeFailed(color_eyre::eyre::Report),
-}
-
-/// Probe a run-scoped 404 by fetching the run itself. Only a structured 404 from
-/// `get_run` means the run is missing; any other `get_run` error is returned as
-/// `ProbeFailed` so callers never misreport a timeout/5xx/auth failure as "run
-/// not found".
-async fn probe_run(api: &AntithesisApi, run_id: &str) -> RunProbe {
-    match api.get_run(run_id).await {
-        Ok(run) => RunProbe::Exists(Box::new(run.untag())),
-        Err(err) if api_error_status(&err) == Some(404) => RunProbe::NotFound,
-        Err(err) => RunProbe::ProbeFailed(err),
-    }
-}
-
 /// Fail unless `snouty debug` can use the run `run_id`. An unknown run gives
 /// the shared "run not found: X" error. A run that is not ready or terminal
 /// also gives an error: before a run is ready, its events search and count
 /// answer 404 `Resource not found` (observed on tenant orbitinghail, release
 /// 64.0), so its input hash cannot be checked.
 pub async fn ensure_run_debuggable(api: &AntithesisApi, run_id: &str) -> Result<RunDetail> {
-    match probe_run(api, run_id).await {
-        RunProbe::NotFound => Err(user_error(format!("run not found: {run_id}"))),
-        RunProbe::ProbeFailed(err) => Err(err),
-        RunProbe::Exists(run) if !run.is_ready_or_terminal() => Err(user_error(format!(
+    let run = fetch_run(api, run_id).await?;
+    if !run.is_ready_or_terminal() {
+        return Err(user_error(format!(
             "run {run_id} is not ready yet: its status is {}",
             run.status_label()
         ))
         .suggestion(format!(
             "wait for it with `snouty runs wait {run_id} --until ready`"
-        ))),
-        RunProbe::Exists(run) => Ok(*run),
+        )));
     }
+    Ok(run)
 }
 
 /// Fail unless `run` has an event under `input_hash`. The launch endpoint
@@ -835,12 +801,11 @@ async fn explain_run_scoped_error(
     if api_error_status(&err) != Some(404) {
         return err;
     }
-    match probe_run(api, run_id).await {
-        RunProbe::NotFound => user_error(format!("run not found: {run_id}")),
-        RunProbe::ProbeFailed(probe_err) => probe_err,
+    match fetch_run(api, run_id).await {
         // The run exists but the endpoint still 404'd — surface the original
         // error rather than guessing why.
-        RunProbe::Exists(_) => err,
+        Ok(_) => err,
+        Err(fetch_err) => fetch_err,
     }
 }
 
@@ -5449,8 +5414,10 @@ mod tests {
             mount_stream(&server, "run-w", u64::MAX).await;
             let api = test_api(&server.uri());
 
-            let err = open_run_stream(&api, "run-w", &[], FAST_POLL)
+            let open = open_run_stream(&api, "run-w", &[], FAST_POLL);
+            let err = tokio::time::timeout(Duration::from_secs(5), open)
                 .await
+                .expect("an unknown status must not keep the stream waiting")
                 .err()
                 .unwrap();
 

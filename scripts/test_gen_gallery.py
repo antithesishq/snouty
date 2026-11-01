@@ -434,8 +434,13 @@ class ExecJsonCheck(unittest.TestCase):
         line = self.line("hello from the run", name="bash_command", stream="info")
         passed, detail = self.check([line], system_events=False)
         self.assertFalse(passed, detail)
-        passed, _ = self.check([{"moment": {}, "source": None}], system_events=False)
-        self.assertFalse(passed)
+
+    def test_events_count_a_row_with_a_null_source(self):
+        null_source = {"moment": {}, "source": None}
+        passed, detail = self.check(
+            [null_source, *self.script_lines()], system_events=True
+        )
+        self.assertTrue(passed, detail)
 
     def test_without_events_only_script_lines_pass(self):
         passed, detail = self.check(self.script_lines(), system_events=False)

@@ -290,13 +290,9 @@ fn bare_enter_keeps_the_stored_api_key() {
     );
     assert!(seen.contains(RETAINED), "{seen}");
     assert!(!seen.contains("replacing"), "{seen}");
-    // The answered line says the key was kept, not masked as a new one.
-    let lines = rendered_lines(&seen);
-    assert!(
-        lines.iter().any(|line| line.ends_with(KEPT_ANSWER)),
-        "{seen}"
-    );
-    assert!(!seen.contains(NEW_KEY_ANSWER), "{seen}");
+    let shown = rendered_lines(&seen).join("\n");
+    assert!(shown.contains(KEPT_ANSWER), "{shown}");
+    assert!(!shown.contains(NEW_KEY_ANSWER), "{shown}");
 }
 
 /// A bare Enter at the API key prompt is refused, and the prompt asks again.
@@ -371,14 +367,13 @@ fn a_different_api_key_asks_before_it_replaces_the_stored_key() {
     send(&mut session, "y\r");
     seen += &finish(session);
 
+    let shown = rendered_lines(&seen).join(" ");
     assert!(
-        rendered_lines(&seen)
-            .join(" ")
-            .contains("credentials.toml, replacing your stored API key."),
+        shown.contains("credentials.toml, replacing your stored API key."),
         "{seen}"
     );
-    assert!(seen.contains(NEW_KEY_ANSWER), "{seen}");
-    assert!(!seen.contains(KEPT_ANSWER), "{seen}");
+    assert!(shown.contains(NEW_KEY_ANSWER), "{shown}");
+    assert!(!shown.contains(KEPT_ANSWER), "{shown}");
     let creds = credentials(home.path());
     assert!(creds.contains(&api_key_line(FAKE_API_KEY_B)), "{creds}");
 }

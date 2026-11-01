@@ -111,8 +111,8 @@ impl Prompter for InquirePrompter {
             None => "hit Esc to skip",
         };
         let keeps_stored = hint.is_some();
-        // The validator lets an empty answer through only when it keeps the
-        // stored secret, so the answered line must not show a fresh mask then.
+        // The validator accepts an empty answer only when it keeps the stored
+        // secret.
         let formatter = |input: &str| {
             if input.is_empty() {
                 "kept".to_owned()

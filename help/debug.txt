@@ -14,7 +14,7 @@ Example:
     --duration 2h
   {% endfilter %}
 
-The session stays available for the time that {{ t("--duration")? }} gives, from 30 minutes to 6 hours. Without it, the server sets the time. Runs from releases before 67 ignore it.
+The session stays available for the time that {{ t("--duration")? }} gives, from 30 minutes to 6 hours. Without it, the server sets the time. Requires tenant version 66 or newer.
 
 Extra parameters can be passed with {{ t("--param")? }}{% if cli %}, as for `snouty launch`{% endif %}. A {{ t("--param")? }} cannot replace the value of a dedicated {% if cli %}flag{% else %}param{% endif %}, such as {{ t("--title")? }}:
   {% filter cmd %}

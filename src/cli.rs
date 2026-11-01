@@ -617,7 +617,7 @@ pub struct LaunchArgs {
     /// Compute hours of fuzzing for the run, at most 1000. One compute hour is
     /// one core running for one hour. The minimum depends on
     /// --performance-tier: 12 on standard, 24 on fast, 48 on turbo. The server
-    /// default is 48.
+    /// default is 48. Requires tenant version 66 or newer.
     #[arg(long, value_parser = clap::value_parser!(u16).range(1..=1000))]
     pub max_compute_hours: Option<u16>,
 
@@ -626,7 +626,7 @@ pub struct LaunchArgs {
         value_parser = |v: &str| SETUP_TIMEOUT.parse(v).map(|t| t.seconds() / 60),
         help = SETUP_TIMEOUT.help(
             "Fail the run immediately if setup takes longer than this, in whole minutes \
-             from 1m to 30m. The default is 5m.",
+             from 1m to 30m. The default is 5m. Requires tenant version 66 or newer.",
         ),
     )]
     pub setup_timeout: Option<u64>,
@@ -733,8 +733,8 @@ pub struct DebugArgs {
         long,
         value_parser = |v: &str| DEBUG_DURATION.parse(v),
         help = DEBUG_DURATION.help(
-            "How long the session stays available, from 30 minutes to 6 hours; runs from \
-             releases before 67 ignore it.",
+            "How long the session stays available, from 30 minutes to 6 hours. Requires \
+             tenant version 66 or newer.",
         ),
     )]
     pub duration: Option<HumanDuration>,

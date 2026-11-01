@@ -2369,18 +2369,18 @@ def logs_non_empty(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     return (n > 0, f"{n} log lines")
 
 
-_LINE_TIME = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d ", re.MULTILINE)
-_LINE_TIME_OFFSET = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d [+-]\d\d:\d\d \[", re.MULTILINE)
+# A line's leading time; the group holds its UTC offset, when it has one.
+_LINE_TIME = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d (?:([+-]\d\d:\d\d) \[)?", re.MULTILINE)
 
 
 def build_logs_with_offset(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     """Log lines, and each line's time carries its UTC offset."""
-    n = len(sr.rows or [])
-    timed = len(_LINE_TIME.findall(sr.result.stdout))
-    with_offset = len(_LINE_TIME_OFFSET.findall(sr.result.stdout))
+    ok, detail = logs_non_empty(sr, reg)
+    offsets = _LINE_TIME.findall(sr.result.stdout)
+    with_offset = sum(1 for o in offsets if o)
     return (
-        n > 0 and timed > 0 and with_offset == timed,
-        f"{n} log lines, {with_offset}/{timed} times with an offset",
+        ok and bool(offsets) and with_offset == len(offsets),
+        f"{detail}, {with_offset}/{len(offsets)} times with an offset",
     )
 
 

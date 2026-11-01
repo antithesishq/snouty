@@ -836,37 +836,6 @@ fn parse_byte_size(setting: &str, value: &str) -> Result<u64> {
         })
 }
 
-/// Formats `bytes` in the largest unit that divides it exactly, such as
-/// `10 MiB` or `10 MB`, so that the text parses back to the same size with
-/// `parse_byte_size`. The `Display` of `ByteSize` rounds.
-fn exact_byte_size(bytes: u64) -> String {
-    use bytesize::{EB, EIB, GB, GIB, KB, KIB, MB, MIB, PB, PIB, TB, TIB};
-    const UNITS: [(u64, &str); 12] = [
-        (EIB, "EiB"),
-        (EB, "EB"),
-        (PIB, "PiB"),
-        (PB, "PB"),
-        (TIB, "TiB"),
-        (TB, "TB"),
-        (GIB, "GiB"),
-        (GB, "GB"),
-        (MIB, "MiB"),
-        (MB, "MB"),
-        (KIB, "KiB"),
-        (KB, "KB"),
-    ];
-    if bytes == 0 {
-        return "0 B".to_owned();
-    }
-    UNITS
-        .iter()
-        .find(|(size, _)| bytes.is_multiple_of(*size))
-        .map_or_else(
-            || format!("{bytes} B"),
-            |(size, unit)| format!("{} {unit}", bytes / size),
-        )
-}
-
 pub(crate) fn read_to_string_if_file_exists(path: &Path) -> Result<Option<String>> {
     match fs::read_to_string(path) {
         Ok(contents) => Ok(Some(contents)),
@@ -1315,25 +1284,6 @@ mod tests {
                 "unexpected error for {bad:?}: {msg}"
             );
         }
-    }
-
-    // ---- exact_byte_size -------------------------------------------------
-
-    #[test]
-    fn byte_sizes_print_in_the_largest_exact_unit() {
-        assert_eq!(exact_byte_size(10 * 1024 * 1024), "10 MiB");
-        assert_eq!(exact_byte_size(10_000_000), "10 MB");
-        assert_eq!(exact_byte_size(1_500), "1500 B");
-        assert_eq!(exact_byte_size(0), "0 B");
-    }
-
-    #[hegel::test]
-    fn a_printed_byte_size_parses_back_to_the_same_size(tc: hegel::TestCase) {
-        let bytes = tc.draw(hegel::generators::integers::<u64>());
-        assert_eq!(
-            parse_byte_size("setting", &exact_byte_size(bytes)).unwrap(),
-            bytes
-        );
     }
 
     // ---- validate_tenant_host -----------------------------------------

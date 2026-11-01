@@ -7,7 +7,7 @@ Prints each setting with the value that snouty resolved for it. For each setting
 
 Then it lists the settings files that snouty read: the project settings file, which overrides the global one, then the global settings file.
 
-`api_cache_max_file_size` is the largest API response that snouty caches. The text output shows it with a unit, such as `10 MiB`. The JSON value is a number of bytes.
+`api_cache_max_file_size` is the largest API response that snouty caches. The text output shows it with a unit, such as `10.0 MiB`. The JSON value is a number of bytes.
 
 With `json`, the output is one object. `settings` holds each setting, with null for a setting that is not set and has no default. `files` lists the settings files in the same order, each with its `type` (`project` or `global`) and `path`.
 

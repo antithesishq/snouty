@@ -3,7 +3,7 @@ use std::io::Write;
 use color_eyre::eyre::Result;
 use serde_json::{Map, Value, json};
 
-use super::{Settings, exact_byte_size};
+use super::Settings;
 use crate::features::{self, Feature};
 use crate::render::{render_kv, sanitize};
 use crate::stdio;
@@ -44,7 +44,10 @@ fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, 
         (
             "api_cache_max_file_size",
             json!(max_file_size),
-            exact_byte_size(max_file_size),
+            bytesize::ByteSize(max_file_size)
+                .display()
+                .iec()
+                .to_string(),
         ),
     ];
     if !features.is_empty() {

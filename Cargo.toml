@@ -40,7 +40,7 @@ default-run = "snouty"
 
 [dependencies]
 base64 = "0.23"
-bytesize = "2.7"
+bytesize = "2"
 # tokio-runtime instead of the default async-std. No mmap: cacache uses it only
 # to write small entries, and it pulls in memmap2 0.5 (RUSTSEC-2026-0186).
 cacache = { version = "13", default-features = false, features = ["tokio-runtime"] }

@@ -128,7 +128,7 @@ progenitor = "0.15.0"
 quote = "1"
 # Same schemars version progenitor/typify resolve; build.rs hands
 # with_conversion a schemars SchemaObject to map vtime onto crate::vtime::VTime.
-schemars = "0.8"
+schemars = "0.9"
 serde_json = "1"
 syn = "3.0.6"
 

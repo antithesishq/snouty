@@ -265,9 +265,11 @@ impl RunSummary {
 }
 
 impl RunDetail {
-    /// Whether the run accepts commands: it is in progress, with the `Ready`
-    /// sub-status (observed on orbitinghail, release 64.0). A run from before [`MIN_SUB_STATUS_RELEASE`] has no
-    /// sub-status, so it is ready while it is in progress.
+    /// Whether the run should accept commands: it is in progress, with the
+    /// `Ready` sub-status (observed on orbitinghail, release 64.0). A run from
+    /// before [`MIN_SUB_STATUS_RELEASE`] has no sub-status, so it is ready
+    /// while it is in progress. A ready run can still refuse a command for a
+    /// few minutes.
     pub(crate) fn is_ready(&self) -> bool {
         let in_progress = self.status == RunStatus::InProgress;
         match run_release(&self.run_id) {
@@ -703,8 +705,7 @@ pub(crate) enum ResponseCache {
     /// `$XDG_RUNTIME_DIR/snouty/api-cache-v4`, falling back to a per-user
     /// directory under the system temp dir — the default for every command.
     Default,
-    /// No response cache: every request reaches the server. Code outside tests
-    /// uses [`AntithesisApi::uncached`].
+    /// No response cache: every request reaches the server.
     #[cfg(test)]
     Disabled,
     /// Cache under this directory.
@@ -738,6 +739,7 @@ fn truncate_at_end_vtime(stream: JsonStream, end: VTime) -> (JsonStream, Arc<Ato
     (stream, passed_end)
 }
 
+#[derive(Clone)]
 pub struct ExecRequest {
     pub moment: Moment,
     pub script: String,
@@ -754,9 +756,22 @@ pub struct ExecRequest {
 
 /// The run that a cold moment comes from, by run ID or by session ID. The
 /// server rewarms the moment by replaying its inputs.
+#[derive(Clone)]
 pub enum RewarmSource {
     Run(SourceRunId),
     Session(SourceSessionId),
+}
+
+/// Turn the 404 of an endpoint whose 404 can only mean a bad run ID into
+/// "run not found: X", instead of a bare "API error: 404 Not Found". Any
+/// other error passes through untouched, so a real server fault is never
+/// masked.
+fn run_not_found(run_id: &str, err: Report) -> Report {
+    if crate::error::api_error_status(&err) == Some(404) {
+        user_error(format!("run not found: {run_id}"))
+    } else {
+        err
+    }
 }
 
 pub struct AntithesisApi {
@@ -793,17 +808,6 @@ impl AntithesisApi {
             verbose,
             ResponseCache::Default,
         )
-    }
-
-    /// A copy of this client with its response cache disabled: every request
-    /// reaches the server.
-    #[must_use]
-    pub fn uncached(&self) -> Self {
-        Self {
-            client: self.client.clone(),
-            base_url: self.base_url.clone(),
-            cache: self.cache.disabled(),
-        }
     }
 
     /// Like [`AntithesisApi::new`], but accepts the deprecated
@@ -946,6 +950,7 @@ impl AntithesisApi {
         })
     }
 
+    /// Read the run. A 404 says "run not found".
     #[cached(value)]
     pub async fn get_run(&self, run_id: &str) -> Result<Tagged<RunDetail, CachePolicy>> {
         match self.client.get_run().run_id(run_id).send().await {
@@ -953,7 +958,7 @@ impl AntithesisApi {
                 let policy = self.cache.headers_policy(response.headers());
                 Ok(response.into_inner().with_tag(policy))
             }
-            Err(err) => Err(format_api_client_error(err).await),
+            Err(err) => Err(run_not_found(run_id, format_api_client_error(err).await)),
         }
     }
 
@@ -1126,7 +1131,8 @@ impl AntithesisApi {
                 ensure_resource_supported(&run_id, MIN_PROPERTIES_VERSION, "run properties")?;
                 let page = self
                     .fetch_run_properties_page(&run_id, after.as_deref(), &statuses, MAX_PAGE_LIMIT)
-                    .await?
+                    .await
+                    .map_err(|err| run_not_found(&run_id, err))?
                     .untag();
                 let normalized = page
                     .data
@@ -3182,6 +3188,33 @@ mod tests {
         expect_rate_limited(&api, &mock_server, 2).await;
     }
 
+    #[tokio::test]
+    async fn get_run_says_run_not_found_only_for_a_404() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/BAD-ID"))
+            .respond_with(
+                ResponseTemplate::new(404).set_body_json(serde_json::json!({"message": "nope"})),
+            )
+            .mount(&mock_server)
+            .await;
+        // A 500 whose body mentions 404 is a server fault, not a missing run.
+        Mock::given(method("GET"))
+            .and(path("/api/v0/runs/run-1"))
+            .respond_with(
+                ResponseTemplate::new(500)
+                    .set_body_json(serde_json::json!({"message": "upstream 404 page"})),
+            )
+            .mount(&mock_server)
+            .await;
+        let api = test_api_optionally_with_cache(&mock_server, None);
+
+        let missing = api.get_run("BAD-ID").await.unwrap_err();
+        assert_eq!(missing.to_string(), "run not found: BAD-ID");
+        let fault = api.get_run("run-1").await.unwrap_err();
+        assert_eq!(crate::error::api_error_status(&fault), Some(500));
+    }
+
     // When the 429 surfaces, the error names the wait and the time that its
     // Retry-After asks for, so that the user or a wrapping script can wait.
     #[tokio::test]
@@ -4280,7 +4313,7 @@ mod tests {
         let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
 
         let error = api.get_run("run-1").await.unwrap_err();
-        assert!(error.to_string().contains("404"), "got: {error:#}");
+        assert_eq!(error.to_string(), "run not found: run-1");
         // The 404 was not cached; this hits the server, succeeds, and caches.
         api.get_run("run-1").await.unwrap();
         // …and this one replays from the cache (the mocks allow no third hit).

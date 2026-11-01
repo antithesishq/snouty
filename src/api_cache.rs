@@ -714,7 +714,7 @@ mod tests {
         let teed = cache.store_stream(key(), stream).untag();
         teed.try_collect::<Vec<_>>().await.unwrap();
 
-        clock.advance(Duration::from_secs(100 * 365 * 24 * 3600));
+        clock.advance(Duration::from_hours(100 * 365 * 24));
         assert!(cache.lookup_stream(&key()).await.is_some());
     }
 

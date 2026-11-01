@@ -3,8 +3,7 @@
 
 version: 2
 
-# Every version update, cargo and github-actions alike, lands in one pull
-# request a week. Security updates still open their own pull requests.
+# One pull request a week carries every cargo and github-actions version update.
 multi-ecosystem-groups:
   dependencies:
     schedule:
@@ -22,8 +21,8 @@ updates:
     # hand and update that hash.
     ignore:
       - dependency-name: "testscript-rs"
-  # The workflows pin every action to a commit. This keeps those pins current.
-  # It does not update the tools in mise.toml; AGENTS.md says how to bump those.
+  # The workflows pin each action to a commit. This entry does not update the
+  # tools in mise.toml; AGENTS.md says how to bump those.
   - package-ecosystem: "github-actions"
     # "/" covers .github/workflows; the local composite actions need their own.
     directories: ["/", "/.github/actions/*"]

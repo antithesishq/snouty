@@ -23,7 +23,7 @@ Alternatively, pass a pre-built config image directly:
 
 --max-compute-hours controls how many compute hours can be spent fuzzing, up to
 1000 compute hours. One compute hour is one core running for one hour. The
-default is 48 compute hours.
+default is 48 compute hours. Requires tenant version 66 or newer.
 
 The tier (--performance-tier) sets how many cores the run uses: 48 on standard
 (the default), 96 on fast and 192 on turbo. The run fuzzes for max compute hours
@@ -36,7 +36,7 @@ standard, 24 on fast and 48 on turbo.
 
 --setup-timeout sets how long setup can take before the run fails immediately.
 Use it to fail fast, and to debug a setup that takes too long. The default is 5
-minutes, and the range is 1 to 30 minutes.
+minutes, and the range is 1 to 30 minutes. Requires tenant version 66 or newer.
   snouty launch --launcher basic_test --config ./config --setup-timeout 10m
 
 Extra parameters can be passed with --param:
@@ -122,13 +122,14 @@ Options:
           Compute hours of fuzzing for the run, at most 1000. One compute hour
           is one core running for one hour. The minimum depends on
           --performance-tier: 12 on standard, 24 on fast, 48 on turbo. The
-          server default is 48
+          server default is 48. Requires tenant version 66 or newer
 
       --setup-timeout <SETUP_TIMEOUT>
           Fail the run immediately if setup takes longer than this, in whole
-          minutes from 1m to 30m. The default is 5m. A duration is a whole
-          number with an h, m or s unit, or several in that order, such as 10m
-          or 30m; a bare number is not permitted
+          minutes from 1m to 30m. The default is 5m. Requires tenant version 66
+          or newer. A duration is a whole number with an h, m or s unit, or
+          several in that order, such as 10m or 30m; a bare number is not
+          permitted
 
       --ephemeral
           Mark the test run as ephemeral, so it does not appear in future

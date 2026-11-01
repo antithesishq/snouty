@@ -30,12 +30,13 @@ Options:
           Compute hours of fuzzing for the run, at most 1000. One compute hour
           is one core running for one hour. The minimum depends on
           --performance-tier: 12 on standard, 24 on fast, 48 on turbo. The
-          server default is 48
+          server default is 48. Requires tenant version 66 or newer
       --setup-timeout <SETUP_TIMEOUT>
           Fail the run immediately if setup takes longer than this, in whole
-          minutes from 1m to 30m. The default is 5m. A duration is a whole
-          number with an h, m or s unit, or several in that order, such as 10m
-          or 30m; a bare number is not permitted
+          minutes from 1m to 30m. The default is 5m. Requires tenant version 66
+          or newer. A duration is a whole number with an h, m or s unit, or
+          several in that order, such as 10m or 30m; a bare number is not
+          permitted
       --ephemeral
           Mark the test run as ephemeral, so it does not appear in future
           reports as a historic result. A launch without --source is ephemeral

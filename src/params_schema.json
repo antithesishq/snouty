@@ -46,12 +46,12 @@
         "antithesis.max_compute_hours": {
           "type": "string",
           "pattern": "^[0-9]+$",
-          "description": "Compute hours to spend on the run, a whole number. One compute hour is one core running for one hour. The server sets the range and the default"
+          "description": "Compute hours to spend on the run, a whole number. One compute hour is one core running for one hour. The server sets the range and the default. Requires tenant version 66 or newer."
         },
         "antithesis.setup_timeout": {
           "type": "string",
           "pattern": "^[0-9]+$",
-          "description": "Minutes that the system has to reach setup complete. If it does not, the run fails immediately"
+          "description": "Minutes that the system has to reach setup complete. If it does not, the run fails immediately. Requires tenant version 66 or newer."
         },
         "antithesis.images": {
           "type": "string",
@@ -118,7 +118,7 @@
         "antithesis.debugging.length_hours": {
           "type": "string",
           "pattern": "^[0-9]+(\\.[0-9]+)?$",
-          "description": "How long the debugging session stays available, in hours, from 0.5 to 6. Runs from releases before 67 ignore it."
+          "description": "How long the debugging session stays available, in hours, from 0.5 to 6. Requires tenant version 66 or newer."
         },
         "antithesis.event_description": {
           "type": "string",

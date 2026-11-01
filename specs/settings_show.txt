@@ -14,11 +14,11 @@ stdout '^base_url +not set$'
 stdout '^https_proxy +not set$'
 stdout '^container_engine +auto-detect$'
 stdout '^update_channel +stable$'
-stdout '^api_cache_max_file_size +\d+$'
+stdout '^api_cache_max_file_size +10 MiB$'
 stdout '^settings files: none$'
 
 # 2. Values resolve through the usual chain. The base URL derives from the
-#    tenant.
+#    tenant. A size prints in the largest unit that holds it exactly.
 env ANTITHESIS_TENANT=acme
 env ANTITHESIS_HTTPS_PROXY=http://proxy.example.com:3128
 env SNOUTY_API_CACHE_MAX_FILE_SIZE=1000
@@ -28,7 +28,7 @@ stdout '^tenant +acme$'
 stdout '^repository +registry\.example\.com/staging$'
 stdout '^base_url +https://acme\.antithesis\.com$'
 stdout '^https_proxy +http://proxy\.example\.com:3128$'
-stdout '^api_cache_max_file_size +1000$'
+stdout '^api_cache_max_file_size +1 KB$'
 
 # 3. The text output is a table of the settings files that snouty read:
 #    the project file, which overrides the global one, then the global file.
@@ -38,7 +38,8 @@ set-env XDG_CONFIG_HOME ${WORK}/cfg
 snouty --settings chosen.toml settings show
 stdout '(?s)^project +/[^\n]*/chosen\.toml\nglobal +/[^\n]*/cfg/snouty/settings\.toml$'
 
-# 4. --json prints the settings, keyed by setting, and the files.
+# 4. --json prints the settings, keyed by setting, and the files. A size is a
+#    number of bytes.
 snouty --json --settings chosen.toml settings show
 stdout '"settings": \{'
 stdout '"tenant": "acme"'

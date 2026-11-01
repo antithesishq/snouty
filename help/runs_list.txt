@@ -3,9 +3,9 @@ List recent runs{% if cli %} (the default when `snouty runs` runs with no subcom
 Each run has its ID, status, creation time, launcher, and test name. For a run with no test name, the name is the first line of its description.
 
 {% if cli %}
-Columns: RUN ID, STATUS, CREATED, LAUNCHER, RUN. RUN is the test name, or `-` for a run with no test name and no description. Use --detail for the full description.
+Columns: RUN ID, STATUS, CREATED, LAUNCHER, RUN. RUN is the test name, or `-` for a run with no test name and no description. CREATED is the age of the run, such as `2h ago`. Use {{ t("--detail")? }} for the full description, and for the creation time in the local timezone, with its UTC offset.
 {% else %}
-Each run prints as a block of `Label  value` lines, with a blank line between blocks: Run ID, Status, Created, Launcher, Test Name when the run has one, and the full Description.
+Each run prints as a block of `Label  value` lines, with a blank line between blocks: Run ID, Status, Created, Launcher, Test Name when the run has one, and the full Description. Created is in the local timezone, with its UTC offset.
 {% endif %}
 
 Pass a run's ID to `{{ t("runs show")? }}` for its details, to `{{ t("runs properties")? }}` for its property results, or to `{{ t("runs wait")? }}` to wait until it is ready or complete.

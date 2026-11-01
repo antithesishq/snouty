@@ -426,15 +426,15 @@ stderr 'detail.*json'
 ! snouty --json runs list --detail
 stderr 'detail.*json'
 
-# `snouty runs build-logs` streams formatted build log lines. Timestamps are
-# reformatted into the local timezone without a tz suffix; TZ is pinned to UTC
-# here so the rendered times are deterministic.
+# `snouty runs build-logs` prints each line's timestamp in the local timezone,
+# with its UTC offset.
 mock-runs-server
-env TZ=UTC
+env TZ=Asia/Tokyo
 snouty runs build-logs $R_run_id
-[!staging] stdout '2025-03-20 02:01:12 \[stdout\] Building image payments-service\.\.\.'
-[!staging] stdout '2025-03-20 02:01:15 \[stderr\] Warning: deprecated feature'
-[!staging] stdout '2025-03-20 02:01:20 \[stdout\] Build complete'
+stdout '^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \+09:00 \[std(out|err)\]'
+[!staging] stdout '2025-03-20 11:01:12 \+09:00 \[stdout\] Building image payments-service\.\.\.'
+[!staging] stdout '2025-03-20 11:01:15 \+09:00 \[stderr\] Warning: deprecated feature'
+[!staging] stdout '2025-03-20 11:01:20 \+09:00 \[stdout\] Build complete'
 
 # `snouty --json runs build-logs` outputs raw NDJSON.
 mock-runs-server
@@ -1064,7 +1064,7 @@ stderr 'run not found: no-such-run'
 mock-runs-server
 env TZ=UTC
 ! snouty runs build-logs run-stream-error
-stdout -literal '2025-03-20 02:01:12 [stdout] Building image payments-service...'
+stdout -literal '2025-03-20 02:01:12 +00:00 [stdout] Building image payments-service...'
 stderr 'the server reported an error mid-stream: mock stream failure'
 stderr 'output produced before the error may be incomplete'
 

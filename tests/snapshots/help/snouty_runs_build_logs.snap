@@ -10,6 +10,9 @@ stderr lines first when a launch failed.
 
 Each line prints as `timestamp [stream] line`. Grep the stream tag to narrow it.
 
+The timestamp is in the local timezone, with its UTC offset. Timestamps inside
+the line text stay as the build tools wrote them.
+
 Examples:
   snouty runs build-logs <run_id>
   snouty runs build-logs <run_id> | grep '\[stderr\]'

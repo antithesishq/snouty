@@ -239,14 +239,8 @@ fn split_unit(s: &str, unit: char) -> Option<(u64, &str)> {
     Some((number.parse().ok()?, &rest[unit.len_utf8()..]))
 }
 
-/// Format an absolute timestamp in the user's local timezone, without a
-/// timezone suffix, for dense output such as build-log lines. Example:
-/// `2026-05-27 08:25:13`.
-pub(crate) fn format_local(dt: DateTime<Utc>) -> String {
-    format_dense(dt.with_timezone(&Local).fixed_offset())
-}
-
-/// [`format_local`] for a timestamp already in the time zone to show.
+/// Format a timestamp in the time zone that it carries, without a suffix, for
+/// a table whose help names the zone. Example: `2026-05-27 08:25:13`.
 pub(crate) fn format_dense(dt: DateTime<FixedOffset>) -> String {
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
@@ -266,11 +260,11 @@ where
     dt.format("%Y-%m-%d %H:%M:%S %:z").to_string()
 }
 
-/// Reformat an RFC 3339 timestamp string into the local, suffix-less format.
+/// Reformat an RFC 3339 timestamp string as [`format_local_with_offset`].
 /// Falls back to the original string if it can't be parsed.
 pub(crate) fn format_local_str(raw: &str) -> String {
     match DateTime::parse_from_rfc3339(raw) {
-        Ok(dt) => format_local(dt.with_timezone(&Utc)),
+        Ok(dt) => format_local_with_offset(dt.to_utc()),
         Err(_) => raw.to_string(),
     }
 }

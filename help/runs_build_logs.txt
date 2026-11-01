@@ -4,7 +4,7 @@ Each log line has a timestamp, a stream (stdout or stderr), and its text. The wh
 
 Each line prints as `timestamp [stream] line`.{% if cli %} Grep the stream tag to narrow it.{% endif %}
 
-The timestamp is in the local timezone, with its UTC offset. Timestamps inside the line text stay as the build tools wrote them.
+The timestamp is in the local timezone, with the UTC offset. Timestamps inside the line text stay as the build tools wrote them.
 
 Examples:
   {{ t("snouty runs build-logs <run_id>")? }}

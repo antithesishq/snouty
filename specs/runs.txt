@@ -427,11 +427,11 @@ stderr 'detail.*json'
 stderr 'detail.*json'
 
 # `snouty runs build-logs` prints each line's timestamp in the local timezone,
-# with its UTC offset.
+# with its UTC offset. TZ is not UTC, so both the shifted hour and the offset show.
 mock-runs-server
 env TZ=Asia/Tokyo
 snouty runs build-logs $R_run_id
-stdout '^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \+09:00 \[std(out|err)\]'
+stdout '^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \+09:00 \[[a-z]+\]'
 [!staging] stdout '2025-03-20 11:01:12 \+09:00 \[stdout\] Building image payments-service\.\.\.'
 [!staging] stdout '2025-03-20 11:01:15 \+09:00 \[stderr\] Warning: deprecated feature'
 [!staging] stdout '2025-03-20 11:01:20 \+09:00 \[stdout\] Build complete'

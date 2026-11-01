@@ -2369,8 +2369,10 @@ def logs_non_empty(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     return (n > 0, f"{n} log lines")
 
 
-# A line's leading time; the group holds its UTC offset, when it has one.
-_LINE_TIME = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d (?:([+-]\d\d:\d\d) \[)?", re.MULTILINE)
+# A log line's leading time. The group holds its UTC offset, when it has one.
+_LINE_TIME = re.compile(
+    r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d (?:([+-]\d\d:\d\d) )?\[", re.MULTILINE
+)
 
 
 def build_logs_with_offset(sr: StoryRun, reg: Registry) -> tuple[bool, str]:

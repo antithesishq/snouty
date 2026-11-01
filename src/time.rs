@@ -239,8 +239,8 @@ fn split_unit(s: &str, unit: char) -> Option<(u64, &str)> {
     Some((number.parse().ok()?, &rest[unit.len_utf8()..]))
 }
 
-/// Format a timestamp in the time zone that it carries, without a suffix, for
-/// a table whose help names the zone. Example: `2026-05-27 08:25:13`.
+/// Format a timestamp without its UTC offset. Use it only where the help
+/// names the zone. Example: `2026-05-27 08:25:13`.
 pub(crate) fn format_dense(dt: DateTime<FixedOffset>) -> String {
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
@@ -264,7 +264,7 @@ where
 /// Falls back to the original string if it can't be parsed.
 pub(crate) fn format_local_str(raw: &str) -> String {
     match DateTime::parse_from_rfc3339(raw) {
-        Ok(dt) => format_local_with_offset(dt.to_utc()),
+        Ok(dt) => format_with_offset(&dt.with_timezone(&Local)),
         Err(_) => raw.to_string(),
     }
 }

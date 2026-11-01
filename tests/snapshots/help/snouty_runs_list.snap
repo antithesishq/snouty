@@ -9,7 +9,7 @@ with no test name, the name is the first line of its description.
 Columns: RUN ID, STATUS, CREATED, LAUNCHER, RUN. RUN is the test name, or `-`
 for a run with no test name and no description. CREATED is the age of the run,
 such as `2h ago`. Use --detail for the full description, and for the creation
-time in the local timezone, with its UTC offset.
+time in the local timezone, with the UTC offset.
 
 Pass a run's ID to `runs show` for its details, to `runs properties` for its
 property results, or to `runs wait` to wait until it is ready or complete.

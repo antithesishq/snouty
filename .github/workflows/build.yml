@@ -6,6 +6,9 @@ on:
   # No branch filter: a stacked pull request (base = another PR's branch) gets
   # the same gate as one that targets main.
   pull_request:
+  # The merge queue merges a pull request only when `tests-passed` passes on
+  # this event.
+  merge_group:
   schedule:
     - cron: "0 7 * * *"
   workflow_dispatch:

@@ -28,7 +28,8 @@ use crate::event_render::EventStreamRenderer;
 use crate::jsonl::JsonStream;
 use crate::stdio;
 
-use super::{ErrorRows, FaultAnnotator, READY_POLL, event_lines, raw_lines, wait_until_ready};
+use super::ready::{self, Needs, RetryDecision, RetryPolicy};
+use super::{ErrorRows, FaultAnnotator, READY_POLL, event_lines, raw_lines};
 
 /// How an event-stream command prints its rows. The illegal flag
 /// combinations (`--raw` without `--json`, `--detail` with `--json`) are
@@ -130,20 +131,32 @@ pub(super) async fn count_query(
     Ok(())
 }
 
-/// Wait until the run is ready or terminal, then send one events-search
-/// request with `send`. The wait bypasses the response cache by itself, so
-/// pass the cached client.
+/// The events search, its count, and its query check. On orbitinghail
+/// (releases 66.0 and 67.0), a ready run answers 404 `Resource not found` for
+/// a minute or two. A release before [`MIN_SEARCH_RELEASE`] answers 404 for
+/// every run.
+const SEARCH_RETRY: RetryPolicy = RetryPolicy {
+    needs: Needs::Ready,
+    waiting: "waiting for the run's events to be searchable",
+    decide: |run, err| {
+        RetryDecision::retry_if(
+            api_error_status(err) == Some(404) && run.created_on_or_after(MIN_SEARCH_RELEASE),
+        )
+    },
+};
+
+/// Send an events-search request with `send` once the run is ready or
+/// terminal, and retry while [`SEARCH_RETRY`] allows it.
 pub(super) async fn search_when_ready<T, Fut>(
     api: &AntithesisApi,
     run_id: &str,
     poll: Duration,
-    send: impl FnOnce() -> Fut,
+    send: impl FnMut() -> Fut,
 ) -> Result<T>
 where
     Fut: Future<Output = Result<T>>,
 {
-    let run = wait_until_ready(api, run_id, poll).await?;
-    send().await.map_err(|err| explain_search_error(&run, err))
+    ready::send_when_ready(api, run_id, poll, SEARCH_RETRY, send, explain_search_error).await
 }
 
 /// Annotate an events-search error for `run`. `run` must exist and be ready
@@ -151,7 +164,7 @@ where
 /// endpoint and answer 404 with an unhelpful "Resource not found", so the
 /// error gets a suggestion that names the release. A 400 comes from the query
 /// or from an out-of-range `limit`, so its note does not blame the query alone.
-pub(super) fn explain_search_error(
+fn explain_search_error(
     run: &RunDetail,
     err: color_eyre::eyre::Report,
 ) -> color_eyre::eyre::Report {

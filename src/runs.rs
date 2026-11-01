@@ -39,9 +39,11 @@ use crate::time::{HumanDuration, format_local_with_offset};
 use crate::vtime::VTime;
 
 mod event_search;
+mod ready;
 mod run_stream;
 
 use event_search::EventOutput;
+use ready::{Needs, RetryDecision, RetryPolicy};
 
 /// The note a limited command prints to stderr under its output. The command
 /// asks the server for at most `limit` rows and cannot tell whether more
@@ -395,12 +397,7 @@ async fn cmd_runs_show(
     debug!("showing run: {run_id}");
 
     let api = AntithesisApi::new(settings, verbose)?;
-    let run = match api.get_run(run_id).await {
-        Ok(run) => run.untag(),
-        // A 404 here is unambiguous: the run id is bad. Say so instead of leaking
-        // a bare "API error: 404 Not Found". Other errors pass through untouched.
-        Err(err) => return Err(explain_run_not_found(run_id, err)),
-    };
+    let run = api.get_run(run_id).await?.untag();
 
     if web {
         return open_run_page(api.base_url(), &run.run_id, json);
@@ -539,7 +536,7 @@ fn unclassified_status_error(run_id: &str, status: &RunStatus) -> color_eyre::ey
 /// Poll `get_run` every `poll_interval` until the run reaches the `until`
 /// point, and call `on_wait` with each poll that has not reached it. The first
 /// poll is at once. An unclassified run fails the wait (see
-/// [`RunStatus::is_unclassified`]). The polls bypass the response cache, so each one observes fresh state.
+/// [`RunStatus::is_unclassified`]).
 ///
 /// Never returns on its own — the caller bounds it with `tokio::time::timeout`.
 async fn wait_for_run(
@@ -553,18 +550,11 @@ async fn wait_for_run(
     // A poll delayed by a slow response schedules the next one a full
     // interval later, instead of firing early to catch up.
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let api = api.uncached();
 
     loop {
         poll.tick().await;
 
-        let run = match api.get_run(run_id).await {
-            Ok(run) => run.untag(),
-            // A 404 here is unambiguous, exactly as in `runs show`: the run id
-            // is bad, so fail now rather than poll a typo until the timeout.
-            Err(err) => return Err(explain_run_not_found(run_id, err)),
-        };
-
+        let run = api.get_run(run_id).await?.untag();
         if run.status.is_unclassified() {
             return Err(unclassified_status_error(run_id, &run.status));
         }
@@ -576,6 +566,21 @@ async fn wait_for_run(
             return Ok(run);
         }
         on_wait(&run);
+    }
+}
+
+/// Read the run after `err`, an error from one of its endpoints. When the
+/// read fails, a 404 gets the read's error, which names a bad run ID; any
+/// other error stays the endpoint's own.
+async fn fetch_run_after(
+    api: &AntithesisApi,
+    run_id: &str,
+    err: color_eyre::eyre::Report,
+) -> Result<(RunDetail, color_eyre::eyre::Report), color_eyre::eyre::Report> {
+    match api.get_run(run_id).await {
+        Ok(run) => Ok((run.untag(), err)),
+        Err(read_err) if api_error_status(&err) == Some(404) => Err(read_err),
+        Err(_) => Err(err),
     }
 }
 
@@ -633,8 +638,7 @@ async fn cmd_runs_properties(
     let mut properties = api
         .stream_run_properties(run_id, &filter.statuses)
         .try_collect::<Vec<_>>()
-        .await
-        .map_err(|err| explain_run_not_found(run_id, err))?;
+        .await?;
 
     if let Some(group) = filter.group {
         let needle = group.to_lowercase();
@@ -725,70 +729,40 @@ fn no_properties_message(filter: &PropertyFilter) -> String {
     }
 }
 
-/// Outcome of probing a run-scoped 404 with `get_run`: does the run itself not
-/// exist, or does it exist (with a known status) but the nested endpoint has no
-/// data yet? Any non-404 `get_run` failure is reported as a propagating error
-/// rather than misattributed to a missing run.
-enum RunProbe {
-    /// The run id is bad: `get_run` also returned a structured 404.
-    NotFound,
-    /// The run exists; carries its full detail so callers can tailor the message
-    /// to its status. Boxed to keep the enum small.
-    Exists(Box<RunDetail>),
-    /// `get_run` failed for some other reason (timeout, 502, auth). Propagate
-    /// this rather than claiming the run doesn't exist.
-    ProbeFailed(color_eyre::eyre::Report),
-}
-
-/// Probe a run-scoped 404 by fetching the run itself. Only a structured 404 from
-/// `get_run` means the run is missing; any other `get_run` error is returned as
-/// `ProbeFailed` so callers never misreport a timeout/5xx/auth failure as "run
-/// not found".
-async fn probe_run(api: &AntithesisApi, run_id: &str) -> RunProbe {
-    match api.get_run(run_id).await {
-        Ok(run) => RunProbe::Exists(Box::new(run.untag())),
-        Err(err) if api_error_status(&err) == Some(404) => RunProbe::NotFound,
-        Err(err) => RunProbe::ProbeFailed(err),
-    }
-}
-
 /// Fail unless `snouty debug` can use the run `run_id`. An unknown run gives
 /// the shared "run not found: X" error. A run that is not ready or terminal
 /// also gives an error: before a run is ready, its events search and count
 /// answer 404 `Resource not found` (observed on tenant orbitinghail, release
 /// 64.0), so its input hash cannot be checked.
-pub async fn ensure_run_debuggable(api: &AntithesisApi, run_id: &str) -> Result<RunDetail> {
-    match probe_run(api, run_id).await {
-        RunProbe::NotFound => Err(user_error(format!("run not found: {run_id}"))),
-        RunProbe::ProbeFailed(err) => Err(err),
-        RunProbe::Exists(run) if !run.is_ready_or_terminal() => Err(user_error(format!(
+pub async fn ensure_run_debuggable(api: &AntithesisApi, run_id: &str) -> Result<()> {
+    let run = api.get_run(run_id).await?.untag();
+    if !run.is_ready_or_terminal() {
+        return Err(user_error(format!(
             "run {run_id} is not ready yet: its status is {}",
             run.status_label()
         ))
         .suggestion(format!(
             "wait for it with `snouty runs wait {run_id} --until ready`"
-        ))),
-        RunProbe::Exists(run) => Ok(*run),
+        )));
     }
+    Ok(())
 }
 
-/// Fail unless `run` has an event under `input_hash`. The launch endpoint
-/// accepts a hash that the run never reached and starts a billable session,
-/// so check the hash first. `run` must be ready or terminal, as
-/// [`ensure_run_debuggable`] checks. Use the count: on a run in progress, a
+/// Fail unless run `run_id` has an event under `input_hash`. The launch
+/// endpoint accepts a hash that the run never reached and starts a billable
+/// session, so check the hash first. Use the count: on a run in progress, a
 /// search for a hash with no event ran 10 minutes without an answer
 /// (orbitinghail, release 64.0).
 pub async fn ensure_input_hash_exists(
     api: &AntithesisApi,
-    run: &RunDetail,
+    run_id: &str,
     input_hash: &str,
 ) -> Result<()> {
-    let run_id = &run.run_id;
     let query = event_set_dsl::input_hash_filter(input_hash);
-    let count = api
-        .count_run_events_query(run_id, &query)
-        .await
-        .map_err(|err| event_search::explain_search_error(run, err))?;
+    let count = event_search::search_when_ready(api, run_id, READY_POLL, || {
+        api.count_run_events_query(run_id, &query)
+    })
+    .await?;
     if count == 0 {
         return Err(user_error(format!(
             "no moment matches input hash {input_hash} in run {run_id}"
@@ -800,23 +774,7 @@ pub async fn ensure_input_hash_exists(
     Ok(())
 }
 
-/// Translate an error from a run-scoped endpoint (show/build-logs/events/logs)
-/// into the shared friendly "run not found: X" message when the failure is a
-/// 404 for a bad run id. Any non-404 error passes through untouched (full
-/// report), so genuine server faults are never masked.
-///
-/// `show` calls `get_run` directly, so its 404 is already unambiguous; the
-/// streaming endpoints get the same treatment so every run-scoped subcommand
-/// reports a bad run id identically.
-fn explain_run_not_found(run_id: &str, err: color_eyre::eyre::Report) -> color_eyre::eyre::Report {
-    if api_error_status(&err) == Some(404) {
-        user_error(format!("run not found: {run_id}"))
-    } else {
-        err
-    }
-}
-
-/// Like [`explain_run_not_found`] but for endpoints whose 404 is ambiguous: it
+/// Explain the 404 of an endpoint whose 404 is ambiguous: it
 /// can mean a bad run id *or* a real run whose nested resource isn't available
 /// yet. Probes the run with `get_run` to disambiguate, falling back to "run not
 /// found: X" when the run is genuinely missing and otherwise to the original
@@ -829,12 +787,10 @@ async fn explain_run_scoped_error(
     if api_error_status(&err) != Some(404) {
         return err;
     }
-    match probe_run(api, run_id).await {
-        RunProbe::NotFound => user_error(format!("run not found: {run_id}")),
-        RunProbe::ProbeFailed(probe_err) => probe_err,
-        // The run exists but the endpoint still 404'd — surface the original
-        // error rather than guessing why.
-        RunProbe::Exists(_) => err,
+    // A run that exists but whose endpoint still 404'd keeps the original
+    // error rather than a guess at why.
+    match fetch_run_after(api, run_id, err).await {
+        Ok((_, err)) | Err(err) => err,
     }
 }
 
@@ -1615,62 +1571,63 @@ async fn cmd_runs_stream(
     result
 }
 
-/// Open the run's status stream, and wait while the run has none yet. The
-/// server answers 404 until the run's stream opens, minutes after the run
-/// reports that it is ready (observed on the antithesis-orbitinghail tenant,
-/// release 65.3: ready at 73 s, stream at 241 s). A 404 is an error when the
-/// run does not exist, has finished, has status "unknown", or was created
-/// before release 65.3.
+/// `runs stream`. The server answers 404 until the run's stream opens,
+/// minutes after the run reports that it is ready (observed on the
+/// antithesis-orbitinghail tenant, release 65.3: ready at 73 s, stream at
+/// 241 s). A tenant before release 65.3 has no stream route and answers 404
+/// for every run; the run ID names the release that created the run.
+const STREAM_RETRY: RetryPolicy = RetryPolicy {
+    needs: Needs::Live,
+    waiting: "waiting for the run's stream to open",
+    decide: |run, err| {
+        RetryDecision::retry_if(
+            api_error_status(err) == Some(404) && run.created_on_or_after(MIN_STREAM_RELEASE),
+        )
+    },
+};
+
+/// Open the run's status stream, and wait while the run has none yet.
 async fn open_run_stream(
     api: &AntithesisApi,
     run_id: &str,
     property_ids: &[String],
     poll: Duration,
 ) -> Result<JsonStream> {
-    let mut waiting: Option<ReadyDisplay> = None;
-    loop {
-        let err = match api.stream_run_status(run_id, property_ids).await {
-            Ok(stream) => {
-                if let Some(waiting) = waiting {
-                    waiting.clear();
-                }
-                return Ok(stream);
-            }
-            Err(err) => err,
-        };
-        if api_error_status(&err) != Some(404) {
-            return Err(err);
-        }
-        match probe_run(api, run_id).await {
-            RunProbe::NotFound => return Err(user_error(format!("run not found: {run_id}"))),
-            RunProbe::ProbeFailed(probe_err) => return Err(probe_err),
-            // A tenant before release 65.3 has no stream route and answers 404
-            // for every run. The run ID names the release that created the run.
-            RunProbe::Exists(run) if !run.created_on_or_after(MIN_STREAM_RELEASE) => {
-                let (major, minor) = MIN_STREAM_RELEASE;
-                return Err(
-                    user_error(format!("run {run_id} has no status stream")).note(format!(
-                        "streaming needs a run created on release {major}.{minor} or later"
-                    )),
-                );
-            }
-            RunProbe::Exists(run) if run.status.is_unclassified() => {
-                return Err(unclassified_status_error(run_id, &run.status));
-            }
-            RunProbe::Exists(run) if run.status.is_terminal() => {
-                return Err(user_error(format!(
-                    "run {run_id} has finished, and has no status stream"
-                ))
-                .suggestion(format!(
-                    "read the results with `snouty runs properties {run_id}`"
-                )));
-            }
-            RunProbe::Exists(_) => {}
-        }
-        waiting
-            .get_or_insert_with(|| ReadyDisplay::new("waiting for the run's stream to open"))
-            .show();
-        tokio::time::sleep(poll).await;
+    ready::send_when_ready(
+        api,
+        run_id,
+        poll,
+        STREAM_RETRY,
+        || api.stream_run_status(run_id, property_ids),
+        explain_stream_error,
+    )
+    .await
+}
+
+/// Annotate a stream error for `run`: a 404 from a run that will never have
+/// a stream.
+fn explain_stream_error(
+    run: &RunDetail,
+    err: color_eyre::eyre::Report,
+) -> color_eyre::eyre::Report {
+    if api_error_status(&err) != Some(404) {
+        return err;
+    }
+    let run_id = &run.run_id;
+    if !run.created_on_or_after(MIN_STREAM_RELEASE) {
+        let (major, minor) = MIN_STREAM_RELEASE;
+        user_error(format!("run {run_id} has no status stream")).note(format!(
+            "streaming needs a run created on release {major}.{minor} or later"
+        ))
+    } else if run.status.is_terminal() {
+        user_error(format!(
+            "run {run_id} has finished, and has no status stream"
+        ))
+        .suggestion(format!(
+            "read the results with `snouty runs properties {run_id}`"
+        ))
+    } else {
+        err
     }
 }
 
@@ -2162,30 +2119,30 @@ async fn cmd_runs_exec(
     exec_when_ready(&api, run_id, exec, READY_POLL, mode).await
 }
 
-/// How often a command that needs a ready run polls a run that is not ready.
+/// How often a command polls a run that is not ready, or retries a request
+/// the run does not serve yet.
 /// A debugging session becomes ready minutes after it starts, so a one-minute
 /// poll (the `runs wait` floor) could delay the command by most of a minute.
 const READY_POLL: Duration = Duration::from_secs(10);
 
-/// Wait until the run is ready or terminal, and show a [`ReadyDisplay`] on
-/// stderr while it is not. The wait has no time limit.
-async fn wait_until_ready(api: &AntithesisApi, run_id: &str, poll: Duration) -> Result<RunDetail> {
-    let mut waiting: Option<ReadyDisplay> = None;
-    let run = wait_for_run(api, run_id, poll, WaitUntil::Ready, |_| {
-        waiting
-            .get_or_insert_with(|| ReadyDisplay::new("waiting for the run to be ready"))
-            .show();
-    })
-    .await?;
-    if let Some(waiting) = waiting {
-        waiting.finish(&run);
-    }
-    Ok(run)
-}
+/// `runs exec`. On orbitinghail (release 67.0), a run that reports the
+/// `Ready` sub-status can still answer 400 `Run <id> is not ready yet. Try
+/// again shortly.` for a few minutes.
+const EXEC_RETRY: RetryPolicy = RetryPolicy {
+    needs: Needs::Ready,
+    waiting: "waiting for the run to accept commands",
+    decide: |run, err| {
+        let not_ready = format!("Run {} is not ready yet", run.run_id);
+        RetryDecision::retry_if(
+            api_error_status(err) == Some(400)
+                && api_error_message(err).is_some_and(|m| m.contains(&not_ready)),
+        )
+    },
+};
 
-/// Wait until the run is ready or complete, then execute. The wait has no
-/// time limit. A complete run executes at once, and the server answers with
-/// an error.
+/// Wait until the run is ready or complete, and until the server accepts the
+/// command, then execute. The wait has no time limit. A complete run executes
+/// at once, and the server answers with an error.
 async fn exec_when_ready(
     api: &AntithesisApi,
     run_id: &str,
@@ -2216,11 +2173,15 @@ async fn exec_when_ready(
             ("--vtime", &exec.moment.vtime.to_string()),
         ],
     );
-    let run = wait_until_ready(api, run_id, poll).await?;
-    let stream = api
-        .execute_command(run_id, exec)
-        .await
-        .map_err(|err| explain_exec_error(&run.status, &debug_command, rewarm_flag, err))?;
+    let stream = ready::send_when_ready(
+        api,
+        run_id,
+        poll,
+        EXEC_RETRY,
+        || api.execute_command(run_id, exec.clone()),
+        |run, err| explain_exec_error(&run.status, &debug_command, rewarm_flag, err),
+    )
+    .await?;
 
     // Only the last line can be the terminal result. A line that parses as
     // one is held until the next line arrives, and is shown as an event if one
@@ -5100,7 +5061,11 @@ mod tests {
             .unwrap()
         }
 
-        async fn mock_get_run(run_id: &str, status: u16, body: serde_json::Value) -> MockServer {
+        pub(super) async fn mock_get_run(
+            run_id: &str,
+            status: u16,
+            body: serde_json::Value,
+        ) -> MockServer {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
                 .and(path(format!("/api/v0/runs/{run_id}")))
@@ -5108,23 +5073,6 @@ mod tests {
                 .mount(&server)
                 .await;
             server
-        }
-
-        #[test]
-        fn run_not_found_rewrites_only_404() {
-            let rewritten = explain_run_not_found("BAD-ID", api_error(404, "API error: 404"));
-            let msg = format!("{rewritten:#}");
-            assert_eq!(msg, "run not found: BAD-ID");
-        }
-
-        #[test]
-        fn run_not_found_passes_through_non_404() {
-            // A 500 whose body mentions 404 must NOT be rewritten — it's a real
-            // server fault, not a missing run.
-            let original = api_error(500, "API error: 500 — upstream 404 page");
-            let result = explain_run_not_found("run-1", original);
-            assert_eq!(api_error_status(&result), Some(500));
-            assert!(format!("{result:#}").contains("upstream 404 page"));
         }
 
         #[tokio::test]
@@ -5288,6 +5236,51 @@ mod tests {
         /// clap's, `wait_for_run` takes any interval.
         const FAST_POLL: Duration = Duration::from_millis(10);
 
+        const JSON: EventOutput = EventOutput::Json {
+            raw: false,
+            annotate_faults: false,
+        };
+
+        fn true_exec() -> ExecRequest {
+            ExecRequest {
+                moment: Moment {
+                    input_hash: "1".to_owned(),
+                    vtime: "2.5".parse().unwrap(),
+                },
+                script: "true".to_owned(),
+                container: None,
+                timeout: None,
+                events: false,
+                rewarm: None,
+            }
+        }
+
+        /// Answer commands in run-w as a ready run that does not accept them
+        /// yet, verbatim from orbitinghail (release 67.0): `times` times, or
+        /// always. A limited answer takes priority over [`mount_exec_exited`].
+        async fn mount_exec_not_ready(server: &MockServer, times: Option<u64>) {
+            let body = r#"{"message":"Run run-w is not ready yet. Try again shortly."}"#;
+            let mock = Mock::given(method("POST"))
+                .and(path("/api/v0/runs/run-w/command"))
+                .respond_with(ResponseTemplate::new(400).set_body_string(body));
+            match times {
+                Some(times) => mock.up_to_n_times(times).with_priority(1),
+                None => mock,
+            }
+            .mount(server)
+            .await;
+        }
+
+        /// Answer every command in run-w with an exit status of 0.
+        async fn mount_exec_exited(server: &MockServer) {
+            let result = crate::testutils::mock_exec_exited(Some(0));
+            Mock::given(method("POST"))
+                .and(path("/api/v0/runs/run-w/command"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(format!("{result}\n")))
+                .mount(server)
+                .await;
+        }
+
         /// The stream of `run_id` answers `404 Resource not found` `misses`
         /// times, then opens with one `RUN_FINALIZED` line.
         async fn mount_stream(server: &MockServer, run_id: &str, misses: u64) {
@@ -5329,14 +5322,91 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn the_stream_reads_the_run_after_each_miss() {
+            let server = MockServer::start().await;
+            mount_get_run_statuses(&server, &["in_progress"]).await;
+            mount_stream(&server, "run-w", 2).await;
+            let api = test_api(&server.uri());
+
+            let _stream = open_run_stream(&api, "run-w", &[], FAST_POLL)
+                .await
+                .unwrap();
+
+            assert_eq!(
+                request_methods(&server).await,
+                ["POST", "GET", "POST", "GET", "POST"]
+            );
+        }
+
+        #[tokio::test]
+        async fn the_stream_of_an_unknown_run_is_not_found() {
+            let server =
+                super::run_scoped_errors::mock_get_run("BAD-ID", 404, json!({"message": "nope"}))
+                    .await;
+            let api = test_api(&server.uri());
+
+            let err = open_run_stream(&api, "BAD-ID", &[], FAST_POLL)
+                .await
+                .err()
+                .unwrap();
+
+            assert_eq!(err.to_string(), "run not found: BAD-ID");
+        }
+
+        #[tokio::test]
+        async fn the_stream_stops_waiting_once_the_run_ends() {
+            let server = MockServer::start().await;
+            mount_get_run_statuses(&server, &["in_progress", "completed"]).await;
+            mount_stream(&server, "run-w", u64::MAX).await;
+            let api = test_api(&server.uri());
+
+            let open = open_run_stream(&api, "run-w", &[], FAST_POLL);
+            let err = tokio::time::timeout(Duration::from_secs(5), open)
+                .await
+                .expect("an ended run must not keep the stream waiting")
+                .err()
+                .unwrap();
+
+            assert_eq!(
+                err.to_string(),
+                "run run-w has finished, and has no status stream"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_stream_error_outlives_a_failed_run_read() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/api/v0/runs/run-w/stream"))
+                .respond_with(ResponseTemplate::new(403).set_body_json(json!({"message": "no"})))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/api/v0/runs/run-w"))
+                .respond_with(ResponseTemplate::new(500).set_body_json(json!({"message": "boom"})))
+                .mount(&server)
+                .await;
+            let api = test_api(&server.uri());
+
+            let err = open_run_stream(&api, "run-w", &[], FAST_POLL)
+                .await
+                .err()
+                .unwrap();
+
+            assert_eq!(api_error_status(&err), Some(403));
+        }
+
+        #[tokio::test]
         async fn a_run_with_status_unknown_is_an_error() {
             let server = MockServer::start().await;
             mount_get_run_statuses(&server, &["unknown"]).await;
             mount_stream(&server, "run-w", u64::MAX).await;
             let api = test_api(&server.uri());
 
-            let err = open_run_stream(&api, "run-w", &[], FAST_POLL)
+            let open = open_run_stream(&api, "run-w", &[], FAST_POLL);
+            let err = tokio::time::timeout(Duration::from_secs(5), open)
                 .await
+                .expect("an unknown status must not keep the stream waiting")
                 .err()
                 .unwrap();
 
@@ -5413,7 +5483,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn wait_until_ready_stops_once_the_run_is_ready() {
+        async fn wait_for_ready_stops_once_the_run_is_ready() {
             let server = MockServer::start().await;
             let bodies = vec![
                 run_body("starting"),
@@ -5442,40 +5512,108 @@ mod tests {
                 ready_run_body(),
             ];
             mount_get_run_bodies(&server, bodies).await;
-            let result = crate::testutils::mock_exec_exited(Some(0));
-            Mock::given(method("POST"))
-                .and(path("/api/v0/runs/run-w/command"))
-                .respond_with(ResponseTemplate::new(200).set_body_string(format!("{result}\n")))
-                .mount(&server)
-                .await;
+            mount_exec_exited(&server).await;
             let api = test_api(&server.uri());
-            let exec = ExecRequest {
-                moment: Moment {
-                    input_hash: "1".to_owned(),
-                    vtime: "2.5".parse().unwrap(),
-                },
-                script: "true".to_owned(),
-                container: None,
-                timeout: None,
-                events: false,
-                rewarm: None,
-            };
-
-            let json = EventOutput::Json {
-                raw: false,
-                annotate_faults: false,
-            };
-            exec_when_ready(&api, "run-w", exec, FAST_POLL, json)
+            exec_when_ready(&api, "run-w", true_exec(), FAST_POLL, JSON)
                 .await
                 .unwrap();
 
-            let requests = server.received_requests().await.unwrap();
-            let methods: Vec<_> = requests.iter().map(|r| r.method.to_string()).collect();
-            assert_eq!(methods, ["GET", "GET", "GET", "POST"]);
+            assert_eq!(
+                request_methods(&server).await,
+                ["GET", "GET", "GET", "POST"]
+            );
         }
 
         #[tokio::test]
-        async fn wait_until_ready_stops_at_a_complete_run() {
+        async fn exec_retries_while_a_ready_run_is_not_ready_yet() {
+            let server = MockServer::start().await;
+            mount_get_run_bodies(&server, vec![ready_run_body()]).await;
+            mount_exec_not_ready(&server, Some(2)).await;
+            mount_exec_exited(&server).await;
+            let api = test_api(&server.uri());
+            exec_when_ready(&api, "run-w", true_exec(), FAST_POLL, JSON)
+                .await
+                .unwrap();
+
+            assert_eq!(
+                request_methods(&server).await,
+                ["GET", "POST", "GET", "POST", "GET", "POST"]
+            );
+        }
+
+        #[tokio::test]
+        async fn exec_stops_retrying_once_the_run_ends() {
+            let server = MockServer::start().await;
+            let bodies = vec![ready_run_body(), ready_run_body(), run_body("completed")];
+            mount_get_run_bodies(&server, bodies).await;
+            mount_exec_not_ready(&server, None).await;
+            let api = test_api(&server.uri());
+            let exec = exec_when_ready(&api, "run-w", true_exec(), FAST_POLL, JSON);
+            let err = tokio::time::timeout(Duration::from_secs(5), exec)
+                .await
+                .expect("an ended run must not keep the command waiting")
+                .unwrap_err();
+
+            let report = format!("{err:?}");
+            assert!(report.contains("This run is completed"), "got: {report}");
+            assert_eq!(
+                request_methods(&server).await,
+                ["GET", "POST", "GET", "POST", "GET"]
+            );
+        }
+
+        #[tokio::test]
+        async fn exec_explains_a_run_that_ends_before_the_command() {
+            let server = MockServer::start().await;
+            mount_get_run_bodies(&server, vec![ready_run_body(), run_body("completed")]).await;
+            let ended = "Run run-w has ended. Commands require an active run.";
+            Mock::given(method("POST"))
+                .and(path("/api/v0/runs/run-w/command"))
+                .respond_with(ResponseTemplate::new(400).set_body_json(json!({ "message": ended })))
+                .mount(&server)
+                .await;
+            let api = test_api(&server.uri());
+
+            let err = exec_when_ready(&api, "run-w", true_exec(), FAST_POLL, JSON)
+                .await
+                .unwrap_err();
+
+            // The note reads the run after the refusal, not before the send.
+            let report = format!("{err:?}");
+            assert!(report.contains("This run is completed"), "got: {report}");
+        }
+
+        #[tokio::test]
+        async fn exec_does_not_retry_another_400() {
+            for message in [
+                "Run run-w has ended. Commands require an active run.",
+                // Not ready, but names a session, not the run.
+                "Session s-1 is not ready yet. Try again shortly.",
+            ] {
+                let server = MockServer::start().await;
+                mount_get_run_bodies(&server, vec![ready_run_body()]).await;
+                Mock::given(method("POST"))
+                    .and(path("/api/v0/runs/run-w/command"))
+                    .respond_with(
+                        ResponseTemplate::new(400).set_body_json(json!({ "message": message })),
+                    )
+                    .mount(&server)
+                    .await;
+                let api = test_api(&server.uri());
+                let exec = exec_when_ready(&api, "run-w", true_exec(), FAST_POLL, JSON);
+                let err = tokio::time::timeout(Duration::from_secs(5), exec)
+                    .await
+                    .expect("the command must not keep waiting")
+                    .unwrap_err();
+
+                assert_eq!(api_error_status(&err), Some(400));
+                let methods = request_methods(&server).await;
+                assert_eq!(methods, ["GET", "POST", "GET"], "message: {message}");
+            }
+        }
+
+        #[tokio::test]
+        async fn wait_for_ready_stops_at_a_complete_run() {
             let server = MockServer::start().await;
             mount_get_run_statuses(&server, &["starting", "incomplete"]).await;
             let api = test_api(&server.uri());
@@ -5634,38 +5772,83 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn search_404_names_the_release_only_for_an_old_run() {
-            let old = crate::testutils::MOCK_OLD_RELEASE_RUN;
-            let new = "0df9ac1f5155c14f88ea41f5ad503e07-64-0";
-            for (run_id, hint) in [(old, true), (new, false)] {
-                let server = MockServer::start().await;
-                // A run from before release 64.0 has no sub-status, so it is
-                // ready while in progress.
-                let mut body = if hint {
-                    run_body("in_progress")
-                } else {
-                    ready_run_body()
-                };
-                body["run_id"] = json!(run_id);
-                mount_get_run_bodies(&server, vec![body]).await;
-                mount_count(&server, run_id, false).await;
-                let api = test_api(&server.uri());
+        async fn search_404_names_the_release_for_an_old_run() {
+            let run_id = crate::testutils::MOCK_OLD_RELEASE_RUN;
+            let server = MockServer::start().await;
+            // A run from before release 64.0 has no sub-status, so it is
+            // ready while in progress.
+            let mut body = run_body("in_progress");
+            body["run_id"] = json!(run_id);
+            mount_get_run_bodies(&server, vec![body]).await;
+            mount_count(&server, run_id, false).await;
+            let api = test_api(&server.uri());
 
-                let err = count_when_ready(&api, run_id).await.unwrap_err();
+            let err = count_when_ready(&api, run_id).await.unwrap_err();
 
-                assert_eq!(api_error_status(&err), Some(404));
-                let report = format!("{err:?}");
-                assert_eq!(
-                    report.contains("tenant releases before 62.2 do not serve the events-search"),
-                    hint,
-                    "got: {report}"
-                );
-                assert_eq!(request_methods(&server).await, ["GET", "POST"]);
-            }
+            assert_eq!(api_error_status(&err), Some(404));
+            let report = format!("{err:?}");
+            assert!(
+                report.contains("tenant releases before 62.2 do not serve the events-search"),
+                "got: {report}"
+            );
+            assert_eq!(request_methods(&server).await, ["GET", "POST", "GET"]);
         }
 
         #[tokio::test]
-        async fn ready_wait_bypasses_the_cache_and_the_search_does_not() {
+        async fn search_retries_a_404_while_a_new_run_is_ready() {
+            let run_id = "0df9ac1f5155c14f88ea41f5ad503e07-64-0";
+            let server = MockServer::start().await;
+            let mut body = ready_run_body();
+            body["run_id"] = json!(run_id);
+            mount_get_run_bodies(&server, vec![body]).await;
+            Mock::given(method("POST"))
+                .and(path(format!("/api/v0/runs/{run_id}/events/search/count")))
+                .respond_with(
+                    ResponseTemplate::new(404)
+                        .set_body_raw(crate::testutils::MOCK_BARE_404_BODY, "application/json"),
+                )
+                .up_to_n_times(1)
+                .with_priority(1)
+                .mount(&server)
+                .await;
+            mount_count(&server, run_id, true).await;
+            let api = test_api(&server.uri());
+
+            let count = count_when_ready(&api, run_id).await.unwrap();
+
+            assert_eq!(count, 3);
+            assert_eq!(
+                request_methods(&server).await,
+                ["GET", "POST", "GET", "POST"]
+            );
+        }
+
+        #[tokio::test]
+        async fn search_stops_retrying_once_the_run_ends() {
+            let server = MockServer::start().await;
+            let bodies = vec![ready_run_body(), ready_run_body(), run_body("completed")];
+            mount_get_run_bodies(&server, bodies).await;
+            mount_count(&server, "run-w", false).await;
+            let api = test_api(&server.uri());
+
+            let count = count_when_ready(&api, "run-w");
+            let err = tokio::time::timeout(Duration::from_secs(5), count)
+                .await
+                .expect("an ended run must not keep the search waiting")
+                .unwrap_err();
+
+            assert_eq!(api_error_status(&err), Some(404));
+            // A run from a release that serves the search gets no release hint.
+            let report = format!("{err:?}");
+            assert!(!report.contains("tenant releases before"), "got: {report}");
+            assert_eq!(
+                request_methods(&server).await,
+                ["GET", "POST", "GET", "POST", "GET"]
+            );
+        }
+
+        #[tokio::test]
+        async fn ready_wait_follows_the_cache_headers() {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
                 .and(path("/api/v0/runs/run-w"))
@@ -5687,16 +5870,16 @@ mod tests {
             )
             .unwrap();
 
-            // The search stand-in is a cacheable read, so the test can see
-            // which client sends it.
+            // The search stand-in reads the same cacheable run.
             for _ in 0..2 {
                 event_search::search_when_ready(&api, "run-w", FAST_POLL, || api.get_run("run-w"))
                     .await
                     .unwrap();
             }
 
-            // Both waits reach the server. The second search reads the cache.
-            assert_eq!(request_methods(&server).await, ["GET", "GET", "GET"]);
+            // The completed run is cacheable, so only the first wait reaches
+            // the server.
+            assert_eq!(request_methods(&server).await, ["GET"]);
         }
 
         #[tokio::test]

@@ -1,16 +1,16 @@
 Validate local Antithesis setup
 
 Compose configs:
-Runs docker-compose locally and watches for the setup-complete event to confirm instrumentation is working. After setup-complete is detected, discovers test commands from /opt/antithesis/test/v1 inside the running containers and validates their structure.
+Starts the compose config locally and waits for the setup-complete event. All images must be available locally.
 
-Before starting anything, validate resolves the compose file twice — with your shell and under a scrubbed environment matching the hermetic Antithesis environment — and fails if any ${VAR} resolves differently, catching setups that only work locally because a value came from your shell. Use {{ t("--allow-compose-divergence")? }} to downgrade that to a warning.
+Validation fails before anything starts when docker-compose.yaml depends on your shell environment, such as a ${VAR} that resolves differently in the Antithesis environment. Use {{ t("--allow-compose-divergence")? }} to make that a warning.
 
-Test commands are discovered by scanning /opt/antithesis/test/v1 from each running container for {test_name}/{command} entries. Test commands are validated to have recognized prefixes and at least one driver or anytime test command when any are present. Test commands are not executed.
+Once setup is complete, each test command in /opt/antithesis/test/v1/<test_name>/ must have a recognized prefix and be executable. Validation prints how many test commands of each type it found. Test commands are not executed.
 
-The setup-complete event is watched through a temp directory bind-mounted into each container. If your container engine runs inside a VM or on another machine and does not share this machine's temp directory, snouty will not be able to see the setup-complete event. Set SNOUTY_TEMP_DIR to a directory under a path the VM shares with write access, or share this machine's temp directory with the VM.
+If your container engine runs in a VM that does not share this machine's temp directory, validation times out waiting for the setup-complete event. Set SNOUTY_TEMP_DIR to a directory that the VM shares with write access.
 
 Kubernetes configs:
-Runs docker.io/antithesishq/k8s-validator against the manifests/ directory to perform static analysis of the manifests. {{ t("--timeout")? }}, {{ t("--keep-running")? }}, and {{ t("--allow-compose-divergence")? }} have no effect here (no workloads or containers are started, and there is no docker-compose config to render).
+Checks the manifests in the manifests/ directory without deploying them. {{ t("--timeout")? }}, {{ t("--keep-running")? }} and {{ t("--allow-compose-divergence")? }} do not apply.
 
 Examples:
   {{ t("snouty validate ./config")? }}

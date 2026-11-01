@@ -2156,7 +2156,7 @@ mod tests {
             ),
         );
 
-        let child = Command::new("sh").args(["-c", "sleep 30"]).spawn().unwrap();
+        let child = Command::new("sleep").arg("30").spawn().unwrap();
         let container_name = "snouty-test-registry-drop".to_string();
 
         {

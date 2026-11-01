@@ -8,9 +8,9 @@ Columns: RUN ID, STARTED, ENDED, CORE HOURS. CORE HOURS has one decimal place.
 
 With {{ t("--rollup")? }}, each row is the total of one day, week, or month: its first and last days, its number of runs, and its core-hours. A run counts in the period in which it ended. A week starts on Monday. Columns: START, END, RUNS, CORE HOURS. The rows are the {{ t("--limit")? }} periods that end with the current period, and a period with no runs shows 0.
 
-Times and periods are in the local timezone. Add {{ t("--utc")? }} to show them in UTC.
+Times and periods are in the local timezone.
 
-{{ t("--after")? }} and {{ t("--before")? }} select runs by the time that they ended: {{ t("--after")? }} includes a run that ended at that time, and {{ t("--before")? }} does not. Each takes a date, which is the start of that day, a time such as `2026-10-01 12:00:00`, or an RFC 3339 time. A date or a time without a zone is in the local timezone, or in UTC with {{ t("--utc")? }}. With {{ t("--rollup")? }}, a period is in the output when it holds a selected time. When a filter cuts a period, the total of that period includes only the runs inside the filter.
+{{ t("--after")? }} and {{ t("--before")? }} select runs by the time that they ended: {{ t("--after")? }} includes a run that ended at that time, and {{ t("--before")? }} does not. Each takes a date, which is the start of that day, a time such as `2026-10-01 12:00:00`, or an RFC 3339 time. A date or a time without a zone is in the local timezone. With {{ t("--rollup")? }}, a period is in the output when it holds a selected time. When a filter cuts a period, the total of that period includes only the runs inside the filter.
 
 {{ t("--limit")? }} counts rows: runs, or periods with {{ t("--rollup")? }}. The default is 10. The filters select which rows the limit keeps:
   no filter or {{ t("--before")? }}    the newest rows (before {{ t("--before")? }})
@@ -22,7 +22,7 @@ Examples:
   {{ t("snouty runs usage")? }}
   {{ t("snouty runs usage --rollup week -n 4")? }}
   {{ t("snouty runs usage --rollup month --after 2026-01-01")? }}
-  {{ t("snouty runs usage --after 2026-10-01 --before 2026-11-01 --utc")? }}
+  {{ t("snouty runs usage --after 2026-10-01 --before 2026-11-01")? }}
 
 {% if cli %}
 Add --json for machine-readable output. Each row prints as one JSON object on its own line. The hours field holds core-hours. A run has the fields run_id, hours, start_time, and end_time; the times are RFC 3339 with the offset of the timezone. A period has the fields date, runs, and hours, with hours rounded to hundredths:

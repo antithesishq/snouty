@@ -202,20 +202,16 @@ pub struct Cli {
     #[arg(long, global = true, display_order = 1000)]
     pub json: bool,
 
-    /// Show times in UTC instead of the local timezone
-    #[arg(long, global = true, display_order = 1001)]
-    pub utc: bool,
-
     /// Log API requests to stderr (authentication tokens redacted)
-    #[arg(long, global = true, display_order = 1002)]
+    #[arg(long, global = true, display_order = 1001)]
     pub verbose: bool,
 
     /// Path to the snouty settings file (default: ./.snouty.toml; overrides SNOUTY_SETTINGS_PATH)
-    #[arg(long, global = true, display_order = 1003)]
+    #[arg(long, global = true, display_order = 1002)]
     pub settings: Option<std::path::PathBuf>,
 
     /// Settings profile to select (overrides ANTITHESIS_PROFILE)
-    #[arg(long, global = true, value_parser = validate_non_empty, display_order = 1004)]
+    #[arg(long, global = true, value_parser = validate_non_empty, display_order = 1003)]
     pub profile: Option<String>,
 
     #[command(subcommand)]
@@ -1062,8 +1058,8 @@ pub struct RunsListArgs {
     #[arg(long)]
     pub created_after: Option<TimeBound>,
 
-    /// Only show runs created at or before this date (e.g. 2026-11-01), time (e.g.
-    /// 2026-11-01 12:00:00) or RFC 3339 time
+    /// Only show runs created at or before this date (e.g. 2026-11-01), time
+    /// (e.g. 2026-11-01 12:00:00) or RFC 3339 time
     #[arg(long)]
     pub created_before: Option<TimeBound>,
 

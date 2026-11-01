@@ -2650,14 +2650,6 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             rows_at_most(6),
         ),
         Story(
-            "runs-usage--utc",
-            "Report usage in UTC",
-            "I share usage numbers with a team in other timezones, so I want UTC times.",
-            "Up to 5 runs; STARTED/ENDED are UTC times, and the --json times end in `Z`.",
-            ["runs", "usage", "--utc", "-n", "5"],
-            rows_at_most(5),
-        ),
-        Story(
             "runs-usage--window",
             "Total the usage of one month",
             "I want the daily usage of the runs that ended in a given month.",

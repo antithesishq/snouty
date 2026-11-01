@@ -68,7 +68,8 @@ mod tests {
         let line = render_one(&json!({
             "timestamp": "2025-03-20T02:01:12Z", "stream": "err", "text": ""
         }));
-        assert_eq!(line, "2025-03-20 02:01:12 [err]");
+        assert!(line.ends_with("[err]"), "got: {line}");
+        assert!(!line.contains("moment"), "got: {line}");
 
         // `stream` is optional in the build-log schema: a record without it
         // still renders as a log line, defaulting to [out].
@@ -80,7 +81,7 @@ mod tests {
 
     #[test]
     fn an_unparsable_timestamp_renders_with_escape_bytes_escaped() {
-        // `Zone::format_rfc3339` cannot parse this timestamp, so it falls back
+        // `format_local_str` cannot parse this timestamp, so it falls back
         // to the raw string — the sanitize here is what keeps the carried
         // escape bytes from reaching the terminal.
         console::set_colors_enabled(false);

@@ -36,7 +36,6 @@ use snouty::params::{
 };
 use snouty::settings::Settings;
 use snouty::stdio::{self, StreamClosed};
-use snouty::time::Zone;
 use snouty::validate;
 
 // musl's malloc is slow, and the Linux release binaries are static musl builds.
@@ -95,7 +94,6 @@ async fn main() {
 async fn run(cli: Cli) -> Result<()> {
     let Cli {
         json,
-        utc,
         verbose,
         settings: settings_path,
         profile,
@@ -106,11 +104,7 @@ async fn run(cli: Cli) -> Result<()> {
     }
     // The global output flags travel together from here on; every command
     // takes them as one value instead of a swappable positional bool pair.
-    let output = OutputOptions {
-        json,
-        verbose,
-        zone: if utc { Zone::Utc } else { Zone::Local },
-    };
+    let output = OutputOptions { json, verbose };
 
     if let Some(report) = gated_command_error(&command, &features::enabled()) {
         return Err(report);
@@ -237,7 +231,7 @@ async fn cmd_launch(
     settings: &Settings,
     settings_path: Option<PathBuf>,
     profile: Option<String>,
-    OutputOptions { json, verbose, .. }: OutputOptions,
+    OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
     let launcher = match args.webhook {
         Some(webhook) => {
@@ -516,7 +510,7 @@ fn param_overrides_flag(DuplicateKey(key): DuplicateKey) -> Report {
 async fn cmd_debug(
     args: DebugArgs,
     settings: &Settings,
-    OutputOptions { json, verbose, .. }: OutputOptions,
+    OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
     let mut params = debug_typed_params(&args);
     params

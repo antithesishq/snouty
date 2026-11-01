@@ -27,7 +27,6 @@ use crate::error::api_error_status;
 use crate::event_render::EventStreamRenderer;
 use crate::jsonl::JsonStream;
 use crate::stdio;
-use crate::time::Zone;
 
 use super::ready::{self, Needs, RetryDecision, RetryPolicy};
 use super::{ErrorRows, FaultAnnotator, READY_POLL, event_lines, raw_lines};
@@ -44,9 +43,8 @@ pub(super) enum EventOutput {
     /// (`annotate_faults` — meaningless with `raw`, which touches nothing).
     Json { raw: bool, annotate_faults: bool },
     /// Text rendering through the shared [`EventStreamRenderer`]; `detail`
-    /// adds a full-width vtime, source locations, and details JSON. `zone`
-    /// is the time zone of build-log timestamps.
-    Text { detail: bool, zone: Zone },
+    /// adds a full-width vtime, source locations, and details JSON.
+    Text { detail: bool },
 }
 
 impl EventOutput {
@@ -81,8 +79,8 @@ pub(super) fn render_event_stream(
                 })
                 .boxed()
         }
-        EventOutput::Text { detail, zone } => {
-            let mut renderer = EventStreamRenderer::new(detail, zone);
+        EventOutput::Text { detail } => {
+            let mut renderer = EventStreamRenderer::new(detail);
             event_lines(stream, error_rows)
                 .map_ok(move |entry| renderer.render_entry(&entry))
                 .boxed()

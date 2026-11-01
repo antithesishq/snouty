@@ -239,52 +239,38 @@ fn split_unit(s: &str, unit: char) -> Option<(u64, &str)> {
     Some((number.parse().ok()?, &rest[unit.len_utf8()..]))
 }
 
-/// The time zone of the timestamps in text output: local, or UTC with the
-/// global `--utc`. The help of each command that prints a time names it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Zone {
-    #[default]
-    Local,
-    Utc,
+/// `time` in the local timezone.
+pub(crate) fn local(time: DateTime<Utc>) -> DateTime<FixedOffset> {
+    time.with_timezone(&Local).fixed_offset()
 }
 
-impl Zone {
-    pub(crate) fn time(self, time: DateTime<Utc>) -> DateTime<FixedOffset> {
-        match self {
-            Zone::Local => time.with_timezone(&Local).fixed_offset(),
-            Zone::Utc => time.fixed_offset(),
-        }
-    }
+/// The start of `date` in the local timezone.
+pub(crate) fn local_midnight(date: NaiveDate) -> DateTime<Utc> {
+    local_instant(date.and_time(NaiveTime::MIN))
+}
 
-    /// The start of `date`.
-    pub(crate) fn midnight(self, date: NaiveDate) -> DateTime<Utc> {
-        self.instant(date.and_time(NaiveTime::MIN))
-    }
-
-    /// The instant that the wall time `time` names in this zone. Where a
-    /// clock change repeats the time, this is the earlier instant. Where it
-    /// skips the time, this is the time read as UTC, which is off by at most
-    /// the size of the change.
-    pub(crate) fn instant(self, time: NaiveDateTime) -> DateTime<Utc> {
-        match self {
-            Zone::Local => Local.from_local_datetime(&time).earliest(),
-            Zone::Utc => None,
-        }
+/// The instant that the local wall time `time` names. Where a clock change
+/// repeats the time, this is the earlier instant. Where it skips the time,
+/// this is the time read as UTC, which is off by at most the size of the
+/// change.
+fn local_instant(time: NaiveDateTime) -> DateTime<Utc> {
+    Local
+        .from_local_datetime(&time)
+        .earliest()
         .map_or(time.and_utc(), |time| time.to_utc())
-    }
+}
 
-    /// `time` in this zone, without the zone. Example: `2026-05-27 08:25:13`.
-    /// [`TimeBound`] reads this form back.
-    pub(crate) fn format(self, time: DateTime<Utc>) -> String {
-        format_dense(self.time(time))
-    }
+/// `time` in the local timezone, without the zone. Example:
+/// `2026-05-27 08:25:13`. [`TimeBound`] reads this form back.
+pub(crate) fn format_local(time: DateTime<Utc>) -> String {
+    format_dense(local(time))
+}
 
-    /// [`Zone::format`] for an RFC 3339 string. Falls back to the original
-    /// string if it can't be parsed.
-    pub(crate) fn format_rfc3339(self, raw: &str) -> String {
-        DateTime::parse_from_rfc3339(raw)
-            .map_or_else(|_| raw.to_string(), |time| self.format(time.to_utc()))
-    }
+/// [`format_local`] for an RFC 3339 string. Falls back to the original
+/// string if it can't be parsed.
+pub(crate) fn format_local_str(raw: &str) -> String {
+    DateTime::parse_from_rfc3339(raw)
+        .map_or_else(|_| raw.to_string(), |time| format_local(time.to_utc()))
 }
 
 /// Format a timestamp in the zone that it carries, without the zone.
@@ -295,46 +281,31 @@ pub(crate) fn format_dense(dt: DateTime<FixedOffset>) -> String {
 /// The form of a time that snouty prints, and that [`TimeBound`] reads.
 const WALL_TIME: &str = "%Y-%m-%d %H:%M:%S";
 
-/// A time that a flag such as `--created-after` takes. A date means the
-/// start of that day, and a date and time without a zone (the form that
-/// snouty prints) is read in the display zone, which is known only after
-/// the parse: see [`TimeBound::resolve`].
+/// A time that a flag such as `--created-after` takes: a date, which is the
+/// start of that day, a time without a zone (the form that snouty prints),
+/// both in the local timezone, or an RFC 3339 time.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum TimeBound {
-    Date(NaiveDate),
-    WallTime(NaiveDateTime),
-    Time(DateTime<Utc>),
-}
+pub struct TimeBound(pub DateTime<Utc>);
 
 impl FromStr for TimeBound {
     type Err = String;
 
     fn from_str(text: &str) -> Result<Self, Self::Err> {
         if let Ok(time) = text.parse() {
-            return Ok(TimeBound::Time(time));
+            return Ok(TimeBound(time));
         }
         if let Ok(date) = NaiveDate::parse_from_str(text, "%Y-%m-%d") {
-            return Ok(TimeBound::Date(date));
+            return Ok(TimeBound(local_midnight(date)));
         }
         // `NaiveDateTime`'s own parser reads the `T` form, and a fraction.
         NaiveDateTime::parse_from_str(text, WALL_TIME)
             .or_else(|_| text.parse())
-            .map(TimeBound::WallTime)
+            .map(|time| TimeBound(local_instant(time)))
             .map_err(|_| {
                 "expected a date (2026-10-01), a time as snouty prints it \
                  (2026-10-01 12:00:00), or an RFC 3339 time (2026-10-01T12:00:00Z)"
                     .to_string()
             })
-    }
-}
-
-impl TimeBound {
-    pub(crate) fn resolve(self, zone: Zone) -> DateTime<Utc> {
-        match self {
-            TimeBound::Date(date) => zone.midnight(date),
-            TimeBound::WallTime(time) => zone.instant(time),
-            TimeBound::Time(time) => time,
-        }
     }
 }
 
@@ -533,20 +504,14 @@ mod tests {
         );
     }
 
-    /// `--utc` prints the instant in UTC, whatever offset the server's string
-    /// carries. An unparsable string prints as it is.
     #[test]
-    fn utc_formats_an_rfc3339_string_in_utc() {
-        assert_eq!(
-            Zone::Utc.format_rfc3339("2025-03-20T11:01:12+09:00"),
-            "2025-03-20 02:01:12"
-        );
-        assert_eq!(Zone::Utc.format_rfc3339("not a time"), "not a time");
+    fn an_unparsable_rfc3339_string_prints_as_it_is() {
+        assert_eq!(format_local_str("not a time"), "not a time");
     }
 
     /// A time that snouty prints reads back as the same instant, in the
-    /// space form, in the `T` form, and as RFC 3339. A date reads as the
-    /// start of its day.
+    /// space form, in the `T` form, and as RFC 3339, in the timezone of the
+    /// test process. A date reads as the start of its day.
     #[hegel::test]
     fn time_bound_reads_back_what_snouty_prints(tc: hegel::TestCase) {
         let seconds = tc.draw(
@@ -555,15 +520,17 @@ mod tests {
                 .max_value(250_000_000_000),
         );
         let time = DateTime::from_timestamp(seconds, 0).unwrap();
-        let printed = Zone::Utc.format(time);
-        let resolve = |text: &str| text.parse::<TimeBound>().map(|b| b.resolve(Zone::Utc));
-        assert_eq!(resolve(&printed), Ok(time), "{printed}");
-        assert_eq!(resolve(&printed.replace(' ', "T")), Ok(time), "{printed}");
-        assert_eq!(resolve(&time.to_rfc3339()), Ok(time));
-        let date = time.date_naive();
+        let printed = format_local(time);
+        let parse = |text: &str| text.parse::<TimeBound>().map(|bound| bound.0);
+        // A time that a clock change repeats reads as its earlier instant.
+        let expected = local_instant(local(time).naive_local());
+        assert_eq!(parse(&printed), Ok(expected), "{printed}");
+        assert_eq!(parse(&printed.replace(' ', "T")), Ok(expected), "{printed}");
+        assert_eq!(parse(&time.to_rfc3339()), Ok(time));
+        let date = local(time).date_naive();
         assert_eq!(
-            date.format("%Y-%m-%d").to_string().parse::<TimeBound>(),
-            Ok(TimeBound::Date(date))
+            parse(&date.format("%Y-%m-%d").to_string()),
+            Ok(local_midnight(date))
         );
     }
 

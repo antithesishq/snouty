@@ -216,23 +216,18 @@ stdout 'Run ID.*$R_run_id'
 [!staging] stdout '(?s)^Version Control\n  Repo Type    github\n  Repo Owner   acme\n  Repo Name    widgets\n  Branch       main\n  Commit       abc123\n  Commit Link  https://github.com/acme/widgets/commit/abc123\n\n'
 [!staging] ! stdout 'vcs\.'
 
-# Timestamps are in the local timezone, without a zone, or in UTC with the
-# global --utc, which also works after the subcommand.
+# Timestamps are in the local timezone, without a zone.
 mock-runs-server
 env TZ=Asia/Tokyo
 snouty runs show $R_run_id
 stdout '^Created +\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$'
 [!staging] stdout '^Started +2025-03-20 11:01:12$'
-snouty --utc runs show $R_run_id
-[!staging] stdout '^Started +2025-03-20 02:01:12$'
 snouty runs list --detail -n 1
-stdout '^Created +\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$'
-snouty runs list --detail -n 1 --utc
 stdout '^Created +\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$'
 
 # A run's Created time pastes back into the created filters, read in the
-# display zone: local, or UTC with --utc. --created-after leaves out a run
-# created at that time, and --created-before includes it.
+# local timezone. --created-after leaves out a run created at that time, and
+# --created-before includes it.
 mock-runs-server
 env TZ=Asia/Tokyo
 [!staging] snouty runs list --detail
@@ -244,12 +239,9 @@ env TZ=Asia/Tokyo
 [!staging] stdout '"run_id":"run-2"'
 [!staging] snouty --json runs list --created-before 2025-03-20T10:59:59
 [!staging] ! stdout '"run_id":"run-1"'
-[!staging] snouty --utc runs list --detail
-[!staging] stdout '^Created +2025-03-20 02:00:00$'
-[!staging] snouty --json runs list --utc --created-after '2025-03-20 01:59:59'
+[!staging] snouty --json runs list --created-after 2025-03-20
 [!staging] stdout '"run_id":"run-1"'
-[!staging] snouty --json runs list --utc --created-before '2025-03-20 02:00:00'
-[!staging] stdout '"run_id":"run-1"'
+[!staging] ! stdout '"run_id":"run-2"'
 
 # A bad time names the forms that the flag takes.
 ! snouty runs list --created-after '2025-03-20 11:00'
@@ -456,8 +448,8 @@ stderr 'detail.*json'
 ! snouty --json runs list --detail
 stderr 'detail.*json'
 
-# `snouty runs build-logs` prints each line's timestamp in the local timezone,
-# or in UTC with --utc. TZ is not UTC, so the two differ.
+# `snouty runs build-logs` prints each line's timestamp in the local timezone.
+# TZ is not UTC, so the times differ from the server's.
 mock-runs-server
 env TZ=Asia/Tokyo
 snouty runs build-logs $R_run_id
@@ -465,8 +457,6 @@ stdout '^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \[[a-z]+\]'
 [!staging] stdout '^2025-03-20 11:01:12 \[stdout\] Building image payments-service\.\.\.'
 [!staging] stdout '^2025-03-20 11:01:15 \[stderr\] Warning: deprecated feature'
 [!staging] stdout '^2025-03-20 11:01:20 \[stdout\] Build complete'
-snouty runs build-logs $R_run_id --utc
-[!staging] stdout '^2025-03-20 02:01:12 \[stdout\] Building image payments-service\.\.\.'
 
 # `snouty --json runs build-logs` outputs raw NDJSON.
 mock-runs-server

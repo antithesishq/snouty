@@ -197,12 +197,7 @@ async fn tools_return_detailed_output_or_json() {
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
     let property: Value = serde_json::from_str(text(&result)).unwrap();
     assert_eq!(property["id"], "97cf5fcafa500ed62bf109d81834c5b881a2c854");
-    let result = call(
-        &client,
-        "runs_usage",
-        json!({ "limit": 1, "utc": true, "json": true }),
-    )
-    .await;
+    let result = call(&client, "runs_usage", json!({ "limit": 1, "json": true })).await;
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
     let usage: Value = serde_json::from_str(text(&result).trim()).unwrap();
     assert!(usage["hours"].is_number(), "{usage}");

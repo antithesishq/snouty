@@ -19,15 +19,14 @@ which it ended. A week starts on Monday. Columns: START, END, RUNS, CORE HOURS.
 The rows are the --limit periods that end with the current period, and a period
 with no runs shows 0.
 
-Times and periods are in the local timezone. Add --utc to show them in UTC.
+Times and periods are in the local timezone.
 
 --after and --before select runs by the time that they ended: --after includes a
 run that ended at that time, and --before does not. Each takes a date, which is
 the start of that day, a time such as `2026-10-01 12:00:00`, or an RFC 3339
-time. A date or a time without a zone is in the local timezone, or in UTC with
---utc. With --rollup, a period is in the output when it holds a selected time.
-When a filter cuts a period, the total of that period includes only the runs
-inside the filter.
+time. A date or a time without a zone is in the local timezone. With --rollup, a
+period is in the output when it holds a selected time. When a filter cuts a
+period, the total of that period includes only the runs inside the filter.
 
 --limit counts rows: runs, or periods with --rollup. The default is 10. The
 filters select which rows the limit keeps:
@@ -40,7 +39,7 @@ Examples:
   snouty runs usage
   snouty runs usage --rollup week -n 4
   snouty runs usage --rollup month --after 2026-01-01
-  snouty runs usage --after 2026-10-01 --before 2026-11-01 --utc
+  snouty runs usage --after 2026-10-01 --before 2026-11-01
 
 Add --json for machine-readable output. Each row prints as one JSON object on
 its own line. The hours field holds core-hours. A run has the fields run_id,
@@ -75,9 +74,6 @@ Options:
       --json
           Output JSON where supported (NDJSON for list/stream commands, pretty
           JSON otherwise)
-
-      --utc
-          Show times in UTC instead of the local timezone
 
       --verbose
           Log API requests to stderr (authentication tokens redacted)

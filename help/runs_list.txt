@@ -3,12 +3,10 @@ List recent runs{% if cli %} (the default when `snouty runs` runs with no subcom
 Each run has its ID, status, creation time, launcher, and test name. For a run with no test name, the name is the first line of its description.
 
 {% if cli %}
-Columns: RUN ID, STATUS, CREATED, LAUNCHER, RUN. RUN is the test name, or `-` for a run with no test name and no description. CREATED is the age of the run, such as `2h ago`. Use {{ t("--detail")? }} for the full description and the creation time, which is in the local timezone. Add {{ t("--utc")? }} to show it in UTC.
+Columns: RUN ID, STATUS, CREATED, LAUNCHER, RUN. RUN is the test name, or `-` for a run with no test name and no description. CREATED is the age of the run, such as `2h ago`. Use {{ t("--detail")? }} for the full description and the creation time, which is in the local timezone.
 {% else %}
-Each run prints as a block of `Label  value` lines, with a blank line between blocks: Run ID, Status, Created, Launcher, Test Name when the run has one, and the full Description. Created is in the local timezone. Add {{ t("--utc")? }} to show it in UTC.
+Each run prints as a block of `Label  value` lines, with a blank line between blocks: Run ID, Status, Created, Launcher, Test Name when the run has one, and the full Description. Created is in the local timezone.
 {% endif %}
-
-{{ t("--created-after")? }} and {{ t("--created-before")? }} take a date, which is the start of that day, a time as snouty prints it, such as `2026-10-01 12:00:00`, or an RFC 3339 time. A date or a time without a zone is in the local timezone, or in UTC with {{ t("--utc")? }}. {{ t("--created-after")? }} lists the runs created after that time, and {{ t("--created-before")? }} the runs created at or before it. So a run's Created time with {{ t("--created-after")? }} leaves that run out, and with {{ t("--created-before")? }} includes it.
 
 Pass a run's ID to `{{ t("runs show")? }}` for its details, to `{{ t("runs properties")? }}` for its property results, or to `{{ t("runs wait")? }}` to wait until it is ready or complete.
 

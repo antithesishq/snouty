@@ -19,7 +19,7 @@ use crate::error::user_error;
 use crate::render::{OutputOptions, sanitize};
 use crate::settings::Settings;
 use crate::table::{Align, Column, Table};
-use crate::time::{Zone, format_dense};
+use crate::time::{format_dense, local, local_midnight};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Rollup {
@@ -28,22 +28,22 @@ pub enum Rollup {
     Month,
 }
 
-/// The usage entry of a run, with its times in the output time zone.
+/// The usage entry of a run, with its times in the local timezone.
 #[derive(Serialize)]
-struct ZonedUsageEntry {
+struct LocalUsageEntry {
     run_id: String,
     hours: f64,
     start_time: DateTime<FixedOffset>,
     end_time: DateTime<FixedOffset>,
 }
 
-impl ZonedUsageEntry {
-    fn new(entry: UsageEntry, zone: Zone) -> Self {
+impl From<UsageEntry> for LocalUsageEntry {
+    fn from(entry: UsageEntry) -> Self {
         Self {
             run_id: entry.run_id,
             hours: entry.hours,
-            start_time: zone.time(entry.start_time),
-            end_time: zone.time(entry.end_time),
+            start_time: local(entry.start_time),
+            end_time: local(entry.end_time),
         }
     }
 }
@@ -130,11 +130,7 @@ impl Selection {
 pub(super) async fn cmd_runs_usage(
     args: RunsUsageArgs,
     settings: &Settings,
-    OutputOptions {
-        json,
-        verbose,
-        zone,
-    }: OutputOptions,
+    OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
     debug!("listing usage");
     let RunsUsageArgs {
@@ -143,8 +139,8 @@ pub(super) async fn cmd_runs_usage(
         before,
         limit,
     } = args;
-    let after = after.map(|bound| bound.resolve(zone));
-    let before = before.map(|bound| bound.resolve(zone));
+    let after = after.map(|bound| bound.0);
+    let before = before.map(|bound| bound.0);
     let selection = match (after, before, limit) {
         (Some(_), Some(_), Some(_)) => {
             return Err(user_error(
@@ -172,10 +168,8 @@ pub(super) async fn cmd_runs_usage(
                     .await?
             }
         };
-        let entries: Vec<ZonedUsageEntry> = entries
-            .into_iter()
-            .map(|entry| ZonedUsageEntry::new(entry, zone))
-            .collect();
+        let entries: Vec<LocalUsageEntry> =
+            entries.into_iter().map(LocalUsageEntry::from).collect();
         return print_rows(
             &entries,
             json,
@@ -188,7 +182,7 @@ pub(super) async fn cmd_runs_usage(
     // A run counts in the period in which it ended, as the usage summary and
     // the usage cap count it. `before` is exclusive, so the newest period is
     // the one that holds the instant before it.
-    let date = |time: DateTime<Utc>| zone.time(time).date_naive();
+    let date = |time: DateTime<Utc>| local(time).date_naive();
     let newest = date(before.map_or_else(Utc::now, |time| time - TimeDelta::nanoseconds(1)));
     let ends = match selection {
         Selection::Newest(limit) => periods_back(rollup, newest, FIRST_DAY, Some(limit)),
@@ -200,8 +194,8 @@ pub(super) async fn cmd_runs_usage(
     // One window of end times holds every period, so the page order does not
     // matter.
     if let (Some(newest_end), Some(oldest_end)) = (ends.first(), ends.last()) {
-        let start = zone.midnight(rollup.period_start(*oldest_end));
-        let end = zone.midnight(*newest_end + Days::new(1));
+        let start = local_midnight(rollup.period_start(*oldest_end));
+        let end = local_midnight(*newest_end + Days::new(1));
         let after = after.map_or(start, |time| time.max(start));
         let before = before.map_or(end, |time| time.min(end));
         let entries = api.stream_usage(Some(after), Some(before), None);
@@ -330,7 +324,7 @@ fn format_hours(hours: f64) -> String {
     format!("{hours:.1}")
 }
 
-fn render_usage_table(entries: &[ZonedUsageEntry], width: usize) -> String {
+fn render_usage_table(entries: &[LocalUsageEntry], width: usize) -> String {
     let rows = entries
         .iter()
         .map(|entry| {

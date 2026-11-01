@@ -3,7 +3,7 @@ use std::io::Write;
 use color_eyre::eyre::Result;
 use serde_json::{Map, Value, json};
 
-use super::Settings;
+use super::{Settings, exact_byte_size};
 use crate::features::{self, Feature};
 use crate::render::{render_kv, sanitize};
 use crate::stdio;
@@ -54,31 +54,6 @@ fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, 
     rows
 }
 
-/// `bytes` in the largest unit that holds it exactly, such as `10 MiB` or
-/// `10 MB`, so that a size prints as the user wrote it. The `Display` of
-/// `ByteSize` rounds: it prints a size set as `10 MB` as `9.5 MiB`.
-fn exact_byte_size(bytes: u64) -> String {
-    const UNITS: [(u64, &str); 10] = [
-        (1 << 50, "PiB"),
-        (1_000_000_000_000_000, "PB"),
-        (1 << 40, "TiB"),
-        (1_000_000_000_000, "TB"),
-        (1 << 30, "GiB"),
-        (1_000_000_000, "GB"),
-        (1 << 20, "MiB"),
-        (1_000_000, "MB"),
-        (1 << 10, "KiB"),
-        (1_000, "KB"),
-    ];
-    UNITS
-        .iter()
-        .find(|(size, _)| bytes != 0 && bytes.is_multiple_of(*size))
-        .map_or_else(
-            || format!("{bytes} B"),
-            |(size, unit)| format!("{} {unit}", bytes / size),
-        )
-}
-
 pub fn cmd_settings_show(settings: &Settings, json: bool) -> Result<()> {
     let rows = rows(settings, &features::enabled());
     let mut stdout = stdio::stdout();
@@ -118,29 +93,4 @@ pub fn cmd_settings_show(settings: &Settings, json: bool) -> Result<()> {
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use hegel::generators;
-
-    use super::exact_byte_size;
-    use crate::settings::parse_byte_size;
-
-    #[test]
-    fn byte_sizes_print_in_the_largest_exact_unit() {
-        assert_eq!(exact_byte_size(10 * 1024 * 1024), "10 MiB");
-        assert_eq!(exact_byte_size(10_000_000), "10 MB");
-        assert_eq!(exact_byte_size(1_500), "1500 B");
-        assert_eq!(exact_byte_size(0), "0 B");
-    }
-
-    #[hegel::test]
-    fn a_printed_byte_size_parses_back_to_the_same_size(tc: hegel::TestCase) {
-        let bytes = tc.draw(generators::integers::<u64>());
-        assert_eq!(
-            parse_byte_size("setting", &exact_byte_size(bytes)).unwrap(),
-            bytes
-        );
-    }
 }

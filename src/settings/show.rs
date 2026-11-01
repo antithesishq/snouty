@@ -12,35 +12,47 @@ use crate::table::{Column, Table};
 const NOT_SET: &str = "not set";
 
 /// Each setting's name in a settings file, its resolved value (null when
-/// unset), and the text the table prints when it is unset.
+/// unset), and the text the table prints for it.
 /// A `features` row follows when an unstable feature is on; an empty row would
 /// be noise on every ordinary run.
-fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, &'static str)> {
+fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, String)> {
+    fn text_row(
+        name: &'static str,
+        value: Option<&str>,
+        unset: &str,
+    ) -> (&'static str, Value, String) {
+        (name, json!(value), value.unwrap_or(unset).to_owned())
+    }
+
+    let max_file_size = settings.api_cache_max_file_size();
     let mut rows = vec![
-        ("profile", json!(settings.profile()), "default"),
-        ("tenant", json!(settings.tenant()), NOT_SET),
-        ("repository", json!(settings.repository()), NOT_SET),
-        ("base_url", json!(settings.base_url()), NOT_SET),
-        ("https_proxy", json!(settings.https_proxy()), NOT_SET),
-        (
+        text_row("profile", settings.profile(), "default"),
+        text_row("tenant", settings.tenant(), NOT_SET),
+        text_row("repository", settings.repository(), NOT_SET),
+        text_row("base_url", settings.base_url(), NOT_SET),
+        text_row("https_proxy", settings.https_proxy(), NOT_SET),
+        text_row(
             "container_engine",
-            json!(settings.container_engine()),
+            settings.container_engine(),
             "auto-detect",
         ),
-        (
+        text_row(
             "update_channel",
-            json!(settings.update_channel().as_str()),
+            Some(settings.update_channel().as_str()),
             NOT_SET,
         ),
         (
             "api_cache_max_file_size",
-            json!(settings.api_cache_max_file_size()),
-            NOT_SET,
+            json!(max_file_size),
+            bytesize::ByteSize(max_file_size)
+                .display()
+                .iec()
+                .to_string(),
         ),
     ];
     if !features.is_empty() {
         let ids: Vec<String> = features.iter().map(Feature::to_string).collect();
-        rows.push(("features", json!(ids.join(", ")), NOT_SET));
+        rows.push(text_row("features", Some(&ids.join(", ")), NOT_SET));
     }
     rows
 }
@@ -58,14 +70,7 @@ pub fn cmd_settings_show(settings: &Settings, json: bool) -> Result<()> {
     } else {
         let text: Vec<(&str, String)> = rows
             .into_iter()
-            .map(|(name, value, unset)| {
-                let text = match value {
-                    Value::Null => unset.to_owned(),
-                    Value::String(text) => text,
-                    other => other.to_string(),
-                };
-                (name, text)
-            })
+            .map(|(name, _, text)| (name, text))
             .collect();
         write!(stdout, "{}", render_kv(&text, 0))?;
         let files = settings.files();

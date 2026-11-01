@@ -1881,6 +1881,21 @@ def contains_all(*needles: str):
     return chk
 
 
+def settings_show_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+    # A machine with no settings file prints "settings files: none" instead of
+    # the table.
+    ok, detail = expect_message("TYPE", "settings files: none")(sr, reg)
+    if not ok:
+        return (ok, detail)
+    if not re.search(
+        r"^api_cache_max_file_size +[\d.]+ [A-Za-z]*B$",
+        sr.result.combined,
+        re.MULTILINE,
+    ):
+        return (False, "api_cache_max_file_size prints without a unit")
+    return (True, detail)
+
+
 # -- login (interactive/stateful) check factories ---------------------------
 #
 # These read `sr.captured_files` (the `post_capture` files read back from the
@@ -3394,12 +3409,10 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "I want to see each setting that snouty resolved from my environment and "
             "settings files, before I run a command against my tenant.",
             "settings show prints one aligned row per setting, with `not set` (or the default) "
-            "for a setting that is not configured, then a TYPE/PATH table "
-            "of the settings files it read, project before global.",
+            "for a setting that is not configured, and a size with its unit, then a TYPE/PATH "
+            "table of the settings files it read, project before global.",
             ["settings", "show"],
-            # A machine with no settings file prints "settings files: none"
-            # instead of the table.
-            expect_message("TYPE", "settings files: none"),
+            settings_show_check,
             json_capable=False,
         ),
         Story(

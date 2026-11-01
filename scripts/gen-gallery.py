@@ -2389,8 +2389,10 @@ def logs_begin_at(begin: str):
 
 
 def exec_json(needle: str, *, system_events: bool):
-    """Check a `--json runs exec` story. With `--events`, timeline events
-    without `output_text` appear."""
+    """Check a `--json runs exec` story. With `--events`, events that the
+    script did not print appear. The script's lines carry its `command_id`,
+    taken from the line with `needle`; other commands, such as setup, carry
+    their own, and the run's events carry none."""
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         try:
@@ -2401,13 +2403,20 @@ def exec_json(needle: str, *, system_events: bool):
             return (False, "no rows")
         *events, result = rows
         exited = result.get("status") == "exited" and result.get("exit_code") == 0
-        found = any(needle in (e.get("output_text") or "") for e in events)
-        system = sum("output_text" not in e for e in events)
+        script = next(
+            (e for e in events if needle in (e.get("output_text") or "")), None
+        )
+        found = script is not None
+        script_id = (script or {}).get("source", {}).get("command_id")
+        system = sum(
+            script_id is None or e.get("source", {}).get("command_id") != script_id
+            for e in events
+        )
         ok = sr.result.ok and exited and found and (system > 0) == system_events
         return (
             ok,
-            f"exit={sr.result.returncode}, {len(events)} events ({system} without "
-            f"output text), exited 0={exited}, {needle!r} found={found}",
+            f"exit={sr.result.returncode}, {len(events)} events ({system} from the "
+            f"run, not the script), exited 0={exited}, {needle!r} found={found}",
         )
 
     return chk
@@ -3576,8 +3585,8 @@ def build_ready_stories(d: Discovery, x: GalleryRun, wait_ready: Result) -> list
             "runs-exec--json--events",
             "Read the whole timeline from a script",
             "I want every event of the timeline while my script executes, as JSON.",
-            "One JSON object per line, including timeline events that have no output text, "
-            "then the result line.",
+            "One JSON object per line, including timeline events that the script did not "
+            "print, then the result line.",
             # The moment is just after setup, when the run is quiet: the
             # script sleeps, in virtual time, so that the run's own events
             # happen while it executes.

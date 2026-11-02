@@ -641,7 +641,6 @@ mod tests {
     #[test]
     fn duration_params_need_a_unit() {
         let durations = [
-            (ToolName::Debug, "duration"),
             (ToolName::RunsWait, "poll_interval"),
             (ToolName::RunsWait, "timeout"),
             (ToolName::RunsExec, "timeout"),

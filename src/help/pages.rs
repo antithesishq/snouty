@@ -36,7 +36,11 @@ macro_rules! help_pages {
                 use askama::Template;
                 let values: [(&str, &dyn std::any::Any); 1] = [("context", &context)];
                 match self {
-                    $(HelpPage::$variant => templates::$variant { cli: context.is_cli(), context }
+                    $(HelpPage::$variant => templates::$variant {
+                        cli: context.is_cli(),
+                        teams: crate::features::is_enabled(crate::features::Feature::Teams),
+                        context,
+                    }
                         .render_with_values(&values),)*
                 }
             }
@@ -61,6 +65,7 @@ macro_rules! help_pages {
                 #[allow(dead_code, reason = "a page uses only what its template calls")]
                 pub(super) struct $variant {
                     pub(super) cli: bool,
+                    pub(super) teams: bool,
                     pub(super) context: Context,
                 }
 

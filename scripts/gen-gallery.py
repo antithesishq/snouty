@@ -91,6 +91,8 @@ from typing import TypeVar
 import pexpect
 import pyte
 
+# Enables the unstable `teams` feature, for the flags that it gates.
+TEAMS: dict[str, str | None] = {"SNOUTY_UNSTABLE_FEATURES": "teams"}
 # A syntactically-valid but nonexistent run id, for clean-error stories.
 UNKNOWN_RUN = "ffffffffffffffffffffffffffffffff-54-5"
 # A run ID that only the `debug-bad-duration` story names, so that the guard
@@ -1416,7 +1418,7 @@ def gallery_run(sn: Snouty, reuse: bool) -> GalleryRun:
     ensure_example_images()
     # The timestamp helps a person tell the gallery's runs apart in the web UI.
     description = f"{GALLERY_RUN_DESCRIPTION} {datetime.now().isoformat()}"
-    launch = sn.run(gallery_launch_args(description))
+    launch = sn.run(gallery_launch_args(description), env=TEAMS)
     run = launched_run_id(launch.stdout)
     if not launch.ok or run is None:
         raise GalleryError(
@@ -3213,7 +3215,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                 guard, DURATION_RUN, "must be from 30 minutes to 6 hours"
             ),
             json_capable=False,
-            env=guarded,
+            env={**guarded, **TEAMS},
         ),
         Story(
             "launch-bare-setup-timeout",
@@ -3236,7 +3238,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                 guard, SETUP_TIMEOUT_IMAGE, "a bare number is not permitted"
             ),
             json_capable=False,
-            env=guarded,
+            env={**guarded, **TEAMS},
         ),
         # -- doctor (one story per distinct auth output) --------------------
         Story(

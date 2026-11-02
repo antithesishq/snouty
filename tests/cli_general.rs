@@ -1,6 +1,7 @@
 mod support;
 
 use predicates::prelude::*;
+use snouty::features::UNSTABLE_FEATURES_VAR_NAME;
 use support::*;
 
 #[test]
@@ -61,6 +62,7 @@ fn launch_with_typed_flags() {
     let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     snouty_with_mock(&mock_url)
+        .env(UNSTABLE_FEATURES_VAR_NAME, "teams")
         .args([
             "launch",
             "--launcher",
@@ -112,8 +114,6 @@ fn launch_with_ephemeral_flag() {
             "basic_test",
             "--config-image",
             "config:latest",
-            "--max-compute-hours",
-            "24",
             "--ephemeral",
         ])
         .assert()
@@ -134,8 +134,6 @@ fn launch_without_source_sets_ephemeral() {
             "basic_test",
             "--config-image",
             "config:latest",
-            "--max-compute-hours",
-            "24",
         ])
         .assert()
         .success()
@@ -158,8 +156,6 @@ fn launch_with_source_omits_ephemeral() {
             "basic_test",
             "--config-image",
             "config:latest",
-            "--max-compute-hours",
-            "24",
             "--source",
             "ci",
         ])
@@ -180,8 +176,6 @@ fn launch_with_param_flag() {
             "basic_test",
             "--config-image",
             "config:latest",
-            "--max-compute-hours",
-            "24",
             "--param",
             "my.custom.prop=value",
             "--param",
@@ -200,6 +194,7 @@ fn launch_param_cannot_override_typed_flag() {
     let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     snouty_with_mock(&mock_url)
+        .env(UNSTABLE_FEATURES_VAR_NAME, "teams")
         .args([
             "launch",
             "--launcher",
@@ -273,14 +268,7 @@ fn launch_duration_accepts_unit_suffixes() {
 #[test]
 fn launch_no_stdin_flag() {
     snouty()
-        .args([
-            "launch",
-            "--launcher",
-            "basic_test",
-            "--stdin",
-            "--max-compute-hours",
-            "24",
-        ])
+        .args(["launch", "--launcher", "basic_test", "--stdin"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("unexpected argument"));
@@ -326,8 +314,8 @@ fn launch_reports_api_errors() {
             "launch",
             "--launcher",
             "no_such_launcher",
-            "--max-compute-hours",
-            "24",
+            "--duration",
+            "30m",
         ])
         .assert()
         .failure()
@@ -345,8 +333,6 @@ fn launch_fails_without_credentials() {
             "basic_test",
             "--config-image",
             "config:latest",
-            "--max-compute-hours",
-            "24",
         ])
         .assert()
         .failure()
@@ -364,8 +350,6 @@ fn run_prints_deprecation_warning() {
             "basic_test",
             "--config-image",
             "config:latest",
-            "--max-compute-hours",
-            "24",
         ])
         .assert()
         .success()
@@ -580,8 +564,6 @@ fn launch_exits_cleanly_when_stdout_closes_early() {
             "launch",
             "--launcher",
             "advanced_test",
-            "--max-compute-hours",
-            "24",
             "--source",
             "ci",
             "--no-vcs",

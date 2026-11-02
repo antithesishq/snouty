@@ -3810,7 +3810,9 @@ def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
             "See which properties my run passed and failed",
             "My run is finished, and I want its property results.",
             "A table of the example's properties: the passing ones, and "
-            f"{EXAMPLE_BUG_PROPERTY!r} failing because of the deliberate bug.",
+            f"{EXAMPLE_BUG_PROPERTY!r} failing because of the deliberate bug. A property "
+            "whose results are still being processed shows as `pending`, and stderr "
+            "then says to run the command again later.",
             ["runs", "properties", x.run],
             run_properties,
         ),

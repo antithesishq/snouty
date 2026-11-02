@@ -4,11 +4,12 @@ source: tests/help_snapshots.rs
 List a run's property (assertion) results, one table per group.
 
 Each property has its ID, name, group, and status: passing, failing, or
-undetermined. An undetermined property has not triggered yet. Each property also
-counts its examples and its counterexamples.
+undetermined. An undetermined property has not triggered yet, or its results are
+still being processed after the run ended. Each property also counts its
+examples and its counterexamples.
 
 Each table is headed by its group; columns are STATUS, ✓, ✗, ID, NAME (failing
-first). STATUS is pass, fail, or unseen, for undetermined. ✓ is the example
+first). STATUS is pass, fail, or pending, for undetermined. ✓ is the example
 count and ✗ is the counterexample count; large counts are shortened, as in 186k.
 ID is the property ID.
 

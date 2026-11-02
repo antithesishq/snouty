@@ -180,7 +180,7 @@ async fn tools_return_detailed_output_or_json() {
     );
 
     // runs_property reads one property of a completed run, and runs_usage the
-    // usage hours of runs.
+    // compute hours of runs.
     let result = call(
         &client,
         "runs_list",

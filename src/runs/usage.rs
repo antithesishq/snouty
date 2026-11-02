@@ -316,7 +316,7 @@ fn print_rows<T: Serialize>(
     Ok(())
 }
 
-/// Core-hours to one decimal place. A core-hour is a billing unit, not a
+/// Compute hours to one decimal place. A compute hour is a billing unit, not a
 /// duration, so it does not print as hours and minutes.
 fn format_hours(hours: f64) -> String {
     format!("{hours:.1}")
@@ -338,7 +338,7 @@ fn render_usage_table(entries: &[UsageRow], width: usize) -> String {
         .column(Column::new("RUN ID"))
         .column(Column::new("STARTED"))
         .column(Column::new("ENDED"))
-        .column(Column::new("CORE HOURS").align(Align::Right))
+        .column(Column::new("COMPUTE HOURS").align(Align::Right))
         .render(rows, width)
 }
 
@@ -358,7 +358,7 @@ fn render_periods_table(periods: &[PeriodUsage], width: usize) -> String {
         .column(Column::new("START"))
         .column(Column::new("END"))
         .column(Column::new("RUNS").align(Align::Right))
-        .column(Column::new("CORE HOURS").align(Align::Right))
+        .column(Column::new("COMPUTE HOURS").align(Align::Right))
         .render(rows, width)
 }
 

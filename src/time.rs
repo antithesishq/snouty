@@ -15,7 +15,8 @@
 //! bare-minutes form already covers that.
 
 use chrono::{
-    DateTime, Local, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Utc,
+    DateTime, Local, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, Offset, TimeDelta, TimeZone,
+    Utc,
 };
 use serde::Serialize;
 
@@ -306,14 +307,24 @@ pub(crate) fn start_of_local_calendar_day(date: NaiveDate) -> DateTime<Utc> {
 
 /// The instant at which the local clock shows `wall_time`.
 fn instant_of_local_wall_time(wall_time: NaiveDateTime) -> DateTime<Utc> {
-    match Local.from_local_datetime(&wall_time) {
+    instant_of_wall_time(&Local, wall_time)
+}
+
+/// The instant at which a clock in `tz` shows `wall_time`.
+fn instant_of_wall_time<Tz: TimeZone>(tz: &Tz, wall_time: NaiveDateTime) -> DateTime<Utc> {
+    match tz.from_local_datetime(&wall_time) {
         LocalResult::Single(time) => time.to_utc(),
         // A clock change shows the time twice: take the earlier instant.
         LocalResult::Ambiguous(a, b) => a.min(b).to_utc(),
         // A clock change skips the time: move it forward by the gap, as the
         // clock does, by reading it with the offset from before the gap.
         LocalResult::None => {
-            let before = Local.offset_from_utc_datetime(&(wall_time - TimeDelta::days(1)));
+            // The offset of the same wall time a day earlier, before the gap.
+            let before = tz
+                .offset_from_local_datetime(&(wall_time - TimeDelta::days(1)))
+                .earliest()
+                .expect("a day before a clock change is not at another one")
+                .fix();
             (wall_time - before).and_utc()
         }
     }
@@ -322,6 +333,12 @@ fn instant_of_local_wall_time(wall_time: NaiveDateTime) -> DateTime<Utc> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::FixedOffset;
+    use chrono_tz::America::New_York;
+    use chrono_tz::Asia::Tokyo;
+    use chrono_tz::Australia::Lord_Howe;
+    use chrono_tz::Tz;
+    use std::sync::OnceLock;
 
     fn minutes(s: &str) -> f64 {
         s.parse::<HumanDuration>().unwrap().minutes()
@@ -550,6 +567,112 @@ mod tests {
     fn parse_timestamp_arg_names_the_forms_it_accepts() {
         let err = parse_timestamp_arg("2026-10-01 12:00").unwrap_err();
         assert!(err.contains("2026-10-01 12:00:00"), "{err}");
+    }
+
+    fn wall_time(text: &str) -> NaiveDateTime {
+        NaiveDateTime::parse_from_str(text, DISPLAY_FORMAT).unwrap()
+    }
+
+    fn utc(text: &str) -> DateTime<Utc> {
+        text.parse().unwrap()
+    }
+
+    /// New York springs forward an hour at 02:00, and Lord Howe half an hour.
+    #[test]
+    fn a_skipped_wall_time_moves_forward_by_the_gap() {
+        let new_york = instant_of_wall_time(&New_York, wall_time("2026-03-08 02:30:00"));
+        assert_eq!(new_york, utc("2026-03-08T07:30:00Z"));
+        assert_eq!(
+            new_york.with_timezone(&New_York).to_string(),
+            "2026-03-08 03:30:00 EDT"
+        );
+        let lord_howe = instant_of_wall_time(&Lord_Howe, wall_time("2026-10-04 02:15:00"));
+        assert_eq!(lord_howe, utc("2026-10-03T15:45:00Z"));
+        assert_eq!(
+            lord_howe.with_timezone(&Lord_Howe).naive_local(),
+            wall_time("2026-10-04 02:45:00")
+        );
+    }
+
+    /// New York falls back an hour at 02:00, and Lord Howe half an hour.
+    #[test]
+    fn a_repeated_wall_time_is_the_earlier_instant() {
+        let new_york = instant_of_wall_time(&New_York, wall_time("2026-11-01 01:30:00"));
+        assert_eq!(new_york, utc("2026-11-01T05:30:00Z"));
+        let lord_howe = instant_of_wall_time(&Lord_Howe, wall_time("2026-04-05 01:45:00"));
+        assert_eq!(lord_howe, utc("2026-04-04T14:45:00Z"));
+    }
+
+    /// A clock change: its instant, and the offsets before and after it.
+    type Transition = (DateTime<Utc>, FixedOffset, FixedOffset);
+
+    /// The clock changes of `tz` in 2026, to the minute.
+    fn transitions(tz: Tz) -> Vec<Transition> {
+        let offset = |time: DateTime<Utc>| tz.offset_from_utc_datetime(&time.naive_utc()).fix();
+        let start = utc("2026-01-01T00:00:00Z");
+        (0..365 * 24 * 60)
+            .map(|minute| start + TimeDelta::minutes(minute))
+            .filter_map(|time| {
+                let (before, after) = (offset(time - TimeDelta::minutes(1)), offset(time));
+                (before != after).then_some((time, before, after))
+            })
+            .collect()
+    }
+
+    /// Near the clock changes of a zone, an existing wall time converts to an
+    /// instant that shows that wall time, a repeated one to the earlier
+    /// instant, and a skipped one to the instant that shows it moved forward
+    /// by the gap. A later wall time that exists never gives an earlier
+    /// instant.
+    #[hegel::test]
+    fn instant_of_wall_time_handles_clock_changes(tc: hegel::TestCase) {
+        static TRANSITIONS: OnceLock<Vec<Vec<Transition>>> = OnceLock::new();
+        let zones = [New_York, Lord_Howe, Tokyo];
+        let transitions =
+            TRANSITIONS.get_or_init(|| zones.iter().map(|tz| transitions(*tz)).collect());
+        let zone = tc.draw(generators::integers::<usize>().max_value(zones.len() - 1));
+        let tz = zones[zone];
+        let center = match transitions[zone].as_slice() {
+            [] => wall_time("2026-06-01 00:00:00"),
+            all => {
+                let index = tc.draw(generators::integers::<usize>().max_value(all.len() - 1));
+                let (time, before, _) = all[index];
+                time.naive_utc() + before
+            }
+        };
+        let minutes = || generators::integers::<i64>().min_value(-180).max_value(180);
+        let (a, b) = (tc.draw(minutes()), tc.draw(minutes()));
+        let (early, late) = (
+            center + TimeDelta::minutes(a.min(b)),
+            center + TimeDelta::minutes(a.max(b)),
+        );
+        let shown = |time: DateTime<Utc>| time.with_timezone(&tz).naive_local();
+        for wall in [early, late] {
+            let instant = instant_of_wall_time(&tz, wall);
+            match tz.from_local_datetime(&wall) {
+                LocalResult::Single(_) => assert_eq!(shown(instant), wall),
+                LocalResult::Ambiguous(x, y) => assert_eq!(instant, x.min(y).to_utc()),
+                LocalResult::None => {
+                    let (_, before, after) = transitions[zone]
+                        .iter()
+                        .rev()
+                        .find(|(time, before, _)| time.naive_utc() + *before <= wall)
+                        .copied()
+                        .expect("a skipped wall time follows a clock change");
+                    let gap = TimeDelta::seconds(i64::from(
+                        after.local_minus_utc() - before.local_minus_utc(),
+                    ));
+                    assert_eq!(shown(instant), wall + gap, "{wall}");
+                }
+            }
+        }
+        let exists = |wall: NaiveDateTime| tz.from_local_datetime(&wall).earliest().is_some();
+        if exists(early) && exists(late) {
+            assert!(
+                instant_of_wall_time(&tz, early) <= instant_of_wall_time(&tz, late),
+                "{early} {late}"
+            );
+        }
     }
 
     /// Parsing arbitrary text must never panic — it returns `Ok` or

@@ -151,6 +151,7 @@ wiremock = "0.6"
 hegeltest = { version = "0.48.1", features = ["static-engine"] }
 expectrl = "0.9"
 strip-ansi-escapes = "0.2.1"
+chrono-tz = "0.10.4"
 
 # The profile that 'dist' will build with
 [profile.dist]

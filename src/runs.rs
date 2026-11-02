@@ -669,6 +669,24 @@ async fn cmd_runs_properties(
         outln!("{}", render_properties_table(&properties))?;
     }
 
+    // After a run ends, the server can report a property as undetermined while
+    // it still processes the run's data. Only then is pending worth a note.
+    if !json
+        && properties
+            .iter()
+            .any(|p| matches!(p.status(), PropertyStatus::Undetermined))
+    {
+        // The note is advice, so a failed lookup only drops it.
+        match api.get_run(run_id).await {
+            Ok(run) if run.value().status.is_terminal() => eprintln!(
+                "\nThe run has ended, but some results are still being processed. \
+                 Run `snouty runs properties {run_id}` again later for the final results."
+            ),
+            Ok(_) => {}
+            Err(err) => debug!("cannot read the run's status: {err}"),
+        }
+    }
+
     Ok(())
 }
 
@@ -906,8 +924,14 @@ fn property_status_word(status: &PropertyStatus) -> Cow<'static, str> {
     }
 }
 
+/// The colored status for the property detail. An undetermined property shows
+/// as pending, as in the table.
 fn property_status_label(status: &PropertyStatus) -> String {
-    style_property_status(status, property_status_word(status))
+    let word = match status {
+        PropertyStatus::Undetermined => "pending".into(),
+        _ => property_status_word(status),
+    };
+    style_property_status(status, word)
 }
 
 fn style_property_status(status: &PropertyStatus, word: Cow<'_, str>) -> String {
@@ -1242,7 +1266,7 @@ fn property_status_cell(status: &PropertyStatus) -> String {
     let word = match status {
         PropertyStatus::Passing => "pass".into(),
         PropertyStatus::Failing => "fail".into(),
-        PropertyStatus::Undetermined => "unseen".into(),
+        PropertyStatus::Undetermined => "pending".into(),
         PropertyStatus::Other(_) => status.to_string().into(),
     };
     style_property_status(status, word)

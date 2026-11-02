@@ -1456,30 +1456,6 @@ enum LoggedBody {
     Withheld,
 }
 
-/// Replaces the value of each sensitive launch param in `json`, at any depth.
-/// Returns whether it replaced one.
-fn redact_sensitive(json: &mut serde_json::Value) -> bool {
-    // Not `any`: it would stop at the first secret and leave the rest.
-    match json {
-        serde_json::Value::Object(map) => map
-            .iter_mut()
-            .map(|(key, value)| {
-                if crate::params::is_sensitive_key(key) {
-                    *value = serde_json::Value::String("[REDACTED]".to_owned());
-                    true
-                } else {
-                    redact_sensitive(value)
-                }
-            })
-            .fold(false, |a, b| a | b),
-        serde_json::Value::Array(items) => items
-            .iter_mut()
-            .map(redact_sensitive)
-            .fold(false, |a, b| a | b),
-        _ => false,
-    }
-}
-
 fn format_request(
     request: &reqwest::Request,
     default_headers: &HeaderMap,
@@ -1524,9 +1500,12 @@ fn format_request(
     }
     match std::str::from_utf8(bytes) {
         Ok(text) => {
+            // A body that is not JSON holds no params, so it prints as sent.
             let redacted = serde_json::from_str::<serde_json::Value>(text)
                 .ok()
-                .and_then(|mut json| redact_sensitive(&mut json).then(|| json.to_string()));
+                .and_then(|mut json| {
+                    crate::params::redact_sensitive(&mut json).then(|| json.to_string())
+                });
             let text = redacted.as_deref().unwrap_or(text);
             out.push_str(">\n");
             out.push_str(text);
@@ -2337,6 +2316,7 @@ mod tests {
             serde_json::json!({"params": {
                 "antithesis.integrations.github.token": FAKE_GITHUB_TOKEN,
                 "antithesis.test_name": "smoke",
+                "antithesis.report.recipients": "team@example.com",
             }})
             .to_string()
             .into(),
@@ -2346,6 +2326,7 @@ mod tests {
         format_request(&request, &HeaderMap::new(), LoggedBody::Shown, &mut out);
 
         assert!(!out.contains(FAKE_GITHUB_TOKEN));
+        assert!(!out.contains("team@example.com"));
         assert!(out.contains(r#""antithesis.integrations.github.token":"[REDACTED]""#));
         assert!(out.contains(r#""antithesis.test_name":"smoke""#));
     }

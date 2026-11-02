@@ -215,18 +215,9 @@ impl Params {
     /// Get a redacted copy of the params for safe display in logs/CI.
     /// Sensitive fields (tokens, emails) are replaced with "[REDACTED]".
     pub fn to_redacted_map(&self) -> Map<String, Value> {
-        self.inner
-            .iter()
-            .map(|(k, v)| {
-                let redacted = is_sensitive_key(k);
-                let value = if redacted {
-                    Value::String("[REDACTED]".to_string())
-                } else {
-                    v.clone()
-                };
-                (k.clone(), value)
-            })
-            .collect()
+        let mut map = self.inner.clone();
+        redact_map(&mut map);
+        map
     }
 }
 
@@ -240,9 +231,36 @@ impl FromIterator<KVPair> for Params {
     }
 }
 
+/// Replaces the value of each sensitive param in `json`, at any depth.
+/// Returns whether it replaced one.
+pub(crate) fn redact_sensitive(json: &mut Value) -> bool {
+    // Not `any`: it would stop at the first secret and leave the rest.
+    match json {
+        Value::Object(map) => redact_map(map),
+        Value::Array(items) => items
+            .iter_mut()
+            .map(redact_sensitive)
+            .fold(false, |a, b| a | b),
+        _ => false,
+    }
+}
+
+fn redact_map(map: &mut Map<String, Value>) -> bool {
+    map.iter_mut()
+        .map(|(key, value)| {
+            if is_sensitive_key(key) {
+                *value = Value::String("[REDACTED]".to_owned());
+                true
+            } else {
+                redact_sensitive(value)
+            }
+        })
+        .fold(false, |a, b| a | b)
+}
+
 // A key suffix, not a file extension.
 #[allow(clippy::case_sensitive_file_extension_comparisons)]
-pub(crate) fn is_sensitive_key(key: &str) -> bool {
+fn is_sensitive_key(key: &str) -> bool {
     key.ends_with(".token") || key == ANT_REPORT_RECIPIENTS
 }
 

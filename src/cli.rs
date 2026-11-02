@@ -356,11 +356,6 @@ pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Re
     let (feature, path) = match command {
         Commands::Mcp(_) => (Feature::Mcp, "snouty mcp".to_owned()),
         Commands::Launch(args) | Commands::Run(args) => {
-            let name = if matches!(command, Commands::Run(_)) {
-                "run"
-            } else {
-                "launch"
-            };
             let flag = if args.max_compute_hours.is_some() {
                 "--max-compute-hours"
             } else if args.setup_timeout.is_some() {
@@ -368,7 +363,7 @@ pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Re
             } else {
                 return None;
             };
-            (Feature::Teams, format!("snouty {name} {flag}"))
+            (Feature::Teams, format!("snouty launch {flag}"))
         }
         Commands::Debug(args) if args.duration.is_some() => {
             (Feature::Teams, "snouty debug --duration".to_owned())

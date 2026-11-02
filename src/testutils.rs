@@ -942,8 +942,7 @@ const MOCK_RUNS: &[(&str, &str, &str, &str, &str)] = &[
 
 /// run-3 has no description. It has only the event description that a
 /// debugging session sets, and that text has two lines.
-const MOCK_RUN_3_PARAMETERS: &str =
-    r#"{"antithesis.event_description":"recovery probe\nafter the restart"}"#;
+const MOCK_RUN_3_PARAMETERS: &str = r#"{"antithesis.event_description":"recovery probe\nafter the restart","antithesis.duration":"30"}"#;
 
 fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
     if empty {

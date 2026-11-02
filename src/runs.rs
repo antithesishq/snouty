@@ -1372,11 +1372,12 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         rows.push(("Completed", format_timestamp_for_display(t)));
     }
 
-    // The JSON output keeps `antithesis.duration`, which the server still
-    // records, but the text output leaves it out because the parameter is
-    // deprecated.
+    // A run sized by compute hours can also record `antithesis.duration`,
+    // which says nothing about its size, so the text output leaves it out.
     if let Some(hours) = run.max_compute_hours() {
         rows.push(("Max Compute Hours", hours.to_string()));
+    } else if let Some(raw) = run.requested_duration() {
+        rows.push(("Duration", format_minutes(raw)));
     }
     if let Some(raw) = run.setup_timeout() {
         rows.push(("Setup Timeout", format_minutes(raw)));

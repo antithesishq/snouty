@@ -12,4 +12,4 @@ The timestamp is in the local timezone. Timestamps inside the line text stay as 
 Examples:
   runs_build_logs {"run_id": "<run_id>"}
 
-With `json`, each log line prints as one JSON object on its own line.
+With `json`, each log line prints as one JSON object on its own line, with its timestamp in RFC 3339 with the local UTC offset.

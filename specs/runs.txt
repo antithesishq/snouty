@@ -472,6 +472,21 @@ mock-runs-server
 snouty --json runs build-logs $R_run_id
 [!staging] stdout '"timestamp".*"text"'
 
+# The JSON shows the times of a run, and of each build-log line, as RFC 3339
+# with the local UTC offset.
+mock-runs-server
+env TZ=Asia/Tokyo
+snouty --json runs list -n 1
+stdout '"created_at":"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?\+09:00"'
+[!staging] stdout '"created_at":"2025-03-20T11:00:00\+09:00"'
+snouty --json runs show $R_run_id
+stdout '"created_at": "\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?\+09:00"'
+[!staging] stdout '"started_at": "2025-03-20T11:01:12\+09:00"'
+[!staging] stdout '"completed_at": "2025-03-20T11:31:45\+09:00"'
+snouty --json runs build-logs $R_run_id
+stdout '"timestamp":"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?\+09:00"'
+[!staging] stdout '"timestamp":"2025-03-20T11:01:12\+09:00"'
+
 # `snouty runs events` filters by `--match` server-side and prints each
 # matching event as a classified block: a `moment HASH` divider opens
 # each timeline segment and each event renders as one `VTIME [source] payload`

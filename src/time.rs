@@ -15,10 +15,9 @@
 //! bare-minutes form already covers that.
 
 use chrono::{
-    DateTime, Local, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, Offset, TimeDelta, TimeZone,
-    Utc,
+    DateTime, Local, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, Offset, SecondsFormat,
+    TimeDelta, TimeZone, Utc,
 };
-use serde::Serialize;
 
 use std::error::Error;
 use std::fmt;
@@ -264,15 +263,32 @@ pub(crate) fn format_rfc3339_for_display(raw: &str) -> String {
     )
 }
 
-/// Serializes `time` as RFC 3339 with the local UTC offset, for JSON output
-/// that shows local times.
+/// Writes `time` as RFC 3339 with the local UTC offset, for JSON output. It
+/// keeps the fraction of a second that `time` has.
+fn format_rfc3339_with_local_offset(time: DateTime<Utc>) -> String {
+    time.with_timezone(&Local)
+        .to_rfc3339_opts(SecondsFormat::AutoSi, false)
+}
+
+/// Serializes `time` as [`format_rfc3339_with_local_offset`] does.
 pub(crate) fn serialize_with_local_offset<S: serde::Serializer>(
     time: &DateTime<Utc>,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
-    time.with_timezone(&Local)
-        .fixed_offset()
-        .serialize(serializer)
+    serializer.serialize_str(&format_rfc3339_with_local_offset(*time))
+}
+
+/// Rewrites each of `fields` of the JSON object `object` that holds an RFC
+/// 3339 time, such as a time from the server, as
+/// [`format_rfc3339_with_local_offset`] does. Other values stay as they are.
+pub(crate) fn localize_rfc3339_fields(object: &mut serde_json::Value, fields: &[&str]) {
+    for field in fields {
+        if let Some(serde_json::Value::String(text)) = object.get_mut(field)
+            && let Ok(time) = DateTime::parse_from_rfc3339(text)
+        {
+            *text = format_rfc3339_with_local_offset(time.to_utc());
+        }
+    }
 }
 
 /// Reads a timestamp argument: a date (the start of that day), a time as
@@ -567,6 +583,35 @@ mod tests {
     fn parse_timestamp_arg_names_the_forms_it_accepts() {
         let err = parse_timestamp_arg("2026-10-01 12:00").unwrap_err();
         assert!(err.contains("2026-10-01 12:00:00"), "{err}");
+    }
+
+    /// A time field keeps its instant, with its fraction of a second, under
+    /// any offset that the server writes. Other fields stay as they are.
+    #[hegel::test]
+    fn localize_rfc3339_fields_keeps_the_instant(tc: hegel::TestCase) {
+        let seconds = tc.draw(
+            generators::integers::<i64>()
+                .min_value(0)
+                .max_value(250_000_000_000),
+        );
+        let nanos = tc.draw(generators::integers::<u32>().max_value(999_999_999));
+        let minutes = tc.draw(
+            generators::integers::<i32>()
+                .min_value(-12 * 60)
+                .max_value(14 * 60),
+        );
+        let time = DateTime::from_timestamp(seconds, nanos).unwrap();
+        let offset = FixedOffset::east_opt(minutes * 60).unwrap();
+        let server = time.with_timezone(&offset).to_rfc3339();
+        let mut object = serde_json::json!({ "at": server, "text": "2025-03-20T02:00:00Z" });
+        localize_rfc3339_fields(&mut object, &["at", "missing"]);
+        let local = object["at"].as_str().unwrap();
+        assert_eq!(
+            DateTime::parse_from_rfc3339(local).unwrap(),
+            time,
+            "{local}"
+        );
+        assert_eq!(object["text"], "2025-03-20T02:00:00Z");
     }
 
     fn wall_time(text: &str) -> NaiveDateTime {

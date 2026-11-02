@@ -12,4 +12,4 @@ Pass a run's ID to `runs_show` for its details, to `runs_properties` for its pro
 Examples:
   runs_list {"status": "completed", "limit": 5}
 
-With `json`, each run prints as one JSON object on its own line, in the order the server returns them.
+With `json`, each run prints as one JSON object on its own line, in the order the server returns them. Its times are RFC 3339 with the local UTC offset.

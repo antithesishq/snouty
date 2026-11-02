@@ -43,8 +43,8 @@ Examples:
 
 Add --json for machine-readable output. Each row prints as one JSON object on
 its own line. The hours field holds core-hours. A run has the fields run_id,
-hours, start_time, and end_time; the times are RFC 3339 with the offset of the
-timezone. A period has the fields date, runs, and hours, with hours rounded to
+hours, start_time, and end_time; the times are RFC 3339 with the local UTC
+offset. A period has the fields date, runs, and hours, with hours rounded to
 hundredths:
   snouty --json runs usage --rollup month | jq -r '"\(.date) \(.hours)"'
 

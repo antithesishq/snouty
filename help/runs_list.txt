@@ -14,8 +14,8 @@ Examples:
   {{ t("snouty runs list --status completed --limit 5")? }}
 
 {% if cli %}
-Add --json for machine-readable output. Each run prints as one JSON object on its own line, in the order the server returns them:
+Add --json for machine-readable output. Each run prints as one JSON object on its own line, in the order the server returns them. Its times are RFC 3339 with the local UTC offset:
   {{ t("snouty --json runs list | jq -r .run_id")? }}
 {% else %}
-With {{ t("--json")? }}, each run prints as one JSON object on its own line, in the order the server returns them.
+With {{ t("--json")? }}, each run prints as one JSON object on its own line, in the order the server returns them. Its times are RFC 3339 with the local UTC offset.
 {% endif %}

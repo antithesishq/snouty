@@ -12,4 +12,4 @@ An incomplete run also has its failure moment (Failure Hash/VTime), to pass to `
 Examples:
   runs_show {"run_id": "<run_id>"}
 
-With `json`, the run prints as one JSON object.
+With `json`, the run prints as one JSON object, with its times in RFC 3339 with the local UTC offset.

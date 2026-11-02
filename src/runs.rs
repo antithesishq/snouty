@@ -35,7 +35,7 @@ use crate::render::{
 use crate::settings::Settings;
 use crate::stdio;
 use crate::table::{Align, Column, Fit, Table};
-use crate::time::{HumanDuration, format_timestamp_for_display};
+use crate::time::{HumanDuration, format_timestamp_for_display, localize_rfc3339_fields};
 use crate::vtime::VTime;
 
 mod event_search;
@@ -314,7 +314,7 @@ async fn cmd_runs_list(
 
     if json {
         while let Some(run) = stream.try_next().await? {
-            outln!("{}", serde_json::to_string(&run)?)?;
+            outln!("{}", run_json(&run)?)?;
         }
         return Ok(());
     }
@@ -404,7 +404,7 @@ async fn cmd_runs_show(
     }
 
     if json {
-        outln!("{}", serde_json::to_string_pretty(&run)?)?;
+        outln!("{:#}", run_json(&run)?)?;
     } else {
         print_run_detail(&run)?;
     }
@@ -1349,6 +1349,13 @@ fn print_kv_block<'a>(
     Ok(())
 }
 
+/// A run as the JSON output shows it: its times with the local UTC offset.
+fn run_json(run: &impl serde::Serialize) -> serde_json::Result<Value> {
+    let mut value = serde_json::to_value(run)?;
+    localize_rfc3339_fields(&mut value, &["created_at", "started_at", "completed_at"]);
+    Ok(value)
+}
+
 fn print_run_detail(run: &RunDetail) -> Result<()> {
     // Bound once and reused for both the Failure Hash/VTime rows and the deferred
     // "view logs" hint below, so the two can't drift apart (a placeholder 0/0
@@ -1643,6 +1650,17 @@ async fn cmd_runs_build_logs(
     let stream = match api.get_run_build_logs(run_id).await {
         Ok(stream) => stream.untag(),
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
+    };
+    // The JSON shows each line's time with the local UTC offset.
+    let stream = if mode.json() {
+        stream
+            .map_ok(|mut line| {
+                localize_rfc3339_fields(&mut line, &["timestamp"]);
+                line
+            })
+            .boxed()
+    } else {
+        stream
     };
     let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode);
     print_event_lines(lines, mode, "No build logs for this run.", None).await

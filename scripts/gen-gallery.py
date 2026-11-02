@@ -1191,7 +1191,7 @@ def discover(sn: Snouty) -> Discovery:
     launcher = next((r["launcher"] for r in recent if r.get("launcher")), "")
     if not launcher:
         raise GalleryError("no run has a launcher — the --launcher story cannot run")
-    by_time = sorted(recent, key=lambda r: r["created_at"])
+    by_time = sorted(recent, key=lambda r: datetime.fromisoformat(r["created_at"]))
     # created-after: a timestamp with several runs after it.
     created_after = by_time[max(0, len(by_time) - 6)]["created_at"]
     # created-window: brackets the middle of the recent runs.

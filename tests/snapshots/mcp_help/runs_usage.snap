@@ -27,4 +27,4 @@ Examples:
   runs_usage {"rollup": "month", "after": "2026-01-01"}
   runs_usage {"after": "2026-10-01", "before": "2026-11-01"}
 
-With `json`, each row prints as one JSON object on its own line. The hours field holds core-hours. A run has the fields run_id, hours, start_time, and end_time; the times are RFC 3339 with the offset of the timezone. A period has the fields date, runs, and hours, with hours rounded to hundredths.
+With `json`, each row prints as one JSON object on its own line. The hours field holds core-hours. A run has the fields run_id, hours, start_time, and end_time; the times are RFC 3339 with the local UTC offset. A period has the fields date, runs, and hours, with hours rounded to hundredths.

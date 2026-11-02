@@ -20,10 +20,9 @@ lines under an event give its source location, as `@ file:function:line`, and
 the details that it carries, such as an SDK assertion's details, as
 `details {...}`.
 
-Matching runs server-side through the events-search API, the same route
-`snouty runs search` takes. Every term must match, case-insensitively. The
-result is a sample of the matching events in no fixed order, capped at --limit.
-Read `snouty runs search --help` to learn how to read a sample and how the run's
+Every term must match, case-insensitively. The result is a sample of the
+matching events in no fixed order, capped at --limit. Read
+`snouty runs search --help` to learn how to read a sample and how the run's
 timelines relate the events.
 
 The run must be ready or complete. If it is not, the command waits until it is
@@ -33,8 +32,7 @@ For log output, the equivalent search is:
   snouty runs search <run_id> \
     'filter(ev => ["a", "b"].every(t =>
       (ev.output_text || "").toLowerCase().includes(t)))'
-with each term in lower case. `snouty --verbose runs events ...` prints the
-exact query, which also matches assertion messages and test-composer commands.
+with each term in lower case.
 
 Examples:
   snouty runs events <run_id> -m error

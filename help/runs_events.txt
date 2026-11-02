@@ -10,7 +10,7 @@ Output: a `moment HASH` divider opens each timeline segment, and each event unde
 A `moment HASH` line opens each timeline segment, and each event under it prints as one `VTIME [source] payload` line, with the full vtime. Indented lines under an event give its source location, as `@ file:function:line`, and the details that it carries, such as an SDK assertion's details, as `details {...}`.
 {% endif %}
 
-Matching runs server-side through the events-search API, the same route `{{ t("snouty runs search")? }}` takes. Every term must match, case-insensitively. The result is a sample of the matching events in no fixed order, capped at {{ t("--limit")? }}. Read {% if cli %}`snouty runs search --help`{% else %}`tool_help {"tool": "runs_search"}`{% endif %} to learn how to read a sample and how the run's timelines relate the events.
+Every term must match, case-insensitively. The result is a sample of the matching events in no fixed order, capped at {{ t("--limit")? }}. Read {% if cli %}`snouty runs search --help`{% else %}`tool_help {"tool": "runs_search"}`{% endif %} to learn how to read a sample and how the run's timelines relate the events.
 
 The run must be ready or complete. If it is not, the command waits until it is ready, as `{{ t("snouty runs exec")? }}` does, and says that it waits.
 
@@ -19,7 +19,7 @@ For log output, the equivalent search is:
   snouty runs search <run_id> \
     'filter(ev => ["a", "b"].every(t =>
       (ev.output_text || "").toLowerCase().includes(t)))'
-with each term in lower case. `snouty --verbose runs events ...` prints the exact query, which also matches assertion messages and test-composer commands.
+with each term in lower case.
 {% endif %}
 
 Examples:

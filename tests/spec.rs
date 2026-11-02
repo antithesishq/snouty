@@ -403,6 +403,9 @@ fn cmd_env_from_json(
     set_env_from_json(env, &value, key)
 }
 
+/// The most matching lines that `env_from_json_find -- <snouty args>` tries.
+const MAX_PROBED_LINES: usize = 5;
+
 fn cmd_env_from_json_find(
     env: &mut testscript_rs::TestEnvironment,
     args: &[String],
@@ -415,7 +418,18 @@ fn cmd_env_from_json_find(
     //                     that `|` separates.
     // Every line must carry each filter's <field> as a string, so a misspelled
     // field fails instead of matching every line.
-    let usage = || err("env_from_json_find requires <json_key> <filter>...".to_string());
+    //
+    // With `-- <snouty args>`, a matching line counts only when snouty exits 0
+    // with those args, run with `$R_<json_key>` set to the line's value. It tries
+    // at most MAX_PROBED_LINES lines, and it leaves the last output alone.
+    let usage = || {
+        err("env_from_json_find requires <json_key> <filter>... [-- <snouty args>...]".to_string())
+    };
+    let (args, probe) = match args.iter().position(|a| a == "--") {
+        Some(i) if i + 1 < args.len() => (&args[..i], Some(&args[i + 1..])),
+        Some(_) => return Err(usage()),
+        None => (args, None),
+    };
     let [key, filters @ ..] = args else {
         return Err(usage());
     };
@@ -423,7 +437,8 @@ fn cmd_env_from_json_find(
         return Err(usage());
     }
 
-    let stdout = last_stdout(env)?;
+    let stdout = last_stdout(env)?.to_owned();
+    let mut probe_failures = Vec::new();
     'lines: for line in stdout.lines() {
         let value = parse_json_line(line)?;
         for filter in filters {
@@ -447,7 +462,32 @@ fn cmd_env_from_json_find(
                 continue 'lines;
             }
         }
-        return set_env_from_json(env, &value, key);
+        set_env_from_json(env, &value, key)?;
+        let Some(probe) = probe else {
+            return Ok(());
+        };
+        let expanded: Vec<String> = probe.iter().map(|a| env.substitute_env_vars(a)).collect();
+        let output = snouty_cmd(env, &expanded)
+            .output()
+            .map_err(|e| err(format!("spawn snouty: {e}")))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        probe_failures.push(format!(
+            "snouty {}: {}",
+            expanded.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+        if probe_failures.len() == MAX_PROBED_LINES {
+            break;
+        }
+    }
+    if !probe_failures.is_empty() {
+        return Err(err(format!(
+            "snouty failed for each of {} matching JSON line(s):\n{}",
+            probe_failures.len(),
+            probe_failures.join("\n")
+        )));
     }
     Err(err(format!(
         "none of {} JSON line(s) matches '{}'",

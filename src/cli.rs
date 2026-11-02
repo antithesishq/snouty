@@ -354,15 +354,24 @@ pub fn parse() -> Cli {
 /// subcommand or flag is still callable, so dispatch checks this first.
 pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Report> {
     let (feature, path) = match command {
-        Commands::Mcp(_) => (Feature::Mcp, "snouty mcp"),
-        Commands::Launch(args) | Commands::Run(args) if args.max_compute_hours.is_some() => {
-            (Feature::Teams, "snouty launch --max-compute-hours")
-        }
-        Commands::Launch(args) | Commands::Run(args) if args.setup_timeout.is_some() => {
-            (Feature::Teams, "snouty launch --setup-timeout")
+        Commands::Mcp(_) => (Feature::Mcp, "snouty mcp".to_owned()),
+        Commands::Launch(args) | Commands::Run(args) => {
+            let name = if matches!(command, Commands::Run(_)) {
+                "run"
+            } else {
+                "launch"
+            };
+            let flag = if args.max_compute_hours.is_some() {
+                "--max-compute-hours"
+            } else if args.setup_timeout.is_some() {
+                "--setup-timeout"
+            } else {
+                return None;
+            };
+            (Feature::Teams, format!("snouty {name} {flag}"))
         }
         Commands::Debug(args) if args.duration.is_some() => {
-            (Feature::Teams, "snouty debug --duration")
+            (Feature::Teams, "snouty debug --duration".to_owned())
         }
         _ => return None,
     };

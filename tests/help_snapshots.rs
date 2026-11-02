@@ -5,7 +5,7 @@
 
 use clap::CommandFactory;
 use snouty::cli::Cli;
-use snouty::features;
+use snouty::features::{self, Feature};
 use snouty::help::{self, Attach};
 use snouty::testutils::names_a_flag_or_command;
 
@@ -13,16 +13,17 @@ use snouty::testutils::names_a_flag_or_command;
 const PIPE_WIDTH: usize = 80;
 
 /// `snouty` as a user sees it off a terminal, with no unstable feature on.
-/// The gated commands, the gated flags and the help pages read
-/// `SNOUTY_UNSTABLE_FEATURES`, which a developer's shell can set, and nothing
-/// here can turn them off.
+/// Whether a gated command is listed depends on `SNOUTY_UNSTABLE_FEATURES`,
+/// which a developer's shell can set, so this hides `mcp`. The gated flags
+/// and the help pages also read it, and nothing here can turn them off.
 fn features_off() -> clap::Command {
     assert!(
-        features::enabled().is_empty(),
-        "unset {} to compare the help snapshots",
+        !features::is_enabled(Feature::Teams),
+        "remove teams from {} to compare the help snapshots",
         features::UNSTABLE_FEATURES_VAR_NAME
     );
-    at_pipe_width(help::attach(Cli::command(), Attach::Eager(PIPE_WIDTH)))
+    let cli = help::attach(Cli::command(), Attach::Eager(PIPE_WIDTH));
+    at_pipe_width(cli.mut_subcommand("mcp", |command| command.hide(true)))
 }
 
 fn at_pipe_width(command: clap::Command) -> clap::Command {

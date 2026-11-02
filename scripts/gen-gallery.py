@@ -3499,6 +3499,7 @@ def build_launch_stories(x: GalleryRun) -> list[Story]:
             x.launch.args,
             launched_run(x.run),
             json_capable=False,
+            env=TEAMS,
             precaptured=x.launch,
         )
     ]

@@ -14,13 +14,12 @@ INPUT_HASH and VTIME identify the moment to execute at, and the moment must be
 warm. A warm moment is a moment that is loaded into the run. Every moment
 generated in the run is warm: by fuzzing, and by an earlier `runs exec`, so the
 end moment of one command is warm for the next. A moment from another run is
-cold, and the server must rewarm it: load it by replaying the inputs of the run
-it comes from. A debugging session rewarms a moment of the run it was launched
-from without a source. For a moment of any other run, name that run with
---source-run-id. Rewarming a moment can take minutes and depends on the
-magnitude of the vtime. The `--timeout` flag does not apply to the time it takes
-to rewarm a moment. Find a moment with `runs properties --detail`,
-`runs search`, or `runs events`.
+cold, and must be rewarmed before the script executes. Use --source-run-id to
+load a moment from a different run. A debugging session needs no --source-run-id
+for a moment of the run it was launched from. Rewarming a moment can take
+minutes, and takes longer for a larger vtime. The `--timeout` flag does not
+apply to the time it takes to rewarm a moment. Find a moment with
+`runs properties --detail`, `runs search`, or `runs events`.
 
 The script executes on the host, or in the container that --container names. The
 command needs tenant release 64.0 or newer; `snouty doctor` reports the tenant
@@ -37,8 +36,8 @@ follow-up command from.
 
 The command fails when the script fails, times out, or its stream ends early.
 
-To run more at the moment that a script left, pass its end moment as the next
-call's input_hash and vtime:
+To run more at the moment that a script left, pass its end moment as INPUT_HASH
+and VTIME:
   snouty runs exec <run_id> <end_hash> <end_vtime> 'cat /tmp/state'
 
 Omit SCRIPT to read the script from stdin — a pipe, a redirect, or a heredoc.

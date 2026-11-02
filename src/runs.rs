@@ -669,8 +669,9 @@ async fn cmd_runs_properties(
         outln!("{}", render_properties_table(&properties))?;
     }
 
-    // After a run ends, the server can report a property as undetermined while
-    // it still processes the run's data. Only then is pending worth a note.
+    // The list endpoint reports a property as Undetermined while the server
+    // still processes a finished run's data, with nonzero example counts
+    // (antithesis-orbitinghail tenant, release 67).
     if !json
         && properties
             .iter()
@@ -924,8 +925,7 @@ fn property_status_word(status: &PropertyStatus) -> Cow<'static, str> {
     }
 }
 
-/// The colored status for the property detail. An undetermined property shows
-/// as pending, as in the table.
+/// The colored status word for the property detail.
 fn property_status_label(status: &PropertyStatus) -> String {
     let word = match status {
         PropertyStatus::Undetermined => "pending".into(),
@@ -1260,8 +1260,7 @@ fn is_failing(p: &Property) -> bool {
     matches!(p.status(), PropertyStatus::Failing)
 }
 
-/// A known status is a word of at most six characters, so the column is no
-/// wider than its STATUS header.
+/// The short status word for the table's STATUS column.
 fn property_status_cell(status: &PropertyStatus) -> String {
     let word = match status {
         PropertyStatus::Passing => "pass".into(),

@@ -403,11 +403,13 @@ fn cmd_env_from_json(
     set_env_from_json(env, &value, key)
 }
 
+const MAX_PROBED_LINES: usize = 5;
+
 fn cmd_env_from_json_find(
     env: &mut testscript_rs::TestEnvironment,
     args: &[String],
 ) -> testscript_rs::Result<()> {
-    // Usage: env_from_json_find <json_key> <filter>...
+    // Usage: env_from_json_find <json_key> <filter>... [-- <snouty args>]
     // Stores <json_key> from the first NDJSON line that matches every filter.
     // A filter is one of:
     //   <field>!=<value>  <field> is a string other than <value>.
@@ -415,7 +417,20 @@ fn cmd_env_from_json_find(
     //                     that `|` separates.
     // Every line must carry each filter's <field> as a string, so a misspelled
     // field fails instead of matching every line.
-    let usage = || err("env_from_json_find requires <json_key> <filter>...".to_string());
+    //
+    // With `-- <snouty args>`, a matching line counts only when snouty, run with
+    // those args and `$R_<json_key>` set to the line's value, exits 0 and prints
+    // to stdout. A line where snouty prints nothing or fails with a 404 is
+    // skipped, and any other failure fails the command. It tries at most
+    // MAX_PROBED_LINES matching lines and does not replace the last output.
+    let usage = || {
+        err("env_from_json_find requires <json_key> <filter>... [-- <snouty args>...]".to_string())
+    };
+    let (args, probe) = match args.iter().position(|a| a == "--") {
+        Some(i) if i + 1 < args.len() => (&args[..i], Some(&args[i + 1..])),
+        Some(_) => return Err(usage()),
+        None => (args, None),
+    };
     let [key, filters @ ..] = args else {
         return Err(usage());
     };
@@ -423,7 +438,8 @@ fn cmd_env_from_json_find(
         return Err(usage());
     }
 
-    let stdout = last_stdout(env)?;
+    let stdout = last_stdout(env)?.to_owned();
+    let mut probe_skips = Vec::new();
     'lines: for line in stdout.lines() {
         let value = parse_json_line(line)?;
         for filter in filters {
@@ -447,7 +463,44 @@ fn cmd_env_from_json_find(
                 continue 'lines;
             }
         }
-        return set_env_from_json(env, &value, key);
+        set_env_from_json(env, &value, key)?;
+        let Some(probe) = probe else {
+            return Ok(());
+        };
+        let start = std::time::Instant::now();
+        let expanded: Vec<String> = probe.iter().map(|a| env.substitute_env_vars(a)).collect();
+        let label = format!("snouty {}", expanded.join(" "));
+        // A cache of its own keeps the probe from answering later commands.
+        let output = snouty_cmd(env, &expanded)
+            .env(
+                "SNOUTY_API_CACHE_DIR",
+                env.current_dir.join("probe-api-cache"),
+            )
+            .output()
+            .map_err(|e| err(format!("spawn snouty: {e}")))?;
+        eprintln!("[{:.1}s] {label}", start.elapsed().as_secs_f64());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let skip = if output.status.success() {
+            if !output.stdout.is_empty() {
+                return Ok(());
+            }
+            format!("{label}: no output")
+        } else if stderr.contains("404 Not Found") || stderr.contains("run not found") {
+            format!("{label}: not found")
+        } else {
+            return Err(err(format!("{label} failed:\n{}", stderr.trim())));
+        };
+        probe_skips.push(skip);
+        if probe_skips.len() == MAX_PROBED_LINES {
+            break;
+        }
+    }
+    if !probe_skips.is_empty() {
+        return Err(err(format!(
+            "no output for any of {} matching JSON line(s):\n{}",
+            probe_skips.len(),
+            probe_skips.join("\n")
+        )));
     }
     Err(err(format!(
         "none of {} JSON line(s) matches '{}'",

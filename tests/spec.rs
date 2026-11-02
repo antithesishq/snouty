@@ -403,14 +403,13 @@ fn cmd_env_from_json(
     set_env_from_json(env, &value, key)
 }
 
-/// The most matching lines that `env_from_json_find -- <snouty args>` tries.
 const MAX_PROBED_LINES: usize = 5;
 
 fn cmd_env_from_json_find(
     env: &mut testscript_rs::TestEnvironment,
     args: &[String],
 ) -> testscript_rs::Result<()> {
-    // Usage: env_from_json_find <json_key> <filter>...
+    // Usage: env_from_json_find <json_key> <filter>... [-- <snouty args>]
     // Stores <json_key> from the first NDJSON line that matches every filter.
     // A filter is one of:
     //   <field>!=<value>  <field> is a string other than <value>.
@@ -420,8 +419,8 @@ fn cmd_env_from_json_find(
     // field fails instead of matching every line.
     //
     // With `-- <snouty args>`, a matching line counts only when snouty exits 0
-    // with those args, run with `$R_<json_key>` set to the line's value. It tries
-    // at most MAX_PROBED_LINES lines, and it leaves the last output alone.
+    // with those args, with `$R_<json_key>` set to the line's value. It tries at
+    // most MAX_PROBED_LINES matching lines and does not replace the last output.
     let usage = || {
         err("env_from_json_find requires <json_key> <filter>... [-- <snouty args>...]".to_string())
     };

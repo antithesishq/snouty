@@ -185,10 +185,8 @@ stderr '.*'
 #    A multiverse-debugging session completes with launcher `debugging` and
 #    has no build logs, so skip it. Staging has more launchers without build
 #    logs, such as `debug_experiment_runner`, so staging picks only a run from
-#    a test launcher. Even such a run can lack build logs, and nothing in the
-#    run data predicts it, so the pick also requires `runs build-logs` to
-#    succeed for the run. The tenant must have a run from a test launcher with
-#    build logs among the first five such runs of its 100 newest completed runs.
+#    a test launcher. A test-launcher run can still lack build logs, so the
+#    pick also requires `runs build-logs` to succeed.
 mock-runs-server
 snouty --json runs list --status completed --limit 100
 [!staging] stdout '"run_id":"run-.*'

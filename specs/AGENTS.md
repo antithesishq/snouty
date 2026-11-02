@@ -93,8 +93,12 @@ fixture.
   it.
 - `env_from_json <line> <key>`: store a key of one NDJSON stdout line as
   `$R_<key>`.
-- `env_from_json_find <key> <filter>...`: store a key of the first NDJSON line
-  that matches each filter, as `$R_<key>`.
+- `env_from_json_find <key> <filter>... [-- <snouty args>]`: store a key of
+  the first NDJSON line that matches each filter, as `$R_<key>`. With
+  `-- <snouty args>`, a matching line counts only when snouty, run with those
+  args and `$R_<key>` set to that line's value, succeeds and prints to stdout.
+  It skips a line where snouty prints nothing or fails with a 404, fails on
+  any other error, and tries at most five matching lines.
 - `file <path> <pattern>`: match a file's contents against a regex. The
   pattern does not get the `(?m)` flag. After `isolate-home`, `~` in the path
   is that `$HOME`.
@@ -141,6 +145,6 @@ because GitHub does not pass secrets there. These rules follow:
   picked, such as its launcher or its report link. When you move an
   assertion behind `[!staging]`, keep an unprefixed shape assertion for the
   same endpoint: staging is the only check for server drift.
-- The tenant must have a completed run from a launcher other than `debugging`
-  among its 100 newest completed runs. `runs.txt` captures that run's id and
+- Among the tenant's 100 newest completed runs, one of the first five from a
+  test launcher must have build logs. `runs.txt` captures that run's id and
   every later command uses it.

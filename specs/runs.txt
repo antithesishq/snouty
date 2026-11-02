@@ -190,10 +190,10 @@ stderr '.*'
 mock-runs-server
 snouty --json runs list --status completed --limit 100
 [!staging] stdout '"run_id":"run-.*'
-[!staging] env_from_json_find run_id launcher!=debugging -- runs build-logs $R_run_id
+[!staging] env_from_json_find run_id launcher!=debugging -- --json runs build-logs $R_run_id
 # TODO: drop `Basic Test` and `Advanced Docker Compose test` once the server
 #    returns launcher ids again, not display names (issue #599).
-[staging] env_from_json_find run_id 'launcher=basic_test|basic_k8s_test|advanced_test|advanced_k8s_test|Basic Test|Advanced Docker Compose test' -- runs build-logs $R_run_id
+[staging] env_from_json_find run_id 'launcher=basic_test|basic_k8s_test|advanced_test|advanced_k8s_test|Basic Test|Advanced Docker Compose test' -- --json runs build-logs $R_run_id
 
 # `snouty runs show` displays run details in key-value format. Max Compute
 # Hours (from antithesis.max_compute_hours) and Setup Timeout (from
@@ -712,6 +712,20 @@ mock-runs-server
 snouty --json runs build-logs run-empty
 ! stderr 'No build logs for this run\.'
 
+# The spec harness's build-logs probe skips a run that is not found or has no
+# build logs, and stops after five matching lines.
+mock-runs-server
+exec cat probe-runs.ndjson
+env_from_json_find id kind=test -- --json runs build-logs $R_id
+snouty --json runs show $R_id
+stdout '"run_id": "run-1"'
+exec cat probe-runs-capped.ndjson
+! env_from_json_find id kind=test -- --json runs build-logs $R_id
+
+# Any other failure fails the probe at once instead of skipping the run.
+exec cat probe-runs-error.ndjson
+! env_from_json_find id kind=test -- --json runs build-logs $R_id
+
 mock-runs-server
 ! snouty runs events no-such-run --match anything
 stderr '.*run not found: no-such-run.*'
@@ -1184,3 +1198,19 @@ mock-runs-server
 snouty --json runs search run-stream-error 'contains({output_text: "starting"})'
 stdout 'output_text.*starting'
 stdout '"error":"mock stream failure"'
+
+-- probe-runs.ndjson --
+{"id":"no-such-run","kind":"test"}
+{"id":"run-empty","kind":"test"}
+{"id":"run-1","kind":"other"}
+{"id":"run-1","kind":"test"}
+-- probe-runs-capped.ndjson --
+{"id":"no-such-run","kind":"test"}
+{"id":"run-empty","kind":"test"}
+{"id":"no-such-run","kind":"test"}
+{"id":"run-empty","kind":"test"}
+{"id":"no-such-run","kind":"test"}
+{"id":"run-1","kind":"test"}
+-- probe-runs-error.ndjson --
+{"id":"run-stream-error","kind":"test"}
+{"id":"run-1","kind":"test"}

@@ -95,9 +95,10 @@ fixture.
   `$R_<key>`.
 - `env_from_json_find <key> <filter>... [-- <snouty args>]`: store a key of
   the first NDJSON line that matches each filter, as `$R_<key>`. With
-  `-- <snouty args>`, a matching line counts only when snouty succeeds with
-  those args, with `$R_<key>` set to that line's value. It tries at most five
-  matching lines.
+  `-- <snouty args>`, a matching line counts only when snouty, run with those
+  args and `$R_<key>` set to that line's value, succeeds and prints to stdout.
+  It skips a line where snouty prints nothing or fails with a 404, fails on
+  any other error, and tries at most five matching lines.
 - `file <path> <pattern>`: match a file's contents against a regex. The
   pattern does not get the `(?m)` flag. After `isolate-home`, `~` in the path
   is that `$HOME`.

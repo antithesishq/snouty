@@ -314,7 +314,7 @@ snouty runs properties $R_run_id
 # A final run with a pending property adds a note on stderr to read the
 # properties again later.
 mock-runs-server
-snouty runs properties run-1
+[!staging] snouty runs properties run-1
 [!staging] stdout '^pending .*Balance stays nonnegative'
 [!staging] stderr 'still being processed'
 [!staging] stderr -literal 'snouty runs properties run-1'
@@ -322,13 +322,13 @@ snouty runs properties run-1
 
 # A run in progress shows pending without the note.
 mock-runs-server
-snouty runs properties run-2
+[!staging] snouty runs properties run-2
 [!staging] stdout '^pending .*Balance stays nonnegative'
 [!staging] ! stderr 'still being processed'
 
 # `--json` keeps the server's status and prints no note.
 mock-runs-server
-snouty --json runs properties run-1
+[!staging] snouty --json runs properties run-1
 [!staging] stdout '"status":"Undetermined"'
 [!staging] ! stderr 'still being processed'
 

@@ -2668,7 +2668,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
         ),
         Story(
             "runs-usage--rollup-week",
-            "Track compute hour usage week by week",
+            "Track compute-hour usage week by week",
             "I want the total runs and hours of each of the last few weeks.",
             "Exactly 4 rows: the current week and the 3 before it, newest first, with "
             "START/END/RUNS/COMPUTE HOURS columns; START is a Monday and END the Sunday after it, a week with "
@@ -2678,7 +2678,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
         ),
         Story(
             "runs-usage--rollup-month",
-            "Compare compute hour usage across months",
+            "Compare compute-hour usage across months",
             "I want to see how our usage changed from month to month.",
             "At most 6 rows, newest month first; START and END are the first and last days of each month.",
             ["runs", "usage", "--rollup", "month", "-n", "6"],

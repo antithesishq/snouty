@@ -7,9 +7,9 @@ Starts a Model Context Protocol server on stdin and stdout. An agent starts `sno
 The tools:
 {{ tool_table() }}
 
-Each tool runs its snouty command and returns what the command prints: stdout, then stderr in a second block when there is any. The output is the text output of the command, in its detailed form. When a tool's `json` param is true, the output is the command's JSON output. The params of a tool are the other arguments of its command, by name. A command that fails marks the result isError.
+Each tool runs its snouty command and returns what the command prints: stdout, then stderr in a second block when there is any. The output is the text output of the command, in its detailed form when the command has one. A tool's `json` param, when true, returns the command's JSON output instead. The params of a tool are the other arguments of its command, by name. A command that fails marks the result isError.
 
-A tool call has no time limit and no output limit, and the result arrives only when the command ends. A call that waits until a run is ready, or that rewarms a moment, can take minutes. A long call sends progress, so a client that resets its time limit on progress does not end it. When the client cancels a call, its command stops. Up to {{ t("--max-concurrent-calls")? }} tool calls run at the same time.
+A tool call has no time limit and no output limit, and the result arrives only when the command ends. A call that waits until a run is ready, or that rewarms a moment, can take minutes. When the client asks for progress, a long call reports it, so a client that resets its time limit on progress does not end the call. When the client cancels a call, its command stops. Up to {{ t("--max-concurrent-calls")? }} tool calls run at the same time.
 
 {{ t("--settings")? }}, {{ t("--profile")? }} and {{ t("--verbose")? }}, and the ANTITHESIS_* environment variables, apply to every tool call as they do for the other commands.
 

@@ -16,6 +16,10 @@ cargo-deny = "0.20.2"
 # container tests need it.
 "github:docker/compose" = "5.6.0"
 "github:NixOS/nixfmt" = { version = "1.5.0", os = ["linux"] }
+# Compiles .github/workflows/weekly-audit.md into its lock file:
+# `mise run aw:compile`. Each release asset is a bare binary named for its
+# platform, so `bin` names it.
+"github:github/gh-aw" = { version = "1.0.1", bin = "gh-aw" }
 
 [settings]
 lockfile = true
@@ -29,6 +33,10 @@ task.quiet = true
 # write them, and otherwise a problem matcher from .github/problem-matchers.
 # Each task ends by printing that it passed, since most tools are silent on
 # success. A failing command stops the task, and mise reports the failure.
+[tasks."aw:compile"]
+description = "Compile the gh-aw workflows in .github/workflows into their lock files"
+run = ["gh-aw compile", "echo '✓ aw:compile passed'"]
+
 [tasks.lint]
 description = "Run every lint that CI runs"
 depends = [

@@ -264,6 +264,8 @@ mcp-scripts:
       AUDIT_RUN: ${{ github.run_id }}
       ANTITHESIS_TENANT: orbitinghail
       ANTITHESIS_API_KEY: ${{ secrets.STAGING_ANTITHESIS_API_KEY }}
+      # Enables launch --max-compute-hours, which the launch tool sends.
+      SNOUTY_UNSTABLE_FEATURES: teams
 
 # The agent can write to its job's workspace, so a binary built there could be
 # swapped for one that prints the API key, and a

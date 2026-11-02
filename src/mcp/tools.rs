@@ -646,7 +646,7 @@ mod tests {
             (ToolName::RunsWait, "timeout"),
             (ToolName::RunsExec, "timeout"),
         ];
-        // The debug tool has the param only while its flag is not hidden.
+        // The debug tool omits the param while its flag is hidden.
         if features::is_enabled(Feature::Teams) {
             durations.push((ToolName::Debug, "duration"));
         }

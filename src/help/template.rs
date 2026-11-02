@@ -46,7 +46,7 @@ impl Context {
         Name::resolve(self.page, body)?.write(self.page, self.reader, body, indent)
     }
 
-    /// Whether the `teams` feature is on, for text about the flags it gates.
+    /// Whether the `teams` feature is on.
     #[allow(clippy::unused_self, reason = "a template calls it as a method")]
     pub(super) fn teams(self) -> bool {
         features::is_enabled(Feature::Teams)

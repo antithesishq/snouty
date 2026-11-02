@@ -40,9 +40,9 @@ pub enum Feature {
     /// `snouty mcp`, the MCP server. Its tools and their output can still
     /// change.
     Mcp,
-    /// `launch --max-compute-hours`, `launch --setup-timeout` and
-    /// `debug --duration`, which need tenant version 66. Without it,
-    /// `launch --duration` is not deprecated.
+    /// Gates `launch --max-compute-hours`, `launch --setup-timeout` and
+    /// `debug --duration`. While it is off, `launch --duration` is not
+    /// deprecated.
     Teams,
     /// Stands in for a real feature in tests.
     #[cfg(test)]

@@ -91,7 +91,6 @@ from typing import TypeVar
 import pexpect
 import pyte
 
-# Enables the unstable `teams` feature, for the flags that it gates.
 TEAMS: dict[str, str | None] = {"SNOUTY_UNSTABLE_FEATURES": "teams"}
 # A syntactically-valid but nonexistent run id, for clean-error stories.
 UNKNOWN_RUN = "ffffffffffffffffffffffffffffffff-54-5"

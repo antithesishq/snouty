@@ -567,8 +567,8 @@ struct ReleaseFloor {
     serves: &'static str,
     min: (u64, u64),
     consequence: &'static str,
-    /// The feature that gates the flags, when they are gated. A floor of a
-    /// feature that is off reports nothing.
+    /// The feature that gates what this floor serves. A floor reports
+    /// nothing while its feature is off.
     feature: Option<Feature>,
 }
 

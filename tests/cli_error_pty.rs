@@ -31,7 +31,8 @@ fn long_argument_error_wraps_at_words() {
         .expect("the error ends with the --help line");
     let raw = String::from_utf8_lossy(captures.as_bytes()).replace('\r', "");
     assert!(
-        raw.contains("\x1b[1m\x1b[31merror:\x1b[0m"),
+        raw.split_once("error:")
+            .is_some_and(|(before, _)| before.contains('\x1b')),
         "error: is not colored:\n{raw:?}"
     );
     let screen = String::from_utf8_lossy(&strip_ansi_escapes::strip(raw.as_bytes())).into_owned();

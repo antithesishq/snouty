@@ -312,13 +312,13 @@ mod tests {
                 ToolName::RunsWait,
                 json!({ "run_id": "r", "timeout": "30" }),
                 "timeout: must be a whole number with an h, m or s unit, or several in that \
-                 order (e.g. `90s`, `5m`, `1h30m`); a bare number is not permitted",
+                 order; a bare number is not permitted",
             ),
             (
                 ToolName::RunsWait,
                 json!({ "run_id": "r", "poll_interval": 2 }),
                 "poll_interval: must be a whole number with an h, m or s unit, or several in that \
-                 order (e.g. `90s`, `5m`, `1h30m`); a bare number is not permitted",
+                 order; a bare number is not permitted",
             ),
             (
                 ToolName::RunsExec,
@@ -327,7 +327,7 @@ mod tests {
                     "timeout": "1.5",
                 }),
                 "timeout: must be a whole number with an h, m or s unit, or several in that \
-                 order (e.g. `90s`, `5m`, `1h30m`); a bare number is not permitted",
+                 order; a bare number is not permitted",
             ),
         ];
         for (name, call, error) in cases {

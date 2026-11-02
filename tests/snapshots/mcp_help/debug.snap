@@ -16,7 +16,7 @@ Example:
     "recipients": "team@example.com"
   }
 
-The session stays available for the time that `duration` gives, from 30 minutes to 6 hours. Without it, the server sets the time. Runs from releases before 67 ignore it.
+The session stays available for the time that `duration` gives, from 30 minutes to 6 hours. Without it, the server sets the time. Requires tenant version 66 or newer.
 
 Extra parameters can be passed with `param`. A `param` cannot replace the value of a dedicated param, such as `title`:
   debug {

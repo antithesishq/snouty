@@ -384,6 +384,72 @@ or set ANTITHESIS_API_KEY; ask Antithesis support for an API key if you don't ha
                 self.assertFalse(passed)
 
 
+class ExecJsonCheck(unittest.TestCase):
+    """The `--json runs exec` check tells the script's lines from the run's."""
+
+    SCRIPT = {"command_id": "echidna-cmd-1", "name": "bash_command"}
+    RESULT = {"status": "exited", "exit_code": 0, "end_moment": {"vtime": 23.2}}
+
+    def line(self, text, **source):
+        return {"moment": {"vtime": 13.2}, "source": source, "output_text": text}
+
+    def check(self, rows, *, system_events):
+        stdout = "".join(json.dumps(row) + "\n" for row in [*rows, self.RESULT])
+        result = gallery.Result([], stdout, "", 0)
+        story = gallery.Story("exec", "", "", "", [], None)
+        chk = gallery.exec_json("hello from", system_events=system_events)
+        return chk(gallery.StoryRun(story, result, None), gallery.Registry())
+
+    def script_lines(self):
+        return [
+            self.line("hello from the run", **self.SCRIPT, stream="info"),
+            self.line("a warning on stderr", **self.SCRIPT, stream="error"),
+        ]
+
+    def test_events_pass_with_a_text_bearing_container_event(self):
+        # A quiet moment: no container changed state, so every event has text.
+        workload = self.line(
+            "workload: the bank is up", container="workload", name="workload"
+        )
+        passed, detail = self.check(
+            [workload, *self.script_lines()], system_events=True
+        )
+        self.assertTrue(passed, detail)
+        self.assertIn("1 from the run, not the script", detail)
+
+    def test_events_count_another_commands_lines(self):
+        setup = self.line("ContainerCreating", command_id="setup-1", name="setup")
+        passed, detail = self.check([setup, *self.script_lines()], system_events=True)
+        self.assertTrue(passed, detail)
+        self.assertIn("1 from the run, not the script", detail)
+
+    def test_events_fail_with_only_the_scripts_events(self):
+        received = {"moment": {}, "source": {"meta_for": "echidna-cmd-1"}}
+        rewarm = {"status": "rewarming", "percent_complete": 50}
+        rows = [rewarm, received, *self.script_lines()]
+        passed, detail = self.check(rows, system_events=True)
+        self.assertFalse(passed, detail)
+
+    def test_fails_without_the_scripts_command_id(self):
+        line = self.line("hello from the run", name="bash_command", stream="info")
+        passed, detail = self.check([line], system_events=False)
+        self.assertFalse(passed, detail)
+
+    def test_events_count_a_row_with_a_null_source(self):
+        null_source = {"moment": {}, "source": None}
+        passed, detail = self.check(
+            [null_source, *self.script_lines()], system_events=True
+        )
+        self.assertTrue(passed, detail)
+
+    def test_without_events_only_script_lines_pass(self):
+        passed, detail = self.check(self.script_lines(), system_events=False)
+        self.assertTrue(passed, detail)
+        workload = self.line("workload: up", container="workload", name="workload")
+        passed, _ = self.check([workload, *self.script_lines()], system_events=False)
+        self.assertFalse(passed, "a run event must not appear without --events")
+
+
 class GalleryRunHelpers(unittest.TestCase):
     RUN = "0123456789abcdef0123456789abcdef-66-0"
     BUG = gallery.EXAMPLE_BUG_PROPERTY

@@ -69,10 +69,14 @@ stdout '"id": "credentials",\s*"kind": "password",\s*"status": "warn"'
 [!staging] stderr 'tenant release is too old for the cancel-run API'
 [!staging] stderr 'tenant release is too old for the execute-command .container. field'
 [!staging] stderr 'release 64.0\) — .runs exec. fails'
+[!staging] stderr 'tenant release is too old for the compute-hours, setup-timeout and debug-duration params'
+[!staging] stderr 'tenant release is too old for property streaming'
 [!staging] snouty doctor --json
 [!staging] stdout '"id": "events_search",\s*"status": "warn"'
 [!staging] stdout '"id": "cancel_run",\s*"status": "warn"'
 [!staging] stdout '"id": "execute_command",\s*"status": "warn"'
+[!staging] stdout '"id": "launch_params",\s*"status": "warn"'
+[!staging] stdout '"id": "run_stream",\s*"status": "warn"'
 
 # 404: typically an older tenant predating the version endpoint, but possibly a
 # proxy/route intercepting the request — either way it's still reachable and

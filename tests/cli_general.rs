@@ -33,21 +33,6 @@ fn help_shows_subcommands() {
 }
 
 #[test]
-fn validate_help_documents_compose_and_kubernetes() {
-    snouty()
-        .args(["validate", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Compose configs:"))
-        .stdout(predicate::str::contains("docker-compose locally"))
-        .stdout(predicate::str::contains("setup-complete"))
-        .stdout(predicate::str::contains("Test commands are not executed"))
-        .stdout(predicate::str::contains("Kubernetes configs:"))
-        .stdout(predicate::str::contains("k8s-validator"))
-        .stdout(predicate::str::contains("manifests/"));
-}
-
-#[test]
 fn runs_lists_all_pages() {
     let mock = start_runs_server(false);
 

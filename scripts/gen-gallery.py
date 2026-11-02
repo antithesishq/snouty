@@ -1881,6 +1881,21 @@ def contains_all(*needles: str):
     return chk
 
 
+def settings_show_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+    # A machine with no settings file prints "settings files: none" instead of
+    # the table.
+    ok, detail = expect_message("TYPE", "settings files: none")(sr, reg)
+    if not ok:
+        return (ok, detail)
+    if not re.search(
+        r"^api_cache_max_file_size +[\d.]+ [A-Za-z]*B$",
+        sr.result.combined,
+        re.MULTILINE,
+    ):
+        return (False, "api_cache_max_file_size prints without a unit")
+    return (True, detail)
+
+
 # -- login (interactive/stateful) check factories ---------------------------
 #
 # These read `sr.captured_files` (the `post_capture` files read back from the
@@ -2402,8 +2417,13 @@ def logs_begin_at(begin: str):
 
 
 def exec_json(needle: str, *, system_events: bool):
-    """Check a `--json runs exec` story. With `--events`, timeline events
-    without `output_text` appear."""
+    """Check a `--json runs exec` story. With `--events`, events that the
+    script did not print appear. The script's events share one `command_id`
+    (its lifecycle events name it in `meta_for`); other commands, such as
+    setup, have a different one, and the run's events have none."""
+
+    def source(row: dict) -> dict:
+        return row.get("source") or {}
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         try:
@@ -2412,15 +2432,30 @@ def exec_json(needle: str, *, system_events: bool):
             return (False, f"stdout is not NDJSON: {e}")
         if not rows:
             return (False, "no rows")
-        *events, result = rows
+        *rows, result = rows
+        # Rewarm progress rows have no moment; every event has one.
+        events = [e for e in rows if "moment" in e]
         exited = result.get("status") == "exited" and result.get("exit_code") == 0
-        found = any(needle in (e.get("output_text") or "") for e in events)
-        system = sum("output_text" not in e for e in events)
-        ok = sr.result.ok and exited and found and (system > 0) == system_events
+        script_id = next(
+            (
+                source(e).get("command_id")
+                for e in events
+                if needle in (e.get("output_text") or "")
+                and source(e).get("command_id")
+            ),
+            None,
+        )
+        if script_id is None:
+            return (False, f"no event with a command_id prints {needle!r}")
+        system = sum(
+            script_id not in (source(e).get("command_id"), source(e).get("meta_for"))
+            for e in events
+        )
+        ok = sr.result.ok and exited and (system > 0) == system_events
         return (
             ok,
-            f"exit={sr.result.returncode}, {len(events)} events ({system} without "
-            f"output text), exited 0={exited}, {needle!r} found={found}",
+            f"exit={sr.result.returncode}, {len(events)} events ({system} from the "
+            f"run, not the script), exited 0={exited}, {needle!r} found",
         )
 
     return chk
@@ -3186,7 +3221,8 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "I want the run to fail fast if setup takes more than 10 minutes, and I "
             "pass a bare 10.",
             "snouty fails and says that --setup-timeout needs a unit, and that a bare "
-            "number is not permitted. It starts no run. Non-zero exit.",
+            "number is not permitted. Each example it gives, such as 10m, is a value "
+            "that --setup-timeout accepts. It starts no run. Non-zero exit.",
             [
                 "launch",
                 "--launcher",
@@ -3379,12 +3415,10 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "I want to see each setting that snouty resolved from my environment and "
             "settings files, before I run a command against my tenant.",
             "settings show prints one aligned row per setting, with `not set` (or the default) "
-            "for a setting that is not configured, then a TYPE/PATH table "
-            "of the settings files it read, project before global.",
+            "for a setting that is not configured, and a size with its unit, then a TYPE/PATH "
+            "table of the settings files it read, project before global.",
             ["settings", "show"],
-            # A machine with no settings file prints "settings files: none"
-            # instead of the table.
-            expect_message("TYPE", "settings files: none"),
+            settings_show_check,
             json_capable=False,
         ),
         Story(
@@ -3582,8 +3616,8 @@ def build_ready_stories(d: Discovery, x: GalleryRun, wait_ready: Result) -> list
             "runs-exec--json--events",
             "Read the whole timeline from a script",
             "I want every event of the timeline while my script executes, as JSON.",
-            "One JSON object per line, including timeline events that have no output text, "
-            "then the result line.",
+            "One JSON object per line, including timeline events that the script did not "
+            "print, then the result line.",
             # The moment is just after setup, when the run is quiet: the
             # script sleeps, in virtual time, so that the run's own events
             # happen while it executes.
@@ -4602,9 +4636,9 @@ def build_tty_stories() -> list[Story]:
                 (_ASK_KEY, ENTER),
             ),
             tty_persisted(
-                prompts=(_TENANT, _REPO),
-                # Keeping the stored key replaces nothing.
-                absent_prompts=("replacing your stored",),
+                prompts=(_TENANT, _REPO, f"{_ASK_KEY} (********9Pgw) kept"),
+                # Keeping the stored key replaces nothing, and shows no new mask.
+                absent_prompts=("replacing your stored", "(********9Pgw) ********"),
                 files=(
                     (_SETTINGS, (f'tenant = "{_TENANT}"', f'repository = "{_REPO}"')),
                     # Every answer was a bare Enter, so the stored key must survive.

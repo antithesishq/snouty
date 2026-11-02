@@ -14,13 +14,13 @@ Alternatively, pass a pre-built config image directly:
     --config-image us-central1-docker.pkg.dev/proj/repo/config:latest \
     --max-compute-hours 24
 
-{{ t("--max-compute-hours")? }} controls how many compute hours can be spent fuzzing, up to 1000 compute hours. One compute hour is one core running for one hour. The default is 48 compute hours.
+{{ t("--max-compute-hours")? }} controls how many compute hours can be spent fuzzing, up to 1000 compute hours. One compute hour is one core running for one hour. The default is 48 compute hours. Requires tenant version 66 or newer.
 
 The tier ({{ t("--performance-tier")? }}) sets how many cores the run uses: 48 on standard (the default), 96 on fast and 192 on turbo. The run fuzzes for max compute hours ÷ cores hours, after setup. For example, 24 compute hours on standard (48 cores) is half an hour of fuzzing, plus the time that setup takes. A faster tier spends the same budget on more cores, so it fuzzes for less wall-clock time.
 
 The minimum budget is a quarter of the tier's cores: 12 compute hours on standard, 24 on fast and 48 on turbo.
 
-{{ t("--setup-timeout")? }} sets how long setup can take before the run fails immediately. Use it to fail fast, and to debug a setup that takes too long. The default is 5 minutes, and the range is 1 to 30 minutes.
+{{ t("--setup-timeout")? }} sets how long setup can take before the run fails immediately. Use it to fail fast, and to debug a setup that takes too long. The default is 5 minutes, and the range is 1 to 30 minutes. Requires tenant version 66 or newer.
   {{ t("snouty launch --launcher basic_test --config ./config --setup-timeout 10m")? }}
 
 Extra parameters can be passed with --param:

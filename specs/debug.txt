@@ -90,8 +90,7 @@ stderr '"antithesis.report.recipients": "\[REDACTED\]"'
 stderr 'warning: username/password authentication is deprecated'
 
 # --duration sends antithesis.debugging.length_hours, the number of hours
-#    that the session stays available. Runs from releases before 67 ignore
-#    it.
+#    that the session stays available.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --duration 90m
 stderr '"antithesis.debugging.length_hours": "1.5"'

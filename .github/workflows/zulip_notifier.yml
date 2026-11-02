@@ -4,6 +4,9 @@ env:
 
 on:
   push:
+    # The merge queue pushes a temporary branch for each entry.
+    branches-ignore:
+      - "gh-readonly-queue/**"
 
 permissions:
   contents: read

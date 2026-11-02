@@ -10,13 +10,10 @@ Example:
     "run_id": "9043254f65c9c65d63fe043a0abfc7fc-53-1",
     "input_hash": "6057726200491963783",
     "vtime": 329.8037810830865,
-    "duration": "2h",
     "title": "stalled leader election",
     "description": "debug this moment",
     "recipients": "team@example.com"
   }
-
-The session stays available for the time that `duration` gives, from 30 minutes to 6 hours. Without it, the server sets the time. Requires tenant version 66 or newer.
 
 Extra parameters can be passed with `param`. A `param` cannot replace the value of a dedicated param, such as `title`:
   debug {

@@ -72,16 +72,6 @@ checksum = "sha256:aa029247ab89c897e2f3948463967553f902f86e86e3402fa28cb29c4a44f
 url = "https://github.com/NixOS/nixfmt/releases/download/v1.5.0/nixfmt"
 url_api = "https://api.github.com/repos/NixOS/nixfmt/releases/assets/556098499"
 
-[tools."github:NixOS/nixfmt"."platforms.macos-arm64"]
-checksum = "sha256:aa029247ab89c897e2f3948463967553f902f86e86e3402fa28cb29c4a44f745"
-url = "https://github.com/NixOS/nixfmt/releases/download/v1.5.0/nixfmt"
-url_api = "https://api.github.com/repos/NixOS/nixfmt/releases/assets/556098499"
-
-[tools."github:NixOS/nixfmt"."platforms.macos-x64"]
-checksum = "sha256:aa029247ab89c897e2f3948463967553f902f86e86e3402fa28cb29c4a44f745"
-url = "https://github.com/NixOS/nixfmt/releases/download/v1.5.0/nixfmt"
-url_api = "https://api.github.com/repos/NixOS/nixfmt/releases/assets/556098499"
-
 [[tools."github:docker/compose"]]
 version = "5.6.0"
 backend = "github:docker/compose"
@@ -101,6 +91,29 @@ url_api = "https://api.github.com/repos/docker/compose/releases/assets/605922795
 checksum = "sha256:c76e3abf5fde1aeb3bd7c7306ff15bef2246afc1f9e54832a0a050dd7cdfb2f8"
 url = "https://github.com/docker/compose/releases/download/v5.6.0/docker-compose-darwin-x86_64"
 url_api = "https://api.github.com/repos/docker/compose/releases/assets/605922764"
+
+[[tools."github:github/gh-aw"]]
+version = "1.0.1"
+backend = "github:github/gh-aw"
+specifiers = ["1.0.1"]
+
+[tools."github:github/gh-aw"."platforms.linux-x64"]
+checksum = "sha256:746d0b41d5fb87e2c010b8ac23a464436bb745ff89fbd19a3456431942c37652"
+url = "https://github.com/github/gh-aw/releases/download/v1.0.1/linux-amd64"
+url_api = "https://api.github.com/repos/github/gh-aw/releases/assets/682204668"
+provenance = "github-attestations"
+
+[tools."github:github/gh-aw"."platforms.macos-arm64"]
+checksum = "sha256:e159eca9db8d9fed6eee61695c6b9a9235c8fcc83bda3a0915773ca0a50e4288"
+url = "https://github.com/github/gh-aw/releases/download/v1.0.1/darwin-arm64"
+url_api = "https://api.github.com/repos/github/gh-aw/releases/assets/682204493"
+provenance = "github-attestations"
+
+[tools."github:github/gh-aw"."platforms.macos-x64"]
+checksum = "sha256:df54cf7f5cd88f15bf61ff53b9d541884fca5e7e958160ae5c44b6473965e1fc"
+url = "https://github.com/github/gh-aw/releases/download/v1.0.1/darwin-amd64"
+url_api = "https://api.github.com/repos/github/gh-aw/releases/assets/682204490"
+provenance = "github-attestations"
 
 [[tools."github:nextest-rs/nextest"]]
 version = "0.9.149"

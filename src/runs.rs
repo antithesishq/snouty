@@ -669,6 +669,20 @@ async fn cmd_runs_properties(
         outln!("{}", render_properties_table(&properties))?;
     }
 
+    // The list endpoint reports a property as Undetermined while the server
+    // still processes a finished run's data, with nonzero example counts
+    // (antithesis-orbitinghail tenant, release 67).
+    if !json
+        && properties
+            .iter()
+            .any(|p| matches!(p.status(), PropertyStatus::Undetermined))
+    {
+        eprintln!(
+            "\nSome properties are still being processed. \
+             Run `snouty runs properties {run_id}` again later for the final results."
+        );
+    }
+
     Ok(())
 }
 
@@ -906,8 +920,13 @@ fn property_status_word(status: &PropertyStatus) -> Cow<'static, str> {
     }
 }
 
+/// The colored status word for the property detail.
 fn property_status_label(status: &PropertyStatus) -> String {
-    style_property_status(status, property_status_word(status))
+    let word = match status {
+        PropertyStatus::Undetermined => "pending".into(),
+        _ => property_status_word(status),
+    };
+    style_property_status(status, word)
 }
 
 fn style_property_status(status: &PropertyStatus, word: Cow<'_, str>) -> String {
@@ -1236,13 +1255,12 @@ fn is_failing(p: &Property) -> bool {
     matches!(p.status(), PropertyStatus::Failing)
 }
 
-/// A known status is a word of at most six characters, so the column is no
-/// wider than its STATUS header.
+/// The short status word for the table's STATUS column.
 fn property_status_cell(status: &PropertyStatus) -> String {
     let word = match status {
         PropertyStatus::Passing => "pass".into(),
         PropertyStatus::Failing => "fail".into(),
-        PropertyStatus::Undetermined => "unseen".into(),
+        PropertyStatus::Undetermined => "pending".into(),
         PropertyStatus::Other(_) => status.to_string().into(),
     };
     style_property_status(status, word)
@@ -1372,11 +1390,12 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         rows.push(("Completed", format_timestamp_for_display(t)));
     }
 
-    // The JSON output keeps `antithesis.duration`, which the server still
-    // records, but the text output leaves it out because the parameter is
-    // deprecated.
+    // A run sized by compute hours can also record `antithesis.duration`,
+    // which says nothing about its size, so the text output leaves it out.
     if let Some(hours) = run.max_compute_hours() {
         rows.push(("Max Compute Hours", hours.to_string()));
+    } else if let Some(raw) = run.requested_duration() {
+        rows.push(("Duration", format_minutes(raw)));
     }
     if let Some(raw) = run.setup_timeout() {
         rows.push(("Setup Timeout", format_minutes(raw)));

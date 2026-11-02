@@ -91,6 +91,7 @@ from typing import TypeVar
 import pexpect
 import pyte
 
+TEAMS: dict[str, str | None] = {"SNOUTY_UNSTABLE_FEATURES": "teams"}
 # A syntactically-valid but nonexistent run id, for clean-error stories.
 UNKNOWN_RUN = "ffffffffffffffffffffffffffffffff-54-5"
 # A run ID that only the `debug-bad-duration` story names, so that the guard
@@ -1416,7 +1417,7 @@ def gallery_run(sn: Snouty, reuse: bool) -> GalleryRun:
     ensure_example_images()
     # The timestamp helps a person tell the gallery's runs apart in the web UI.
     description = f"{GALLERY_RUN_DESCRIPTION} {datetime.now().isoformat()}"
-    launch = sn.run(gallery_launch_args(description))
+    launch = sn.run(gallery_launch_args(description), env=TEAMS)
     run = launched_run_id(launch.stdout)
     if not launch.ok or run is None:
         raise GalleryError(
@@ -2320,6 +2321,25 @@ def stream_verdict(
     )
 
 
+def stream_after_final(run: str):
+    """Check that a `runs stream` of a final run exits 0 and ends with one
+    `completed` line for `run`, with only property, sample or verdict lines
+    before it. A run that finished recently can still send events."""
+
+    def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+        rows = stream_events(sr.result.stdout)
+        events = [r["event"] for r in rows]
+        completed = rows[-1:] == [{"event": "completed", "run_id": run}]
+        others = set(events[:-1]) - {"property", "sample", "verdict"}
+        return (
+            sr.result.ok and completed and not others,
+            f"exit={sr.result.returncode}, events={dict(Counter(events))}, "
+            f"ends with completed={completed}, unexpected={sorted(others)}",
+        )
+
+    return chk
+
+
 def _cast_text(cast: str | None) -> str:
     """Everything a recording's terminal received, redraws included. Line 1
     of an asciicast is its header, and each other line is `[time, type,
@@ -2459,6 +2479,19 @@ def exec_json(needle: str, *, system_events: bool):
         )
 
     return chk
+
+
+def help_without_teams_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+    """A help story, whose help names --duration and none of the flags that
+    the `teams` feature gates."""
+    ok, detail = help_story_check(sr, reg)
+    if not ok or sr.help_result is None:
+        return (ok, detail)
+    text = sr.help_result.combined
+    named = [f for f in ("--max-compute-hours", "--setup-timeout") if f in text]
+    if named or "--duration" not in text or "Deprecated" in text:
+        return (False, f"help names gated flags {named!r} or misdescribes --duration")
+    return (True, detail)
 
 
 def help_story_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
@@ -3125,10 +3158,11 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
         Story(
             "runs-stream-final",
             "Stream a run that is already final",
-            "I start the property stream on a completed run; I want it to end at once, not hang.",
-            "stdout is one `completed <run id>` line. Exit 0.",
+            "I start the property stream on a completed run; I want it to end soon, not hang.",
+            "stdout can hold some last `property`, `sample` or `verdict` lines, then "
+            "one `completed <run id>` line. Exit 0.",
             ["runs", "stream", d.success],
-            succeeds_with(f"completed  {d.success}"),
+            stream_after_final(d.success),
             json_capable=False,
         ),
         Story(
@@ -3213,7 +3247,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                 guard, DURATION_RUN, "must be from 30 minutes to 6 hours"
             ),
             json_capable=False,
-            env=guarded,
+            env={**guarded, **TEAMS},
         ),
         Story(
             "launch-bare-setup-timeout",
@@ -3236,7 +3270,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                 guard, SETUP_TIMEOUT_IMAGE, "a bare number is not permitted"
             ),
             json_capable=False,
-            env=guarded,
+            env={**guarded, **TEAMS},
         ),
         # -- doctor (one story per distinct auth output) --------------------
         Story(
@@ -3497,6 +3531,7 @@ def build_launch_stories(x: GalleryRun) -> list[Story]:
             x.launch.args,
             launched_run(x.run),
             json_capable=False,
+            env=TEAMS,
             precaptured=x.launch,
         )
     ]
@@ -3775,7 +3810,9 @@ def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
             "See which properties my run passed and failed",
             "My run is finished, and I want its property results.",
             "A table of the example's properties: the passing ones, and "
-            f"{EXAMPLE_BUG_PROPERTY!r} failing because of the deliberate bug.",
+            f"{EXAMPLE_BUG_PROPERTY!r} failing because of the deliberate bug. A property "
+            "whose results are still being processed shows as `pending`, and stderr "
+            "then says to run the command again later.",
             ["runs", "properties", x.run],
             run_properties,
         ),
@@ -3792,10 +3829,11 @@ def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
         Story(
             "runs-stream-run-final",
             "Stream my run after it finished",
-            "My run is finished, and I start its property stream; I want it to end at once.",
-            "stdout is one `completed <run id>` line. Exit 0.",
+            "My run is finished, and I start its property stream; I want it to end soon.",
+            "stdout can hold some last `property`, `sample` or `verdict` lines, then "
+            "one `completed <run id>` line. Exit 0.",
             ["runs", "stream", x.run],
-            succeeds_with(f"completed  {x.run}"),
+            stream_after_final(x.run),
             json_capable=False,
         ),
     ]
@@ -3920,6 +3958,8 @@ def _help_story(
     samples: list[tuple[str, list[str]]] | None = None,
     align: tuple[str, ...] = (),
     expect_ok: bool = True,
+    env: dict[str, str | None] | None = None,
+    check=help_story_check,
 ) -> Story:
     args = args or []
     judge = HELP_RUBRIC + (_OUTPUT_RUBRIC if args else _HELP_ONLY_RUBRIC)
@@ -3929,12 +3969,13 @@ def _help_story(
         goal=goal,
         judge=judge,
         args=args,
-        check=help_story_check,
+        check=check,
         json_capable=False,
         help_cmd=help_cmd,
         samples=samples,
         align_tokens=align,
         expect_ok=expect_ok,
+        env=env,
     )
 
 
@@ -4045,7 +4086,7 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "Learn to search events and chain into logs",
             "I want the help to explain `moment HASH` dividers and `VTIME [source] payload` "
             "lines, that the hash alone feeds `runs logs`, and that several terms must all "
-            "match, through the events-search API.",
+            "match.",
             ["runs", "events"],
             ["runs", "events", s, "--match", d.event_keyword],
         ),
@@ -4143,6 +4184,18 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "split across two lines. Each example for a launcher that needs a config image "
             "should pass one, so that I can copy it as written.",
             ["launch"],
+            env=TEAMS,
+        ),
+        _help_story(
+            "help-launch-without-teams",
+            "Understand how to size a run without the teams feature",
+            "Without the `teams` unstable feature, I run `snouty launch --help` to learn how "
+            "long my run fuzzes. The help should name --duration and not call it deprecated. "
+            "It should not name --max-compute-hours or --setup-timeout, which need the "
+            "feature.",
+            ["launch"],
+            env={"SNOUTY_UNSTABLE_FEATURES": None},
+            check=help_without_teams_check,
         ),
         _help_story(
             "help-debug",
@@ -5113,7 +5166,7 @@ def run_story(sn: Snouty, story: Story) -> StoryRun:
     help_result = None
     sample_results = None
     if story.help_cmd is not None:
-        help_result = sn.run([*story.help_cmd, "--help"])
+        help_result = sn.run([*story.help_cmd, "--help"], story.env)
         if story.samples:
             sample_results = [(label, sn.run(a)) for label, a in story.samples]
     return StoryRun(story, result, rows, help_result, sample_results)

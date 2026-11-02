@@ -183,11 +183,12 @@ For any one setting, snouty uses the first value it finds, highest precedence fi
 
 ### Unstable features
 
-When a subcommand, or the Antithesis API it calls, is still changing shape, snouty can keep it behind a gate, turned on by naming its feature in `SNOUTY_UNSTABLE_FEATURES` (a comma-separated list). Anything behind this gate can change its behavior, its flags, or its id, or go away, in any release.
+When a subcommand or a flag, or the Antithesis API it calls, is still changing shape, snouty can keep it behind a gate, turned on by naming its feature in `SNOUTY_UNSTABLE_FEATURES` (a comma-separated list). Anything behind this gate can change its behavior, its flags, or its id, or go away, in any release.
 
-| Feature | Enables                                                                    |
-| ------- | -------------------------------------------------------------------------- |
-| `mcp`   | `snouty mcp`, the MCP server. Its tools and their output can still change. |
+| Feature | Enables                                                                                                              |
+| ------- | -------------------------------------------------------------------------------------------------------------------- |
+| `mcp`   | `snouty mcp`, the MCP server. Its tools and their output can still change.                                           |
+| `teams` | `launch --max-compute-hours`, `launch --setup-timeout` and `debug --duration`. They need tenant version 66 or newer. |
 
 An id that snouty does not know, such as the retired `runs-exec`, has no effect.
 
@@ -326,7 +327,7 @@ To set it up, add the registry to `credHelpers` in `~/.docker/config.json` for D
 }
 ```
 
-The helper uses the same [settings](#settings-files) as snouty in the directory where Docker runs it, including `./.snouty.toml`. As for every command, the helper uses `./.snouty.toml` only after you trust it with `snouty settings trust`, and ignores it after `snouty settings deny`. Until you decide, the helper fails. With `--profile` or `ANTITHESIS_PROFILE`, the helper uses only that profile. Otherwise it uses the first profile whose `repository` is on `registry.<tenant>.antithesis.com` and that has its own credential. A named profile does not use the credential of the default profile, but `ANTITHESIS_API_KEY` applies to every profile.
+The helper uses the same [settings](#settings-files) as snouty in the directory where Docker runs it, including `./.snouty.toml`. With `--profile` or `ANTITHESIS_PROFILE`, the helper uses that profile. Otherwise, it uses the first profile whose `repository` is on `registry.<tenant>.antithesis.com`.
 
 The shell script installer and the Nix package install `docker-credential-snouty`, an alias of `snouty`. For another install method, make the alias yourself, in a directory on your `PATH`:
 

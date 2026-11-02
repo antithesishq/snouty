@@ -7,7 +7,7 @@ Example:
   snouty launch --launcher basic_test --config ./config \
     --test-name "my-test" \
     --description "nightly test run" \
-    --max-compute-hours 24 \
+    --duration 30m \
     --recipients "team@example.com"
 
 The -c/--config flag points at a local directory containing docker-compose.yaml
@@ -19,26 +19,12 @@ for images that are not on this machine.
 Alternatively, pass a pre-built config image directly:
   snouty launch --launcher basic_test \
     --config-image us-central1-docker.pkg.dev/proj/repo/config:latest \
-    --max-compute-hours 24
+    --duration 30m
 
---max-compute-hours controls how many compute hours can be spent fuzzing, up to
-1000 compute hours. One compute hour is one core running for one hour. The
-default is 48 compute hours. Requires tenant version 66 or newer.
+--duration sets how long the run fuzzes, after setup.
 
 The tier (--performance-tier) sets how many cores the run uses: 48 on standard
-(the default), 96 on fast and 192 on turbo. The run fuzzes for its max compute
-hours divided by the tier's cores, after setup. For example, 24 compute hours on
-standard (48 cores) is half an hour of fuzzing, plus the time that setup takes.
-A faster tier spends the same budget on more cores, so it fuzzes for less
-wall-clock time.
-
-The minimum budget is a quarter of the tier's cores: 12 compute hours on
-standard, 24 on fast and 48 on turbo.
-
---setup-timeout sets how long setup can take before the run fails immediately.
-Use it to fail fast, and to debug a setup that takes too long. The default is 5
-minutes, and the range is 1 to 30 minutes. Requires tenant version 66 or newer.
-  snouty launch --launcher basic_test --config ./config --setup-timeout 10m
+(the default), 96 on fast and 192 on turbo.
 
 Extra parameters can be passed with --param:
   snouty launch --launcher basic_test --config ./config \
@@ -115,22 +101,9 @@ Options:
           Test description
 
       --duration <DURATION>
-          Deprecated: use --max-compute-hours. Test duration, at least 1 minute.
-          A duration is a whole number with an h, m or s unit, or several in
-          that order, such as 90s, 5m or 1h30m; a bare number is not permitted
-
-      --max-compute-hours <MAX_COMPUTE_HOURS>
-          Compute hours of fuzzing for the run, at most 1000. One compute hour
-          is one core running for one hour. The minimum depends on
-          --performance-tier: 12 on standard, 24 on fast, 48 on turbo. The
-          server default is 48. Requires tenant version 66 or newer
-
-      --setup-timeout <SETUP_TIMEOUT>
-          Fail the run immediately if setup takes longer than this, in whole
-          minutes from 1m to 30m. The default is 5m. Requires tenant version 66
-          or newer. A duration is a whole number with an h, m or s unit, or
-          several in that order, such as 10m or 30m; a bare number is not
-          permitted
+          Test duration, at least 1 minute. A duration is a whole number with an
+          h, m or s unit, or several in that order, such as 90s, 5m or 1h30m; a
+          bare number is not permitted
 
       --ephemeral
           Mark the test run as ephemeral, so it does not appear in future

@@ -197,8 +197,8 @@ snouty --json runs list --status completed --limit 100
 
 # `snouty runs show` displays run details in key-value format. Max Compute
 # Hours (from antithesis.max_compute_hours) and Setup Timeout (from
-# antithesis.setup_timeout, in minutes) show what the launch requested. The
-# deprecated antithesis.duration is left out of the text output. Elapsed is the
+# antithesis.setup_timeout, in minutes) show what the launch requested.
+# A run with Max Compute Hours leaves out antithesis.duration. Elapsed is the
 # wall-clock time derived from the start/complete timestamps, and Source
 # reports where the run was launched from. User-defined `attrs.*` params are
 # listed under an Attributes block, sorted by name with the prefix removed.
@@ -298,7 +298,7 @@ stdout '"run_id".*"$R_run_id"'
 
 # `snouty runs properties` renders one table per group, headed by the group.
 # Each table has STATUS, ✓, ✗, ID, and NAME columns. STATUS is `pass`,
-# `fail`, or `unseen` for an undetermined property. ✓ and ✗ are the
+# `fail`, or `pending` for an undetermined property. ✓ and ✗ are the
 # SI-shortened example and counterexample counts. Ungrouped properties go in a
 # trailing "(ungrouped)" section.
 mock-runs-server
@@ -309,7 +309,27 @@ snouty runs properties $R_run_id
 # group, so NAME drops the `Safety: ` prefix.
 [!staging] ! stdout 'Safety: Counter'
 [!staging] stdout '^pass +.*Setup completes$'
-[!staging] stdout '^unseen +0 +0 +\S+ +Balance stays nonnegative$'
+[!staging] stdout '^pending +0 +0 +\S+ +Balance stays nonnegative$'
+
+# A pending property adds a note on stderr to read the properties again
+# later, on a final run and on a run in progress.
+mock-runs-server
+[!staging] snouty runs properties run-1
+[!staging] stdout '^pending .*Balance stays nonnegative'
+[!staging] stderr 'still being processed'
+[!staging] stderr -literal 'snouty runs properties run-1'
+[!staging] ! stdout 'still being processed'
+
+mock-runs-server
+[!staging] snouty runs properties run-2
+[!staging] stdout '^pending .*Balance stays nonnegative'
+[!staging] stderr -literal 'snouty runs properties run-2'
+
+# `--json` keeps the server's status and prints no note.
+mock-runs-server
+[!staging] snouty --json runs properties run-1
+[!staging] stdout '"status":"Undetermined"'
+[!staging] ! stderr 'still being processed'
 
 # `snouty runs properties --failing` shows only failing properties.
 mock-runs-server
@@ -326,7 +346,7 @@ snouty runs properties --passing $R_run_id
 # `snouty runs properties --undetermined` shows only undetermined properties.
 mock-runs-server
 snouty runs properties --undetermined $R_run_id
-[!staging] stdout '^unseen .*Balance stays nonnegative'
+[!staging] stdout '^pending .*Balance stays nonnegative'
 [!staging] ! stdout 'Setup completes'
 [!staging] ! stdout 'Counter value stays below limit'
 
@@ -334,7 +354,7 @@ snouty runs properties --undetermined $R_run_id
 mock-runs-server
 snouty runs properties --passing --undetermined $R_run_id
 [!staging] stdout '^pass .*Setup completes'
-[!staging] stdout '^unseen .*Balance stays nonnegative'
+[!staging] stdout '^pending .*Balance stays nonnegative'
 [!staging] ! stdout 'Counter value stays below limit'
 
 # A status filter that matches nothing names every status it asked for.
@@ -393,7 +413,7 @@ snouty runs properties $R_run_id --group safety
 # An undetermined property's --detail reports no examples yet.
 mock-runs-server
 snouty runs properties $R_run_id --name 'Balance stays' --detail
-[!staging] stdout '^Status +undetermined$'
+[!staging] stdout '^Status +pending$'
 [!staging] stdout '^Examples +none yet$'
 
 # A non-event ("system") property's --detail shows its value under a `Result`
@@ -610,10 +630,12 @@ stdout 'Status +completed'
 [!staging] stdout '(?m)^Description\nnightly smoke on main$'
 
 # A run with no description shows its event description in full. run-3 has
-# only an event description.
+# only an event description. A run sized by antithesis.duration shows it as
+# Duration.
 mock-runs-server
 [!staging] snouty runs show run-3
 [!staging] stdout '(?m)^Description\nrecovery probe\nafter the restart$'
+[!staging] stdout '^Duration +30m$'
 
 # If no runs are returned, the command prints a friendly empty-state message.
 mock-runs-server empty

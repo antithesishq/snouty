@@ -2321,6 +2321,25 @@ def stream_verdict(
     )
 
 
+def stream_after_final(run: str):
+    """Check that a `runs stream` of a final run exits 0 and ends with one
+    `completed` line for `run`, with only property, sample or verdict lines
+    before it. A run that finished recently can still send events."""
+
+    def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+        rows = stream_events(sr.result.stdout)
+        events = [r["event"] for r in rows]
+        completed = rows[-1:] == [{"event": "completed", "run_id": run}]
+        others = set(events[:-1]) - {"property", "sample", "verdict"}
+        return (
+            sr.result.ok and completed and not others,
+            f"exit={sr.result.returncode}, events={dict(Counter(events))}, "
+            f"ends with completed={completed}, unexpected={sorted(others)}",
+        )
+
+    return chk
+
+
 def _cast_text(cast: str | None) -> str:
     """Everything a recording's terminal received, redraws included. Line 1
     of an asciicast is its header, and each other line is `[time, type,
@@ -3139,10 +3158,11 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
         Story(
             "runs-stream-final",
             "Stream a run that is already final",
-            "I start the property stream on a completed run; I want it to end at once, not hang.",
-            "stdout is one `completed <run id>` line. Exit 0.",
+            "I start the property stream on a completed run; I want it to end soon, not hang.",
+            "stdout can hold some last `property`, `sample` or `verdict` lines, then "
+            "one `completed <run id>` line. Exit 0.",
             ["runs", "stream", d.success],
-            succeeds_with(f"completed  {d.success}"),
+            stream_after_final(d.success),
             json_capable=False,
         ),
         Story(
@@ -3807,10 +3827,11 @@ def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
         Story(
             "runs-stream-run-final",
             "Stream my run after it finished",
-            "My run is finished, and I start its property stream; I want it to end at once.",
-            "stdout is one `completed <run id>` line. Exit 0.",
+            "My run is finished, and I start its property stream; I want it to end soon.",
+            "stdout can hold some last `property`, `sample` or `verdict` lines, then "
+            "one `completed <run id>` line. Exit 0.",
             ["runs", "stream", x.run],
-            succeeds_with(f"completed  {x.run}"),
+            stream_after_final(x.run),
             json_capable=False,
         ),
     ]

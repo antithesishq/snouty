@@ -592,6 +592,21 @@ class GalleryRunHelpers(unittest.TestCase):
         run = gallery.StoryRun(story, failed, None)
         self.assertFalse(story.check(run, gallery.Registry())[0])
 
+    def test_final_stream_story_allows_last_events_before_completed(self):
+        story = self.story("runs-stream-run-final")
+        for name, stdout, code, ok in [
+            ("completed only", f"completed  {self.RUN}\n", 0, True),
+            ("last events", self.transcript(), 0, True),
+            ("not completed", self.transcript(last="verdict    p2  failed"), 0, False),
+            ("another run", self.transcript(last="completed  other-run"), 0, False),
+            ("unknown event", f"unknown  X  {{}}\ncompleted  {self.RUN}\n", 0, False),
+            ("failed", self.transcript(), 1, False),
+        ]:
+            with self.subTest(name):
+                result = gallery.Result([], stdout, "", code)
+                run = gallery.StoryRun(story, result, None)
+                self.assertEqual(story.check(run, gallery.Registry())[0], ok)
+
     def test_json_stream_story_reads_ndjson_and_stderr(self):
         rows = [
             {"event": "property", "property_id": "p1", "name": self.BUG},

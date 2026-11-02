@@ -1,6 +1,6 @@
 # snouty runs usage
 #
-# Show the usage hours of runs, newest first (`GET /api/v0/usage`). With
+# Show the compute hours of runs, newest first (`GET /api/v0/usage`). With
 # --rollup, show the total of each day, week, or month instead. Times and
 # periods use the local timezone.
 
@@ -21,9 +21,8 @@ stderr 'expected a date \(2026-10-01\), a time as snouty prints it'
 env TZ=Asia/Tokyo
 
 # Without --rollup, each run is one row: its run id, the start and end of its
-# usage in the local timezone, and its hours to the minute, as `Xh Ym`, with
-# the minutes padded to two places so that the columns line up. The
-# command reads every page until the limit.
+# usage in the local timezone, and its compute hours. The command reads every
+# page until the limit.
 mock-runs-server
 snouty runs usage
 stdout '^(RUN ID +STARTED +ENDED +COMPUTE HOURS|No usage found\.)$'

@@ -7,7 +7,9 @@ Each log line has a timestamp, a stream (stdout or stderr), and its text. The wh
 
 Each line prints as `timestamp [stream] line`.
 
+The timestamp is in the local timezone. Timestamps inside the line text stay as the build tools wrote them.
+
 Examples:
   runs_build_logs {"run_id": "<run_id>"}
 
-With `json`, each log line prints as one JSON object on its own line.
+With `json`, each log line prints as one JSON object on its own line, with its timestamp in RFC 3339 in UTC.

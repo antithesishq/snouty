@@ -14,7 +14,9 @@
 //! in that order); fractional components like `1.5h` are rejected, since the
 //! bare-minutes form already covers that.
 
-use chrono::{DateTime, FixedOffset, Local, TimeZone, Utc};
+use chrono::{
+    DateTime, Local, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Utc,
+};
 
 use std::error::Error;
 use std::fmt;
@@ -250,46 +252,81 @@ fn split_unit(s: &str, unit: char) -> Option<(u64, &str)> {
     Some((number.parse().ok()?, &rest[unit.len_utf8()..]))
 }
 
-/// Format an absolute timestamp in the user's local timezone, without a
-/// timezone suffix, for dense output such as build-log lines. Example:
+/// The form of a timestamp that snouty prints, and that
+/// [`parse_timestamp_arg`] reads back.
+const DISPLAY_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
+
+/// Writes `time` as the local wall time, without the zone, such as
 /// `2026-05-27 08:25:13`.
-pub(crate) fn format_local(dt: DateTime<Utc>) -> String {
-    format_dense(dt.with_timezone(&Local).fixed_offset())
+pub(crate) fn format_timestamp_for_display(time: DateTime<Utc>) -> String {
+    time.with_timezone(&Local)
+        .format(DISPLAY_FORMAT)
+        .to_string()
 }
 
-/// [`format_local`] for a timestamp already in the time zone to show.
-pub(crate) fn format_dense(dt: DateTime<FixedOffset>) -> String {
-    dt.format("%Y-%m-%d %H:%M:%S").to_string()
+/// [`format_timestamp_for_display`] for an RFC 3339 string from the server.
+/// Returns the string as it is when it does not parse.
+pub(crate) fn format_rfc3339_for_display(raw: &str) -> String {
+    DateTime::parse_from_rfc3339(raw).map_or_else(
+        |_| raw.to_string(),
+        |time| format_timestamp_for_display(time.to_utc()),
+    )
 }
 
-/// Format an absolute timestamp in the user's local timezone with its UTC
-/// offset, a form `--created-after`/`--created-before` read back as the same
-/// instant. Example: `2026-05-27 08:25:13 -07:00`.
-pub(crate) fn format_local_with_offset(dt: DateTime<Utc>) -> String {
-    format_with_offset(&dt.with_timezone(&Local))
+/// Reads a timestamp argument: a date (the start of that day), a time as
+/// snouty prints it or with a `T`, or an RFC 3339 time. A value without an
+/// offset is a local wall time. A wall time that a clock change skips is an
+/// error.
+pub(crate) fn parse_timestamp_arg(text: &str) -> Result<DateTime<Utc>, String> {
+    if let Ok(time) = text.parse() {
+        return Ok(time);
+    }
+    if let Ok(date) = NaiveDate::parse_from_str(text, "%Y-%m-%d") {
+        return Ok(start_of_local_calendar_day(date));
+    }
+    let wall_time = NaiveDateTime::parse_from_str(text, DISPLAY_FORMAT)
+        // `NaiveDateTime`'s own parser reads the `T` form, and a fraction.
+        .or_else(|_| text.parse())
+        .map_err(|_| {
+            "expected a date (2026-10-01), a time as snouty prints it \
+             (2026-10-01 12:00:00), or an RFC 3339 time (2026-10-01T12:00:00Z)"
+                .to_string()
+        })?;
+    instant_of_wall_time(wall_time).ok_or_else(|| {
+        format!("{text} does not exist in the local timezone (a clock change skips it)")
+    })
 }
 
-/// [`format_local_with_offset`] for a timestamp already in its timezone.
-fn format_with_offset<Tz: TimeZone>(dt: &DateTime<Tz>) -> String
-where
-    Tz::Offset: fmt::Display,
-{
-    dt.format("%Y-%m-%d %H:%M:%S %:z").to_string()
+/// The date of the local calendar day that holds `instant`.
+pub(crate) fn local_calendar_date(instant: DateTime<Utc>) -> NaiveDate {
+    instant.with_timezone(&Local).date_naive()
 }
 
-/// Reformat an RFC 3339 timestamp string into the local, suffix-less format.
-/// Falls back to the original string if it can't be parsed.
-pub(crate) fn format_local_str(raw: &str) -> String {
-    match DateTime::parse_from_rfc3339(raw) {
-        Ok(dt) => format_local(dt.with_timezone(&Utc)),
-        Err(_) => raw.to_string(),
+/// The first instant of the local calendar day `date`.
+pub(crate) fn start_of_local_calendar_day(date: NaiveDate) -> DateTime<Utc> {
+    // A few zones skip midnight: the day then starts at its first minute that
+    // exists.
+    (0..24 * 60)
+        .find_map(|minute| {
+            instant_of_wall_time(date.and_time(NaiveTime::MIN) + TimeDelta::minutes(minute))
+        })
+        .expect("a calendar day has a minute that exists")
+}
+
+/// The instant at which the local clock shows `wall_time`, or `None` when a
+/// clock change skips it.
+fn instant_of_wall_time(wall_time: NaiveDateTime) -> Option<DateTime<Utc>> {
+    match Local.from_local_datetime(&wall_time) {
+        LocalResult::Single(time) => Some(time.to_utc()),
+        // A clock change shows the time twice: take the earlier instant.
+        LocalResult::Ambiguous(a, b) => Some(a.min(b).to_utc()),
+        LocalResult::None => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::FixedOffset;
 
     fn minutes(s: &str) -> f64 {
         s.parse::<HumanDuration>().unwrap().minutes()
@@ -482,34 +519,44 @@ mod tests {
         );
     }
 
-    /// A timestamp `runs show` prints parses back, as `--created-after` and
-    /// `--created-before` parse it, to the same instant, under any UTC offset
-    /// of whole minutes (every zone in use today).
+    #[test]
+    fn an_unparsable_rfc3339_string_prints_as_it_is() {
+        assert_eq!(format_rfc3339_for_display("not a time"), "not a time");
+    }
+
+    /// A timestamp that snouty prints reads back as the same instant, in the
+    /// space form, in the `T` form, and as RFC 3339, in the timezone of the
+    /// test process. A date reads as the start of its day.
     #[hegel::test]
-    fn format_with_offset_round_trips(tc: hegel::TestCase) {
-        // 1970 through 2100, at whole seconds as the format prints them.
+    fn parse_timestamp_arg_reads_back_what_snouty_prints(tc: hegel::TestCase) {
         let seconds = tc.draw(
             generators::integers::<i64>()
                 .min_value(0)
-                .max_value(4_102_444_800),
+                .max_value(250_000_000_000),
         );
-        // UTC-12:00 through UTC+14:00, the span of real zones.
-        let minutes = tc.draw(
-            generators::integers::<i32>()
-                .min_value(-12 * 60)
-                .max_value(14 * 60),
+        let time = DateTime::from_timestamp(seconds, 0).unwrap();
+        let printed = format_timestamp_for_display(time);
+        // A wall time that a clock change shows twice reads as the earlier
+        // instant, so `expected` is `time` or an instant before it.
+        let expected = parse_timestamp_arg(&printed).unwrap();
+        assert!(expected <= time, "{printed}");
+        assert_eq!(format_timestamp_for_display(expected), printed);
+        let t_form = printed.replace(' ', "T");
+        assert_eq!(parse_timestamp_arg(&t_form), Ok(expected), "{printed}");
+        assert_eq!(parse_timestamp_arg(&time.to_rfc3339()), Ok(time));
+        let date = local_calendar_date(time);
+        assert_eq!(
+            parse_timestamp_arg(&date.format("%Y-%m-%d").to_string()),
+            Ok(start_of_local_calendar_day(date))
         );
-        let offset = FixedOffset::east_opt(minutes * 60).expect("in range");
-        let dt = DateTime::from_timestamp(seconds, 0).expect("in range");
-        let printed = format_with_offset(&dt.with_timezone(&offset));
-        let parsed: DateTime<Utc> = printed.parse().expect("the printed form must parse");
-        assert_eq!(parsed, dt, "{printed:?}");
     }
 
-    /// Parsing arbitrary text must never panic — it returns `Ok` or
-    /// `ParseDurationError`, but the `from_str`/`from_minutes`/`parse_units`
-    /// path (with its `as u64` casts and `checked_*` arithmetic) is the kind of
-    /// code that overflows or indexes out of bounds on hostile input.
+    #[test]
+    fn parse_timestamp_arg_names_the_forms_it_accepts() {
+        let err = parse_timestamp_arg("2026-10-01 12:00").unwrap_err();
+        assert!(err.contains("2026-10-01 12:00:00"), "{err}");
+    }
+
     #[hegel::test]
     fn parse_never_panics(tc: hegel::TestCase) {
         let s = tc.draw(generators::text());

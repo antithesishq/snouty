@@ -2384,6 +2384,19 @@ def logs_non_empty(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     return (n > 0, f"{n} log lines")
 
 
+# A log line's leading time, in the form snouty prints it: no zone.
+_LINE_TIME = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \[", re.MULTILINE)
+
+
+def build_logs_with_times(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+    """Log lines, and each line starts with a well-formed time. Every log
+    line counts, so a line whose time has another form fails the check."""
+    ok, detail = logs_non_empty(sr, reg)
+    timed = len(_LINE_TIME.findall(sr.result.stdout))
+    lines = len(sr.rows or [])
+    return (ok and timed == lines, f"{detail}, {timed}/{lines} lines with a time")
+
+
 def logs_with_footer(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     """Log lines, then the footer that marks the end of the stream."""
     n = len(sr.rows or [])
@@ -2670,14 +2683,6 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "At most 6 rows, newest month first; START and END are the first and last days of each month.",
             ["runs", "usage", "--rollup", "month", "-n", "6"],
             rows_at_most(6),
-        ),
-        Story(
-            "runs-usage--utc",
-            "Report usage in UTC",
-            "I share usage numbers with a team in other timezones, so I want UTC times.",
-            "Up to 5 runs; STARTED/ENDED are UTC times, and the --json times end in `Z`.",
-            ["runs", "usage", "--utc", "-n", "5"],
-            rows_at_most(5),
         ),
         Story(
             "runs-usage--window",
@@ -3112,9 +3117,10 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-build-logs",
             "Stream the build logs to see how a run was set up",
             "I want to see the build/setup logs for a run.",
-            "At least one build-log line is streamed.",
+            "At least one build-log line is streamed, and each line starts with its local "
+            "time.",
             ["runs", "build-logs", d.success],
-            logs_non_empty,
+            build_logs_with_times,
         ),
         Story(
             "runs-stream-final",
@@ -4075,7 +4081,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
         _help_story(
             "help-runs-build-logs",
             "Learn what build-logs streams",
-            "I want the help to tell me this is the build/setup log and the line format.",
+            "I want the help to tell me this is the build/setup log, the line format, and the "
+            "timezone of the timestamps.",
             ["runs", "build-logs"],
             ["runs", "build-logs", s],
         ),

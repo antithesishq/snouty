@@ -61,7 +61,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::render::sanitize;
-use crate::time::format_local_str;
+use crate::time::format_rfc3339_for_display;
 use crate::vtime::VTime;
 
 /// The vtime cell is a fixed character budget, truncated — never rounded — so
@@ -491,7 +491,7 @@ impl EventStreamRenderer {
             {
                 // `stream` is optional in the build-log schema.
                 let stream = entry["stream"].as_str().unwrap_or("out");
-                log::render_build_log(out, &format_local_str(timestamp), stream, text)?;
+                log::render_build_log(out, &format_rfc3339_for_display(timestamp), stream, text)?;
             } else {
                 write!(out, "{}", sanitize(&entry.to_string()))?;
             }

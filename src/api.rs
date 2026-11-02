@@ -1545,7 +1545,10 @@ fn redact_sensitive_value(name: &HeaderName, value: &str) -> &'static str {
 pub struct RunsFilterOptions {
     pub status: Option<RunStatus>,
     pub launcher: Option<String>,
+    /// Runs created after this time. The server leaves out a run created at
+    /// this time (observed on the antithesis-orbitinghail tenant, release 67).
     pub created_after: Option<chrono::DateTime<chrono::Utc>>,
+    /// Runs created at or before this time, on the same tenant.
     pub created_before: Option<chrono::DateTime<chrono::Utc>>,
 }
 

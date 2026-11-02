@@ -953,6 +953,13 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
     let after = mock_query_param(query, "after");
     let status_filter = mock_query_param(query, "status");
     let launcher_filter = mock_query_param(query, "launcher");
+    // As the server does: `created_after` excludes a run created at that
+    // time, and `created_before` includes it.
+    let time = |key| {
+        mock_query_param(query, key)
+            .map(|t| chrono::DateTime::parse_from_rfc3339(&t).expect("an RFC 3339 time"))
+    };
+    let (created_after, created_before) = (time("created_after"), time("created_before"));
 
     // Determine which runs to consider based on cursor position.
     let start = match after.as_deref() {
@@ -969,6 +976,12 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
         }
         if let Some(f) = launcher_filter.as_deref()
             && launcher != f
+        {
+            continue;
+        }
+        let created_at = chrono::DateTime::parse_from_rfc3339(created).unwrap();
+        if created_after.is_some_and(|after| created_at <= after)
+            || created_before.is_some_and(|before| created_at > before)
         {
             continue;
         }

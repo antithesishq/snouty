@@ -5,10 +5,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::num::NonZeroU64;
 
-use chrono::{
-    DateTime, Datelike, Days, FixedOffset, Local, Months, NaiveDate, NaiveTime, TimeDelta,
-    TimeZone, Utc,
-};
+use chrono::{DateTime, Datelike, Days, Months, NaiveDate, TimeDelta, Utc};
 use clap::ValueEnum;
 use color_eyre::eyre::Result;
 use futures_util::TryStreamExt;
@@ -22,7 +19,7 @@ use crate::error::user_error;
 use crate::render::{OutputOptions, sanitize};
 use crate::settings::Settings;
 use crate::table::{Align, Column, Table};
-use crate::time::format_dense;
+use crate::time::{format_timestamp_for_display, local_calendar_date, start_of_local_calendar_day};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Rollup {
@@ -31,82 +28,23 @@ pub enum Rollup {
     Month,
 }
 
-/// The time zone of the output: of the times, and of the periods that runs
-/// are totaled in.
-#[derive(Clone, Copy)]
-enum Zone {
-    Local,
-    Utc,
-}
-
-impl Zone {
-    fn time(self, time: DateTime<Utc>) -> DateTime<FixedOffset> {
-        match self {
-            Zone::Local => time.with_timezone(&Local).fixed_offset(),
-            Zone::Utc => time.fixed_offset(),
-        }
-    }
-
-    /// The start of `date`. Where a clock change skips local midnight, this
-    /// is UTC midnight, which is off by at most the size of the change.
-    fn midnight(self, date: NaiveDate) -> DateTime<Utc> {
-        let midnight = date.and_time(NaiveTime::MIN);
-        match self {
-            Zone::Local => Local.from_local_datetime(&midnight).earliest(),
-            Zone::Utc => None,
-        }
-        .map_or(midnight.and_utc(), |time| time.to_utc())
-    }
-}
-
-/// A `--after` or `--before` value: a date, which means the start of that
-/// day in the output time zone, or an RFC 3339 time.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum TimeBound {
-    Date(NaiveDate),
-    Time(DateTime<Utc>),
-}
-
-impl std::str::FromStr for TimeBound {
-    type Err = String;
-
-    fn from_str(text: &str) -> Result<Self, Self::Err> {
-        if let Ok(date) = NaiveDate::parse_from_str(text, "%Y-%m-%d") {
-            return Ok(TimeBound::Date(date));
-        }
-        text.parse().map(TimeBound::Time).map_err(|_| {
-            "expected a date such as 2026-10-01, or an RFC 3339 time such as \
-             2026-10-01T12:00:00Z"
-                .to_string()
-        })
-    }
-}
-
-impl TimeBound {
-    fn resolve(self, zone: Zone) -> DateTime<Utc> {
-        match self {
-            TimeBound::Date(date) => zone.midnight(date),
-            TimeBound::Time(time) => time,
-        }
-    }
-}
-
-/// The usage entry of a run, with its times in the output time zone.
+/// The usage entry of a run, as a row of the output. The JSON keeps the
+/// fields in the order of the API schema.
 #[derive(Serialize)]
-struct ZonedUsageEntry {
+struct UsageRow {
     run_id: String,
     hours: f64,
-    start_time: DateTime<FixedOffset>,
-    end_time: DateTime<FixedOffset>,
+    start_time: DateTime<Utc>,
+    end_time: DateTime<Utc>,
 }
 
-impl ZonedUsageEntry {
-    fn new(entry: UsageEntry, zone: Zone) -> Self {
+impl From<UsageEntry> for UsageRow {
+    fn from(entry: UsageEntry) -> Self {
         Self {
             run_id: entry.run_id,
             hours: entry.hours,
-            start_time: zone.time(entry.start_time),
-            end_time: zone.time(entry.end_time),
+            start_time: entry.start_time,
+            end_time: entry.end_time,
         }
     }
 }
@@ -200,12 +138,8 @@ pub(super) async fn cmd_runs_usage(
         rollup,
         after,
         before,
-        utc,
         limit,
     } = args;
-    let zone = if utc { Zone::Utc } else { Zone::Local };
-    let after = after.map(|bound| bound.resolve(zone));
-    let before = before.map(|bound| bound.resolve(zone));
     let selection = match (after, before, limit) {
         (Some(_), Some(_), Some(_)) => {
             return Err(user_error(
@@ -233,10 +167,7 @@ pub(super) async fn cmd_runs_usage(
                     .await?
             }
         };
-        let entries: Vec<ZonedUsageEntry> = entries
-            .into_iter()
-            .map(|entry| ZonedUsageEntry::new(entry, zone))
-            .collect();
+        let entries: Vec<UsageRow> = entries.into_iter().map(UsageRow::from).collect();
         return print_rows(
             &entries,
             json,
@@ -249,28 +180,28 @@ pub(super) async fn cmd_runs_usage(
     // A run counts in the period in which it ended, as the usage summary and
     // the usage cap count it. `before` is exclusive, so the newest period is
     // the one that holds the instant before it.
-    let date = |time: DateTime<Utc>| zone.time(time).date_naive();
-    let newest = date(before.map_or_else(Utc::now, |time| time - TimeDelta::nanoseconds(1)));
+    let newest =
+        local_calendar_date(before.map_or_else(Utc::now, |time| time - TimeDelta::nanoseconds(1)));
     let ends = match selection {
         Selection::Newest(limit) => periods_back(rollup, newest, FIRST_DAY, Some(limit)),
-        Selection::Oldest(after, limit) => periods_forward(rollup, date(after), newest, limit),
-        Selection::All(after) => periods_back(rollup, newest, date(after), None),
+        Selection::Oldest(after, limit) => {
+            periods_forward(rollup, local_calendar_date(after), newest, limit)
+        }
+        Selection::All(after) => periods_back(rollup, newest, local_calendar_date(after), None),
     };
     let mut totals: BTreeMap<NaiveDate, (u64, f64)> =
         ends.iter().map(|end| (*end, (0, 0.0))).collect();
     // One window of end times holds every period, so the page order does not
     // matter.
     if let (Some(newest_end), Some(oldest_end)) = (ends.first(), ends.last()) {
-        let start = zone.midnight(rollup.period_start(*oldest_end));
-        let end = zone.midnight(*newest_end + Days::new(1));
+        let start = start_of_local_calendar_day(rollup.period_start(*oldest_end));
+        let end = start_of_local_calendar_day(*newest_end + Days::new(1));
         let after = after.map_or(start, |time| time.max(start));
         let before = before.map_or(end, |time| time.min(end));
         let entries = api.stream_usage(Some(after), Some(before), None);
         let mut entries = std::pin::pin!(entries);
         while let Some(entry) = entries.try_next().await? {
-            let date = rollup.period_end(date(entry.end_time));
-            // The midnight of a skipped clock change can let in a run from
-            // just outside the window, which has no period here.
+            let date = rollup.period_end(local_calendar_date(entry.end_time));
             if let Some((runs, hours)) = totals.get_mut(&date) {
                 *runs += 1;
                 *hours += entry.hours;
@@ -391,14 +322,14 @@ fn format_hours(hours: f64) -> String {
     format!("{hours:.1}")
 }
 
-fn render_usage_table(entries: &[ZonedUsageEntry], width: usize) -> String {
+fn render_usage_table(entries: &[UsageRow], width: usize) -> String {
     let rows = entries
         .iter()
         .map(|entry| {
             vec![
                 sanitize(&entry.run_id),
-                format_dense(entry.start_time),
-                format_dense(entry.end_time),
+                format_timestamp_for_display(entry.start_time),
+                format_timestamp_for_display(entry.end_time),
                 format_hours(entry.hours),
             ]
         })
@@ -470,26 +401,6 @@ mod tests {
             Rollup::Week.period_end(date("2026-10-25")),
             date("2026-10-25")
         );
-    }
-
-    /// A date parses as a date, and an RFC 3339 time as the same instant.
-    #[hegel::test]
-    fn time_bound_parses_dates_and_times(tc: hegel::TestCase) {
-        let days = tc.draw(generators::integers::<u64>().max_value(3_000_000));
-        let date = date("0001-01-01") + Days::new(days);
-        let text = date.format("%Y-%m-%d").to_string();
-        assert_eq!(text.parse::<TimeBound>(), Ok(TimeBound::Date(date)));
-        let seconds = tc.draw(
-            generators::integers::<i64>()
-                .min_value(0)
-                .max_value(250_000_000_000),
-        );
-        let time = DateTime::from_timestamp(seconds, 0).unwrap();
-        assert_eq!(
-            time.to_rfc3339().parse::<TimeBound>(),
-            Ok(TimeBound::Time(time))
-        );
-        assert!("2026-10-01 12:00".parse::<TimeBound>().is_err());
     }
 
     fn dates(texts: &[&str]) -> Vec<NaiveDate> {

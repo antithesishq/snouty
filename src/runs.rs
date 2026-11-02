@@ -35,7 +35,7 @@ use crate::render::{
 use crate::settings::Settings;
 use crate::stdio;
 use crate::table::{Align, Column, Fit, Table};
-use crate::time::{HumanDuration, format_local_with_offset};
+use crate::time::{HumanDuration, format_timestamp_for_display};
 use crate::vtime::VTime;
 
 mod event_search;
@@ -1363,13 +1363,13 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
     }
 
     rows.push(("Status", run.status_label()));
-    rows.push(("Created", format_local_with_offset(run.created_at)));
+    rows.push(("Created", format_timestamp_for_display(run.created_at)));
 
     if let Some(t) = run.started_at {
-        rows.push(("Started", format_local_with_offset(t)));
+        rows.push(("Started", format_timestamp_for_display(t)));
     }
     if let Some(t) = run.completed_at {
-        rows.push(("Completed", format_local_with_offset(t)));
+        rows.push(("Completed", format_timestamp_for_display(t)));
     }
 
     // The JSON output keeps `antithesis.duration`, which the server still
@@ -1462,7 +1462,7 @@ fn render_runs_detail(runs: &[RunSummary]) -> String {
             let mut rows: Vec<(&str, String)> = vec![
                 ("Run ID", run.run_id.clone()),
                 ("Status", run.status.to_string()),
-                ("Created", format_local_with_offset(run.created_at)),
+                ("Created", format_timestamp_for_display(run.created_at)),
                 ("Launcher", run.launcher.clone()),
             ];
             if let Some(name) = run.test_name() {

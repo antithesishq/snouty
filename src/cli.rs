@@ -20,9 +20,11 @@ use crate::error::user_error;
 use crate::features::{self, Feature};
 use crate::help::{self, Attach};
 use crate::params::MAX_SETUP_TIMEOUT_MINUTES;
-use crate::runs::usage::{Rollup, TimeBound};
+use crate::runs::usage::Rollup;
 use crate::stdio;
-use crate::time::{BareUnit, DURATION_EXAMPLES, HumanDuration, duration_error, duration_help};
+use crate::time::{
+    BareUnit, DURATION_EXAMPLES, HumanDuration, duration_error, duration_help, parse_timestamp_arg,
+};
 use crate::vtime::VTime;
 
 pub(crate) mod tree;
@@ -990,19 +992,15 @@ pub struct RunsUsageArgs {
     #[arg(long, value_enum)]
     pub rollup: Option<Rollup>,
 
-    /// Only show runs that ended at or after this date (e.g. 2026-10-01) or
-    /// RFC 3339 time
-    #[arg(long)]
-    pub after: Option<TimeBound>,
+    /// Only show runs that ended at or after this date (e.g. 2026-10-01),
+    /// time (e.g. 2026-10-01 12:00:00) or RFC 3339 time
+    #[arg(long, value_parser = parse_timestamp_arg)]
+    pub after: Option<DateTime<Utc>>,
 
-    /// Only show runs that ended before this date (e.g. 2026-11-01) or RFC
-    /// 3339 time
-    #[arg(long)]
-    pub before: Option<TimeBound>,
-
-    /// Show times and periods in UTC instead of the local timezone
-    #[arg(long)]
-    pub utc: bool,
+    /// Only show runs that ended before this date (e.g. 2026-11-01), time
+    /// (e.g. 2026-11-01 12:00:00) or RFC 3339 time
+    #[arg(long, value_parser = parse_timestamp_arg)]
+    pub before: Option<DateTime<Utc>>,
 
     /// Maximum number of rows to display: runs, or periods with a rollup
     /// [default: 10; not allowed with both an after and a before time]
@@ -1071,12 +1069,14 @@ pub struct RunsListArgs {
     #[arg(short, long)]
     pub launcher: Option<String>,
 
-    /// Only show runs created after this timestamp (ISO 8601)
-    #[arg(long)]
+    /// Only show runs created after this date (e.g. 2026-10-01), time
+    /// (e.g. 2026-10-01 12:00:00) or RFC 3339 time
+    #[arg(long, value_parser = parse_timestamp_arg)]
     pub created_after: Option<DateTime<Utc>>,
 
-    /// Only show runs created before this timestamp (ISO 8601)
-    #[arg(long)]
+    /// Only show runs created at or before this date (e.g. 2026-11-01), time
+    /// (e.g. 2026-11-01 12:00:00) or RFC 3339 time
+    #[arg(long, value_parser = parse_timestamp_arg)]
     pub created_before: Option<DateTime<Utc>>,
 
     /// Maximum number of runs to display

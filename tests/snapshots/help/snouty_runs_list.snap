@@ -7,8 +7,9 @@ Each run has its ID, status, creation time, launcher, and test name. For a run
 with no test name, the name is the first line of its description.
 
 Columns: RUN ID, STATUS, CREATED, LAUNCHER, RUN. RUN is the test name, or `-`
-for a run with no test name and no description. Use --detail for the full
-description.
+for a run with no test name and no description. CREATED is the age of the run,
+such as `2h ago`. Use --detail for the full description and the creation time,
+which is in the local timezone.
 
 Pass a run's ID to `runs show` for its details, to `runs properties` for its
 property results, or to `runs wait` to wait until it is ready or complete.
@@ -17,7 +18,8 @@ Examples:
   snouty runs list --status completed --limit 5
 
 Add --json for machine-readable output. Each run prints as one JSON object on
-its own line, in the order the server returns them:
+its own line, in the order the server returns them. Its times are RFC 3339 in
+UTC:
   snouty --json runs list | jq -r .run_id
 
 Usage: snouty runs list [OPTIONS]
@@ -33,10 +35,12 @@ Options:
           Filter by launcher name
 
       --created-after <CREATED_AFTER>
-          Only show runs created after this timestamp (ISO 8601)
+          Only show runs created after this date (e.g. 2026-10-01), time (e.g.
+          2026-10-01 12:00:00) or RFC 3339 time
 
       --created-before <CREATED_BEFORE>
-          Only show runs created before this timestamp (ISO 8601)
+          Only show runs created at or before this date (e.g. 2026-11-01), time
+          (e.g. 2026-11-01 12:00:00) or RFC 3339 time
 
   -n, --limit <LIMIT>
           Maximum number of runs to display

@@ -242,7 +242,7 @@ impl FromIterator<KVPair> for Params {
 
 // A key suffix, not a file extension.
 #[allow(clippy::case_sensitive_file_extension_comparisons)]
-fn is_sensitive_key(key: &str) -> bool {
+pub(crate) fn is_sensitive_key(key: &str) -> bool {
     key.ends_with(".token") || key == ANT_REPORT_RECIPIENTS
 }
 

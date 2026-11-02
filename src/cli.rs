@@ -345,7 +345,14 @@ pub fn parse() -> Cli {
             let _ = write!(stdio::stdout(), "{err}");
             std::process::exit(1)
         }
-        // --help and --version, and every error of the CLI.
+        // The terminal would re-wrap a long error mid-word, so wrap it here.
+        // anstream drops the colors when clap would not color.
+        Err(err) if err.use_stderr() => {
+            let rendered = crate::render::wrap_if_tty(&err.render().ansi().to_string());
+            let _ = write!(anstream::stderr(), "{rendered}");
+            std::process::exit(err.exit_code())
+        }
+        // --help and --version.
         Err(err) => err.exit(),
     }
 }

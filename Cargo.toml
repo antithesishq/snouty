@@ -39,7 +39,7 @@ repository = "https://github.com/antithesishq/snouty"
 default-run = "snouty"
 
 [dependencies]
-# Writes a clap error with colors only where clap would color it.
+# Writes clap errors with clap's color detection.
 anstream = "1"
 base64 = "0.23"
 bytesize = "2"

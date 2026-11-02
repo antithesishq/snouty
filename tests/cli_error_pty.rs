@@ -1,6 +1,5 @@
-//! A clap error wraps only on a terminal, so this runs snouty on a real
-//! pseudo-terminal. The spec-test harness has no TTY: there, the error keeps
-//! whole lines (covered by specs/launch.txt).
+//! A clap error wraps only on a terminal, so this runs snouty on a
+//! pseudo-terminal. specs/launch.txt covers the piped case.
 
 #![cfg(unix)]
 

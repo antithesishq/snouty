@@ -982,7 +982,7 @@ pub enum RunsCommands {
     /// Query events with the event-set DSL
     Search(RunsSearchArgs),
 
-    /// Show the core-hours that recent runs used
+    /// Show the compute hours that recent runs used
     Usage(RunsUsageArgs),
 }
 

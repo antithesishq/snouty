@@ -16,7 +16,7 @@ Alternatively, pass a pre-built config image directly:
 
 {{ t("--max-compute-hours")? }} controls how many compute hours can be spent fuzzing, up to 1000 compute hours. One compute hour is one core running for one hour. The default is 48 compute hours. Requires tenant version 66 or newer.
 
-The tier ({{ t("--performance-tier")? }}) sets how many cores the run uses: 48 on standard (the default), 96 on fast and 192 on turbo. The run fuzzes for max compute hours ÷ cores hours, after setup. For example, 24 compute hours on standard (48 cores) is half an hour of fuzzing, plus the time that setup takes. A faster tier spends the same budget on more cores, so it fuzzes for less wall-clock time.
+The tier ({{ t("--performance-tier")? }}) sets how many cores the run uses: 48 on standard (the default), 96 on fast and 192 on turbo. The run fuzzes for its max compute hours divided by the tier's cores, after setup. For example, 24 compute hours on standard (48 cores) is half an hour of fuzzing, plus the time that setup takes. A faster tier spends the same budget on more cores, so it fuzzes for less wall-clock time.
 
 The minimum budget is a quarter of the tier's cores: 12 compute hours on standard, 24 on fast and 48 on turbo.
 

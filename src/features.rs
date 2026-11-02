@@ -12,9 +12,9 @@
 //! go away, in any release. Nothing behind this gate is covered by whatever
 //! stability the rest of the CLI has.
 //!
-//! A gated command needs a [`Feature`] variant, a clap `hide` attribute, and a
-//! check before dispatch: a hidden subcommand is still callable, and
-//! `clap_complete` still lists it.
+//! A gated command or flag needs a [`Feature`] variant, a clap `hide`
+//! attribute, and a check before dispatch: a hidden subcommand or flag is
+//! still callable, and `clap_complete` still lists it.
 //!
 //! Deliberately an environment variable and not a setting. The gate has to be
 //! known before the command line is parsed, because it decides which
@@ -40,6 +40,10 @@ pub enum Feature {
     /// `snouty mcp`, the MCP server. Its tools and their output can still
     /// change.
     Mcp,
+    /// Gates `launch --max-compute-hours`, `launch --setup-timeout` and
+    /// `debug --duration`. While it is off, `launch --duration` is not
+    /// deprecated.
+    Teams,
     /// Stands in for a real feature in tests.
     #[cfg(test)]
     Example,
@@ -59,17 +63,6 @@ impl Display for Feature {
             .to_possible_value()
             .expect("no Feature variant is skipped");
         f.write_str(value.get_name())
-    }
-}
-
-impl Feature {
-    /// The subcommand of `snouty` that the feature gates.
-    pub fn gated_command(self) -> &'static str {
-        match self {
-            Feature::Mcp => "mcp",
-            #[cfg(test)]
-            Feature::Example => "example",
-        }
     }
 }
 

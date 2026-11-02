@@ -10,7 +10,7 @@ release.
 
 Starts a Model Context Protocol server on stdin and stdout. An agent starts
 `snouty mcp` itself and talks to it over the stdio transport. The server stops
-when stdin closes, and the tool calls in progress stop with it.
+when stdin closes.
 
 The tools:
   runs_list        List recent runs

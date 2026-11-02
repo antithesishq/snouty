@@ -326,7 +326,7 @@ To set it up, add the registry to `credHelpers` in `~/.docker/config.json` for D
 }
 ```
 
-The helper uses the same [settings](#settings-files) as snouty in the directory where Docker runs it, including `./.snouty.toml`. As for every command, the helper uses `./.snouty.toml` only after you trust it with `snouty settings trust`, and ignores it after `snouty settings deny`. Until you decide, the helper fails. With `--profile` or `ANTITHESIS_PROFILE`, the helper uses that profile, with its own credential or, if it has none, the default profile's. Otherwise it uses the first profile whose `repository` is on `registry.<tenant>.antithesis.com` and that has its own credential, so log in with that profile. `ANTITHESIS_API_KEY` applies to every profile.
+The helper uses the same [settings](#settings-files) as snouty in the directory where Docker runs it, including `./.snouty.toml`. With `--profile` or `ANTITHESIS_PROFILE`, the helper uses that profile. Otherwise, it uses the first profile whose `repository` is on `registry.<tenant>.antithesis.com`.
 
 The shell script installer and the Nix package install `docker-credential-snouty`, an alias of `snouty`. For another install method, make the alias yourself, in a directory on your `PATH`:
 

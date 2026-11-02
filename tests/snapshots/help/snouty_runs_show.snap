@@ -23,8 +23,8 @@ Examples:
   snouty runs show <run_id> --web
 
 Add --json for machine-readable output. The run prints as one JSON object, with
-its times in RFC 3339 with the local UTC offset. With --web it prints the run
-page URL as {"url": ...} and opens no browser:
+its times in RFC 3339 in UTC. With --web it prints the run page URL as {"url":
+...} and opens no browser:
   snouty --json runs show <run_id> | jq -r .status
 
 Usage: snouty runs show [OPTIONS] <RUN_ID>

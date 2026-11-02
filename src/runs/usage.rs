@@ -19,10 +19,7 @@ use crate::error::user_error;
 use crate::render::{OutputOptions, sanitize};
 use crate::settings::Settings;
 use crate::table::{Align, Column, Table};
-use crate::time::{
-    format_timestamp_for_display, local_calendar_date, serialize_with_local_offset,
-    start_of_local_calendar_day,
-};
+use crate::time::{format_timestamp_for_display, local_calendar_date, start_of_local_calendar_day};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Rollup {
@@ -31,15 +28,13 @@ pub enum Rollup {
     Month,
 }
 
-/// The usage entry of a run, as a row of the output. The JSON shows its times
-/// with the local UTC offset.
+/// The usage entry of a run, as a row of the output. The JSON keeps the
+/// fields in the order of the API schema.
 #[derive(Serialize)]
 struct UsageRow {
     run_id: String,
     hours: f64,
-    #[serde(serialize_with = "serialize_with_local_offset")]
     start_time: DateTime<Utc>,
-    #[serde(serialize_with = "serialize_with_local_offset")]
     end_time: DateTime<Utc>,
 }
 

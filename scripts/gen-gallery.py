@@ -2321,9 +2321,9 @@ def stream_verdict(
 
 
 def stream_after_final(run: str):
-    """A `runs stream` story on a final run: a run that finished recently can
-    still send some events, so any property, sample or verdict lines come
-    before one last `completed` line for `run`."""
+    """Check that a `runs stream` of a final run exits 0 and ends with one
+    `completed` line for `run`, with only property, sample or verdict lines
+    before it. A run that finished recently can still send events."""
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         rows = stream_events(sr.result.stdout)
@@ -3144,10 +3144,11 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
         Story(
             "runs-stream-final",
             "Stream a run that is already final",
-            "I start the property stream on a completed run; I want it to end at once, not hang.",
-            "stdout is one `completed <run id>` line. Exit 0.",
+            "I start the property stream on a completed run; I want it to end soon, not hang.",
+            "stdout can hold some last `property`, `sample` or `verdict` lines, then "
+            "one `completed <run id>` line. Exit 0.",
             ["runs", "stream", d.success],
-            succeeds_with(f"completed  {d.success}"),
+            stream_after_final(d.success),
             json_capable=False,
         ),
         Story(

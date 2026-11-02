@@ -44,8 +44,7 @@ mock-runs-server
 snouty runs stream run-2 --property 27a7cb0b311c8481c4ce12f3347fadbf
 stdout '(?s)\Aproperty +27a7cb0b311c8481c4ce12f3347fadbf +Balance stays nonnegative\nverdict +27a7cb0b311c8481c4ce12f3347fadbf +passed\ncompleted +run\-2\n?\z'
 
-# run-1 is the mock's final fixture, and its stream sends only RUN_FINALIZED.
-# (A real run that finished recently can still send some events first.)
+# run-1 is final in the mock, and its stream sends only RUN_FINALIZED.
 mock-runs-server
 snouty runs stream run-1
 stdout '\Acompleted +run-1\n?\z'

@@ -677,15 +677,10 @@ async fn cmd_runs_properties(
             .iter()
             .any(|p| matches!(p.status(), PropertyStatus::Undetermined))
     {
-        // The note is advice, so a failed lookup only drops it.
-        match api.get_run(run_id).await {
-            Ok(run) if run.value().status.is_terminal() => eprintln!(
-                "\nThe run has ended, but some results are still being processed. \
-                 Run `snouty runs properties {run_id}` again later for the final results."
-            ),
-            Ok(_) => {}
-            Err(err) => debug!("cannot read the run's status: {err}"),
-        }
+        eprintln!(
+            "\nSome properties are still being processed. \
+             Run `snouty runs properties {run_id}` again later for the final results."
+        );
     }
 
     Ok(())

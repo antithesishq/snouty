@@ -102,7 +102,7 @@ impl std::str::FromStr for KVPair {
 
 /// A bare number counts `bare` units and prints a deprecation warning;
 /// [`BareUnit::Refused`] makes it an error. `check` must accept each of
-/// `examples`, which the help and the parse error both show.
+/// `examples`, which the parse error shows, as does [`DurationFlag::help`].
 struct DurationFlag {
     name: &'static str,
     bare: BareUnit,
@@ -633,10 +633,10 @@ pub struct LaunchArgs {
     )]
     pub duration: Option<HumanDuration>,
 
-    /// Compute hours of fuzzing for the run, at most 1000. One compute hour is
-    /// one core running for one hour. The minimum depends on
-    /// --performance-tier: 12 on standard, 24 on fast, 48 on turbo. The server
-    /// default is 48. Requires tenant version 66 or newer.
+    /// Compute hours for the run, setup included, at most 1000. One compute
+    /// hour is one core running for one hour. The minimum depends on
+    /// --performance-tier. The server default is 48. Requires tenant version
+    /// 66 or newer.
     #[arg(
         long,
         value_parser = clap::value_parser!(u16).range(1..=1000),
@@ -648,10 +648,9 @@ pub struct LaunchArgs {
         long,
         value_parser = |v: &str| SETUP_TIMEOUT.parse(v).map(|t| t.seconds() / 60),
         hide = !features::is_enabled(Feature::Teams),
-        help = SETUP_TIMEOUT.help(
-            "Fail the run immediately if setup takes longer than this, in whole minutes \
-             from 1m to 30m. The default is 5m. Requires tenant version 66 or newer.",
-        ),
+        help = "Fail the run immediately if setup takes longer than this, in whole \
+                minutes with a unit, such as 10m, from 1m to 30m. The default is 5m. \
+                Requires tenant version 66 or newer",
     )]
     pub setup_timeout: Option<u64>,
 
@@ -1464,7 +1463,7 @@ mod tests {
         (&["runs", "exec"], EXEC_TIMEOUT),
     ];
 
-    /// Each example of a duration flag, which its help and its error show,
+    /// Each example of a duration flag, which its error shows,
     /// passes the flag's own parser and the parser of its clap arg, so it lies
     /// in the flag's range.
     #[test]

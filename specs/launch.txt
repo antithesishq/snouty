@@ -63,10 +63,11 @@ stderr 'invalid value .48\.5. for .--max-compute-hours'
 
 # --setup-timeout takes h/m units only. A bare number fails at flag-parse
 #    time, because a reader cannot tell its unit. The timeout must be whole
-#    minutes, from 1 to 30.
+#    minutes, from 1 to 30. Piped, the error stays on one line.
 ! snouty launch --launcher basic_test --config-image config:latest --setup-timeout 10
 stderr 'invalid value .10. for .--setup-timeout <SETUP_TIMEOUT>.: must be a whole number with an h, m or s unit'
-stderr 'a bare number is not permitted'
+stderr '^error: .* a bare number is not permitted$'
+stderr '^For more information, try .--help.\.$'
 ! snouty launch --launcher basic_test --config-image config:latest --setup-timeout 90s
 stderr 'must be a whole number of minutes'
 ! snouty launch --launcher basic_test --config-image config:latest --setup-timeout 0m

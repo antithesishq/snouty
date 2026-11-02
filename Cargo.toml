@@ -39,6 +39,8 @@ repository = "https://github.com/antithesishq/snouty"
 default-run = "snouty"
 
 [dependencies]
+# Writes clap errors with clap's color detection.
+anstream = "1"
 base64 = "0.23"
 bytesize = "2"
 # tokio-runtime instead of the default async-std. No mmap: cacache uses it only

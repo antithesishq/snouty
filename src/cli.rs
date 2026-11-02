@@ -7,6 +7,7 @@ use std::num::NonZeroU64;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
+use clap::error::ErrorKind;
 use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
 use crate::api::{
@@ -20,6 +21,7 @@ use crate::error::user_error;
 use crate::features::{self, Feature};
 use crate::help::{self, Attach};
 use crate::params::MAX_SETUP_TIMEOUT_MINUTES;
+use crate::render::{self, CodeSpans};
 use crate::runs::usage::Rollup;
 use crate::stdio;
 use crate::time::{
@@ -345,7 +347,24 @@ pub fn parse() -> Cli {
             let _ = write!(stdio::stdout(), "{err}");
             std::process::exit(1)
         }
-        // --help and --version, and every error of the CLI.
+        // The terminal would re-wrap a long error mid-word, so wrap it here.
+        // Only the `error:` line wraps: clap lays out the usage and tip lines.
+        // It quotes the user's input, so backticks are plain characters.
+        // anstream drops the colors when clap would not color.
+        Err(err)
+            if err.use_stderr()
+                && err.kind() != ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand =>
+        {
+            let rendered = err.render().ansi().to_string();
+            let (message, rest) = rendered.split_once('\n').unwrap_or((&rendered, ""));
+            let message = match render::prose_width() {
+                Some(width) => render::wrap_text(message, width, CodeSpans::Ignore).join("\n"),
+                None => message.to_string(),
+            };
+            let _ = write!(anstream::stderr(), "{message}\n{rest}");
+            std::process::exit(err.exit_code())
+        }
+        // --help, --version, and the help page for a bare `snouty`.
         Err(err) => err.exit(),
     }
 }

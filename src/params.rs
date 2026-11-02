@@ -54,6 +54,10 @@ pub const ANT_FAULT_EXCLUSIONS: &str = "antithesis.fault_exclusions";
 /// type. Observed on `GET /api/v0/runs/{run_id}` (tenant version 64): a run
 /// launched with `run.caller_type=snouty` reports `creator.type` `snouty`.
 pub const RUN_CALLER_TYPE: &str = "run.caller_type";
+pub const RUN_CREATOR_NAME: &str = "run.creator_name";
+pub const RUN_CRON_SCHEDULE: &str = "run.cron_schedule";
+pub const ANT_GITHUB_CALLBACK_URL: &str = "antithesis.integrations.github.callback_url";
+pub const ANT_GITHUB_TOKEN: &str = "antithesis.integrations.github.token";
 /// Prefix of the user-defined `attrs.<name>` parameters the server records on a run.
 pub const ATTRS_PREFIX: &str = "attrs.";
 pub const VCS_REPO_TYPE: &str = "vcs.repo_type";
@@ -62,8 +66,12 @@ pub const VCS_REPO_NAME: &str = "vcs.repo_name";
 pub const VCS_REPO_BRANCH: &str = "vcs.repo_branch";
 pub const VCS_VERSION_ID: &str = "vcs.version_id";
 pub const VCS_VERSION_LINK: &str = "vcs.version_link";
+pub const VCS_PR_ID: &str = "vcs.pr_id";
+pub const VCS_PR_LINK: &str = "vcs.pr_link";
+pub const VCS_PR_OWNER: &str = "vcs.pr_owner";
+pub const VCS_PR_TITLE: &str = "vcs.pr_title";
 /// The `vcs.*` parameters that `runs show` lists, with their labels, in display
-/// order. `launch` detects exactly these.
+/// order.
 /// Observed as strings on `GET /api/v0/runs/{run_id}` (tenant version 63), on runs
 /// launched by the Antithesis GitHub trigger action.
 /// TODO: add `vcs.pr_*` and `vcs.system_name` when a run records them.
@@ -74,6 +82,22 @@ pub const VCS_PARAMS: &[(&str, &str)] = &[
     (VCS_REPO_BRANCH, "Branch"),
     (VCS_VERSION_ID, "Commit"),
     (VCS_VERSION_LINK, "Commit Link"),
+];
+
+/// The `vcs.*` keys that `launch` detects. A user value for any of them turns
+/// the detection off, so that a detected commit link cannot sit next to a
+/// different commit.
+pub const DETECTED_VCS_KEYS: &[&str] = &[
+    VCS_REPO_TYPE,
+    VCS_REPO_OWNER,
+    VCS_REPO_NAME,
+    VCS_REPO_BRANCH,
+    VCS_VERSION_ID,
+    VCS_VERSION_LINK,
+    VCS_PR_ID,
+    VCS_PR_LINK,
+    VCS_PR_OWNER,
+    VCS_PR_TITLE,
 ];
 
 pub const ANT_DEBUGGING_SESSION_ID: &str = "antithesis.debugging.session_id";
@@ -199,6 +223,13 @@ impl Params {
     pub fn merge(&mut self, other: Params) {
         for (key, value) in other.inner {
             self.inner.insert(key, value);
+        }
+    }
+
+    /// Inserts each key of `defaults` that `self` does not hold.
+    pub fn merge_defaults(&mut self, defaults: Params) {
+        for (key, value) in defaults.inner {
+            self.inner.entry(key).or_insert(value);
         }
     }
 

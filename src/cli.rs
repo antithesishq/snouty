@@ -729,9 +729,8 @@ pub struct LaunchArgs {
     #[arg(long)]
     pub fault_exclusions: Option<String>,
 
-    /// Do not record the commit, branch, and repository of the local git
-    /// checkout in run metadata. A pre-built config image (--config-image)
-    /// also turns the detection off
+    /// Do not record the commit, branch, repository and pull request in run
+    /// metadata, and do not set the GitHub commit status
     #[arg(long)]
     pub no_vcs: bool,
 

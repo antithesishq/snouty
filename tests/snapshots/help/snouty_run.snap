@@ -70,9 +70,8 @@ Options:
           pausing is machine-wide, so it still applies. Rust regex syntax: no
           lookaround or backreferences. Max 1024 characters
       --no-vcs
-          Do not record the commit, branch, and repository of the local git
-          checkout in run metadata. A pre-built config image (--config-image)
-          also turns the detection off
+          Do not record the commit, branch, repository and pull request in run
+          metadata, and do not set the GitHub commit status
       --param <PARAMS>
           Extra parameters as key=value pairs (repeatable)
   -h, --help

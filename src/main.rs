@@ -13,6 +13,7 @@ use semver::Version;
 use snouty::OutputOptions;
 use snouty::api::AntithesisApi;
 use snouty::auth::initialize_credential_store;
+use snouty::ci;
 use snouty::cli::{
     Cli, Commands, DebugArgs, LaunchArgs, SettingsCommands, UpdateArgs, UpdateChannel,
     gated_command_error,
@@ -23,16 +24,15 @@ use snouty::container;
 use snouty::docs;
 use snouty::error::user_error;
 use snouty::features::{self, Feature};
-use snouty::git::{self, GitHubRepo};
+use snouty::git;
 use snouty::login::cmd_login;
 use snouty::params::{
     ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_LENGTH_HOURS, ANT_DEBUGGING_RUN_ID,
     ANT_DEBUGGING_SESSION_ID, ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION,
     ANT_EVENT_DESCRIPTION, ANT_FAULT_EXCLUSIONS, ANT_FAULT_TOLERANCE, ANT_FILTER_LOGS_MATCHING,
     ANT_FILTER_SOURCE_MATCHING, ANT_IS_EPHEMERAL, ANT_MAX_COMPUTE_HOURS, ANT_PERFORMANCE_TIER,
-    ANT_REPORT_RECIPIENTS, ANT_SETUP_TIMEOUT, ANT_SOURCE, ANT_TEST_NAME, DuplicateKey, Params,
-    RUN_CALLER_TYPE, VCS_PARAMS, VCS_REPO_BRANCH, VCS_REPO_NAME, VCS_REPO_OWNER, VCS_REPO_TYPE,
-    VCS_VERSION_ID, VCS_VERSION_LINK,
+    ANT_REPORT_RECIPIENTS, ANT_SETUP_TIMEOUT, ANT_SOURCE, ANT_TEST_NAME, DETECTED_VCS_KEYS,
+    DuplicateKey, Params, RUN_CALLER_TYPE,
 };
 use snouty::settings::Settings;
 use snouty::stdio::{self, StreamClosed};
@@ -319,23 +319,52 @@ async fn cmd_launch(
         return Err(user_error("invalid arguments: no parameters provided"));
     }
 
-    // A user value for any detected key turns detection off, so that a
-    // detected commit link cannot point at a different commit. A pre-built
-    // config image has no config dir, and the current directory need not hold
-    // its source, so it turns detection off too.
-    let prebuilt_image = args.config.is_none() && params.contains_key(ANT_CONFIG_IMAGE);
+    let checkout = git::checkout(args.config.as_deref().unwrap_or(Path::new(".")));
+    // A GitHub Actions job can check out a commit other than the one it was
+    // started for. Then the build does not describe the launch.
+    let build = ci::Build::detect().filter(|build| {
+        checkout
+            .as_ref()
+            .is_none_or(|checkout| build.checks_out(&checkout.commit))
+    });
+    let mut commit_status = None;
     if !args.no_vcs
-        && !prebuilt_image
-        && !VCS_PARAMS.iter().any(|&(key, _)| params.contains_key(key))
+        && !DETECTED_VCS_KEYS
+            .iter()
+            .any(|&key| params.contains_key(key))
     {
-        params.merge(detect_vcs_params(
-            args.config.as_deref().unwrap_or(Path::new(".")),
-        ));
+        match &build {
+            // A GitHub Actions build names the commit that it builds, also for
+            // a pre-built config image.
+            Some(build) => {
+                params.merge(build.vcs_params());
+                let test_name = params
+                    .as_map()
+                    .get(ANT_TEST_NAME)
+                    .and_then(serde_json::Value::as_str);
+                // A user value for either GitHub integration param turns off
+                // the automatic callback and the pending status.
+                commit_status = build
+                    .commit_status(test_name)
+                    .filter(|status| params.extend_checked(status.callback_params()).is_ok());
+            }
+            // Outside GitHub Actions, a pre-built config image has no config dir, and the
+            // current directory need not hold its source.
+            None if args.config.is_none() && params.contains_key(ANT_CONFIG_IMAGE) => {}
+            None => {
+                if let Some(checkout) = checkout {
+                    params.merge(ci::Build::from(checkout).vcs_params());
+                }
+            }
+        }
     }
 
-    if !params.contains_key(RUN_CALLER_TYPE) {
-        params.insert(RUN_CALLER_TYPE, "snouty");
+    let mut defaults = Params::new();
+    defaults.insert(RUN_CALLER_TYPE, "snouty");
+    if let Some(build) = &build {
+        defaults.merge(build.run_params());
     }
+    params.merge_defaults(defaults);
 
     params.validate_test_params()?;
 
@@ -409,6 +438,18 @@ async fn cmd_launch(
 
     let response = submit_launch(&launcher, params, &api).await?;
 
+    // A failed status update does not fail the launch: the run has started,
+    // and Antithesis still posts the result.
+    if let Some(status) = commit_status {
+        let context = status.context();
+        match status.post_pending().await {
+            Ok(()) => eprintln!("Set the GitHub commit status {context} to pending"),
+            Err(err) => eprintln!(
+                "warning: could not set the GitHub commit status {context} to pending: {err:#}"
+            ),
+        }
+    }
+
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else if let Some(run_id) = response.run_id.as_deref() {
@@ -434,30 +475,6 @@ async fn cmd_launch(
     }
 
     Ok(())
-}
-
-/// The `vcs.*` params for the git checkout that holds `dir`, in the shape the
-/// Antithesis GitHub trigger action sends them. Empty outside a git checkout.
-fn detect_vcs_params(dir: &Path) -> Params {
-    let mut vcs = Params::new();
-    let Some(checkout) = git::checkout(dir) else {
-        return vcs;
-    };
-    if let Some(repo) = checkout
-        .origin
-        .as_ref()
-        .and_then(|url| GitHubRepo::try_from(url).ok())
-    {
-        vcs.insert(VCS_REPO_TYPE, "github");
-        vcs.insert(VCS_VERSION_LINK, repo.commit_url(&checkout.commit));
-        vcs.insert(VCS_REPO_OWNER, repo.owner);
-        vcs.insert(VCS_REPO_NAME, repo.name);
-    }
-    if let Some(branch) = checkout.branch {
-        vcs.insert(VCS_REPO_BRANCH, branch);
-    }
-    vcs.insert(VCS_VERSION_ID, checkout.commit);
-    vcs
 }
 
 async fn submit_launch(

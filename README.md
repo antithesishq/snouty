@@ -185,9 +185,9 @@ For any one setting, snouty uses the first value it finds, highest precedence fi
 
 When a subcommand or a flag, or the Antithesis API it calls, is still changing shape, snouty can keep it behind a gate, turned on by naming its feature in `SNOUTY_UNSTABLE_FEATURES` (a comma-separated list). Anything behind this gate can change its behavior, its flags, or its id, or go away, in any release.
 
-| Feature | Enables                                                                                                                                  |
-| ------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `mcp`   | `snouty mcp`, the MCP server. Its tools and their output can still change.                                                               |
+| Feature | Enables                                                                                                              |
+| ------- | -------------------------------------------------------------------------------------------------------------------- |
+| `mcp`   | `snouty mcp`, the MCP server. Its tools and their output can still change.                                           |
 | `teams` | `launch --max-compute-hours`, `launch --setup-timeout` and `debug --duration`. They need tenant version 66 or newer. |
 
 An id that snouty does not know, such as the retired `runs-exec`, has no effect.

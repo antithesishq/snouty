@@ -243,12 +243,12 @@ env TZ=Asia/Tokyo
 [!staging] stdout '"run_id":"run-1"'
 [!staging] ! stdout '"run_id":"run-2"'
 
-# Around a clock change, a local time that the clock skips moves forward by
-# the gap, and a time that it shows twice is the earlier instant.
-mock-runs-server
+# Around a clock change, a local time that the clock skips is an error, and a
+# time that it shows twice is the earlier instant.
 env TZ=America/New_York
-[!staging] snouty --verbose runs list --created-after '2026-03-08 02:30:00'
-[!staging] stderr 'created_after=2026-03-08T07%3A30%3A00Z'
+! snouty runs list --created-after '2026-03-08 02:30:00'
+stderr '2026-03-08 02:30:00 does not exist in the local timezone'
+mock-runs-server
 [!staging] snouty --verbose runs list --created-after '2026-11-01 01:30:00'
 [!staging] stderr 'created_after=2026-11-01T05%3A30%3A00Z'
 

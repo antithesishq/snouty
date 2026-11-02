@@ -66,18 +66,6 @@ impl Display for Feature {
     }
 }
 
-impl Feature {
-    /// The subcommand of `snouty` that the feature gates, if it gates one.
-    pub fn gated_command(self) -> Option<&'static str> {
-        match self {
-            Feature::Mcp => Some("mcp"),
-            Feature::Teams => None,
-            #[cfg(test)]
-            Feature::Example => Some("example"),
-        }
-    }
-}
-
 /// Whether `feature` is enabled. Cheap enough for a clap `hide` attribute.
 pub fn is_enabled(feature: Feature) -> bool {
     enabled().contains(&feature)

@@ -10,7 +10,7 @@ Example:
     --vtime 329.8037810830865 \
     --title "stalled leader election" \
     --description "debug this moment" \
-{%- if teams %}
+{%- if teams() %}
     --recipients "team@example.com" \
     --duration 2h
 {%- else %}
@@ -18,7 +18,7 @@ Example:
 {%- endif %}
   {% endfilter %}
 
-{% if teams %}
+{% if teams() %}
 The session stays available for the time that {{ t("--duration")? }} gives, from 30 minutes to 6 hours. Without it, the server sets the time. Requires tenant version 66 or newer.
 {% endif %}
 

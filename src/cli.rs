@@ -379,9 +379,10 @@ pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Re
     ))
     .note("an unstable feature can change or go away in any release");
     // The help of a hidden flag does not print, so only a command points to it.
-    Some(match feature.gated_command() {
-        Some(_) => report.suggestion(format!("run `{path} --help` for what it does")),
-        None => report,
+    Some(if matches!(command, Commands::Mcp(_)) {
+        report.suggestion(format!("run `{path} --help` for what it does"))
+    } else {
+        report
     })
 }
 

@@ -3,9 +3,9 @@
 //! change with `cargo insta review`, or accept every change with
 //! `INSTA_UPDATE=always`.
 
-use clap::{CommandFactory, ValueEnum};
+use clap::CommandFactory;
 use snouty::cli::Cli;
-use snouty::features::{self, Feature};
+use snouty::features;
 use snouty::help::{self, Attach};
 use snouty::testutils::names_a_flag_or_command;
 
@@ -13,23 +13,16 @@ use snouty::testutils::names_a_flag_or_command;
 const PIPE_WIDTH: usize = 80;
 
 /// `snouty` as a user sees it off a terminal, with no unstable feature on.
-/// Whether a gated command is listed depends on `SNOUTY_UNSTABLE_FEATURES`,
-/// which a developer's shell can set. The gated flags and the help pages
-/// also read it, and nothing here can turn them off.
+/// The gated commands, the gated flags and the help pages read
+/// `SNOUTY_UNSTABLE_FEATURES`, which a developer's shell can set, and nothing
+/// here can turn them off.
 fn features_off() -> clap::Command {
     assert!(
-        !features::is_enabled(Feature::Teams),
+        features::enabled().is_empty(),
         "unset {} to compare the help snapshots",
         features::UNSTABLE_FEATURES_VAR_NAME
     );
-    let cli = help::attach(Cli::command(), Attach::Eager(PIPE_WIDTH));
-    let cli = Feature::value_variants()
-        .iter()
-        .filter_map(|feature| feature.gated_command())
-        .fold(cli, |cli, name| {
-            cli.mut_subcommand(name, |command| command.hide(true))
-        });
-    at_pipe_width(cli)
+    at_pipe_width(help::attach(Cli::command(), Attach::Eager(PIPE_WIDTH)))
 }
 
 fn at_pipe_width(command: clap::Command) -> clap::Command {

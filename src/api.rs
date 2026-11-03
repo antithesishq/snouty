@@ -1285,8 +1285,7 @@ impl AntithesisApi {
 
     /// Streams usage entries newest first by start time, at most `limit` of
     /// them, or all with `None`. The filters select on the end time of a run:
-    /// `[ended_after, ended_before)`. A page holds at most 1000 entries, the
-    /// maximum of the endpoint.
+    /// `[ended_after, ended_before)`.
     pub fn stream_usage(
         &self,
         ended_after: Option<chrono::DateTime<chrono::Utc>>,
@@ -1295,7 +1294,9 @@ impl AntithesisApi {
     ) -> impl futures_util::Stream<Item = Result<UsageEntry>> + '_ {
         paginate_limited(
             limit.map_or(u64::MAX, NonZeroU64::get),
-            1000,
+            // The endpoint maximum from release 67.0. An earlier release
+            // answers 400 above 1000.
+            50_000,
             move |after, page_limit| async move {
                 let mut request = self.client.list_usage().limit(page_limit);
                 if let Some(cursor) = after {

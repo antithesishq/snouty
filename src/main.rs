@@ -458,8 +458,12 @@ fn debug_typed_params(args: &DebugArgs) -> Params {
     }
     params.insert(ANT_DEBUGGING_INPUT_HASH, args.input_hash.as_str());
     params.insert(ANT_DEBUGGING_VTIME, args.vtime.to_string());
-    if let Some(minutes) = args.duration {
-        params.insert(ANT_DEBUGGING_DURATION, minutes.to_string());
+    // DEBUG_DURATION's check has refused leftover seconds.
+    if let Some(duration) = args.duration {
+        params.insert(
+            ANT_DEBUGGING_DURATION,
+            (duration.seconds() / 60).to_string(),
+        );
     }
     if let Some(title) = &args.title {
         params.insert(ANT_TEST_NAME, title.as_str());

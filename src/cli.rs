@@ -790,14 +790,14 @@ pub struct DebugArgs {
 
     #[arg(
         long,
-        value_parser = |v: &str| DEBUG_DURATION.parse_minutes(v),
+        value_parser = |v: &str| DEBUG_DURATION.parse(v),
         hide = !features::is_enabled(Feature::Teams),
         help = DEBUG_DURATION.help(
             "How long the session stays available, from 30 minutes to 6 hours. Requires \
              tenant version 66 or newer.",
         ),
     )]
-    pub duration: Option<u64>,
+    pub duration: Option<HumanDuration>,
 
     /// Debugging session title, shown as the test name in the run list
     #[arg(long)]

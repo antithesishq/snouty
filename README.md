@@ -399,6 +399,8 @@ jobs:
           ANTITHESIS_TENANT: my-tenant
           ANTITHESIS_REPOSITORY: registry.my-tenant.antithesis.com/my-project
           ANTITHESIS_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          # The runner has Podman too, and snouty prefers it by default.
+          SNOUTY_CONTAINER_ENGINE: docker
           SOURCE: ${{ github.event_name == 'push' && github.ref_name || '' }}
         run: |
           snouty launch --launcher basic_test --config ./antithesis \

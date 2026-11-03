@@ -572,10 +572,8 @@ async fn tool_results_are_plain_detailed_text() {
     client.cancel().await.expect("close snouty mcp");
 }
 
-/// `server.json`, the MCP Registry entry that the release publishes, is valid
-/// against the registry's schema, matches this crate's version, starts the
-/// server with its feature on, and has the `mcp-name` line in the README that
-/// proves the crate is ours.
+/// The release publishes `server.json` to the MCP Registry, which rejects an
+/// entry that fails its schema or whose crate README lacks the `mcp-name` line.
 #[test]
 fn mcp_registry_entry_matches_the_crate() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -584,6 +582,7 @@ fn mcp_registry_entry_matches_the_crate() {
     };
     let entry = read_json("server.json");
     let schema = read_json("tests/fixtures/mcp-server.schema.json");
+    assert_eq!(entry["$schema"], schema["$id"]);
     let validator = jsonschema::validator_for(&schema).unwrap();
     let errors: Vec<String> = validator
         .iter_errors(&entry)
@@ -596,16 +595,25 @@ fn mcp_registry_entry_matches_the_crate() {
     assert_eq!(entry["version"], version);
     assert_eq!(package["version"], version);
     assert_eq!(package["identifier"], env!("CARGO_PKG_NAME"));
-    assert_eq!(package["packageArguments"], json!([{"type": "positional", "value": "mcp"}]));
+    assert_eq!(
+        package["packageArguments"],
+        json!([{"type": "positional", "value": "mcp"}])
+    );
     let feature_var = package["environmentVariables"]
         .as_array()
         .unwrap()
         .iter()
         .find(|var| var["name"] == snouty::features::UNSTABLE_FEATURES_VAR_NAME)
         .unwrap();
-    assert_eq!(feature_var["value"], snouty::features::Feature::Mcp.to_string());
+    assert_eq!(
+        feature_var["value"],
+        snouty::features::Feature::Mcp.to_string()
+    );
 
     let name = entry["name"].as_str().unwrap();
     let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
-    assert!(readme.contains(&format!("`mcp-name: {name}`")), "README.md lacks mcp-name: {name}");
+    assert!(
+        readme.contains(&format!("`mcp-name: {name}`")),
+        "README.md lacks mcp-name: {name}"
+    );
 }

@@ -19,7 +19,7 @@ Times and periods are in the local timezone.
   no filter or `before`    the newest rows (before `before`)
   `after`                  the oldest rows from `after`
   `after` and `before`     every row between them; `limit` is not allowed
-Runs show the most recently started first, and periods the newest first.
+The output shows the run that started most recently first. With `rollup`, it shows the newest period first.
 
 Examples:
   runs_usage

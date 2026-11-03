@@ -245,8 +245,7 @@ thread_local! {
 /// Run `cmd` to completion, and fail it after [`COMMAND_TIMEOUT`].
 ///
 /// Prints the run time of the command to stderr, and the API request lines of
-/// its debug log when it is slow. nextest shows these lines live only with
-/// `--no-capture`, which the staging job sets.
+/// its debug log when it is slow.
 fn run_timed(
     mut cmd: std::process::Command,
     stdin: Option<Vec<u8>>,
@@ -300,8 +299,6 @@ fn run_timed(
             eprintln!("  still running after {}s: {label}", next_notice.as_secs());
             next_notice += RUNNING_NOTICE;
         }
-        // Wake at once when the command exits, and otherwise at the next notice
-        // or the timeout.
         let wait = next_notice.min(COMMAND_TIMEOUT).saturating_sub(elapsed);
         if let Some(status) = child
             .wait_timeout(wait)
@@ -328,9 +325,9 @@ fn run_timed(
     })
 }
 
-/// Read `pipe` to its end on a thread of its own. The buffer is shared so that
-/// a timeout can read the output so far without a join, which a grandchild
-/// that holds the pipe open would block.
+/// Read `pipe` to its end on its own thread. The buffer is shared so that a
+/// timeout can read the output without a join. A grandchild that holds the
+/// pipe open blocks the join.
 fn drain(mut pipe: impl Read + Send + 'static) -> (Arc<Mutex<Vec<u8>>>, thread::JoinHandle<()>) {
     let buf = Arc::new(Mutex::new(Vec::new()));
     let reader = thread::spawn({
@@ -360,7 +357,6 @@ fn request_lines(stderr: &[u8]) -> String {
     out
 }
 
-/// Prints the run time of `label` on a line of its own.
 fn print_time(time: Duration, label: &str) {
     eprintln!("  [{:.1}s] {label}", time.as_secs_f64());
 }

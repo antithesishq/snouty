@@ -23,7 +23,8 @@ There are three kinds of story:
     validates the example project in examples/antithesis, `launch` starts a
     15-minute run of it, and `runs-stream-run` (and `--json`) follow the run's
     property stream from the launch to the end. Once the run is ready, the
-    `runs exec` stories (`runs-exec*`) execute in it, and the rewarm stories
+    `runs exec` stories (`runs-exec*`) execute in it, `runs-properties-live`
+    lists its properties while some are still pending, and the rewarm stories
     load shallow moments of another completed run into it. Once it is final,
     the result stories (`runs-wait-run`, `runs-properties-run`, …) read its
     results. The gallery reuses a live run that an earlier gallery launched,
@@ -1304,7 +1305,8 @@ RUN_FINAL_TIMEOUT = f"{RUN_FINAL_MINUTES}m"
 STREAM_SLACK_MINUTES = 60
 STREAM_TIMEOUT = (RUN_READY_MINUTES + RUN_FINAL_MINUTES + STREAM_SLACK_MINUTES) * 60
 
-# Bounds on the polls in `_first_post_setup_moment` and `_container`.
+# Bounds on the polls in `_first_post_setup_moment`, `_container` and
+# `wait_for_pending_properties`.
 MOMENT_SEARCH_DEADLINE = 600
 MOMENT_SEARCH_POLL = 15
 
@@ -1566,6 +1568,29 @@ def prepare_exec(sn: Snouty, x: GalleryRun, rewarm: tuple[str, dict, dict]) -> N
     )
 
 
+def wait_for_pending_properties(sn: Snouty, run: str) -> None:
+    """Wait until the in-progress `run` reports a pending property. A run that
+    is ready can report its first property results a little later. After the
+    deadline, return anyway: the story's check then fails, not the gallery."""
+    deadline = time.monotonic() + MOMENT_SEARCH_DEADLINE
+    while True:
+        try:
+            if sn.json_lines(["runs", "properties", run, "--pending"]):
+                return
+            reason = "no pending property yet"
+        except (GalleryError, json.JSONDecodeError) as e:
+            reason = str(e)
+        if time.monotonic() > deadline:
+            print(
+                f"  {run} has no pending property after {MOMENT_SEARCH_DEADLINE}s: "
+                f"{reason}",
+                file=sys.stderr,
+            )
+            return
+        print(f"  waiting for a pending property in {run}: {reason}", file=sys.stderr)
+        time.sleep(MOMENT_SEARCH_POLL)
+
+
 def property_id_named(rows: list[dict], name: str) -> str:
     """The ID of the property whose name contains `name`, or "". A grouped
     property's name can carry a `<group>: ` prefix."""
@@ -1645,6 +1670,10 @@ class Story:
     # A result that discovery captured, because later stories depend on its side
     # effects. The story shows it and runs nothing.
     precaptured: Result | None = None
+    # Work that the story's own capture task does before it runs `args`, such
+    # as a wait for the live run to reach a state, so that other stories need
+    # not wait for it.
+    before: Callable[[Snouty], None] | None = None
     # The story starts real containers (a live `snouty validate` sample), as
     # opposed to the static checks that fail before any container starts. All
     # validate stories require a container runtime (see `ensure_validate_runtime`);
@@ -2390,6 +2419,22 @@ def run_properties(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     return (
         ok and bug_failing,
         f"{detail}, {EXAMPLE_BUG_PROPERTY!r} failing={bug_failing}",
+    )
+
+
+# What `runs properties` prints on stderr when a row is pending.
+PENDING_NOTE = "Some properties are still being processed."
+
+
+def live_properties(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+    """`runs properties` on the in-progress gallery run: at least one pending
+    row, and the note that tells the user to come back later. Rows with other
+    statuses can appear, but a young run can have none."""
+    statuses = Counter(r.get("status") for r in sr.rows or [])
+    noted = contains_text(sr.result.combined, PENDING_NOTE)
+    return (
+        statuses["Pending"] > 0 and noted and sr.result.ok,
+        f"exit={sr.result.returncode}, statuses={dict(statuses)}, note={noted}",
     )
 
 
@@ -3541,8 +3586,8 @@ def build_launch_stories(x: GalleryRun) -> list[Story]:
 
 def build_ready_stories(d: Discovery, x: GalleryRun, wait_ready: Result) -> list[Story]:
     """Stories that need the gallery's run to be ready, most of which execute
-    in it, after `wait_ready` waited for it. No story is JSON-capable, so each
-    script executes once."""
+    in it, after `wait_ready` waited for it. No exec story is JSON-capable, so
+    each script executes once."""
     exec_at = ["runs", "exec", x.run, x.hash, x.vtime]
     script = 'echo "hello from $(uname -n)"; echo "a warning on stderr" >&2'
 
@@ -3574,6 +3619,23 @@ def build_ready_stories(d: Discovery, x: GalleryRun, wait_ready: Result) -> list
             f"that it is ready. The launcher is {GALLERY_RUN_LAUNCHER}.",
             ["runs", "show", x.run],
             contains_all("in_progress:ready", GALLERY_RUN_LAUNCHER),
+        ),
+        Story(
+            "runs-properties-live",
+            "See where my live run stands",
+            "My run is still in progress, and I want to see its properties so far: "
+            "which ones have no final result yet, and which ones already pass or fail.",
+            "A STATUS/✓/✗/ID/NAME table with at least one `pending` row. Rows that "
+            "already pass or fail can appear among the pending ones. The `pending`, "
+            "`pass` and `fail` labels are easy to tell apart, and the grouping and "
+            "order of the rows read well with the statuses mixed. Each row has the "
+            "passing and failing example counts so far and the full property ID, to "
+            "pass to `snouty runs property`. stderr then says that some properties are "
+            f"still being processed, and to run `snouty runs properties {x.run}` again "
+            "later for the final results. Exit 0.",
+            ["runs", "properties", x.run],
+            live_properties,
+            before=lambda sn: wait_for_pending_properties(sn, x.run),
         ),
         exec_story(
             "runs-exec",
@@ -5148,6 +5210,8 @@ def run_mcp_story(sn: Snouty, story: Story) -> StoryRun:
 def run_story(sn: Snouty, story: Story) -> StoryRun:
     if story.precaptured is not None:
         return StoryRun(story, story.precaptured, None)
+    if story.before is not None:
+        story.before(sn)
     if story.mcp_tool is not None:
         return run_mcp_story(sn, story)
     if story.dialogue is not None:

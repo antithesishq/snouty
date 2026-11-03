@@ -40,8 +40,10 @@ jobs:
       - name: File or update the issue
         env:
           GH_TOKEN: ${{ github.token }}
-          # mise asks the GitHub API for each tool's releases.
+          # mise asks the GitHub API for each tool's releases, not its own
+          # versions host, which times out from Actions.
           GITHUB_TOKEN: ${{ github.token }}
+          MISE_USE_VERSIONS_HOST: "false"
         run: |
           cooldown_days=7
           export MISE_MINIMUM_RELEASE_AGE="${cooldown_days}d"
@@ -60,9 +62,10 @@ jobs:
 
           # mise warns and leaves out a tool whose lookup fails, and still
           # exits 0. Stop instead, so that a failed lookup never reads as
-          # current and closes the issue.
+          # current and closes the issue. A retried request also warns, so
+          # match only the warnings for a lookup that failed for good.
           outdated=$(mise outdated --bump --no-global --json 2> outdated.err)
-          if grep -E 'WARN|ERROR' outdated.err; then
+          if grep -E 'Could not check|Error getting latest version' outdated.err; then
             echo "mise outdated could not look up every tool" >&2
             exit 1
           fi

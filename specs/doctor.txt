@@ -71,11 +71,13 @@ stdout '"id": "credentials",\s*"kind": "password",\s*"status": "warn"'
 [!staging] stderr 'release 64.0\) — .runs exec. fails'
 [!staging] ! stderr 'compute-hours'
 [!staging] stderr 'tenant release is too old for property streaming'
+[!staging] stderr 'tenant release is too old for search predicates'
 [!staging] snouty doctor --json
 [!staging] stdout '"id": "events_search",\s*"status": "warn"'
 [!staging] stdout '"id": "cancel_run",\s*"status": "warn"'
 [!staging] stdout '"id": "execute_command",\s*"status": "warn"'
 [!staging] stdout '"id": "run_stream",\s*"status": "warn"'
+[!staging] stdout '"id": "search_predicate",\s*"status": "warn"'
 [!staging] ! stdout 'launch_params'
 # The launch-params floor applies only with the teams feature.
 [!staging] env SNOUTY_UNSTABLE_FEATURES=teams

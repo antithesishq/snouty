@@ -770,7 +770,7 @@ pub async fn ensure_input_hash_exists(
 ) -> Result<()> {
     let query = event_set_dsl::input_hash_filter(input_hash);
     let count = event_search::search_when_ready(api, run_id, READY_POLL, || {
-        api.count_run_events_query(run_id, &query)
+        api.count_run_events_query(run_id, &query, None)
     })
     .await?;
     if count == 0 {
@@ -1693,11 +1693,14 @@ async fn cmd_runs_search(
     debug!("querying events for run: {}", args.run_id);
 
     let api = AntithesisApi::new(settings, verbose)?;
+    let predicate = args.predicate();
     if args.check {
-        return event_search::check_query(&api, &args.run_id, &args.query, mode.json()).await;
+        return event_search::check_query(&api, &args.run_id, &args.query, predicate, mode.json())
+            .await;
     }
     if args.count {
-        return event_search::count_query(&api, &args.run_id, &args.query, mode.json()).await;
+        return event_search::count_query(&api, &args.run_id, &args.query, predicate, mode.json())
+            .await;
     }
     // `--follow` with no limit is the one unbounded case: the caller asked to
     // watch an in-progress run, so the stream stays open.
@@ -1710,7 +1713,7 @@ async fn cmd_runs_search(
         limit,
     };
     let stream = event_search::search_when_ready(&api, &args.run_id, READY_POLL, || {
-        api.search_run_events_query(&args.run_id, &args.query, search)
+        api.search_run_events_query(&args.run_id, &args.query, search, predicate)
     })
     .await?;
     // A user-written DSL pipeline can reshape rows into any object,
@@ -1749,7 +1752,7 @@ async fn cmd_runs_events(
     };
     let query = event_set_dsl::substring_filter(matches);
     let stream = event_search::search_when_ready(&api, run_id, READY_POLL, || {
-        api.search_run_events_query(run_id, &query, search)
+        api.search_run_events_query(run_id, &query, search, None)
     })
     .await?;
     let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode);
@@ -5952,7 +5955,7 @@ mod tests {
 
         async fn count_when_ready(api: &AntithesisApi, run_id: &str) -> Result<u64> {
             event_search::search_when_ready(api, run_id, FAST_POLL, || {
-                api.count_run_events_query(run_id, "filter(ev => true)")
+                api.count_run_events_query(run_id, "filter(ev => true)", None)
             })
             .await
         }

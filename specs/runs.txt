@@ -593,6 +593,12 @@ mock-runs-server
 stderr '^warning: --raw is deprecated, use --json alone instead$'
 ! stdout 'deprecated'
 
+# A predicate that passes on every event fails on none of them.
+[staging] snouty runs search $R_run_id 'contains({output_text: "fault"})' --count --failing 'ev => true'
+[staging] stdout '^0 events matched the query\.$'
+[staging] snouty runs search $R_run_id 'contains({output_text: "fault"})' --count --passing 'ev => true'
+[staging] stdout '^\d+ events? matched the query\.$'
+
 [staging] skip
 
 # An incomplete run carries the failure moment (input_hash + vtime) in its detail
@@ -1111,6 +1117,11 @@ stdout '^0 events matched the query\.$'
 mock-runs-server
 snouty --json runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --count
 stdout '^\{"count":3\}$'
+
+# --failing conflicts with --passing and fails before any request.
+mock-runs-server
+! snouty runs search $R_run_id 'contains({output_text: "x"})' --failing 'ev => true' --passing 'ev => true'
+stderr 'cannot be used with'
 
 # The count endpoint rejects an invalid query with the same error as a search.
 mock-runs-server

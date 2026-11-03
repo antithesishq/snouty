@@ -4,8 +4,8 @@ use serde::Serialize;
 
 use crate::api::{
     AntithesisApi, ApiVersion, HttpClient, MIN_CANCEL_RELEASE, MIN_EXEC_RELEASE,
-    MIN_LAUNCH_PARAMS_RELEASE, MIN_SEARCH_RELEASE, MIN_STREAM_RELEASE, VersionError,
-    normalize_base_url,
+    MIN_LAUNCH_PARAMS_RELEASE, MIN_SEARCH_PREDICATE_RELEASE, MIN_SEARCH_RELEASE,
+    MIN_STREAM_RELEASE, VersionError, normalize_base_url,
 };
 use crate::attributed_value::AttributedValue;
 use crate::auth::AuthenticationInfo;
@@ -133,6 +133,7 @@ enum CheckId {
     CancelRun,
     LaunchParams,
     RunStream,
+    SearchPredicate,
     OauthConfigured,
 }
 
@@ -572,7 +573,7 @@ struct ReleaseFloor {
     feature: Option<Feature>,
 }
 
-const RELEASE_FLOORS: [ReleaseFloor; 5] = [
+const RELEASE_FLOORS: [ReleaseFloor; 6] = [
     ReleaseFloor {
         id: CheckId::EventsSearch,
         serves: "the events-search API",
@@ -607,6 +608,13 @@ const RELEASE_FLOORS: [ReleaseFloor; 5] = [
         serves: "property streaming",
         min: MIN_STREAM_RELEASE,
         consequence: "`runs stream` is not available",
+        feature: None,
+    },
+    ReleaseFloor {
+        id: CheckId::SearchPredicate,
+        serves: "search predicates",
+        min: MIN_SEARCH_PREDICATE_RELEASE,
+        consequence: "`runs search --failing` and `--passing` have no effect",
         feature: None,
     },
 ];
@@ -1162,7 +1170,14 @@ mod tests {
     #[test]
     fn release_floor_check_fires_only_on_a_known_gap() {
         let version = |release: &str| ApiVersion::new("v1".into(), release.into());
-        let [search, exec, cancel, launch_params, run_stream] = &RELEASE_FLOORS;
+        let [
+            search,
+            exec,
+            cancel,
+            launch_params,
+            run_stream,
+            search_predicate,
+        ] = &RELEASE_FLOORS;
         assert!(release_floor_check(&version("62.2"), search).is_none());
         assert!(release_floor_check(&version("63.0"), search).is_none());
         // 58.11 ships the endpoint but not its contract, so it is too old.
@@ -1213,6 +1228,14 @@ mod tests {
             "{}",
             check.notes[0].text
         );
+
+        assert!(release_floor_check(&version("67.0"), search_predicate).is_none());
+        let check = release_floor_check(&version("66.0"), search_predicate).unwrap();
+        assert!(
+            check.notes[0].text.contains("`runs search --failing`"),
+            "{}",
+            check.notes[0].text
+        );
     }
 
     #[test]
@@ -1224,7 +1247,11 @@ mod tests {
                 .collect()
         };
         let (major, minor) = MIN_EXEC_RELEASE;
-        let newer = [CheckId::LaunchParams, CheckId::RunStream];
+        let newer = [
+            CheckId::LaunchParams,
+            CheckId::RunStream,
+            CheckId::SearchPredicate,
+        ];
         assert_eq!(
             ids(format!("{}.99", major - 1)),
             [&[CheckId::ExecuteCommand][..], &newer].concat()
@@ -1241,8 +1268,11 @@ mod tests {
                 .map(|check| check.id)
                 .collect()
         };
-        assert!(ids(&[]).is_empty());
-        assert_eq!(ids(&[Feature::Teams]), [CheckId::LaunchParams]);
+        assert_eq!(ids(&[]), [CheckId::SearchPredicate]);
+        assert_eq!(
+            ids(&[Feature::Teams]),
+            [CheckId::LaunchParams, CheckId::SearchPredicate]
+        );
     }
 
     #[test]

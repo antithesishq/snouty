@@ -120,6 +120,13 @@ the details that it carries, such as an SDK assertion's details, as
 
 Rows reshaped by map/narrow/fold print as raw JSON.
 
+Add --failing or --passing to search the way a property does. Each takes a
+predicate, a JavaScript function from event to boolean, and only the events of
+the query that it fails or passes on match. For example, the error lines of
+etcd0 that do not mention a panic:
+  snouty runs search <run_id> 'matches({container: "etcd0", stream: "error"})' \
+    --passing 'ev => !ev.output_text.includes("panic")'
+
 Add --count to print how many events in the whole run match the query, instead
 of a sample. No limit applies.
 
@@ -153,6 +160,14 @@ Options:
 
       --check
           Check the query's syntax without running it
+
+      --failing <JS>
+          Match only the events of the query that this property predicate, a
+          JavaScript function from event to boolean, fails on
+
+      --passing <JS>
+          Match only the events of the query that this property predicate passes
+          on
 
       --count
           Print the number of events in the run that match the query, instead of

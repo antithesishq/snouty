@@ -86,6 +86,12 @@ A `moment HASH` line opens each timeline segment, and each event under it prints
 
 Rows reshaped by map/narrow/fold print as raw JSON.{% if !cli %} The output already shows the details of each assertion, so do not reshape events to read them.{% endif %}
 
+Add {{ t("--failing")? }} or {{ t("--passing")? }} to search the way a property does. Each takes a predicate, a JavaScript function from event to boolean, and only the events of the query that it fails or passes on match. For example, the error lines of etcd0 that do not mention a panic:
+  {% filter cmd %}
+  snouty runs search <run_id> 'matches({container: "etcd0", stream: "error"})' \
+    --passing 'ev => !ev.output_text.includes("panic")'
+  {% endfilter %}
+
 Add {{ t("--count")? }} to print how many events in the whole run match the query, instead of a sample. No limit applies.
 
 The run must be ready or complete. If it is not, the command waits until it is ready, as `{{ t("snouty runs exec")? }}` does, and says that it waits.

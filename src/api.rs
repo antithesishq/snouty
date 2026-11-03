@@ -106,6 +106,10 @@ pub const MIN_CANCEL_RELEASE: (u64, u64) = (63, 0);
 /// `launch --setup-timeout` and `debug --duration`. `snouty doctor` checks it.
 pub const MIN_LAUNCH_PARAMS_RELEASE: (u64, u64) = (66, 0);
 
+/// The first tenant release that takes a property predicate in an events
+/// search. An earlier release ignores the fields. `snouty doctor` checks it.
+pub const MIN_SEARCH_PREDICATE_RELEASE: (u64, u64) = (67, 0);
+
 /// Starts each debug log line that times or retries an API request. The spec harness
 /// picks these lines out of the stderr of a slow command.
 pub const REQUEST_LOG_PREFIX: &str = "http: ";
@@ -165,6 +169,28 @@ pub enum SearchMode {
         stream: bool,
         limit: Option<NonZeroU64>,
     },
+}
+
+/// A property predicate, JavaScript source for a function from event to
+/// boolean, that narrows an events search to the events it fails or passes on.
+#[derive(Debug, Clone, Copy)]
+pub enum Predicate<'a> {
+    Failing(&'a str),
+    Passing(&'a str),
+}
+
+impl Predicate<'_> {
+    fn source(self) -> String {
+        match self {
+            Self::Failing(source) | Self::Passing(source) => source.to_string(),
+        }
+    }
+
+    /// `None` for a failing predicate: the server reads an omitted `passing` as
+    /// the failing events.
+    fn passing(self) -> Option<bool> {
+        matches!(self, Self::Passing(_)).then_some(true)
+    }
 }
 
 /// The largest `limit` the events-search endpoint accepts. The server answers
@@ -1194,11 +1220,14 @@ impl AntithesisApi {
         run_id: &str,
         query: &str,
         mode: SearchMode,
+        predicate: Option<Predicate<'_>>,
     ) -> Result<JsonStream> {
         let mut body = generated::types::SearchRequest::builder()
             .query(query)
             .is_streaming(matches!(mode, SearchMode::Query { stream: true, .. }))
-            .validate_only(matches!(mode, SearchMode::Validate));
+            .validate_only(matches!(mode, SearchMode::Validate))
+            .is_passing_predicate(predicate.map(Predicate::source))
+            .passing(predicate.and_then(Predicate::passing));
         // Only a caller-named limit reaches the request. An omitted limit is
         // meaningful: a closed request falls to the server default (50), and
         // a streaming one stays unbounded — the server is starting to honor
@@ -1223,9 +1252,18 @@ impl AntithesisApi {
     }
 
     /// POST an event-set DSL query to the events-search count endpoint and
-    /// return the number of events in the run that match it.
-    pub async fn count_run_events_query(&self, run_id: &str, query: &str) -> Result<u64> {
-        let body = generated::types::SearchCountRequest::builder().query(query);
+    /// return the number of events in the run that match it and, when given,
+    /// the predicate.
+    pub async fn count_run_events_query(
+        &self,
+        run_id: &str,
+        query: &str,
+        predicate: Option<Predicate<'_>>,
+    ) -> Result<u64> {
+        let body = generated::types::SearchCountRequest::builder()
+            .query(query)
+            .is_passing_predicate(predicate.map(Predicate::source))
+            .passing(predicate.and_then(Predicate::passing));
         let request = self.client.search_count().run_id(run_id).body(body);
         match request.send().await {
             Ok(response) => Ok(response.into_inner().count),
@@ -2576,6 +2614,7 @@ mod tests {
                     stream: false,
                     limit: None,
                 },
+                None,
             )
             .await
         else {
@@ -5096,6 +5135,7 @@ mod tests {
                     stream: false,
                     limit: None,
                 },
+                None,
             )
             .await
             .unwrap();
@@ -5132,6 +5172,7 @@ mod tests {
                     stream: true,
                     limit: NonZeroU64::new(7),
                 },
+                None,
             )
             .await
             .unwrap();
@@ -5156,9 +5197,63 @@ mod tests {
                 "run-1",
                 "contains({output_text: \"raft\"})",
                 SearchMode::Validate,
+                None,
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn search_requests_forward_the_predicate() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v0/runs/run-1/events/search"))
+            .and(body_json(serde_json::json!({
+                "query": "matches({container: \"etcd0\"})",
+                "is_streaming": false,
+                "validate_only": false,
+                "is_passing_predicate": "ev => ev.ok",
+                "passing": true,
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_string(""))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v0/runs/run-1/events/search/count"))
+            .and(body_json(serde_json::json!({
+                "query": "matches({container: \"etcd0\"})",
+                "is_passing_predicate": "ev => ev.ok",
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "count": 2,
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let api = test_api_optionally_with_cache(&mock_server, None);
+        let _stream = api
+            .search_run_events_query(
+                "run-1",
+                "matches({container: \"etcd0\"})",
+                SearchMode::Query {
+                    stream: false,
+                    limit: None,
+                },
+                Some(Predicate::Passing("ev => ev.ok")),
+            )
+            .await
+            .unwrap();
+        let count = api
+            .count_run_events_query(
+                "run-1",
+                "matches({container: \"etcd0\"})",
+                Some(Predicate::Failing("ev => ev.ok")),
+            )
+            .await
+            .unwrap();
+        assert_eq!(count, 2);
     }
 
     #[tokio::test]
@@ -5179,7 +5274,7 @@ mod tests {
 
         let api = test_api_optionally_with_cache(&mock_server, None);
         let count = api
-            .count_run_events_query("run-1", "contains({output_text: \"raft\"})")
+            .count_run_events_query("run-1", "contains({output_text: \"raft\"})", None)
             .await
             .unwrap();
         assert_eq!(count, 318446);
@@ -5208,6 +5303,7 @@ mod tests {
                     stream: false,
                     limit: None,
                 },
+                None,
             )
             .await
         else {

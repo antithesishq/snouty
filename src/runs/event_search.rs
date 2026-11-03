@@ -22,7 +22,7 @@ use serde_json::json;
 use futures_util::stream::BoxStream;
 use futures_util::{StreamExt, TryStreamExt};
 
-use crate::api::{AntithesisApi, MIN_SEARCH_RELEASE, RunDetail, SearchMode};
+use crate::api::{AntithesisApi, MIN_SEARCH_RELEASE, Predicate, RunDetail, SearchMode};
 use crate::error::api_error_status;
 use crate::event_render::EventStreamRenderer;
 use crate::jsonl::JsonStream;
@@ -88,17 +88,19 @@ pub(super) fn render_event_stream(
     }
 }
 
-/// Ask the search backend whether `query` parses, without running it
+/// Ask the search backend whether `query` and the predicate parse, without
+/// running them
 /// (`runs search --check`). A valid query gets a 200 with an empty body; an
 /// invalid one fails with the server's rejection. Nothing to read either way.
 pub(super) async fn check_query(
     api: &AntithesisApi,
     run_id: &str,
     query: &str,
+    predicate: Option<Predicate<'_>>,
     json: bool,
 ) -> Result<()> {
     let _ = search_when_ready(api, run_id, READY_POLL, || {
-        api.search_run_events_query(run_id, query, SearchMode::Validate)
+        api.search_run_events_query(run_id, query, SearchMode::Validate, predicate)
     })
     .await?;
     let mut stdout = stdio::stdout().lock();
@@ -110,15 +112,17 @@ pub(super) async fn check_query(
     Ok(())
 }
 
-/// Print how many events in the run match `query` (`runs search --count`).
+/// Print how many events in the run match `query` and, when given, the
+/// predicate (`runs search --count`).
 pub(super) async fn count_query(
     api: &AntithesisApi,
     run_id: &str,
     query: &str,
+    predicate: Option<Predicate<'_>>,
     json: bool,
 ) -> Result<()> {
     let count = search_when_ready(api, run_id, READY_POLL, || {
-        api.count_run_events_query(run_id, query)
+        api.count_run_events_query(run_id, query, predicate)
     })
     .await?;
     let mut stdout = stdio::stdout().lock();

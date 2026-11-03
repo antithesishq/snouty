@@ -11,7 +11,8 @@ use clap::error::ErrorKind;
 use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
 use crate::api::{
-    FaultTolerance, PerformanceTier, RunStatus, SearchLimit, SourceRunId, SourceSessionId,
+    FaultTolerance, PerformanceTier, Predicate, RunStatus, SearchLimit, SourceRunId,
+    SourceSessionId,
 };
 use color_eyre::Section;
 use color_eyre::eyre::Report;
@@ -1070,6 +1071,16 @@ pub struct RunsSearchArgs {
     #[arg(long, conflicts_with = "follow")]
     pub check: bool,
 
+    /// Match only the events of the query that this property predicate, a
+    /// JavaScript function from event to boolean, fails on
+    #[arg(long, value_name = "JS", conflicts_with = "passing")]
+    pub failing: Option<String>,
+
+    /// Match only the events of the query that this property predicate
+    /// passes on
+    #[arg(long, value_name = "JS")]
+    pub passing: Option<String>,
+
     /// Print the number of events in the run that match the query, instead
     /// of a sample of them
     #[arg(long, conflicts_with_all = ["follow", "check", "limit", "raw", "detail"])]
@@ -1077,6 +1088,15 @@ pub struct RunsSearchArgs {
 
     #[command(flatten)]
     pub render: EventOutputArgs,
+}
+
+impl RunsSearchArgs {
+    pub fn predicate(&self) -> Option<Predicate<'_>> {
+        self.failing
+            .as_deref()
+            .map(Predicate::Failing)
+            .or_else(|| self.passing.as_deref().map(Predicate::Passing))
+    }
 }
 
 /// The output-depth flags every event-stream command (`runs logs`,

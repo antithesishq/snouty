@@ -18,9 +18,14 @@ pub struct OutputOptions {
 /// terminated with a newline; labels and values are sanitized. Labels are padded to the
 /// widest label, but never narrower than `min_label_width` so a caller that also
 /// renders a wider prose label below the block can keep every row aligned.
+///
+/// A value that does not fit in `width` columns wraps at spaces, and its
+/// continuation lines start at the value column. Pass `usize::MAX` to keep each
+/// row on one line.
 pub(crate) fn render_kv<L: AsRef<str>, V: AsRef<str>>(
     rows: &[(L, V)],
     min_label_width: usize,
+    width: usize,
 ) -> String {
     let rows: Vec<(String, String)> = rows
         .iter()
@@ -32,9 +37,16 @@ pub(crate) fn render_kv<L: AsRef<str>, V: AsRef<str>>(
         .chain(std::iter::once(min_label_width))
         .max()
         .unwrap_or(0);
+    let value_col = label_width + 2;
+    let value_width = width.saturating_sub(value_col).max(1);
     let mut out = String::new();
     for (label, value) in rows {
-        let _ = writeln!(out, "{label:label_width$}  {value}");
+        let mut lines = wrap_text(&value, value_width, CodeSpans::Ignore).into_iter();
+        let first = lines.next().unwrap_or_default();
+        let _ = writeln!(out, "{label:label_width$}  {first}");
+        for line in lines {
+            let _ = writeln!(out, "{:value_col$}{line}", "");
+        }
     }
     out
 }
@@ -466,17 +478,35 @@ mod tests {
     fn render_kv_aligns_to_widest_label_and_min_width() {
         let rows = vec![("a", "1".to_string()), ("longer", "2".to_string())];
         // min_label_width below the widest label has no effect; labels pad to 6.
-        assert_eq!(render_kv(&rows, 0), "a       1\nlonger  2\n");
+        assert_eq!(render_kv(&rows, 0, usize::MAX), "a       1\nlonger  2\n");
         // a larger min_label_width widens every row.
-        assert_eq!(render_kv(&[("a", "1".to_string())], 4), "a     1\n");
+        assert_eq!(
+            render_kv(&[("a", "1".to_string())], 4, usize::MAX),
+            "a     1\n"
+        );
+    }
+
+    #[test]
+    fn render_kv_wraps_a_long_value_under_the_value_column() {
+        let rows = vec![
+            ("k", "one two three".to_string()),
+            ("long", "x".to_string()),
+        ];
+        assert_eq!(
+            render_kv(&rows, 0, 15),
+            "k     one two\n      three\nlong  x\n"
+        );
     }
 
     #[test]
     fn render_kv_sanitizes_labels_and_values() {
         let rows = vec![("k", "a\nb".to_string())];
-        assert_eq!(render_kv(&rows, 0), "k  a\\nb\n");
+        assert_eq!(render_kv(&rows, 0, usize::MAX), "k  a\\nb\n");
         let rows = vec![("\x1b[2Jk", "v".to_string()), ("kk", "w".to_string())];
-        assert_eq!(render_kv(&rows, 0), "\\x1B[2Jk  v\nkk        w\n");
+        assert_eq!(
+            render_kv(&rows, 0, usize::MAX),
+            "\\x1B[2Jk  v\nkk        w\n"
+        );
     }
 
     /// The prose shape [`wrap_if_tty`] produces on a wide terminal, minus the

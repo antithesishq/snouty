@@ -72,7 +72,7 @@ pub fn cmd_settings_show(settings: &Settings, json: bool) -> Result<()> {
             .into_iter()
             .map(|(name, _, text)| (name, text))
             .collect();
-        write!(stdout, "{}", render_kv(&text, 0))?;
+        write!(stdout, "{}", render_kv(&text, 0, usize::MAX))?;
         let files = settings.files();
         if files.is_empty() {
             writeln!(stdout, "\nsettings files: none")?;

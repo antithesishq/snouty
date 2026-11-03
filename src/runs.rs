@@ -1377,7 +1377,8 @@ fn print_kv_block<'a>(
 ) -> Result<()> {
     let rows: Vec<_> = rows.into_iter().collect();
     if !rows.is_empty() {
-        out!("\n{title}\n{}\n", indent_lines(&render_kv(&rows, 0), "  "))?;
+        let block = render_kv(&rows, 0, terminal_width().saturating_sub(2));
+        out!("\n{title}\n{}\n", indent_lines(&block, "  "))?;
     }
     Ok(())
 }
@@ -1442,7 +1443,7 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         rows.push(("Creator", name.clone()));
     }
 
-    out!("{}", render_kv(&rows, 0))?;
+    out!("{}", render_kv(&rows, 0, terminal_width()))?;
 
     // Each block aligns its own labels, so these rows do not widen the metadata
     // labels above.
@@ -1520,7 +1521,7 @@ fn render_runs_detail(runs: &[RunSummary]) -> String {
                 .unwrap_or(0)
                 .max(min_label_width);
 
-            let mut out = render_kv(&rows, min_label_width);
+            let mut out = render_kv(&rows, min_label_width, terminal_width());
             if let Some(description) = description {
                 out.push_str(&render_prose_block(
                     "Description",

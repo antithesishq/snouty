@@ -572,8 +572,9 @@ async fn tool_results_are_plain_detailed_text() {
     client.cancel().await.expect("close snouty mcp");
 }
 
-/// The release publishes `server.json` to the MCP Registry, which rejects an
-/// entry that fails its schema or whose crate README lacks the `mcp-name` line.
+/// The release publishes `server.json` to the MCP Registry, so it must pass the
+/// registry schema, match this crate's version and name, start `snouty mcp`
+/// with its feature on, and match the README's `mcp-name` line.
 #[test]
 fn mcp_registry_entry_matches_the_crate() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));

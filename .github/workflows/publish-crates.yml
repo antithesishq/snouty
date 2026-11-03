@@ -63,11 +63,10 @@ jobs:
               cargo publish -p "$crate"
             fi
           done
-      # Lists `snouty mcp` in the MCP Registry under server.json's name. Stable
-      # releases only: the registry ranks versions by semver, so an -rc.N would
-      # become the latest version there. The login proves control of
-      # antithesis.com: MCP_PRIVATE_KEY is the hex Ed25519 key whose public half
-      # is in the antithesis.com TXT record `v=MCPv1; k=ed25519; p=...`.
+      # Stable releases only. The registry marks the highest semver as latest,
+      # so an -rc.N would replace the stable listing. MCP_PRIVATE_KEY is a hex
+      # Ed25519 key. Its public half is in the antithesis.com TXT record
+      # `v=MCPv1; k=ed25519; p=...`.
       - name: Publish to the MCP Registry
         if: ${{ !fromJson(inputs.plan).announcement_is_prerelease }}
         env:
@@ -84,8 +83,8 @@ jobs:
           echo "a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc  mcp-publisher.tar.gz" | sha256sum -c -
           tar xzf mcp-publisher.tar.gz mcp-publisher
           ./mcp-publisher login dns --domain antithesis.com --private-key "$MCP_PRIVATE_KEY"
-          # The registry checks for the mcp-name line in the crate's README,
-          # which crates.io renders a little after the upload.
+          # The registry reads the mcp-name line from the crate's README on
+          # crates.io, which shows the new README some time after the upload.
           for attempt in 1 2 3 4; do
             ./mcp-publisher publish && exit 0
             sleep 30

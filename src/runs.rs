@@ -860,8 +860,8 @@ fn property_group(p: &Property) -> Option<&str> {
     .filter(|g| !g.is_empty())
 }
 
-/// Order names case-insensitively, so `acknowledged` sorts before `Oxigraph`,
-/// with a case-sensitive tie-break that keeps the order total.
+/// Order names ignoring case, with a case-sensitive tie-break so the order
+/// does not depend on input order.
 fn cmp_names(a: &str, b: &str) -> std::cmp::Ordering {
     fn fold(s: &str) -> impl Iterator<Item = char> + '_ {
         s.chars().flat_map(char::to_lowercase)
@@ -1278,8 +1278,9 @@ fn property_status_cell(status: &PropertyStatus) -> String {
 
 /// Order properties into display sections shared by the table and `--detail`
 /// views: named groups containing a failing property first (then the rest,
-/// alphabetical), with ungrouped properties in a final "(ungrouped)" section.
-/// Within each section, failing entries sort first, then by name.
+/// alphabetical, ignoring case), with ungrouped properties in a final
+/// "(ungrouped)" section. Within each section, failing entries sort first,
+/// then by name, ignoring case.
 ///
 /// Each section's heading is `Some(name)`, except the ungrouped section's, which
 /// is `None` when there are no named groups to contrast it against — a lone
@@ -3160,27 +3161,35 @@ mod tests {
         assert_eq!(property_display_name(&p), prefixed);
     }
 
-    /// Within a section, names sort case-insensitively, and the order does
-    /// not depend on the order the API returned them in.
+    /// Groups and the names within each group sort ignoring case, and the
+    /// order does not depend on the order the API returns properties in.
     #[hegel::test]
-    fn property_sections_sort_names_case_insensitively(tc: hegel::TestCase) {
-        let name = generators::text().alphabet("aAbB:G ");
-        let names = tc.draw(generators::vecs(name).min_size(1).max_size(8));
-        let props: Vec<Property> = names
+    fn property_sections_sort_ignoring_case(tc: hegel::TestCase) {
+        let entry = generators::tuples!(
+            generators::text().alphabet("aAbB").min_size(1).max_size(3),
+            generators::text().alphabet("aAbB ").max_size(4)
+        );
+        let entries = tc.draw(generators::vecs(entry).min_size(1).max_size(8));
+        let props: Vec<Property> = entries
             .iter()
-            .map(|n| event_property(n, PropertyStatus::Passing, Some("G"), vec![], vec![]))
+            .map(|(g, n)| event_property(n, PropertyStatus::Passing, Some(g), vec![], vec![]))
             .collect();
-        let sorted = |props: &[Property]| -> Vec<String> {
-            let sections = group_property_sections(props);
-            sections[0]
-                .1
-                .iter()
-                .map(|p| property_display_name(p).to_string())
+        let sorted = |props: &[Property]| -> Vec<(Option<String>, Vec<String>)> {
+            group_property_sections(props)
+                .into_iter()
+                .map(|(heading, ps)| (heading, ps.iter().map(|p| p.name().to_string()).collect()))
                 .collect()
         };
+        let fold = |s: &str| s.chars().flat_map(char::to_lowercase).collect::<String>();
         let out = sorted(&props);
         for pair in out.windows(2) {
-            assert!(pair[0].to_lowercase() <= pair[1].to_lowercase(), "{pair:?}");
+            let (a, b) = (pair[0].0.as_deref().unwrap(), pair[1].0.as_deref().unwrap());
+            assert!(fold(a) <= fold(b), "{a:?} before {b:?}");
+        }
+        for (_, names) in &out {
+            for pair in names.windows(2) {
+                assert!(fold(&pair[0]) <= fold(&pair[1]), "{pair:?}");
+            }
         }
         let reversed: Vec<Property> = props.into_iter().rev().collect();
         assert_eq!(sorted(&reversed), out);

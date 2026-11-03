@@ -116,8 +116,14 @@ the real HTTP wiring end-to-end, set `SNOUTY_STAGING=1` and make sure your
 normal `ANTITHESIS_*` credentials are exported:
 
 ```
-SNOUTY_STAGING=1 cargo nextest run spec_tests
+SNOUTY_STAGING=1 cargo nextest run spec_tests --no-capture
 ```
+
+`--no-capture` shows the progress as it occurs: each spec file and each
+command with its time, the API requests of a command that takes 5 seconds or
+more, and at the end the slowest files and commands. A command fails after 3
+minutes, and the failure shows its API requests. A request with no status
+did not complete.
 
 Required env in staging mode: `ANTITHESIS_TENANT` plus either
 `ANTITHESIS_API_KEY` or `ANTITHESIS_USERNAME`+`ANTITHESIS_PASSWORD`.

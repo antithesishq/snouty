@@ -319,7 +319,9 @@ jobs:
           ANTITHESIS_API_KEY: ${{ secrets.STAGING_ANTITHESIS_API_KEY }}
           # No base URL. snouty resolves https://<tenant>.antithesis.com, which
           # is the address to test.
-        run: cargo nextest run --test spec spec_tests
+        # --no-capture prints each spec file and command with its time as it
+        # finishes, so the log shows what was slow even when the job times out.
+        run: cargo nextest run --test spec spec_tests --no-capture
 
   # The check the main ruleset requires. It covers what a pull request gates on;
   # the macOS Intel and nix legs are too slow for that and run after merge, in

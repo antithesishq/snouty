@@ -71,7 +71,8 @@ fn limit_note(shown: usize, limit: NonZeroU64, noun: &str, blank_line_before: bo
 ///
 /// Commentary goes to stderr and only in text mode: under `--json` the rows
 /// are the whole answer. An empty stream gets `empty_message`; any other gets
-/// the limit note when the request named a `limit`.
+/// the limit note when the request named a `limit`, set apart by a blank line
+/// because the text rendering separates its moment blocks with blank lines.
 async fn print_event_lines(
     mut lines: BoxStream<'_, Result<String>>,
     output: EventOutput,
@@ -92,7 +93,7 @@ async fn print_event_lines(
     if seen == 0 {
         eprintln!("{empty_message}");
     } else if let Some(limit) = limit {
-        limit_note(seen, limit, "results", false);
+        limit_note(seen, limit, "results", true);
     }
     Ok(())
 }
@@ -650,12 +651,7 @@ async fn cmd_runs_properties(
         properties.retain(|p| property_display_name(p).to_lowercase().contains(&needle));
     }
 
-    properties.sort_by(|a, b| {
-        property_group(a)
-            .unwrap_or("")
-            .cmp(property_group(b).unwrap_or(""))
-            .then(a.name().cmp(b.name()))
-    });
+    properties.sort_by(cmp_by_group_then_name);
 
     if json {
         for property in &properties {
@@ -857,6 +853,25 @@ fn property_group(p: &Property) -> Option<&str> {
         Property::NonEventProperty(p) => p.group.as_deref(),
     }
     .filter(|g| !g.is_empty())
+}
+
+/// Order names ignoring case, with a case-sensitive tie-break so the order
+/// does not depend on input order.
+fn cmp_names(a: &str, b: &str) -> std::cmp::Ordering {
+    fn fold(s: &str) -> impl Iterator<Item = char> + '_ {
+        s.chars().flat_map(char::to_lowercase)
+    }
+    fold(a).cmp(fold(b)).then_with(|| a.cmp(b))
+}
+
+/// The `--json` line order: ungrouped first, then by group and name, each
+/// compared with [`cmp_names`].
+fn cmp_by_group_then_name(a: &Property, b: &Property) -> std::cmp::Ordering {
+    cmp_names(
+        property_group(a).unwrap_or(""),
+        property_group(b).unwrap_or(""),
+    )
+    .then_with(|| cmp_names(a.name(), b.name()))
 }
 
 /// The property's name without the `"<group>: "` prefix that the API puts on a
@@ -1268,8 +1283,9 @@ fn property_status_cell(status: &PropertyStatus) -> String {
 
 /// Order properties into display sections shared by the table and `--detail`
 /// views: named groups containing a failing property first (then the rest,
-/// alphabetical), with ungrouped properties in a final "(ungrouped)" section.
-/// Within each section, failing entries sort first, then by name.
+/// alphabetical, ignoring case), with ungrouped properties in a final
+/// "(ungrouped)" section. Within each section, failing entries sort first,
+/// then by name, ignoring case.
 ///
 /// Each section's heading is `Some(name)`, except the ungrouped section's, which
 /// is `None` when there are no named groups to contrast it against — a lone
@@ -1279,11 +1295,10 @@ fn group_property_sections(properties: &[Property]) -> Vec<(Option<String>, Vec<
         props.sort_by(|a, b| {
             is_failing(b)
                 .cmp(&is_failing(a))
-                .then_with(|| property_display_name(a).cmp(property_display_name(b)))
+                .then_with(|| cmp_names(property_display_name(a), property_display_name(b)))
         });
     }
 
-    // BTreeMap keeps named groups alphabetical before the failing-first re-sort.
     let mut grouped = std::collections::BTreeMap::<&str, Vec<&Property>>::new();
     let mut ungrouped: Vec<&Property> = Vec::new();
     for p in properties {
@@ -1298,7 +1313,7 @@ fn group_property_sections(properties: &[Property]) -> Vec<(Option<String>, Vec<
         bps.iter()
             .any(|p| is_failing(p))
             .cmp(&aps.iter().any(|p| is_failing(p)))
-            .then_with(|| a.cmp(b))
+            .then_with(|| cmp_names(a, b))
     });
 
     let mut sections: Vec<(Option<String>, Vec<&Property>)> = Vec::new();
@@ -1362,7 +1377,8 @@ fn print_kv_block<'a>(
 ) -> Result<()> {
     let rows: Vec<_> = rows.into_iter().collect();
     if !rows.is_empty() {
-        out!("\n{title}\n{}\n", indent_lines(&render_kv(&rows, 0), "  "))?;
+        let block = render_kv(&rows, 0, terminal_width().saturating_sub(2));
+        out!("\n{title}\n{}\n", indent_lines(&block, "  "))?;
     }
     Ok(())
 }
@@ -1427,7 +1443,7 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         rows.push(("Creator", name.clone()));
     }
 
-    out!("{}", render_kv(&rows, 0))?;
+    out!("{}", render_kv(&rows, 0, terminal_width()))?;
 
     // Each block aligns its own labels, so these rows do not widen the metadata
     // labels above.
@@ -1505,7 +1521,7 @@ fn render_runs_detail(runs: &[RunSummary]) -> String {
                 .unwrap_or(0)
                 .max(min_label_width);
 
-            let mut out = render_kv(&rows, min_label_width);
+            let mut out = render_kv(&rows, min_label_width, terminal_width());
             if let Some(description) = description {
                 out.push_str(&render_prose_block(
                     "Description",
@@ -1993,6 +2009,14 @@ const MOMENT_NOT_WARM: [&str; 3] = [
     "moment is not valid in the original run",
 ];
 
+/// Why the server rejected a `runs exec` request in a live run.
+enum ExecRejection {
+    MissingSource,
+    ColdMoment,
+    /// A rewarm did not finish, or the source is not the moment's run.
+    BadRewarm,
+}
+
 /// Add suggestions to a failed `runs exec` request in a run with status
 /// `run_status`, which is ready or complete. `debug_command` starts a
 /// debugging session at the request's moment, and `rewarm_flag` names the
@@ -2003,7 +2027,10 @@ const MOMENT_NOT_WARM: [&str; 3] = [
 /// require an active run.` Otherwise, the server's responses on orbitinghail
 /// mean:
 ///
-/// - 404 `Resource not found` (release 64.0): the source does not exist.
+/// - 404 `Resource not found`: the source session (release 67.0), or any
+///   source (release 64.0), does not exist.
+/// - 400 `Source run '<id>' does not exist.` (release 67.0): the source run
+///   does not exist.
 /// - A 400 that `MOMENT_NOT_WARM` matches: the moment is cold and there is
 ///   no source.
 /// - Any other 400 (release 64.0): a rewarm did not finish, or the source is
@@ -2027,16 +2054,29 @@ fn explain_exec_error(
                 indent_lines(debug_command, "  ")
             ));
     }
-    let cold = api_error_message(&err)
-        .is_some_and(|m| MOMENT_NOT_WARM.iter().any(|marker| m.contains(marker)));
-    match (status, rewarm_flag) {
-        (404, Some(flag)) => err.suggestion(format!("check that {flag} names an existing source")),
-        (400, None) if cold => {
+    let message = api_error_message(&err).unwrap_or_default();
+    let rejection = match status {
+        404 => ExecRejection::MissingSource,
+        400 if message.contains("Source run '") => ExecRejection::MissingSource,
+        400 if MOMENT_NOT_WARM
+            .iter()
+            .any(|marker| message.contains(marker)) =>
+        {
+            ExecRejection::ColdMoment
+        }
+        400 => ExecRejection::BadRewarm,
+        _ => return err,
+    };
+    match (rejection, rewarm_flag) {
+        (ExecRejection::MissingSource, Some(flag)) => {
+            err.suggestion(format!("check that {flag} names an existing source"))
+        }
+        (ExecRejection::ColdMoment, None) => {
             err.suggestion("use --source-run-id to load a moment from a different run")
         }
-        (400, Some(flag)) => err.suggestion(format!(
-            "check that {flag} names the run the moment comes from"
-        )),
+        (ExecRejection::ColdMoment | ExecRejection::BadRewarm, Some(flag)) => err.suggestion(
+            format!("check that {flag} names the run the moment comes from"),
+        ),
         _ => err,
     }
 }
@@ -3125,6 +3165,74 @@ mod tests {
         }
         let p = event_property(&prefixed, PropertyStatus::Passing, None, vec![], vec![]);
         assert_eq!(property_display_name(&p), prefixed);
+    }
+
+    /// Groups and the names within each group sort ignoring case, and the
+    /// order does not depend on the order the API returns properties in.
+    #[hegel::test]
+    fn property_sections_sort_ignoring_case(tc: hegel::TestCase) {
+        let entry = generators::tuples!(
+            generators::text().alphabet("aAbB").min_size(1).max_size(3),
+            generators::text().alphabet("aAbB ").max_size(4)
+        );
+        let entries = tc.draw(generators::vecs(entry).min_size(1).max_size(8));
+        let props: Vec<Property> = entries
+            .iter()
+            .map(|(g, n)| event_property(n, PropertyStatus::Passing, Some(g), vec![], vec![]))
+            .collect();
+        let sorted = |props: &[Property]| -> Vec<(Option<String>, Vec<String>)> {
+            group_property_sections(props)
+                .into_iter()
+                .map(|(heading, ps)| (heading, ps.iter().map(|p| p.name().to_string()).collect()))
+                .collect()
+        };
+        let fold = |s: &str| s.chars().flat_map(char::to_lowercase).collect::<String>();
+        let out = sorted(&props);
+        for pair in out.windows(2) {
+            let (a, b) = (pair[0].0.as_deref().unwrap(), pair[1].0.as_deref().unwrap());
+            assert!(fold(a) <= fold(b), "{a:?} before {b:?}");
+        }
+        for (_, names) in &out {
+            for pair in names.windows(2) {
+                assert!(fold(&pair[0]) <= fold(&pair[1]), "{pair:?}");
+            }
+        }
+        let reversed: Vec<Property> = props.into_iter().rev().collect();
+        assert_eq!(sorted(&reversed), out);
+    }
+
+    /// The `--json` order sorts by group, then name, ignoring case, and does
+    /// not depend on the order the API returns properties in.
+    #[hegel::test]
+    fn json_order_sorts_by_group_then_name_ignoring_case(tc: hegel::TestCase) {
+        let entry = generators::tuples!(
+            generators::text().alphabet("aAbB").max_size(3),
+            generators::text().alphabet("aAbB ").max_size(4)
+        );
+        let entries = tc.draw(generators::vecs(entry).max_size(8));
+        let props: Vec<Property> = entries
+            .iter()
+            .map(|(g, n)| event_property(n, PropertyStatus::Passing, Some(g), vec![], vec![]))
+            .collect();
+        let sorted = |mut props: Vec<Property>| -> Vec<(String, String)> {
+            props.sort_by(cmp_by_group_then_name);
+            props
+                .iter()
+                .map(|p| {
+                    (
+                        property_group(p).unwrap_or("").to_string(),
+                        p.name().to_string(),
+                    )
+                })
+                .collect()
+        };
+        let fold = |s: &str| s.chars().flat_map(char::to_lowercase).collect::<String>();
+        let out = sorted(props.clone());
+        for pair in out.windows(2) {
+            let key = |(g, n): &(String, String)| (fold(g), g.clone(), fold(n));
+            assert!(key(&pair[0]) <= key(&pair[1]), "{pair:?}");
+        }
+        assert_eq!(sorted(props.into_iter().rev().collect()), out);
     }
 
     #[test]

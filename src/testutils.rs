@@ -1025,10 +1025,11 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
     )
 }
 
-// (run_id, hours, start_time, end_time), newest first. In a timezone of
-// UTC+9, usage-1 starts a day later than in UTC, and usage-3 starts a month
-// later. In UTC+9, usage-4 starts on 2026-02-27 and ends on 2026-02-28. The
-// hours of usage-2 and usage-3 have a sum that is not exact in
+// (run_id, hours, start_time, end_time), newest start time first, as the
+// endpoint sorts them. usage-2 started before usage-3 and ended after it. In a
+// timezone of UTC+9, usage-1 starts a day later than in UTC, and usage-3
+// starts a month later. In UTC+9, usage-4 starts on 2026-02-27 and ends on
+// 2026-02-28. The hours of usage-2 and usage-3 have a sum that is not exact in
 // binary.
 const MOCK_USAGE: &[(&str, f64, &str, &str)] = &[
     (
@@ -1038,16 +1039,16 @@ const MOCK_USAGE: &[(&str, f64, &str, &str)] = &[
         "2026-03-02T17:30:00Z",
     ),
     (
-        "usage-2",
-        2.1,
-        "2026-03-01T10:00:00Z",
-        "2026-03-01T10:45:00Z",
-    ),
-    (
         "usage-3",
         1.2,
         "2026-02-28T20:00:00.5Z",
         "2026-02-28T20:15:00Z",
+    ),
+    (
+        "usage-2",
+        2.1,
+        "2026-02-28T19:00:00Z",
+        "2026-03-01T10:45:00Z",
     ),
     (
         "usage-4",

@@ -1,8 +1,8 @@
 # snouty runs usage
 #
-# Show the compute hours of runs, newest first (`GET /api/v0/usage`). With
-# --rollup, show the total of each day, week, or month instead. Times and
-# periods use the local timezone.
+# Show the compute hours of runs, newest end time first
+# (`GET /api/v0/usage`). With --rollup, show the total of each day, week, or
+# month instead. Times and periods use the local timezone.
 
 # Like every runs command, usage requires an API key.
 ! snouty runs usage
@@ -21,11 +21,12 @@ stderr 'expected a date \(2026-10-01\), a time as snouty prints it'
 env TZ=Asia/Tokyo
 
 # Without --rollup, each run is one row: its run id, the start and end of its
-# usage in the local timezone, and its compute hours. The command reads every
-# page until the limit.
+# usage in the local timezone, and its compute hours. The rows are sorted by
+# end time, newest first, though the endpoint sorts them by start time.
 mock-runs-server
 snouty runs usage
 stdout '^(RUN ID +STARTED +ENDED +COMPUTE HOURS|No usage found\.)$'
+[!staging] stdout '(?s)^RUN ID [^\n]*\nusage-1 [^\n]*\nusage-2 [^\n]*\nusage-3 [^\n]*\nusage-4 [^\n]*\nusage-5 [^\n]*$'
 [!staging] stdout '^usage-1 +2026-03-03 01:00:00 +2026-03-03 02:30:00 +10\.5$'
 [!staging] stdout '^usage-3 +2026-03-01 05:00:00 +2026-03-01 05:15:00 +1\.2$'
 [!staging] stdout '^usage-5 +2026-01-15 09:00:00 +2026-01-15 15:00:00 +100\.0$'
@@ -40,15 +41,36 @@ snouty --json runs usage -n 1
 [!staging] stdout -count=1 '^.+$'
 
 # --limit caps the rows, and a note on stderr says that more can exist.
-# Without --after, the rows are the newest runs.
+# Without --after, the rows are the runs that ended last. usage-3 started
+# after usage-2, but ended before it.
 mock-runs-server
 [!staging] snouty runs usage -n 2
 [!staging] stdout '^usage-2 '
 [!staging] ! stdout 'usage-3'
 [!staging] stderr 'Showing up to 2 results'
+mock-runs-server
+[!staging] snouty --json runs usage -n 2
+[!staging] stdout '(?s)^\{"run_id":"usage-1",[^\n]*\n\{"run_id":"usage-2",[^\n]*$'
+
+# The command first reads the runs that started last, up to the limit. They
+# all ended at or after 20:15 on 2026-02-28, when usage-3 ended, so the runs
+# that ended last did too, and a second request reads every run that ended
+# since then. usage-2 is only in the second.
+mock-runs-server
+[!staging] snouty --verbose runs usage --before 2026-03-04 -n 2
+[!staging] stderr '^> GET .*/api/v0/usage\?end_time=2026-03-03T15%3A00%3A00Z&limit=2$'
+[!staging] stderr '^> GET .*/api/v0/usage\?.*start_time=2026-02-28T20%3A15%3A00Z'
+[!staging] stdout '(?s)^RUN ID [^\n]*\nusage-1 [^\n]*\nusage-2 [^\n]*$'
+
+# When the first request holds fewer runs than the limit, they are every run,
+# and the command reads nothing more.
+mock-runs-server
+[!staging] snouty --verbose runs usage
+[!staging] ! stderr 'start_time='
+[!staging] stdout -count=5 '^usage-'
 
 # With --after alone, the rows are the oldest runs that ended at or after it,
-# shown newest first. The endpoint sends the newest runs first, so the command
+# shown newest first. The endpoint sorts runs by start time, so the command
 # reads windows of end times forward from --after, the first one a day long,
 # until they hold the limit.
 mock-runs-server

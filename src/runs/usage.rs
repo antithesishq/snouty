@@ -105,10 +105,10 @@ impl Rollup {
     }
 }
 
-/// Which rows the output holds. The usage endpoint sends the newest runs
-/// first, so only `Newest` can stop at the first `limit` runs that it reads.
-// TODO: when the endpoint can sort the oldest runs first, read `Oldest` from
-// one request at `--after` instead of from windows of end times.
+/// Which rows the output holds. The usage endpoint sorts the runs by start
+/// time, newest first, but the rows are the newest or oldest runs by end time.
+// TODO: when the endpoint can sort runs by end time, read `Newest` and
+// `Oldest` from one request each.
 #[derive(Clone, Copy)]
 enum Selection {
     /// The `limit` newest rows, before `--before` when it is set.
@@ -154,20 +154,7 @@ pub(super) async fn cmd_runs_usage(
     let api = AntithesisApi::new(settings, verbose)?;
 
     let Some(rollup) = rollup else {
-        let entries = match selection {
-            Selection::Newest(limit) => {
-                api.stream_usage(None, before, Some(limit))
-                    .try_collect()
-                    .await?
-            }
-            Selection::Oldest(after, limit) => oldest_entries(&api, after, limit).await?,
-            Selection::All(after) => {
-                api.stream_usage(Some(after), before, None)
-                    .try_collect()
-                    .await?
-            }
-        };
-        let entries: Vec<UsageRow> = entries.into_iter().map(UsageRow::from).collect();
+        let entries = usage_rows(&api, selection, before).await?;
         return print_rows(
             &entries,
             json,
@@ -227,10 +214,61 @@ pub(super) async fn cmd_runs_usage(
     )
 }
 
-/// The `limit` runs that ended first at or after `after`, newest first. The
-/// endpoint sends the newest runs first, so this reads windows of end times
-/// forward from `after`, each twice as long as the one before, until they hold
-/// `limit` runs or pass the present.
+/// The runs of `selection`, newest end time first.
+async fn usage_rows(
+    api: &AntithesisApi,
+    selection: Selection,
+    before: Option<DateTime<Utc>>,
+) -> Result<Vec<UsageRow>> {
+    let mut entries = match selection {
+        Selection::Newest(limit) => newest_entries(api, before, limit).await?,
+        Selection::Oldest(after, limit) => oldest_entries(api, after, limit).await?,
+        Selection::All(after) => {
+            api.stream_usage(Some(after), before, None)
+                .try_collect()
+                .await?
+        }
+    };
+    entries.sort_unstable_by(|a, b| (b.end_time, &b.run_id).cmp(&(a.end_time, &a.run_id)));
+    if let Some(limit) = selection.limit() {
+        let limit = usize::try_from(limit.get()).unwrap_or(usize::MAX);
+        match selection {
+            Selection::Oldest(..) => {
+                entries.drain(..entries.len().saturating_sub(limit));
+            }
+            _ => entries.truncate(limit),
+        }
+    }
+    Ok(entries.into_iter().map(UsageRow::from).collect())
+}
+
+/// The runs that ended before `before`, among them the `limit` that ended
+/// last. The first request reads the `limit` runs that started last. When it
+/// holds fewer, they are every run. Otherwise each of them ended at or after
+/// the earliest end among them, so the `limit` runs that ended last did too,
+/// and a second request reads every run that ended since then.
+async fn newest_entries(
+    api: &AntithesisApi,
+    before: Option<DateTime<Utc>>,
+    limit: NonZeroU64,
+) -> Result<Vec<UsageEntry>> {
+    let entries: Vec<UsageEntry> = api
+        .stream_usage(None, before, Some(limit))
+        .try_collect()
+        .await?;
+    match entries.iter().map(|entry| entry.end_time).min() {
+        Some(cutoff) if entries.len() as u64 == limit.get() => {
+            api.stream_usage(Some(cutoff), before, None)
+                .try_collect()
+                .await
+        }
+        _ => Ok(entries),
+    }
+}
+
+/// The runs that ended at or after `after`, among them the `limit` that ended
+/// first. This reads windows of end times forward from `after`, each twice as
+/// long as the one before, until they hold `limit` runs or pass the present.
 async fn oldest_entries(
     api: &AntithesisApi,
     after: DateTime<Utc>,
@@ -248,9 +286,6 @@ async fn oldest_entries(
         entries.extend(window);
         (start, length) = (end, length * 2);
     }
-    entries.sort_by_key(|entry| entry.end_time);
-    entries.truncate(usize::try_from(limit.get()).unwrap_or(usize::MAX));
-    entries.sort_by_key(|entry| std::cmp::Reverse(entry.start_time));
     Ok(entries)
 }
 

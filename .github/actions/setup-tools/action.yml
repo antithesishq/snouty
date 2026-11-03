@@ -12,7 +12,15 @@ inputs:
     description: Extra Rust components to install, separated by commas.
     default: ""
   cache:
-    description: Set to "false" for a job that compiles nothing.
+    description: Set to "false" for a job that compiles nothing, or that holds a secret.
+    default: "true"
+  mise-tools:
+    description: The mise.toml tools to install, separated by spaces. Empty installs them all.
+    default: ""
+  mise-cache:
+    description: >-
+      Set to "false" for a job that holds a secret. A tool restored from the cache skips the
+      mise.lock checksum check.
     default: "true"
 runs:
   using: composite
@@ -46,6 +54,8 @@ runs:
         # A shim works only below mise.toml, and tests run tools from
         # temporary directories. The next step puts the tools on PATH instead.
         add_shims_to_path: false
+        install_args: ${{ inputs.mise-tools }}
+        cache: ${{ inputs.mise-cache }}
 
     # The paths are mise's install directories for the tools that mise.toml
     # pins, so they are only as trusted as the checked-out repository.

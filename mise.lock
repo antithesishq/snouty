@@ -115,6 +115,29 @@ url = "https://github.com/github/gh-aw/releases/download/v1.0.1/darwin-amd64"
 url_api = "https://api.github.com/repos/github/gh-aw/releases/assets/682204490"
 provenance = "github-attestations"
 
+[[tools."github:modelcontextprotocol/registry"]]
+version = "1.8.1"
+backend = "github:modelcontextprotocol/registry"
+specifiers = ["1.8.1"]
+
+[tools."github:modelcontextprotocol/registry".options]
+matching_regex = "^mcp-publisher_"
+
+[tools."github:modelcontextprotocol/registry"."platforms.linux-x64"]
+checksum = "sha256:a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc"
+url = "https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz"
+url_api = "https://api.github.com/repos/modelcontextprotocol/registry/releases/assets/504323513"
+
+[tools."github:modelcontextprotocol/registry"."platforms.macos-arm64"]
+checksum = "sha256:e45e520892460732a4bdf37255576415d4a53ec171f8b913faf15bb1aef7cb77"
+url = "https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_darwin_arm64.tar.gz"
+url_api = "https://api.github.com/repos/modelcontextprotocol/registry/releases/assets/504323523"
+
+[tools."github:modelcontextprotocol/registry"."platforms.macos-x64"]
+checksum = "sha256:88126981225e7714fcc6b7a10cdba4a80ae5901e9740a8c06d0d5195c8bc294c"
+url = "https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_darwin_amd64.tar.gz"
+url_api = "https://api.github.com/repos/modelcontextprotocol/registry/releases/assets/504323524"
+
 [[tools."github:nextest-rs/nextest"]]
 version = "0.9.149"
 backend = "github:nextest-rs/nextest"

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.antithesis/snouty",
+  "title": "snouty",
+  "description": "Launch and triage Antithesis runs, run commands at a moment of a run, and search the docs",
+  "repository": {
+    "url": "https://github.com/antithesishq/snouty",
+    "source": "github"
+  },
+  "version": "0.9.0-rc.2",
+  "packages": [
+    {
+      "registryType": "cargo",
+      "identifier": "snouty",
+      "version": "0.9.0-rc.2",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "SNOUTY_UNSTABLE_FEATURES",
+          "description": "Unstable features to turn on. snouty mcp needs mcp, which is always on",
+          "value": "mcp,{features}",
+          "variables": {
+            "features": {
+              "description": "More unstable features to turn on, comma-separated, such as teams",
+              "default": ""
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

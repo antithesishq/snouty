@@ -72,6 +72,9 @@ Edit the `version = "..."` line in `Cargo.toml` to the new version. The
 `snouty-macros/Cargo.toml` and the `=`-pinned version on the
 `snouty-macros` dependency in the root `Cargo.toml` to the same value.
 
+Set both `version` fields in `server.json`, the MCP Registry entry, to the
+same value. A test in `tests/mcp.rs` fails when either differs from the Cargo.toml version.
+
 ### 4. Build
 
 Run `cargo build` to update `Cargo.lock` and verify the project compiles.
@@ -91,7 +94,7 @@ legs must pass before the PR merges rather than after the tag is cut.
 git switch -c release/vX.Y.Z
 ```
 
-Stage only `Cargo.toml`, `snouty-macros/Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md`. If there are any other changes abort. Then commit with message:
+Stage only `Cargo.toml`, `snouty-macros/Cargo.toml`, `Cargo.lock`, `server.json`, and `CHANGELOG.md`. If there are any other changes abort. Then commit with message:
 
 ```
 chore: Release snouty version X.Y.Z

@@ -435,7 +435,7 @@ antithesis:
     - curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
     - export PATH="$HOME/.local/bin:$PATH"
   script:
-    - SOURCE=$([ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ] && echo "$CI_COMMIT_BRANCH")
+    - if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then SOURCE="$CI_COMMIT_BRANCH"; fi
     - snouty launch --launcher basic_test --config ./antithesis --duration 30m ${SOURCE:+--source "$SOURCE"}
 ```
 
@@ -452,7 +452,7 @@ steps:
     command: |
       curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
       export PATH="$$HOME/.local/bin:$$PATH"
-      SOURCE=$$([ "$$BUILDKITE_BRANCH" = "$$BUILDKITE_PIPELINE_DEFAULT_BRANCH" ] && [ "$$BUILDKITE_PULL_REQUEST" = "false" ] && echo "$$BUILDKITE_BRANCH")
+      if [ "$$BUILDKITE_BRANCH" = "$$BUILDKITE_PIPELINE_DEFAULT_BRANCH" ] && [ "$$BUILDKITE_PULL_REQUEST" = "false" ]; then SOURCE="$$BUILDKITE_BRANCH"; fi
       snouty launch --launcher basic_test --config ./antithesis --duration 30m $${SOURCE:+--source "$$SOURCE"}
 ```
 
@@ -474,7 +474,7 @@ jobs:
       - run: |
           curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
           export PATH="$HOME/.local/bin:$PATH"
-          SOURCE=$([ "$CIRCLE_BRANCH" = main ] && [ -z "$CIRCLE_PULL_REQUEST" ] && echo main)
+          if [ "$CIRCLE_BRANCH" = main ] && [ -z "$CIRCLE_PULL_REQUEST" ]; then SOURCE=main; fi
           snouty launch --launcher basic_test --config ./antithesis --duration 30m ${SOURCE:+--source "$SOURCE"}
 workflows:
   antithesis:

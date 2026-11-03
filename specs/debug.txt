@@ -152,8 +152,7 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 stderr 'pass only one of antithesis.debugging.run_id and antithesis.debugging.session_id'
 ! stderr 'Requesting the Antithesis multiverse debugger'
 
-# The live API answers success with HTTP 200. snouty also accepts the
-#    documented 202.
+# snouty accepts the documented 202 as success.
 mock-server 202 '{"statusCode":202,"runId":"run-123"}'
 snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
 stdout 'Debugging session started: run_id run-123'

@@ -233,8 +233,8 @@ fn isolated_xdg_config_home(current_dir: &std::path::Path) -> std::path::PathBuf
 const SLOW_COMMAND: Duration = Duration::from_secs(5);
 /// A command prints a "still running" line each time it runs this long again.
 const RUNNING_NOTICE: Duration = Duration::from_secs(30);
-/// A command that runs this long fails. A normal staging run takes about 1.5
-/// minutes in all, and the staging job stops after 15.
+/// A command that runs this long against staging fails. A normal staging run
+/// takes about 1.5 minutes in all, and the staging job stops after 15.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(180);
 
 thread_local! {
@@ -242,7 +242,7 @@ thread_local! {
     static COMMAND_TIMES: RefCell<Vec<(Duration, String)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Run `cmd` to completion, and fail it after [`COMMAND_TIMEOUT`].
+/// Run `cmd` to completion. Against staging, fail it after [`COMMAND_TIMEOUT`].
 ///
 /// Prints the run time of the command to stderr, and the API request lines of
 /// its debug log when it is slow.
@@ -279,10 +279,15 @@ fn run_timed(
         }
     }
 
+    let timeout = if is_staging() {
+        COMMAND_TIMEOUT
+    } else {
+        Duration::MAX
+    };
     let mut next_notice = RUNNING_NOTICE;
     let status = loop {
         let elapsed = start.elapsed();
-        if elapsed >= COMMAND_TIMEOUT {
+        if elapsed >= timeout {
             let _ = child.kill();
             let _ = child.wait();
             let requests = request_lines(&stderr.lock().unwrap());
@@ -291,7 +296,7 @@ fn run_timed(
             return Err(testscript_rs::Error::Usage {
                 message: format!(
                     "{label} timed out after {}s. Its API requests:\n{requests}",
-                    COMMAND_TIMEOUT.as_secs()
+                    timeout.as_secs()
                 ),
             });
         }
@@ -299,7 +304,7 @@ fn run_timed(
             eprintln!("  still running after {}s: {label}", next_notice.as_secs());
             next_notice += RUNNING_NOTICE;
         }
-        let wait = next_notice.min(COMMAND_TIMEOUT).saturating_sub(elapsed);
+        let wait = next_notice.min(timeout).saturating_sub(elapsed);
         if let Some(status) = child
             .wait_timeout(wait)
             .map_err(|e| err(format!("wait snouty: {e}")))?

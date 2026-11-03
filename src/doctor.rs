@@ -614,7 +614,8 @@ const RELEASE_FLOORS: [ReleaseFloor; 6] = [
         id: CheckId::SearchPredicate,
         serves: "search predicates",
         min: MIN_SEARCH_PREDICATE_RELEASE,
-        consequence: "`runs search --failing` and `--passing` have no effect",
+        consequence: "`runs search --failing` and `--passing` are ignored, and the \
+                      search prints every event that matches the query",
         feature: None,
     },
 ];

@@ -153,6 +153,8 @@ wiremock = "0.6"
 hegeltest = { version = "0.50.3", features = ["static-engine"] }
 expectrl = "0.9"
 strip-ansi-escapes = "0.2.1"
+# Waits on a spec command with a deadline (tests/spec.rs).
+wait-timeout = "0.2"
 
 # The profile that 'dist' will build with
 [profile.dist]

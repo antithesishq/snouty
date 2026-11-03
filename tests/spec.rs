@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use testscript_rs::testscript;
+use wait_timeout::ChildExt;
 
 fn err(msg: String) -> testscript_rs::Error {
     testscript_rs::Error::Generic(msg)
@@ -259,25 +260,8 @@ fn run_timed(
     });
     let mut child = cmd.spawn().map_err(|e| err(format!("spawn snouty: {e}")))?;
 
-    let mut stdout_pipe = child.stdout.take().expect("stdout piped");
-    let stdout_reader = thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stdout_pipe.read_to_end(&mut buf);
-        buf
-    });
-    // Shared, so that a timeout can read the stderr so far without a join,
-    // which a grandchild that holds the pipe open would block.
-    let stderr = Arc::new(Mutex::new(Vec::new()));
-    let mut stderr_pipe = child.stderr.take().expect("stderr piped");
-    let stderr_reader = thread::spawn({
-        let stderr = Arc::clone(&stderr);
-        move || {
-            let mut chunk = [0; 8192];
-            while let Ok(n @ 1..) = stderr_pipe.read(&mut chunk) {
-                stderr.lock().unwrap().extend_from_slice(&chunk[..n]);
-            }
-        }
-    });
+    let (stdout, stdout_reader) = drain(child.stdout.take().expect("stdout piped"));
+    let (stderr, stderr_reader) = drain(child.stderr.take().expect("stderr piped"));
 
     if let Some(data) = stdin {
         // snouty is free to exit before it reads all of stdin — `runs exec` with
@@ -298,12 +282,6 @@ fn run_timed(
 
     let mut next_notice = RUNNING_NOTICE;
     let status = loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|e| err(format!("wait snouty: {e}")))?
-        {
-            break status;
-        }
         let elapsed = start.elapsed();
         if elapsed >= COMMAND_TIMEOUT {
             let _ = child.kill();
@@ -322,14 +300,23 @@ fn run_timed(
             eprintln!("  still running after {}s: {label}", next_notice.as_secs());
             next_notice += RUNNING_NOTICE;
         }
-        thread::sleep(Duration::from_millis(50));
+        // Wake at once when the command exits, and otherwise at the next notice
+        // or the timeout.
+        let wait = next_notice.min(COMMAND_TIMEOUT).saturating_sub(elapsed);
+        if let Some(status) = child
+            .wait_timeout(wait)
+            .map_err(|e| err(format!("wait snouty: {e}")))?
+        {
+            break status;
+        }
     };
     let elapsed = start.elapsed();
 
-    let stdout = stdout_reader.join().unwrap_or_default();
+    let _ = stdout_reader.join();
     let _ = stderr_reader.join();
+    let stdout = std::mem::take(&mut *stdout.lock().unwrap());
     let stderr = std::mem::take(&mut *stderr.lock().unwrap());
-    eprintln!("  [{:.1}s] {label}", elapsed.as_secs_f64());
+    print_time(elapsed, label);
     if elapsed >= SLOW_COMMAND {
         eprint!("{}", request_lines(&stderr));
     }
@@ -339,6 +326,23 @@ fn run_timed(
         stdout,
         stderr,
     })
+}
+
+/// Read `pipe` to its end on a thread of its own. The buffer is shared so that
+/// a timeout can read the output so far without a join, which a grandchild
+/// that holds the pipe open would block.
+fn drain(mut pipe: impl Read + Send + 'static) -> (Arc<Mutex<Vec<u8>>>, thread::JoinHandle<()>) {
+    let buf = Arc::new(Mutex::new(Vec::new()));
+    let reader = thread::spawn({
+        let buf = Arc::clone(&buf);
+        move || {
+            let mut chunk = [0; 8192];
+            while let Ok(n @ 1..) = pipe.read(&mut chunk) {
+                buf.lock().unwrap().extend_from_slice(&chunk[..n]);
+            }
+        }
+    });
+    (buf, reader)
 }
 
 /// The API request lines of a snouty debug log, each indented on a line of
@@ -354,6 +358,11 @@ fn request_lines(stderr: &[u8]) -> String {
         out.push('\n');
     }
     out
+}
+
+/// Prints the run time of `label` on a line of its own.
+fn print_time(time: Duration, label: &str) {
+    eprintln!("  [{:.1}s] {label}", time.as_secs_f64());
 }
 
 fn cmd_snouty(
@@ -860,10 +869,7 @@ fn cmd_build_image(
         ctx.engine
             .build_image(&dir, &image_ref, dockerfile, platform.as_deref())
             .map_err(|e| err(format!("build-image: {e:?}")))?;
-        eprintln!(
-            "  [{:.1}s] build-image {label}",
-            start.elapsed().as_secs_f64()
-        );
+        print_time(start.elapsed(), &format!("build-image {label}"));
         ctx.built_images.push(image_ref);
         Ok(())
     })
@@ -1091,7 +1097,7 @@ fn print_slowest(what: &str, mut times: Vec<(Duration, String)>, count: usize) {
     times.sort_by_key(|(time, _)| std::cmp::Reverse(*time));
     eprintln!("slowest {what}:");
     for (time, name) in times.into_iter().take(count) {
-        eprintln!("  [{:.1}s] {name}", time.as_secs_f64());
+        print_time(time, &name);
     }
 }
 

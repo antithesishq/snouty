@@ -71,7 +71,8 @@ fn limit_note(shown: usize, limit: NonZeroU64, noun: &str, blank_line_before: bo
 ///
 /// Commentary goes to stderr and only in text mode: under `--json` the rows
 /// are the whole answer. An empty stream gets `empty_message`; any other gets
-/// the limit note when the request named a `limit`.
+/// the limit note when the request named a `limit`, set apart by a blank line
+/// because the text rendering separates its moment blocks with blank lines.
 async fn print_event_lines(
     mut lines: BoxStream<'_, Result<String>>,
     output: EventOutput,
@@ -92,7 +93,7 @@ async fn print_event_lines(
     if seen == 0 {
         eprintln!("{empty_message}");
     } else if let Some(limit) = limit {
-        limit_note(seen, limit, "results", false);
+        limit_note(seen, limit, "results", true);
     }
     Ok(())
 }

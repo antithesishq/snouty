@@ -931,7 +931,7 @@ mock-runs-server
 [!staging] stdout '400\.5'
 [!staging] stdout '401\.75'
 [!staging] ! stdout '402\.0'
-[!staging] stderr 'Showing up to 2 results\. Additional results may be available\.'
+[!staging] stderr '^\nShowing up to 2 results\. Additional results may be available\.'
 # `--json` never carries the note; the output itself is still capped.
 mock-runs-server
 [!staging] snouty --json runs events $R_run_id --match parallel_driver_fetch --limit 2
@@ -968,7 +968,7 @@ mock-runs-server
 [!staging] snouty runs events $R_run_id --match parallel_driver_fetch --limit 1
 [!staging] stdout '400\.5'
 [!staging] ! stdout '401\.75'
-[!staging] stderr 'Showing up to 1 results\. Additional results may be available\.'
+[!staging] stderr '^\nShowing up to 1 results\. Additional results may be available\.'
 
 # The tenant is assumed to serve the search endpoint, so its 404 simply means
 # the run — the error says "run not found".
@@ -1040,13 +1040,13 @@ snouty --json runs search $R_run_id 'contains({output_text: "parallel_driver_fet
 mock-runs-server
 [!staging] snouty runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --limit 1
 [!staging] stdout '400\.5'
-[!staging] stderr 'Showing up to 1 results\. Additional results may be available\.'
+[!staging] stderr '^\nShowing up to 1 results\. Additional results may be available\.'
 
 # `--follow` with a limit prints the note too: the stream stops at the limit.
 mock-runs-server
 [!staging] snouty runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --follow --limit 1
 [!staging] stdout '400\.5'
-[!staging] stderr 'Showing up to 1 results\. Additional results may be available\.'
+[!staging] stderr '^\nShowing up to 1 results\. Additional results may be available\.'
 
 # An empty result prints its own note instead.
 mock-runs-server

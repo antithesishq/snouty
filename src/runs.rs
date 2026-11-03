@@ -1146,15 +1146,13 @@ fn render_result(p: &NonEventProperty) -> String {
 }
 
 /// The example values of a passing non-event property under a single `Result`
-/// field: a lone scalar (or small object) inline, several values (or a large one)
-/// as a block, none as a placeholder.
+/// field: a lone scalar (or small object) inline, a large one as a block, several
+/// as a block of one value per line, none as a placeholder.
 fn render_result_values(values: &[Value]) -> String {
     match values {
         [] => render_field("Result", "(none)"),
         [one] => render_result_value("Result", one),
-        // Several values render as one JSON array; serialize the slice of
-        // references directly rather than cloning into an owned `Value::Array`.
-        many => render_json_field("Result", &many),
+        many => render_value_group("Result", many),
     }
 }
 
@@ -1176,15 +1174,30 @@ fn render_value_group(label: &str, values: &[Value]) -> String {
 fn render_result_value(label: &str, value: &Value) -> String {
     match value {
         Value::Array(_) | Value::Object(_) => render_json_field(label, value),
+        Value::String(s) => match json_container(s) {
+            Some(inner) => render_json_field(label, &inner),
+            None => render_field(label, &value_token(value)),
+        },
         scalar => render_field(label, &value_token(scalar)),
     }
 }
 
+/// The JSON object/array that a string value holds, if it holds one.
+fn json_container(s: &str) -> Option<Value> {
+    serde_json::from_str(s)
+        .ok()
+        .filter(|v| matches!(v, Value::Array(_) | Value::Object(_)))
+}
+
 /// A non-event value as a single inline token: a string sanitised, other scalars
-/// via their `Display`, an object/array as compact one-line JSON.
+/// via their `Display`, an object/array as compact one-line JSON. A string that
+/// holds a JSON object/array shows as that compact JSON, not as quoted text.
 fn value_token(value: &Value) -> String {
     match value {
-        Value::String(s) => sanitize(s),
+        Value::String(s) => match json_container(s) {
+            Some(inner) => value_token(&inner),
+            None => sanitize(s),
+        },
         Value::Number(n) => n.to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Null => "null".to_string(),
@@ -1192,10 +1205,10 @@ fn value_token(value: &Value) -> String {
     }
 }
 
-/// Render a JSON object/array (or a slice of values) under `label`: inline when
+/// Render a JSON object/array under `label`: inline when
 /// its compact one-line form fits the value column, otherwise pretty-printed as an
 /// indented block. The inline-vs-block layout is delegated to [`render_field`].
-fn render_json_field<T: serde::Serialize>(label: &str, value: &T) -> String {
+fn render_json_field(label: &str, value: &Value) -> String {
     let compact = serde_json::to_string(value).unwrap_or_default();
     if fits_inline(label, &compact) {
         render_field(label, &compact)
@@ -3223,16 +3236,45 @@ mod tests {
         assert!(out.contains("total_output_mb"));
         assert!(!out.contains("Examples"));
 
-        // Several small values collapse into one inline JSON array.
+        // Several values print one per line under `Result`.
         let multi = non_event_property(
             "Two values",
             PropertyStatus::Passing,
             vec![json!(1), json!(2)],
             vec![],
         );
+        let out = render_property_detail(&multi);
+        assert!(out.contains("Result\n  1\n  2"), "got: {out}");
+
+        // A string that holds a JSON object shows as compact JSON, unescaped.
+        let encoded = non_event_property(
+            "Container age",
+            PropertyStatus::Passing,
+            vec![
+                json!(r#"{"container":"a","days_old":0}"#),
+                json!("{\"container\":\"b\",\"days_old\":1}\n"),
+            ],
+            vec![],
+        );
+        let out = render_property_detail(&encoded);
         assert!(
-            render_property_detail(&multi).contains("Result    [1,2]"),
-            "multi inline"
+            out.contains(
+                "Result\n  {\"container\":\"a\",\"days_old\":0}\n  {\"container\":\"b\",\"days_old\":1}"
+            ),
+            "got: {out}"
+        );
+        assert!(!out.contains('\\'), "got: {out}");
+
+        // So does a lone one.
+        let lone = non_event_property(
+            "Lone",
+            PropertyStatus::Passing,
+            vec![json!(r#"{"k":1}"#)],
+            vec![],
+        );
+        assert!(
+            render_property_detail(&lone).contains(r#"Result    {"k":1}"#),
+            "lone encoded object"
         );
     }
 

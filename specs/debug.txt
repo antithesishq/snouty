@@ -69,7 +69,8 @@ env SNOUTY_UNSTABLE_FEATURES=teams
 snouty debug --help
 stdout '--duration'
 
-# --duration outside 30 minutes to 6 hours fails before any API call.
+# --duration outside 30 minutes to 6 hours, or not in whole minutes, fails
+#    before any API call.
 ! snouty debug --input-hash abc --run-id run-1 --vtime 1 --duration 29m
 stderr 'invalid value .29m. for .--duration.*must be from 30 minutes to 6 hours'
 ! snouty debug --input-hash abc --run-id run-1 --vtime 1 --duration 6h1m

@@ -127,7 +127,8 @@ impl DurationFlag {
         Ok(duration)
     }
 
-    /// [`parse`](Self::parse) for a flag whose `check` requires whole minutes.
+    /// Returns the duration in minutes. `check` must refuse leftover seconds,
+    /// which this drops.
     fn parse_minutes(&self, value: &str) -> Result<u64, String> {
         self.parse(value).map(|duration| duration.seconds() / 60)
     }

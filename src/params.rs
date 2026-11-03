@@ -54,18 +54,27 @@ pub const ANT_FAULT_EXCLUSIONS: &str = "antithesis.fault_exclusions";
 /// type. Observed on `GET /api/v0/runs/{run_id}` (tenant version 64): a run
 /// launched with `run.caller_type=snouty` reports `creator.type` `snouty`.
 pub const RUN_CALLER_TYPE: &str = "run.caller_type";
+pub const RUN_CREATOR_NAME: &str = "run.creator_name";
+pub const RUN_CRON_SCHEDULE: &str = "run.cron_schedule";
+pub const ANT_GITHUB_CALLBACK_URL: &str = "antithesis.integrations.github.callback_url";
+pub const ANT_GITHUB_TOKEN: &str = "antithesis.integrations.github.token";
 /// Prefix of the user-defined `attrs.<name>` parameters the server records on a run.
 pub const ATTRS_PREFIX: &str = "attrs.";
+/// Prefix of the version control params.
+pub const VCS_PREFIX: &str = "vcs.";
 pub const VCS_REPO_TYPE: &str = "vcs.repo_type";
 pub const VCS_REPO_OWNER: &str = "vcs.repo_owner";
 pub const VCS_REPO_NAME: &str = "vcs.repo_name";
 pub const VCS_REPO_BRANCH: &str = "vcs.repo_branch";
 pub const VCS_VERSION_ID: &str = "vcs.version_id";
 pub const VCS_VERSION_LINK: &str = "vcs.version_link";
+pub const VCS_PR_ID: &str = "vcs.pr_id";
+pub const VCS_PR_LINK: &str = "vcs.pr_link";
+pub const VCS_PR_OWNER: &str = "vcs.pr_owner";
+pub const VCS_PR_TITLE: &str = "vcs.pr_title";
 /// The `vcs.*` parameters that `runs show` lists, with their labels, in display
-/// order. `launch` detects exactly these.
-/// Observed as strings on `GET /api/v0/runs/{run_id}` (tenant version 63), on runs
-/// launched by the Antithesis GitHub trigger action.
+/// order.
+/// Observed as strings on `GET /api/v0/runs/{run_id}` (tenant version 63).
 /// TODO: add `vcs.pr_*` and `vcs.system_name` when a run records them.
 pub const VCS_PARAMS: &[(&str, &str)] = &[
     (VCS_REPO_TYPE, "Repo Type"),
@@ -185,6 +194,16 @@ impl Params {
         self.inner.insert(key.into(), Value::String(value.into()));
     }
 
+    /// Keep only the params whose key passes `keep`.
+    pub fn retain(&mut self, mut keep: impl FnMut(&str) -> bool) {
+        self.inner.retain(|key, _| keep(key));
+    }
+
+    /// The value of `key`, when it is a string.
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.inner.get(key).and_then(Value::as_str)
+    }
+
     /// Check if a key exists in the params.
     pub fn contains_key(&self, key: &str) -> bool {
         self.inner.contains_key(key)
@@ -199,6 +218,13 @@ impl Params {
     pub fn merge(&mut self, other: Params) {
         for (key, value) in other.inner {
             self.inner.insert(key, value);
+        }
+    }
+
+    /// Inserts each key of `defaults` that `self` does not hold.
+    pub fn merge_defaults(&mut self, defaults: Params) {
+        for (key, value) in defaults.inner {
+            self.inner.entry(key).or_insert(value);
         }
     }
 

@@ -23,7 +23,6 @@ use snouty::container;
 use snouty::docs;
 use snouty::error::user_error;
 use snouty::features::{self, Feature};
-use snouty::git::{self, GitHubRepo};
 use snouty::login::cmd_login;
 use snouty::params::{
     ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_LENGTH_HOURS, ANT_DEBUGGING_RUN_ID,
@@ -31,9 +30,9 @@ use snouty::params::{
     ANT_EVENT_DESCRIPTION, ANT_FAULT_EXCLUSIONS, ANT_FAULT_TOLERANCE, ANT_FILTER_LOGS_MATCHING,
     ANT_FILTER_SOURCE_MATCHING, ANT_IS_EPHEMERAL, ANT_MAX_COMPUTE_HOURS, ANT_PERFORMANCE_TIER,
     ANT_REPORT_RECIPIENTS, ANT_SETUP_TIMEOUT, ANT_SOURCE, ANT_TEST_NAME, DuplicateKey, Params,
-    RUN_CALLER_TYPE, VCS_PARAMS, VCS_REPO_BRANCH, VCS_REPO_NAME, VCS_REPO_OWNER, VCS_REPO_TYPE,
-    VCS_VERSION_ID, VCS_VERSION_LINK,
+    VCS_PREFIX,
 };
+use snouty::run_metadata;
 use snouty::settings::Settings;
 use snouty::stdio::{self, StreamClosed};
 use snouty::validate;
@@ -319,23 +318,12 @@ async fn cmd_launch(
         return Err(user_error("invalid arguments: no parameters provided"));
     }
 
-    // A user value for any detected key turns detection off, so that a
-    // detected commit link cannot point at a different commit. A pre-built
-    // config image has no config dir, and the current directory need not hold
-    // its source, so it turns detection off too.
-    let prebuilt_image = args.config.is_none() && params.contains_key(ANT_CONFIG_IMAGE);
-    if !args.no_vcs
-        && !prebuilt_image
-        && !VCS_PARAMS.iter().any(|&(key, _)| params.contains_key(key))
-    {
-        params.merge(detect_vcs_params(
-            args.config.as_deref().unwrap_or(Path::new(".")),
-        ));
+    let mut metadata = run_metadata::detect(args.config.as_deref().unwrap_or(Path::new(".")));
+    if args.no_vcs {
+        metadata.retain(|key| !key.starts_with(VCS_PREFIX));
     }
-
-    if !params.contains_key(RUN_CALLER_TYPE) {
-        params.insert(RUN_CALLER_TYPE, "snouty");
-    }
+    // A user value replaces the detected one.
+    params.merge_defaults(metadata);
 
     params.validate_test_params()?;
 
@@ -407,7 +395,15 @@ async fn cmd_launch(
         );
     }
 
-    let response = submit_launch(&launcher, params, &api).await?;
+    let response = submit_launch(&launcher, &params, &api).await?;
+
+    // A failed status update does not fail the launch: the run has started,
+    // and Antithesis still posts the result.
+    match run_metadata::post_pending_status(&params).await {
+        Some(Ok(context)) => eprintln!("Set the GitHub commit status {context} to pending"),
+        Some(Err(err)) => eprintln!("warning: {err:#}"),
+        None => {}
+    }
 
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -436,33 +432,9 @@ async fn cmd_launch(
     Ok(())
 }
 
-/// The `vcs.*` params for the git checkout that holds `dir`, in the shape the
-/// Antithesis GitHub trigger action sends them. Empty outside a git checkout.
-fn detect_vcs_params(dir: &Path) -> Params {
-    let mut vcs = Params::new();
-    let Some(checkout) = git::checkout(dir) else {
-        return vcs;
-    };
-    if let Some(repo) = checkout
-        .origin
-        .as_ref()
-        .and_then(|url| GitHubRepo::try_from(url).ok())
-    {
-        vcs.insert(VCS_REPO_TYPE, "github");
-        vcs.insert(VCS_VERSION_LINK, repo.commit_url(&checkout.commit));
-        vcs.insert(VCS_REPO_OWNER, repo.owner);
-        vcs.insert(VCS_REPO_NAME, repo.name);
-    }
-    if let Some(branch) = checkout.branch {
-        vcs.insert(VCS_REPO_BRANCH, branch);
-    }
-    vcs.insert(VCS_VERSION_ID, checkout.commit);
-    vcs
-}
-
 async fn submit_launch(
     launcher: &str,
-    params: Params,
+    params: &Params,
     api: &AntithesisApi,
 ) -> Result<snouty::api::LaunchResponse> {
     params.validate_test_params()?;
@@ -472,7 +444,7 @@ async fn submit_launch(
         serde_json::to_string_pretty(&params.to_redacted_map())?
     );
 
-    api.launch_test(launcher, &params).await
+    api.launch_test(launcher, params).await
 }
 
 fn debug_typed_params(args: &DebugArgs) -> Params {

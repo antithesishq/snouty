@@ -136,6 +136,24 @@ fn require(ok: bool, message: &str) -> Result<(), String> {
     ok.then_some(()).ok_or_else(|| message.to_string())
 }
 
+/// Refuses a duration outside `minutes`, with `range_message`, or one that is
+/// not a whole number of minutes.
+fn require_whole_minutes(
+    duration: HumanDuration,
+    minutes: std::ops::RangeInclusive<u64>,
+    range_message: &str,
+) -> Result<(), String> {
+    let seconds = duration.seconds();
+    require(
+        (minutes.start() * 60..=minutes.end() * 60).contains(&seconds),
+        range_message,
+    )?;
+    require(
+        seconds.is_multiple_of(60),
+        "must be a whole number of minutes",
+    )
+}
+
 /// A run takes minutes to hours, so polling more often than once a minute
 /// sees nothing sooner and only loads the API.
 const POLL_INTERVAL: DurationFlag = DurationFlag {
@@ -172,26 +190,22 @@ const SETUP_TIMEOUT: DurationFlag = DurationFlag {
     bare: BareUnit::Refused,
     examples: &["10m", "30m"],
     check: |timeout| {
-        let seconds = timeout.seconds();
-        if !(60..=MAX_SETUP_TIMEOUT_MINUTES * 60).contains(&seconds) {
-            return Err(format!(
-                "must be from 1 to {MAX_SETUP_TIMEOUT_MINUTES} minutes"
-            ));
-        }
-        require(seconds % 60 == 0, "must be a whole number of minutes")
+        require_whole_minutes(
+            timeout,
+            1..=MAX_SETUP_TIMEOUT_MINUTES,
+            &format!("must be from 1 to {MAX_SETUP_TIMEOUT_MINUTES} minutes"),
+        )
     },
 };
 
-/// The range that the API accepts for `antithesis.debugging.length_hours`.
+/// The range that the API accepts for `antithesis.debugging.duration`, a
+/// whole number of minutes.
 const DEBUG_DURATION: DurationFlag = DurationFlag {
     name: "--duration",
     bare: BareUnit::Minutes,
     examples: &["45m", "2h", "1h30m"],
     check: |duration| {
-        require(
-            (30 * 60..=6 * 60 * 60).contains(&duration.seconds()),
-            "must be from 30 minutes to 6 hours",
-        )
+        require_whole_minutes(duration, 30..=6 * 60, "must be from 30 minutes to 6 hours")
     },
 };
 
@@ -665,13 +679,13 @@ pub struct LaunchArgs {
 
     #[arg(
         long,
-        value_parser = |v: &str| SETUP_TIMEOUT.parse(v).map(|t| t.seconds() / 60),
+        value_parser = |v: &str| SETUP_TIMEOUT.parse(v),
         hide = !features::is_enabled(Feature::Teams),
         help = "Fail the run immediately if setup takes longer than this, in whole \
                 minutes with a unit, such as 10m, from 1m to 30m. The default is 5m. \
                 Requires tenant version 66 or newer",
     )]
-    pub setup_timeout: Option<u64>,
+    pub setup_timeout: Option<HumanDuration>,
 
     /// Mark the test run as ephemeral, so it does not appear in future reports
     /// as a historic result. A launch without --source is ephemeral already.
@@ -768,8 +782,6 @@ pub struct DebugArgs {
     #[arg(long)]
     pub vtime: VTime,
 
-    // We send it to the API as `.hours().to_string()`, the (possibly
-    // fractional) hour count that `antithesis.debugging.length_hours` wants.
     #[arg(
         long,
         value_parser = |v: &str| DEBUG_DURATION.parse(v),

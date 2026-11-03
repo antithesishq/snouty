@@ -36,6 +36,10 @@ jobs:
     runs-on: "ubuntu-24.04"
     # Hold the run here until a reviewer approves it.
     environment: release
+    # An explicit bash adds pipefail, so a failed curl or jq fails its step.
+    defaults:
+      run:
+        shell: bash
     # release.yml grants the publish job `id-token: write` and
     # `packages: write`. A called workflow can only narrow that grant, so this
     # job keeps the OIDC permission it needs and drops the rest. `contents`
@@ -107,6 +111,8 @@ jobs:
             | .bin |= {snouty: .snouty}
           ' package/package.json > package.json
           mv package.json package/package.json
+          # A published version cannot be replaced, so check the edit first.
+          jq -e '.bin.snouty and .mcpName == env.name' package/package.json > /dev/null
           # A prerelease must not become the version that `npm install` picks.
           tag=latest
           case $version in *-*) tag=next ;; esac

@@ -18,9 +18,10 @@ targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-musl", "x86_64-unknown
 install-path = "~/.local/bin"
 # Whether to install an updater program
 install-updater = true
-# Publish the crates to crates.io from CI (.github/workflows/publish-crates.yml)
+# Publish the crates to crates.io, the npm package to npm, and server.json to
+# the MCP Registry from CI (.github/workflows/publish-crates.yml)
 publish-jobs = ["./publish-crates"]
-# Publish -rc.N tags to crates.io as well as stable tags
+# Publish -rc.N tags as well as stable tags
 publish-prereleases = true
 # Steps to run before each build, relative to .github/workflows
 github-build-setup = "../build-setup.yml"

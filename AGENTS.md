@@ -124,7 +124,10 @@ Say:
 - a consequence that changes the user's choice: "snouty cannot validate the
   image or pin it to a digest";
 - what the command prints: the columns, the line layout, the JSON shape;
-- the next command, when there is an obvious one.
+- the next command, when there is an obvious one;
+- what snouty does not do, when readers (people or agents) would otherwise
+  assume it does: snouty does not build or pull service images, so the user
+  must build them first.
 
 Leave out:
 
@@ -140,7 +143,7 @@ Examples from review:
 
 | Before | After |
 |---|---|
-| Compose service images must already exist locally — snouty never pulls — unless --allow-remote-images is set. | By default all images must be available locally. Use --allow-remote-images to skip this check. |
+| Compose service images must already exist locally — snouty never pulls — unless --allow-remote-images is set. | snouty does not build or pull your service images, and does not run `build:` stanzas. By default, every image must be in the local image store, for example from `docker compose build`. Use --allow-remote-images to skip this check. |
 | A run must fuzz for at least 15 minutes, a quarter of an hour, so the minimum budget is a quarter of the tier's cores. snouty refuses a launch below the minimum, and names it. | The minimum budget is a quarter of the tier's cores: 12 compute hours on standard, 24 on fast and 48 on turbo. |
 | For a moment off the session's own timeline, name the run it comes from with --source-run-id. | Use --source-run-id to load a moment from a different run. |
 | Then docker push signs in with your snouty credential, and docker login is not necessary. Podman also reads `${XDG_RUNTIME_DIR}/containers/auth.json`… | Then `docker push`, `docker pull`, `podman push` and `podman pull` automatically use your snouty credentials for the Antithesis docker registry. |

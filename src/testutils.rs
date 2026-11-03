@@ -1316,7 +1316,7 @@ fn mock_route_get_run_logs(run_id: &str) -> (u16, String) {
 }
 
 /// The properties every run in `MOCK_RUNS` reports, in the order `[failing,
-/// failing_nonevent, undetermined, passing]`. The list route pages over them
+/// failing_nonevent, pending, passing]`. The list route pages over them
 /// and the lookup route finds one by ID.
 ///
 /// Full-precision vtimes so a precision fault fails a spec (see specs/runs.txt).
@@ -1359,11 +1359,11 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
         .collect();
     let after = mock_query_param(query, "after");
 
-    let [failing, failing_nonevent, undetermined, passing] = MOCK_PROPERTIES;
+    let [failing, failing_nonevent, pending, passing] = MOCK_PROPERTIES;
 
     let (data, next_cursor) = match after.as_deref() {
         _ if !statuses.is_empty() => {
-            let all = [failing, failing_nonevent, undetermined, passing];
+            let all = [failing, failing_nonevent, pending, passing];
             let data = all
                 .into_iter()
                 .filter(|p| {
@@ -1375,7 +1375,7 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
             (data, None)
         }
         None => (vec![failing, failing_nonevent], Some("props-cursor-1")),
-        Some("props-cursor-1") => (vec![passing, undetermined], None),
+        Some("props-cursor-1") => (vec![passing, pending], None),
         Some(_) => (vec![], None),
     };
 
@@ -1432,11 +1432,11 @@ fn mock_route_stream_run_status(run_id: &str, req_body: &str) -> (u16, String) {
     let request: Value = serde_json::from_str(req_body).unwrap_or_default();
     let ids = request["property_filter"].as_array();
     let types = request["notification_type_filter"].as_array();
-    let [failing, failing_nonevent, undetermined, mut passing] =
+    let [failing, failing_nonevent, pending, mut passing] =
         MOCK_PROPERTIES.map(|p| serde_json::from_str::<Value>(p).unwrap());
     // Every property on the stream has an ID (release 65.3 and later).
     passing["id"] = json!(MOCK_STREAM_PASSING_ID);
-    let mut resolved = undetermined.clone();
+    let mut resolved = pending.clone();
     resolved["status"] = json!("Passing");
     let mut new_examples = failing.clone();
     new_examples["examples"] = json!([]);
@@ -1446,7 +1446,7 @@ fn mock_route_stream_run_status(run_id: &str, req_body: &str) -> (u16, String) {
     // NEW_EXAMPLES_FOUND carries a new sample, and the PROPERTIES_FAILED
     // after it repeats the samples the server keeps, that one included.
     let changes = [
-        ("NEW_PROPERTIES_ADDED", undetermined),
+        ("NEW_PROPERTIES_ADDED", pending),
         ("NEW_PROPERTIES_ADDED", failing_nonevent),
         ("NEW_EXAMPLES_FOUND", new_examples),
         ("PROPERTIES_FAILED", failing),

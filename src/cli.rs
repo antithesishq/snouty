@@ -865,9 +865,9 @@ pub enum RunsCommands {
         #[arg(long)]
         failing: bool,
 
-        /// Show undetermined properties; combine with the other status filters
+        /// Show pending properties; combine with the other status filters
         #[arg(long)]
-        undetermined: bool,
+        pending: bool,
 
         /// Filter properties by name (matched by substring, case-insensitive)
         #[arg(long)]

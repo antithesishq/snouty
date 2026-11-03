@@ -184,7 +184,7 @@ pub async fn cmd_runs(
             run_id,
             passing,
             failing,
-            undetermined,
+            pending,
             name,
             group,
             detail,
@@ -192,7 +192,7 @@ pub async fn cmd_runs(
             let statuses = [
                 (passing, PropertyStatus::Passing),
                 (failing, PropertyStatus::Failing),
-                (undetermined, PropertyStatus::Pending),
+                (pending, PropertyStatus::Pending),
             ]
             .into_iter()
             .filter_map(|(on, status)| on.then_some(status))
@@ -930,18 +930,9 @@ fn property_status_word(status: &PropertyStatus) -> Cow<'static, str> {
     match status {
         PropertyStatus::Passing => "passing".into(),
         PropertyStatus::Failing => "failing".into(),
-        PropertyStatus::Pending => "undetermined".into(),
+        PropertyStatus::Pending => "pending".into(),
         PropertyStatus::Other(_) => status.to_string().into(),
     }
-}
-
-/// The colored status word for the property detail.
-fn property_status_label(status: &PropertyStatus) -> String {
-    let word = match status {
-        PropertyStatus::Pending => "pending".into(),
-        _ => property_status_word(status),
-    };
-    style_property_status(status, word)
 }
 
 fn style_property_status(status: &PropertyStatus, word: Cow<'_, str>) -> String {
@@ -1063,7 +1054,7 @@ fn render_property_detail(property: &Property) -> String {
     }
     out.push_str(&render_field(
         "Status",
-        &property_status_label(property.status()),
+        &style_property_status(property.status(), property_status_word(property.status())),
     ));
     out.push('\n');
     match property {

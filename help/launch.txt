@@ -11,7 +11,7 @@ Example:
 {%- endif %}
     --recipients "team@example.com"
 
-The -c/--config flag points at a local directory containing docker-compose.yaml (this is the config image source, unrelated to snouty's own settings file). By default, every image that the run needs must be in the local image store, and snouty pushes them automatically. Add --allow-remote-images to skip this check for images that are not on this machine.
+The -c/--config flag points at a local directory containing docker-compose.yaml (this is the config image source, unrelated to snouty's own settings file). By default, every image that the run needs must be in the local image store, and snouty pushes them automatically. snouty does not build or pull your service images, and it ignores `build:` stanzas, so build them first, for example with `docker compose build`. Add {{ t("--allow-remote-images")? }} to skip this check for images that are not on this machine.
 
 Alternatively, pass a pre-built config image directly:
   snouty launch --launcher basic_test \

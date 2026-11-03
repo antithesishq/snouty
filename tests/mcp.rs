@@ -584,7 +584,10 @@ fn mcp_registry_entry_matches_the_crate() {
     let entry = read_json("server.json");
     let schema = read_json("tests/fixtures/mcp-server.schema.json");
     assert_eq!(entry["$schema"], schema["$id"]);
-    let validator = jsonschema::validator_for(&schema).unwrap();
+    let validator = jsonschema::options()
+        .should_validate_formats(true)
+        .build(&schema)
+        .unwrap();
     let errors: Vec<String> = validator
         .iter_errors(&entry)
         .map(|error| error.to_string())

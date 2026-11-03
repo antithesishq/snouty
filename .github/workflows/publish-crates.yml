@@ -67,8 +67,11 @@ jobs:
       # so an -rc.N would replace the stable listing. MCP_PRIVATE_KEY is a hex
       # Ed25519 key. Its public half is in the antithesis.com TXT record
       # `v=MCPv1; k=ed25519; p=...`.
+      # A failure here must not hold back the release announcement, which waits
+      # for this job. Re-run the job to retry: each step skips what is done.
       - name: Publish to the MCP Registry
         if: ${{ !fromJson(inputs.plan).announcement_is_prerelease }}
+        continue-on-error: true
         env:
           MCP_PRIVATE_KEY: ${{ secrets.MCP_PRIVATE_KEY }}
         run: |

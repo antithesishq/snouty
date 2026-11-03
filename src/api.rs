@@ -1788,13 +1788,13 @@ fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
 
 /// Resolve the error from a launch / debugging-launch webhook call.
 ///
-/// The spec documents 202 as the only success, and the generated client
-/// surfaces any other 2xx as `UnexpectedResponse`. Release 67.0 answers 202 for
-/// `basic_test` and `debugging`, but older tenants answered 200, so this treats
-/// **any** 2xx as success and decodes the body itself. Failures (4xx/5xx) are
-/// formatted as errors, status first — `build.rs` leaves them undocumented, so
-/// the status is always there to lead with. TODO: drop the any-2xx arm once
-/// every supported tenant and launcher answers 202.
+/// Any 2xx is success. The spec documents only 202, and the generated client
+/// surfaces any other 2xx as `UnexpectedResponse`. Earlier releases answered
+/// 200. On orbitinghail, release 67.0 answers 202 for `basic_test` and
+/// `debugging`, but nobody has checked the other launchers. A 4xx or 5xx
+/// becomes an error that leads with the status, which `build.rs` leaves
+/// undocumented. TODO: drop the any-2xx arm once every launcher is seen to
+/// answer 202 and no supported release answers 200.
 async fn recover_launch_error<T: DeserializeOwned>(err: ClientError<()>) -> Result<T> {
     match err {
         ClientError::UnexpectedResponse(response) if response.status().is_success() => response
@@ -2833,8 +2833,6 @@ mod tests {
         );
     }
 
-    // The launch webhooks answer an undocumented HTTP 200. snouty accepts any
-    // 2xx as success.
     #[tokio::test]
     async fn launch_test_accepts_200_webhook_envelope() {
         let mock_server = mock_launch_test(200, LAUNCH_OK_BODY).await;

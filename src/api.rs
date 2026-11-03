@@ -1500,6 +1500,13 @@ fn format_request(
     }
     match std::str::from_utf8(bytes) {
         Ok(text) => {
+            // A body that is not JSON holds no params, so it prints as sent.
+            let redacted = serde_json::from_str::<serde_json::Value>(text)
+                .ok()
+                .and_then(|mut json| {
+                    crate::params::redact_sensitive(&mut json).then(|| json.to_string())
+                });
+            let text = redacted.as_deref().unwrap_or(text);
             out.push_str(">\n");
             out.push_str(text);
             if !text.ends_with('\n') {
@@ -2185,8 +2192,8 @@ mod tests {
     use crate::testutils::auth::{jwt_expiring_in, oauth_credential_in, paseto_expiring_in};
     use crate::testutils::fake_secrets::{
         FAKE_ACCESS_TOKEN_A, FAKE_ACCESS_TOKEN_B, FAKE_API_KEY_A, FAKE_BASIC_AUTHORIZATION,
-        FAKE_OAUTH_FLOW_TOKEN, FAKE_OIDC_REQUEST_TOKEN, FAKE_PASSWORD, FAKE_REFRESH_TOKEN_A,
-        FAKE_REFRESH_TOKEN_B, FAKE_SESSION_COOKIE, FAKE_USERNAME, MARKER,
+        FAKE_GITHUB_TOKEN, FAKE_OAUTH_FLOW_TOKEN, FAKE_OIDC_REQUEST_TOKEN, FAKE_PASSWORD,
+        FAKE_REFRESH_TOKEN_A, FAKE_REFRESH_TOKEN_B, FAKE_SESSION_COOKIE, FAKE_USERNAME, MARKER,
     };
     use hegel::{Generator, generators};
     use std::sync::Arc;
@@ -2295,6 +2302,33 @@ mod tests {
         assert!(!out.contains(MARKER));
         assert!(out.contains("content-type: application/json"));
         assert!(out.contains(r#"{"hello":"world"}"#));
+    }
+
+    #[test]
+    fn format_request_redacts_sensitive_params() {
+        let mut request = reqwest::Request::new(
+            reqwest::Method::POST,
+            "http://example.com/api/v1/launch/basic_test"
+                .parse()
+                .unwrap(),
+        );
+        *request.body_mut() = Some(
+            serde_json::json!({"params": {
+                "antithesis.integrations.github.token": FAKE_GITHUB_TOKEN,
+                "antithesis.test_name": "smoke",
+                "antithesis.report.recipients": "team@example.com",
+            }})
+            .to_string()
+            .into(),
+        );
+
+        let mut out = String::new();
+        format_request(&request, &HeaderMap::new(), LoggedBody::Shown, &mut out);
+
+        assert!(!out.contains(FAKE_GITHUB_TOKEN));
+        assert!(!out.contains("team@example.com"));
+        assert!(out.contains(r#""antithesis.integrations.github.token":"[REDACTED]""#));
+        assert!(out.contains(r#""antithesis.test_name":"smoke""#));
     }
 
     #[test]

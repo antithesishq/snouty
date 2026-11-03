@@ -501,6 +501,31 @@ class GalleryRunHelpers(unittest.TestCase):
         self.assertEqual(gallery.property_id_named(rows, self.BUG), "b")
         self.assertEqual(gallery.property_id_named(rows[:1], self.BUG), "")
 
+    def test_pending_story_needs_only_pending_rows_and_the_note(self):
+        story = next(
+            s
+            for s in gallery.build_ready_stories(
+                gallery.Discovery(),
+                gallery.GalleryRun(run=self.RUN),
+                gallery.Result([], "", "", 0),
+            )
+            if s.slug == "runs-properties--pending"
+        )
+        stdout = f"pending  106  0  p1  {self.BUG}\n\n{gallery.PENDING_NOTE}\n"
+        result = gallery.Result(story.args, stdout, "", 0)
+        pending = {"id": "p1", "status": "Pending"}
+        run = gallery.StoryRun(story, result, [pending])
+        self.assertTrue(story.check(run, gallery.Registry())[0])
+        for rows in ([], [pending, {"id": "p2", "status": "Failing"}]):
+            with self.subTest(rows=rows):
+                run.rows = rows
+                self.assertFalse(story.check(run, gallery.Registry())[0])
+        run.rows = [pending]
+        result.stdout = f"pending  106  0  p1  {self.BUG}\n"
+        self.assertFalse(story.check(run, gallery.Registry())[0])
+        result.stdout, result.returncode = stdout, 1
+        self.assertFalse(story.check(run, gallery.Registry())[0])
+
     def transcript(self, *, verdict="failed", last=None):
         lines = [
             f"property   p1  {self.BUG}",

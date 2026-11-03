@@ -23,7 +23,8 @@ There are three kinds of story:
     validates the example project in examples/antithesis, `launch` starts a
     15-minute run of it, and `runs-stream-run` (and `--json`) follow the run's
     property stream from the launch to the end. Once the run is ready, the
-    `runs exec` stories (`runs-exec*`) execute in it, and the rewarm stories
+    `runs exec` stories (`runs-exec*`) execute in it, `runs-properties--pending`
+    lists the properties that it has not decided yet, and the rewarm stories
     load shallow moments of another completed run into it. Once it is final,
     the result stories (`runs-wait-run`, `runs-properties-run`, …) read its
     results. The gallery reuses a live run that an earlier gallery launched,
@@ -1566,6 +1567,19 @@ def prepare_exec(sn: Snouty, x: GalleryRun, rewarm: tuple[str, dict, dict]) -> N
     )
 
 
+def wait_for_pending_properties(sn: Snouty, run: str) -> None:
+    """Wait until the in-progress `run` reports a pending property. A run that
+    is ready can report its first property results a little later."""
+    deadline = time.monotonic() + MOMENT_SEARCH_DEADLINE
+    while not sn.json_lines(["runs", "properties", run, "--pending"]):
+        if time.monotonic() > deadline:
+            raise GalleryError(
+                f"{run} has no pending property after {MOMENT_SEARCH_DEADLINE}s"
+            )
+        print(f"  waiting for a pending property in {run}", file=sys.stderr)
+        time.sleep(MOMENT_SEARCH_POLL)
+
+
 def property_id_named(rows: list[dict], name: str) -> str:
     """The ID of the property whose name contains `name`, or "". A grouped
     property's name can carry a `<group>: ` prefix."""
@@ -2390,6 +2404,21 @@ def run_properties(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     return (
         ok and bug_failing,
         f"{detail}, {EXAMPLE_BUG_PROPERTY!r} failing={bug_failing}",
+    )
+
+
+# What `runs properties` prints on stderr when a row is pending.
+PENDING_NOTE = "Some properties are still being processed."
+
+
+def pending_properties(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+    """`runs properties --pending` on the in-progress gallery run: only pending
+    rows, at least one, and the note that tells the user to come back later."""
+    ok, detail = all_status("Pending")(sr, reg)
+    noted = contains_text(sr.result.combined, PENDING_NOTE)
+    return (
+        ok and noted and sr.result.ok,
+        f"exit={sr.result.returncode}, {detail}, note={noted}",
     )
 
 
@@ -3541,8 +3570,8 @@ def build_launch_stories(x: GalleryRun) -> list[Story]:
 
 def build_ready_stories(d: Discovery, x: GalleryRun, wait_ready: Result) -> list[Story]:
     """Stories that need the gallery's run to be ready, most of which execute
-    in it, after `wait_ready` waited for it. No story is JSON-capable, so each
-    script executes once."""
+    in it, after `wait_ready` waited for it. No exec story is JSON-capable, so
+    each script executes once."""
     exec_at = ["runs", "exec", x.run, x.hash, x.vtime]
     script = 'echo "hello from $(uname -n)"; echo "a warning on stderr" >&2'
 
@@ -3574,6 +3603,19 @@ def build_ready_stories(d: Discovery, x: GalleryRun, wait_ready: Result) -> list
             f"that it is ready. The launcher is {GALLERY_RUN_LAUNCHER}.",
             ["runs", "show", x.run],
             contains_all("in_progress:ready", GALLERY_RUN_LAUNCHER),
+        ),
+        Story(
+            "runs-properties--pending",
+            "See which properties my live run has not decided yet",
+            "My run is still in progress, and I want to see the properties that do "
+            "not have a final result yet, and how many examples each has so far.",
+            "A STATUS/✓/✗/ID/NAME table where every row has STATUS `pending`, with the "
+            "passing and failing example counts so far and the full property ID, to "
+            "pass to `snouty runs property`. stderr then says that some properties are "
+            f"still being processed, and to run `snouty runs properties {x.run}` again "
+            "later for the final results. Exit 0.",
+            ["runs", "properties", x.run, "--pending"],
+            pending_properties,
         ),
         exec_story(
             "runs-exec",
@@ -5427,6 +5469,8 @@ def main() -> int:
                         f"run {run.run} did not become ready: {wait_ready.combined}"
                     )
                 prepare_exec(sn, run, rewarm.result())
+                if selected("runs-properties--pending"):
+                    wait_for_pending_properties(sn, run.run)
                 ready = [
                     s
                     for s in build_ready_stories(disc, run, wait_ready)

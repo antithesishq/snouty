@@ -1993,6 +1993,14 @@ const MOMENT_NOT_WARM: [&str; 3] = [
     "moment is not valid in the original run",
 ];
 
+/// Why the server rejected a `runs exec` request in a live run.
+enum ExecRejection {
+    MissingSource,
+    ColdMoment,
+    /// A rewarm did not finish, or the source is not the moment's run.
+    BadRewarm,
+}
+
 /// Add suggestions to a failed `runs exec` request in a run with status
 /// `run_status`, which is ready or complete. `debug_command` starts a
 /// debugging session at the request's moment, and `rewarm_flag` names the
@@ -2003,7 +2011,10 @@ const MOMENT_NOT_WARM: [&str; 3] = [
 /// require an active run.` Otherwise, the server's responses on orbitinghail
 /// mean:
 ///
-/// - 404 `Resource not found` (release 64.0): the source does not exist.
+/// - 404 `Resource not found`: the source session (release 67.0), or any
+///   source (release 64.0), does not exist.
+/// - 400 `Source run '<id>' does not exist.` (release 67.0): the source run
+///   does not exist.
 /// - A 400 that `MOMENT_NOT_WARM` matches: the moment is cold and there is
 ///   no source.
 /// - Any other 400 (release 64.0): a rewarm did not finish, or the source is
@@ -2027,16 +2038,29 @@ fn explain_exec_error(
                 indent_lines(debug_command, "  ")
             ));
     }
-    let cold = api_error_message(&err)
-        .is_some_and(|m| MOMENT_NOT_WARM.iter().any(|marker| m.contains(marker)));
-    match (status, rewarm_flag) {
-        (404, Some(flag)) => err.suggestion(format!("check that {flag} names an existing source")),
-        (400, None) if cold => {
+    let message = api_error_message(&err).unwrap_or_default();
+    let rejection = match status {
+        404 => ExecRejection::MissingSource,
+        400 if message.contains("Source run '") => ExecRejection::MissingSource,
+        400 if MOMENT_NOT_WARM
+            .iter()
+            .any(|marker| message.contains(marker)) =>
+        {
+            ExecRejection::ColdMoment
+        }
+        400 => ExecRejection::BadRewarm,
+        _ => return err,
+    };
+    match (rejection, rewarm_flag) {
+        (ExecRejection::MissingSource, Some(flag)) => {
+            err.suggestion(format!("check that {flag} names an existing source"))
+        }
+        (ExecRejection::ColdMoment, None) => {
             err.suggestion("use --source-run-id to load a moment from a different run")
         }
-        (400, Some(flag)) => err.suggestion(format!(
-            "check that {flag} names the run the moment comes from"
-        )),
+        (ExecRejection::ColdMoment | ExecRejection::BadRewarm, Some(flag)) => err.suggestion(
+            format!("check that {flag} names the run the moment comes from"),
+        ),
         _ => err,
     }
 }

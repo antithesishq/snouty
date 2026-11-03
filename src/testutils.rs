@@ -1642,10 +1642,15 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     }
 
     let script = request["script"].as_str().unwrap_or_default();
-    // An unknown rewarm source answers the live endpoint's bare 404.
-    if request["source_run_id"] == "no-such-run"
-        || request["source_session_id"] == "no-such-session"
-    {
+    // orbitinghail (release 67.0) answers an unknown source run with this 400,
+    // and an unknown source session with a bare 404.
+    if request["source_run_id"] == "no-such-run" {
+        return (
+            400,
+            r#"{"message":"Source run 'no-such-run' does not exist."}"#.to_string(),
+        );
+    }
+    if request["source_session_id"] == "no-such-session" {
         return (404, MOCK_BARE_404_BODY.to_string());
     }
     // A cold moment stands for a moment from another run. Without a source,

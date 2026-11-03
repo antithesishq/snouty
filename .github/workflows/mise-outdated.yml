@@ -64,15 +64,24 @@ jobs:
             echo "mise outdated could not look up every tool" >&2
             exit 1
           fi
-          tools=$(jq -r 'to_entries[] | "| `\(.key)` | \(.value.requested) | \(.value.latest) |"' <<< "$outdated")
+          # A pin younger than the cooldown makes mise report an older release
+          # as latest, so keep only releases newer than the pin.
+          tools=""
+          while IFS=$'\t' read -r tool pinned newest; do
+            if [ "$newest" != "$pinned" ] && [ "$(printf '%s\n' "$pinned" "$newest" | sort -V | tail -1)" = "$newest" ]; then
+              tools+="| \`$tool\` | $pinned | $newest |"$'\n'
+            fi
+          done < <(jq -r 'to_entries[] | [.key, .value.requested, .value.latest] | @tsv' <<< "$outdated")
           if [ -n "$tools" ]; then
             body+="**mise.toml tools.** Change each version in \`mise.toml\`, then run \`mise lock --platform linux-x64,macos-arm64,macos-x64\`. After a gh-aw bump, also run \`mise run aw:compile\`."$'\n\n'
-            body+="| Tool | Pinned | Latest |"$'\n'"|---|---|---|"$'\n'"$tools"$'\n\n'
+            body+="| Tool | Pinned | Latest |"$'\n'"|---|---|---|"$'\n'"$tools"$'\n'
           fi
 
           issue_title="Update mise and its tools"
-          issue=$(gh issue list --state open --limit 500 --json number,title \
-            --jq "map(select(.title == \"$issue_title\")) | .[0].number // empty")
+          # Only an issue this workflow opened, never one that someone else
+          # titled the same.
+          issue=$(gh issue list --state open --limit 500 --json number,title,author \
+            --jq "map(select(.title == \"$issue_title\" and .author.login == \"app/github-actions\")) | .[0].number // empty")
           footer="Releases count once they are a week old. Filed by \`.github/workflows/mise-outdated.yml\`, because Dependabot does not update mise."
           if [ -z "$body" ]; then
             echo "mise $current and every mise.toml tool are current"

@@ -591,19 +591,17 @@ fn mcp_registry_entry_matches_the_crate() {
     let packages = entry["packages"].as_array().unwrap();
     let identifiers: Vec<_> = packages
         .iter()
-        .map(|package| {
-            (
-                package["registryType"].as_str().unwrap(),
-                package["identifier"].as_str().unwrap(),
-            )
-        })
+        .map(|package| json!([package["registryType"], package["identifier"]]))
         .collect();
     // npm comes first, because a client that installs only one package, such
     // as VS Code, takes the first one, and few clients can install a crate.
-    let npm_package = format!("{npm_scope}/{}", env!("CARGO_PKG_NAME"));
+    let crate_name = env!("CARGO_PKG_NAME");
     assert_eq!(
         identifiers,
-        [("npm", npm_package.as_str()), ("cargo", env!("CARGO_PKG_NAME"))]
+        [
+            json!(["npm", format!("{npm_scope}/{crate_name}")]),
+            json!(["cargo", crate_name])
+        ]
     );
     for package in packages {
         assert_eq!(package["version"], version);

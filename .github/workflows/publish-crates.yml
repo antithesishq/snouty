@@ -72,26 +72,39 @@ jobs:
               cargo publish -p "$crate"
             fi
           done
+      # server.json, the MCP Registry entry, names the server and its npm
+      # package. tests/mcp.rs checks that its version is the crate's.
+      - name: Read server.json
+        id: entry
+        run: |
+          {
+            echo "name=$(jq -r .name server.json)"
+            echo "version=$(jq -r .version server.json)"
+            echo "npm-package=$(jq -r '.packages[] | select(.registryType == "npm") | .identifier' server.json)"
+          } >> "$GITHUB_OUTPUT"
       # dist builds the npm package and attaches it to the GitHub Release; this
       # step publishes it, because dist cannot add mcpName, which the MCP
       # Registry checks to verify the package. The step also sets the
       # repository URL in the form that Trusted Publishing compares to this
-      # repository, and drops the docker-credential-snouty command: npm's
-      # wrapper starts snouty under its own name, so snouty would not act as
-      # the credential helper. A launch links the helper itself.
+      # repository, and keeps only the snouty command, dropping the
+      # docker-credential-snouty alias: npm's wrapper starts snouty under its
+      # own name, so snouty would not act as the credential helper. A launch
+      # links the helper itself.
       - name: Publish to npm
+        env:
+          name: ${{ steps.entry.outputs.name }}
+          version: ${{ steps.entry.outputs.version }}
+          package: ${{ steps.entry.outputs.npm-package }}
         run: |
-          version=$(cargo pkgid -p snouty | sed 's/.*[@#]//')
-          package=$(jq -r '.packages[] | select(.registryType == "npm") | .identifier' server.json)
           if [ -n "$(npm view "$package@$version" version 2> /dev/null)" ]; then
             echo "$package $version is already on npm"
             exit 0
           fi
-          curl -fsSL --retry 3 "https://github.com/antithesishq/snouty/releases/download/v$version/snouty-npm-package.tar.gz" | tar xz
-          jq --arg name "$(jq -r .name server.json)" '
+          curl -fsSL --retry 3 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/v$version/snouty-npm-package.tar.gz" | tar xz
+          jq --arg name "$name" --arg url "git+$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" '
             .mcpName = $name
-            | .repository = {type: "git", url: "git+https://github.com/antithesishq/snouty.git"}
-            | del(.bin["docker-credential-snouty"])
+            | .repository = {type: "git", url: $url}
+            | .bin |= {snouty: .snouty}
           ' package/package.json > package.json
           mv package.json package/package.json
           # A prerelease must not become the version that `npm install` picks.
@@ -106,9 +119,10 @@ jobs:
       - name: Publish to the MCP Registry
         env:
           MCP_PRIVATE_KEY: ${{ secrets.MCP_PRIVATE_KEY }}
+          name: ${{ steps.entry.outputs.name }}
+          version: ${{ steps.entry.outputs.version }}
+          package: ${{ steps.entry.outputs.npm-package }}
         run: |
-          name=$(jq -r .name server.json)
-          version=$(jq -r .version server.json)
           if curl -sf -o /dev/null "https://registry.modelcontextprotocol.io/v0/servers/${name/\//%2F}/versions/$version?include_deleted=true"; then
             echo "$name $version is already in the MCP Registry"
             exit 0
@@ -118,7 +132,6 @@ jobs:
           # line from the crate's README on crates.io. Both registries serve a
           # new version some time after the upload. Wait for them, so that the
           # one publish fails only on a real error.
-          package=$(jq -r '.packages[] | select(.registryType == "npm") | .identifier' server.json)
           for _ in $(seq 20); do
             [ "$(npm view "$package@$version" mcpName 2> /dev/null)" = "$name" ] && break
             sleep 15

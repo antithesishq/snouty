@@ -8,6 +8,7 @@ import textwrap
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 gallery = importlib.import_module("gen-gallery")
 
@@ -525,6 +526,53 @@ class GalleryRunHelpers(unittest.TestCase):
         self.assertFalse(story.check(run, gallery.Registry())[0])
         result.stdout, result.returncode = stdout, 1
         self.assertFalse(story.check(run, gallery.Registry())[0])
+
+    def test_pending_wait_retries_failures_and_gives_up_without_raising(self):
+        class Polls:
+            def __init__(self, answers):
+                self.answers = list(answers)
+                self.calls = 0
+
+            def json_lines(self, args):
+                self.calls += 1
+                answer = self.answers.pop(0) if self.answers else []
+                if isinstance(answer, Exception):
+                    raise answer
+                return answer
+
+        with (
+            mock.patch.object(gallery, "MOMENT_SEARCH_POLL", 0),
+            mock.patch.object(gallery, "MOMENT_SEARCH_DEADLINE", 0.2),
+        ):
+            polls = Polls(
+                [
+                    gallery.GalleryError("exit 1"),
+                    json.JSONDecodeError("bad", "", 0),
+                    [],
+                    [{"status": "Pending"}],
+                ]
+            )
+            gallery.wait_for_pending_properties(polls, self.RUN)
+            self.assertEqual(polls.calls, 4)
+            polls = Polls([gallery.GalleryError("exit 1")])
+            gallery.wait_for_pending_properties(polls, self.RUN)
+            self.assertGreater(polls.calls, 1)
+
+    def test_story_capture_runs_its_before_step_first(self):
+        steps = []
+        story = gallery.Story(
+            "sample",
+            "Sample",
+            "Goal",
+            "Judge",
+            ["-c", "print('captured')"],
+            gallery.non_empty_table,
+            json_capable=False,
+            before=lambda sn: steps.append(sn),
+        )
+        run = gallery.run_story(self.snouty, story)
+        self.assertEqual(steps, [self.snouty])
+        self.assertIn("captured", run.result.combined)
 
     def transcript(self, *, verdict="failed", last=None):
         lines = [

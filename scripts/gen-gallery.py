@@ -1570,14 +1570,24 @@ def prepare_exec(sn: Snouty, x: GalleryRun, rewarm: tuple[str, dict, dict]) -> N
 
 def wait_for_pending_properties(sn: Snouty, run: str) -> None:
     """Wait until the in-progress `run` reports a pending property. A run that
-    is ready can report its first property results a little later."""
+    is ready can report its first property results a little later. After the
+    deadline, return anyway: the story's check then fails, not the gallery."""
     deadline = time.monotonic() + MOMENT_SEARCH_DEADLINE
-    while not sn.json_lines(["runs", "properties", run, "--pending"]):
+    while True:
+        try:
+            if sn.json_lines(["runs", "properties", run, "--pending"]):
+                return
+            reason = "no pending property yet"
+        except (GalleryError, json.JSONDecodeError) as e:
+            reason = str(e)
         if time.monotonic() > deadline:
-            raise GalleryError(
-                f"{run} has no pending property after {MOMENT_SEARCH_DEADLINE}s"
+            print(
+                f"  {run} has no pending property after {MOMENT_SEARCH_DEADLINE}s: "
+                f"{reason}",
+                file=sys.stderr,
             )
-        print(f"  waiting for a pending property in {run}", file=sys.stderr)
+            return
+        print(f"  waiting for a pending property in {run}: {reason}", file=sys.stderr)
         time.sleep(MOMENT_SEARCH_POLL)
 
 
@@ -1660,6 +1670,10 @@ class Story:
     # A result that discovery captured, because later stories depend on its side
     # effects. The story shows it and runs nothing.
     precaptured: Result | None = None
+    # Work that the story's own capture task does before it runs `args`, such
+    # as a wait for the live run to reach a state, so that other stories need
+    # not wait for it.
+    before: Callable[[Snouty], None] | None = None
     # The story starts real containers (a live `snouty validate` sample), as
     # opposed to the static checks that fail before any container starts. All
     # validate stories require a container runtime (see `ensure_validate_runtime`);
@@ -3617,6 +3631,7 @@ def build_ready_stories(d: Discovery, x: GalleryRun, wait_ready: Result) -> list
             "later for the final results. Exit 0.",
             ["runs", "properties", x.run, "--pending"],
             pending_properties,
+            before=lambda sn: wait_for_pending_properties(sn, x.run),
         ),
         exec_story(
             "runs-exec",
@@ -5191,6 +5206,8 @@ def run_mcp_story(sn: Snouty, story: Story) -> StoryRun:
 def run_story(sn: Snouty, story: Story) -> StoryRun:
     if story.precaptured is not None:
         return StoryRun(story, story.precaptured, None)
+    if story.before is not None:
+        story.before(sn)
     if story.mcp_tool is not None:
         return run_mcp_story(sn, story)
     if story.dialogue is not None:
@@ -5470,8 +5487,6 @@ def main() -> int:
                         f"run {run.run} did not become ready: {wait_ready.combined}"
                     )
                 prepare_exec(sn, run, rewarm.result())
-                if selected("runs-properties--pending"):
-                    wait_for_pending_properties(sn, run.run)
                 ready = [
                     s
                     for s in build_ready_stories(disc, run, wait_ready)

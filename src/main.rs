@@ -30,8 +30,9 @@ use snouty::params::{
     ANT_EVENT_DESCRIPTION, ANT_FAULT_EXCLUSIONS, ANT_FAULT_TOLERANCE, ANT_FILTER_LOGS_MATCHING,
     ANT_FILTER_SOURCE_MATCHING, ANT_IS_EPHEMERAL, ANT_MAX_COMPUTE_HOURS, ANT_PERFORMANCE_TIER,
     ANT_REPORT_RECIPIENTS, ANT_SETUP_TIMEOUT, ANT_SOURCE, ANT_TEST_NAME, DuplicateKey, Params,
+    VCS_PREFIX,
 };
-use snouty::run_metadata::{self, VcsDetection};
+use snouty::run_metadata;
 use snouty::settings::Settings;
 use snouty::stdio::{self, StreamClosed};
 use snouty::validate;
@@ -317,17 +318,12 @@ async fn cmd_launch(
         return Err(user_error("invalid arguments: no parameters provided"));
     }
 
-    // A user value replaces the derived one.
-    params.merge_defaults(run_metadata::detect(
-        args.config.as_deref().unwrap_or(Path::new(".")),
-        if args.no_vcs {
-            VcsDetection::Off
-        } else if args.config.is_none() && params.contains_key(ANT_CONFIG_IMAGE) {
-            VcsDetection::GitHubActionsOnly
-        } else {
-            VcsDetection::All
-        },
-    ));
+    let mut metadata = run_metadata::detect(args.config.as_deref().unwrap_or(Path::new(".")));
+    if args.no_vcs {
+        metadata.retain(|key| !key.starts_with(VCS_PREFIX));
+    }
+    // A user value replaces the detected one.
+    params.merge_defaults(metadata);
 
     params.validate_test_params()?;
 

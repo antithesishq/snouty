@@ -60,6 +60,8 @@ pub const ANT_GITHUB_CALLBACK_URL: &str = "antithesis.integrations.github.callba
 pub const ANT_GITHUB_TOKEN: &str = "antithesis.integrations.github.token";
 /// Prefix of the user-defined `attrs.<name>` parameters the server records on a run.
 pub const ATTRS_PREFIX: &str = "attrs.";
+/// Prefix of the version control params.
+pub const VCS_PREFIX: &str = "vcs.";
 pub const VCS_REPO_TYPE: &str = "vcs.repo_type";
 pub const VCS_REPO_OWNER: &str = "vcs.repo_owner";
 pub const VCS_REPO_NAME: &str = "vcs.repo_name";
@@ -72,8 +74,7 @@ pub const VCS_PR_OWNER: &str = "vcs.pr_owner";
 pub const VCS_PR_TITLE: &str = "vcs.pr_title";
 /// The `vcs.*` parameters that `runs show` lists, with their labels, in display
 /// order.
-/// Observed as strings on `GET /api/v0/runs/{run_id}` (tenant version 63), on runs
-/// launched by the Antithesis GitHub trigger action.
+/// Observed as strings on `GET /api/v0/runs/{run_id}` (tenant version 63).
 /// TODO: add `vcs.pr_*` and `vcs.system_name` when a run records them.
 pub const VCS_PARAMS: &[(&str, &str)] = &[
     (VCS_REPO_TYPE, "Repo Type"),
@@ -191,6 +192,11 @@ impl Params {
     /// Insert a key-value pair into the params.
     pub fn insert(&mut self, key: impl Into<String>, value: impl Into<String>) {
         self.inner.insert(key.into(), Value::String(value.into()));
+    }
+
+    /// Keep only the params whose key passes `keep`.
+    pub fn retain(&mut self, mut keep: impl FnMut(&str) -> bool) {
+        self.inner.retain(|key, _| keep(key));
     }
 
     /// The value of `key`, when it is a string.

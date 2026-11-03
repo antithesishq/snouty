@@ -11,8 +11,8 @@ Elapsed is wall-clock time, which also spans provisioning, setup and teardown.
 Source is the `antithesis.source` the run was launched from, when the launcher
 recorded one. The run also has its user-defined attributes
 (`--param attrs.<name>=<value>` at launch) and the `vcs.*` parameters that the
-Antithesis GitHub trigger action records (repository, branch, and commit), under
-Attributes and Version Control.
+launch recorded (repository, branch, and commit), under Attributes and Version
+Control.
 
 An incomplete run also has its failure moment (Failure Hash/VTime), to pass to
 `runs logs`, and a failure reason when the run reports one. Use --web to open

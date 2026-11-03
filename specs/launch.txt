@@ -500,19 +500,10 @@ stderr '"vcs.repo_branch": "feature/vcs"'
 stderr '"vcs.version_id": "[0-9a-f]{40}"'
 stderr '"vcs.version_link": "https://github.com/acme/widget/commit/[0-9a-f]{40}"'
 
-# A pre-built config image has no config dir, and the current directory need
-#    not hold its source, so it turns the detection off. `--param vcs.*`
-#    values are still sent.
+# With a pre-built config image, the launch reads the current directory.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24
-! stderr 'vcs\.'
-mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --max-compute-hours 24 --param antithesis.config_image=config:latest
-! stderr 'vcs\.'
-mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --param vcs.version_id=abc123
-stderr '"vcs.version_id": "abc123"'
-! stderr 'vcs.repo_owner'
+stderr '"vcs.repo_owner": "acme"'
 
 # A --param replaces only the detected param with the same key.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
@@ -590,11 +581,6 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch --launcher advanced_test --max-compute-hours 24 --param vcs.repo_branch=release
 stderr '"vcs.repo_branch": "release"'
 stderr '"vcs.version_id": "0123456789abcdef0123456789abcdef01234567"'
-
-# A pre-built config image does not turn the GitHub Actions detection off.
-mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24
-stderr '"vcs.repo_owner": "octo"'
 
 # --no-vcs turns off the vcs.* params, but not the run.* params.
 mock-server 200 '{"message":"Success","runId":"run-123"}'

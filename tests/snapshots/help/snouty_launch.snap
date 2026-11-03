@@ -38,28 +38,17 @@ them on the run and `snouty runs show` lists them:
     --param attrs.branch=main \
     --param attrs.build=12345
 
-When the config dir (or the current directory, without --config) is in a git
-checkout, the launch records the checked-out commit and branch in run metadata.
-For a github.com `origin` remote, it also records the repository and a link to
-the commit. `snouty runs show` lists them under Version Control. A pre-built
-config image (--config-image or --param antithesis.config_image) turns this off.
-A --param replaces the detected param with the same key. --no-vcs turns off all
-detection of the commit.
-
-In GitHub Actions, the launch records the commit, branch, repository and pull
-request of the workflow run instead, also for a pre-built config image. It
-records the user who started the workflow as `run.creator_name`. When the
-checked-out commit is not the commit of the workflow run, the launch reads the
-git checkout instead.
+The launch records the commit, branch and repository of the git checkout that
+holds the config dir (or the current directory, without --config). In GitHub
+Actions, it also records the pull request and the user who started the workflow.
+`snouty runs show` lists them under Version Control. A --param replaces a
+recorded value, and --no-vcs records no commit, branch, repository or pull
+request.
 
 In GitHub Actions, set ANTITHESIS_GITHUB_TOKEN to a GitHub token that can write
-commit statuses. Then the launch sends the
-`antithesis.integrations.github.callback_url` and
-`antithesis.integrations.github.token` params for the commit. When the params of
-a launch hold both, also from --param, the launch sets the
-`continuous-testing/antithesis` commit status at the callback URL to pending,
-and Antithesis sets the result when the run ends. With --test-name, the status
-is `continuous-testing/antithesis (<test-name>)`.
+commit statuses, and the run shows as the `continuous-testing/antithesis` commit
+status of the commit: pending at launch, and the result when the run ends. With
+--test-name, the status is `continuous-testing/antithesis (<test-name>)`.
 
 Additional container images that the config parser can't discover (e.g. an image
 referenced only in a Kubernetes CRD field) can be registered with the
@@ -88,7 +77,8 @@ Environment variables (override any settings file):
   ANTITHESIS_USERNAME     Username (deprecated).
   ANTITHESIS_PASSWORD     Password (deprecated).
   ANTITHESIS_REPOSITORY   Container registry for pushing images.
-  ANTITHESIS_GITHUB_TOKEN GitHub token for the commit status, in GitHub Actions.
+  ANTITHESIS_GITHUB_TOKEN GitHub token used by Antithesis to update GitHub
+  commit status.
   SNOUTY_CONTAINER_ENGINE Force "docker" or "podman" (auto-detected by default).
 
 Usage: snouty launch [OPTIONS]

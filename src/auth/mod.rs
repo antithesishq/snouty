@@ -166,9 +166,8 @@ impl AuthenticationInfo {
     ) -> Result<AttributedValue<Self>> {
         match Self::find(profile, Fallback::DefaultProfile)? {
             Some(found) => apply_password_policy(found, policy),
-            None => Err(user_error(NO_CREDENTIALS_MESSAGE).suggestion(
-                "set ANTITHESIS_API_KEY; ask Antithesis support for an API key if you don't have one",
-            )),
+            None => Err(user_error(NO_CREDENTIALS_MESSAGE)
+                .suggestion("run `snouty login` or set ANTITHESIS_API_KEY")),
         }
     }
 

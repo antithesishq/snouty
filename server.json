@@ -33,15 +33,6 @@
               "default": ""
             }
           }
-        },
-        {
-          "name": "ANTITHESIS_TENANT",
-          "description": "Your Antithesis tenant. Not needed after snouty login"
-        },
-        {
-          "name": "ANTITHESIS_API_KEY",
-          "description": "An Antithesis API key. Not needed after snouty login",
-          "isSecret": true
         }
       ]
     }

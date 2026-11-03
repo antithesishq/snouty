@@ -51,6 +51,7 @@ stderr "invalid value '..' for '--run-id <RUN_ID>': invalid run ID"
 #    username/password authentication is not supported.
 ! snouty runs
 stderr 'No Antithesis credentials found.*'
+stderr -literal 'Suggestion: run `snouty login` or set ANTITHESIS_API_KEY'
 
 # With only username/password configured, the command fails fast with a clear
 # message instead of sending a request the API would reject with a 403.

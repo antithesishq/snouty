@@ -194,7 +194,7 @@ An id that snouty does not know, such as the retired `runs-exec`, has no effect.
 
 ## MCP server
 
-`snouty mcp` serves most of snouty's commands to AI agents as [Model Context Protocol](https://modelcontextprotocol.io) tools, over the stdio transport. It is an unstable feature: set `SNOUTY_UNSTABLE_FEATURES=mcp` to turn it on. The agent starts the server itself. For example, in Claude Code:
+`snouty mcp` serves most of snouty's commands to AI agents as [Model Context Protocol](https://modelcontextprotocol.io) tools, over the stdio transport. It is an unstable feature: set `SNOUTY_UNSTABLE_FEATURES=mcp` to turn it on. Run `snouty login` once before you add the server, which then uses the credential that snouty stores. The agent starts the server itself. For example, in Claude Code:
 
 ```sh
 claude mcp add snouty -e SNOUTY_UNSTABLE_FEATURES=mcp -- snouty mcp

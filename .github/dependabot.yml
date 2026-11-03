@@ -28,8 +28,8 @@ updates:
       # cacache still uses sha2 0.10, and deny.toml rejects a second sha2.
       - dependency-name: "sha2"
         versions: [">= 0.11"]
-  # The workflows pin each action to a commit. This entry does not update the
-  # tools in mise.toml; AGENTS.md says how to bump those.
+  # The workflows pin each action to a commit. This entry does not update mise
+  # or the tools in mise.toml; mise-outdated.yml files an issue for those.
   - package-ecosystem: "github-actions"
     # "/" covers .github/workflows; the local composite actions need their own.
     directories: ["/", "/.github/actions/*"]

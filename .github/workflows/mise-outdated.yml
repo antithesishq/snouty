@@ -1,0 +1,101 @@
+name: mise outdated
+
+# Files an issue when mise, or a tool that mise.toml pins, has a newer
+# release. Dependabot updates neither. A release counts only once it is a week
+# old, the same cooldown as dependabot.yml. One issue stays open at a time: a
+# later run updates it, and closes it once everything is current.
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-tools
+        with:
+          cache: "false"
+
+      - name: File or update the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # mise asks the GitHub API for each tool's releases, not its own
+          # versions host, which times out from Actions.
+          GITHUB_TOKEN: ${{ github.token }}
+          MISE_USE_VERSIONS_HOST: "false"
+        run: |
+          cooldown_days=7
+          export MISE_MINIMUM_RELEASE_AGE="${cooldown_days}d"
+          body=""
+
+          setup=.github/actions/setup-tools/action.yml
+          current=$(sed -n 's/^ *version: "\(.*\)"$/\1/p' "$setup")
+          [ -n "$current" ] || { echo "no mise version in $setup" >&2; exit 1; }
+          cutoff=$(date -u -d "$cooldown_days days ago" +%FT%TZ)
+          latest=$(gh api 'repos/jdx/mise/releases?per_page=50' --jq \
+            "[.[] | select(.prerelease | not) | select(.published_at <= \"$cutoff\")][0].tag_name | ltrimstr(\"v\")")
+          [ -n "$latest" ] || { echo "found no mise release older than $cutoff" >&2; exit 1; }
+          if [ "$latest" != "$current" ] && [ "$(printf '%s\n' "$current" "$latest" | sort -V | tail -1)" = "$latest" ]; then
+            body+="**mise** $current → $latest. Change \`version\` in \`$setup\`, and the SHA-256 for each platform: the \`digest\` that GitHub shows for each \`mise-v$latest-<platform>\` asset of [the release](https://github.com/jdx/mise/releases/tag/v$latest)."$'\n\n'
+          fi
+
+          # mise warns and leaves out a tool whose lookup fails, and still
+          # exits 0. Stop instead, so that a failed lookup never reads as
+          # current and closes the issue. A retried request also warns, so
+          # match only the warnings for a lookup that failed for good.
+          outdated=$(mise outdated --bump --no-global --json 2> outdated.err)
+          if grep -E 'Could not check|Error getting latest version' outdated.err; then
+            echo "mise outdated could not look up every tool" >&2
+            exit 1
+          fi
+          # A pin younger than the cooldown makes mise report an older release
+          # as latest, so keep only releases newer than the pin.
+          tools=""
+          while IFS=$'\t' read -r tool pinned newest; do
+            if [ "$newest" != "$pinned" ] && [ "$(printf '%s\n' "$pinned" "$newest" | sort -V | tail -1)" = "$newest" ]; then
+              tools+="| \`$tool\` | $pinned | $newest |"$'\n'
+            fi
+          done < <(jq -r 'to_entries[] | [.key, .value.requested, .value.latest] | @tsv' <<< "$outdated")
+          if [ -n "$tools" ]; then
+            body+="**mise.toml tools.** Change each version in \`mise.toml\`, then run \`mise lock --platform linux-x64,macos-arm64,macos-x64\`. After a gh-aw bump, also run \`mise run aw:compile\`."$'\n\n'
+            body+="| Tool | Pinned | Latest |"$'\n'"|---|---|---|"$'\n'"$tools"$'\n'
+          fi
+
+          issue_title="Update mise and its tools"
+          # Only an issue this workflow opened, never one that someone else
+          # titled the same.
+          issue=$(gh issue list --state open --limit 500 --json number,title,author \
+            --jq "map(select(.title == \"$issue_title\" and .author.login == \"app/github-actions\")) | .[0].number // empty")
+          footer="Releases count once they are a week old. Filed by \`.github/workflows/mise-outdated.yml\`, because Dependabot does not update mise."
+          if [ -z "$body" ]; then
+            echo "mise $current and every mise.toml tool are current"
+            if [ -n "$issue" ]; then
+              gh issue close "$issue" --comment "mise and every mise.toml tool are current."
+            fi
+            exit 0
+          fi
+          echo "$body"
+          if [ -n "$issue" ]; then
+            gh issue edit "$issue" --body "$body$footer"
+          else
+            gh issue create --title "$issue_title" --body "$body$footer"
+          fi

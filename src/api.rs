@@ -5054,10 +5054,7 @@ mod tests {
         let api = test_api_optionally_with_cache(&mock_server, None);
 
         let properties = api
-            .stream_run_properties(
-                "run-1",
-                &[PropertyStatus::Failing, PropertyStatus::Pending],
-            )
+            .stream_run_properties("run-1", &[PropertyStatus::Failing, PropertyStatus::Pending])
             .try_collect::<Vec<_>>()
             .await
             .unwrap();

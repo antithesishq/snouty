@@ -502,7 +502,7 @@ class GalleryRunHelpers(unittest.TestCase):
         self.assertEqual(gallery.property_id_named(rows, self.BUG), "b")
         self.assertEqual(gallery.property_id_named(rows[:1], self.BUG), "")
 
-    def test_pending_story_needs_only_pending_rows_and_the_note(self):
+    def test_live_story_needs_a_pending_row_and_the_note(self):
         story = next(
             s
             for s in gallery.build_ready_stories(
@@ -510,17 +510,22 @@ class GalleryRunHelpers(unittest.TestCase):
                 gallery.GalleryRun(run=self.RUN),
                 gallery.Result([], "", "", 0),
             )
-            if s.slug == "runs-properties--pending"
+            if s.slug == "runs-properties-live"
         )
         stdout = f"pending  106  0  p1  {self.BUG}\n\n{gallery.PENDING_NOTE}\n"
         result = gallery.Result(story.args, stdout, "", 0)
         pending = {"id": "p1", "status": "Pending"}
+        failing = {"id": "p2", "status": "Failing"}
         run = gallery.StoryRun(story, result, [pending])
-        self.assertTrue(story.check(run, gallery.Registry())[0])
-        for rows in ([], [pending, {"id": "p2", "status": "Failing"}]):
+        for rows, passed in (
+            ([pending], True),
+            ([pending, failing], True),
+            ([], False),
+            ([failing], False),
+        ):
             with self.subTest(rows=rows):
                 run.rows = rows
-                self.assertFalse(story.check(run, gallery.Registry())[0])
+                self.assertEqual(story.check(run, gallery.Registry())[0], passed)
         run.rows = [pending]
         result.stdout = f"pending  106  0  p1  {self.BUG}\n"
         self.assertFalse(story.check(run, gallery.Registry())[0])

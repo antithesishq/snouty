@@ -23,8 +23,8 @@ There are three kinds of story:
     validates the example project in examples/antithesis, `launch` starts a
     15-minute run of it, and `runs-stream-run` (and `--json`) follow the run's
     property stream from the launch to the end. Once the run is ready, the
-    `runs exec` stories (`runs-exec*`) execute in it, `runs-properties--pending`
-    lists the properties that it has not decided yet, and the rewarm stories
+    `runs exec` stories (`runs-exec*`) execute in it, `runs-properties-live`
+    lists its properties while some are still pending, and the rewarm stories
     load shallow moments of another completed run into it. Once it is final,
     the result stories (`runs-wait-run`, `runs-properties-run`, …) read its
     results. The gallery reuses a live run that an earlier gallery launched,
@@ -2426,14 +2426,15 @@ def run_properties(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
 PENDING_NOTE = "Some properties are still being processed."
 
 
-def pending_properties(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-    """`runs properties --pending` on the in-progress gallery run: only pending
-    rows, at least one, and the note that tells the user to come back later."""
-    ok, detail = all_status("Pending")(sr, reg)
+def live_properties(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+    """`runs properties` on the in-progress gallery run: at least one pending
+    row, and the note that tells the user to come back later. Rows with other
+    statuses can appear, but a young run can have none."""
+    statuses = Counter(r.get("status") for r in sr.rows or [])
     noted = contains_text(sr.result.combined, PENDING_NOTE)
     return (
-        ok and noted and sr.result.ok,
-        f"exit={sr.result.returncode}, {detail}, note={noted}",
+        statuses["Pending"] > 0 and noted and sr.result.ok,
+        f"exit={sr.result.returncode}, statuses={dict(statuses)}, note={noted}",
     )
 
 
@@ -3620,17 +3621,20 @@ def build_ready_stories(d: Discovery, x: GalleryRun, wait_ready: Result) -> list
             contains_all("in_progress:ready", GALLERY_RUN_LAUNCHER),
         ),
         Story(
-            "runs-properties--pending",
-            "See which properties my live run has not decided yet",
-            "My run is still in progress, and I want to see the properties that do "
-            "not have a final result yet, and how many examples each has so far.",
-            "A STATUS/✓/✗/ID/NAME table where every row has STATUS `pending`, with the "
+            "runs-properties-live",
+            "See where my live run stands",
+            "My run is still in progress, and I want to see its properties so far: "
+            "which ones have no final result yet, and which ones already pass or fail.",
+            "A STATUS/✓/✗/ID/NAME table with at least one `pending` row. Rows that "
+            "already pass or fail can appear among the pending ones. The `pending`, "
+            "`pass` and `fail` labels are easy to tell apart, and the grouping and "
+            "order of the rows read well with the statuses mixed. Each row has the "
             "passing and failing example counts so far and the full property ID, to "
             "pass to `snouty runs property`. stderr then says that some properties are "
             f"still being processed, and to run `snouty runs properties {x.run}` again "
             "later for the final results. Exit 0.",
-            ["runs", "properties", x.run, "--pending"],
-            pending_properties,
+            ["runs", "properties", x.run],
+            live_properties,
             before=lambda sn: wait_for_pending_properties(sn, x.run),
         ),
         exec_story(

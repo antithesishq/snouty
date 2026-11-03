@@ -1,7 +1,7 @@
 Validate local Antithesis setup
 
 Compose configs:
-Starts the compose config locally and waits for the setup-complete event. snouty does not build or pull images, and it ignores `build:` stanzas, so build or pull every image first, for example with `docker compose build`.
+Starts the compose config locally and waits for the setup-complete event. snouty does not build or pull images, and does not run `build:` stanzas, so build or pull every image first, for example with `docker compose build`.
 
 Validation fails before anything starts when docker-compose.yaml depends on your shell environment, such as a ${VAR} that resolves differently in the Antithesis environment. Use {{ t("--allow-compose-divergence")? }} to make that a warning.
 

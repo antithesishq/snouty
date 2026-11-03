@@ -132,10 +132,14 @@ fn read_github_actions(
     env: &impl Fn(&str) -> Option<String>,
     checkout: Option<&str>,
     params: &mut Params,
-) -> Option<()> {
-    env("GITHUB_ACTIONS")?;
-    let repository = env("GITHUB_REPOSITORY")?;
-    let sha = env("GITHUB_SHA")?;
+) {
+    let (Some(_), Some(repository), Some(sha)) = (
+        env("GITHUB_ACTIONS"),
+        env("GITHUB_REPOSITORY"),
+        env("GITHUB_SHA"),
+    ) else {
+        return;
+    };
     // The run is usable without the event, so a read error goes only to the
     // debug log.
     let event: GitHubEvent = env("GITHUB_EVENT_PATH")
@@ -161,7 +165,7 @@ fn read_github_actions(
         && (target || checkout != sha)
     {
         debug!("the checkout at {checkout} is not the GitHub Actions commit {commit}");
-        return None;
+        return;
     }
 
     let server = env("GITHUB_SERVER_URL").unwrap_or_else(|| "https://github.com".to_owned());
@@ -204,7 +208,6 @@ fn read_github_actions(
         );
         params.insert(ANT_GITHUB_TOKEN, token);
     }
-    Some(())
 }
 
 /// Sets the GitHub commit status at the callback URL of `params` to pending,

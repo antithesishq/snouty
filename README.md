@@ -72,6 +72,14 @@ This also allows you to update via `snouty update` later on.
 cargo binstall snouty
 ```
 
+### Install prebuilt binaries via npm
+
+```sh
+npm install -g @antithesishq/snouty
+```
+
+The package downloads the prebuilt binary for your platform from the GitHub Release on its first run. Its `snouty` command is a Node wrapper, so it cannot serve as the [Docker credential helper](#docker-credential-helper). `snouty launch --config` needs the helper only with a Docker older than 28.3.0.
+
 ### Install snouty from source
 
 ```sh
@@ -216,7 +224,7 @@ A JSON config for a stdio server looks like this one. The key names can be diffe
 
 Run `snouty mcp --help` to see all tools.
 
-snouty is listed in the [MCP Registry](https://registry.modelcontextprotocol.io) as `com.antithesis/snouty`, so a client that installs from the registry sets the server up for you. The registry checks this line to verify the crate: `mcp-name: com.antithesis/snouty`.
+snouty is listed in the [MCP Registry](https://registry.modelcontextprotocol.io) as `com.antithesis/snouty`, with two packages: the npm package `@antithesishq/snouty`, which a client runs with `npx @antithesishq/snouty mcp` and which downloads the prebuilt binary on its first run, and the crate. The registry checks this line to verify the crate: `mcp-name: com.antithesis/snouty`.
 
 The server sets no time limit and no output limit on a tool call. The client sets them: when it cancels a call or closes stdin, the server kills the call's command. A command also exits when its server is gone. Up to 8 tool calls run at the same time, and `--max-concurrent-calls` changes that number.
 

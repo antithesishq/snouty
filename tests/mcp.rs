@@ -573,33 +573,56 @@ async fn tool_results_are_plain_detailed_text() {
 }
 
 /// The release publishes `server.json` to the MCP Registry, so it must match
-/// this crate's version and name, start `snouty mcp` with its feature on, and
-/// match the README's `mcp-name` line. `mise run lint:mcp` validates the rest.
+/// this crate's version and name, list the npm package that dist builds and
+/// the crate, have each start `snouty mcp` with its feature on, and match the
+/// README's `mcp-name` line. `mise run lint:mcp` validates the rest.
 #[test]
 fn mcp_registry_entry_matches_the_crate() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let entry: Value =
         serde_json::from_str(&std::fs::read_to_string(root.join("server.json")).unwrap()).unwrap();
-    let version = env!("CARGO_PKG_VERSION");
-    let package = &entry["packages"][0];
-    assert_eq!(entry["version"], version);
-    assert_eq!(package["version"], version);
-    assert_eq!(package["identifier"], env!("CARGO_PKG_NAME"));
-    assert_eq!(
-        package["packageArguments"],
-        json!([{"type": "positional", "value": "mcp"}])
-    );
-    let feature_var = package["environmentVariables"]
-        .as_array()
+    let dist: toml::Table = std::fs::read_to_string(root.join("dist-workspace.toml"))
         .unwrap()
-        .iter()
-        .find(|var| var["name"] == snouty::features::UNSTABLE_FEATURES_VAR_NAME)
+        .parse()
         .unwrap();
-    let features = feature_var["value"].as_str().unwrap();
+    let npm_scope = dist["dist"]["npm-scope"].as_str().unwrap();
+    let version = env!("CARGO_PKG_VERSION");
+    assert_eq!(entry["version"], version);
+    let packages = entry["packages"].as_array().unwrap();
+    let identifiers: Vec<_> = packages
+        .iter()
+        .map(|package| {
+            (
+                package["registryType"].as_str().unwrap(),
+                package["identifier"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    // npm comes first, because a client that installs only one package, such
+    // as VS Code, takes the first one, and few clients can install a crate.
+    let npm_package = format!("{npm_scope}/{}", env!("CARGO_PKG_NAME"));
     assert_eq!(
-        features.split(',').next(),
-        Some(snouty::features::Feature::Mcp.to_string().as_str())
+        identifiers,
+        [("npm", npm_package.as_str()), ("cargo", env!("CARGO_PKG_NAME"))]
     );
+    for package in packages {
+        assert_eq!(package["version"], version);
+        assert_eq!(
+            package["packageArguments"],
+            json!([{"type": "positional", "value": "mcp"}])
+        );
+        let feature_var = package["environmentVariables"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|var| var["name"] == snouty::features::UNSTABLE_FEATURES_VAR_NAME)
+            .unwrap();
+        let features = feature_var["value"].as_str().unwrap();
+        assert_eq!(
+            features.split(',').next(),
+            Some(snouty::features::Feature::Mcp.to_string().as_str())
+        );
+    }
 
     let name = entry["name"].as_str().unwrap();
     let readme = std::fs::read_to_string(root.join("README.md")).unwrap();

@@ -334,8 +334,8 @@ fn unrequire_search_count_validate_only_default(spec: &mut serde_json::Value) {
     );
 }
 
-/// Strip the `default: false` from `passing` in both search requests, so a
-/// search that names no predicate omits the field.
+/// Strip the `default: false` from `passing` in both search requests. The
+/// server requires `is_passing_predicate` when `passing` is present.
 fn unrequire_search_passing_default(spec: &mut serde_json::Value) {
     for schema in ["Search_Request", "Search_Count_Request"] {
         remove_schema_key(

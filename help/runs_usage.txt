@@ -6,7 +6,7 @@ Each run has its ID, the start and end of its billable usage, and its compute ho
 
 Columns: RUN ID, STARTED, ENDED, COMPUTE HOURS. COMPUTE HOURS has one decimal place.
 
-With {{ t("--rollup")? }}, each row is the total of one day, week, or month: its first and last days, its number of runs, and its compute hours. A run counts in the period in which it ended. A week starts on Monday. Columns: START, END, RUNS, COMPUTE HOURS. The rows are the {{ t("--limit")? }} periods that end with the current period, and a period with no runs shows 0.
+With {{ t("--rollup")? }}, each row is the total of one day, week, or month: its first and last days, its number of runs, and its compute hours. A run counts in the period in which it ended. A week starts on Monday. Columns: START, END, RUNS, COMPUTE HOURS. A period with no runs shows 0.
 
 Times and periods are in the local timezone.
 
@@ -21,7 +21,7 @@ The output shows the run that started most recently first. With {{ t("--rollup")
 Examples:
   {{ t("snouty runs usage")? }}
   {{ t("snouty runs usage --rollup week -n 4")? }}
-  {{ t("snouty runs usage --rollup month --after 2026-01-01")? }}
+  {{ t("snouty runs usage --rollup month --after 2026-01-01 -n 12")? }}
   {{ t("snouty runs usage --after 2026-10-01 --before 2026-11-01")? }}
 
 {% if cli %}

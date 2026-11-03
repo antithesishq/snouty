@@ -17,8 +17,7 @@ place.
 With --rollup, each row is the total of one day, week, or month: its first and
 last days, its number of runs, and its compute hours. A run counts in the period
 in which it ended. A week starts on Monday. Columns: START, END, RUNS, COMPUTE
-HOURS. The rows are the --limit periods that end with the current period, and a
-period with no runs shows 0.
+HOURS. A period with no runs shows 0.
 
 Times and periods are in the local timezone.
 
@@ -40,7 +39,7 @@ shows the newest period first.
 Examples:
   snouty runs usage
   snouty runs usage --rollup week -n 4
-  snouty runs usage --rollup month --after 2026-01-01
+  snouty runs usage --rollup month --after 2026-01-01 -n 12
   snouty runs usage --after 2026-10-01 --before 2026-11-01
 
 Add --json for machine-readable output. Each row prints as one JSON object on

@@ -106,6 +106,10 @@ pub const MIN_CANCEL_RELEASE: (u64, u64) = (63, 0);
 /// `launch --setup-timeout` and `debug --duration`. `snouty doctor` checks it.
 pub const MIN_LAUNCH_PARAMS_RELEASE: (u64, u64) = (66, 0);
 
+/// Starts each debug log line that times or retries an API request. The spec harness
+/// picks these lines out of the stderr of a slow command.
+pub const REQUEST_LOG_PREFIX: &str = "http: ";
+
 /// The `container` value that executes a command on the host instead of in a
 /// container.
 const EXEC_HOST_CONTAINER: &str = "_ANTITHESIS_HOST";
@@ -683,13 +687,13 @@ async fn execute_with_retry(
         };
         let Some(wait) = budget.spend(&reason) else {
             debug!(
-                "{reason}, no retry left within {} retries and {MAX_RETRY_WAIT:?}",
+                "{REQUEST_LOG_PREFIX}{reason}, no retry left within {} retries and {MAX_RETRY_WAIT:?}",
                 reason.max_retries()
             );
             return result;
         };
         debug!(
-            "{reason}, retry {} of {} in {wait:?}",
+            "{REQUEST_LOG_PREFIX}{reason}, retry {} of {} in {wait:?}",
             budget.retries,
             reason.max_retries()
         );
@@ -1389,6 +1393,7 @@ impl ClientHooks<ClientState> for generated::Client {
         let retry_request = request.try_clone();
 
         http.log_request(&request, LoggedBody::Shown);
+        let timing = RequestTiming::start(&request);
         let mut budget = RetryBudget::default();
         let result = execute_with_retry(self.client(), http.verbose, &mut budget, request).await;
 
@@ -1421,8 +1426,44 @@ impl ClientHooks<ClientState> for generated::Client {
             (result, _) => result,
         };
 
+        timing.finish(&result);
         http.log_response(&result);
         result
+    }
+}
+
+/// Times one API request in a pair of debug lines that start with
+/// [`REQUEST_LOG_PREFIX`].
+struct RequestTiming {
+    target: String,
+    start: std::time::Instant,
+}
+
+impl RequestTiming {
+    fn start(request: &reqwest::Request) -> Self {
+        // Only the path: a query string can carry user input.
+        let target = format!("{} {}", request.method(), request.url().path());
+        debug!("{REQUEST_LOG_PREFIX}{target}");
+        Self {
+            target,
+            start: std::time::Instant::now(),
+        }
+    }
+
+    /// Logs the time to the response headers. A streamed body can take longer.
+    fn finish(self, result: &reqwest::Result<reqwest::Response>) {
+        let Self { target, start } = self;
+        let elapsed = start.elapsed().as_secs_f64();
+        match result {
+            Ok(response) => debug!(
+                "{REQUEST_LOG_PREFIX}{target}: {} in {elapsed:.1}s",
+                response.status()
+            ),
+            Err(err) => debug!(
+                "{REQUEST_LOG_PREFIX}{target}: failed in {elapsed:.1}s: {}",
+                root_cause(err)
+            ),
+        }
     }
 }
 
@@ -1745,7 +1786,9 @@ impl HttpClient {
     ) -> reqwest::Result<reqwest::Response> {
         let request = request.build()?;
         self.log_request(&request, LoggedBody::Withheld);
+        let timing = RequestTiming::start(&request);
         let result = self.client.execute(request).await;
+        timing.finish(&result);
         self.log_response(&result);
         result
     }

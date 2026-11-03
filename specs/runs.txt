@@ -67,6 +67,8 @@ stderr 'snouty login'
 mock-runs-server
 snouty runs
 stdout '^RUN ID +STATUS +CREATED +LAUNCHER +RUN$'
+# The debug log times each API request. The spec harness reads these lines.
+stderr '^http: GET /api/v0/runs: 200 OK in [0-9]+\.[0-9]s$'
 [!staging] stdout 'run-1.*completed'
 [!staging] stdout 'run-2.*in_progress'
 # The LAUNCHER column shows the launcher. The RUN column shows the test name.

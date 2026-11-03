@@ -317,11 +317,10 @@ stderr 'cannot be used with'
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --source-run-id ''
 stderr 'invalid value .* for .--source-run-id'
 
-# An unknown source answers a bare 404. The session exists, so snouty points
-# at the flag.
+# An unknown source fails, and snouty points at the flag.
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --source-run-id no-such-run
-stderr 'Resource not found'
 stderr 'check that --source-run-id names an existing source'
+! stderr 'names the run the moment comes from'
 
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --source-session-id no-such-session
 stderr 'check that --source-session-id names an existing source'

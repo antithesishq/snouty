@@ -2003,7 +2003,10 @@ const MOMENT_NOT_WARM: [&str; 3] = [
 /// require an active run.` Otherwise, the server's responses on orbitinghail
 /// mean:
 ///
-/// - 404 `Resource not found` (release 64.0): the source does not exist.
+/// - 404 `Resource not found` (release 67.0, a source session; release 64.0,
+///   any source): the source does not exist.
+/// - 400 `Source run '<id>' does not exist.` (release 67.0): the source run
+///   does not exist.
 /// - A 400 that `MOMENT_NOT_WARM` matches: the moment is cold and there is
 ///   no source.
 /// - Any other 400 (release 64.0): a rewarm did not finish, or the source is
@@ -2027,10 +2030,13 @@ fn explain_exec_error(
                 indent_lines(debug_command, "  ")
             ));
     }
-    let cold = api_error_message(&err)
-        .is_some_and(|m| MOMENT_NOT_WARM.iter().any(|marker| m.contains(marker)));
+    let message = api_error_message(&err);
+    let cold = message.is_some_and(|m| MOMENT_NOT_WARM.iter().any(|marker| m.contains(marker)));
+    let missing = status == 404 || message.is_some_and(|m| m.contains("does not exist"));
     match (status, rewarm_flag) {
-        (404, Some(flag)) => err.suggestion(format!("check that {flag} names an existing source")),
+        (400 | 404, Some(flag)) if missing => {
+            err.suggestion(format!("check that {flag} names an existing source"))
+        }
         (400, None) if cold => {
             err.suggestion("use --source-run-id to load a moment from a different run")
         }

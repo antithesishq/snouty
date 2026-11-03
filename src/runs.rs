@@ -1176,32 +1176,16 @@ fn render_result_value(label: &str, value: &Value) -> String {
     }
 }
 
-/// The text of a string that holds a JSON object/array, trimmed of surrounding
-/// whitespace; `None` for any other string. The text is parsed only to check its
-/// shape and is shown as reported, so big integers, duplicate keys and number
-/// spellings such as `1e2` reach the user unchanged.
-///
-/// Observed on the `antithesis-orbitinghail` tenant: `snouty runs properties
-/// <run> --detail` for the non-event property "Recent software version
-/// provided" on oxigraph-ring runs reports its examples as strings such as
-/// `"{\"container\":\"snouty-config\",\"container_age\":{\"absolute_time_interval\":\"1m 4s\"},\"days_old\":0}"`,
-/// some with a trailing newline.
-fn json_container_text(s: &str) -> Option<&str> {
-    let text = s.trim();
-    let container = text.starts_with('{') || text.starts_with('[');
-    (container && serde_json::from_str::<serde::de::IgnoredAny>(text).is_ok()).then_some(text)
-}
-
-/// A non-event value as a single sanitised inline token: a string as its text
-/// (JSON-quoted when empty or all whitespace, so it stays visible), other scalars
-/// via their `Display`, an object/array as compact one-line JSON. A string that
-/// holds a JSON object/array shows as that text, not as quoted text.
+/// A non-event value as a single sanitised inline token: a string as its
+/// trimmed text (`""` when empty or all whitespace, so it stays visible), other
+/// scalars via their `Display`, an object/array as compact one-line JSON. A
+/// string that holds JSON (the SDK often reports examples that way, some with a
+/// trailing newline) thus shows as the reported JSON text, unescaped.
 fn value_token(value: &Value) -> String {
     match value {
-        Value::String(s) => match json_container_text(s) {
-            Some(text) => sanitize(text),
-            None if s.trim().is_empty() => sanitize(&value.to_string()),
-            None => sanitize(s),
+        Value::String(s) => match s.trim() {
+            "" => r#""""#.to_string(),
+            s => sanitize(s),
         },
         Value::Number(n) => n.to_string(),
         Value::Bool(b) => b.to_string(),
@@ -3329,7 +3313,7 @@ mod tests {
             vec![],
         );
         let out = render_property_detail(&p);
-        assert!(out.contains("Result\n  a\n  \"\"\n  \" \""), "got: {out}");
+        assert!(out.contains("Result\n  a\n  \"\"\n  \"\""), "got: {out}");
     }
 
     #[test]

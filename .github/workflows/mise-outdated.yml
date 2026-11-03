@@ -8,8 +8,6 @@ on:
   schedule:
     - cron: "0 8 * * 1"
   workflow_dispatch:
-  # TEMPORARY: verify the workflow on its PR. Remove before merging.
-  pull_request:
 
 concurrency:
   group: ${{ github.workflow }}

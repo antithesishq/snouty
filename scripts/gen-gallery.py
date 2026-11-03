@@ -1152,8 +1152,7 @@ def _pick_nonevent_property(sn: Snouty, run: str, props: list[dict]) -> str:
 
 
 def _pick_property_id(sn: Snouty, run: str, prop: dict) -> str:
-    """`prop`'s ID, once a lookup by that ID succeeds. Runs created before
-    release 65.3 reject the lookup."""
+    """`prop`'s ID, once a lookup by that ID succeeds."""
     prop_id = prop.get("id")
     if not prop_id:
         raise GalleryError(f"property {prop['name']!r} has no ID")

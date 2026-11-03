@@ -16,7 +16,7 @@ Times and periods are in the local timezone.
   no filter or {{ t("--before")? }}    the newest rows (before {{ t("--before")? }})
   {{ t("--after")? }}                  the oldest rows from {{ t("--after")? }}
   {{ t("--after")? }} and {{ t("--before")? }}     every row between them; {{ t("--limit")? }} is not allowed
-The rows always show newest first.
+Runs show the most recently started first, and periods the newest first.
 
 Examples:
   {{ t("snouty runs usage")? }}

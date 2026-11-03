@@ -34,7 +34,7 @@ filters select which rows the limit keeps:
   no filter or --before    the newest rows (before --before)
   --after                  the oldest rows from --after
   --after and --before     every row between them; --limit is not allowed
-The rows always show newest first.
+Runs show the most recently started first, and periods the newest first.
 
 Examples:
   snouty runs usage

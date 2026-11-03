@@ -19,7 +19,7 @@ Times and periods are in the local timezone.
   no filter or `before`    the newest rows (before `before`)
   `after`                  the oldest rows from `after`
   `after` and `before`     every row between them; `limit` is not allowed
-The rows always show newest first.
+Runs show the most recently started first, and periods the newest first.
 
 Examples:
   runs_usage

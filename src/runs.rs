@@ -651,10 +651,11 @@ async fn cmd_runs_properties(
     }
 
     properties.sort_by(|a, b| {
-        property_group(a)
-            .unwrap_or("")
-            .cmp(property_group(b).unwrap_or(""))
-            .then(a.name().cmp(b.name()))
+        cmp_names(
+            property_group(a).unwrap_or(""),
+            property_group(b).unwrap_or(""),
+        )
+        .then_with(|| cmp_names(a.name(), b.name()))
     });
 
     if json {
@@ -857,6 +858,14 @@ fn property_group(p: &Property) -> Option<&str> {
         Property::NonEventProperty(p) => p.group.as_deref(),
     }
     .filter(|g| !g.is_empty())
+}
+
+/// Order names case-insensitively, so `acknowledged` sorts before `Oxigraph`,
+/// with a case-sensitive tie-break that keeps the order total.
+fn cmp_names(a: &str, b: &str) -> std::cmp::Ordering {
+    a.to_lowercase()
+        .cmp(&b.to_lowercase())
+        .then_with(|| a.cmp(b))
 }
 
 /// The property's name without the `"<group>: "` prefix that the API puts on a
@@ -1279,11 +1288,10 @@ fn group_property_sections(properties: &[Property]) -> Vec<(Option<String>, Vec<
         props.sort_by(|a, b| {
             is_failing(b)
                 .cmp(&is_failing(a))
-                .then_with(|| property_display_name(a).cmp(property_display_name(b)))
+                .then_with(|| cmp_names(property_display_name(a), property_display_name(b)))
         });
     }
 
-    // BTreeMap keeps named groups alphabetical before the failing-first re-sort.
     let mut grouped = std::collections::BTreeMap::<&str, Vec<&Property>>::new();
     let mut ungrouped: Vec<&Property> = Vec::new();
     for p in properties {
@@ -1298,7 +1306,7 @@ fn group_property_sections(properties: &[Property]) -> Vec<(Option<String>, Vec<
         bps.iter()
             .any(|p| is_failing(p))
             .cmp(&aps.iter().any(|p| is_failing(p)))
-            .then_with(|| a.cmp(b))
+            .then_with(|| cmp_names(a, b))
     });
 
     let mut sections: Vec<(Option<String>, Vec<&Property>)> = Vec::new();
@@ -3149,6 +3157,32 @@ mod tests {
         }
         let p = event_property(&prefixed, PropertyStatus::Passing, None, vec![], vec![]);
         assert_eq!(property_display_name(&p), prefixed);
+    }
+
+    /// Within a section, names sort case-insensitively, and the order does
+    /// not depend on the order the API returned them in.
+    #[hegel::test]
+    fn property_sections_sort_names_case_insensitively(tc: hegel::TestCase) {
+        let name = generators::text().alphabet("aAbB:G ");
+        let names = tc.draw(generators::vecs(name).min_size(1).max_size(8));
+        let props: Vec<Property> = names
+            .iter()
+            .map(|n| event_property(n, PropertyStatus::Passing, Some("G"), vec![], vec![]))
+            .collect();
+        let sorted = |props: &[Property]| -> Vec<String> {
+            let sections = group_property_sections(props);
+            sections[0]
+                .1
+                .iter()
+                .map(|p| property_display_name(p).to_string())
+                .collect()
+        };
+        let out = sorted(&props);
+        for pair in out.windows(2) {
+            assert!(pair[0].to_lowercase() <= pair[1].to_lowercase(), "{pair:?}");
+        }
+        let reversed: Vec<Property> = props.into_iter().rev().collect();
+        assert_eq!(sorted(&reversed), out);
     }
 
     #[test]

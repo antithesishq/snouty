@@ -650,12 +650,7 @@ async fn cmd_runs_properties(
         properties.retain(|p| property_display_name(p).to_lowercase().contains(&needle));
     }
 
-    properties.sort_by(|a, b| {
-        property_group(a)
-            .unwrap_or("")
-            .cmp(property_group(b).unwrap_or(""))
-            .then(a.name().cmp(b.name()))
-    });
+    properties.sort_by(cmp_by_group_then_name);
 
     if json {
         for property in &properties {
@@ -857,6 +852,25 @@ fn property_group(p: &Property) -> Option<&str> {
         Property::NonEventProperty(p) => p.group.as_deref(),
     }
     .filter(|g| !g.is_empty())
+}
+
+/// Order names ignoring case, with a case-sensitive tie-break so the order
+/// does not depend on input order.
+fn cmp_names(a: &str, b: &str) -> std::cmp::Ordering {
+    fn fold(s: &str) -> impl Iterator<Item = char> + '_ {
+        s.chars().flat_map(char::to_lowercase)
+    }
+    fold(a).cmp(fold(b)).then_with(|| a.cmp(b))
+}
+
+/// The `--json` line order: ungrouped first, then by group and name, each
+/// compared with [`cmp_names`].
+fn cmp_by_group_then_name(a: &Property, b: &Property) -> std::cmp::Ordering {
+    cmp_names(
+        property_group(a).unwrap_or(""),
+        property_group(b).unwrap_or(""),
+    )
+    .then_with(|| cmp_names(a.name(), b.name()))
 }
 
 /// The property's name without the `"<group>: "` prefix that the API puts on a
@@ -1268,8 +1282,9 @@ fn property_status_cell(status: &PropertyStatus) -> String {
 
 /// Order properties into display sections shared by the table and `--detail`
 /// views: named groups containing a failing property first (then the rest,
-/// alphabetical), with ungrouped properties in a final "(ungrouped)" section.
-/// Within each section, failing entries sort first, then by name.
+/// alphabetical, ignoring case), with ungrouped properties in a final
+/// "(ungrouped)" section. Within each section, failing entries sort first,
+/// then by name, ignoring case.
 ///
 /// Each section's heading is `Some(name)`, except the ungrouped section's, which
 /// is `None` when there are no named groups to contrast it against — a lone
@@ -1279,11 +1294,10 @@ fn group_property_sections(properties: &[Property]) -> Vec<(Option<String>, Vec<
         props.sort_by(|a, b| {
             is_failing(b)
                 .cmp(&is_failing(a))
-                .then_with(|| property_display_name(a).cmp(property_display_name(b)))
+                .then_with(|| cmp_names(property_display_name(a), property_display_name(b)))
         });
     }
 
-    // BTreeMap keeps named groups alphabetical before the failing-first re-sort.
     let mut grouped = std::collections::BTreeMap::<&str, Vec<&Property>>::new();
     let mut ungrouped: Vec<&Property> = Vec::new();
     for p in properties {
@@ -1298,7 +1312,7 @@ fn group_property_sections(properties: &[Property]) -> Vec<(Option<String>, Vec<
         bps.iter()
             .any(|p| is_failing(p))
             .cmp(&aps.iter().any(|p| is_failing(p)))
-            .then_with(|| a.cmp(b))
+            .then_with(|| cmp_names(a, b))
     });
 
     let mut sections: Vec<(Option<String>, Vec<&Property>)> = Vec::new();
@@ -3149,6 +3163,74 @@ mod tests {
         }
         let p = event_property(&prefixed, PropertyStatus::Passing, None, vec![], vec![]);
         assert_eq!(property_display_name(&p), prefixed);
+    }
+
+    /// Groups and the names within each group sort ignoring case, and the
+    /// order does not depend on the order the API returns properties in.
+    #[hegel::test]
+    fn property_sections_sort_ignoring_case(tc: hegel::TestCase) {
+        let entry = generators::tuples!(
+            generators::text().alphabet("aAbB").min_size(1).max_size(3),
+            generators::text().alphabet("aAbB ").max_size(4)
+        );
+        let entries = tc.draw(generators::vecs(entry).min_size(1).max_size(8));
+        let props: Vec<Property> = entries
+            .iter()
+            .map(|(g, n)| event_property(n, PropertyStatus::Passing, Some(g), vec![], vec![]))
+            .collect();
+        let sorted = |props: &[Property]| -> Vec<(Option<String>, Vec<String>)> {
+            group_property_sections(props)
+                .into_iter()
+                .map(|(heading, ps)| (heading, ps.iter().map(|p| p.name().to_string()).collect()))
+                .collect()
+        };
+        let fold = |s: &str| s.chars().flat_map(char::to_lowercase).collect::<String>();
+        let out = sorted(&props);
+        for pair in out.windows(2) {
+            let (a, b) = (pair[0].0.as_deref().unwrap(), pair[1].0.as_deref().unwrap());
+            assert!(fold(a) <= fold(b), "{a:?} before {b:?}");
+        }
+        for (_, names) in &out {
+            for pair in names.windows(2) {
+                assert!(fold(&pair[0]) <= fold(&pair[1]), "{pair:?}");
+            }
+        }
+        let reversed: Vec<Property> = props.into_iter().rev().collect();
+        assert_eq!(sorted(&reversed), out);
+    }
+
+    /// The `--json` order sorts by group, then name, ignoring case, and does
+    /// not depend on the order the API returns properties in.
+    #[hegel::test]
+    fn json_order_sorts_by_group_then_name_ignoring_case(tc: hegel::TestCase) {
+        let entry = generators::tuples!(
+            generators::text().alphabet("aAbB").max_size(3),
+            generators::text().alphabet("aAbB ").max_size(4)
+        );
+        let entries = tc.draw(generators::vecs(entry).max_size(8));
+        let props: Vec<Property> = entries
+            .iter()
+            .map(|(g, n)| event_property(n, PropertyStatus::Passing, Some(g), vec![], vec![]))
+            .collect();
+        let sorted = |mut props: Vec<Property>| -> Vec<(String, String)> {
+            props.sort_by(cmp_by_group_then_name);
+            props
+                .iter()
+                .map(|p| {
+                    (
+                        property_group(p).unwrap_or("").to_string(),
+                        p.name().to_string(),
+                    )
+                })
+                .collect()
+        };
+        let fold = |s: &str| s.chars().flat_map(char::to_lowercase).collect::<String>();
+        let out = sorted(props.clone());
+        for pair in out.windows(2) {
+            let key = |(g, n): &(String, String)| (fold(g), g.clone(), fold(n));
+            assert!(key(&pair[0]) <= key(&pair[1]), "{pair:?}");
+        }
+        assert_eq!(sorted(props.into_iter().rev().collect()), out);
     }
 
     #[test]

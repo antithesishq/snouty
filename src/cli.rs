@@ -126,6 +126,11 @@ impl DurationFlag {
         }
         Ok(duration)
     }
+
+    /// [`parse`](Self::parse) for a flag whose `check` requires whole minutes.
+    fn parse_minutes(&self, value: &str) -> Result<u64, String> {
+        self.parse(value).map(|duration| duration.seconds() / 60)
+    }
 }
 
 fn bare_number_warning(flag: &str, duration: HumanDuration) -> String {
@@ -134,6 +139,24 @@ fn bare_number_warning(flag: &str, duration: HumanDuration) -> String {
 
 fn require(ok: bool, message: &str) -> Result<(), String> {
     ok.then_some(()).ok_or_else(|| message.to_string())
+}
+
+/// Refuses a duration outside `minutes`, with `range_message`, or one that is
+/// not a whole number of minutes.
+fn require_whole_minutes(
+    duration: HumanDuration,
+    minutes: std::ops::RangeInclusive<u64>,
+    range_message: &str,
+) -> Result<(), String> {
+    let seconds = duration.seconds();
+    require(
+        (minutes.start() * 60..=minutes.end() * 60).contains(&seconds),
+        range_message,
+    )?;
+    require(
+        seconds.is_multiple_of(60),
+        "must be a whole number of minutes",
+    )
 }
 
 /// A run takes minutes to hours, so polling more often than once a minute
@@ -172,13 +195,11 @@ const SETUP_TIMEOUT: DurationFlag = DurationFlag {
     bare: BareUnit::Refused,
     examples: &["10m", "30m"],
     check: |timeout| {
-        let seconds = timeout.seconds();
-        if !(60..=MAX_SETUP_TIMEOUT_MINUTES * 60).contains(&seconds) {
-            return Err(format!(
-                "must be from 1 to {MAX_SETUP_TIMEOUT_MINUTES} minutes"
-            ));
-        }
-        require(seconds % 60 == 0, "must be a whole number of minutes")
+        require_whole_minutes(
+            timeout,
+            1..=MAX_SETUP_TIMEOUT_MINUTES,
+            &format!("must be from 1 to {MAX_SETUP_TIMEOUT_MINUTES} minutes"),
+        )
     },
 };
 
@@ -189,11 +210,7 @@ const DEBUG_DURATION: DurationFlag = DurationFlag {
     bare: BareUnit::Minutes,
     examples: &["45m", "2h", "1h30m"],
     check: |duration| {
-        let seconds = duration.seconds();
-        if !(30 * 60..=6 * 60 * 60).contains(&seconds) {
-            return Err("must be from 30 minutes to 6 hours".into());
-        }
-        require(seconds % 60 == 0, "must be a whole number of minutes")
+        require_whole_minutes(duration, 30..=6 * 60, "must be from 30 minutes to 6 hours")
     },
 };
 
@@ -667,7 +684,7 @@ pub struct LaunchArgs {
 
     #[arg(
         long,
-        value_parser = |v: &str| SETUP_TIMEOUT.parse(v).map(|t| t.seconds() / 60),
+        value_parser = |v: &str| SETUP_TIMEOUT.parse_minutes(v),
         hide = !features::is_enabled(Feature::Teams),
         help = "Fail the run immediately if setup takes longer than this, in whole \
                 minutes with a unit, such as 10m, from 1m to 30m. The default is 5m. \
@@ -772,7 +789,7 @@ pub struct DebugArgs {
 
     #[arg(
         long,
-        value_parser = |v: &str| DEBUG_DURATION.parse(v).map(|d| d.seconds() / 60),
+        value_parser = |v: &str| DEBUG_DURATION.parse_minutes(v),
         hide = !features::is_enabled(Feature::Teams),
         help = DEBUG_DURATION.help(
             "How long the session stays available, from 30 minutes to 6 hours. Requires \

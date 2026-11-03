@@ -106,6 +106,10 @@ pub const MIN_CANCEL_RELEASE: (u64, u64) = (63, 0);
 /// `launch --setup-timeout` and `debug --duration`. `snouty doctor` checks it.
 pub const MIN_LAUNCH_PARAMS_RELEASE: (u64, u64) = (66, 0);
 
+/// Starts each debug log line that times an API request. The spec harness
+/// picks these lines out of the stderr of a slow command.
+pub const REQUEST_LOG_PREFIX: &str = "http: ";
+
 /// The `container` value that executes a command on the host instead of in a
 /// container.
 const EXEC_HOST_CONTAINER: &str = "_ANTITHESIS_HOST";
@@ -1389,6 +1393,10 @@ impl ClientHooks<ClientState> for generated::Client {
         let retry_request = request.try_clone();
 
         http.log_request(&request, LoggedBody::Shown);
+        // Only the path: a query string can carry user input.
+        let target = format!("{} {}", request.method(), request.url().path());
+        debug!("{REQUEST_LOG_PREFIX}{target}");
+        let start = std::time::Instant::now();
         let mut budget = RetryBudget::default();
         let result = execute_with_retry(self.client(), http.verbose, &mut budget, request).await;
 
@@ -1421,6 +1429,18 @@ impl ClientHooks<ClientState> for generated::Client {
             (result, _) => result,
         };
 
+        // The time to the response headers. A streamed body can take longer.
+        let elapsed = start.elapsed().as_secs_f64();
+        match &result {
+            Ok(response) => debug!(
+                "{REQUEST_LOG_PREFIX}{target}: {} in {elapsed:.1}s",
+                response.status()
+            ),
+            Err(err) => debug!(
+                "{REQUEST_LOG_PREFIX}{target}: failed in {elapsed:.1}s: {}",
+                root_cause(err)
+            ),
+        }
         http.log_response(&result);
         result
     }

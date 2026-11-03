@@ -6,7 +6,9 @@ use std::cell::RefCell;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 use testscript_rs::testscript;
 
 fn err(msg: String) -> testscript_rs::Error {
@@ -226,20 +228,58 @@ fn isolated_xdg_config_home(current_dir: &std::path::Path) -> std::path::PathBuf
     dir
 }
 
-fn cmd_snouty(
-    env: &mut testscript_rs::TestEnvironment,
-    args: &[String],
-) -> testscript_rs::Result<()> {
-    let start = std::time::Instant::now();
-    let expanded: Vec<String> = args.iter().map(|a| env.substitute_env_vars(a)).collect();
-    let label = expanded.join(" ");
-    let mut cmd = snouty_cmd(env, &expanded);
-    if env.next_stdin.is_some() {
-        cmd.stdin(Stdio::piped());
-    }
+/// A command that runs at least this long prints the time of each API request.
+const SLOW_COMMAND: Duration = Duration::from_secs(5);
+/// A command prints a "still running" line each time it runs this long again.
+const RUNNING_NOTICE: Duration = Duration::from_secs(30);
+/// A command that runs this long fails. A normal staging run takes about 1.5
+/// minutes in all, and the staging job stops after 15.
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(180);
 
+thread_local! {
+    /// The run time of each command in the current spec file.
+    static COMMAND_TIMES: RefCell<Vec<(Duration, String)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Run `cmd` to completion, and fail it after [`COMMAND_TIMEOUT`].
+///
+/// Prints the run time of the command to stderr, and the API request lines of
+/// its debug log when it is slow. nextest shows these lines live only with
+/// `--no-capture`, which the staging job sets.
+fn run_timed(
+    mut cmd: std::process::Command,
+    stdin: Option<Vec<u8>>,
+    label: &str,
+) -> testscript_rs::Result<std::process::Output> {
+    let start = Instant::now();
+    cmd.stdin(if stdin.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
     let mut child = cmd.spawn().map_err(|e| err(format!("spawn snouty: {e}")))?;
-    if let Some(data) = env.next_stdin.take() {
+
+    let mut stdout_pipe = child.stdout.take().expect("stdout piped");
+    let stdout_reader = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout_pipe.read_to_end(&mut buf);
+        buf
+    });
+    // Shared, so that a timeout can read the stderr so far without a join,
+    // which a grandchild that holds the pipe open would block.
+    let stderr = Arc::new(Mutex::new(Vec::new()));
+    let mut stderr_pipe = child.stderr.take().expect("stderr piped");
+    let stderr_reader = thread::spawn({
+        let stderr = Arc::clone(&stderr);
+        move || {
+            let mut chunk = [0; 8192];
+            while let Ok(n @ 1..) = stderr_pipe.read(&mut chunk) {
+                stderr.lock().unwrap().extend_from_slice(&chunk[..n]);
+            }
+        }
+    });
+
+    if let Some(data) = stdin {
         // snouty is free to exit before it reads all of stdin — `runs exec` with
         // a SCRIPT argument never reads it at all — and that breaks the pipe.
         // A broken pipe here is not a failure, so let the spec's own assertions
@@ -255,10 +295,75 @@ fn cmd_snouty(
             Err(e) => return Err(err(format!("write stdin: {e}"))),
         }
     }
-    let output = child
-        .wait_with_output()
-        .map_err(|e| err(format!("wait snouty: {e}")))?;
-    eprintln!("[{:.1}s] snouty {label}", start.elapsed().as_secs_f64());
+
+    let mut next_notice = RUNNING_NOTICE;
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| err(format!("wait snouty: {e}")))?
+        {
+            break status;
+        }
+        let elapsed = start.elapsed();
+        if elapsed >= COMMAND_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            let requests = request_lines(&stderr.lock().unwrap());
+            // A usage error fails the spec even on a `!` line, where any
+            // other error satisfies the `!`.
+            return Err(testscript_rs::Error::Usage {
+                message: format!(
+                    "{label} timed out after {}s. Its API requests:\n{requests}",
+                    COMMAND_TIMEOUT.as_secs()
+                ),
+            });
+        }
+        if elapsed >= next_notice {
+            eprintln!("  still running after {}s: {label}", next_notice.as_secs());
+            next_notice += RUNNING_NOTICE;
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+    let elapsed = start.elapsed();
+
+    let stdout = stdout_reader.join().unwrap_or_default();
+    let _ = stderr_reader.join();
+    let stderr = std::mem::take(&mut *stderr.lock().unwrap());
+    eprintln!("  [{:.1}s] {label}", elapsed.as_secs_f64());
+    if elapsed >= SLOW_COMMAND {
+        eprint!("{}", request_lines(&stderr));
+    }
+    COMMAND_TIMES.with_borrow_mut(|times| times.push((elapsed, label.to_owned())));
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+/// The API request lines of a snouty debug log, each indented on a line of
+/// its own.
+fn request_lines(stderr: &[u8]) -> String {
+    let mut out = String::new();
+    for line in String::from_utf8_lossy(stderr)
+        .lines()
+        .filter_map(|line| line.strip_prefix(snouty::api::REQUEST_LOG_PREFIX))
+    {
+        out.push_str("    ");
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+fn cmd_snouty(
+    env: &mut testscript_rs::TestEnvironment,
+    args: &[String],
+) -> testscript_rs::Result<()> {
+    let expanded: Vec<String> = args.iter().map(|a| env.substitute_env_vars(a)).collect();
+    let label = format!("snouty {}", expanded.join(" "));
+    let cmd = snouty_cmd(env, &expanded);
+    let output = run_timed(cmd, env.next_stdin.take(), &label)?;
     let success = output.status.success();
     let stderr_str = String::from_utf8_lossy(&output.stderr).into_owned();
     let stdout_str = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -467,18 +572,15 @@ fn cmd_env_from_json_find(
         let Some(probe) = probe else {
             return Ok(());
         };
-        let start = std::time::Instant::now();
         let expanded: Vec<String> = probe.iter().map(|a| env.substitute_env_vars(a)).collect();
         let label = format!("snouty {}", expanded.join(" "));
+        let mut cmd = snouty_cmd(env, &expanded);
         // A cache of its own keeps the probe from answering later commands.
-        let output = snouty_cmd(env, &expanded)
-            .env(
-                "SNOUTY_API_CACHE_DIR",
-                env.current_dir.join("probe-api-cache"),
-            )
-            .output()
-            .map_err(|e| err(format!("spawn snouty: {e}")))?;
-        eprintln!("[{:.1}s] {label}", start.elapsed().as_secs_f64());
+        cmd.env(
+            "SNOUTY_API_CACHE_DIR",
+            env.current_dir.join("probe-api-cache"),
+        );
+        let output = run_timed(cmd, None, &label)?;
         let stderr = String::from_utf8_lossy(&output.stderr);
         let skip = if output.status.success() {
             if !output.stdout.is_empty() {
@@ -744,7 +846,7 @@ fn cmd_build_image(
             ));
         }
     };
-    let start = std::time::Instant::now();
+    let start = Instant::now();
     let label = args.join(" ");
     ENGINE_CTX.with_borrow_mut(|ctx| {
         let ctx = ctx
@@ -759,7 +861,7 @@ fn cmd_build_image(
             .build_image(&dir, &image_ref, dockerfile, platform.as_deref())
             .map_err(|e| err(format!("build-image: {e:?}")))?;
         eprintln!(
-            "[{:.1}s] build-image {label}",
+            "  [{:.1}s] build-image {label}",
             start.elapsed().as_secs_f64()
         );
         ctx.built_images.push(image_ref);
@@ -881,7 +983,12 @@ fn spec_tests() {
         .collect();
     files.sort();
 
+    let mut file_times = Vec::new();
+    let mut command_times = Vec::new();
+    let mut failure = None;
     for file in files {
+        eprintln!("spec {file}");
+        let start = Instant::now();
         let result = testscript::run("specs")
             .files([file.clone()])
             .condition("staging", staging)
@@ -951,13 +1058,40 @@ fn spec_tests() {
             })
             .execute();
 
-        match result {
-            Ok(()) => {}
-            Err(e) if e.to_string().contains("SKIP:") => {
-                eprintln!("skipping {file}");
+        let elapsed = start.elapsed();
+        let outcome = match result {
+            Ok(()) => "ok",
+            Err(e) if e.to_string().contains("SKIP:") => "skipped",
+            Err(e) => {
+                failure = Some(e);
+                "FAILED"
             }
-            Err(e) => panic!("\n{e}"),
+        };
+        eprintln!("spec {file}: {outcome} in {:.1}s", elapsed.as_secs_f64());
+        command_times.extend(
+            COMMAND_TIMES
+                .take()
+                .into_iter()
+                .map(|(time, label)| (time, format!("{file}: {label}"))),
+        );
+        file_times.push((elapsed, file));
+        if failure.is_some() {
+            break;
         }
+    }
+
+    print_slowest("spec files", file_times, 5);
+    print_slowest("commands", command_times, 10);
+    if let Some(failure) = failure {
+        panic!("\n{failure}");
+    }
+}
+
+fn print_slowest(what: &str, mut times: Vec<(Duration, String)>, count: usize) {
+    times.sort_by_key(|(time, _)| std::cmp::Reverse(*time));
+    eprintln!("slowest {what}:");
+    for (time, name) in times.into_iter().take(count) {
+        eprintln!("  [{:.1}s] {name}", time.as_secs_f64());
     }
 }
 

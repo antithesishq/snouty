@@ -3,18 +3,18 @@ source: tests/help_snapshots.rs
 ---
 List a run's property (assertion) results, one table per group.
 
-Each property has its ID, name, group, and status: passing, failing, or
-undetermined. An undetermined property has not triggered yet, or its results are
-still being processed after the run ended. Each property also counts its
-examples and its counterexamples.
+Each property has its ID, name, group, and status: passing, failing, or pending.
+A pending property has not triggered yet, or its results are still being
+processed after the run ended. Each property also counts its examples and its
+counterexamples.
 
 Each table is headed by its group; columns are STATUS, ✓, ✗, ID, NAME (failing
-first). STATUS is pass, fail, or pending, for undetermined. ✓ is the example
-count and ✗ is the counterexample count; large counts are shortened, as in 186k.
-ID is the property ID.
+first). STATUS is pass, fail, or pending. ✓ is the example count and ✗ is the
+counterexample count; large counts are shortened, as in 186k. ID is the property
+ID.
 
-Filter by status with --passing, --failing, and --undetermined. Give more than
-one to show each of those statuses.
+Filter by status with --passing, --failing, and --pending. Give more than one to
+show each of those statuses.
 
 Narrow with --name and/or --group. Both are case-insensitive substring matches
 against the relevant fields. Add --detail to expand the matches into their
@@ -25,7 +25,7 @@ it. To show one property in full, pass its ID to
 
 Examples:
   snouty runs properties <run_id> --failing
-  snouty runs properties <run_id> --failing --undetermined
+  snouty runs properties <run_id> --failing --pending
   snouty runs properties <run_id> --name eventually_validate --detail
   snouty runs properties <run_id> --group Unreachable --detail
 
@@ -46,8 +46,8 @@ Options:
       --failing
           Show failing properties; combine with the other status filters
 
-      --undetermined
-          Show undetermined properties; combine with the other status filters
+      --pending
+          Show pending properties; combine with the other status filters
 
       --name <NAME>
           Filter properties by name (matched by substring, case-insensitive)

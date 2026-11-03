@@ -40,10 +40,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The toolchain that rust-toolchain.toml pins, which the runner image may
-      # not have.
-      - name: Install Rust
-        run: rustup toolchain install --no-self-update
+      # The toolchain that rust-toolchain.toml pins, and mcp-publisher. This
+      # job holds secrets, so it restores nothing from the Actions cache.
+      - uses: ./.github/actions/setup-tools
+        with:
+          cache: "false"
+          mise-tools: "github:modelcontextprotocol/registry"
+          mise-cache: "false"
       - name: Get a crates.io token
         id: auth
         uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
@@ -63,14 +66,6 @@ jobs:
               cargo publish -p "$crate"
             fi
           done
-      # Only mcp-publisher, at the version and checksum in mise.lock. mise and
-      # its checksum match .github/actions/setup-tools.
-      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
-        with:
-          version: "2026.10.25"
-          sha256: "5d362ecc578dc7c146679b841dda949d6472cbf86ff5635db7afdca1b6b3fd87"
-          install_args: "github:modelcontextprotocol/registry"
-          cache: false
       # Runs for -rc.N tags too, so an -rc.N becomes the registry's latest
       # version until the stable release. TODO: skip prereleases once the mcp
       # feature is stable. MCP_PRIVATE_KEY is a hex Ed25519 key.

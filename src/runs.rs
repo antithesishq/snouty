@@ -667,7 +667,8 @@ async fn cmd_runs_properties(
 
     // The list endpoint reports a property as Pending while the server
     // still processes a finished run's data, with nonzero example counts
-    // (antithesis-orbitinghail tenant, release 67).
+    // (antithesis-orbitinghail tenant, release 67, which named the status
+    // Undetermined).
     if !json
         && properties
             .iter()
@@ -925,7 +926,7 @@ fn format_count_si(n: u64) -> String {
     }
 }
 
-/// The status as an uncolored word, for prose.
+/// The status as an uncolored word.
 fn property_status_word(status: &PropertyStatus) -> Cow<'static, str> {
     match status {
         PropertyStatus::Passing => "passing".into(),
@@ -3611,6 +3612,7 @@ mod tests {
         for (status, outcome) in [
             (PropertyStatus::Passing, "passed with no examples"),
             (PropertyStatus::Failing, "failed with no examples"),
+            (PropertyStatus::Pending, "none yet"),
         ] {
             let p = Property::EventProperty(event_prop(status, vec![], vec![]));
             let out = render_property_detail(&p);

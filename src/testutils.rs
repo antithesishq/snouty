@@ -1326,7 +1326,7 @@ fn mock_route_get_run_logs(run_id: &str) -> (u16, String) {
 /// violating value in `counterexamples`, so `--detail` must label it apart from
 /// the satisfying `examples`. Runs created on release 65.3 or later report
 /// `Pending` until a property resolves (observed on the
-/// antithesis-orbitinghail tenant).
+/// antithesis-orbitinghail tenant, where the status was named `Undetermined`).
 const MOCK_PROPERTIES: [&str; 4] = [
     r#"{"id":"97cf5fcafa500ed62bf109d81834c5b881a2c854","name":"Safety: Counter value stays below limit","description":"Counter stays within safe bounds","status":"Failing","is_event":true,"group":"Safety","category":"Antithesis SDK","team":"Storage","example_count":12,"counterexample_count":3,"examples":[{"moment":{"input_hash":"-300","vtime":"398.4898056755774"}}],"counterexamples":[{"moment":{"input_hash":"-200","vtime":"313.15126806590706"}},{"moment":{"input_hash":"-100","vtime":"45.334635781589895"}}]}"#,
     r#"{"id":"d2558d97fabac81ba7eb4676e47a0cba558263f8","name":"Peak memory stays below cap","description":"Peak memory never exceeds the configured limit","category":"","status":"Failing","is_event":false,"group":"Resources","example_count":2,"counterexample_count":1,"examples":[820,910],"counterexamples":[1340]}"#,

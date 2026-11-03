@@ -1,7 +1,7 @@
 ---
 source: tests/help_snapshots.rs
 ---
-Show the compute hours that recent runs used, newest first.
+Show the compute hours that recent runs used, newest first by end time.
 
 A compute hour is one core running for one hour. Compute hours are the unit that Antithesis bills usage in, and that the usage cap counts. They are not wall-clock hours: Antithesis runs a test in parallel, so one hour of testing uses many compute hours, and a higher performance tier uses more.
 
@@ -19,7 +19,7 @@ Times and periods are in the local timezone.
   no filter or `before`    the newest rows (before `before`)
   `after`                  the oldest rows from `after`
   `after` and `before`     every row between them; `limit` is not allowed
-The rows always show newest first.
+The rows always show newest first, and runs are in order of the time that they ended.
 
 Examples:
   runs_usage

@@ -330,7 +330,7 @@ mock-runs-server
 # `--json` keeps the server's status and prints no note.
 mock-runs-server
 [!staging] snouty --json runs properties run-1
-[!staging] stdout '"status":"Undetermined"'
+[!staging] stdout '"status":"Pending"'
 [!staging] ! stderr 'still being processed'
 
 # `snouty runs properties --failing` shows only failing properties.

@@ -192,7 +192,7 @@ pub async fn cmd_runs(
             let statuses = [
                 (passing, PropertyStatus::Passing),
                 (failing, PropertyStatus::Failing),
-                (undetermined, PropertyStatus::Undetermined),
+                (undetermined, PropertyStatus::Pending),
             ]
             .into_iter()
             .filter_map(|(on, status)| on.then_some(status))
@@ -665,13 +665,13 @@ async fn cmd_runs_properties(
         outln!("{}", render_properties_table(&properties))?;
     }
 
-    // The list endpoint reports a property as Undetermined while the server
+    // The list endpoint reports a property as Pending while the server
     // still processes a finished run's data, with nonzero example counts
     // (antithesis-orbitinghail tenant, release 67).
     if !json
         && properties
             .iter()
-            .any(|p| matches!(p.status(), PropertyStatus::Undetermined))
+            .any(|p| matches!(p.status(), PropertyStatus::Pending))
     {
         eprintln!(
             "\nSome properties are still being processed. \
@@ -930,7 +930,7 @@ fn property_status_word(status: &PropertyStatus) -> Cow<'static, str> {
     match status {
         PropertyStatus::Passing => "passing".into(),
         PropertyStatus::Failing => "failing".into(),
-        PropertyStatus::Undetermined => "undetermined".into(),
+        PropertyStatus::Pending => "undetermined".into(),
         PropertyStatus::Other(_) => status.to_string().into(),
     }
 }
@@ -938,7 +938,7 @@ fn property_status_word(status: &PropertyStatus) -> Cow<'static, str> {
 /// The colored status word for the property detail.
 fn property_status_label(status: &PropertyStatus) -> String {
     let word = match status {
-        PropertyStatus::Undetermined => "pending".into(),
+        PropertyStatus::Pending => "pending".into(),
         _ => property_status_word(status),
     };
     style_property_status(status, word)
@@ -949,7 +949,7 @@ fn style_property_status(status: &PropertyStatus, word: Cow<'_, str>) -> String 
     match status {
         PropertyStatus::Passing => word.green(),
         PropertyStatus::Failing => word.red(),
-        PropertyStatus::Undetermined => word.yellow(),
+        PropertyStatus::Pending => word.yellow(),
         PropertyStatus::Other(_) => word,
     }
     .to_string()
@@ -1076,7 +1076,7 @@ fn render_property_detail(property: &Property) -> String {
                 let examples = match p.status {
                     PropertyStatus::Passing => "passed with no examples",
                     PropertyStatus::Failing => "failed with no examples",
-                    PropertyStatus::Undetermined => "none yet",
+                    PropertyStatus::Pending => "none yet",
                     PropertyStatus::Other(_) => "none",
                 };
                 out.push_str(&render_field("Examples", examples));
@@ -1276,7 +1276,7 @@ fn property_status_cell(status: &PropertyStatus) -> String {
     let word = match status {
         PropertyStatus::Passing => "pass".into(),
         PropertyStatus::Failing => "fail".into(),
-        PropertyStatus::Undetermined => "pending".into(),
+        PropertyStatus::Pending => "pending".into(),
         PropertyStatus::Other(_) => status.to_string().into(),
     };
     style_property_status(status, word)

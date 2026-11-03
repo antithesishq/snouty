@@ -5042,7 +5042,7 @@ mod tests {
             .and(path("/api/v0/runs/run-1/properties"))
             .and(query_param("limit", "100"))
             .and(query_param("status", "Failing"))
-            .and(query_param("status", "Undetermined"))
+            .and(query_param("status", "Pending"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "data": [],
                 "next_cursor": null
@@ -5056,7 +5056,7 @@ mod tests {
         let properties = api
             .stream_run_properties(
                 "run-1",
-                &[PropertyStatus::Failing, PropertyStatus::Undetermined],
+                &[PropertyStatus::Failing, PropertyStatus::Pending],
             )
             .try_collect::<Vec<_>>()
             .await

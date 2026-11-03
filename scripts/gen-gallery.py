@@ -1061,7 +1061,9 @@ def _matches_only_itself(prop: dict, props: list[dict]) -> bool:
     return sum(name in p["name"].lower() for p in props) == 1
 
 
-_MOMENT_ROW = re.compile(r"-?\d{6,}\s+\d+\.\d+")  # long hash + float vtime
+# A long hash and a float vtime on one line. `[ \t]` rather than `\s` so two
+# numbers on adjacent lines of a `Result` block don't look like a moment row.
+_MOMENT_ROW = re.compile(r"-?\d{6,}[ \t]+\d+\.\d+")
 
 
 def _has_moment_rows(rendered: str) -> bool:
@@ -1106,9 +1108,10 @@ def _pick_property_with_moments(
 
 
 # A non-event ("system") property renders its value under a `Result` label
-# (see render_result in src/runs.rs) — `Result   <scalar>` inline, or a bare
-# `Result` label line above indented JSON (no colon) for an object/array —
-# never as a moment HASH/VTIME row.
+# (see render_result in src/runs.rs) — one value inline as `Result   <value>`
+# when it fits, or a bare `Result` label line (no colon) above indented lines:
+# pretty JSON for a large object/array, or one value per line for several
+# values — never as a moment HASH/VTIME row.
 _NONEVENT_RESULT = re.compile(r"^\s*Result\b", re.MULTILINE)
 
 # snouty does not show a property's description, so `--detail` has no

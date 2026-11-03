@@ -319,6 +319,7 @@ stderr 'invalid value .* for .--source-run-id'
 
 # An unknown source fails, and snouty points at the flag.
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --source-run-id no-such-run
+stderr 'Source run .no-such-run. does not exist'
 stderr 'check that --source-run-id names an existing source'
 ! stderr 'names the run the moment comes from'
 

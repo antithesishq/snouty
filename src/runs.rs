@@ -2032,7 +2032,8 @@ fn explain_exec_error(
     }
     let message = api_error_message(&err);
     let cold = message.is_some_and(|m| MOMENT_NOT_WARM.iter().any(|marker| m.contains(marker)));
-    let missing = status == 404 || message.is_some_and(|m| m.contains("does not exist"));
+    let missing = status == 404
+        || message.is_some_and(|m| m.contains("Source run '") && m.ends_with("' does not exist."));
     match (status, rewarm_flag) {
         (400 | 404, Some(flag)) if missing => {
             err.suggestion(format!("check that {flag} names an existing source"))

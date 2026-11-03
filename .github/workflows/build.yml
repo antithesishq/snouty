@@ -150,6 +150,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: mise run lint:deny
 
+      - name: MCP Registry entry
+        if: ${{ !cancelled() }}
+        run: mise run lint:mcp
+
       # A new advisory can appear with no change here, so it fails only the
       # nightly and manual runs, not a pull request.
       - name: cargo-deny advisories

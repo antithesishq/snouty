@@ -572,28 +572,14 @@ async fn tool_results_are_plain_detailed_text() {
     client.cancel().await.expect("close snouty mcp");
 }
 
-/// The release publishes `server.json` to the MCP Registry, so it must pass the
-/// registry schema, match this crate's version and name, start `snouty mcp`
-/// with its feature on, and match the README's `mcp-name` line.
+/// The release publishes `server.json` to the MCP Registry, so it must match
+/// this crate's version and name, start `snouty mcp` with its feature on, and
+/// match the README's `mcp-name` line. `mise run lint:mcp` validates the rest.
 #[test]
 fn mcp_registry_entry_matches_the_crate() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let read_json = |path: &str| -> Value {
-        serde_json::from_str(&std::fs::read_to_string(root.join(path)).unwrap()).unwrap()
-    };
-    let entry = read_json("server.json");
-    let schema = read_json("tests/fixtures/mcp-server.schema.json");
-    assert_eq!(entry["$schema"], schema["$id"]);
-    let validator = jsonschema::options()
-        .should_validate_formats(true)
-        .build(&schema)
-        .unwrap();
-    let errors: Vec<String> = validator
-        .iter_errors(&entry)
-        .map(|error| error.to_string())
-        .collect();
-    assert_eq!(errors, Vec::<String>::new());
-
+    let entry: Value =
+        serde_json::from_str(&std::fs::read_to_string(root.join("server.json")).unwrap()).unwrap();
     let version = env!("CARGO_PKG_VERSION");
     let package = &entry["packages"][0];
     assert_eq!(entry["version"], version);

@@ -63,6 +63,14 @@ jobs:
               cargo publish -p "$crate"
             fi
           done
+      # Only mcp-publisher, at the version and checksum in mise.lock. mise and
+      # its checksum match .github/actions/setup-tools.
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        with:
+          version: "2026.10.25"
+          sha256: "5d362ecc578dc7c146679b841dda949d6472cbf86ff5635db7afdca1b6b3fd87"
+          install_args: "github:modelcontextprotocol/registry"
+          cache: false
       # Runs for -rc.N tags too, so an -rc.N becomes the registry's latest
       # version until the stable release. TODO: skip prereleases once the mcp
       # feature is stable. MCP_PRIVATE_KEY is a hex Ed25519 key.
@@ -78,11 +86,7 @@ jobs:
             echo "$name $version is already in the MCP Registry"
             exit 0
           fi
-          curl -fsSL -o mcp-publisher.tar.gz \
-            https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz
-          echo "a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc  mcp-publisher.tar.gz" | sha256sum -c -
-          tar xzf mcp-publisher.tar.gz mcp-publisher
-          ./mcp-publisher login dns --domain antithesis.com --private-key "$MCP_PRIVATE_KEY"
+          mcp-publisher login dns --domain antithesis.com --private-key "$MCP_PRIVATE_KEY"
           # The registry reads the mcp-name line from the crate's README on
           # crates.io, which serves the new README some time after the upload.
           # Wait for it, so that the one publish fails only on a real error.
@@ -92,4 +96,4 @@ jobs:
               | grep -qF "mcp-name: $name" && break
             sleep 15
           done
-          ./mcp-publisher publish
+          mcp-publisher publish

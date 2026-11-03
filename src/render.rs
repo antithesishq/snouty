@@ -14,14 +14,19 @@ pub struct OutputOptions {
     pub verbose: bool,
 }
 
+/// Below this many columns, a wrapped value would print about one word per line,
+/// so [`render_kv`] lets it overflow the terminal instead.
+const MIN_KV_VALUE_WIDTH: usize = 20;
+
 /// Render aligned `Label  value` lines, sqlite `.mode line`–style. Each line is
 /// terminated with a newline; labels and values are sanitized. Labels are padded to the
 /// widest label, but never narrower than `min_label_width` so a caller that also
 /// renders a wider prose label below the block can keep every row aligned.
 ///
 /// A value that does not fit in `width` columns wraps at spaces, and its
-/// continuation lines start at the value column. Pass `usize::MAX` to keep each
-/// row on one line.
+/// continuation lines start at the value column. The value column is never
+/// narrower than [`MIN_KV_VALUE_WIDTH`]. Pass `usize::MAX` to keep each row on
+/// one line.
 pub(crate) fn render_kv<L: AsRef<str>, V: AsRef<str>>(
     rows: &[(L, V)],
     min_label_width: usize,
@@ -38,7 +43,7 @@ pub(crate) fn render_kv<L: AsRef<str>, V: AsRef<str>>(
         .max()
         .unwrap_or(0);
     let value_col = label_width + 2;
-    let value_width = width.saturating_sub(value_col).max(1);
+    let value_width = width.saturating_sub(value_col).max(MIN_KV_VALUE_WIDTH);
     let mut out = String::new();
     for (label, value) in rows {
         let mut lines = wrap_text(&value, value_width, CodeSpans::Ignore).into_iter();
@@ -489,13 +494,13 @@ mod tests {
     #[test]
     fn render_kv_wraps_a_long_value_under_the_value_column() {
         let rows = vec![
-            ("k", "one two three".to_string()),
+            ("k", "one two three four five six".to_string()),
             ("long", "x".to_string()),
         ];
-        assert_eq!(
-            render_kv(&rows, 0, 15),
-            "k     one two\n      three\nlong  x\n"
-        );
+        let wrapped = "k     one two three four\n      five six\nlong  x\n";
+        assert_eq!(render_kv(&rows, 0, 26), wrapped);
+        // A narrower terminal still gives the value MIN_KV_VALUE_WIDTH columns.
+        assert_eq!(render_kv(&rows, 0, 10), wrapped);
     }
 
     #[test]

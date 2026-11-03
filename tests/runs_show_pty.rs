@@ -12,7 +12,7 @@ use snouty::testutils::MockApiServer;
 use support::pty::PtyCommand;
 
 /// Narrow enough that the mock's "the workload container exited early" does
-/// not fit after the 16-column label.
+/// not fit in the value column, which starts at column 16.
 const PTY_COLS: u16 = 40;
 
 #[test]

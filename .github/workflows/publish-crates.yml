@@ -16,7 +16,7 @@
 # already exists, so a crate with no published version needs one manual
 # `cargo publish` before this job can take it over.
 #
-# npm uses Trusted Publishing too. Its config on @antithesishq/snouty names
+# npm uses Trusted Publishing too. Its config on the snouty package names
 # `release.yml` and the `release` environment, and allows direct publishing. Like crates.io,
 # npm attaches a config only to a package that exists, so the first version
 # needs one manual `npm publish`.
@@ -142,8 +142,10 @@ jobs:
           done
           readme="https://crates.io/api/v1/crates/snouty/$version/readme"
           for _ in $(seq 20); do
-            curl -sfL -A "snouty-release (https://github.com/antithesishq/snouty)" "$readme" \
-              | grep -qF "mcp-name: $name" && break
+            # grep reads a variable, not a pipe: under pipefail, curl fails
+            # when grep -q exits early, and the check would never pass.
+            html=$(curl -sfL -A "snouty-release (https://github.com/antithesishq/snouty)" "$readme" || true)
+            grep -qF "mcp-name: $name" <<< "$html" && break
             sleep 15
           done
           mcp-publisher publish

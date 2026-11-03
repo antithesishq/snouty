@@ -586,7 +586,6 @@ fn mcp_registry_entry_matches_the_crate() {
         .unwrap()
         .parse()
         .unwrap();
-    let npm_scope = dist["dist"]["npm-scope"].as_str().unwrap();
     let version = env!("CARGO_PKG_VERSION");
     assert_eq!(entry["version"], version);
     let packages = entry["packages"].as_array().unwrap();
@@ -595,14 +594,16 @@ fn mcp_registry_entry_matches_the_crate() {
         .map(|package| json!([package["registryType"], package["identifier"]]))
         .collect();
     let crate_name = env!("CARGO_PKG_NAME");
+    // dist names the npm package after the crate, under npm-scope if set.
+    let npm_package = match dist["dist"].get("npm-scope") {
+        Some(scope) => format!("{}/{crate_name}", scope.as_str().unwrap()),
+        None => crate_name.to_owned(),
+    };
     // npm comes first, because a client that installs only one package, such
     // as VS Code, takes the first one, and few clients can install a crate.
     assert_eq!(
         identifiers,
-        [
-            json!(["npm", format!("{npm_scope}/{crate_name}")]),
-            json!(["cargo", crate_name])
-        ]
+        [json!(["npm", npm_package]), json!(["cargo", crate_name])]
     );
     for package in packages {
         assert_eq!(package["version"], version);

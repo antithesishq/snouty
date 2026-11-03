@@ -6,6 +6,8 @@ use color_eyre::eyre::{Report, Result, bail};
 use gix::refs::Category;
 use log::debug;
 
+use crate::params::{Params, VCS_REPO_BRANCH, VCS_VERSION_ID};
+
 /// The state of the git checkout that holds a directory.
 #[derive(Debug)]
 pub struct Checkout {
@@ -49,6 +51,31 @@ pub fn checkout(dir: &Path) -> Option<Checkout> {
 pub struct GitHubRepo {
     pub owner: String,
     pub name: String,
+}
+
+impl Checkout {
+    /// The `vcs.*` params of the checked-out commit. Only a github.com
+    /// `origin` remote gives a repository and a commit link.
+    pub fn vcs_params(self) -> Params {
+        let mut vcs = Params::new();
+        if let Some(repo) = self
+            .origin
+            .as_ref()
+            .and_then(|url| GitHubRepo::try_from(url).ok())
+        {
+            super::insert_github_repo(
+                &mut vcs,
+                &repo.owner,
+                &repo.name,
+                repo.commit_url(&self.commit),
+            );
+        }
+        if let Some(branch) = self.branch {
+            vcs.insert(VCS_REPO_BRANCH, branch);
+        }
+        vcs.insert(VCS_VERSION_ID, self.commit);
+        vcs
+    }
 }
 
 impl GitHubRepo {

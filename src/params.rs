@@ -84,22 +84,6 @@ pub const VCS_PARAMS: &[(&str, &str)] = &[
     (VCS_VERSION_LINK, "Commit Link"),
 ];
 
-/// The `vcs.*` keys that `launch` detects. A user value for any of them turns
-/// the detection off, so that a detected commit link cannot sit next to a
-/// different commit.
-pub const DETECTED_VCS_KEYS: &[&str] = &[
-    VCS_REPO_TYPE,
-    VCS_REPO_OWNER,
-    VCS_REPO_NAME,
-    VCS_REPO_BRANCH,
-    VCS_VERSION_ID,
-    VCS_VERSION_LINK,
-    VCS_PR_ID,
-    VCS_PR_LINK,
-    VCS_PR_OWNER,
-    VCS_PR_TITLE,
-];
-
 pub const ANT_DEBUGGING_SESSION_ID: &str = "antithesis.debugging.session_id";
 pub const ANT_DEBUGGING_RUN_ID: &str = "antithesis.debugging.run_id";
 pub const ANT_DEBUGGING_INPUT_HASH: &str = "antithesis.debugging.input_hash";
@@ -207,6 +191,11 @@ impl Params {
     /// Insert a key-value pair into the params.
     pub fn insert(&mut self, key: impl Into<String>, value: impl Into<String>) {
         self.inner.insert(key.into(), Value::String(value.into()));
+    }
+
+    /// The value of `key`, when it is a string.
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.inner.get(key).and_then(Value::as_str)
     }
 
     /// Check if a key exists in the params.

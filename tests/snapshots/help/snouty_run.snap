@@ -71,7 +71,7 @@ Options:
           lookaround or backreferences. Max 1024 characters
       --no-vcs
           Do not record the commit, branch, repository and pull request in run
-          metadata, and do not set the GitHub commit status
+          metadata
       --param <PARAMS>
           Extra parameters as key=value pairs (repeatable)
   -h, --help

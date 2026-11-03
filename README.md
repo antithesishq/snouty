@@ -411,7 +411,7 @@ The job authenticates with [GitHub Actions OIDC](#github-actions-oidc). To use a
 
 When `ANTITHESIS_GITHUB_TOKEN` is set, the launch sets the `continuous-testing/antithesis` commit status of the commit to pending, and Antithesis sets the result when the run ends. With `--test-name`, the status is `continuous-testing/antithesis (<test-name>)`, so two tests on one commit get two statuses. Antithesis uses the token after the job ends, so `secrets.GITHUB_TOKEN` does not work. Use a [fine-grained personal access token](https://github.com/settings/tokens?type=beta) for the repository, with read access to metadata and read and write access to commit statuses, and store it as the `GH_PAT` secret.
 
-A `--param` for a detected `run.*` parameter replaces the detected value. A `--param` for a detected `vcs.*` parameter, or `--no-vcs`, turns off the `vcs.*` detection and the commit status.
+A `--param` replaces the detected parameter with the same key. `--no-vcs` turns off the `vcs.*` detection, but not the commit status.
 
 Each input of the trigger action has a snouty equivalent:
 
@@ -497,7 +497,7 @@ workflows:
 
 ### Commit status from another CI system
 
-Only GitHub Actions sets the commit status for you. To post results to GitHub from another CI system, pass the callback URL and token yourself:
+Only GitHub Actions sends the GitHub callback params for you. For a repository on GitHub that another CI system builds, pass them yourself. Then the launch also sets the commit status to pending:
 
 ```sh
 snouty launch --launcher basic_test --config ./antithesis \

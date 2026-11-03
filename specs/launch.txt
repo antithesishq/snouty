@@ -514,13 +514,11 @@ snouty launch --launcher basic_test --config-image config:latest --max-compute-h
 stderr '"vcs.version_id": "abc123"'
 ! stderr 'vcs.repo_owner'
 
-# A --param for a detected key turns the detection off, so that a detected
-#    commit link cannot sit next to a different commit.
+# A --param replaces only the detected param with the same key.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch --launcher advanced_test --max-compute-hours 24 --param vcs.version_id=abc123
 stderr '"vcs.version_id": "abc123"'
-! stderr 'vcs.version_link'
-! stderr 'vcs.repo_branch'
+stderr '"vcs.repo_branch": "feature/vcs"'
 
 # A --param for a `vcs.*` key that snouty does not detect is sent with the
 #    detected values.
@@ -587,11 +585,11 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch --launcher advanced_test --max-compute-hours 24 --param run.creator_name=bot
 stderr '"run.creator_name": "bot"'
 
-# A --param for a detected vcs.* key turns off the GitHub Actions detection.
+# A --param replaces only the detected param with the same key.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty launch --launcher advanced_test --max-compute-hours 24 --param vcs.repo_branch=release
 stderr '"vcs.repo_branch": "release"'
-! stderr 'vcs.version_id'
+stderr '"vcs.version_id": "0123456789abcdef0123456789abcdef01234567"'
 
 # A pre-built config image does not turn the GitHub Actions detection off.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
@@ -630,17 +628,21 @@ stderr '"antithesis.integrations.github.token": "\[REDACTED\]"'
 stderr -literal 'Set the GitHub commit status continuous-testing/antithesis (smoke) to pending'
 stdout 'Test run started: run_id run-123'
 
-# --no-vcs turns the callback off.
+# --no-vcs keeps the callback and the pending status.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
+set-env GITHUB_API_URL ${ANTITHESIS_BASE_URL}
 snouty launch --launcher advanced_test --max-compute-hours 24 --no-vcs
-! stderr 'antithesis.integrations'
-! stderr 'commit status'
+! stderr 'vcs\.'
+stderr 'antithesis.integrations.github.callback_url'
+stderr 'Set the GitHub commit status continuous-testing/antithesis to pending'
 
-# A GitHub integration --param turns the automatic callback off.
+# A GitHub integration --param replaces the detected one, and the pending
+#    status goes to the URL that the run has.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher advanced_test --max-compute-hours 24 --param antithesis.integrations.github.callback_url=https://example.com/cb
-! stderr 'antithesis.integrations.github.token'
-! stderr 'commit status'
+snouty launch --launcher advanced_test --max-compute-hours 24 --param antithesis.integrations.github.callback_url=${ANTITHESIS_BASE_URL}/custom
+stderr '"antithesis.integrations.github.callback_url": "http://127.0.0.1:[0-9]+/custom"'
+stderr '"antithesis.integrations.github.token": "\[REDACTED\]"'
+stderr 'Set the GitHub commit status continuous-testing/antithesis to pending'
 
 # A failed commit status update is a warning, and the launch succeeds.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
@@ -648,6 +650,20 @@ env GITHUB_API_URL=http://127.0.0.1:1
 snouty launch --launcher advanced_test --max-compute-hours 24
 stderr 'warning: could not set the GitHub commit status continuous-testing/antithesis to pending'
 stdout 'Test run started: run_id run-123'
+
+# Outside GitHub Actions, the GitHub callback params from --param also set
+#    the pending status.
+env GITHUB_ACTIONS=
+env ANTITHESIS_GITHUB_TOKEN=
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher advanced_test --max-compute-hours 24 --param antithesis.integrations.github.callback_url=${ANTITHESIS_BASE_URL}/repos/o/r/statuses/abc --param antithesis.integrations.github.token=${FAKE_GITHUB_TOKEN}
+! stderr ${FAKE_GITHUB_TOKEN@R}
+stderr 'Set the GitHub commit status continuous-testing/antithesis to pending'
+
+# Without the token, the launch sets no commit status.
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty launch --launcher advanced_test --max-compute-hours 24 --param antithesis.integrations.github.callback_url=${ANTITHESIS_BASE_URL}/repos/o/r/statuses/abc
+! stderr 'commit status'
 
 -- event.json --
 {"pull_request": {"number": 42, "html_url": "https://github.com/octo/app/pull/42", "title": "Add a widget", "user": {"login": "octocat"}, "head": {"sha": "fedcba9876543210fedcba9876543210fedcba98"}}}

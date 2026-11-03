@@ -730,7 +730,7 @@ pub struct LaunchArgs {
     pub fault_exclusions: Option<String>,
 
     /// Do not record the commit, branch, repository and pull request in run
-    /// metadata, and do not set the GitHub commit status
+    /// metadata
     #[arg(long)]
     pub no_vcs: bool,
 

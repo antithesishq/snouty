@@ -13,7 +13,6 @@ use semver::Version;
 use snouty::OutputOptions;
 use snouty::api::AntithesisApi;
 use snouty::auth::initialize_credential_store;
-use snouty::ci;
 use snouty::cli::{
     Cli, Commands, DebugArgs, LaunchArgs, SettingsCommands, UpdateArgs, UpdateChannel,
     gated_command_error,
@@ -24,16 +23,15 @@ use snouty::container;
 use snouty::docs;
 use snouty::error::user_error;
 use snouty::features::{self, Feature};
-use snouty::git;
 use snouty::login::cmd_login;
 use snouty::params::{
     ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_LENGTH_HOURS, ANT_DEBUGGING_RUN_ID,
     ANT_DEBUGGING_SESSION_ID, ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION,
     ANT_EVENT_DESCRIPTION, ANT_FAULT_EXCLUSIONS, ANT_FAULT_TOLERANCE, ANT_FILTER_LOGS_MATCHING,
     ANT_FILTER_SOURCE_MATCHING, ANT_IS_EPHEMERAL, ANT_MAX_COMPUTE_HOURS, ANT_PERFORMANCE_TIER,
-    ANT_REPORT_RECIPIENTS, ANT_SETUP_TIMEOUT, ANT_SOURCE, ANT_TEST_NAME, DETECTED_VCS_KEYS,
-    DuplicateKey, Params, RUN_CALLER_TYPE,
+    ANT_REPORT_RECIPIENTS, ANT_SETUP_TIMEOUT, ANT_SOURCE, ANT_TEST_NAME, DuplicateKey, Params,
 };
+use snouty::run_metadata::{self, VcsDetection};
 use snouty::settings::Settings;
 use snouty::stdio::{self, StreamClosed};
 use snouty::validate;
@@ -319,52 +317,17 @@ async fn cmd_launch(
         return Err(user_error("invalid arguments: no parameters provided"));
     }
 
-    let checkout = git::checkout(args.config.as_deref().unwrap_or(Path::new(".")));
-    // A GitHub Actions job can check out a commit other than the one it was
-    // started for. Then the build does not describe the launch.
-    let build = ci::Build::detect().filter(|build| {
-        checkout
-            .as_ref()
-            .is_none_or(|checkout| build.checks_out(&checkout.commit))
-    });
-    let mut commit_status = None;
-    if !args.no_vcs
-        && !DETECTED_VCS_KEYS
-            .iter()
-            .any(|&key| params.contains_key(key))
-    {
-        match &build {
-            // A GitHub Actions build names the commit that it builds, also for
-            // a pre-built config image.
-            Some(build) => {
-                params.merge(build.vcs_params());
-                let test_name = params
-                    .as_map()
-                    .get(ANT_TEST_NAME)
-                    .and_then(serde_json::Value::as_str);
-                // A user value for either GitHub integration param turns off
-                // the automatic callback and the pending status.
-                commit_status = build
-                    .commit_status(test_name)
-                    .filter(|status| params.extend_checked(status.callback_params()).is_ok());
-            }
-            // Outside GitHub Actions, a pre-built config image has no config dir, and the
-            // current directory need not hold its source.
-            None if args.config.is_none() && params.contains_key(ANT_CONFIG_IMAGE) => {}
-            None => {
-                if let Some(checkout) = checkout {
-                    params.merge(ci::Build::from(checkout).vcs_params());
-                }
-            }
-        }
-    }
-
-    let mut defaults = Params::new();
-    defaults.insert(RUN_CALLER_TYPE, "snouty");
-    if let Some(build) = &build {
-        defaults.merge(build.run_params());
-    }
-    params.merge_defaults(defaults);
+    // A user value replaces the derived one.
+    params.merge_defaults(run_metadata::detect(
+        args.config.as_deref().unwrap_or(Path::new(".")),
+        if args.no_vcs {
+            VcsDetection::Off
+        } else if args.config.is_none() && params.contains_key(ANT_CONFIG_IMAGE) {
+            VcsDetection::GitHubActionsOnly
+        } else {
+            VcsDetection::All
+        },
+    ));
 
     params.validate_test_params()?;
 
@@ -436,18 +399,14 @@ async fn cmd_launch(
         );
     }
 
-    let response = submit_launch(&launcher, params, &api).await?;
+    let response = submit_launch(&launcher, &params, &api).await?;
 
     // A failed status update does not fail the launch: the run has started,
     // and Antithesis still posts the result.
-    if let Some(status) = commit_status {
-        let context = status.context();
-        match status.post_pending().await {
-            Ok(()) => eprintln!("Set the GitHub commit status {context} to pending"),
-            Err(err) => eprintln!(
-                "warning: could not set the GitHub commit status {context} to pending: {err:#}"
-            ),
-        }
+    match run_metadata::post_pending_status(&params).await {
+        Some(Ok(context)) => eprintln!("Set the GitHub commit status {context} to pending"),
+        Some(Err(err)) => eprintln!("warning: {err:#}"),
+        None => {}
     }
 
     if json {
@@ -479,7 +438,7 @@ async fn cmd_launch(
 
 async fn submit_launch(
     launcher: &str,
-    params: Params,
+    params: &Params,
     api: &AntithesisApi,
 ) -> Result<snouty::api::LaunchResponse> {
     params.validate_test_params()?;
@@ -489,7 +448,7 @@ async fn submit_launch(
         serde_json::to_string_pretty(&params.to_redacted_map())?
     );
 
-    api.launch_test(launcher, &params).await
+    api.launch_test(launcher, params).await
 }
 
 fn debug_typed_params(args: &DebugArgs) -> Params {

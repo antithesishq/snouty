@@ -412,7 +412,7 @@
                           "id": "27a7cb0b311c8481c4ce12f3347fadbf",
                           "name": "Balance stays nonnegative",
                           "description": null,
-                          "status": "Undetermined",
+                          "status": "Pending",
                           "is_event": true,
                           "is_group": false,
                           "example_count": 0,
@@ -644,7 +644,7 @@
                             }
                           ],
                           "description": null,
-                          "status": "Undetermined",
+                          "status": "Pending",
                           "is_event": true,
                           "is_group": false
                         }
@@ -911,7 +911,7 @@
       "get": {
         "operationId": "listRunProperties",
         "summary": "List test run properties",
-        "description": "Returns a paginated list of a test run's properties and their current status: Passing, Failing, or Undetermined (not yet resolved). Each property includes a sample of its examples and counterexamples. Use the `status` parameter to filter by status.\n\nTo get the next page, pass the `next_cursor` value from the previous response as `after`, and keep the same `status` filter. Results are read live, so properties can change while you page through them. If a cursor has expired, the endpoint returns `400 Bad Request`, and you need to start again from the first page. Query parameters that the endpoint doesn't recognize are ignored.\n\nCompleted runs return the results Antithesis stored when the run finished. For cancelled and incomplete runs, results are calculated when you request them, which can take a while for a large run.\n\nRuns created before Antithesis version 65.3 return their saved results in an older format. Their properties are only Passing or Failing, so filtering on Undetermined returns no properties, and the response doesn't include `total_count` or `response_count`.\n\nProperty results aren't available for test runs created before Antithesis version 54.5. Requests for these runs return `404 Not Found`.",
+        "description": "Returns a paginated list of a test run's properties and their current status: Passing, Failing, or Pending (not yet resolved). Each property includes a sample of its examples and counterexamples. Use the `status` parameter to filter by status.\n\nTo get the next page, pass the `next_cursor` value from the previous response as `after`, and keep the same `status` filter. Results are read live, so properties can change while you page through them. If a cursor has expired, the endpoint returns `400 Bad Request`, and you need to start again from the first page. Query parameters that the endpoint doesn't recognize are ignored.\n\nCompleted runs return the results Antithesis stored when the run finished. For cancelled and incomplete runs, results are calculated when you request them, which can take a while for a large run.\n\nRuns created before Antithesis version 65.3 return their saved results in an older format. Their properties are only Passing or Failing, so filtering on Pending returns no properties, and the response doesn't include `total_count` or `response_count`.\n\nProperty results aren't available for test runs created before Antithesis version 54.5. Requests for these runs return `404 Not Found`.",
         "tags": [
           "Test runs"
         ],
@@ -947,7 +947,7 @@
           {
             "name": "status",
             "in": "query",
-            "description": "Filter by one or more statuses. Repeat the parameter, for example status=Passing&status=Undetermined. Matched case-insensitively. Omit for all statuses.",
+            "description": "Filter by one or more statuses. Repeat the parameter, for example status=Passing&status=Pending. Matched case-insensitively. Omit for all statuses.",
             "style": "form",
             "explode": true,
             "schema": {
@@ -957,7 +957,7 @@
                 "enum": [
                   "Passing",
                   "Failing",
-                  "Undetermined"
+                  "Pending"
                 ]
               }
             }
@@ -977,7 +977,7 @@
                       "id": "27a7cb0b311c8481c4ce12f3347fadbf",
                       "name": "Balance stays nonnegative",
                       "description": null,
-                      "status": "Undetermined",
+                      "status": "Pending",
                       "is_event": true,
                       "is_group": false,
                       "example_count": 0,
@@ -1027,7 +1027,7 @@
           "Test runs"
         ],
         "summary": "Get a test run property",
-        "description": "Returns a single property from a test run, in the same form as the [List test run properties](/docs/reference/rest_api/#op-listRunProperties) endpoint. For a run in progress, the property can change between requests. For a completed run, the endpoint returns the property's final result.\n\nFor runs created before Antithesis version 65.3, the property comes from the run's saved results. The status can only be Passing or Failing (not Undefined), and it doesn't include `category`, `team`, `event_set`, or `passing_predicate`.",
+        "description": "Returns a single property from a test run, in the same form as the [List test run properties](/docs/reference/rest_api/#op-listRunProperties) endpoint. For a run in progress, the property can change between requests. For a completed run, the endpoint returns the property's final result.\n\nFor runs created before Antithesis version 65.3, the property comes from the run's saved results. The status can only be Passing or Failing (not Pending), and it doesn't include `category`, `team`, `event_set`, or `passing_predicate`.",
         "parameters": [
           {
             "name": "run_id",
@@ -1060,7 +1060,7 @@
                   "id": "27a7cb0b311c8481c4ce12f3347fadbf",
                   "name": "Balance stays nonnegative",
                   "description": null,
-                  "status": "Undetermined",
+                  "status": "Pending",
                   "is_event": true,
                   "is_group": false,
                   "example_count": 0,
@@ -3367,9 +3367,9 @@
         "enum": [
           "Passing",
           "Failing",
-          "Undetermined"
+          "Pending"
         ],
-        "description": "Current property status. Undetermined means the property has not resolved. Runs created before Antithesis version 65.3 report only Passing or Failing."
+        "description": "Current property status. Pending means the property has not resolved. Runs created before Antithesis version 65.3 report only Passing or Failing."
       },
       "Run_Status": {
         "type": "string",

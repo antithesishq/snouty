@@ -287,10 +287,10 @@ task from `mise.toml` directly. In a nix shell, the Stop hooks use the nix
 tools and do not use mise.
 
 Dependabot does not update `mise.toml` or mise itself. Each week,
-`.github/workflows/mise-outdated.yml` files an issue, "Update mise and its
-tools", that lists what has a newer release. To bump a tool, change its
-version in `mise.toml`, then regenerate the lockfile for the platforms that CI and
-contributors use:
+`.github/workflows/mise-outdated.yml` files an issue, "Update mise and
+its tools", that lists what has a newer release. To bump a tool, change
+its version in `mise.toml`, then regenerate the lockfile for the platforms
+that CI and contributors use:
 
 ```
 mise lock --platform linux-x64,macos-arm64,macos-x64

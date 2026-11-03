@@ -63,3 +63,31 @@ jobs:
               cargo publish -p "$crate"
             fi
           done
+      # Lists `snouty mcp` in the MCP Registry under server.json's name. Stable
+      # releases only: the registry ranks versions by semver, so an -rc.N would
+      # become the latest version there. The login proves control of
+      # antithesis.com: MCP_PRIVATE_KEY is the hex Ed25519 key whose public half
+      # is in the antithesis.com TXT record `v=MCPv1; k=ed25519; p=...`.
+      - name: Publish to the MCP Registry
+        if: ${{ !fromJson(inputs.plan).announcement_is_prerelease }}
+        env:
+          MCP_PRIVATE_KEY: ${{ secrets.MCP_PRIVATE_KEY }}
+        run: |
+          name=$(jq -r .name server.json)
+          version=$(jq -r .version server.json)
+          if curl -sf -o /dev/null "https://registry.modelcontextprotocol.io/v0/servers/${name/\//%2F}/versions/$version?include_deleted=true"; then
+            echo "$name $version is already in the MCP Registry"
+            exit 0
+          fi
+          curl -fsSL -o mcp-publisher.tar.gz \
+            https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz
+          echo "a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc  mcp-publisher.tar.gz" | sha256sum -c -
+          tar xzf mcp-publisher.tar.gz mcp-publisher
+          ./mcp-publisher login dns --domain antithesis.com --private-key "$MCP_PRIVATE_KEY"
+          # The registry checks for the mcp-name line in the crate's README,
+          # which crates.io renders a little after the upload.
+          for attempt in 1 2 3 4 5; do
+            ./mcp-publisher publish && exit 0
+            sleep 30
+          done
+          exit 1

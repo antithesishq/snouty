@@ -1,0 +1,43 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.antithesis/snouty",
+  "title": "snouty",
+  "description": "Launch and triage Antithesis runs, run commands at a moment of a run, and search the docs",
+  "repository": {
+    "url": "https://github.com/antithesishq/snouty",
+    "source": "github"
+  },
+  "version": "0.9.0-rc.2",
+  "packages": [
+    {
+      "registryType": "cargo",
+      "identifier": "snouty",
+      "version": "0.9.0-rc.2",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "SNOUTY_UNSTABLE_FEATURES",
+          "description": "Turns on snouty mcp, which is an unstable feature",
+          "value": "mcp"
+        },
+        {
+          "name": "ANTITHESIS_TENANT",
+          "description": "Your Antithesis tenant. Not needed after snouty login"
+        },
+        {
+          "name": "ANTITHESIS_API_KEY",
+          "description": "An Antithesis API key. Not needed after snouty login",
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

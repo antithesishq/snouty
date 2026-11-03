@@ -571,3 +571,41 @@ async fn tool_results_are_plain_detailed_text() {
     assert!(line.is_match(stdout), "{stdout}");
     client.cancel().await.expect("close snouty mcp");
 }
+
+/// `server.json`, the MCP Registry entry that the release publishes, is valid
+/// against the registry's schema, matches this crate's version, starts the
+/// server with its feature on, and has the `mcp-name` line in the README that
+/// proves the crate is ours.
+#[test]
+fn mcp_registry_entry_matches_the_crate() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let read_json = |path: &str| -> Value {
+        serde_json::from_str(&std::fs::read_to_string(root.join(path)).unwrap()).unwrap()
+    };
+    let entry = read_json("server.json");
+    let schema = read_json("tests/fixtures/mcp-server.schema.json");
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    let errors: Vec<String> = validator
+        .iter_errors(&entry)
+        .map(|error| error.to_string())
+        .collect();
+    assert_eq!(errors, Vec::<String>::new());
+
+    let version = env!("CARGO_PKG_VERSION");
+    let package = &entry["packages"][0];
+    assert_eq!(entry["version"], version);
+    assert_eq!(package["version"], version);
+    assert_eq!(package["identifier"], env!("CARGO_PKG_NAME"));
+    assert_eq!(package["packageArguments"], json!([{"type": "positional", "value": "mcp"}]));
+    let feature_var = package["environmentVariables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|var| var["name"] == snouty::features::UNSTABLE_FEATURES_VAR_NAME)
+        .unwrap();
+    assert_eq!(feature_var["value"], snouty::features::Feature::Mcp.to_string());
+
+    let name = entry["name"].as_str().unwrap();
+    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+    assert!(readme.contains(&format!("`mcp-name: {name}`")), "README.md lacks mcp-name: {name}");
+}

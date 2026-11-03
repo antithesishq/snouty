@@ -20,8 +20,14 @@ the tenant release is too old for an API or a flag that some commands use. It
 also warns when CLI OAuth login is not enabled for the tenant. Pass --offline to
 skip these network calls.
 
-The command fails if any required check fails. Pass --json for a
-machine-readable report (e.g. to gate CI).
+The command fails if any required check fails.
+
+Add --json for machine-readable output, for example to gate CI. The report
+prints as one JSON object, with the fields ok and checks. ok is false when a
+required check fails. checks is a list of checks, each with the fields id (such
+as tenant or credentials), status (ok, warn or error) and message. The
+credentials check also has kind, the credential in use, when it finds one. A
+check with explanatory lines has notes, a list of {level, text} objects.
 
 Examples:
   snouty doctor

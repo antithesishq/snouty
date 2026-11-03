@@ -332,8 +332,8 @@
         "tags": [
           "Test runs"
         ],
-        "summary": "Stream property updates for a run",
-        "description": "Streams newline-delimited JSON (application/x-ndjson), one object per line. Subscribe before fetching /properties to collect updates while loading the initial state. There is no initial snapshot, replay cursor, or resume support. Reconnect and reload the current properties after a failed stream. A quiet stream can remain open without emitting heartbeat records.\n\nEvery notification uses the same type/data envelope. Data contains complete Event_Property or Non_Event_Property objects, including metadata, status, counts, and samples. NEW_EXAMPLES_FOUND includes only newly delivered samples, with cumulative counts; status notifications include retained samples. Arrays are always present, including empty sample arrays.\n\nRUN_FINALIZED has an empty data array, bypasses all filters and ends the stream successfully. An already-finalized view emits RUN_FINALIZED immediately. If the source fails or the subscriber falls behind after HTTP 200, the stream ends with an error object instead; EOF without RUN_FINALIZED does not establish finalization.\n\nRuns created before Antithesis 65.3 do not support streaming and return 409. Their saved results remain available from /properties.",
+        "summary": "Stream updates for a run",
+        "description": "Streams updates about a test run while the run is in progress. By default, you get a notification when Antithesis finds new properties, and when properties pass or fail. You can also opt in to notifications when Antithesis finds new examples for a property. When the run finishes, the stream sends `RUN_FINALIZED` and closes.\n\nThe stream only sends changes that happen after you connect. To get a complete, up-to-date view of a run's properties, open the stream first, then fetch the current properties from the [List test run properties](/docs/reference/rest_api/#op-listRunProperties) endpoint.\n\nRuns created before Antithesis 65.3 do not support streaming and return 409. Instead, call the [List test run properties](/docs/reference/rest_api/#op-listRunProperties) endpoint on completed runs.\n\nOutput is streamed as newline-delimited JSON (NDJSON), with one notification per line. Each notification has a `type`, and a `data` list of the properties associated with it.\n\nWhen Antithesis finds a property's first example or counterexample, it sends a `NEW_EXAMPLES_FOUND` notification. The property's `examples` or `counterexamples` list contains the new example. Later examples only increase `example_count` and `counterexample_count`.\n\nIf the stream closes without sending `RUN_FINALIZED`, or ends with an error, the run may still be in progress. Reconnecting doesn't resend notifications you missed, so reconnect and then reload the current properties.",
         "parameters": [
           {
             "name": "run_id",
@@ -675,7 +675,7 @@
             "$ref": "#/components/responses/NotFound"
           },
           "409": {
-            "description": "The run was created before Antithesis 65.3 and does not support streaming. List its saved results with /properties instead.",
+            "description": "The run was created before Antithesis 65.3 and does not support streaming. List its saved results with the [List test run properties](/docs/reference/rest_api/#op-listRunProperties) endpoint.",
             "content": {
               "application/json": {
                 "schema": {
@@ -911,7 +911,7 @@
       "get": {
         "operationId": "listRunProperties",
         "summary": "List test run properties",
-        "description": "Returns a paginated list of a test run's current properties, including Undetermined properties, with retained event samples. Keep the same run and status filters when following next_cursor. Pages are live reads, not a frozen snapshot; properties can change between reads. A stale cursor returns 400 and requires restarting pagination. Unknown query parameters are ignored.\n\n**Runs created before Antithesis version 65.3** return their saved property results instead. Those results are only Passing or Failing, so filtering on Undetermined returns no properties, and the response omits `total_count` and `response_count`. An `after` cursor issued by the previous version of this endpoint continues paging the saved results, so pagination started before an upgrade can finish.\n\n**Known limitation:** Property results are not available for test runs created before Antithesis version 54.5. Requests for such runs return `404 Not Found`.",
+        "description": "Returns a paginated list of a test run's properties and their current status: Passing, Failing, or Undetermined (not yet resolved). Each property includes a sample of its examples and counterexamples. Use the `status` parameter to filter by status.\n\nTo get the next page, pass the `next_cursor` value from the previous response as `after`, and keep the same `status` filter. Results are read live, so properties can change while you page through them. If a cursor has expired, the endpoint returns `400 Bad Request`, and you need to start again from the first page. Query parameters that the endpoint doesn't recognize are ignored.\n\nCompleted runs return the results Antithesis stored when the run finished. For cancelled and incomplete runs, results are calculated when you request them, which can take a while for a large run.\n\nRuns created before Antithesis version 65.3 return their saved results in an older format. Their properties are only Passing or Failing, so filtering on Undetermined returns no properties, and the response doesn't include `total_count` or `response_count`.\n\nProperty results aren't available for test runs created before Antithesis version 54.5. Requests for these runs return `404 Not Found`.",
         "tags": [
           "Test runs"
         ],
@@ -947,7 +947,7 @@
           {
             "name": "status",
             "in": "query",
-            "description": "Filter by one or more statuses. Repeat the parameter, for example status=Passing&status=Undetermined. Lowercase equivalents are also accepted. Omit for all statuses.",
+            "description": "Filter by one or more statuses. Repeat the parameter, for example status=Passing&status=Undetermined. Matched case-insensitively. Omit for all statuses.",
             "style": "form",
             "explode": true,
             "schema": {
@@ -957,10 +957,7 @@
                 "enum": [
                   "Passing",
                   "Failing",
-                  "Undetermined",
-                  "passing",
-                  "failing",
-                  "undetermined"
+                  "Undetermined"
                 ]
               }
             }
@@ -1030,7 +1027,7 @@
           "Test runs"
         ],
         "summary": "Get a test run property",
-        "description": "Returns one property exactly as /properties lists it. The read is live, not a frozen snapshot; the property can change between reads. The endpoint takes no query parameters; any supplied parameter returns 400. Runs created before Antithesis 65.3 return 409; list their saved results with /properties.",
+        "description": "Returns a single property from a test run, in the same form as the [List test run properties](/docs/reference/rest_api/#op-listRunProperties) endpoint. For a run in progress, the property can change between requests. For a completed run, the endpoint returns the property's final result.\n\nFor runs created before Antithesis version 65.3, the property comes from the run's saved results. The status can only be Passing or Failing (not Undefined), and it doesn't include `category`, `team`, `event_set`, or `passing_predicate`.",
         "parameters": [
           {
             "name": "run_id",
@@ -1092,19 +1089,6 @@
                 },
                 "example": {
                   "message": "Property 27a7cb0b311c8481c4ce12f3347fadbf not found"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "The run was created before Antithesis 65.3 and does not support property lookup. List its saved results with /properties instead.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error_Response"
-                },
-                "example": {
-                  "message": "Conflict: Property lookup is not available for this run. Property lookup requires a run created with Antithesis version 65.3 or later. You can still view this run's saved property results."
                 }
               }
             }
@@ -1215,7 +1199,7 @@
       "post": {
         "operationId": "search",
         "summary": "Search events with event sets",
-        "description": "Runs a search query across a single test run's events and returns the matching events. The test run to search is identified by the `run_id` path parameter. To count matching events instead, use `/api/v0/runs/{run_id}/events/search/count`.\n\n### Search query\n\nThe `query` field is an event set. An event set is a pipeline of verbs separated by `.`, applied left to right to the underlying event stream. The [event set reference](/docs/reference/event-set-reference/) has the full grammar.\n\n### Validating a query\n\nWhen `validate_only` is `true` the server checks only that `query` is syntactically valid and does not execute it; no events are returned. The server responds with `200 OK` and an empty body for a syntactically valid query, and for an invalid query, the server responds with `400 Bad Request`. `validate_only` takes precedence over `is_streaming`.\n\n### Streaming\n\nWhen `is_streaming` is `true` the connection remains open and the server continues to emit events as they are observed in live test runs. When `false` the server closes the connection once it has returned the current matching set.",
+        "description": "Runs a search query across a single test run's events and returns the matching events. The test run to search is identified by the `run_id` path parameter. To count matching events instead, use `/api/v0/runs/{run_id}/events/search/count`.\n\n### Search query\n\nThe `query` field is an event set. An event set is a pipeline of verbs separated by `.`, applied left to right to the underlying event stream. The [event set reference](/docs/reference/event-set-reference/) has the full grammar.\n\n### Property-shaped searches\n\nTo make the search-property shaped, you can use the property event_set as `query`, and send the predicate as `is_passing_predicate` (a JavaScript function on example to a boolean to indicate passing/failing) and `passing` (default `false`, the failing events).\n\n### Validating a query\n\nWhen `validate_only` is `true` the server checks only that `query` is syntactically valid and does not execute it; no events are returned. The server responds with `200 OK` and an empty body for a syntactically valid query, and for an invalid query, the server responds with `400 Bad Request`. `validate_only` takes precedence over `is_streaming`.\n\n### Streaming\n\nWhen `is_streaming` is `true` the connection remains open and the server continues to emit events as they are observed in live test runs. When `false` the server closes the connection once it has returned the current matching set.",
         "tags": ["Test runs"],
         "parameters": [
           {
@@ -1255,6 +1239,14 @@
                   "value": {
                     "query": "matches({container: \"etcd0\"})",
                     "validate_only": true
+                  }
+                },
+                "failing_events": {
+                  "summary": "Return the etcd0 log lines a property's predicate fails on",
+                  "value": {
+                    "query": "matches({container: \"etcd0\"})",
+                    "is_passing_predicate": "ev => !ev.output_text.includes(\"panic\")",
+                    "passing": false
                   }
                 }
               }
@@ -1318,7 +1310,7 @@
       "post": {
         "operationId": "searchCount",
         "summary": "Count events with event sets",
-        "description": "Runs a search query across a single test run's events and returns the number of matching events. The test run to search is identified by the `run_id` path parameter.\n\n### Search query\n\nThe `query` field is an event set. An event set is a pipeline of verbs separated by `.`, applied left to right to the underlying event stream. The [event set reference](/docs/reference/event-set-reference/) has the full grammar.\n\n### Validating a query\n\nWhen `validate_only` is `true` the server checks only that `query` is syntactically valid and does not execute it; no count is computed. The server responds with `200 OK` and an empty body for a syntactically valid query, and for an invalid query, the server responds with `400 Bad Request`.",
+        "description": "Runs a search query across a single test run's events and returns the number of matching events. The test run to search is identified by the `run_id` path parameter.\n\n### Search query\n\nThe `query` field is an event set. An event set is a pipeline of verbs separated by `.`, applied left to right to the underlying event stream. The [event set reference](/docs/reference/event-set-reference/) has the full grammar.\n\n### Property-shaped searches\n\nTo make the search-property shaped, you can use the property event_set as `query`, and send the predicate as `is_passing_predicate` (a JavaScript function on example to a boolean to indicate passing/failing) and `passing` (default `false`, the failing events).\n\n### Validating a query\n\nWhen `validate_only` is `true` the server checks only that `query` is syntactically valid and does not execute it; no count is computed. The server responds with `200 OK` and an empty body for a syntactically valid query, and for an invalid query, the server responds with `400 Bad Request`.",
         "tags": ["Test runs"],
         "parameters": [
           {
@@ -1343,6 +1335,14 @@
                   "summary": "Count raft-related log lines in a single run",
                   "value": {
                     "query": "contains({output_text: \"raft\"})"
+                  }
+                },
+                "count_failing_events": {
+                  "summary": "Count the etcd0 log lines a property's predicate fails on",
+                  "value": {
+                    "query": "matches({container: \"etcd0\"})",
+                    "is_passing_predicate": "ev => !ev.output_text.includes(\"panic\")",
+                    "passing": false
                   }
                 },
                 "validate_only": {
@@ -2107,13 +2107,13 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Maximum number of results to return. Server-capped at 1000.",
+            "description": "Maximum number of results to return. Server-capped at 50000.",
             "required": false,
             "schema": {
               "type": "integer",
               "default": 50,
               "minimum": 1,
-              "maximum": 1000
+              "maximum": 50000
             }
           },
           {
@@ -2197,7 +2197,7 @@
           {
             "name": "start_time",
             "in": "query",
-            "description": "Only count runs that ended at or after this timestamp (ISO 8901). Must be before `end_time` when both are given.",
+            "description": "Only count runs that ended at or after this timestamp (ISO 8601). Must be before `end_time` when both are given.",
             "required": false,
             "schema": {
               "type": "string",
@@ -2207,7 +2207,7 @@
           {
             "name": "end_time",
             "in": "query",
-            "description": "Only count runs that ended strictly before this timestamp (ISO 8901). Must be after `start_time` when both are given.",
+            "description": "Only count runs that ended strictly before this timestamp (ISO 8601). Must be after `start_time` when both are given.",
             "required": false,
             "schema": {
               "type": "string",
@@ -2924,6 +2924,16 @@
             "description": "An event set query. A pipeline of dot-separated verbs (`matches`, `contains`, `not_matches`, `excludes`, `map`, `filter`, `flatmap`, `fold`, `narrow`, `as_base_for`, `union`, `intersect`, `difference`, `distinct_by_moment`, `with_last`, `with_next`) applied to the underlying event stream. See the [event sets reference](/docs/reference/event-set-reference/) for the full grammar.",
             "example": "matches({container: \"etcd0\", stream: \"error\"}).filter(ev => ev.output_text.includes(\"raft\"))"
           },
+          "is_passing_predicate": {
+            "type": "string",
+            "description": "A JavaScript function from event to boolean, as a property's predicate: a truthy result means the event is passing example on the property as defined by `is_passing_predicate` and the `query` event set. A predicate that does not parse, is not a function, or throws is rejected with `400 Bad Request`.",
+            "example": "ev => !ev.output_text.includes(\"panic\")"
+          },
+          "passing": {
+            "type": "boolean",
+            "description": "Whether to return passing (true) or failing (false) examples according to `is_passing_predicate`. Defaults to `false`, the failing events. Requires `is_passing_predicate`.",
+            "default": false
+          },
           "is_streaming": {
             "type": "boolean",
             "description": "When `true`, the connection stays open and the server keeps emitting newly observed events as they arrive. When `false`, the server closes the connection after returning the current matching set. Defaults to `false`.",
@@ -2953,6 +2963,16 @@
             "type": "string",
             "description": "An event set query. A pipeline of dot-separated verbs (`matches`, `contains`, `not_matches`, `excludes`, `map`, `filter`, `flatmap`, `fold`, `narrow`, `as_base_for`, `union`, `intersect`, `difference`, `distinct_by_moment`, `with_last`, `with_next`) applied to the underlying event stream. See the [event sets reference](/docs/reference/event-set-reference/) for the full grammar.",
             "example": "matches({container: \"etcd0\", stream: \"error\"}).filter(ev => ev.output_text.includes(\"raft\"))"
+          },
+          "is_passing_predicate": {
+            "type": "string",
+            "description": "A JavaScript function from event to boolean, as a property's predicate: a truthy result means the event is passing example on the property as defined by `is_passing_predicate` and the `query` event set. A predicate that does not parse, is not a function, or throws is rejected with `400 Bad Request`.",
+            "example": "ev => !ev.output_text.includes(\"panic\")"
+          },
+          "passing": {
+            "type": "boolean",
+            "description": "Whether to return passing (true) or failing (false) examples according to `is_passing_predicate`. Defaults to `false`, the failing events. Requires `is_passing_predicate`.",
+            "default": false
           },
           "validate_only": {
             "type": "boolean",
@@ -3466,7 +3486,7 @@
       },
       "Run_Stream_Notification": {
         "type": "object",
-        "description": "A run stream notification. Each data entry is a complete event or non-event property. NEW_EXAMPLES_FOUND includes only newly delivered samples, with cumulative counts; status notifications include retained samples and may repeat samples delivered earlier. RUN_FINALIZED always has an empty data array, bypasses filters, and ends the stream.",
+        "description": "Each notification has a `type`, and a `data` list of the properties associated with it. When Antithesis finds a property's first example or counterexample, it sends a `NEW_EXAMPLES_FOUND` notification. The property's `examples` or `counterexamples` list contains the new example. Later examples only increase `example_count` and `counterexample_count`. Other notifications may repeat examples you've already received. `RUN_FINALIZED` always has an empty `data` list, is sent whatever filters you set, and ends the stream.",
         "required": [
           "type",
           "data"

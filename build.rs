@@ -58,7 +58,7 @@ fn generate_api_client(out_dir: &Path) {
     for &(param, schema) in LAUNCH_ENUM_PARAMS {
         open_param_enum(&mut spec_value, param, schema);
     }
-    dedupe_property_status_filter(&mut spec_value);
+    share_property_status_filter(&mut spec_value);
     share_run_stream_notification_type(&mut spec_value);
     unrequire_search_limit_default(&mut spec_value);
     unrequire_search_count_validate_only_default(&mut spec_value);
@@ -490,33 +490,15 @@ fn open_param_enum(spec: &mut serde_json::Value, param: &str, schema: &str) {
     );
 }
 
-/// Point the `/properties` status filter at `Property_Status`. The spec lists
-/// each status twice, capitalized and lowercase, and typify cannot give the
-/// two spellings distinct variant names.
-/// TODO: delete this transform when the filter's enum lists each status once.
-fn dedupe_property_status_filter(spec: &mut serde_json::Value) {
+/// Point the `/properties` status filter at `Property_Status`. The spec
+/// repeats the enum inline, and typify would make a second Rust enum of it.
+fn share_property_status_filter(spec: &mut serde_json::Value) {
     const POINTER: &str = "/paths/~1api~1v0~1runs~1{run_id}~1properties/get/parameters/3/schema";
-    let items = remove_schema_key(spec, POINTER, "items", "dedupe_property_status_filter");
-    let statuses = spec["components"]["schemas"]["Property_Status"]["enum"]
-        .as_array()
-        .expect("openapi spec has no Property_Status enum");
-    let mut expected: Vec<String> = statuses
-        .iter()
-        .filter_map(serde_json::Value::as_str)
-        .flat_map(|status| [status.to_string(), status.to_lowercase()])
-        .collect();
-    let mut actual: Vec<String> = items["enum"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|value| value.as_str().map(str::to_string))
-        .collect();
-    expected.sort_unstable();
-    actual.sort_unstable();
+    let items = remove_schema_key(spec, POINTER, "items", "share_property_status_filter");
     assert_eq!(
-        actual, expected,
-        "the /properties status filter no longer lists each Property_Status value capitalized \
-         and lowercase; update or delete `dedupe_property_status_filter` in build.rs"
+        items["enum"], spec["components"]["schemas"]["Property_Status"]["enum"],
+        "the /properties status filter no longer lists exactly the Property_Status values; \
+         update or delete `share_property_status_filter` in build.rs"
     );
     spec.pointer_mut(POINTER).unwrap()["items"] =
         serde_json::json!({"$ref": "#/components/schemas/Property_Status"});

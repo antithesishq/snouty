@@ -2003,8 +2003,8 @@ const MOMENT_NOT_WARM: [&str; 3] = [
 /// require an active run.` Otherwise, the server's responses on orbitinghail
 /// mean:
 ///
-/// - 404 `Resource not found` (release 67.0, a source session; release 64.0,
-///   any source): the source does not exist.
+/// - 404 `Resource not found`: the source session (release 67.0), or any
+///   source (release 64.0), does not exist.
 /// - 400 `Source run '<id>' does not exist.` (release 67.0): the source run
 ///   does not exist.
 /// - A 400 that `MOMENT_NOT_WARM` matches: the moment is cold and there is

@@ -1642,9 +1642,8 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     }
 
     let script = request["script"].as_str().unwrap_or_default();
-    // An unknown rewarm source answers the live endpoint's response, verbatim
-    // from orbitinghail (release 67.0): a 400 that names a source run, and a
-    // bare 404 for a source session.
+    // orbitinghail (release 67.0) answers an unknown source run with this 400,
+    // and an unknown source session with a bare 404.
     if request["source_run_id"] == "no-such-run" {
         return (
             400,

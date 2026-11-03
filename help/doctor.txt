@@ -8,7 +8,7 @@ doctor also contacts the Antithesis API. When credentials are configured, it rep
 
 The command fails if any required check fails.
 
-{% if cli %}Add --json for machine-readable output, for example to gate CI. The report{% else %}With {{ t("--json")? }}, the report{% endif %} prints as one JSON object, with the fields ok and checks. ok is false when any check has status error. checks is a list of checks, each with the fields id (such as tenant or credentials), status (ok, warn or error) and message. The credentials check also has kind (api_key, oauth, github_actions_oidc or password) when it finds a credential. A check with explanatory lines has notes, a list of {level, text} objects, where level is note, warning or error.
+{% if cli %}Add {{ t("--json")? }} for machine-readable output, for example to gate CI. The report{% else %}With {{ t("--json")? }}, the report{% endif %} prints as one JSON object, with the fields ok and checks. ok is false when any check has status error. checks is a list of checks, each with the fields id (such as tenant or credentials), status (ok, warn or error) and message. The credentials check also has kind (api_key, oauth, github_actions_oidc or password) when it finds a credential. A check with explanatory lines has notes, a list of {level, text} objects, where level is note, warning or error.
 
 Examples:
   {{ t("snouty doctor")? }}

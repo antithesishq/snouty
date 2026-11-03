@@ -62,6 +62,7 @@ fn generate_api_client(out_dir: &Path) {
     share_run_stream_notification_type(&mut spec_value);
     unrequire_search_limit_default(&mut spec_value);
     unrequire_search_count_validate_only_default(&mut spec_value);
+    unrequire_search_passing_default(&mut spec_value);
     add_mvd_test_name(&mut spec_value);
     open_mvd_params(&mut spec_value);
     let spec: openapiv3::OpenAPI = serde_json::from_value(spec_value).unwrap();
@@ -331,6 +332,19 @@ fn unrequire_search_count_validate_only_default(spec: &mut serde_json::Value) {
         "default",
         "unrequire_search_count_validate_only_default",
     );
+}
+
+/// Strip the `default: false` from `passing` in both search requests, so a
+/// search that names no predicate omits the field.
+fn unrequire_search_passing_default(spec: &mut serde_json::Value) {
+    for schema in ["Search_Request", "Search_Count_Request"] {
+        remove_schema_key(
+            spec,
+            &format!("/components/schemas/{schema}/properties/passing"),
+            "default",
+            "unrequire_search_passing_default",
+        );
+    }
 }
 
 /// Strip the schema default from `Execute_Command_Request.include_system_logs`,

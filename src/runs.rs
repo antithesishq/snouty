@@ -667,8 +667,7 @@ async fn cmd_runs_properties(
 
     // The list endpoint reports a property as Pending while the server
     // still processes a finished run's data, with nonzero example counts
-    // (antithesis-orbitinghail tenant, release 67, which named the status
-    // Undetermined).
+    // (antithesis-orbitinghail tenant, release 67).
     if !json
         && properties
             .iter()

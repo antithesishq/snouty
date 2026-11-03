@@ -92,9 +92,9 @@ mock-runs-server
 [!staging] ! stdout 'usage-4'
 
 # With --rollup, each row is one period: its first and last days, the number
-# of runs that ended in it, and the sum of their hours. Newest period first. The rows
-# are the --limit periods that end with the current period, and a period with
-# no runs shows 0.
+# of runs that ended in it, and the sum of their hours. Newest period first.
+# With no filter, the rows end with the current period, and a period with no
+# runs shows 0.
 mock-runs-server
 snouty runs usage --rollup day
 stdout '^START +END +RUNS +COMPUTE HOURS$'

@@ -9,7 +9,7 @@ Each run has its ID, the start and end of its billable usage, and its compute ho
 
 Columns: RUN ID, STARTED, ENDED, COMPUTE HOURS. COMPUTE HOURS has one decimal place.
 
-With `rollup`, each row is the total of one day, week, or month: its first and last days, its number of runs, and its compute hours. A run counts in the period in which it ended. A week starts on Monday. Columns: START, END, RUNS, COMPUTE HOURS. The rows are the `limit` periods that end with the current period, and a period with no runs shows 0.
+With `rollup`, each row is the total of one day, week, or month: its first and last days, its number of runs, and its compute hours. A run counts in the period in which it ended. A week starts on Monday. Columns: START, END, RUNS, COMPUTE HOURS. A period with no runs shows 0.
 
 Times and periods are in the local timezone.
 
@@ -24,7 +24,7 @@ The output shows the run that started most recently first. With `rollup`, it sho
 Examples:
   runs_usage
   runs_usage {"rollup": "week", "limit": 4}
-  runs_usage {"rollup": "month", "after": "2026-01-01"}
+  runs_usage {"rollup": "month", "after": "2026-01-01", "limit": 12}
   runs_usage {"after": "2026-10-01", "before": "2026-11-01"}
 
 With `json`, each row prints as one JSON object on its own line. The hours field holds compute hours. A run has the fields run_id, hours, start_time, and end_time; the times are RFC 3339 in UTC. A period has the fields date, runs, and hours: date is the last day of the period in the local timezone, and hours is rounded to hundredths.

@@ -1993,6 +1993,14 @@ const MOMENT_NOT_WARM: [&str; 3] = [
     "moment is not valid in the original run",
 ];
 
+/// Why the server rejected a `runs exec` request in a live run.
+enum ExecRejection {
+    MissingSource,
+    ColdMoment,
+    /// A rewarm did not finish, or the source is not the moment's run.
+    BadRewarm,
+}
+
 /// Add suggestions to a failed `runs exec` request in a run with status
 /// `run_status`, which is ready or complete. `debug_command` starts a
 /// debugging session at the request's moment, and `rewarm_flag` names the
@@ -2030,20 +2038,29 @@ fn explain_exec_error(
                 indent_lines(debug_command, "  ")
             ));
     }
-    let message = api_error_message(&err);
-    let cold = message.is_some_and(|m| MOMENT_NOT_WARM.iter().any(|marker| m.contains(marker)));
-    let missing = status == 404
-        || message.is_some_and(|m| m.contains("Source run '") && m.ends_with("' does not exist."));
-    match (status, rewarm_flag) {
-        (400 | 404, Some(flag)) if missing => {
+    let message = api_error_message(&err).unwrap_or_default();
+    let rejection = match status {
+        404 => ExecRejection::MissingSource,
+        400 if message.contains("Source run '") => ExecRejection::MissingSource,
+        400 if MOMENT_NOT_WARM
+            .iter()
+            .any(|marker| message.contains(marker)) =>
+        {
+            ExecRejection::ColdMoment
+        }
+        400 => ExecRejection::BadRewarm,
+        _ => return err,
+    };
+    match (rejection, rewarm_flag) {
+        (ExecRejection::MissingSource, Some(flag)) => {
             err.suggestion(format!("check that {flag} names an existing source"))
         }
-        (400, None) if cold => {
+        (ExecRejection::ColdMoment, None) => {
             err.suggestion("use --source-run-id to load a moment from a different run")
         }
-        (400, Some(flag)) => err.suggestion(format!(
-            "check that {flag} names the run the moment comes from"
-        )),
+        (ExecRejection::ColdMoment | ExecRejection::BadRewarm, Some(flag)) => err.suggestion(
+            format!("check that {flag} names the run the moment comes from"),
+        ),
         _ => err,
     }
 }

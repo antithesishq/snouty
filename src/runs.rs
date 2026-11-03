@@ -1167,49 +1167,59 @@ fn render_value_group(label: &str, values: &[Value]) -> String {
     format!("{label}\n{}", indent_lines(&body, "  "))
 }
 
-/// Render one value under `label`: a scalar inline; an object/array, or a string
-/// that holds one, through [`render_json_field`].
+/// Render one value under `label`: a scalar or string inline when it fits; an
+/// object/array through [`render_json_field`].
 fn render_result_value(label: &str, value: &Value) -> String {
-    match &*decode_json_string(value) {
-        container @ (Value::Array(_) | Value::Object(_)) => render_json_field(label, container),
-        scalar => render_field(label, &value_token(scalar)),
+    match value {
+        Value::Array(_) | Value::Object(_) => render_json_field(label, value),
+        other => render_field(label, &value_token(other)),
     }
 }
 
-/// `value` with a string that holds a JSON object/array replaced by that
-/// object/array; any other value unchanged.
-fn decode_json_string(value: &Value) -> Cow<'_, Value> {
-    if let Value::String(s) = value
-        && let Ok(inner @ (Value::Array(_) | Value::Object(_))) = serde_json::from_str(s)
-    {
-        return Cow::Owned(inner);
-    }
-    Cow::Borrowed(value)
+/// The text of a string that holds a JSON object/array, trimmed of surrounding
+/// whitespace; `None` for any other string. The text is parsed only to check its
+/// shape and is shown as reported, so big integers, duplicate keys and number
+/// spellings such as `1e2` reach the user unchanged.
+///
+/// Observed on the `antithesis-orbitinghail` tenant: `snouty runs properties
+/// <run> --detail` for the non-event property "Recent software version
+/// provided" on oxigraph-ring runs reports its examples as strings such as
+/// `"{\"container\":\"snouty-config\",\"container_age\":{\"absolute_time_interval\":\"1m 4s\"},\"days_old\":0}"`,
+/// some with a trailing newline.
+fn json_container_text(s: &str) -> Option<&str> {
+    let text = s.trim();
+    let container = text.starts_with('{') || text.starts_with('[');
+    (container && serde_json::from_str::<serde::de::IgnoredAny>(text).is_ok()).then_some(text)
 }
 
-/// A non-event value as a single inline token: a string sanitised, other scalars
+/// A non-event value as a single sanitised inline token: a string as its text
+/// (JSON-quoted when empty or all whitespace, so it stays visible), other scalars
 /// via their `Display`, an object/array as compact one-line JSON. A string that
-/// holds a JSON object/array shows as that compact JSON, not as quoted text.
+/// holds a JSON object/array shows as that text, not as quoted text.
 fn value_token(value: &Value) -> String {
-    match &*decode_json_string(value) {
-        Value::String(s) => sanitize(s),
+    match value {
+        Value::String(s) => match json_container_text(s) {
+            Some(text) => sanitize(text),
+            None if s.trim().is_empty() => sanitize(&value.to_string()),
+            None => sanitize(s),
+        },
         Value::Number(n) => n.to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Null => "null".to_string(),
-        container => serde_json::to_string(container).unwrap_or_default(),
+        container => sanitize(&container.to_string()),
     }
 }
 
-/// Render a JSON object/array under `label`: compact and inline when it fits,
-/// otherwise pretty-printed as a block.
+/// Render a JSON object/array under `label`, sanitised: compact and inline when
+/// it fits, otherwise pretty-printed as a block.
 fn render_json_field(label: &str, value: &Value) -> String {
-    let compact = serde_json::to_string(value).unwrap_or_default();
+    let compact = sanitize(&value.to_string());
     if fits_inline(label, &compact) {
         render_field(label, &compact)
     } else {
         render_field(
             label,
-            &serde_json::to_string_pretty(value).unwrap_or_default(),
+            &sanitize_multiline(&serde_json::to_string_pretty(value).unwrap_or_default()),
         )
     }
 }
@@ -3269,6 +3279,57 @@ mod tests {
             render_property_detail(&lone).contains(r#"Result    {"k":1}"#),
             "lone encoded object"
         );
+    }
+
+    #[test]
+    fn non_event_json_strings_show_reported_text() {
+        // The reported text is shown as is: no reparse, so big integers, number
+        // spellings and duplicate keys are unchanged.
+        let text = r#"{"id":18446744073709551616,"n":1e2,"k":1,"k":2}"#;
+        let p = non_event_property(
+            "Raw",
+            PropertyStatus::Passing,
+            vec![json!(text), json!(text)],
+            vec![],
+        );
+        let out = render_property_detail(&p);
+        assert!(
+            out.contains(&format!("Result\n  {text}\n  {text}")),
+            "got: {out}"
+        );
+    }
+
+    #[test]
+    fn non_event_values_escape_c1_controls() {
+        // U+009B (8-bit CSI) inside a JSON-holding string, a native object and
+        // a large native object never reaches the terminal raw.
+        let encoded = json!("{\"k\":\"\u{9b}31m\"}");
+        let native = json!({"k": "\u{9b}31m"});
+        let big = json!({"k": "\u{9b}31m", "pad": "x".repeat(200)});
+        for values in [
+            vec![encoded.clone()],
+            vec![encoded, json!(1)],
+            vec![native.clone()],
+            vec![native, json!(1)],
+            vec![big],
+        ] {
+            let p = non_event_property("C1", PropertyStatus::Passing, values, vec![]);
+            let out = render_property_detail(&p);
+            assert!(!out.contains('\u{9b}'), "got: {out:?}");
+            assert!(out.contains(r"\x9B"), "got: {out:?}");
+        }
+    }
+
+    #[test]
+    fn non_event_empty_strings_stay_visible() {
+        let p = non_event_property(
+            "Empty",
+            PropertyStatus::Passing,
+            vec![json!("a"), json!(""), json!(" ")],
+            vec![],
+        );
+        let out = render_property_detail(&p);
+        assert!(out.contains("Result\n  a\n  \"\"\n  \" \""), "got: {out}");
     }
 
     #[test]

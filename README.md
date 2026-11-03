@@ -352,7 +352,7 @@ Username and password authentication is deprecated. It works with `snouty launch
 Each CI job needs these environment variables:
 
 - `ANTITHESIS_TENANT`: your tenant.
-- `ANTITHESIS_REPOSITORY`: the container registry for your images, with `--config`.
+- `ANTITHESIS_REPOSITORY`: the container registry for your images, with `--config`. On your tenant registry, `registry.<tenant>.antithesis.com`, snouty pushes with its own credential. For any other registry, log in to it in the job before the launch.
 - `ANTITHESIS_API_KEY`: an API key, stored as a secret. GitHub Actions can use [OIDC](#github-actions-oidc) instead.
 
 snouty does not choose a `--source` for you. A run without `--source` is ephemeral: its results do not go into the property history of any source. To record history for a branch, pass `--source` only in the jobs that build that branch, such as pushes to `main` and nightly schedules. Do not pass a pull request's branch name as the source: a pull request from a fork can use any branch name, such as `main`.
@@ -363,7 +363,7 @@ snouty does not choose a `--source` for you. A run without `--source` is ephemer
 
 `snouty launch` can replace the [Antithesis Trigger Action](https://github.com/antithesishq/antithesis-trigger-action). In GitHub Actions, it records the same metadata as the action: the repository, the branch, the commit, the pull request (`vcs.pr_id`, `vcs.pr_link`, `vcs.pr_owner` and `vcs.pr_title`), the user who started the workflow (`run.creator_name`), and the cron schedule of a scheduled workflow (`run.cron_schedule`). It records `run.caller_type` as `snouty`. On a pull request, it records the head commit of the pull request, not the merge commit that the workflow checks out. When the job checks out a different commit, for example another ref or another repository, the launch reads the git checkout instead.
 
-This workflow starts a run for each push to `main` and each pull request. Only a push to `main` records property history:
+This workflow starts a run for each push to `main` and each pull request from a branch of the repository. Only a push to `main` records property history. A pull request from a fork, or from Dependabot, gets no OIDC token and no secrets, so the job skips it:
 
 ```yaml
 name: Antithesis
@@ -374,6 +374,7 @@ on:
 
 jobs:
   antithesis:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -385,7 +386,7 @@ jobs:
       - name: Launch an Antithesis run
         env:
           ANTITHESIS_TENANT: my-tenant
-          ANTITHESIS_REPOSITORY: us-central1-docker.pkg.dev/my-project/my-repo
+          ANTITHESIS_REPOSITORY: registry.my-tenant.antithesis.com/my-project
           ANTITHESIS_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           SOURCE: ${{ github.event_name == 'push' && github.ref_name || '' }}
         run: |
@@ -429,7 +430,7 @@ antithesis:
   services: [docker:dind]
   variables:
     ANTITHESIS_TENANT: my-tenant
-    ANTITHESIS_REPOSITORY: us-central1-docker.pkg.dev/my-project/my-repo
+    ANTITHESIS_REPOSITORY: registry.my-tenant.antithesis.com/my-project
   before_script:
     - apk add --no-cache curl git xz
     - curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
@@ -448,7 +449,7 @@ steps:
   - label: Antithesis
     env:
       ANTITHESIS_TENANT: my-tenant
-      ANTITHESIS_REPOSITORY: us-central1-docker.pkg.dev/my-project/my-repo
+      ANTITHESIS_REPOSITORY: registry.my-tenant.antithesis.com/my-project
     command: |
       curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
       export PATH="$$HOME/.local/bin:$$PATH"
@@ -468,7 +469,7 @@ jobs:
       image: ubuntu-2404:current
     environment:
       ANTITHESIS_TENANT: my-tenant
-      ANTITHESIS_REPOSITORY: us-central1-docker.pkg.dev/my-project/my-repo
+      ANTITHESIS_REPOSITORY: registry.my-tenant.antithesis.com/my-project
     steps:
       - checkout
       - run: |

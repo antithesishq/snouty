@@ -25,8 +25,14 @@
       "environmentVariables": [
         {
           "name": "SNOUTY_UNSTABLE_FEATURES",
-          "description": "Turns on snouty mcp, which is an unstable feature",
-          "value": "mcp"
+          "description": "Unstable features to turn on. snouty mcp needs mcp, which is always on",
+          "value": "mcp,{features}",
+          "variables": {
+            "features": {
+              "description": "More unstable features to turn on, comma-separated, such as teams",
+              "default": ""
+            }
+          }
         },
         {
           "name": "ANTITHESIS_TENANT",

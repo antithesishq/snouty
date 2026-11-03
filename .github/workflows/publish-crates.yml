@@ -18,8 +18,8 @@ name: Publish crates
 
 on:
   workflow_call:
-    # dist passes the release plan to every publish job. The MCP Registry step
-    # reads it to skip prereleases.
+    # dist passes the release plan to every publish job. This job does not read
+    # it, but the input must be declared for the call to be valid.
     inputs:
       plan:
         required: true
@@ -63,15 +63,12 @@ jobs:
               cargo publish -p "$crate"
             fi
           done
-      # Stable releases only. The registry marks the highest semver as latest,
-      # so an -rc.N would replace the stable listing. MCP_PRIVATE_KEY is a hex
-      # Ed25519 key. Its public half is in the antithesis.com TXT record
+      # Runs for -rc.N tags too, so an -rc.N becomes the registry's latest
+      # version until the stable release. TODO: skip prereleases once the mcp
+      # feature is stable. MCP_PRIVATE_KEY is a hex Ed25519 key.
+      # Its public half is in the antithesis.com TXT record
       # `v=MCPv1; k=ed25519; p=...`.
-      # A failure here must not hold back the release announcement, which waits
-      # for this job. Re-run the job to retry: each step skips what is done.
       - name: Publish to the MCP Registry
-        if: ${{ !fromJson(inputs.plan).announcement_is_prerelease }}
-        continue-on-error: true
         env:
           MCP_PRIVATE_KEY: ${{ secrets.MCP_PRIVATE_KEY }}
         run: |
@@ -87,9 +84,12 @@ jobs:
           tar xzf mcp-publisher.tar.gz mcp-publisher
           ./mcp-publisher login dns --domain antithesis.com --private-key "$MCP_PRIVATE_KEY"
           # The registry reads the mcp-name line from the crate's README on
-          # crates.io, which shows the new README some time after the upload.
-          for _ in 1 2 3 4; do
-            ./mcp-publisher publish && exit 0
-            sleep 30
+          # crates.io, which serves the new README some time after the upload.
+          # Wait for it, so that the one publish fails only on a real error.
+          readme="https://crates.io/api/v1/crates/snouty/$version/readme"
+          for _ in $(seq 20); do
+            curl -sfL -A "snouty-release (https://github.com/antithesishq/snouty)" "$readme" \
+              | grep -qF "mcp-name: $name" && break
+            sleep 15
           done
           ./mcp-publisher publish

@@ -609,9 +609,10 @@ fn mcp_registry_entry_matches_the_crate() {
         .iter()
         .find(|var| var["name"] == snouty::features::UNSTABLE_FEATURES_VAR_NAME)
         .unwrap();
+    let features = feature_var["value"].as_str().unwrap();
     assert_eq!(
-        feature_var["value"],
-        snouty::features::Feature::Mcp.to_string()
+        features.split(',').next(),
+        Some(snouty::features::Feature::Mcp.to_string().as_str())
     );
 
     let name = entry["name"].as_str().unwrap();

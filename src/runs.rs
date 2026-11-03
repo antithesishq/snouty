@@ -863,9 +863,10 @@ fn property_group(p: &Property) -> Option<&str> {
 /// Order names case-insensitively, so `acknowledged` sorts before `Oxigraph`,
 /// with a case-sensitive tie-break that keeps the order total.
 fn cmp_names(a: &str, b: &str) -> std::cmp::Ordering {
-    a.to_lowercase()
-        .cmp(&b.to_lowercase())
-        .then_with(|| a.cmp(b))
+    fn fold(s: &str) -> impl Iterator<Item = char> + '_ {
+        s.chars().flat_map(char::to_lowercase)
+    }
+    fold(a).cmp(fold(b)).then_with(|| a.cmp(b))
 }
 
 /// The property's name without the `"<group>: "` prefix that the API puts on a

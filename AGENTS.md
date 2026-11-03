@@ -47,7 +47,10 @@ All code must be simple and idiomatic.
   early as you can. Parsing a string late means the type is missing — add it and
   parse sooner.
 - Every CLI argument uses its domain type as the `value_parser`. No dispatch arm
-  parses a string.
+  parses a string. The parser does not convert the value to a wire unit: a
+  duration flag is a `HumanDuration`, never a `u64` of minutes. Convert to the
+  unit that the API wants only where the parameter is written out. The MCP
+  tool schema comes from the parser's type, so a `u64` loses the unit check.
 - Use the right type for the job. For example, prefer to convert `HumanDuration`
   to `Duration` once you no longer need the additional behavior.
 - Implement the std trait rather than a bespoke method: `Display` not `as_str`,

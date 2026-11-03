@@ -259,8 +259,8 @@ async fn cmd_launch(
     if let Some(hours) = args.max_compute_hours {
         params.insert(ANT_MAX_COMPUTE_HOURS, hours.to_string());
     }
-    if let Some(minutes) = args.setup_timeout {
-        params.insert(ANT_SETUP_TIMEOUT, minutes.to_string());
+    if let Some(timeout) = args.setup_timeout {
+        params.insert(ANT_SETUP_TIMEOUT, timeout.whole_minutes().to_string());
     }
     let has_source = if let Some(source) = args.source {
         params.insert(ANT_SOURCE, source);
@@ -458,12 +458,8 @@ fn debug_typed_params(args: &DebugArgs) -> Params {
     }
     params.insert(ANT_DEBUGGING_INPUT_HASH, args.input_hash.as_str());
     params.insert(ANT_DEBUGGING_VTIME, args.vtime.to_string());
-    // DEBUG_DURATION's check has refused leftover seconds.
     if let Some(duration) = args.duration {
-        params.insert(
-            ANT_DEBUGGING_DURATION,
-            (duration.seconds() / 60).to_string(),
-        );
+        params.insert(ANT_DEBUGGING_DURATION, duration.whole_minutes().to_string());
     }
     if let Some(title) = &args.title {
         params.insert(ANT_TEST_NAME, title.as_str());

@@ -143,6 +143,12 @@ impl HumanDuration {
         hundredths as f64 / 100.0
     }
 
+    /// The duration as a whole number of minutes, with leftover seconds
+    /// dropped. For a flag whose check refuses leftover seconds.
+    pub fn whole_minutes(&self) -> u64 {
+        self.seconds() / SECS_PER_MINUTE
+    }
+
     /// The duration as a whole number of seconds.
     pub fn seconds(&self) -> u64 {
         self.0.as_secs()

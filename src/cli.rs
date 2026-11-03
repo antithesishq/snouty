@@ -126,12 +126,6 @@ impl DurationFlag {
         }
         Ok(duration)
     }
-
-    /// Returns the duration in minutes. `check` must refuse leftover seconds,
-    /// which this drops.
-    fn parse_minutes(&self, value: &str) -> Result<u64, String> {
-        self.parse(value).map(|duration| duration.seconds() / 60)
-    }
 }
 
 fn bare_number_warning(flag: &str, duration: HumanDuration) -> String {
@@ -685,13 +679,13 @@ pub struct LaunchArgs {
 
     #[arg(
         long,
-        value_parser = |v: &str| SETUP_TIMEOUT.parse_minutes(v),
+        value_parser = |v: &str| SETUP_TIMEOUT.parse(v),
         hide = !features::is_enabled(Feature::Teams),
         help = "Fail the run immediately if setup takes longer than this, in whole \
                 minutes with a unit, such as 10m, from 1m to 30m. The default is 5m. \
                 Requires tenant version 66 or newer",
     )]
-    pub setup_timeout: Option<u64>,
+    pub setup_timeout: Option<HumanDuration>,
 
     /// Mark the test run as ephemeral, so it does not appear in future reports
     /// as a historic result. A launch without --source is ephemeral already.

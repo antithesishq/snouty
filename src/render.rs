@@ -2,6 +2,8 @@
 //! key/value blocks and control-character sanitization.
 use std::fmt::Write as _;
 
+use textwrap::core::display_width;
+
 /// The global output flags (`--json`, `--verbose`), resolved once at the
 /// dispatch boundary in main.rs and passed by value through the command
 /// layer. Carrying them as one named-field struct keeps the two bools from
@@ -15,7 +17,7 @@ pub struct OutputOptions {
 }
 
 /// Below this many columns, a wrapped value would print about one word per line,
-/// so [`render_kv`] lets it overflow the terminal instead.
+/// so [`render_kv`] keeps it on one line instead.
 const MIN_KV_VALUE_WIDTH: usize = 20;
 
 /// Render aligned `Label  value` lines, sqlite `.mode line`–style. Each line is
@@ -24,9 +26,9 @@ const MIN_KV_VALUE_WIDTH: usize = 20;
 /// renders a wider prose label below the block can keep every row aligned.
 ///
 /// A value that does not fit in `width` columns wraps at spaces, and its
-/// continuation lines start at the value column. The value column is never
-/// narrower than [`MIN_KV_VALUE_WIDTH`]. Pass `usize::MAX` to keep each row on
-/// one line.
+/// continuation lines start at the value column. When fewer than
+/// [`MIN_KV_VALUE_WIDTH`] columns are left for the value, each row stays on one
+/// line. Pass `usize::MAX` to keep each row on one line.
 pub(crate) fn render_kv<L: AsRef<str>, V: AsRef<str>>(
     rows: &[(L, V)],
     min_label_width: usize,
@@ -38,17 +40,21 @@ pub(crate) fn render_kv<L: AsRef<str>, V: AsRef<str>>(
         .collect();
     let label_width = rows
         .iter()
-        .map(|(label, _)| label.len())
+        .map(|(label, _)| display_width(label))
         .chain(std::iter::once(min_label_width))
         .max()
         .unwrap_or(0);
     let value_col = label_width + 2;
-    let value_width = width.saturating_sub(value_col).max(MIN_KV_VALUE_WIDTH);
+    let value_width = match width.saturating_sub(value_col) {
+        w if w < MIN_KV_VALUE_WIDTH => usize::MAX,
+        w => w,
+    };
     let mut out = String::new();
     for (label, value) in rows {
         let mut lines = wrap_text(&value, value_width, CodeSpans::Ignore).into_iter();
         let first = lines.next().unwrap_or_default();
-        let _ = writeln!(out, "{label:label_width$}  {first}");
+        let pad = value_col - display_width(&label);
+        let _ = writeln!(out, "{label}{:pad$}{first}", "");
         for line in lines {
             let _ = writeln!(out, "{:value_col$}{line}", "");
         }
@@ -499,8 +505,17 @@ mod tests {
         ];
         let wrapped = "k     one two three four\n      five six\nlong  x\n";
         assert_eq!(render_kv(&rows, 0, 26), wrapped);
-        // A narrower terminal still gives the value MIN_KV_VALUE_WIDTH columns.
-        assert_eq!(render_kv(&rows, 0, 10), wrapped);
+        // Too narrow to wrap usefully: each row stays on one line.
+        assert_eq!(
+            render_kv(&rows, 0, 10),
+            "k     one two three four five six\nlong  x\n"
+        );
+    }
+
+    #[test]
+    fn render_kv_pads_wide_labels_by_display_width() {
+        let rows = vec![("名前", "v".to_string()), ("k", "w".to_string())];
+        assert_eq!(render_kv(&rows, 0, usize::MAX), "名前  v\nk     w\n");
     }
 
     #[test]

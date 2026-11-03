@@ -1305,7 +1305,8 @@ RUN_FINAL_TIMEOUT = f"{RUN_FINAL_MINUTES}m"
 STREAM_SLACK_MINUTES = 60
 STREAM_TIMEOUT = (RUN_READY_MINUTES + RUN_FINAL_MINUTES + STREAM_SLACK_MINUTES) * 60
 
-# Bounds on the polls in `_first_post_setup_moment` and `_container`.
+# Bounds on the polls in `_first_post_setup_moment`, `_container` and
+# `wait_for_pending_properties`.
 MOMENT_SEARCH_DEADLINE = 600
 MOMENT_SEARCH_POLL = 15
 

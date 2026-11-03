@@ -1156,10 +1156,8 @@ fn render_result_values(values: &[Value]) -> String {
     }
 }
 
-/// A labelled group of non-event values for the failing case — the `label` on its
-/// own line with each value indented beneath. Always a block (never inline) so the
-/// violating counterexamples and the satisfying examples read consistently.
-/// Scalars print verbatim; objects/arrays as compact one-line JSON.
+/// Render `values` under `label` as a block, one value per line, each as a
+/// [`value_token`].
 fn render_value_group(label: &str, values: &[Value]) -> String {
     let body = values
         .iter()
@@ -1169,45 +1167,41 @@ fn render_value_group(label: &str, values: &[Value]) -> String {
     format!("{label}\n{}", indent_lines(&body, "  "))
 }
 
-/// A single non-event value under `label`: a scalar (or small object/array)
-/// inline, a large object/array as a pretty-printed block.
+/// Render one value under `label`: a scalar inline; an object/array, or a string
+/// that holds one, through [`render_json_field`].
 fn render_result_value(label: &str, value: &Value) -> String {
-    match value {
-        Value::Array(_) | Value::Object(_) => render_json_field(label, value),
-        Value::String(s) => match json_container(s) {
-            Some(inner) => render_json_field(label, &inner),
-            None => render_field(label, &value_token(value)),
-        },
+    match &*decode_json_string(value) {
+        container @ (Value::Array(_) | Value::Object(_)) => render_json_field(label, container),
         scalar => render_field(label, &value_token(scalar)),
     }
 }
 
-/// The JSON object/array that a string value holds, if it holds one.
-fn json_container(s: &str) -> Option<Value> {
-    serde_json::from_str(s)
-        .ok()
-        .filter(|v| matches!(v, Value::Array(_) | Value::Object(_)))
+/// `value` with a string that holds a JSON object/array replaced by that
+/// object/array; any other value unchanged.
+fn decode_json_string(value: &Value) -> Cow<'_, Value> {
+    if let Value::String(s) = value
+        && let Ok(inner @ (Value::Array(_) | Value::Object(_))) = serde_json::from_str(s)
+    {
+        return Cow::Owned(inner);
+    }
+    Cow::Borrowed(value)
 }
 
 /// A non-event value as a single inline token: a string sanitised, other scalars
 /// via their `Display`, an object/array as compact one-line JSON. A string that
 /// holds a JSON object/array shows as that compact JSON, not as quoted text.
 fn value_token(value: &Value) -> String {
-    match value {
-        Value::String(s) => match json_container(s) {
-            Some(inner) => value_token(&inner),
-            None => sanitize(s),
-        },
+    match &*decode_json_string(value) {
+        Value::String(s) => sanitize(s),
         Value::Number(n) => n.to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Null => "null".to_string(),
-        Value::Array(_) | Value::Object(_) => serde_json::to_string(value).unwrap_or_default(),
+        container => serde_json::to_string(container).unwrap_or_default(),
     }
 }
 
-/// Render a JSON object/array under `label`: inline when
-/// its compact one-line form fits the value column, otherwise pretty-printed as an
-/// indented block. The inline-vs-block layout is delegated to [`render_field`].
+/// Render a JSON object/array under `label`: compact and inline when it fits,
+/// otherwise pretty-printed as a block.
 fn render_json_field(label: &str, value: &Value) -> String {
     let compact = serde_json::to_string(value).unwrap_or_default();
     if fits_inline(label, &compact) {
@@ -3236,7 +3230,6 @@ mod tests {
         assert!(out.contains("total_output_mb"));
         assert!(!out.contains("Examples"));
 
-        // Several values print one per line under `Result`.
         let multi = non_event_property(
             "Two values",
             PropertyStatus::Passing,
@@ -3246,7 +3239,8 @@ mod tests {
         let out = render_property_detail(&multi);
         assert!(out.contains("Result\n  1\n  2"), "got: {out}");
 
-        // A string that holds a JSON object shows as compact JSON, unescaped.
+        // A string that holds a JSON object, with or without trailing whitespace,
+        // prints as compact JSON.
         let encoded = non_event_property(
             "Container age",
             PropertyStatus::Passing,
@@ -3265,7 +3259,6 @@ mod tests {
         );
         assert!(!out.contains('\\'), "got: {out}");
 
-        // So does a lone one.
         let lone = non_event_property(
             "Lone",
             PropertyStatus::Passing,

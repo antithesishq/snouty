@@ -16,8 +16,8 @@
 # already exists, so a crate with no published version needs one manual
 # `cargo publish` before this job can take it over.
 #
-# npm uses Trusted Publishing too. Its config on @antithesishq/snouty names the
-# same workflow and environment, and allows direct publishing. Like crates.io,
+# npm uses Trusted Publishing too. Its config on @antithesishq/snouty names
+# `release.yml` and the `release` environment, and allows direct publishing. Like crates.io,
 # npm attaches a config only to a package that exists, so the first version
 # needs one manual `npm publish`.
 name: Publish crates
@@ -36,7 +36,7 @@ jobs:
     runs-on: "ubuntu-24.04"
     # Hold the run here until a reviewer approves it.
     environment: release
-    # An explicit bash adds pipefail, so a failed curl or jq fails its step.
+    # An explicit bash adds pipefail, so a failed curl fails its pipeline.
     defaults:
       run:
         shell: bash
@@ -50,7 +50,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The toolchain that rust-toolchain.toml pins, mcp-publisher, and node.
       # This job holds secrets, so it restores nothing from the Actions cache.
       - uses: ./.github/actions/setup-tools
         with:
@@ -76,24 +75,24 @@ jobs:
               cargo publish -p "$crate"
             fi
           done
-      # server.json, the MCP Registry entry, names the server and its npm
-      # package. tests/mcp.rs checks that its version is the crate's.
+      # tests/mcp.rs keeps this version equal to the crate's, so it names the
+      # release tag.
       - name: Read server.json
         id: entry
         run: |
+          name=$(jq -er .name server.json)
+          version=$(jq -er .version server.json)
+          package=$(jq -er '[.packages[] | select(.registryType == "npm")] | if length == 1 then .[0].identifier else error("want one npm package") end' server.json)
           {
-            echo "name=$(jq -r .name server.json)"
-            echo "version=$(jq -r .version server.json)"
-            echo "npm-package=$(jq -r '.packages[] | select(.registryType == "npm") | .identifier' server.json)"
+            echo "name=$name"
+            echo "version=$version"
+            echo "npm-package=$package"
           } >> "$GITHUB_OUTPUT"
-      # dist builds the npm package and attaches it to the GitHub Release; this
-      # step publishes it, because dist cannot add mcpName, which the MCP
-      # Registry checks to verify the package. The step also sets the
-      # repository URL in the form that Trusted Publishing compares to this
-      # repository, and keeps only the snouty command, dropping the
-      # docker-credential-snouty alias: npm's wrapper starts snouty under its
-      # own name, so snouty would not act as the credential helper. A launch
-      # links the helper itself.
+      # dist cannot add mcpName, which the MCP Registry checks, so this job
+      # publishes dist's package. Trusted Publishing compares the repository
+      # URL to this repository. npm's wrapper starts snouty under its own name,
+      # so the docker-credential-snouty alias cannot act as the credential
+      # helper.
       - name: Publish to npm
         env:
           name: ${{ steps.entry.outputs.name }}
@@ -134,10 +133,9 @@ jobs:
             exit 0
           fi
           mcp-publisher login dns --domain antithesis.com --private-key "$MCP_PRIVATE_KEY"
-          # The registry reads mcpName from the npm package, and the mcp-name
-          # line from the crate's README on crates.io. Both registries serve a
-          # new version some time after the upload. Wait for them, so that the
-          # one publish fails only on a real error.
+          # The registry reads mcpName from npm and the mcp-name line from the
+          # crate's README on crates.io. Both serve a new version after a
+          # delay, so wait for them before the one publish.
           for _ in $(seq 20); do
             [ "$(npm view "$package@$version" mcpName 2> /dev/null)" = "$name" ] && break
             sleep 15

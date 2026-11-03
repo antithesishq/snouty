@@ -573,9 +573,10 @@ async fn tool_results_are_plain_detailed_text() {
 }
 
 /// The release publishes `server.json` to the MCP Registry, so it must match
-/// this crate's version and name, list the npm package that dist builds and
-/// the crate, have each start `snouty mcp` with its feature on, and match the
-/// README's `mcp-name` line. `mise run lint:mcp` validates the rest.
+/// this crate's version and name. It must list the npm package that dist
+/// builds, then the crate, and each must start `snouty mcp` with its feature
+/// on. Its name must match the README's `mcp-name` line. `mise run lint:mcp`
+/// validates the rest.
 #[test]
 fn mcp_registry_entry_matches_the_crate() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -593,9 +594,9 @@ fn mcp_registry_entry_matches_the_crate() {
         .iter()
         .map(|package| json!([package["registryType"], package["identifier"]]))
         .collect();
+    let crate_name = env!("CARGO_PKG_NAME");
     // npm comes first, because a client that installs only one package, such
     // as VS Code, takes the first one, and few clients can install a crate.
-    let crate_name = env!("CARGO_PKG_NAME");
     assert_eq!(
         identifiers,
         [

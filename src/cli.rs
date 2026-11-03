@@ -182,16 +182,18 @@ const SETUP_TIMEOUT: DurationFlag = DurationFlag {
     },
 };
 
-/// The range that the API accepts for `antithesis.debugging.length_hours`.
+/// The range that the API accepts for `antithesis.debugging.duration`, a
+/// whole number of minutes.
 const DEBUG_DURATION: DurationFlag = DurationFlag {
     name: "--duration",
     bare: BareUnit::Minutes,
     examples: &["45m", "2h", "1h30m"],
     check: |duration| {
-        require(
-            (30 * 60..=6 * 60 * 60).contains(&duration.seconds()),
-            "must be from 30 minutes to 6 hours",
-        )
+        let seconds = duration.seconds();
+        if !(30 * 60..=6 * 60 * 60).contains(&seconds) {
+            return Err("must be from 30 minutes to 6 hours".into());
+        }
+        require(seconds % 60 == 0, "must be a whole number of minutes")
     },
 };
 
@@ -768,18 +770,16 @@ pub struct DebugArgs {
     #[arg(long)]
     pub vtime: VTime,
 
-    // We send it to the API as `.hours().to_string()`, the (possibly
-    // fractional) hour count that `antithesis.debugging.length_hours` wants.
     #[arg(
         long,
-        value_parser = |v: &str| DEBUG_DURATION.parse(v),
+        value_parser = |v: &str| DEBUG_DURATION.parse(v).map(|d| d.seconds() / 60),
         hide = !features::is_enabled(Feature::Teams),
         help = DEBUG_DURATION.help(
             "How long the session stays available, from 30 minutes to 6 hours. Requires \
              tenant version 66 or newer.",
         ),
     )]
-    pub duration: Option<HumanDuration>,
+    pub duration: Option<u64>,
 
     /// Debugging session title, shown as the test name in the run list
     #[arg(long)]

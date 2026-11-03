@@ -115,10 +115,10 @@
           "type": "string",
           "description": "The vtime at which to start debugging, from the copy moment button in triage report"
         },
-        "antithesis.debugging.length_hours": {
+        "antithesis.debugging.duration": {
           "type": "string",
-          "pattern": "^[0-9]+(\\.[0-9]+)?$",
-          "description": "How long the debugging session stays available, in hours, from 0.5 to 6. Requires tenant version 66 or newer."
+          "pattern": "^[0-9]+$",
+          "description": "How long the debugging session stays available, in minutes, from 30 to 360. Requires tenant version 66 or newer."
         },
         "antithesis.event_description": {
           "type": "string",

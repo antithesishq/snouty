@@ -136,20 +136,10 @@ impl HumanDuration {
     /// The duration as a number of minutes, rounded to 2 decimal places — the
     /// form the API wants: e.g. 7s is `0.12`, not `0.11666…`.
     pub fn minutes(&self) -> f64 {
-        self.in_units_of(SECS_PER_MINUTE)
-    }
-
-    /// The duration as a number of hours, rounded to 2 decimal places as
-    /// [`minutes()`](Self::minutes) is: e.g. 50m is `0.83`.
-    pub fn hours(&self) -> f64 {
-        self.in_units_of(SECS_PER_HOUR)
-    }
-
-    fn in_units_of(&self, secs_per_unit: u64) -> f64 {
         // Rounded in integer space, not by dividing floats, so a second-granular
         // value does not become a long repeating decimal.
-        let per_unit = u128::from(secs_per_unit);
-        let hundredths = (u128::from(self.seconds()) * 100 + per_unit / 2) / per_unit;
+        let per_minute = u128::from(SECS_PER_MINUTE);
+        let hundredths = (u128::from(self.seconds()) * 100 + per_minute / 2) / per_minute;
         hundredths as f64 / 100.0
     }
 
@@ -336,10 +326,6 @@ mod tests {
         s.parse::<HumanDuration>().unwrap().seconds()
     }
 
-    fn hours(s: &str) -> f64 {
-        s.parse::<HumanDuration>().unwrap().hours()
-    }
-
     #[test]
     fn parses_bare_number_as_minutes() {
         assert_eq!(minutes("30"), 30.0);
@@ -361,14 +347,6 @@ mod tests {
         assert_eq!(HumanDuration::from_seconds(5445).minutes(), 90.75);
         // ...and the string sent to the API stays clean.
         assert_eq!(HumanDuration::from_seconds(7).minutes().to_string(), "0.12");
-    }
-
-    #[test]
-    fn hours_rounds_to_two_decimals() {
-        assert_eq!(hours("30m"), 0.5);
-        assert_eq!(hours("1h30m"), 1.5);
-        assert_eq!(hours("6h"), 6.0);
-        assert_eq!(hours("50m").to_string(), "0.83");
     }
 
     #[test]
@@ -591,26 +569,5 @@ mod tests {
         let d = HumanDuration::from_seconds(seconds);
         let expected_hundredths = (u128::from(seconds) * 100 + 30) / 60;
         assert_eq!((d.minutes() * 100.0).round() as u128, expected_hundredths);
-    }
-
-    /// Over the `debug --duration` range, `hours()` is the second count rounded
-    /// to the nearest hundredth of an hour, and prints as a plain decimal.
-    #[hegel::test]
-    fn hours_is_close_and_short(tc: hegel::TestCase) {
-        let seconds = tc.draw(
-            generators::integers::<u64>()
-                .min_value(1800)
-                .max_value(21600),
-        );
-        let hours = HumanDuration::from_seconds(seconds).hours();
-        assert_eq!(
-            (hours * 100.0).round() as u64,
-            (seconds * 100 + 1800) / 3600
-        );
-        let text = hours.to_string();
-        assert!(
-            text.split_once('.').is_none_or(|(_, frac)| frac.len() <= 2),
-            "{text}"
-        );
     }
 }

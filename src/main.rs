@@ -25,7 +25,7 @@ use snouty::error::user_error;
 use snouty::features::{self, Feature};
 use snouty::login::cmd_login;
 use snouty::params::{
-    ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_LENGTH_HOURS, ANT_DEBUGGING_RUN_ID,
+    ANT_CONFIG_IMAGE, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_DURATION, ANT_DEBUGGING_RUN_ID,
     ANT_DEBUGGING_SESSION_ID, ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION,
     ANT_EVENT_DESCRIPTION, ANT_FAULT_EXCLUSIONS, ANT_FAULT_TOLERANCE, ANT_FILTER_LOGS_MATCHING,
     ANT_FILTER_SOURCE_MATCHING, ANT_IS_EPHEMERAL, ANT_MAX_COMPUTE_HOURS, ANT_PERFORMANCE_TIER,
@@ -458,8 +458,8 @@ fn debug_typed_params(args: &DebugArgs) -> Params {
     }
     params.insert(ANT_DEBUGGING_INPUT_HASH, args.input_hash.as_str());
     params.insert(ANT_DEBUGGING_VTIME, args.vtime.to_string());
-    if let Some(duration) = args.duration {
-        params.insert(ANT_DEBUGGING_LENGTH_HOURS, duration.hours().to_string());
+    if let Some(minutes) = args.duration {
+        params.insert(ANT_DEBUGGING_DURATION, minutes.to_string());
     }
     if let Some(title) = &args.title {
         params.insert(ANT_TEST_NAME, title.as_str());

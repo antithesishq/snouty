@@ -1,16 +1,14 @@
-Stream the logs of one timeline of a run.
+Stream the logs of one timeline of a run, up to a moment.
 
-How a run is structured: An Antithesis run is a tree of timelines, not one history. A timeline is a series of input_hashes. An input_hash is a hash of every input Antithesis sent up to that point. Antithesis branches a timeline by sending an input from some moment, which creates a new input_hash. Every event has an input_hash and a vtime, and one input_hash can have zero or more events. Events that share an input_hash are on the same timeline. vtime is the virtual time at which the event was emitted on its timeline. Antithesis virtualizes the clock, so vtime can jump forward by any amount, but it never goes backward. vtime orders events only within one timeline.
+A run is a multiverse: a tree of timelines that branch from each other. A timeline is one continuous simulated execution of the system, and vtime (virtual time) is its simulated clock. A moment is an instant on a timeline, identified by an input_hash and a vtime; the input_hash is a hash of every input Antithesis sent up to that moment. A branch is a timeline that splits off another timeline at a moment.
 
-{{ t("input_hash")? }} identifies the timeline: the hash of every input Antithesis sent from the root to that point. {% if cli %}{{ t("input_hash")? }} is often negative, such as `-123`; pass it as it is, with no `--` before it. {% endif %}Logs stream from the root (or {{ t("--begin-vtime")? }}) to the timeline's current end; a run in progress can extend the timeline, so the same {{ t("input_hash")? }} can return more logs later. Give {{ t("vtime")? }} to end the stream at that moment instead. Find a moment with `{{ t("runs properties --detail")? }}`, `{{ t("runs events")? }}`, `{{ t("runs search")? }}`, or the failure moment of an incomplete run in `{{ t("runs show")? }}`.
+{{ t("input_hash")? }} and {{ t("vtime")? }} identify a moment in the multiverse. If {{ t("--begin-vtime")? }} is specified, logs will start from that point rather than the root moment. When {{ t("vtime")? }} is not specified, logs will end at the end of the branch corresponding to the {{ t("input_hash")? }}. If the run is in progress, the {{ t("input_hash")? }} branch may be extended at any time.
 
-Each event has its moment (an input_hash and a vtime), its source, and its payload: log output, an SDK assertion, a fault, a container lifecycle change, or a test composer command.
+{% if cli %}{{ t("input_hash")? }} is often negative, such as `-123`; pass it as it is, with no `--` before it. {% endif %}Find a moment with `{{ t("runs properties --detail")? }}`, `{{ t("runs events")? }}`, `{{ t("runs search")? }}`, or the failure moment of an incomplete run in `{{ t("runs show")? }}`.
 
-{% if cli %}
-Output: a `moment HASH` divider opens each timeline segment, and each event under it renders on one line as `VTIME [source] payload`, each event shape in its own concise form. VTIME is truncated to fit its column, and a long source label ends in `…`. With {{ t("--detail")? }}, VTIME and the source print whole, and indented lines under an event give its source location, as `@ file:function:line`, and the details that it carries, such as an SDK assertion's details, as `details {...}`.
-{% else %}
-A `moment HASH` line opens each timeline segment, and each event under it prints as one `VTIME [source] payload` line, with the full vtime. Indented lines under an event give its source location, as `@ file:function:line`, and the details that it carries, such as an SDK assertion's details, as `details {...}`.
-{% endif %}
+Each event has a moment, a source, and a payload: log output, an SDK assertion, a fault, a container lifecycle change, or a test composer command.
+
+Output: a `moment INPUT_HASH` divider is emitted at the start of each branch. Each event under a divider renders on one line as `VTIME [source] payload`. {% if cli %}With {{ t("--detail")? }}, no fields are truncated, and{% else %}No fields are truncated, and{% endif %} additional fields are included in indented lines after the event.
 
 {% if cli %}
 Add --json for machine-readable output. Each event prints as one JSON object on its own line:

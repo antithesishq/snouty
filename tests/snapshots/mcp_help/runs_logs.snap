@@ -1,14 +1,14 @@
 ---
 source: tests/help_snapshots.rs
 ---
-Stream the logs of one timeline of a run.
+Stream the logs of one timeline of a run, up to a moment.
 
-An Antithesis run is a tree of timelines. From one moment, Antithesis can send different inputs, and each input starts a new branch. An input_hash names the part of a branch from one input to the next. Each event has a moment: an input_hash, and a vtime, the virtual time on that branch.
+A run is a multiverse: a tree of timelines that branch from each other. A timeline is one continuous simulated execution of the system, and vtime (virtual time) is its simulated clock. A moment is an instant on a timeline, identified by an input_hash and a vtime; the input_hash is a hash of every input Antithesis sent up to that moment. A branch is a timeline that splits off another timeline at a moment.
 
-`input_hash` selects a path in the tree. The logs stream from the root, through each earlier input_hash on the path, to the end of `input_hash`. Give `vtime` to end the stream at that moment, or `begin_vtime` to start it later than the root. A run in progress can extend `input_hash`, so it can return more logs later. Find a moment with `runs_properties`, `runs_events`, `runs_search`, or the failure moment of an incomplete run in `runs_show`.
+`input_hash` and `vtime` identify a moment. The logs stream along the timeline that leads to that moment, from its start (or from `begin_vtime`) to the moment. Without `vtime`, the stream ends at the last event with `input_hash`. A run in progress can add events, so a later call can return more logs. Find a moment with `runs_properties`, `runs_events`, `runs_search`, or the failure moment of an incomplete run in `runs_show`.
 
-Each event also has a source and a payload: log output, an SDK assertion, a fault, a container lifecycle change, or a test composer command.
+Each event has a moment, a source, and a payload: log output, an SDK assertion, a fault, a container lifecycle change, or a test composer command.
 
-A `moment HASH` line opens the events of each input_hash on the path, from the root to `input_hash`. Each event under it prints as one `VTIME [source] payload` line, with the full vtime. Indented lines under an event give its source location, as `@ file:function:line`, and the details that it carries, such as an SDK assertion's details, as `details {...}`.
+A `moment HASH` line opens the events with each input_hash. The input_hash changes each time Antithesis sends an input, so these lines mark the inputs on the timeline, up to `input_hash`. Each event under a divider prints as one `VTIME [source] payload` line, with the full vtime. Indented lines under an event give its source location, as `@ file:function:line`, and the details that it carries, such as an SDK assertion's details, as `details {...}`.
 
 With `json`, each event prints as one JSON object on its own line.

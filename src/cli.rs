@@ -931,11 +931,11 @@ pub enum RunsCommands {
         #[arg(value_parser = parse_run_id)]
         run_id: String,
 
-        /// Input hash at the end of the path to stream
+        /// Input hash of the moment to stream to
         #[arg(allow_hyphen_values = true)]
         input_hash: String,
 
-        /// Virtual time of the moment to end the stream at; omit it to stream to the end of the input hash
+        /// Virtual time of the moment to end the stream at; omit it to stream to the last event with the input hash
         // Typed, so a malformed vtime is rejected by clap instead of by the
         // server. `allow_hyphen_values` is kept here (unlike `runs exec`),
         // because this command has always accepted a hyphen-led vtime.

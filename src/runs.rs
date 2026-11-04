@@ -1671,8 +1671,16 @@ async fn cmd_runs_build_logs(
         Ok(stream) => stream.untag(),
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
     };
-    let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode);
-    print_event_lines(lines, mode, "No build logs for this run.", None).await
+    let any_lines = AtomicBool::new(false);
+    let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode)
+        .inspect_ok(|_| any_lines.store(true, Ordering::Relaxed))
+        .boxed();
+    print_event_lines(lines, mode, "No build logs for this run.", None).await?;
+    // The footer marks the end of the stream, as `runs logs` does.
+    if !mode.json() && any_lines.into_inner() {
+        eprintln!("— end of build logs");
+    }
+    Ok(())
 }
 
 async fn cmd_runs_search(

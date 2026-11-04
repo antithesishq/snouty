@@ -489,10 +489,14 @@ stdout '^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \[[a-z]+\]'
 [!staging] stdout '^2025-03-20 11:01:12 \[stdout\] Building image payments-service\.\.\.'
 [!staging] stdout '^2025-03-20 11:01:15 \[stderr\] Warning: deprecated feature'
 [!staging] stdout '^2025-03-20 11:01:20 \[stdout\] Build complete'
+# A footer on stderr marks the end of the stream, so the last line doesn't
+# read as one cut short.
+stderr '^— end of build logs$'
 
 # `snouty --json runs build-logs` outputs raw NDJSON.
 mock-runs-server
 snouty --json runs build-logs $R_run_id
+! stderr 'end of build logs'
 [!staging] stdout '"timestamp".*"text"'
 
 # The JSON shows the times of a run, and of each build-log line, in UTC, as
@@ -729,6 +733,7 @@ stderr '.*run not found: no-such-run.*'
 mock-runs-server
 snouty runs build-logs run-empty
 stderr 'No build logs for this run\.'
+! stderr 'end of build logs'
 
 # In --json mode an empty stream is the correct machine answer, so no note.
 mock-runs-server

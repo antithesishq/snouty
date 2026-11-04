@@ -2456,12 +2456,17 @@ _LINE_TIME = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \[", re.MULTILINE)
 
 
 def build_logs_with_times(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-    """Log lines, and each line starts with a well-formed time. Every log
-    line counts, so a line whose time has another form fails the check."""
+    """Log lines, each starting with a well-formed time, then the footer that
+    marks the end of the stream. Every log line counts, so a line whose time
+    has another form fails the check."""
     ok, detail = logs_non_empty(sr, reg)
     timed = len(_LINE_TIME.findall(sr.result.stdout))
     lines = len(sr.rows or [])
-    return (ok and timed == lines, f"{detail}, {timed}/{lines} lines with a time")
+    footer = contains_text(sr.result.stderr, "— end of build logs")
+    return (
+        ok and timed == lines and footer,
+        f"{detail}, {timed}/{lines} lines with a time, footer={footer}",
+    )
 
 
 def logs_with_footer(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
@@ -3197,8 +3202,8 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-build-logs",
             "Stream the build logs to see how a run was set up",
             "I want to see the build/setup logs for a run.",
-            "At least one build-log line is streamed, and each line starts with its local "
-            "time.",
+            "At least one build-log line is streamed, each line starts with its local "
+            "time, and a footer marks the end of the stream.",
             ["runs", "build-logs", d.success],
             build_logs_with_times,
         ),

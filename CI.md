@@ -94,6 +94,8 @@ jobs:
             "${source_flag[@]}"
 ```
 
+Replace `my-tenant` with your tenant, and `antithesis` with the folder that holds your `docker-compose.yaml`. Then create an `antithesis` label in the repository.
+
 The workflow needs these secrets:
 
 - `ANTITHESIS_API_KEY`: your Antithesis API key. With [GitHub Actions OIDC](#github-actions-oidc), you need no key.

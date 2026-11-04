@@ -1478,8 +1478,8 @@ fn mock_route_stream_run_status(run_id: &str, req_body: &str) -> (u16, String) {
 /// an assertion's message and source function, and a test-composer command
 /// and task, NUL-joined so a needle cannot span two fields.
 ///
-/// The gates the live endpoints put on those fields — an assertion counts
-/// only once it was hit, a command only on a composer event — are not
+/// The live server matches a command only on a composer event, and its
+/// default log filter drops some events before any query; neither is
 /// modelled here. The specs pin which FIELDS a needle reaches; which events
 /// the server then considers is the server's own answer, and a fixture
 /// written here is not evidence of it.

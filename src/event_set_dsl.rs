@@ -86,11 +86,11 @@ macro_rules! query_fragment {
 /// holds every needle. The needles must be lowercase: `m` folds only the
 /// haystack.
 ///
-/// The server's default log filter runs before the query. It drops bootstrap
-/// events and assertion catalog entries (`antithesis_assert.hit === false`),
-/// so the filter does not test for them (tenant `orbitinghail`, run
-/// `d4b213720b4f72d68132653843623a04-62-2`, which held bootstrap events
-/// before release 67.0, returns none now).
+/// The server's default log filter drops bootstrap events and assertion
+/// catalog entries (`antithesis_assert.hit === false`) before the query
+/// runs, so this filter does not test for them. Tenant `orbitinghail`, run
+/// `d4b213720b4f72d68132653843623a04-62-2`, held bootstrap events on an
+/// earlier release and returns none on release 67.0.
 ///
 /// The live server names a test-composer command's output source after the
 /// command, such as `main/parallel_driver_lifecycle`, and sets

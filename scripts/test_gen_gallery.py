@@ -528,9 +528,10 @@ class GalleryRunHelpers(unittest.TestCase):
         for table, counts, mixed in (
             (
                 "bank\n"
-                f"  fail     3  1  p1  {self.BUG}\n"
-                "  pending  9  0  p2  Total money in the bank is conserved\n"
-                "  pending  2  0  p3  Transfers complete\n",
+                f"fail     3  1  p1  {self.BUG}\n"
+                "pending  9  0  p2  Total money in the bank is conserved,\n"
+                "                   fail or not\n"
+                "pending  2  0  p3  Transfers complete\n",
                 "{'fail': 1, 'pending': 2}",
                 True,
             ),

@@ -1571,8 +1571,8 @@ def prepare_exec(sn: Snouty, x: GalleryRun, rewarm: tuple[str, dict, dict]) -> N
 def wait_for_pending_properties(sn: Snouty, run: str) -> None:
     """Wait until the in-progress `run` reports a pending property next to a
     passing or failing one, so that the captured table mixes the statuses.
-    Early in a run every property is pending. After the deadline, return
-    anyway: the story's check then reports what the capture shows."""
+    Early in a run, every property is pending. After the deadline, return
+    anyway, so that a slow run does not stop the gallery."""
     deadline = time.monotonic() + MOMENT_SEARCH_DEADLINE
     while True:
         try:
@@ -2434,26 +2434,29 @@ PENDING_NOTE = "Some properties are still being processed."
 
 
 def table_statuses(text: str) -> Counter:
-    """Count the rows of a `runs properties` table by the word in its STATUS
-    column, the first word of each row."""
+    """Count the rows of a `runs properties` table by their STATUS word. Lines
+    that are not property rows do not count, and neither does a wrapped NAME's
+    continuation line, which starts with blanks."""
     return Counter(
         words[0]
         for line in text.splitlines()
-        if (words := line.split()) and words[0] in {"pending", "pass", "fail"}
+        if line[:1].strip()
+        and (words := line.split())[0] in {"pending", "pass", "fail"}
     )
 
 
 def live_properties(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     """`runs properties` on the in-progress gallery run: at least one pending
-    row, and the note that tells the user to come back later. The counts come
-    from the captured table, so they describe the same moment as the capture.
-    Rows that pass or fail should appear too, but a young run can have none."""
+    row, and the note that tells the user to come back later. It counts the
+    captured table, because a later fetch can report other statuses. A missing
+    pass or fail row is reported, not failed, because the wait can time out
+    before one appears."""
     statuses = table_statuses(sr.result.stdout)
     noted = contains_text(sr.result.combined, PENDING_NOTE)
-    mixed = "" if statuses["pass"] or statuses["fail"] else ", no pass or fail row"
+    unmixed = "" if statuses["pass"] or statuses["fail"] else ", no pass or fail row"
     return (
         statuses["pending"] > 0 and noted and sr.result.ok,
-        f"exit={sr.result.returncode}, statuses={dict(statuses)}, note={noted}{mixed}",
+        f"exit={sr.result.returncode}, statuses={dict(statuses)}, note={noted}{unmixed}",
     )
 
 

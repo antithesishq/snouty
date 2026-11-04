@@ -1050,8 +1050,8 @@ impl AntithesisApi {
     /// timeline has passed it, so a stream that reached a line past the end
     /// is cached even when the headers say `no-cache`, as they do for a live
     /// run. A stream that stops short of the end, on a timeline that has not
-    /// got there yet, is not. The `0` placeholder asks for the branch's
-    /// current end, which grows while the run is live, so the headers
+    /// got there yet, is not. The `0` placeholder asks for the end of the
+    /// branch, which the run can extend while it is live, so the headers
     /// decide.
     #[cached(stream)]
     pub async fn get_run_logs(

@@ -36,11 +36,11 @@ For example:
 
   [default]
   type = "ApiKey"
-  api_key = "..."
+  api_key = "<your API key>"
 
   [profile.staging]
   type = "ApiKey"
-  api_key = "..."
+  api_key = "<your API key>"
 
 For each command, snouty uses the first credential that it finds: ANTITHESIS_API_KEY, or ANTITHESIS_USERNAME with ANTITHESIS_PASSWORD, then the keychain entry and the credentials.toml table of the selected profile, then those of [default], then a GitHub Actions OIDC token. Keep credentials.toml readable only by you (mode 0600).
 

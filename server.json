@@ -35,33 +35,6 @@
           }
         }
       ]
-    },
-    {
-      "registryType": "cargo",
-      "identifier": "snouty",
-      "version": "0.9.0-rc.3",
-      "transport": {
-        "type": "stdio"
-      },
-      "packageArguments": [
-        {
-          "type": "positional",
-          "value": "mcp"
-        }
-      ],
-      "environmentVariables": [
-        {
-          "name": "SNOUTY_UNSTABLE_FEATURES",
-          "description": "Unstable features to turn on. snouty mcp needs mcp, which is always on",
-          "value": "mcp,{features}",
-          "variables": {
-            "features": {
-              "description": "More unstable features to turn on, comma-separated, such as teams",
-              "default": ""
-            }
-          }
-        }
-      ]
     }
   ]
 }

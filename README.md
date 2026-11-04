@@ -224,7 +224,7 @@ A JSON config for a stdio server looks like this one. The key names can be diffe
 
 Run `snouty mcp --help` to see all tools.
 
-snouty is listed in the [MCP Registry](https://registry.modelcontextprotocol.io) as `com.antithesis/snouty`, with two packages: the npm package `snouty`, which a client runs with `npx snouty mcp` and which downloads the prebuilt binary on its first run, and the crate. The registry checks this line to verify the crate: `mcp-name: com.antithesis/snouty`.
+snouty is listed in the [MCP Registry](https://registry.modelcontextprotocol.io) as `com.antithesis/snouty`, through the npm package `snouty`: a client that installs from the registry runs `npx snouty mcp`, which downloads the prebuilt binary on its first run.
 
 The server sets no time limit and no output limit on a tool call. The client sets them: when it cancels a call or closes stdin, the server kills the call's command. A command also exits when its server is gone. Up to 8 tool calls run at the same time, and `--max-concurrent-calls` changes that number.
 

@@ -139,19 +139,10 @@ jobs:
             exit 0
           fi
           mcp-publisher login dns --domain antithesis.com --private-key "$MCP_PRIVATE_KEY"
-          # The registry reads mcpName from npm and the mcp-name line from the
-          # crate's README on crates.io. Both serve a new version after a
-          # delay, so wait for them before the one publish.
+          # The registry reads mcpName from npm, which serves a new version
+          # after a delay, so wait for it before the one publish.
           for _ in $(seq 20); do
             [ "$(npm view "$package@$version" mcpName 2> /dev/null)" = "$name" ] && break
-            sleep 15
-          done
-          readme="https://crates.io/api/v1/crates/snouty/$version/readme"
-          for _ in $(seq 20); do
-            # grep reads a variable, not a pipe: under pipefail, curl fails
-            # when grep -q exits early, and the check would never pass.
-            html=$(curl -sfL -A "snouty-release (https://github.com/antithesishq/snouty)" "$readme" || true)
-            grep -qF "mcp-name: $name" <<< "$html" && break
             sleep 15
           done
           mcp-publisher publish

@@ -573,10 +573,8 @@ async fn tool_results_are_plain_detailed_text() {
 }
 
 /// The release publishes `server.json` to the MCP Registry, so it must match
-/// this crate's version and name. It must list the npm package that dist
-/// builds, then the crate, and each must start `snouty mcp` with its feature
-/// on. Its name must match the README's `mcp-name` line. `mise run lint:mcp`
-/// validates the rest.
+/// this crate's version, list the npm package that dist builds, and start
+/// `snouty mcp` with its feature on. `mise run lint:mcp` validates the rest.
 #[test]
 fn mcp_registry_entry_matches_the_crate() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -588,46 +586,31 @@ fn mcp_registry_entry_matches_the_crate() {
         .unwrap();
     let version = env!("CARGO_PKG_VERSION");
     assert_eq!(entry["version"], version);
-    let packages = entry["packages"].as_array().unwrap();
-    let identifiers: Vec<_> = packages
-        .iter()
-        .map(|package| json!([package["registryType"], package["identifier"]]))
-        .collect();
-    let crate_name = env!("CARGO_PKG_NAME");
+    let [package] = entry["packages"].as_array().unwrap().as_slice() else {
+        panic!("server.json must list exactly one package");
+    };
     // dist names the npm package after the crate, under npm-scope if set.
+    let crate_name = env!("CARGO_PKG_NAME");
     let npm_package = match dist["dist"].get("npm-scope") {
         Some(scope) => format!("{}/{crate_name}", scope.as_str().unwrap()),
         None => crate_name.to_owned(),
     };
-    // npm comes first, because a client that installs only one package, such
-    // as VS Code, takes the first one, and few clients can install a crate.
+    assert_eq!(package["registryType"], "npm");
+    assert_eq!(package["identifier"], npm_package);
+    assert_eq!(package["version"], version);
     assert_eq!(
-        identifiers,
-        [json!(["npm", npm_package]), json!(["cargo", crate_name])]
+        package["packageArguments"],
+        json!([{"type": "positional", "value": "mcp"}])
     );
-    for package in packages {
-        assert_eq!(package["version"], version);
-        assert_eq!(
-            package["packageArguments"],
-            json!([{"type": "positional", "value": "mcp"}])
-        );
-        let feature_var = package["environmentVariables"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|var| var["name"] == snouty::features::UNSTABLE_FEATURES_VAR_NAME)
-            .unwrap();
-        let features = feature_var["value"].as_str().unwrap();
-        assert_eq!(
-            features.split(',').next(),
-            Some(snouty::features::Feature::Mcp.to_string().as_str())
-        );
-    }
-
-    let name = entry["name"].as_str().unwrap();
-    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
-    assert!(
-        readme.contains(&format!("`mcp-name: {name}`")),
-        "README.md lacks mcp-name: {name}"
+    let feature_var = package["environmentVariables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|var| var["name"] == snouty::features::UNSTABLE_FEATURES_VAR_NAME)
+        .unwrap();
+    let features = feature_var["value"].as_str().unwrap();
+    assert_eq!(
+        features.split(',').next(),
+        Some(snouty::features::Feature::Mcp.to_string().as_str())
     );
 }

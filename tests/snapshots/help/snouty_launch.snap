@@ -28,9 +28,8 @@ Alternatively, pass a pre-built config image directly:
 The tier (--performance-tier) sets how many cores the run uses: 48 on standard
 (the default), 96 on fast and 192 on turbo.
 
-Extra parameters can be passed with --param:
+Use --param to pass other params:
   snouty launch --launcher basic_test --config ./config \
-    --param antithesis.integrations.github.token=TOKEN \
     --param my.custom.property=value
 
 User-defined attributes are params with an `attrs.` prefix. The server records

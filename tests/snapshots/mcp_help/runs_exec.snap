@@ -26,4 +26,4 @@ Examples:
   runs_exec {"run_id": "<run_id>", "input_hash": "<hash>", "vtime": <vtime>, "script": "sleep 5", "events": true}
   runs_exec {"run_id": "<run_id>", "input_hash": "<hash>", "vtime": <vtime>, "script": "ls", "source_run_id": "<other_run_id>", "timeout": "5m"}
 
-With `json`, each frame of the stream prints as one JSON object on its own line. The last line is the exit result, and its `end_moment` is the moment to chain a follow-up call from.
+With `json`, each frame of the stream prints as one JSON object on its own line. When the script exits, the last line is the exit result, and its `end_moment` is the moment to chain a follow-up call from.

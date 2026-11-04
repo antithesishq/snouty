@@ -61,8 +61,8 @@ list:
 With --json, the launch response prints as one JSON object.
 
 Next, wait for the run to finish with `snouty runs wait <run_id>`. The run ID is
-the `run_id` value in the launch output, or `.runId` in the --json output. To
-watch it live, use `snouty runs stream <run_id>`.
+the `run_id` value in the launch output, or `runId` with --json. To watch it
+live, use `snouty runs stream <run_id>`.
 
 Credentials come from `snouty login` or from the environment variables below.
 Tenant and repository may be set via the environment variables below, or in a

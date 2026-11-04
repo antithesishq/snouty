@@ -1,6 +1,6 @@
 Search a run's events for one or more substrings (all must match).
 
-Each {{ t("--match")? }} value is matched against the text an event carries: log output, an assertion's message and source function, and a test-composer command.
+{% if cli %}A term, from {{ t("--match")? }} or {{ t("query")? }},{% else %}Each {{ t("--match")? }} value{% endif %} is matched against the text an event carries: log output, an assertion's message and source function, and a test-composer command.
 
 Each matching event has its moment (an input_hash and a vtime), its source, and its payload: log output, an SDK assertion, a fault, a container lifecycle change, or a test composer command. To stream the logs of an event's timeline to its current end, pass its run ID and input_hash to `{{ t("snouty runs logs <run_id> <hash>")? }}`.
 

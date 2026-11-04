@@ -3,8 +3,8 @@ source: tests/help_snapshots.rs
 ---
 Search a run's events for one or more substrings (all must match).
 
-Each --match value is matched against the text an event carries: log output, an
-assertion's message and source function, and a test-composer command.
+A term, from --match or QUERY, is matched against the text an event carries: log
+output, an assertion's message and source function, and a test-composer command.
 
 Each matching event has its moment (an input_hash and a vtime), its source, and
 its payload: log output, an SDK assertion, a fault, a container lifecycle

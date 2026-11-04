@@ -363,14 +363,15 @@ mock-runs-server
 snouty runs properties --failing --pending $R_run_id --name no-such-property
 [!staging] stdout 'No properties match \(failing or pending, name containing .no-such-property.\)'
 
-# `snouty --json runs properties` outputs JSON. A moment's vtime is an exact
-# JSON number — the full-precision value survives byte-identically (see
-# src/vtime.rs for why an f64 holds it exactly).
+# `snouty --json runs properties` outputs JSON, with each sample moment under
+# `examples` or `counterexamples`. A moment's vtime is an exact JSON number —
+# the full-precision value survives byte-identically (see src/vtime.rs for why
+# an f64 holds it exactly).
 mock-runs-server
 snouty --json runs properties $R_run_id
 [!staging] stdout '"name":"Safety: Counter value stays below limit"'
 [!staging] stdout '"status".*"Failing"'
-[!staging] stdout '"vtime":45\.334635781589895'
+[!staging] stdout '"counterexamples":\[[^]]*\{"moment":\{"input_hash":"-100","vtime":45\.334635781589895\}\}'
 [!staging] ! stdout '"description"'
 
 # `--name <substr> --detail` expands the matching property into its examples.

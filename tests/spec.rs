@@ -256,14 +256,14 @@ thread_local! {
 /// its debug log when it is slow.
 fn run_timed(
     make_cmd: impl Fn() -> std::process::Command,
-    stdin: Option<Vec<u8>>,
+    stdin: Option<&[u8]>,
     label: &str,
 ) -> testscript_rs::Result<std::process::Output> {
     let mut retries = 0;
     loop {
-        match run_once(make_cmd(), stdin.as_deref(), label)? {
-            Ok(output) => return Ok(output),
-            Err(requests) if retries < TIMEOUT_RETRIES => {
+        match run_once(make_cmd(), stdin, label)? {
+            Run::Done(output) => return Ok(output),
+            Run::TimedOut { requests } if retries < TIMEOUT_RETRIES => {
                 retries += 1;
                 eprintln!(
                     "  timed out after {}s, retry {retries} of {TIMEOUT_RETRIES} in {}s: {label}\n{requests}",
@@ -274,7 +274,7 @@ fn run_timed(
             }
             // A usage error fails the spec even on a `!` line, where any
             // other error satisfies the `!`.
-            Err(requests) => {
+            Run::TimedOut { requests } => {
                 return Err(testscript_rs::Error::Usage {
                     message: format!(
                         "{label} timed out after {}s, {} times. Its API requests:\n{requests}",
@@ -287,13 +287,21 @@ fn run_timed(
     }
 }
 
-/// Run `cmd` once. Against staging, kill it at [`COMMAND_TIMEOUT`] and return
-/// the API request lines of its debug log as the error.
+/// How one run of a command ended.
+enum Run {
+    Done(std::process::Output),
+    /// Killed at [`COMMAND_TIMEOUT`], with the API request lines of its debug log.
+    TimedOut {
+        requests: String,
+    },
+}
+
+/// Run `cmd` once. Against staging, kill it at [`COMMAND_TIMEOUT`].
 fn run_once(
     mut cmd: std::process::Command,
     stdin: Option<&[u8]>,
     label: &str,
-) -> testscript_rs::Result<Result<std::process::Output, String>> {
+) -> testscript_rs::Result<Run> {
     let start = Instant::now();
     cmd.stdin(if stdin.is_some() {
         Stdio::piped()
@@ -333,7 +341,9 @@ fn run_once(
         if elapsed >= timeout {
             let _ = child.kill();
             let _ = child.wait();
-            return Ok(Err(request_lines(&stderr.lock().unwrap())));
+            return Ok(Run::TimedOut {
+                requests: request_lines(&stderr.lock().unwrap()),
+            });
         }
         if elapsed >= next_notice {
             eprintln!("  still running after {}s: {label}", next_notice.as_secs());
@@ -358,7 +368,7 @@ fn run_once(
         eprint!("{}", request_lines(&stderr));
     }
     COMMAND_TIMES.with_borrow_mut(|times| times.push((elapsed, label.to_owned())));
-    Ok(Ok(std::process::Output {
+    Ok(Run::Done(std::process::Output {
         status,
         stdout,
         stderr,
@@ -408,7 +418,7 @@ fn cmd_snouty(
     let expanded: Vec<String> = args.iter().map(|a| env.substitute_env_vars(a)).collect();
     let label = format!("snouty {}", expanded.join(" "));
     let stdin = env.next_stdin.take();
-    let output = run_timed(|| snouty_cmd(env, &expanded), stdin, &label)?;
+    let output = run_timed(|| snouty_cmd(env, &expanded), stdin.as_deref(), &label)?;
     let success = output.status.success();
     let stderr_str = String::from_utf8_lossy(&output.stderr).into_owned();
     let stdout_str = String::from_utf8_lossy(&output.stdout).into_owned();

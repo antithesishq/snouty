@@ -29,9 +29,10 @@ Examples:
   snouty runs properties <run_id> --name eventually_validate --detail
   snouty runs properties <run_id> --group Unreachable --detail
 
-Add --json for machine-readable output. Each property prints as one JSON object
-on its own line. --json is mutually exclusive with --detail:
-  snouty --json runs properties <run_id> --failing | jq -r .name
+With --json, each property prints as one JSON object on its own line, with its
+samples in `examples` and `counterexamples`. An empty array is left out. An
+event sample gives its moment as `moment.input_hash` and `moment.vtime`. --json
+is mutually exclusive with --detail.
 
 Usage: snouty runs properties [OPTIONS] <RUN_ID>
 

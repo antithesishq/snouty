@@ -20,9 +20,4 @@ Examples:
   {{ t("snouty runs properties <run_id> --group Unreachable --detail")? }}
 {%- endif %}
 
-{% if cli %}
-Add --json for machine-readable output. Each property prints as one JSON object on its own line. --json is mutually exclusive with --detail:
-  {{ t("snouty --json runs properties <run_id> --failing | jq -r .name")? }}
-{% else %}
-With {{ t("--json")? }}, each property prints as one JSON object on its own line, without the sample moments.
-{% endif %}
+With {{ t("--json")? }}, each property prints as one JSON object on its own line, with its samples in `examples` and `counterexamples`. An empty array is left out. An event sample gives its moment as `moment.input_hash` and `moment.vtime`.{% if cli %} {{ t("--json")? }} is mutually exclusive with {{ t("--detail")? }}.{% endif %}

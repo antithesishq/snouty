@@ -39,9 +39,8 @@ The minimum budget is a quarter of the tier's cores: 12 compute hours on standar
 The tier ({{ t("--performance-tier")? }}) sets how many cores the run uses: 48 on standard (the default), 96 on fast and 192 on turbo.
 {% endif %}
 
-Extra parameters can be passed with --param:
+Use {{ t("--param")? }} to pass other params:
   snouty launch --launcher basic_test --config ./config \
-    --param antithesis.integrations.github.token=TOKEN \
     --param my.custom.property=value
 
 User-defined attributes are params with an `attrs.` prefix. The server records them on the run and `snouty runs show` lists them:

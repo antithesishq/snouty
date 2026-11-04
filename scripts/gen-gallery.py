@@ -2462,7 +2462,7 @@ def build_logs_with_times(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     ok, detail = logs_non_empty(sr, reg)
     timed = len(_LINE_TIME.findall(sr.result.stdout))
     lines = len(sr.rows or [])
-    footer = contains_text(sr.result.stderr, "— end of build logs")
+    footer = contains_text(sr.result.combined, "— end of build logs")
     return (
         ok and timed == lines and footer,
         f"{detail}, {timed}/{lines} lines with a time, footer={footer}",

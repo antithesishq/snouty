@@ -90,17 +90,4 @@ Add {{ t("--count")? }} to print how many events in the whole run match the quer
 
 The run must be ready or complete. If it is not, the command waits until it is ready, as `{{ t("snouty runs exec")? }}` does, and says that it waits.
 
-{% if cli %}
-Add --json for machine-readable output. Each event prints as one JSON object on its own line:
-  {% filter cmd %}
-  snouty --json runs search <run_id> 'contains({output_text: "err"})' \
-    | jq -r .moment.vtime
-  {% endfilter %}
-With --count, the count prints as one JSON object:
-  {% filter cmd %}
-  snouty --json runs search <run_id> 'contains({output_text: "err"})' \
-    --count | jq .count
-  {% endfilter %}
-{% else %}
 With {{ t("--json")? }}, each event prints as one JSON object on its own line, and with {{ t("--count")? }}, the count prints as one JSON object.
-{% endif %}

@@ -24,9 +24,4 @@ Examples:
   {{ t("snouty runs usage --rollup month --after 2026-01-01 -n 12")? }}
   {{ t("snouty runs usage --after 2026-10-01 --before 2026-11-01")? }}
 
-{% if cli %}
-Add --json for machine-readable output. Each row prints as one JSON object on its own line. The hours field holds compute hours. A run has the fields run_id, hours, start_time, and end_time; the times are RFC 3339 in UTC. A period has the fields date, runs, and hours: date is the last day of the period in the local timezone, and hours is rounded to hundredths:
-  {{ t("snouty --json runs usage --rollup month | jq -r '\"\\(.date) \\(.hours)\"'")? }}
-{% else %}
 With {{ t("--json")? }}, each row prints as one JSON object on its own line. The hours field holds compute hours. A run has the fields run_id, hours, start_time, and end_time; the times are RFC 3339 in UTC. A period has the fields date, runs, and hours: date is the last day of the period in the local timezone, and hours is rounded to hundredths.
-{% endif %}

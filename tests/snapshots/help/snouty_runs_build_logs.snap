@@ -18,9 +18,8 @@ Examples:
   snouty runs build-logs <run_id> | grep '\[stderr\]'
   snouty runs build-logs <run_id> | grep -i 'error\|denied'
 
-Add --json for machine-readable output. Each log line prints as one JSON object
-on its own line, with its timestamp in RFC 3339 in UTC:
-  snouty --json runs build-logs <run_id> | jq -r .text
+With --json, each log line prints as one JSON object on its own line, with its
+timestamp in RFC 3339 in UTC.
 
 Usage: snouty runs build-logs [OPTIONS] <RUN_ID>
 

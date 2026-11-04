@@ -12,7 +12,4 @@ With {{ t("--json")? }}, the output is one JSON object, with the fields ok and c
 
 Examples:
   {{ t("snouty doctor")? }}
-{%- if cli %}
-  {{ t("snouty doctor --json | jq .ok")? }}
-{%- endif %}
   {{ t("snouty doctor --offline")? }}

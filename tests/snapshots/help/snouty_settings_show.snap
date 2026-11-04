@@ -16,14 +16,14 @@ which overrides the global one, then the global settings file.
 text output shows it with a unit, such as `10.0 MiB`. The JSON value is a number
 of bytes.
 
-The JSON output is one object. `settings` holds each setting, with null for a
-setting that is not set and has no default. `files` lists the settings files in
-the same order, each with its `type` (`project` or `global`) and `path`.
+With --json, the output is one object. `settings` holds each setting, with null
+for a setting that is not set and has no default. `files` lists the settings
+files in the same order, each with its `type` (`project` or `global`) and
+`path`.
 
 Examples:
   snouty settings show
   snouty --profile staging settings show
-  snouty settings show --json | jq -r .settings.tenant
 
 Usage: snouty settings show [OPTIONS]
 

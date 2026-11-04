@@ -5,7 +5,7 @@ Wait until a run is ready or complete.
   complete  The run is complete: completed, cancelled, or incomplete. This
             is the default.
 
-The status is a minimum. A run can only move forward, and a complete run never starts again. Thus {% if cli %}`--until ready`{% else %}a wait until ready{% endif %} on a complete run returns at once.
+The status is a minimum. A run can only move forward, and a complete run never starts again. Thus a wait until ready on a complete run returns at once.
 
 When the run reaches the status, the command prints the run's current status and succeeds, whatever that status is. A run that reports status `unknown` fails the command: snouty cannot tell whether such a run will still make progress.
 
@@ -15,13 +15,5 @@ Examples:
   {{ t("snouty runs wait <run_id>")? }}
   {{ t("snouty runs wait <run_id> --timeout 2h")? }}
   {{ t("snouty runs wait <run_id> --until ready")? }}
-{%- if cli %}
-  snouty launch --json --config ./config ... | jq -r .runId | xargs snouty runs wait
-{%- endif %}
 
-{% if cli %}
-Add --json for machine-readable output. The final status prints as one JSON object:
-  {{ t("snouty --json runs wait <run_id> | jq -r .status")? }}
-{% else %}
 With {{ t("--json")? }}, the final status prints as one JSON object.
-{% endif %}

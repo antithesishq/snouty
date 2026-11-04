@@ -7,9 +7,4 @@ The command needs tenant release 63.0 or newer; `{{ t("snouty doctor")? }}` repo
 Examples:
   {{ t("snouty runs cancel <run_id>")? }}
 
-{% if cli %}
-Add --json for machine-readable output. The cancelled run id prints as one JSON object:
-  {{ t("snouty --json runs cancel <run_id> | jq -r .run_id")? }}
-{% else %}
 With {{ t("--json")? }}, the cancelled run id prints as one JSON object, with the field run_id.
-{% endif %}

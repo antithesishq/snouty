@@ -57,9 +57,7 @@ Additional container images that the config parser can't discover (e.g. an image
   snouty launch --launcher basic_k8s_test --config ./config \
     --param 'antithesis.images=app@sha256:...;db:latest'
 
-Add --json for machine-readable output. The launch response prints as one JSON object:
-  snouty launch --json --launcher basic_test --config ./config |
-    jq -r .runId
+With --json, the launch response prints as one JSON object.
 
 Next, wait for the run to finish with `snouty runs wait <run_id>`. The run ID is the `run_id` value in the launch output, or `.runId` in the --json output. To watch it live, use `snouty runs stream <run_id>`.
 

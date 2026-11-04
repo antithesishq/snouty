@@ -13,9 +13,4 @@ Examples:
   {{ t("snouty runs build-logs <run_id> | grep -i 'error\\|denied'")? }}
 {%- endif %}
 
-{% if cli %}
-Add --json for machine-readable output. Each log line prints as one JSON object on its own line, with its timestamp in RFC 3339 in UTC:
-  {{ t("snouty --json runs build-logs <run_id> | jq -r .text")? }}
-{% else %}
 With {{ t("--json")? }}, each log line prints as one JSON object on its own line, with its timestamp in RFC 3339 in UTC.
-{% endif %}

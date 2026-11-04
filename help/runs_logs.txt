@@ -10,9 +10,4 @@ Each event has a moment, a source, and a payload: log output, an SDK assertion, 
 
 Output: a `moment INPUT_HASH` divider is emitted at the start of each branch. Each event under a divider renders on one line as `VTIME [source] payload`. {% if cli %}With {{ t("--detail")? }}, no fields are truncated, and{% else %}No fields are truncated, and{% endif %} additional fields are included in indented lines after the event.
 
-{% if cli %}
-Add --json for machine-readable output. Each event prints as one JSON object on its own line:
-  {{ t("snouty --json runs logs <run_id> <hash> | jq -r .moment.vtime")? }}
-{% else %}
 With {{ t("--json")? }}, each event prints as one JSON object on its own line.
-{% endif %}

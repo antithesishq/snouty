@@ -1,7 +1,7 @@
 ---
 source: tests/help_snapshots.rs
 ---
-List recent runs (the default when `snouty runs` runs with no subcommand).
+List recent runs.
 
 Each run has its ID, status, creation time, launcher, and test name. For a run
 with no test name, the name is the first line of its description.
@@ -17,10 +17,8 @@ property results, or to `runs wait` to wait until it is ready or complete.
 Examples:
   snouty runs list --status completed --limit 5
 
-Add --json for machine-readable output. Each run prints as one JSON object on
-its own line, in the order the server returns them. Its times are RFC 3339 in
-UTC:
-  snouty --json runs list | jq -r .run_id
+With --json, each run prints as one JSON object on its own line, in the order
+the server returns them. Its times are RFC 3339 in UTC.
 
 Usage: snouty runs list [OPTIONS]
 

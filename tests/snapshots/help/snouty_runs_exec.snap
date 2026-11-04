@@ -17,9 +17,9 @@ end moment of one command is warm for the next. A moment from another run is
 cold, and must be rewarmed before the script executes. Use --source-run-id to
 load a moment from a different run. A debugging session needs no --source-run-id
 for a moment of the run it was launched from. Rewarming a moment can take
-minutes, and takes longer for a larger vtime. The `--timeout` flag does not
-apply to the time it takes to rewarm a moment. Find a moment with
-`runs properties --detail`, `runs search`, or `runs events`.
+minutes, and takes longer for a larger vtime. --timeout does not apply to the
+time it takes to rewarm a moment. Find a moment with `runs properties --detail`,
+`runs search`, or `runs events`.
 
 The script executes on the host, or in the container that --container names. The
 command needs tenant release 64.0 or newer; `snouty doctor` reports the tenant
@@ -51,10 +51,9 @@ Examples:
   echo 'ps aux' | snouty runs exec <run_id> <hash> <vtime>
   snouty runs exec <run_id> <hash> <vtime> < script.sh
 
-Add --json for machine-readable output. Each frame of the stream prints as one
-JSON object on its own line, and the trailer is left out:
-  snouty --json runs exec <run_id> <hash> <vtime> 'ls' \
-    | jq -r 'select(.output_text != null).output_text'
+With --json, each frame of the stream prints as one JSON object on its own line.
+The last line is the exit result, and its `end_moment` is the moment to chain a
+follow-up call from.
 
 Usage: snouty runs exec [OPTIONS] <RUN_ID> <INPUT_HASH> <VTIME> [SCRIPT]
 

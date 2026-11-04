@@ -9,7 +9,7 @@ Wait until a run is ready or complete.
             is the default.
 
 The status is a minimum. A run can only move forward, and a complete run never
-starts again. Thus `--until ready` on a complete run returns at once.
+starts again. Thus a wait until ready on a complete run returns at once.
 
 When the run reaches the status, the command prints the run's current status and
 succeeds, whatever that status is. A run that reports status `unknown` fails the
@@ -22,12 +22,8 @@ Examples:
   snouty runs wait <run_id>
   snouty runs wait <run_id> --timeout 2h
   snouty runs wait <run_id> --until ready
-  snouty launch --json --config ./config ... | jq -r .runId | xargs snouty runs
-  wait
 
-Add --json for machine-readable output. The final status prints as one JSON
-object:
-  snouty --json runs wait <run_id> | jq -r .status
+With --json, the final status prints as one JSON object.
 
 Usage: snouty runs wait [OPTIONS] <RUN_ID>
 

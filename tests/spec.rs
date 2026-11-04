@@ -233,24 +233,67 @@ fn isolated_xdg_config_home(current_dir: &std::path::Path) -> std::path::PathBuf
 const SLOW_COMMAND: Duration = Duration::from_secs(5);
 /// A command prints a "still running" line each time it runs this long again.
 const RUNNING_NOTICE: Duration = Duration::from_secs(30);
-/// A command that runs this long against staging fails. A normal staging run
-/// takes about 1.5 minutes in all, and the staging job stops after 15.
+/// A command that runs this long against staging times out. A normal staging
+/// run takes about 1.5 minutes in all.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(180);
+/// A staging command that times out runs again after [`TIMEOUT_RETRY_WAIT`],
+/// at most this many times. An events search on the shared staging tenant
+/// stalls while other users' searches hold the tenant's search capacity, and
+/// the stall ends in minutes.
+const TIMEOUT_RETRIES: u32 = 2;
+const TIMEOUT_RETRY_WAIT: Duration = Duration::from_secs(60);
 
 thread_local! {
     /// The run time of each command in the current spec file.
     static COMMAND_TIMES: RefCell<Vec<(Duration, String)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Run `cmd` to completion. Against staging, fail it after [`COMMAND_TIMEOUT`].
+/// Run the command that `make_cmd` builds to completion. Against staging, a
+/// run that reaches [`COMMAND_TIMEOUT`] is killed and run again, up to
+/// [`TIMEOUT_RETRIES`] times, before the command fails.
 ///
 /// Prints the run time of the command to stderr, and the API request lines of
 /// its debug log when it is slow.
 fn run_timed(
-    mut cmd: std::process::Command,
+    make_cmd: impl Fn() -> std::process::Command,
     stdin: Option<Vec<u8>>,
     label: &str,
 ) -> testscript_rs::Result<std::process::Output> {
+    let mut retries = 0;
+    loop {
+        match run_once(make_cmd(), stdin.as_deref(), label)? {
+            Ok(output) => return Ok(output),
+            Err(requests) if retries < TIMEOUT_RETRIES => {
+                retries += 1;
+                eprintln!(
+                    "  timed out after {}s, retry {retries} of {TIMEOUT_RETRIES} in {}s: {label}\n{requests}",
+                    COMMAND_TIMEOUT.as_secs(),
+                    TIMEOUT_RETRY_WAIT.as_secs()
+                );
+                std::thread::sleep(TIMEOUT_RETRY_WAIT);
+            }
+            // A usage error fails the spec even on a `!` line, where any
+            // other error satisfies the `!`.
+            Err(requests) => {
+                return Err(testscript_rs::Error::Usage {
+                    message: format!(
+                        "{label} timed out after {}s, {} times. Its API requests:\n{requests}",
+                        COMMAND_TIMEOUT.as_secs(),
+                        TIMEOUT_RETRIES + 1
+                    ),
+                });
+            }
+        }
+    }
+}
+
+/// Run `cmd` once. Against staging, kill it at [`COMMAND_TIMEOUT`] and return
+/// the API request lines of its debug log as the error.
+fn run_once(
+    mut cmd: std::process::Command,
+    stdin: Option<&[u8]>,
+    label: &str,
+) -> testscript_rs::Result<Result<std::process::Output, String>> {
     let start = Instant::now();
     cmd.stdin(if stdin.is_some() {
         Stdio::piped()
@@ -272,7 +315,7 @@ fn run_timed(
         // Linux nearly always hides this: a small write lands in the pipe buffer
         // and returns before snouty exits. macOS loses that race often enough to
         // fail a spec about one run in three.
-        match child.stdin.take().unwrap().write_all(&data) {
+        match child.stdin.take().unwrap().write_all(data) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
             Err(e) => return Err(err(format!("write stdin: {e}"))),
@@ -290,15 +333,7 @@ fn run_timed(
         if elapsed >= timeout {
             let _ = child.kill();
             let _ = child.wait();
-            let requests = request_lines(&stderr.lock().unwrap());
-            // A usage error fails the spec even on a `!` line, where any
-            // other error satisfies the `!`.
-            return Err(testscript_rs::Error::Usage {
-                message: format!(
-                    "{label} timed out after {}s. Its API requests:\n{requests}",
-                    timeout.as_secs()
-                ),
-            });
+            return Ok(Err(request_lines(&stderr.lock().unwrap())));
         }
         if elapsed >= next_notice {
             eprintln!("  still running after {}s: {label}", next_notice.as_secs());
@@ -323,11 +358,11 @@ fn run_timed(
         eprint!("{}", request_lines(&stderr));
     }
     COMMAND_TIMES.with_borrow_mut(|times| times.push((elapsed, label.to_owned())));
-    Ok(std::process::Output {
+    Ok(Ok(std::process::Output {
         status,
         stdout,
         stderr,
-    })
+    }))
 }
 
 /// Read `pipe` to its end on its own thread. The buffer is shared so that a
@@ -372,8 +407,8 @@ fn cmd_snouty(
 ) -> testscript_rs::Result<()> {
     let expanded: Vec<String> = args.iter().map(|a| env.substitute_env_vars(a)).collect();
     let label = format!("snouty {}", expanded.join(" "));
-    let cmd = snouty_cmd(env, &expanded);
-    let output = run_timed(cmd, env.next_stdin.take(), &label)?;
+    let stdin = env.next_stdin.take();
+    let output = run_timed(|| snouty_cmd(env, &expanded), stdin, &label)?;
     let success = output.status.success();
     let stderr_str = String::from_utf8_lossy(&output.stderr).into_owned();
     let stdout_str = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -584,13 +619,16 @@ fn cmd_env_from_json_find(
         };
         let expanded: Vec<String> = probe.iter().map(|a| env.substitute_env_vars(a)).collect();
         let label = format!("snouty {}", expanded.join(" "));
-        let mut cmd = snouty_cmd(env, &expanded);
-        // A cache of its own keeps the probe from answering later commands.
-        cmd.env(
-            "SNOUTY_API_CACHE_DIR",
-            env.current_dir.join("probe-api-cache"),
-        );
-        let output = run_timed(cmd, None, &label)?;
+        let make_cmd = || {
+            let mut cmd = snouty_cmd(env, &expanded);
+            // A cache of its own keeps the probe from answering later commands.
+            cmd.env(
+                "SNOUTY_API_CACHE_DIR",
+                env.current_dir.join("probe-api-cache"),
+            );
+            cmd
+        };
+        let output = run_timed(make_cmd, None, &label)?;
         let stderr = String::from_utf8_lossy(&output.stderr);
         let skip = if output.status.success() {
             if !output.stdout.is_empty() {

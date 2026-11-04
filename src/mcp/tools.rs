@@ -126,7 +126,7 @@ tools! {
     RunsEvents => "runs_events", Reads, hidden: ["query"], required: ["matches"];
     Debug => "debug", StartsSessions, hidden: [], required: [];
     DocsTree => "docs_tree", Reads, hidden: [], required: [];
-    DocsShow => "docs_show", Reads, hidden: ["json"], required: [];
+    DocsShow => "docs_show", Reads, hidden: [], required: [];
     DocsSearch => "docs_search", Reads, hidden: [], required: [];
     Doctor => "doctor", Reads, hidden: [], required: [];
     Version => "version", Reads, hidden: [], required: [];

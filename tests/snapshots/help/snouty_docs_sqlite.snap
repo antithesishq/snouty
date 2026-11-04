@@ -14,10 +14,6 @@ Options:
       --offline
           Don't check for documentation updates
 
-      --json
-          Output JSON where supported (NDJSON for list/stream commands, pretty
-          JSON otherwise)
-
       --verbose
           Log API requests to stderr (authentication tokens redacted)
 

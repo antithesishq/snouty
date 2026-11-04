@@ -40,5 +40,5 @@ stderr '/docs/sdk/python_sdk/.*'
 setup-docs-db
 ! snouty --json docs --offline show getting_started
 stderr '`snouty docs show` has no JSON output'
-stderr -literal 'run `snouty docs show` without --json'
+stderr -literal 'run it without --json'
 ! stdout .

@@ -29,3 +29,8 @@ stderr 'invalid value .nushell.'
 ! snouty --json completions bash
 stderr '`snouty completions` has no JSON output'
 ! stdout .
+
+# --json fails also after the subcommand.
+! snouty completions bash --json
+stderr '`snouty completions` has no JSON output'
+! stdout .

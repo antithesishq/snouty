@@ -274,12 +274,14 @@ pub enum Commands {
     Debug(DebugArgs),
 
     /// Output shell completions
+    #[command(arg = no_json())]
     Completions {
         /// Shell to generate completions for
         shell: clap_complete::Shell,
     },
 
     /// Validate local Antithesis setup
+    #[command(arg = no_json())]
     Validate(ValidateArgs),
 
     /// Check environment configuration
@@ -289,6 +291,7 @@ pub enum Commands {
     Version,
 
     /// Check for and install updates
+    #[command(arg = no_json())]
     Update(UpdateArgs),
 
     /// Search Antithesis documentation
@@ -310,6 +313,7 @@ pub enum Commands {
     },
 
     /// Sign in and store your snouty configuration
+    #[command(arg = no_json())]
     Login {
         #[arg(long, value_parser = validate_non_empty)]
         tenant: Option<String>,
@@ -319,6 +323,7 @@ pub enum Commands {
     },
 
     /// Give Docker or Podman the credential for the tenant's container registry
+    #[command(arg = no_json())]
     DockerCredential {
         /// The credential helper action that the engine requests
         action: DockerCredentialAction,
@@ -326,9 +331,49 @@ pub enum Commands {
 
     /// Serve snouty's run, docs, doctor and settings commands to AI agents over MCP
     #[command(
-        hide = !features::is_enabled(Feature::Mcp)
+        hide = !features::is_enabled(Feature::Mcp),
+        arg = no_json(),
     )]
     Mcp(McpArgs),
+}
+
+/// The `--json` of a command that prints no JSON. It shadows the global
+/// flag, so the help and the MCP tool leave it out, and [`parse`] refuses it.
+fn no_json() -> clap::Arg {
+    clap::Arg::new("json")
+        .long("json")
+        .action(clap::ArgAction::SetTrue)
+        .hide(true)
+}
+
+/// Refuses `--json` on a command that prints no JSON.
+fn reject_json(matches: &clap::ArgMatches) -> Result<(), clap::Error> {
+    let mut path = Vec::new();
+    let mut leaf = matches;
+    while let Some((name, sub)) = leaf.subcommand() {
+        path.push(name);
+        leaf = sub;
+    }
+    let no_json = (1..=path.len()).any(|depth| {
+        tree::find(&path[..depth])
+            .and_then(|command| command.get_arguments().find(|arg| arg.get_id() == "json"))
+            .is_some_and(clap::Arg::is_hide_set)
+    });
+    if matches.get_flag("json") && no_json {
+        let name = path.join(" ");
+        let mut root = command();
+        root.build();
+        let command = path.iter().fold(&mut root, |command, name| {
+            command
+                .find_subcommand_mut(name)
+                .expect("clap parsed this subcommand")
+        });
+        return Err(command.error(
+            ErrorKind::ArgumentConflict,
+            format!("`snouty {name}` has no JSON output; run it without --json"),
+        ));
+    }
+    Ok(())
 }
 
 /// `snouty`'s clap command, with the long help of each command. clap
@@ -351,6 +396,7 @@ pub fn parse() -> Cli {
         args.splice(..1, ["snouty", "docker-credential"].map(OsString::from));
     }
     let parsed = command().try_get_matches_from(args).and_then(|matches| {
+        reject_json(&matches)?;
         Cli::from_arg_matches(&matches).map_err(|err| err.format(&mut command()))
     });
     match parsed {
@@ -472,9 +518,11 @@ pub enum SettingsCommands {
     Show,
 
     /// Use a project settings file while its content stays the same
+    #[command(arg = no_json())]
     Trust(SettingsFileArgs),
 
     /// Ignore a project settings file
+    #[command(arg = no_json())]
     Deny(SettingsFileArgs),
 }
 
@@ -517,12 +565,14 @@ pub enum DocsCommands {
     },
 
     /// Show full contents of a documentation page
+    #[command(arg = no_json())]
     Show {
         /// Page path (e.g. "product/writing_tests/controlling_faults")
         path: String,
     },
 
     /// Print the path to the cached SQLite database
+    #[command(arg = no_json())]
     Sqlite,
 }
 

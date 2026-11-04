@@ -502,8 +502,8 @@ class GalleryRunHelpers(unittest.TestCase):
         self.assertEqual(gallery.property_id_named(rows, self.BUG), "b")
         self.assertEqual(gallery.property_id_named(rows[:1], self.BUG), "")
 
-    def test_live_story_needs_a_pending_row_and_the_note(self):
-        story = next(
+    def live_story(self):
+        return next(
             s
             for s in gallery.build_ready_stories(
                 gallery.Discovery(),
@@ -512,54 +512,102 @@ class GalleryRunHelpers(unittest.TestCase):
             )
             if s.slug == "runs-properties-live"
         )
-        stdout = f"pending  106  0  p1  {self.BUG}\n\n{gallery.PENDING_NOTE}\n"
-        result = gallery.Result(story.args, stdout, "", 0)
-        pending = {"id": "p1", "status": "Pending"}
-        failing = {"id": "p2", "status": "Failing"}
-        run = gallery.StoryRun(story, result, [pending])
-        for rows, passed in (
-            ([pending], True),
-            ([pending, failing], True),
-            ([], False),
-            ([failing], False),
+
+    def test_live_story_needs_a_pending_row_and_the_note(self):
+        story = self.live_story()
+        self.assertFalse(story.json_capable)
+        header = "STATUS   ✓    ✗  ID  NAME\n"
+        pending = f"pending  106  0  p1  {self.BUG}\n"
+        failing = "fail     3    1  p2  Total money in the bank is conserved\n"
+        note = f"\n{gallery.PENDING_NOTE}\n"
+        for table, passed in (
+            (pending, True),
+            (pending + failing, True),
+            ("", False),
+            (failing, False),
         ):
-            with self.subTest(rows=rows):
-                run.rows = rows
+            with self.subTest(table=table):
+                result = gallery.Result(story.args, header + table, note, 0)
+                run = gallery.StoryRun(story, result, None)
                 self.assertEqual(story.check(run, gallery.Registry())[0], passed)
-        run.rows = [pending]
-        result.stdout = f"pending  106  0  p1  {self.BUG}\n"
-        self.assertFalse(story.check(run, gallery.Registry())[0])
-        result.stdout, result.returncode = stdout, 1
-        self.assertFalse(story.check(run, gallery.Registry())[0])
+        result = gallery.Result(story.args, header + pending, "", 0)
+        self.assertFalse(
+            story.check(gallery.StoryRun(story, result, None), gallery.Registry())[0]
+        )
+        result = gallery.Result(story.args, header + pending, note, 1)
+        self.assertFalse(
+            story.check(gallery.StoryRun(story, result, None), gallery.Registry())[0]
+        )
 
-    def test_pending_wait_retries_failures_and_gives_up_without_raising(self):
-        class Polls:
-            def __init__(self, answers):
-                self.answers = list(answers)
-                self.calls = 0
+    def test_live_story_counts_the_captured_table_not_the_rows(self):
+        story = self.live_story()
+        stdout = (
+            "STATUS   ✓    ✗  ID  NAME\n"
+            "bank\n"
+            f"  fail     3  1  p1  {self.BUG}\n"
+            "  pending  9  0  p2  Total money in the bank is conserved\n"
+            "  pending  2  0  p3  Transfers complete\n"
+        )
+        result = gallery.Result(story.args, stdout, gallery.PENDING_NOTE, 0)
+        # Rows from a later fetch must not change what the check reports.
+        later = [{"status": "Passing"}] * 5
+        ok, detail = story.check(
+            gallery.StoryRun(story, result, later), gallery.Registry()
+        )
+        self.assertTrue(ok)
+        self.assertIn("{'fail': 1, 'pending': 2}", detail)
+        self.assertNotIn("no pass or fail row", detail)
+        result.stdout = (
+            "STATUS   ✓    ✗  ID  NAME\npending  9  0  p2  Transfers complete\n"
+        )
+        ok, detail = story.check(
+            gallery.StoryRun(story, result, later), gallery.Registry()
+        )
+        self.assertTrue(ok)
+        self.assertIn("{'pending': 1}", detail)
+        self.assertIn("no pass or fail row", detail)
 
-            def json_lines(self, args):
-                self.calls += 1
-                answer = self.answers.pop(0) if self.answers else []
-                if isinstance(answer, Exception):
-                    raise answer
-                return answer
+    class Polls:
+        def __init__(self, answers):
+            self.answers = list(answers)
+            self.calls = 0
 
+        def json_lines(self, args):
+            self.calls += 1
+            answer = self.answers.pop(0) if self.answers else []
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+    def test_pending_wait_retries_until_the_statuses_mix(self):
+        pending, passing, failing = (
+            {"status": s} for s in ("Pending", "Passing", "Failing")
+        )
+        with (
+            mock.patch.object(gallery, "MOMENT_SEARCH_POLL", 0),
+            mock.patch.object(gallery, "MOMENT_SEARCH_DEADLINE", 5),
+        ):
+            for final in (passing, failing):
+                with self.subTest(final=final):
+                    polls = self.Polls(
+                        [
+                            gallery.GalleryError("exit 1"),
+                            json.JSONDecodeError("bad", "", 0),
+                            [],
+                            [pending, pending],
+                            [final, final],
+                            [pending, final],
+                        ]
+                    )
+                    gallery.wait_for_pending_properties(polls, self.RUN)
+                    self.assertEqual(polls.calls, 6)
+
+    def test_pending_wait_gives_up_without_raising(self):
         with (
             mock.patch.object(gallery, "MOMENT_SEARCH_POLL", 0),
             mock.patch.object(gallery, "MOMENT_SEARCH_DEADLINE", 0.2),
         ):
-            polls = Polls(
-                [
-                    gallery.GalleryError("exit 1"),
-                    json.JSONDecodeError("bad", "", 0),
-                    [],
-                    [{"status": "Pending"}],
-                ]
-            )
-            gallery.wait_for_pending_properties(polls, self.RUN)
-            self.assertEqual(polls.calls, 4)
-            polls = Polls([gallery.GalleryError("exit 1")])
+            polls = self.Polls([gallery.GalleryError("exit 1")])
             gallery.wait_for_pending_properties(polls, self.RUN)
             self.assertGreater(polls.calls, 1)
 

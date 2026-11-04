@@ -328,6 +328,9 @@ export ANTITHESIS_EXTRA_HEADERS="X-Proxy-Token: abc123"
 
 `docker-credential-snouty` gives Docker and Podman your snouty credentials for your tenant's container registry, `registry.<tenant>.antithesis.com`.
 
+> [!NOTE]
+> The tenant registry must be enabled on your tenant. Contact Antithesis support to request it.
+
 To set it up, add the registry to `credHelpers` in `~/.docker/config.json` for Docker, or in `~/.config/containers/auth.json` for Podman:
 
 ```json
@@ -363,7 +366,7 @@ Username and password authentication is deprecated. It works with `snouty launch
 Each CI job needs these environment variables:
 
 - `ANTITHESIS_TENANT`: your tenant.
-- `ANTITHESIS_REPOSITORY`: the container registry for your images, with `--config`. On your tenant registry, `registry.<tenant>.antithesis.com`, snouty pushes with its own credential. That needs Docker 28.3.0 or later, or the [Docker credential helper](#docker-credential-helper). For any other registry, log in to it in the job before the launch.
+- `ANTITHESIS_REPOSITORY`: the container registry for your images, with `--config`. Log in to it in the job before the launch. On the tenant registry, `registry.<tenant>.antithesis.com`, snouty pushes with its own credential instead. That needs Docker 28.3.0 or later, or the [Docker credential helper](#docker-credential-helper). The tenant registry must be enabled on your tenant: contact Antithesis support to request it.
 - `ANTITHESIS_API_KEY`: an API key, stored as a secret. GitHub Actions can use [OIDC](#github-actions-oidc) instead.
 
 snouty does not choose a `--source` for you. A run without `--source` is ephemeral: its results do not go into the property history of any source. To record history for a branch, pass `--source` only in the jobs that build that branch, such as pushes to `main` and nightly schedules. Do not pass a pull request's branch name as the source: a pull request from a fork can use any branch name, such as `main`.
@@ -394,11 +397,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    # For the whole job: the credential helper needs them in every step that
-    # reaches the tenant registry, not only in the launch.
     env:
       ANTITHESIS_TENANT: my-tenant
-      ANTITHESIS_REPOSITORY: registry.my-tenant.antithesis.com/my-project
+      ANTITHESIS_REPOSITORY: us-central1-docker.pkg.dev/my-project/my-tenant-repository
       ANTITHESIS_API_KEY: ${{ secrets.ANTITHESIS_API_KEY }}
       # The runner has Podman too, and snouty prefers it by default.
       SNOUTY_CONTAINER_ENGINE: docker
@@ -408,14 +409,12 @@ jobs:
       - name: Install snouty
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
 
-      # The runner's Docker is older than 28.3.0, so it needs the credential
-      # helper for the tenant registry.
-      - name: Use snouty for the tenant registry
-        run: |
-          mkdir -p ~/.docker
-          [ -f ~/.docker/config.json ] || echo '{}' > ~/.docker/config.json
-          jq '.credHelpers["registry.my-tenant.antithesis.com"] = "snouty"' ~/.docker/config.json > "$RUNNER_TEMP/config.json"
-          mv "$RUNNER_TEMP/config.json" ~/.docker/config.json
+      - name: Log in to the container registry
+        uses: docker/login-action@v3
+        with:
+          registry: us-central1-docker.pkg.dev
+          username: _json_key
+          password: ${{ secrets.GCP_REGISTRY_KEY }}
 
       # snouty launches only images in the local image store: it never builds
       # or pulls them.
@@ -447,7 +446,7 @@ jobs:
             "${source_flag[@]}"
 ```
 
-Store your Antithesis API key as the `ANTITHESIS_API_KEY` secret, or use [GitHub Actions OIDC](#github-actions-oidc) to store no secret. `snouty validate` waits 2 minutes for setup-complete by default. If your system takes longer to start, raise the limit with `--timeout`, for example `--timeout 10m`.
+Store your Antithesis API key as the `ANTITHESIS_API_KEY` secret, or use [GitHub Actions OIDC](#github-actions-oidc) to store no secret. Store the JSON key of the service account for your container registry as the `GCP_REGISTRY_KEY` secret. `snouty validate` waits 2 minutes for setup-complete by default. If your system takes longer to start, raise the limit with `--timeout`, for example `--timeout 10m`.
 
 When `ANTITHESIS_GITHUB_TOKEN` is set, the launch sets the `continuous-testing/antithesis` commit status of the commit to pending, and Antithesis sets the result when the run ends. With `--test-name`, the status is `continuous-testing/antithesis (<test-name>)`, so two tests on one commit get two statuses. Antithesis uses the token after the job ends, so `secrets.GITHUB_TOKEN` does not work. Use a [fine-grained personal access token](https://github.com/settings/tokens?type=beta) for the repository, with read access to metadata and read and write access to commit statuses, and store it as the `GH_PAT` secret.
 

@@ -34,4 +34,4 @@ Examples:
   snouty runs stream <run_id>
   snouty runs stream <run_id> --property <property_id>
 
-With --json, each event prints as one JSON object, with an `event` key and the fields above. Each vtime is a JSON number. The `data` key holds the JSON of an unknown notification.
+With {{ t("--json")? }}, each event prints as one JSON object, with an `event` key and the fields above. Each vtime is a JSON number. The `data` key holds the JSON of an unknown notification.

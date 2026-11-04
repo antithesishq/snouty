@@ -22,4 +22,4 @@ Examples:
   snouty runs exec <run_id> <input_hash> <vtime> 'uname -a'
   snouty runs usage --rollup week
 
-With --json, every subcommand prints JSON in place of its table or its rendered events.
+With {{ t("--json")? }}, every subcommand prints JSON in place of its table or its rendered events.

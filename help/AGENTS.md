@@ -58,16 +58,16 @@ command, named for its path below `snouty` with `_` between the parts:
 - An MCP tool call returns the command's text output, with `--detail` when
   the command has that flag, and its `json` param runs it with `--json`
   instead. So the MCP reader needs the layout of the detailed output, and
-  the JSON shape as what `json` returns: `With {{ t("--json")? }}, each run
-  prints as one JSON object`.
+  the JSON shape as what `json` returns. Describe that shape in words, in
+  one paragraph that starts `With {{ t("--json")? }}, `, such as `With
+  {{ t("--json")? }}, each run prints as one JSON object`. Do not add a `jq`
+  example.
 - Put text that only one reader needs, such as a pipeline example, a flag
   that has no param, or a layout that only the default (not `--detail`)
   output has, in `{% if cli %}…{% else %}…{% endif %}`. The other
   reader's branch is not rendered, so `t()` does not check it for that
   reader. Write text that both readers need once, outside a block, with
   `t()` for its names. `{{ tool_table() }}` is the list of MCP tools.
-- Describe the JSON shape in words, in one paragraph that starts `With
-  {{ t("--json")? }}, `. Do not add a `jq` example.
 - Describe what a command reports in words that suit both readers. Put a
   layout that both readers see, such as the columns of a command with no
   `--detail`, outside a block. Say that a command succeeds or fails; name exit

@@ -193,19 +193,11 @@ mod tests {
             "ev.antithesis_assert.location?.function",
             "ev.command",
             "ev.started_task",
+            // The server renames a Kubernetes test-composer command's output
+            // source to the command and flags it, so the filter keys on the flag.
+            "ev.source?.is_test_composer_command === true",
         ] {
             assert!(query.contains(field), "{field} missing from: {query}");
         }
-    }
-
-    // The server renames a Kubernetes test-composer command's output source to
-    // the command and flags it, so the needle filter keys on the flag.
-    #[test]
-    fn substring_filter_reaches_test_composer_command_output() {
-        let query = substring_filter(&["lifecycle".to_string()]);
-        assert!(
-            query.contains("ev.source?.is_test_composer_command === true"),
-            "got: {query}"
-        );
     }
 }

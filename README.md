@@ -260,7 +260,7 @@ Snouty looks for a credential in this order, and uses the first one it finds:
 2. `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` in the environment (deprecated).
 3. The credential stored for the selected `--profile`: the system keychain first, the credentials file second.
 4. The credential stored for the default profile: the system keychain first, the credentials file second.
-5. A GitHub Actions OIDC token, when the workflow exposes one.
+5. A [GitHub Actions OIDC](#github-actions-oidc) token, when the workflow exposes one.
 
 An environment variable always wins over a stored credential. Unset `ANTITHESIS_API_KEY` when you want snouty to use what `snouty login` stored.
 
@@ -298,23 +298,6 @@ export ANTITHESIS_API_KEY="your-api-key"
 ```
 
 `snouty login` also stores an API key for you, which keeps the key out of your shell history and out of your environment.
-
-### GitHub Actions OIDC
-
-In a GitHub Actions workflow, snouty can authenticate with the workflow's own OIDC token instead of an API key, so you store no secret.
-
-> [!IMPORTANT]
-> Your Antithesis tenant must trust GitHub Actions OIDC tokens from your repository before this works. Ask Antithesis support to configure it.
-
-Give the job permission to mint the token, and leave `ANTITHESIS_API_KEY` unset, because an API key takes precedence:
-
-```yaml
-permissions:
-  id-token: write
-  contents: read
-```
-
-A pull request from a fork gets no OIDC token, just as it gets no secrets.
 
 ### Credential injection by an HTTPS proxy
 
@@ -487,6 +470,23 @@ Each input of the trigger action has a snouty equivalent:
 | `additional_parameters` | one `--param key=value` for each parameter |
 
 The action always sends the branch as `antithesis.source`. With snouty, pass `--source` yourself, as in the workflow above.
+
+### GitHub Actions OIDC
+
+In a GitHub Actions workflow, snouty can authenticate with the workflow's own OIDC token instead of an API key, so you store no secret.
+
+> [!IMPORTANT]
+> Your Antithesis tenant must trust GitHub Actions OIDC tokens from your repository before this works. Ask Antithesis support to configure it.
+
+Give the job permission to mint the token, and leave `ANTITHESIS_API_KEY` unset, because an API key takes precedence:
+
+```yaml
+permissions:
+  id-token: write
+  contents: read
+```
+
+A pull request from a fork gets no OIDC token, just as it gets no secrets.
 
 ### GitLab CI
 

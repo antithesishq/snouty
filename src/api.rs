@@ -820,9 +820,9 @@ impl AntithesisApi {
 
     /// Like [`AntithesisApi::new`], but accepts the deprecated
     /// username/password credentials and warns on use
-    /// ([`PasswordPolicy::WarnDeprecated`]) — the launchers are the
+    /// ([`PasswordPolicy::WarnDeprecated`]) — the launch endpoints are the
     /// only endpoints that still accept them. TODO: drop this constructor once
-    /// the launchers reject username/password too.
+    /// the launch endpoints reject username/password too.
     pub fn new_for_launch(settings: &Settings, verbose: bool) -> Result<Self> {
         Self::build(
             settings,
@@ -1830,7 +1830,7 @@ fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
     .wrap_err("failed to build launch request")
 }
 
-/// Resolve the error from a launcher or debugging-launcher call.
+/// Resolve the error from a launch call.
 ///
 /// Any 2xx is success. The spec documents only 202, and the generated client
 /// surfaces any other 2xx as `UnexpectedResponse`. Earlier releases answered

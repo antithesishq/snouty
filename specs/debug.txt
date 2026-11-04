@@ -265,7 +265,7 @@ stdout -literal "  snouty runs exec run-123 6057726200491963783 329.803781083086
 ! stdout 'runs wait'
 
 # With --json, snouty prints its own envelope: the run id, and nothing else.
-# The launcher's body-level statusCode is deliberately not re-exported (issue
+# The launch response's body-level statusCode is deliberately not re-exported (issue
 # #180) — it carries nothing the exit code doesn't, and here it disagrees with
 # the response anyway (the mock answers HTTP 200 saying 202). Use --verbose to
 # see the response as it arrived.

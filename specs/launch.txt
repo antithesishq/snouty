@@ -258,7 +258,7 @@ snouty launch --launcher basic_test --config-image config:latest --max-compute-h
 stderr '"run.caller_type": "ci"'
 ! stderr '"run.caller_type": "snouty"'
 
-# Username/password authentication still works for the launchers, but it
+# Username/password authentication still works for the launch endpoints, but it
 # is deprecated: a warning on stderr steers the user to `snouty login`. The
 # mock-server directive configures username/password credentials.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
@@ -278,7 +278,7 @@ stdout 'Test run started: run_id run-123'
 env ANTITHESIS_API_KEY=
 
 # With --json, snouty prints its own envelope: the run id, and nothing else.
-# The launcher's body-level statusCode is deliberately not re-exported
+# The launch response's body-level statusCode is deliberately not re-exported
 # (issue #180) — the exit code is the success signal, and the field disagrees
 # with the response anyway (the mock answers HTTP 200 saying 202). Use --verbose
 # to see the response as it arrived.

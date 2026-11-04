@@ -11,8 +11,8 @@ ignore = [
     # from snouty would not remove it.
     # https://rustsec.org/advisories/RUSTSEC-2024-0449
     { id = "RUSTSEC-2024-0449", reason = "unmaintained, no upgrade available; progenitor-macro still requires serde_yaml" },
-    # basic-toml is archived. askama's `config` feature reads askama.toml with
-    # it, at build time only, and askama 0.16.1, the latest, still depends on it.
+    # basic-toml is archived. askama's `config` feature uses it to read
+    # askama.toml at build time only. askama 0.16.1, the latest, still requires it.
     # https://rustsec.org/advisories/RUSTSEC-2026-0374
     { id = "RUSTSEC-2026-0374", reason = "unmaintained, build time only; askama 0.16.1 still requires basic-toml" },
 ]

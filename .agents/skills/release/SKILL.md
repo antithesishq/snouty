@@ -72,8 +72,8 @@ Edit the `version = "..."` line in `Cargo.toml` to the new version. The
 `snouty-macros/Cargo.toml` and the `=`-pinned version on the
 `snouty-macros` dependency in the root `Cargo.toml` to the same value.
 
-Set both `version` fields in `server.json`, the MCP Registry entry, to the
-same value. A test in `tests/mcp.rs` fails when either differs from the Cargo.toml version.
+Set every `version` field in `server.json`, the MCP Registry entry, to the
+same value: the top-level one and the package one. A test in `tests/mcp.rs` fails when any differs from the Cargo.toml version.
 
 ### 4. Build
 

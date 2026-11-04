@@ -10,7 +10,7 @@
   "version": "0.9.0-rc.3",
   "packages": [
     {
-      "registryType": "cargo",
+      "registryType": "npm",
       "identifier": "snouty",
       "version": "0.9.0-rc.3",
       "transport": {

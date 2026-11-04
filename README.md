@@ -72,6 +72,14 @@ This also allows you to update via `snouty update` later on.
 cargo binstall snouty
 ```
 
+### Install prebuilt binaries via npm
+
+```sh
+npm install -g snouty
+```
+
+The package downloads the prebuilt binary for your platform from the GitHub Release on its first run, and installs the [Docker credential helper](#docker-credential-helper).
+
 ### Install snouty from source
 
 ```sh
@@ -216,7 +224,7 @@ A JSON config for a stdio server looks like this one. The key names can be diffe
 
 Run `snouty mcp --help` to see all tools.
 
-snouty is listed in the [MCP Registry](https://registry.modelcontextprotocol.io) as `com.antithesis/snouty`, so a client that installs from the registry sets the server up for you. The registry checks this line to verify the crate: `mcp-name: com.antithesis/snouty`.
+snouty is listed in the [MCP Registry](https://registry.modelcontextprotocol.io) as `com.antithesis/snouty`, through the npm package `snouty`: a client that installs from the registry runs `npx snouty mcp`, which downloads the prebuilt binary on its first run.
 
 The server sets no time limit and no output limit on a tool call. The client sets them: when it cancels a call or closes stdin, the server kills the call's command. A command also exits when its server is gone. Up to 8 tool calls run at the same time, and `--max-concurrent-calls` changes that number.
 
@@ -331,7 +339,7 @@ To set it up, add the registry to `credHelpers` in `~/.docker/config.json` for D
 
 The helper uses the same [settings](#settings-files) as snouty in the directory where Docker runs it, including `./.snouty.toml`. With `--profile` or `ANTITHESIS_PROFILE`, the helper uses that profile. Otherwise, it uses the first profile whose `repository` is on `registry.<tenant>.antithesis.com`.
 
-The shell script installer and the Nix package install `docker-credential-snouty`, an alias of `snouty`. For another install method, make the alias yourself, in a directory on your `PATH`:
+The shell script installer, the npm package and the Nix package install `docker-credential-snouty`. For another install method, make the alias yourself, in a directory on your `PATH`:
 
 ```sh
 ln -s "$(command -v snouty)" ~/.local/bin/docker-credential-snouty

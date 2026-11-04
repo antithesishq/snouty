@@ -573,18 +573,31 @@ async fn tool_results_are_plain_detailed_text() {
 }
 
 /// The release publishes `server.json` to the MCP Registry, so it must match
-/// this crate's version and name, start `snouty mcp` with its feature on, and
-/// match the README's `mcp-name` line. `mise run lint:mcp` validates the rest.
+/// this crate's version, list the npm package that dist builds, and start
+/// `snouty mcp` with its feature on. `mise run lint:mcp` validates the rest.
 #[test]
 fn mcp_registry_entry_matches_the_crate() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let entry: Value =
         serde_json::from_str(&std::fs::read_to_string(root.join("server.json")).unwrap()).unwrap();
+    let dist: toml::Table = std::fs::read_to_string(root.join("dist-workspace.toml"))
+        .unwrap()
+        .parse()
+        .unwrap();
     let version = env!("CARGO_PKG_VERSION");
-    let package = &entry["packages"][0];
     assert_eq!(entry["version"], version);
+    let [package] = entry["packages"].as_array().unwrap().as_slice() else {
+        panic!("server.json must list exactly one package");
+    };
+    // dist names the npm package after the crate, under npm-scope if set.
+    let crate_name = env!("CARGO_PKG_NAME");
+    let npm_package = match dist["dist"].get("npm-scope") {
+        Some(scope) => format!("{}/{crate_name}", scope.as_str().unwrap()),
+        None => crate_name.to_owned(),
+    };
+    assert_eq!(package["registryType"], "npm");
+    assert_eq!(package["identifier"], npm_package);
     assert_eq!(package["version"], version);
-    assert_eq!(package["identifier"], env!("CARGO_PKG_NAME"));
     assert_eq!(
         package["packageArguments"],
         json!([{"type": "positional", "value": "mcp"}])
@@ -599,12 +612,5 @@ fn mcp_registry_entry_matches_the_crate() {
     assert_eq!(
         features.split(',').next(),
         Some(snouty::features::Feature::Mcp.to_string().as_str())
-    );
-
-    let name = entry["name"].as_str().unwrap();
-    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
-    assert!(
-        readme.contains(&format!("`mcp-name: {name}`")),
-        "README.md lacks mcp-name: {name}"
     );
 }

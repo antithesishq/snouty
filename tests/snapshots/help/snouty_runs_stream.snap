@@ -50,11 +50,9 @@ Examples:
   snouty runs stream <run_id>
   snouty runs stream <run_id> --property <property_id>
 
-Add --json for machine-readable output. Each event prints as one JSON object,
-with an `event` key and the fields above. Each vtime is a JSON number. The
-`data` key holds the JSON of an unknown notification:
-  snouty --json runs stream <run_id> | jq -r 'select(.event == "verdict" and
-  .verdict == "failed") | .property_id'
+With --json, each event prints as one JSON object, with an `event` key and the
+fields above. Each vtime is a JSON number. The `data` key holds the JSON of an
+unknown notification.
 
 Usage: snouty runs stream [OPTIONS] <RUN_ID>
 

@@ -12,9 +12,4 @@ Examples:
   {{ t("snouty runs show <run_id> --web")? }}
 {%- endif %}
 
-{% if cli %}
-Add --json for machine-readable output. The run prints as one JSON object, with its times in RFC 3339 in UTC. With --web it prints the run page URL as {"url": ...} and opens no browser:
-  {{ t("snouty --json runs show <run_id> | jq -r .status")? }}
-{% else %}
-With {{ t("--json")? }}, the run prints as one JSON object, with its times in RFC 3339 in UTC.
-{% endif %}
+{% if cli %}With {{ t("--json")? }}, {{ t("--web")? }} prints the run page URL as {"url": ...} and opens no browser.{% endif %}

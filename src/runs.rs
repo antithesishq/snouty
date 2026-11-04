@@ -26,7 +26,7 @@ use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs, WaitUntil};
 use crate::error::{api_error_message, api_error_status, user_error};
 use crate::event_render::{EventStreamRenderer, normalize_terminal_text, strip_ansi};
 use crate::event_set_dsl;
-use crate::jsonl::JsonStream;
+use crate::ndjson::JsonStream;
 use crate::render::{
     CodeSpans, OutputOptions, indent_lines, render_kv, sanitize, sanitize_multiline, shell_command,
     wrap_if_tty, wrap_text,

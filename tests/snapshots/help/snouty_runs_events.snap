@@ -3,8 +3,8 @@ source: tests/help_snapshots.rs
 ---
 Search a run's events for one or more substrings (all must match).
 
-A term is matched against the text an event carries: log output, an assertion's
-message and source function, and a test-composer command.
+A term, from --match or QUERY, is matched against the text an event carries: log
+output, an assertion's message and source function, and a test-composer command.
 
 Each matching event has its moment (an input_hash and a vtime), its source, and
 its payload: log output, an SDK assertion, a fault, a container lifecycle
@@ -34,10 +34,6 @@ To see the equivalent `snouty runs search` query, run
 Examples:
   snouty runs events <run_id> -m error
   snouty runs events <run_id> -m error -m node-0 -n 100
-
-Add --json for machine-readable output. Each event prints as one JSON object on
-its own line:
-  snouty --json runs events <run_id> -m error | jq -r .moment.vtime
 
 Usage: snouty runs events [OPTIONS] <RUN_ID> [QUERY]...
 

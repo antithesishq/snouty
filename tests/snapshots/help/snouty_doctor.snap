@@ -28,7 +28,6 @@ fields id, status (ok, warn or error) and message.
 
 Examples:
   snouty doctor
-  snouty doctor --json | jq .ok
   snouty doctor --offline
 
 Usage: snouty doctor [OPTIONS]

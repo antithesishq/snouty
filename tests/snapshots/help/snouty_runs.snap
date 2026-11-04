@@ -26,10 +26,6 @@ Examples:
   snouty runs exec <run_id> <input_hash> <vtime> 'uname -a'
   snouty runs usage --rollup week
 
-Add --json for machine-readable output. Every subcommand prints JSON in place of
-its table or its rendered events:
-  snouty --json runs list | jq -r .run_id
-
 Usage: snouty runs [OPTIONS] [COMMAND]
 
 Commands:

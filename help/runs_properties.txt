@@ -15,9 +15,7 @@ Narrow with {{ t("--name")? }} and/or {{ t("--group")? }}. Both are case-insensi
 Examples:
   {{ t("snouty runs properties <run_id> --failing")? }}
   {{ t("snouty runs properties <run_id> --failing --pending")? }}
-{%- if cli %}
   {{ t("snouty runs properties <run_id> --name eventually_validate --detail")? }}
   {{ t("snouty runs properties <run_id> --group Unreachable --detail")? }}
-{%- endif %}
 
-With {{ t("--json")? }}, each property prints as one JSON object on its own line, with its samples in `examples` and `counterexamples`. An empty array is left out. An event sample gives its moment as `moment.input_hash` and `moment.vtime`.{% if cli %} {{ t("--json")? }} is mutually exclusive with {{ t("--detail")? }}.{% endif %}
+With {{ t("--json")? }}, each property prints as one JSON object on its own line, with its samples in `examples` and `counterexamples`. An empty array is left out. An event sample gives its moment as `moment.input_hash` and `moment.vtime`.

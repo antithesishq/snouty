@@ -18,5 +18,3 @@ Examples:
   runs_wait {"run_id": "<run_id>"}
   runs_wait {"run_id": "<run_id>", "timeout": "2h"}
   runs_wait {"run_id": "<run_id>", "until": "ready"}
-
-With `json`, the final status prints as one JSON object.

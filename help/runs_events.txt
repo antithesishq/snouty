@@ -1,6 +1,6 @@
 Search a run's events for one or more substrings (all must match).
 
-{% if cli %}A term{% else %}Each item of {{ t("--match")? }}{% endif %} is matched against the text an event carries: log output, an assertion's message and source function, and a test-composer command.
+{% if cli %}A term, from {{ t("--match")? }} or {{ t("query")? }},{% else %}Each {{ t("--match")? }} value{% endif %} is matched against the text an event carries: log output, an assertion's message and source function, and a test-composer command.
 
 Each matching event has its moment (an input_hash and a vtime), its source, and its payload: log output, an SDK assertion, a fault, a container lifecycle change, or a test composer command. To stream the logs of an event's timeline to its current end, pass its run ID and input_hash to `{{ t("snouty runs logs <run_id> <hash>")? }}`.
 
@@ -21,10 +21,3 @@ To see the equivalent `snouty runs search` query, run `snouty --verbose runs eve
 Examples:
   {{ t("snouty runs events <run_id> -m error")? }}
   {{ t("snouty runs events <run_id> -m error -m node-0 -n 100")? }}
-
-{% if cli %}
-Add --json for machine-readable output. Each event prints as one JSON object on its own line:
-  {{ t("snouty --json runs events <run_id> -m error | jq -r .moment.vtime")? }}
-{% else %}
-With {{ t("--json")? }}, each event prints as one JSON object on its own line.
-{% endif %}

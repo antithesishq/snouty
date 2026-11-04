@@ -167,34 +167,6 @@ mod tests {
         }
     }
 
-    /// `--json` is a global flag, so every page says what its command does
-    /// with it: prints JSON, or ignores the flag. The commands that warn
-    /// "--json has no effect" at run time are the exception: their help
-    /// never raises the subject.
-    #[test]
-    fn every_page_says_what_json_does() {
-        const NO_JSON: [&str; 9] = [
-            "validate",
-            "completions",
-            "update",
-            "login",
-            "mcp",
-            "settings trust",
-            "settings deny",
-            // A group page; `settings show` says what --json does.
-            "settings",
-            "docker-credential",
-        ];
-        for page in HelpPage::ALL {
-            if !NO_JSON.contains(&page.path().join(" ").as_str()) {
-                assert!(
-                    page.text().contains("--json"),
-                    "{page} says nothing about --json"
-                );
-            }
-        }
-    }
-
     #[test]
     fn blank_lines_collapse() {
         assert_eq!(

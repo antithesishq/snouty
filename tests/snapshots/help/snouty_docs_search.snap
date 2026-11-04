@@ -20,9 +20,8 @@ Examples:
   snouty docs search sdk setup
   snouty docs search --match 'sdk NOT java'
 
-Add --json for machine-readable output. The matches print as one JSON array of
-{path, title, snippet} objects, or of paths with --list:
-  snouty --json docs search fault injection | jq -r '.[].path'
+With --json, the matches print as one JSON array of {path, title, snippet}
+objects, or of paths with --list.
 
 Usage: snouty docs search [OPTIONS] <QUERY>...
 

@@ -14,5 +14,7 @@ Narrow with `name` and/or `group`. Both are case-insensitive substring matches a
 Examples:
   runs_properties {"run_id": "<run_id>", "failing": true}
   runs_properties {"run_id": "<run_id>", "failing": true, "pending": true}
+  runs_properties {"run_id": "<run_id>", "name": "eventually_validate"}
+  runs_properties {"run_id": "<run_id>", "group": "Unreachable"}
 
 With `json`, each property prints as one JSON object on its own line, with its samples in `examples` and `counterexamples`. An empty array is left out. An event sample gives its moment as `moment.input_hash` and `moment.vtime`.

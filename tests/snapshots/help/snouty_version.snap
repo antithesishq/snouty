@@ -9,10 +9,6 @@ build had uncommitted changes. A build from a source tarball has no commit.
 Examples:
   snouty version
 
-Add --json for machine-readable output. The version prints as one JSON object,
-with the fields version and commit. commit is null when the build has no commit:
-  snouty --json version | jq -r .version
-
 Usage: snouty version [OPTIONS]
 
 Options:

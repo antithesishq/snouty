@@ -3,7 +3,7 @@ source: tests/help_snapshots.rs
 ---
 Search a run's events for one or more substrings (all must match).
 
-Each item of `matches` is matched against the text an event carries: log output, an assertion's message and source function, and a test-composer command.
+Each `matches` value is matched against the text an event carries: log output, an assertion's message and source function, and a test-composer command.
 
 Each matching event has its moment (an input_hash and a vtime), its source, and its payload: log output, an SDK assertion, a fault, a container lifecycle change, or a test composer command. To stream the logs of an event's timeline to its current end, pass its run ID and input_hash to `runs_logs {"run_id": "<run_id>", "input_hash": "<hash>"}`.
 
@@ -16,5 +16,3 @@ The run must be ready or complete. If it is not, the command waits until it is r
 Examples:
   runs_events {"run_id": "<run_id>", "matches": ["error"]}
   runs_events {"run_id": "<run_id>", "matches": ["error", "node-0"], "limit": 100}
-
-With `json`, each event prints as one JSON object on its own line.

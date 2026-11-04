@@ -6,11 +6,7 @@ status, example totals, and sample moments, as `snouty runs properties --detail`
 shows them.
 
 Examples:
-  snouty --json runs properties <run_id> --failing | jq -r .id
   snouty runs property <run_id> <property_id>
-
-Add --json for machine-readable output. The property prints as one JSON object:
-  snouty --json runs property <run_id> <property_id> | jq .counterexample_count
 
 Usage: snouty runs property [OPTIONS] <RUN_ID> <PROPERTY_ID>
 

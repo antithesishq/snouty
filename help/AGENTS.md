@@ -58,10 +58,12 @@ command, named for its path below `snouty` with `_` between the parts:
 - An MCP tool call returns the command's text output, with `--detail` when
   the command has that flag, and its `json` param runs it with `--json`
   instead. So the MCP reader needs the layout of the detailed output, and
-  the JSON shape as what `json` returns. Describe that shape in words, in
-  one paragraph that starts `With {{ t("--json")? }}, `, such as `With
-  {{ t("--json")? }}, each run prints as one JSON object`. Do not add a `jq`
-  example.
+  the JSON shape as what `json` returns. The `--json` flag's own doc says
+  whether the output is NDJSON or one object, so a page says nothing more
+  unless the shape holds something that the rest of the page does not imply,
+  such as a field's unit or zone. Then describe it in words, in one paragraph
+  that starts `With {{ t("--json")? }}, `. Do not add a `jq` example. A
+  command that prints no JSON says so.
 - Put text that only one reader needs, such as a pipeline example, a flag
   that has no param, or a layout that only the default (not `--detail`)
   output has, in `{% if cli %}…{% else %}…{% endif %}`. The other

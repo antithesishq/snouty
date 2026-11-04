@@ -18,9 +18,7 @@ Examples:
   snouty runs show <run_id>
   snouty runs show <run_id> --web
 
-With --json, the run prints as one JSON object, with its times in RFC 3339 in
-UTC. With --web, it prints the run page URL as {"url": ...} and opens no
-browser.
+With --json, --web prints the run page URL as {"url": ...} and opens no browser.
 
 Usage: snouty runs show [OPTIONS] <RUN_ID>
 

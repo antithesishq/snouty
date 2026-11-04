@@ -35,8 +35,6 @@ Examples:
   snouty runs events <run_id> -m error
   snouty runs events <run_id> -m error -m node-0 -n 100
 
-With --json, each event prints as one JSON object on its own line.
-
 Usage: snouty runs events [OPTIONS] <RUN_ID> [QUERY]...
 
 Arguments:

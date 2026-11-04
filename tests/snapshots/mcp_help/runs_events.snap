@@ -16,5 +16,3 @@ The run must be ready or complete. If it is not, the command waits until it is r
 Examples:
   runs_events {"run_id": "<run_id>", "matches": ["error"]}
   runs_events {"run_id": "<run_id>", "matches": ["error", "node-0"], "limit": 100}
-
-With `json`, each event prints as one JSON object on its own line.

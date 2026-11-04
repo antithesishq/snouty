@@ -14,9 +14,6 @@ tenant release.
 Examples:
   snouty runs cancel <run_id>
 
-With --json, the cancelled run id prints as one JSON object, with the field
-run_id.
-
 Usage: snouty runs cancel [OPTIONS] <RUN_ID>
 
 Arguments:

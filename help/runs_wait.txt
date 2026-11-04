@@ -15,5 +15,3 @@ Examples:
   {{ t("snouty runs wait <run_id>")? }}
   {{ t("snouty runs wait <run_id> --timeout 2h")? }}
   {{ t("snouty runs wait <run_id> --until ready")? }}
-
-With {{ t("--json")? }}, the run's run_id and final status print as one JSON object.

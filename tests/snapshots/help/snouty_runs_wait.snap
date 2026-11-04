@@ -23,8 +23,6 @@ Examples:
   snouty runs wait <run_id> --timeout 2h
   snouty runs wait <run_id> --until ready
 
-With --json, the run's run_id and final status print as one JSON object.
-
 Usage: snouty runs wait [OPTIONS] <RUN_ID>
 
 Arguments:

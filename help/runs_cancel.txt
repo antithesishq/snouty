@@ -6,5 +6,3 @@ The command needs tenant release 63.0 or newer; `{{ t("snouty doctor")? }}` repo
 
 Examples:
   {{ t("snouty runs cancel <run_id>")? }}
-
-With {{ t("--json")? }}, the cancelled run id prints as one JSON object, with the field run_id.

@@ -2,5 +2,3 @@ Show one property of a run, in full: its name, ID, group, category, team, status
 
 Examples:
   {{ t("snouty runs property <run_id> <property_id>")? }}
-
-With {{ t("--json")? }}, the property prints as one JSON object.

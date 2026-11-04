@@ -26,8 +26,6 @@ then run commands at that moment:
   snouty runs wait <session_run_id> --until ready
   snouty runs exec <session_run_id> <hash> <vtime> 'ps aux'
 
-With --json, the response prints as one JSON object.
-
 Usage: snouty debug [OPTIONS] --input-hash <INPUT_HASH> --vtime <VTIME> <--run-id <RUN_ID>|--session-id <SESSION_ID>>
 
 Options:

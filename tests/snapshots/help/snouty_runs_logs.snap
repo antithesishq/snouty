@@ -28,8 +28,6 @@ Each event under a divider renders on one line as `VTIME [source] payload`. With
 --detail, no fields are truncated, and additional fields are included in
 indented lines after the event.
 
-With --json, each event prints as one JSON object on its own line.
-
 Usage: snouty runs logs [OPTIONS] <RUN_ID> <INPUT_HASH> [VTIME]
 
 Arguments:

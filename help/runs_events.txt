@@ -21,5 +21,3 @@ To see the equivalent `snouty runs search` query, run `snouty --verbose runs eve
 Examples:
   {{ t("snouty runs events <run_id> -m error")? }}
   {{ t("snouty runs events <run_id> -m error -m node-0 -n 100")? }}
-
-With {{ t("--json")? }}, each event prints as one JSON object on its own line.

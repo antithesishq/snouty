@@ -1,4 +1,4 @@
-# Version 0.9.0-rc.4 (2026-11-03)
+# Version 0.9.0 (2026-11-04)
 
 - **Breaking**: snouty uses a project settings file, `.snouty.toml` in the current directory, only after you trust it. The global settings file in your home directory needs no trust. Until you run `snouty settings trust` or `snouty settings deny`, every command that reads settings stops with an error when the current directory has a `.snouty.toml`, and a trusted file must be trusted again after it changes. A file named with `--settings` or `SNOUTY_SETTINGS_PATH` needs no trust; in CI, set `SNOUTY_SETTINGS_TRUST=all` ([#524](https://github.com/antithesishq/snouty/pull/524))
 - **Breaking**: `snouty doctor` no longer prints the resolved settings; use the new `snouty settings show`, which prints each resolved setting and the settings files snouty read ([#524](https://github.com/antithesishq/snouty/pull/524), [#566](https://github.com/antithesishq/snouty/pull/566), [#592](https://github.com/antithesishq/snouty/pull/592))
@@ -12,6 +12,7 @@
 - `snouty launch --config` gives your snouty credential to Docker (28.3.0 or later) or Podman when it pushes to the tenant registry, so the push no longer needs a separate registry login ([#515](https://github.com/antithesishq/snouty/pull/515))
 - Add `snouty runs stream`: stream a run's property events until the run is final ([#470](https://github.com/antithesishq/snouty/pull/470), [#506](https://github.com/antithesishq/snouty/pull/506))
 - Add `snouty runs usage`: show the compute hours of runs, or with `--rollup` the total per day, week, or month. A rollup, or a listing of more than 1000 entries, needs tenant release 67.0 or newer ([#474](https://github.com/antithesishq/snouty/pull/474), [#507](https://github.com/antithesishq/snouty/pull/507), [#629](https://github.com/antithesishq/snouty/pull/629))
+- On Kubernetes runs, a `snouty runs events` needle that names a test-composer command now matches all of that command's output ([#648](https://github.com/antithesishq/snouty/pull/648))
 - Add `snouty runs property <run_id> <property_id>`: show one property in full ([#469](https://github.com/antithesishq/snouty/pull/469))
 - `snouty runs properties` takes `--pending`, the status filters combine, and `--detail` shows each property's category and team. ([#468](https://github.com/antithesishq/snouty/pull/468), [#469](https://github.com/antithesishq/snouty/pull/469), [#606](https://github.com/antithesishq/snouty/pull/606), [#622](https://github.com/antithesishq/snouty/pull/622), [#623](https://github.com/antithesishq/snouty/pull/623), [#626](https://github.com/antithesishq/snouty/pull/626))
 - Text output prints every timestamp in local time. JSON timestamps are UTC. ([#591](https://github.com/antithesishq/snouty/pull/591))

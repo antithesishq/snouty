@@ -168,7 +168,7 @@ mcp-scripts:
 
       def launch(args):
           if any(a.split("=")[0] in ("-c", "--config") or a.startswith("-c") and len(a) > 2 for a in args):
-              return {"error": "launch from --config-image or a webhook, not a local --config directory"}
+              return {"error": "launch from --config-image or a launcher, not a local --config directory"}
           params = [v for k, v in zip(args, args[1:]) if k == "--param"]
           params += [a.split("=", 1)[1] for a in args if a.startswith("--param=")]
           size = f"size the run with --max-compute-hours, at most {MAX_COMPUTE_HOURS}"

@@ -820,9 +820,9 @@ impl AntithesisApi {
 
     /// Like [`AntithesisApi::new`], but accepts the deprecated
     /// username/password credentials and warns on use
-    /// ([`PasswordPolicy::WarnDeprecated`]) — the launch webhooks are the
+    /// ([`PasswordPolicy::WarnDeprecated`]) — the launchers are the
     /// only endpoints that still accept them. TODO: drop this constructor once
-    /// the launch webhooks reject username/password too.
+    /// the launchers reject username/password too.
     pub fn new_for_launch(settings: &Settings, verbose: bool) -> Result<Self> {
         Self::build(
             settings,
@@ -1830,7 +1830,7 @@ fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
     .wrap_err("failed to build launch request")
 }
 
-/// Resolve the error from a launch / debugging-launch webhook call.
+/// Resolve the error from a launcher or debugging-launcher call.
 ///
 /// Any 2xx is success. The spec documents only 202, and the generated client
 /// surfaces any other 2xx as `UnexpectedResponse`. Earlier releases answered
@@ -2878,7 +2878,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn launch_test_accepts_200_webhook_envelope() {
+    async fn launch_test_accepts_200_launcher_envelope() {
         let mock_server = mock_launch_test(200, LAUNCH_OK_BODY).await;
 
         let api = test_api_optionally_with_cache(&mock_server, None);
@@ -3060,7 +3060,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn launch_debugging_accepts_200_webhook_envelope() {
+    async fn launch_debugging_accepts_200_launcher_envelope() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))

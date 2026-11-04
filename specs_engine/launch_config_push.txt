@@ -7,7 +7,7 @@
 # pull/push), or tagged with the ANTITHESIS_REPOSITORY prefix and pushed. The
 # compose file is then canonicalized and rewritten with digest-pinned image
 # references and baked into the config image. The config image itself is
-# pinned (name@sha256:digest) in the webhook params. snouty no longer sets
+# pinned (name@sha256:digest) in the launcher params. snouty no longer sets
 # antithesis.images — the pinned compose file is the source of truth.
 
 # Local build images are tagged with the registry prefix and pushed; the

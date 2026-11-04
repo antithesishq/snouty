@@ -1,6 +1,6 @@
 # snouty
 
-A CLI for the [Antithesis](https://antithesis.com) API. See the [webhook documentation](https://antithesis.com/docs/webhook/) for details on available endpoints and parameters.
+A CLI for the [Antithesis](https://antithesis.com) API. See the [REST API reference](https://antithesis.com/docs/reference/rest_api/) for details on available endpoints and parameters.
 
 ## Usage
 

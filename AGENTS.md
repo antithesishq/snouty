@@ -111,7 +111,7 @@ All code must be simple and idiomatic.
 ## User-facing text
 
 These rules cover the help pages in `help/`, the `///` docs of clap flags,
-errors, warnings, hints, status lines and the README.
+errors, warnings, hints, status lines, the README and CI.md.
 
 Help tells the user what they need to call a command correctly and to read its
 result. snouty does the rest, so leave the details to snouty. Write for the few

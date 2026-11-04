@@ -162,8 +162,8 @@ mod tests {
 
     use super::*;
     use crate::cli::{Cli, Commands, RunsCommands};
-    use crate::mcp::tools::ValueType;
     use crate::mcp::object;
+    use crate::mcp::tools::ValueType;
 
     fn globals() -> Globals {
         Globals {
@@ -411,6 +411,7 @@ mod tests {
         assert_eq!(debug.input_hash, "-5");
         assert_eq!(debug.params.len(), 2);
     }
+
     /// A call with only the schema's required params parses, so the schema
     /// marks every arg that the command line requires. MCP clients refuse a
     /// tool whose schema has a top-level `anyOf`, so the schema cannot require
@@ -440,7 +441,11 @@ mod tests {
                 if !param.required && !in_group {
                     continue;
                 }
-                let first = param.arg.get_possible_values().first().map(|v| v.get_name().to_owned());
+                let first = param
+                    .arg
+                    .get_possible_values()
+                    .first()
+                    .map(|v| v.get_name().to_owned());
                 let value = match param.kind {
                     ParamKind::Flag => json!(true),
                     ParamKind::One(ValueType::String) | ParamKind::Many(ValueType::String) => {
@@ -454,8 +459,7 @@ mod tests {
                 call.insert(param.id().to_owned(), value);
             }
             let argv = command_args(name, &globals(), call).unwrap();
-            let parsed =
-                Cli::try_parse_from(std::iter::once(OsString::from("snouty")).chain(argv));
+            let parsed = Cli::try_parse_from(std::iter::once(OsString::from("snouty")).chain(argv));
             if let Err(error) = parsed {
                 panic!("{name}: the schema misses a required arg: {error}");
             }

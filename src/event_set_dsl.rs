@@ -88,9 +88,9 @@ macro_rules! query_fragment {
 ///
 /// The server's default log filter runs before the query. It drops bootstrap
 /// events and assertion catalog entries (`antithesis_assert.hit === false`),
-/// so the filter does not test for them (tenant `orbitinghail`: none on 7
-/// runs, run `d4b213720b4f72d68132653843623a04-62-2` included, which held
-/// bootstrap events before).
+/// so the filter does not test for them (tenant `orbitinghail`, run
+/// `d4b213720b4f72d68132653843623a04-62-2`, which held bootstrap events
+/// before release 67.0, returns none now).
 ///
 /// The live server names a test-composer command's output source after the
 /// command, such as `main/parallel_driver_lifecycle`, and sets
@@ -176,7 +176,6 @@ mod tests {
             "got: {query}"
         );
     }
-
 
     // A needle is matched against the event's text fields, never against the
     // event's JSON: matching that string made a field name a needle.

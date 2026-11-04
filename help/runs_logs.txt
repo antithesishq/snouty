@@ -2,14 +2,14 @@ Stream the logs of one timeline of a run, up to a moment.
 
 A run is a multiverse: a tree of timelines that branch from each other. A timeline is one continuous simulated execution of the system, and vtime (virtual time) is its simulated clock. A moment is an instant on a timeline, identified by an input_hash and a vtime; the input_hash is a hash of every input Antithesis sent up to that moment. A branch is a timeline that splits off another timeline at a moment.
 
-{{ t("input_hash")? }} and {{ t("vtime")? }} identify a moment. The logs stream along the timeline that leads to that moment, from its start (or from {{ t("--begin-vtime")? }}) to the moment. Without {{ t("vtime")? }}, the stream ends at the last event with {{ t("input_hash")? }}. A run in progress can add events, so a later call can return more logs. {% if cli %}{{ t("input_hash")? }} is often negative, such as `-123`; pass it as it is, with no `--` before it. {% endif %}Find a moment with `{{ t("runs properties --detail")? }}`, `{{ t("runs events")? }}`, `{{ t("runs search")? }}`, or the failure moment of an incomplete run in `{{ t("runs show")? }}`.
+{{ t("input_hash")? }} and {{ t("vtime")? }} identify a moment in the multiverse. If {{ t("--begin-vtime")? }} is specified, logs will start from that point rather than the root moment. When {{ t("vtime")? }} is not specified, logs will end at the end of the branch corresponding to the {{ t("input_hash")? }}. If the run is in progress, the {{ t("input_hash")? }} branch may be extended at any time.
+
+{% if cli %}{{ t("input_hash")? }} is often negative, such as `-123`; pass it as it is, with no `--` before it. {% endif %}Find a moment with `{{ t("runs properties --detail")? }}`, `{{ t("runs events")? }}`, `{{ t("runs search")? }}`, or the failure moment of an incomplete run in `{{ t("runs show")? }}`.
 
 Each event has a moment, a source, and a payload: log output, an SDK assertion, a fault, a container lifecycle change, or a test composer command.
 
 {% if cli %}
-Output: a `moment HASH` divider opens the events with each input_hash. The input_hash changes each time Antithesis sends an input, so the dividers mark the inputs on the timeline, up to {{ t("input_hash")? }}. Each event under a divider renders on one line as `VTIME [source] payload`, each event shape in its own concise form. VTIME is truncated to fit its column, and a long source label ends in `…`. With {{ t("--detail")? }}, VTIME and the source print whole, and indented lines under an event give its source location, as `@ file:function:line`, and the details that it carries, such as an SDK assertion's details, as `details {...}`.
-{% else %}
-A `moment HASH` line opens the events with each input_hash. The input_hash changes each time Antithesis sends an input, so these lines mark the inputs on the timeline, up to {{ t("input_hash")? }}. Each event under a divider prints as one `VTIME [source] payload` line, with the full vtime. Indented lines under an event give its source location, as `@ file:function:line`, and the details that it carries, such as an SDK assertion's details, as `details {...}`.
+Output: a `moment INPUT_HASH` divider is emitted at the start of each branch. Each event under a divider renders on one line as `VTIME [source] payload`. With {{ t("--detail")? }}, no fields are truncated, and additional fields are included in indented lines after the event.
 {% endif %}
 
 {% if cli %}

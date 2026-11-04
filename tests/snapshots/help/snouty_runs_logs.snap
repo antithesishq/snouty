@@ -10,25 +10,23 @@ by an input_hash and a vtime; the input_hash is a hash of every input Antithesis
 sent up to that moment. A branch is a timeline that splits off another timeline
 at a moment.
 
-INPUT_HASH and VTIME identify a moment. The logs stream along the timeline that
-leads to that moment, from its start (or from --begin-vtime) to the moment.
-Without VTIME, the stream ends at the last event with INPUT_HASH. A run in
-progress can add events, so a later call can return more logs. INPUT_HASH is
-often negative, such as `-123`; pass it as it is, with no `--` before it. Find a
-moment with `runs properties --detail`, `runs events`, `runs search`, or the
-failure moment of an incomplete run in `runs show`.
+INPUT_HASH and VTIME identify a moment in the multiverse. If --begin-vtime is
+specified, logs will start from that point rather than the root moment. When
+VTIME is not specified, logs will end at the end of the branch corresponding to
+the INPUT_HASH. If the run is in progress, the INPUT_HASH branch may be extended
+at any time.
+
+INPUT_HASH is often negative, such as `-123`; pass it as it is, with no `--`
+before it. Find a moment with `runs properties --detail`, `runs events`,
+`runs search`, or the failure moment of an incomplete run in `runs show`.
 
 Each event has a moment, a source, and a payload: log output, an SDK assertion,
 a fault, a container lifecycle change, or a test composer command.
 
-Output: a `moment HASH` divider opens the events with each input_hash. The
-input_hash changes each time Antithesis sends an input, so the dividers mark the
-inputs on the timeline, up to INPUT_HASH. Each event under a divider renders on
-one line as `VTIME [source] payload`, each event shape in its own concise form.
-VTIME is truncated to fit its column, and a long source label ends in `…`. With
---detail, VTIME and the source print whole, and indented lines under an event
-give its source location, as `@ file:function:line`, and the details that it
-carries, such as an SDK assertion's details, as `details {...}`.
+Output: a `moment INPUT_HASH` divider is emitted at the start of each branch.
+Each event under a divider renders on one line as `VTIME [source] payload`. With
+--detail, no fields are truncated, and additional fields are included in
+indented lines after the event.
 
 Add --json for machine-readable output. Each event prints as one JSON object on
 its own line:

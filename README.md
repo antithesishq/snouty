@@ -202,11 +202,48 @@ An id that snouty does not know, such as the retired `runs-exec`, has no effect.
 
 ## MCP server
 
-`snouty mcp` serves most of snouty's commands to AI agents as [Model Context Protocol](https://modelcontextprotocol.io) tools, over the stdio transport. It is an unstable feature: set `SNOUTY_UNSTABLE_FEATURES=mcp` to turn it on. Run `snouty login` once before you add the server, which then uses the credential that snouty stores. The agent starts the server itself. For example, in Claude Code:
+`snouty mcp` serves most of snouty's commands to AI agents as [Model Context Protocol](https://modelcontextprotocol.io) tools, over the stdio transport. It is an unstable feature: set `SNOUTY_UNSTABLE_FEATURES=mcp` to turn it on. The agent starts the server itself.
+
+Run `snouty login` once before you add the server. The server then uses the credential that snouty stores, in whatever environment the agent starts it. Some agents, such as Codex, start a server with only part of your environment, so a credential in `ANTITHESIS_API_KEY` alone may not reach it.
+
+The commands below run the installed `snouty`. To run snouty without installing it, use `npx -y snouty mcp` in place of `snouty mcp`: npx fetches the npm package, which downloads the prebuilt binary on its first run.
+
+Run `snouty mcp --help` to see all tools.
+
+snouty is listed in the [MCP Registry](https://registry.modelcontextprotocol.io) as `com.antithesis/snouty`, through the npm package `snouty`: a client that installs from the registry runs `npx snouty mcp`, which downloads the prebuilt binary on its first run.
+
+The server sets no time limit and no output limit on a tool call. The client sets them: when it cancels a call or closes stdin, the server kills the call's command. A command also exits when its server is gone. Up to 8 tool calls run at the same time, and `--max-concurrent-calls` changes that number.
+
+The server reads settings, profiles, and credentials as the other commands do, so `--settings`, `--profile`, `--verbose`, and the `ANTITHESIS_*` environment variables apply to every tool call. A client cannot set them.
+
+### Claude Code
 
 ```sh
-claude mcp add snouty -e SNOUTY_UNSTABLE_FEATURES=mcp -- snouty mcp
+claude mcp add snouty --scope user -e SNOUTY_UNSTABLE_FEATURES=mcp -- snouty mcp
 ```
+
+`--scope user` makes the server available in every project. Without it, the server is added only for the current project. Run `claude mcp list` to check that it connects, and start a new session to use it.
+
+### Codex
+
+```sh
+codex mcp add snouty --env SNOUTY_UNSTABLE_FEATURES=mcp -- snouty mcp
+```
+
+This adds the server to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.snouty]
+command = "snouty"
+args = ["mcp"]
+
+[mcp_servers.snouty.env]
+SNOUTY_UNSTABLE_FEATURES = "mcp"
+```
+
+Run `codex mcp list` to check it, and start a new session to use it.
+
+### Other clients
 
 A JSON config for a stdio server looks like this one. The key names can be different in your client, so refer to its documentation:
 
@@ -221,14 +258,6 @@ A JSON config for a stdio server looks like this one. The key names can be diffe
   }
 }
 ```
-
-Run `snouty mcp --help` to see all tools.
-
-snouty is listed in the [MCP Registry](https://registry.modelcontextprotocol.io) as `com.antithesis/snouty`, through the npm package `snouty`: a client that installs from the registry runs `npx snouty mcp`, which downloads the prebuilt binary on its first run.
-
-The server sets no time limit and no output limit on a tool call. The client sets them: when it cancels a call or closes stdin, the server kills the call's command. A command also exits when its server is gone. Up to 8 tool calls run at the same time, and `--max-concurrent-calls` changes that number.
-
-The server reads settings, profiles, and credentials as the other commands do, so `--settings`, `--profile`, `--verbose`, and the `ANTITHESIS_*` environment variables apply to every tool call. A client cannot set them.
 
 ### Debugging the MCP server
 

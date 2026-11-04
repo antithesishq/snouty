@@ -12,8 +12,8 @@ pub(crate) const PASSWORD_VAR_NAME: &str = "ANTITHESIS_PASSWORD";
 /// resolution finds them. The other credential kinds are always accepted.
 #[derive(Clone, Copy)]
 pub(crate) enum PasswordPolicy {
-    /// Fail with a friendly error: every endpoint other than the launch
-    /// webhooks answers username/password with an opaque 403.
+    /// Fail with a friendly error: every endpoint other than the
+    /// launch endpoints answers username/password with an opaque 403.
     Reject,
     /// Accept them and print the deprecation warning: the launch commands
     /// (`snouty launch`, `snouty debug`) take this path.

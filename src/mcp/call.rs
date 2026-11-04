@@ -412,12 +412,9 @@ mod tests {
         assert_eq!(debug.params.len(), 2);
     }
 
-    /// A call with only the schema's required params parses, so the schema
-    /// marks every arg that the command line requires. MCP clients refuse a
-    /// tool whose schema has a top-level `anyOf`, so the schema cannot require
-    /// one of two params: for a required group with two params or more, the
-    /// call adds the first, and the params' descriptions say that one is
-    /// required.
+    /// A call with only the schema's required params parses. MCP clients
+    /// refuse a top-level `anyOf`, so the call adds the first param of each
+    /// required group.
     #[test]
     fn the_required_params_are_enough_to_parse() {
         for name in ToolName::ALL {

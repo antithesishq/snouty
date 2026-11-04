@@ -87,10 +87,9 @@ macro_rules! tools {
                 }
             }
 
-            /// Args that the tool requires and the command line does not. The
-            /// schema reads requiredness from clap and cannot see a check in
-            /// the command's code, so a command marks its required args in
-            /// clap.
+            /// Args that the tool requires and the command line does not. Mark
+            /// other required args in clap: the schema cannot see a check in
+            /// the command's code.
             fn required(self) -> &'static [&'static str] {
                 match self {
                     $(ToolName::$variant => &[$($required),*],)*
@@ -478,9 +477,6 @@ mod tests {
     use crate::features::{self, Feature};
     use crate::mcp::object;
 
-    /// The schema requires the params that each command needs. A command
-    /// that checks for an arg in its code, not in clap, shows up here as a
-    /// param that the schema leaves optional.
     #[test]
     fn each_tool_requires_the_params_its_command_needs() {
         for name in ToolName::ALL {

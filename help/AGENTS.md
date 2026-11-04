@@ -59,7 +59,9 @@ command, named for its path below `snouty` with `_` between the parts:
   the command has that flag, and its `json` param runs it with `--json`
   instead. So the MCP reader needs the layout of the detailed output, and
   the JSON shape as what `json` returns. The `--json` flag's own doc says
-  whether the output is NDJSON or one object, so a page says nothing more
+  whether the output is NDJSON or one object: the `json(JsonShape::…)`
+  attribute on the command's variant in `src/cli.rs` sets it, and also
+  hides `--json` on a command that prints no JSON. So a page says nothing more
   unless the shape holds something that the rest of the page does not imply,
   such as a field's unit or zone. Then describe it in words, in one paragraph
   that starts `With {{ t("--json")? }}, `. Do not add a `jq` example. A

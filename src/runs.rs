@@ -678,9 +678,8 @@ async fn cmd_runs_properties(
             .iter()
             .any(|p| matches!(p.status(), PropertyStatus::Pending))
     {
-        eprintln!();
         eprintln!(
-            "{}",
+            "\n{}",
             wrap_if_tty(&format!(
                 "Some properties are still being processed. \
                  Run `snouty runs properties {run_id}` again later for the final results."

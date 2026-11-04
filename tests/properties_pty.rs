@@ -40,6 +40,7 @@ const PTY_COLS: u16 = 36;
 
 #[test]
 fn long_name_wraps_under_its_value() {
+    // The detail ends with the `runs logs` next step.
     let screen = run_on_pty(
         "runs properties run-1 --name counter --detail",
         PTY_COLS,
@@ -59,11 +60,11 @@ fn long_name_wraps_under_its_value() {
     assert!(lines[name + 2].starts_with("ID"), "{screen}");
 }
 
-/// The pending note wraps at word boundaries on a terminal, and keeps the
-/// command to run again on one line.
+/// The command to run again stays on one line. At this width, a wrap at
+/// every space would split it.
 #[test]
 fn pending_note_wraps_on_a_terminal() {
-    let screen = run_on_pty("runs properties run-1", 48, "final results.");
+    let screen = run_on_pty("runs properties run-1", 60, "results.");
     let lines: Vec<&str> = screen.lines().collect();
     let start = lines
         .iter()
@@ -73,8 +74,8 @@ fn pending_note_wraps_on_a_terminal() {
         lines[start..],
         [
             "Some properties are still being processed. Run",
-            "`snouty runs properties run-1` again later for",
-            "the final results.",
+            "`snouty runs properties run-1` again later for the final",
+            "results.",
         ],
         "{screen}"
     );

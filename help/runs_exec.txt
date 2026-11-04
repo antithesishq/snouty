@@ -37,4 +37,4 @@ Examples:
   {{ t("snouty runs exec <run_id> <hash> <vtime> < script.sh")? }}
 {%- endif %}
 
-With {{ t("--json")? }}, each frame of the stream prints as one JSON object on its own line. When the script exits, the last line is the exit result, and its `end_moment` is the moment to chain a follow-up call from.{% if cli %} The trailer is left out.{% endif %}
+With {{ t("--json")? }}, each frame of the stream prints as one JSON object on its own line. When the script exits, the last line is the exit result, and its `end_moment` is the moment to chain a follow-up call from.

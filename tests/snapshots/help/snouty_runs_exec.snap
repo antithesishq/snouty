@@ -53,7 +53,7 @@ Examples:
 
 With --json, each frame of the stream prints as one JSON object on its own line.
 When the script exits, the last line is the exit result, and its `end_moment` is
-the moment to chain a follow-up call from. The trailer is left out.
+the moment to chain a follow-up call from.
 
 Usage: snouty runs exec [OPTIONS] <RUN_ID> <INPUT_HASH> <VTIME> [SCRIPT]
 

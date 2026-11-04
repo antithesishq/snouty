@@ -441,28 +441,24 @@ mod tests {
                 if !param.required && !in_group {
                     continue;
                 }
-                let first = param
-                    .arg
-                    .get_possible_values()
-                    .first()
-                    .map(|v| v.get_name().to_owned());
                 let value = match param.kind {
                     ParamKind::Flag => json!(true),
                     ParamKind::One(ValueType::String) | ParamKind::Many(ValueType::String) => {
-                        let text = first.unwrap_or_else(|| {
-                            if param.check("x").is_ok() { "x" } else { "1m" }.to_owned()
-                        });
-                        json!(text)
+                        match param.arg.get_possible_values().first() {
+                            Some(value) => json!(value.get_name()),
+                            None if param.check("x").is_ok() => json!("x"),
+                            None => json!("1m"),
+                        }
                     }
                     ParamKind::One(_) | ParamKind::Many(_) => json!(1),
                 };
                 call.insert(param.id().to_owned(), value);
             }
             let argv = command_args(name, &globals(), call).unwrap();
-            let parsed = Cli::try_parse_from(std::iter::once(OsString::from("snouty")).chain(argv));
-            if let Err(error) = parsed {
-                panic!("{name}: the schema misses a required arg: {error}");
-            }
+            Cli::try_parse_from(std::iter::once(OsString::from("snouty")).chain(argv))
+                .unwrap_or_else(|error| {
+                    panic!("{name}: the schema misses a required arg: {error}")
+                });
         }
     }
 }

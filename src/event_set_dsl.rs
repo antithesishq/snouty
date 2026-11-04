@@ -84,22 +84,28 @@ macro_rules! query_fragment {
 
 /// The event-set expression `(ev, needles)` that decides whether one event
 /// holds every needle. The needles must be lowercase: `m` folds only the
-/// haystack. An assertion catalog entry (`antithesis_assert.hit === false`)
-/// never matches on `output_text`, because it is no evidence that anything ran.
+/// haystack.
+///
+/// The server's default log filter drops bootstrap events and assertion
+/// catalog entries (`antithesis_assert.hit === false`) before the query
+/// runs, so this filter does not test for them. Tenant `orbitinghail`, run
+/// `d4b213720b4f72d68132653843623a04-62-2`, held bootstrap events on an
+/// earlier release and returns none on release 67.0.
+///
+/// The live server names a test-composer command's output source after the
+/// command, such as `main/parallel_driver_lifecycle`, and sets
+/// `source.is_test_composer_command` (tenant `orbitinghail`, run
+/// `0b60de7a42a34218d44549277fed9753-64-0`, `events/search` and `logs`). No
+/// source name holds the `antithesis/pods/<pod>/commands/` path of the spec's
+/// example.
 pub(crate) const NEEDLE_FILTER: &str =
     query_fragment!(include_str!("event_set_dsl/needle_filter.pangolin.js"));
 
-/// The condition that drops bootstrap events. They come before a run's log
-/// timeline starts, so their moments have no log stream: a hash taken from
-/// one leads `runs logs` nowhere.
-pub(crate) const SKIP_BOOTSTRAP: &str = query_fragment!(r#"ev.source?.name !== "bootstrap""#);
-
-/// Build the event set that keeps the events holding every needle, bootstrap
-/// events aside.
+/// Build the event set that keeps the events holding every needle.
 pub fn substring_filter(needles: &[String]) -> String {
     let lowercased: Vec<String> = needles.iter().map(|needle| needle.to_lowercase()).collect();
     let needles = serde_json::to_string(&lowercased).expect("strings serialize to JSON");
-    format!("filter(ev => {SKIP_BOOTSTRAP} && ({NEEDLE_FILTER})(ev, {needles}))")
+    format!("filter(ev => ({NEEDLE_FILTER})(ev, {needles}))")
 }
 
 /// Build the event set that keeps the events under `input_hash`. The hash
@@ -171,16 +177,6 @@ mod tests {
         );
     }
 
-    // Bootstrap events are dropped before any needle is tried.
-    #[test]
-    fn substring_filter_skips_bootstrap_events() {
-        let query = substring_filter(&["error".to_string()]);
-        assert!(
-            query.starts_with(&format!("filter(ev => {SKIP_BOOTSTRAP} && (")),
-            "got: {query}"
-        );
-    }
-
     // A needle is matched against the event's text fields, never against the
     // event's JSON: matching that string made a field name a needle.
     #[test]
@@ -189,10 +185,11 @@ mod tests {
         assert!(query.contains(NEEDLE_FILTER), "got: {query}");
         for field in [
             "ev.output_text",
-            "ev.antithesis_assert.message",
-            "ev.antithesis_assert.location?.function",
+            "ev.antithesis_assert?.message",
+            "ev.antithesis_assert?.location?.function",
             "ev.command",
             "ev.started_task",
+            "ev.source?.is_test_composer_command === true",
         ] {
             assert!(query.contains(field), "{field} missing from: {query}");
         }

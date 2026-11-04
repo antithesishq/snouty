@@ -489,10 +489,14 @@ stdout '^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \[[a-z]+\]'
 [!staging] stdout '^2025-03-20 11:01:12 \[stdout\] Building image payments-service\.\.\.'
 [!staging] stdout '^2025-03-20 11:01:15 \[stderr\] Warning: deprecated feature'
 [!staging] stdout '^2025-03-20 11:01:20 \[stdout\] Build complete'
+# A marker on stderr ends the stream, so the last line doesn't read as one
+# cut short.
+stderr '^\n— end of stream$'
 
 # `snouty --json runs build-logs` outputs raw NDJSON.
 mock-runs-server
 snouty --json runs build-logs $R_run_id
+! stderr 'end of stream'
 [!staging] stdout '"timestamp".*"text"'
 
 # The JSON shows the times of a run, and of each build-log line, in UTC, as
@@ -716,6 +720,7 @@ stderr '.*run not found: no-such-run.*'
 mock-runs-server
 snouty runs build-logs run-empty
 stderr 'No build logs for this run\.'
+! stderr 'end of stream'
 
 # In --json mode an empty stream is the correct machine answer, so no note.
 mock-runs-server
@@ -795,9 +800,9 @@ stdout '^1\.0       \[app\] \{"level":"info","msg":"starting"\}$'
 stdout '^2\.0       \[app\] \{"level":"warn","msg":"slow request"\}$'
 ! stdout '311\.8487'
 ! stdout 'line one'
-# A footer on stderr marks the end of the stream, so a quiet timeline
-# doesn't read as one cut short.
-stderr '^— end of logs$'
+# A marker on stderr ends the stream, so a quiet timeline doesn't read as
+# one cut short.
+stderr '^\n— end of stream$'
 
 # `--detail` upgrades the rendering: a full-width vtime on every line, and
 # the assertion's source location on an indented detail line.
@@ -820,7 +825,7 @@ stderr '--detail and --json cannot be combined'
 # `snouty --json runs logs` outputs NDJSON with faults annotated.
 mock-runs-server
 snouty --json runs logs run-1 -123
-! stderr 'end of logs'
+! stderr 'end of stream'
 stdout 'output_text.*starting'
 stdout 'output_text.*slow request'
 stdout '"antithesis_assert".*"display_type":"AlwaysOrUnreachable"'
@@ -919,6 +924,8 @@ mock-runs-server
 [!staging] stdout '401\.75'
 [!staging] ! stdout '402\.0'
 [!staging] stderr '^\nShowing up to 2 results\. Additional results may be available\.'
+# The note replaces the end marker, because more events may exist.
+[!staging] ! stderr 'end of stream'
 # `--json` never carries the note; the output itself is still capped.
 mock-runs-server
 [!staging] snouty --json runs events $R_run_id --match parallel_driver_fetch --limit 2
@@ -929,6 +936,7 @@ mock-runs-server
 mock-runs-server
 [!staging] snouty runs events $R_run_id --match zzz-no-such-needle --limit 2
 [!staging] stderr 'No events matched'
+[!staging] ! stderr 'end of stream'
 [!staging] ! stderr 'Showing up to'
 
 # `--limit 0` is rejected by clap before any request: the server's accepted
@@ -956,6 +964,7 @@ mock-runs-server
 [!staging] stdout '400\.5'
 [!staging] ! stdout '401\.75'
 [!staging] stderr '^\nShowing up to 1 results\. Additional results may be available\.'
+[!staging] ! stderr 'end of stream'
 
 # The tenant is assumed to serve the search endpoint, so its 404 simply means
 # the run — the error says "run not found".
@@ -1009,6 +1018,9 @@ mock-runs-server
 [!staging] stdout '^moment -456$'
 [!staging] stdout '^2\.0       \[app\] \{"level":"warn","msg":"slow request"\}$'
 ! stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
+# Results under the limit end with the marker, and no limit note.
+[!staging] stderr '^\n— end of stream$'
+[!staging] ! stderr 'Showing up to'
 
 # `--json` passes the NDJSON through, vtime normalized to an exact JSON number.
 mock-runs-server
@@ -1028,12 +1040,14 @@ mock-runs-server
 [!staging] snouty runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --limit 1
 [!staging] stdout '400\.5'
 [!staging] stderr '^\nShowing up to 1 results\. Additional results may be available\.'
+[!staging] ! stderr 'end of stream'
 
 # `--follow` with a limit prints the note too: the stream stops at the limit.
 mock-runs-server
 [!staging] snouty runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --follow --limit 1
 [!staging] stdout '400\.5'
 [!staging] stderr '^\nShowing up to 1 results\. Additional results may be available\.'
+[!staging] ! stderr 'end of stream'
 
 # An empty result prints its own note instead.
 mock-runs-server
@@ -1138,6 +1152,7 @@ env TZ=UTC
 stdout -literal '2025-03-20 02:01:12 [stdout] Building image payments-service...'
 stderr 'the server reported an error mid-stream: mock stream failure'
 stderr 'output produced before the error may be incomplete'
+! stderr 'end of stream'
 
 # In the raw NDJSON passthrough the error line stays off stdout: it is the
 # server aborting the stream, not build log data.

@@ -771,7 +771,11 @@ class RunReuse(unittest.TestCase):
 
 
 class BuildLogsTimeCheck(unittest.TestCase):
-    def check(self, stdout: str, rows: int) -> tuple[bool, str]:
+    def check(self, stdout: str, rows: int, footer: bool = True) -> tuple[bool, str]:
+        # A terminal capture merges stderr into stdout, so the footer follows
+        # the log lines there and stderr is empty.
+        if footer:
+            stdout += f"\n{gallery.END_OF_STREAM}\n"
         story = gallery.Story("s", "t", "g", "j", [], gallery.build_logs_with_times)
         result = gallery.Result(story.args, stdout, "", 0)
         run = gallery.StoryRun(story, result, [{}] * rows)
@@ -790,6 +794,11 @@ class BuildLogsTimeCheck(unittest.TestCase):
     def test_fails_when_a_line_has_an_offset(self):
         stdout = "2026-10-31 18:38:50 -07:00 [stdout] one\n"
         passed, detail = self.check(stdout, rows=1)
+        self.assertFalse(passed, detail)
+
+    def test_fails_without_the_footer(self):
+        stdout = "2026-10-31 18:38:50 [stdout] one\n"
+        passed, detail = self.check(stdout, rows=1, footer=False)
         self.assertFalse(passed, detail)
 
 

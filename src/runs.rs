@@ -2,13 +2,12 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::io::{IsTerminal, Read, Write};
 use std::num::NonZeroU64;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use color_eyre::Section;
 use color_eyre::eyre::{Result, WrapErr, eyre};
+use futures_util::TryStreamExt;
 use futures_util::stream::BoxStream;
-use futures_util::{StreamExt, TryStreamExt};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -75,9 +74,11 @@ fn limit_note(shown: usize, limit: NonZeroU64, noun: &str, blank_line_before: bo
 /// may never be seen.
 ///
 /// Commentary goes to stderr and only in text mode: under `--json` the rows
-/// are the whole answer. An empty stream gets `empty_message`; any other gets
-/// the limit note when the request named a `limit`, set apart by a blank line
-/// because the text rendering separates its moment blocks with blank lines.
+/// are the whole answer. An empty stream gets `empty_message`. A stream that
+/// filled its `limit` gets the limit note, and any other stream gets an end
+/// marker, so a quiet stream doesn't read as one cut short. Either one is set
+/// apart by a blank line because the text rendering separates its moment
+/// blocks with blank lines.
 async fn print_event_lines(
     mut lines: BoxStream<'_, Result<String>>,
     output: EventOutput,
@@ -97,8 +98,13 @@ async fn print_event_lines(
     // mid-stream error propagated above instead.
     if seen == 0 {
         eprintln!("{empty_message}");
-    } else if let Some(limit) = limit {
-        limit_note(seen, limit, "results", true);
+        return Ok(());
+    }
+    // A filled limit means more rows may exist, so the limit note replaces
+    // the end marker.
+    match limit {
+        Some(limit) if seen as u64 >= limit.get() => limit_note(seen, limit, "results", true),
+        _ => eprintln!("\n— end of stream"),
     }
     Ok(())
 }
@@ -1779,17 +1785,8 @@ async fn cmd_runs_logs(
     // A moment with no logs (e.g. a manually-supplied 0/0 placeholder)
     // yields an empty stream; the pipeline says so in text mode rather
     // than printing nothing.
-    let any_lines = AtomicBool::new(false);
-    let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode)
-        .inspect_ok(|_| any_lines.store(true, Ordering::Relaxed))
-        .boxed();
-    print_event_lines(lines, mode, "No log lines at this moment.", None).await?;
-    // The footer marks the end of the stream, so a quiet timeline doesn't
-    // read as one cut short.
-    if !mode.json() && any_lines.into_inner() {
-        eprintln!("— end of logs");
-    }
-    Ok(())
+    let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode);
+    print_event_lines(lines, mode, "No log lines at this moment.", None).await
 }
 
 /// The script's stdout is `info`, and its stderr is `error`.

@@ -105,6 +105,8 @@ SETUP_TIMEOUT_IMAGE = "launch-bare-setup-timeout:latest"
 UNKNOWN_HASH = "1234567890123456789"
 # A property ID that no run has, for the property lookup error story.
 UNKNOWN_PROPERTY = "ffffffffffffffffffffffffffffffff"
+# The marker on stderr after an event stream that ran to its end.
+END_OF_STREAM = "— end of stream"
 
 # Stories are captured concurrently (each is one or two snouty subprocesses that
 # can each block on snouty's 60s timeout); checks are then evaluated serially.
@@ -1804,15 +1806,18 @@ def rows_at_most_with_limit_note(limit: int):
     """`rows_at_most`, plus the note that names the limit.
 
     The note claims more results may exist, so it belongs only when the server
-    filled the limit. Fewer rows than asked for means the result set is
-    exhausted, and the note must be absent.
+    filled the limit, and it replaces the end-of-stream marker. Fewer rows than
+    asked for means the result set is exhausted: the marker appears and the
+    note must be absent.
     """
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         n = len(sr.rows or [])
         noted = f"Showing up to {limit} results." in sr.result.combined
-        ok = 1 <= n <= limit and noted == (n == limit)
-        return (ok, f"{n} rows (limit {limit}), note={noted}")
+        ended = END_OF_STREAM in sr.result.combined
+        filled = n == limit
+        ok = 1 <= n <= limit and noted == filled and ended != filled
+        return (ok, f"{n} rows (limit {limit}), note={noted}, ended={ended}")
 
     return chk
 
@@ -2478,19 +2483,24 @@ _LINE_TIME = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \[", re.MULTILINE)
 
 
 def build_logs_with_times(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-    """Log lines, and each line starts with a well-formed time. Every log
-    line counts, so a line whose time has another form fails the check."""
+    """Log lines, each starting with a well-formed time, then the end-of-stream
+    marker. Every log line counts, so a line whose time has another form fails
+    the check."""
     ok, detail = logs_non_empty(sr, reg)
     timed = len(_LINE_TIME.findall(sr.result.stdout))
     lines = len(sr.rows or [])
-    return (ok and timed == lines, f"{detail}, {timed}/{lines} lines with a time")
+    ended = contains_text(sr.result.combined, END_OF_STREAM)
+    return (
+        ok and timed == lines and ended,
+        f"{detail}, {timed}/{lines} lines with a time, ended={ended}",
+    )
 
 
-def logs_with_footer(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-    """Log lines, then the footer that marks the end of the stream."""
+def logs_with_end_marker(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+    """Log lines, then the end-of-stream marker."""
     n = len(sr.rows or [])
-    footer = contains_text(sr.result.combined, "— end of logs")
-    return (n > 0 and footer, f"{n} log lines, footer={footer}")
+    ended = contains_text(sr.result.combined, END_OF_STREAM)
+    return (n > 0 and ended, f"{n} log lines, ended={ended}")
 
 
 def logs_begin_at(begin: str):
@@ -3077,8 +3087,9 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "Cap a DSL query at -n 3",
             "I want only the first few matches, not the whole stream — and I want to "
             "know whether the first few are all of them.",
-            "Exactly at most 3 event lines, then the command exits promptly; a stderr "
-            "note names the limit and says more results may be available.",
+            "At most 3 event lines, then the command exits promptly. With 3 lines, a "
+            "stderr note names the limit and says more results may be available; with "
+            "fewer, the end-of-stream marker follows instead.",
             [
                 "runs",
                 "search",
@@ -3209,18 +3220,18 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-logs-incomplete",
             "Stream logs at the failure moment of an incomplete run",
             "I want the logs right at the moment an incomplete run failed.",
-            "At least one log line, then a footer that marks the end of the stream, so a quiet "
-            "timeline doesn't read as cut short.",
+            "At least one log line, then an end-of-stream marker, so a quiet timeline doesn't "
+            "read as cut short.",
             ["runs", "logs", d.fail, d.fail_hash, d.fail_vtime],
-            logs_with_footer,
+            logs_with_end_marker,
         ),
         # -- build logs -----------------------------------------------------
         Story(
             "runs-build-logs",
             "Stream the build logs to see how a run was set up",
             "I want to see the build/setup logs for a run.",
-            "At least one build-log line is streamed, and each line starts with its local "
-            "time.",
+            "At least one build-log line is streamed, each line starts with its local "
+            "time, and an end-of-stream marker follows the last line.",
             ["runs", "build-logs", d.success],
             build_logs_with_times,
         ),

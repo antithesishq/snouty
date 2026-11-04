@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -236,11 +237,12 @@ const RUNNING_NOTICE: Duration = Duration::from_secs(30);
 /// A command that runs this long against staging times out. A normal staging
 /// run takes about 1.5 minutes in all.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(180);
-/// A staging command that times out runs again after [`TIMEOUT_RETRY_WAIT`],
-/// at most this many times. An events search on the shared staging tenant
-/// stalls while other users' searches hold the tenant's search capacity, and
-/// the stall ends in minutes.
-const TIMEOUT_RETRIES: u32 = 2;
+/// A staging command that times out runs again after [`TIMEOUT_RETRY_WAIT`].
+/// The whole suite gets this many retries, so one stall costs at most 11
+/// minutes and the next timeout fails at once. An events search on the shared
+/// staging tenant stalls while other users' searches hold the tenant's search
+/// capacity, and the stall ends in minutes.
+static TIMEOUT_RETRIES_LEFT: AtomicU32 = AtomicU32::new(2);
 const TIMEOUT_RETRY_WAIT: Duration = Duration::from_secs(60);
 
 thread_local! {
@@ -249,8 +251,8 @@ thread_local! {
 }
 
 /// Run the command that `make_cmd` builds to completion. Against staging, a
-/// run that reaches [`COMMAND_TIMEOUT`] is killed and run again, up to
-/// [`TIMEOUT_RETRIES`] times, before the command fails.
+/// run that reaches [`COMMAND_TIMEOUT`] is killed and runs again while
+/// [`TIMEOUT_RETRIES_LEFT`] allows, and fails after that.
 ///
 /// Prints the run time of the command to stderr, and the API request lines of
 /// its debug log when it is slow.
@@ -259,31 +261,29 @@ fn run_timed(
     stdin: Option<&[u8]>,
     label: &str,
 ) -> testscript_rs::Result<std::process::Output> {
-    let mut retries = 0;
     loop {
-        match run_once(make_cmd(), stdin, label)? {
+        let requests = match run_once(make_cmd(), stdin, label)? {
             Run::Done(output) => return Ok(output),
-            Run::TimedOut { requests } if retries < TIMEOUT_RETRIES => {
-                retries += 1;
-                eprintln!(
-                    "  timed out after {}s, retry {retries} of {TIMEOUT_RETRIES} in {}s: {label}\n{requests}",
-                    COMMAND_TIMEOUT.as_secs(),
-                    TIMEOUT_RETRY_WAIT.as_secs()
-                );
-                std::thread::sleep(TIMEOUT_RETRY_WAIT);
-            }
+            Run::TimedOut { requests } => requests,
+        };
+        let retry = TIMEOUT_RETRIES_LEFT
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .is_ok();
+        if !retry {
             // A usage error fails the spec even on a `!` line, where any
             // other error satisfies the `!`.
-            Run::TimedOut { requests } => {
-                return Err(testscript_rs::Error::Usage {
-                    message: format!(
-                        "{label} timed out after {}s, {} times. Its API requests:\n{requests}",
-                        COMMAND_TIMEOUT.as_secs(),
-                        TIMEOUT_RETRIES + 1
-                    ),
-                });
-            }
+            return Err(testscript_rs::Error::Usage {
+                message: format!(
+                    "{label} timed out after {}s, with no retries left. Its API requests:\n{requests}",
+                    COMMAND_TIMEOUT.as_secs()
+                ),
+            });
         }
+        eprint!(
+            "  retry in {}s: {label}\n{requests}",
+            TIMEOUT_RETRY_WAIT.as_secs()
+        );
+        std::thread::sleep(TIMEOUT_RETRY_WAIT);
     }
 }
 
@@ -341,6 +341,9 @@ fn run_once(
         if elapsed >= timeout {
             let _ = child.kill();
             let _ = child.wait();
+            let label = format!("{label} (timed out)");
+            print_time(elapsed, &label);
+            COMMAND_TIMES.with_borrow_mut(|times| times.push((elapsed, label)));
             return Ok(Run::TimedOut {
                 requests: request_lines(&stderr.lock().unwrap()),
             });

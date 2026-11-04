@@ -1,5 +1,5 @@
-//! `snouty runs properties --detail` wraps a long Name only on a terminal, so
-//! this runs it on a real pseudo-terminal. The spec-test harness has no TTY.
+//! `snouty runs` output wraps only on a terminal, so these tests run it on a
+//! real pseudo-terminal. The spec-test harness has no TTY.
 
 #![cfg(unix)]
 
@@ -76,6 +76,24 @@ fn pending_note_wraps_on_a_terminal() {
             "Some properties are still being processed. Run",
             "`snouty runs properties run-1` again later for the final",
             "results.",
+        ],
+        "{screen}"
+    );
+}
+
+#[test]
+fn limit_note_wraps_on_a_terminal() {
+    let screen = run_on_pty("runs list --limit 2", 40, "available.");
+    let lines: Vec<&str> = screen.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| line.starts_with("Showing up to"))
+        .unwrap_or_else(|| panic!("no limit note in:\n{screen}"));
+    assert_eq!(
+        lines[start..],
+        [
+            "Showing up to 2 results. Additional",
+            "results may be available."
         ],
         "{screen}"
     );

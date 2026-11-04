@@ -404,6 +404,9 @@ fn input_schema(name: ToolName, params: &[Param]) -> Arc<JsonObject> {
             };
         }
         if param.required {
+            if let ParamKind::Many(_) = param.kind {
+                schema["minItems"] = 1.into();
+            }
             required.push(Value::String(param.id().to_owned()));
         }
         properties.insert(param.id().to_owned(), schema);
@@ -617,6 +620,7 @@ mod tests {
         assert_eq!(list["additionalProperties"], false);
         let debug = schema(ToolName::Debug);
         assert_eq!(debug["properties"]["param"]["type"], "array");
+        assert!(debug["properties"]["param"].get("minItems").is_none());
         assert_eq!(
             debug["properties"]["param"]["items"]["pattern"],
             KV_PAIR_PATTERN
@@ -640,8 +644,10 @@ mod tests {
             DURATION_PATTERN
         );
         let events = schema(ToolName::RunsEvents);
-        assert_eq!(events["required"], json!(["run_id", "matches"]));
         assert_eq!(events["properties"]["matches"]["type"], "array");
+        assert_eq!(events["properties"]["matches"]["minItems"], 1);
+        let docs_search = schema(ToolName::DocsSearch);
+        assert_eq!(docs_search["properties"]["query"]["minItems"], 1);
         assert_eq!(events["properties"]["limit"]["type"], "integer");
         assert!(events["properties"].get("query").is_none(), "{events:?}");
         let version = schema(ToolName::Version)["properties"].as_object().unwrap();

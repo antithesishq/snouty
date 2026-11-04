@@ -459,9 +459,9 @@ The action always sends the branch as `antithesis.source`. With snouty, pass `--
 
 ### Other CI systems
 
-Like the GitHub Actions workflow, the examples below build and pull the images, because snouty launches only local images, then run `snouty validate`, so a broken harness fails in CI instead of in Antithesis. `snouty validate` waits 2 minutes for setup-complete by default. If your system takes longer to start, add `--timeout 10m`.
+Like the GitHub Actions workflow, these examples build and pull the images, then run `snouty validate`. snouty launches only local images, and validate catches a broken harness in CI. Validate waits 2 minutes for setup-complete; for a slower system, add `--timeout 10m`.
 
-`snouty validate` watches for setup-complete in a directory under `$TMPDIR`, which it mounts into the containers. When Docker runs on another machine or in a container (Docker-in-Docker), set `TMPDIR` to a directory that Docker can also see, as the GitLab CI example does.
+Validate mounts a directory under `$TMPDIR` into the containers. If Docker runs elsewhere, such as in Docker-in-Docker, set `TMPDIR` to a directory Docker can see, as the GitLab CI example does.
 
 ### GitLab CI
 

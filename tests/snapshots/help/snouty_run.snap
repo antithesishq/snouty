@@ -77,8 +77,7 @@ Options:
   -h, --help
           Print help
       --json
-          Output JSON where supported (NDJSON for list/stream commands, pretty
-          JSON otherwise)
+          Print one JSON object
       --verbose
           Log API requests to stderr (authentication tokens redacted)
       --settings <SETTINGS>

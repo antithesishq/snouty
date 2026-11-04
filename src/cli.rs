@@ -257,10 +257,11 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Launch a test run
+    #[command(arg = json(JsonShape::Object))]
     Launch(LaunchArgs),
 
     /// Deprecated: use `launch` instead
-    #[command(hide = true)]
+    #[command(hide = true, arg = json(JsonShape::Object))]
     Run(LaunchArgs),
 
     /// Interact with test runs
@@ -271,27 +272,30 @@ pub enum Commands {
     },
 
     /// Launch a debugging session
+    #[command(arg = json(JsonShape::Object))]
     Debug(DebugArgs),
 
     /// Output shell completions
-    #[command(arg = no_json())]
+    #[command(arg = json(JsonShape::None))]
     Completions {
         /// Shell to generate completions for
         shell: clap_complete::Shell,
     },
 
     /// Validate local Antithesis setup
-    #[command(arg = no_json())]
+    #[command(arg = json(JsonShape::None))]
     Validate(ValidateArgs),
 
     /// Check environment configuration
+    #[command(arg = json(JsonShape::Object))]
     Doctor(DoctorArgs),
 
     /// Print version information
+    #[command(arg = json(JsonShape::Object))]
     Version,
 
     /// Check for and install updates
-    #[command(arg = no_json())]
+    #[command(arg = json(JsonShape::None))]
     Update(UpdateArgs),
 
     /// Search Antithesis documentation
@@ -313,7 +317,7 @@ pub enum Commands {
     },
 
     /// Sign in and store your snouty configuration
-    #[command(arg = no_json())]
+    #[command(arg = json(JsonShape::None))]
     Login {
         #[arg(long, value_parser = validate_non_empty)]
         tenant: Option<String>,
@@ -323,7 +327,7 @@ pub enum Commands {
     },
 
     /// Give Docker or Podman the credential for the tenant's container registry
-    #[command(arg = no_json())]
+    #[command(arg = json(JsonShape::None))]
     DockerCredential {
         /// The credential helper action that the engine requests
         action: DockerCredentialAction,
@@ -332,18 +336,42 @@ pub enum Commands {
     /// Serve snouty's run, docs, doctor and settings commands to AI agents over MCP
     #[command(
         hide = !features::is_enabled(Feature::Mcp),
-        arg = no_json(),
+        arg = json(JsonShape::None),
     )]
     Mcp(McpArgs),
 }
 
-/// The `--json` of a command that prints no JSON. It shadows the global
-/// flag, so the help and the MCP tool leave it out, and [`parse`] refuses it.
-fn no_json() -> clap::Arg {
-    clap::Arg::new("json")
+/// What a command prints with `--json`.
+#[derive(Clone, Copy)]
+enum JsonShape {
+    /// No JSON: the command's `--json` is hidden, and [`parse`] refuses it.
+    None,
+    Object,
+    Array,
+    /// NDJSON.
+    Lines,
+    /// NDJSON, or one object for `--count`.
+    LinesOrCount,
+}
+
+/// The `--json` of a command, with help that names its JSON shape. It
+/// shadows the global flag, which clap does not copy to a command that
+/// defines its own. A group, such as `runs`, keeps the global flag, so its
+/// subcommands still get it.
+fn json(shape: JsonShape) -> clap::Arg {
+    let arg = clap::Arg::new("json")
         .long("json")
         .action(clap::ArgAction::SetTrue)
-        .hide(true)
+        .display_order(1000);
+    match shape {
+        JsonShape::None => arg.hide(true),
+        JsonShape::Object => arg.help("Print one JSON object"),
+        JsonShape::Array => arg.help("Print one JSON array"),
+        JsonShape::Lines => arg.help("Print NDJSON: one JSON object per line"),
+        JsonShape::LinesOrCount => {
+            arg.help("Print NDJSON: one JSON object per line, or one object for a count")
+        }
+    }
 }
 
 /// Refuses `--json` on a command that prints no JSON.
@@ -515,14 +543,15 @@ fn validate_non_empty(value: &str) -> Result<String, String> {
 #[derive(Subcommand)]
 pub enum SettingsCommands {
     /// Print the settings that snouty resolved
+    #[command(arg = json(JsonShape::Object))]
     Show,
 
     /// Use a project settings file while its content stays the same
-    #[command(arg = no_json())]
+    #[command(arg = json(JsonShape::None))]
     Trust(SettingsFileArgs),
 
     /// Ignore a project settings file
-    #[command(arg = no_json())]
+    #[command(arg = json(JsonShape::None))]
     Deny(SettingsFileArgs),
 }
 
@@ -536,6 +565,7 @@ pub struct SettingsFileArgs {
 #[derive(Subcommand)]
 pub enum DocsCommands {
     /// Search the documentation
+    #[command(arg = json(JsonShape::Array))]
     Search {
         /// Print only matching page paths, one per line
         #[arg(short = 'l', long)]
@@ -555,6 +585,7 @@ pub enum DocsCommands {
         query: Vec<String>,
     },
     /// Print a tree of documentation paths
+    #[command(arg = json(JsonShape::Object))]
     Tree {
         /// Limit output to nodes at this depth or shallower
         #[arg(short = 'd', long)]
@@ -565,14 +596,14 @@ pub enum DocsCommands {
     },
 
     /// Show full contents of a documentation page
-    #[command(arg = no_json())]
+    #[command(arg = json(JsonShape::None))]
     Show {
         /// Page path (e.g. "product/writing_tests/controlling_faults")
         path: String,
     },
 
     /// Print the path to the cached SQLite database
-    #[command(arg = no_json())]
+    #[command(arg = json(JsonShape::None))]
     Sqlite,
 }
 
@@ -864,9 +895,11 @@ pub struct DebugArgs {
 #[derive(Subcommand)]
 pub enum RunsCommands {
     /// List recent runs
+    #[command(arg = json(JsonShape::Lines))]
     List(RunsListArgs),
 
     /// Show details of a specific run
+    #[command(arg = json(JsonShape::Object))]
     Show {
         /// Run ID
         #[arg(value_parser = parse_run_id)]
@@ -878,6 +911,7 @@ pub enum RunsCommands {
     },
 
     /// Wait until a run is ready or complete
+    #[command(arg = json(JsonShape::Object))]
     Wait {
         /// Run ID
         #[arg(value_parser = parse_run_id)]
@@ -908,6 +942,7 @@ pub enum RunsCommands {
     },
 
     /// Cancel a run that has not finished
+    #[command(arg = json(JsonShape::Object))]
     Cancel {
         /// Run ID
         #[arg(value_parser = parse_run_id)]
@@ -915,6 +950,7 @@ pub enum RunsCommands {
     },
 
     /// List property results for a run
+    #[command(arg = json(JsonShape::Lines))]
     Properties {
         /// Run ID
         #[arg(value_parser = parse_run_id)]
@@ -947,6 +983,7 @@ pub enum RunsCommands {
     },
 
     /// Show one property of a run, by its ID
+    #[command(arg = json(JsonShape::Object))]
     Property {
         /// Run ID
         #[arg(value_parser = parse_run_id)]
@@ -958,6 +995,7 @@ pub enum RunsCommands {
     },
 
     /// Stream a run's property changes until the run is final
+    #[command(arg = json(JsonShape::Lines))]
     Stream {
         /// Run ID
         #[arg(value_parser = parse_run_id)]
@@ -969,6 +1007,7 @@ pub enum RunsCommands {
     },
 
     /// Stream build logs for a run
+    #[command(arg = json(JsonShape::Lines))]
     BuildLogs {
         /// Run ID
         #[arg(value_parser = parse_run_id)]
@@ -976,6 +1015,7 @@ pub enum RunsCommands {
     },
 
     /// Stream moment logs for a run
+    #[command(arg = json(JsonShape::Lines))]
     Logs {
         /// Run ID
         #[arg(value_parser = parse_run_id)]
@@ -1001,6 +1041,7 @@ pub enum RunsCommands {
     },
 
     /// Execute a command in a run that is in progress
+    #[command(arg = json(JsonShape::Lines))]
     Exec {
         /// Run ID
         #[arg(value_parser = parse_run_id)]
@@ -1060,6 +1101,7 @@ pub enum RunsCommands {
     },
 
     /// Search events in a run
+    #[command(arg = json(JsonShape::Lines))]
     Events {
         /// Run ID
         #[arg(value_parser = parse_run_id)]
@@ -1083,9 +1125,11 @@ pub enum RunsCommands {
     },
 
     /// Query events with the event-set DSL
+    #[command(arg = json(JsonShape::LinesOrCount))]
     Search(RunsSearchArgs),
 
     /// Show the compute hours that recent runs used
+    #[command(arg = json(JsonShape::Lines))]
     Usage(RunsUsageArgs),
 }
 
@@ -1211,6 +1255,33 @@ mod tests {
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("args should parse")
+    }
+
+    /// Each command without subcommands names its JSON shape with
+    /// [`json`], so a new command cannot fall back to the generic help of
+    /// the global flag.
+    #[test]
+    fn every_command_names_its_json_shape() {
+        fn check(command: &clap::Command, path: &str) {
+            let subcommands: Vec<_> = command
+                .get_subcommands()
+                .filter(|sub| sub.get_name() != "help")
+                .collect();
+            if subcommands.is_empty() {
+                let json = command
+                    .get_arguments()
+                    .find(|arg| arg.get_id() == "json")
+                    .unwrap_or_else(|| panic!("{path}: no --json"));
+                assert!(
+                    !json.is_global_set(),
+                    "{path}: add #[command(arg = json(..))]"
+                );
+            }
+            for sub in subcommands {
+                check(sub, &format!("{path} {}", sub.get_name()));
+            }
+        }
+        check(tree::root(), "snouty");
     }
 
     /// clap parses the value name, and `launch` sends `Display`, the wire

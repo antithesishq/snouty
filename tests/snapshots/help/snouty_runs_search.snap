@@ -158,8 +158,7 @@ Options:
           Print help (see a summary with '-h')
 
       --json
-          Output JSON where supported (NDJSON for list/stream commands, pretty
-          JSON otherwise)
+          Print NDJSON: one JSON object per line, or one object for a count
 
       --verbose
           Log API requests to stderr (authentication tokens redacted)

@@ -89,9 +89,6 @@ pub async fn cmd_docs(
             limit,
             match_mode,
         } => {
-            if query.is_empty() {
-                return Err(user_error("search query required"));
-            }
             let query_mode = if match_mode {
                 QueryMode::Fts5
             } else {

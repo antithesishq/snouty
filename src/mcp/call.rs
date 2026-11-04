@@ -163,6 +163,7 @@ mod tests {
     use super::*;
     use crate::cli::{Cli, Commands, RunsCommands};
     use crate::mcp::object;
+    use crate::mcp::tools::ValueType;
 
     fn globals() -> Globals {
         Globals {
@@ -409,5 +410,52 @@ mod tests {
         assert_eq!(debug.run_id.as_deref(), Some("r"));
         assert_eq!(debug.input_hash, "-5");
         assert_eq!(debug.params.len(), 2);
+    }
+
+    /// A call with only the schema's required params parses. MCP clients
+    /// refuse a top-level `anyOf`, so the call adds the first param of each
+    /// required group.
+    #[test]
+    fn the_required_params_are_enough_to_parse() {
+        for name in ToolName::ALL {
+            let spec = name.spec();
+            let command = tree::find(name.path()).unwrap();
+            let group_firsts: Vec<&str> = command
+                .get_groups()
+                .filter(|group| group.is_required_set())
+                .filter_map(|group| {
+                    let params: Vec<&str> = group
+                        .get_args()
+                        .map(clap::Id::as_str)
+                        .filter(|id| spec.param(id).is_some())
+                        .collect();
+                    (params.len() > 1).then(|| params[0])
+                })
+                .collect();
+            let mut call = JsonObject::new();
+            for param in &spec.params {
+                let in_group = group_firsts.contains(&param.id());
+                if !param.required && !in_group {
+                    continue;
+                }
+                let value = match param.kind {
+                    ParamKind::Flag => json!(true),
+                    ParamKind::One(ValueType::String) | ParamKind::Many(ValueType::String) => {
+                        match param.arg.get_possible_values().first() {
+                            Some(value) => json!(value.get_name()),
+                            None if param.check("x").is_ok() => json!("x"),
+                            None => json!("1m"),
+                        }
+                    }
+                    ParamKind::One(_) | ParamKind::Many(_) => json!(1),
+                };
+                call.insert(param.id().to_owned(), value);
+            }
+            let argv = command_args(name, &globals(), call).unwrap();
+            Cli::try_parse_from(std::iter::once(OsString::from("snouty")).chain(argv))
+                .unwrap_or_else(|error| {
+                    panic!("{name}: the schema misses a required arg: {error}")
+                });
+        }
     }
 }

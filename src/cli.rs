@@ -503,6 +503,7 @@ pub enum DocsCommands {
         match_mode: bool,
 
         /// Search query
+        #[arg(required = true)]
         query: Vec<String>,
     },
     /// Print a tree of documentation paths

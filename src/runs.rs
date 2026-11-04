@@ -69,17 +69,15 @@ fn limit_note(shown: usize, limit: NonZeroU64, noun: &str, blank_line_before: bo
 /// may never be seen.
 ///
 /// Commentary goes to stderr and only in text mode: under `--json` the rows
-/// are the whole answer. An empty stream gets `empty_message`; any other gets
-/// the limit note when the request named a `limit`, set apart by a blank line
-/// because the text rendering separates its moment blocks with blank lines,
-/// and then `footer`, which marks the end of the stream so a quiet stream
-/// doesn't read as one cut short.
+/// are the whole answer. An empty stream gets `empty_message`. A stream that
+/// filled its `limit` gets the limit note, set apart by a blank line because
+/// the text rendering separates its moment blocks with blank lines. Any other
+/// stream gets an end marker, so a quiet stream doesn't read as one cut short.
 async fn print_event_lines(
     mut lines: BoxStream<'_, Result<String>>,
     output: EventOutput,
     empty_message: &str,
     limit: Option<NonZeroU64>,
-    footer: Option<&str>,
 ) -> Result<()> {
     let mut stdout = stdio::stdout().lock();
     let mut seen: usize = 0;
@@ -96,11 +94,11 @@ async fn print_event_lines(
         eprintln!("{empty_message}");
         return Ok(());
     }
-    if let Some(limit) = limit {
-        limit_note(seen, limit, "results", true);
-    }
-    if let Some(footer) = footer {
-        eprintln!("{footer}");
+    // A filled limit means more rows may exist, so the limit note replaces
+    // the end marker.
+    match limit {
+        Some(limit) if seen as u64 >= limit.get() => limit_note(seen, limit, "results", true),
+        _ => eprintln!("— end of stream"),
     }
     Ok(())
 }
@@ -1679,14 +1677,7 @@ async fn cmd_runs_build_logs(
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
     };
     let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode);
-    print_event_lines(
-        lines,
-        mode,
-        "No build logs for this run.",
-        None,
-        Some("— end of build logs"),
-    )
-    .await
+    print_event_lines(lines, mode, "No build logs for this run.", None).await
 }
 
 async fn cmd_runs_search(
@@ -1722,7 +1713,7 @@ async fn cmd_runs_search(
     // `{"error": ...}` included, so this stream must not guess that such a
     // row is the server's Stream_Error signal.
     let lines = event_search::render_event_stream(stream, ErrorRows::Data, mode);
-    print_event_lines(lines, mode, "No events matched the query.", limit, None).await
+    print_event_lines(lines, mode, "No events matched the query.", limit).await
 }
 
 async fn cmd_runs_events(
@@ -1763,7 +1754,6 @@ async fn cmd_runs_events(
         mode,
         &format!("No events matched \"{}\".", matches.join(" ")),
         Some(limit),
-        None,
     )
     .await
 }
@@ -1787,14 +1777,7 @@ async fn cmd_runs_logs(
     // yields an empty stream; the pipeline says so in text mode rather
     // than printing nothing.
     let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode);
-    print_event_lines(
-        lines,
-        mode,
-        "No log lines at this moment.",
-        None,
-        Some("— end of logs"),
-    )
-    .await
+    print_event_lines(lines, mode, "No log lines at this moment.", None).await
 }
 
 /// The script's stdout is `info`, and its stderr is `error`.

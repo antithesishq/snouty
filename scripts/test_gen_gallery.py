@@ -737,7 +737,7 @@ class BuildLogsTimeCheck(unittest.TestCase):
         # A terminal capture merges stderr into stdout, so the footer follows
         # the log lines there and stderr is empty.
         if footer:
-            stdout += "— end of build logs\n"
+            stdout += f"{gallery.END_OF_STREAM}\n"
         story = gallery.Story("s", "t", "g", "j", [], gallery.build_logs_with_times)
         result = gallery.Result(story.args, stdout, "", 0)
         run = gallery.StoryRun(story, result, [{}] * rows)

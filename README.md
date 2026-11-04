@@ -401,6 +401,7 @@ jobs:
       ANTITHESIS_TENANT: my-tenant
       ANTITHESIS_REPOSITORY: us-central1-docker.pkg.dev/my-project/my-tenant-repository
       ANTITHESIS_API_KEY: ${{ secrets.ANTITHESIS_API_KEY }}
+      GCP_REGISTRY_KEY: ${{ secrets.GCP_REGISTRY_KEY }}
       # The runner has Podman too, and snouty prefers it by default.
       SNOUTY_CONTAINER_ENGINE: docker
     steps:
@@ -410,11 +411,7 @@ jobs:
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
 
       - name: Log in to the container registry
-        uses: docker/login-action@v3
-        with:
-          registry: us-central1-docker.pkg.dev
-          username: _json_key
-          password: ${{ secrets.GCP_REGISTRY_KEY }}
+        run: echo "$GCP_REGISTRY_KEY" | docker login us-central1-docker.pkg.dev --username _json_key --password-stdin
 
       # snouty launches only images in the local image store: it never builds
       # or pulls them.

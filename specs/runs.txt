@@ -1157,6 +1157,7 @@ env TZ=UTC
 stdout -literal '2025-03-20 02:01:12 [stdout] Building image payments-service...'
 stderr 'the server reported an error mid-stream: mock stream failure'
 stderr 'output produced before the error may be incomplete'
+! stderr 'end of build logs'
 
 # In the raw NDJSON passthrough the error line stays off stdout: it is the
 # server aborting the stream, not build log data.

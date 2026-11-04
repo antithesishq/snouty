@@ -122,10 +122,10 @@ SNOUTY_STAGING=1 cargo nextest run spec_tests --no-capture
 `--no-capture` shows the progress as it occurs: each spec file and each
 command with its time, the API requests of a command that takes 5 seconds or
 more, and at the end the slowest files and commands. A command that runs 3
-minutes is stopped and runs again after 1 minute, because an events search on
-the shared staging tenant can stall while other searches hold its capacity.
-The whole run gets 2 retries; a timeout after that fails the command. Each
-timeout shows the command's API requests. A request with no status did not complete.
+minutes stops and runs again after 1 minute. An events search on the shared
+staging tenant can stall while other searches hold its capacity. The whole run
+gets 2 retries, and a timeout after that fails the command. Each timeout shows
+the command's API requests. A request with no status did not complete.
 
 Required env in staging mode: `ANTITHESIS_TENANT` plus either
 `ANTITHESIS_API_KEY` or `ANTITHESIS_USERNAME`+`ANTITHESIS_PASSWORD`.

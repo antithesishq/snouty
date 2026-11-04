@@ -237,11 +237,10 @@ const RUNNING_NOTICE: Duration = Duration::from_secs(30);
 /// A command that runs this long against staging times out. A normal staging
 /// run takes about 1.5 minutes in all.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(180);
-/// A staging command that times out runs again after [`TIMEOUT_RETRY_WAIT`].
-/// The whole suite gets this many retries, so one stall costs at most 11
-/// minutes and the next timeout fails at once. An events search on the shared
-/// staging tenant stalls while other users' searches hold the tenant's search
-/// capacity, and the stall ends in minutes.
+/// The whole run shares this many reruns, each after [`TIMEOUT_RETRY_WAIT`], of
+/// a staging command that times out. An events search on the shared staging
+/// tenant stalls while other users' searches hold its search capacity, and the
+/// stall ends within minutes.
 static TIMEOUT_RETRIES_LEFT: AtomicU32 = AtomicU32::new(2);
 const TIMEOUT_RETRY_WAIT: Duration = Duration::from_secs(60);
 
@@ -287,10 +286,9 @@ fn run_timed(
     }
 }
 
-/// How one run of a command ended.
 enum Run {
     Done(std::process::Output),
-    /// Killed at [`COMMAND_TIMEOUT`], with the API request lines of its debug log.
+    /// `requests` holds the API request lines of the command's debug log.
     TimedOut {
         requests: String,
     },

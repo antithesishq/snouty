@@ -94,9 +94,15 @@ jobs:
             "${source_flag[@]}"
 ```
 
-Store your Antithesis API key as the `ANTITHESIS_API_KEY` secret, or use [GitHub Actions OIDC](#github-actions-oidc) to store no secret. Store the JSON key of the service account for your container registry as the `GCP_REGISTRY_KEY` secret. `snouty validate` waits 2 minutes for setup-complete by default. If your system takes longer to start, raise the limit with `--timeout`, for example `--timeout 10m`. To run a pull request again, remove the `antithesis` label and add it back.
+The workflow needs these secrets:
 
-When `ANTITHESIS_GITHUB_TOKEN` is set, the launch sets the `continuous-testing/antithesis` commit status of the commit to pending, and Antithesis sets the result when the run ends. With `--test-name`, the status is `continuous-testing/antithesis (<test-name>)`, so two tests on one commit get two statuses. Antithesis uses the token after the job ends, so `secrets.GITHUB_TOKEN` does not work. Use a [fine-grained personal access token](https://github.com/settings/tokens?type=beta) for the repository, with read access to metadata and read and write access to commit statuses, and store it as the `GH_PAT` secret.
+- `ANTITHESIS_API_KEY`: your Antithesis API key. With [GitHub Actions OIDC](#github-actions-oidc), you need no key.
+- `GCP_REGISTRY_KEY`: the JSON key of the service account for your container registry.
+- `GH_PAT`: a [fine-grained personal access token](https://github.com/settings/tokens?type=beta) for the repository, with read access to metadata and read and write access to commit statuses. `secrets.GITHUB_TOKEN` does not work, because Antithesis uses the token after the job ends.
+
+The launch sets the `continuous-testing/antithesis (<test-name>)` commit status to pending, and Antithesis sets the result when the run ends. Each test name gets its own status.
+
+To run a pull request again, remove the `antithesis` label and add it back. If your system takes more than 2 minutes to start, add `--timeout 10m` to `snouty validate`.
 
 A `--param` replaces the detected parameter with the same key. `--no-vcs` turns off the `vcs.*` detection, but not the commit status.
 

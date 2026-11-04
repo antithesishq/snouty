@@ -11,4 +11,6 @@ Find a moment with `runs_properties`, `runs_events`, `runs_search`, or the failu
 
 Each event has a moment, a source, and a payload: log output, an SDK assertion, a fault, a container lifecycle change, or a test composer command.
 
+Output: a `moment INPUT_HASH` divider is emitted at the start of each branch. Each event under a divider renders on one line as `VTIME [source] payload`. No fields are truncated, and additional fields are included in indented lines after the event.
+
 With `json`, each event prints as one JSON object on its own line.

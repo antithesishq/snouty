@@ -1410,8 +1410,6 @@ mod tests {
         assert_eq!(begin_vtime, Some("-2.0".parse::<VTime>().unwrap()));
     }
 
-    // VTIME is optional; without it the stream runs to the branch's current
-    // end.
     #[test]
     fn logs_accepts_a_missing_vtime() {
         let cli = parse(&["snouty", "runs", "logs", "RUN", "-123"]);

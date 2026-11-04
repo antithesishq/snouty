@@ -7,8 +7,8 @@
 //! each run of consecutive events that share an input hash (the moment is the
 //! commit, its events are the body), one line per event beneath it, and dim
 //! indented detail lines where a kind has more to say. Consecutive blocks are
-//! separated by a blank line. Colors go through [`console::style`], which disables itself off-tty
-//! and under `NO_COLOR`.
+//! separated by a blank line. Colors go through [`console::style`], which
+//! disables itself off-tty and under `NO_COLOR`.
 //!
 //! Each event type lives in its own submodule and implements [`Event`],
 //! which couples the type's classification (does this entry have my shape?)
@@ -33,9 +33,8 @@
 //! The renderer also owns the display conventions the streams share: vtime is
 //! normalized through [`VTime`] and shown in a fixed-width cell, truncated —
 //! never rounded — so a value copied off the screen and pasted back lands on,
-//! never past, the line you saw. The divider carries the input hash for
-//! `runs logs <run_id> <hash>`, which streams to the end of the branch
-//! corresponding to that input hash.
+//! never past, the line you saw. The divider carries the input hash that
+//! `runs logs <run_id> <hash>` takes.
 //!
 //! Rendering writes into a caller-supplied buffer (see [`Block`]), in the
 //! style of `Display`/`Debug` formatters: one pass over each input, no
@@ -453,8 +452,8 @@ fn render_source(entry: &Value, detail: bool) -> String {
 /// separation included, no trailing newline.
 pub(crate) struct EventStreamRenderer {
     detail: bool,
-    /// The previous event's input hash; `Some` also means at least one block was
-    /// written, so the next divider needs a blank line above it.
+    /// The previous event's input hash; `Some` also means at least one block
+    /// was written, so the next divider needs a blank line above it.
     last_input_hash: Option<String>,
 }
 
@@ -579,7 +578,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn opens_each_timeline_segment_with_an_input_hash_divider() {
+    fn prints_a_divider_each_time_the_input_hash_changes() {
         let mut r = renderer(false);
         let first = r.render_entry(&json!({
             "moment": {"input_hash": "-123", "vtime": "311.8487535319291"},

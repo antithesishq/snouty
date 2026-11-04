@@ -516,8 +516,8 @@ stdout '"timestamp":"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z"'
 [!staging] stdout '"timestamp":"2025-03-20T02:01:12Z"'
 
 # `snouty runs events` filters by `--match` server-side and prints each
-# matching event as a classified block: a `moment HASH` divider opens
-# each timeline segment and each event renders as one `VTIME [source] payload`
+# matching event as a classified block: a `moment INPUT_HASH` divider each
+# time the input_hash changes, and each event renders as one `VTIME [source] payload`
 # line (no table: rows print as the server sends them).
 #    Against staging the search matches `fault` and carries `--limit`: fault
 #    events are Antithesis-generated, exist in every fault-injecting run, and
@@ -766,14 +766,14 @@ stderr '^Suggestion: search for a moment using `snouty runs events run-1 <search
 ! snouty runs properties
 stderr '.*'
 
-# `snouty runs logs` renders classified event blocks: a `moment HASH`
-# divider (its hash is sufficient for `runs logs`) opens each
-# timeline segment, and each event under it renders as one
+# `snouty runs logs` renders classified event blocks: a `moment INPUT_HASH`
+# divider (its hash is sufficient for `runs logs`) at the start of each
+# branch, and each event under it renders as one
 # `VTIME [source] payload` line. Antithesis shapes get their own concise
 # forms: an SDK assertion shows a verdict badge (HIT or FAIL) with its
 # label and message; a fault shows its type, disruption and nodes;
 # test-composer records show their task lifecycle or key=value chatter.
-# Without VTIME the stream runs to the timeline's current end.
+# Without VTIME the stream ends at the end of the input_hash's branch.
 mock-runs-server
 snouty runs logs run-1 -123
 stdout '^moment -123$'
@@ -789,7 +789,7 @@ stdout '^400\.7     \[test_composer\] composer new_command_path=core/parallel_dr
 ! stdout 'new_command='
 # Locations and attached details stay behind --detail.
 ! stdout '@ control\.go'
-# Consecutive timeline segments are separated by one blank line.
+# A blank line separates the events of one moment divider from the next.
 stdout '(?s)"starting"\}\n\nmoment -456'
 
 # VTIME is the stream's end moment. The API streams the branch past it, so
@@ -1008,7 +1008,7 @@ mock-runs-server
 [!staging] ! stderr 'waiting for the run'
 
 # `snouty runs search` runs one event-set DSL query server-side and prints
-# each matching event as a classified block under its `moment HASH`
+# each matching event as a classified block under its `moment INPUT_HASH`
 # divider, exactly like `runs events` (no table: on a live run the stream
 # stays open, so rows print as they arrive).
 #    Against staging the query carries --limit for the same wall-time reason

@@ -198,7 +198,7 @@ snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --ev
 stdout '\[bash_command\] .*include_system_logs=true'
 
 # --events prints every event of the timeline as `runs logs` does, all on
-# stdout: a `moment HASH` divider, then `VTIME [source] payload` lines. The
+# stdout: a `moment INPUT_HASH` divider, then `VTIME [source] payload` lines. The
 # trailer still goes to stderr.
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 with-system-logs --events
 stdout 'moment -8206006569229276678'

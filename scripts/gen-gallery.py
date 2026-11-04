@@ -3159,7 +3159,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-logs",
             "Stream logs using the hash from a property example",
             "I copy an example's input hash from `runs properties --detail` to read "
-            "logs through the end of that moment.",
+            "logs to the end of its branch.",
             "Without a vtime argument, logs end at the end of the hash's branch. "
             "Each divider shows only `moment INPUT_HASH`; event lines keep their vtimes.",
             ["runs", "logs", d.success, d.logs_hash],

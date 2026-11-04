@@ -252,7 +252,7 @@ A JSON config for a stdio server looks like this one. The key names can be diffe
 
 ## Authentication
 
-Snouty accepts three kinds of credentials: OAuth tokens from a browser sign-in, an API key, and a deprecated username and password. On a workstation, run `snouty login` and let snouty store a credential for you. In CI and in scripts, use environment variables.
+Snouty accepts four kinds of credentials: OAuth tokens from a browser sign-in, an API key, a GitHub Actions OIDC token, and a deprecated username and password. On a workstation, run `snouty login` and let snouty store a credential for you. In CI and in scripts, use environment variables or GitHub Actions OIDC tokens.
 
 Snouty looks for a credential in this order, and uses the first one it finds:
 
@@ -260,6 +260,7 @@ Snouty looks for a credential in this order, and uses the first one it finds:
 2. `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` in the environment (deprecated).
 3. The credential stored for the selected `--profile`: the system keychain first, the credentials file second.
 4. The credential stored for the default profile: the system keychain first, the credentials file second.
+5. A GitHub Actions OIDC token, when the workflow exposes one.
 
 An environment variable always wins over a stored credential. Unset `ANTITHESIS_API_KEY` when you want snouty to use what `snouty login` stored.
 
@@ -297,6 +298,23 @@ export ANTITHESIS_API_KEY="your-api-key"
 ```
 
 `snouty login` also stores an API key for you, which keeps the key out of your shell history and out of your environment.
+
+### GitHub Actions OIDC
+
+In a GitHub Actions workflow, snouty can authenticate with the workflow's own OIDC token instead of an API key, so you store no secret.
+
+> [!IMPORTANT]
+> Your Antithesis tenant must trust GitHub Actions OIDC tokens from your repository before this works. Ask Antithesis support to configure it.
+
+Give the job permission to mint the token, and leave `ANTITHESIS_API_KEY` unset, because an API key takes precedence:
+
+```yaml
+permissions:
+  id-token: write
+  contents: read
+```
+
+A pull request from a fork gets no OIDC token, just as it gets no secrets.
 
 ### Credential injection by an HTTPS proxy
 
@@ -363,7 +381,7 @@ Each CI job needs these environment variables:
 
 - `ANTITHESIS_TENANT`: your tenant.
 - `ANTITHESIS_REPOSITORY`: the container registry for your images, with `--config`. On your tenant registry, `registry.<tenant>.antithesis.com`, snouty pushes with its own credential. That needs Docker 28.3.0 or later, or the [Docker credential helper](#docker-credential-helper). For any other registry, log in to it in the job before the launch.
-- `ANTITHESIS_API_KEY`: an API key, stored as a secret.
+- `ANTITHESIS_API_KEY`: an API key, stored as a secret. GitHub Actions can use [OIDC](#github-actions-oidc) instead.
 
 snouty does not choose a `--source` for you. A run without `--source` is ephemeral: its results do not go into the property history of any source. To record history for a branch, pass `--source` only in the jobs that build that branch, such as pushes to `main` and nightly schedules. Do not pass a pull request's branch name as the source: a pull request from a fork can use any branch name, such as `main`.
 
@@ -444,7 +462,7 @@ jobs:
             "${source_flag[@]}"
 ```
 
-Store your Antithesis API key as the `ANTITHESIS_API_KEY` secret. `snouty validate` waits 2 minutes for setup-complete by default. If your system takes longer to start, raise the limit with `--timeout`, for example `--timeout 10m`.
+Store your Antithesis API key as the `ANTITHESIS_API_KEY` secret, or use [GitHub Actions OIDC](#github-actions-oidc) to store no secret. `snouty validate` waits 2 minutes for setup-complete by default. If your system takes longer to start, raise the limit with `--timeout`, for example `--timeout 10m`.
 
 When `ANTITHESIS_GITHUB_TOKEN` is set, the launch sets the `continuous-testing/antithesis` commit status of the commit to pending, and Antithesis sets the result when the run ends. With `--test-name`, the status is `continuous-testing/antithesis (<test-name>)`, so two tests on one commit get two statuses. Antithesis uses the token after the job ends, so `secrets.GITHUB_TOKEN` does not work. Use a [fine-grained personal access token](https://github.com/settings/tokens?type=beta) for the repository, with read access to metadata and read and write access to commit statuses, and store it as the `GH_PAT` secret.
 
@@ -455,7 +473,7 @@ Each input of the trigger action has a snouty equivalent:
 | Trigger action input | snouty |
 |---|---|
 | `tenant` | `ANTITHESIS_TENANT` |
-| `api_key` | `ANTITHESIS_API_KEY` |
+| `api_key` | `ANTITHESIS_API_KEY`, or GitHub Actions OIDC |
 | `username`, `password` | `ANTITHESIS_USERNAME`, `ANTITHESIS_PASSWORD` (deprecated) |
 | `github_token` | `ANTITHESIS_GITHUB_TOKEN` |
 | `notebook_name` | `--launcher` |

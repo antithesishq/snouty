@@ -145,9 +145,15 @@ Each input of the trigger action has a snouty equivalent:
 
 The action always sends the branch as `antithesis.source`. With snouty, pass `--source` yourself, as in the workflow above.
 
-## GitLab CI
+## Other CI systems
 
-GitLab CI checks out a detached HEAD, so the launch records the commit but no branch. This job records history for the default branch only. Store `ANTITHESIS_API_KEY` as a masked CI/CD variable:
+Like the GitHub Actions workflow, these examples log in to the container registry, build and pull the images, then run `snouty validate`. snouty launches only local images, and validate catches a broken harness in CI. Validate waits 2 minutes for setup-complete; for a slower system, add `--timeout 10m`.
+
+Validate mounts a directory under `$TMPDIR` into the containers. If Docker runs elsewhere, such as in Docker-in-Docker, set `TMPDIR` to a directory Docker can see, as the GitLab CI example does.
+
+### GitLab CI
+
+GitLab CI checks out a detached HEAD, so the launch records the commit but no branch. This job records history for the default branch only. Docker runs in the `docker:dind` service, which shares only the project directory with the job, so `snouty validate` keeps its temporary files there. Store `ANTITHESIS_API_KEY` as a masked CI/CD variable. GitLab cannot mask a JSON key, so store the registry key base64-encoded (`base64 -w0 key.json`) as the masked variable `GCP_REGISTRY_KEY_BASE64`:
 
 ```yaml
 antithesis:
@@ -155,36 +161,62 @@ antithesis:
   services: [docker:dind]
   variables:
     ANTITHESIS_TENANT: my-tenant
-    ANTITHESIS_REPOSITORY: registry.my-tenant.antithesis.com/my-project
+    ANTITHESIS_REPOSITORY: us-central1-docker.pkg.dev/molten-verve-216720/my-tenant-repository
   before_script:
     - apk add --no-cache curl git xz
     - curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
     - export PATH="$HOME/.local/bin:$PATH"
   script:
-    - if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then SOURCE="$CI_COMMIT_BRANCH"; fi
-    - snouty launch --launcher basic_test --config ./antithesis --duration 30m ${SOURCE:+--source "$SOURCE"}
+    - echo "$GCP_REGISTRY_KEY_BASE64" | docker login us-central1-docker.pkg.dev --username _json_key_base64 --password-stdin
+    - docker compose -f antithesis/docker-compose.yaml build
+    - docker compose -f antithesis/docker-compose.yaml pull --ignore-buildable
+    - export TMPDIR="$CI_PROJECT_DIR/.snouty-tmp" && mkdir -p "$TMPDIR"
+    - snouty validate ./antithesis
+    - |
+      # Only the default branch records property history.
+      source_flag=""
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        source_flag="--source $CI_COMMIT_BRANCH"
+      fi
+      snouty launch \
+        --launcher basic_test \
+        --config ./antithesis \
+        --duration 30m \
+        $source_flag
 ```
 
-## Buildkite
+### Buildkite
 
-Buildkite checks out a detached HEAD, so the launch records the commit but no branch. For a repository on github.com, it also records the repository and a commit link. Give the agent `ANTITHESIS_API_KEY` from your secrets store. `$$` keeps Buildkite from replacing a variable when it uploads the pipeline:
+Buildkite checks out a detached HEAD, so the launch records the commit but no branch. For a repository on github.com, it also records the repository and a commit link. The agent needs Docker with Compose. Give it `ANTITHESIS_API_KEY` and `GCP_REGISTRY_KEY`, the JSON key of the service account for your container registry, from your secrets store. `$$` keeps Buildkite from replacing a variable when it uploads the pipeline:
 
 ```yaml
 steps:
   - label: Antithesis
     env:
       ANTITHESIS_TENANT: my-tenant
-      ANTITHESIS_REPOSITORY: registry.my-tenant.antithesis.com/my-project
+      ANTITHESIS_REPOSITORY: us-central1-docker.pkg.dev/molten-verve-216720/my-tenant-repository
     command: |
       curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
       export PATH="$$HOME/.local/bin:$$PATH"
-      if [ "$$BUILDKITE_BRANCH" = "$$BUILDKITE_PIPELINE_DEFAULT_BRANCH" ] && [ "$$BUILDKITE_PULL_REQUEST" = "false" ]; then SOURCE="$$BUILDKITE_BRANCH"; fi
-      snouty launch --launcher basic_test --config ./antithesis --duration 30m $${SOURCE:+--source "$$SOURCE"}
+      echo "$$GCP_REGISTRY_KEY" | docker login us-central1-docker.pkg.dev --username _json_key --password-stdin
+      docker compose -f antithesis/docker-compose.yaml build
+      docker compose -f antithesis/docker-compose.yaml pull --ignore-buildable
+      snouty validate ./antithesis
+      # Only the default branch records property history.
+      source_flag=""
+      if [ "$$BUILDKITE_BRANCH" = "$$BUILDKITE_PIPELINE_DEFAULT_BRANCH" ] && [ "$$BUILDKITE_PULL_REQUEST" = "false" ]; then
+        source_flag="--source $$BUILDKITE_BRANCH"
+      fi
+      snouty launch \
+        --launcher basic_test \
+        --config ./antithesis \
+        --duration 30m \
+        $$source_flag
 ```
 
-## CircleCI
+### CircleCI
 
-CircleCI checks out the branch of a branch build, so the launch records the commit and the branch. For a repository on github.com, it also records the repository and a commit link. Store `ANTITHESIS_API_KEY` in a context or a project environment variable:
+CircleCI checks out the branch of a branch build, so the launch records the commit and the branch. For a repository on github.com, it also records the repository and a commit link. Store `ANTITHESIS_API_KEY` and `GCP_REGISTRY_KEY`, the JSON key of the service account for your container registry, in a context or as project environment variables:
 
 ```yaml
 version: 2.1
@@ -194,20 +226,32 @@ jobs:
       image: ubuntu-2404:current
     environment:
       ANTITHESIS_TENANT: my-tenant
-      ANTITHESIS_REPOSITORY: registry.my-tenant.antithesis.com/my-project
+      ANTITHESIS_REPOSITORY: us-central1-docker.pkg.dev/molten-verve-216720/my-tenant-repository
     steps:
       - checkout
       - run: |
           curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
           export PATH="$HOME/.local/bin:$PATH"
-          if [ "$CIRCLE_BRANCH" = main ] && [ -z "$CIRCLE_PULL_REQUEST" ]; then SOURCE=main; fi
-          snouty launch --launcher basic_test --config ./antithesis --duration 30m ${SOURCE:+--source "$SOURCE"}
+          echo "$GCP_REGISTRY_KEY" | docker login us-central1-docker.pkg.dev --username _json_key --password-stdin
+          docker compose -f antithesis/docker-compose.yaml build
+          docker compose -f antithesis/docker-compose.yaml pull --ignore-buildable
+          snouty validate ./antithesis
+          # Only main records property history.
+          source_flag=""
+          if [ "$CIRCLE_BRANCH" = main ] && [ -z "$CIRCLE_PULL_REQUEST" ]; then
+            source_flag="--source main"
+          fi
+          snouty launch \
+            --launcher basic_test \
+            --config ./antithesis \
+            --duration 30m \
+            $source_flag
 workflows:
   antithesis:
     jobs: [antithesis]
 ```
 
-## Commit status from another CI system
+### Commit status from another CI system
 
 Only GitHub Actions sends the GitHub callback params for you. For a repository on GitHub that another CI system builds, pass them yourself. Then the launch also sets the commit status to pending:
 

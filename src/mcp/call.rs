@@ -162,6 +162,7 @@ mod tests {
 
     use super::*;
     use crate::cli::{Cli, Commands, RunsCommands};
+    use crate::mcp::tools::ValueType;
     use crate::mcp::object;
 
     fn globals() -> Globals {
@@ -409,5 +410,55 @@ mod tests {
         assert_eq!(debug.run_id.as_deref(), Some("r"));
         assert_eq!(debug.input_hash, "-5");
         assert_eq!(debug.params.len(), 2);
+    }
+    /// A call with only the schema's required params parses, so the schema
+    /// marks every arg that the command line requires. MCP clients refuse a
+    /// tool whose schema has a top-level `anyOf`, so the schema cannot require
+    /// one of two params: for a required group with two params or more, the
+    /// call adds the first, and the params' descriptions say that one is
+    /// required.
+    #[test]
+    fn the_required_params_are_enough_to_parse() {
+        for name in ToolName::ALL {
+            let spec = name.spec();
+            let command = tree::find(name.path()).unwrap();
+            let group_firsts: Vec<&str> = command
+                .get_groups()
+                .filter(|group| group.is_required_set())
+                .filter_map(|group| {
+                    let params: Vec<&str> = group
+                        .get_args()
+                        .map(clap::Id::as_str)
+                        .filter(|id| spec.param(id).is_some())
+                        .collect();
+                    (params.len() > 1).then(|| params[0])
+                })
+                .collect();
+            let mut call = JsonObject::new();
+            for param in &spec.params {
+                let in_group = group_firsts.contains(&param.id());
+                if !param.required && !in_group {
+                    continue;
+                }
+                let first = param.arg.get_possible_values().first().map(|v| v.get_name().to_owned());
+                let value = match param.kind {
+                    ParamKind::Flag => json!(true),
+                    ParamKind::One(ValueType::String) | ParamKind::Many(ValueType::String) => {
+                        let text = first.unwrap_or_else(|| {
+                            if param.check("x").is_ok() { "x" } else { "1m" }.to_owned()
+                        });
+                        json!(text)
+                    }
+                    ParamKind::One(_) | ParamKind::Many(_) => json!(1),
+                };
+                call.insert(param.id().to_owned(), value);
+            }
+            let argv = command_args(name, &globals(), call).unwrap();
+            let parsed =
+                Cli::try_parse_from(std::iter::once(OsString::from("snouty")).chain(argv));
+            if let Err(error) = parsed {
+                panic!("{name}: the schema misses a required arg: {error}");
+            }
+        }
     }
 }

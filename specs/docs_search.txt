@@ -8,7 +8,7 @@
 #    with spaces into a single full-text search query.
 setup-docs-db
 ! snouty docs --offline search
-stderr 'search query required.*'
+stderr 'required arguments were not provided'
 
 # 1b. Multiple positional terms joined into single query.
 snouty docs --offline search fault injection

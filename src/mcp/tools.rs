@@ -87,6 +87,10 @@ macro_rules! tools {
                 }
             }
 
+            /// Args that the tool requires and the command line does not. The
+            /// schema reads requiredness from clap and cannot see a check in
+            /// the command's code, so a command marks its required args in
+            /// clap.
             fn required(self) -> &'static [&'static str] {
                 match self {
                     $(ToolName::$variant => &[$($required),*],)*
@@ -474,6 +478,44 @@ mod tests {
     use crate::features::{self, Feature};
     use crate::mcp::object;
 
+    /// The schema requires the params that each command needs. A command
+    /// that checks for an arg in its code, not in clap, shows up here as a
+    /// param that the schema leaves optional.
+    #[test]
+    fn each_tool_requires_the_params_its_command_needs() {
+        for name in ToolName::ALL {
+            let expected: &[&str] = match name {
+                ToolName::RunsShow
+                | ToolName::RunsWait
+                | ToolName::RunsCancel
+                | ToolName::RunsProperties
+                | ToolName::RunsBuildLogs => &["run_id"],
+                ToolName::RunsProperty => &["run_id", "property_id"],
+                ToolName::RunsLogs => &["run_id", "input_hash"],
+                ToolName::RunsSearch => &["run_id", "query"],
+                ToolName::RunsExec => &["run_id", "input_hash", "vtime", "script"],
+                ToolName::RunsEvents => &["run_id", "matches"],
+                // One of `run_id` and `session_id` is also required.
+                ToolName::Debug => &["input_hash", "vtime"],
+                ToolName::DocsShow => &["path"],
+                ToolName::DocsSearch => &["query"],
+                ToolName::RunsList
+                | ToolName::RunsUsage
+                | ToolName::DocsTree
+                | ToolName::Doctor
+                | ToolName::Version
+                | ToolName::SettingsShow => &[],
+            };
+            let required: Vec<&str> = name.spec().tool.input_schema["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|id| id.as_str().unwrap())
+                .collect();
+            assert_eq!(required, expected, "{name}");
+        }
+    }
+
     /// The hidden and required ids name real args, so a renamed arg cannot
     /// slip past the table.
     #[test]
@@ -549,11 +591,6 @@ mod tests {
     #[test]
     fn schemas_follow_the_clap_args() {
         let schema = |name: ToolName| &name.spec().tool.input_schema;
-        let exec = schema(ToolName::RunsExec);
-        assert_eq!(
-            exec["required"],
-            json!(["run_id", "input_hash", "vtime", "script"])
-        );
         let search = schema(ToolName::RunsSearch);
         assert_eq!(search["properties"]["count"]["type"], "boolean");
         assert_eq!(search["properties"]["limit"]["minimum"], 1);
@@ -583,14 +620,11 @@ mod tests {
         assert_eq!(logs["properties"]["vtime"]["type"], "number");
         assert_eq!(list["additionalProperties"], false);
         let debug = schema(ToolName::Debug);
-        assert_eq!(debug["required"], json!(["input_hash", "vtime"]));
         assert_eq!(debug["properties"]["param"]["type"], "array");
         assert_eq!(
             debug["properties"]["param"]["items"]["pattern"],
             KV_PAIR_PATTERN
         );
-        let property = schema(ToolName::RunsProperty);
-        assert_eq!(property["required"], json!(["run_id", "property_id"]));
         let usage = schema(ToolName::RunsUsage);
         assert_eq!(usage["properties"]["rollup"]["type"], "string");
         assert!(

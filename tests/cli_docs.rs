@@ -365,15 +365,6 @@ fn docs_search_list_json_outputs_path_array() {
 }
 
 #[test]
-fn docs_search_no_query_fails() {
-    snouty_docs()
-        .args(["docs", "--offline", "search"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("search query required"));
-}
-
-#[test]
 fn docs_search_no_results() {
     snouty_docs()
         .args(["docs", "--offline", "search", "xyznonexistent999"])

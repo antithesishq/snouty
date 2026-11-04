@@ -385,16 +385,21 @@ on:
 
 jobs:
   antithesis:
-    # Pull requests from forks and from Dependabot get no secrets, so the
-    # launch could only fail. Skip them.
+    # Pull requests from other repositories (forks) and from Dependabot get no
+    # secrets, so the launch could only fail. Skip them.
     if: >-
       github.event_name == 'push' ||
-      (!github.event.pull_request.head.repo.fork &&
+      (github.event.pull_request.head.repo.full_name == github.repository &&
        github.actor != 'dependabot[bot]')
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # For the whole job: the credential helper needs them in every step that
+    # reaches the tenant registry, not only in the launch.
     env:
+      ANTITHESIS_TENANT: my-tenant
+      ANTITHESIS_REPOSITORY: registry.my-tenant.antithesis.com/my-project
+      ANTITHESIS_API_KEY: ${{ secrets.ANTITHESIS_API_KEY }}
       # The runner has Podman too, and snouty prefers it by default.
       SNOUTY_CONTAINER_ENGINE: docker
     steps:
@@ -426,9 +431,6 @@ jobs:
 
       - name: Launch an Antithesis run
         env:
-          ANTITHESIS_TENANT: my-tenant
-          ANTITHESIS_REPOSITORY: registry.my-tenant.antithesis.com/my-project
-          ANTITHESIS_API_KEY: ${{ secrets.ANTITHESIS_API_KEY }}
           ANTITHESIS_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           # Only pushes to main record property history. Pull request runs are

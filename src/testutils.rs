@@ -1303,7 +1303,7 @@ fn mock_route_get_run_logs(run_id: &str) -> (u16, String) {
         // Verifies that --json emits this as a single output line.
         r#"{"output_text":"line one\nline two","source":{"container":"app","name":"app","stream":"out"},"moment":{"input_hash":"-789","vtime":"3.0"}}"#,
         r#"{"IPT_bytes_out":563000,"output_text":"W0320 15:07:26.913251       1 control.go:315] Error setting vault 10.0.1.123:8003 value to 64: Post \"http://10.0.1.123:8003/\": dial tcp 10.0.1.123:8003: i/o timeout (Client.Timeout exceeded while awaiting headers)","source":{"container":"control","name":"service_control","stream":"error"},"moment":{"input_hash":"-7835669064649885519","vtime":"73.94233945617452"}}"#,
-        r#"{"antithesis_assert":{"assert_type":"always","condition":false,"details":null,"display_type":"AlwaysOrUnreachable","hit":false,"id":"Counter's value retrieved","location":{"begin_column":0,"begin_line":87,"class":"","file":"/go/src/antithesis/control/control.go","function":"get"},"message":"Counter's value retrieved","must_hit":false},"IPT_bytes_out":1837376,"source":{"container":"control","name":"control","pid":1},"moment":{"input_hash":"-4735081784258020614","vtime":"311.8487535319291"}}"#,
+        r#"{"antithesis_assert":{"assert_type":"always","condition":false,"details":null,"display_type":"AlwaysOrUnreachable","hit":true,"id":"Counter's value retrieved","location":{"begin_column":0,"begin_line":87,"class":"","file":"/go/src/antithesis/control/control.go","function":"get"},"message":"Counter's value retrieved","must_hit":false},"IPT_bytes_out":1837376,"source":{"container":"control","name":"control","pid":1},"moment":{"input_hash":"-4735081784258020614","vtime":"311.8487535319291"}}"#,
         // Platform events with no container; source.name is used as the
         // bracketed label and curated fields render as <path>=<value> pairs.
         r#"{"started_task":"abc_parallel_driver_fetch","task_status":"started","command":"core/parallel_driver_fetch","container_id":"d700ef3d05a263","tasks_len":"1","source":{"name":"antithesis_test_composer","pid":974},"moment":{"input_hash":"5181922178177328213","vtime":"400.5"}}"#,
@@ -1312,7 +1312,40 @@ fn mock_route_get_run_logs(run_id: &str) -> (u16, String) {
         r#"{"started_task":"abc_parallel_driver_fetch","task_status":"progressing","command":"core/parallel_driver_fetch","container_id":"d700ef3d05a263","tasks_len":"1","source":{"name":"antithesis_test_composer","pid":974},"moment":{"input_hash":"5181922178177328213","vtime":"401.75"}}"#,
         r#"{"started_task":"abc_parallel_driver_fetch","task_status":"completed","command":"core/parallel_driver_fetch","container_id":"d700ef3d05a263","tasks_len":"1","source":{"name":"antithesis_test_composer","pid":974},"moment":{"input_hash":"5181922178177328213","vtime":"402.0"}}"#,
     ];
-    (200, lines.join("\n") + "\n")
+    let kept: Vec<&str> = lines
+        .into_iter()
+        .filter(|line| {
+            let event = serde_json::from_str(line).expect("fixture is JSON");
+            passes_default_log_filter(&event)
+        })
+        .collect();
+    (200, kept.join("\n") + "\n")
+}
+
+/// Whether the server's default log filter keeps `event`, which is already in
+/// the shape its mapper writes. The filter runs before `logs` and before every
+/// events search. It keeps container output on a stream other than
+/// `internal`, `containers_meta` lifecycle events, test-composer events and
+/// command output, fault-injector events that carry `fault` or `info`,
+/// command events, and signal terminations. It drops assertion catalog
+/// entries (`antithesis_assert.hit === false`) and everything else, such as
+/// bootstrap and `input_*` events.
+fn passes_default_log_filter(event: &serde_json::Value) -> bool {
+    let source = &event["source"];
+    let name = source["name"].as_str();
+    let catalog = event["antithesis_assert"]["hit"] == false;
+    let container_output = source["container"].is_string() && source["stream"] != "internal";
+    let command = source["command_id"].is_string() && event["exclude_from_logs"] != true;
+    ((container_output || command) && !catalog)
+        || matches!(
+            name,
+            Some(
+                "containers_meta" | "antithesis_test_composer" | "processes_terminated_with_signal"
+            )
+        )
+        || source["is_test_composer_command"] == true
+        || (name == Some("fault_injector")
+            && (event.get("fault").is_some() || event.get("info").is_some()))
 }
 
 /// The properties every run in `MOCK_RUNS` reports, in the order `[failing,
@@ -1478,9 +1511,8 @@ fn mock_route_stream_run_status(run_id: &str, req_body: &str) -> (u16, String) {
 /// an assertion's message and source function, and a test-composer command
 /// and task, NUL-joined so a needle cannot span two fields.
 ///
-/// The gates the live endpoints put on those fields — an assertion counts
-/// only once it was hit, a command only on a composer event — are not
-/// modelled here. The specs pin which FIELDS a needle reaches; which events
+/// The live server matches a command only on a composer event; that gate is
+/// not modelled here. The specs pin which FIELDS a needle reaches; which events
 /// the server then considers is the server's own answer, and a fixture
 /// written here is not evidence of it.
 fn mock_event_haystack(line: &str) -> String {
@@ -1756,10 +1788,6 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
     (200, lines.join("\n") + "\n")
 }
 
-/// A bootstrap event, shaped as the live server sends one (tenant
-/// `orbitinghail`, run `d4b213720b4f72d68132653843623a04-62-2`).
-const MOCK_BOOTSTRAP_EVENT: &str = r#"{"output_text":"Bootstrapping","source":{"name":"bootstrap","stream":"info"},"moment":{"input_hash":"6133169164192300224","vtime":"0.5"}}"#;
-
 /// `POST /runs/{id}/events/search` — the events-search endpoint.
 /// `validate_only` returns an empty 200, and matching events stream back as
 /// NDJSON. The mock ends the stream at `limit`, as release 61 does (observed
@@ -1887,13 +1915,9 @@ fn mock_route_search_events(run_id: &str, body: &str) -> (u16, String, &'static 
     // events` answer differently on each backend (issue #252).
     let reads_event_json = !query.contains(crate::event_set_dsl::NEEDLE_FILTER)
         && query.contains("JSON.stringify(ev)");
-    // The search reaches bootstrap events, which the log stream never holds
-    // (they precede its timeline). A query carrying `SKIP_BOOTSTRAP` drops them.
-    let skip_bootstrap = query.contains(crate::event_set_dsl::SKIP_BOOTSTRAP);
     let (_, logs) = mock_route_get_run_logs(run_id);
     let mut matches: Vec<&str> = logs
         .lines()
-        .chain((!skip_bootstrap).then_some(MOCK_BOOTSTRAP_EVENT))
         .filter(|line| {
             let haystack = if reads_event_json {
                 line.to_lowercase()
@@ -1939,6 +1963,35 @@ pub fn names_a_flag_or_command(text: &str) -> bool {
 mod tests {
     use super::*;
     use std::fs;
+
+    // The mock serves only what the server's default log filter keeps.
+    #[test]
+    fn mock_logs_keep_what_the_default_log_filter_keeps() {
+        let keeps = |line: &str| passes_default_log_filter(&serde_json::from_str(line).unwrap());
+        for kept in [
+            r#"{"output_text":"x","source":{"container":"app","name":"app","stream":"out"}}"#,
+            r#"{"antithesis_assert":{"hit":true},"source":{"container":"app","name":"app"}}"#,
+            r#"{"output_text":"x","source":{"command_id":"c1","name":"setup"}}"#,
+            r#"{"event":"init","source":{"name":"containers_meta"}}"#,
+            r#"{"command":"main/x","source":{"name":"antithesis_test_composer"}}"#,
+            r#"{"output_text":"x","source":{"container":"w","is_test_composer_command":true,"name":"main/x"}}"#,
+            r#"{"fault":{"name":"clog"},"source":{"name":"fault_injector"}}"#,
+            r#"{"info":{"message":"status"},"source":{"name":"fault_injector"}}"#,
+            r#"{"source":{"name":"processes_terminated_with_signal"}}"#,
+        ] {
+            assert!(keeps(kept), "dropped: {kept}");
+        }
+        for dropped in [
+            r#"{"antithesis_assert":{"hit":false},"source":{"container":"app","name":"app"}}"#,
+            r#"{"antithesis_assert":{"hit":false},"source":{"command_id":"c1","name":"setup"}}"#,
+            r#"{"output_text":"x","source":{"container":"app","name":"app","stream":"internal"}}"#,
+            r#"{"output_text":"x","exclude_from_logs":true,"source":{"command_id":"c1","name":"setup"}}"#,
+            r#"{"output_text":"Bootstrapping","source":{"name":"bootstrap","stream":"info"}}"#,
+            r#"{"source":{"name":"fault_injector"}}"#,
+        ] {
+            assert!(!keeps(dropped), "kept: {dropped}");
+        }
+    }
 
     #[test]
     fn mock_cache_headers_follow_the_run_status() {

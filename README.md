@@ -457,9 +457,15 @@ Each input of the trigger action has a snouty equivalent:
 
 The action always sends the branch as `antithesis.source`. With snouty, pass `--source` yourself, as in the workflow above.
 
+### Other CI systems
+
+Like the GitHub Actions workflow, the examples below build and pull the images, because snouty launches only local images, then run `snouty validate`, so a broken harness fails in CI instead of in Antithesis. `snouty validate` waits 2 minutes for setup-complete by default. If your system takes longer to start, add `--timeout 10m`.
+
+`snouty validate` watches for setup-complete in a directory under `$TMPDIR`, which it mounts into the containers. When Docker runs on another machine or in a container (Docker-in-Docker), set `TMPDIR` to a directory that Docker can also see, as the GitLab CI example does.
+
 ### GitLab CI
 
-GitLab CI checks out a detached HEAD, so the launch records the commit but no branch. This job records history for the default branch only. Store `ANTITHESIS_API_KEY` as a masked CI/CD variable:
+GitLab CI checks out a detached HEAD, so the launch records the commit but no branch. This job records history for the default branch only. Docker runs in the `docker:dind` service, which shares only the project directory with the job, so `snouty validate` keeps its temporary files there. Store `ANTITHESIS_API_KEY` as a masked CI/CD variable:
 
 ```yaml
 antithesis:
@@ -473,13 +479,26 @@ antithesis:
     - curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
     - export PATH="$HOME/.local/bin:$PATH"
   script:
-    - if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then SOURCE="$CI_COMMIT_BRANCH"; fi
-    - snouty launch --launcher basic_test --config ./antithesis --duration 30m ${SOURCE:+--source "$SOURCE"}
+    - docker compose -f antithesis/docker-compose.yaml build
+    - docker compose -f antithesis/docker-compose.yaml pull --ignore-buildable
+    - export TMPDIR="$CI_PROJECT_DIR/.snouty-tmp" && mkdir -p "$TMPDIR"
+    - snouty validate ./antithesis
+    - |
+      # Only the default branch records property history.
+      source_flag=""
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        source_flag="--source $CI_COMMIT_BRANCH"
+      fi
+      snouty launch \
+        --launcher basic_test \
+        --config ./antithesis \
+        --duration 30m \
+        $source_flag
 ```
 
 ### Buildkite
 
-Buildkite checks out a detached HEAD, so the launch records the commit but no branch. For a repository on github.com, it also records the repository and a commit link. Give the agent `ANTITHESIS_API_KEY` from your secrets store. `$$` keeps Buildkite from replacing a variable when it uploads the pipeline:
+Buildkite checks out a detached HEAD, so the launch records the commit but no branch. For a repository on github.com, it also records the repository and a commit link. Give the agent `ANTITHESIS_API_KEY` from your secrets store. The agent needs Docker with Compose, and Docker 28.3.0 or later, or the [Docker credential helper](#docker-credential-helper), to push to the tenant registry. `$$` keeps Buildkite from replacing a variable when it uploads the pipeline:
 
 ```yaml
 steps:
@@ -490,8 +509,19 @@ steps:
     command: |
       curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
       export PATH="$$HOME/.local/bin:$$PATH"
-      if [ "$$BUILDKITE_BRANCH" = "$$BUILDKITE_PIPELINE_DEFAULT_BRANCH" ] && [ "$$BUILDKITE_PULL_REQUEST" = "false" ]; then SOURCE="$$BUILDKITE_BRANCH"; fi
-      snouty launch --launcher basic_test --config ./antithesis --duration 30m $${SOURCE:+--source "$$SOURCE"}
+      docker compose -f antithesis/docker-compose.yaml build
+      docker compose -f antithesis/docker-compose.yaml pull --ignore-buildable
+      snouty validate ./antithesis
+      # Only the default branch records property history.
+      source_flag=""
+      if [ "$$BUILDKITE_BRANCH" = "$$BUILDKITE_PIPELINE_DEFAULT_BRANCH" ] && [ "$$BUILDKITE_PULL_REQUEST" = "false" ]; then
+        source_flag="--source $$BUILDKITE_BRANCH"
+      fi
+      snouty launch \
+        --launcher basic_test \
+        --config ./antithesis \
+        --duration 30m \
+        $$source_flag
 ```
 
 ### CircleCI
@@ -512,8 +542,19 @@ jobs:
       - run: |
           curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
           export PATH="$HOME/.local/bin:$PATH"
-          if [ "$CIRCLE_BRANCH" = main ] && [ -z "$CIRCLE_PULL_REQUEST" ]; then SOURCE=main; fi
-          snouty launch --launcher basic_test --config ./antithesis --duration 30m ${SOURCE:+--source "$SOURCE"}
+          docker compose -f antithesis/docker-compose.yaml build
+          docker compose -f antithesis/docker-compose.yaml pull --ignore-buildable
+          snouty validate ./antithesis
+          # Only main records property history.
+          source_flag=""
+          if [ "$CIRCLE_BRANCH" = main ] && [ -z "$CIRCLE_PULL_REQUEST" ]; then
+            source_flag="--source main"
+          fi
+          snouty launch \
+            --launcher basic_test \
+            --config ./antithesis \
+            --duration 30m \
+            $source_flag
 workflows:
   antithesis:
     jobs: [antithesis]

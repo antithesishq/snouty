@@ -14,8 +14,8 @@ use snouty::OutputOptions;
 use snouty::api::AntithesisApi;
 use snouty::auth::initialize_credential_store;
 use snouty::cli::{
-    Cli, Commands, DebugArgs, LaunchArgs, SettingsCommands, UpdateArgs, UpdateChannel,
-    gated_command_error,
+    Cli, Commands, DebugArgs, DocsCommands, LaunchArgs, SettingsCommands, UpdateArgs,
+    UpdateChannel, gated_command_error,
 };
 use snouty::compose;
 use snouty::config;
@@ -98,8 +98,9 @@ async fn run(cli: Cli) -> Result<()> {
         profile,
         command,
     } = cli;
-    if json && let Some(name) = json_unaware_command_name(&command) {
-        eprintln!("warning: --json has no effect for `snouty {name}`");
+    if json && let Some(name) = no_json_command_name(&command) {
+        return Err(user_error(format!("`snouty {name}` has no JSON output"))
+            .suggestion(format!("run `snouty {name}` without --json")));
     }
     // The global output flags travel together from here on; every command
     // takes them as one value instead of a swappable positional bool pair.
@@ -200,12 +201,12 @@ fn suppress_broken_pipe(result: Result<()>) -> Result<()> {
     }
 }
 
-fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
+/// The name of `command` when it prints no JSON, so `--json` is an error.
+fn no_json_command_name(command: &Commands) -> Option<&'static str> {
     match command {
         Commands::Launch(_)
         | Commands::Run(_)
         | Commands::Runs { .. }
-        | Commands::Docs { .. }
         | Commands::Debug { .. }
         | Commands::Doctor(_)
         | Commands::Version => None,
@@ -218,6 +219,11 @@ fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
             SettingsCommands::Show => None,
             SettingsCommands::Trust(_) => Some("settings trust"),
             SettingsCommands::Deny(_) => Some("settings deny"),
+        },
+        Commands::Docs { command, .. } => match command {
+            DocsCommands::Search { .. } | DocsCommands::Tree { .. } => None,
+            DocsCommands::Show { .. } => Some("docs show"),
+            DocsCommands::Sqlite => Some("docs sqlite"),
         },
         Commands::DockerCredential { .. } => Some("docker-credential"),
     }

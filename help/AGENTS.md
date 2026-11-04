@@ -63,7 +63,8 @@ command, named for its path below `snouty` with `_` between the parts:
   unless the shape holds something that the rest of the page does not imply,
   such as a field's unit or zone. Then describe it in words, in one paragraph
   that starts `With {{ t("--json")? }}, `. Do not add a `jq` example. A
-  command that prints no JSON says so.
+  command that prints no JSON fails with `--json`, so its page does not
+  mention `--json`.
 - Put text that only one reader needs, such as a pipeline example, a flag
   that has no param, or a layout that only the default (not `--detail`)
   output has, in `{% if cli %}…{% else %}…{% endif %}`. The other

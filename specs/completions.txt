@@ -24,3 +24,8 @@ stdout '.*snouty.*'
 # Unsupported shells are rejected.
 ! snouty completions nushell
 stderr 'invalid value .nushell.'
+
+# --json fails before the script prints, because completions prints no JSON.
+! snouty --json completions bash
+stderr '`snouty completions` has no JSON output'
+! stdout .

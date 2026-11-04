@@ -4,5 +4,3 @@ source: tests/help_snapshots.rs
 Show full contents of a documentation page
 
 Displays the full markdown content of a page by its path. If the exact path is not found, suggests similar pages.
-
-The output is always the page's markdown text, never JSON.

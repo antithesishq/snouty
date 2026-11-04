@@ -6,8 +6,6 @@ Show full contents of a documentation page
 Displays the full markdown content of a page by its path. If the exact path is
 not found, suggests similar pages.
 
-The output is always the page's markdown text, never JSON, even with --json.
-
 Usage: snouty docs show [OPTIONS] <PATH>
 
 Arguments:

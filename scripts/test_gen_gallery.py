@@ -502,70 +502,52 @@ class GalleryRunHelpers(unittest.TestCase):
         self.assertEqual(gallery.property_id_named(rows, self.BUG), "b")
         self.assertEqual(gallery.property_id_named(rows[:1], self.BUG), "")
 
-    def live_story(self):
-        return next(
-            s
-            for s in gallery.build_ready_stories(
-                gallery.Discovery(),
-                gallery.GalleryRun(run=self.RUN),
-                gallery.Result([], "", "", 0),
-            )
-            if s.slug == "runs-properties-live"
-        )
-
     def test_live_story_needs_a_pending_row_and_the_note(self):
-        story = self.live_story()
+        story = self.ready_story("runs-properties-live")
         self.assertFalse(story.json_capable)
         header = "STATUS   ✓    ✗  ID  NAME\n"
         pending = f"pending  106  0  p1  {self.BUG}\n"
         failing = "fail     3    1  p2  Total money in the bank is conserved\n"
         note = f"\n{gallery.PENDING_NOTE}\n"
-        for table, passed in (
-            (pending, True),
-            (pending + failing, True),
-            ("", False),
-            (failing, False),
+        for table, stderr, rc, passed in (
+            (pending, note, 0, True),
+            (pending + failing, note, 0, True),
+            ("", note, 0, False),
+            (failing, note, 0, False),
+            (pending, "", 0, False),
+            (pending, note, 1, False),
         ):
-            with self.subTest(table=table):
-                result = gallery.Result(story.args, header + table, note, 0)
+            with self.subTest(table=table, stderr=stderr, rc=rc):
+                result = gallery.Result(story.args, header + table, stderr, rc)
                 run = gallery.StoryRun(story, result, None)
                 self.assertEqual(story.check(run, gallery.Registry())[0], passed)
-        result = gallery.Result(story.args, header + pending, "", 0)
-        self.assertFalse(
-            story.check(gallery.StoryRun(story, result, None), gallery.Registry())[0]
-        )
-        result = gallery.Result(story.args, header + pending, note, 1)
-        self.assertFalse(
-            story.check(gallery.StoryRun(story, result, None), gallery.Registry())[0]
-        )
 
-    def test_live_story_counts_the_captured_table_not_the_rows(self):
-        story = self.live_story()
-        stdout = (
-            "STATUS   ✓    ✗  ID  NAME\n"
-            "bank\n"
-            f"  fail     3  1  p1  {self.BUG}\n"
-            "  pending  9  0  p2  Total money in the bank is conserved\n"
-            "  pending  2  0  p3  Transfers complete\n"
-        )
-        result = gallery.Result(story.args, stdout, gallery.PENDING_NOTE, 0)
-        # Rows from a later fetch must not change what the check reports.
-        later = [{"status": "Passing"}] * 5
-        ok, detail = story.check(
-            gallery.StoryRun(story, result, later), gallery.Registry()
-        )
-        self.assertTrue(ok)
-        self.assertIn("{'fail': 1, 'pending': 2}", detail)
-        self.assertNotIn("no pass or fail row", detail)
-        result.stdout = (
-            "STATUS   ✓    ✗  ID  NAME\npending  9  0  p2  Transfers complete\n"
-        )
-        ok, detail = story.check(
-            gallery.StoryRun(story, result, later), gallery.Registry()
-        )
-        self.assertTrue(ok)
-        self.assertIn("{'pending': 1}", detail)
-        self.assertIn("no pass or fail row", detail)
+    def test_live_story_counts_the_captured_table(self):
+        story = self.ready_story("runs-properties-live")
+        header = "STATUS   ✓    ✗  ID  NAME\n"
+        for table, counts, mixed in (
+            (
+                "bank\n"
+                f"  fail     3  1  p1  {self.BUG}\n"
+                "  pending  9  0  p2  Total money in the bank is conserved\n"
+                "  pending  2  0  p3  Transfers complete\n",
+                "{'fail': 1, 'pending': 2}",
+                True,
+            ),
+            ("pending  9  0  p2  Transfers complete\n", "{'pending': 1}", False),
+        ):
+            with self.subTest(table=table):
+                result = gallery.Result(
+                    story.args, header + table, gallery.PENDING_NOTE, 0
+                )
+                # Rows from a later fetch must not change what the check reports.
+                later = [{"status": "Passing"}] * 5
+                ok, detail = story.check(
+                    gallery.StoryRun(story, result, later), gallery.Registry()
+                )
+                self.assertTrue(ok)
+                self.assertIn(counts, detail)
+                self.assertEqual("no pass or fail row" not in detail, mixed)
 
     class Polls:
         def __init__(self, answers):
@@ -685,6 +667,13 @@ class GalleryRunHelpers(unittest.TestCase):
     def story(self, slug):
         x = gallery.GalleryRun(run=self.RUN)
         stories = gallery.build_final_stories(x, gallery._LISTED_FINAL)
+        return next(s for s in stories if s.slug == slug)
+
+    def ready_story(self, slug):
+        x = gallery.GalleryRun(run=self.RUN)
+        stories = gallery.build_ready_stories(
+            gallery.Discovery(), x, gallery.Result([], "", "", 0)
+        )
         return next(s for s in stories if s.slug == slug)
 
     def cast(self, line):

@@ -2433,17 +2433,13 @@ def run_properties(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
 PENDING_NOTE = "Some properties are still being processed."
 
 
-# The words in the STATUS column of the `runs properties` table.
-PROPERTY_STATUS_WORDS = ("pending", "pass", "fail")
-
-
 def table_statuses(text: str) -> Counter:
     """Count the rows of a `runs properties` table by the word in its STATUS
     column, the first word of each row."""
     return Counter(
         words[0]
         for line in text.splitlines()
-        if (words := line.split()) and words[0] in PROPERTY_STATUS_WORDS
+        if (words := line.split()) and words[0] in {"pending", "pass", "fail"}
     )
 
 

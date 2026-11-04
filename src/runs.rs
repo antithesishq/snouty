@@ -30,7 +30,7 @@ use crate::event_set_dsl;
 use crate::jsonl::JsonStream;
 use crate::render::{
     CodeSpans, OutputOptions, indent_lines, render_kv, sanitize, sanitize_multiline, shell_command,
-    wrap_text,
+    wrap_if_tty, wrap_text,
 };
 use crate::settings::Settings;
 use crate::stdio;
@@ -61,7 +61,12 @@ fn limit_note(shown: usize, limit: NonZeroU64, noun: &str, blank_line_before: bo
     if blank_line_before {
         eprintln!();
     }
-    eprintln!("Showing up to {limit} {noun}. Additional {noun} may be available.");
+    eprintln!(
+        "{}",
+        wrap_if_tty(&format!(
+            "Showing up to {limit} {noun}. Additional {noun} may be available."
+        ))
+    );
 }
 
 /// Print a rendered event stream, then the text-mode commentary under it.
@@ -674,8 +679,11 @@ async fn cmd_runs_properties(
             .any(|p| matches!(p.status(), PropertyStatus::Pending))
     {
         eprintln!(
-            "\nSome properties are still being processed. \
-             Run `snouty runs properties {run_id}` again later for the final results."
+            "\n{}",
+            wrap_if_tty(&format!(
+                "Some properties are still being processed. \
+                 Run `snouty runs properties {run_id}` again later for the final results."
+            ))
         );
     }
 

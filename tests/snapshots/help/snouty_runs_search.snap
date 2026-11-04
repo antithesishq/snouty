@@ -158,7 +158,8 @@ Options:
           Print help (see a summary with '-h')
 
       --json
-          Print NDJSON: one JSON object per line, or one object for a count
+          Print NDJSON: one JSON object per event. A count prints {"count": N},
+          and a query check prints {"valid": true}
 
       --verbose
           Log API requests to stderr (authentication tokens redacted)

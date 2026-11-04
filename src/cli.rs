@@ -350,8 +350,8 @@ enum JsonShape {
     Array,
     /// NDJSON.
     Lines,
-    /// NDJSON, or one object for `--count`.
-    LinesOrCount,
+    /// A command whose shape depends on its flags, in its own words.
+    Custom(&'static str),
 }
 
 /// The `--json` of a command, with help that names its JSON shape. It
@@ -368,9 +368,7 @@ fn json(shape: JsonShape) -> clap::Arg {
         JsonShape::Object => arg.help("Print one JSON object"),
         JsonShape::Array => arg.help("Print one JSON array"),
         JsonShape::Lines => arg.help("Print NDJSON: one JSON object per line"),
-        JsonShape::LinesOrCount => {
-            arg.help("Print NDJSON: one JSON object per line, or one object for a count")
-        }
+        JsonShape::Custom(help) => arg.help(help),
     }
 }
 
@@ -1125,7 +1123,10 @@ pub enum RunsCommands {
     },
 
     /// Query events with the event-set DSL
-    #[command(arg = json(JsonShape::LinesOrCount))]
+    #[command(arg = json(JsonShape::Custom(
+        "Print NDJSON: one JSON object per event. A count prints {\"count\": N}, \
+         and a query check prints {\"valid\": true}"
+    )))]
     Search(RunsSearchArgs),
 
     /// Show the compute hours that recent runs used

@@ -3,35 +3,29 @@ source: tests/help_snapshots.rs
 ---
 Stream the logs of one timeline of a run.
 
-How a run is structured: An Antithesis run is a tree of timelines, not one
-history. A timeline is a series of input_hashes. An input_hash is a hash of
-every input Antithesis sent up to that point. Antithesis branches a timeline by
-sending an input from some moment, which creates a new input_hash. Every event
-has an input_hash and a vtime, and one input_hash can have zero or more events.
-Events that share an input_hash are on the same timeline. vtime is the virtual
-time at which the event was emitted on its timeline. Antithesis virtualizes the
-clock, so vtime can jump forward by any amount, but it never goes backward.
-vtime orders events only within one timeline.
+An Antithesis run is a tree of timelines. From one moment, Antithesis can send
+different inputs, and each input starts a new branch. An input_hash names the
+part of a branch from one input to the next. Each event has a moment: an
+input_hash, and a vtime, the virtual time on that branch.
 
-INPUT_HASH identifies the timeline: the hash of every input Antithesis sent from
-the root to that point. INPUT_HASH is often negative, such as `-123`; pass it as
-it is, with no `--` before it. Logs stream from the root (or --begin-vtime) to
-the timeline's current end; a run in progress can extend the timeline, so the
-same INPUT_HASH can return more logs later. Give VTIME to end the stream at that
-moment instead. Find a moment with `runs properties --detail`, `runs events`,
+INPUT_HASH selects a path in the tree. The logs stream from the root, through
+each earlier input_hash on the path, to the end of INPUT_HASH. INPUT_HASH is
+often negative, such as `-123`; pass it as it is, with no `--` before it. Give
+VTIME to end the stream at that moment, or --begin-vtime to start it later than
+the root. A run in progress can extend INPUT_HASH, so it can return more logs
+later. Find a moment with `runs properties --detail`, `runs events`,
 `runs search`, or the failure moment of an incomplete run in `runs show`.
 
-Each event has its moment (an input_hash and a vtime), its source, and its
-payload: log output, an SDK assertion, a fault, a container lifecycle change, or
-a test composer command.
+Each event also has a source and a payload: log output, an SDK assertion, a
+fault, a container lifecycle change, or a test composer command.
 
-Output: a `moment HASH` divider opens each timeline segment, and each event
-under it renders on one line as `VTIME [source] payload`, each event shape in
-its own concise form. VTIME is truncated to fit its column, and a long source
-label ends in `…`. With --detail, VTIME and the source print whole, and indented
-lines under an event give its source location, as `@ file:function:line`, and
-the details that it carries, such as an SDK assertion's details, as
-`details {...}`.
+Output: a `moment HASH` divider opens the events of each input_hash on the path,
+from the root to INPUT_HASH. Each event under it renders on one line as
+`VTIME [source] payload`, each event shape in its own concise form. VTIME is
+truncated to fit its column, and a long source label ends in `…`. With --detail,
+VTIME and the source print whole, and indented lines under an event give its
+source location, as `@ file:function:line`, and the details that it carries,
+such as an SDK assertion's details, as `details {...}`.
 
 Add --json for machine-readable output. Each event prints as one JSON object on
 its own line:
@@ -44,11 +38,11 @@ Arguments:
           Run ID
 
   <INPUT_HASH>
-          Input hash identifying the timeline to stream
+          Input hash at the end of the path to stream
 
   [VTIME]
           Virtual time of the moment to end the stream at; omit it to stream to
-          the timeline's current end
+          the end of the input hash
 
 Options:
       --begin-vtime <BEGIN_VTIME>

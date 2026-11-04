@@ -3,7 +3,8 @@
   const assert_hit = ev.antithesis_assert?.hit === true;
   const not_catalog = !ev.antithesis_assert || ev.antithesis_assert.hit !== false;
   const composer = ev.source?.name === "antithesis_test_composer"
-    || ev.source?.is_test_composer_command === true;
+    || ev.source?.is_test_composer_command === true
+    || /^antithesis\/pods\/.*\/commands/.test(ev.source?.name ?? "");
   const has = (needle) =>
     (not_catalog && m(ev.output_text, needle))
     || (assert_hit

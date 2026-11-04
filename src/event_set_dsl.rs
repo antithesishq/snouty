@@ -86,6 +86,13 @@ macro_rules! query_fragment {
 /// holds every needle. The needles must be lowercase: `m` folds only the
 /// haystack. An assertion catalog entry (`antithesis_assert.hit === false`)
 /// never matches on `output_text`, because it is no evidence that anything ran.
+///
+/// A test-composer command's output has one of two sources. The spec's
+/// example names the command's file, `antithesis/pods/<pod>/commands/...`.
+/// The live server names the command, `main/parallel_driver_lifecycle`, and
+/// sets `source.is_test_composer_command` (tenant `orbitinghail`, release
+/// 64.0, run `0b60de7a42a34218d44549277fed9753-64-0`, both `events/search`
+/// and `logs`). The filter accepts both.
 pub(crate) const NEEDLE_FILTER: &str =
     query_fragment!(include_str!("event_set_dsl/needle_filter.pangolin.js"));
 
@@ -193,8 +200,6 @@ mod tests {
             "ev.antithesis_assert.location?.function",
             "ev.command",
             "ev.started_task",
-            // The server renames a Kubernetes test-composer command's output
-            // source to the command and flags it, so the filter keys on the flag.
             "ev.source?.is_test_composer_command === true",
         ] {
             assert!(query.contains(field), "{field} missing from: {query}");

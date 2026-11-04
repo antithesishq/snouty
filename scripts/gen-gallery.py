@@ -1569,25 +1569,32 @@ def prepare_exec(sn: Snouty, x: GalleryRun, rewarm: tuple[str, dict, dict]) -> N
 
 
 def wait_for_pending_properties(sn: Snouty, run: str) -> None:
-    """Wait until the in-progress `run` reports a pending property. A run that
-    is ready can report its first property results a little later. After the
-    deadline, return anyway: the story's check then fails, not the gallery."""
+    """Wait until the in-progress `run` reports a pending property next to a
+    passing or failing one, so that the captured table mixes the statuses.
+    Early in a run, every property is pending. After the deadline, return
+    anyway, so that a slow run does not stop the gallery."""
     deadline = time.monotonic() + MOMENT_SEARCH_DEADLINE
     while True:
         try:
-            if sn.json_lines(["runs", "properties", run, "--pending"]):
+            statuses = {
+                r.get("status") for r in sn.json_lines(["runs", "properties", run])
+            }
+            if "Pending" in statuses and statuses & {"Passing", "Failing"}:
                 return
-            reason = "no pending property yet"
+            reason = f"statuses so far: {sorted(map(str, statuses))}"
         except (GalleryError, json.JSONDecodeError) as e:
             reason = str(e)
         if time.monotonic() > deadline:
             print(
-                f"  {run} has no pending property after {MOMENT_SEARCH_DEADLINE}s: "
-                f"{reason}",
+                f"  {run} has no pending property next to a final one after "
+                f"{MOMENT_SEARCH_DEADLINE}s: {reason}",
                 file=sys.stderr,
             )
             return
-        print(f"  waiting for a pending property in {run}: {reason}", file=sys.stderr)
+        print(
+            f"  waiting for pending and final properties in {run}: {reason}",
+            file=sys.stderr,
+        )
         time.sleep(MOMENT_SEARCH_POLL)
 
 
@@ -2426,15 +2433,30 @@ def run_properties(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
 PENDING_NOTE = "Some properties are still being processed."
 
 
+def table_statuses(text: str) -> Counter:
+    """Count the rows of a `runs properties` table by their STATUS word. Lines
+    that are not property rows do not count, and neither does a wrapped NAME's
+    continuation line, which starts with blanks."""
+    return Counter(
+        words[0]
+        for line in text.splitlines()
+        if line[:1].strip()
+        and (words := line.split())[0] in {"pending", "pass", "fail"}
+    )
+
+
 def live_properties(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     """`runs properties` on the in-progress gallery run: at least one pending
-    row, and the note that tells the user to come back later. Rows with other
-    statuses can appear, but a young run can have none."""
-    statuses = Counter(r.get("status") for r in sr.rows or [])
+    row, and the note that tells the user to come back later. It counts the
+    captured table, because a later fetch can report other statuses. A missing
+    pass or fail row is reported, not failed, because the wait can time out
+    before one appears."""
+    statuses = table_statuses(sr.result.stdout)
     noted = contains_text(sr.result.combined, PENDING_NOTE)
+    unmixed = "" if statuses["pass"] or statuses["fail"] else ", no pass or fail row"
     return (
-        statuses["Pending"] > 0 and noted and sr.result.ok,
-        f"exit={sr.result.returncode}, statuses={dict(statuses)}, note={noted}",
+        statuses["pending"] > 0 and noted and sr.result.ok,
+        f"exit={sr.result.returncode}, statuses={dict(statuses)}, note={noted}{unmixed}",
     )
 
 
@@ -3625,8 +3647,9 @@ def build_ready_stories(d: Discovery, x: GalleryRun, wait_ready: Result) -> list
             "See where my live run stands",
             "My run is still in progress, and I want to see its properties so far: "
             "which ones have no final result yet, and which ones already pass or fail.",
-            "A STATUS/✓/✗/ID/NAME table with at least one `pending` row. Rows that "
-            "already pass or fail can appear among the pending ones. The `pending`, "
+            "A STATUS/✓/✗/ID/NAME table with at least one `pending` row. The gallery "
+            "captures it once some property passes or fails, so rows that pass or "
+            "fail should appear among the pending ones. The `pending`, "
             "`pass` and `fail` labels are easy to tell apart, and the grouping and "
             "order of the rows read well with the statuses mixed. Each row has the "
             "passing and failing example counts so far and the full property ID, to "
@@ -3635,6 +3658,7 @@ def build_ready_stories(d: Discovery, x: GalleryRun, wait_ready: Result) -> list
             "later for the final results. Exit 0.",
             ["runs", "properties", x.run],
             live_properties,
+            json_capable=False,
             before=lambda sn: wait_for_pending_properties(sn, x.run),
         ),
         exec_story(

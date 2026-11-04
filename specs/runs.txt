@@ -764,8 +764,7 @@ stderr '.*'
 # divider (its hash is sufficient for `runs logs`) opens each
 # timeline segment, and each event under it renders as one
 # `VTIME [source] payload` line. Antithesis shapes get their own concise
-# forms: an SDK assertion shows a verdict badge (HIT/FAIL on evaluations,
-# CATALOG on the hit:false registrations the SDK emits at startup) with its
+# forms: an SDK assertion shows a verdict badge (HIT or FAIL) with its
 # label and message; a fault shows its type, disruption and nodes;
 # test-composer records show their task lifecycle or key=value chatter.
 # Without VTIME the stream runs to the timeline's current end.
@@ -775,7 +774,7 @@ stdout '^moment -123$'
 stdout '^1\.0       \[app\] \{"level":"info","msg":"starting"\}$'
 stdout '^moment -456$'
 stdout '^2\.0       \[app\] \{"level":"warn","msg":"slow request"\}$'
-stdout '^311\.8487  \[control\] CATALOG AlwaysOrUnreachable "Counter'\''s value retrieved"$'
+stdout '^311\.8487  \[control\] FAIL AlwaysOrUnreachable "Counter'\''s value retrieved"$'
 stdout '^400\.5     \[test_composer\] task started core/parallel_driver_fetch$'
 stdout '^401\.5     \[fault_injector\] FAULT network/clog Stopped max=0\.3s nodes=client2,setup$'
 # A composer `new_command` is the container id and the script name, so it
@@ -806,7 +805,7 @@ mock-runs-server
 snouty runs logs --detail run-1 -123
 stdout '^moment -123$'
 stdout '^moment -456$'
-stdout '^311\.8487535319291   \[control\] CATALOG AlwaysOrUnreachable "Counter'\''s value retrieved"$'
+stdout '^311\.8487535319291   \[control\] FAIL AlwaysOrUnreachable "Counter'\''s value retrieved"$'
 stdout '^ +@ control\.go:get:87$'
 # --detail shows every composer value whole.
 stdout '(?s)\n +new_command_path=core/parallel_driver_fetch\n +container_id=d700ef3d05a263\n +new_command=d700ef3d05a263_parallel_driver_fetch\n'

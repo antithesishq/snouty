@@ -15,4 +15,4 @@ Examples:
   runs_properties {"run_id": "<run_id>", "failing": true}
   runs_properties {"run_id": "<run_id>", "failing": true, "pending": true}
 
-With `json`, each property prints as one JSON object on its own line, without the sample moments.
+With `json`, each property prints as one JSON object on its own line. Its `examples` and `counterexamples` arrays hold the same samples as the block. In an event property, each sample gives its moment as `moment.input_hash` and `moment.vtime`.

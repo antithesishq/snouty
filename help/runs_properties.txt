@@ -21,8 +21,8 @@ Examples:
 {%- endif %}
 
 {% if cli %}
-Add --json for machine-readable output. Each property prints as one JSON object on its own line. --json is mutually exclusive with --detail:
+Add --json for machine-readable output. Each property prints as one JSON object on its own line. Its `examples` and `counterexamples` arrays hold the same samples that --detail shows. --json is mutually exclusive with --detail:
   {{ t("snouty --json runs properties <run_id> --failing | jq -r .name")? }}
 {% else %}
-With {{ t("--json")? }}, each property prints as one JSON object on its own line, without the sample moments.
+With {{ t("--json")? }}, each property prints as one JSON object on its own line. Its `examples` and `counterexamples` arrays hold the same samples as the block. In an event property, each sample gives its moment as `moment.input_hash` and `moment.vtime`.
 {% endif %}

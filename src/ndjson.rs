@@ -1,4 +1,4 @@
-//! The standard shape of every Antithesis streaming response: JSONL, one
+//! The standard shape of every Antithesis streaming response: NDJSON, one
 //! JSON value per line.
 //!
 //! Every streaming endpoint — logs, build logs, events, event search,
@@ -19,7 +19,7 @@ use serde_json::Value;
 /// and what the API cache replays and tees.
 pub type JsonStream = BoxStream<'static, Result<Value>>;
 
-/// Parse a JSONL chunk stream into a [`JsonStream`]: each item is one line,
+/// Parse an NDJSON chunk stream into a [`JsonStream`]: each item is one line,
 /// parsed. Lines are yielded as they arrive — a partial line buffers across
 /// chunks, so a live stream renders line by line rather than waiting for an
 /// EOF that may never come. Empty lines are skipped; a final line without a
@@ -74,7 +74,7 @@ mod tests {
     use super::*;
     use futures_util::TryStreamExt;
 
-    fn jsonl(chunks: &[&'static str]) -> JsonStream {
+    fn ndjson(chunks: &[&'static str]) -> JsonStream {
         let chunks: Vec<reqwest::Result<Bytes>> = chunks
             .iter()
             .map(|c| Ok(Bytes::from_static(c.as_bytes())))
@@ -92,7 +92,7 @@ mod tests {
 
     #[tokio::test]
     async fn splits_lines_across_chunk_boundaries() {
-        let stream = jsonl(&["{\"a\":1}\n{\"b\"", ":2}\n", "{\"c\":3}"]);
+        let stream = ndjson(&["{\"a\":1}\n{\"b\"", ":2}\n", "{\"c\":3}"]);
         assert_eq!(
             drain(stream).await,
             vec![r#"{"a":1}"#, r#"{"b":2}"#, r#"{"c":3}"#]
@@ -103,7 +103,7 @@ mod tests {
     async fn skips_empty_lines_and_parses_any_json_value() {
         // Reshaped rows (fold/map pipelines) can be any JSON value, not just
         // objects.
-        let stream = jsonl(&["{\"a\":1}\n\n\n[1,2]\n42\n"]);
+        let stream = ndjson(&["{\"a\":1}\n\n\n[1,2]\n42\n"]);
         assert_eq!(drain(stream).await, vec![r#"{"a":1}"#, "[1,2]", "42"]);
     }
 
@@ -111,7 +111,7 @@ mod tests {
     async fn round_trips_floats() {
         // float_roundtrip makes the parsed Value a faithful currency for raw
         // output: float values survive.
-        let stream = jsonl(&["{\"a\":{\"vtime\":398.4898056755774}}\n"]);
+        let stream = ndjson(&["{\"a\":{\"vtime\":398.4898056755774}}\n"]);
         assert_eq!(
             drain(stream).await,
             vec![r#"{"a":{"vtime":398.4898056755774}}"#]
@@ -119,7 +119,7 @@ mod tests {
     }
 
     /// The whole-pipeline guarantee: any series of JSON values, serialized
-    /// to one JSONL buffer and split into arbitrary chunks, round-trips
+    /// to one NDJSON buffer and split into arbitrary chunks, round-trips
     /// through the stream back to the same series.
     #[hegel::test]
     fn round_trips_any_series_across_any_chunking(tc: hegel::TestCase) {
@@ -158,7 +158,7 @@ mod tests {
         let count = tc.draw(generators::integers::<usize>().max_value(8));
         let values: Vec<Value> = (0..count).map(|_| json_value(&tc, 0)).collect();
 
-        // One JSONL buffer (serialization escapes any newline inside a
+        // One NDJSON buffer (serialization escapes any newline inside a
         // value, so the line structure is exactly one value per line) ...
         let mut buf: Vec<u8> = Vec::new();
         for value in &values {
@@ -203,7 +203,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_corrupted_line_fails_the_stream_and_names_it() {
-        let mut stream = jsonl(&["{\"a\":1}\nnot json\n"]);
+        let mut stream = ndjson(&["{\"a\":1}\nnot json\n"]);
         assert!(stream.try_next().await.unwrap().is_some());
         let err = format!("{:?}", stream.try_next().await.unwrap_err());
         assert!(err.contains("invalid JSON in the response stream"), "{err}");

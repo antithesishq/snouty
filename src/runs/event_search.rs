@@ -25,7 +25,7 @@ use futures_util::{StreamExt, TryStreamExt};
 use crate::api::{AntithesisApi, MIN_SEARCH_RELEASE, RunDetail, SearchMode};
 use crate::error::api_error_status;
 use crate::event_render::EventStreamRenderer;
-use crate::jsonl::JsonStream;
+use crate::ndjson::JsonStream;
 use crate::stdio;
 
 use super::ready::{self, Needs, RetryDecision, RetryPolicy};

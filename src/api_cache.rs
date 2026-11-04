@@ -40,7 +40,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
 use crate::env;
-use crate::jsonl::{JsonStream, json_lines};
+use crate::ndjson::{JsonStream, json_lines};
 use crate::tag::Tagged;
 
 mod policy;

@@ -44,7 +44,7 @@ mod generated {
     include!(concat!(env!("OUT_DIR"), "/antithesis_api.rs"));
 }
 
-use crate::jsonl::{JsonStream, json_lines};
+use crate::ndjson::{JsonStream, json_lines};
 pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
     BuildLogLine, Event, EventProperty, ExecuteCommandRequestSourceRunId as SourceRunId,
@@ -1187,7 +1187,7 @@ impl AntithesisApi {
 
     /// POST an event-set DSL query to the events-search endpoint and return
     /// the response stream. Every mode's answer arrives through the stream
-    /// (see [`SearchMode`]): matching events as JSONL, the `Validate` answer
+    /// (see [`SearchMode`]): matching events as NDJSON, the `Validate` answer
     /// as an empty body.
     pub async fn search_run_events_query(
         &self,
@@ -3926,7 +3926,7 @@ mod tests {
         })
     }
 
-    async fn read_stream(stream: crate::jsonl::JsonStream) -> Vec<serde_json::Value> {
+    async fn read_stream(stream: crate::ndjson::JsonStream) -> Vec<serde_json::Value> {
         stream.try_collect::<Vec<_>>().await.unwrap()
     }
 

@@ -78,7 +78,7 @@ cargo binstall snouty
 npm install -g snouty
 ```
 
-The package downloads the prebuilt binary for your platform from the GitHub Release on its first run. Its `snouty` command is a Node wrapper, so it cannot serve as the [Docker credential helper](#docker-credential-helper). `snouty launch --config` needs the helper only with a Docker older than 28.3.0.
+The package downloads the prebuilt binary for your platform from the GitHub Release on its first run, and installs the [Docker credential helper](#docker-credential-helper).
 
 ### Install snouty from source
 
@@ -339,7 +339,7 @@ To set it up, add the registry to `credHelpers` in `~/.docker/config.json` for D
 
 The helper uses the same [settings](#settings-files) as snouty in the directory where Docker runs it, including `./.snouty.toml`. With `--profile` or `ANTITHESIS_PROFILE`, the helper uses that profile. Otherwise, it uses the first profile whose `repository` is on `registry.<tenant>.antithesis.com`.
 
-The shell script installer and the Nix package install `docker-credential-snouty`, an alias of `snouty`. For another install method except npm, make the alias yourself, in a directory on your `PATH`:
+The shell script installer, the npm package and the Nix package install `docker-credential-snouty`. For another install method, make the alias yourself, in a directory on your `PATH`:
 
 ```sh
 ln -s "$(command -v snouty)" ~/.local/bin/docker-credential-snouty

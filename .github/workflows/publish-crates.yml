@@ -90,9 +90,9 @@ jobs:
           } >> "$GITHUB_OUTPUT"
       # dist cannot add mcpName, which the MCP Registry checks, so this job
       # publishes dist's package. Trusted Publishing compares the repository
-      # URL to this repository. npm's wrapper starts snouty under its own name,
-      # so the docker-credential-snouty alias cannot act as the credential
-      # helper.
+      # URL to this repository. npm's wrapper starts snouty by its own path,
+      # so a docker-credential-snouty alias would not act as the credential
+      # helper; a second wrapper runs `snouty docker-credential` instead.
       - name: Publish to npm
         env:
           name: ${{ steps.entry.outputs.name }}
@@ -104,14 +104,20 @@ jobs:
             exit 0
           fi
           curl -fsSL --retry 3 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/v$version/snouty-npm-package.tar.gz" | tar xz
+          cat > package/run-docker-credential-snouty.js <<'EOF'
+          #!/usr/bin/env node
+          process.argv.splice(2, 0, "docker-credential");
+          require("./binary").run("snouty");
+          EOF
           jq --arg name "$name" --arg url "git+$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" '
             .mcpName = $name
             | .repository = {type: "git", url: $url}
-            | .bin |= {snouty: .snouty}
+            | .bin |= {snouty: .snouty, "docker-credential-snouty": "run-docker-credential-snouty.js"}
           ' package/package.json > package.json
           mv package.json package/package.json
           # A published version cannot be replaced, so check the edit first.
           jq -e '.bin.snouty and .mcpName == env.name' package/package.json > /dev/null
+          [ -f "package/$(jq -r '.bin["docker-credential-snouty"]' package/package.json)" ]
           # A prerelease must not become the version that `npm install` picks.
           tag=latest
           case $version in *-*) tag=next ;; esac

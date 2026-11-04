@@ -136,7 +136,7 @@
     },
 
     "testParams": {
-      "description": "Parameters for basic_test and k8s_test launchers. Known antithesis.* params are value-checked; unknown params (antithesis.* or user-defined) pass through so newer platform params work with older snouty versions.",
+      "description": "Parameters for test launchers, such as basic_test. Known antithesis.* params are value-checked; unknown params (antithesis.* or user-defined) pass through so newer platform params work with older snouty versions.",
       "allOf": [
         { "$ref": "#/$defs/testCore" },
         { "$ref": "#/$defs/reportRecipients" },
@@ -145,7 +145,7 @@
     },
 
     "debuggingParams": {
-      "description": "Parameters for debugging session launcher. Known antithesis.* params are value-checked; unknown params (antithesis.* or user-defined) pass through with any JSON value.",
+      "description": "Parameters for a debugging session launch. Known antithesis.* params are value-checked; unknown params (antithesis.* or user-defined) pass through with any JSON value.",
       "allOf": [
         { "$ref": "#/$defs/debuggingCore" },
         { "$ref": "#/$defs/reportRecipients" }

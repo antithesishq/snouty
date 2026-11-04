@@ -20,8 +20,7 @@ To use another project settings file in place of ./.snouty.toml, name it with
 uses it without asking you to trust it.
 
 A settings file is TOML. Each setting is a top-level key, or a key in a named
-profile, a [profile.NAME] table. The environment variable of a setting overrides
-every file:
+profile, a [profile.NAME] table. Each setting also has an environment variable:
 
   tenant                   ANTITHESIS_TENANT
   base_url                 ANTITHESIS_BASE_URL
@@ -31,14 +30,13 @@ every file:
   update_channel           SNOUTY_UPDATE_CHANNEL
   api_cache_max_file_size  SNOUTY_API_CACHE_MAX_FILE_SIZE
 
-Each value is a string. tenant is your Antithesis tenant, a hostname of letters,
-digits, hyphens and dots. base_url is the API URL, by default
-https://TENANT.antithesis.com. repository is the container registry that snouty
-pushes your images to. https_proxy is the URL of a proxy for snouty's requests.
-container_engine is docker or podman. update_channel is stable, the default, or
-unstable. api_cache_max_file_size is a size such as "10 MiB", the default, or an
-integer number of bytes. snouty ignores a key that it does not know, and fails
-when a value has the wrong type. For example:
+tenant is the name of your Antithesis tenant. base_url is the API URL, by
+default https://TENANT.antithesis.com. repository is the container registry that
+snouty pushes your images to. https_proxy is the URL of a proxy for snouty's
+requests. container_engine is docker or podman. update_channel is stable, the
+default, or unstable. api_cache_max_file_size is a size such as "10 MiB", the
+default, or an integer number of bytes. snouty ignores a key that it does not
+know. For example:
 
   tenant = "acme"
   repository = "us-central1-docker.pkg.dev/acme/images"
@@ -78,9 +76,9 @@ ANTITHESIS_API_KEY, then the keychain entry and the credentials.toml table of
 the selected profile, then those of [default], then a GitHub Actions OIDC token.
 Keep credentials.toml readable only by you (mode 0600).
 
-`snouty login` rewrites settings.toml and credentials.toml, and snouty rewrites
-credentials.toml when it refreshes an OAuth token. A rewrite keeps the values of
-the other profiles, but it removes comments.
+snouty can rewrite settings.toml and credentials.toml, for example in
+`snouty login`. A rewrite keeps the values of the other profiles, but it removes
+comments.
 
 A project settings file can set any setting, at the top level or in a profile,
 including base_url, https_proxy and repository. snouty sends your API key to

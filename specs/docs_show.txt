@@ -35,3 +35,10 @@ stderr 'page not found.*nonexistent_page'
 ! snouty docs --offline show sdk
 stderr 'did you mean.*'
 stderr '/docs/sdk/python_sdk/.*'
+
+# --json fails, because show prints no JSON.
+setup-docs-db
+! snouty --json docs --offline show getting_started
+stderr '`snouty docs show` has no JSON output'
+stderr -literal 'run it without --json'
+! stdout .

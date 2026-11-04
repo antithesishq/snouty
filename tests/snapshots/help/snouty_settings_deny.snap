@@ -26,10 +26,6 @@ Options:
   -h, --help
           Print help (see a summary with '-h')
 
-      --json
-          Output JSON where supported (NDJSON for list/stream commands, pretty
-          JSON otherwise)
-
       --verbose
           Log API requests to stderr (authentication tokens redacted)
 

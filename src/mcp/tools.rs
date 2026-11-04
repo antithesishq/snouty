@@ -126,7 +126,7 @@ tools! {
     RunsEvents => "runs_events", Reads, hidden: ["query"], required: ["matches"];
     Debug => "debug", StartsSessions, hidden: [], required: [];
     DocsTree => "docs_tree", Reads, hidden: [], required: [];
-    DocsShow => "docs_show", Reads, hidden: ["json"], required: [];
+    DocsShow => "docs_show", Reads, hidden: [], required: [];
     DocsSearch => "docs_search", Reads, hidden: [], required: [];
     Doctor => "doctor", Reads, hidden: [], required: [];
     Version => "version", Reads, hidden: [], required: [];
@@ -169,7 +169,7 @@ impl ToolName {
     pub(crate) fn role(self, id: &str) -> ArgRole {
         match self.spec().param(id) {
             Some(param) => ArgRole::Param(param),
-            None if id == "json" || id == "detail" => ArgRole::Implied,
+            None if id == "detail" => ArgRole::Implied,
             None => ArgRole::Excluded,
         }
     }
@@ -188,11 +188,10 @@ pub(crate) fn summaries() -> Vec<(String, String)> {
 pub(crate) enum ArgRole {
     Param(&'static Param),
     /// An arg that an example may carry and the call drops: `--detail`, which
-    /// a call without `json` adds, and `--json` of a tool that prints the
-    /// same in both modes.
+    /// a call without `json` adds.
     Implied,
     /// The root's args but `json`, which are the server's to set, and the
-    /// args that the tool hides, but `json`.
+    /// args that the tool hides.
     Excluded,
 }
 

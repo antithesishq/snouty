@@ -5,8 +5,6 @@ Print the path to the cached SQLite database
 
 Useful for directly querying the documentation database with external tools.
 
-This command prints the path only. --json has no effect on it.
-
 Usage: snouty docs sqlite [OPTIONS]
 
 Options:
@@ -15,10 +13,6 @@ Options:
 
       --offline
           Don't check for documentation updates
-
-      --json
-          Output JSON where supported (NDJSON for list/stream commands, pretty
-          JSON otherwise)
 
       --verbose
           Log API requests to stderr (authentication tokens redacted)

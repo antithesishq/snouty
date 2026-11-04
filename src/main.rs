@@ -98,9 +98,6 @@ async fn run(cli: Cli) -> Result<()> {
         profile,
         command,
     } = cli;
-    if json && let Some(name) = json_unaware_command_name(&command) {
-        eprintln!("warning: --json has no effect for `snouty {name}`");
-    }
     // The global output flags travel together from here on; every command
     // takes them as one value instead of a swappable positional bool pair.
     let output = OutputOptions { json, verbose };
@@ -197,29 +194,6 @@ fn suppress_broken_pipe(result: Result<()>) -> Result<()> {
             Ok(())
         }
         other => other,
-    }
-}
-
-fn json_unaware_command_name(command: &Commands) -> Option<&'static str> {
-    match command {
-        Commands::Launch(_)
-        | Commands::Run(_)
-        | Commands::Runs { .. }
-        | Commands::Docs { .. }
-        | Commands::Debug { .. }
-        | Commands::Doctor(_)
-        | Commands::Version => None,
-        Commands::Validate(_) => Some("validate"),
-        Commands::Completions { .. } => Some("completions"),
-        Commands::Update(_) => Some("update"),
-        Commands::Login { .. } => Some("login"),
-        Commands::Mcp(_) => Some("mcp"),
-        Commands::Settings { command } => match command {
-            SettingsCommands::Show => None,
-            SettingsCommands::Trust(_) => Some("settings trust"),
-            SettingsCommands::Deny(_) => Some("settings deny"),
-        },
-        Commands::DockerCredential { .. } => Some("docker-credential"),
     }
 }
 

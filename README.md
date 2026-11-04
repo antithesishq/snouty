@@ -377,7 +377,7 @@ snouty does not choose a `--source` for you. A run without `--source` is ephemer
 
 `snouty launch` can replace the [Antithesis Trigger Action](https://github.com/antithesishq/antithesis-trigger-action). In GitHub Actions, it records the same metadata as the action: the repository, the branch, the commit, the pull request (`vcs.pr_id`, `vcs.pr_link`, `vcs.pr_owner` and `vcs.pr_title`), the user who started the workflow (`run.creator_name`), and the cron schedule of a scheduled workflow (`run.cron_schedule`). It records `run.caller_type` as `snouty`. On a pull request, it records the head commit of the pull request, not the merge commit that the workflow checks out. When the job checks out a different commit, for example another ref or another repository, the launch reads the git checkout instead.
 
-This workflow starts a run on the default branch every 12 hours, and on each pull request from a branch of the repository. Only the scheduled runs record property history. A pull request from a fork, or from Dependabot, gets no secrets, so the job skips it:
+This workflow starts a run on the default branch every 12 hours, and on a pull request when someone adds the `antithesis` label. Only the scheduled runs record property history. A pull request from a fork gets no secrets, so the job skips it:
 
 ```yaml
 name: Antithesis
@@ -385,16 +385,18 @@ on:
   # Every 12 hours, on the default branch.
   schedule:
     - cron: "0 */12 * * *"
+  # When someone adds the `antithesis` label to a pull request.
   pull_request:
+    types: [labeled]
 
 jobs:
   antithesis:
-    # Pull requests from other repositories (forks) and from Dependabot get no
-    # secrets, so the launch could only fail. Skip them.
+    # A pull request from another repository (a fork) gets no secrets, so the
+    # launch could only fail. Skip it.
     if: >-
       github.event_name == 'schedule' ||
-      (github.event.pull_request.head.repo.full_name == github.repository &&
-       github.actor != 'dependabot[bot]')
+      (github.event.label.name == 'antithesis' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -436,22 +438,24 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
             # Pull request runs are ephemeral.
             source_flag=()
+            test_name="pull-request"
             description="PR #$PR_NUMBER: $PR_TITLE"
           else
             # Scheduled runs record property history for the branch.
             source_flag=(--source "$GITHUB_REF_NAME")
+            test_name="$GITHUB_REF_NAME"
             description="Scheduled run of $GITHUB_REF_NAME"
           fi
           snouty launch \
             --launcher basic_test \
             --config ./antithesis \
-            --test-name smoke \
+            --test-name "$test_name" \
             --description "$description" \
             --duration 30m \
             "${source_flag[@]}"
 ```
 
-Store your Antithesis API key as the `ANTITHESIS_API_KEY` secret, or use [GitHub Actions OIDC](#github-actions-oidc) to store no secret. Store the JSON key of the service account for your container registry as the `GCP_REGISTRY_KEY` secret. `snouty validate` waits 2 minutes for setup-complete by default. If your system takes longer to start, raise the limit with `--timeout`, for example `--timeout 10m`.
+Store your Antithesis API key as the `ANTITHESIS_API_KEY` secret, or use [GitHub Actions OIDC](#github-actions-oidc) to store no secret. Store the JSON key of the service account for your container registry as the `GCP_REGISTRY_KEY` secret. `snouty validate` waits 2 minutes for setup-complete by default. If your system takes longer to start, raise the limit with `--timeout`, for example `--timeout 10m`. To run a pull request again, remove the `antithesis` label and add it back.
 
 When `ANTITHESIS_GITHUB_TOKEN` is set, the launch sets the `continuous-testing/antithesis` commit status of the commit to pending, and Antithesis sets the result when the run ends. With `--test-name`, the status is `continuous-testing/antithesis (<test-name>)`, so two tests on one commit get two statuses. Antithesis uses the token after the job ends, so `secrets.GITHUB_TOKEN` does not work. Use a [fine-grained personal access token](https://github.com/settings/tokens?type=beta) for the repository, with read access to metadata and read and write access to commit statuses, and store it as the `GH_PAT` secret.
 

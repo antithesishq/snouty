@@ -87,11 +87,12 @@ macro_rules! query_fragment {
 /// haystack. An assertion catalog entry (`antithesis_assert.hit === false`)
 /// never matches on `output_text`, because it is no evidence that anything ran.
 ///
-/// A test-composer command's source has one of two shapes. The spec's example
-/// is the command's file path, `antithesis/pods/<pod>/commands/...`. The live
-/// server (tenant `orbitinghail`, run `0b60de7a42a34218d44549277fed9753-64-0`,
-/// `events/search` and `logs`) sends the command name, such as
-/// `main/parallel_driver_lifecycle`, and sets `source.is_test_composer_command`.
+/// The live server names a test-composer command's output source after the
+/// command, such as `main/parallel_driver_lifecycle`, and sets
+/// `source.is_test_composer_command` (tenant `orbitinghail`, run
+/// `0b60de7a42a34218d44549277fed9753-64-0`, `events/search` and `logs`). No
+/// source name holds the `antithesis/pods/<pod>/commands/` path of the spec's
+/// example.
 pub(crate) const NEEDLE_FILTER: &str =
     query_fragment!(include_str!("event_set_dsl/needle_filter.pangolin.js"));
 

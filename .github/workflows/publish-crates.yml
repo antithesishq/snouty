@@ -36,7 +36,7 @@ jobs:
     runs-on: "ubuntu-24.04"
     # Hold the run here until a reviewer approves it.
     environment: release
-    # An explicit bash adds pipefail, so a failed curl fails its pipeline.
+    # An explicit bash adds pipefail, so a failed command fails its pipeline.
     defaults:
       run:
         shell: bash
@@ -93,6 +93,12 @@ jobs:
       # URL to this repository. npm's wrapper starts snouty by its own path,
       # so a docker-credential-snouty alias would not act as the credential
       # helper; a second wrapper runs `snouty docker-credential` instead.
+      # The npm package that dist's build-global-artifacts job built in this
+      # run. A called workflow shares its caller's run, and so its artifacts.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: artifacts-build-global
+          path: dist-global
       - name: Publish to npm
         env:
           name: ${{ steps.entry.outputs.name }}
@@ -103,7 +109,7 @@ jobs:
             echo "$package $version is already on npm"
             exit 0
           fi
-          curl -fsSL --retry 3 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/v$version/snouty-npm-package.tar.gz" | tar xz
+          tar xzf dist-global/snouty-npm-package.tar.gz
           cat > package/run-docker-credential-snouty.js <<'EOF'
           #!/usr/bin/env node
           process.argv.splice(2, 0, "docker-credential");

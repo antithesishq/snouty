@@ -204,7 +204,7 @@ An id that snouty does not know, such as the retired `runs-exec`, has no effect.
 
 `snouty mcp` serves most of snouty's commands to AI agents as [Model Context Protocol](https://modelcontextprotocol.io) tools, over the stdio transport. It is an unstable feature: set `SNOUTY_UNSTABLE_FEATURES=mcp` to turn it on. The agent starts the server itself.
 
-Run `snouty login` once before you add the server. The server then uses the credential that snouty stores in your home directory. Some agents, such as Codex, start a server with only part of your environment, so a credential in `ANTITHESIS_API_KEY` alone may not reach it. If you set `XDG_CONFIG_HOME`, pass it to the server too (for example, add `--env XDG_CONFIG_HOME=...` to the Codex command), so that the server reads the files that `snouty login` wrote.
+Run `snouty login` once before you add the server. The server then uses the credential that snouty stores (see [Where stored credentials live](#where-stored-credentials-live)). Some agents, such as Codex, start a server with only part of your environment, so a credential in `ANTITHESIS_API_KEY` alone may not reach it. If you set `XDG_CONFIG_HOME`, pass it to the server too (for example, add `--env XDG_CONFIG_HOME=...` to the Codex command), so that the server reads the settings, and any credentials file, that `snouty login` wrote.
 
 The commands below run the installed `snouty`. To run snouty without installing it, use `npx -y snouty mcp` in place of `snouty mcp`: npx fetches the npm package, which downloads the prebuilt binary on its first run.
 

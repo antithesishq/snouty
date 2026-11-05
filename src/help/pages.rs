@@ -77,6 +77,7 @@ macro_rules! help_pages {
 }
 
 help_pages! {
+    Simulate => "simulate.txt", ["simulate"];
     Launch => "launch.txt", ["launch"];
     Runs => "runs.txt", ["runs"];
     Debug => "debug.txt", ["debug"];

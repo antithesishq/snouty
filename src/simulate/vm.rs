@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::process::CommandExt;
@@ -69,8 +70,8 @@ impl BootConsole {
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
         self.offset += bytes.len() as u64;
-        self.filter.write(&bytes, &mut io::stderr().lock())?;
-        io::stderr().flush()?;
+        self.filter.write(&bytes, &mut crate::stdio::stderr())?;
+        crate::stdio::stderr().flush()?;
         Ok(())
     }
 }
@@ -311,7 +312,7 @@ impl Vm {
                             return Ok(());
                         }
                     }
-                    _ = sleep(Duration::from_millis(50)) => {}
+                    () = sleep(Duration::from_millis(50)) => {}
                 }
             }
         }).await.map_err(|_| eyre!("guest startup timed out waiting for SSH readiness marker (antithesis_host.status=ssh_ready)"))??;
@@ -335,7 +336,7 @@ impl Vm {
             let result = loop {
                 tokio::select! {
                     result = &mut output => break result,
-                    _ = sleep(Duration::from_millis(50)) => {
+                    () = sleep(Duration::from_millis(50)) => {
                         boot_console.flush(&self.run_dir.join("boot.log"))?;
                         if !self.is_running()? {
                             bail!("QEMU exited before SSH became ready");
@@ -438,7 +439,7 @@ impl Vm {
     pub async fn load_images(&self, archive: &Path) -> Result<()> {
         let mut command = self.ssh();
         command.arg("podman load").stdin(File::open(archive)?);
-        let output = output_async(command, Duration::from_secs(1800)).await?;
+        let output = output_async(command, Duration::from_mins(30)).await?;
         if !output.status.success() {
             bail!(
                 "guest image import failed: {}",
@@ -483,7 +484,8 @@ impl Vm {
                     .or_else(|_| file.seek(SeekFrom::Start(0)));
                 let mut bytes = Vec::new();
                 if file.read_to_end(&mut bytes).is_ok() {
-                    result.push_str(&format!("\n{name}:\n{}", String::from_utf8_lossy(&bytes)));
+                    write!(result, "\n{name}:\n{}", String::from_utf8_lossy(&bytes))
+                        .expect("writing to a String cannot fail");
                 }
             }
         }
@@ -505,13 +507,15 @@ impl Vm {
             Ok::<_, color_eyre::Report>(())
         })
         .await;
-        match powered_off {
-            Ok(result) => result?,
-            Err(_) => {
-                killpg(Pid::from_raw(self.child.id() as i32), Signal::SIGKILL)?;
-                self.child.wait()?;
-                self.client_key.take();
-            }
+        if let Ok(result) = powered_off {
+            result?;
+        } else {
+            killpg(
+                Pid::from_raw(self.child.id().cast_signed()),
+                Signal::SIGKILL,
+            )?;
+            self.child.wait()?;
+            self.client_key.take();
         }
         Ok(())
     }
@@ -559,7 +563,10 @@ impl Drop for Vm {
         if matches!(self.child.try_wait(), Ok(Some(_))) {
             return;
         }
-        let _ = killpg(Pid::from_raw(self.child.id() as i32), Signal::SIGKILL);
+        let _ = killpg(
+            Pid::from_raw(self.child.id().cast_signed()),
+            Signal::SIGKILL,
+        );
         let _ = self.child.wait();
     }
 }
@@ -613,7 +620,7 @@ mod tests {
             .process_group(0)
             .spawn()
             .unwrap();
-        let pid = Pid::from_raw(child.id() as i32);
+        let pid = Pid::from_raw(child.id().cast_signed());
         let vm = Vm {
             child,
             _socket_directory: tempfile::tempdir().unwrap(),

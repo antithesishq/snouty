@@ -1,0 +1,18 @@
+Run a Compose setup in an Antithesis guest VM
+
+This command is gated behind the 'simulate' unstable feature. Enable it with SNOUTY_UNSTABLE_FEATURES=simulate.
+
+After the guest boots, it prints a run ID. Open a second terminal and use `{{ t("snouty simulate --attach <ID>")? }}` to enter its guest. Leaving that shell does not stop the simulation.
+
+Accepts a directory containing docker-compose.yaml, as validate does. Kubernetes configurations are not supported. Workload images must exist in the local container engine. The guest image defaults to antithesis-guest:v66.0 in the configured repository. No API key is required.
+
+Requires Linux or macOS and QEMU 10.2 or later, built with libslirp 4.7 or later. Uses 1 CPU and 15000 MiB of memory by default. Use {{ t("--memory")? }} to lower guest memory when the host has less RAM. The guest uses the host architecture by default. SSH configuration is private to this run; user configuration is not changed.
+
+Waits for setup_complete before starting test composer on each rollout. After the composer watch is ready, calls add_entropy with a fresh random seed and force=true. Repeats every 30 seconds, including after composer completion. Pauses faults before stack recreation and waits for setup_complete on the next rollout. Entropy refresh preserves the current fault pause state. Uses the guest's configure.py to apply {{ t("--fault-tolerance")? }} and {{ t("--fault-exclusions")? }} before the first rollout. Fault tolerance defaults to resilient. Omitted fault exclusions keep the guest setting. {{ t("--fault-tolerance")? }} none pauses fault injection before Compose starts and prevents test composer from unpausing it. Other groups unpause fault injection after setup_complete. TacticsLang does not use this fault configuration. Repeats rollouts for templates with driver or check commands until interrupted. Checks test commands after setup_complete. With no commands or only first_ commands, keeps the stack running. {{ t("--disable-restart")? }} keeps all workloads running after composer completion. Failed assertions and composer commands do not stop the simulation, but cause a nonzero exit status when it stops. On interruption, requests immediate guest poweroff, waits up to two seconds, then force-kills the VM if needed and drains the remaining logs. A second interrupt force-kills the VM immediately.
+
+Boot console logs are hidden unless startup fails or the VM exits unexpectedly. Text output uses the same vtime, source, and event rendering as `{{ t("runs logs")? }}`. With {{ t("--json")? }}, emits newline-delimited events annotated with active faults and a final failure-count summary. The startup timeout does not limit the simulation duration.
+
+Example:
+  {% filter cmd %}
+  snouty simulate ./config
+  {% endfilter %}

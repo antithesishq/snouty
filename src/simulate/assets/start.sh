@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 set -euo pipefail
 compose_file=/opt/config/docker-compose.yaml
 export COMPOSE_PROJECT_NAME=antithesis

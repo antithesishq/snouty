@@ -1,4 +1,4 @@
-use std::io::{self, ErrorKind, Read, Write};
+use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -76,22 +76,20 @@ async fn main() -> std::process::ExitCode {
         Ok(code) => return code,
         Err(report) => report,
     };
-    {
-        // The docker-credential helper already said "not found" on stdout,
-        // which is all that the helper protocol permits for it.
-        if report.is::<snouty::docker_credential::CredentialsNotFound>() {
-            std::process::exit(1);
-        }
-        // One rendering for every error: `render_report` collapses the chain
-        // index for single errors and wraps overlong prose, both printing
-        // concerns that belong here rather than in the messages. User-facing
-        // failures are built with `user_error`/4xx `suppress_backtrace`, so they
-        // print message + any `.note()`/`.suggestion()` hints with no backtrace;
-        // genuine internal faults keep theirs.
-        let rendered = snouty::error::render_report(&report);
-        eprintln!("{}", snouty::wrap_if_tty(&rendered));
+    // The docker-credential helper already said "not found" on stdout,
+    // which is all that the helper protocol permits for it.
+    if report.is::<snouty::docker_credential::CredentialsNotFound>() {
         std::process::exit(1);
     }
+    // One rendering for every error: `render_report` collapses the chain
+    // index for single errors and wraps overlong prose, both printing
+    // concerns that belong here rather than in the messages. User-facing
+    // failures are built with `user_error`/4xx `suppress_backtrace`, so they
+    // print message + any `.note()`/`.suggestion()` hints with no backtrace;
+    // genuine internal faults keep theirs.
+    let rendered = snouty::error::render_report(&report);
+    eprintln!("{}", snouty::wrap_if_tty(&rendered));
+    std::process::exit(1);
 }
 
 async fn run(cli: Cli) -> Result<std::process::ExitCode> {
@@ -280,7 +278,7 @@ async fn cmd_launch(
     }
 
     if let Some(fault_exclusions) = args.fault_exclusions {
-        params.insert(ANT_FAULT_EXCLUSIONS, fault_exclusions);
+        params.insert(ANT_FAULT_EXCLUSIONS, fault_exclusions.to_string());
     }
 
     let config_image_ref = if let Some(config_dir) = &args.config {

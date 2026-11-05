@@ -627,9 +627,9 @@ mod tests {
             "source": {"name": "workload"},
             "moment": {"vtime": "1.25"}
         });
-        let rendered = render_entry(&mut renderer, &entry);
-        assert_eq!(rendered, "1.25      [workload] ready");
-        assert!(!rendered.contains("moment"));
+        let block = renderer.render_entry(&entry);
+        assert_eq!(block, "1.25      [workload] ready");
+        assert!(!block.contains("moment"));
     }
 
     #[test]

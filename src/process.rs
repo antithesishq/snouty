@@ -123,7 +123,7 @@ impl ProcessGroupChild {
         if let Some(ref mut child) = self.inner {
             if let Some(pid) = child.id() {
                 let _ = nix::sys::signal::killpg(
-                    nix::unistd::Pid::from_raw(pid as i32),
+                    nix::unistd::Pid::from_raw(pid.cast_signed()),
                     nix::sys::signal::Signal::SIGKILL,
                 );
             }
@@ -152,7 +152,7 @@ impl Drop for ProcessGroupChild {
         if let Some(ref mut child) = self.inner
             && let Some(pid) = child.id()
         {
-            let pid = nix::unistd::Pid::from_raw(pid as i32);
+            let pid = nix::unistd::Pid::from_raw(pid.cast_signed());
             let _ = nix::sys::signal::killpg(pid, nix::sys::signal::Signal::SIGKILL);
             // Cancellation can outlive the Tokio runtime, so reap before returning.
             while matches!(child.try_wait(), Ok(None)) {

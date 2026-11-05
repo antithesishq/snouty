@@ -13,7 +13,7 @@ use crate::container::{Architecture, ContainerRuntime};
 use crate::process::{output_async, output_with_timeout};
 use crate::simulate::SimulatePlatform;
 
-const IMAGE_TIMEOUT: Duration = Duration::from_secs(1800);
+const IMAGE_TIMEOUT: Duration = Duration::from_mins(30);
 const CREATE_TIMEOUT: Duration = Duration::from_secs(60);
 const SHA256_PREFIX: &str = "sha256:";
 
@@ -439,11 +439,12 @@ esac
 
     #[hegel::test]
     fn digest_normalization_preserves_identity(tc: hegel::TestCase) {
+        use std::fmt::Write as _;
         let bytes = tc.draw(generators::binary().min_size(32).max_size(32));
-        let digest = bytes
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+        let digest = bytes.iter().fold(String::new(), |mut output, byte| {
+            write!(output, "{byte:02x}").unwrap();
+            output
+        });
         let id: ImageId = digest.parse().unwrap();
         assert_eq!(
             format!("sha256:{}", digest.to_ascii_uppercase())

@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::io::{BufRead, IsTerminal, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -105,13 +106,13 @@ fn session_root() -> Result<PathBuf> {
 }
 
 fn interactive_terminal(option: &str) -> Result<()> {
-    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+    if !std::io::stdin().is_terminal() || !crate::stdio::stdout().is_terminal() {
         bail!("simulate {option} requires an interactive terminal");
     }
     Ok(())
 }
 
-pub(super) fn attach(id: SimulationId) -> Result<ExitCode> {
+pub(super) fn attach(id: &SimulationId) -> Result<ExitCode> {
     interactive_terminal("--attach")?;
     let path = session_root()?.join(id.to_string());
     let metadata = std::fs::symlink_metadata(&path)
@@ -142,6 +143,10 @@ enum RunPhase {
 }
 
 #[derive(Default, Serialize)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "field names are public summary JSON keys"
+)]
 struct Summary {
     assertion_failures: u64,
     command_failures: u64,
@@ -197,9 +202,9 @@ impl Output {
         std::thread::Builder::new()
             .name("simulate-output".into())
             .spawn(move || {
-                let mut stdout = std::io::stdout().lock();
+                let mut stdout = crate::stdio::stdout().lock();
                 while let Some(line) = receiver.blocking_recv() {
-                    let result = writeln!(stdout, "{}", line.text).and_then(|_| stdout.flush());
+                    let result = writeln!(stdout, "{}", line.text).and_then(|()| stdout.flush());
                     let failed = result.is_err();
                     let _ = line.written.send(result);
                     if failed {
@@ -277,9 +282,7 @@ impl Output {
                     {
                         event.render()
                     } else {
-                        let mut rendered = String::new();
-                        self.renderer.render_entry(entry, &mut rendered)?;
-                        rendered
+                        self.renderer.render_entry(entry)
                     }
                 };
                 self.line(line).await?;
@@ -314,6 +317,11 @@ pub(super) async fn run(
     settings: &Settings,
     options: OutputOptions,
 ) -> Result<ExitCode> {
+    #[derive(Deserialize)]
+    struct RemoteImage {
+        #[serde(rename = "Id")]
+        id: ImageId,
+    }
     let guest = resolve_guest(args.guest_image, settings)?;
     let runtime = container::runtime(settings)?;
     container::warn_ambiguous_engine(settings, runtime.as_ref(), options.json);
@@ -383,14 +391,19 @@ pub(super) async fn run(
             shell_quote(&args.fault_tolerance.to_string())
         );
         if let Some(exclusions) = &args.fault_exclusions {
-            configure.push_str(&format!(" --fault-exclusions={}", shell_quote(exclusions)));
+            write!(
+                configure,
+                " --fault-exclusions={}",
+                shell_quote(&exclusions.to_string())
+            )
+            .expect("writing to a String cannot fail");
         }
         configure.push('\n');
         guest
             .run_script(&configure)
             .await
             .wrap_err("configuring guest faults with configure.py")?;
-        if args.fault_tolerance == super::FaultTolerance::None {
+        if args.fault_tolerance == crate::api::FaultTolerance::None {
             guest
                 .run_script(DISABLE_FAULTS)
                 .await
@@ -422,11 +435,6 @@ pub(super) async fn run(
                 "set -euo pipefail\nif podman image exists {image}; then podman image inspect {image}; else printf '[]'; fi\n",
                 image = shell_quote(&reference)
             );
-            #[derive(Deserialize)]
-            struct RemoteImage {
-                #[serde(rename = "Id")]
-                id: ImageId,
-            }
             let remote: Vec<RemoteImage> = serde_json::from_str(
                 &guest
                     .run_script(&script)
@@ -464,7 +472,7 @@ pub(super) async fn run(
                         && matches!(event.kind, events::EventKind::SetupComplete { .. })
                         && matches!(cycle, WorkloadCycle::WaitingForSetup)
                     {
-                        if args.fault_tolerance != super::FaultTolerance::None {
+                        if args.fault_tolerance != crate::api::FaultTolerance::None {
                             guest.run_script("fault_injector_update --unpause\n").await.wrap_err("unpausing guest faults")?;
                         }
                         let workload = guest.run_script(WORKLOAD_KIND).await.wrap_err("classifying guest workload")?;
@@ -475,13 +483,13 @@ pub(super) async fn run(
                     output.event(&line, &mut summary, RunPhase::Running).await?;
                     if output.closed { return Ok::<_, color_eyre::Report>(()); }
                 },
-                _ = async {
+                () = async {
                     tokio::select! {
                         _ = health.tick() => {},
-                        _ = async {
+                        () = async {
                             match cycle {
                                 WorkloadCycle::Running { entropy_at, .. } | WorkloadCycle::ComposerCompleted { entropy_at } => tokio::time::sleep_until(entropy_at).await,
-                                _ => std::future::pending().await,
+                                WorkloadCycle::WaitingForSetup => std::future::pending().await,
                             }
                         } => {},
                     }
@@ -637,15 +645,14 @@ fn resolve_guest(image: Option<String>, settings: &Settings) -> Result<Guest> {
         }
         return Ok(Guest::Iso(iso));
     }
-    Ok(Guest::Image(match image {
-        Some(image) => image,
-        None => {
-            let repository = crate::settings::require(settings.repository(), "repository")?;
-            format!(
-                "{}/antithesis-guest:{GUEST_VERSION}",
-                repository.trim_end_matches('/')
-            )
-        }
+    Ok(Guest::Image(if let Some(image) = image {
+        image
+    } else {
+        let repository = crate::settings::require_setting(settings.repository(), "repository")?;
+        format!(
+            "{}/antithesis-guest:{GUEST_VERSION}",
+            repository.trim_end_matches('/')
+        )
     }))
 }
 

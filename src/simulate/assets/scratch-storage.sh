@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 set -euo pipefail
 device=/dev/vda
 modprobe virtio_blk

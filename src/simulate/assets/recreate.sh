@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 set -euo pipefail
 export COMPOSE_PROJECT_NAME=antithesis
 remove_stale_composer_registrations() {

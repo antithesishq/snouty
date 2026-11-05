@@ -20,14 +20,14 @@ use crate::docker_credential::HELPER_NAME;
 use crate::error::user_error;
 use crate::features::{self, Feature};
 use crate::help::{self, Attach};
-use crate::params::MAX_SETUP_TIMEOUT_MINUTES;
+use crate::params::{FaultExclusions, MAX_SETUP_TIMEOUT_MINUTES};
 use crate::render::{self, CodeSpans};
 use crate::runs::usage::Rollup;
+use crate::simulate::SimulatePlatform;
 use crate::stdio;
 use crate::time::{
     BareUnit, DURATION_EXAMPLES, HumanDuration, duration_error, duration_help, parse_timestamp_arg,
 };
-use crate::simulate::{FaultTolerance, SimulatePlatform};
 use crate::vtime::VTime;
 
 pub(crate) mod tree;
@@ -226,13 +226,17 @@ const EXEC_TIMEOUT: DurationFlag = DurationFlag {
     check: |timeout| require(timeout.seconds() > 0, "must be at least 1 second"),
 };
 
-fn parse_startup_timeout(value: &str) -> Result<HumanDuration, String> {
-    let timeout = value.parse::<HumanDuration>().map_err(|e| e.to_string())?;
-    if timeout.seconds() == 0 {
-        return Err("startup timeout must be greater than zero".to_string());
-    }
-    Ok(timeout)
-}
+const STARTUP_TIMEOUT: DurationFlag = DurationFlag {
+    name: "--timeout",
+    bare: BareUnit::Refused,
+    examples: &["30s", "5m"],
+    check: |timeout| {
+        require(
+            timeout.seconds() > 0,
+            "startup timeout must be greater than zero",
+        )
+    },
+};
 
 #[derive(Parser)]
 #[command(name = "snouty")]
@@ -298,60 +302,11 @@ pub enum Commands {
     /// Run a Compose setup in an Antithesis guest VM
     #[command(
         hide = !features::is_enabled(Feature::Simulate),
-        long_about = r#"Run a Compose setup in an Antithesis guest VM
-
-This command is gated behind the 'simulate' unstable feature. Enable it with
-SNOUTY_UNSTABLE_FEATURES=simulate.
-
-After the guest boots, it prints a run ID. Open a second terminal
-and use `snouty simulate --attach <ID>` to enter its guest. Leaving that shell
-does not stop the simulation.
-
-Accepts a directory containing docker-compose.yaml, as validate does.
-Kubernetes configurations are not supported. Workload images must exist in
-the local container engine. The guest image defaults to antithesis-guest:v66.0
-in the configured repository. No API key is required.
-
-Requires Linux or macOS and QEMU 10.2 or later, built with libslirp 4.7 or later.
-Uses 1 CPU and 15000 MiB of memory by default.
-Use --memory to lower guest memory when the host has less RAM.
-The guest uses the host architecture by default.
-SSH configuration is private to this run; user configuration is not changed.
-
-Waits for setup_complete before starting test composer on each rollout.
-After the composer watch is ready, calls add_entropy with a fresh random seed
-and force=true. Repeats every 30 seconds, including after composer completion.
-Pauses faults before stack recreation and waits for setup_complete on the next
-rollout. Entropy refresh preserves the current fault pause state.
-Uses the guest's configure.py to apply --fault-tolerance and --fault-exclusions
-before the first rollout. Fault tolerance defaults to resilient. Omitted fault
-exclusions keep the guest setting.
---fault-tolerance none pauses fault injection before Compose starts and prevents
-test composer from unpausing it. Other groups unpause fault injection after
-setup_complete.
-TacticsLang does not use this fault configuration.
-Repeats rollouts for templates with driver or check commands until interrupted.
-Checks test commands after setup_complete.
-With no commands or only first_ commands, keeps the stack running.
---disable-restart keeps all workloads running after composer completion.
-Failed assertions and composer commands do not stop the simulation, but cause a
-nonzero exit status when it stops.
-On interruption, requests immediate guest poweroff, waits up to two seconds,
-then force-kills the VM if needed and drains the remaining logs. A second
-interrupt force-kills the VM immediately.
-
-Boot console logs are hidden unless startup fails or the VM exits unexpectedly.
-Human output uses the same vtime, source, and event rendering as `runs logs`.
-With --json, emits newline-delimited events annotated with active faults and a
-final failure-count summary.
-The startup timeout does not limit the simulation duration.
-
-Example:
-  SNOUTY_UNSTABLE_FEATURES=simulate snouty simulate ./config"#
+        arg = json(JsonShape::Lines),
     )]
     Simulate(SimulateArgs),
 
-    #[command(hide = true)]
+    #[command(hide = true, arg = json(JsonShape::None))]
     InternalSshProxy { socket: std::path::PathBuf },
 
     /// Check environment configuration
@@ -758,13 +713,19 @@ pub struct SimulateArgs {
     #[arg(long, conflicts_with = "attach")]
     pub disable_restart: bool,
 
-    /// Fault group for the classic fault injector; none keeps fault injection paused
+    /// Which faults to inject, by how much disruption the system must survive.
+    /// `none`: no faults. `resilient`: degraded network links, thread pauses,
+    /// container pauses of up to 10 seconds, CPU throttling and clock jitter.
+    /// `high_availability`: everything in `resilient`, plus network partitions
+    /// and killed or stopped containers. `legacy`: all network faults and thread
+    /// pausing.
     #[arg(long, value_enum, default_value_t = FaultTolerance::Resilient, conflicts_with = "attach")]
     pub fault_tolerance: FaultTolerance,
 
-    /// Fault exclusion regex (an empty string clears the guest setting)
+    /// Containers that faults must leave alone, matched by name with a Rust regex.
+    /// Thread pausing still applies. Max 1024 characters.
     #[arg(long, conflicts_with = "attach")]
-    pub fault_exclusions: Option<String>,
+    pub fault_exclusions: Option<FaultExclusions>,
 
     /// Guest memory in MiB (maximum: 15000)
     #[arg(long, default_value_t = 15000, value_parser = clap::value_parser!(u64).range(1..=15000), conflicts_with = "attach")]
@@ -783,7 +744,7 @@ pub struct SimulateArgs {
     pub attach: Option<SimulationId>,
 
     /// Maximum time to wait for guest startup (for example, 5m or 300s)
-    #[arg(long, default_value = "5m", value_parser = parse_startup_timeout, conflicts_with = "attach")]
+    #[arg(long, default_value = "5m", value_parser = |s: &str| STARTUP_TIMEOUT.parse(s), conflicts_with = "attach")]
     pub timeout: HumanDuration,
 }
 
@@ -938,7 +899,7 @@ pub struct LaunchArgs {
     /// pausing is machine-wide, so it still applies. Rust regex syntax: no
     /// lookaround or backreferences. Max 1024 characters.
     #[arg(long)]
-    pub fault_exclusions: Option<String>,
+    pub fault_exclusions: Option<FaultExclusions>,
 
     /// Do not record the commit, branch, repository and pull request in run
     /// metadata
@@ -1447,6 +1408,68 @@ mod tests {
     }
 
     #[test]
+    fn launch_and_simulate_accept_the_same_fault_flags() {
+        for level in FaultTolerance::value_variants() {
+            let value = level.to_string();
+            for (command, positional) in
+                [("launch", "--launcher=basic_test"), ("simulate", "config")]
+            {
+                let cli = parse(&[
+                    "snouty",
+                    command,
+                    positional,
+                    "--fault-tolerance",
+                    &value,
+                    "--fault-exclusions",
+                    "^driver$",
+                ]);
+                let (actual, exclusions) = match cli.command {
+                    Commands::Launch(args) => (
+                        args.fault_tolerance.unwrap(),
+                        args.fault_exclusions.unwrap(),
+                    ),
+                    Commands::Simulate(args) => {
+                        (args.fault_tolerance, args.fault_exclusions.unwrap())
+                    }
+                    _ => unreachable!(),
+                };
+                assert_eq!(actual, *level);
+                assert_eq!(exclusions.to_string(), "^driver$");
+            }
+        }
+        for (command, positional) in [("launch", "--launcher=basic_test"), ("simulate", "config")] {
+            for invalid in [
+                String::new(),
+                " ".to_owned(),
+                "(".to_owned(),
+                "(?=driver)".to_owned(),
+                "é".repeat(1025),
+            ] {
+                assert!(
+                    Cli::try_parse_from([
+                        "snouty",
+                        command,
+                        positional,
+                        "--fault-exclusions",
+                        &invalid
+                    ])
+                    .is_err()
+                );
+            }
+            assert!(
+                Cli::try_parse_from([
+                    "snouty",
+                    command,
+                    positional,
+                    "--fault-exclusions",
+                    &"é".repeat(1024)
+                ])
+                .is_ok()
+            );
+        }
+    }
+
+    #[test]
     fn update_channel_parses_its_named_values() {
         assert_eq!(
             UpdateChannel::STABLE.parse::<UpdateChannel>().unwrap(),
@@ -1752,8 +1775,9 @@ mod tests {
     }
 
     /// Every duration flag, with the path of its command.
-    const DURATION_FLAGS: [(&[&str], DurationFlag); 9] = [
+    const DURATION_FLAGS: [(&[&str], DurationFlag); 10] = [
         (&["validate"], VALIDATE_TIMEOUT),
+        (&["simulate"], STARTUP_TIMEOUT),
         (&["launch"], LAUNCH_DURATION),
         (&["launch"], SETUP_TIMEOUT),
         (&["run"], LAUNCH_DURATION),

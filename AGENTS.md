@@ -40,7 +40,6 @@ boots the guest and opens a root shell. It does not inspect or start a Compose
 configuration. It shows the boot console until SSH is ready. Exit the shell or
 run `poweroff` to stop the VM.
 
-
 ## Rust coding conventions
 
 All code must be simple and idiomatic.

@@ -20,6 +20,7 @@ fn long_argument_error_wraps_at_words() {
     let mut command = PtyCommand::new(r#"exec "$0" launch --setup-timeout 10"#);
     command
         .env_clear()
+        .envs(support::ca_env())
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", home.path())
         .env("TERM", "xterm-256color");

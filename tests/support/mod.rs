@@ -147,6 +147,18 @@ impl MockDocsServer {
 /// it represents a global state that might leak into or out of tests.
 const FORWARDED_ENV_VARS: &[&str] = &["PATH", "TMPDIR", "LLVM_PROFILE_FILE"];
 
+/// The variables that locate CA certificates. snouty builds no HTTP client
+/// without CA certificates, and some hosts, such as the Nix build sandbox,
+/// have them only through these variables.
+pub(crate) const CA_ENV_VARS: [&str; 2] = ["SSL_CERT_FILE", "SSL_CERT_DIR"];
+
+/// The [`CA_ENV_VARS`] that are set, for a command that clears its environment.
+pub(crate) fn ca_env() -> impl Iterator<Item = (&'static str, std::ffi::OsString)> {
+    CA_ENV_VARS
+        .into_iter()
+        .filter_map(|var| Some((var, std::env::var_os(var)?)))
+}
+
 pub(crate) fn snouty() -> Command {
     let mut cmd = cargo_bin_cmd!("snouty");
     cmd.env_clear();
@@ -155,6 +167,7 @@ pub(crate) fn snouty() -> Command {
             cmd.env(var, value);
         }
     }
+    cmd.envs(ca_env());
     cmd.env("RUST_LOG", "debug");
     // Disable keychain access -- this isn't something we can mock for each test case
     cmd.env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1");

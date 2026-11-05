@@ -65,6 +65,10 @@ reqwest = { version = "0.13.1", default-features = false, features = ["http2", "
 # ring makes a smaller binary than reqwest's default, aws-lc-rs.
 # api::client_builder installs it.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# api::client_builder asks reqwest's verifier for the system CA roots, and
+# falls back to the bundled Mozilla roots when it finds none.
+rustls-platform-verifier = "0.7"
+webpki-root-certs = "1"
 color-eyre = { version = "0.6", default-features = false }
 futures-util = "0.3"
 # Chunk type of reqwest response streams; JsonStream buffers them.
@@ -113,12 +117,6 @@ gix = { version = "0.90", default-features = false, features = ["sha1"] }
 # See the global_allocator in main.rs.
 [target.'cfg(target_env = "musl")'.dependencies]
 mimalloc = "0.1.52"
-
-# Fallback CA roots for api::client_builder. Only these targets load system
-# roots from files.
-[target.'cfg(all(unix, not(target_vendor = "apple"), not(target_os = "android")))'.dependencies]
-rustls-native-certs = "0.8"
-webpki-root-certs = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1.0.0", features = ["keychain"] }

@@ -1,0 +1,10 @@
+# CA roots
+#
+# On a host with no system CA certificates, snouty trusts the bundled Mozilla
+# roots. An empty SSL_CERT_FILE makes the system load no roots.
+
+# A host with no CA certificates still runs a command.
+env SSL_CERT_FILE=
+mock-runs-server
+snouty runs
+stdout '^RUN ID +STATUS +CREATED +LAUNCHER +RUN$'

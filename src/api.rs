@@ -506,34 +506,31 @@ pub fn client_builder() -> reqwest::ClientBuilder {
     // Err means a provider is already installed, which is enough.
     let _ = rustls::crypto::ring::default_provider().install_default();
     let builder = Client::builder();
-    #[cfg(all(unix, not(target_vendor = "apple"), not(target_os = "android")))]
-    {
-        /// The bundled Mozilla roots, or `None` when the system has CA
-        /// certificates. Without roots, reqwest fails to build any client,
-        /// even for plain HTTP.
-        static FALLBACK_ROOTS: std::sync::LazyLock<Option<Vec<reqwest::Certificate>>> =
-            std::sync::LazyLock::new(|| {
-                let system = rustls_native_certs::load_native_certs().certs;
-                let (parsed, _) = rustls::RootCertStore::empty().add_parsable_certificates(system);
-                if parsed > 0 {
-                    return None;
-                }
-                log::debug!("no system CA certificates, so using the bundled Mozilla roots");
-                Some(
-                    webpki_root_certs::TLS_SERVER_ROOT_CERTS
-                        .iter()
-                        .map(|der| {
-                            reqwest::Certificate::from_der(der).expect("rustls accepts any DER")
-                        })
-                        .collect(),
-                )
-            });
-        if let Some(roots) = &*FALLBACK_ROOTS {
-            return builder.tls_certs_only(roots.clone());
-        }
+    if let Some(roots) = &*FALLBACK_ROOTS {
+        return builder.tls_certs_only(roots.clone());
     }
     builder
 }
+
+/// The bundled Mozilla roots, or `None` when reqwest's verifier loads the
+/// system CA certificates. Without roots, reqwest fails to build any client,
+/// even for plain HTTP.
+static FALLBACK_ROOTS: std::sync::LazyLock<Option<Vec<reqwest::Certificate>>> =
+    std::sync::LazyLock::new(|| {
+        let provider = rustls::crypto::CryptoProvider::get_default()
+            .expect("client_builder installs a provider")
+            .clone();
+        let error = rustls_platform_verifier::Verifier::new(provider).err()?;
+        log::debug!("{error}, so using the bundled Mozilla roots");
+        Some(
+            webpki_root_certs::TLS_SERVER_ROOT_CERTS
+                .iter()
+                .map(|der| {
+                    reqwest::Certificate::from_der(der).expect("from_der only copies the bytes")
+                })
+                .collect(),
+        )
+    });
 
 /// How many times one API call is re-sent before its failure surfaces.
 const MAX_RETRIES: u32 = 10;

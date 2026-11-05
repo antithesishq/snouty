@@ -14,7 +14,7 @@ snouty does not choose a `--source` for you. A run without `--source` is ephemer
 
 ## GitHub Actions
 
-`snouty launch` can replace the [Antithesis Trigger Action](https://github.com/antithesishq/antithesis-trigger-action). In GitHub Actions, it records the same metadata as the action: the repository, the branch, the commit, the pull request (`vcs.pr_id`, `vcs.pr_link`, `vcs.pr_owner` and `vcs.pr_title`), the user who started the workflow (`run.creator_name`), and the cron schedule of a scheduled workflow (`run.cron_schedule`). It records `run.caller_type` as `snouty`. On a pull request, it records the head commit of the pull request, not the merge commit that the workflow checks out. When the job checks out a different commit, for example another ref or another repository, the launch reads the git checkout instead.
+`snouty launch` can replace the [Antithesis Trigger Action](https://github.com/antithesishq/antithesis-trigger-action). In GitHub Actions, it records all the context it can gather from the workflow, including the pull request, the user who started the workflow, and the schedule of a scheduled workflow.
 
 This workflow starts a run on the default branch every 12 hours, and on a pull request when someone adds the `antithesis` label. Only the scheduled runs record property history. A pull request from a fork gets no secrets, so the job skips it:
 
@@ -102,11 +102,9 @@ The workflow needs these secrets:
 - `GCP_REGISTRY_KEY`: the JSON key of the service account for your container registry.
 - `GH_PAT`: a [fine-grained personal access token](https://github.com/settings/tokens?type=beta) for the repository, with read access to metadata and read and write access to commit statuses. `secrets.GITHUB_TOKEN` does not work, because Antithesis uses the token after the job ends.
 
-The launch sets the `continuous-testing/antithesis (<test-name>)` commit status to pending, and Antithesis sets the result when the run ends. Each test name gets its own status.
+The launch posts a pending check to the tested commit, and Antithesis updates it with the result when the run ends.
 
 To run a pull request again, remove the `antithesis` label and add it back. If your system takes more than 2 minutes to start, add `--timeout 10m` to `snouty validate`.
-
-A `--param` replaces the detected parameter with the same key. `--no-vcs` turns off the `vcs.*` detection, but not the commit status.
 
 ### GitHub Actions OIDC
 
@@ -115,7 +113,7 @@ In a GitHub Actions workflow, snouty can authenticate with the workflow's own OI
 > [!IMPORTANT]
 > Your Antithesis tenant must trust GitHub Actions OIDC tokens from your repository before this works. Ask Antithesis support to configure it.
 
-Give the job permission to mint the token, and leave `ANTITHESIS_API_KEY` unset, because an API key takes precedence:
+Give the job permission to mint the token, and leave `ANTITHESIS_API_KEY` unset:
 
 ```yaml
 permissions:
@@ -133,11 +131,10 @@ Each input of the trigger action has a snouty equivalent:
 |---|---|
 | `tenant` | `ANTITHESIS_TENANT` |
 | `api_key` | `ANTITHESIS_API_KEY`, or GitHub Actions OIDC |
-| `username`, `password` | `ANTITHESIS_USERNAME`, `ANTITHESIS_PASSWORD` (deprecated) |
 | `github_token` | `ANTITHESIS_GITHUB_TOKEN` |
 | `notebook_name` | `--launcher` |
 | `config_image` | `--config-image`, or `--config` to build and push the config |
-| `images` | `--param antithesis.images=...` |
+| `images` | not needed for images the compose file names; otherwise, or on Kubernetes, `--param antithesis.images=...` |
 | `description` | `--description` |
 | `test_name` | `--test-name` |
 | `email_recipients` | `--recipients` |
@@ -151,11 +148,9 @@ The action always sends the branch as `antithesis.source`. With snouty, pass `--
 
 Like the GitHub Actions workflow, these examples log in to the container registry, build and pull the images, then run `snouty validate`. snouty launches only local images, and validate catches a broken harness in CI. Validate waits 2 minutes for setup-complete; for a slower system, add `--timeout 10m`.
 
-Validate mounts a directory under `$TMPDIR` into the containers. If Docker runs elsewhere, such as in Docker-in-Docker, set `TMPDIR` to a directory Docker can see, as the GitLab CI example does.
-
 ### GitLab CI
 
-GitLab CI checks out a detached HEAD, so the launch records the commit but no branch. This job records history for the default branch only. Docker runs in the `docker:dind` service, which shares only the project directory with the job, so `snouty validate` keeps its temporary files there. Store `ANTITHESIS_API_KEY` as a masked CI/CD variable. GitLab cannot mask a JSON key, so store the registry key base64-encoded (`base64 -w0 key.json`) as the masked variable `GCP_REGISTRY_KEY_BASE64`:
+GitLab CI checks out a detached HEAD, so the launch records the commit but no branch. This job records history for the default branch only. Docker runs in the `docker:dind` service, which shares only the project directory with the job, so `snouty validate` keeps its temporary files there. Store `ANTITHESIS_API_KEY` as a masked CI/CD variable. GitLab masks only a single-line value with no spaces, which a JSON key is not, so store the registry key base64-encoded (`base64 -w0 key.json`) as the masked variable `GCP_REGISTRY_KEY_BASE64`:
 
 ```yaml
 antithesis:

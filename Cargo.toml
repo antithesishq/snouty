@@ -114,6 +114,12 @@ gix = { version = "0.90", default-features = false, features = ["sha1"] }
 [target.'cfg(target_env = "musl")'.dependencies]
 mimalloc = "0.1.52"
 
+# api::client_builder falls back to the bundled Mozilla roots when the system
+# has no CA certificates. Only these targets load system roots from files.
+[target.'cfg(all(unix, not(target_vendor = "apple"), not(target_os = "android")))'.dependencies]
+rustls-native-certs = "0.8"
+webpki-root-certs = "1"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1.0.0", features = ["keychain"] }
 

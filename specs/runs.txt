@@ -1224,6 +1224,14 @@ snouty --json runs search run-stream-error 'contains({output_text: "starting"})'
 stdout 'output_text.*starting'
 stdout '"error":"mock stream failure"'
 
+# A host with no CA certificates still runs the command. An empty
+# SSL_CERT_FILE loads no system roots. Keep this case last: `env` cannot
+# unset the variable.
+env SSL_CERT_FILE=
+mock-runs-server
+snouty runs
+stdout '^RUN ID +STATUS +CREATED +LAUNCHER +RUN$'
+
 -- probe-runs.ndjson --
 {"id":"no-such-run","kind":"test"}
 {"id":"run-empty","kind":"test"}

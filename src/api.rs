@@ -499,6 +499,8 @@ pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// A reqwest builder with a rustls crypto provider installed: ring, unless
 /// another is already installed. reqwest panics on `build` without one, so
 /// every client must start here.
+/// On a host with no system CA certificates, it trusts the bundled Mozilla
+/// roots.
 #[allow(clippy::disallowed_methods)]
 pub fn client_builder() -> reqwest::ClientBuilder {
     // Err means a provider is already installed, which is enough.
@@ -506,10 +508,9 @@ pub fn client_builder() -> reqwest::ClientBuilder {
     let builder = Client::builder();
     #[cfg(all(unix, not(target_vendor = "apple"), not(target_os = "android")))]
     {
-        /// The bundled Mozilla roots, when the system has no CA certificates,
-        /// such as in a minimal container. Without them, reqwest fails to
-        /// build any client on such a host, also a client for plain HTTP.
-        /// `None` when the system has roots.
+        /// The bundled Mozilla roots, or `None` when the system has CA
+        /// certificates. Without roots, reqwest fails to build any client,
+        /// even for plain HTTP.
         static FALLBACK_ROOTS: std::sync::LazyLock<Option<Vec<reqwest::Certificate>>> =
             std::sync::LazyLock::new(|| {
                 let system = rustls_native_certs::load_native_certs().certs;

@@ -221,7 +221,7 @@ stdout 'Run ID.*$R_run_id'
 
 # Timestamps are in the local timezone, without a zone.
 mock-runs-server
-env TZ=Asia/Tokyo
+env TZ=JST-9
 snouty runs show $R_run_id
 stdout '^Created +\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$'
 [!staging] stdout '^Started +2025-03-20 11:01:12$'
@@ -232,7 +232,7 @@ stdout '^Created +\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$'
 # local timezone. --created-after leaves out a run created at that time, and
 # --created-before includes it.
 mock-runs-server
-env TZ=Asia/Tokyo
+env TZ=JST-9
 [!staging] snouty runs list --detail
 [!staging] stdout '^Created +2025-03-20 11:00:00$'
 [!staging] snouty --json runs list --created-after '2025-03-20 11:00:00'
@@ -248,7 +248,7 @@ env TZ=Asia/Tokyo
 
 # Around a clock change, a local time that the clock skips is an error, and a
 # time that it shows twice is the earlier instant.
-env TZ=America/New_York
+env TZ=EST5EDT,M3.2.0,M11.1.0
 ! snouty runs list --created-after '2026-03-08 02:30:00'
 stderr '2026-03-08 02:30:00 does not exist in the local timezone'
 mock-runs-server
@@ -484,7 +484,7 @@ stderr 'detail.*json'
 # `snouty runs build-logs` prints each line's timestamp in the local timezone.
 # TZ is not UTC, so the times differ from the server's.
 mock-runs-server
-env TZ=Asia/Tokyo
+env TZ=JST-9
 snouty runs build-logs $R_run_id
 stdout '^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \[[a-z]+\]'
 [!staging] stdout '^2025-03-20 11:01:12 \[stdout\] Building image payments-service\.\.\.'
@@ -503,7 +503,7 @@ snouty --json runs build-logs $R_run_id
 # The JSON shows the times of a run, and of each build-log line, in UTC, as
 # the server sends them, while the text shows local times.
 mock-runs-server
-env TZ=Asia/Tokyo
+env TZ=JST-9
 snouty --json runs list -n 1
 stdout '"created_at":"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z"'
 [!staging] stdout '"created_at":"2025-03-20T02:00:00Z"'
@@ -1148,7 +1148,7 @@ stderr 'run not found: no-such-run'
 # record or dropping it. Data received before the error still prints. The
 # `run-stream-error` mock fixture ends each of its streams this way.
 mock-runs-server
-env TZ=UTC
+env TZ=UTC0
 ! snouty runs build-logs run-stream-error
 stdout -literal '2025-03-20 02:01:12 [stdout] Building image payments-service...'
 stderr 'the server reported an error mid-stream: mock stream failure'

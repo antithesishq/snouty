@@ -260,7 +260,7 @@ Snouty looks for a credential in this order, and uses the first one it finds:
 2. `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` in the environment (deprecated).
 3. The credential stored for the selected `--profile`: the system keychain first, the credentials file second.
 4. The credential stored for the default profile: the system keychain first, the credentials file second.
-5. A GitHub Actions OIDC token, when the workflow exposes one.
+5. A [GitHub Actions OIDC](https://github.com/antithesishq/snouty/blob/main/CI.md#github-actions-oidc) token, when the workflow exposes one.
 
 An environment variable always wins over a stored credential. Unset `ANTITHESIS_API_KEY` when you want snouty to use what `snouty login` stored.
 
@@ -299,19 +299,6 @@ export ANTITHESIS_API_KEY="your-api-key"
 
 `snouty login` also stores an API key for you, which keeps the key out of your shell history and out of your environment.
 
-### GitHub Actions OIDC
-
-In a GitHub Actions workflow, snouty authenticates with the workflow's own OIDC token, so you store no secret. Give the job permission to mint the token:
-
-```yaml
-permissions:
-  id-token: write
-  contents: read
-```
-
-> [!IMPORTANT]
-> Your Antithesis tenant must trust GitHub Actions OIDC tokens from your repository before this works. Ask Antithesis support to configure it.
-
 ### Credential injection by an HTTPS proxy
 
 Some VM and development platforms hold your credentials for you, and inject them into outbound requests. The platform gives you a hostname that stands in for `https://<tenant>.antithesis.com`. That hostname terminates TLS, replaces the `Authorization` header with the real credential, and forwards the request. Your machine never holds the secret. Replit and exe.dev work this way; check your platform's documentation for the hostname it gives you.
@@ -340,6 +327,9 @@ export ANTITHESIS_EXTRA_HEADERS="X-Proxy-Token: abc123"
 ### Docker credential helper
 
 `docker-credential-snouty` gives Docker and Podman your snouty credentials for your tenant's container registry, `registry.<tenant>.antithesis.com`.
+
+> [!NOTE]
+> The tenant registry must be enabled on your tenant. Contact Antithesis support to request it.
 
 To set it up, add the registry to `credHelpers` in `~/.docker/config.json` for Docker, or in `~/.config/containers/auth.json` for Podman:
 
@@ -371,163 +361,7 @@ Username and password authentication is deprecated. It works with `snouty launch
 
 ## Running in CI
 
-`snouty launch` runs in any CI system. In every CI system it records the checked-out commit in run metadata. It also records the branch, when HEAD is on a branch, and the repository and a commit link, when the `origin` remote is on github.com. In GitHub Actions, it records more: see [GitHub Actions](#github-actions).
-
-Each CI job needs these environment variables:
-
-- `ANTITHESIS_TENANT`: your tenant.
-- `ANTITHESIS_REPOSITORY`: the container registry for your images, with `--config`. On your tenant registry, `registry.<tenant>.antithesis.com`, snouty pushes with its own credential. That needs Docker 28.3.0 or later, or the [Docker credential helper](#docker-credential-helper). For any other registry, log in to it in the job before the launch.
-- `ANTITHESIS_API_KEY`: an API key, stored as a secret. GitHub Actions can use [OIDC](#github-actions-oidc) instead.
-
-snouty does not choose a `--source` for you. A run without `--source` is ephemeral: its results do not go into the property history of any source. To record history for a branch, pass `--source` only in the jobs that build that branch, such as pushes to `main` and nightly schedules. Do not pass a pull request's branch name as the source: a pull request from a fork can use any branch name, such as `main`.
-
-`--config` builds the config image and pushes the images, so the job needs Docker or Podman.
-
-### GitHub Actions
-
-`snouty launch` can replace the [Antithesis Trigger Action](https://github.com/antithesishq/antithesis-trigger-action). In GitHub Actions, it records the same metadata as the action: the repository, the branch, the commit, the pull request (`vcs.pr_id`, `vcs.pr_link`, `vcs.pr_owner` and `vcs.pr_title`), the user who started the workflow (`run.creator_name`), and the cron schedule of a scheduled workflow (`run.cron_schedule`). It records `run.caller_type` as `snouty`. On a pull request, it records the head commit of the pull request, not the merge commit that the workflow checks out. When the job checks out a different commit, for example another ref or another repository, the launch reads the git checkout instead.
-
-This workflow starts a run for each push to `main` and each pull request from a branch of the repository. Only a push to `main` records property history. A pull request from a fork, or from Dependabot, gets no OIDC token and no secrets, so the job skips it:
-
-```yaml
-name: Antithesis
-on:
-  push:
-    branches: [main]
-  pull_request:
-
-jobs:
-  antithesis:
-    if: >-
-      github.event_name == 'push' ||
-      (github.event.pull_request.head.repo.full_name == github.repository &&
-       github.actor != 'dependabot[bot]')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v5
-      - name: Install snouty
-        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
-      # The runner's Docker is older than 28.3.0, so it needs the credential
-      # helper for the tenant registry.
-      - name: Use snouty for the tenant registry
-        run: |
-          mkdir -p ~/.docker
-          [ -f ~/.docker/config.json ] || echo '{}' > ~/.docker/config.json
-          jq '.credHelpers["registry.my-tenant.antithesis.com"] = "snouty"' ~/.docker/config.json > "$RUNNER_TEMP/config.json"
-          mv "$RUNNER_TEMP/config.json" ~/.docker/config.json
-      - name: Launch an Antithesis run
-        env:
-          ANTITHESIS_TENANT: my-tenant
-          ANTITHESIS_REPOSITORY: registry.my-tenant.antithesis.com/my-project
-          ANTITHESIS_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-          # The runner has Podman too, and snouty prefers it by default.
-          SNOUTY_CONTAINER_ENGINE: docker
-          SOURCE: ${{ github.event_name == 'push' && github.ref_name || '' }}
-        run: |
-          snouty launch --launcher basic_test --config ./antithesis \
-            --test-name smoke --duration 30m ${SOURCE:+--source "$SOURCE"}
-```
-
-The job authenticates with [GitHub Actions OIDC](#github-actions-oidc). To use an API key instead, remove `id-token: write` and set `ANTITHESIS_API_KEY: ${{ secrets.ANTITHESIS_API_KEY }}`.
-
-When `ANTITHESIS_GITHUB_TOKEN` is set, the launch sets the `continuous-testing/antithesis` commit status of the commit to pending, and Antithesis sets the result when the run ends. With `--test-name`, the status is `continuous-testing/antithesis (<test-name>)`, so two tests on one commit get two statuses. Antithesis uses the token after the job ends, so `secrets.GITHUB_TOKEN` does not work. Use a [fine-grained personal access token](https://github.com/settings/tokens?type=beta) for the repository, with read access to metadata and read and write access to commit statuses, and store it as the `GH_PAT` secret.
-
-A `--param` replaces the detected parameter with the same key. `--no-vcs` turns off the `vcs.*` detection, but not the commit status.
-
-Each input of the trigger action has a snouty equivalent:
-
-| Trigger action input | snouty |
-|---|---|
-| `tenant` | `ANTITHESIS_TENANT` |
-| `api_key` | `ANTITHESIS_API_KEY`, or GitHub Actions OIDC |
-| `username`, `password` | `ANTITHESIS_USERNAME`, `ANTITHESIS_PASSWORD` (deprecated) |
-| `github_token` | `ANTITHESIS_GITHUB_TOKEN` |
-| `notebook_name` | `--launcher` |
-| `config_image` | `--config-image`, or `--config` to build and push the config |
-| `images` | `--param antithesis.images=...` |
-| `description` | `--description` |
-| `test_name` | `--test-name` |
-| `email_recipients` | `--recipients` |
-| `team` | `--param run.team=...` |
-| `system_name` | `--param vcs.system_name=...` |
-| `additional_parameters` | one `--param key=value` for each parameter |
-
-The action always sends the branch as `antithesis.source`. With snouty, pass `--source` yourself, as in the workflow above.
-
-### GitLab CI
-
-GitLab CI checks out a detached HEAD, so the launch records the commit but no branch. This job records history for the default branch only. Store `ANTITHESIS_API_KEY` as a masked CI/CD variable:
-
-```yaml
-antithesis:
-  image: docker:latest
-  services: [docker:dind]
-  variables:
-    ANTITHESIS_TENANT: my-tenant
-    ANTITHESIS_REPOSITORY: registry.my-tenant.antithesis.com/my-project
-  before_script:
-    - apk add --no-cache curl git xz
-    - curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
-    - export PATH="$HOME/.local/bin:$PATH"
-  script:
-    - if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then SOURCE="$CI_COMMIT_BRANCH"; fi
-    - snouty launch --launcher basic_test --config ./antithesis --duration 30m ${SOURCE:+--source "$SOURCE"}
-```
-
-### Buildkite
-
-Buildkite checks out a detached HEAD, so the launch records the commit but no branch. For a repository on github.com, it also records the repository and a commit link. Give the agent `ANTITHESIS_API_KEY` from your secrets store. `$$` keeps Buildkite from replacing a variable when it uploads the pipeline:
-
-```yaml
-steps:
-  - label: Antithesis
-    env:
-      ANTITHESIS_TENANT: my-tenant
-      ANTITHESIS_REPOSITORY: registry.my-tenant.antithesis.com/my-project
-    command: |
-      curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
-      export PATH="$$HOME/.local/bin:$$PATH"
-      if [ "$$BUILDKITE_BRANCH" = "$$BUILDKITE_PIPELINE_DEFAULT_BRANCH" ] && [ "$$BUILDKITE_PULL_REQUEST" = "false" ]; then SOURCE="$$BUILDKITE_BRANCH"; fi
-      snouty launch --launcher basic_test --config ./antithesis --duration 30m $${SOURCE:+--source "$$SOURCE"}
-```
-
-### CircleCI
-
-CircleCI checks out the branch of a branch build, so the launch records the commit and the branch. For a repository on github.com, it also records the repository and a commit link. Store `ANTITHESIS_API_KEY` in a context or a project environment variable:
-
-```yaml
-version: 2.1
-jobs:
-  antithesis:
-    machine:
-      image: ubuntu-2404:current
-    environment:
-      ANTITHESIS_TENANT: my-tenant
-      ANTITHESIS_REPOSITORY: registry.my-tenant.antithesis.com/my-project
-    steps:
-      - checkout
-      - run: |
-          curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
-          export PATH="$HOME/.local/bin:$PATH"
-          if [ "$CIRCLE_BRANCH" = main ] && [ -z "$CIRCLE_PULL_REQUEST" ]; then SOURCE=main; fi
-          snouty launch --launcher basic_test --config ./antithesis --duration 30m ${SOURCE:+--source "$SOURCE"}
-workflows:
-  antithesis:
-    jobs: [antithesis]
-```
-
-### Commit status from another CI system
-
-Only GitHub Actions sends the GitHub callback params for you. For a repository on GitHub that another CI system builds, pass them yourself. Then the launch also sets the commit status to pending:
-
-```sh
-snouty launch --launcher basic_test --config ./antithesis \
-  --param "antithesis.integrations.github.callback_url=https://api.github.com/repos/OWNER/REPO/statuses/$COMMIT" \
-  --param "antithesis.integrations.github.token=$GITHUB_PAT"
-```
+`snouty launch` runs in any CI system. See [CI.md](https://github.com/antithesishq/snouty/blob/main/CI.md) for complete workflows for GitHub Actions, GitLab CI, Buildkite and CircleCI.
 
 ## Shell Completions
 

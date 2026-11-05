@@ -11,6 +11,20 @@ Examples:
   snouty docs tree --depth 2
   snouty docs tree sdk
 
+Each line shows one path segment. A page also shows its title, after " - ". For
+example, `snouty docs tree rust` prints:
+
+  reference
+  ┗━━ sdk - SDKs
+      ┗━━ rust - Rust SDK
+          ┣━━ example - Rust SDK tutorial, times10 function
+          ┣━━ instrumentation - Rust instrumentation
+          ┗━━ legacy_instrumentation - Legacy Rust instrumentation
+
+To get the path of a page, join the segments from the top line down to the page
+with "/", for example reference/sdk/rust/example. `snouty docs show` accepts
+this path. A line without a title is not a page.
+
 With --json, the tree prints as one JSON object, {"children": [node, ...]}. Each
 node has name, the last segment of its path, and path. A node has title when it
 is a page, and then `snouty docs show` accepts its path. A node has children,

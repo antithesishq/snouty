@@ -1662,18 +1662,18 @@ fn restart_wait_cancels_entropy_and_is_interruptible() {
 }
 
 #[test]
-fn completed_single_rollout_and_empty_commands_cancel_entropy() {
+fn completed_composer_keeps_entropy_without_restarting_autonomous_or_single_rollouts() {
     let mut simulations = Vec::new();
-    for mode in ["clean-once", "no-commands"] {
+    for mode in ["clean-once", "no-commands", "first-only"] {
         let mut simulation = Simulation::start(mode);
         simulation.wait_for("entropy_calls", "true");
         fs::write(simulation.root().join("composer_exit"), "").unwrap();
-        simulation.wait_for("cycle_events", "true\npause\n");
-        if mode == "clean-once" {
-            assert!(!simulation.root().join("recreate_started").exists());
-        } else {
-            simulation.wait_for("recreate_started", "yes");
-        }
+        simulation.wait_for("composer_completed", "yes");
+        simulation.wait_for(
+            "stderr",
+            "Test composer completed; leaving the local Compose project running",
+        );
+        assert!(!simulation.root().join("recreate_started").exists());
         simulations.push(simulation);
     }
     std::thread::sleep(Duration::from_secs(31));
@@ -1681,6 +1681,10 @@ fn completed_single_rollout_and_empty_commands_cancel_entropy() {
         assert!(simulation.child.try_wait().unwrap().is_none());
         kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
         simulation.finish();
-        assert_eq!(simulation.read("entropy_calls").lines().count(), 1);
+        assert_eq!(simulation.read("entropy_calls").lines().count(), 2);
+        assert!(!simulation.root().join("recreate_started").exists());
+        let events = simulation.read("cycle_events");
+        assert_eq!(events.lines().filter(|line| *line == "pause").count(), 1);
+        assert_eq!(events.lines().filter(|line| *line == "unpause").count(), 1);
     }
 }

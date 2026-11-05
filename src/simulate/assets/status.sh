@@ -10,6 +10,5 @@ fi
 if [[ "$state" == active || "$state" == activating ]]; then
     echo '"running"'
 else
-    fault_injector_update --pause
     echo '"completed"'
 fi

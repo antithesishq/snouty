@@ -320,8 +320,9 @@ SSH configuration is private to this run; user configuration is not changed.
 
 Waits for setup_complete before starting test composer on each rollout.
 After the composer watch is ready, calls add_entropy with a fresh random seed
-and force=true. Repeats every 30 seconds while composer runs. Pauses faults
-before stack recreation and waits for setup_complete on the next rollout.
+and force=true. Repeats every 30 seconds, including after composer completion.
+Pauses faults before stack recreation and waits for setup_complete on the next
+rollout. Entropy refresh preserves the current fault pause state.
 Uses the guest's configure.py to apply --fault-tolerance and --fault-exclusions
 before the first rollout. Fault tolerance defaults to resilient. Omitted fault
 exclusions keep the guest setting.
@@ -329,9 +330,12 @@ exclusions keep the guest setting.
 test composer from unpausing it. Other groups unpause fault injection after
 setup_complete.
 TacticsLang does not use this fault configuration.
-Repeats rollouts until interrupted. --disable-restart runs one rollout and
-continues to stream logs. Failed assertions and composer commands do not stop
-the simulation, but cause a nonzero exit status when it stops.
+Repeats rollouts for templates with driver or check commands until interrupted.
+Checks test commands after setup_complete.
+With no commands or only first_ commands, keeps the stack running.
+--disable-restart keeps all workloads running after composer completion.
+Failed assertions and composer commands do not stop the simulation, but cause a
+nonzero exit status when it stops.
 On interruption, requests immediate guest poweroff, waits up to two seconds,
 then force-kills the VM if needed and drains the remaining logs. A second
 interrupt force-kills the VM immediately.
@@ -750,7 +754,7 @@ pub struct SimulateArgs {
     #[arg(long, hide = true, value_enum, default_value_t = SimulatePlatform::default(), conflicts_with = "attach")]
     pub platform: SimulatePlatform,
 
-    /// Run one rollout, then continue streaming logs until interrupted
+    /// Keep the stack running after composer completion, with entropy refresh and logs
     #[arg(long, conflicts_with = "attach")]
     pub disable_restart: bool,
 

@@ -70,7 +70,7 @@ def run_case(mode: str) -> None:
             (root / "active").unlink()
             result = subprocess.run(["bash", "-c", source], env=env, capture_output=True, text=True)
             assert result.returncode == 0 and json.loads(result.stdout) == "completed", result
-            assert "fault_injector_update --pause" in (root / "calls").read_text()
+            assert "fault_injector_update --pause" not in (root / "calls").read_text()
             (root / "calls").unlink()
             (root / "failure").touch()
             result = subprocess.run(["bash", "-c", source], env=env, capture_output=True, text=True)
@@ -85,9 +85,6 @@ def run_case(mode: str) -> None:
             source = (assets / "recreate.sh").read_text().replace(
                 "/opt/antithesis/containers", str(containers)
             ).replace("/run/crun", str(crun))
-            result = subprocess.run(["bash", "-c", source], env=env, capture_output=True, text=True)
-            assert result.returncode == 0 and json.loads(result.stdout) == "idle", result
-            assert not (root / "calls").exists()
             for name in ("live", "stale"):
                 container = containers / name
                 container.mkdir()
@@ -95,12 +92,42 @@ def run_case(mode: str) -> None:
             (crun / "live").mkdir()
             (crun / "live/config.json").touch()
             result = subprocess.run(["bash", "-c", source], env=env, capture_output=True, text=True)
-            assert result.returncode == 0 and json.loads(result.stdout) == "restarted", result
+            assert result.returncode == 0, result
             calls = (root / "calls").read_text().splitlines()
-            assert "down --volumes --remove-orphans" in calls[0], calls
-            assert "up -d --no-build --pull=never" in calls[1], calls
+            assert calls[0] == "fault_injector_update --pause", calls
+            assert "down --volumes --remove-orphans" in calls[1], calls
+            assert "up -d --no-build --pull=never" in calls[2], calls
             assert (containers / "live").exists()
             assert not (containers / "stale").exists()
+        elif mode == "workload-kind":
+            containers = root / "containers"
+            crun = root / "crun"
+            containers.mkdir()
+            crun.mkdir()
+            source = (assets / "workload-kind.sh").read_text().replace(
+                "/opt/antithesis/containers", str(containers)
+            ).replace("/run/crun", str(crun))
+            def classify(expected):
+                result = subprocess.run(["bash", "-c", source], env=env, capture_output=True, text=True)
+                assert result.returncode == 0 and json.loads(result.stdout) == expected, result
+            classify("autonomous")
+            stale = containers / "stale"
+            stale.mkdir()
+            (stale / "commands.json").write_text('{"commands":["suite/serial_driver_old"]}')
+            classify("autonomous")
+            live = containers / "live"
+            live.mkdir()
+            (crun / "live").mkdir()
+            (crun / "live/config.json").touch()
+            for commands in ([], ["suite/first_setup"], ["a/first_setup", "b/first_start"]):
+                (live / "commands.json").write_text(json.dumps({"commands": commands}))
+                classify("autonomous")
+            for prefix in ("parallel_driver", "serial_driver", "singleton_driver", "anytime", "finally", "eventually"):
+                (live / "commands.json").write_text(json.dumps({"commands": ["suite/first_setup", f"suite/{prefix}_test"]}))
+                classify("composed")
+            (live / "commands.json").write_text("{broken")
+            result = subprocess.run(["bash", "-c", source], env=env, capture_output=True, text=True)
+            assert result.returncode != 0, result
         else:
             raise AssertionError(mode)
 

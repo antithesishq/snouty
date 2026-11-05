@@ -522,6 +522,16 @@ static FALLBACK_ROOTS: std::sync::LazyLock<Option<Vec<reqwest::Certificate>>> =
             .clone();
         let error = rustls_platform_verifier::Verifier::new(provider).err()?;
         log::debug!("{error}, so using the bundled Mozilla roots");
+        // A user who names a CA bundle means to restrict trust, so a bundle
+        // that loads nothing must not widen it silently.
+        if ["SSL_CERT_FILE", "SSL_CERT_DIR"]
+            .iter()
+            .any(|var| std::env::var_os(var).is_some())
+        {
+            eprintln!(
+                "warning: SSL_CERT_FILE or SSL_CERT_DIR loads no CA certificates, so snouty trusts its bundled roots. Fix or unset the variable."
+            );
+        }
         Some(
             webpki_root_certs::TLS_SERVER_ROOT_CERTS
                 .iter()

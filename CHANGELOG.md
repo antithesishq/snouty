@@ -1,3 +1,10 @@
+# Version 0.9.1 (2026-11-04)
+
+- **Breaking**: `--json` on a command that prints no JSON is a usage error (exit 2) instead of a warning. The commands are `validate`, `completions`, `update`, `login`, `mcp`, `settings trust`, `settings deny`, `docker-credential`, `docs show` and `docs sqlite`; run them without `--json` ([#665](https://github.com/antithesishq/snouty/pull/665))
+- The `--json` flag in each command's `--help` names the JSON shape that command prints: one object, one array, or NDJSON ([#667](https://github.com/antithesishq/snouty/pull/667))
+- `snouty settings --help` documents the settings files and the credentials file: every key, its environment variable, type and default, with examples ([#669](https://github.com/antithesishq/snouty/pull/669))
+- The CI docs moved from the README to `CI.md`, and the GitHub Actions, GitLab CI, Buildkite and CircleCI examples now work when copied: they build and pull the images, validate the harness, and log in to a registry before launch ([#659](https://github.com/antithesishq/snouty/pull/659))
+
 # Version 0.9.0 (2026-11-04)
 
 - **Breaking**: snouty uses a project settings file, `.snouty.toml` in the current directory, only after you trust it. The global settings file in your home directory needs no trust. Until you run `snouty settings trust` or `snouty settings deny`, every command that reads settings stops with an error when the current directory has a `.snouty.toml`, and a trusted file must be trusted again after it changes. A file named with `--settings` or `SNOUTY_SETTINGS_PATH` needs no trust; in CI, set `SNOUTY_SETTINGS_TRUST=all` ([#524](https://github.com/antithesishq/snouty/pull/524))

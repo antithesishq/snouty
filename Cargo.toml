@@ -65,10 +65,6 @@ reqwest = { version = "0.13.1", default-features = false, features = ["http2", "
 # ring makes a smaller binary than reqwest's default, aws-lc-rs.
 # api::client_builder installs it.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-# api::client_builder asks reqwest's verifier for the system CA roots, and
-# falls back to the bundled Mozilla roots when it finds none.
-rustls-platform-verifier = "0.7"
-webpki-root-certs = "1"
 color-eyre = { version = "0.6", default-features = false }
 futures-util = "0.3"
 # Chunk type of reqwest response streams; JsonStream buffers them.

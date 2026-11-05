@@ -3,6 +3,8 @@
 
 #![cfg(unix)]
 
+mod support;
+
 use std::path::Path;
 use std::time::Duration;
 
@@ -39,6 +41,7 @@ fn snouty_mcp_from(exe: &Path, server: &MockApiServer, home: &Path) -> tokio::pr
     command
         .arg("mcp")
         .env_clear()
+        .envs(support::ca_env())
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", home)
         .env("XDG_CACHE_HOME", home.join("cache"))

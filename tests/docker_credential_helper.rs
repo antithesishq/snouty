@@ -1,6 +1,9 @@
 //! `docker-credential-snouty`, an alias of `snouty`, as Docker runs it.
 #![cfg(unix)]
 
+mod support;
+
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
@@ -32,6 +35,7 @@ fn helper_process(bin: &Path, home: &TempDir) -> std::process::Command {
     command
         .current_dir(home.path())
         .env_clear()
+        .envs(support::ca_env())
         .env("HOME", home.path())
         .env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1")
         .env("ANTITHESIS_TENANT", "acme")
@@ -239,10 +243,14 @@ fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRu
     std::fs::create_dir(&home).unwrap();
     let alias = Alias::symlink();
     let helper = bin.join(HELPER_NAME);
+    let ca_env = support::ca_env().fold(String::new(), |mut env, (var, value)| {
+        write!(env, "{var}='{}' ", value.display()).unwrap();
+        env
+    });
     snouty::testutils::write_script(
         &helper,
         &format!(
-            "sed 's/{addr}/registry.acme.antithesis.com/' | exec env -i \
+            "sed 's/{addr}/registry.acme.antithesis.com/' | exec env -i {ca_env}\
              HOME='{home}' SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE=1 \
              ANTITHESIS_TENANT=acme \
              ANTITHESIS_REPOSITORY=registry.acme.antithesis.com/app \

@@ -129,6 +129,7 @@ fn spawn_login(login: &Login) -> (tempfile::TempDir, OsSession) {
         ])
         .args(login.args)
         .env_clear()
+        .envs(support::ca_env())
         .env("HOME", home.path())
         .env("TERM", "xterm-256color")
         .env(

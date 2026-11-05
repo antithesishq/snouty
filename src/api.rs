@@ -499,48 +499,12 @@ pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// A reqwest builder with a rustls crypto provider installed: ring, unless
 /// another is already installed. reqwest panics on `build` without one, so
 /// every client must start here.
-/// On a host with no system CA certificates, it trusts the bundled Mozilla
-/// roots.
 #[allow(clippy::disallowed_methods)]
 pub fn client_builder() -> reqwest::ClientBuilder {
     // Err means a provider is already installed, which is enough.
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let builder = Client::builder();
-    if let Some(roots) = &*FALLBACK_ROOTS {
-        return builder.tls_certs_only(roots.clone());
-    }
-    builder
+    Client::builder()
 }
-
-/// The bundled Mozilla roots, or `None` when reqwest's verifier loads the
-/// system CA certificates. Without roots, reqwest fails to build any client,
-/// even for plain HTTP.
-static FALLBACK_ROOTS: std::sync::LazyLock<Option<Vec<reqwest::Certificate>>> =
-    std::sync::LazyLock::new(|| {
-        let provider = rustls::crypto::CryptoProvider::get_default()
-            .expect("client_builder installs a provider")
-            .clone();
-        let error = rustls_platform_verifier::Verifier::new(provider).err()?;
-        log::debug!("{error}, so using the bundled Mozilla roots");
-        // A user who names a CA bundle means to restrict trust, so a bundle
-        // that loads nothing must not widen it silently.
-        if ["SSL_CERT_FILE", "SSL_CERT_DIR"]
-            .iter()
-            .any(|var| std::env::var_os(var).is_some())
-        {
-            eprintln!(
-                "warning: SSL_CERT_FILE or SSL_CERT_DIR loads no CA certificates, so snouty trusts its bundled roots. Fix or unset the variable."
-            );
-        }
-        Some(
-            webpki_root_certs::TLS_SERVER_ROOT_CERTS
-                .iter()
-                .map(|der| {
-                    reqwest::Certificate::from_der(der).expect("from_der only copies the bytes")
-                })
-                .collect(),
-        )
-    });
 
 /// How many times one API call is re-sent before its failure surfaces.
 const MAX_RETRIES: u32 = 10;

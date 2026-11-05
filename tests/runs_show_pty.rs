@@ -22,6 +22,7 @@ fn long_failure_reason_wraps_under_its_value() {
     let mut command = PtyCommand::new(r#"exec "$0" runs show run-3"#);
     command
         .env_clear()
+        .envs(support::ca_env())
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", home.path())
         .env("TERM", "xterm-256color")

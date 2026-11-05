@@ -156,7 +156,17 @@ thread_local! {
 ///
 /// DBus configuration is deliberately omitted from `FORWARDED_ENV_VARS` since
 /// it represents a global state that might leak into or out of tests.
-const FORWARDED_ENV_VARS: &[&str] = &["PATH", "HOME", "LLVM_PROFILE_FILE", "TMPDIR"];
+///
+/// `SSL_CERT_FILE` and `SSL_CERT_DIR` locate CA certificates, which snouty
+/// needs to build an HTTP client.
+const FORWARDED_ENV_VARS: &[&str] = &[
+    "PATH",
+    "HOME",
+    "LLVM_PROFILE_FILE",
+    "TMPDIR",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+];
 
 /// Build a `Command` for the snouty binary with a clean environment.
 ///

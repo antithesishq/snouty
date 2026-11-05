@@ -19,6 +19,7 @@ fn run_on_pty(args: &str, cols: u16, last: &str) -> String {
     let mut command = PtyCommand::new(&format!(r#"exec "$0" {args}"#));
     command
         .env_clear()
+        .envs(support::ca_env())
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", home.path())
         .env("TERM", "xterm-256color")

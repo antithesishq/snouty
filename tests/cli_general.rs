@@ -527,6 +527,7 @@ fn run_with_closed_stdout(envs: &[(&str, &str)], args: &[&str]) -> String {
 
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_snouty"))
         .env_clear()
+        .envs(support::ca_env())
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1")
         .envs(envs.iter().copied())

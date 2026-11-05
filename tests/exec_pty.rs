@@ -4,6 +4,8 @@
 
 #![cfg(unix)]
 
+mod support;
+
 use std::process::Command;
 use std::time::Duration;
 
@@ -23,6 +25,7 @@ fn exec_on_pty(script: &str) -> (Vec<String>, String, i32) {
         .args(["runs", "exec", "run-2", MOCK_COLD_HASH, "278.1311443040613"])
         .args([script, "--source-run-id", "source-run"])
         .env_clear()
+        .envs(support::ca_env())
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", home.path())
         .env("TERM", "xterm-256color")

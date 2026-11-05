@@ -8,24 +8,79 @@ it read. `settings trust` and `settings deny` decide whether snouty uses a
 project settings file (./.snouty.toml).
 
 snouty reads two settings files. The global settings file holds your own
-settings, and `snouty login` writes it. It is settings.toml in
-$XDG_CONFIG_HOME/snouty, or in ~/.config/snouty when XDG_CONFIG_HOME is not set.
-The project settings file holds the settings of one project. It is .snouty.toml
-in the current directory, and snouty does not look for it in parent directories.
-A value in the project settings file overrides the same value in the global
-settings file.
+settings, and `snouty login` writes it. It is settings.toml in the global
+settings directory: $XDG_CONFIG_HOME/snouty, or ~/.config/snouty when
+XDG_CONFIG_HOME is not set. The project settings file holds the settings of one
+project. It is .snouty.toml in the current directory, and snouty does not look
+for it in parent directories. A value in the project settings file overrides the
+same value in the global settings file.
 
 To use another project settings file in place of ./.snouty.toml, name it with
 --settings or SNOUTY_SETTINGS_PATH. A file that you name must exist, and snouty
 uses it without asking you to trust it.
 
-Each settings file can hold top-level settings and named profiles, as
-[profile.NAME] tables. Select a profile with --profile or ANTITHESIS_PROFILE.
-For each setting, snouty uses the first value that it finds: the environment
-variable, such as ANTITHESIS_TENANT, then the selected profile in the project
-settings file, the selected profile in the global settings file, the top-level
-value in the project settings file, then the top-level value in the global
-settings file.
+A settings file is TOML. Each setting is a top-level key, or a key in a named
+profile, a [profile.NAME] table. Each setting also has an environment variable:
+
+  tenant                   ANTITHESIS_TENANT
+  base_url                 ANTITHESIS_BASE_URL
+  repository               ANTITHESIS_REPOSITORY
+  https_proxy              ANTITHESIS_HTTPS_PROXY
+  container_engine         SNOUTY_CONTAINER_ENGINE
+  update_channel           SNOUTY_UPDATE_CHANNEL
+  api_cache_max_file_size  SNOUTY_API_CACHE_MAX_FILE_SIZE
+
+Each value is a TOML string. `tenant` is the name of your Antithesis tenant,
+such as acme. `base_url` is the API URL, by default
+`https://TENANT.antithesis.com`. `repository` is the container registry that
+snouty pushes your images to. `https_proxy` is the URL of a proxy for snouty to
+use. `container_engine` is docker or podman; when it is not set, snouty uses the
+engine that it finds, podman first. `update_channel` is stable, the default, or
+unstable. `api_cache_max_file_size` is a size such as "10 MiB", the default.
+snouty ignores a key that it does not know. For example:
+
+  tenant = "acme"
+  repository = "registry.example.com/acme/images"
+
+  [profile.staging]
+  tenant = "acme-staging"
+
+Select a profile with --profile or ANTITHESIS_PROFILE. For each setting, snouty
+uses the first value that it finds: the environment variable, then the selected
+profile in the project settings file, the selected profile in the global
+settings file, the top-level value in the project settings file, then the
+top-level value in the global settings file.
+
+Credentials are not settings, and a settings file must not hold them.
+`snouty login` stores them in the system keychain on macOS, and on other systems
+in credentials.toml, in the global settings directory. snouty reads
+credentials.toml on every system. The file holds a [default] table for the top
+level, and a [profile.NAME] table for each profile. Each table has a `type` key,
+which selects the other keys:
+
+  type = "ApiKey"    api_key
+  type = "OAuth"     antithesis_token, and an optional refresh_token
+
+For example:
+
+  [default]
+  type = "ApiKey"
+  api_key = "<your API key>"
+
+  [profile.staging]
+  type = "ApiKey"
+  api_key = "<your API key>"
+
+For each command, snouty uses the first credential that it finds:
+ANTITHESIS_API_KEY, then the keychain entry and the credentials.toml table of
+the selected profile, then those of [default], then a GitHub Actions OIDC token.
+Keep credentials.toml readable only by you (mode 0600).
+
+snouty can rewrite settings.toml and credentials.toml, for example in
+`snouty login`. A rewrite keeps the values of the other profiles. It removes
+comments, can change the order of keys, and in credentials.toml removes keys
+that snouty does not know. When the file does not parse, snouty renames it to
+NAME.bak and writes a new file that holds only the new values.
 
 A project settings file can set any setting, at the top level or in a profile,
 including base_url, https_proxy and repository. snouty sends your API key to

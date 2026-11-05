@@ -7,4 +7,15 @@ Examples:
   {{ t("snouty docs tree --depth 2")? }}
   {{ t("snouty docs tree sdk")? }}
 
+Each line shows one path segment. A line whose path is a page also shows the page's title, after " - ". For example, `{{ t("snouty docs tree rust")? }}` prints:
+
+  reference
+  ┗━━ sdk - SDKs
+      ┗━━ rust - Rust SDK
+          ┣━━ example - Rust SDK tutorial, times10 function
+          ┣━━ instrumentation - Rust instrumentation
+          ┗━━ legacy_instrumentation - Legacy Rust instrumentation
+
+To get the path of a page, join the segments of its parent lines and its own line, from the top level down, with "/", for example reference/sdk/rust/example. `{{ t("snouty docs show")? }}` accepts this path.
+
 With {{ t("--json")? }}, the tree prints as one JSON object, {"children": [node, ...]}. Each node has name, the last segment of its path, and path. A node has title when it is a page, and then `{{ t("snouty docs show")? }}` accepts its path. A node has children, sorted by name, when it has child nodes that {{ t("--depth")? }} did not remove. When no page matches, the output is {"children": []}.

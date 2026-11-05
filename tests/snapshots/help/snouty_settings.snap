@@ -30,15 +30,14 @@ profile, a [profile.NAME] table. Each setting also has an environment variable:
   update_channel           SNOUTY_UPDATE_CHANNEL
   api_cache_max_file_size  SNOUTY_API_CACHE_MAX_FILE_SIZE
 
-Each value is a TOML string, except that api_cache_max_file_size can also be an
-integer. tenant is the name of your Antithesis tenant, a hostname such as acme.
-base_url is the API URL, by default https://TENANT.antithesis.com. repository is
-the container registry that snouty pushes your images to. https_proxy is the URL
-of a proxy for snouty's requests. container_engine is docker or podman; by
-default, snouty uses the engine that it finds, podman first. update_channel is
-stable, the default, or unstable. api_cache_max_file_size is a size such as "10
-MiB", the default, or an integer number of bytes. snouty ignores a key that it
-does not know. For example:
+Each value is a TOML string. `tenant` is the name of your Antithesis tenant,
+such as acme. `base_url` is the API URL, by default
+`https://TENANT.antithesis.com`. `repository` is the container registry that
+snouty pushes your images to. `https_proxy` is the URL of a proxy for snouty to
+use. `container_engine` is docker or podman; when it is not set, snouty uses the
+engine that it finds, podman first. `update_channel` is stable, the default, or
+unstable. `api_cache_max_file_size` is a size such as "10 MiB", the default.
+snouty ignores a key that it does not know. For example:
 
   tenant = "acme"
   repository = "registry.example.com/acme/images"
@@ -61,7 +60,6 @@ which selects the other keys:
 
   type = "ApiKey"    api_key
   type = "OAuth"     antithesis_token, and an optional refresh_token
-  type = "Password"  username and password (deprecated)
 
 For example:
 
@@ -74,10 +72,9 @@ For example:
   api_key = "<your API key>"
 
 For each command, snouty uses the first credential that it finds:
-ANTITHESIS_API_KEY, or ANTITHESIS_USERNAME with ANTITHESIS_PASSWORD, then the
-keychain entry and the credentials.toml table of the selected profile, then
-those of [default], then a GitHub Actions OIDC token. Keep credentials.toml
-readable only by you (mode 0600).
+ANTITHESIS_API_KEY, then the keychain entry and the credentials.toml table of
+the selected profile, then those of [default], then a GitHub Actions OIDC token.
+Keep credentials.toml readable only by you (mode 0600).
 
 snouty can rewrite settings.toml and credentials.toml, for example in
 `snouty login`. A rewrite keeps the values of the other profiles. It removes

@@ -3,12 +3,12 @@
 //! events).
 //!
 //! Every stream entry is classified into an event type and rendered as a
-//! concise block, git-log style: a yellow `moment HASH` divider opens
-//! each timeline segment (the moment is the commit, its events are the body),
-//! one line per event beneath it, and dim indented detail lines where a kind
-//! has more to say. Blocks for consecutive segments are separated by a blank
-//! line. Colors go through [`console::style`], which disables itself off-tty
-//! and under `NO_COLOR`.
+//! concise block, git-log style: a yellow `moment INPUT_HASH` divider opens
+//! each run of consecutive events that share an input hash (the moment is the
+//! commit, its events are the body), one line per event beneath it, and dim
+//! indented detail lines where a kind has more to say. Consecutive blocks are
+//! separated by a blank line. Colors go through [`console::style`], which
+//! disables itself off-tty and under `NO_COLOR`.
 //!
 //! Each event type lives in its own submodule and implements [`Event`],
 //! which couples the type's classification (does this entry have my shape?)
@@ -33,8 +33,8 @@
 //! The renderer also owns the display conventions the streams share: vtime is
 //! normalized through [`VTime`] and shown in a fixed-width cell, truncated —
 //! never rounded — so a value copied off the screen and pasted back lands on,
-//! never past, the line you saw. The divider carries the input hash for
-//! `runs logs <run_id> <hash>`, which streams to the branch's current end.
+//! never past, the line you saw. The divider carries the input hash that
+//! `runs logs <run_id> <hash>` takes.
 //!
 //! Rendering writes into a caller-supplied buffer (see [`Block`]), in the
 //! style of `Display`/`Debug` formatters: one pass over each input, no
@@ -452,8 +452,8 @@ fn render_source(entry: &Value, detail: bool) -> String {
 /// separation included, no trailing newline.
 pub(crate) struct EventStreamRenderer {
     detail: bool,
-    /// The current segment's hash; `Some` also means at least one block was
-    /// written, so the next divider needs a blank line above it.
+    /// The previous event's input hash; `Some` also means at least one block
+    /// was written, so the next divider needs a blank line above it.
     last_input_hash: Option<String>,
 }
 
@@ -466,8 +466,9 @@ impl EventStreamRenderer {
     }
 
     /// Render one NDJSON entry (vtime already normalized by the stream). The
-    /// text may span several lines — a `moment` divider when the entry opens
-    /// a new timeline segment, the event line, and any indented detail lines.
+    /// text may span several lines — a `moment` divider when the entry's input
+    /// hash differs from the previous event's, the event line, and any
+    /// indented detail lines.
     pub(crate) fn render_entry(&mut self, entry: &Value) -> String {
         let mut out = String::new();
         self.write_entry(entry, &mut out)
@@ -577,7 +578,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn opens_each_timeline_segment_with_an_input_hash_divider() {
+    fn prints_a_divider_each_time_the_input_hash_changes() {
         let mut r = renderer(false);
         let first = r.render_entry(&json!({
             "moment": {"input_hash": "-123", "vtime": "311.8487535319291"},

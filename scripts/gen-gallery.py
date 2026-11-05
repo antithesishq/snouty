@@ -3027,8 +3027,8 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             f"Find events that mention '{kw}'",
             "I want to find events that mention a particular keyword.",
             f"At least one matching event row, and the keyword '{kw}' appears in the output. "
-            "A `moment HASH` divider groups `VTIME [source] payload` lines. Its hash "
-            "is sufficient for `runs logs` to stream to the timeline's current end. "
+            "A `moment INPUT_HASH` divider groups `VTIME [source] payload` lines. Its "
+            "hash is sufficient for `runs logs` to stream to the end of its branch. "
             "When more events match than the default limit of "
             "50, a stderr note says the output stopped at the limit.",
             ["runs", "events", d.success, "--match", kw],
@@ -3074,9 +3074,9 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-search-contains",
             f"Query events with the DSL: contains '{kw}'",
             "I want to run an event-set DSL query and read the matching events.",
-            f"At least one matching event line, keyword '{kw}' visible. A `moment HASH` "
+            f"At least one matching event line, keyword '{kw}' visible. A `moment INPUT_HASH` "
             "divider groups `VTIME [source] payload` lines. Its hash is sufficient for "
-            "`runs logs` to stream to the timeline's current end. When more "
+            "`runs logs` to stream to the end of its branch. When more "
             "events match than the default limit of 50, a stderr note says the output "
             "stopped at the limit.",
             ["runs", "search", d.success, f'contains({{output_text: "{kw}"}})'],
@@ -3159,9 +3159,9 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-logs",
             "Stream logs using the hash from a property example",
             "I copy an example's input hash from `runs properties --detail` to read "
-            "logs through the end of that moment.",
-            "Logs stream to the branch's current end without a vtime argument. "
-            "Each divider shows only `moment HASH`; event lines keep their vtimes.",
+            "logs to the end of its branch.",
+            "Without a vtime argument, logs end at the end of the hash's branch. "
+            "Each divider shows only `moment INPUT_HASH`; event lines keep their vtimes.",
             ["runs", "logs", d.success, d.logs_hash],
             logs_non_empty,
         ),
@@ -4183,7 +4183,7 @@ def build_help_stories(d: Discovery) -> list[Story]:
         _help_story(
             "help-runs-events",
             "Learn to search events and chain into logs",
-            "I want the help to explain `moment HASH` dividers and `VTIME [source] payload` "
+            "I want the help to explain `moment INPUT_HASH` dividers and `VTIME [source] payload` "
             "lines, that the hash alone feeds `runs logs`, and that several terms must all "
             "match.",
             ["runs", "events"],
@@ -4200,7 +4200,7 @@ def build_help_stories(d: Discovery) -> list[Story]:
         _help_story(
             "help-runs-logs",
             "Learn how the hash and optional vtime select logs",
-            "I want the help to explain that a hash streams to the branch's current end, "
+            "I want the help to explain that a hash alone streams to the end of its branch, "
             "an optional vtime sets an earlier end, and --begin-vtime sets the start.",
             ["runs", "logs"],
             ["runs", "logs", s, d.logs_hash],

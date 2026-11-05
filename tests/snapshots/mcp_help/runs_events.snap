@@ -5,9 +5,9 @@ Search a run's events for one or more substrings (all must match).
 
 Each `matches` value is matched against the text an event carries: log output, an assertion's message and source function, and a test-composer command.
 
-Each matching event has its moment (an input_hash and a vtime), its source, and its payload: log output, an SDK assertion, a fault, a container lifecycle change, or a test composer command. To stream the logs of an event's timeline to its current end, pass its run ID and input_hash to `runs_logs {"run_id": "<run_id>", "input_hash": "<hash>"}`.
+Each matching event has its moment (an input_hash and a vtime), its source, and its payload: log output, an SDK assertion, a fault, a container lifecycle change, or a test composer command. To stream the logs to the end of the branch corresponding to an event's input_hash, pass the run ID and that input_hash to `runs_logs {"run_id": "<run_id>", "input_hash": "<hash>"}`.
 
-A `moment HASH` line opens each timeline segment, and each event under it prints as one `VTIME [source] payload` line, with the full vtime. Indented lines under an event give its source location, as `@ file:function:line`, and the details that it carries, such as an SDK assertion's details, as `details {...}`.
+A `moment INPUT_HASH` line is emitted each time the input_hash changes. Each event under it prints as one `VTIME [source] payload` line, with the full vtime. Indented lines under an event give its source location, as `@ file:function:line`, and the details that it carries, such as an SDK assertion's details, as `details {...}`.
 
 Every term must match, case-insensitively. The result is a sample of the matching events in no fixed order, capped at `limit`. Read `tool_help {"tool": "runs_search"}` to learn how to read a sample and how the run's timelines relate the events.
 

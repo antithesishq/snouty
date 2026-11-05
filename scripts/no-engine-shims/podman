@@ -1,9 +1,11 @@
 #!/bin/sh
-# A stand-in for podman on the arm64 macOS CI leg.
+# A stand-in for podman where the tests run with no container engine: the
+# arm64 macOS CI leg and the Nix build sandbox.
 #
-# That runner cannot run a real podman: arm64 macOS has no nested
+# The arm64 macOS runner cannot run a real podman: arm64 macOS has no nested
 # virtualization, because of a limit in Apple's Virtualization Framework, so
-# `podman machine` cannot start. But `snouty doctor` checks that a container
+# `podman machine` cannot start. The Nix build sandbox has no container engine
+# at all. But `snouty doctor` checks that a container
 # runtime exists, and `specs/doctor.txt` asserts that `snouty doctor` exits
 # zero while testing something unrelated — API connectivity and version
 # reporting. Without this shim that spec fails, and the whole `specs/` suite
@@ -13,14 +15,11 @@
 # see `available_engines` in src/container.rs — and fails everything else. That
 # is deliberate. The engine-backed tests resolve a runtime with `podman info`
 # (see `available_runtimes` in src/testutils.rs), which fails here, so they
-# still refuse to run on this leg instead of half-running against a fake.
+# still refuse to run instead of half-running against a fake.
 #
 # It also means this shim cannot mask a regression. If snouty ever probes for a
 # runtime some other way, that probe lands here, fails, and the arm64 job goes
 # red — rather than reporting a healthy runtime that does not exist.
-#
-# TODO: drop this shim and its docker-compose sibling once an arm64 macOS
-# runner can start `podman machine`.
 case "$1" in
   --version)
     # Only the word "podman" matters to the caller (`version_output_is_podman`).
@@ -29,6 +28,6 @@ case "$1" in
     ;;
 esac
 
-echo "podman shim: '$*' needs a podman machine, which the arm64 macOS runner cannot start" >&2
-echo "podman shim: engine-backed tests belong on the Intel leg; see .config/nextest.toml" >&2
+echo "podman shim: '$*' needs a container engine, which this test run does not have" >&2
+echo "podman shim: engine-backed tests belong in the container test group; see .config/nextest.toml" >&2
 exit 1

@@ -18,7 +18,7 @@ stderr 'expected a date \(2026-10-01\), a time as snouty prints it'
 
 # The mock usage entries fall on different days in UTC and in UTC+9, so a
 # fixed timezone makes the expected times and periods exact.
-env TZ=Asia/Tokyo
+env TZ=JST-9
 
 # Without --rollup, each run is one row: its run id, the start and end of its
 # usage in the local timezone, and its compute hours. The command reads every

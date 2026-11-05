@@ -3,6 +3,9 @@
   rustPlatform,
   pkg-config,
   sqlite,
+  cacert,
+  cargo-nextest,
+  git,
 }:
 
 rustPlatform.buildRustPackage (finalAttrs: {
@@ -13,19 +16,26 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # Every path that Cargo.toml declares must appear here: workspace members,
   # path dependencies, and [[example]] paths. The askama derive reads
   # ./askama.toml, ./templates and ./help at compile time, so they must appear
-  # too.
+  # too. The tests also read ./.config/nextest.toml, ./dist-workspace.toml,
+  # ./scripts/no-engine-shims, ./server.json, ./specs and ./tests.
   src = lib.fileset.toSource {
     root = ./.;
     fileset = lib.fileset.unions [
       ./Cargo.lock
       ./Cargo.toml
+      ./.config/nextest.toml
       ./askama.toml
       ./build.rs
+      ./dist-workspace.toml
       ./examples
       ./help
+      ./scripts/no-engine-shims
+      ./server.json
       ./snouty-macros
+      ./specs
       ./src
       ./templates
+      ./tests
     ];
   };
 
@@ -44,8 +54,24 @@ rustPlatform.buildRustPackage (finalAttrs: {
     sqlite
   ];
 
-  # Some tests require a container runtime, unavailable in the Nix sandbox
-  doCheck = false;
+  # The sandbox has no container engine, so the tests that need one do not run.
+  # The shims answer the engine probes of `snouty doctor`, which specs/doctor.txt
+  # needs.
+  useNextest = true;
+  cargoTestFlags = [
+    "--filterset"
+    "not group(container)"
+  ];
+  preCheck = ''
+    export PATH="$PWD/scripts/no-engine-shims:$PATH"
+  '';
+  # The sandbox has CA certificates only through SSL_CERT_FILE, which cacert
+  # sets. Some specs run git.
+  nativeCheckInputs = [
+    cacert
+    cargo-nextest
+    git
+  ];
 
   # Docker and Podman run the credential helper by this name, and snouty runs
   # the helper when it starts by this name.

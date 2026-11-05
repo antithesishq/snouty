@@ -185,19 +185,7 @@ jobs:
           token: ${{secrets.GITHUB_TOKEN}}
           persist-credentials: false
 
-      - name: Start Podman socket # required for docker-compose
-        run: |
-          systemctl --user start podman.socket
-
-      # This leg sets no SNOUTY_TEST_RUNTIME, so the suite exercises both
-      # engines and both need the images.
-      - name: Set up test images and registry
-        shell: bash
-        timeout-minutes: 10
-        run: scripts/setup-test-images.sh podman docker
-
-      - name: Build
+      # The check phase runs every test that does not need a container engine,
+      # inside the Nix build sandbox.
+      - name: Build and test
         run: nix-build
-
-      - name: Test
-        run: nix-shell --run "cargo nextest run"

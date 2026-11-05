@@ -1,6 +1,6 @@
 #!/bin/sh
-# A stand-in for docker-compose on the arm64 macOS CI leg. See the `podman`
-# shim beside this file for why these exist at all.
+# A stand-in for docker-compose where the tests run with no container engine.
+# See the `podman` shim beside this file for why these exist at all.
 #
 # `snouty doctor` reports whether a usable Docker Compose v2 is present, and
 # `specs/doctor.txt` needs doctor to exit zero. This answers the single probe
@@ -13,6 +13,6 @@ if [ "$1" = "version" ] && [ "$2" = "--short" ]; then
   exit 0
 fi
 
-echo "docker-compose shim: '$*' needs a container engine, which the arm64 macOS runner cannot run" >&2
-echo "docker-compose shim: compose-backed tests belong on the Intel leg; see .config/nextest.toml" >&2
+echo "docker-compose shim: '$*' needs a container engine, which this test run does not have" >&2
+echo "docker-compose shim: compose-backed tests belong in the container test group; see .config/nextest.toml" >&2
 exit 1

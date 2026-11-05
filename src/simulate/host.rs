@@ -29,6 +29,7 @@ const PREPARE: &str = include_str!("assets/prepare.sh");
 const DISABLE_FAULTS: &str = include_str!("assets/disable-faults.sh");
 const START: &str = include_str!("assets/start.sh");
 const START_COMPOSER: &str = include_str!("assets/start-composer.sh");
+const WORKLOAD_KIND: &str = include_str!("assets/workload-kind.sh");
 const RECREATE: &str = include_str!("assets/recreate.sh");
 const STATUS: &str = include_str!("assets/status.sh");
 const ATTACH_READY: &str = "attach-ready";
@@ -44,15 +45,20 @@ enum ComposerStatus {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum RecreateStatus {
-    Restarted,
-    Idle,
+enum WorkloadKind {
+    Autonomous,
+    Composed,
 }
 
 enum WorkloadCycle {
     WaitingForSetup,
-    Running { entropy_at: tokio::time::Instant },
-    Finished,
+    Running {
+        entropy_at: tokio::time::Instant,
+        workload: WorkloadKind,
+    },
+    ComposerCompleted {
+        entropy_at: tokio::time::Instant,
+    },
 }
 
 async fn add_entropy(guest: &Vm) -> Result<tokio::time::Instant> {
@@ -465,8 +471,10 @@ pub(super) async fn run(
                         if args.fault_tolerance != super::FaultTolerance::None {
                             guest.run_script("fault_injector_update --unpause\n").await.wrap_err("unpausing guest faults")?;
                         }
+                        let workload = guest.run_script(WORKLOAD_KIND).await.wrap_err("classifying guest workload")?;
+                        let workload = serde_json::from_str::<WorkloadKind>(&workload).wrap_err("reading guest workload kind")?;
                         guest.run_script(START_COMPOSER).await.wrap_err("starting guest test composer")?;
-                        cycle = WorkloadCycle::Running { entropy_at: add_entropy(guest).await? };
+                        cycle = WorkloadCycle::Running { entropy_at: add_entropy(guest).await?, workload };
                     }
                     output.event(&line, &mut summary, RunPhase::Running).await?;
                     if output.closed { return Ok::<_, color_eyre::Report>(()); }
@@ -476,32 +484,32 @@ pub(super) async fn run(
                         _ = health.tick() => {},
                         _ = async {
                             match cycle {
-                                WorkloadCycle::Running { entropy_at } => tokio::time::sleep_until(entropy_at).await,
+                                WorkloadCycle::Running { entropy_at, .. } | WorkloadCycle::ComposerCompleted { entropy_at } => tokio::time::sleep_until(entropy_at).await,
                                 _ => std::future::pending().await,
                             }
                         } => {},
                     }
                 } => {
                     if !guest.is_running()? { bail!("QEMU exited unexpectedly\n{}", guest.boot_diagnostics()); }
-                    if let WorkloadCycle::Running { entropy_at } = cycle {
+                    if let WorkloadCycle::Running { entropy_at, ref workload } = cycle {
                         let status = tokio::time::timeout(Duration::from_secs(15), guest.run_script(STATUS)).await.wrap_err("guest health check timed out")?.wrap_err("checking guest service health")?;
-                        match serde_json::from_str::<ComposerStatus>(&status).wrap_err("reading test composer status")? {
-                            ComposerStatus::Running => {
-                                if tokio::time::Instant::now() >= entropy_at {
-                                    cycle = WorkloadCycle::Running { entropy_at: add_entropy(guest).await? };
-                                }
-                            },
-                            ComposerStatus::Completed => {
-                                cycle = WorkloadCycle::Finished;
-                                if !args.disable_restart {
-                                    let status = guest.run_script(RECREATE).await.wrap_err("recreating guest Compose project")?;
-                                    match serde_json::from_str::<RecreateStatus>(&status).wrap_err("reading Compose recreation status")? {
-                                        RecreateStatus::Restarted => cycle = WorkloadCycle::WaitingForSetup,
-                                        RecreateStatus::Idle => eprintln!("Test composer exited without runnable commands; leaving the local Compose project running"),
-                                    }
-                                }
-                            },
+                        if matches!(serde_json::from_str::<ComposerStatus>(&status).wrap_err("reading test composer status")?, ComposerStatus::Completed) {
+                            if matches!(workload, WorkloadKind::Composed) && !args.disable_restart {
+                                guest.run_script(RECREATE).await.wrap_err("recreating guest Compose project")?;
+                                cycle = WorkloadCycle::WaitingForSetup;
+                            } else {
+                                eprintln!("Test composer completed; leaving the local Compose project running");
+                                cycle = WorkloadCycle::ComposerCompleted { entropy_at };
+                            }
                         }
+                    }
+                    match &mut cycle {
+                        WorkloadCycle::Running { entropy_at, .. } | WorkloadCycle::ComposerCompleted { entropy_at } => {
+                            if tokio::time::Instant::now() >= *entropy_at {
+                                *entropy_at = add_entropy(guest).await?;
+                            }
+                        }
+                        WorkloadCycle::WaitingForSetup => {},
                     }
                 },
             }

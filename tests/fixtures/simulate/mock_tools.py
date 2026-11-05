@@ -139,18 +139,20 @@ elif name == 'ssh':
                 print('configure.py configuration details')
                 print('configure.py rejected configuration', file=sys.stderr)
                 sys.exit(42)
-        elif 'fault_injector_update --pause' in script and '--property=Result' not in script:
+        elif script == 'fault_injector_update --pause\n' or 'configure-composer' in script:
             record('faults_paused', 'yes')
             event('pause')
             if mode == 'fault-pause-failure':
                 sys.exit(1)
-        elif 'composer_has_runnable_commands()' in script:
+        elif 'has_test_commands=' in script:
+            print(json.dumps('autonomous' if mode in ('no-commands', 'first-only') else 'composed'))
+        elif 'remove_stale_composer_registrations()' in script:
+            event('pause')
             event('recreate')
             record('recreate_started', 'yes')
             if mode == 'restart-blocked':
                 while True:
                     time.sleep(1)
-            print(json.dumps('idle' if mode == 'no-commands' else 'restarted'))
         elif 'up -d' in script:
             record('start_script', script)
             log = Path.cwd() / 'instrumentation.log'
@@ -202,7 +204,7 @@ elif name == 'ssh':
                 event('pause')
                 sys.exit('composer failed fixture')
             if (root / 'composer_exit').exists():
-                event('pause')
+                record('composer_completed', 'yes')
                 print(json.dumps('completed'))
             else:
                 print(json.dumps('running'))

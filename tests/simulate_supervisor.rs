@@ -23,11 +23,16 @@ fn composer_start_waits_for_inotify_watch() {
 }
 
 #[test]
-fn composer_exit_pauses_faults_on_success_and_failure() {
+fn composer_status_preserves_faults_on_success_and_pauses_on_failure() {
     run_case("status");
 }
 
 #[test]
-fn recreation_requires_commands_and_removes_volumes_and_stale_registrations() {
+fn recreation_pauses_faults_and_removes_volumes_and_stale_registrations() {
     run_case("recreate");
+}
+
+#[test]
+fn workload_kind_uses_live_commands_and_preserves_setup_only_workloads() {
+    run_case("workload-kind");
 }

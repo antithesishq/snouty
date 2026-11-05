@@ -505,30 +505,34 @@ pub fn client_builder() -> reqwest::ClientBuilder {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let builder = Client::builder();
     #[cfg(all(unix, not(target_vendor = "apple"), not(target_os = "android")))]
-    if let Some(roots) = &*FALLBACK_ROOTS {
-        return builder.tls_certs_only(roots.clone());
+    {
+        /// The bundled Mozilla roots, when the system has no CA certificates,
+        /// such as in a minimal container. Without them, reqwest fails to
+        /// build any client on such a host, also a client for plain HTTP.
+        /// `None` when the system has roots.
+        static FALLBACK_ROOTS: std::sync::LazyLock<Option<Vec<reqwest::Certificate>>> =
+            std::sync::LazyLock::new(|| {
+                let system = rustls_native_certs::load_native_certs().certs;
+                let (parsed, _) = rustls::RootCertStore::empty().add_parsable_certificates(system);
+                if parsed > 0 {
+                    return None;
+                }
+                log::debug!("no system CA certificates, so using the bundled Mozilla roots");
+                Some(
+                    webpki_root_certs::TLS_SERVER_ROOT_CERTS
+                        .iter()
+                        .map(|der| {
+                            reqwest::Certificate::from_der(der).expect("rustls accepts any DER")
+                        })
+                        .collect(),
+                )
+            });
+        if let Some(roots) = &*FALLBACK_ROOTS {
+            return builder.tls_certs_only(roots.clone());
+        }
     }
     builder
 }
-
-/// The bundled Mozilla roots, when the system has no CA certificates, such
-/// as in a minimal container. Without them, reqwest fails to build any
-/// client on such a host, also a client for plain HTTP. `None` when the
-/// system has roots.
-#[cfg(all(unix, not(target_vendor = "apple"), not(target_os = "android")))]
-static FALLBACK_ROOTS: std::sync::LazyLock<Option<Vec<reqwest::Certificate>>> =
-    std::sync::LazyLock::new(|| {
-        if !rustls_native_certs::load_native_certs().certs.is_empty() {
-            return None;
-        }
-        log::debug!("no system CA certificates, so using the bundled Mozilla roots");
-        Some(
-            webpki_root_certs::TLS_SERVER_ROOT_CERTS
-                .iter()
-                .map(|der| reqwest::Certificate::from_der(der).expect("rustls accepts any DER"))
-                .collect(),
-        )
-    });
 
 /// How many times one API call is re-sent before its failure surfaces.
 const MAX_RETRIES: u32 = 10;

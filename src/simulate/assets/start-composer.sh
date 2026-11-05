@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 set -euo pipefail
 systemctl reset-failed antithesis-test-composer.service 2>/dev/null || true
 systemctl start antithesis-test-composer

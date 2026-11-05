@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 set -euo pipefail
 fault_injector_update --pause
 

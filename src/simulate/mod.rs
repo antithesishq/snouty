@@ -55,26 +55,6 @@ impl From<SimulatePlatform> for crate::container::Architecture {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
-#[value(rename_all = "snake_case")]
-pub enum FaultTolerance {
-    Legacy,
-    None,
-    Resilient,
-    HighAvailability,
-}
-
-impl std::fmt::Display for FaultTolerance {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use clap::ValueEnum;
-        f.write_str(
-            self.to_possible_value()
-                .expect("fault group is visible")
-                .get_name(),
-        )
-    }
-}
-
 enum SimulationMode {
     Compose,
     Shell,
@@ -98,7 +78,7 @@ pub async fn cmd_simulate(
         }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            return attach(id);
+            return attach(&id);
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {

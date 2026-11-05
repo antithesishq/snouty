@@ -26,7 +26,9 @@ if name == 'docker-compose':
     else:
         sys.exit('unexpected compose command: ' + repr(args))
 elif name == 'docker':
-    if args[:2] == ['image', 'inspect']:
+    if args == ['--version']:
+        print('Docker version 29.1.3, build fixture')
+    elif args[:2] == ['image', 'inspect']:
         reference = args[-1]
         platform = args[3] if args[2:3] == ['--platform'] else 'linux/amd64'
         if reference == 'guest:test' and mode in ('missing-guest', 'pull-failure') and not (root / 'pulled').exists():

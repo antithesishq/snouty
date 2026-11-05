@@ -1,6 +1,7 @@
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use std::fs;
+use std::io::Write as _;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
@@ -319,7 +320,11 @@ fn simulation_uses_ephemeral_scratch_disk_for_podman_storage() {
     assert_eq!(simulation.read("image_load_command"), "podman load");
     let scratch_disk = simulation.read("scratch_disk_path");
     assert!(scratch_disk.ends_with("/scratch.qcow2"));
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     simulation.finish();
     assert!(!Path::new(&scratch_disk).exists());
 }
@@ -472,7 +477,11 @@ fn arm64_guest_uses_uefi_and_arm64_images() {
         save.windows(2)
             .any(|args| args == ["--platform", "linux/arm64"])
     );
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     assert_eq!(simulation.finish().status.code(), Some(143));
 }
 
@@ -489,7 +498,11 @@ fn combined_firmware_uses_bios_without_copying_image() {
     );
     let run_dir = Path::new(simulation.read("run_dir").trim()).to_path_buf();
     assert!(!run_dir.join("uefi_vars.fd").exists());
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     assert_eq!(simulation.finish().status.code(), Some(143));
 }
 
@@ -517,7 +530,11 @@ fn interrupted_startup_cleanup_ignores_unowned_paths() {
         checkout.path().as_os_str().as_encoded_bytes(),
     )
     .unwrap();
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     simulation.finish();
     drop(simulation);
     assert!(!root.exists());
@@ -729,7 +746,11 @@ fn attach_opens_shell_without_stopping_compose_simulation() {
     assert!(simulation.child.try_wait().unwrap().is_none());
     assert!(run_dir.join("attach-ready").exists());
 
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     let output = simulation.finish();
     assert_eq!(output.status.code(), Some(143));
     assert!(!run_dir.exists());
@@ -749,7 +770,11 @@ fn human_simulation_prints_the_attach_command() {
             .contains(&format!("Attach: snouty simulate --attach {id}"))
     );
     assert!(!simulation.read("compose_started").contains("yes"));
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     assert_eq!(simulation.finish().status.code(), Some(143));
 }
 
@@ -771,7 +796,11 @@ fn json_simulation_emits_run_id_before_upload_finishes() {
         id
     );
     assert!(!simulation.read("compose_started").contains("yes"));
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     assert_eq!(simulation.finish().status.code(), Some(143));
 }
 
@@ -784,7 +813,11 @@ fn attach_rejects_a_stopped_simulation_with_retained_logs() {
         serde_json::from_str(simulation.read("stdout").lines().next().unwrap()).unwrap();
     let id = start["run_id"].as_str().unwrap();
     let run_dir = Path::new(&simulation.read("run_dir")).to_owned();
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     assert_eq!(simulation.finish().status.code(), Some(1));
     assert!(run_dir.exists());
     assert!(!run_dir.join("attach-ready").exists());
@@ -838,7 +871,11 @@ fn assertion_failure_is_latched_until_interruption_and_children_are_reaped() {
     let mut simulation = Simulation::start("assertion");
     simulation.wait_for("stdout", "still running after assertion");
     assert!(simulation.child.try_wait().unwrap().is_none());
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     let output = simulation.finish();
     assert_eq!(
         output.status.code(),
@@ -938,7 +975,11 @@ fn assertion_failure_is_latched_until_interruption_and_children_are_reaped() {
 fn json_events_are_annotated_with_guest_faults() {
     let mut simulation = Simulation::start("fault-annotation");
     simulation.wait_for("stdout", "balance stays positive");
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     let output = simulation.finish();
     let events: Vec<serde_json::Value> = String::from_utf8(output.stdout)
         .unwrap()
@@ -984,7 +1025,11 @@ fn ssh_waits_for_a_complete_readiness_record() {
     assert!(!simulation.root().join("ssh_invoked").exists());
     fs::write(simulation.root().join("finish_marker"), "").unwrap();
     simulation.wait_for("rollout_started", "yes");
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     let output = simulation.finish();
     assert!(!String::from_utf8_lossy(&output.stdout).contains("ssh_ready"));
 }
@@ -1004,7 +1049,11 @@ fn ssh_readiness_retries_promptly_after_a_failed_connection() {
 fn first_ssh_login_can_take_longer_than_five_seconds() {
     let mut simulation = Simulation::start("slow-login");
     simulation.wait_for("rollout_started", "yes");
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     simulation.finish();
 }
 
@@ -1084,7 +1133,11 @@ fn clean_single_rollout_keeps_streaming_and_preserves_signal_exit_status() {
             .read("start_script")
             .contains("export COMPOSE_PROJECT_NAME=antithesis")
     );
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     let output = simulation.finish();
     assert_eq!(output.status.code(), Some(143));
     let events: Vec<serde_json::Value> = String::from_utf8(output.stdout)
@@ -1110,7 +1163,11 @@ fn interrupt_powers_off_guest_and_drains_final_output() {
     let mut simulation = Simulation::start("clean-once");
     simulation.wait_for("stdout", "workload running");
     let start = Instant::now();
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGINT).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGINT,
+    )
+    .unwrap();
     let output = simulation.finish();
     assert_eq!(output.status.code(), Some(130));
     assert!(start.elapsed() < Duration::from_secs(2));
@@ -1132,7 +1189,11 @@ fn failed_or_stalled_poweroff_is_force_killed() {
         let mut simulation = Simulation::start(mode);
         simulation.wait_for("compose_started", "yes");
         let start = Instant::now();
-        kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGINT).unwrap();
+        kill(
+            Pid::from_raw(simulation.child.id().cast_signed()),
+            Signal::SIGINT,
+        )
+        .unwrap();
         let output = simulation.finish();
         assert_eq!(output.status.code(), Some(130));
         assert!(start.elapsed() < Duration::from_secs(4));
@@ -1149,10 +1210,18 @@ fn failed_or_stalled_poweroff_is_force_killed() {
 fn second_interrupt_skips_poweroff_wait() {
     let mut simulation = Simulation::start("poweroff-second-interrupt");
     simulation.wait_for("compose_started", "yes");
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGINT).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGINT,
+    )
+    .unwrap();
     simulation.wait_for("poweroff_requested", "yes");
     let start = Instant::now();
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGINT).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGINT,
+    )
+    .unwrap();
     assert_eq!(simulation.finish().status.code(), Some(130));
     assert!(start.elapsed() < Duration::from_secs(1));
     let pid: i32 = simulation.read("qemu_pid").parse().unwrap();
@@ -1161,14 +1230,16 @@ fn second_interrupt_skips_poweroff_wait() {
 
 #[test]
 fn assertion_written_at_shutdown_is_included_in_final_status() {
-    use std::io::Write;
-
     let mut simulation = Simulation::start("clean-once");
     simulation.wait_for("stdout", "workload running");
     let log = Path::new(&simulation.read("run_dir")).join("instrumentation.log");
     let mut file = fs::OpenOptions::new().append(true).open(log).unwrap();
     writeln!(file, "14.0 [workload] [JSON] '{{\"antithesis_assert\":{{\"message\":\"late failure\",\"assert_type\":\"always\",\"hit\":true,\"condition\":false}}}}'").unwrap();
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     let output = simulation.finish();
     assert_eq!(output.status.code(), Some(1));
     let events: Vec<serde_json::Value> = String::from_utf8(output.stdout)
@@ -1198,7 +1269,11 @@ fn local_guest_iso_bypasses_image_resolution_and_download() {
             assert!(!simulation.root().join(marker).exists(), "{marker}");
         }
         assert!(simulation.root().join("save_args").exists());
-        kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+        kill(
+            Pid::from_raw(simulation.child.id().cast_signed()),
+            Signal::SIGTERM,
+        )
+        .unwrap();
         simulation.finish();
         assert_eq!(fs::read(iso).unwrap(), b"local ISO fixture");
     }
@@ -1234,7 +1309,11 @@ fn missing_guest_image_is_pulled_before_boot() {
         serde_json::json!(["pull", "--platform", "linux/amd64", "guest:test"])
     );
     assert_eq!(simulation.read("pulled"), "guest:test");
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     assert_eq!(simulation.finish().status.code(), Some(143));
 }
 
@@ -1278,7 +1357,11 @@ fn unread_output_pipe_does_not_block_signal_cleanup() {
     let mut simulation = Simulation::start("blocked-output");
     simulation.wait_for("stderr", "Streaming guest logs");
     std::thread::sleep(Duration::from_millis(200));
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     let output = simulation.finish();
     assert_eq!(
         output.status.code(),
@@ -1295,7 +1378,11 @@ fn unread_output_backlog_preserves_command_and_assertion_failures() {
     let mut simulation = Simulation::start("blocked-output-failures");
     simulation.wait_for("stderr", "Streaming guest logs");
     std::thread::sleep(Duration::from_millis(200));
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     let output = simulation.finish();
     assert_eq!(
         output.status.code(),
@@ -1336,7 +1423,11 @@ async fn guest_image_defaults_to_configured_repository() {
             simulation.read("guest_image"),
             "registry.example/team/antithesis-guest:v66.0"
         );
-        kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+        kill(
+            Pid::from_raw(simulation.child.id().cast_signed()),
+            Signal::SIGTERM,
+        )
+        .unwrap();
         simulation.finish();
     })
     .await
@@ -1351,7 +1442,11 @@ fn default_guest_image_works_without_api_access() {
         simulation.read("guest_image"),
         "registry.example/team/antithesis-guest:v66.0"
     );
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     assert_eq!(simulation.finish().status.code(), Some(143));
 }
 
@@ -1365,7 +1460,6 @@ fn composer_waits_for_setup_complete_and_wait_is_interruptible() {
     assert!(simulation.read("entropy_calls").is_empty());
     assert_eq!(simulation.read("faults_paused"), "yes");
     let log = Path::new(&simulation.read("run_dir")).join("instrumentation.log");
-    use std::io::Write;
     writeln!(
         fs::OpenOptions::new().append(true).open(log).unwrap(),
         "14 [workload] [JSON] '{{\"antithesis_setup\":{{\"status\":\"complete\"}}}}'"
@@ -1374,12 +1468,20 @@ fn composer_waits_for_setup_complete_and_wait_is_interruptible() {
     simulation.wait_for("rollout_started", "yes");
     assert_eq!(simulation.read("faults_unpaused"), "yes");
     assert_eq!(simulation.read("faults_paused"), "yes");
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     simulation.finish();
 
     let mut simulation = Simulation::start("waiting-setup");
     simulation.wait_for("stdout", "still running after assertion");
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     simulation.finish();
     assert!(!simulation.root().join("rollout_started").exists());
 }
@@ -1399,7 +1501,11 @@ fn fault_tolerance_none_keeps_faults_paused_and_starts_composer() {
     );
     assert_eq!(simulation.read("faults_paused"), "yes");
     simulation.wait_for("rollout_started", "yes");
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     simulation.finish();
     assert!(!simulation.root().join("faults_unpaused").exists());
 }
@@ -1420,7 +1526,11 @@ fn fault_configuration_is_forwarded_before_compose() {
     );
     simulation.wait_for("faults_unpaused", "yes");
     assert_eq!(simulation.read("faults_paused"), "yes");
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     simulation.finish();
 
     for (mode, tolerance) in [
@@ -1441,7 +1551,11 @@ fn fault_configuration_is_forwarded_before_compose() {
         );
         simulation.wait_for("faults_unpaused", "yes");
         assert_eq!(simulation.read("faults_paused"), "yes");
-        kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+        kill(
+            Pid::from_raw(simulation.child.id().cast_signed()),
+            Signal::SIGTERM,
+        )
+        .unwrap();
         simulation.finish();
     }
 }
@@ -1533,7 +1647,7 @@ fn composer_config_disables_fault_control_and_preserves_other_settings() {
     );
 
     fs::write(&config, "{invalid").unwrap();
-    let output = Command::new("bash").args(["-c", &script]).output().unwrap();
+    let output = Command::new("bash").args(["-c", script]).output().unwrap();
     assert!(!output.status.success());
     assert_eq!(fs::read_to_string(config).unwrap(), "{invalid");
 }
@@ -1566,7 +1680,11 @@ fn entropy_waits_for_composer_readiness_and_wakes_it_immediately() {
         events.starts_with("pause\nunpause\ncomposer-start\ncomposer-ready\nentropy "),
         "{events}"
     );
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     simulation.finish();
     assert_eq!(simulation.read("entropy_calls").lines().count(), 1);
 }
@@ -1582,7 +1700,11 @@ fn composer_readiness_failure_never_adds_entropy() {
 fn composer_readiness_wait_is_interruptible() {
     let mut simulation = Simulation::start("readiness-blocked");
     simulation.wait_for("composer_starting", "yes");
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     simulation.finish();
     assert!(simulation.read("entropy_calls").is_empty());
 }
@@ -1615,7 +1737,11 @@ fn entropy_is_forced_every_thirty_seconds_and_stops_on_shutdown() {
             .count(),
         1
     );
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     simulation.finish();
     assert_eq!(simulation.read("entropy_calls").lines().count(), 2);
 }
@@ -1633,7 +1759,6 @@ fn entropy_stops_after_exit_until_next_setup_and_readiness() {
     assert_eq!(events.lines().filter(|line| *line == "unpause").count(), 1);
     fs::remove_file(simulation.root().join("composer_exit")).unwrap();
     let log = Path::new(&simulation.read("run_dir")).join("instrumentation.log");
-    use std::io::Write;
     writeln!(
         fs::OpenOptions::new().append(true).open(log).unwrap(),
         "14 [workload] [JSON] '{{\"antithesis_setup\":{{\"status\":\"complete\"}}}}'"
@@ -1644,7 +1769,11 @@ fn entropy_stops_after_exit_until_next_setup_and_readiness() {
         "recreate\nunpause\ncomposer-start\ncomposer-ready\nentropy ",
     );
     assert_eq!(simulation.read("entropy_calls").lines().count(), 2);
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     simulation.finish();
 }
 
@@ -1656,7 +1785,11 @@ fn restart_wait_cancels_entropy_and_is_interruptible() {
     simulation.wait_for("recreate_started", "yes");
     std::thread::sleep(Duration::from_secs(31));
     assert_eq!(simulation.read("entropy_calls").lines().count(), 1);
-    kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     simulation.finish();
     assert_eq!(simulation.read("entropy_calls").lines().count(), 1);
 }
@@ -1679,7 +1812,11 @@ fn completed_composer_keeps_entropy_without_restarting_autonomous_or_single_roll
     std::thread::sleep(Duration::from_secs(31));
     for mut simulation in simulations {
         assert!(simulation.child.try_wait().unwrap().is_none());
-        kill(Pid::from_raw(simulation.child.id() as i32), Signal::SIGTERM).unwrap();
+        kill(
+            Pid::from_raw(simulation.child.id().cast_signed()),
+            Signal::SIGTERM,
+        )
+        .unwrap();
         simulation.finish();
         assert_eq!(simulation.read("entropy_calls").lines().count(), 2);
         assert!(!simulation.root().join("recreate_started").exists());

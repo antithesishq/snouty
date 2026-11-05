@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 set -euo pipefail
 unit=antithesis-test-composer.service
 result=$(systemctl show "$unit" --property=Result --value)

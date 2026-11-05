@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 set -euo pipefail
 for commands_file in /opt/antithesis/containers/*/commands.json; do
   [[ -f "$commands_file" ]] || continue

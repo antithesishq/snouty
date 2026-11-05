@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::sync::LazyLock;
 
 use color_eyre::eyre::{Context, Result, eyre};
@@ -37,6 +38,10 @@ fn frame(line: &str) -> Option<Frame<'_>> {
 
 /// Convert one guest instrumentation frame to the log-entry shape consumed by
 /// fault annotation and event rendering.
+#[allow(
+    clippy::case_sensitive_file_extension_comparisons,
+    reason = "composer stream suffixes are case-sensitive protocol markers"
+)]
 pub(super) fn log_entry(line: &str) -> Result<Option<Value>> {
     let line = CSI.replace_all(line, "").replace('\r', "");
     let Some(frame) = frame(&line) else {
@@ -232,7 +237,8 @@ impl Event {
                 };
                 for (label, value) in [("stdout", stdout), ("stderr", stderr)] {
                     if !value.is_empty() {
-                        output.push_str(&format!("\n  {label}: {}", text(value)));
+                        write!(output, "\n  {label}: {}", text(value))
+                            .expect("writing to a String cannot fail");
                     }
                 }
                 output
@@ -315,6 +321,10 @@ struct AssertionPayload {
     id: Option<String>,
 }
 
+#[allow(
+    clippy::case_sensitive_file_extension_comparisons,
+    reason = "composer stream suffixes are case-sensitive protocol markers"
+)]
 pub fn parse_line(line: &str) -> Result<Option<Event>> {
     let line = CSI.replace_all(line, "").replace('\r', "");
     let Some(frame) = frame(&line) else {
@@ -559,8 +569,10 @@ mod tests {
         let output = include_str!("../../tests/fixtures/simulate/input.log")
             .lines()
             .filter_map(|line| parse_line(line).unwrap())
-            .map(|event| format!("{}\n", console::strip_ansi_codes(&event.render())))
-            .collect::<String>();
+            .fold(String::new(), |mut output, event| {
+                writeln!(output, "{}", console::strip_ansi_codes(&event.render())).unwrap();
+                output
+            });
         assert_eq!(
             output,
             include_str!("../../tests/fixtures/simulate/expected.log")

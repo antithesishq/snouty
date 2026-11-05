@@ -41,7 +41,7 @@ pub const AMD64_PLATFORM: &str = "linux/amd64";
 pub enum Architecture {
     /// `amd64` (x86-64) — the only architecture Antithesis runs.
     Amd64,
-    /// `arm64` (AArch64) — used by local simulation.
+    /// `arm64` (`AArch64`) — used by local simulation.
     Arm64,
     /// Any other architecture; carries the runtime's raw name for diagnostics.
     Other(String),

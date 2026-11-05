@@ -1,0 +1,16 @@
+---
+source: tests/help_snapshots.rs
+---
+Usage: snouty internal-ssh-proxy [OPTIONS] <SOCKET>
+
+Arguments:
+  <SOCKET>  
+
+Options:
+  -h, --help                 Print help
+      --verbose              Log API requests to stderr (authentication tokens
+                             redacted)
+      --settings <SETTINGS>  Path to the snouty settings file (default:
+                             ./.snouty.toml; overrides SNOUTY_SETTINGS_PATH)
+      --profile <PROFILE>    Settings profile to select (overrides
+                             ANTITHESIS_PROFILE)

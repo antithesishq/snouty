@@ -3,7 +3,7 @@ use std::path::Path;
 use color_eyre::eyre::{Context, Result, bail};
 
 pub fn pass_ssh_socket(path: &Path) -> Result<()> {
-    use std::io::{IoSlice, stdout};
+    use std::io::IoSlice;
     use std::os::fd::AsRawFd;
     use std::os::unix::net::UnixStream;
 
@@ -11,7 +11,7 @@ pub fn pass_ssh_socket(path: &Path) -> Result<()> {
 
     let socket = UnixStream::connect(path).wrap_err("failed to connect to guest SSH socket")?;
     sendmsg::<()>(
-        stdout().as_raw_fd(),
+        nix::libc::STDOUT_FILENO,
         &[IoSlice::new(&[0])],
         &[ControlMessage::ScmRights(&[socket.as_raw_fd()])],
         MsgFlags::empty(),

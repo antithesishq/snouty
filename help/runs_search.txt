@@ -13,8 +13,8 @@ Verbs:
   excludes({f: "x"})       drop substring matches
   filter(ev => expr)       keep events where the JS expression is truthy
   map(ev => expr)          add or change fields of each event; expr must
-                           be an event, such as ev.add_fields({...}), not
-                           a new object
+                           be an event, such as ev.add_fields({...}); the
+                           query fails when expr is a new object
   flatmap(ev => expr)      map, then flatten the result one level
   narrow(["f1", "f2"])     keep only the listed fields
   fold((s, ev) => [events, s'], s0)
@@ -75,8 +75,8 @@ Query snippets (each is a complete {{ t("query")? }}, ready to paste):
   contains({output_text: "fatal"}).with_last({fault: filter(ev => ev.fault)})
 
   # each error with the text after "error:" (field msg)
-  contains({output_text: "error:"})
-    .map(ev => ev.add_fields({msg: ev.output_text.split("error:")[1]}))
+  contains({output_text: "error:"}).map(ev =>
+    ev.add_fields({msg: ev.output_text.replace(/^.*?error:\s*/, "")}))
 
   # errors numbered in order within each timeline (field n)
   contains({output_text: "error"})
@@ -94,6 +94,6 @@ Events changed by map, narrow or fold print as raw JSON.{% if !cli %} The output
 
 Add {{ t("--count")? }} to print how many events in the whole run match the query, instead of a sample. No limit applies.
 
-The query returns events, and it cannot count or group them. For counts per value or a set of distinct values, add {{ t("--json")? }} and aggregate the events yourself. The result then holds for the sample only.
+The query returns events. It cannot count or group events across the run. For the exact count of one value, add {{ t("--count")? }} to a query that matches that value, such as `matches({container: "etcd0"})`. For counts per value or a set of distinct values in the sample, add {{ t("--json")? }} and aggregate the events yourself.
 
 The run must be ready or complete. If it is not, the command waits until it is ready, as `{{ t("snouty runs exec")? }}` does, and says that it waits.

@@ -15,7 +15,7 @@ use super::{
     events::{self, Event, Failure},
     images::Images,
     serial::{LogStream, MAX_RECORD_BYTES, serial_lines},
-    vm::{BootOutput, Drive, GuestConnection, Vm},
+    vm::{BootOutput, GuestConnection, Vm},
 };
 use crate::{
     OutputOptions,
@@ -359,10 +359,9 @@ pub(super) async fn run(
         eprintln!("Preparing guest image...");
         let iso = guest.iso(&images, run_dir.path(), args.platform).await?;
         eprintln!("Preparing workload images...");
-        let image_disk =
-            workload_image_disk(&images, references, run_dir.path(), args.platform).await?;
+        let inject_disk =
+            workload_inject_disk(&images, references, run_dir.path(), args.platform).await?;
         eprintln!("Booting guest...");
-        let scratch_disk = create_scratch_disk(run_dir.path()).await?;
         vm = Some(
             Vm::boot(
                 &iso,
@@ -371,19 +370,11 @@ pub(super) async fn run(
                 BootOutput::Hidden,
                 args.memory,
                 args.platform,
-                &[Drive::Scratch(&scratch_disk), Drive::Images(&image_disk)],
+                &inject_disk,
             )
             .await?,
         );
         let guest = vm.as_mut().expect("guest booted");
-        guest
-            .run_script(SCRATCH_SETUP)
-            .await
-            .wrap_err("setting up guest scratch storage")?;
-        guest
-            .run_script(MOUNT_IMAGES)
-            .await
-            .wrap_err("mounting guest workload images")?;
         guest
             .run_script(PREPARE)
             .await
@@ -543,7 +534,7 @@ pub(super) async fn run(
         summary.infrastructure_failures += 1;
         eprintln!("Instrumentation read failed: {error:#}");
     }
-    for name in ["ssh_config", "images.tar", "images.erofs", "scratch.qcow2"] {
+    for name in ["ssh_config", "images.tar", "images.erofs"] {
         let path = run_dir.path().join(name);
         if let Err(error) = std::fs::remove_file(&path)
             && error.kind() != std::io::ErrorKind::NotFound
@@ -575,12 +566,8 @@ pub(super) async fn run(
     Ok(summary.exit_code(reason))
 }
 
-const SCRATCH_SETUP: &str = include_str!("assets/scratch-storage.sh");
-const MOUNT_IMAGES: &str = include_str!("assets/mount-images.sh");
-
-/// Save the workload images and convert them into the EROFS drive that the
-/// guest mounts as an additional image store.
-async fn workload_image_disk(
+/// Save the workload images and convert them into the inject drive.
+async fn workload_inject_disk(
     images: &Images,
     references: BTreeSet<String>,
     run_dir: &Path,
@@ -592,32 +579,23 @@ async fn workload_image_disk(
     }
     let archive = run_dir.join("images.tar");
     images.save(&references, &archive, platform).await?;
-    let disk = run_dir.join("images.erofs");
-    let output = std::fs::File::create(&disk)?;
-    let source = archive.clone();
-    let converted =
-        tokio::task::spawn_blocking(move || crate::containers_storage::convert(&[&source], output))
-            .await?
-            .wrap_err("cannot convert workload images")?;
-    log::debug!("converted workload images: {converted:?}");
+    let disk = inject_disk(vec![archive.clone()], run_dir).await?;
     std::fs::remove_file(archive)?;
     Ok(disk)
 }
 
-async fn create_scratch_disk(run_dir: &Path) -> Result<PathBuf> {
-    let disk = run_dir.join("scratch.qcow2");
-    let output = tokio::process::Command::new("qemu-img")
-        .args(["create", "-f", "qcow2"])
-        .arg(&disk)
-        .arg(super::vm::SCRATCH_DISK_SIZE)
-        .output()
-        .await?;
-    if !output.status.success() {
-        bail!(
-            "cannot create simulation scratch disk: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
+/// Convert image archives into the read-only EROFS drive that the guest
+/// imports at boot. With no archives the drive holds an empty store.
+async fn inject_disk(archives: Vec<PathBuf>, run_dir: &Path) -> Result<PathBuf> {
+    let disk = run_dir.join("images.erofs");
+    let output = std::fs::File::create(&disk)?;
+    let converted = tokio::task::spawn_blocking(move || {
+        let archives: Vec<&Path> = archives.iter().map(PathBuf::as_path).collect();
+        crate::containers_storage::convert(&archives, output)
+    })
+    .await?
+    .wrap_err("cannot convert workload images")?;
+    log::debug!("converted workload images: {converted:?}");
     Ok(disk)
 }
 
@@ -672,10 +650,9 @@ pub(super) async fn shell(args: SimulateArgs, settings: &Settings) -> Result<Exi
         .tempdir()?;
     eprintln!("Preparing guest image...");
     let iso = guest.iso(&images, run_dir.path(), args.platform).await?;
-    let scratch_disk = create_scratch_disk(run_dir.path()).await?;
+    let inject_disk = inject_disk(Vec::new(), run_dir.path()).await?;
     eprintln!("Booting guest...");
     let mut signals = Signals::install()?;
-    let drives = [Drive::Scratch(&scratch_disk)];
     let mut guest = tokio::select! {
         biased;
         reason = signals.receive() => return Ok(Summary::default().exit_code(reason)),
@@ -686,13 +663,9 @@ pub(super) async fn shell(args: SimulateArgs, settings: &Settings) -> Result<Exi
             BootOutput::Visible,
             args.memory,
             args.platform,
-            &drives,
+            &inject_disk,
         ) => result?,
     };
-    guest
-        .run_script(SCRATCH_SETUP)
-        .await
-        .wrap_err("setting up guest scratch storage")?;
     eprintln!("Opening guest shell. Exit the shell to stop the VM.");
     let shell = tokio::select! {
         biased;

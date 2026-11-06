@@ -56,7 +56,6 @@ impl Simulation {
             "ssh-keygen",
             "qemu-system-x86_64",
             "qemu-system-aarch64",
-            "qemu-img",
         ] {
             symlink(&script, bin.join(tool)).unwrap();
         }
@@ -306,41 +305,34 @@ fn configured_memory_is_passed_to_qemu() {
 }
 
 #[test]
-fn simulation_uses_ephemeral_scratch_disk_for_podman_storage() {
+fn simulation_attaches_workload_images_as_a_read_only_erofs_drive() {
     let mut simulation = Simulation::start("clean-once");
     simulation.wait_for("stdout", "workload");
     let args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
-    let drive = args.windows(2).find(|args| args[0] == "-drive").unwrap();
-    assert!(drive[1].contains("scratch.qcow2,if=virtio,format=qcow2"));
-    let setup = simulation.read("scratch_setup_script");
-    assert!(setup.contains("mkfs.ext4 -F \"$device\""));
-    assert!(setup.contains("mount --bind /mnt/snouty-scratch/tmp /var/tmp"));
-    assert!(setup.contains("mount --bind /mnt/snouty-scratch/storage /var/lib/containers/storage"));
-    assert!(setup.contains("image_copy_tmp_dir = \"/var/tmp\""));
-    let mount = simulation.read("mount_images_script");
-    assert!(mount.contains("mount -t erofs -o ro \"$device\" \"$store\""));
-    assert!(mount.contains("additionalimagestores"));
     let images_drive = simulation.read("images_drive");
-    assert!(images_drive.ends_with("/images.erofs,if=virtio,format=raw,readonly=on"));
-    assert_eq!(simulation.read("images_drive_magic"), "e2e1f5e0");
-    let scratch_index = args
-        .iter()
-        .position(|arg| arg.contains("scratch.qcow2"))
-        .unwrap();
-    let images_index = args.iter().position(|arg| arg == &images_drive).unwrap();
-    assert!(
-        scratch_index < images_index,
-        "scratch disk must be /dev/vda"
+    assert!(images_drive.ends_with("/images.erofs,if=none,id=inject,format=raw,readonly=on"));
+    let drives: Vec<_> = args
+        .windows(2)
+        .filter(|args| args[0] == "-drive" || args[0] == "-device")
+        .map(|args| args[1].as_str())
+        .filter(|arg| !arg.starts_with("virtio-net-pci"))
+        .collect();
+    assert_eq!(
+        drives,
+        [
+            images_drive.as_str(),
+            "virtio-blk-pci,drive=inject,serial=antithesis-inject"
+        ]
     );
-    let scratch_disk = simulation.read("scratch_disk_path");
-    assert!(scratch_disk.ends_with("/scratch.qcow2"));
+    assert_eq!(simulation.read("images_drive_magic"), "e2e1f5e0");
+    let run_dir = simulation.read("run_dir");
     kill(
         Pid::from_raw(simulation.child.id().cast_signed()),
         Signal::SIGTERM,
     )
     .unwrap();
     simulation.finish();
-    assert!(!Path::new(&scratch_disk).exists());
+    assert!(!Path::new(&run_dir).join("images.erofs").exists());
 }
 
 #[test]
@@ -572,13 +564,7 @@ fn start_shell_simulation(mode: &str) -> (TempDir, OsSession) {
     )
     .unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-    for tool in [
-        "docker",
-        "ssh",
-        "ssh-keygen",
-        "qemu-system-x86_64",
-        "qemu-img",
-    ] {
+    for tool in ["docker", "ssh", "ssh-keygen", "qemu-system-x86_64"] {
         symlink(&script, bin.join(tool)).unwrap();
     }
     fs::write(root.join("mode"), mode).unwrap();
@@ -669,15 +655,17 @@ fn hidden_shell_bypasses_compose_and_owns_the_terminal() {
     assert!(!boot.as_bytes().windows(5).any(|bytes| bytes == b"\x1b[18t"));
     assert!(!boot.as_bytes().windows(4).any(|bytes| bytes == b"\x1b[6n"));
     Expect::expect(&mut session, "guest shell ready").expect("guest shell opened");
-    let setup = fs::read_to_string(root.join("scratch_setup_script")).unwrap();
-    assert!(setup.contains("image_copy_tmp_dir = \"/var/tmp\""));
-    let scratch_disk = fs::read_to_string(root.join("scratch_disk_path")).unwrap();
     let qemu_args: Vec<String> =
         serde_json::from_str(&fs::read_to_string(root.join("qemu_args")).unwrap()).unwrap();
+    // The guest imports the inject drive at boot, so it is always attached.
     assert!(
         qemu_args
-            .windows(2)
-            .any(|args| args[0] == "-drive" && args[1].contains("scratch.qcow2"))
+            .iter()
+            .any(|arg| arg == "virtio-blk-pci,drive=inject,serial=antithesis-inject")
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("images_drive_magic")).unwrap(),
+        "e2e1f5e0"
     );
     Expect::send_line(&mut session, "whoami").expect("write to guest shell");
     Expect::expect(&mut session, "root").expect("guest shell replied");
@@ -703,11 +691,6 @@ fn hidden_shell_bypasses_compose_and_owns_the_terminal() {
         fs::read_to_string(root.join("shell_input")).unwrap(),
         "whoami\npoweroff"
     );
-    assert!(
-        fs::read_to_string(root.join("batch_script"))
-            .unwrap()
-            .contains("image_copy_tmp_dir = \"/var/tmp\"")
-    );
     assert!(!root.join("rollout_started").exists());
     assert_eq!(poweroff, "yes");
     let closing = String::from_utf8_lossy(closing.as_bytes());
@@ -719,7 +702,6 @@ fn hidden_shell_bypasses_compose_and_owns_the_terminal() {
     assert_eq!(fs::read_to_string(root.join("qemu_signal")).unwrap(), "15");
     let run_dir = fs::read_to_string(root.join("run_dir")).unwrap();
     assert!(!Path::new(&run_dir).exists());
-    assert!(!Path::new(&scratch_disk).exists());
 }
 
 #[test]
@@ -962,7 +944,7 @@ fn assertion_failure_is_latched_until_interruption_and_children_are_reaped() {
             .any(|arg| arg.contains("hostfwd=unix:/tmp/snouty")
                 && arg.ends_with("-:22,restrict=yes"))
     );
-    let ssh_config = simulation.read("guest_ssh_config");
+    let ssh_config = simulation.read("ssh_config");
     assert!(ssh_config.contains("IdentitiesOnly yes"));
     assert!(ssh_config.contains("IdentityAgent none"));
     assert!(ssh_config.contains("StrictHostKeyChecking no"));

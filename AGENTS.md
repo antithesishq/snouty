@@ -262,10 +262,11 @@ shellcheck directive, or an entry in `[package.metadata.cargo-shear] ignored`.
 Clippy runs with the `pedantic` group, and `[workspace.lints.clippy]` in
 `Cargo.toml` gives a reason for each pedantic lint that is off. Fix a
 cargo-deny advisory with an upgrade; ignore it in `deny.toml` only when no
-upgrade exists, with a reason and a link. A pull request fails on licenses,
-bans and sources; only the nightly and manual runs fail on advisories. Do not fix a
-zizmor finding in a generated workflow by hand; change its generator, as
-`.github/zizmor.yml` describes.
+upgrade exists, with a reason and a link. An ignore that matches no crate
+fails the check, so delete it when an upgrade drops the crate. A pull request
+fails on licenses, bans and sources; only the nightly and manual runs fail on
+advisories. Do not fix a zizmor finding in a generated workflow by hand; change
+its generator, as `.github/zizmor.yml` describes.
 
 The Python scripts share one set of dependencies, in the top-level
 `pyproject.toml` and `uv.lock`. Do not declare dependencies in a script.

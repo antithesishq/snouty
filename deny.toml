@@ -5,6 +5,9 @@
 # Vulnerable, unmaintained, unsound and yanked crates all fail. yanked defaults
 # to a warning, so it is set here.
 yanked = "deny"
+# An ignore that no longer matches any crate fails, so a stale entry is deleted
+# once an upgrade drops the crate it covers.
+unused-ignored-advisory = "deny"
 ignore = [
     # unsafe-libyaml is archived. serde_yaml pulls it in, and even the latest
     # progenitor-macro (0.15.1) depends on serde_yaml, so dropping serde_yaml

@@ -90,6 +90,11 @@ struct Node {
     trailing_size: usize,
     data_blkaddr: u32,
     file_type: FileType,
+    /// snouty: a hard link has no inode of its own. It is a directory entry
+    /// for the inode at this path, and takes that inode's nid after layout.
+    hardlink_to: Option<String>,
+    /// snouty: the number of hard links to this inode.
+    extra_links: u32,
 }
 
 impl Node {
@@ -118,6 +123,8 @@ impl Node {
             trailing_size: 0,
             data_blkaddr: 0,
             file_type,
+            hardlink_to: None,
+            extra_links: 0,
         }
     }
 
@@ -132,7 +139,7 @@ impl Node {
         if self.is_dir() {
             2 + self.children.iter().filter(|c| c.is_dir()).count() as u32
         } else {
-            1
+            1 + self.extra_links
         }
     }
 
@@ -407,6 +414,42 @@ where
         )
     }
 
+    /// snouty: add a hard link at `path` to the existing non-directory entry
+    /// at `target`. Both names share one inode, whose nlink counts them.
+    pub async fn link(&mut self, path: &str, target: &str) -> io::Result<()> {
+        let clean_path = clean(path);
+        if clean_path.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid path"));
+        }
+        let mut target = clean(target);
+        let file_type = loop {
+            let node = find_mut(&mut self.root, &target).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("hard link target /{target} does not exist"),
+                )
+            })?;
+            if node.is_dir() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("hard link target /{target} is a directory"),
+                ));
+            }
+            match &node.hardlink_to {
+                Some(original) => target = original.clone(),
+                None => {
+                    node.extra_links += 1;
+                    break node.file_type;
+                }
+            }
+        };
+        ensure_dir(&mut self.root, &mut self.paths, &clean_path)?;
+        let mut node = Node::new(String::new(), InodeMeta::default());
+        node.file_type = file_type;
+        node.hardlink_to = Some(target);
+        insert(&mut self.root, &mut self.paths, &clean_path, node)
+    }
+
     /// Lay out metadata, append outstanding data (dirent blocks, fallback
     /// file blocks, non-inline symlink targets) and the metadata area, then
     /// patch the superblock and return the sink.
@@ -569,7 +612,13 @@ fn insert(
             .find(|c| c.is_dir() && c.name == seg)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "missing parent directory"))?;
     }
-    if dir.children.iter().any(|c| c.name == name) {
+    if let Some(existing) = dir.children.iter_mut().find(|c| c.name == name) {
+        // snouty: a directory entry can follow the directory's implicit
+        // creation as a parent. Take its metadata instead of dropping it.
+        if existing.is_dir() && node.is_dir() {
+            existing.meta = node.meta;
+            return Ok(());
+        }
         if paths.contains(&format!("/{}", clean)) {
             return Ok(());
         }
@@ -586,6 +635,10 @@ fn insert(
 
 fn plan_layout(root: &mut Node, bs: usize, bt: u64, btn: u32) {
     fn plan_node(n: &mut Node, off: &mut usize, bs: usize, bt: u64, btn: u32) {
+        // snouty: a hard link has no inode to place.
+        if n.hardlink_to.is_some() {
+            return;
+        }
         n.xattr_size = calc_xattr_size(&n.meta.xattrs);
         n.compact = n.meta.uid <= 0xFFFF
             && n.meta.gid <= 0xFFFF
@@ -699,11 +752,58 @@ fn plan_layout(root: &mut Node, bs: usize, bt: u64, btn: u32) {
     }
 
     assign_parent_nids(root, 0);
+    resolve_hardlinks(root);
+}
+
+/// snouty: give each hard link the nid of the inode it names.
+fn resolve_hardlinks(root: &mut Node) {
+    fn targets(n: &Node, out: &mut Vec<String>) {
+        out.extend(n.hardlink_to.clone());
+        for c in &n.children {
+            targets(c, out);
+        }
+    }
+    fn assign(n: &mut Node, nids: &HashMap<String, u64>) {
+        if let Some(target) = &n.hardlink_to {
+            n.nid = nids[target];
+        }
+        for c in n.children.iter_mut() {
+            assign(c, nids);
+        }
+    }
+    let mut paths = Vec::new();
+    targets(root, &mut paths);
+    let nids: HashMap<String, u64> = paths
+        .into_iter()
+        .map(|path| {
+            let nid = find(root, &path).expect("hard link target exists").nid;
+            (path, nid)
+        })
+        .collect();
+    assign(root, &nids);
+}
+
+fn find<'a>(root: &'a Node, clean: &str) -> Option<&'a Node> {
+    clean
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .try_fold(root, |dir, seg| dir.children.iter().find(|c| c.name == seg))
+}
+
+fn find_mut<'a>(root: &'a mut Node, clean: &str) -> Option<&'a mut Node> {
+    clean
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .try_fold(root, |dir, seg| dir.children.iter_mut().find(|c| c.name == seg))
 }
 
 fn collect_entries<'a>(root: &'a Node) -> Vec<&'a Node> {
     let mut out = Vec::new();
     fn rec<'a>(n: &'a Node, out: &mut Vec<&'a Node>) {
+        // snouty: a hard link is not an inode.
+        if n.hardlink_to.is_some() {
+            return;
+        }
         out.push(n);
         for c in &n.children {
             rec(c, out);
@@ -925,6 +1025,10 @@ fn write_metadata(
         data_addrs: &HashMap<u64, u32>,
         bs: usize,
     ) -> io::Result<()> {
+        // snouty: a hard link has no inode to write.
+        if n.hardlink_to.is_some() {
+            return Ok(());
+        }
         let expected = (n.nid as usize) * 32;
         if expected > buf.len() {
             buf.resize(expected, 0);

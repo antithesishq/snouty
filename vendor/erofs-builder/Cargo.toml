@@ -7,12 +7,13 @@ license = "MIT"
 
 [dependencies]
 tokio = { version = "1", features = ["io-util", "fs", "rt-multi-thread", "macros"] }
-crc32c = "0.6"
-rand = "0.8"
+# snouty: rand is optional and crc32c is gone, so the library pulls in neither.
+rand = { version = "0.8", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
 
 [features]
 default = []
+clap = ["dep:clap", "dep:rand"]
 
 [dev-dependencies]
 tempfile = "3"

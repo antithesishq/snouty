@@ -90,10 +90,10 @@ Output: a `moment INPUT_HASH` divider is emitted each time the input_hash change
 A `moment INPUT_HASH` line is emitted each time the input_hash changes. Each event under it prints as one `VTIME [source] payload` line, with the full vtime. Indented lines under an event give its source location, as `@ file:function:line`, and the details that it carries, such as an SDK assertion's details, as `details {...}`.
 {% endif %}
 
-Events that map, narrow or fold change print as raw JSON.{% if !cli %} The output already shows the details of each assertion, so do not change events to read them.{% endif %}
+Events changed by map, narrow or fold print as raw JSON.{% if !cli %} The output already shows the details of each assertion, so do not change events to read them.{% endif %}
 
 Add {{ t("--count")? }} to print how many events in the whole run match the query, instead of a sample. No limit applies.
 
-The query returns events, and it cannot count or group them. For counts per value or a set of distinct values, add {{ t("--json")? }} and aggregate the events yourself{% if cli %}, for example with `jq`{% endif %}. The result then holds for the sample only.
+The query returns events, and it cannot count or group them. For counts per value or a set of distinct values, add {{ t("--json")? }} and aggregate the events yourself. The result then holds for the sample only.
 
 The run must be ready or complete. If it is not, the command waits until it is ready, as `{{ t("snouty runs exec")? }}` does, and says that it waits.

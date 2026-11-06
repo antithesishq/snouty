@@ -124,14 +124,14 @@ VTIME and the source print whole, and indented lines under an event give its
 source location, as `@ file:function:line`, and the details that it carries,
 such as an SDK assertion's details, as `details {...}`.
 
-Events that map, narrow or fold change print as raw JSON.
+Events changed by map, narrow or fold print as raw JSON.
 
 Add --count to print how many events in the whole run match the query, instead
 of a sample. No limit applies.
 
 The query returns events, and it cannot count or group them. For counts per
-value or a set of distinct values, add --json and aggregate the events yourself,
-for example with `jq`. The result then holds for the sample only.
+value or a set of distinct values, add --json and aggregate the events yourself.
+The result then holds for the sample only.
 
 The run must be ready or complete. If it is not, the command waits until it is
 ready, as `snouty runs exec` does, and says that it waits.

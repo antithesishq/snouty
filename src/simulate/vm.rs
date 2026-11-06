@@ -157,6 +157,28 @@ impl<'a> GuestConnection<'a> {
     }
 }
 
+/// A block device for the guest. The guest names drives in the order given:
+/// `/dev/vda`, then `/dev/vdb`.
+pub enum Drive<'a> {
+    /// A writable qcow2 disk for container storage and temporary files.
+    Scratch(&'a Path),
+    /// A read-only EROFS image of the workload images.
+    Images(&'a Path),
+}
+
+impl std::fmt::Display for Drive<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Scratch(path) => write!(f, "file={},if=virtio,format=qcow2", path.display()),
+            Self::Images(path) => write!(
+                f,
+                "file={},if=virtio,format=raw,readonly=on",
+                path.display()
+            ),
+        }
+    }
+}
+
 impl Vm {
     pub async fn boot(
         iso: &Path,
@@ -165,7 +187,7 @@ impl Vm {
         boot_output: BootOutput,
         memory_mib: u64,
         platform: SimulatePlatform,
-        scratch_disk: Option<&Path>,
+        drives: &[Drive<'_>],
     ) -> Result<Self> {
         let run_dir = fs::canonicalize(run_dir)?;
         if platform != SimulatePlatform::default() {
@@ -219,11 +241,8 @@ impl Vm {
             ))
             .args(["-nodefaults", "-smp", "1", "-m"])
             .arg(memory_mib.to_string());
-        if let Some(scratch_disk) = scratch_disk {
-            command.args([
-                "-drive",
-                &format!("file={},if=virtio,format=qcow2", scratch_disk.display()),
-            ]);
+        for drive in drives {
+            command.arg("-drive").arg(drive.to_string());
         }
         if let Some(code) = &firmware {
             command.arg("-bios").arg(code);
@@ -430,19 +449,6 @@ impl Vm {
         if !output.status.success() {
             bail!(
                 "config upload failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-        }
-        Ok(())
-    }
-
-    pub async fn load_images(&self, archive: &Path) -> Result<()> {
-        let mut command = self.ssh();
-        command.arg("podman load").stdin(File::open(archive)?);
-        let output = output_async(command, Duration::from_mins(30)).await?;
-        if !output.status.success() {
-            bail!(
-                "guest image import failed: {}",
                 String::from_utf8_lossy(&output.stderr).trim()
             );
         }

@@ -13,9 +13,9 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use super::{
     events::{self, Event, Failure},
-    images::{ImageId, Images},
+    images::Images,
     serial::{LogStream, MAX_RECORD_BYTES, serial_lines},
-    vm::{BootOutput, GuestConnection, Vm},
+    vm::{BootOutput, Drive, GuestConnection, Vm},
 };
 use crate::{
     OutputOptions,
@@ -317,11 +317,6 @@ pub(super) async fn run(
     settings: &Settings,
     options: OutputOptions,
 ) -> Result<ExitCode> {
-    #[derive(Deserialize)]
-    struct RemoteImage {
-        #[serde(rename = "Id")]
-        id: ImageId,
-    }
     let guest = resolve_guest(args.guest_image, settings)?;
     let runtime = container::runtime(settings)?;
     container::warn_ambiguous_engine(settings, runtime.as_ref(), options.json);
@@ -363,6 +358,9 @@ pub(super) async fn run(
     let execution = async {
         eprintln!("Preparing guest image...");
         let iso = guest.iso(&images, run_dir.path(), args.platform).await?;
+        eprintln!("Preparing workload images...");
+        let image_disk =
+            workload_image_disk(&images, references, run_dir.path(), args.platform).await?;
         eprintln!("Booting guest...");
         let scratch_disk = create_scratch_disk(run_dir.path()).await?;
         vm = Some(
@@ -373,7 +371,7 @@ pub(super) async fn run(
                 BootOutput::Hidden,
                 args.memory,
                 args.platform,
-                Some(&scratch_disk),
+                &[Drive::Scratch(&scratch_disk), Drive::Images(&image_disk)],
             )
             .await?,
         );
@@ -382,6 +380,10 @@ pub(super) async fn run(
             .run_script(SCRATCH_SETUP)
             .await
             .wrap_err("setting up guest scratch storage")?;
+        guest
+            .run_script(MOUNT_IMAGES)
+            .await
+            .wrap_err("mounting guest workload images")?;
         guest
             .run_script(PREPARE)
             .await
@@ -426,32 +428,8 @@ pub(super) async fn run(
         if output.closed {
             return Ok::<_, color_eyre::Report>(());
         }
-        eprintln!("Uploading Compose configuration and images...");
+        eprintln!("Uploading Compose configuration...");
         guest.upload_config(config.dir()).await?;
-        let mut changed = Vec::new();
-        for reference in references {
-            let local = images.inspect(&reference, args.platform).await?;
-            let script = format!(
-                "set -euo pipefail\nif podman image exists {image}; then podman image inspect {image}; else printf '[]'; fi\n",
-                image = shell_quote(&reference)
-            );
-            let remote: Vec<RemoteImage> = serde_json::from_str(
-                &guest
-                    .run_script(&script)
-                    .await
-                    .wrap_err_with(|| format!("inspecting guest image {reference}"))?,
-            )?;
-            let same = remote.first().is_some_and(|image| image.id == local.id);
-            if !same {
-                changed.push(reference);
-            }
-        }
-        if !changed.is_empty() {
-            let archive = run_dir.path().join("images.tar");
-            images.save(&changed, &archive, args.platform).await?;
-            guest.load_images(&archive).await?;
-            std::fs::remove_file(archive)?;
-        }
         instrumentation = Some(guest.instrumentation_log().to_owned());
         consumed = std::fs::metadata(guest.instrumentation_log())?.len();
         logs = Some(serial_lines(guest.instrumentation_log(), consumed)?);
@@ -565,7 +543,7 @@ pub(super) async fn run(
         summary.infrastructure_failures += 1;
         eprintln!("Instrumentation read failed: {error:#}");
     }
-    for name in ["ssh_config", "images.tar", "scratch.qcow2"] {
+    for name in ["ssh_config", "images.tar", "images.erofs", "scratch.qcow2"] {
         let path = run_dir.path().join(name);
         if let Err(error) = std::fs::remove_file(&path)
             && error.kind() != std::io::ErrorKind::NotFound
@@ -598,6 +576,33 @@ pub(super) async fn run(
 }
 
 const SCRATCH_SETUP: &str = include_str!("assets/scratch-storage.sh");
+const MOUNT_IMAGES: &str = include_str!("assets/mount-images.sh");
+
+/// Save the workload images and convert them into the EROFS drive that the
+/// guest mounts as an additional image store.
+async fn workload_image_disk(
+    images: &Images,
+    references: BTreeSet<String>,
+    run_dir: &Path,
+    platform: super::SimulatePlatform,
+) -> Result<PathBuf> {
+    let references: Vec<_> = references.into_iter().collect();
+    for reference in &references {
+        images.inspect(reference, platform).await?;
+    }
+    let archive = run_dir.join("images.tar");
+    images.save(&references, &archive, platform).await?;
+    let disk = run_dir.join("images.erofs");
+    let output = std::fs::File::create(&disk)?;
+    let source = archive.clone();
+    let converted =
+        tokio::task::spawn_blocking(move || crate::containers_storage::convert(&[&source], output))
+            .await?
+            .wrap_err("cannot convert workload images")?;
+    log::debug!("converted workload images: {converted:?}");
+    std::fs::remove_file(archive)?;
+    Ok(disk)
+}
 
 async fn create_scratch_disk(run_dir: &Path) -> Result<PathBuf> {
     let disk = run_dir.join("scratch.qcow2");
@@ -670,6 +675,7 @@ pub(super) async fn shell(args: SimulateArgs, settings: &Settings) -> Result<Exi
     let scratch_disk = create_scratch_disk(run_dir.path()).await?;
     eprintln!("Booting guest...");
     let mut signals = Signals::install()?;
+    let drives = [Drive::Scratch(&scratch_disk)];
     let mut guest = tokio::select! {
         biased;
         reason = signals.receive() => return Ok(Summary::default().exit_code(reason)),
@@ -680,7 +686,7 @@ pub(super) async fn shell(args: SimulateArgs, settings: &Settings) -> Result<Exi
             BootOutput::Visible,
             args.memory,
             args.platform,
-            Some(&scratch_disk),
+            &drives,
         ) => result?,
     };
     guest

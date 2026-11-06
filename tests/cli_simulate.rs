@@ -317,7 +317,21 @@ fn simulation_uses_ephemeral_scratch_disk_for_podman_storage() {
     assert!(setup.contains("mount --bind /mnt/snouty-scratch/tmp /var/tmp"));
     assert!(setup.contains("mount --bind /mnt/snouty-scratch/storage /var/lib/containers/storage"));
     assert!(setup.contains("image_copy_tmp_dir = \"/var/tmp\""));
-    assert_eq!(simulation.read("image_load_command"), "podman load");
+    let mount = simulation.read("mount_images_script");
+    assert!(mount.contains("mount -t erofs -o ro \"$device\" \"$store\""));
+    assert!(mount.contains("additionalimagestores"));
+    let images_drive = simulation.read("images_drive");
+    assert!(images_drive.ends_with("/images.erofs,if=virtio,format=raw,readonly=on"));
+    assert_eq!(simulation.read("images_drive_magic"), "e2e1f5e0");
+    let scratch_index = args
+        .iter()
+        .position(|arg| arg.contains("scratch.qcow2"))
+        .unwrap();
+    let images_index = args.iter().position(|arg| arg == &images_drive).unwrap();
+    assert!(
+        scratch_index < images_index,
+        "scratch disk must be /dev/vda"
+    );
     let scratch_disk = simulation.read("scratch_disk_path");
     assert!(scratch_disk.ends_with("/scratch.qcow2"));
     kill(
@@ -948,7 +962,7 @@ fn assertion_failure_is_latched_until_interruption_and_children_are_reaped() {
             .any(|arg| arg.contains("hostfwd=unix:/tmp/snouty")
                 && arg.ends_with("-:22,restrict=yes"))
     );
-    let ssh_config = simulation.read("image_load_ssh_config");
+    let ssh_config = simulation.read("guest_ssh_config");
     assert!(ssh_config.contains("IdentitiesOnly yes"));
     assert!(ssh_config.contains("IdentityAgent none"));
     assert!(ssh_config.contains("StrictHostKeyChecking no"));

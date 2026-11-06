@@ -1,5 +1,8 @@
 [workspace]
 members = ["snouty-macros"]
+# A git subtree of an upstream crate, kept outside snouty's lints. See its
+# VENDORED.md.
+exclude = ["vendor/erofs-builder"]
 
 # Both crates inherit this. It is the minor version of the toolchain that
 # rust-toolchain.toml pins, which CI and the release builds use.
@@ -110,6 +113,9 @@ inquire = { version = "0.9", default-features = false, features = ["crossterm"] 
 askama = { version = "0.16.1", default-features = false, features = ["config", "derive", "std"] }
 axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1"] }
 gix = { version = "0.90", default-features = false, features = ["sha1"] }
+tar = { version = "0.4", default-features = false }
+erofs-builder = { path = "vendor/erofs-builder" }
+flate2 = "1"
 
 # See the global_allocator in main.rs.
 [target.'cfg(target_env = "musl")'.dependencies]

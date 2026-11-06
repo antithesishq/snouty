@@ -8,6 +8,7 @@ pub mod cli;
 pub mod compose;
 pub mod config;
 pub mod container;
+pub mod containers_storage;
 pub mod docker_credential;
 pub mod docs;
 pub mod doctor;

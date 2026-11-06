@@ -18,6 +18,22 @@ def event(value):
 def record(name, value):
     (root / name).write_text(str(value))
 
+def write_image_archive(path, tags):
+    import hashlib, io, tarfile
+    layer = io.BytesIO()
+    with tarfile.open(fileobj=layer, mode='w') as archive:
+        info = tarfile.TarInfo('app')
+        info.size = 2
+        archive.addfile(info, io.BytesIO(b'ok'))
+    layer = layer.getvalue()
+    config = json.dumps({'rootfs': {'type': 'layers', 'diff_ids': ['sha256:' + hashlib.sha256(layer).hexdigest()]}}).encode()
+    manifest = json.dumps([{'Config': 'config.json', 'RepoTags': tags, 'Layers': ['layer.tar']}]).encode()
+    with tarfile.open(path, 'w') as archive:
+        for member, data in (('config.json', config), ('layer.tar', layer), ('manifest.json', manifest)):
+            info = tarfile.TarInfo(member)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+
 if name == 'docker-compose':
     if 'version' in args:
         print('2.39.0')
@@ -46,7 +62,8 @@ elif name == 'docker':
         Path(args[-1]).write_bytes(b'guest ISO fixture')
     elif args[0] == 'save':
         record('save_args', json.dumps(args))
-        Path(args[args.index('--output') + 1]).write_bytes(b'workload archive')
+        output = args.index('--output') + 1
+        write_image_archive(Path(args[output]), args[output + 1:])
     elif args[0] == 'pull':
         record('pull_args', json.dumps(args))
         if mode == 'pull-failure':
@@ -125,6 +142,9 @@ elif name == 'ssh':
             sys.exit('unexpected service cleanup')
         elif 'mkfs.ext4' in script:
             record('scratch_setup_script', script)
+        elif 'additionalimagestores' in script:
+            record('mount_images_script', script)
+            record('guest_ssh_config', config.read_text())
         elif 'shmctl --thread_pause_enable' in script:
             record('thread_pause_enabled', 'yes')
         elif '/opt/antithesis/bin/fault_scripts/randomization/configure.py' in script:
@@ -210,18 +230,12 @@ elif name == 'ssh':
                 print(json.dumps('completed'))
             else:
                 print(json.dumps('running'))
-        elif 'podman image exists' in script:
-            print('[]')
     elif command.startswith('tar '):
         sys.stdin.buffer.read()
         if mode.endswith('blocked-upload'):
             record('upload_blocked', 'yes')
             while True:
                 time.sleep(1)
-    elif command in ('podman load', 'podman --tmpdir=/var/tmp load'):
-        record('image_load_ssh_config', config.read_text())
-        record('image_load_command', command)
-        sys.stdin.buffer.read()
     else:
         sys.exit('unexpected ssh command: ' + repr(args))
 elif name == 'ssh-keygen':
@@ -252,6 +266,12 @@ elif name in ('qemu-system-x86_64', 'qemu-system-aarch64'):
     record('qemu_pid', os.getpid())
     record('qemu_tool', name)
     record('qemu_args', json.dumps(args))
+    for drive in (args[i + 1] for i, arg in enumerate(args) if arg == '-drive'):
+        if 'readonly=on' in drive:
+            image = Path(drive.split(',')[0].removeprefix('file='))
+            # The EROFS superblock starts at byte 1024 with this magic.
+            record('images_drive', drive)
+            record('images_drive_magic', image.read_bytes()[1024:1028].hex())
     record('run_dir', Path.cwd())
     record('authorized_key', authorized_key)
     Path('boot.log').write_bytes(b'\x1b[18t\x1b[6nprivate boot console\n')

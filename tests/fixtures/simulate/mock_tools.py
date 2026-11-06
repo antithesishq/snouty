@@ -140,11 +140,6 @@ elif name == 'ssh':
             sys.exit(255)
         elif 'systemctl stop' in script:
             sys.exit('unexpected service cleanup')
-        elif 'mkfs.ext4' in script:
-            record('scratch_setup_script', script)
-        elif 'additionalimagestores' in script:
-            record('mount_images_script', script)
-            record('guest_ssh_config', config.read_text())
         elif 'shmctl --thread_pause_enable' in script:
             record('thread_pause_enabled', 'yes')
         elif '/opt/antithesis/bin/fault_scripts/randomization/configure.py' in script:
@@ -250,10 +245,6 @@ elif name == 'ssh-keygen':
     public_key.write_text('fixture public key\n')
     record('private_key_path', private_key)
     record('public_key_path', public_key)
-elif name == 'qemu-img':
-    assert args[:3] == ['create', '-f', 'qcow2'], args
-    Path(args[3]).write_text('qcow2 fixture')
-    record('scratch_disk_path', args[3])
 elif name in ('qemu-system-x86_64', 'qemu-system-aarch64'):
     if '-fw_cfg' not in args:
         sys.exit('unexpected QEMU command: ' + repr(args))

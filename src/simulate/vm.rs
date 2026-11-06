@@ -22,7 +22,6 @@ use super::{
 
 const AUTHORIZED_KEY_FW_CFG: &str = "opt/antithesis/authorized_key";
 const SSH_READY_RETRY_INTERVAL: Duration = Duration::from_millis(100);
-pub(super) const SCRATCH_DISK_SIZE: &str = "16G";
 #[cfg(target_os = "linux")]
 const QEMU_ACCELERATOR: &str = "kvm:tcg";
 #[cfg(target_os = "macos")]
@@ -157,27 +156,10 @@ impl<'a> GuestConnection<'a> {
     }
 }
 
-/// A block device for the guest. The guest names drives in the order given:
-/// `/dev/vda`, then `/dev/vdb`.
-pub enum Drive<'a> {
-    /// A writable qcow2 disk for container storage and temporary files.
-    Scratch(&'a Path),
-    /// A read-only EROFS image of the workload images.
-    Images(&'a Path),
-}
-
-impl std::fmt::Display for Drive<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Scratch(path) => write!(f, "file={},if=virtio,format=qcow2", path.display()),
-            Self::Images(path) => write!(
-                f,
-                "file={},if=virtio,format=raw,readonly=on",
-                path.display()
-            ),
-        }
-    }
-}
+/// The serial number of the inject drive, which names it
+/// `/dev/disk/by-id/virtio-antithesis-inject` in the guest. virtio-blk
+/// allows 20 bytes.
+const INJECT_DRIVE_SERIAL: &str = "antithesis-inject";
 
 impl Vm {
     pub async fn boot(
@@ -187,7 +169,7 @@ impl Vm {
         boot_output: BootOutput,
         memory_mib: u64,
         platform: SimulatePlatform,
-        drives: &[Drive<'_>],
+        inject_disk: &Path,
     ) -> Result<Self> {
         let run_dir = fs::canonicalize(run_dir)?;
         if platform != SimulatePlatform::default() {
@@ -241,9 +223,18 @@ impl Vm {
             ))
             .args(["-nodefaults", "-smp", "1", "-m"])
             .arg(memory_mib.to_string());
-        for drive in drives {
-            command.arg("-drive").arg(drive.to_string());
-        }
+        // The read-only EROFS image of the workload images, which the guest
+        // imports at boot. `if=virtio` cannot set the serial that names it.
+        command
+            .arg("-drive")
+            .arg(format!(
+                "file={},if=none,id=inject,format=raw,readonly=on",
+                inject_disk.display()
+            ))
+            .arg("-device")
+            .arg(format!(
+                "virtio-blk-pci,drive=inject,serial={INJECT_DRIVE_SERIAL}"
+            ));
         if let Some(code) = &firmware {
             command.arg("-bios").arg(code);
         }

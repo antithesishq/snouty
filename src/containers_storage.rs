@@ -1,12 +1,13 @@
 //! Converts `docker save` and `podman save` archives into one EROFS image
-//! that holds a containers-storage tree for the overlay driver.
+//! that holds a containers-storage tree for the overlay driver, under
+//! `containers/`.
 //!
-//! The production pipeline writes this tree to disk on a Linux host with
+//! The production pipeline writes the same tree to disk on a Linux host with
 //! `transfer-containers.py`. This module reads tar streams and writes the
 //! image file directly, so it runs on any host OS: no Linux file system
 //! semantics (symlinks, device nodes, xattrs, ownership) reach the host file
-//! system. A Linux guest mounts the image read-only and lists it in
-//! `additionalimagestores`, and then Podman and CRI-O run its images as if
+//! system. The guest mounts the image and imports the tree into
+//! `/var/lib/containers/storage`, where Podman and CRI-O run its images as if
 //! they had pulled them.
 //!
 //! Several archives can go into one image. Images and layers that two of
@@ -30,6 +31,8 @@ use flate2::read::MultiGzDecoder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+/// The directory of the image that holds the containers-storage tree.
+const STORE: &str = "containers";
 const WHITEOUT_PREFIX: &[u8] = b".wh.";
 const OPAQUE_MARKER: &[u8] = b".wh..wh..opq";
 const OPAQUE_XATTR: &str = "trusted.overlay.opaque";
@@ -504,12 +507,13 @@ impl StoreWriter {
             mtime,
         };
         for (path, mode) in [
-            ("overlay", 0o700),
-            ("overlay/l", 0o755),
-            ("overlay-layers", 0o700),
-            ("overlay-images", 0o700),
+            ("", 0o755),
+            ("/overlay", 0o700),
+            ("/overlay/l", 0o755),
+            ("/overlay-layers", 0o700),
+            ("/overlay-images", 0o700),
         ] {
-            writer.directory(path, mode)?;
+            writer.directory(&format!("{STORE}{path}"), mode)?;
         }
         Ok(writer)
     }
@@ -601,7 +605,7 @@ impl StoreWriter {
                 document.bytes.clone(),
             )
         }));
-        let directory = format!("overlay-images/{}", config_digest.hex());
+        let directory = format!("{STORE}/overlay-images/{}", config_digest.hex());
         self.directory(&directory, 0o700)?;
         let mut record = ImageRecord {
             id: config_digest.hex().to_owned(),
@@ -678,7 +682,7 @@ impl StoreWriter {
         diff_id: &Sha256Digest,
     ) -> Result<usize> {
         let link = short_link(&id);
-        let base = format!("overlay/{id}");
+        let base = format!("{STORE}/overlay/{id}");
         let diff = format!("{base}/diff");
         self.directory(&base, 0o700)?;
         self.directory(&diff, 0o755)?;
@@ -709,7 +713,10 @@ impl StoreWriter {
         }
         self.directory(&format!("{base}/work"), 0o700)?;
         self.directory(&format!("{base}/merged"), 0o700)?;
-        self.symlink(&format!("overlay/l/{link}"), &format!("../{id}/diff"))?;
+        self.symlink(
+            &format!("{STORE}/overlay/l/{link}"),
+            &format!("../{id}/diff"),
+        )?;
 
         let lower_for_child = match lower {
             Some(lower) => format!("l/{link}:{lower}"),
@@ -864,12 +871,16 @@ impl StoreWriter {
         let layers: Vec<&LayerRecord> = self.layers.iter().map(|layer| &layer.record).collect();
         let layers_json = serde_json::to_vec(&layers)?;
         let images_json = serde_json::to_vec(&self.images)?;
-        self.file("overlay-layers/layers.json", 0o600, &layers_json)?;
-        self.file("overlay-images/images.json", 0o600, &images_json)?;
-        // A read-only store must already have its lock files: containers-
-        // storage opens them before it reads the catalogs.
-        self.file("overlay-layers/layers.lock", 0o644, b"")?;
-        self.file("overlay-images/images.lock", 0o644, b"")?;
+        self.file(
+            &format!("{STORE}/overlay-layers/layers.json"),
+            0o600,
+            &layers_json,
+        )?;
+        self.file(
+            &format!("{STORE}/overlay-images/images.json"),
+            0o600,
+            &images_json,
+        )?;
         let converted = Converted {
             images: self.images.len(),
             layers: self.layers.len(),
@@ -1460,7 +1471,7 @@ mod tests {
             }
         );
 
-        let layers = image.json("overlay-layers/layers.json");
+        let layers = image.json("containers/overlay-layers/layers.json");
         let base_id = layers[0]["id"].as_str().unwrap().to_owned();
         let top_id = layers[1]["id"].as_str().unwrap().to_owned();
         assert_eq!(
@@ -1475,8 +1486,8 @@ mod tests {
         );
         assert_eq!(layers[0]["uidset"], serde_json::json!([1000]));
 
-        let base = format!("overlay/{base_id}/diff");
-        let top = format!("overlay/{top_id}/diff");
+        let base = format!("containers/overlay/{base_id}/diff");
+        let top = format!("containers/overlay/{top_id}/diff");
         let passwd = image.at(&format!("{base}/etc/passwd"));
         assert_eq!(passwd.data, b"root");
         assert_eq!(passwd.mode & 0o7777, 0o4755);
@@ -1510,23 +1521,35 @@ mod tests {
         assert_eq!(bin.data, b"/usr/bin");
 
         let base_link =
-            String::from_utf8(image.at(&format!("overlay/{base_id}/link")).data).unwrap();
-        let top_link = String::from_utf8(image.at(&format!("overlay/{top_id}/link")).data).unwrap();
+            String::from_utf8(image.at(&format!("containers/overlay/{base_id}/link")).data)
+                .unwrap();
+        let top_link =
+            String::from_utf8(image.at(&format!("containers/overlay/{top_id}/link")).data).unwrap();
         assert_eq!(base_link.len(), 26);
         assert_eq!(
-            image.at(&format!("overlay/{top_id}/lower")).data,
+            image.at(&format!("containers/overlay/{top_id}/lower")).data,
             format!("l/{base_link}").into_bytes()
         );
         assert_eq!(
-            image.at(&format!("overlay/l/{top_link}")).data,
+            image.at(&format!("containers/overlay/l/{top_link}")).data,
             format!("../{top_id}/diff").into_bytes()
         );
-        assert!(image.get(&format!("overlay/{base_id}/empty")).is_some());
-        assert!(image.get(&format!("overlay/{top_id}/empty")).is_none());
-        assert!(image.get("overlay-layers/layers.lock").is_some());
-        assert!(image.get("overlay-images/images.lock").is_some());
+        assert!(
+            image
+                .get(&format!("containers/overlay/{base_id}/empty"))
+                .is_some()
+        );
+        assert!(
+            image
+                .get(&format!("containers/overlay/{top_id}/empty"))
+                .is_none()
+        );
+        assert!(
+            image.get("overlay").is_none(),
+            "the tree is under containers/"
+        );
 
-        let images = image.json("overlay-images/images.json");
+        let images = image.json("containers/overlay-images/images.json");
         let record = &images[0];
         let config_id = Sha256Digest::of(&fixture.config);
         assert_eq!(record["id"], config_id.hex());
@@ -1545,7 +1568,7 @@ mod tests {
             manifest_digest.to_string()
         );
         assert!(record["big-data-sizes"][format!("manifest-{index_digest}")].is_u64());
-        let images_dir = format!("overlay-images/{}", config_id.hex());
+        let images_dir = format!("containers/overlay-images/{}", config_id.hex());
         let manifest = image.at(&format!(
             "{images_dir}/{}",
             big_data_file_name(&manifest_key)
@@ -1563,16 +1586,18 @@ mod tests {
         let fixture = fixture();
         let archive = docker_archive(&fixture, directory.path(), "localhost/app:dev");
         let (_, image) = convert_to_image(&[&archive]);
-        let layers = image.json("overlay-layers/layers.json");
+        let layers = image.json("containers/overlay-layers/layers.json");
         assert_eq!(layers[1]["compression"], 0);
         assert_eq!(
             layers[1]["compressed-diff-digest"],
             layers[1]["diff-digest"]
         );
-        let images = image.json("overlay-images/images.json");
+        let images = image.json("containers/overlay-images/images.json");
         assert_eq!(images[0]["names"], serde_json::json!(["localhost/app:dev"]));
         let id = images[0]["id"].as_str().unwrap();
-        let manifest = image.at(&format!("overlay-images/{id}/manifest")).data;
+        let manifest = image
+            .at(&format!("containers/overlay-images/{id}/manifest"))
+            .data;
         let parsed: serde_json::Value = serde_json::from_slice(&manifest).unwrap();
         assert_eq!(parsed["layers"][1]["digest"], layers[1]["diff-digest"]);
         assert_eq!(images[0]["digest"], Sha256Digest::of(&manifest).to_string());
@@ -1613,7 +1638,7 @@ mod tests {
                 layers: 2
             }
         );
-        let images = image.json("overlay-images/images.json");
+        let images = image.json("containers/overlay-images/images.json");
         assert_eq!(
             images[0]["names"],
             serde_json::json!([
@@ -1628,8 +1653,29 @@ mod tests {
         );
         assert_eq!(
             images[1]["layer"],
-            image.json("overlay-layers/layers.json")[0]["id"]
+            image.json("containers/overlay-layers/layers.json")[0]["id"]
         );
+    }
+
+    #[test]
+    fn no_archives_give_an_empty_store() {
+        let (converted, image) = convert_to_image(&[]);
+        assert_eq!(
+            converted,
+            Converted {
+                images: 0,
+                layers: 0
+            }
+        );
+        assert_eq!(
+            image.json("containers/overlay-images/images.json"),
+            serde_json::json!([])
+        );
+        assert_eq!(
+            image.json("containers/overlay-layers/layers.json"),
+            serde_json::json!([])
+        );
+        assert!(image.get("containers/overlay/l").is_some());
     }
 
     #[test]

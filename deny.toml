@@ -15,9 +15,9 @@ ignore = [
     # askama.toml at build time only. askama 0.16.1, the latest, still requires it.
     # https://rustsec.org/advisories/RUSTSEC-2026-0374
     { id = "RUSTSEC-2026-0374", reason = "unmaintained, build time only; askama 0.16.1 still requires basic-toml" },
-    # pin-utils is archived. The PTY tests' dev-dependency expectrl pulls it in
-    # through nix 0.26. expectrl 0.9.0 and ptyprocess 0.5.0, the latest, still
-    # require nix 0.26.
+    # pin-utils is archived. expectrl, a dev-dependency of the PTY tests, pulls
+    # it in through nix 0.26. expectrl 0.9.0 and ptyprocess 0.5.0, the latest,
+    # still require nix 0.26.
     # https://rustsec.org/advisories/RUSTSEC-2026-0441
     { id = "RUSTSEC-2026-0441", reason = "unmaintained, tests only; expectrl 0.9.0 still requires nix 0.26" },
 ]

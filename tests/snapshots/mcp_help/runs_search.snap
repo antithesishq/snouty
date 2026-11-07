@@ -15,7 +15,7 @@ Verbs:
   not_matches({f: "x"})    drop exact matches
   excludes({f: "x"})       drop substring matches
   filter(ev => expr)       keep events where the JS expression is truthy
-  map(ev => expr)          reshape each event (ev.add_fields({...}) adds)
+  map(ev => expr)          add or change fields of each event
   flatmap(ev => expr)      map, then flatten the result one level
   narrow(["f1", "f2"])     keep only the listed fields
   fold((s, ev) => [events, s'], s0)
@@ -38,6 +38,8 @@ Verbs:
                            "timeout"
 
 The string verbs (matches/contains/not_matches/excludes) address four fields: output_text, and container, stream, and source, which read the event's source.container, source.stream, and source.name. output_text holds log output only. An SDK assertion's message is in ev.antithesis_assert.message, and a test-composer command is in ev.command. In JS, read every field from `ev`, e.g. `ev.source.container` or `ev.moment.vtime`.
+
+Each verb outputs events, so the result of a JS function in map, flatmap, or fold must be an input event, or an input event with fields that ev.add_fields({...}) adds or changes. narrow also outputs events. Every event keeps its moment: add_fields cannot change it, and narrow keeps it. The query fails when a function returns a new object, even one that copies the moment, such as `ev => ({moment: ev.moment, n: 1})`.
 
 fold: the reducer takes the state s and one event ev, and returns [events, s']. events is an array of the events to output: [ev] outputs ev, [] outputs nothing, and several distinct events output each one, e.g. [ev.add_fields({copy: 1}), ev.add_fields({copy: 2})]. Identical events output once. s' is the state for the next event in the same timeline. s0 must be strict JSON: write {"count": 0}, not {count: 0}. The reducer body and s' are JavaScript.
 
@@ -75,6 +77,10 @@ Query snippets (each is a complete `query`, ready to paste):
   # each crash annotated with the nearest earlier fault (field last_fault)
   contains({output_text: "fatal"}).with_last({fault: filter(ev => ev.fault)})
 
+  # each error with the text after "error:" (field msg)
+  contains({output_text: "error:"}).map(ev =>
+    ev.add_fields({msg: ev.output_text.replace(/^.*?error:\s*/, "")}))
+
   # errors numbered in order within each timeline (field n)
   contains({output_text: "error"})
     .fold((s, ev) => [[ev.add_fields({n: s.n + 1})], {n: s.n + 1}], {"n": 0})
@@ -83,7 +89,7 @@ Each matching event has its moment (an input_hash and a vtime), its source, and 
 
 A `moment INPUT_HASH` line is emitted each time the input_hash changes. Each event under it prints as one `VTIME [source] payload` line, with the full vtime. Indented lines under an event give its source location, as `@ file:function:line`, and the details that it carries, such as an SDK assertion's details, as `details {...}`.
 
-Rows reshaped by map/narrow/fold print as raw JSON. The output already shows the details of each assertion, so do not reshape events to read them.
+Events changed by map, narrow or fold print as raw JSON. The output already shows the details of each assertion, so do not change events to read them.
 
 Add `count` to print how many events in the whole run match the query, instead of a sample. No limit applies.
 

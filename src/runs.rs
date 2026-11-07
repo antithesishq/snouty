@@ -1718,9 +1718,9 @@ async fn cmd_runs_search(
         api.search_run_events_query(&args.run_id, &args.query, search)
     })
     .await?;
-    // A user-written DSL pipeline can reshape rows into `{"error": ...}`, so
-    // this stream must not guess that such a row is the server's Stream_Error
-    // signal.
+    // A user-written DSL pipeline can reshape rows into any object,
+    // `{"error": ...}` included, so this stream must not guess that such a
+    // row is the server's Stream_Error signal.
     let lines = event_search::render_event_stream(stream, ErrorRows::Data, mode);
     print_event_lines(lines, mode, "No events matched the query.", limit).await
 }
@@ -2355,9 +2355,8 @@ fn stream_error_message(entry: &Value) -> Option<&str> {
 /// one: it is the server's out-of-band failure signal
 /// ([`stream_error_message`]). A user-written event-set pipeline is the
 /// exception — map/narrow/fold can legitimately reshape a result row into
-/// exactly that shape (`map(ev => ev.add_fields({error: ev.output_text}))
-/// .narrow(["error"])`), so a DSL query's stream passes such rows through as
-/// data rather than guessing.
+/// exactly that shape (`map(ev => ({error: ev.output_text}))`), so a DSL
+/// query's stream passes such rows through as data rather than guessing.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ErrorRows {
     Abort,

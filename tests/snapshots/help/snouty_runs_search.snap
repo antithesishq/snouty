@@ -28,9 +28,7 @@ Verbs:
   not_matches({f: "x"})    drop exact matches
   excludes({f: "x"})       drop substring matches
   filter(ev => expr)       keep events where the JS expression is truthy
-  map(ev => expr)          add or change fields of each event; expr must
-                           be an event, such as ev.add_fields({...}); the
-                           query fails when expr is a new object
+  map(ev => expr)          add or change fields of each event
   flatmap(ev => expr)      map, then flatten the result one level
   narrow(["f1", "f2"])     keep only the listed fields
   fold((s, ev) => [events, s'], s0)
@@ -58,6 +56,13 @@ source.container, source.stream, and source.name. output_text holds log output
 only. An SDK assertion's message is in ev.antithesis_assert.message, and a
 test-composer command is in ev.command. In JS, read every field from `ev`, e.g.
 `ev.source.container` or `ev.moment.vtime`.
+
+Each verb outputs events, so the result of a JS function in map, flatmap, or
+fold must be an input event, or an input event with fields that
+ev.add_fields({...}) adds or changes. narrow also outputs events. Every event
+keeps its moment: add_fields cannot change it, and narrow keeps it. The query
+fails when a function returns a new object, even one that copies the moment,
+such as `ev => ({moment: ev.moment, n: 1})`.
 
 fold: the reducer takes the state s and one event ev, and returns [events, s'].
 events is an array of the events to output: [ev] outputs ev, [] outputs nothing,
@@ -128,11 +133,6 @@ Events changed by map, narrow or fold print as raw JSON.
 
 Add --count to print how many events in the whole run match the query, instead
 of a sample. No limit applies.
-
-The query returns events. It cannot count or group events across the run. For
-the exact count of one value, add --count to a query that matches that value,
-such as `matches({container: "etcd0"})`. For counts per value or a set of
-distinct values in the sample, add --json and aggregate the events yourself.
 
 The run must be ready or complete. If it is not, the command waits until it is
 ready, as `snouty runs exec` does, and says that it waits.

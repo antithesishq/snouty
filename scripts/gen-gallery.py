@@ -3519,7 +3519,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                 ),
                 absent=(
                     "run `snouty login` to sign in",
-                    "more than one credential source",
+                    "hides a stored credential",
                     "Using password credentials",
                 ),
             ),

@@ -105,11 +105,15 @@ impl Rollup {
     }
 }
 
-/// How far before `--before` the output starts when `--after` is not set.
-fn default_window(rollup: Option<Rollup>) -> TimeDelta {
+/// Where the output starts when `--after` is not set: a time before `end`
+/// that suits the size of the rows.
+fn default_start(rollup: Option<Rollup>, end: DateTime<Utc>) -> DateTime<Utc> {
     match rollup {
-        Some(Rollup::Week) => TimeDelta::weeks(4),
-        None | Some(Rollup::Day | Rollup::Month) => TimeDelta::weeks(1),
+        None | Some(Rollup::Day) => end - TimeDelta::weeks(1),
+        Some(Rollup::Week) => end - TimeDelta::weeks(4),
+        Some(Rollup::Month) => end
+            .checked_sub_months(Months::new(6))
+            .unwrap_or(DateTime::<Utc>::MIN_UTC),
     }
 }
 
@@ -163,7 +167,7 @@ pub(super) async fn cmd_runs_usage(
     // runs.
     let now = Utc::now();
     let end = before.map_or(now, |time| time.min(now));
-    let start = after.unwrap_or(end - default_window(rollup));
+    let start = after.unwrap_or_else(|| default_start(rollup, end));
 
     let Some(rollup) = rollup else {
         let mut entries: Vec<UsageEntry> = api.stream_usage(start, before).try_collect().await?;

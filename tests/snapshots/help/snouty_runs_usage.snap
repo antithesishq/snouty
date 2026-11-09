@@ -28,7 +28,8 @@ fails and names the run.
 
 --after and --before select runs by the time that they ended: --after includes a
 run that ended at that time, and --before does not. --before defaults to now.
---after defaults to 1 week before --before, or 4 weeks with a weekly --rollup.
+--after defaults to 1 week before --before. With --rollup, it defaults to 4
+weeks before for weeks, and 6 months before for months.
 
 Each takes one of these forms:
   a relative time    `now`, `5 hours ago`, `3 days ago`, `2 weeks ago`
@@ -75,7 +76,7 @@ Options:
           Only show runs that ended at or after this time: a relative time (e.g.
           3 days ago), a date (e.g. 2026-10-01), a time (e.g. 2026-10-01
           12:00:00) or an RFC 3339 time [default: 1 week before the before time,
-          or 4 weeks with a weekly rollup]
+          or 4 weeks with a weekly rollup, or 6 months with a monthly rollup]
 
       --before <BEFORE>
           Only show runs that ended before this time, in the same forms

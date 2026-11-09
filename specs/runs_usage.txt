@@ -91,13 +91,15 @@ mock-runs-server
 # With --rollup, each row is one period: its first and last days, the number
 # of runs that ended in it, and the sum of their hours. Without a filter, the
 # rows are the periods from the one that holds the time 1 week ago to the
-# current one, or from 4 weeks ago for weeks.
+# current one, or from 4 weeks ago for weeks, or from 6 months ago for months.
 mock-runs-server
 snouty runs usage --rollup day
 stdout '^START +END +RUNS +COMPUTE HOURS$'
 stdout -count=9 '^.+$'
 snouty runs usage --rollup week
 stdout -count=6 '^.+$'
+snouty runs usage --rollup month
+stdout -count=8 '^.+$'
 
 # The periods are oldest first, and a period with no runs shows 0. --before
 # sets the newest period: the one that holds the instant before it. usage-4
@@ -121,6 +123,11 @@ mock-runs-server
 snouty --json runs usage --rollup month
 stdout '^\{"date":"\d{4}-\d\d-\d\d","runs":\d+,"hours":[\d.]+\}$'
 ! stdout '^[^{]'
+mock-runs-server
+[!staging] snouty --verbose runs usage --rollup month --before 2026-03-04
+[!staging] stdout '(?s)^START +END +RUNS +COMPUTE HOURS\n2025-09-01 +2025-09-30 +0 +0\.0\n.*\n2026-01-01 +2026-01-31 +1 +100\.0\n2026-02-01 +2026-02-28 +1 +4\.0\n2026-03-01 +2026-03-31 +3 +13\.8$'
+[!staging] stdout -count=8 '^.+$'
+[!staging] stderr '^> GET .*/api/v0/usage\?.*start_time=2025-08-31T15%3A00%3A00Z'
 mock-runs-server
 [!staging] snouty --json runs usage --rollup month --after 2026-01-01 --before 2026-03-04
 [!staging] stdout '(?s)^\{"date":"2026-01-31","runs":1,"hours":100.0\}\n\{"date":"2026-02-28","runs":1,"hours":4.0\}\n\{"date":"2026-03-31","runs":3,"hours":13.8\}$'

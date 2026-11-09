@@ -12,7 +12,7 @@ Times and periods are in the local timezone.
 
 With {{ t("run_ids")? }}, the output has one row for each run, in the order that you give them. A run has no usage until it ends, so a run that is in progress has no row. When a run has no usage, the command prints the rows of the other runs, then fails and names the run.
 
-{{ t("--after")? }} and {{ t("--before")? }} select runs by the time that they ended: {{ t("--after")? }} includes a run that ended at that time, and {{ t("--before")? }} does not. {{ t("--before")? }} defaults to now. {{ t("--after")? }} defaults to 1 week before {{ t("--before")? }}, or 4 weeks with a weekly {{ t("--rollup")? }}.
+{{ t("--after")? }} and {{ t("--before")? }} select runs by the time that they ended: {{ t("--after")? }} includes a run that ended at that time, and {{ t("--before")? }} does not. {{ t("--before")? }} defaults to now. {{ t("--after")? }} defaults to 1 week before {{ t("--before")? }}. With {{ t("--rollup")? }}, it defaults to 4 weeks before for weeks, and 6 months before for months.
 
 Each takes one of these forms:
   a relative time    `now`, `5 hours ago`, `3 days ago`, `2 weeks ago`

@@ -1150,7 +1150,8 @@ pub struct RunsUsageArgs {
     /// Only show runs that ended at or after this time: a relative time
     /// (e.g. 3 days ago), a date (e.g. 2026-10-01), a time (e.g. 2026-10-01
     /// 12:00:00) or an RFC 3339 time [default: 1 week before the before
-    /// time, or 4 weeks with a weekly rollup]
+    /// time, or 4 weeks with a weekly rollup, or 6 months with a monthly
+    /// rollup]
     #[arg(long, value_parser = parse_timestamp_arg)]
     pub after: Option<DateTime<Utc>>,
 

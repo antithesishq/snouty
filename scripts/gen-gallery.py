@@ -2792,9 +2792,9 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-usage--rollup-month",
             "Compare compute-hour usage across months",
             "I want to see how our usage changed from month to month.",
-            "Exactly 7 rows, oldest month first: the month that holds the day 6 months ago, "
-            "through the current month; START and END are the first and last days of each month.",
-            ["runs", "usage", "--rollup", "month", "--after", "6 months ago"],
+            "Exactly 7 rows, oldest month first: the 6 months before the current month, and "
+            "then the current month; START and END are the first and last days of each month.",
+            ["runs", "usage", "--rollup", "month"],
             rows_at_most(7),
         ),
         Story(

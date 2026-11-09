@@ -99,8 +99,10 @@ Without flakes, use `nix-env -iA nixpkgs.snouty` on a nixpkgs-unstable channel. 
 The repository also has a Nix package, which installs the Docker credential helper. It builds snouty from source and runs its tests. This builds `main`; for a release from v0.9.0 or later, replace `main.tar.gz` with `refs/tags/v<version>.tar.gz`:
 
 ```sh
-nix-env -if https://github.com/antithesishq/snouty/archive/main.tar.gz
+nix profile install --impure --expr 'import (builtins.fetchTarball "https://github.com/antithesishq/snouty/archive/main.tar.gz") { }'
 ```
+
+Without flakes, use `nix-env -if https://github.com/antithesishq/snouty/archive/main.tar.gz`. Remove the nixpkgs `snouty` first, because both packages install `bin/snouty`.
 
 ### Download prebuilt binaries
 

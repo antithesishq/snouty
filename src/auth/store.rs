@@ -49,11 +49,8 @@ impl CredentialStore {
     pub(super) fn load(&self) -> Result<Option<PersistableCredentials>> {
         match self {
             Self::Keychain { profile } => {
-                let entry_name = keychain_entry_name(profile.as_deref());
-                let entry = match Entry::new("snouty", &entry_name) {
-                    Ok(entry) => entry,
-                    Err(keyring_core::Error::NoDefaultStore) => return Ok(None),
-                    Err(other) => return Err(eyre!("opening keychain entry: {other}")),
+                let Some(entry) = keychain_entry(profile.as_deref())? else {
+                    return Ok(None);
                 };
                 match entry.get_password() {
                     Ok(json) => match serde_json::from_str(&json) {
@@ -67,7 +64,10 @@ impl CredentialStore {
                     },
                     Err(keyring_core::Error::NoEntry) => Ok(None),
                     Err(err) => {
-                        warn!("keychain lookup for entry {entry_name} failed: {err}");
+                        warn!(
+                            "keychain lookup for entry {} failed: {err}",
+                            keychain_entry_name(profile.as_deref())
+                        );
                         Ok(None)
                     }
                 }
@@ -84,15 +84,12 @@ impl CredentialStore {
 
     pub(super) fn persist(&self, credentials: PersistableCredentials) -> Result<()> {
         match self {
-            Self::Keychain { profile } => {
-                let entry = Entry::new("snouty", &keychain_entry_name(profile.as_deref()))
-                    .wrap_err("opening the keychain entry to store the credential")?;
-                entry
-                    .set_password(&serde_json::to_string(&credentials)?)
-                    .wrap_err("writing the credential to the keychain")
-            }
+            Self::Keychain { profile } => keychain_entry(profile.as_deref())?
+                .ok_or_eyre("the system keychain is not available")?
+                .set_password(&serde_json::to_string(&credentials)?)
+                .wrap_err("writing the credential to the keychain"),
             Self::CredentialsFile { path, profile } => {
-                persist_to_file(credentials, profile.as_deref(), Some(path)).map(|_| ())
+                persist_to_file(credentials, profile.as_deref(), path)
             }
         }
     }
@@ -212,36 +209,29 @@ pub(crate) fn persist(
     credentials: PersistableCredentials,
     profile: Option<&str>,
 ) -> Result<CredentialStore> {
-    if try_persist_to_keychain(&credentials, profile)? {
-        return Ok(CredentialStore::keychain(profile));
+    let store = if keychain_entry(profile)?.is_some() {
+        CredentialStore::keychain(profile)
+    } else {
+        CredentialStore::credentials_file(profile).ok_or_eyre(
+            "Could not determine settings directory. Please ensure $XDG_CONFIG_HOME or $HOME is set",
+        )?
+    };
+    store.persist(credentials)?;
+    if matches!(store, CredentialStore::Keychain { .. }) {
+        clear_from_file_if_present(profile);
     }
-    let path = persist_to_file(credentials, profile, None)?;
-    Ok(CredentialStore::CredentialsFile {
-        path,
-        profile: profile.map(str::to_owned),
-    })
+    Ok(store)
 }
 
-/// Whether the keychain stored `credentials`: `false` when there is no
-/// keychain.
-fn try_persist_to_keychain(
-    credentials: &PersistableCredentials,
-    profile: Option<&str>,
-) -> Result<bool> {
-    let credential_name = keychain_entry_name(profile);
-
-    let credential = match Entry::new("snouty", credential_name.as_str()) {
-        Ok(cred) => Ok(cred),
-        // A NoDefaultStore error indicates that the version of initialize_credential_store() selected by the compiler was a no-op
-        Err(keyring_core::Error::NoDefaultStore) => return Ok(false),
-        Err(other) => Err(other),
-    }?;
-
-    credential.set_password(serde_json::to_string(credentials)?.as_str())?;
-
-    clear_from_file_if_present(profile);
-
-    Ok(true)
+/// The keychain entry of `profile`, or `None` when there is no keychain.
+fn keychain_entry(profile: Option<&str>) -> Result<Option<Entry>> {
+    match Entry::new("snouty", &keychain_entry_name(profile)) {
+        Ok(entry) => Ok(Some(entry)),
+        // No default store: `initialize_credential_store` is a no-op on this
+        // platform.
+        Err(keyring_core::Error::NoDefaultStore) => Ok(None),
+        Err(other) => Err(eyre!("opening keychain entry: {other}")),
+    }
 }
 
 pub(crate) fn keychain_entry_name(profile: Option<&str>) -> String {
@@ -294,29 +284,23 @@ fn rewrite_credentials_file(
     Ok(())
 }
 
-pub(super) fn persist_to_file(
+fn persist_to_file(
     credentials: PersistableCredentials,
     profile: Option<&str>,
-    path: Option<&PathBuf>,
-) -> Result<PathBuf> {
-    let (settings_dir, path) = match path {
-        None =>  try_get_credentials_file_path().ok_or_eyre(
-            "Could not determine settings directory. Please ensure $XDG_CONFIG_HOME or $HOME is set",
-        )?,
-        Some(explicit_path) => match explicit_path.parent() {
-            None => return Err(eyre!("Unable to determine parent directory of {}", explicit_path.to_str().unwrap_or("[invalid path]"))),
-            Some(parent_dir) => (parent_dir.to_path_buf(), explicit_path.clone()),
-        }
-    };
+    path: &Path,
+) -> Result<()> {
+    let settings_dir = path
+        .parent()
+        .ok_or_else(|| eyre!("Unable to determine parent directory of {}", path.display()))?;
 
-    mkdir(&settings_dir, true, 0o700)?;
+    mkdir(settings_dir, true, 0o700)?;
 
-    let mut current_contents = match read_to_string_if_file_exists(&path)? {
+    let mut current_contents = match read_to_string_if_file_exists(path)? {
         Some(contents) => {
-            if let Ok(file) = parse_credentials_file_toml(&contents, &path) {
+            if let Ok(file) = parse_credentials_file_toml(&contents, path) {
                 file
             } else {
-                let backup = back_up_unparsable_file(&path)?;
+                let backup = back_up_unparsable_file(path)?;
                 // Same shape as the settings repair note: paths on their own
                 // lines, since they are what the user may copy and what made
                 // the one-line form overflow.
@@ -351,9 +335,7 @@ pub(super) fn persist_to_file(
         current_contents.default = Some(credentials);
     }
 
-    rewrite_credentials_file(&current_contents, &settings_dir, &path)?;
-
-    Ok(path)
+    rewrite_credentials_file(&current_contents, settings_dir, path)
 }
 
 pub(super) fn parse_credentials_file_toml(contents: &str, path: &Path) -> Result<CredentialsFile> {

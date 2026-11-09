@@ -246,8 +246,8 @@ fn render_payload(entry: &Value, block: &mut Block<'_>) -> fmt::Result {
         composer::Task,
         composer::Chatter,
     );
-    // Anything else — an unknown structured payload, or a row reshaped by an
-    // event-set DSL pipeline. Its raw payload JSON is the rendering.
+    // Anything else is an unknown structured payload. Its raw payload JSON is
+    // the rendering.
     write!(
         block,
         "{}",
@@ -477,9 +477,9 @@ impl EventStreamRenderer {
     }
 
     fn write_entry(&mut self, entry: &Value, out: &mut String) -> fmt::Result {
-        // A full event carries both its moment and its source envelope. A
-        // row reshaped by an event-set DSL pipeline can lack either (narrow
-        // can keep `moment` while dropping the rest); rendering it through
+        // A full event carries both its moment and its source envelope. An
+        // event from an event-set DSL pipeline always keeps its moment, but
+        // narrow can drop its source; rendering it through
         // the event form would produce a half-empty hybrid line, so its JSON
         // is the row — print it as such. A build-log record (`runs
         // build-logs`) has no moment either — a wall-clock
@@ -643,10 +643,10 @@ mod tests {
             "got: {block}"
         );
 
-        // A row reshaped by map/narrow/fold has no moment: its JSON is the row.
+        // An event that narrow stripped of its source: its JSON is the row.
         let mut r = renderer(false);
-        let row = r.render_entry(&json!({"count": 3, "container": "etcd0"}));
-        assert_eq!(row, r#"{"count":3,"container":"etcd0"}"#);
+        let row = r.render_entry(&json!({"moment": {"input_hash": "-1", "vtime": 1.0}, "n": 3}));
+        assert_eq!(row, r#"{"moment":{"input_hash":"-1","vtime":1.0},"n":3}"#);
     }
 
     #[test]

@@ -23,7 +23,7 @@ snouty validate config_sdk_local --timeout 30s
 stderr 'Setup-complete event detected.*'
 stderr 'Setup validation successful.*'
 
-# Each run starts on fresh named volumes: the second run finds no marker.
+# Validate removes its named volumes, so a second run starts on fresh ones.
 build-image volume-marker-setup:latest volume_marker
 snouty validate config_volume --timeout 30s
 stderr 'Setup validation successful.*'

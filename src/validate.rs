@@ -242,11 +242,7 @@ async fn validate_compose(
     // volumes. Removing them could destroy state the user kept on purpose, so
     // print the command and let the user run it.
     let leftovers = compose.ps(overlay)?;
-    let project_name = contents
-        .project_name
-        .as_deref()
-        .ok_or_else(|| eyre!("compose config printed no project name"))?;
-    let leftover_volumes = rt.compose_project_volumes(project_name)?;
+    let leftover_volumes = rt.compose_project_volumes(&contents.project_name)?;
     let mut found = Vec::new();
     if !leftovers.is_empty() {
         let services: BTreeSet<&str> = leftovers.iter().map(|c| c.service.as_str()).collect();
@@ -1139,6 +1135,7 @@ mod tests {
     #[test]
     fn generate_setup_override_basic() {
         let compose_yaml = "\
+name: test
 services:
   app:
     image: myapp:latest
@@ -1225,6 +1222,7 @@ services:
     #[test]
     fn generate_setup_override_custom_networks() {
         let compose_yaml = "\
+name: test
 services:
   app:
     image: myapp:latest
@@ -1262,6 +1260,7 @@ networks:
     #[test]
     fn generate_setup_override_special_service_name() {
         let compose_yaml = "\
+name: test
 services:
   \"a: b\":
     image: myapp:latest
@@ -1279,7 +1278,7 @@ services:
 
     #[test]
     fn generate_setup_override_no_services() {
-        let contents = compose::parse_compose_config("version: '3'\n").unwrap();
+        let contents = compose::parse_compose_config("name: test\nversion: '3'\n").unwrap();
         let dir = tempfile::tempdir().unwrap();
         let err = generate_setup_override(&contents, dir.path()).unwrap_err();
         assert!(err.to_string().contains("no services"), "got: {err}");

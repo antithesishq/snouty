@@ -161,7 +161,7 @@ struct OAuthRefreshResponse {
 }
 
 impl CredentialStore {
-    /// Path of the advisory lock file guarding refreshes for this store
+    /// The advisory lock file that serializes refreshes of this store.
     fn lock_path(&self) -> Option<PathBuf> {
         let scope = keychain_entry_name(self.profile());
         match self {

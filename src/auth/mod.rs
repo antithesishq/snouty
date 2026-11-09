@@ -90,14 +90,10 @@ impl std::fmt::Display for AuthenticationInfo {
 /// Where a credential that snouty found came from.
 #[derive(Clone, Debug)]
 pub(crate) enum CredentialSource {
-    /// The environment variables that hold the credential.
-    Environment {
-        variables: Vec<&'static str>,
-    },
+    Environment { variables: Vec<&'static str> },
     Stored(CredentialStore),
 }
 
-/// A credential, tagged with where snouty found it.
 pub(crate) type SourcedCredential = Tagged<AuthenticationInfo, CredentialSource>;
 
 /// A place snouty looks for credentials. More than one can hold a credential

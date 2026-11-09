@@ -97,7 +97,6 @@ impl CredentialStore {
         }
     }
 
-    /// The credential that this store holds, tagged with this store.
     pub(super) fn resolve(self) -> Result<Option<Tagged<AuthenticationInfo, Self>>> {
         Ok(self
             .load()?
@@ -110,8 +109,8 @@ impl CredentialStore {
         }
     }
 
-    /// The credentials file in the global settings dir, for `profile`.
-    /// `None` when the global settings dir is unknown.
+    /// The credentials file for `profile`, or `None` when the global settings
+    /// dir is unknown.
     pub(super) fn credentials_file(profile: Option<&str>) -> Option<Self> {
         try_get_credentials_file_path().map(|(_dir, path)| Self::CredentialsFile {
             path,
@@ -207,7 +206,8 @@ pub fn initialize_credential_store() -> Result<()> {
     Ok(())
 }
 
-/// Stores `credentials` for `profile`, and returns where it stored them.
+/// Stores `credentials` in the keychain, or in the credentials file when there
+/// is no keychain.
 pub(crate) fn persist(
     credentials: PersistableCredentials,
     profile: Option<&str>,
@@ -244,7 +244,6 @@ fn try_persist_to_keychain(
     Ok(true)
 }
 
-/// The name of the keychain entry that holds the credential of `profile`.
 pub(crate) fn keychain_entry_name(profile: Option<&str>) -> String {
     profile.map_or_else(|| "_default_".to_owned(), |p| format!("profile_{p}"))
 }

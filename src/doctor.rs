@@ -365,7 +365,7 @@ fn hidden_credential_check(in_use: &SourcedCredential, hidden: &SourcedCredentia
 /// The single check for a username and password with no credential the API
 /// accepts behind them. It replaces the shortfall and password checks, which
 /// together suggested `snouty login` twice. The next step depends on the
-/// origin: `snouty login` replaces a stored password, but an exported one
+/// source: `snouty login` replaces a stored password, but an exported one
 /// still hides the new credential until the user unsets it.
 fn password_only_check(in_use: &SourcedCredential, username: &str) -> Check {
     let next_step = match in_use.tag() {
@@ -426,14 +426,14 @@ fn shadowed_credentials_check(
             AuthenticationInfo::OAuth(_) => "OAuth credentials are",
             AuthenticationInfo::Password { .. } => "a username and password are",
         };
-        let origin = match other.tag() {
+        let source = match other.tag() {
             CredentialSource::Stored(CredentialStore::CredentialsFile {
                 path,
                 profile: None,
             }) => path.display().to_string(),
             source => describe_source(source),
         };
-        check = check.note(Level::Note, format!("{credential} configured in {origin}"));
+        check = check.note(Level::Note, format!("{credential} configured in {source}"));
     }
     Some(check.note(
         Level::Note,
@@ -1084,7 +1084,7 @@ mod tests {
     }
 
     #[test]
-    fn the_action_that_frees_a_credential_matches_its_origin() {
+    fn the_action_that_frees_a_credential_matches_its_source() {
         let keychain = from_keychain(
             AuthenticationInfo::ApiKey {
                 api_key: FAKE_API_KEY_A.to_owned(),

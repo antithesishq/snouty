@@ -175,15 +175,15 @@ pub(super) async fn cmd_runs_usage(
         if !rows.is_empty() {
             print_rows(&rows, json, None, "results", render_usage_table)?;
         }
-        for run_id in &missing {
-            eprintln!("No usage found for {}.", sanitize(run_id));
-        }
         if !missing.is_empty() {
+            for run_id in missing {
+                eprintln!("No usage found for {}.", sanitize(run_id));
+            }
             eprintln!(
                 "{}",
                 wrap_if_tty(
-                    "A run has no usage until it ends. To see the status of a run, use \
-                     `snouty runs show <run_id>`."
+                    "A run has no usage until it ends. To check a run ID and the status of \
+                     its run, use `snouty runs show <run_id>`."
                 )
             );
         }
@@ -203,7 +203,7 @@ pub(super) async fn cmd_runs_usage(
                     .stream_usage(Some(after), before, None)
                     .try_collect()
                     .await?;
-                entries.sort_by_key(|entry| entry.end_time);
+                sort_oldest_first(&mut entries);
                 entries
             }
         };
@@ -269,6 +269,14 @@ pub(super) async fn cmd_runs_usage(
     )
 }
 
+/// Sorts by end time. The start time and the run ID order the runs that ended
+/// at the same time, so the order does not depend on the order of the pages.
+fn sort_oldest_first(entries: &mut [UsageEntry]) {
+    entries.sort_by(|a, b| {
+        (a.end_time, a.start_time, &a.run_id).cmp(&(b.end_time, b.start_time, &b.run_id))
+    });
+}
+
 /// The `limit` runs that ended first at or after `after`, in the order that
 /// they ended. The endpoint sends the newest runs first, so this reads windows
 /// of end times forward from `after`, each twice as long as the one before,
@@ -290,7 +298,7 @@ async fn oldest_entries(
         entries.extend(window);
         (start, length) = (end, length * 2);
     }
-    entries.sort_by_key(|entry| entry.end_time);
+    sort_oldest_first(&mut entries);
     entries.truncate(usize::try_from(limit.get()).unwrap_or(usize::MAX));
     Ok(entries)
 }

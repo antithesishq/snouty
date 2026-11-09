@@ -33,15 +33,15 @@ period is in the output when it holds a selected time. When a filter cuts a
 period, the total of that period includes only the runs inside the filter.
 
 The filters select which rows show, and in which order:
-  no filter or --before    the 10 newest rows (before --before), newest first
+  no filter or --before    the newest rows (before --before), newest first
   --after                  every row from --after to now, oldest first
   --after and --before     every row between them, oldest first
 Newest first sorts runs by start time, and oldest first sorts them by end time.
 With --rollup, the periods are in the same order.
 
---limit counts rows: runs, or periods with --rollup. With --after alone, it
-keeps the oldest rows from --after. It cannot be used with both --after and
---before.
+--limit counts rows: runs, or periods with --rollup. Without --after, the
+default is 10. With --after alone, it keeps the oldest rows from --after. It
+cannot be used with both --after and --before.
 
 Examples:
   snouty runs usage

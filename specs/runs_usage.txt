@@ -197,5 +197,9 @@ mock-runs-server
 # Run IDs cannot be used with a filter, --limit or --rollup.
 ! snouty runs usage usage-1 --after 2026-02-01
 stderr 'cannot be used with'
+! snouty runs usage usage-1 --before 2026-03-01
+stderr 'cannot be used with'
+! snouty runs usage usage-1 -n 5
+stderr 'cannot be used with'
 ! snouty runs usage usage-1 --rollup day
 stderr 'cannot be used with'

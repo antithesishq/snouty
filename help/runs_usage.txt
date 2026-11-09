@@ -15,12 +15,12 @@ With {{ t("run_ids")? }}, the output has one row for each run, in the order that
 {{ t("--after")? }} and {{ t("--before")? }} select runs by the time that they ended: {{ t("--after")? }} includes a run that ended at that time, and {{ t("--before")? }} does not. Each takes a date, which is the start of that day, a time such as `2026-10-01 12:00:00`, or an RFC 3339 time. A date or a time without a zone is in the local timezone. With {{ t("--rollup")? }}, a period is in the output when it holds a selected time. When a filter cuts a period, the total of that period includes only the runs inside the filter.
 
 The filters select which rows show, and in which order:
-  no filter or {{ t("--before")? }}    the 10 newest rows (before {{ t("--before")? }}), newest first
+  no filter or {{ t("--before")? }}    the newest rows (before {{ t("--before")? }}), newest first
   {{ t("--after")? }}                  every row from {{ t("--after")? }} to now, oldest first
   {{ t("--after")? }} and {{ t("--before")? }}     every row between them, oldest first
 Newest first sorts runs by start time, and oldest first sorts them by end time. With {{ t("--rollup")? }}, the periods are in the same order.
 
-{{ t("--limit")? }} counts rows: runs, or periods with {{ t("--rollup")? }}. With {{ t("--after")? }} alone, it keeps the oldest rows from {{ t("--after")? }}. It cannot be used with both {{ t("--after")? }} and {{ t("--before")? }}.
+{{ t("--limit")? }} counts rows: runs, or periods with {{ t("--rollup")? }}. Without {{ t("--after")? }}, the default is 10. With {{ t("--after")? }} alone, it keeps the oldest rows from {{ t("--after")? }}. It cannot be used with both {{ t("--after")? }} and {{ t("--before")? }}.
 
 Examples:
   {{ t("snouty runs usage")? }}

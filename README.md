@@ -94,15 +94,13 @@ nixpkgs has a `snouty` package. Stable NixOS releases can have an old version, s
 nix profile install github:NixOS/nixpkgs/nixpkgs-unstable#snouty
 ```
 
-Without flakes, use `nix-env -iA nixpkgs.snouty` on a nixpkgs-unstable channel. On NixOS, add `pkgs.snouty` to `environment.systemPackages`. The nixpkgs package does not install the [Docker credential helper](#docker-credential-helper).
+Without flakes, use `nix-env -iA nixpkgs.snouty` on a nixpkgs-unstable channel. On NixOS, add `pkgs.snouty` to `environment.systemPackages`.
 
-The repository also has a Nix package, which installs the Docker credential helper. It builds snouty from source and runs its tests. This builds `main`; for a release from v0.9.0 or later, replace `main.tar.gz` with `refs/tags/v<version>.tar.gz`:
+The repository also has a Nix package. It builds snouty from source and runs its tests. This builds `main`; for a release from v0.9.0 or later, replace `main.tar.gz` with `refs/tags/v<version>.tar.gz`:
 
 ```sh
 nix profile install --impure --expr 'import (builtins.fetchTarball "https://github.com/antithesishq/snouty/archive/main.tar.gz") { }'
 ```
-
-Without flakes, use `nix-env -if https://github.com/antithesishq/snouty/archive/main.tar.gz`. Remove the nixpkgs `snouty` first, because both packages install `bin/snouty`.
 
 ### Download prebuilt binaries
 
@@ -363,7 +361,7 @@ To set it up, add the registry to `credHelpers` in `~/.docker/config.json` for D
 
 The helper uses the same [settings](#settings-files) as snouty in the directory where Docker runs it, including `./.snouty.toml`. With `--profile` or `ANTITHESIS_PROFILE`, the helper uses that profile. Otherwise, it uses the first profile whose `repository` is on `registry.<tenant>.antithesis.com`.
 
-The shell script installer, the npm package and the Nix package in this repository install `docker-credential-snouty`. For another install method, make the alias yourself, in a directory on your `PATH`:
+The shell script installer, the npm package and the Nix packages install `docker-credential-snouty`. For another install method, make the alias yourself, in a directory on your `PATH`:
 
 ```sh
 ln -s "$(command -v snouty)" ~/.local/bin/docker-credential-snouty

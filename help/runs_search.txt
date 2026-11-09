@@ -76,7 +76,7 @@ Query snippets (each is a complete {{ t("query")? }}, ready to paste):
 
   # each error's log text, cut to the part after "error:"
   contains({output_text: "error:"}).map(ev => ev.add_fields(
-    {output_text: ev.output_text.replace(/^.*?error:\s*/, "")}))
+    {output_text: ev.output_text.split("error:").pop().trim()}))
 
   # errors numbered in order within each timeline (field n)
   contains({output_text: "error"})
@@ -94,6 +94,6 @@ Text output does not show the fields that a query adds to an event, such as thos
 
 With {{ t("--json")? }}, each event has all of its fields, with those that the query adds.
 
-Add {{ t("--count")? }} to print how many events in the whole run match the query, instead of a sample. No limit applies.
+Add {{ t("--count")? }} to print how many events in the whole run match the query, instead of a sample. No limit applies. This count is the only aggregate across timelines. For an aggregate within one timeline, such as a running count, use fold to add the value to each event.
 
 The run must be ready or complete. If it is not, the command waits until it is ready, as `{{ t("snouty runs exec")? }}` does, and says that it waits.

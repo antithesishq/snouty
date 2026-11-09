@@ -9,9 +9,7 @@ does not build or pull images, and does not run `build:` stanzas, so build or
 pull every image first, for example with `docker compose build`.
 
 When validation ends, snouty removes the compose project's containers and named
-volumes, so each run starts on fresh volumes, as in Antithesis. Use
---keep-running to keep them. Validation does not start while the project still
-has containers or volumes from an earlier run.
+volumes. Use --keep-running to keep them.
 
 Validation fails before anything starts when docker-compose.yaml depends on your
 shell environment, such as a ${VAR} that resolves differently in the Antithesis

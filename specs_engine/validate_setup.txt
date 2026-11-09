@@ -27,6 +27,7 @@ stderr 'Setup validation successful.*'
 build-image volume-marker-setup:latest volume_marker
 snouty validate config_volume --timeout 30s
 stderr 'Setup validation successful.*'
+! stderr 'Warning:'
 snouty validate config_volume --timeout 30s
 stderr 'Setup validation successful.*'
 

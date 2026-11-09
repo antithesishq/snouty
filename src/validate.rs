@@ -242,7 +242,13 @@ async fn validate_compose(
     // volumes. Removing them could destroy state the user kept on purpose, so
     // print the command and let the user run it.
     let leftovers = compose.ps(overlay)?;
-    let leftover_volumes = rt.compose_project_volumes(&contents.project_name)?;
+    // Only the volumes that this config declares: `down --volumes` removes
+    // those and no others.
+    let leftover_volumes: Vec<String> = rt
+        .compose_project_volumes(&contents.project_name)?
+        .into_iter()
+        .filter(|v| contents.volumes.contains(v))
+        .collect();
     let mut found = Vec::new();
     if !leftovers.is_empty() {
         let services: BTreeSet<&str> = leftovers.iter().map(|c| c.service.as_str()).collect();

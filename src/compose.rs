@@ -324,7 +324,7 @@ impl DockerCompose {
         if let Some(overlay) = overlay {
             let _ = write!(hint, " -f {}", abs(overlay).display());
         }
-        hint.push_str(" down --volumes --remove-orphans");
+        hint.push_str(" down --volumes");
         hint
     }
 
@@ -502,18 +502,20 @@ impl DockerCompose {
         self.spawn_inherited(overlay, &["up", "--no-build", "--pull=never"])
     }
 
-    /// Run `compose down`, removing the project's named volumes and orphan
-    /// containers so the next run starts fresh, as on Antithesis. Best-effort;
-    /// ignores errors.
+    /// Run `compose down`, removing the project's named volumes so the next
+    /// run starts fresh, as on Antithesis. Prints a warning when it fails.
     pub fn down(&self, overlay: Option<&Path>) {
-        let mut cmd = self.command(
-            overlay,
-            &["down", "--volumes", "--remove-orphans", "--timeout", "0"],
-        );
+        let mut cmd = self.command(overlay, &["down", "--volumes", "--timeout", "0"]);
         cmd.stdin(std::process::Stdio::null());
-        cmd.stdout(std::process::Stdio::null());
-        cmd.stderr(std::process::Stdio::null());
-        let _ = cmd.status();
+        match cmd.output() {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => eprintln!(
+                "Warning: '{} down' failed:\n{}",
+                self.cli,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+            Err(e) => eprintln!("Warning: failed to run '{} down': {e}", self.cli),
+        }
     }
 
     /// Return the `docker-compose.yaml` contents canonicalized, with each
@@ -899,6 +901,9 @@ pub struct ComposeContents {
     pub build_services: HashSet<String>,
     /// Explicitly declared network names (from the top-level `networks` key).
     pub networks: Vec<String>,
+    /// Engine names of the volumes that compose creates, which are the
+    /// non-external entries of the top-level `volumes` key.
+    pub volumes: Vec<String>,
 }
 /// Parse services and networks from resolved compose config YAML.
 pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
@@ -955,12 +960,32 @@ pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
     }
     networks.sort();
 
+    let mut volumes = Vec::new();
+    if let Some(vol_map) = doc.get("volumes").and_then(|v| v.as_mapping()) {
+        for value in vol_map.values() {
+            let is_external = value
+                .get("external")
+                .and_then(serde_yaml::Value::as_bool)
+                .unwrap_or(false);
+            if is_external {
+                continue;
+            }
+            // `compose config` always prints the resolved engine name.
+            let name = value
+                .get("name")
+                .and_then(serde_yaml::Value::as_str)
+                .ok_or_else(|| eyre!("compose config printed a volume without a name"))?;
+            volumes.push(name.to_string());
+        }
+    }
+
     Ok(ComposeContents {
         project_name,
         services,
         services_without_image,
         build_services,
         networks,
+        volumes,
     })
 }
 /// Ensure the referenced images are available in the local image store.
@@ -1386,6 +1411,26 @@ services:
         assert!(contents.services.is_empty());
         assert!(contents.build_services.is_empty());
     }
+    #[test]
+    fn parse_compose_config_lists_the_volumes_compose_creates() {
+        let yaml = "\
+name: test
+services:
+  app:
+    image: app
+volumes:
+  data:
+    name: test_data
+  named:
+    name: custom
+  ext:
+    name: ext
+    external: true
+";
+        let contents = parse_compose_config(yaml).unwrap();
+        assert_eq!(contents.volumes, vec!["test_data", "custom"]);
+    }
+
     #[test]
     fn parse_compose_config_with_networks() {
         let yaml = "\
@@ -2267,6 +2312,7 @@ services:
             services_without_image: Vec::new(),
             build_services: build_services.iter().map(ToString::to_string).collect(),
             networks: Vec::new(),
+            volumes: Vec::new(),
         }
     }
     #[test]
@@ -2642,7 +2688,7 @@ services:
             compose.down_hint(Some(Path::new("/tmp/override.yml"))),
             format!(
                 "DOCKER_HOST=unix:///run/podman.sock docker compose \
-                 -f {}/docker-compose.yaml -f /tmp/override.yml down --volumes --remove-orphans",
+                 -f {}/docker-compose.yaml -f /tmp/override.yml down --volumes",
                 dir.path().display()
             ),
         );
@@ -2659,7 +2705,7 @@ services:
         assert_eq!(
             compose.down_hint(None),
             format!(
-                "docker-compose -f {}/docker-compose.yaml down --volumes --remove-orphans",
+                "docker-compose -f {}/docker-compose.yaml down --volumes",
                 dir.path().display()
             ),
         );

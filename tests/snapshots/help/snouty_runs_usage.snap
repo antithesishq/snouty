@@ -22,8 +22,9 @@ HOURS. A period with no runs shows 0.
 Times and periods are in the local timezone.
 
 With RUN_IDS, the output has one row for each run, in the order that you give
-them. A run has no usage until it ends, so a run that is in progress has no row,
-and a note names it.
+them. A run has no usage until it ends, so a run that is in progress has no row.
+When a run has no usage, the command prints the rows of the other runs, then
+fails and names the run.
 
 --after and --before select runs by the time that they ended: --after includes a
 run that ended at that time, and --before does not. Each takes a date, which is

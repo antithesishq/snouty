@@ -7,6 +7,7 @@ use std::num::NonZeroU64;
 
 use chrono::{DateTime, Datelike, Days, Months, NaiveDate, TimeDelta, Utc};
 use clap::ValueEnum;
+use color_eyre::Section;
 use color_eyre::eyre::Result;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use log::debug;
@@ -16,7 +17,7 @@ use super::{limit_note, terminal_width};
 use crate::api::{AntithesisApi, UsageEntry};
 use crate::cli::{DEFAULT_RUNS_LIMIT, RunsUsageArgs};
 use crate::error::user_error;
-use crate::render::{OutputOptions, sanitize, wrap_if_tty};
+use crate::render::{OutputOptions, sanitize};
 use crate::settings::Settings;
 use crate::table::{Align, Column, Table};
 use crate::time::{format_timestamp_for_display, local_calendar_date, start_of_local_calendar_day};
@@ -169,25 +170,22 @@ pub(super) async fn cmd_runs_usage(
         for (run_id, entry) in run_ids.iter().zip(entries) {
             match entry {
                 Some(entry) => rows.push(UsageRow::from(entry)),
-                None => missing.push(run_id),
+                None => missing.push(sanitize(run_id)),
             }
         }
         if !rows.is_empty() {
             print_rows(&rows, json, None, "results", render_usage_table)?;
         }
-        if !missing.is_empty() {
-            for run_id in missing {
-                eprintln!("No usage found for {}.", sanitize(run_id));
-            }
-            eprintln!(
-                "{}",
-                wrap_if_tty(
-                    "A run has no usage until it ends. To check a run ID and the status of \
-                     its run, use `snouty runs show <run_id>`."
-                )
-            );
+        if missing.is_empty() {
+            return Ok(());
         }
-        return Ok(());
+        return Err(
+            user_error(format!("no usage found for {}", missing.join(", ")))
+                .note("a run has no usage until it ends")
+                .suggestion(
+                    "check each run ID and the status of its run with `snouty runs show <run_id>`",
+                ),
+        );
     }
 
     let Some(rollup) = rollup else {

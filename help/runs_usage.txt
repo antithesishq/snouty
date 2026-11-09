@@ -10,7 +10,7 @@ With {{ t("--rollup")? }}, each row is the total of one day, week, or month: its
 
 Times and periods are in the local timezone.
 
-With {{ t("run_ids")? }}, the output has one row for each run, in the order that you give them. A run has no usage until it ends, so a run that is in progress has no row, and a note names it.
+With {{ t("run_ids")? }}, the output has one row for each run, in the order that you give them. A run has no usage until it ends, so a run that is in progress has no row. When a run has no usage, the command prints the rows of the other runs, then fails and names the run.
 
 {{ t("--after")? }} and {{ t("--before")? }} select runs by the time that they ended: {{ t("--after")? }} includes a run that ended at that time, and {{ t("--before")? }} does not. Each takes a date, which is the start of that day, a time such as `2026-10-01 12:00:00`, or an RFC 3339 time. A date or a time without a zone is in the local timezone. With {{ t("--rollup")? }}, a period is in the output when it holds a selected time. When a filter cuts a period, the total of that period includes only the runs inside the filter.
 

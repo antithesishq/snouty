@@ -171,28 +171,32 @@ mock-runs-server
 [!staging] snouty --json runs usage
 [!staging] ! stdout .
 
-# A run from the usage list has a row of its own, and an unknown run has a
-# note on stderr.
+# A run from the usage list has a row of its own. An unknown run fails the
+# command, after the rows of the other runs.
 mock-runs-server
 snouty --json runs usage -n 1
 env_from_json 0 run_id
-snouty runs usage ${R_run_id} no-such-run
+snouty runs usage ${R_run_id}
 stdout '^RUN ID +STARTED +ENDED +COMPUTE HOURS$'
 stdout '^${R_run_id@R} '
-stderr 'No usage found for no-such-run\.'
+! snouty runs usage ${R_run_id} no-such-run
+stdout '^${R_run_id@R} '
+stderr 'no usage found for no-such-run'
 
-# With run IDs, each run that has usage is one row, in the order given. A run
-# with no usage prints a note on stderr, and the command still succeeds.
+# With run IDs, each run is one row, in the order given. The runs with no
+# usage fail the command, which names them and still prints the other rows.
 mock-runs-server
-[!staging] snouty runs usage usage-3 no-such-run usage-1
+[!staging] snouty runs usage usage-3 usage-1
 [!staging] stdout '(?s)^RUN ID .*\nusage-3 .*\nusage-1 [^\n]*$'
-[!staging] stderr 'No usage found for no-such-run\.'
-[!staging] stderr -literal 'snouty runs show <run_id>'
+mock-runs-server
+[!staging] ! snouty --json runs usage usage-3 no-such-run usage-1 other-run
+[!staging] stdout -count=2 '^\{"run_id":'
+[!staging] stderr 'no usage found for no-such-run, other-run'
+[!staging] stderr -literal 'Suggestion: check each run ID and the status of its run with `snouty runs show <run_id>`'
 mock-runs-server
 [!staging] snouty --json runs usage usage-1
 [!staging] stdout '^\{"run_id":"usage-1","hours":10.5,'
 [!staging] stdout -count=1 '^.+$'
-[!staging] ! stderr 'No usage'
 
 # Run IDs cannot be used with a filter, --limit or --rollup.
 ! snouty runs usage usage-1 --after 2026-02-01

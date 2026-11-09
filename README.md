@@ -88,15 +88,15 @@ cargo install snouty
 
 ### Install snouty with Nix
 
-nixpkgs has a `snouty` package. Use nixpkgs-unstable for the latest release:
+nixpkgs has a `snouty` package. Stable NixOS releases can have an old version, so install from nixpkgs-unstable for the latest release:
 
 ```sh
-nix profile install nixpkgs#snouty
+nix profile install github:NixOS/nixpkgs/nixpkgs-unstable#snouty
 ```
 
-On NixOS, add `pkgs.snouty` to `environment.systemPackages`.
+Without flakes, use `nix-env -iA nixpkgs.snouty` on a nixpkgs-unstable channel. On NixOS, add `pkgs.snouty` to `environment.systemPackages`. The nixpkgs package does not install the [Docker credential helper](#docker-credential-helper).
 
-The repository also has a Nix package, which installs the [Docker credential helper](#docker-credential-helper). This builds `main`; for a release, replace `main.tar.gz` with `refs/tags/v<version>.tar.gz`:
+The repository also has a Nix package, which installs the Docker credential helper. It builds snouty from source and runs its tests. This builds `main`; for a release from v0.9.0 or later, replace `main.tar.gz` with `refs/tags/v<version>.tar.gz`:
 
 ```sh
 nix-env -if https://github.com/antithesishq/snouty/archive/main.tar.gz
@@ -116,7 +116,7 @@ nix-env -if https://github.com/antithesishq/snouty/archive/main.tar.gz
 cargo uninstall snouty || rm -f "$(which snouty)" "$(which snouty-update)" "$(which docker-credential-snouty)"
 ```
 
-For a Nix install, run `nix profile remove snouty` or `nix-env -e snouty`.
+For a Nix install, run `nix profile remove snouty` after `nix profile install`, or `nix-env -e snouty` after `nix-env -i`.
 
 If you set up [shell completions](#shell-completions), also remove the snouty line from your shell's startup file.
 

@@ -111,9 +111,12 @@ fn default_start(rollup: Option<Rollup>, end: DateTime<Utc>) -> DateTime<Utc> {
     match rollup {
         None | Some(Rollup::Day) => end - TimeDelta::weeks(1),
         Some(Rollup::Week) => end - TimeDelta::weeks(4),
-        Some(Rollup::Month) => end
-            .checked_sub_months(Months::new(6))
-            .unwrap_or(DateTime::<Utc>::MIN_UTC),
+        // Months are counted on the local calendar, as the periods are.
+        Some(Rollup::Month) => start_of_local_calendar_day(
+            local_calendar_date(end)
+                .checked_sub_months(Months::new(6))
+                .unwrap_or(FIRST_DAY),
+        ),
     }
 }
 

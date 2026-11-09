@@ -145,16 +145,23 @@ impl<'a> CredentialLookup<'a> {
     }
 
     fn resolve(self) -> Result<Option<SourcedCredential>> {
-        let stored = |store: Option<CredentialStore>| {
-            let found = store.map_or(Ok(None), CredentialStore::resolve)?;
-            Ok(found.map(|found| found.map_tag(CredentialSource::Stored)))
-        };
         match self {
             Self::Environment => AuthenticationInfo::try_from_env(),
-            Self::Keychain { profile } => stored(Some(CredentialStore::keychain(profile))),
-            Self::CredentialsFile { profile } => stored(CredentialStore::credentials_file(profile)),
+            Self::Keychain { .. } | Self::CredentialsFile { .. } => Ok(self
+                .resolve_stored()?
+                .map(|found| found.map_tag(CredentialSource::Stored))),
             Self::GithubActionsOidc => AuthenticationInfo::try_from_github_actions_environment(),
         }
+    }
+
+    /// The credential in the store that this place names, if it is one.
+    fn resolve_stored(self) -> Result<Option<Tagged<AuthenticationInfo, CredentialStore>>> {
+        let store = match self {
+            Self::Keychain { profile } => Some(CredentialStore::keychain(profile)),
+            Self::CredentialsFile { profile } => CredentialStore::credentials_file(profile),
+            Self::Environment | Self::GithubActionsOidc => None,
+        };
+        store.map_or(Ok(None), CredentialStore::resolve)
     }
 }
 
@@ -240,10 +247,15 @@ impl AuthenticationInfo {
     pub(crate) fn stored_for_profile(
         profile: Option<&str>,
     ) -> Result<Option<Tagged<Self, CredentialStore>>> {
-        if let Some(found) = CredentialStore::keychain(profile).resolve()? {
-            return Ok(Some(found));
+        for lookup in [
+            CredentialLookup::Keychain { profile },
+            CredentialLookup::CredentialsFile { profile },
+        ] {
+            if let Some(found) = lookup.resolve_stored()? {
+                return Ok(Some(found));
+            }
         }
-        CredentialStore::credentials_file(profile).map_or(Ok(None), CredentialStore::resolve)
+        Ok(None)
     }
 
     pub(crate) fn for_ambient_configuration(

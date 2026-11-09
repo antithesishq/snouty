@@ -86,10 +86,10 @@ impl CredentialStore {
         match self {
             Self::Keychain { profile } => {
                 let entry = Entry::new("snouty", &keychain_entry_name(profile.as_deref()))
-                    .wrap_err("opening keychain entry to store the refreshed credential")?;
+                    .wrap_err("opening the keychain entry to store the credential")?;
                 entry
                     .set_password(&serde_json::to_string(&credentials)?)
-                    .wrap_err("writing the refreshed credential to the keychain")
+                    .wrap_err("writing the credential to the keychain")
             }
             Self::CredentialsFile { path, profile } => {
                 persist_to_file(credentials, profile.as_deref(), Some(path)).map(|_| ())
@@ -99,11 +99,9 @@ impl CredentialStore {
 
     /// The credential that this store holds, tagged with this store.
     pub(super) fn resolve(self) -> Result<Option<Tagged<AuthenticationInfo, Self>>> {
-        Ok(self.load()?.map(|found| {
-            found
-                .convert_to_authentication_info(self.clone())
-                .with_tag(self)
-        }))
+        Ok(self
+            .load()?
+            .map(|found| found.convert_to_authentication_info(&self).with_tag(self)))
     }
 
     pub(super) fn keychain(profile: Option<&str>) -> Self {
@@ -172,14 +170,16 @@ impl std::fmt::Debug for PersistableCredentials {
 }
 
 impl PersistableCredentials {
-    fn convert_to_authentication_info(self, store: CredentialStore) -> AuthenticationInfo {
+    /// An OAuth credential keeps a copy of `store`, to write a refreshed token
+    /// back to it.
+    fn convert_to_authentication_info(self, store: &CredentialStore) -> AuthenticationInfo {
         match self {
             Self::ApiKey { api_key } => AuthenticationInfo::ApiKey { api_key },
             Self::OAuth {
                 antithesis_token,
                 refresh_token,
             } => AuthenticationInfo::OAuth(RefreshableOAuthToken::new(
-                store,
+                store.clone(),
                 antithesis_token,
                 refresh_token,
             )),
@@ -212,16 +212,13 @@ pub(crate) fn persist(
     credentials: PersistableCredentials,
     profile: Option<&str>,
 ) -> Result<CredentialStore> {
-    let profile_owned = profile.map(str::to_owned);
     if try_persist_to_keychain(&credentials, profile)? {
-        return Ok(CredentialStore::Keychain {
-            profile: profile_owned,
-        });
+        return Ok(CredentialStore::keychain(profile));
     }
     let path = persist_to_file(credentials, profile, None)?;
     Ok(CredentialStore::CredentialsFile {
         path,
-        profile: profile_owned,
+        profile: profile.map(str::to_owned),
     })
 }
 

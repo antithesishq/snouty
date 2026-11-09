@@ -286,14 +286,14 @@ fn authn_checks(sources: &[SourcedCredential]) -> Vec<Check> {
 
     let id = CheckId::credentials(credentials);
     let check = match credentials.value() {
-        AuthenticationInfo::GithubActionsOidc(_) => enrich_with_origin(
+        AuthenticationInfo::GithubActionsOidc(_) => enrich_with_source(
             Check::ok(id, "GitHub Actions OIDC token provided"),
             credentials,
         ),
         AuthenticationInfo::OAuth(_) => {
-            enrich_with_origin(Check::ok(id, "OAuth credentials used"), credentials)
+            enrich_with_source(Check::ok(id, "OAuth credentials used"), credentials)
         }
-        credential if credential.has_blank_api_key() => enrich_with_origin(
+        credential if credential.has_blank_api_key() => enrich_with_source(
             with_credential_remedy(
                 Check::fail(id, "the API key is empty")
                     .note(Level::Error, "an empty API key cannot authenticate"),
@@ -301,7 +301,7 @@ fn authn_checks(sources: &[SourcedCredential]) -> Vec<Check> {
             credentials,
         ),
         AuthenticationInfo::ApiKey { .. } => {
-            enrich_with_origin(Check::ok(id, "API key provided"), credentials)
+            enrich_with_source(Check::ok(id, "API key provided"), credentials)
         }
         AuthenticationInfo::Password { username, .. } => password_only_check(credentials, username),
     };
@@ -349,7 +349,7 @@ fn hidden_credential_check(in_use: &SourcedCredential, hidden: &SourcedCredentia
         Level::Warning,
         format!(
             "snouty uses the username and password from {}, which `snouty runs` refuses",
-            describe_origin(in_use.tag())
+            describe_source(in_use.tag())
         ),
     )
     .note(
@@ -357,7 +357,7 @@ fn hidden_credential_check(in_use: &SourcedCredential, hidden: &SourcedCredentia
         format!(
             "{} to use the {hidden_kind} in {}",
             drop_action(in_use.tag()),
-            describe_origin(hidden.tag())
+            describe_source(hidden.tag())
         ),
     )
 }
@@ -375,7 +375,7 @@ fn password_only_check(in_use: &SourcedCredential, username: &str) -> Check {
         ),
         CredentialSource::Stored(store) => login_to_replace(store.profile()),
     };
-    enrich_with_origin(
+    enrich_with_source(
         Check::warn(
             CheckId::credentials(in_use),
             format!(
@@ -416,7 +416,7 @@ fn shadowed_credentials_check(
         format!(
             "snouty is using the {} from {}",
             in_use.value(),
-            describe_origin(in_use.tag())
+            describe_source(in_use.tag())
         ),
     );
     for other in shadowed {
@@ -431,7 +431,7 @@ fn shadowed_credentials_check(
                 path,
                 profile: None,
             }) => path.display().to_string(),
-            source => describe_origin(source),
+            source => describe_source(source),
         };
         check = check.note(Level::Note, format!("{credential} configured in {origin}"));
     }
@@ -443,7 +443,7 @@ fn shadowed_credentials_check(
 
 /// A phrase that reads after "read from" or after the name of a credential
 /// kind.
-fn describe_origin(source: &CredentialSource) -> String {
+fn describe_source(source: &CredentialSource) -> String {
     match source {
         CredentialSource::Environment { variables } => format!(
             "the `{}` environment variable{}",
@@ -480,10 +480,10 @@ fn drop_action(source: &CredentialSource) -> String {
     }
 }
 
-fn enrich_with_origin(check: Check, credential: &SourcedCredential) -> Check {
+fn enrich_with_source(check: Check, credential: &SourcedCredential) -> Check {
     check.note(
         Level::Note,
-        format!("read from {}", describe_origin(credential.tag())),
+        format!("read from {}", describe_source(credential.tag())),
     )
 }
 

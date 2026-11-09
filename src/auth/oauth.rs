@@ -96,7 +96,7 @@ impl RefreshableOAuthToken {
     /// Replaces the access token with a newer one, in every clone: the one
     /// that the store holds, when another process or refresh stored it, or
     /// else a new one from the refresh endpoint at `base_url`, which the
-    /// origin then stores. An advisory file lock serializes refreshes across
+    /// store then holds. An advisory file lock serializes refreshes across
     /// processes, so that two do not both spend one refresh token.
     ///
     /// Fails when there is no newer token: the store holds the same token,
@@ -310,7 +310,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        // The origin already holds a newer credential — as though a *different*
+        // The store already holds a newer credential — as though a *different*
         // snouty process refreshed while we held the stale one.
         let creds_dir = tempfile::TempDir::new().unwrap();
         let store = credentials_file_in(creds_dir.path());
@@ -356,7 +356,7 @@ mod tests {
             .expect(0)
             .mount(&server)
             .await;
-        // The origin holds a newer credential, which `auth_header` must not
+        // The store holds a newer credential, which `auth_header` must not
         // adopt either.
         let creds_dir = tempfile::TempDir::new().unwrap();
         let store = credentials_file_in(creds_dir.path());

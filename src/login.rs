@@ -36,7 +36,7 @@ use crate::{
         ANTITHESIS_PROFILE_ENV_VAR_NAME, Settings, update_settings_in_global_file,
         validate_tenant_host,
     },
-    tag::Tagged,
+    tag::{Tag, Tagged},
     util::root_cause,
 };
 
@@ -214,7 +214,7 @@ async fn do_cmd_login(
                     PersistableCredentials::Password { .. } => "username and password",
                     PersistableCredentials::OAuth { .. } => "OAuth credentials",
                 };
-                Some((kind, persist(credentials, profile_to_use.as_deref())?))
+                Some(kind.with_tag(persist(credentials, profile_to_use.as_deref())?))
             }
             None => None,
         }
@@ -252,7 +252,7 @@ fn print_login_summary(
     repository: &str,
     profile: Option<&str>,
     settings_path: &Path,
-    written: Option<(&str, CredentialStore)>,
+    written: Option<Tagged<&str, CredentialStore>>,
     stored: Option<&Tagged<AuthenticationInfo, CredentialStore>>,
 ) {
     // Wrap each line at word boundaries on a terminal: a long settings path
@@ -273,29 +273,19 @@ fn print_login_summary(
         "\nSaved {saved}{scope} to {}.",
         settings_path.display()
     ));
-    match (written, stored.map(Tagged::tag)) {
-        (Some((kind, CredentialStore::Keychain { .. })), _) => {
+    match (written, stored) {
+        (Some(written), _) => {
             say(&format!(
-                "Stored your {kind}{scope} in the system keychain{}.",
+                "Stored your {}{scope} in {}{}.",
+                written.value(),
+                location(written.tag()),
                 replacing(stored)
             ));
         }
-        (Some((kind, CredentialStore::CredentialsFile { path, .. })), _) => {
-            say(&format!(
-                "Stored your {kind}{scope} in {}{}.",
-                path.display(),
-                replacing(stored)
-            ));
-        }
-        (None, Some(CredentialStore::Keychain { .. })) => {
-            say(&format!(
-                "Retained your previously stored credentials{scope} in the system keychain."
-            ));
-        }
-        (None, Some(CredentialStore::CredentialsFile { path, .. })) => {
+        (None, Some(stored)) => {
             say(&format!(
                 "Retained your previously stored credentials{scope} in {}.",
-                path.display()
+                location(stored.tag())
             ));
         }
         (None, None) => {
@@ -305,6 +295,14 @@ fn print_login_summary(
         }
     }
     say("Run `snouty doctor` to verify your setup.");
+}
+
+/// Where the summary says a credential is stored.
+fn location(store: &CredentialStore) -> String {
+    match store {
+        CredentialStore::Keychain { .. } => "the system keychain".to_owned(),
+        CredentialStore::CredentialsFile { path, .. } => path.display().to_string(),
+    }
 }
 
 /// The summary's ", replacing your stored …" clause. Every write replaces

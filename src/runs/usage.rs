@@ -8,7 +8,7 @@ use std::num::NonZeroU64;
 use chrono::{DateTime, Datelike, Days, Months, NaiveDate, TimeDelta, Utc};
 use clap::ValueEnum;
 use color_eyre::eyre::Result;
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt, stream};
 use log::debug;
 use serde::Serialize;
 
@@ -16,7 +16,7 @@ use super::{limit_note, terminal_width};
 use crate::api::{AntithesisApi, UsageEntry};
 use crate::cli::{DEFAULT_RUNS_LIMIT, RunsUsageArgs};
 use crate::error::user_error;
-use crate::render::{OutputOptions, sanitize};
+use crate::render::{OutputOptions, sanitize, wrap_if_tty};
 use crate::settings::Settings;
 use crate::table::{Align, Column, Table};
 use crate::time::{format_timestamp_for_display, local_calendar_date, start_of_local_calendar_day};
@@ -107,6 +107,7 @@ impl Rollup {
 
 /// Which rows the output holds. The usage endpoint sends the newest runs
 /// first, so only `Newest` can stop at the first `limit` runs that it reads.
+/// `Newest` prints the newest row first, and the others the oldest row first.
 // TODO: when the endpoint can sort the oldest runs first, read `Oldest` from
 // one request at `--after` instead of from windows of end times.
 #[derive(Clone, Copy)]
@@ -115,7 +116,7 @@ enum Selection {
     Newest(NonZeroU64),
     /// The `limit` oldest rows from `--after`.
     Oldest(DateTime<Utc>, NonZeroU64),
-    /// Every row between `--after` and `--before`.
+    /// Every row from `--after`, and before `--before` when it is set.
     All(DateTime<Utc>),
 }
 
@@ -128,6 +129,9 @@ impl Selection {
     }
 }
 
+/// The number of usage requests in flight at one time for a list of runs.
+const RUN_REQUESTS: usize = 8;
+
 pub(super) async fn cmd_runs_usage(
     args: RunsUsageArgs,
     settings: &Settings,
@@ -135,6 +139,7 @@ pub(super) async fn cmd_runs_usage(
 ) -> Result<()> {
     debug!("listing usage");
     let RunsUsageArgs {
+        run_ids,
         rollup,
         after,
         before,
@@ -147,11 +152,47 @@ pub(super) async fn cmd_runs_usage(
                  row between them",
             ));
         }
-        (Some(after), Some(_), None) => Selection::All(after),
-        (Some(after), None, limit) => Selection::Oldest(after, limit.unwrap_or(DEFAULT_RUNS_LIMIT)),
+        (Some(after), None, Some(limit)) => Selection::Oldest(after, limit),
+        (Some(after), _, None) => Selection::All(after),
         (None, _, limit) => Selection::Newest(limit.unwrap_or(DEFAULT_RUNS_LIMIT)),
     };
     let api = AntithesisApi::new(settings, verbose)?;
+
+    if !run_ids.is_empty() {
+        let entries: Vec<Option<UsageEntry>> = stream::iter(&run_ids)
+            .map(|run_id| api.get_usage(run_id))
+            .buffered(RUN_REQUESTS)
+            .try_collect()
+            .await?;
+        let mut missing = Vec::new();
+        let mut rows = Vec::new();
+        for (run_id, entry) in run_ids.iter().zip(entries) {
+            match entry {
+                Some(entry) => rows.push(UsageRow::from(entry)),
+                None => missing.push(run_id),
+            }
+        }
+        if json {
+            for row in &rows {
+                outln!("{}", serde_json::to_string(row)?)?;
+            }
+        } else if !rows.is_empty() {
+            outln!("{}", render_usage_table(&rows, terminal_width()))?;
+        }
+        for run_id in &missing {
+            eprintln!("No usage found for {}.", sanitize(run_id));
+        }
+        if !missing.is_empty() {
+            eprintln!(
+                "{}",
+                wrap_if_tty(
+                    "A run has no usage until it ends. To see the status of a run, use \
+                     `snouty runs show <run_id>`."
+                )
+            );
+        }
+        return Ok(());
+    }
 
     let Some(rollup) = rollup else {
         let entries = match selection {
@@ -162,9 +203,12 @@ pub(super) async fn cmd_runs_usage(
             }
             Selection::Oldest(after, limit) => oldest_entries(&api, after, limit).await?,
             Selection::All(after) => {
-                api.stream_usage(Some(after), before, None)
+                let mut entries: Vec<UsageEntry> = api
+                    .stream_usage(Some(after), before, None)
                     .try_collect()
-                    .await?
+                    .await?;
+                entries.sort_by_key(|entry| entry.end_time);
+                entries
             }
         };
         let entries: Vec<UsageRow> = entries.into_iter().map(UsageRow::from).collect();
@@ -208,9 +252,8 @@ pub(super) async fn cmd_runs_usage(
             }
         }
     }
-    let periods: Vec<PeriodUsage> = totals
+    let mut periods: Vec<PeriodUsage> = totals
         .into_iter()
-        .rev()
         .map(|(date, (runs, hours))| PeriodUsage {
             start: rollup.period_start(date),
             date,
@@ -218,6 +261,9 @@ pub(super) async fn cmd_runs_usage(
             hours,
         })
         .collect();
+    if let Selection::Newest(_) = selection {
+        periods.reverse();
+    }
     print_rows(
         &periods,
         json,
@@ -227,7 +273,8 @@ pub(super) async fn cmd_runs_usage(
     )
 }
 
-/// The `limit` runs that ended first at or after `after`, newest first. The
+/// The `limit` runs that ended first at or after `after`, in the order that
+/// they ended. The
 /// endpoint sends the newest runs first, so this reads windows of end times
 /// forward from `after`, each twice as long as the one before, until they hold
 /// `limit` runs or pass the present.
@@ -250,7 +297,6 @@ async fn oldest_entries(
     }
     entries.sort_by_key(|entry| entry.end_time);
     entries.truncate(usize::try_from(limit.get()).unwrap_or(usize::MAX));
-    entries.sort_by_key(|entry| std::cmp::Reverse(entry.start_time));
     Ok(entries)
 }
 

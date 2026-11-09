@@ -1,8 +1,9 @@
 # snouty runs usage
 #
-# Show the compute hours of runs, newest first (`GET /api/v0/usage`). With
-# --rollup, show the total of each day, week, or month instead. Times and
-# periods use the local timezone.
+# Show the compute hours of runs (`GET /api/v0/usage`), or of the runs that
+# the command names (`GET /api/v0/usage/{run_id}`). With --rollup, show the
+# total of each day, week, or month instead. Times and periods use the local
+# timezone.
 
 # Like every runs command, usage requires an API key.
 ! snouty runs usage
@@ -47,16 +48,23 @@ mock-runs-server
 [!staging] ! stdout 'usage-3'
 [!staging] stderr 'Showing up to 2 results'
 
-# With --after alone, the rows are the oldest runs that ended at or after it,
-# shown newest first. The endpoint sends the newest runs first, so the command
-# reads windows of end times forward from --after, the first one a day long,
-# until they hold the limit.
+# With --after and --limit, the rows are the oldest runs that ended at or
+# after --after, oldest first. The endpoint sends the newest runs first, so the
+# command reads windows of end times forward from --after, the first one a day
+# long, until they hold the limit.
 mock-runs-server
 [!staging] snouty --verbose runs usage --after 2026-02-01 -n 2
-[!staging] stdout '(?s)^RUN ID .*\nusage-3 .*\nusage-4 [^\n]*$'
+[!staging] stdout '(?s)^RUN ID .*\nusage-4 .*\nusage-3 [^\n]*$'
 [!staging] ! stdout 'usage-2'
 [!staging] stderr 'Showing up to 2 results'
 [!staging] stderr '^> GET .*/api/v0/usage\?.*end_time=2026-02-01T15%3A00%3A00Z'
+
+# With --after and no --limit, every run from --after shows, oldest first by
+# end time, with no limit note.
+mock-runs-server
+[!staging] snouty runs usage --after 2026-02-01
+[!staging] stdout '(?s)^RUN ID .*\nusage-4 .*\nusage-3 .*\nusage-2 .*\nusage-1 [^\n]*$'
+[!staging] ! stderr 'Showing up to'
 
 # With both --after and --before, every run between them shows, and --limit
 # is not allowed.
@@ -128,13 +136,13 @@ mock-runs-server
 [!staging] stdout -count=3 '^.+$'
 
 # With both --after and --before, the rows are every period from the one that
-# holds --after to the one before --before, with no limit note. The first
+# holds --after to the one before --before, oldest first, with no limit note. The first
 # period counts only the runs inside the filter: usage-4 ended after the start
 # of 2026-02-28, and usage-5 did not. The request asks only for the runs of the
 # shown periods, so the old history is not read.
 mock-runs-server
 [!staging] snouty --verbose runs usage --rollup month --after 2026-02-28 --before 2026-03-04
-[!staging] stdout '(?s)^START +END +RUNS +COMPUTE HOURS\n2026-03-01 +2026-03-31 +3 +13\.8\n2026-02-01 +2026-02-28 +1 +4\.0$'
+[!staging] stdout '(?s)^START +END +RUNS +COMPUTE HOURS\n2026-02-01 +2026-02-28 +1 +4\.0\n2026-03-01 +2026-03-31 +3 +13\.8$'
 [!staging] stdout -count=3 '^.+$'
 [!staging] stderr '^> GET .*/api/v0/usage\?.*start_time=2026-02-27T15%3A00%3A00Z'
 [!staging] ! stderr 'Showing up to'
@@ -142,11 +150,12 @@ mock-runs-server
 [!staging] snouty --verbose runs usage --rollup week -n 2 --before 2026-03-04
 [!staging] stderr '^> GET .*/api/v0/usage\?.*start_time=2026-02-22T15%3A00%3A00Z'
 
-# With --after alone, the rows are the --limit periods from the one that holds
-# --after forward, newest first. One window of end times covers them all.
+# With --after and --limit, the rows are the --limit periods from the one
+# that holds --after forward, oldest first. One window of end times covers them
+# all.
 mock-runs-server
 [!staging] snouty --verbose runs usage --rollup day --after 2026-02-27 -n 3
-[!staging] stdout '(?s)^START +END +RUNS +COMPUTE HOURS\n2026-03-01 +2026-03-01 +2 +3\.3\n2026-02-28 +2026-02-28 +1 +4\.0\n2026-02-27 +2026-02-27 +0 +0\.0$'
+[!staging] stdout '(?s)^START +END +RUNS +COMPUTE HOURS\n2026-02-27 +2026-02-27 +0 +0\.0\n2026-02-28 +2026-02-28 +1 +4\.0\n2026-03-01 +2026-03-01 +2 +3\.3$'
 [!staging] stderr 'Showing up to 3 periods'
 [!staging] stderr '^> GET .*/api/v0/usage\?.*end_time=2026-03-01T15%3A00%3A00Z.*start_time=2026-02-26T15%3A00%3A00Z'
 
@@ -161,3 +170,22 @@ mock-runs-server
 [!staging] mock-runs-server empty
 [!staging] snouty --json runs usage
 [!staging] ! stdout .
+
+# With run IDs, each run that has usage is one row, in the order given. A run
+# with no usage prints a note on stderr, and the command still succeeds.
+mock-runs-server
+[!staging] snouty runs usage usage-3 no-such-run usage-1
+[!staging] stdout '(?s)^RUN ID .*\nusage-3 .*\nusage-1 [^\n]*$'
+[!staging] stderr 'No usage found for no-such-run\.'
+[!staging] stderr -literal 'snouty runs show <run_id>'
+mock-runs-server
+[!staging] snouty --json runs usage usage-1
+[!staging] stdout '^\{"run_id":"usage-1","hours":10.5,'
+[!staging] stdout -count=1 '^.+$'
+[!staging] ! stderr 'No usage'
+
+# Run IDs cannot be used with a filter, --limit or --rollup.
+! snouty runs usage usage-1 --after 2026-02-01
+stderr 'cannot be used with'
+! snouty runs usage usage-1 --rollup day
+stderr 'cannot be used with'

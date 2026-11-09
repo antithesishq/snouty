@@ -41,7 +41,7 @@ Commands:
   exec        Execute a command in a run that is in progress
   events      Search events in a run
   search      Query events with the event-set DSL
-  usage       Show the compute hours that recent runs used
+  usage       Show the compute hours that runs used
   help        Print this message or the help of the given subcommand(s)
 
 Options:

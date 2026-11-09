@@ -2800,7 +2800,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-usage--window",
             "Total the usage of one month",
             "I want the daily usage of the runs that ended in a given month.",
-            "One row per day of September, newest first, with no limit note; days with no "
+            "One row per day of September, oldest first, with no limit note; days with no "
             "runs show 0.",
             [
                 "runs",
@@ -2819,10 +2819,19 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "See the first runs after a date",
             "I want the first few runs that finished after the start of October.",
             "At most 5 rows: the 5 runs that ended first on or after 2026-10-01 (local time), "
-            "shown newest first; when more runs exist, a stderr note says the output stopped "
-            "at the limit.",
+            "oldest first by end time; when more runs exist, a stderr note says the output "
+            "stopped at the limit.",
             ["runs", "usage", "--after", "2026-10-01", "-n", "5"],
             rows_at_most(5),
+        ),
+        Story(
+            "runs-usage--run-ids",
+            "See the usage of one run",
+            "I want to know how many compute hours a run that I launched used.",
+            "Exactly one row, for the completed run, with RUN ID/STARTED/ENDED/COMPUTE HOURS "
+            "columns, and no stderr note.",
+            ["runs", "usage", d.success],
+            rows_at_most(1),
         ),
         Story(
             "runs-verbose",

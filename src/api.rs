@@ -1320,6 +1320,25 @@ impl AntithesisApi {
         )
     }
 
+    /// The usage of one run, or `None` when the server has none for it.
+    ///
+    /// Observed on orbitinghail, release 67.0: an in-progress run, an unknown
+    /// run ID and a malformed one all answer 404
+    /// `{"message":"Resource not found"}`.
+    pub async fn get_usage(&self, run_id: &str) -> Result<Option<UsageEntry>> {
+        match self.client.get_usage().run_id(run_id).send().await {
+            Ok(response) => Ok(Some(response.into_inner())),
+            Err(err) => {
+                let err = format_api_client_error(err).await;
+                if crate::error::api_error_status(&err) == Some(404) {
+                    Ok(None)
+                } else {
+                    Err(err)
+                }
+            }
+        }
+    }
+
     #[cached(value)]
     async fn fetch_run_properties_page(
         &self,

@@ -1129,13 +1129,20 @@ pub enum RunsCommands {
     )))]
     Search(RunsSearchArgs),
 
-    /// Show the compute hours that recent runs used
+    /// Show the compute hours that runs used
     #[command(arg = json(JsonShape::Lines))]
     Usage(RunsUsageArgs),
 }
 
 #[derive(Args)]
 pub struct RunsUsageArgs {
+    /// Show only these runs, in this order
+    #[arg(
+        value_parser = parse_run_id,
+        conflicts_with_all = ["rollup", "after", "before", "limit"],
+    )]
+    pub run_ids: Vec<String>,
+
     /// Total the runs of each day, week, or month
     #[arg(long, value_enum)]
     pub rollup: Option<Rollup>,
@@ -1151,7 +1158,7 @@ pub struct RunsUsageArgs {
     pub before: Option<DateTime<Utc>>,
 
     /// Maximum number of rows to display: runs, or periods with a rollup
-    /// [default: 10; not allowed with both an after and a before time]
+    /// [default: 10, or every row with an after time]
     #[arg(short = 'n', long)]
     pub limit: Option<NonZeroU64>,
 }

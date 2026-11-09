@@ -1,7 +1,7 @@
 ---
 source: tests/help_snapshots.rs
 ---
-Show the compute hours that recent runs used, newest first.
+Show the compute hours that runs used.
 
 A compute hour is one core running for one hour. Compute hours are the unit that Antithesis bills usage in, and that the usage cap counts. They are not wall-clock hours: Antithesis runs a test in parallel, so one hour of testing uses many compute hours, and a higher performance tier uses more.
 
@@ -13,18 +13,23 @@ With `rollup`, each row is the total of one day, week, or month: its first and l
 
 Times and periods are in the local timezone.
 
+With `run_ids`, the output has one row for each run, in the order that you give them. A run has no usage until it ends, so a run that is in progress has no row, and a note names it.
+
 `after` and `before` select runs by the time that they ended: `after` includes a run that ended at that time, and `before` does not. Each takes a date, which is the start of that day, a time such as `2026-10-01 12:00:00`, or an RFC 3339 time. A date or a time without a zone is in the local timezone. With `rollup`, a period is in the output when it holds a selected time. When a filter cuts a period, the total of that period includes only the runs inside the filter.
 
-`limit` counts rows: runs, or periods with `rollup`. The default is 10. The filters select which rows the limit keeps:
-  no filter or `before`    the newest rows (before `before`)
-  `after`                  the oldest rows from `after`
-  `after` and `before`     every row between them; `limit` is not allowed
-The output shows the run that started most recently first. With `rollup`, it shows the newest period first.
+The filters select which rows show, and in which order:
+  no filter or `before`    the 10 newest rows (before `before`), newest first
+  `after`                  every row from `after` to now, oldest first
+  `after` and `before`     every row between them, oldest first
+Newest first sorts runs by start time, and oldest first sorts them by end time. With `rollup`, the periods are in the same order.
+
+`limit` counts rows: runs, or periods with `rollup`. With `after` alone, it keeps the oldest rows from `after`. It cannot be used with both `after` and `before`.
 
 Examples:
   runs_usage
   runs_usage {"rollup": "week", "limit": 4}
   runs_usage {"rollup": "month", "after": "2026-01-01", "limit": 12}
   runs_usage {"after": "2026-10-01", "before": "2026-11-01"}
+  runs_usage {"run_ids": ["<run_id>", "<run_id>"]}
 
 With `json`, each row prints as one JSON object on its own line. The hours field holds compute hours. A run has the fields run_id, hours, start_time, and end_time; the times are RFC 3339 in UTC. A period has the fields date, runs, and hours: date is the last day of the period in the local timezone, and hours is rounded to hundredths.

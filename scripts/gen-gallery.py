@@ -2817,10 +2817,10 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
         Story(
             "runs-usage--after",
             "See the runs since a relative time",
-            "I want the usage of the runs that finished in the last 2 days.",
-            "Every run that ended in the last 2 days, oldest first by end time, so the run "
+            "I want the usage of the runs that finished in the last 2 weeks.",
+            "Every run that ended in the last 2 weeks, oldest first by end time, so the run "
             "that ended most recently is the last row.",
-            ["runs", "usage", "--after", "2 days ago"],
+            ["runs", "usage", "--after", "2 weeks ago"],
             non_empty_table,
         ),
         Story(

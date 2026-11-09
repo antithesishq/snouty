@@ -1139,7 +1139,7 @@ pub struct RunsUsageArgs {
     /// Show only these runs, in this order
     #[arg(
         value_parser = parse_run_id,
-        conflicts_with_all = ["rollup", "after", "before", "limit"],
+        conflicts_with_all = ["rollup", "after", "before"],
     )]
     pub run_ids: Vec<String>,
 
@@ -1147,20 +1147,17 @@ pub struct RunsUsageArgs {
     #[arg(long, value_enum)]
     pub rollup: Option<Rollup>,
 
-    /// Only show runs that ended at or after this date (e.g. 2026-10-01),
-    /// time (e.g. 2026-10-01 12:00:00) or RFC 3339 time
+    /// Only show runs that ended at or after this time: a relative time
+    /// (e.g. 3 days ago), a date (e.g. 2026-10-01), a time (e.g. 2026-10-01
+    /// 12:00:00) or an RFC 3339 time [default: 1 week before the before
+    /// time, or 4 weeks with a weekly rollup]
     #[arg(long, value_parser = parse_timestamp_arg)]
     pub after: Option<DateTime<Utc>>,
 
-    /// Only show runs that ended before this date (e.g. 2026-11-01), time
-    /// (e.g. 2026-11-01 12:00:00) or RFC 3339 time
+    /// Only show runs that ended before this time, in the same forms
+    /// [default: now]
     #[arg(long, value_parser = parse_timestamp_arg)]
     pub before: Option<DateTime<Utc>>,
-
-    /// Maximum number of rows to display: runs, or periods with a rollup
-    /// [default: 10, or every row with an after time]
-    #[arg(short = 'n', long)]
-    pub limit: Option<NonZeroU64>,
 }
 
 #[derive(Args)]
@@ -1225,12 +1222,14 @@ pub struct RunsListArgs {
     pub launcher: Option<String>,
 
     /// Only show runs created after this date (e.g. 2026-10-01), time
-    /// (e.g. 2026-10-01 12:00:00) or RFC 3339 time
+    /// (e.g. 2026-10-01 12:00:00), RFC 3339 time or relative time (e.g. 3
+    /// days ago)
     #[arg(long, value_parser = parse_timestamp_arg)]
     pub created_after: Option<DateTime<Utc>>,
 
     /// Only show runs created at or before this date (e.g. 2026-11-01), time
-    /// (e.g. 2026-11-01 12:00:00) or RFC 3339 time
+    /// (e.g. 2026-11-01 12:00:00), RFC 3339 time or relative time (e.g. 3
+    /// days ago)
     #[arg(long, value_parser = parse_timestamp_arg)]
     pub created_before: Option<DateTime<Utc>>,
 

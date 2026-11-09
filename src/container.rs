@@ -400,12 +400,11 @@ pub trait ContainerRuntime: Send + Sync {
         Ok(TestTemplates::Present)
     }
 
-    /// Names of the volumes that compose created for `project`.
-    fn compose_project_volumes(&self, project: &str) -> Result<Vec<String>> {
+    /// Names of every volume in the engine.
+    fn volume_names(&self) -> Result<Vec<String>> {
         let runtime = self.name();
         let mut cmd = Command::new(runtime);
-        cmd.args(["volume", "ls", "--format", "{{.Name}}", "--filter"])
-            .arg(format!("label=com.docker.compose.project={project}"));
+        cmd.args(["volume", "ls", "--format", "{{.Name}}"]);
         let output = output_with_timeout(cmd, DISCOVERY_COMMAND_TIMEOUT)
             .wrap_err_with(|| format!("failed to run '{runtime} volume ls'"))?;
         if !output.status.success() {

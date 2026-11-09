@@ -891,8 +891,6 @@ pub struct ComposeService {
 /// Parsed contents of a compose config file.
 #[derive(Debug)]
 pub struct ComposeContents {
-    /// The project name, which `compose config` always prints as `name`.
-    pub project_name: String,
     /// One entry per service with an explicit `image:` field.
     pub services: Vec<ComposeService>,
     /// Names of services without an explicit `image:` field.
@@ -910,11 +908,6 @@ pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
     let doc: serde_yaml::Value =
         serde_yaml::from_str(yaml).wrap_err("failed to parse docker-compose.yaml")?;
 
-    let project_name = doc
-        .get("name")
-        .and_then(serde_yaml::Value::as_str)
-        .ok_or_else(|| eyre!("compose config printed no project name"))?
-        .to_string();
     let mut services = Vec::new();
     let mut services_without_image = Vec::new();
     let mut build_services = HashSet::new();
@@ -980,7 +973,6 @@ pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
     }
 
     Ok(ComposeContents {
-        project_name,
         services,
         services_without_image,
         build_services,
@@ -1349,7 +1341,6 @@ mod tests {
     #[test]
     fn parse_compose_config_basic() {
         let yaml = "\
-name: test
 services:
   app:
     image: us-central1-docker.pkg.dev/proj/repo/app:v1
@@ -1406,7 +1397,7 @@ services:
     }
     #[test]
     fn parse_compose_config_no_services() {
-        let yaml = "name: test\nversion: '3'\n";
+        let yaml = "version: '3'\n";
         let contents = parse_compose_config(yaml).unwrap();
         assert!(contents.services.is_empty());
         assert!(contents.build_services.is_empty());
@@ -1414,7 +1405,6 @@ services:
     #[test]
     fn parse_compose_config_lists_the_volumes_compose_creates() {
         let yaml = "\
-name: test
 services:
   app:
     image: app
@@ -1434,7 +1424,6 @@ volumes:
     #[test]
     fn parse_compose_config_with_networks() {
         let yaml = "\
-name: test
 services:
   app:
     image: myapp:latest
@@ -1451,7 +1440,6 @@ networks:
     #[test]
     fn parse_compose_config_rejects_external_network() {
         let yaml = "\
-name: test
 services:
   app:
     image: myapp:latest
@@ -2301,7 +2289,6 @@ services:
     /// of services that have a `build:` stanza.
     fn contents_of(services: &[(&str, &str)], build_services: &[&str]) -> ComposeContents {
         ComposeContents {
-            project_name: "test".to_string(),
             services: services
                 .iter()
                 .map(|(name, image)| ComposeService {
@@ -2586,7 +2573,6 @@ services:
     #[test]
     fn parse_compose_config_build_with_image() {
         let yaml = "\
-name: test
 services:
   app:
     build: .

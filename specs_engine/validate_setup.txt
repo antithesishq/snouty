@@ -26,8 +26,7 @@ stderr 'Setup validation successful.*'
 # Validate removes its named volumes, so a second run starts on fresh ones.
 build-image volume-marker-setup:latest volume_marker
 snouty validate config_volume --timeout 30s
-stderr 'Setup validation successful.*'
-! stderr 'Warning:'
+stderr 'Setup validation successful\.\z'
 snouty validate config_volume --timeout 30s
 stderr 'Setup validation successful.*'
 

@@ -58,9 +58,11 @@ test-composer command is in ev.command. In JS, read every field from `ev`, e.g.
 `ev.source.container` or `ev.moment.vtime`.
 
 A query can only filter its input events and change their fields. It cannot
-replace an event or construct a new one. In map, flatmap, and fold, return ev,
-or ev with fields added or changed, such as ev.add_fields({...}). The query
-fails when a function returns a new object.
+construct an event in any way: an object literal, a spread copy such as {...ev},
+or a JSON copy is not an event, even when it has the same fields. Such a result
+fails the query, or its changes are lost. In map, flatmap, and fold, return ev,
+or the result of ev.add_fields({...}) to add or change fields. To remove fields,
+use narrow.
 
 fold: the reducer takes the state s and one event ev, and returns [events, s'].
 events is an array of the events to output: [ev] outputs ev, [] outputs nothing,

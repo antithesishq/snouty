@@ -16,17 +16,21 @@ use color_eyre::{
 };
 use http::HeaderValue;
 
-use crate::{attributed_value::AttributedValue, env, error::user_error};
+use crate::{
+    env,
+    error::user_error,
+    tag::{Tag, Tagged},
+};
 
 pub(crate) use api_key::{API_KEY_VAR_NAME, is_blank_api_key};
-pub use oauth::{OAuthRefreshInfo, RefreshableOAuthToken};
+pub use oauth::RefreshableOAuthToken;
 pub use oidc::GithubActionsOidcToken;
 #[cfg(test)]
 use oidc::{OIDC_TOKEN_VAR_NAME, OIDC_URL_VAR_NAME};
 use password::apply_password_policy;
 pub(crate) use password::{PASSWORD_VAR_NAME, PasswordPolicy, USERNAME_VAR_NAME};
 pub use store::initialize_credential_store;
-pub(crate) use store::{PersistableCredentials, persist};
+pub(crate) use store::{CredentialStore, PersistableCredentials, keychain_entry_name, persist};
 
 /// Every environment variable that ambient credential resolution reads. A test
 /// harness that isolates itself from the developer's shell must clear all of
@@ -83,10 +87,19 @@ impl std::fmt::Display for AuthenticationInfo {
     }
 }
 
-/// A place snouty reads credentials from. More than one can hold a credential
+/// Where a credential that snouty found came from.
+#[derive(Clone, Debug)]
+pub(crate) enum CredentialSource {
+    Environment { variables: Vec<&'static str> },
+    Stored(CredentialStore),
+}
+
+pub(crate) type SourcedCredential = Tagged<AuthenticationInfo, CredentialSource>;
+
+/// A place snouty looks for credentials. More than one can hold a credential
 /// at once, and the first in resolution order then wins.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CredentialOrigin<'a> {
+enum CredentialLookup<'a> {
     Environment,
     Keychain { profile: Option<&'a str> },
     CredentialsFile { profile: Option<&'a str> },
@@ -101,7 +114,7 @@ enum Fallback {
     None,
 }
 
-impl<'a> CredentialOrigin<'a> {
+impl<'a> CredentialLookup<'a> {
     fn in_resolution_order(
         profile: Option<&'a str>,
         fallback: Fallback,
@@ -127,48 +140,48 @@ impl<'a> CredentialOrigin<'a> {
             .chain([Self::GithubActionsOidc])
     }
 
-    fn resolve(self) -> Result<Option<AttributedValue<AuthenticationInfo>>> {
+    fn resolve(self) -> Result<Option<SourcedCredential>> {
         match self {
             Self::Environment => AuthenticationInfo::try_from_env(),
-            Self::Keychain { profile } => AuthenticationInfo::try_from_keychain(profile),
-            Self::CredentialsFile { profile } => {
-                AuthenticationInfo::try_from_credentials_file(profile)
-            }
+            Self::Keychain { .. } | Self::CredentialsFile { .. } => Ok(self
+                .resolve_stored()?
+                .map(|found| found.map_tag(CredentialSource::Stored))),
             Self::GithubActionsOidc => AuthenticationInfo::try_from_github_actions_environment(),
         }
+    }
+
+    /// The credential in the store that this place names, if it is one.
+    fn resolve_stored(self) -> Result<Option<Tagged<AuthenticationInfo, CredentialStore>>> {
+        let store = match self {
+            Self::Keychain { profile } => Some(CredentialStore::keychain(profile)),
+            Self::CredentialsFile { profile } => CredentialStore::credentials_file(profile),
+            Self::Environment | Self::GithubActionsOidc => None,
+        };
+        store.map_or(Ok(None), CredentialStore::resolve)
     }
 }
 
 impl AuthenticationInfo {
-    fn try_from_env() -> Result<Option<AttributedValue<Self>>> {
+    fn try_from_env() -> Result<Option<SourcedCredential>> {
         if let Some(api_key) = env::var(API_KEY_VAR_NAME)? {
-            return Ok(Some(AttributedValue::EnvironmentVariable {
-                value: Self::ApiKey { api_key },
-                environment_variable_names: vec![API_KEY_VAR_NAME],
-            }));
+            return Ok(Some(Self::ApiKey { api_key }.with_tag(
+                CredentialSource::Environment {
+                    variables: vec![API_KEY_VAR_NAME],
+                },
+            )));
         }
 
         if let Some(username) = env::var(USERNAME_VAR_NAME)?
             && let Some(password) = env::var(PASSWORD_VAR_NAME)?
         {
-            return Ok(Some(AttributedValue::EnvironmentVariable {
-                value: Self::Password { username, password },
-                environment_variable_names: vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
-            }));
+            return Ok(Some(Self::Password { username, password }.with_tag(
+                CredentialSource::Environment {
+                    variables: vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
+                },
+            )));
         }
 
         Ok(None)
-    }
-
-    pub(crate) fn for_ambient_configuration_with_attribution(
-        profile: Option<&str>,
-        policy: PasswordPolicy,
-    ) -> Result<AttributedValue<Self>> {
-        match Self::find(profile, Fallback::DefaultProfile)? {
-            Some(found) => apply_password_policy(found, policy),
-            None => Err(user_error(NO_CREDENTIALS_MESSAGE)
-                .suggestion("run `snouty login` or set ANTITHESIS_API_KEY")),
-        }
     }
 
     /// The credential of `profile` itself: the environment, then the
@@ -179,20 +192,20 @@ impl AuthenticationInfo {
     /// call, and `policy` applies to a username and password.
     pub(crate) fn find_own(profile: Option<&str>, policy: PasswordPolicy) -> Result<Option<Self>> {
         Self::find(profile, Fallback::None)?
-            .map(|found| Ok(apply_password_policy(found, policy)?.extract()))
+            .map(|found| Ok(apply_password_policy(found, policy)?.untag()))
             .transpose()
     }
 
-    fn find(profile: Option<&str>, fallback: Fallback) -> Result<Option<AttributedValue<Self>>> {
-        for origin in CredentialOrigin::in_resolution_order(profile, fallback) {
-            if let Some(found) = origin.resolve()? {
+    fn find(profile: Option<&str>, fallback: Fallback) -> Result<Option<SourcedCredential>> {
+        for lookup in CredentialLookup::in_resolution_order(profile, fallback) {
+            if let Some(found) = lookup.resolve()? {
                 return Ok(Some(found));
             }
         }
         Ok(None)
     }
 
-    /// Every origin that holds a credential, in resolution order: the first is
+    /// Every credential that snouty finds, in resolution order: the first is
     /// the one every command uses, and each later one is ignored.
     ///
     /// This always opens the system keychain, and the [`PasswordPolicy`] gate
@@ -200,14 +213,14 @@ impl AuthenticationInfo {
     /// it, and only one that never authenticates with the result.
     pub(crate) fn available_ambient_credentials(
         profile: Option<&str>,
-    ) -> Result<Vec<AttributedValue<Self>>> {
+    ) -> Result<Vec<SourcedCredential>> {
         let mut found = Vec::new();
-        for origin in CredentialOrigin::in_resolution_order(profile, Fallback::DefaultProfile) {
-            match origin.resolve() {
+        for lookup in CredentialLookup::in_resolution_order(profile, Fallback::DefaultProfile) {
+            match lookup.resolve() {
                 Ok(Some(credential)) => found.push(credential),
                 Ok(None) => {}
                 // Past the first credential no command reads any further, so
-                // an unreadable origin there hides nothing. Before it, the
+                // an unreadable place there hides nothing. Before it, the
                 // failure is the one every command meets.
                 Err(_) if !found.is_empty() => {}
                 Err(err) => return Err(err),
@@ -229,12 +242,12 @@ impl AuthenticationInfo {
     /// authenticates with the result may call it.
     pub(crate) fn stored_for_profile(
         profile: Option<&str>,
-    ) -> Result<Option<AttributedValue<Self>>> {
-        for origin in [
-            CredentialOrigin::Keychain { profile },
-            CredentialOrigin::CredentialsFile { profile },
+    ) -> Result<Option<Tagged<Self, CredentialStore>>> {
+        for lookup in [
+            CredentialLookup::Keychain { profile },
+            CredentialLookup::CredentialsFile { profile },
         ] {
-            if let Some(found) = origin.resolve()? {
+            if let Some(found) = lookup.resolve_stored()? {
                 return Ok(Some(found));
             }
         }
@@ -245,7 +258,11 @@ impl AuthenticationInfo {
         profile: Option<&str>,
         policy: PasswordPolicy,
     ) -> Result<Self> {
-        Ok(Self::for_ambient_configuration_with_attribution(profile, policy)?.extract())
+        match Self::find(profile, Fallback::DefaultProfile)? {
+            Some(found) => Ok(apply_password_policy(found, policy)?.untag()),
+            None => Err(user_error(NO_CREDENTIALS_MESSAGE)
+                .suggestion("run `snouty login` or set ANTITHESIS_API_KEY")),
+        }
     }
 
     /// Whether the credential needs a [`refresh`](Self::refresh) before its
@@ -310,7 +327,7 @@ mod tests {
 
     #[test]
     fn a_named_profile_uses_the_default_profile_only_with_the_fallback() {
-        use CredentialOrigin::{CredentialsFile, Environment, GithubActionsOidc, Keychain};
+        use CredentialLookup::{CredentialsFile, Environment, GithubActionsOidc, Keychain};
         let own = [
             Environment,
             Keychain {
@@ -325,12 +342,12 @@ mod tests {
             CredentialsFile { profile: None },
         ];
         assert_eq!(
-            CredentialOrigin::in_resolution_order(Some("acme-prod"), Fallback::None)
+            CredentialLookup::in_resolution_order(Some("acme-prod"), Fallback::None)
                 .collect::<Vec<_>>(),
             [own.as_slice(), &[GithubActionsOidc]].concat(),
         );
         assert_eq!(
-            CredentialOrigin::in_resolution_order(Some("acme-prod"), Fallback::DefaultProfile)
+            CredentialLookup::in_resolution_order(Some("acme-prod"), Fallback::DefaultProfile)
                 .collect::<Vec<_>>(),
             [own.as_slice(), &default, &[GithubActionsOidc]].concat(),
         );
@@ -340,12 +357,12 @@ mod tests {
     fn the_default_profile_always_uses_its_own_entries() {
         for fallback in [Fallback::None, Fallback::DefaultProfile] {
             assert_eq!(
-                CredentialOrigin::in_resolution_order(None, fallback).collect::<Vec<_>>(),
+                CredentialLookup::in_resolution_order(None, fallback).collect::<Vec<_>>(),
                 [
-                    CredentialOrigin::Environment,
-                    CredentialOrigin::Keychain { profile: None },
-                    CredentialOrigin::CredentialsFile { profile: None },
-                    CredentialOrigin::GithubActionsOidc,
+                    CredentialLookup::Environment,
+                    CredentialLookup::Keychain { profile: None },
+                    CredentialLookup::CredentialsFile { profile: None },
+                    CredentialLookup::GithubActionsOidc,
                 ],
             );
         }

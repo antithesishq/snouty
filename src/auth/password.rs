@@ -2,8 +2,8 @@
 
 use color_eyre::{Section, eyre::Result};
 
-use super::AuthenticationInfo;
-use crate::{attributed_value::AttributedValue, error::user_error};
+use super::{AuthenticationInfo, SourcedCredential};
+use crate::error::user_error;
 
 pub(crate) const USERNAME_VAR_NAME: &str = "ANTITHESIS_USERNAME";
 pub(crate) const PASSWORD_VAR_NAME: &str = "ANTITHESIS_PASSWORD";
@@ -30,9 +30,9 @@ const PASSWORD_DEPRECATION_SUGGESTION: &str = "username/password authentication 
 /// the only place that accepts or rejects username/password credentials, so
 /// the whole deprecation policy lives here.
 pub(super) fn apply_password_policy(
-    authn_info: AttributedValue<AuthenticationInfo>,
+    authn_info: SourcedCredential,
     policy: PasswordPolicy,
-) -> Result<AttributedValue<AuthenticationInfo>> {
+) -> Result<SourcedCredential> {
     if !matches!(authn_info.value(), AuthenticationInfo::Password { .. }) {
         return Ok(authn_info);
     }

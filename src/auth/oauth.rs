@@ -9,22 +9,18 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use color_eyre::eyre::{Context, Result, eyre};
-use keyring_core::Entry;
+use color_eyre::eyre::{Context, Result};
 use log::warn;
 use serde::Deserialize;
 
 use super::{
     claims::try_get_expiry_from_token,
-    store::{
-        PersistableCredentials, construct_keychain_credential_name, parse_credentials_file_toml,
-        persist_to_file,
-    },
+    store::{CredentialStore, PersistableCredentials, keychain_entry_name},
     to_header_value,
 };
 use crate::{
     error::user_error,
-    settings::{global_settings_dir, mkdir, read_to_string_if_file_exists},
+    settings::{global_settings_dir, mkdir},
 };
 
 #[derive(Clone)]
@@ -43,22 +39,22 @@ impl std::fmt::Debug for OAuthCredential {
 }
 
 /// An OAuth access token and the refresh token that replaces it, with the
-/// origin that stores them. Clones share one credential: a refresh through
+/// store that holds them. Clones share one credential: a refresh through
 /// any clone gives every clone the new token.
 #[derive(Clone, Debug)]
 pub struct RefreshableOAuthToken {
-    origin: OAuthRefreshInfo,
+    store: CredentialStore,
     credential: Arc<RwLock<OAuthCredential>>,
 }
 
 impl RefreshableOAuthToken {
     pub(crate) fn new(
-        origin: OAuthRefreshInfo,
+        store: CredentialStore,
         antithesis_token: String,
         refresh_token: Option<String>,
     ) -> Self {
         Self {
-            origin,
+            store,
             credential: Arc::new(RwLock::new(OAuthCredential {
                 antithesis_token,
                 refresh_token,
@@ -73,7 +69,7 @@ impl RefreshableOAuthToken {
             .clone()
     }
 
-    fn store(&self, credential: OAuthCredential) {
+    fn set_credential(&self, credential: OAuthCredential) {
         *self
             .credential
             .write()
@@ -98,12 +94,12 @@ impl RefreshableOAuthToken {
     }
 
     /// Replaces the access token with a newer one, in every clone: the one
-    /// that the origin holds, when another process or refresh stored it, or
+    /// that the store holds, when another process or refresh stored it, or
     /// else a new one from the refresh endpoint at `base_url`, which the
     /// origin then stores. An advisory file lock serializes refreshes across
     /// processes, so that two do not both spend one refresh token.
     ///
-    /// Fails when there is no newer token: the origin holds the same token,
+    /// Fails when there is no newer token: the store holds the same token,
     /// and there is no refresh token, or the refresh fails.
     pub(crate) async fn refresh(&self, client: &reqwest::Client, base_url: &str) -> Result<()> {
         let held_access_token = self.access_token();
@@ -111,7 +107,7 @@ impl RefreshableOAuthToken {
         // Best-effort cross-process lock, held across the reload + refresh. If
         // we can't take it we proceed unserialized rather than fail; the lock
         // is released when `_lock` drops at the end of this scope.
-        let _lock = acquire_refresh_lock(&self.origin).await;
+        let _lock = acquire_refresh_lock(&self.store).await;
 
         // Adopt whatever is currently persisted — another process may have
         // refreshed while we waited for the lock — so any refresh below uses
@@ -119,9 +115,9 @@ impl RefreshableOAuthToken {
         if let Ok(Some(PersistableCredentials::OAuth {
             antithesis_token,
             refresh_token,
-        })) = self.origin.load()
+        })) = self.store.load()
         {
-            self.store(OAuthCredential {
+            self.set_credential(OAuthCredential {
                 antithesis_token,
                 refresh_token,
             });
@@ -146,9 +142,9 @@ impl RefreshableOAuthToken {
             // means that the previous token is still valid.
             refresh_token: Some(refreshed.refresh_token.unwrap_or(refresh_token)),
         };
-        self.store(refreshed.clone());
-        // Persist back to the origin so the refreshed tokens survive across runs.
-        if let Err(err) = self.origin.persist(PersistableCredentials::OAuth {
+        self.set_credential(refreshed.clone());
+        // Persist back to the store so the refreshed tokens survive across runs.
+        if let Err(err) = self.store.persist(PersistableCredentials::OAuth {
             antithesis_token: refreshed.antithesis_token,
             refresh_token: refreshed.refresh_token,
         }) {
@@ -164,82 +160,17 @@ struct OAuthRefreshResponse {
     refresh_token: Option<String>,
 }
 
-#[derive(Clone, Debug)]
-pub enum OAuthRefreshInfo {
-    Keychain {
-        entry_name: String,
-    },
-    CredentialsFile {
-        path: PathBuf,
-        profile: Option<String>,
-    },
-}
-
-impl OAuthRefreshInfo {
-    pub(super) fn persist(&self, credentials: PersistableCredentials) -> Result<()> {
-        match self {
-            Self::Keychain { entry_name } => {
-                let entry = Entry::new("snouty", entry_name)
-                    .wrap_err("opening keychain entry to store the refreshed credential")?;
-                entry
-                    .set_password(&serde_json::to_string(&credentials)?)
-                    .wrap_err("writing the refreshed credential to the keychain")
-            }
-            Self::CredentialsFile { path, profile } => {
-                persist_to_file(credentials, profile.as_deref(), Some(path)).map(|_| ())
-            }
-        }
-    }
-
-    /// Path of the advisory lock file guarding refreshes for this origin
+impl CredentialStore {
+    /// Path of the advisory lock file guarding refreshes for this store
     fn lock_path(&self) -> Option<PathBuf> {
+        let scope = keychain_entry_name(self.profile());
         match self {
-            Self::CredentialsFile { path, profile } => {
-                let scope = construct_keychain_credential_name(profile.as_deref());
-                Some(
-                    path.parent()?
-                        .join("locks")
-                        .join(format!("{}.{scope}.refresh.lock", path_lock_token(path))),
-                )
-            }
-            Self::Keychain { entry_name } => {
-                Some(lock_dir()?.join(format!("{entry_name}.refresh.lock")))
-            }
-        }
-    }
-
-    pub(super) fn load(&self) -> Result<Option<PersistableCredentials>> {
-        match self {
-            Self::Keychain { entry_name } => {
-                let entry = match Entry::new("snouty", entry_name) {
-                    Ok(entry) => entry,
-                    Err(keyring_core::Error::NoDefaultStore) => return Ok(None),
-                    Err(other) => return Err(eyre!("opening keychain entry: {other}")),
-                };
-                match entry.get_password() {
-                    Ok(json) => match serde_json::from_str(&json) {
-                        Ok(deserialized) => Ok(deserialized),
-                        Err(err) => {
-                            warn!(
-                                "Deserialization of the value in the keychain failed with error {err:#}"
-                            );
-                            Ok(None)
-                        }
-                    },
-                    Err(keyring_core::Error::NoEntry) => Ok(None),
-                    Err(err) => {
-                        warn!("keychain lookup for entry {entry_name} failed: {err}");
-                        Ok(None)
-                    }
-                }
-            }
-            Self::CredentialsFile { path, profile } => {
-                let Some(contents) = read_to_string_if_file_exists(path)? else {
-                    return Ok(None);
-                };
-                let parsed = parse_credentials_file_toml(&contents, path)?;
-                Ok(parsed.for_profile(profile.as_deref()))
-            }
+            Self::CredentialsFile { path, .. } => Some(
+                path.parent()?
+                    .join("locks")
+                    .join(format!("{}.{scope}.refresh.lock", path_lock_token(path))),
+            ),
+            Self::Keychain { .. } => Some(lock_dir()?.join(format!("{scope}.refresh.lock"))),
         }
     }
 }
@@ -250,8 +181,8 @@ impl OAuthRefreshInfo {
 /// keychain), so it serializes regardless of where the credential is stored.
 /// `None` means no lock could be established and the caller should proceed
 /// unserialized rather than fail.
-async fn acquire_refresh_lock(refresh_info: &OAuthRefreshInfo) -> Option<std::fs::File> {
-    let path = refresh_info.lock_path()?;
+async fn acquire_refresh_lock(store: &CredentialStore) -> Option<std::fs::File> {
+    let path = store.lock_path()?;
     // `File::lock` blocks until granted, so acquire on the blocking pool to keep
     // the runtime thread moving while another process holds the lock.
     tokio::task::spawn_blocking(move || {
@@ -382,8 +313,8 @@ mod tests {
         // The origin already holds a newer credential — as though a *different*
         // snouty process refreshed while we held the stale one.
         let creds_dir = tempfile::TempDir::new().unwrap();
-        let refresh_info = credentials_file_in(creds_dir.path());
-        refresh_info
+        let store = credentials_file_in(creds_dir.path());
+        store
             .persist(PersistableCredentials::OAuth {
                 antithesis_token: FAKE_ACCESS_TOKEN_B.to_owned(),
                 refresh_token: Some(FAKE_REFRESH_TOKEN_B.to_owned()),
@@ -392,7 +323,7 @@ mod tests {
 
         // The token holds the stale token (as if it just expired / 401'd).
         let token = RefreshableOAuthToken::new(
-            refresh_info,
+            store,
             FAKE_ACCESS_TOKEN_A.to_owned(),
             Some(FAKE_REFRESH_TOKEN_A.to_owned()),
         );
@@ -404,7 +335,7 @@ mod tests {
         // happened.
         assert!(
             server.received_requests().await.unwrap().is_empty(),
-            "must not refresh when the origin already holds a newer token"
+            "must not refresh when the store already holds a newer token"
         );
         let in_memory = clone.current();
         assert_eq!(in_memory.antithesis_token, FAKE_ACCESS_TOKEN_B);
@@ -428,8 +359,8 @@ mod tests {
         // The origin holds a newer credential, which `auth_header` must not
         // adopt either.
         let creds_dir = tempfile::TempDir::new().unwrap();
-        let refresh_info = credentials_file_in(creds_dir.path());
-        refresh_info
+        let store = credentials_file_in(creds_dir.path());
+        store
             .persist(PersistableCredentials::OAuth {
                 antithesis_token: FAKE_ACCESS_TOKEN_B.to_owned(),
                 refresh_token: Some(FAKE_REFRESH_TOKEN_B.to_owned()),
@@ -437,7 +368,7 @@ mod tests {
             .unwrap();
         let expired_token = paseto_expiring_in(-chrono::TimeDelta::minutes(1));
         let token = RefreshableOAuthToken::new(
-            refresh_info,
+            store,
             expired_token.clone(),
             Some(FAKE_REFRESH_TOKEN_A.to_owned()),
         );
@@ -451,15 +382,9 @@ mod tests {
 
     #[test]
     fn expired_is_true_when_the_oauth_access_token_is_past_its_exp() {
-        let refresh_info = OAuthRefreshInfo::Keychain {
-            entry_name: "unused".to_owned(),
-        };
+        let store = CredentialStore::Keychain { profile: None };
         let oauth = |token: String| {
-            RefreshableOAuthToken::new(
-                refresh_info.clone(),
-                token,
-                Some(FAKE_REFRESH_TOKEN_A.to_owned()),
-            )
+            RefreshableOAuthToken::new(store.clone(), token, Some(FAKE_REFRESH_TOKEN_A.to_owned()))
         };
         assert!(oauth(paseto_expiring_in(-chrono::TimeDelta::minutes(1))).expired());
         assert!(!oauth(paseto_expiring_in(chrono::TimeDelta::minutes(1))).expired());
@@ -469,17 +394,15 @@ mod tests {
 
     #[test]
     fn expires_at_is_the_exp_of_an_oauth_access_token() {
-        let refresh_info = OAuthRefreshInfo::Keychain {
-            entry_name: "unused".to_owned(),
-        };
+        let store = CredentialStore::Keychain { profile: None };
         let token = public_paseto_with_claims(br#"{"exp":"2039-01-01T00:00:00+00:00"}"#);
-        let oauth = RefreshableOAuthToken::new(refresh_info.clone(), token, None);
+        let oauth = RefreshableOAuthToken::new(store.clone(), token, None);
         assert_eq!(
             oauth.expires_at(),
             Some("2039-01-01T00:00:00Z".parse().unwrap())
         );
         // An access token whose expiry cannot be read.
-        let opaque = RefreshableOAuthToken::new(refresh_info, FAKE_ACCESS_TOKEN_A.to_owned(), None);
+        let opaque = RefreshableOAuthToken::new(store, FAKE_ACCESS_TOKEN_A.to_owned(), None);
         assert_eq!(opaque.expires_at(), None);
     }
 }

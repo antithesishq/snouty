@@ -13,66 +13,113 @@ use log::warn;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 
-use super::{
-    AuthenticationInfo, OAuthRefreshInfo, RefreshableOAuthToken, claims::try_get_expiry_from_token,
-};
+use super::{AuthenticationInfo, RefreshableOAuthToken, claims::try_get_expiry_from_token};
 use crate::{
-    attributed_value::AttributedValue,
     settings::{
         back_up_unparsable_file, global_settings_dir, mkdir, read_to_string_if_file_exists,
     },
+    tag::{Tag, Tagged},
 };
 
 const CREDENTIALS_FILENAME: &str = "credentials.toml";
 
-impl AuthenticationInfo {
-    pub(super) fn try_from_keychain(
-        profile: Option<&str>,
-    ) -> Result<Option<AttributedValue<Self>>> {
-        let entry_name = construct_keychain_credential_name(profile);
-        let refresh_info = OAuthRefreshInfo::Keychain {
-            entry_name: entry_name.clone(),
-        };
-        if let Some(found) = refresh_info.load()? {
-            Ok(Some(AttributedValue::Keychain {
-                value: found.convert_to_authentication_info(refresh_info),
-                entry_name,
-            }))
-        } else {
-            Ok(None)
+/// A place that `snouty login` stores the credential of one profile. An
+/// OAuth refresh writes the new token back to the same place.
+#[derive(Clone, Debug)]
+pub(crate) enum CredentialStore {
+    Keychain {
+        profile: Option<String>,
+    },
+    CredentialsFile {
+        path: PathBuf,
+        profile: Option<String>,
+    },
+}
+
+impl CredentialStore {
+    /// The named profile, or `None` for the default profile.
+    pub(crate) fn profile(&self) -> Option<&str> {
+        match self {
+            Self::Keychain { profile } | Self::CredentialsFile { profile, .. } => {
+                profile.as_deref()
+            }
         }
     }
 
-    pub(super) fn try_from_credentials_file(
-        profile: Option<&str>,
-    ) -> Result<Option<AttributedValue<Self>>> {
-        let Some((path, parsed)) = try_load_credentials_file()? else {
-            return Ok(None);
-        };
-        Ok(parsed
-            .for_profile(profile)
-            .map(|credentials| AttributedValue::SettingsFile {
-                value: credentials.convert_to_authentication_info(
-                    OAuthRefreshInfo::CredentialsFile {
-                        path: path.clone(),
-                        profile: profile.map(str::to_owned),
+    pub(super) fn load(&self) -> Result<Option<PersistableCredentials>> {
+        match self {
+            Self::Keychain { profile } => {
+                let entry_name = keychain_entry_name(profile.as_deref());
+                let entry = match Entry::new("snouty", &entry_name) {
+                    Ok(entry) => entry,
+                    Err(keyring_core::Error::NoDefaultStore) => return Ok(None),
+                    Err(other) => return Err(eyre!("opening keychain entry: {other}")),
+                };
+                match entry.get_password() {
+                    Ok(json) => match serde_json::from_str(&json) {
+                        Ok(deserialized) => Ok(deserialized),
+                        Err(err) => {
+                            warn!(
+                                "Deserialization of the value in the keychain failed with error {err:#}"
+                            );
+                            Ok(None)
+                        }
                     },
-                ),
-                settings_file_path: path,
-                profile: profile.map(str::to_owned),
-            }))
+                    Err(keyring_core::Error::NoEntry) => Ok(None),
+                    Err(err) => {
+                        warn!("keychain lookup for entry {entry_name} failed: {err}");
+                        Ok(None)
+                    }
+                }
+            }
+            Self::CredentialsFile { path, profile } => {
+                let Some(contents) = read_to_string_if_file_exists(path)? else {
+                    return Ok(None);
+                };
+                let parsed = parse_credentials_file_toml(&contents, path)?;
+                Ok(parsed.for_profile(profile.as_deref()))
+            }
+        }
     }
-}
 
-fn try_load_credentials_file() -> Result<Option<(PathBuf, CredentialsFile)>> {
-    if let Some((_dir, path)) = try_get_credentials_file_path()
-        && let Some(contents) = read_to_string_if_file_exists(&path)?
-    {
-        let parsed = parse_credentials_file_toml(&contents, &path)?;
-        return Ok(Some((path, parsed)));
+    pub(super) fn persist(&self, credentials: PersistableCredentials) -> Result<()> {
+        match self {
+            Self::Keychain { profile } => {
+                let entry = Entry::new("snouty", &keychain_entry_name(profile.as_deref()))
+                    .wrap_err("opening keychain entry to store the refreshed credential")?;
+                entry
+                    .set_password(&serde_json::to_string(&credentials)?)
+                    .wrap_err("writing the refreshed credential to the keychain")
+            }
+            Self::CredentialsFile { path, profile } => {
+                persist_to_file(credentials, profile.as_deref(), Some(path)).map(|_| ())
+            }
+        }
     }
 
-    Ok(None)
+    /// The credential that this store holds, tagged with this store.
+    pub(super) fn resolve(self) -> Result<Option<Tagged<AuthenticationInfo, Self>>> {
+        Ok(self.load()?.map(|found| {
+            found
+                .convert_to_authentication_info(self.clone())
+                .with_tag(self)
+        }))
+    }
+
+    pub(super) fn keychain(profile: Option<&str>) -> Self {
+        Self::Keychain {
+            profile: profile.map(str::to_owned),
+        }
+    }
+
+    /// The credentials file in the global settings dir, for `profile`.
+    /// `None` when the global settings dir is unknown.
+    pub(super) fn credentials_file(profile: Option<&str>) -> Option<Self> {
+        try_get_credentials_file_path().map(|(_dir, path)| Self::CredentialsFile {
+            path,
+            profile: profile.map(str::to_owned),
+        })
+    }
 }
 
 fn try_get_credentials_file_path() -> Option<(PathBuf, PathBuf)> {
@@ -125,14 +172,14 @@ impl std::fmt::Debug for PersistableCredentials {
 }
 
 impl PersistableCredentials {
-    fn convert_to_authentication_info(self, refresh_info: OAuthRefreshInfo) -> AuthenticationInfo {
+    fn convert_to_authentication_info(self, store: CredentialStore) -> AuthenticationInfo {
         match self {
             Self::ApiKey { api_key } => AuthenticationInfo::ApiKey { api_key },
             Self::OAuth {
                 antithesis_token,
                 refresh_token,
             } => AuthenticationInfo::OAuth(RefreshableOAuthToken::new(
-                refresh_info,
+                store,
                 antithesis_token,
                 refresh_token,
             )),
@@ -160,36 +207,36 @@ pub fn initialize_credential_store() -> Result<()> {
     Ok(())
 }
 
+/// Stores `credentials` for `profile`, and returns where it stored them.
 pub(crate) fn persist(
     credentials: PersistableCredentials,
     profile: Option<&str>,
-) -> Result<AttributedValue<()>> {
-    match try_persist_to_keychain(&credentials, profile) {
-        Err(err) => Err(err),
-        Ok(Some(entry_name)) => Ok(AttributedValue::Keychain {
-            value: (),
-            entry_name,
-        }),
-        Ok(None) => {
-            persist_to_file(credentials, profile, None).map(|path| AttributedValue::SettingsFile {
-                value: (),
-                settings_file_path: path,
-                profile: profile.map(str::to_owned),
-            })
-        }
+) -> Result<CredentialStore> {
+    let profile_owned = profile.map(str::to_owned);
+    if try_persist_to_keychain(&credentials, profile)? {
+        return Ok(CredentialStore::Keychain {
+            profile: profile_owned,
+        });
     }
+    let path = persist_to_file(credentials, profile, None)?;
+    Ok(CredentialStore::CredentialsFile {
+        path,
+        profile: profile_owned,
+    })
 }
 
+/// Whether the keychain stored `credentials`: `false` when there is no
+/// keychain.
 fn try_persist_to_keychain(
     credentials: &PersistableCredentials,
     profile: Option<&str>,
-) -> Result<Option<String>> {
-    let credential_name = construct_keychain_credential_name(profile);
+) -> Result<bool> {
+    let credential_name = keychain_entry_name(profile);
 
     let credential = match Entry::new("snouty", credential_name.as_str()) {
         Ok(cred) => Ok(cred),
         // A NoDefaultStore error indicates that the version of initialize_credential_store() selected by the compiler was a no-op
-        Err(keyring_core::Error::NoDefaultStore) => return Ok(None),
+        Err(keyring_core::Error::NoDefaultStore) => return Ok(false),
         Err(other) => Err(other),
     }?;
 
@@ -197,10 +244,11 @@ fn try_persist_to_keychain(
 
     clear_from_file_if_present(profile);
 
-    Ok(Some(credential_name))
+    Ok(true)
 }
 
-pub(super) fn construct_keychain_credential_name(profile: Option<&str>) -> String {
+/// The name of the keychain entry that holds the credential of `profile`.
+pub(crate) fn keychain_entry_name(profile: Option<&str>) -> String {
     profile.map_or_else(|| "_default_".to_owned(), |p| format!("profile_{p}"))
 }
 

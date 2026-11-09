@@ -20,6 +20,11 @@ impl<V, T> Tagged<V, T> {
         &self.tag
     }
 
+    /// The same value with the tag that `f` makes from this tag.
+    pub fn map_tag<U>(self, f: impl FnOnce(T) -> U) -> Tagged<V, U> {
+        Tagged::new(self.value, f(self.tag))
+    }
+
     /// The inner value, dropping the tag.
     pub fn untag(self) -> V {
         self.value

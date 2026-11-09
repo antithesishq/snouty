@@ -235,26 +235,35 @@ async fn validate_compose(
     let override_path = generate_setup_override(&contents, temp_dir)?;
     let overlay = Some(override_path.as_path());
 
-    // Refuse to start over a project that already has containers — leftovers
-    // from a `--keep-running` session or a crashed run whose cleanup never
-    // fired. Discovery lists this project's containers, so a previous run's
-    // could be read in place of this run's, and published host ports would
-    // collide anyway. Tearing them down ourselves could destroy state the
-    // user kept on purpose, so name the command and leave the destructive
-    // step to them.
+    // Refuse to start over a project that already has containers or volumes —
+    // leftovers from a `--keep-running` session or a crashed run whose cleanup
+    // never fired. Discovery lists this project's containers, so a previous
+    // run's could be read in place of this run's, and published host ports
+    // would collide anyway. A previous run's volumes would make this run start
+    // on its state, where Antithesis starts on fresh volumes. Tearing them down
+    // ourselves could destroy state the user kept on purpose, so name the
+    // command and leave the destructive step to them.
     let leftovers = compose.ps(overlay)?;
+    let leftover_volumes = rt.compose_project_volumes(&compose.project_name()?)?;
+    let mut found = Vec::new();
     if !leftovers.is_empty() {
         let services: BTreeSet<&str> = leftovers.iter().map(|c| c.service.as_str()).collect();
         let services = services.into_iter().collect::<Vec<_>>().join(", ");
+        found.push(format!("containers (services: {services})"));
+    }
+    if !leftover_volumes.is_empty() {
+        found.push(format!("volumes ({})", leftover_volumes.join(", ")));
+    }
+    if !found.is_empty() {
+        let found = found.join(" and ");
         return Err(eyre!(
-            "this compose project already has containers (services: {services}), \
-             likely left over from a previous run"
+            "this compose project already has {found}, likely left over from a previous run"
         ))
         .with_suggestion(|| {
             // down_hint(None), not (overlay): this run's override file is
             // deleted when the process exits, so a hint naming it would not
             // be runnable. The overlay adds no services, so a `down` against
-            // the base file alone removes every leftover container.
+            // the base file alone removes every leftover container and volume.
             format!(
                 "bring the project down first, then re-run validate:\n  {}",
                 compose.down_hint(None)
@@ -264,7 +273,7 @@ async fn validate_compose(
 
     if keep_running {
         eprintln!(
-            "Note: --keep-running is set. When done, bring containers down with:\n  {}\n",
+            "Note: --keep-running is set. When done, bring the project down with:\n  {}\n",
             compose.down_hint(overlay),
         );
     }

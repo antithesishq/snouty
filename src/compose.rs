@@ -324,7 +324,7 @@ impl DockerCompose {
         if let Some(overlay) = overlay {
             let _ = write!(hint, " -f {}", abs(overlay).display());
         }
-        hint.push_str(" down");
+        hint.push_str(" down --volumes --remove-orphans");
         hint
     }
 
@@ -383,6 +383,19 @@ impl DockerCompose {
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    /// The compose project name: the top-level `name`, or else the config
+    /// directory's name.
+    pub fn project_name(&self) -> Result<String> {
+        // Parsed as YAML: `compose config` emits YAML by default.
+        let yaml = self.config(None, &[])?;
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(&yaml).wrap_err("failed to parse docker-compose.yaml")?;
+        doc.get("name")
+            .and_then(serde_yaml::Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| eyre!("'{} config' printed no project name", self.cli))
     }
 
     /// Resolve and parse the compose config into structured contents.
@@ -502,9 +515,14 @@ impl DockerCompose {
         self.spawn_inherited(overlay, &["up", "--no-build", "--pull=never"])
     }
 
-    /// Run `compose down` for cleanup. Best-effort, ignores errors.
+    /// Run `compose down` for cleanup, which also removes the project's named
+    /// volumes: Antithesis starts every run on fresh volumes, so the next
+    /// validate must too. Best-effort, ignores errors.
     pub fn down(&self, overlay: Option<&Path>) {
-        let mut cmd = self.command(overlay, &["down", "--timeout", "0"]);
+        let mut cmd = self.command(
+            overlay,
+            &["down", "--volumes", "--remove-orphans", "--timeout", "0"],
+        );
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::null());
         cmd.stderr(std::process::Stdio::null());
@@ -2624,7 +2642,7 @@ services:
             compose.down_hint(Some(Path::new("/tmp/override.yml"))),
             format!(
                 "DOCKER_HOST=unix:///run/podman.sock docker compose \
-                 -f {}/docker-compose.yaml -f /tmp/override.yml down",
+                 -f {}/docker-compose.yaml -f /tmp/override.yml down --volumes --remove-orphans",
                 dir.path().display()
             ),
         );
@@ -2641,7 +2659,7 @@ services:
         assert_eq!(
             compose.down_hint(None),
             format!(
-                "docker-compose -f {}/docker-compose.yaml down",
+                "docker-compose -f {}/docker-compose.yaml down --volumes --remove-orphans",
                 dir.path().display()
             ),
         );

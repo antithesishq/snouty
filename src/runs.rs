@@ -1685,7 +1685,7 @@ async fn cmd_runs_build_logs(
         Ok(stream) => stream.untag(),
         Err(err) => return Err(explain_run_scoped_error(&api, run_id, err).await),
     };
-    let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode);
+    let lines = event_search::render_event_stream(stream, mode);
     print_event_lines(lines, mode, "No build logs for this run.", None).await
 }
 
@@ -1718,10 +1718,7 @@ async fn cmd_runs_search(
         api.search_run_events_query(&args.run_id, &args.query, search)
     })
     .await?;
-    // A user-written DSL pipeline can reshape rows into any object,
-    // `{"error": ...}` included, so this stream must not guess that such a
-    // row is the server's Stream_Error signal.
-    let lines = event_search::render_event_stream(stream, ErrorRows::Data, mode);
+    let lines = event_search::render_event_stream(stream, mode);
     print_event_lines(lines, mode, "No events matched the query.", limit).await
 }
 
@@ -1757,7 +1754,7 @@ async fn cmd_runs_events(
         api.search_run_events_query(run_id, &query, search)
     })
     .await?;
-    let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode);
+    let lines = event_search::render_event_stream(stream, mode);
     print_event_lines(
         lines,
         mode,
@@ -1785,7 +1782,7 @@ async fn cmd_runs_logs(
     // A moment with no logs (e.g. a manually-supplied 0/0 placeholder)
     // yields an empty stream; the pipeline says so in text mode rather
     // than printing nothing.
-    let lines = event_search::render_event_stream(stream, ErrorRows::Abort, mode);
+    let lines = event_search::render_event_stream(stream, mode);
     print_event_lines(lines, mode, "No log lines at this moment.", None).await
 }
 
@@ -2244,7 +2241,7 @@ async fn exec_when_ready(
     // does. Every other line is shown as it arrives.
     let mut held: Option<(Value, ExecResult)> = None;
     let mut rewarm: Option<RewarmDisplay> = None;
-    let mut lines = event_lines(stream, ErrorRows::Abort);
+    let mut lines = event_lines(stream);
     while let Some(mut entry) = lines.try_next().await? {
         if let Some((line, _)) = held.take() {
             render_exec_event(&line, json, renderer.as_mut())?;
@@ -2350,39 +2347,21 @@ fn stream_error_message(entry: &Value) -> Option<&str> {
     obj.get("error")?.as_str()
 }
 
-/// What a `{"error": "..."}` line without a data envelope means for a
-/// stream. Every fixed-schema stream (logs, build logs, events) aborts on
-/// one: it is the server's out-of-band failure signal
-/// ([`stream_error_message`]). A user-written event-set pipeline is the
-/// exception — map/narrow/fold can legitimately reshape a result row into
-/// exactly that shape (`map(ev => ({error: ev.output_text}))`), so a DSL
-/// query's stream passes such rows through as data rather than guessing.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum ErrorRows {
-    Abort,
-    Data,
-}
-
 /// The failure a `Stream_Error` line becomes.
 fn mid_stream_error(message: &str) -> color_eyre::eyre::Report {
     eyre!("the server reported an error mid-stream: {message}")
         .note("output produced before the error may be incomplete")
 }
 
-/// Event lines ready to consume: the `Stream_Error` policy applied and
+/// Event lines ready to consume: a `Stream_Error` line fails the stream, and
 /// `moment.vtime` normalized to an exact JSON number. Commands whose
 /// contract is *raw* output use [`raw_lines`] instead — normalization is not
 /// their happy case.
-fn event_lines(
-    stream: JsonStream,
-    error_rows: ErrorRows,
-) -> impl futures_util::Stream<Item = Result<Value>> + Unpin {
+fn event_lines(stream: JsonStream) -> impl futures_util::Stream<Item = Result<Value>> + Unpin {
     use futures_util::StreamExt;
-    stream.map(move |line| {
+    stream.map(|line| {
         let mut value = line?;
-        if error_rows == ErrorRows::Abort
-            && let Some(message) = stream_error_message(&value)
-        {
+        if let Some(message) = stream_error_message(&value) {
             return Err(mid_stream_error(message));
         }
         normalize_vtime_field(&mut value, "moment");
@@ -2392,19 +2371,14 @@ fn event_lines(
 
 /// Raw lines: each parsed value serialized back out unmodified (no vtime
 /// normalization — `serde_json`'s `float_roundtrip` keeps the round-trip
-/// faithful). A `Stream_Error` record still fails the command per
-/// `error_rows`: it is the server aborting the stream, so even raw modes
-/// must not present it (and whatever follows it never arrives) as data.
-fn raw_lines(
-    stream: JsonStream,
-    error_rows: ErrorRows,
-) -> impl futures_util::Stream<Item = Result<String>> + Unpin {
+/// faithful). A `Stream_Error` record still fails the command: it is the
+/// server aborting the stream, so even raw modes must not present it (and
+/// whatever follows it never arrives) as data.
+fn raw_lines(stream: JsonStream) -> impl futures_util::Stream<Item = Result<String>> + Unpin {
     use futures_util::StreamExt;
-    stream.map(move |line| {
+    stream.map(|line| {
         let value = line?;
-        if error_rows == ErrorRows::Abort
-            && let Some(message) = stream_error_message(&value)
-        {
+        if let Some(message) = stream_error_message(&value) {
             return Err(mid_stream_error(message));
         }
         Ok(value.to_string())

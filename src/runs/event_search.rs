@@ -29,7 +29,7 @@ use crate::ndjson::JsonStream;
 use crate::stdio;
 
 use super::ready::{self, Needs, RetryDecision, RetryPolicy};
-use super::{ErrorRows, FaultAnnotator, READY_POLL, event_lines, raw_lines};
+use super::{FaultAnnotator, READY_POLL, event_lines, raw_lines};
 
 /// How an event-stream command prints its rows. The illegal flag
 /// combinations (`--raw` without `--json`, `--detail` with `--json`) are
@@ -60,17 +60,16 @@ impl EventOutput {
 /// [`super::print_event_lines`].
 pub(super) fn render_event_stream(
     stream: JsonStream,
-    error_rows: ErrorRows,
     output: EventOutput,
 ) -> BoxStream<'static, Result<String>> {
     match output {
-        EventOutput::Json { raw: true, .. } => raw_lines(stream, error_rows).boxed(),
+        EventOutput::Json { raw: true, .. } => raw_lines(stream).boxed(),
         EventOutput::Json {
             raw: false,
             annotate_faults,
         } => {
             let mut annotator = annotate_faults.then(FaultAnnotator::default);
-            event_lines(stream, error_rows)
+            event_lines(stream)
                 .map_ok(move |mut entry| {
                     if let Some(annotator) = &mut annotator {
                         annotator.annotate(&mut entry);
@@ -81,7 +80,7 @@ pub(super) fn render_event_stream(
         }
         EventOutput::Text { detail } => {
             let mut renderer = EventStreamRenderer::new(detail);
-            event_lines(stream, error_rows)
+            event_lines(stream)
                 .map_ok(move |entry| renderer.render_entry(&entry))
                 .boxed()
         }
@@ -162,8 +161,7 @@ where
 /// Annotate an events-search error for `run`. `run` must exist and be ready
 /// or terminal. Releases before [`MIN_SEARCH_RELEASE`] do not serve the
 /// endpoint and answer 404 with an unhelpful "Resource not found", so the
-/// error gets a suggestion that names the release. A 400 comes from the query
-/// or from an out-of-range `limit`, so its note does not blame the query alone.
+/// error gets a suggestion that names the release.
 fn explain_search_error(
     run: &RunDetail,
     err: color_eyre::eyre::Report,
@@ -176,10 +174,6 @@ fn explain_search_error(
                  API as documented; `snouty doctor` reports the tenant release"
             ))
         }
-        Some(400) => err.note(
-            "the server rejected the request; its message above says which part \
-             — for a query, check the event-set DSL syntax",
-        ),
         _ => err,
     }
 }

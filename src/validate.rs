@@ -244,7 +244,11 @@ async fn validate_compose(
     // ourselves could destroy state the user kept on purpose, so name the
     // command and leave the destructive step to them.
     let leftovers = compose.ps(overlay)?;
-    let leftover_volumes = rt.compose_project_volumes(&compose.project_name()?)?;
+    let project_name = contents
+        .project_name
+        .as_deref()
+        .ok_or_else(|| eyre!("compose config printed no project name"))?;
+    let leftover_volumes = rt.compose_project_volumes(project_name)?;
     let mut found = Vec::new();
     if !leftovers.is_empty() {
         let services: BTreeSet<&str> = leftovers.iter().map(|c| c.service.as_str()).collect();

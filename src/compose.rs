@@ -385,19 +385,6 @@ impl DockerCompose {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
-    /// The compose project name: the top-level `name`, or else the config
-    /// directory's name.
-    pub fn project_name(&self) -> Result<String> {
-        // Parsed as YAML: `compose config` emits YAML by default.
-        let yaml = self.config(None, &[])?;
-        let doc: serde_yaml::Value =
-            serde_yaml::from_str(&yaml).wrap_err("failed to parse docker-compose.yaml")?;
-        doc.get("name")
-            .and_then(serde_yaml::Value::as_str)
-            .map(str::to_string)
-            .ok_or_else(|| eyre!("'{} config' printed no project name", self.cli))
-    }
-
     /// Resolve and parse the compose config into structured contents.
     pub fn contents(&self, overlay: Option<&Path>) -> Result<ComposeContents> {
         let yaml = self.config(overlay, &[])?;
@@ -902,6 +889,9 @@ pub struct ComposeService {
 /// Parsed contents of a compose config file.
 #[derive(Debug)]
 pub struct ComposeContents {
+    /// The project name `compose config` resolved: the top-level `name`, or
+    /// else the config directory's name.
+    pub project_name: Option<String>,
     /// One entry per service with an explicit `image:` field.
     pub services: Vec<ComposeService>,
     /// Names of services without an explicit `image:` field.
@@ -962,6 +952,10 @@ pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
     networks.sort();
 
     Ok(ComposeContents {
+        project_name: doc
+            .get("name")
+            .and_then(serde_yaml::Value::as_str)
+            .map(str::to_string),
         services,
         services_without_image,
         build_services,
@@ -2258,6 +2252,7 @@ services:
     /// of services that have a `build:` stanza.
     fn contents_of(services: &[(&str, &str)], build_services: &[&str]) -> ComposeContents {
         ComposeContents {
+            project_name: None,
             services: services
                 .iter()
                 .map(|(name, image)| ComposeService {

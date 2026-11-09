@@ -57,12 +57,10 @@ only. An SDK assertion's message is in ev.antithesis_assert.message, and a
 test-composer command is in ev.command. In JS, read every field from `ev`, e.g.
 `ev.source.container` or `ev.moment.vtime`.
 
-Each verb outputs events, so the result of a JS function in map, flatmap, or
-fold must be an input event, or an input event with fields that
-ev.add_fields({...}) adds or changes. narrow also outputs events. Every event
-keeps its moment: add_fields cannot change it, and narrow keeps it. The query
-fails when a function returns a new object, even one that copies the moment,
-such as `ev => ({moment: ev.moment, n: 1})`.
+A query can only filter its input events and change their fields. It cannot
+replace an event or construct a new one. In map, flatmap, and fold, return ev,
+or ev with fields added or changed, such as ev.add_fields({...}). The query
+fails when a function returns a new object.
 
 fold: the reducer takes the state s and one event ev, and returns [events, s'].
 events is an array of the events to output: [ev] outputs ev, [] outputs nothing,
@@ -107,9 +105,9 @@ Query snippets (each is a complete QUERY, ready to paste):
   # each crash annotated with the nearest earlier fault (field last_fault)
   contains({output_text: "fatal"}).with_last({fault: filter(ev => ev.fault)})
 
-  # each error with the text after "error:" (field msg)
-  contains({output_text: "error:"}).map(ev =>
-    ev.add_fields({msg: ev.output_text.replace(/^.*?error:\s*/, "")}))
+  # each error's log text, cut to the part after "error:"
+  contains({output_text: "error:"}).map(ev => ev.add_fields(
+    {output_text: ev.output_text.replace(/^.*?error:\s*/, "")}))
 
   # errors numbered in order within each timeline (field n)
   contains({output_text: "error"})
@@ -129,7 +127,9 @@ VTIME and the source print whole, and indented lines under an event give its
 source location, as `@ file:function:line`, and the details that it carries,
 such as an SDK assertion's details, as `details {...}`.
 
-Events changed by map, narrow or fold print as raw JSON.
+In text output, an event without its source, such as one from narrow, prints as
+raw JSON, and the fields that add_fields adds to a log event do not show. --json
+shows every field.
 
 Add --count to print how many events in the whole run match the query, instead
 of a sample. No limit applies.

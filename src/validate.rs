@@ -235,14 +235,12 @@ async fn validate_compose(
     let override_path = generate_setup_override(&contents, temp_dir)?;
     let overlay = Some(override_path.as_path());
 
-    // Refuse to start over a project that already has containers or volumes —
-    // leftovers from a `--keep-running` session or a crashed run whose cleanup
-    // never fired. Discovery lists this project's containers, so a previous
-    // run's could be read in place of this run's, and published host ports
-    // would collide anyway. A previous run's volumes would make this run start
-    // on its state, where Antithesis starts on fresh volumes. Tearing them down
-    // ourselves could destroy state the user kept on purpose, so name the
-    // command and leave the destructive step to them.
+    // Refuse to start over leftover containers or volumes from a
+    // `--keep-running` session or a crashed run. Old containers can be
+    // discovered in place of this run's, and their published ports collide.
+    // Old volumes start this run on stale state; Antithesis starts on fresh
+    // volumes. Removing them could destroy state the user kept on purpose, so
+    // print the command and let the user run it.
     let leftovers = compose.ps(overlay)?;
     let project_name = contents
         .project_name
@@ -264,10 +262,9 @@ async fn validate_compose(
             "this compose project already has {found}, likely left over from a previous run"
         ))
         .with_suggestion(|| {
-            // down_hint(None), not (overlay): this run's override file is
-            // deleted when the process exits, so a hint naming it would not
-            // be runnable. The overlay adds no services, so a `down` against
-            // the base file alone removes every leftover container and volume.
+            // Omit the overlay: this run deletes it on exit. The overlay adds
+            // no services, so `down` on the base file removes every leftover
+            // container and volume.
             format!(
                 "bring the project down first, then re-run validate:\n  {}",
                 compose.down_hint(None)

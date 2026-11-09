@@ -502,9 +502,9 @@ impl DockerCompose {
         self.spawn_inherited(overlay, &["up", "--no-build", "--pull=never"])
     }
 
-    /// Run `compose down` for cleanup, which also removes the project's named
-    /// volumes: Antithesis starts every run on fresh volumes, so the next
-    /// validate must too. Best-effort, ignores errors.
+    /// Run `compose down`, removing the project's named volumes and orphan
+    /// containers so the next run starts fresh, as on Antithesis. Best-effort;
+    /// ignores errors.
     pub fn down(&self, overlay: Option<&Path>) {
         let mut cmd = self.command(
             overlay,
@@ -889,8 +889,7 @@ pub struct ComposeService {
 /// Parsed contents of a compose config file.
 #[derive(Debug)]
 pub struct ComposeContents {
-    /// The project name `compose config` resolved: the top-level `name`, or
-    /// else the config directory's name.
+    /// The top-level `name` from `compose config` output, if present.
     pub project_name: Option<String>,
     /// One entry per service with an explicit `image:` field.
     pub services: Vec<ComposeService>,

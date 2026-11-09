@@ -172,12 +172,8 @@ pub(super) async fn cmd_runs_usage(
                 None => missing.push(run_id),
             }
         }
-        if json {
-            for row in &rows {
-                outln!("{}", serde_json::to_string(row)?)?;
-            }
-        } else if !rows.is_empty() {
-            outln!("{}", render_usage_table(&rows, terminal_width()))?;
+        if !rows.is_empty() {
+            print_rows(&rows, json, None, "results", render_usage_table)?;
         }
         for run_id in &missing {
             eprintln!("No usage found for {}.", sanitize(run_id));
@@ -274,10 +270,9 @@ pub(super) async fn cmd_runs_usage(
 }
 
 /// The `limit` runs that ended first at or after `after`, in the order that
-/// they ended. The
-/// endpoint sends the newest runs first, so this reads windows of end times
-/// forward from `after`, each twice as long as the one before, until they hold
-/// `limit` runs or pass the present.
+/// they ended. The endpoint sends the newest runs first, so this reads windows
+/// of end times forward from `after`, each twice as long as the one before,
+/// until they hold `limit` runs or pass the present.
 async fn oldest_entries(
     api: &AntithesisApi,
     after: DateTime<Utc>,

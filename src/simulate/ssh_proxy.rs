@@ -47,7 +47,7 @@ mod tests {
     fn proxy_command_preserves_shell_arguments(tc: hegel::TestCase) {
         let suffix = tc.draw(hegel::generators::text());
         let path = format!("/tmp/space ' \" $HOME `echo bad` %h \\ {suffix}");
-        let command = proxy_command(Path::new("/bin/printf"), Path::new(&path));
+        let command = proxy_command(Path::new("printf"), Path::new(&path));
         if path.contains(['\n', '\r']) {
             assert!(command.is_err());
             return;

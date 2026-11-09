@@ -8,7 +8,7 @@ import tempfile
 import time
 
 
-STUB = '''#!/usr/bin/env python3
+STUB = '''
 import os
 from pathlib import Path
 import sys
@@ -32,7 +32,7 @@ def run_case(mode: str) -> None:
         bin_dir = root / "bin"
         bin_dir.mkdir()
         stub = bin_dir / "stub"
-        stub.write_text(STUB)
+        stub.write_text(f"#!{sys.executable}\n{STUB}")
         stub.chmod(0o755)
         for name in ("systemctl", "podman", "fault_injector_update", "journalctl"):
             (bin_dir / name).symlink_to(stub)

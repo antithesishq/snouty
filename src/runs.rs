@@ -2359,7 +2359,7 @@ fn mid_stream_error(message: &str) -> color_eyre::eyre::Report {
 /// their happy case.
 fn event_lines(stream: JsonStream) -> impl futures_util::Stream<Item = Result<Value>> + Unpin {
     use futures_util::StreamExt;
-    stream.map(move |line| {
+    stream.map(|line| {
         let mut value = line?;
         if let Some(message) = stream_error_message(&value) {
             return Err(mid_stream_error(message));
@@ -2376,7 +2376,7 @@ fn event_lines(stream: JsonStream) -> impl futures_util::Stream<Item = Result<Va
 /// whatever follows it never arrives) as data.
 fn raw_lines(stream: JsonStream) -> impl futures_util::Stream<Item = Result<String>> + Unpin {
     use futures_util::StreamExt;
-    stream.map(move |line| {
+    stream.map(|line| {
         let value = line?;
         if let Some(message) = stream_error_message(&value) {
             return Err(mid_stream_error(message));

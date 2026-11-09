@@ -479,12 +479,12 @@ impl EventStreamRenderer {
     fn write_entry(&mut self, entry: &Value, out: &mut String) -> fmt::Result {
         // A full event carries both its moment and its source envelope. An
         // event from an event-set DSL pipeline always keeps its moment, but
-        // narrow can drop its source; rendering it through
-        // the event form would produce a half-empty hybrid line, so its JSON
-        // is the row — print it as such. A build-log record (`runs
-        // build-logs`) has no moment either — a wall-clock
-        // `timestamp`/`stream`/`text` triple instead — and renders in the
-        // shared visual grammar without a divider or classification.
+        // narrow can drop its source; rendering it through the event form
+        // would produce a half-empty hybrid line, so its JSON is the row —
+        // print it as such. A build-log record (`runs build-logs`) has no
+        // moment — a wall-clock `timestamp`/`stream`/`text` triple instead —
+        // and renders in the shared visual grammar without a divider or
+        // classification.
         let hash = entry["moment"]["input_hash"].as_str();
         let Some(hash) = hash.filter(|_| entry.get("source").is_some()) else {
             if let (Some(timestamp), Some(text)) =
@@ -631,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_unknown_payloads_and_reshaped_rows_as_json() {
+    fn renders_unknown_payloads_and_sourceless_events_as_json() {
         // Unknown structured payload under a moment: envelope stripped, JSON shown.
         let block = render_one(&json!({
             "mystery": {"a": 1},

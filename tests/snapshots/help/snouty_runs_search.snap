@@ -60,9 +60,9 @@ test-composer command is in ev.command. In JS, read every field from `ev`, e.g.
 A query can only filter its input events and change their fields. It cannot
 construct an event in any way: an object literal, a spread copy such as {...ev},
 or a JSON copy is not an event, even when it has the same fields. Such a result
-fails the query, or its changes are lost. In map, flatmap, and fold, return ev,
-or the result of ev.add_fields({...}) to add or change fields. To remove fields,
-use narrow.
+fails the query, or its changes are lost. In map, flatmap, and fold, each event
+that a function outputs must be ev, or the result of ev.add_fields({...}) to add
+or change fields. To remove fields, use narrow.
 
 fold: the reducer takes the state s and one event ev, and returns [events, s'].
 events is an array of the events to output: [ev] outputs ev, [] outputs nothing,
@@ -129,9 +129,11 @@ VTIME and the source print whole, and indented lines under an event give its
 source location, as `@ file:function:line`, and the details that it carries,
 such as an SDK assertion's details, as `details {...}`.
 
-In text output, an event without its source, such as one from narrow, prints as
-raw JSON, and the fields that add_fields adds to a log event do not show. --json
-shows every field.
+Text output does not show the fields that a query adds to an event, such as
+those from add_fields, fold, or with_last. An event without its source, such as
+one from narrow or with_next, prints as raw JSON.
+
+With --json, each event has all of its fields, with those that the query adds.
 
 Add --count to print how many events in the whole run match the query, instead
 of a sample. No limit applies.

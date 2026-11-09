@@ -1208,8 +1208,7 @@ stdout 'output_text.*starting'
 ! stdout '"error"'
 stderr 'the server reported an error mid-stream: mock stream failure'
 
-# `runs search`: a query can only output events, which carry a moment, so an
-# `{"error": ...}` line is the Stream_Error abort here too.
+# `runs search` fails on a Stream_Error line.
 mock-runs-server
 ! snouty runs search run-stream-error 'contains({output_text: "starting"})'
 stdout '\[app\] \{"level":"info","msg":"starting"\}'

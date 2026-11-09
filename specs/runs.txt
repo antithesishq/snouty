@@ -1208,21 +1208,18 @@ stdout 'output_text.*starting'
 ! stdout '"error"'
 stderr 'the server reported an error mid-stream: mock stream failure'
 
-# `runs search` runs a user-written pipeline that can reshape rows into any
-# object — `map(ev => ({error: ev.output_text}))` is a legitimate result row —
-# so a `{"error": ...}` line is data on this stream, not the Stream_Error
-# abort every fixed-schema stream turns it into. The row prints as its own
-# JSON and the command exits 0.
+# `runs search` fails on a Stream_Error line.
 mock-runs-server
-snouty runs search run-stream-error 'contains({output_text: "starting"})'
+! snouty runs search run-stream-error 'contains({output_text: "starting"})'
 stdout '\[app\] \{"level":"info","msg":"starting"\}'
-stdout -literal '{"error":"mock stream failure"}'
-! stderr 'mid-stream'
+! stdout '"error"'
+stderr 'the server reported an error mid-stream: mock stream failure'
 
 mock-runs-server
-snouty --json runs search run-stream-error 'contains({output_text: "starting"})'
+! snouty --json runs search run-stream-error 'contains({output_text: "starting"})'
 stdout 'output_text.*starting'
-stdout '"error":"mock stream failure"'
+! stdout '"error"'
+stderr 'the server reported an error mid-stream: mock stream failure'
 
 -- probe-runs.ndjson --
 {"id":"no-such-run","kind":"test"}

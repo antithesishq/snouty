@@ -212,6 +212,9 @@ const KV_PAIR_PATTERN: &str = "^[^=]+=";
 /// Matches a timestamp without an offset, as snouty prints it.
 const TIMESTAMP_PATTERN: &str = r"^\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d(\.\d+)?$";
 
+/// Matches a time relative to the present, such as `3 days ago`.
+const RELATIVE_TIME_PATTERN: &str = r"^(now|\d+\s+(minute|hour|day|week|month)s?\s+ago)$";
+
 impl ValueType {
     fn of(arg: &Arg) -> Self {
         value_schema(arg).0
@@ -245,6 +248,7 @@ fn value_schema(arg: &Arg) -> (ValueType, Value) {
             { "format": "date" },
             { "format": "date-time" },
             { "pattern": TIMESTAMP_PATTERN },
+            { "pattern": RELATIVE_TIME_PATTERN },
         ] });
         (ValueType::String, formats)
     } else if is_duration(arg) {
@@ -583,6 +587,7 @@ mod tests {
             { "format": "date" },
             { "format": "date-time" },
             { "pattern": TIMESTAMP_PATTERN },
+            { "pattern": RELATIVE_TIME_PATTERN },
         ])
     }
 
@@ -631,7 +636,6 @@ mod tests {
             "{usage:?}"
         );
         assert_eq!(usage["properties"]["after"]["anyOf"], timestamp_formats());
-        assert_eq!(usage["properties"]["limit"]["type"], "integer");
         let wait = schema(ToolName::RunsWait);
         assert_eq!(
             wait["properties"]["until"]["enum"],

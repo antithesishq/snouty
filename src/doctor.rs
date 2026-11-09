@@ -7,8 +7,9 @@ use crate::api::{
     MIN_LAUNCH_PARAMS_RELEASE, MIN_SEARCH_RELEASE, MIN_STREAM_RELEASE, VersionError,
     normalize_base_url,
 };
-use crate::attributed_value::AttributedValue;
-use crate::auth::AuthenticationInfo;
+use crate::auth::{
+    AuthenticationInfo, CredentialSource, CredentialStore, SourcedCredential, keychain_entry_name,
+};
 use crate::compose;
 use crate::container;
 use crate::features::{self, Feature};
@@ -138,7 +139,7 @@ enum CheckId {
 
 impl CheckId {
     /// The credentials check for the credential in use.
-    fn credentials(in_use: &AttributedValue<AuthenticationInfo>) -> Self {
+    fn credentials(in_use: &SourcedCredential) -> Self {
         Self::Credentials {
             kind: Some(CredentialKind::from(in_use.value())),
         }
@@ -260,53 +261,81 @@ fn repository_check(repository: Option<&str>) -> Check {
     }
 }
 
-fn authn_checks(sources: &[AttributedValue<AuthenticationInfo>]) -> Vec<Check> {
-    let Some((credentials, shadowed)) = sources.split_first() else {
+fn authn_checks(sources: &[SourcedCredential]) -> Vec<Check> {
+    let Some((credentials, behind)) = sources.split_first() else {
         return vec![missing_credentials_check(
             crate::auth::NO_CREDENTIALS_MESSAGE,
         )];
     };
 
-    // A blank API key cannot authenticate, so it is no source to fall back on.
-    let shadowed: Vec<_> = shadowed
-        .iter()
-        .filter(|s| !s.value().has_blank_api_key())
-        .collect();
-
-    // A username and password in use while they hide a credential the API
-    // accepts: the one thing to do is free that credential (issue #292).
-    if let AuthenticationInfo::Password { .. } = credentials.value()
-        && let Some(hidden) = shadowed
-            .iter()
-            .find(|s| !matches!(s.value(), AuthenticationInfo::Password { .. }))
-    {
-        return vec![hidden_credential_check(credentials, hidden)];
-    }
+    // Only a credential in the environment hides one that the user expects:
+    // a stored credential hides just its fallbacks, the default profile and
+    // the GitHub Actions OIDC token. A blank API key cannot authenticate, so
+    // it is nothing to fall back on.
+    let (variables, hidden): (&[&str], Option<&SourcedCredential>) = match credentials.tag() {
+        CredentialSource::Environment { variables } => (
+            variables,
+            behind.iter().find(|s| {
+                matches!(s.tag(), CredentialSource::Stored(_)) && !s.value().has_blank_api_key()
+            }),
+        ),
+        CredentialSource::Stored(_) => (&[], None),
+    };
 
     let id = CheckId::credentials(credentials);
     let check = match credentials.value() {
-        AuthenticationInfo::GithubActionsOidc(_) => enrich_with_origin(
+        AuthenticationInfo::GithubActionsOidc(_) => enrich_with_source(
             Check::ok(id, "GitHub Actions OIDC token provided"),
             credentials,
         ),
         AuthenticationInfo::OAuth(_) => {
-            enrich_with_origin(Check::ok(id, "OAuth credentials used"), credentials)
+            enrich_with_source(Check::ok(id, "OAuth credentials used"), credentials)
         }
-        credential if credential.has_blank_api_key() => enrich_with_origin(
-            with_credential_remedy(
-                Check::fail(id, "the API key is empty")
-                    .note(Level::Error, "an empty API key cannot authenticate"),
-            ),
-            credentials,
-        ),
+        credential if credential.has_blank_api_key() => {
+            let check = Check::fail(id, "the API key is empty")
+                .note(Level::Error, "an empty API key cannot authenticate");
+            match credentials.tag() {
+                CredentialSource::Environment { .. } => {
+                    enrich_with_source(with_credential_remedy(check), credentials)
+                }
+                CredentialSource::Stored(store) => enrich_with_source(check, credentials)
+                    .note(Level::Note, login_to_replace(store.profile())),
+            }
+        }
         AuthenticationInfo::ApiKey { .. } => {
-            enrich_with_origin(Check::ok(id, "API key provided"), credentials)
+            enrich_with_source(Check::ok(id, "API key provided"), credentials)
         }
-        AuthenticationInfo::Password { username, .. } => password_only_check(credentials, username),
+        // A username and password that hide a credential the API accepts:
+        // the one thing to do is free that credential (issue #292).
+        AuthenticationInfo::Password { .. }
+            if let Some(hidden) = hidden
+                && !matches!(hidden.value(), AuthenticationInfo::Password { .. }) =>
+        {
+            return vec![hidden_credential_check(credentials, variables, hidden)];
+        }
+        AuthenticationInfo::Password { username, .. } => {
+            return vec![password_only_check(credentials, username)];
+        }
     };
 
     let mut checks = vec![check];
-    checks.extend(shadowed_credentials_check(credentials, &shadowed));
+    if let Some(hidden) = hidden {
+        checks.push(
+            Check::warn(
+                CheckId::CredentialSources,
+                "the environment hides a stored credential",
+            )
+            .note(
+                Level::Warning,
+                format!(
+                    "snouty is using the {} from {}",
+                    credentials.value(),
+                    describe_source(credentials.tag())
+                ),
+            )
+            .note(Level::Note, unset_to_use(variables, hidden)),
+        );
+    }
     checks
 }
 
@@ -339,48 +368,41 @@ fn with_credential_remedy(check: Check) -> Check {
 /// which together repeated the problem three ways and led with `snouty
 /// login`, a step the user has already taken.
 fn hidden_credential_check(
-    in_use: &AttributedValue<AuthenticationInfo>,
-    hidden: &AttributedValue<AuthenticationInfo>,
+    in_use: &SourcedCredential,
+    variables: &[&str],
+    hidden: &SourcedCredential,
 ) -> Check {
-    let hidden_kind = hidden.value();
     Check::warn(
         CheckId::credentials(in_use),
-        format!("the username and password are hiding your {hidden_kind}"),
+        format!(
+            "the username and password are hiding your {}",
+            hidden.value()
+        ),
     )
     .note(
         Level::Warning,
         format!(
             "snouty uses the username and password from {}, which `snouty runs` refuses",
-            describe_origin(in_use)
+            describe_source(in_use.tag())
         ),
     )
-    .note(
-        Level::Note,
-        format!(
-            "{} to use the {hidden_kind} in {}",
-            drop_action(in_use),
-            describe_origin(hidden)
-        ),
-    )
+    .note(Level::Note, unset_to_use(variables, hidden))
 }
 
 /// The single check for a username and password with no credential the API
 /// accepts behind them. It replaces the shortfall and password checks, which
 /// together suggested `snouty login` twice. The next step depends on the
-/// origin: `snouty login` replaces a stored password, but an exported one
+/// source: `snouty login` replaces a stored password, but an exported one
 /// still hides the new credential until the user unsets it.
-fn password_only_check(in_use: &AttributedValue<AuthenticationInfo>, username: &str) -> Check {
-    let next_step = match in_use {
-        AttributedValue::EnvironmentVariable { .. } => format!(
+fn password_only_check(in_use: &SourcedCredential, username: &str) -> Check {
+    let next_step = match in_use.tag() {
+        CredentialSource::Environment { variables } => format!(
             "run `snouty login` to store an API key, then {}",
-            drop_action(in_use)
+            unset(variables)
         ),
-        AttributedValue::SettingsFile { profile, .. } => login_to_replace(profile.as_deref()),
-        AttributedValue::Keychain { entry_name, .. } => {
-            login_to_replace(entry_name.strip_prefix("profile_"))
-        }
+        CredentialSource::Stored(store) => login_to_replace(store.profile()),
     };
-    enrich_with_origin(
+    enrich_with_source(
         Check::warn(
             CheckId::credentials(in_use),
             format!(
@@ -403,109 +425,48 @@ fn login_to_replace(profile: Option<&str>) -> String {
     format!("run `snouty login{flag}` to replace it with an API key")
 }
 
-/// A warning, not a failure: the credential in use is not the one the user
-/// expected.
-fn shadowed_credentials_check(
-    in_use: &AttributedValue<AuthenticationInfo>,
-    shadowed: &[&AttributedValue<AuthenticationInfo>],
-) -> Option<Check> {
-    if shadowed.is_empty() {
-        return None;
-    }
-    let mut check = Check::warn(
-        CheckId::CredentialSources,
-        "more than one credential source is available",
+fn unset(variables: &[&str]) -> String {
+    format!("`unset {}`", variables.join(" "))
+}
+
+/// The one step that frees `hidden`, a stored credential that the
+/// environment variables `variables` hide.
+fn unset_to_use(variables: &[&str], hidden: &SourcedCredential) -> String {
+    format!(
+        "{} to use the {} in {}",
+        unset(variables),
+        hidden.value(),
+        describe_source(hidden.tag())
     )
-    .note(
-        Level::Warning,
-        format!(
-            "snouty is using the {} from {}",
-            in_use.value(),
-            describe_origin(in_use)
-        ),
-    );
-    for other in shadowed {
-        let credential = match other.value() {
-            AuthenticationInfo::ApiKey { .. } => "an API key is",
-            AuthenticationInfo::GithubActionsOidc(_) => "a GitHub Actions OIDC token is",
-            AuthenticationInfo::OAuth(_) => "OAuth credentials are",
-            AuthenticationInfo::Password { .. } => "a username and password are",
-        };
-        let origin = match other {
-            AttributedValue::SettingsFile {
-                settings_file_path,
-                profile: None,
-                ..
-            } => settings_file_path.display().to_string(),
-            _ => describe_origin(other),
-        };
-        check = check.note(Level::Note, format!("{credential} configured in {origin}"));
-    }
-    Some(check.note(
-        Level::Note,
-        format!("{} to use the next source", drop_action(in_use)),
-    ))
 }
 
 /// A phrase that reads after "read from" or after the name of a credential
 /// kind.
-fn describe_origin<T>(attribution: &AttributedValue<T>) -> String {
-    match attribution {
-        AttributedValue::EnvironmentVariable {
-            environment_variable_names,
-            ..
-        } => format!(
+fn describe_source(source: &CredentialSource) -> String {
+    match source {
+        CredentialSource::Environment { variables } => format!(
             "the `{}` environment variable{}",
-            environment_variable_names.join("` and `"),
-            if environment_variable_names.len() == 1 {
-                ""
-            } else {
-                "s"
-            }
+            variables.join("` and `"),
+            if variables.len() == 1 { "" } else { "s" }
         ),
-        AttributedValue::SettingsFile {
-            settings_file_path,
-            profile,
-            ..
-        } => format!(
+        CredentialSource::Stored(CredentialStore::CredentialsFile { path, profile }) => format!(
             // `Display`, not `Debug`: `{:?}` on a path adds quotes of its
             // own, which read as a second set of brackets around the name.
             "the [{}] profile in {}",
             profile.as_deref().unwrap_or(DEFAULT_PROFILE),
-            settings_file_path.display(),
+            path.display(),
         ),
-        AttributedValue::Keychain { entry_name, .. } => {
-            format!("system keychain entry named [{entry_name}]")
-        }
+        CredentialSource::Stored(CredentialStore::Keychain { profile }) => format!(
+            "system keychain entry named [{}]",
+            keychain_entry_name(profile.as_deref())
+        ),
     }
 }
 
-/// An imperative phrase that reads before "to use the next source".
-fn drop_action<T>(attribution: &AttributedValue<T>) -> String {
-    match attribution {
-        AttributedValue::EnvironmentVariable {
-            environment_variable_names,
-            ..
-        } => format!("`unset {}`", environment_variable_names.join(" ")),
-        AttributedValue::SettingsFile {
-            settings_file_path,
-            profile,
-            ..
-        } => format!(
-            "remove the [{}] profile from {}",
-            profile.as_deref().unwrap_or(DEFAULT_PROFILE),
-            settings_file_path.display(),
-        ),
-        AttributedValue::Keychain { entry_name, .. } => {
-            format!("remove the [{entry_name}] entry from the system keychain")
-        }
-    }
-}
-
-fn enrich_with_origin<T>(check: Check, attribution: &AttributedValue<T>) -> Check {
+fn enrich_with_source(check: Check, credential: &SourcedCredential) -> Check {
     check.note(
         Level::Note,
-        format!("read from {}", describe_origin(attribution)),
+        format!("read from {}", describe_source(credential.tag())),
     )
 }
 
@@ -821,21 +782,22 @@ mod tests {
     };
     use crate::testutils::auth::oauth_credential_in;
     use crate::testutils::fake_secrets::{
-        FAKE_ACCESS_TOKEN_A, FAKE_API_KEY_A, FAKE_OIDC_REQUEST_TOKEN, FAKE_PASSWORD,
+        FAKE_ACCESS_TOKEN_A, FAKE_API_KEY_A, FAKE_API_KEY_B, FAKE_OIDC_REQUEST_TOKEN, FAKE_PASSWORD,
     };
 
     use super::*;
+    use crate::tag::Tag;
 
     // ---- auth_checks (env-only auth) -----------------------------------
 
     #[test]
     fn auth_api_key_set_is_a_single_bare_ok_check() {
-        let checks = authn_checks(&[AttributedValue::EnvironmentVariable {
-            value: AuthenticationInfo::ApiKey {
+        let checks = authn_checks(&[from_env(
+            AuthenticationInfo::ApiKey {
                 api_key: FAKE_API_KEY_A.to_owned(),
             },
-            environment_variable_names: vec![API_KEY_VAR_NAME],
-        }]);
+            vec![API_KEY_VAR_NAME],
+        )]);
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, Status::Ok);
         assert!(checks[0].message.contains("API key provided"));
@@ -847,13 +809,12 @@ mod tests {
     #[test]
     fn auth_from_a_file_names_the_profile_and_the_path() {
         let note = |profile: Option<&str>| {
-            let checks = authn_checks(&[AttributedValue::SettingsFile {
-                value: AuthenticationInfo::ApiKey {
+            let checks = authn_checks(&[from_file(
+                AuthenticationInfo::ApiKey {
                     api_key: FAKE_API_KEY_A.to_owned(),
                 },
-                settings_file_path: std::path::PathBuf::from("/tmp/credentials.toml"),
-                profile: profile.map(str::to_owned),
-            }]);
+                profile,
+            )]);
             checks[0]
                 .notes
                 .iter()
@@ -878,7 +839,7 @@ mod tests {
     /// where they came from.
     #[test]
     fn a_password_alone_is_one_check_with_one_next_step() {
-        let notes = |source: AttributedValue<AuthenticationInfo>| {
+        let notes = |source: SourcedCredential| {
             let checks = authn_checks(&[source]);
             assert_eq!(
                 checks.len(),
@@ -928,14 +889,13 @@ mod tests {
             ]
         );
         assert_eq!(
-            notes(AttributedValue::SettingsFile {
-                value: AuthenticationInfo::Password {
+            notes(from_file(
+                AuthenticationInfo::Password {
                     username: "user".to_owned(),
                     password: FAKE_PASSWORD.to_owned(),
                 },
-                settings_file_path: std::path::PathBuf::from("/tmp/credentials.toml"),
-                profile: None,
-            }),
+                None
+            )),
             [
                 deprecated,
                 (
@@ -950,13 +910,13 @@ mod tests {
         );
         // A bare `snouty login` writes the default profile, so the next step
         // names the profile that holds the password.
-        let keychain = notes(AttributedValue::Keychain {
-            value: AuthenticationInfo::Password {
+        let keychain = notes(from_keychain(
+            AuthenticationInfo::Password {
                 username: "user".to_owned(),
                 password: FAKE_PASSWORD.to_owned(),
             },
-            entry_name: "profile_prod".to_owned(),
-        });
+            Some("prod"),
+        ));
         assert_eq!(
             keychain.last().unwrap(),
             &(
@@ -1009,33 +969,40 @@ mod tests {
         assert_eq!(checks[0].message, crate::auth::NO_CREDENTIALS_MESSAGE);
     }
 
-    fn env_password_source() -> AttributedValue<AuthenticationInfo> {
-        AttributedValue::EnvironmentVariable {
-            value: AuthenticationInfo::Password {
+    fn from_env(value: AuthenticationInfo, variables: Vec<&'static str>) -> SourcedCredential {
+        value.with_tag(CredentialSource::Environment { variables })
+    }
+
+    fn from_file(value: AuthenticationInfo, profile: Option<&str>) -> SourcedCredential {
+        value.with_tag(CredentialSource::Stored(CredentialStore::CredentialsFile {
+            path: std::path::PathBuf::from("/tmp/credentials.toml"),
+            profile: profile.map(str::to_owned),
+        }))
+    }
+
+    fn from_keychain(value: AuthenticationInfo, profile: Option<&str>) -> SourcedCredential {
+        value.with_tag(CredentialSource::Stored(CredentialStore::Keychain {
+            profile: profile.map(str::to_owned),
+        }))
+    }
+
+    fn env_password_source() -> SourcedCredential {
+        from_env(
+            AuthenticationInfo::Password {
                 username: "user".to_owned(),
                 password: FAKE_PASSWORD.to_owned(),
             },
-            environment_variable_names: vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
-        }
+            vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
+        )
     }
 
-    fn file_api_key_source() -> AttributedValue<AuthenticationInfo> {
-        AttributedValue::SettingsFile {
-            value: AuthenticationInfo::ApiKey {
+    fn file_api_key_source() -> SourcedCredential {
+        from_file(
+            AuthenticationInfo::ApiKey {
                 api_key: FAKE_API_KEY_A.to_owned(),
             },
-            settings_file_path: std::path::PathBuf::from("/tmp/credentials.toml"),
-            profile: None,
-        }
-    }
-
-    fn note_text(check: &Check) -> String {
-        check
-            .notes
-            .iter()
-            .map(|n| n.text.as_str())
-            .collect::<Vec<_>>()
-            .join(" | ")
+            None,
+        )
     }
 
     #[test]
@@ -1090,31 +1057,89 @@ mod tests {
         );
     }
 
+    fn api_key(api_key: &str) -> AuthenticationInfo {
+        AuthenticationInfo::ApiKey {
+            api_key: api_key.to_owned(),
+        }
+    }
+
+    fn env_api_key_source() -> SourcedCredential {
+        from_env(api_key(FAKE_API_KEY_B), vec![API_KEY_VAR_NAME])
+    }
+
+    fn oidc_source() -> SourcedCredential {
+        from_env(
+            AuthenticationInfo::GithubActionsOidc(GithubActionsOidcToken::new(
+                "http://127.0.0.1:1/token".to_owned(),
+                FAKE_OIDC_REQUEST_TOKEN.to_owned(),
+            )),
+            vec![
+                "ACTIONS_ID_TOKEN_REQUEST_URL",
+                "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+            ],
+        )
+    }
+
+    /// An exported credential that hides a stored one is the trap: the one
+    /// step is to unset it.
     #[test]
-    fn the_action_that_frees_a_credential_matches_its_origin() {
-        let keychain = AttributedValue::Keychain {
-            value: AuthenticationInfo::ApiKey {
-                api_key: FAKE_API_KEY_A.to_owned(),
-            },
-            entry_name: "_default_".to_owned(),
-        };
-        let checks = authn_checks(&[keychain, env_password_source()]);
+    fn an_environment_credential_that_hides_a_stored_one_is_a_warning() {
+        let checks = authn_checks(&[env_api_key_source(), file_api_key_source()]);
         let check = checks
             .iter()
             .find(|c| c.id == CheckId::CredentialSources)
-            .expect("the conflict is reported");
-        let notes = note_text(check);
-        assert!(
-            notes.contains("remove the [_default_] entry from the system keychain"),
-            "got: {notes}"
+            .expect("the hidden credential is reported");
+        assert_eq!(check.status, Status::Warn);
+        assert_eq!(
+            check.notes.last().unwrap().text,
+            "`unset ANTITHESIS_API_KEY` to use the API key in \
+            the [default] profile in /tmp/credentials.toml"
         );
-        assert!(
-            notes.contains(
-                "a username and password are configured in the \
-                `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables"
-            ),
-            "got: {notes}"
-        );
+    }
+
+    /// The default profile and the GitHub Actions OIDC token are fallbacks,
+    /// so a credential that hides only them is no conflict.
+    #[test]
+    fn a_credential_that_hides_only_its_fallbacks_is_no_conflict() {
+        for sources in [
+            vec![
+                from_keychain(api_key(FAKE_API_KEY_A), Some("prod")),
+                from_keychain(api_key(FAKE_API_KEY_B), None),
+                oidc_source(),
+            ],
+            vec![file_api_key_source(), oidc_source()],
+            vec![env_api_key_source(), oidc_source()],
+        ] {
+            let checks = authn_checks(&sources);
+            assert_eq!(
+                checks.iter().map(|c| c.status).collect::<Vec<_>>(),
+                [Status::Ok],
+                "got: {:?}",
+                checks.iter().map(|c| &c.message).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// A stored credential that cannot work is replaced with `snouty login`
+    /// for its profile, also when the default profile holds a working one.
+    #[test]
+    fn a_stored_credential_that_cannot_work_is_replaced_by_login() {
+        let password = AuthenticationInfo::Password {
+            username: "user".to_owned(),
+            password: FAKE_PASSWORD.to_owned(),
+        };
+        for (in_use, status) in [(password, Status::Warn), (api_key(""), Status::Error)] {
+            let checks = authn_checks(&[
+                from_file(in_use, Some("prod")),
+                from_file(api_key(FAKE_API_KEY_A), None),
+            ]);
+            assert_eq!(checks.len(), 1);
+            assert_eq!(checks[0].status, status);
+            assert_eq!(
+                checks[0].notes.last().unwrap().text,
+                "run `snouty login --profile prod` to replace it with an API key"
+            );
+        }
     }
 
     // ---- required-settings checks --------------------------------------
@@ -1353,10 +1378,7 @@ mod tests {
 
     #[test]
     fn the_credentials_check_carries_the_kind_in_use() {
-        let env = |value: AuthenticationInfo| AttributedValue::EnvironmentVariable {
-            value,
-            environment_variable_names: vec![API_KEY_VAR_NAME],
-        };
+        let env = |value: AuthenticationInfo| from_env(value, vec![API_KEY_VAR_NAME]);
         let dir = tempfile::tempdir().unwrap();
         let cases = [
             (vec![], Status::Error, None),

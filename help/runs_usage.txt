@@ -1,4 +1,4 @@
-Show the compute hours that recent runs used, newest first.
+Show the compute hours that runs used.
 
 A compute hour is one core running for one hour. Compute hours are the unit that Antithesis bills usage in, and that the usage cap counts. They are not wall-clock hours: Antithesis runs a test in parallel, so one hour of testing uses many compute hours, and a higher performance tier uses more.
 
@@ -10,18 +10,29 @@ With {{ t("--rollup")? }}, each row is the total of one day, week, or month: its
 
 Times and periods are in the local timezone.
 
-{{ t("--after")? }} and {{ t("--before")? }} select runs by the time that they ended: {{ t("--after")? }} includes a run that ended at that time, and {{ t("--before")? }} does not. Each takes a date, which is the start of that day, a time such as `2026-10-01 12:00:00`, or an RFC 3339 time. A date or a time without a zone is in the local timezone. With {{ t("--rollup")? }}, a period is in the output when it holds a selected time. When a filter cuts a period, the total of that period includes only the runs inside the filter.
+With {{ t("run_ids")? }}, the output has one row for each run, in the order that you give them. A run has no usage until it ends, so a run that is in progress has no row. When a run has no usage, the command prints the rows of the other runs, then fails and names the run.
 
-{{ t("--limit")? }} counts rows: runs, or periods with {{ t("--rollup")? }}. The default is 10. The filters select which rows the limit keeps:
-  no filter or {{ t("--before")? }}    the newest rows (before {{ t("--before")? }})
-  {{ t("--after")? }}                  the oldest rows from {{ t("--after")? }}
-  {{ t("--after")? }} and {{ t("--before")? }}     every row between them; {{ t("--limit")? }} is not allowed
-The output shows the run that started most recently first. With {{ t("--rollup")? }}, it shows the newest period first.
+{{ t("--after")? }} and {{ t("--before")? }} select runs by the time that they ended: {{ t("--after")? }} includes a run that ended at that time, and {{ t("--before")? }} does not. {{ t("--before")? }} defaults to now. {{ t("--after")? }} defaults to 1 week before {{ t("--before")? }}. With {{ t("--rollup")? }}, it defaults to 4 weeks before for weeks, and 6 months before for months.
+
+Each takes one of these forms:
+  a relative time    `now`, `5 hours ago`, `3 days ago`, `2 weeks ago`
+  a date             `2026-10-01`, which is the start of that day
+  a time             `2026-10-01 12:00:00`
+  an RFC 3339 time   `2026-10-01T12:00:00Z`
+A relative time counts minutes, hours, days, weeks or months. A date or a time without a zone is in the local timezone.
+
+The rows are in the order in which the runs ended, oldest first. With {{ t("--rollup")? }}, the oldest period is first.
+
+With {{ t("--rollup")? }}, a period is in the output when it holds a selected time. When {{ t("--after")? }} or {{ t("--before")? }} cuts a period, the total of that period includes only the runs inside the filter. Without {{ t("--after")? }}, the first period is whole.
 
 Examples:
   {{ t("snouty runs usage")? }}
-  {{ t("snouty runs usage --rollup week -n 4")? }}
-  {{ t("snouty runs usage --rollup month --after 2026-01-01 -n 12")? }}
+  {% filter cmd %}
+  snouty runs usage --after "3 days ago"
+  {% endfilter %}
+  {{ t("snouty runs usage --rollup week")? }}
+  {{ t("snouty runs usage --rollup month --after 2026-01-01")? }}
   {{ t("snouty runs usage --after 2026-10-01 --before 2026-11-01")? }}
+  {{ t("snouty runs usage <run_id> <run_id>")? }}
 
 With {{ t("--json")? }}, each row prints as one JSON object on its own line. The hours field holds compute hours. A run has the fields run_id, hours, start_time, and end_time; the times are RFC 3339 in UTC. A period has the fields date, runs, and hours: date is the last day of the period in the local timezone, and hours is rounded to hundredths.

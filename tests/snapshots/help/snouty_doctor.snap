@@ -8,8 +8,8 @@ Runs health checks — container runtime, docker compose, the tenant and
 repository settings, and your credentials (stored by `snouty login`, or set in
 the ANTITHESIS_* environment variables). A missing tenant fails the check; a
 missing repository is a warning, because only `snouty launch` needs it. doctor
-also warns when more than one credential source is available. To see the
-settings that snouty resolved, run `snouty settings show`.
+also warns when a credential in the environment variables hides a stored one. To
+see the settings that snouty resolved, run `snouty settings show`.
 
 snouty prefers an API key (full API access); a username and password is
 deprecated auth, accepted only by `snouty launch` and `snouty debug`.

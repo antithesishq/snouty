@@ -1,5 +1,5 @@
 //! Credentials for the unit tests: PASETO access tokens and JWTs with a
-//! chosen expiry, and OAuth credentials whose origin is a credentials file in
+//! chosen expiry, and OAuth credentials stored in a credentials file in
 //! a temporary directory.
 
 use std::path::Path;
@@ -7,7 +7,7 @@ use std::path::Path;
 use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use chrono::Utc;
 
-use crate::auth::{AuthenticationInfo, OAuthRefreshInfo, RefreshableOAuthToken};
+use crate::auth::{AuthenticationInfo, CredentialStore, RefreshableOAuthToken};
 
 /// Build a `v4.public` PASETO whose payload is `claims_json ‖ signature`,
 /// mirroring the real wire format (a 64-byte Ed25519 signature stand-in
@@ -40,15 +40,15 @@ pub(crate) fn jwt_expiring_in(lifetime: chrono::TimeDelta) -> String {
     jwt_with_claims(serde_json::json!({ "exp": exp }).to_string().as_bytes())
 }
 
-/// The origin `credentials.toml` in `dir`, for the default profile.
-pub(crate) fn credentials_file_in(dir: &Path) -> OAuthRefreshInfo {
-    OAuthRefreshInfo::CredentialsFile {
+/// The store `credentials.toml` in `dir`, for the default profile.
+pub(crate) fn credentials_file_in(dir: &Path) -> CredentialStore {
+    CredentialStore::CredentialsFile {
         path: dir.join("credentials.toml"),
         profile: None,
     }
 }
 
-/// An OAuth credential whose origin is [`credentials_file_in`] `dir`.
+/// An OAuth credential stored in [`credentials_file_in`] `dir`.
 pub(crate) fn oauth_credential_in(
     dir: &Path,
     access_token: impl Into<String>,

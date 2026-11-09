@@ -10,8 +10,10 @@ use chrono::{DateTime, Utc};
 use color_eyre::eyre::{Context, Result};
 use serde::Deserialize;
 
-use super::{AuthenticationInfo, claims::try_get_expiry_from_jwt};
-use crate::{attributed_value::AttributedValue, env};
+use super::{
+    AuthenticationInfo, CredentialSource, SourcedCredential, claims::try_get_expiry_from_jwt,
+};
+use crate::{env, tag::Tag};
 
 pub(super) const OIDC_URL_VAR_NAME: &str = "ACTIONS_ID_TOKEN_REQUEST_URL";
 pub(super) const OIDC_TOKEN_VAR_NAME: &str = "ACTIONS_ID_TOKEN_REQUEST_TOKEN";
@@ -19,17 +21,19 @@ pub(super) const OIDC_TOKEN_VAR_NAME: &str = "ACTIONS_ID_TOKEN_REQUEST_TOKEN";
 const OIDC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl AuthenticationInfo {
-    pub(super) fn try_from_github_actions_environment() -> Result<Option<AttributedValue<Self>>> {
+    pub(super) fn try_from_github_actions_environment() -> Result<Option<SourcedCredential>> {
         if let Some(actions_id_request_token) = env::var(OIDC_TOKEN_VAR_NAME)?
             && let Some(actions_id_url) = env::var(OIDC_URL_VAR_NAME)?
         {
-            return Ok(Some(AttributedValue::EnvironmentVariable {
-                value: Self::GithubActionsOidc(GithubActionsOidcToken::new(
+            return Ok(Some(
+                Self::GithubActionsOidc(GithubActionsOidcToken::new(
                     actions_id_url,
                     actions_id_request_token,
-                )),
-                environment_variable_names: vec![OIDC_URL_VAR_NAME, OIDC_TOKEN_VAR_NAME],
-            }));
+                ))
+                .with_tag(CredentialSource::Environment {
+                    variables: vec![OIDC_URL_VAR_NAME, OIDC_TOKEN_VAR_NAME],
+                }),
+            ));
         }
 
         Ok(None)

@@ -585,6 +585,7 @@ pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
 /// - `POST /api/v0/runs/{run_id}/cancel` — 200 for an in-progress run, 409
 ///   for any other known run, 404 for an unknown run
 /// - `GET  /api/v0/usage` — paginated usage entries
+/// - `GET  /api/v0/usage/{run_id}` — one usage entry (404 for any other run)
 /// - `GET  /auth/cli/config` — `{"port_strategy":"disabled"}`
 /// - `POST /auth/cli/refresh` — [`fake_secrets::FAKE_ACCESS_TOKEN_B`]
 /// - `GET  /github-actions/token` — the GitHub Actions OIDC token endpoint:
@@ -832,6 +833,14 @@ fn mock_route(
             json,
             NO_CACHE_CACHE_CONTROL,
         ),
+        ("GET", p) if p.starts_with("/api/v0/usage/") => {
+            let run_id = &p["/api/v0/usage/".len()..];
+            let (s, b) = match MOCK_USAGE.iter().find(|(id, ..)| *id == run_id) {
+                Some(entry) => (200, mock_usage_json(entry).to_string()),
+                None => (404, MOCK_BARE_404_BODY.to_string()),
+            };
+            (s, b, json, NO_CACHE_CACHE_CONTROL)
+        }
         ("GET", p) if p.starts_with("/api/v0/runs/") => {
             let rest = &p["/api/v0/runs/".len()..];
             // Every mock run's build has finished, so its build logs are
@@ -1087,17 +1096,21 @@ fn mock_route_list_usage(query: Option<&str>, empty: bool) -> String {
     let end = entries.len().min(offset + limit.min(2));
     let data: Vec<_> = entries[offset..end]
         .iter()
-        .map(|(run_id, hours, start_time, end_time)| {
-            serde_json::json!({
-                "run_id": run_id,
-                "hours": hours,
-                "start_time": start_time,
-                "end_time": end_time,
-            })
-        })
+        .map(|entry| mock_usage_json(entry))
         .collect();
     let next_cursor = (end < entries.len()).then(|| end.to_string());
     serde_json::json!({ "data": data, "next_cursor": next_cursor }).to_string()
+}
+
+fn mock_usage_json(
+    (run_id, hours, start_time, end_time): &(&str, f64, &str, &str),
+) -> serde_json::Value {
+    serde_json::json!({
+        "run_id": run_id,
+        "hours": hours,
+        "start_time": start_time,
+        "end_time": end_time,
+    })
 }
 
 /// Run ids that exist on the mock server. Nested endpoints (properties, logs,

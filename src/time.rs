@@ -15,7 +15,8 @@
 //! bare-minutes form already covers that.
 
 use chrono::{
-    DateTime, Local, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Utc,
+    DateTime, Local, LocalResult, Months, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone,
+    Utc,
 };
 
 use std::error::Error;
@@ -269,11 +270,42 @@ pub(crate) fn format_rfc3339_for_display(raw: &str) -> String {
     )
 }
 
+/// Reads a time relative to `now`: `now`, or a whole number of minutes,
+/// hours, days, weeks or months before it, such as `3 days ago`. A day is 24
+/// hours, and a month is a calendar month.
+fn parse_relative_time(text: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    if text == "now" {
+        return Some(now);
+    }
+    let mut words = text.split_ascii_whitespace();
+    let (Some(count), Some(unit), Some("ago"), None) =
+        (words.next(), words.next(), words.next(), words.next())
+    else {
+        return None;
+    };
+    if !count.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let count: u32 = count.parse().ok()?;
+    let delta = match unit.strip_suffix('s').unwrap_or(unit) {
+        "minute" => TimeDelta::minutes(count.into()),
+        "hour" => TimeDelta::hours(count.into()),
+        "day" => TimeDelta::days(count.into()),
+        "week" => TimeDelta::weeks(count.into()),
+        "month" => return now.checked_sub_months(Months::new(count)),
+        _ => return None,
+    };
+    now.checked_sub_signed(delta)
+}
+
 /// Reads a timestamp argument: a date (the start of that day), a time as
-/// snouty prints it or with a `T`, or an RFC 3339 time. A value without an
-/// offset is a local wall time. A wall time that a clock change skips is an
-/// error.
+/// snouty prints it or with a `T`, an RFC 3339 time, or a time relative to
+/// the present, such as `3 days ago`. A value without an offset is a local
+/// wall time. A wall time that a clock change skips is an error.
 pub(crate) fn parse_timestamp_arg(text: &str) -> Result<DateTime<Utc>, String> {
+    if let Some(time) = parse_relative_time(text, Utc::now()) {
+        return Ok(time);
+    }
     if let Ok(time) = text.parse() {
         return Ok(time);
     }
@@ -285,7 +317,8 @@ pub(crate) fn parse_timestamp_arg(text: &str) -> Result<DateTime<Utc>, String> {
         .or_else(|_| text.parse())
         .map_err(|_| {
             "expected a date (2026-10-01), a time as snouty prints it \
-             (2026-10-01 12:00:00), or an RFC 3339 time (2026-10-01T12:00:00Z)"
+             (2026-10-01 12:00:00), an RFC 3339 time (2026-10-01T12:00:00Z), or a \
+             relative time (now, 3 days ago)"
                 .to_string()
         })?;
     instant_of_wall_time(wall_time).ok_or_else(|| {
@@ -533,6 +566,47 @@ mod tests {
             parse_timestamp_arg(&date.format("%Y-%m-%d").to_string()),
             Ok(start_of_local_calendar_day(date))
         );
+    }
+
+    #[test]
+    fn parse_relative_time_counts_back_from_now() {
+        let now: DateTime<Utc> = "2026-03-31T12:00:00Z".parse().unwrap();
+        let at = |text: &str| parse_relative_time(text, now).map(|time| time.to_rfc3339());
+        assert_eq!(at("now").as_deref(), Some("2026-03-31T12:00:00+00:00"));
+        assert_eq!(
+            at("90 minutes ago").as_deref(),
+            Some("2026-03-31T10:30:00+00:00")
+        );
+        assert_eq!(
+            at("1 hour ago").as_deref(),
+            Some("2026-03-31T11:00:00+00:00")
+        );
+        assert_eq!(
+            at("3 days ago").as_deref(),
+            Some("2026-03-28T12:00:00+00:00")
+        );
+        assert_eq!(
+            at("2 weeks ago").as_deref(),
+            Some("2026-03-17T12:00:00+00:00")
+        );
+        // February has no day 31: a month ends on its last day.
+        assert_eq!(
+            at("1 month ago").as_deref(),
+            Some("2026-02-28T12:00:00+00:00")
+        );
+        for text in [
+            "",
+            "ago",
+            "3 days",
+            "days ago",
+            "-3 days ago",
+            "+3 days ago",
+            "3 fortnights ago",
+            "3 days ago now",
+            "1.5 hours ago",
+        ] {
+            assert_eq!(at(text), None, "{text}");
+        }
     }
 
     #[test]

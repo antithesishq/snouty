@@ -31,11 +31,12 @@ Options:
 
       --created-after <CREATED_AFTER>
           Only show runs created after this date (e.g. 2026-10-01), time (e.g.
-          2026-10-01 12:00:00) or RFC 3339 time
+          2026-10-01 12:00:00), RFC 3339 time or relative time (e.g. 3 days ago)
 
       --created-before <CREATED_BEFORE>
           Only show runs created at or before this date (e.g. 2026-11-01), time
-          (e.g. 2026-11-01 12:00:00) or RFC 3339 time
+          (e.g. 2026-11-01 12:00:00), RFC 3339 time or relative time (e.g. 3
+          days ago)
 
   -n, --limit <LIMIT>
           Maximum number of runs to display

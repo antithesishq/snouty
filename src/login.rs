@@ -26,8 +26,9 @@ use tokio::sync::mpsc;
 use crate::settings;
 use crate::{
     api::HttpClient,
-    attributed_value::AttributedValue,
-    auth::{AuthenticationInfo, PersistableCredentials, is_blank_api_key, persist},
+    auth::{
+        AuthenticationInfo, CredentialStore, PersistableCredentials, is_blank_api_key, persist,
+    },
     env,
     error::user_error,
     render::{OutputOptions, sanitize, wrap_if_tty},
@@ -35,6 +36,7 @@ use crate::{
         ANTITHESIS_PROFILE_ENV_VAR_NAME, Settings, update_settings_in_global_file,
         validate_tenant_host,
     },
+    tag::{Tag, Tagged},
     util::root_cause,
 };
 
@@ -203,7 +205,7 @@ async fn do_cmd_login(
 
     // The kind of credential login wrote, and where.
     let written = if prompter.is_interactive() {
-        let stored_value = stored.as_ref().map(AttributedValue::value);
+        let stored_value = stored.as_ref().map(Tagged::value);
         let client = HttpClient::new(current_settings, verbose)?;
         match prompt_for_auth(prompter, &client, &tenant_to_use, stored_value).await? {
             Some(credentials) => {
@@ -212,7 +214,7 @@ async fn do_cmd_login(
                     PersistableCredentials::Password { .. } => "username and password",
                     PersistableCredentials::OAuth { .. } => "OAuth credentials",
                 };
-                Some(persist(credentials, profile_to_use.as_deref())?.with_value(kind))
+                Some(kind.with_tag(persist(credentials, profile_to_use.as_deref())?))
             }
             None => None,
         }
@@ -237,7 +239,7 @@ async fn do_cmd_login(
         profile_to_use.as_deref(),
         &settings_path,
         written,
-        stored,
+        stored.as_ref(),
     );
 
     Ok(())
@@ -250,8 +252,8 @@ fn print_login_summary(
     repository: &str,
     profile: Option<&str>,
     settings_path: &Path,
-    written: Option<AttributedValue<&str>>,
-    stored: Option<AttributedValue<AuthenticationInfo>>,
+    written: Option<Tagged<&str, CredentialStore>>,
+    stored: Option<&Tagged<AuthenticationInfo, CredentialStore>>,
 ) {
     // Wrap each line at word boundaries on a terminal: a long settings path
     // otherwise makes the terminal cut the line mid-word.
@@ -271,54 +273,41 @@ fn print_login_summary(
         "\nSaved {saved}{scope} to {}.",
         settings_path.display()
     ));
-    match written {
-        Some(AttributedValue::Keychain {
-            value: kind,
-            entry_name: _,
-        }) => {
+    match (written, stored) {
+        (Some(written), _) => {
             say(&format!(
-                "Stored your {kind}{scope} in the system keychain{}.",
-                replacing(stored.as_ref())
+                "Stored your {}{scope} in {}{}.",
+                written.value(),
+                location(written.tag()),
+                replacing(stored)
             ));
         }
-        Some(AttributedValue::SettingsFile {
-            value: kind,
-            settings_file_path: path,
-            profile: _,
-        }) => {
+        (None, Some(stored)) => {
             say(&format!(
-                "Stored your {kind}{scope} in {}{}.",
-                path.display(),
-                replacing(stored.as_ref())
+                "Retained your previously stored credentials{scope} in {}.",
+                location(stored.tag())
             ));
         }
-        _ => match stored {
-            Some(AttributedValue::Keychain { .. }) => {
-                say(&format!(
-                    "Retained your previously stored credentials{scope} in the system keychain."
-                ));
-            }
-            Some(AttributedValue::SettingsFile {
-                settings_file_path, ..
-            }) => {
-                say(&format!(
-                    "Retained your previously stored credentials{scope} in {}.",
-                    settings_file_path.display()
-                ));
-            }
-            _ => {
-                say(
-                    "Skipped credential storage — snouty will read credentials from the environment, such as ANTITHESIS_API_KEY.",
-                );
-            }
-        },
+        (None, None) => {
+            say(
+                "Skipped credential storage — snouty will read credentials from the environment, such as ANTITHESIS_API_KEY.",
+            );
+        }
     }
     say("Run `snouty doctor` to verify your setup.");
 }
 
+/// Where the summary says a credential is stored.
+fn location(store: &CredentialStore) -> String {
+    match store {
+        CredentialStore::Keychain { .. } => "the system keychain".to_owned(),
+        CredentialStore::CredentialsFile { path, .. } => path.display().to_string(),
+    }
+}
+
 /// The summary's ", replacing your stored …" clause. Every write replaces
 /// `stored`, because login writes nothing when the user keeps it.
-fn replacing(stored: Option<&AttributedValue<AuthenticationInfo>>) -> String {
+fn replacing(stored: Option<&Tagged<AuthenticationInfo, CredentialStore>>) -> String {
     stored
         .map(|stored| format!(", replacing your stored {}", stored.value()))
         .unwrap_or_default()
@@ -1773,7 +1762,7 @@ mod tests {
             &oauth_credentials(Some(FAKE_REFRESH_TOKEN_A)),
         );
         let stored = AuthenticationInfo::stored_for_profile(None)?;
-        let stored = stored.as_ref().map(AttributedValue::value);
+        let stored = stored.as_ref().map(Tagged::value);
 
         // An empty script panics if the flow asks anything.
         let prompter = Script::default().build();
@@ -2037,11 +2026,11 @@ mod tests {
         // --- Read-back: an in-process read does not trip the ACL prompt that
         // the `security` CLI would. ---
         let resolved = AuthenticationInfo::stored_for_profile(None)?;
-        match &resolved {
-            Some(AttributedValue::Keychain {
-                value: AuthenticationInfo::ApiKey { api_key },
-                ..
-            }) => assert_eq!(api_key.as_str(), FAKE_API_KEY_A),
+        match resolved.as_ref().map(|found| (found.value(), found.tag())) {
+            Some((
+                AuthenticationInfo::ApiKey { api_key },
+                CredentialStore::Keychain { profile: None },
+            )) => assert_eq!(api_key.as_str(), FAKE_API_KEY_A),
             _ => panic!("expected the API key to resolve from the keychain"),
         }
 

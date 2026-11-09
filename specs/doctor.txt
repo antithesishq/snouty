@@ -42,7 +42,7 @@ stderr '^      NOTE: run `snouty login` to store an API key, then `unset ANTITHE
 ! stderr 'No credentials the API commands accept'
 ! stderr 'snouty login. to sign in'
 # One source only, so doctor says nothing about a conflict.
-! stderr '.*more than one credential source.*'
+! stderr 'hides a stored credential'
 ! snouty doctor --json
 stdout '"id": "credentials",\s*"kind": "password",\s*"status": "warn"'
 
@@ -173,7 +173,7 @@ stderr '^  ⚠ the username and password are hiding your API key$'
 stderr '^      WARNING: snouty uses the username and password from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables, which `snouty runs` refuses$'
 stderr '^      NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in .+credentials\.toml$'
 ! stderr 'snouty login. to sign in'
-! stderr 'more than one credential source'
+! stderr 'hides a stored credential'
 ! stderr 'Using password credentials'
 
 snouty doctor --json
@@ -182,6 +182,14 @@ stdout '"text": "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API 
 ! stdout '"id": "credential_sources"'
 ! stdout '"id": "basic_auth"'
 ! stdout '${FAKE_API_KEY_A@R}|${FAKE_PASSWORD@R}'
+
+# A password stored in a named profile is replaced with `snouty login`, also
+# when the default profile holds an API key.
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
+snouty --profile prod doctor
+stderr -literal 'run `snouty login --profile prod` to replace it with an API key'
+! stderr 'hiding your API key'
 
 # A username and password stored in the credentials file: `snouty login`
 # replaces them, so it is the only next step. A warning does not fail doctor.
@@ -238,6 +246,26 @@ snouty doctor --offline --json
 stdout '"id": "credentials",\s*"kind": "oauth",\s*"status": "ok"'
 ! stdout '${FAKE_ACCESS_TOKEN_A@R}'
 
+# A stored credential hides only its fallbacks, the default profile and a
+# GitHub Actions OIDC token, so doctor does not warn.
+set-env ACTIONS_ID_TOKEN_REQUEST_URL http://127.0.0.1:1/token
+set-env ACTIONS_ID_TOKEN_REQUEST_TOKEN ${FAKE_OIDC_REQUEST_TOKEN}
+snouty --profile prod doctor --offline
+stderr '^  ✓ OAuth credentials used$'
+stderr 'read from the \[prod\] profile'
+! stderr '⚠ .*credential'
+env ACTIONS_ID_TOKEN_REQUEST_URL=
+env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
+
+# An exported API key hides the stored credential, so doctor warns.
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
+snouty --profile prod doctor --offline
+stderr '⚠ the environment hides a stored credential'
+stderr -literal '`unset ANTITHESIS_API_KEY` to use the OAuth credentials in the [prod] profile'
+snouty --profile prod doctor --offline --json
+stdout '"id": "credential_sources",\s*"status": "warn"'
+env ANTITHESIS_API_KEY=
+
 # A GitHub Actions OIDC token, which doctor --offline never fetches.
 isolate-home oidc
 set-env ACTIONS_ID_TOKEN_REQUEST_URL http://127.0.0.1:1/token
@@ -271,7 +299,7 @@ set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
 snouty doctor --offline
 stderr '^  ⚠ username/password for user \[envuser\] only works for `snouty launch` and `snouty debug`$'
 ! stderr 'hiding your API key'
-! stderr 'more than one credential source'
+! stderr 'hides a stored credential'
 
 # An explicit `docker` engine that is podman (podman-docker) fails: the user
 # asked for Docker, and this `docker` is not Docker. Only the fake CLIs are on
@@ -296,6 +324,11 @@ stderr 'Container runtime: podman detected'
 type = "ApiKey"
 api_key = "${FAKE_API_KEY_A}"
 
+[profile.prod]
+type = "Password"
+username = "prod-user"
+password = "${FAKE_PASSWORD}"
+
 -- stored_password/.config/snouty/credentials.toml --
 [default]
 type = "Password"
@@ -316,6 +349,10 @@ api_key = ""
 [default]
 type = "OAuth"
 antithesis_token = "${FAKE_ACCESS_TOKEN_A}"
+
+[profile.prod]
+type = "OAuth"
+antithesis_token = "${FAKE_ACCESS_TOKEN_B}"
 
 -- broken_credentials/.config/snouty/credentials.toml --
 this is not valid TOML {{{

@@ -129,9 +129,10 @@ VTIME and the source print whole, and indented lines under an event give its
 source location, as `@ file:function:line`, and the details that it carries,
 such as an SDK assertion's details, as `details {...}`.
 
-Text output does not show the fields that a query adds to an event, such as
-those from add_fields, fold, or with_last. An event without its source, such as
-one from narrow or with_next, prints as raw JSON.
+Text output shows the output_text of a log event, and renders an event from a
+built-in source, such as an assertion or a fault, in its own form. It does not
+show other fields, such as those that a query adds. An event without its source
+field prints as raw JSON.
 
 With --json, each event has all of its fields, with those that the query adds.
 

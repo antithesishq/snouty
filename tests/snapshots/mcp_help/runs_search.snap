@@ -89,8 +89,6 @@ Each matching event has its moment (an input_hash and a vtime), its source, and 
 
 A `moment INPUT_HASH` line is emitted each time the input_hash changes. Each event under it prints as one `VTIME [source] payload` line, with the full vtime. Indented lines under an event give its source location, as `@ file:function:line`, and the details that it carries, such as an SDK assertion's details, as `details {...}`.
 
-Text output does not show the fields that a query adds to an event, such as those from add_fields, fold, or with_last. An event without its source, such as one from narrow or with_next, prints as raw JSON. The output already shows the details of each assertion, so do not change events to read them.
-
 With `json`, each event has all of its fields, with those that the query adds.
 
 Add `count` to print how many events in the whole run match the query, instead of a sample. No limit applies. This count is the only aggregate across timelines. For an aggregate within one timeline, such as a running count, use fold to add the value to each event.

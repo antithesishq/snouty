@@ -96,13 +96,11 @@ nix profile install nixpkgs#snouty
 
 On NixOS, add `pkgs.snouty` to `environment.systemPackages`.
 
-The repository also has a Nix package. It builds the given branch or tag, and installs the [Docker credential helper](#docker-credential-helper):
+The repository also has a Nix package, which installs the [Docker credential helper](#docker-credential-helper). This builds `main`; for a release, replace `main.tar.gz` with `refs/tags/v<version>.tar.gz`:
 
 ```sh
 nix-env -if https://github.com/antithesishq/snouty/archive/main.tar.gz
 ```
-
-Replace `main.tar.gz` with `refs/tags/v<version>.tar.gz` for a release.
 
 ### Download prebuilt binaries
 

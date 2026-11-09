@@ -2772,36 +2772,36 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-usage",
             "See how many hours recent runs used",
             "I want to know which recent runs used the most hours.",
-            "Up to 10 runs, newest first, with RUN ID/STARTED/ENDED/COMPUTE HOURS columns; "
-            "STARTED/ENDED are local times, and COMPUTE HOURS is last, right-aligned, with one decimal; "
-            "when more runs exist, a stderr note says the output stopped at the limit.",
+            "The runs that ended in the last week, oldest first by end time, with "
+            "RUN ID/STARTED/ENDED/COMPUTE HOURS columns; STARTED/ENDED are local times, and "
+            "COMPUTE HOURS is last, right-aligned, with one decimal.",
             ["runs", "usage"],
-            rows_at_most(10),
+            non_empty_table,
         ),
         Story(
             "runs-usage--rollup-week",
             "Track compute-hour usage week by week",
             "I want the total runs and hours of each of the last few weeks.",
-            "Exactly 4 rows: the current week and the 3 before it, newest first, with "
-            "START/END/RUNS/COMPUTE HOURS columns; START is a Monday and END the Sunday after it, a week with "
-            "no runs shows 0, and COMPUTE HOURS has one decimal; a stderr note says it shows up to 4 periods.",
-            ["runs", "usage", "--rollup", "week", "-n", "4"],
-            rows_at_most(4),
+            "Exactly 5 rows: the 4 weeks before the current week and then the current week, "
+            "oldest first, with START/END/RUNS/COMPUTE HOURS columns; START is a Monday and END "
+            "the Sunday after it, a week with no runs shows 0, and COMPUTE HOURS has one decimal.",
+            ["runs", "usage", "--rollup", "week"],
+            rows_at_most(5),
         ),
         Story(
             "runs-usage--rollup-month",
             "Compare compute-hour usage across months",
             "I want to see how our usage changed from month to month.",
-            "At most 6 rows, newest month first; START and END are the first and last days of each month.",
-            ["runs", "usage", "--rollup", "month", "-n", "6"],
-            rows_at_most(6),
+            "Exactly 7 rows, oldest month first: the 6 months before the current month, and "
+            "then the current month; START and END are the first and last days of each month.",
+            ["runs", "usage", "--rollup", "month"],
+            rows_at_most(7),
         ),
         Story(
             "runs-usage--window",
             "Total the usage of one month",
             "I want the daily usage of the runs that ended in a given month.",
-            "One row per day of September, newest first, with no limit note; days with no "
-            "runs show 0.",
+            "One row per day of September, oldest first; days with no runs show 0.",
             [
                 "runs",
                 "usage",
@@ -2816,13 +2816,21 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
         ),
         Story(
             "runs-usage--after",
-            "See the first runs after a date",
-            "I want the first few runs that finished after the start of October.",
-            "At most 5 rows: the 5 runs that ended first on or after 2026-10-01 (local time), "
-            "shown newest first; when more runs exist, a stderr note says the output stopped "
-            "at the limit.",
-            ["runs", "usage", "--after", "2026-10-01", "-n", "5"],
-            rows_at_most(5),
+            "See the runs since a relative time",
+            "I want the usage of the runs that finished in the last 2 weeks.",
+            "Every run that ended in the last 2 weeks, oldest first by end time, so the run "
+            "that ended most recently is the last row.",
+            ["runs", "usage", "--after", "2 weeks ago"],
+            non_empty_table,
+        ),
+        Story(
+            "runs-usage--run-ids",
+            "See the usage of one run",
+            "I want to know how many compute hours a run that I launched used.",
+            "Exactly one row, for the completed run, with RUN ID/STARTED/ENDED/COMPUTE HOURS "
+            "columns, and no stderr note.",
+            ["runs", "usage", d.success],
+            rows_at_most(1),
         ),
         Story(
             "runs-verbose",
@@ -4112,10 +4120,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "Learn what `runs usage` reports",
             "I want to know what the usage columns mean and how --rollup groups runs.",
             ["runs", "usage"],
-            ["runs", "usage", "-n", "5"],
-            samples=[
-                ("with --rollup week", ["runs", "usage", "--rollup", "week", "-n", "4"])
-            ],
+            ["runs", "usage", "--after", "1 day ago"],
+            samples=[("with --rollup week", ["runs", "usage", "--rollup", "week"])],
             align=("RUN ID", "COMPUTE HOURS", "STARTED", "ENDED"),
         ),
         _help_story(

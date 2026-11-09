@@ -1283,17 +1283,15 @@ impl AntithesisApi {
         }
     }
 
-    /// Streams usage entries newest first by start time, at most `limit` of
-    /// them, or all with `None`. The filters select on the end time of a run:
-    /// `[ended_after, ended_before)`.
+    /// Streams every usage entry, newest first by start time. The filters
+    /// select on the end time of a run: `[ended_after, ended_before)`.
     pub fn stream_usage(
         &self,
-        ended_after: Option<chrono::DateTime<chrono::Utc>>,
+        ended_after: chrono::DateTime<chrono::Utc>,
         ended_before: Option<chrono::DateTime<chrono::Utc>>,
-        limit: Option<NonZeroU64>,
     ) -> impl futures_util::Stream<Item = Result<UsageEntry>> + '_ {
         paginate_limited(
-            limit.map_or(u64::MAX, NonZeroU64::get),
+            u64::MAX,
             // The endpoint maximum from release 67.0. An earlier release
             // answers 400 above 1000.
             50_000,
@@ -1302,9 +1300,7 @@ impl AntithesisApi {
                 if let Some(cursor) = after {
                     request = request.after(cursor);
                 }
-                if let Some(ts) = ended_after {
-                    request = request.start_time(ts);
-                }
+                request = request.start_time(ended_after);
                 if let Some(ts) = ended_before {
                     request = request.end_time(ts);
                 }
@@ -1318,6 +1314,25 @@ impl AntithesisApi {
                 }
             },
         )
+    }
+
+    /// The usage of one run, or `None` when the server has none for it.
+    ///
+    /// Observed on orbitinghail, release 67.0: an in-progress run, an unknown
+    /// run ID and a malformed one all answer 404
+    /// `{"message":"Resource not found"}`.
+    pub async fn get_usage(&self, run_id: &str) -> Result<Option<UsageEntry>> {
+        match self.client.get_usage().run_id(run_id).send().await {
+            Ok(response) => Ok(Some(response.into_inner())),
+            Err(err) => {
+                let err = format_api_client_error(err).await;
+                if crate::error::api_error_status(&err) == Some(404) {
+                    Ok(None)
+                } else {
+                    Err(err)
+                }
+            }
+        }
     }
 
     #[cached(value)]

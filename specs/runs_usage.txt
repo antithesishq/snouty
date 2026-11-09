@@ -171,6 +171,16 @@ mock-runs-server
 [!staging] snouty --json runs usage
 [!staging] ! stdout .
 
+# A run from the usage list has a row of its own, and an unknown run has a
+# note on stderr.
+mock-runs-server
+snouty --json runs usage -n 1
+env_from_json 0 run_id
+snouty runs usage ${R_run_id} no-such-run
+stdout '^RUN ID +STARTED +ENDED +COMPUTE HOURS$'
+stdout '^${R_run_id@R} '
+stderr 'No usage found for no-such-run\.'
+
 # With run IDs, each run that has usage is one row, in the order given. A run
 # with no usage prints a note on stderr, and the command still succeeds.
 mock-runs-server

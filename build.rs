@@ -50,8 +50,7 @@ fn generate_api_client(out_dir: &Path) {
          EXPECTED_ADDITIONAL_PROPERTIES_FALSE in build.rs to {stripped}."
     );
     untype_error_responses(&mut spec_value);
-    unrequire_exec_log_defaults(&mut spec_value);
-    unrequire_exec_timeout_default(&mut spec_value);
+    unrequire_exec_defaults(&mut spec_value);
     drop_property_description(&mut spec_value);
     drop_launch_status_code(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
@@ -347,30 +346,23 @@ fn unrequire_search_passing_default(spec: &mut serde_json::Value) {
     }
 }
 
-/// Strip the schema defaults from `Execute_Command_Request.include_system_logs`
-/// and `include_filtered_logs`, so the request omits each field unless
-/// `runs exec --events` or `--include-filtered-logs` sets it.
-fn unrequire_exec_log_defaults(spec: &mut serde_json::Value) {
-    for field in ["include_system_logs", "include_filtered_logs"] {
+/// Strip the schema defaults from `Execute_Command_Request`'s optional
+/// fields, so the request omits each one unless `runs exec --events`,
+/// `--include-filtered-logs`, or `--timeout` sets it, and the server's own
+/// default applies.
+fn unrequire_exec_defaults(spec: &mut serde_json::Value) {
+    for field in [
+        "include_system_logs",
+        "include_filtered_logs",
+        "timeout_seconds",
+    ] {
         remove_schema_key(
             spec,
             &format!("/components/schemas/Execute_Command_Request/properties/{field}"),
             "default",
-            "unrequire_exec_log_defaults",
+            "unrequire_exec_defaults",
         );
     }
-}
-
-/// Strip the schema default from `Execute_Command_Request.timeout_seconds`,
-/// so the request omits the field unless `runs exec --timeout` sets it, and
-/// the server's own default applies.
-fn unrequire_exec_timeout_default(spec: &mut serde_json::Value) {
-    remove_schema_key(
-        spec,
-        "/components/schemas/Execute_Command_Request/properties/timeout_seconds",
-        "default",
-        "unrequire_exec_timeout_default",
-    );
 }
 
 /// snouty does not show a property's description, in its text output or in

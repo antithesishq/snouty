@@ -677,26 +677,6 @@ fn version_check(host: &str, result: std::result::Result<ApiVersion, VersionErro
     }
 }
 
-/// Fail `check`, the credentials check of `auth`, because `auth` expired and
-/// could not be renewed. The error says why, and names `snouty login` when
-/// that is the fix.
-fn fail_renewal(check: &mut Check, auth: &AuthenticationInfo, err: &color_eyre::eyre::Report) {
-    check.status = Status::Error;
-    check.message = match auth {
-        AuthenticationInfo::GithubActionsOidc(_) => {
-            "could not get a GitHub Actions OIDC token".to_owned()
-        }
-        _ => format!("the {auth} expired and could not be renewed"),
-    };
-    check.notes.insert(
-        0,
-        Note {
-            level: Level::Error,
-            text: format!("{err:#}"),
-        },
-    );
-}
-
 pub async fn cmd_doctor(
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
@@ -713,36 +693,49 @@ pub async fn cmd_doctor(
         // unauthenticated users to set a key. The client is built from the
         // resolved settings (base url / tenant), and `verbose` logs the
         // request/response.
-        let mut api_unreachable = false;
+        let mut api_failed = false;
         if let Ok(api) = AntithesisApi::new(settings, verbose) {
-            // The client renews an expired credential before its first
-            // request. Do it here, so that a failure fails the credentials
-            // check and is not reported as an unreachable API. The version
-            // request would fail the same way, so it is skipped.
+            // Renew here so that a failure fails the credentials check, not
+            // the API check. The version request would fail the same way, so
+            // skip it.
             if api.authentication().expired()
                 && let Err(err) = api.refresh_authentication().await
             {
-                if let Some(check) = checks
+                api_failed = true;
+                let auth = api.authentication();
+                let check = checks
                     .iter_mut()
                     .find(|c| matches!(c.id, CheckId::Credentials { .. }))
-                {
-                    fail_renewal(check, api.authentication(), &err);
-                }
+                    .expect("the client uses the credential that the credentials check reports");
+                check.status = Status::Error;
+                check.message = match auth {
+                    AuthenticationInfo::GithubActionsOidc(_) => {
+                        "could not get a GitHub Actions OIDC token".to_owned()
+                    }
+                    _ => format!("the {auth} expired and could not be renewed"),
+                };
+                check.notes.insert(
+                    0,
+                    Note {
+                        level: Level::Error,
+                        text: format!("{err:#}"),
+                    },
+                );
             } else {
                 let host = api.host();
                 let version = api.get_version().await;
                 if let Ok(version) = &version {
                     checks.extend(release_floor_checks(version, &features::enabled()));
                 }
-                api_unreachable = matches!(version, Err(VersionError::Unreachable(_)));
+                api_failed = matches!(version, Err(VersionError::Unreachable(_)));
                 checks.push(version_check(&host, version));
             }
         }
 
         // A client that fails to build (bad proxy URL or extra header) skips
-        // the API check too. Skip the probe when the API check could not reach
-        // the tenant: the probe would only wait out its timeout.
-        if !api_unreachable
+        // the API check too. Skip the probe when the tenant could be
+        // unreachable: the probe would only wait out its timeout.
+        if !api_failed
             && let Some(base_url) = settings.base_url()
             && let Ok(client) = HttpClient::new(settings, verbose)
         {

@@ -144,13 +144,13 @@ stderr '.*could not connect to 127.0.0.1.*'
 [!staging] stdout '"id": "credentials",\s*"kind": "oauth",\s*"status": "error"'
 
 # A GitHub Actions OIDC token that cannot be fetched fails the credentials
-# check, and doctor does not blame the Antithesis API.
+# check, and doctor does not report the API as unreachable.
 isolate-home oidc_unreachable
 env ANTITHESIS_API_KEY=
 env ANTITHESIS_USERNAME=
 env ANTITHESIS_PASSWORD=
 env ANTITHESIS_TENANT=testtenant
-env ANTITHESIS_BASE_URL=
+env ANTITHESIS_BASE_URL=http://127.0.0.1:1
 set-env ACTIONS_ID_TOKEN_REQUEST_URL http://127.0.0.1:1/token?api-version=2.0
 set-env ACTIONS_ID_TOKEN_REQUEST_TOKEN ${FAKE_OIDC_REQUEST_TOKEN}
 ! snouty doctor

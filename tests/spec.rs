@@ -200,9 +200,9 @@ fn snouty_cmd(env: &testscript_rs::TestEnvironment, args: &[String]) -> std::pro
     let cache_dir = env.current_dir.join("api-cache-isolation");
     std::fs::create_dir_all(&cache_dir).expect("create API cache isolation dir");
     cmd.env("SNOUTY_API_CACHE_DIR", &cache_dir);
-    // A second of retry wait lasts 10 ms. Staging keeps the real waits.
+    // A second of a fixed wait lasts 100 ms. Staging keeps the real waits.
     if !is_staging() {
-        cmd.env(snouty::testutils::TEST_SECOND_MS_VAR_NAME, "10");
+        cmd.env(snouty::testutils::TEST_SECOND_MS_VAR_NAME, "100");
     }
     for (k, v) in &env.env_vars {
         cmd.env(k, v);

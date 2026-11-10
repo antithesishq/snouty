@@ -59,3 +59,9 @@ filter = """
    + test(=spec_tests)
 """
 priority = 100
+
+# `spec_tests` runs each spec file on a thread of its own, so it counts as
+# more than one test.
+[[profile.default.overrides]]
+filter = "test(=spec_tests)"
+threads-required = 4

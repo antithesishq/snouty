@@ -62,6 +62,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import time
 from collections.abc import Iterator
 from itertools import count
@@ -81,6 +82,14 @@ GH_FAILED_POLLS = 20
 
 # In a PR's seen events once its merge or close has printed.
 CLOSED = "closed"
+
+# Failed write-access lookups in a row, by event key.
+lookup_failures: dict[str, int] = {}
+
+# The check verdict of each PR, and when the polls began to agree on it.
+verdict_since: dict[int, tuple[str, float]] = {}
+# How long the polls must agree on a verdict: the poll interval.
+agree_seconds = 45.0
 
 
 def emit(line: str, wake: bool = True) -> None:
@@ -329,9 +338,19 @@ def poll_pr(
             continue
         ok = trusted(slug, item.get("user") or {}, write_access)
         if ok is None:
-            continue
+            # A short outage clears on a later poll. A lookup that fails on
+            # every poll would hide the event for good, so after
+            # GH_FAILED_POLLS failures it prints, and the reader treats it as
+            # untrusted.
+            lookup_failures[key] = lookup_failures.get(key, 0) + 1
+            if lookup_failures[key] < GH_FAILED_POLLS:
+                continue
+            line = f"{line} [write access unknown]"
+        elif not ok:
+            line = f"{line} [no write access]"
+        lookup_failures.pop(key, None)
         seen.add(key)
-        emit(line if ok else f"{line} [no write access]")
+        emit(line)
 
     failure_results = {
         "failure",
@@ -368,12 +387,15 @@ def poll_pr(
         verdict = None
     # A green rollup can be premature: checks register a moment after the
     # PR's creation, and a slow workflow can register its checks after a
-    # fast one concludes. A verdict emits only when two consecutive polls
-    # agree on it.
+    # fast one concludes. A verdict emits only when the polls have agreed on
+    # it for a whole poll interval. A time, not a count of polls, because the
+    # settle wait polls sooner.
     last = f"last:{sha}:{verdict}"
-    agreed = last in seen
-    seen.difference_update({k for k in seen if k.startswith("last:")})
-    seen.add(last)
+    now = time.monotonic()
+    since = verdict_since.get(pr)
+    if since is None or since[0] != last:
+        verdict_since[pr] = (last, now)
+    agreed = since is not None and since[0] == last and now - since[1] >= agree_seconds
     if verdict and agreed and f"emitted:{last}" not in seen:
         seen.add(f"emitted:{last}")
         emit(f"PR #{pr} {verdict}", wake=False)
@@ -382,12 +404,22 @@ def poll_pr(
 
 
 def default_state_dir() -> Path:
-    """A directory for the watchers started in this directory. Watchers in
-    other checkouts keep their own state, so each of them prints every event.
+    """A directory for the watchers started in this checkout, from any of its
+    directories. Watchers in other checkouts keep their own state, so each of
+    them prints every event.
     """
+    try:
+        top = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
+    except OSError:  # no git on PATH
+        top = ""
+    checkout = str(Path(top or Path.cwd()).resolve())
     home = os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state"
-    cwd = hashlib.sha256(str(Path.cwd().resolve()).encode()).hexdigest()[:12]
-    return Path(home) / "watch-prs" / cwd
+    return Path(home) / "watch-prs" / hashlib.sha256(checkout.encode()).hexdigest()[:12]
 
 
 def state_file(state_dir: Path, slug: str, pr: int) -> Path:
@@ -466,13 +498,23 @@ def main() -> int:
             ap.error("cannot resolve the repository; pass -R owner/repo")
         slug = view["nameWithOwner"]
     open_prs = set(args.prs)
+    global agree_seconds
+    agree_seconds = args.interval
     state_dir = args.state_dir or default_state_dir()
     files = {pr: state_file(state_dir, slug, pr) for pr in args.prs}
-    state = {pr: (set(), set()) if args.replay else load(files[pr]) for pr in args.prs}
-    # Find an unwritable state directory before the first event prints.
+    state: dict[int, tuple[set[str], set[str]]] = {}
+    for pr in args.prs:
+        if args.replay:
+            state[pr] = (set(), set())
+        else:
+            state[pr] = load(files[pr])
+    # Find an unwritable state directory before the first event prints, with
+    # a scratch file, so a --replay run keeps the saved state until it polls.
     try:
-        for pr in args.prs:
-            save(files[pr], *state[pr])
+        state_dir.mkdir(parents=True, exist_ok=True)
+        # A name of its own, so watchers that start together do not collide.
+        with tempfile.NamedTemporaryFile(dir=state_dir):
+            pass
     except OSError as e:
         return cannot_save(e)
 
@@ -507,7 +549,7 @@ def main() -> int:
         delay = args.interval
         if args.exit_on_event and last_wake is not None:
             # Poll again when the settle time ends, not a whole interval later.
-            delay = min(delay, args.settle - (time.monotonic() - last_wake))
+            delay = max(0, min(delay, args.settle - (time.monotonic() - last_wake)))
         time.sleep(delay)
     return 0
 

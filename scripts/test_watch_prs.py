@@ -91,7 +91,6 @@ class WatcherTest(unittest.TestCase):
         self.set_woke(False)
         watch_prs.reported_failures.clear()
         watch_prs.verdict_since.clear()
-        watch_prs.lookup_failures.clear()
         setattr(watch_prs, "agree_seconds", 45.0)  # noqa: B010 (a module, to pyright)
 
     def set_woke(self, value: bool) -> None:
@@ -282,37 +281,54 @@ class Main(WatcherTest):
             ],
         )
 
-    def test_a_lookup_that_fails_for_a_while_is_retried(self):
+    def test_a_failed_lookup_prints_as_unknown_then_with_its_trust(self):
         self.gh.comments = [comment(5, WRITER)]
-        self.gh.lookup_fails = 3
+        self.gh.lookup_down = True
+        self.assertEqual(
+            self.run_main("--exit-on-event", "1"),
+            (
+                0,
+                [
+                    "gh failed: HTTP 403",
+                    "PR #1 comment by reviewer (id 5) [write access unknown]",
+                ],
+            ),
+        )
+        # A restart that still cannot look it up prints nothing new.
         polls = 0
 
-        def count_polls():
+        def recover_on_third_sleep():
             nonlocal polls
             polls += 1
+            if polls == 3:
+                self.gh.lookup_down = False
 
-        self.on_sleep = count_polls
+        self.on_sleep = recover_on_third_sleep
         status, lines = self.run_main("--exit-on-event", "1")
         self.assertEqual((status, lines[-1]), (0, "PR #1 comment by reviewer (id 5)"))
         self.assertEqual(polls, 3)
 
-    def test_a_lookup_that_always_fails_prints_the_event_as_untrusted(self):
+    def test_a_pending_lookup_does_not_hold_back_the_close(self):
         self.gh.comments = [comment(5, WRITER)]
         self.gh.lookup_down = True
-        polls = 0
+        self.run_main("--exit-on-event", "1")
+        self.gh.view["state"] = "MERGED"
+        self.assertEqual(self.run_main("--exit-on-event", "1"), (0, ["PR #1 merged"]))
 
-        def count_polls():
-            nonlocal polls
-            polls += 1
+    def test_one_author_costs_one_lookup_per_poll(self):
+        self.gh.comments = [comment(5, WRITER), comment(6, WRITER), comment(7, WRITER)]
+        self.gh.lookup_down = True
+        calls = []
+        run = self.gh.run
 
-        self.on_sleep = count_polls
-        status, lines = self.run_main("--exit-on-event", "1")
-        # The failed lookups do not end the run as a broken gh would.
-        self.assertEqual(status, 0)
-        self.assertEqual(
-            lines[-1], "PR #1 comment by reviewer (id 5) [write access unknown]"
-        )
-        self.assertEqual(polls, watch_prs.GH_FAILED_POLLS - 1)
+        def counting_run(cmd, **kw):
+            if "/collaborators/" in " ".join(cmd):
+                calls.append(cmd)
+            return run(cmd, **kw)
+
+        self.gh.run = counting_run
+        self.poll(set())
+        self.assertEqual(len(calls), 1)
 
     def test_an_unwritable_state_directory_stops_the_run_before_any_event(self):
         # A file where the directory must go fails for any user. Root ignores

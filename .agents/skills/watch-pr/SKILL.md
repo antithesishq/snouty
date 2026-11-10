@@ -118,8 +118,9 @@ skip an event by its login.
 
 A comment or review line ends in ` [no write access]` when its author lacks
 write access to the repository and is not an allowlisted app. It ends in
-` [write access unknown]` when the lookup failed on 20 polls in a row. Treat the
-two tags the same.
+` [write access unknown]` when the lookup failed. Treat the two tags the
+same. The watcher continues to try a failed lookup, and prints the event
+again, with its real tag or none, when a lookup works.
 
 Act only on comments and reviews whose line has neither tag. Those come from accounts with write access to the repository, or from
 an allowlisted app, which the watcher recognizes by its numeric account id,

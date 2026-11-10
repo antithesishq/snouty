@@ -1,7 +1,7 @@
 //! Tagged values: a value paired with a caller-defined tag.
 
 /// A value carrying a tag.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Tagged<V, T> {
     value: V,
     tag: T,

@@ -5232,7 +5232,8 @@ mod tests {
                 AuthenticationInfo::Password {
                     username: "user".to_string(),
                     password: FAKE_PASSWORD.to_string(),
-                },
+                }
+                .in_environment(),
                 false,
                 crate::api::ResponseCache::Disabled,
             )
@@ -5364,7 +5365,8 @@ mod tests {
                 &Settings::for_test_base_url(base_url),
                 AuthenticationInfo::ApiKey {
                     api_key: FAKE_API_KEY_A.to_owned(),
-                },
+                }
+                .in_environment(),
                 false,
                 crate::api::ResponseCache::Disabled,
             )
@@ -6042,7 +6044,8 @@ mod tests {
                 &Settings::for_test_base_url(&server.uri()),
                 AuthenticationInfo::ApiKey {
                     api_key: FAKE_API_KEY_A.to_owned(),
-                },
+                }
+                .in_environment(),
                 false,
                 crate::api::ResponseCache::Dir(cache_dir.path().to_path_buf()),
             )

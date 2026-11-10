@@ -7,9 +7,7 @@ use crate::api::{
     MIN_LAUNCH_PARAMS_RELEASE, MIN_SEARCH_RELEASE, MIN_STREAM_RELEASE, VersionError,
     normalize_base_url,
 };
-use crate::auth::{
-    AuthenticationInfo, CredentialSource, CredentialStore, SourcedCredential, keychain_entry_name,
-};
+use crate::auth::{AuthenticationInfo, CredentialSource, SourcedCredential, login_command};
 use crate::compose;
 use crate::container;
 use crate::features::{self, Feature};
@@ -217,10 +215,6 @@ impl Check {
     }
 }
 
-/// What doctor prints for the profile when none is selected: no profile means
-/// snouty uses the default one, not that a value is missing.
-const DEFAULT_PROFILE: &str = "default";
-
 /// The full doctor report, as emitted by `--json`. The resolved settings
 /// are `settings show`'s job.
 #[derive(Serialize)]
@@ -330,7 +324,7 @@ fn authn_checks(sources: &[SourcedCredential]) -> Vec<Check> {
                 format!(
                     "snouty is using the {} from {}",
                     credentials.value(),
-                    describe_source(credentials.tag())
+                    credentials.tag()
                 ),
             )
             .note(Level::Note, unset_to_use(variables, hidden)),
@@ -383,7 +377,7 @@ fn hidden_credential_check(
         Level::Warning,
         format!(
             "snouty uses the username and password from {}, which `snouty runs` refuses",
-            describe_source(in_use.tag())
+            in_use.tag()
         ),
     )
     .note(Level::Note, unset_to_use(variables, hidden))
@@ -421,8 +415,10 @@ fn password_only_check(in_use: &SourcedCredential, username: &str) -> Check {
 /// The next step for a stored password. A bare `snouty login` writes the
 /// default profile, so a named profile is passed on.
 fn login_to_replace(profile: Option<&str>) -> String {
-    let flag = profile.map_or(String::new(), |p| format!(" --profile {p}"));
-    format!("run `snouty login{flag}` to replace it with an API key")
+    format!(
+        "run {} to replace it with an API key",
+        login_command(profile)
+    )
 }
 
 fn unset(variables: &[&str]) -> String {
@@ -436,38 +432,12 @@ fn unset_to_use(variables: &[&str], hidden: &SourcedCredential) -> String {
         "{} to use the {} in {}",
         unset(variables),
         hidden.value(),
-        describe_source(hidden.tag())
+        hidden.tag()
     )
-}
-
-/// A phrase that reads after "read from" or after the name of a credential
-/// kind.
-fn describe_source(source: &CredentialSource) -> String {
-    match source {
-        CredentialSource::Environment { variables } => format!(
-            "the `{}` environment variable{}",
-            variables.join("` and `"),
-            if variables.len() == 1 { "" } else { "s" }
-        ),
-        CredentialSource::Stored(CredentialStore::CredentialsFile { path, profile }) => format!(
-            // `Display`, not `Debug`: `{:?}` on a path adds quotes of its
-            // own, which read as a second set of brackets around the name.
-            "the [{}] profile in {}",
-            profile.as_deref().unwrap_or(DEFAULT_PROFILE),
-            path.display(),
-        ),
-        CredentialSource::Stored(CredentialStore::Keychain { profile }) => format!(
-            "system keychain entry named [{}]",
-            keychain_entry_name(profile.as_deref())
-        ),
-    }
 }
 
 fn enrich_with_source(check: Check, credential: &SourcedCredential) -> Check {
-    check.note(
-        Level::Note,
-        format!("read from {}", describe_source(credential.tag())),
-    )
+    check.note(Level::Note, format!("read from {}", credential.tag()))
 }
 
 /// Binary health checks: local tooling, the required settings
@@ -786,6 +756,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::auth::CredentialStore;
     use crate::tag::Tag;
 
     // ---- auth_checks (env-only auth) -----------------------------------

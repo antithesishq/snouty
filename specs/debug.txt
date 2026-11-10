@@ -278,10 +278,11 @@ stdout '\s*"runId": "run-123".*'
 # Gateway-level rejections (auth, rate limiting) on the launch/debug endpoints
 # return an EMPTY body rather than the Launch_Error_Response envelope — verified
 # against the live API, which answers a bad token with 401/403 and no payload.
-# The HTTP status is the only thing the server said, so it is the whole message.
+# The error names the rejected credential and its source.
 mock-server 401 ''
 ! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
-stderr 'API error: 401 Unauthorized.*'
+stderr 'the tenant rejected the username and password'
+stderr -literal 'Suggestion: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`, then run `snouty login` to use an API key'
 
 # A 429 is retried, a mutation such as a debugging launch too, and --verbose
 # logs each retry. With no Retry-After, the first wait is the 1-second backoff.

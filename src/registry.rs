@@ -12,7 +12,7 @@ use chrono::{TimeDelta, Utc};
 use color_eyre::eyre::{OptionExt, Result};
 
 use crate::api::AntithesisApi;
-use crate::auth::{AuthenticationInfo, PasswordPolicy, RefreshableOAuthToken};
+use crate::auth::{AuthenticationInfo, PasswordPolicy, RefreshableOAuthToken, SourcedCredential};
 use crate::error::user_error;
 use crate::settings::{Settings, SettingsRequest, is_valid_tenant_host};
 
@@ -123,11 +123,11 @@ pub fn tenant_registry(settings: &Settings) -> Option<TenantRegistry> {
 ///    profiles match but none has its own credential, fail.
 ///
 /// The search makes no network call.
-pub fn select_settings(
+pub(crate) fn select_settings(
     project_settings_path: Option<PathBuf>,
     profile: Option<String>,
     registry: &TenantRegistry,
-) -> Result<Option<(Settings, AuthenticationInfo)>> {
+) -> Result<Option<(Settings, SourcedCredential)>> {
     let request = SettingsRequest::from_flags(project_settings_path, profile)?;
     if request.profile().is_some() {
         let settings = request.resolve()?;
@@ -150,8 +150,8 @@ pub fn select_settings(
 fn first_with_own_credential(
     profiles: Vec<Settings>,
     registry: &TenantRegistry,
-    mut own_credential: impl FnMut(Option<&str>) -> Result<Option<AuthenticationInfo>>,
-) -> Result<Option<(Settings, AuthenticationInfo)>> {
+    mut own_credential: impl FnMut(Option<&str>) -> Result<Option<SourcedCredential>>,
+) -> Result<Option<(Settings, SourcedCredential)>> {
     let mut matched = false;
     for settings in profiles {
         if tenant_registry(&settings).as_ref() != Some(registry) {
@@ -249,7 +249,7 @@ mod tests {
     fn api(base_url: &str, auth: AuthenticationInfo) -> AntithesisApi {
         AntithesisApi::build(
             &Settings::for_test_base_url(base_url),
-            auth,
+            auth.in_environment(),
             false,
             ResponseCache::Disabled,
         )
@@ -600,14 +600,15 @@ mod tests {
     /// acme registry, from `profiles` and `own_credential`.
     fn select_for_acme(
         profiles: Vec<Settings>,
-        own_credential: impl FnMut(Option<&str>) -> Result<Option<AuthenticationInfo>>,
+        mut own_credential: impl FnMut(Option<&str>) -> Result<Option<AuthenticationInfo>>,
     ) -> Result<Option<(Option<String>, String)>> {
         let selected = first_with_own_credential(
             profiles,
             &registry("registry.acme.antithesis.com"),
-            own_credential,
+            |profile| Ok(own_credential(profile)?.map(AuthenticationInfo::in_environment)),
         )?;
         Ok(selected.map(|(settings, credential)| {
+            let credential = credential.untag();
             let AuthenticationInfo::ApiKey { api_key } = credential else {
                 panic!("not an API key: {credential}");
             };

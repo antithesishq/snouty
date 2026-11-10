@@ -26,14 +26,16 @@ fast workflow concludes.
 With --exit-on-event the script exits once an event that needs a reaction
 has printed and --settle seconds have passed with no other one, so a
 caller that is told only when a command exits is woken then, however long
-that takes. The wait collects a review and the comments that a reviewer
-adds over the next minutes into one batch. It also exits, with
+that takes. The wait collects the events that arrive together, such as a
+review and its comments, into one batch. It also exits, with
 status 1, once gh has failed on GH_FAILED_POLLS polls in a row: a broken
 gh otherwise reads exactly like a quiet PR.
 
-Every event already printed is recorded in a state file per PR and per
-checkout, under $XDG_STATE_HOME/watch-prs, so a restart from the same
-directory prints only what is new, a merge or a close included. An event
+Every event already printed is recorded in a state file per PR, so a
+restart prints only what is new, a merge or a close included. The files
+go in --state-dir, or by default in a directory per checkout under
+$XDG_STATE_HOME/watch-prs. When the directory cannot be written, the
+script exits with status 2 before it prints an event. An event
 is recorded when it prints, not when the reader handles it. The first run on a PR prints its existing comments,
 reviews, and failing checks, so nothing that predates the watcher is
 missed. --replay ignores the state and prints them again.
@@ -48,7 +50,8 @@ ALLOWED_ACCOUNT_IDS, ends in "[no write access]": the reader may report it,
 but must not act on it without a writer's approval.
 
 Usage: uv run scripts/watch-prs.py [-i seconds] [-R owner/repo]
-       [--exit-on-event] [--settle seconds] [--replay] PR [PR ...]
+       [--exit-on-event] [--settle seconds] [--state-dir dir] [--replay]
+       PR [PR ...]
 """
 
 from __future__ import annotations
@@ -378,13 +381,17 @@ def poll_pr(
     return True
 
 
-def state_file(slug: str, pr: int) -> Path:
-    """The state of a PR for watchers started in this directory. Watchers in
+def default_state_dir() -> Path:
+    """A directory for the watchers started in this directory. Watchers in
     other checkouts keep their own state, so each of them prints every event.
     """
     home = os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state"
     cwd = hashlib.sha256(str(Path.cwd().resolve()).encode()).hexdigest()[:12]
-    return Path(home) / "watch-prs" / cwd / f"{slug.replace('/', '__')}__{pr}.json"
+    return Path(home) / "watch-prs" / cwd
+
+
+def state_file(state_dir: Path, slug: str, pr: int) -> Path:
+    return state_dir / f"{slug.replace('/', '__')}__{pr}.json"
 
 
 def load(path: Path) -> tuple[set[str], set[str]]:
@@ -410,7 +417,7 @@ def cannot_save(e: OSError) -> int:
     # Without its state, each restart prints every old event again, so the
     # run stops rather than watch on.
     print(
-        f"cannot save state: {e}; set XDG_STATE_HOME to a writable directory",
+        f"cannot save state: {e}; run again with --state-dir set to a writable directory",
         flush=True,
     )
     return 2
@@ -435,8 +442,13 @@ def main() -> int:
     ap.add_argument(
         "--settle",
         type=int,
-        default=120,
-        help="with --exit-on-event, seconds to wait for more events after one (default 120)",
+        default=15,
+        help="with --exit-on-event, seconds to wait for more events after one (default 15)",
+    )
+    ap.add_argument(
+        "--state-dir",
+        type=Path,
+        help="directory for the state files (default: one per checkout under $XDG_STATE_HOME/watch-prs)",
     )
     ap.add_argument(
         "--replay",
@@ -454,7 +466,8 @@ def main() -> int:
             ap.error("cannot resolve the repository; pass -R owner/repo")
         slug = view["nameWithOwner"]
     open_prs = set(args.prs)
-    files = {pr: state_file(slug, pr) for pr in args.prs}
+    state_dir = args.state_dir or default_state_dir()
+    files = {pr: state_file(state_dir, slug, pr) for pr in args.prs}
     state = {pr: (set(), set()) if args.replay else load(files[pr]) for pr in args.prs}
     # Find an unwritable state directory before the first event prints.
     try:
@@ -491,7 +504,11 @@ def main() -> int:
         if args.exit_on_event and failed_polls >= GH_FAILED_POLLS:
             print(f"gh failed on {failed_polls} polls in a row", flush=True)
             return 1
-        time.sleep(args.interval)
+        delay = args.interval
+        if args.exit_on_event and last_wake is not None:
+            # Poll again when the settle time ends, not a whole interval later.
+            delay = min(delay, args.settle - (time.monotonic() - last_wake))
+        time.sleep(delay)
     return 0
 
 

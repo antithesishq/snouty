@@ -21,9 +21,9 @@ uv run scripts/watch-prs.py --exit-on-event <PR> [<PR> ...]
 ```
 
 The script polls in silence, for days if necessary. When an event that
-needs a reaction prints, it waits until two minutes pass with no other
-one, then exits, so a review and the comments that follow it arrive in
-one batch. `--settle seconds` changes the wait. Read all of its output,
+needs a reaction prints, it waits until 15 seconds pass with no other
+one, then exits, so events that arrive together, such as a review and its
+comments, come in one batch. `--settle seconds` changes the wait. Read all of its output,
 react to each line (step 3), then start it again with the same command and
 end your turn. Stop when it prints `merged` or `closed without merge` for
 every PR.
@@ -101,9 +101,9 @@ cannot reach the API reads exactly like a quiet PR. Fix gh, then start the
 watcher again.
 
 When the script cannot write its state, it prints `cannot save state` and
-exits with status 2 before it prints an event. Set `XDG_STATE_HOME` to a
-writable directory, use the same one for each later run, and start the
-watcher again.
+exits with status 2 before it prints an event. Start it again with
+`--state-dir <dir>`, where `<dir>` is a writable directory that only this
+watch uses, and pass the same `--state-dir` on each later run.
 
 When an app opened the PR, as an agent behind a GitHub integration does,
 the script suppresses the comments and reviews of that app: they are your

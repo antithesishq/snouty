@@ -412,7 +412,7 @@ async fn a_long_call_reports_progress() {
     let server = MockApiServer::start();
     let home = TempDir::new().unwrap();
     let (mut command, _silent) = snouty_mcp_silent(&server, home.path());
-    command.env("SNOUTY_TEST_SECOND_MS", "100");
+    command.env(snouty::testutils::TEST_SECOND_MS_VAR_NAME, "100");
     let (sender, mut progress) = tokio::sync::mpsc::unbounded_channel();
     let transport = TokioChildProcess::new(command).expect("spawn snouty mcp");
     let client = ProgressClient(sender)

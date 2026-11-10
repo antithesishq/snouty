@@ -46,7 +46,7 @@ test-group = "container"
 priority = 100
 
 # The slowest tests that do NOT need an engine, started first for the same
-# reason: roughly 7s and 4s, against under 3s for everything else.
+# reason.
 #
 # `spec_tests` drives every file in `specs/`. It is not in the group above
 # because it needs a runtime to be *detected*, not to work — `specs/doctor.txt`

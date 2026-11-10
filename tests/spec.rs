@@ -203,7 +203,7 @@ fn snouty_cmd(env: &testscript_rs::TestEnvironment, args: &[String]) -> std::pro
     // A retry of a request to an unreachable mock host waits 10 ms, not a
     // second. A retry of a staging request keeps its real wait.
     if !is_staging() {
-        cmd.env("SNOUTY_TEST_SECOND_MS", "10");
+        cmd.env(snouty::testutils::TEST_SECOND_MS_VAR_NAME, "10");
     }
     for (k, v) in &env.env_vars {
         cmd.env(k, v);
@@ -1195,7 +1195,11 @@ fn spec_tests() {
                 .collect();
             handles
                 .into_iter()
-                .map(|handle| handle.join().expect("a spec thread panicked"))
+                .map(|handle| {
+                    handle
+                        .join()
+                        .unwrap_or_else(|e| std::panic::resume_unwind(e))
+                })
                 .collect()
         })
     };

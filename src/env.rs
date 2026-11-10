@@ -30,7 +30,7 @@ pub(crate) fn var(key: &str) -> Result<Option<String>> {
 /// The tests set this to the length of one second of a fixed wait, in
 /// milliseconds, so that they do not wait out the real one. It is not a
 /// setting, and no help page names it.
-pub(crate) const TEST_SECOND_MS_VAR_NAME: &str = "SNOUTY_TEST_SECOND_MS";
+pub const TEST_SECOND_MS_VAR_NAME: &str = "SNOUTY_TEST_SECOND_MS";
 
 /// The length of one second of a fixed wait, as a fraction of a real second:
 /// 1.0 unless [`TEST_SECOND_MS_VAR_NAME`] is set.
@@ -40,10 +40,11 @@ pub(crate) fn wait_scale() -> f64 {
             .ok()
             .flatten()
             .map_or(1.0, |ms| {
-                let ms: u32 = ms
+                // Not zero: a tool call divides by the scale.
+                let ms: std::num::NonZeroU32 = ms
                     .parse()
                     .unwrap_or_else(|e| panic!("{TEST_SECOND_MS_VAR_NAME}={ms}: {e}"));
-                f64::from(ms) / 1000.0
+                f64::from(ms.get()) / 1000.0
             })
     });
     *SCALE

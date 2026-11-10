@@ -96,7 +96,7 @@ fn docs_update_that_never_connects_times_out_and_uses_cache() {
     set_docs_cache_env(&mut snouty(), &cache_dir)
         .env("ANTITHESIS_DOCS_URL", format!("https://127.0.0.1:{port}"))
         // A second lasts 100 ms, so the 10 s connect timeout lasts 1 s.
-        .env("SNOUTY_TEST_SECOND_MS", "100")
+        .env(snouty::testutils::TEST_SECOND_MS_VAR_NAME, "100")
         .args(["docs", "search", "docker"])
         .timeout(Duration::from_secs(60))
         .assert()

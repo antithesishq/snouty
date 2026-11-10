@@ -45,6 +45,10 @@
     {
       "name": "Version",
       "description": "API and release version information."
+    },
+    {
+      "name": "Registry",
+      "description": "Where to push container images."
     }
   ],
   "paths": {
@@ -109,7 +113,7 @@
           {
             "name": "launcher",
             "in": "query",
-            "description": "Filter by the name of the configured launcher that kicked off the test run.",
+            "description": "Filter by launcher: the programmatic name of the launcher that kicked off the test run. This is the same value as the `launcher` field on a run and the `{launcher_name}` accepted by `POST /api/v1/launch/{launcher_name}`. Display names are not matched.",
             "required": false,
             "schema": {
               "type": "string"
@@ -130,7 +134,8 @@
                       "run_id": "9043254f65c9c65d63fe043a0abfc7fc-53-1",
                       "status": "completed",
                       "created_at": "2026-04-28T13:49:49Z",
-                      "launcher": "Research Nightly",
+                      "launcher": "research_nightly",
+                      "launcher_display_name": "Research Nightly",
                       "started_at": "2026-04-28T13:49:49Z",
                       "completed_at": "2026-04-28T14:14:07Z",
                       "creator": {
@@ -150,7 +155,8 @@
                       "run_id": "ced73597f5f6499a6041f4c7f2329cf1-53-1",
                       "status": "completed",
                       "created_at": "2026-04-28T13:49:49Z",
-                      "launcher": "Thesis",
+                      "launcher": "thesis-nes",
+                      "launcher_display_name": "Thesis",
                       "started_at": "2026-04-28T13:49:49Z",
                       "completed_at": "2026-04-28T14:07:36Z",
                       "creator": {
@@ -1404,7 +1410,7 @@
       "post": {
         "operationId": "executeCommand",
         "summary": "Execute a command in a test run",
-        "description": "Executes a bash command in a test run, starting at a given moment.\n\nThe moment can come from any test run, including one that has already completed. The command executes in the in-progress run given by `run_id`:\n\n- If the moment is from that run, the command runs on it directly.\n- If the moment is from a different run, pass that run's ID as `source_run_id` (or its debugging session ID as `source_session_id`). If you launched the in-progress run with [Launch a debugging session](/docs/reference/rest_api/#op-launchMvd), you can leave both out, and the server uses the run you launched it from. The server \"rewarms\" the moment from the source run, emitting `Rewarm_Progress` records ahead of the command output. The source run must be on the same [performance tier](/docs/product/launching_tests/#choose-a-performance-tier) as `run_id`.\n\nIf you don't have an in-progress run, start one with [Launch a debugging session](/docs/reference/rest_api/#op-launchMvd).\n\nSet `container` to the container you want the script to run in. To run it on the host machine instead, set `container` to `_ANTITHESIS_HOST`.\n\nIf you're using Kubernetes, set `container` to `_ANTITHESIS_HOST`, and manage the cluster with `kubectl` commands. For example, use `kubectl get pods -A` to list the pods, and `kubectl exec <pod> -n <namespace> -c <container> -- <command>` to run a command inside a pod.\n\nReturns the command's stdout and stderr. Set `include_system_logs` to `true` to also include every event observed during the command's execution.\n\nOutput is streamed as newline-delimited JSON (NDJSON). Command output uses the same `Event` shape returned by the [Get logs for a specific moment](/docs/reference/rest_api/#op-getRunLogs) endpoint.\n\nA successful stream ends with exactly one command result with a status of `exited` or `timed_out`. A stream that fails after the response begins ends with a `Stream_Error`.\n\nThe command times out after 600 seconds by default; set `timeout_seconds` to change this. Rewarming time doesn't count toward the timeout.",
+        "description": "Executes a bash command in a test run, starting at a given moment.\n\nThe moment can come from any test run, including one that has already completed. The command executes in the in-progress run given by `run_id`:\n\n- If the moment is from that run, the command runs on it directly.\n- If the moment is from a different run, pass that run's ID as `source_run_id` (or its debugging session ID as `source_session_id`). If you launched the in-progress run with [Launch a debugging session](/docs/reference/rest_api/#op-launchMvd), you can leave both out, and the server uses the run you launched it from. The server \"rewarms\" the moment from the source run, emitting `Rewarm_Progress` records ahead of the command output. The source run must be on the same [performance tier](/docs/product/launching_tests/#choose-a-performance-tier) as `run_id`.\n\nIf you don't have an in-progress run, start one with [Launch a debugging session](/docs/reference/rest_api/#op-launchMvd).\n\nSet `container` to the container you want the script to run in. To run it on the host machine instead, set `container` to `_ANTITHESIS_HOST`.\n\nIf you're using Kubernetes, set `container` to `_ANTITHESIS_HOST`, and manage the cluster with `kubectl` commands. For example, use `kubectl get pods -A` to list the pods, and `kubectl exec <pod> -n <namespace> -c <container> -- <command>` to run a command inside a pod.\n\nReturns the command's stdout and stderr. Set `include_system_logs` to `true` to also include every event observed during the command's execution. Set `include_filtered_logs` to `true` to also include logs that are filtered out of the run's logs by the Retroactive Logging feature.\n\nOutput is streamed as newline-delimited JSON (NDJSON). Command output uses the same `Event` shape returned by the [Get logs for a specific moment](/docs/reference/rest_api/#op-getRunLogs) endpoint.\n\nA successful stream ends with exactly one command result with a status of `exited` or `timed_out`. A stream that fails after the response begins ends with a `Stream_Error`.\n\nThe command times out after 600 seconds by default; set `timeout_seconds` to change this. Rewarming time doesn't count toward the timeout.",
         "tags": ["Test runs"],
         "parameters": [
           {
@@ -1745,6 +1751,45 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/registry": {
+      "get": {
+        "tags": ["Registry"],
+        "operationId": "getRegistry",
+        "summary": "Get where to push container images",
+        "description": "Returns the registry this tenant's container images are pushed to, and whose login to push with. `antithesis`: authenticate to `registry_url` with the same credential as this API. `docker`: use the login already configured in Docker for `registry_url`.",
+        "responses": {
+          "200": {
+            "description": "Registry information.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Registry_Response"
+                },
+                "example": {
+                  "auth": "antithesis",
+                  "registry_url": "registry.example.antithesis.com"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           },
           "406": {
             "$ref": "#/components/responses/NotAcceptable"
@@ -2274,7 +2319,8 @@
                   "$ref": "#/components/schemas/Usage_Cap"
                 },
                 "example": {
-                  "cap": 5000
+                  "cap": 5000,
+                  "max_cap": 22400
                 }
               }
             }
@@ -2622,7 +2668,12 @@
           },
           "launcher": {
             "type": "string",
-            "description": "The name of the launcher that kicked off this test run.",
+            "description": "The programmatic name of the launcher that kicked off this test run. Pass it to `POST /api/v1/launch/{launcher_name}` to launch another run from the same launcher, or to the `launcher` filter when listing runs.",
+            "example": "payments_nightly"
+          },
+          "launcher_display_name": {
+            "type": "string",
+            "description": "The launcher's human-readable display name, when the launcher configures one and the run recorded it. Omitted otherwise; fall back to `launcher` for display.",
             "example": "Payments Nightly"
           },
           "description": {
@@ -2728,6 +2779,25 @@
         },
         "additionalProperties": true
       },
+      "Registry_Response": {
+        "type": "object",
+        "description": "Where this tenant's container images are pushed, and whose login to push with.",
+        "required": ["auth", "registry_url"],
+        "properties": {
+          "auth": {
+            "type": "string",
+            "enum": ["antithesis", "docker"],
+            "description": "`antithesis`: authenticate to `registry_url` with the same credential as this API. `docker`: use the login already configured in Docker for `registry_url`.",
+            "example": "antithesis"
+          },
+          "registry_url": {
+            "type": "string",
+            "description": "The registry host and path to push to, without a scheme.",
+            "example": "registry.example.antithesis.com"
+          }
+        },
+        "additionalProperties": true
+      },
       "Launch_MVD_Response": {
         "type": "object",
         "description": "Response returned when a debugging session request is successfully accepted.",
@@ -2819,6 +2889,11 @@
             "type": "boolean",
             "default": false,
             "description": "When true, the streamed output includes every event observed during the command's execution, not just the command's own stdout and stderr. Defaults to false."
+          },
+          "include_filtered_logs": {
+            "type": "boolean",
+            "default": false,
+            "description": "When true, the streamed output also includes logs that are filtered out of the run's logs by the Retroactive Logging feature. Enabling this adds a short setup step before the command runs; that time does not count toward `timeout_seconds`. Defaults to false."
           },
           "timeout_seconds": {
             "type": "integer",
@@ -3457,7 +3532,8 @@
         "type": "object",
         "description": "The usage cap set on the tenant.",
         "required": [
-          "cap"
+          "cap",
+          "max_cap"
         ],
         "properties": {
           "cap": {
@@ -3465,6 +3541,12 @@
             "nullable": true,
             "description": "The maximum usage hours usable per entitlement period. At least the current period's prepaid quantity. Null if no cap is set.",
             "example": 5000
+          },
+          "max_cap": {
+            "type": "number",
+            "nullable": true,
+            "description": "The highest cap the tenant may set on itself. Null when the tenant cannot set its own cap.",
+            "example": 22400
           }
         }
       },

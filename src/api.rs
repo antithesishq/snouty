@@ -768,6 +768,8 @@ pub struct ExecRequest {
     /// Stream every event of the timeline while the script executes, not
     /// only the script's output.
     pub events: bool,
+    /// Also stream the logs that the run's log filters drop.
+    pub include_filtered_logs: bool,
     /// Where the server replays inputs from when `moment` is cold.
     pub rewarm: Option<RewarmSource>,
 }
@@ -1122,6 +1124,7 @@ impl AntithesisApi {
                 .container
                 .unwrap_or_else(|| EXEC_HOST_CONTAINER.to_string()),
             include_system_logs: exec.events.then_some(true),
+            include_filtered_logs: exec.include_filtered_logs.then_some(true),
             // The wire field is a whole number of seconds.
             timeout_seconds: exec.timeout.map(|timeout| timeout.as_secs()),
             source_run_id,
@@ -3541,6 +3544,7 @@ mod tests {
         assert_eq!(
             operations,
             [
+                "get getRegistry",
                 "get getRun",
                 "get getRunBuildLogs",
                 "get getRunLogs",

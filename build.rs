@@ -50,7 +50,7 @@ fn generate_api_client(out_dir: &Path) {
          EXPECTED_ADDITIONAL_PROPERTIES_FALSE in build.rs to {stripped}."
     );
     untype_error_responses(&mut spec_value);
-    unrequire_include_system_logs_default(&mut spec_value);
+    unrequire_exec_log_defaults(&mut spec_value);
     unrequire_exec_timeout_default(&mut spec_value);
     drop_property_description(&mut spec_value);
     drop_launch_status_code(&mut spec_value);
@@ -347,15 +347,18 @@ fn unrequire_search_passing_default(spec: &mut serde_json::Value) {
     }
 }
 
-/// Strip the schema default from `Execute_Command_Request.include_system_logs`,
-/// so the request omits the field unless `runs exec --events` sets it.
-fn unrequire_include_system_logs_default(spec: &mut serde_json::Value) {
-    remove_schema_key(
-        spec,
-        "/components/schemas/Execute_Command_Request/properties/include_system_logs",
-        "default",
-        "unrequire_include_system_logs_default",
-    );
+/// Strip the schema defaults from `Execute_Command_Request.include_system_logs`
+/// and `include_filtered_logs`, so the request omits each field unless
+/// `runs exec --events` or `--include-filtered-logs` sets it.
+fn unrequire_exec_log_defaults(spec: &mut serde_json::Value) {
+    for field in ["include_system_logs", "include_filtered_logs"] {
+        remove_schema_key(
+            spec,
+            &format!("/components/schemas/Execute_Command_Request/properties/{field}"),
+            "default",
+            "unrequire_exec_log_defaults",
+        );
+    }
 }
 
 /// Strip the schema default from `Execute_Command_Request.timeout_seconds`,

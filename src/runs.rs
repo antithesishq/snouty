@@ -255,6 +255,7 @@ pub async fn cmd_runs(
             container,
             timeout,
             events,
+            include_filtered_logs,
             source_run_id,
             source_session_id,
             ..
@@ -269,6 +270,7 @@ pub async fn cmd_runs(
                 container,
                 timeout: timeout.map(Duration::from),
                 events,
+                include_filtered_logs,
                 rewarm,
             };
             cmd_runs_exec(&run_id, exec, settings, output.verbose, mode).await
@@ -4856,6 +4858,7 @@ mod tests {
             started_at: None,
             completed_at: None,
             launcher: launcher.to_string(),
+            launcher_display_name: None,
             creator: None,
             description: None,
             parameters,
@@ -5429,6 +5432,7 @@ mod tests {
                 container: None,
                 timeout: None,
                 events: false,
+                include_filtered_logs: false,
                 rewarm: None,
             }
         }

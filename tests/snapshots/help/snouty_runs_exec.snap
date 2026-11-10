@@ -34,6 +34,12 @@ events as `snouty runs logs --detail` does.
 On exit, a trailer on stderr documents the branch's end moment, to chain a
 follow-up command from.
 
+--include-filtered-logs adds the logs that the run's log filters drop to the
+events: the lines that `antithesis.filter_logs_matching` and
+`antithesis.filter_source_matching` suppress (retroactive logging). It needs
+--events. It adds a short setup step before the script executes, which --timeout
+does not cover.
+
 The command fails when the script fails, times out, or its stream ends early.
 
 To run more at the moment that a script left, pass its end moment as INPUT_HASH
@@ -46,6 +52,8 @@ Examples:
   snouty runs exec <run_id> <hash> <vtime> 'uname -a'
   snouty runs exec <run_id> <hash> <vtime> --container <name> 'ps aux'
   snouty runs exec <run_id> <hash> <vtime> --events 'sleep 5'
+  snouty runs exec <run_id> <hash> <vtime> --events --include-filtered-logs
+  'sleep 5'
   snouty runs exec <run_id> <hash> <vtime> --source-run-id <other_run_id>
   --timeout 5m 'ls'
   echo 'ps aux' | snouty runs exec <run_id> <hash> <vtime>
@@ -82,6 +90,10 @@ Options:
   -d, --detail
           Detailed rendering of the events: a full-width vtime on every line,
           source locations, and each event's attached details JSON
+
+      --include-filtered-logs
+          Also emit the logs that the run's log filters drop (retroactive
+          logging). Adds a short setup step that the timeout does not cover
 
       --source-run-id <SOURCE_RUN_ID>
           Run that a cold moment comes from; the server loads the moment into

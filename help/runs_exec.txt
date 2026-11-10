@@ -18,6 +18,8 @@ Without `events`, the result's first content block is the script's output. With 
 A second block holds the script's error output, why the command failed when it fails, and, when the script exits, a last line `end moment: HASH VTIME`: the moment to chain a follow-up call from. The two blocks do not keep the order of the output and the error output; set `json` to get one stream in order.
 {% endif %}
 
+{{ t("--include-filtered-logs")? }} adds the logs that the run's log filters drop to the events: the lines that `antithesis.filter_logs_matching` and `antithesis.filter_source_matching` suppress (retroactive logging). It needs {{ t("--events")? }}. It adds a short setup step before the script executes, which {{ t("--timeout")? }} does not cover.
+
 The command fails when the script fails, times out, or its stream ends early.
 
 To run more at the moment that a script left, pass its end moment as {{ t("input_hash")? }} and {{ t("vtime")? }}:
@@ -31,6 +33,7 @@ Examples:
   {{ t("snouty runs exec <run_id> <hash> <vtime> 'uname -a'")? }}
   {{ t("snouty runs exec <run_id> <hash> <vtime> --container <name> 'ps aux'")? }}
   {{ t("snouty runs exec <run_id> <hash> <vtime> --events 'sleep 5'")? }}
+  {{ t("snouty runs exec <run_id> <hash> <vtime> --events --include-filtered-logs 'sleep 5'")? }}
   {{ t("snouty runs exec <run_id> <hash> <vtime> --source-run-id <other_run_id> --timeout 5m 'ls'")? }}
 {%- if cli %}
   {{ t("echo 'ps aux' | snouty runs exec <run_id> <hash> <vtime>")? }}

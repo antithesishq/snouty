@@ -424,15 +424,10 @@ async fn cmd_runs_show(
     Ok(())
 }
 
-fn run_page_url(base_url: &str, run_id: &str) -> Result<reqwest::Url> {
-    reqwest::Url::parse_with_params(&format!("{base_url}/run"), [("run_id", run_id)])
-        .map_err(|err| eyre!("invalid run page URL: {err}"))
-}
-
 /// `runs show --web`: open the run's page in a browser. With `--json`, emit the
 /// URL instead of launching anything so scripts can capture it.
 fn open_run_page(base_url: &str, run_id: &str, json: bool) -> Result<()> {
-    let url = run_page_url(base_url, run_id)?;
+    let url = crate::browser::run_page_url(base_url, run_id)?;
 
     if json {
         outln!("{}", serde_json::json!({ "url": url.as_str() }))?;
@@ -2760,15 +2755,6 @@ mod tests {
     use super::*;
     use crate::testutils::fake_secrets::{FAKE_API_KEY_A, FAKE_PASSWORD};
     use hegel::generators;
-
-    #[test]
-    fn run_page_url_encodes_query_characters() {
-        let url = run_page_url("https://acme.antithesis.com", "a&b#c d").unwrap();
-        assert_eq!(
-            url.as_str(),
-            "https://acme.antithesis.com/run?run_id=a%26b%23c+d"
-        );
-    }
 
     /// Column indexes of the runs table.
     const RUNS_TABLE_LAUNCHER: usize = 3;

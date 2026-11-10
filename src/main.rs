@@ -382,21 +382,25 @@ async fn cmd_launch(
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else if let Some(run_id) = response.run_id.as_deref() {
-        // `writedoc!` and not `println!`: a reader that stops after the run ID
-        // line (`| head -1`) closes the pipe, and `println!` panics on that.
+        // A reader such as `head -1` may close stdout after the run ID.
+        let mut stdout = stdio::stdout();
+        writeln!(stdout, "Test run started: run_id {run_id}")?;
+        if let Ok(url) = snouty::browser::run_page_url(api.base_url(), run_id) {
+            writeln!(stdout, "\nRun View: {url}")?;
+            writeln!(
+                stdout,
+                "The run may still be starting. Live results can take a few minutes to appear."
+            )?;
+        }
         writedoc!(
-            stdio::stdout(),
+            stdout,
             r"
-                Test run started: run_id {run_id}
+
+                Watch live properties with:
+                  snouty runs stream {run_id}
 
                 Wait for the run to finish with:
                   snouty runs wait {run_id}
-
-                Or interact with the run once it is ready:
-                  snouty runs wait {run_id} --until ready
-                  snouty runs search {run_id} --follow <query>
-                  snouty runs events {run_id} <query>
-                  snouty runs exec {run_id} <input_hash> <vtime> <script>
             "
         )?;
     } else {

@@ -311,7 +311,17 @@ class Main(WatcherTest):
     def test_a_pending_lookup_does_not_hold_back_the_close(self):
         self.gh.comments = [comment(5, WRITER)]
         self.gh.lookup_down = True
-        self.run_main("--exit-on-event", "1")
+
+        def fail_on_a_second_poll():
+            raise AssertionError("the comment waited for another poll")
+
+        # The comment prints on the first poll, before the PR can close.
+        self.on_sleep = fail_on_a_second_poll
+        status, lines = self.run_main("--exit-on-event", "1")
+        self.assertEqual(
+            (status, [line for line in lines if line.startswith("PR #1 comment")]),
+            (0, ["PR #1 comment by reviewer (id 5) [write access unknown]"]),
+        )
         self.gh.view["state"] = "MERGED"
         self.assertEqual(self.run_main("--exit-on-event", "1"), (0, ["PR #1 merged"]))
 

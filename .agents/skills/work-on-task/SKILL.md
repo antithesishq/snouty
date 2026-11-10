@@ -36,6 +36,10 @@ implement.
 
 Follow AGENTS.md, section "Workflow". Commit as you go.
 
+After the PR exists, add commits and merge `origin/main`. Do not amend or
+rebase: a reviewer must be able to see what changed since the last review.
+The squash merge leaves one commit on `main`.
+
 ## 3. Pre-PR gauntlet
 
 Run these steps in order. Each step may change the tree, so commit after each
@@ -65,4 +69,5 @@ the body carries `fixes #<N>` and the merge closes the issue.
 ## 5. Watch until close
 
 Invoke the `watch-pr` skill with the new PR number. It runs the watcher and
-tells you how to react to each event.
+tells you how to react to each event. The watcher wakes you only when an
+event needs a reaction.

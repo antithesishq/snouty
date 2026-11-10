@@ -244,11 +244,14 @@ async fn validate_compose(
     let leftovers = compose.ps(overlay)?;
     // Every declared volume, whoever created it: `down --volumes` removes
     // each one by name, and no others.
-    let leftover_volumes: Vec<String> = rt
-        .volume_names()?
-        .into_iter()
-        .filter(|v| contents.volumes.contains(v))
-        .collect();
+    let leftover_volumes: Vec<String> = if contents.volumes.is_empty() {
+        Vec::new()
+    } else {
+        rt.volume_names()?
+            .into_iter()
+            .filter(|v| contents.volumes.contains(v))
+            .collect()
+    };
     let mut found = Vec::new();
     if !leftovers.is_empty() {
         let services: BTreeSet<&str> = leftovers.iter().map(|c| c.service.as_str()).collect();

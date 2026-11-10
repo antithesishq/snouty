@@ -305,9 +305,9 @@ impl DockerCompose {
     }
 
     /// A copy-pasteable `... down` command that reproduces what [`down`](Self::down)
-    /// runs — same engine wiring, compose form, and files — for the
-    /// `--keep-running` hint. Uses absolute file paths so it works from any
-    /// directory (unlike [`down`](Self::down), which sets the working directory).
+    /// runs — same engine wiring, compose form, and files. Uses absolute file
+    /// paths so it works from any directory (unlike [`down`](Self::down), which
+    /// sets the working directory).
     pub fn down_hint(&self, overlay: Option<&Path>) -> String {
         // Make every path absolute so the printed command is copy-pasteable from
         // any directory. `config.dir()` (and hence the overlay) is whatever —
@@ -507,15 +507,20 @@ impl DockerCompose {
     pub fn down(&self, overlay: Option<&Path>) {
         let mut cmd = self.command(overlay, &["down", "--volumes", "--timeout", "0"]);
         cmd.stdin(std::process::Stdio::null());
-        match cmd.output() {
-            Ok(output) if output.status.success() => {}
-            Ok(output) => eprintln!(
-                "Warning: '{} down' failed:\n{}",
+        let failure = match cmd.output() {
+            Ok(output) if output.status.success() => return,
+            Ok(output) => format!(
+                "'{} down' failed:\n{}",
                 self.cli,
                 String::from_utf8_lossy(&output.stderr).trim()
             ),
-            Err(e) => eprintln!("Warning: failed to run '{} down': {e}", self.cli),
-        }
+            Err(e) => format!("failed to run '{} down': {e}", self.cli),
+        };
+        // Omit the overlay from the hint: the caller can delete it on exit.
+        eprintln!(
+            "Warning: {failure}\nBring the project down before the next validate:\n  {}",
+            self.down_hint(None)
+        );
     }
 
     /// Return the `docker-compose.yaml` contents canonicalized, with each
@@ -964,11 +969,9 @@ pub fn parse_compose_config(yaml: &str) -> Result<ComposeContents> {
                 continue;
             }
             // `compose config` always prints the resolved engine name.
-            let name = value
-                .get("name")
-                .and_then(serde_yaml::Value::as_str)
-                .ok_or_else(|| eyre!("compose config printed a volume without a name"))?;
-            volumes.push(name.to_string());
+            if let Some(name) = value.get("name").and_then(serde_yaml::Value::as_str) {
+                volumes.push(name.to_string());
+            }
         }
     }
 

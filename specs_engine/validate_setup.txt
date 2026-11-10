@@ -24,8 +24,6 @@ stderr 'Setup-complete event detected.*'
 stderr 'Setup validation successful.*'
 
 # Validate removes its named volumes, so a second run starts on fresh ones.
-# Docker only: on rootless Podman 5 in CI, `compose down` fails with
-# "rootless netns: kill network process: permission denied".
 [docker] build-image volume-marker-setup:latest volume_marker
 [docker] snouty validate config_volume --timeout 30s
 [docker] stderr 'Setup validation successful\.\z'

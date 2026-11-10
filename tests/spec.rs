@@ -1149,8 +1149,10 @@ fn execute_spec_file(file: &str, staging: bool) -> testscript_rs::Result<()> {
 fn spec_tests() {
     let staging = is_staging();
     let specs_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("specs");
-    let files: Vec<String> = if let Ok(only) = std::env::var("SNOUTY_SPEC") {
+    let only = std::env::var("SNOUTY_SPEC").ok().filter(|v| !v.is_empty());
+    let files: Vec<String> = if let Some(only) = only {
         only.split(',')
+            .filter(|name| !name.is_empty())
             .map(|name| {
                 let file = format!("{name}.txt");
                 assert!(specs_dir.join(&file).is_file(), "no spec file specs/{file}");

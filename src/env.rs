@@ -36,16 +36,13 @@ pub const TEST_SECOND_MS_VAR_NAME: &str = "SNOUTY_TEST_SECOND_MS";
 /// 1.0 unless [`TEST_SECOND_MS_VAR_NAME`] is set.
 pub(crate) fn wait_scale() -> f64 {
     static SCALE: LazyLock<f64> = LazyLock::new(|| {
+        // A value that is not a number above zero keeps the real second: this
+        // variable must not fail a command, and the scale is a divisor.
         var(TEST_SECOND_MS_VAR_NAME)
             .ok()
             .flatten()
-            .map_or(1.0, |ms| {
-                // Not zero: the scale is a divisor.
-                let ms: std::num::NonZeroU32 = ms
-                    .parse()
-                    .unwrap_or_else(|e| panic!("{TEST_SECOND_MS_VAR_NAME}={ms}: {e}"));
-                f64::from(ms.get()) / 1000.0
-            })
+            .and_then(|ms| ms.parse::<std::num::NonZeroU32>().ok())
+            .map_or(1.0, |ms| f64::from(ms.get()) / 1000.0)
     });
     *SCALE
 }

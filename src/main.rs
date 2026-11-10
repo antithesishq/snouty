@@ -389,6 +389,9 @@ async fn cmd_launch(
             r"
                 Test run started: run_id {run_id}
 
+                View the run in your browser with:
+                  snouty runs show --web {run_id}
+
                 Wait for the run to finish with:
                   snouty runs wait {run_id}
 

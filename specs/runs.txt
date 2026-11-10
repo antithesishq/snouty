@@ -662,8 +662,8 @@ stderr '^Error: API error: 400.*'
 [!staging] stderr 'API error: 429 Too Many Requests.*'
 [!staging] stderr '^Suggestion: retry after 3600s \(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\) to respect the server.s rate limit$'
 
-# A rejected credential is named with its source, and the suggestion is the
-# one way to replace it from that source.
+# The error names the rejected credential and its source. The suggestion gives
+# the one way to replace it from that source.
 [!staging] mock-server 401 ''
 [!staging] set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 [!staging] ! snouty runs

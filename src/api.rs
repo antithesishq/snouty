@@ -915,8 +915,8 @@ impl AntithesisApi {
         self.client.inner().credential.value()
     }
 
-    /// Render a failed API call for the user. A rejected credential is named,
-    /// with where it came from.
+    /// Render a failed API call for the user, with the credential of this
+    /// client.
     async fn api_error(&self, err: ClientError<()>) -> Report {
         format_api_client_error(err, &self.client.inner().credential).await
     }
@@ -927,7 +927,7 @@ impl AntithesisApi {
     /// surfaces any other 2xx as `UnexpectedResponse`. Earlier releases answered
     /// 200. On orbitinghail, release 67.0 answers 202 for `basic_test` and
     /// `debugging`, but nobody has checked the other launchers. A 4xx or 5xx
-    /// becomes an error that leads with the status, which `build.rs` leaves
+    /// becomes the error of [`Self::api_error`]; `build.rs` leaves it
     /// undocumented. TODO: drop the any-2xx arm once every launcher is seen to
     /// answer 202 and no supported release answers 200.
     async fn recover_launch_error<T: DeserializeOwned>(&self, err: ClientError<()>) -> Result<T> {
@@ -1956,8 +1956,7 @@ fn format_api_error(status: u16, body: &str) -> Report {
     api_error_report(status, msg, body)
 }
 
-/// An [`ApiError`] whose message is `msg`, then the body, without an echo of
-/// the status reason at its front.
+/// An [`ApiError`] for `status` whose message is `msg`, then `body`.
 fn api_error_report(status: u16, mut msg: String, body: &str) -> Report {
     let reason = status_reason(status);
     let body = body.trim();
@@ -2045,9 +2044,8 @@ fn char_pos_to_byte_offset(body: &str, line: usize, column: usize) -> usize {
     body.len()
 }
 
-/// Render a failed API call for the user, status first. A 401 or 403 instead
-/// names `credential`, which the tenant rejected, and the one way to replace
-/// it.
+/// Render a failed API call for the user, status first. A 401 or 403 names
+/// the rejected `credential` instead, and suggests the one way to replace it.
 async fn format_api_client_error(err: ClientError<()>, credential: &SourcedCredential) -> Report {
     match classify_client_error(err).await {
         ApiFailure::Response {
@@ -2537,8 +2535,8 @@ mod tests {
         .in_environment()
     }
 
-    // A rejection names the credential, not the status, and keeps the status
-    // for callers that classify the failure.
+    // The message omits the status, but the report keeps it for callers that
+    // classify the failure.
     #[tokio::test]
     async fn format_api_client_error_names_a_rejected_credential() {
         for status in [401, 403] {
@@ -2572,9 +2570,8 @@ mod tests {
         ClientError::UnexpectedResponse(response)
     }
 
-    // The status is the whole message when the server sent no body — which is
-    // what the gateway does for some rejections, on any endpoint. The point of
-    // #180 is that the status survives that; nothing further is added.
+    // With no body, the status is the whole message. The gateway sends no body
+    // for some rejections, such as rate limits, on any endpoint.
     #[tokio::test]
     async fn format_api_client_error_reports_the_status_for_an_empty_body() {
         for status in [429, 502] {

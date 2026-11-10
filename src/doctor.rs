@@ -414,8 +414,7 @@ fn password_only_check(in_use: &SourcedCredential, username: &str) -> Check {
     .note(Level::Note, next_step)
 }
 
-/// The next step for a stored password. A bare `snouty login` writes the
-/// default profile, so a named profile is passed on.
+/// The next step for a stored password.
 fn login_to_replace(profile: Option<&str>) -> String {
     format!(
         "run {} to replace it with an API key",

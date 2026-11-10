@@ -105,8 +105,8 @@ impl std::fmt::Display for CredentialSource {
                 variables.join("` and `"),
                 if variables.len() == 1 { "" } else { "s" }
             ),
-            // `Display`, not `Debug`: `{:?}` on a path adds quotes of its
-            // own, which read as a second set of brackets around the name.
+            // `{:?}` on a path adds quotes, which read as a second set of
+            // brackets around the name.
             Self::Stored(CredentialStore::CredentialsFile { path, profile }) => write!(
                 f,
                 "the [{}] profile in {}",
@@ -126,7 +126,8 @@ impl std::fmt::Display for CredentialSource {
 /// uses the default one, not that a value is missing.
 const DEFAULT_PROFILE: &str = "default";
 
-/// The `snouty login` command that stores the credential of `profile`.
+/// The `snouty login` command that stores the credential of `profile`. A bare
+/// `snouty login` writes the default profile.
 pub(crate) fn login_command(profile: Option<&str>) -> String {
     match profile {
         Some(profile) => format!("`snouty login --profile {profile}`"),
@@ -134,15 +135,14 @@ pub(crate) fn login_command(profile: Option<&str>) -> String {
     }
 }
 
-/// The shell command that unsets the environment variables `variables`.
 pub(crate) fn unset_command(variables: &[&str]) -> String {
     format!("`unset {}`", variables.join(" "))
 }
 
 pub(crate) type SourcedCredential = Tagged<AuthenticationInfo, CredentialSource>;
 
-/// What a tenant that rejects `credential` rejected: the credential, and where
-/// it came from.
+/// The error message for a tenant that rejects `credential`. It names the
+/// credential and its source.
 pub(crate) fn rejection_message(credential: &SourcedCredential) -> String {
     match credential.value() {
         // The job supplies the token, so its source names nothing to fix.
@@ -432,8 +432,6 @@ mod tests {
         FAKE_ACCESS_TOKEN_A, FAKE_API_KEY_A, FAKE_OIDC_REQUEST_TOKEN, FAKE_PASSWORD,
     };
 
-    /// Each kind of credential, from each place it can come from, gives a
-    /// rejection that names that place and the one action that fixes it.
     #[test]
     fn a_rejection_names_the_credential_its_source_and_one_action() {
         let api_key = || AuthenticationInfo::ApiKey {

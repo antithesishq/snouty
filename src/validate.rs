@@ -1473,7 +1473,7 @@ services:
     }
 
     /// Times out when the event never arrives.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn times_out_without_event() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("app")).unwrap();
@@ -1488,7 +1488,7 @@ services:
 
     /// Only the first [`MAX_READ_BYTES`] of a file are read, so an event behind
     /// more than that is deliberately not found.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn ignores_an_event_past_the_read_cap() {
         let dir = tempfile::tempdir().unwrap();
         let service_dir = dir.path().join("app");

@@ -195,7 +195,8 @@ impl ServerHandler for Snouty {
         tokio::pin!(call);
         let progress = ctx.meta.get_progress_token();
         let start = tokio::time::Instant::now();
-        let mut ticks = tokio::time::interval_at(start + PROGRESS_INTERVAL, PROGRESS_INTERVAL);
+        let interval = crate::env::scaled_wait(PROGRESS_INTERVAL);
+        let mut ticks = tokio::time::interval_at(start + interval, interval);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // The client sets the time limit: it cancels the call, or closes
         // stdin. Either drops `call`, which kills the child.
@@ -204,7 +205,7 @@ impl ServerHandler for Snouty {
                 result = &mut call => return result,
                 () = ctx.ct.cancelled() => return Err(ErrorData::internal_error("cancelled", None)),
                 _ = ticks.tick(), if progress.is_some() => {
-                    let seconds = start.elapsed().as_secs();
+                    let seconds = start.elapsed().div_f64(crate::env::wait_scale()).as_secs();
                     let param =
                         ProgressNotificationParam::new(progress.clone().unwrap(), seconds as f64)
                             .with_message(format!("running for {seconds}s"));

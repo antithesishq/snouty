@@ -21,9 +21,16 @@ CLI tool for the Antithesis API. Written in Rust.
 1. Cover each behavior change with the test that "Tests" names for its job.
 2. Edit `scripts/gen-gallery.py` when you add a command (add a story), or when
    a gallery check names text that you changed.
-3. Run `mise run test` before you finish. Before a `git push`, also run the
-   checks that the Stop hooks run (see "Checks and lints") and `mise run lint`:
-   a hook does not run until you stop.
+3. While you work, run only the tests that your change touches:
+   `cargo nextest run <name>`, or `SNOUTY_SPEC=<file> cargo nextest run
+   spec_tests` for a spec. To run all tests but the slow container tests, use
+   `cargo nextest run --filterset 'not group(container)'`.
+4. Run `mise run test` one time, before the first `git push`. After that, run
+   it again only when a later change touches the container code or
+   `specs_engine/`. CI runs all tests on each push.
+5. Before a `git push`, also run the checks that the Stop hooks run (see
+   "Checks and lints") and `mise run lint`: a hook does not run until you
+   stop.
 
 ## Rust coding conventions
 
@@ -199,6 +206,11 @@ break the logic (a branch, a condition, a request field), not a string.
   a test module, or behind `#[cfg(test)]`.
 - Tests use only the fake secrets in `src/testutils/fake_secrets.rs`. Its
   module doc tells how to add one.
+- A test does not wait out a fixed time. Pause the tokio clock
+  (`start_paused`) in a unit test. For a wait inside the binary, set
+  `SNOUTY_TEST_SECOND_MS`, which shortens the retry backoff, the docs connect
+  timeout and the MCP progress interval. Do not add a second variable of this
+  type.
 
 ## Comments, changelog, and prose
 

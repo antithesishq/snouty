@@ -22,7 +22,18 @@ paragraph.
 
 ## Running specs
 
-`spec_tests` finds each file in `specs/` by itself. A file in `specs_engine/`
+`spec_tests` finds each file in `specs/` by itself. To run only some files,
+name them in `SNOUTY_SPEC`, without the extension:
+
+```
+SNOUTY_SPEC=doctor,runs cargo nextest run spec_tests
+```
+
+The files run at the same time, except against staging. The runner sets
+`SNOUTY_TEST_SECOND_MS`, which shortens the retry waits of snouty. A case that
+reads a real wait clears it first: `env SNOUTY_TEST_SECOND_MS=`.
+
+A file in `specs_engine/`
 does not run until you add it to `tests/spec.rs` by hand: one
 `engine_spec_case_test!` entry for podman, and one for docker. Such a test
 does nothing when `SNOUTY_TEST_RUNTIME` names the other runtime. When its

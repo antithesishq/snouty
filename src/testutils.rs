@@ -9,6 +9,7 @@ pub mod auth;
 pub mod fake_secrets;
 
 use crate::container::{ContainerRuntime, DockerRuntime, PodmanRuntime, docker_is_podman};
+pub use crate::env::TEST_SECOND_MS_VAR_NAME;
 
 /// A reqwest client with default settings.
 pub fn test_client() -> reqwest::Client {

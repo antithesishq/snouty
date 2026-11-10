@@ -171,7 +171,7 @@ async fn fetch_db_if_changed() -> Result<Option<(Vec<u8>, String)>> {
     // No read timeout: the database is several MB, and a slow download must finish.
     let client = client_builder()
         .user_agent(user_agent())
-        .connect_timeout(CONNECT_TIMEOUT)
+        .connect_timeout(crate::env::scaled_wait(CONNECT_TIMEOUT))
         .build()?;
     let mut request = client.get(format!("{}/sqlite.db", docs_url()));
 

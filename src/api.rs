@@ -516,25 +516,34 @@ const MAX_TRANSPORT_RETRIES: u32 = 3;
 
 /// The longest total wait across the retries of one API call. A wait that
 /// goes past it surfaces the failure at once.
-const MAX_RETRY_WAIT: Duration = RETRY_SECOND.saturating_mul(300);
+fn max_retry_wait() -> Duration {
+    retry_second().saturating_mul(300)
+}
 
 /// The longest single [`retry_backoff`]. With it, [`MAX_RETRIES`] backoffs
-/// and their jitter fit in [`MAX_RETRY_WAIT`].
-const MAX_BACKOFF: Duration = RETRY_SECOND.saturating_mul(30);
+/// and their jitter fit in [`max_retry_wait`].
+fn max_backoff() -> Duration {
+    retry_second().saturating_mul(30)
+}
 
-/// The unit of every retry wait: a second, but a millisecond in unit tests,
-/// so that they run fast.
+/// The unit of every retry wait: a second, which the tests shorten. A unit
+/// test cannot set [`crate::env::TEST_SECOND_MS_VAR_NAME`], so it has a fixed
+/// millisecond.
 #[cfg(not(test))]
-const RETRY_SECOND: Duration = Duration::from_secs(1);
+fn retry_second() -> Duration {
+    crate::env::scaled_wait(Duration::from_secs(1))
+}
 #[cfg(test)]
-const RETRY_SECOND: Duration = Duration::from_millis(1);
+fn retry_second() -> Duration {
+    Duration::from_millis(1)
+}
 
 /// The wait before retry attempt `retry` (0-based): 1, 2, 4, ... seconds, at
-/// most [`MAX_BACKOFF`]
+/// most [`max_backoff`]
 fn retry_backoff(retry: u32) -> Duration {
-    RETRY_SECOND
+    retry_second()
         .saturating_mul(1u32.checked_shl(retry).unwrap_or(u32::MAX))
-        .min(MAX_BACKOFF)
+        .min(max_backoff())
 }
 
 /// Add up to 50% to `wait`, so that clients that failed together do not all
@@ -564,7 +573,7 @@ impl RetryBudget {
             return None;
         }
         let wait = reason.min_wait().max(retry_backoff(self.retries));
-        let remaining = MAX_RETRY_WAIT.checked_sub(self.waited + wait)?;
+        let remaining = max_retry_wait().checked_sub(self.waited + wait)?;
         // The jitter never shortens the wait, nor takes the total past the limit.
         let wait = with_jitter(wait).min(wait + remaining);
         self.retries += 1;
@@ -635,7 +644,7 @@ fn retry_after_seconds(headers: &HeaderMap) -> Option<u32> {
 /// The `Retry-After` of a 429, or zero when there is none.
 fn retry_after(headers: &HeaderMap) -> Duration {
     retry_after_seconds(headers).map_or(Duration::ZERO, |seconds| {
-        RETRY_SECOND.saturating_mul(seconds)
+        retry_second().saturating_mul(seconds)
     })
 }
 
@@ -687,8 +696,9 @@ async fn execute_with_retry(
         };
         let Some(wait) = budget.spend(&reason) else {
             debug!(
-                "{REQUEST_LOG_PREFIX}{reason}, no retry left within {} retries and {MAX_RETRY_WAIT:?}",
-                reason.max_retries()
+                "{REQUEST_LOG_PREFIX}{reason}, no retry left within {} retries and {:?}",
+                reason.max_retries(),
+                max_retry_wait()
             );
             return result;
         };
@@ -3340,7 +3350,7 @@ mod tests {
 
     // Each wait is at least the longer of its minimum and the backoff, and
     // adds at most 50% jitter to it. The budget pays for at most MAX_RETRIES
-    // retries and MAX_RETRY_WAIT in total, and a refusal spends nothing.
+    // retries and max_retry_wait() in total, and a refusal spends nothing.
     #[hegel::test]
     fn retry_budget_spends_within_its_limits(tc: hegel::TestCase) {
         let min_waits =
@@ -3348,28 +3358,28 @@ mod tests {
         let mut budget = RetryBudget::default();
         for seconds in min_waits {
             let (retries, waited) = (budget.retries, budget.waited);
-            let floor = (RETRY_SECOND * seconds).max(retry_backoff(retries));
+            let floor = (retry_second() * seconds).max(retry_backoff(retries));
             let reason = RetryReason::RateLimited {
-                retry_after: RETRY_SECOND * seconds,
+                retry_after: retry_second() * seconds,
             };
             if let Some(wait) = budget.spend(&reason) {
                 assert!(floor <= wait && wait <= floor.mul_f64(1.5));
                 assert_eq!(budget.retries, retries + 1);
                 assert_eq!(budget.waited, waited + wait);
             } else {
-                assert!(retries == MAX_RETRIES || waited + floor > MAX_RETRY_WAIT);
+                assert!(retries == MAX_RETRIES || waited + floor > max_retry_wait());
                 assert_eq!((budget.retries, budget.waited), (retries, waited));
             }
-            assert!(budget.retries <= MAX_RETRIES && budget.waited <= MAX_RETRY_WAIT);
+            assert!(budget.retries <= MAX_RETRIES && budget.waited <= max_retry_wait());
         }
     }
 
     // Without a Retry-After, every one of the MAX_RETRIES retries fits in
-    // MAX_RETRY_WAIT, even with the most jitter.
+    // max_retry_wait(), even with the most jitter.
     #[test]
     fn every_backoff_fits_in_the_total_wait() {
         let backoffs: Duration = (0..MAX_RETRIES).map(retry_backoff).sum();
-        assert!(backoffs.mul_f64(1.5) <= MAX_RETRY_WAIT);
+        assert!(backoffs.mul_f64(1.5) <= max_retry_wait());
     }
 
     // Retry-After is a number of seconds. A missing or non-numeric one is zero.
@@ -3381,7 +3391,7 @@ mod tests {
                 HeaderValue::from_static(value),
             )])
         };
-        assert_eq!(retry_after(&headers(" 3 ")), RETRY_SECOND * 3);
+        assert_eq!(retry_after(&headers(" 3 ")), retry_second() * 3);
         assert_eq!(
             retry_after(&headers("Wed, 21 Oct 2026 07:28:00 GMT")),
             Duration::ZERO

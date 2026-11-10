@@ -95,6 +95,8 @@ fn docs_update_that_never_connects_times_out_and_uses_cache() {
     let start = Instant::now();
     set_docs_cache_env(&mut snouty(), &cache_dir)
         .env("ANTITHESIS_DOCS_URL", format!("https://127.0.0.1:{port}"))
+        // A second lasts 100 ms, so the 10 s connect timeout lasts 1 s.
+        .env(snouty::testutils::TEST_SECOND_MS_VAR_NAME, "100")
         .args(["docs", "search", "docker"])
         .timeout(Duration::from_secs(60))
         .assert()
@@ -106,8 +108,8 @@ fn docs_update_that_never_connects_times_out_and_uses_cache() {
         .stderr(predicate::str::contains("operation timed out"));
     let elapsed = start.elapsed();
     assert!(
-        (Duration::from_secs(10)..Duration::from_secs(20)).contains(&elapsed),
-        "the refresh gave up after {elapsed:?}, not after the 10 s connect timeout"
+        (Duration::from_secs(1)..Duration::from_secs(10)).contains(&elapsed),
+        "the refresh gave up after {elapsed:?}, not after the connect timeout"
     );
 }
 

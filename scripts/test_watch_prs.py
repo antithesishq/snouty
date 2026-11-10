@@ -36,6 +36,7 @@ class FakeGh:
         self.comments: list[dict[str, Any]] = []
         self.down = False
         self.lookup_down = False
+        self.lists_down = False
 
     def run(self, cmd: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
         if self.down:
@@ -55,6 +56,8 @@ class FakeGh:
             return None
         if "/collaborators/" in path:
             return {"user": {"id": WRITER["id"]}, "permission": "write"}
+        if "/issues/" in path and self.lists_down:
+            return None
         if "/issues/" in path:
             return self.comments
         return []
@@ -86,6 +89,8 @@ class WatcherTest(unittest.TestCase):
 
     def sleep(self, seconds: float) -> None:
         self.now += seconds
+        if self.now > 7 * 24 * 3600:
+            raise AssertionError("the run did not end in a week")
         self.on_sleep()
 
     def poll(self, seen: set[str], checks: set[str] | None = None) -> list[str]:
@@ -257,14 +262,22 @@ class Main(WatcherTest):
         status, lines = self.run_main("--exit-on-event", "1")
         self.assertEqual((status, lines[-1]), (0, "PR #1 merged"))
 
-    def test_an_unwritable_state_directory_does_not_stop_the_watch(self):
+    def test_an_unwritable_state_directory_stops_the_run_before_any_event(self):
         self.state_home.chmod(0o500)
         self.addCleanup(self.state_home.chmod, 0o700)
         self.gh.comments = [comment(5, WRITER)]
         status, lines = self.run_main("--exit-on-event", "1")
-        self.assertEqual(status, 0)
-        self.assertIn("PR #1 comment by reviewer (id 5)", lines)
-        self.assertTrue(lines[-1].startswith("cannot save state: "))
+        self.assertEqual(status, 2)
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("cannot save state: "))
+
+    def test_a_failed_list_of_comments_ends_the_run(self):
+        self.gh.lists_down = True
+        status, lines = self.run_main("--exit-on-event", "1")
+        self.assertEqual(status, 1)
+        self.assertEqual(
+            lines[-1], f"gh failed on {watch_prs.GH_FAILED_POLLS} polls in a row"
+        )
 
     def test_each_checkout_keeps_its_own_state(self):
         self.gh.comments = [comment(5, WRITER)]

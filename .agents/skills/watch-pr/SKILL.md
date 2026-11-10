@@ -94,10 +94,15 @@ you. The "all checks passed" line names the head commit; check that it
 names your latest push before you rely on it.
 
 A `gh failed: <message>` line prints one time per distinct message, and a
-failure that clears needs nothing. When the view of a PR fails on 20 polls
-in a row, 15 minutes at the default interval, the script prints
+failure that clears needs nothing. When the view of a PR or a list of its
+comments fails on 20 polls in a row, 15 minutes at the default interval, the script prints
 `gh failed on <N> polls in a row` and exits with status 1: a watcher that
 cannot reach the API reads exactly like a quiet PR. Fix gh, then start the
+watcher again.
+
+When the script cannot write its state, it prints `cannot save state` and
+exits with status 2 before it prints an event. Set `XDG_STATE_HOME` to a
+writable directory, use the same one for each later run, and start the
 watcher again.
 
 When an app opened the PR, as an agent behind a GitHub integration does,

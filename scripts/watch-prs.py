@@ -68,12 +68,12 @@ from urllib.parse import quote
 
 # What one poll of every PR did, for --exit-on-event.
 woke = False  # printed an event that needs a reaction
-gh_failed = False  # the view of a PR failed
+gh_failed = False  # the view of a PR, or a list of its comments, failed
 
 # With --exit-on-event, give up after this many polls in a row in which the
-# view of a PR failed: 15 minutes at the default interval. A failed lookup
-# for one comment does not count, because it can fail on every poll while
-# gh works.
+# view of a PR or a list of its comments failed: 15 minutes at the default
+# interval. A failed lookup for one comment's author does not count, because
+# it can fail on every poll while gh works.
 GH_FAILED_POLLS = 20
 
 # In a PR's seen events once its merge or close has printed.
@@ -122,6 +122,8 @@ def paginate(path: str) -> Iterator[Any]:
     for page in count(1):
         items = gh_json(["api", f"{path}?per_page=100&page={page}"])
         if items is None:
+            global gh_failed
+            gh_failed = True
             return
         yield from items
         if len(items) < 100:
@@ -397,20 +399,21 @@ def load(path: Path) -> tuple[set[str], set[str]]:
 
 
 def save(path: Path, seen: set[str], checks: set[str]) -> None:
-    """Write a PR's state. When the directory cannot be written, print one
-    line and watch on: a restart then prints the old events again.
-    """
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # Replace the file in one step, so a kill mid-write leaves the old state.
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"seen": sorted(seen), "checks": sorted(checks)}))
-        tmp.replace(path)
-    except OSError as e:
-        message = f"cannot save state: {e}"
-        if message not in reported_failures:
-            reported_failures.add(message)
-            emit(message, wake=False)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Replace the file in one step, so a kill mid-write leaves the old state.
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"seen": sorted(seen), "checks": sorted(checks)}))
+    tmp.replace(path)
+
+
+def cannot_save(e: OSError) -> int:
+    # Without its state, each restart prints every old event again, so the
+    # run stops rather than watch on.
+    print(
+        f"cannot save state: {e}; set XDG_STATE_HOME to a writable directory",
+        flush=True,
+    )
+    return 2
 
 
 def main() -> int:
@@ -453,6 +456,12 @@ def main() -> int:
     open_prs = set(args.prs)
     files = {pr: state_file(slug, pr) for pr in args.prs}
     state = {pr: (set(), set()) if args.replay else load(files[pr]) for pr in args.prs}
+    # Find an unwritable state directory before the first event prints.
+    try:
+        for pr in args.prs:
+            save(files[pr], *state[pr])
+    except OSError as e:
+        return cannot_save(e)
 
     failed_polls = 0
     last_wake: float | None = None
@@ -464,7 +473,10 @@ def main() -> int:
             if not poll_pr(repo_flag, slug, pr, seen, checks):
                 open_prs.discard(pr)
             if (seen, checks) != before:
-                save(files[pr], seen, checks)
+                try:
+                    save(files[pr], seen, checks)
+                except OSError as e:
+                    return cannot_save(e)
         if woke:
             last_wake = time.monotonic()
         if not open_prs:

@@ -246,12 +246,11 @@ stderr '"antithesis.source": "ci-pipeline"'
 stderr '"run.caller_type": "snouty"'
 stdout 'Test run started: run_id run-123'
 
-# The launch response gives the ID used in the Run View URL.
-stdout '^Run View: http://127\.0\.0\.1:[0-9]+/run\?run_id=run-123$'
-stdout '^  snouty runs stream run-123$'
-stdout '^  snouty runs wait run-123$'
-! stdout 'wait run-123 --until ready'
-! stdout 'snouty runs (search|events|exec) '
+# After the run ID, the output names the next steps: wait for the run to
+#    finish, or interact with it once it is ready: wait for it first, then
+#    follow its events, search them, or execute a script.
+stdout '(?s)Test run started: run_id run-123\n\nView the run in your browser with:\n  snouty runs show --web run-123\n\nWait for the run to finish with:\n  snouty runs wait run-123\n'
+stdout '(?s)Or interact with the run once it is ready:\n  snouty runs wait run-123 --until ready\n  snouty runs search run-123 --follow <query>\n  snouty runs events run-123 <query>\n  snouty runs exec run-123 <input_hash> <vtime> <script>$'
 
 # A --param value replaces the default run.caller_type.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
@@ -289,7 +288,6 @@ stdout '\s*"runId": "run-123".*'
 ! stdout '.*statusCode.*'
 ! stdout 'Test run started.*'
 ! stdout 'snouty runs'
-! stdout 'Run View:'
 
 # 6b. --ephemeral flag sets antithesis.is_ephemeral to "true".
 mock-server 200 '{"message":"Success","runId":"run-123"}'

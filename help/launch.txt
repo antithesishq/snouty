@@ -57,7 +57,7 @@ Additional container images that the config parser can't discover (e.g. an image
   snouty launch --launcher basic_k8s_test --config ./config \
     --param 'antithesis.images=app@sha256:...;db:latest'
 
-The launch output includes a Run View link. Live results can take a few minutes to appear. To wait for the run to finish, use `snouty runs wait <run_id>`. The run ID is the `run_id` value in the launch output, or `runId` with --json. To watch it live, use `snouty runs stream <run_id>`.
+Use `snouty runs show --web <run_id>` to open the run in your browser. To wait for the run to finish, use `snouty runs wait <run_id>`. The run ID is the `run_id` value in the launch output, or `runId` with --json. To watch it live, use `snouty runs stream <run_id>`.
 
 Credentials come from `snouty login` or from the environment variables below. Tenant and repository may be set via the environment variables below, or in a settings file (./.snouty.toml by default; see the global --settings/--profile flags and the README). Environment variables take precedence.
 

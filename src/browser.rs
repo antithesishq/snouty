@@ -16,11 +16,6 @@ pub(crate) fn parse_http_url(url: &str) -> Result<reqwest::Url> {
     Ok(parsed)
 }
 
-pub fn run_page_url(base_url: &str, run_id: &str) -> Result<reqwest::Url> {
-    reqwest::Url::parse_with_params(&format!("{base_url}/run"), [("run_id", run_id)])
-        .map_err(|err| eyre!("invalid run page URL: {err}"))
-}
-
 /// Best-effort, non-blocking open of `url` in the user's default browser.
 ///
 /// `Err` says why the URL was not opened: it failed to parse, it is not an
@@ -35,15 +30,6 @@ pub fn open_in_browser(url: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn run_page_url_encodes_query_characters() {
-        let url = run_page_url("https://acme.antithesis.com", "a&b#c d").unwrap();
-        assert_eq!(
-            url.as_str(),
-            "https://acme.antithesis.com/run?run_id=a%26b%23c+d"
-        );
-    }
 
     #[test]
     fn parse_http_url_accepts_only_http_and_https() {

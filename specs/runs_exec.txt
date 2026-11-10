@@ -205,7 +205,7 @@ stdout 'include_filtered_logs=absent'
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --events --include-filtered-logs
 stdout 'include_filtered_logs=true'
 
-# --include-filtered-logs adds events to the timeline, so it requires --events.
+# --include-filtered-logs streams its logs as events, so it requires --events.
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --include-filtered-logs
 stderr 'the following required arguments were not provided'
 stderr '--events'

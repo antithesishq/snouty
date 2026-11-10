@@ -347,9 +347,8 @@ fn unrequire_search_passing_default(spec: &mut serde_json::Value) {
 }
 
 /// Strip the schema defaults from `Execute_Command_Request`'s optional
-/// fields, so the request omits each one unless `runs exec --events`,
-/// `--include-filtered-logs`, or `--timeout` sets it, and the server's own
-/// default applies.
+/// fields, so the request omits each field that `runs exec` does not set and
+/// the server's default applies.
 fn unrequire_exec_defaults(spec: &mut serde_json::Value) {
     for field in [
         "include_system_logs",

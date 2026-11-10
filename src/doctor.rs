@@ -695,34 +695,52 @@ pub async fn cmd_doctor(
         // request/response.
         let mut api_failed = false;
         if let Ok(api) = AntithesisApi::new(settings, verbose) {
-            // Renew here so that a failure fails the credentials check, not
-            // the API check. The version request would fail the same way, so
+            let host = api.host();
+            // Renew here so that a rejected renewal fails the credentials
+            // check, not the API check. The version request would fail the same way, so
             // skip it.
-            if api.authentication().expired()
-                && let Err(err) = api.refresh_authentication().await
-            {
+            let renewal = if api.authentication().expired() {
+                api.refresh_authentication().await
+            } else {
+                Ok(())
+            };
+            if let Err(err) = renewal {
                 api_failed = true;
                 let auth = api.authentication();
-                let check = checks
-                    .iter_mut()
-                    .find(|c| matches!(c.id, CheckId::Credentials { .. }))
-                    .expect("the client uses the credential that the credentials check reports");
-                check.status = Status::Error;
-                check.message = match auth {
-                    AuthenticationInfo::GithubActionsOidc(_) => {
-                        "could not get a GitHub Actions OIDC token".to_owned()
-                    }
-                    _ => format!("the {auth} expired and could not be renewed"),
-                };
-                check.notes.insert(
-                    0,
-                    Note {
-                        level: Level::Error,
-                        text: format!("{err:#}"),
-                    },
-                );
+                // An OAuth token is refreshed by the tenant, so a request
+                // that got no response means that the tenant is unreachable.
+                if matches!(auth, AuthenticationInfo::OAuth(_))
+                    && err
+                        .downcast_ref::<reqwest::Error>()
+                        .is_some_and(|e| e.status().is_none() && !e.is_decode())
+                {
+                    checks.push(version_check(
+                        &host,
+                        Err(VersionError::Unreachable(err.root_cause().to_string())),
+                    ));
+                } else {
+                    let check = checks
+                        .iter_mut()
+                        .find(|c| matches!(c.id, CheckId::Credentials { .. }))
+                        .expect(
+                            "the client uses the credential that the credentials check reports",
+                        );
+                    check.status = Status::Error;
+                    check.message = match auth {
+                        AuthenticationInfo::GithubActionsOidc(_) => {
+                            "could not get a GitHub Actions OIDC token".to_owned()
+                        }
+                        _ => format!("the {auth} expired and could not be renewed"),
+                    };
+                    check.notes.insert(
+                        0,
+                        Note {
+                            level: Level::Error,
+                            text: format!("{err:#}"),
+                        },
+                    );
+                }
             } else {
-                let host = api.host();
                 let version = api.get_version().await;
                 if let Ok(version) = &version {
                     checks.extend(release_floor_checks(version, &features::enabled()));

@@ -20,8 +20,10 @@ its command exits:
 uv run scripts/watch-prs.py --exit-on-event <PR> [<PR> ...]
 ```
 
-The script polls in silence, for days if necessary. It exits after the first
-poll that prints an event that needs a reaction. Read all of its output,
+The script polls in silence, for days if necessary. When an event that
+needs a reaction prints, it waits until two minutes pass with no other
+one, then exits, so a review and the comments that follow it arrive in
+one batch. `--settle seconds` changes the wait. Read all of its output,
 react to each line (step 3), then start it again with the same command and
 end your turn. Stop when it prints `merged` or `closed without merge` for
 every PR.
@@ -32,14 +34,20 @@ wakes you for nothing. Without `--exit-on-event` the script prints events
 as they occur and runs until every PR closes. Use that mode only with a
 monitor that never expires.
 
-The script records each event that it prints in a state file for each PR,
-so a restart prints only new events. The first run on a PR prints its
-existing comments, reviews, and failing checks: triage that batch like any
-other events. If the task is gone when you come back, after a reboot or in
-a new session, start it again. No event is lost or repeated. This is true
-for a closed PR also: its `merged` line prints one time, and a later run
-that still names the PR only notes that it is closed, unless someone
-reopened it. `--replay` prints every event again.
+Run the script from the root of the checkout. It records each event that
+it prints in a state file for each PR and checkout, so a restart prints
+only new events. The first run on a PR prints its existing comments,
+reviews, and failing checks: triage that batch like any other events. This
+is true for a closed PR also: its `merged` line prints one time, and a
+later run that still names the PR only notes that it is closed, unless
+someone reopened it.
+
+The script records an event when it prints it, not when you handle it. If
+the task is gone and you do not have its output, after a reboot or in a
+new session, start it one time with `--replay`, which prints every event
+again. For each event, read the thread or the check: when your reply or
+fix is already there, the event is handled. Then continue with the usual
+command.
 
 Flags: `-i seconds` sets the poll interval (default 45), `-R owner/repo`
 overrides the repository.
@@ -86,8 +94,8 @@ you. The "all checks passed" line names the head commit; check that it
 names your latest push before you rely on it.
 
 A `gh failed: <message>` line prints one time per distinct message, and a
-failure that clears needs nothing. When gh fails on 20 polls in a row, 15
-minutes at the default interval, the script prints
+failure that clears needs nothing. When the view of a PR fails on 20 polls
+in a row, 15 minutes at the default interval, the script prints
 `gh failed on <N> polls in a row` and exits with status 1: a watcher that
 cannot reach the API reads exactly like a quiet PR. Fix gh, then start the
 watcher again.
@@ -160,8 +168,9 @@ share.
     repos/<owner>/<repo>/actions/jobs/<job id>/logs |
     sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | tail -100
   ```
-- **Conflict**: merge `origin/main` into the branch, resolve the conflict,
-  run the tests that the merge touches, and push. A base that moves without
+- **Conflict**: merge `origin/<branch>`, the base that the event names,
+  into the branch. Resolve the conflict, run the tests that the merge
+  touches, and push. A base that moves without
   a conflict needs nothing.
 - **Base changed**: someone retargeted the PR. Compare the branch with the
   new base, and update the description (step 4) if the content of the PR
@@ -171,7 +180,8 @@ share.
 - **Merged or closed**: stop related work on that PR. The script exits on its
   own once every watched PR reaches this state.
 
-Push each change as a new commit, and bring in the base with a merge. Never
+Push each change as a new commit, and bring in the base branch of the PR
+with a merge. Never
 amend, rebase, or force-push a branch that has a PR. The reviewer compares
 the branch with the commit that they reviewed last, and a rewritten history
 removes that comparison. The added commits cost nothing: the squash merge

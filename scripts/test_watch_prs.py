@@ -6,8 +6,9 @@ import os
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
+from pathlib import Path
 from typing import Any
-from unittest import mock
 
 watch_prs = importlib.import_module("watch-prs")
 
@@ -34,18 +35,24 @@ class FakeGh:
         }
         self.comments: list[dict[str, Any]] = []
         self.down = False
+        self.lookup_down = False
 
     def run(self, cmd: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
         if self.down:
             return subprocess.CompletedProcess(cmd, 1, "", "gh is down\n")
-        return subprocess.CompletedProcess(cmd, 0, json.dumps(self.answer(cmd[1:])))
+        answer = self.answer(cmd[1:])
+        if answer is None:
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 403\n")
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(answer))
 
-    def answer(self, args: list[str]) -> Any:
+    def answer(self, args: list[str]) -> Any | None:
         if args[:2] == ["pr", "view"]:
             return self.view
         path = args[1]
         if "/branches/" in path:
             return {"commit": {"sha": self.view["baseRefOid"]}}
+        if "/collaborators/" in path and self.lookup_down:
+            return None
         if "/collaborators/" in path:
             return {"user": {"id": WRITER["id"]}, "permission": "write"}
         if "/issues/" in path:
@@ -57,24 +64,28 @@ class WatcherTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
+        self.state_home = Path(tmp.name)
         self.gh = FakeGh()
         for patch in (
-            mock.patch.dict(os.environ, {"XDG_STATE_HOME": tmp.name}),
-            mock.patch.object(
+            unittest.mock.patch.dict(os.environ, {"XDG_STATE_HOME": tmp.name}),
+            unittest.mock.patch.object(
                 watch_prs.subprocess, "run", lambda cmd, **kw: self.gh.run(cmd, **kw)
             ),
-            mock.patch.object(watch_prs.time, "sleep", self.sleep),
+            unittest.mock.patch.object(watch_prs.time, "sleep", self.sleep),
+            unittest.mock.patch.object(watch_prs.time, "monotonic", lambda: self.now),
         ):
             patch.start()
             self.addCleanup(patch.stop)
         self.on_sleep = lambda: None
+        self.now = 0.0
         self.set_woke(False)
         watch_prs.reported_failures.clear()
 
     def set_woke(self, value: bool) -> None:
         setattr(watch_prs, "woke", value)  # noqa: B010 (a module, to pyright)
 
-    def sleep(self, _seconds: float) -> None:
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
         self.on_sleep()
 
     def poll(self, seen: set[str], checks: set[str] | None = None) -> list[str]:
@@ -84,10 +95,14 @@ class WatcherTest(unittest.TestCase):
             watch_prs.poll_pr([], SLUG, 1, seen, set() if checks is None else checks)
         return out.getvalue().splitlines()
 
-    def run_main(self, *argv: str) -> tuple[int, list[str]]:
+    def run_main(self, *argv: str, settle: int = 0) -> tuple[int, list[str]]:
+        """Run the script. `settle` is 0 by default, so a run ends on the
+        poll that prints its first event.
+        """
         out = io.StringIO()
+        argv = ("--settle", str(settle), *argv)
         with (
-            mock.patch("sys.argv", ["watch-prs.py", "-R", SLUG, *argv]),
+            unittest.mock.patch("sys.argv", ["watch-prs.py", "-R", SLUG, *argv]),
             contextlib.redirect_stdout(out),
         ):
             status = watch_prs.main()
@@ -186,6 +201,27 @@ class Main(WatcherTest):
             (0, ["PR #1 is closed, as an earlier run reported"]),
         )
 
+    def test_settle_collects_the_events_that_follow_one_into_one_run(self):
+        self.gh.comments = [comment(5, WRITER)]
+        polls = 0
+
+        def comment_after_the_first_sleep():
+            nonlocal polls
+            polls += 1
+            if polls == 1:
+                self.gh.comments.append(comment(6, WRITER))
+
+        self.on_sleep = comment_after_the_first_sleep
+        status, lines = self.run_main("--exit-on-event", "1", settle=120)
+        self.assertEqual(status, 0)
+        self.assertEqual(
+            [line for line in lines if "comment by" in line],
+            ["PR #1 comment by reviewer (id 5)", "PR #1 comment by reviewer (id 6)"],
+        )
+        # The last event printed at 45 seconds, so the run ends at the first
+        # poll 120 seconds after it.
+        self.assertEqual(self.now, 180)
+
     def test_replay_prints_earlier_events_again(self):
         self.gh.comments = [comment(5, WRITER)]
         self.run_main("--exit-on-event", "1")
@@ -205,6 +241,42 @@ class Main(WatcherTest):
                 f"gh failed on {watch_prs.GH_FAILED_POLLS} polls in a row",
             ],
         )
+
+    def test_a_failed_lookup_for_one_comment_does_not_end_the_run(self):
+        self.gh.comments = [comment(5, WRITER)]
+        self.gh.lookup_down = True
+        polls = 0
+
+        def merge_after_the_limit():
+            nonlocal polls
+            polls += 1
+            if polls == watch_prs.GH_FAILED_POLLS + 1:
+                self.gh.view["state"] = "MERGED"
+
+        self.on_sleep = merge_after_the_limit
+        status, lines = self.run_main("--exit-on-event", "1")
+        self.assertEqual((status, lines[-1]), (0, "PR #1 merged"))
+
+    def test_an_unwritable_state_directory_does_not_stop_the_watch(self):
+        self.state_home.chmod(0o500)
+        self.addCleanup(self.state_home.chmod, 0o700)
+        self.gh.comments = [comment(5, WRITER)]
+        status, lines = self.run_main("--exit-on-event", "1")
+        self.assertEqual(status, 0)
+        self.assertIn("PR #1 comment by reviewer (id 5)", lines)
+        self.assertTrue(lines[-1].startswith("cannot save state: "))
+
+    def test_each_checkout_keeps_its_own_state(self):
+        self.gh.comments = [comment(5, WRITER)]
+        self.run_main("--exit-on-event", "1")
+        with tempfile.TemporaryDirectory() as other:
+            cwd = os.getcwd()
+            os.chdir(other)
+            self.addCleanup(os.chdir, cwd)
+            self.assertEqual(
+                self.run_main("--exit-on-event", "1"),
+                (0, ["PR #1 comment by reviewer (id 5)"]),
+            )
 
     def test_one_gh_failure_resets_when_gh_recovers(self):
         self.gh.down = True

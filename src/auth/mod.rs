@@ -407,11 +407,15 @@ impl AuthenticationInfo {
 
 #[cfg(test)]
 impl AuthenticationInfo {
-    /// The credential as if it came from the environment.
+    /// The credential as if it came from the environment variables of its
+    /// kind.
     pub(crate) fn in_environment(self) -> SourcedCredential {
-        self.with_tag(CredentialSource::Environment {
-            variables: vec![API_KEY_VAR_NAME],
-        })
+        let variables = match self {
+            Self::Password { .. } => vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
+            Self::GithubActionsOidc(_) => vec![OIDC_URL_VAR_NAME, OIDC_TOKEN_VAR_NAME],
+            Self::ApiKey { .. } | Self::OAuth(_) => vec![API_KEY_VAR_NAME],
+        };
+        self.with_tag(CredentialSource::Environment { variables })
     }
 }
 

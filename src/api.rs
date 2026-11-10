@@ -2045,21 +2045,23 @@ fn char_pos_to_byte_offset(body: &str, line: usize, column: usize) -> usize {
     body.len()
 }
 
-/// Render a failed API call for the user, status first. A 401 or 403 names
-/// `credential`, which the tenant rejected, instead of the status.
+/// Render a failed API call for the user, status first. A 401 or 403 instead
+/// names `credential`, which the tenant rejected, and the one way to replace
+/// it.
 async fn format_api_client_error(err: ClientError<()>, credential: &SourcedCredential) -> Report {
     match classify_client_error(err).await {
+        ApiFailure::Response {
+            status, message, ..
+        } if matches!(status, 401 | 403) => {
+            api_error_report(status, rejection_message(credential), &message)
+                .suggestion(rejection_suggestion(credential))
+        }
         ApiFailure::Response {
             status,
             message,
             retry_after,
         } => {
-            let report = if matches!(status, 401 | 403) {
-                api_error_report(status, rejection_message(credential), &message)
-                    .suggestion(rejection_suggestion(credential))
-            } else {
-                format_api_error(status, &message)
-            };
+            let report = format_api_error(status, &message);
             match retry_after {
                 Some(retry_after) => report.suggestion(format!(
                     "retry after {retry_after} to respect the server's rate limit"

@@ -765,13 +765,20 @@ pub struct ExecRequest {
     pub container: Option<String>,
     /// `None` leaves the timeout to the server's default.
     pub timeout: Option<Duration>,
-    /// Stream every event of the timeline while the script executes, not
-    /// only the script's output.
-    pub events: bool,
-    /// Also stream the logs that the run's log filters drop.
-    pub include_filtered_logs: bool,
+    pub output: ExecOutput,
     /// Where the server replays inputs from when `moment` is cold.
     pub rewarm: Option<RewarmSource>,
+}
+
+/// What the stream of a `runs exec` carries.
+#[derive(Clone, Copy)]
+pub enum ExecOutput {
+    /// Only the script's output.
+    Script,
+    /// Every event of the timeline while the script executes.
+    Events,
+    /// Every event, and the logs that the run's log filters drop.
+    EventsWithFilteredLogs,
 }
 
 /// The run that a cold moment comes from, by run ID or by session ID. The
@@ -1123,8 +1130,9 @@ impl AntithesisApi {
             container: exec
                 .container
                 .unwrap_or_else(|| EXEC_HOST_CONTAINER.to_string()),
-            include_system_logs: exec.events.then_some(true),
-            include_filtered_logs: exec.include_filtered_logs.then_some(true),
+            include_system_logs: (!matches!(exec.output, ExecOutput::Script)).then_some(true),
+            include_filtered_logs: matches!(exec.output, ExecOutput::EventsWithFilteredLogs)
+                .then_some(true),
             // The wire field is a whole number of seconds.
             timeout_seconds: exec.timeout.map(|timeout| timeout.as_secs()),
             source_run_id,

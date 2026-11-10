@@ -7,7 +7,9 @@ use crate::api::{
     MIN_LAUNCH_PARAMS_RELEASE, MIN_SEARCH_RELEASE, MIN_STREAM_RELEASE, VersionError,
     normalize_base_url,
 };
-use crate::auth::{AuthenticationInfo, CredentialSource, SourcedCredential, login_command};
+use crate::auth::{
+    AuthenticationInfo, CredentialSource, SourcedCredential, login_command, unset_command,
+};
 use crate::compose;
 use crate::container;
 use crate::features::{self, Feature};
@@ -392,7 +394,7 @@ fn password_only_check(in_use: &SourcedCredential, username: &str) -> Check {
     let next_step = match in_use.tag() {
         CredentialSource::Environment { variables } => format!(
             "run `snouty login` to store an API key, then {}",
-            unset(variables)
+            unset_command(variables)
         ),
         CredentialSource::Stored(store) => login_to_replace(store.profile()),
     };
@@ -421,16 +423,12 @@ fn login_to_replace(profile: Option<&str>) -> String {
     )
 }
 
-fn unset(variables: &[&str]) -> String {
-    format!("`unset {}`", variables.join(" "))
-}
-
 /// The one step that frees `hidden`, a stored credential that the
 /// environment variables `variables` hide.
 fn unset_to_use(variables: &[&str], hidden: &SourcedCredential) -> String {
     format!(
         "{} to use the {} in {}",
-        unset(variables),
+        unset_command(variables),
         hidden.value(),
         hidden.tag()
     )

@@ -1956,13 +1956,6 @@ fn format_api_error(status: u16, body: &str) -> Report {
     api_error_report(status, msg, body)
 }
 
-/// The tenant rejected `credential`: the error names it and its source, not
-/// the status.
-fn rejected_credential_error(status: u16, body: &str, credential: &SourcedCredential) -> Report {
-    api_error_report(status, rejection_message(credential), body)
-        .suggestion(rejection_suggestion(credential))
-}
-
 /// An [`ApiError`] whose message is `msg`, then the body, without an echo of
 /// the status reason at its front.
 fn api_error_report(status: u16, mut msg: String, body: &str) -> Report {
@@ -2062,7 +2055,8 @@ async fn format_api_client_error(err: ClientError<()>, credential: &SourcedCrede
             retry_after,
         } => {
             let report = if matches!(status, 401 | 403) {
-                rejected_credential_error(status, &message, credential)
+                api_error_report(status, rejection_message(credential), &message)
+                    .suggestion(rejection_suggestion(credential))
             } else {
                 format_api_error(status, &message)
             };

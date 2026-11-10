@@ -134,6 +134,11 @@ pub(crate) fn login_command(profile: Option<&str>) -> String {
     }
 }
 
+/// The shell command that unsets the environment variables `variables`.
+pub(crate) fn unset_command(variables: &[&str]) -> String {
+    format!("`unset {}`", variables.join(" "))
+}
+
 pub(crate) type SourcedCredential = Tagged<AuthenticationInfo, CredentialSource>;
 
 /// What a tenant that rejects `credential` rejected: the credential, and where
@@ -168,8 +173,8 @@ pub(crate) fn rejection_suggestion(credential: &SourcedCredential) -> String {
         (AuthenticationInfo::OAuth(_), _) => format!("run {login} to sign in again"),
         (AuthenticationInfo::Password { .. }, CredentialSource::Environment { variables }) => {
             format!(
-                "`unset {}`, then run {login} to use an API key",
-                variables.join(" ")
+                "{}, then run {login} to use an API key",
+                unset_command(variables)
             )
         }
         (AuthenticationInfo::Password { .. }, CredentialSource::Stored(_)) => {

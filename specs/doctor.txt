@@ -128,6 +128,37 @@ env ANTITHESIS_BASE_URL=http://127.0.0.1:1
 stderr '.*Antithesis API unreachable.*'
 stderr '.*could not connect to 127.0.0.1.*'
 
+# An expired OAuth token whose refresh is rejected fails the credentials
+# check, and doctor does not report the API as unreachable.
+[!staging] mock-server 401 ''
+[!staging] isolate-home expired_oauth
+[!staging] substitute ~/.config/snouty/credentials.toml
+[!staging] env ANTITHESIS_API_KEY=
+[!staging] env ANTITHESIS_USERNAME=
+[!staging] env ANTITHESIS_PASSWORD=
+[!staging] ! snouty doctor
+[!staging] stderr '^  ✗ the OAuth credentials expired and could not be renewed$'
+[!staging] stderr 'run `snouty login`'
+[!staging] ! stderr 'Antithesis API'
+[!staging] ! snouty doctor --json
+[!staging] stdout '"id": "credentials",\s*"kind": "oauth",\s*"status": "error"'
+
+# A GitHub Actions OIDC token that cannot be fetched fails the credentials
+# check, and doctor does not blame the Antithesis API.
+isolate-home oidc_unreachable
+env ANTITHESIS_API_KEY=
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
+env ANTITHESIS_TENANT=testtenant
+env ANTITHESIS_BASE_URL=
+set-env ACTIONS_ID_TOKEN_REQUEST_URL http://127.0.0.1:1/token?api-version=2.0
+set-env ACTIONS_ID_TOKEN_REQUEST_TOKEN ${FAKE_OIDC_REQUEST_TOKEN}
+! snouty doctor
+stderr '^  ✗ could not get a GitHub Actions OIDC token$'
+! stderr 'Antithesis API'
+env ACTIONS_ID_TOKEN_REQUEST_URL=
+env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
+
 # --- CLI OAuth probe ---
 # The probe needs no credentials. No API key is set, so doctor skips the API
 # check. mock-server answers every request with the same response.
@@ -353,6 +384,12 @@ antithesis_token = "${FAKE_ACCESS_TOKEN_A}"
 [profile.prod]
 type = "OAuth"
 antithesis_token = "${FAKE_ACCESS_TOKEN_B}"
+
+-- expired_oauth/.config/snouty/credentials.toml --
+[default]
+type = "OAuth"
+antithesis_token = "${FAKE_PASETO_A}"
+refresh_token = "${FAKE_REFRESH_TOKEN_A}"
 
 -- broken_credentials/.config/snouty/credentials.toml --
 this is not valid TOML {{{

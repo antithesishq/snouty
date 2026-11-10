@@ -1394,7 +1394,7 @@ impl ClientHooks<ClientState> for generated::Client {
         if auth.expired() {
             auth.refresh(self.client(), self.baseurl())
                 .await
-                .map_err(|e| ClientError::Custom(e.to_string()))?;
+                .map_err(|e| ClientError::Custom(format!("{e:#}")))?;
         }
         let header = auth
             .auth_header()

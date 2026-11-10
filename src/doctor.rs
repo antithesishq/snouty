@@ -677,6 +677,26 @@ fn version_check(host: &str, result: std::result::Result<ApiVersion, VersionErro
     }
 }
 
+/// Fail `check`, the credentials check of `auth`, because `auth` expired and
+/// could not be renewed. The error says why, and names `snouty login` when
+/// that is the fix.
+fn fail_renewal(check: &mut Check, auth: &AuthenticationInfo, err: &color_eyre::eyre::Report) {
+    check.status = Status::Error;
+    check.message = match auth {
+        AuthenticationInfo::GithubActionsOidc(_) => {
+            "could not get a GitHub Actions OIDC token".to_owned()
+        }
+        auth => format!("the {auth} expired and could not be renewed"),
+    };
+    check.notes.insert(
+        0,
+        Note {
+            level: Level::Error,
+            text: format!("{err:#}"),
+        },
+    );
+}
+
 pub async fn cmd_doctor(
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
@@ -695,13 +715,26 @@ pub async fn cmd_doctor(
         // request/response.
         let mut api_unreachable = false;
         if let Ok(api) = AntithesisApi::new(settings, verbose) {
-            let host = api.host();
-            let version = api.get_version().await;
-            if let Ok(version) = &version {
-                checks.extend(release_floor_checks(version, &features::enabled()));
+            // The client renews an expired credential before its first
+            // request. Do it here, so that a failure fails the credentials
+            // check and is not reported as an unreachable API. The probe
+            // would fail the same way, so it is skipped.
+            if api.authentication().expired()
+                && let Err(err) = api.refresh_authentication().await
+                && let Some(check) = checks
+                    .iter_mut()
+                    .find(|c| matches!(c.id, CheckId::Credentials { .. }))
+            {
+                fail_renewal(check, api.authentication(), &err);
+            } else {
+                let host = api.host();
+                let version = api.get_version().await;
+                if let Ok(version) = &version {
+                    checks.extend(release_floor_checks(version, &features::enabled()));
+                }
+                api_unreachable = matches!(version, Err(VersionError::Unreachable(_)));
+                checks.push(version_check(&host, version));
             }
-            api_unreachable = matches!(version, Err(VersionError::Unreachable(_)));
-            checks.push(version_check(&host, version));
         }
 
         // A client that fails to build (bad proxy URL or extra header) skips

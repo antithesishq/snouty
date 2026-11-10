@@ -686,7 +686,7 @@ fn fail_renewal(check: &mut Check, auth: &AuthenticationInfo, err: &color_eyre::
         AuthenticationInfo::GithubActionsOidc(_) => {
             "could not get a GitHub Actions OIDC token".to_owned()
         }
-        auth => format!("the {auth} expired and could not be renewed"),
+        _ => format!("the {auth} expired and could not be renewed"),
     };
     check.notes.insert(
         0,
@@ -717,15 +717,17 @@ pub async fn cmd_doctor(
         if let Ok(api) = AntithesisApi::new(settings, verbose) {
             // The client renews an expired credential before its first
             // request. Do it here, so that a failure fails the credentials
-            // check and is not reported as an unreachable API. The probe
-            // would fail the same way, so it is skipped.
+            // check and is not reported as an unreachable API. The version
+            // request would fail the same way, so it is skipped.
             if api.authentication().expired()
                 && let Err(err) = api.refresh_authentication().await
-                && let Some(check) = checks
+            {
+                if let Some(check) = checks
                     .iter_mut()
                     .find(|c| matches!(c.id, CheckId::Credentials { .. }))
-            {
-                fail_renewal(check, api.authentication(), &err);
+                {
+                    fail_renewal(check, api.authentication(), &err);
+                }
             } else {
                 let host = api.host();
                 let version = api.get_version().await;

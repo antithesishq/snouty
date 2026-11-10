@@ -36,7 +36,6 @@ class FakeGh:
         self.comments: list[dict[str, Any]] = []
         self.down = False
         self.lookup_down = False
-        self.lookup_fails = 0  # the next lookups that fail, after lookup_down
         self.lists_down = False
 
     def run(self, cmd: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
@@ -56,9 +55,6 @@ class FakeGh:
         path = args[1]
         if "/branches/" in path:
             return {"commit": {"sha": self.view["baseRefOid"]}}
-        if "/collaborators/" in path and self.lookup_fails:
-            self.lookup_fails -= 1
-            return None
         if "/collaborators/" in path and self.lookup_down:
             return None
         if "/collaborators/" in path:

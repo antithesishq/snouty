@@ -29,7 +29,7 @@ pub(crate) fn var(key: &str) -> Result<Option<String>> {
 
 /// The tests set this to the length of one second of a fixed wait, in
 /// milliseconds, so that they do not wait out the real one. It is not a
-/// setting, and no help page names it.
+/// user setting.
 pub const TEST_SECOND_MS_VAR_NAME: &str = "SNOUTY_TEST_SECOND_MS";
 
 /// The length of one second of a fixed wait, as a fraction of a real second:
@@ -40,7 +40,7 @@ pub(crate) fn wait_scale() -> f64 {
             .ok()
             .flatten()
             .map_or(1.0, |ms| {
-                // Not zero: a tool call divides by the scale.
+                // Not zero: the scale is a divisor.
                 let ms: std::num::NonZeroU32 = ms
                     .parse()
                     .unwrap_or_else(|e| panic!("{TEST_SECOND_MS_VAR_NAME}={ms}: {e}"));
@@ -51,8 +51,7 @@ pub(crate) fn wait_scale() -> f64 {
 }
 
 /// A fixed wait of the nominal length `wait`, in the seconds of
-/// [`wait_scale`]. Only the API retry backoff, the docs connect timeout and
-/// the MCP progress interval use it: a wait that the user sets does not.
+/// [`wait_scale`]. Do not scale a wait that the user sets.
 pub(crate) fn scaled_wait(wait: Duration) -> Duration {
     wait.mul_f64(wait_scale())
 }

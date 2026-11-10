@@ -527,8 +527,8 @@ fn max_backoff() -> Duration {
 }
 
 /// The unit of every retry wait: a second, which the tests shorten. A unit
-/// test cannot set the variable of [`crate::env::scaled_wait`], so it has a
-/// fixed millisecond.
+/// test cannot set [`crate::env::TEST_SECOND_MS_VAR_NAME`], so it has a fixed
+/// millisecond.
 #[cfg(not(test))]
 fn retry_second() -> Duration {
     crate::env::scaled_wait(Duration::from_secs(1))

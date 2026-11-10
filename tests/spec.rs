@@ -200,8 +200,7 @@ fn snouty_cmd(env: &testscript_rs::TestEnvironment, args: &[String]) -> std::pro
     let cache_dir = env.current_dir.join("api-cache-isolation");
     std::fs::create_dir_all(&cache_dir).expect("create API cache isolation dir");
     cmd.env("SNOUTY_API_CACHE_DIR", &cache_dir);
-    // A retry of a request to an unreachable mock host waits 10 ms, not a
-    // second. A retry of a staging request keeps its real wait.
+    // A second of retry wait lasts 10 ms. Staging keeps the real waits.
     if !is_staging() {
         cmd.env(snouty::testutils::TEST_SECOND_MS_VAR_NAME, "10");
     }
@@ -1042,8 +1041,7 @@ fn run_engine_spec_case(runtime_name: &'static str, case: EngineSpecCase) {
 
 // --- Test functions ---
 
-/// What one spec file did: its failure if it failed, and the run time of the
-/// file and of each of its commands.
+/// The result of one spec file.
 struct SpecOutcome {
     file: String,
     elapsed: Duration,

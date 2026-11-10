@@ -355,7 +355,7 @@ async fn prompt_for_auth(
     tenant: &str,
     stored: Option<&AuthenticationInfo>,
 ) -> Result<Option<PersistableCredentials>> {
-    let url = normalize_base_url(base_url.url());
+    let url = normalize_base_url(base_url.as_ref());
     let oauth_config = fetch_cli_config(client, &url).await;
 
     // A connect error or timeout most often means a misspelled tenant or

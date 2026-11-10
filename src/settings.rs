@@ -112,8 +112,8 @@ pub(crate) enum BaseUrl {
     Tenant(String),
 }
 
-impl BaseUrl {
-    pub(crate) fn url(&self) -> &str {
+impl AsRef<str> for BaseUrl {
+    fn as_ref(&self) -> &str {
         match self {
             BaseUrl::Explicit(url) | BaseUrl::Tenant(url) => url,
         }
@@ -317,6 +317,9 @@ impl SettingsFiles {
         {
             validate_tenant_host(tenant)?;
         }
+        if let Some(base_url) = &base_url {
+            validate_base_url(base_url)?;
+        }
 
         // A named-field literal (not the setters) so the compiler flags this
         // site whenever a new setting is added to the builder.
@@ -351,7 +354,7 @@ impl Settings {
     /// derived from the tenant; `None` when neither exists (a derived `base_url`
     /// is present exactly when the tenant is).
     pub fn base_url(&self) -> Option<&str> {
-        self.base_url.as_ref().map(BaseUrl::url)
+        self.base_url.as_ref().map(AsRef::as_ref)
     }
 
     /// The base URL for `tenant`: an explicit `base_url` wins, otherwise the
@@ -628,6 +631,17 @@ fn update_table(
     insert_key_if_non_empty(target, "repository", repository);
     insert_key_if_non_empty(target, "base_url", base_url);
     insert_key_if_non_empty(target, "container_engine", container_engine);
+}
+
+/// Reject a `base_url` that no request can use, such as one without a scheme.
+fn validate_base_url(base_url: &str) -> Result<()> {
+    match reqwest::Url::parse(base_url) {
+        Ok(url) if matches!(url.scheme(), "http" | "https") && url.has_host() => Ok(()),
+        _ => Err(user_error(format!(
+            "invalid base_url setting `{base_url}`: use an http or https URL, such as \
+             `https://acme.antithesis.com`"
+        ))),
+    }
 }
 
 /// The base URL of `tenant` when no `base_url` is set.
@@ -1201,7 +1215,7 @@ mod tests {
             .base_url("https://example.test")
             .build();
         assert_eq!(
-            settings.base_url_for_tenant("other").url(),
+            settings.base_url_for_tenant("other").as_ref(),
             "https://example.test"
         );
     }
@@ -1210,9 +1224,22 @@ mod tests {
     fn base_url_for_tenant_derives_from_the_new_tenant() {
         let settings = Settings::builder().tenant("acme").build();
         assert_eq!(
-            settings.base_url_for_tenant("other").url(),
+            settings.base_url_for_tenant("other").as_ref(),
             "https://other.antithesis.com"
         );
+    }
+
+    #[test]
+    fn validate_base_url_accepts_only_http_urls_with_a_host() {
+        for ok in [
+            "https://acme.antithesis.com",
+            "http://127.0.0.1:8765/api/v1",
+        ] {
+            assert!(validate_base_url(ok).is_ok(), "{ok}");
+        }
+        for bad in ["acme.example.com", "ftp://acme.example.com", "https://", ""] {
+            assert!(validate_base_url(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

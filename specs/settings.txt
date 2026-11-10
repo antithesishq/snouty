@@ -61,6 +61,12 @@ stdout 'repository.*env-path-repo'
 snouty --settings other.toml settings show
 stdout 'repository.*other/repo'
 
+# 10. A base_url that is not an http or https URL fails at startup.
+env ANTITHESIS_BASE_URL=acme.example.com
+! snouty settings show
+stderr 'invalid base_url setting'
+env ANTITHESIS_BASE_URL=
+
 -- .snouty.toml --
 tenant = "acme"
 repository = "acme/repo"

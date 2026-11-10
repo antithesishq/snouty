@@ -92,14 +92,24 @@ enum Stdout {
 
 const STDOUT_FILE: &str = "stdout.txt";
 
+/// What `ANTITHESIS_BASE_URL` holds for the child.
+#[derive(Default)]
+enum BaseUrl<'a> {
+    /// A mock backend that answers the `/auth/cli/config` probe with
+    /// [`OAUTH_DISABLED`].
+    #[default]
+    Mock,
+    Env(&'a str),
+    /// Unset, so a seeded settings file can set `base_url`.
+    Unset,
+}
+
 /// How [`spawn_login`] runs `snouty login --tenant … --repository …`.
 #[derive(Default)]
 struct Login<'a> {
     /// Each `(path, contents)` is written under the temp `$HOME` first.
     seed: &'a [(&'a str, &'a str)],
-    /// Without it, a mock backend answers the `/auth/cli/config` probe with
-    /// [`OAUTH_DISABLED`].
-    base_url: Option<&'a str>,
+    base_url: BaseUrl<'a>,
     /// Each `(name, value)` is set for the child.
     env: &'a [(&'a str, &'a str)],
     stdout: Stdout,
@@ -132,17 +142,22 @@ fn spawn_login(login: &Login) -> (tempfile::TempDir, OsSession) {
         .envs(support::ca_env())
         .env("HOME", home.path())
         .env("TERM", "xterm-256color")
-        .env(
-            "ANTITHESIS_BASE_URL",
-            login.base_url.map_or_else(
-                || support::start_mock_server(OAUTH_DISABLED, 200),
-                str::to_owned,
-            ),
-        )
         // Force file-based credential storage so a macOS run doesn't touch
         // the real keychain.
         .env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1")
         .envs(login.env.iter().copied());
+    match login.base_url {
+        BaseUrl::Mock => {
+            command.env(
+                "ANTITHESIS_BASE_URL",
+                support::start_mock_server(OAUTH_DISABLED, 200),
+            );
+        }
+        BaseUrl::Env(url) => {
+            command.env("ANTITHESIS_BASE_URL", url);
+        }
+        BaseUrl::Unset => {}
+    }
 
     let mut session = command.spawn(PTY_COLS, 24);
     session.set_expect_timeout(Some(EXPECT_TIMEOUT));
@@ -515,7 +530,7 @@ fn flat(seen: &str) -> String {
 fn an_unreachable_tenant_warns_and_login_continues() {
     let refused = refused_base_url();
     let (home, mut session) = spawn_login(&Login {
-        base_url: Some(&refused),
+        base_url: BaseUrl::Env(&refused),
         ..Login::default()
     });
 
@@ -537,6 +552,25 @@ fn an_unreachable_tenant_warns_and_login_continues() {
     assert!(credentials(home.path()).contains(FAKE_API_KEY_A));
 }
 
+/// Login checks for single sign-on at the `base_url` of the settings file,
+/// which later commands call, not at the host of the tenant.
+#[test]
+fn login_uses_the_base_url_of_the_settings_file() {
+    let refused = refused_base_url();
+    let settings = format!("base_url = \"{refused}\"\n");
+    let (_home, mut session) = spawn_login(&Login {
+        seed: &[(".config/snouty/settings.toml", &settings)],
+        base_url: BaseUrl::Unset,
+        ..Login::default()
+    });
+
+    let seen = flat(&expect(&mut session, "Please enter your API Key"));
+    let needle = format!("could not reach {refused}/auth/cli/config");
+    assert!(seen.contains(&needle), "missing {needle:?} in {seen}");
+    send(&mut session, "\x1b");
+    finish(session);
+}
+
 /// A tenant that answers that single sign-on is disabled gets the API key
 /// prompt with no warning.
 #[test]
@@ -554,7 +588,7 @@ fn a_tenant_without_oauth_gets_no_warning() {
 fn verbose_logs_why_the_oauth_probe_failed() {
     let refused = refused_base_url();
     let (_home, mut session) = spawn_login(&Login {
-        base_url: Some(&refused),
+        base_url: BaseUrl::Env(&refused),
         args: &["--verbose"],
         ..Login::default()
     });
@@ -629,7 +663,7 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
     let no_opener = tempfile::TempDir::new().expect("an empty PATH directory");
     let no_opener = no_opener.path().to_str().expect("a UTF-8 temp path");
     let (home, mut session) = spawn_login(&Login {
-        base_url: Some(&url),
+        base_url: BaseUrl::Env(&url),
         env: &[("PATH", no_opener)],
         stdout: Stdout::File,
         args: &["--verbose"],

@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     fs,
     io::{ErrorKind, Write},
     path::{Path, PathBuf},
@@ -95,12 +96,20 @@ pub struct Settings {
     profile: Option<String>,
     tenant: Option<String>,
     repository: Option<String>,
-    base_url: Option<String>,
+    base_url: Option<BaseUrl>,
     https_proxy: Option<String>,
     container_engine: Option<String>,
     update_channel: UpdateChannel,
     api_cache_max_file_size: u64,
     files: Vec<SettingsFile>,
+}
+
+/// Where the resolved base URL comes from.
+enum BaseUrl {
+    /// A `base_url` setting.
+    Explicit(String),
+    /// The host of the tenant.
+    Tenant(String),
 }
 
 impl Default for Settings {
@@ -334,7 +343,18 @@ impl Settings {
     /// derived from the tenant; `None` when neither exists (a derived `base_url`
     /// is present exactly when the tenant is).
     pub fn base_url(&self) -> Option<&str> {
-        self.base_url.as_deref()
+        self.base_url
+            .as_ref()
+            .map(|(BaseUrl::Explicit(url) | BaseUrl::Tenant(url))| url.as_str())
+    }
+
+    /// The base URL once `tenant` replaces the resolved tenant: an explicit
+    /// `base_url` still wins, and otherwise the URL is the host of `tenant`.
+    pub fn base_url_for_tenant(&self, tenant: &str) -> Cow<'_, str> {
+        match &self.base_url {
+            Some(BaseUrl::Explicit(url)) => Cow::Borrowed(url),
+            _ => Cow::Owned(tenant_base_url(tenant)),
+        }
     }
 
     pub fn https_proxy(&self) -> Option<&str> {
@@ -455,10 +475,10 @@ impl SettingsBuilder {
     /// [`Settings::resolve`] and the test constructors both finish here, so the
     /// derivation is exercised the same way everywhere.
     pub fn build(self) -> Settings {
-        let base_url = self.base_url.or_else(|| {
+        let base_url = self.base_url.map(BaseUrl::Explicit).or_else(|| {
             self.tenant
-                .as_ref()
-                .map(|tenant| format!("https://{tenant}.antithesis.com"))
+                .as_deref()
+                .map(|tenant| BaseUrl::Tenant(tenant_base_url(tenant)))
         });
 
         Settings {
@@ -601,6 +621,11 @@ fn update_table(
     insert_key_if_non_empty(target, "repository", repository);
     insert_key_if_non_empty(target, "base_url", base_url);
     insert_key_if_non_empty(target, "container_engine", container_engine);
+}
+
+/// The base URL of `tenant` when no `base_url` is set.
+fn tenant_base_url(tenant: &str) -> String {
+    format!("https://{tenant}.antithesis.com")
 }
 
 /// Validate that `tenant` is safe to interpolate into the derived base URL
@@ -1160,6 +1185,27 @@ mod tests {
             .base_url("https://example.test")
             .build();
         assert_eq!(settings.base_url(), Some("https://example.test"));
+    }
+
+    #[test]
+    fn base_url_for_tenant_keeps_an_explicit_base_url() {
+        let settings = Settings::builder()
+            .tenant("acme")
+            .base_url("https://example.test")
+            .build();
+        assert_eq!(
+            settings.base_url_for_tenant("other"),
+            "https://example.test"
+        );
+    }
+
+    #[test]
+    fn base_url_for_tenant_derives_from_the_new_tenant() {
+        let settings = Settings::builder().tenant("acme").build();
+        assert_eq!(
+            settings.base_url_for_tenant("other"),
+            "https://other.antithesis.com"
+        );
     }
 
     #[test]

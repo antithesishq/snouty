@@ -23,9 +23,8 @@ use sha2::{Digest, Sha256};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 
-use crate::settings;
 use crate::{
-    api::HttpClient,
+    api::{HttpClient, normalize_base_url},
     auth::{
         AuthenticationInfo, CredentialStore, PersistableCredentials, is_blank_api_key, persist,
     },
@@ -207,7 +206,9 @@ async fn do_cmd_login(
     let written = if prompter.is_interactive() {
         let stored_value = stored.as_ref().map(Tagged::value);
         let client = HttpClient::new(current_settings, verbose)?;
-        match prompt_for_auth(prompter, &client, &tenant_to_use, stored_value).await? {
+        // Sign in at the URL that later commands call.
+        let base_url = normalize_base_url(current_settings.base_url_for_tenant(&tenant_to_use));
+        match prompt_for_auth(prompter, &client, &base_url, &tenant_to_use, stored_value).await? {
             Some(credentials) => {
                 let kind = match &credentials {
                     PersistableCredentials::ApiKey { .. } => "API key",
@@ -350,13 +351,11 @@ impl std::fmt::Display for AuthSetupType {
 async fn prompt_for_auth(
     prompter: &dyn Prompter,
     client: &HttpClient,
+    base_url: &str,
     tenant: &str,
     stored: Option<&AuthenticationInfo>,
 ) -> Result<Option<PersistableCredentials>> {
-    // ANTITHESIS_BASE_URL trumps the supplied tenant because the former is used by spec tests
-    let base_url = env::var(settings::ANTITHESIS_BASE_URL_VAR_NAME)?
-        .unwrap_or_else(|| format!("https://{tenant}.antithesis.com"));
-    let oauth_config = fetch_cli_config(client, &base_url).await;
+    let oauth_config = fetch_cli_config(client, base_url).await;
 
     // A connect error or timeout most often means a misspelled tenant. Any
     // HTTP answer, such as 403, means the tenant exists. A body error comes
@@ -423,7 +422,7 @@ async fn prompt_for_auth(
         {
             Ok(None)
         }
-        Some(AuthSetupType::OAuth) => complete_oauth_login(client, &base_url, &oauth_config?)
+        Some(AuthSetupType::OAuth) => complete_oauth_login(client, base_url, &oauth_config?)
             .await
             .map(Some),
     }

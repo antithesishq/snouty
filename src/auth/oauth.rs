@@ -222,9 +222,7 @@ async fn refresh_oauth_token(
         .execute(request)
         .await?
         .error_for_status()
-        .wrap_err(
-            "Unable to refresh OAuth credential. Please run `snouty login` to obtain a new token.",
-        )?
+        .wrap_err("the OAuth token could not be refreshed; run `snouty login`")?
         .json::<OAuthRefreshResponse>()
         .await
         .wrap_err("parsing the OAuth refresh response")

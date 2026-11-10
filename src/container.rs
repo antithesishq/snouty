@@ -400,6 +400,24 @@ pub trait ContainerRuntime: Send + Sync {
         Ok(TestTemplates::Present)
     }
 
+    /// Names of every volume in the engine.
+    fn volume_names(&self) -> Result<Vec<String>> {
+        let runtime = self.name();
+        let mut cmd = Command::new(runtime);
+        cmd.args(["volume", "ls", "--format", "{{.Name}}"]);
+        let output = output_with_timeout(cmd, DISCOVERY_COMMAND_TIMEOUT)
+            .wrap_err_with(|| format!("failed to run '{runtime} volume ls'"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(eyre!("'{runtime} volume ls' failed"))
+                .with_section(move || stderr.trim().to_string().header("Stderr:"));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect())
+    }
+
     /// Probe whether `path` exists inside `container_id` (must be running).
     /// Runs `runtime exec <id> test -d <path>`; exit 0 → Directory, exit 1 →
     /// Missing, any other failure (no shell, container died, etc.) →

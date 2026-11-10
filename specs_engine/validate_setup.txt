@@ -23,6 +23,13 @@ snouty validate config_sdk_local --timeout 30s
 stderr 'Setup-complete event detected.*'
 stderr 'Setup validation successful.*'
 
+# Validate removes its named volumes, so a second run starts on fresh ones.
+[docker] build-image volume-marker-setup:latest volume_marker
+[docker] snouty validate config_volume --timeout 30s
+[docker] stderr 'Setup validation successful\.\z'
+[docker] snouty validate config_volume --timeout 30s
+[docker] stderr 'Setup validation successful.*'
+
 -- setup_emitter/Dockerfile --
 FROM busybox
 CMD sh -c 'echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl" && sleep 3600'
@@ -85,3 +92,16 @@ services:
   emitter:
     image: sdk-local-emitter-setup:latest
     pull_policy: never
+
+-- volume_marker/Dockerfile --
+FROM busybox
+CMD sh -c 'test ! -e /data/marker && touch /data/marker && echo "{\"antithesis_setup\":{\"status\":\"complete\"}}" >> "$ANTITHESIS_OUTPUT_DIR/sdk.jsonl" && sleep 3600'
+-- config_volume/docker-compose.yaml --
+services:
+  marker:
+    image: volume-marker-setup:latest
+    pull_policy: never
+    volumes:
+      - data:/data
+volumes:
+  data:

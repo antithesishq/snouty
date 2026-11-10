@@ -62,9 +62,10 @@ log = "0.4"
 open = "5"
 progenitor-client = "0.15.0"
 reqwest = { version = "0.13.1", default-features = false, features = ["http2", "json", "query", "stream", "rustls-no-provider"] }
-# ring makes a smaller binary than reqwest's default, aws-lc-rs.
-# api::client_builder installs it.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# aws-lc-rs, not ring: ring makes a smaller binary but cannot verify ECDSA
+# P-521 signatures, and some TLS-inspecting corporate proxies sign with a
+# P-521 root. api::client_builder installs it.
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 color-eyre = { version = "0.6", default-features = false }
 futures-util = "0.3"
 # Chunk type of reqwest response streams; JsonStream buffers them.

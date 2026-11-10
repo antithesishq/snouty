@@ -510,9 +510,9 @@ fn flat(seen: &str) -> String {
 }
 
 /// When the OAuth configuration probe gets no response, login warns that the
-/// tenant may be wrong, offers only an API key, and saves the tenant.
+/// base URL may be wrong, offers only an API key, and saves the tenant.
 #[test]
-fn an_unreachable_tenant_warns_and_login_continues() {
+fn an_unreachable_base_url_warns_and_login_continues() {
     let refused = refused_base_url();
     let (home, mut session) = spawn_login(&Login {
         base_url: Some(&refused),
@@ -522,7 +522,7 @@ fn an_unreachable_tenant_warns_and_login_continues() {
     let seen = flat(&expect(&mut session, "Please enter your API Key"));
     for needle in [
         format!("warning: could not reach {refused}/auth/cli/config to check for single sign-on: "),
-        "Check that the tenant name `pty-tenant` is correct.".to_owned(),
+        "Check that the base_url setting is correct.".to_owned(),
         "Login continues with an API key.".to_owned(),
     ] {
         assert!(seen.contains(&needle), "missing {needle:?} in {seen}");
@@ -537,8 +537,8 @@ fn an_unreachable_tenant_warns_and_login_continues() {
     assert!(credentials(home.path()).contains(FAKE_API_KEY_A));
 }
 
-/// Login checks for single sign-on at the `base_url` of the settings file,
-/// which later commands call, not at the host of the tenant.
+/// Login checks for single sign-on at the `base_url` of the settings file, not
+/// at the host of the tenant.
 #[test]
 fn login_uses_the_base_url_of_the_settings_file() {
     let refused = refused_base_url();
@@ -546,7 +546,7 @@ fn login_uses_the_base_url_of_the_settings_file() {
     let (_home, mut session) = spawn_login(&Login {
         seed: &[(".config/snouty/settings.toml", &settings)],
         // An empty value counts as unset, so the settings file decides.
-        env: &[("ANTITHESIS_BASE_URL", "")],
+        base_url: Some(""),
         ..Login::default()
     });
 

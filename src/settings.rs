@@ -103,12 +103,21 @@ pub struct Settings {
     files: Vec<SettingsFile>,
 }
 
-/// Where the resolved base URL comes from.
-enum BaseUrl {
+/// A base URL, by where it comes from.
+#[derive(Clone)]
+pub(crate) enum BaseUrl {
     /// A `base_url` setting.
     Explicit(String),
     /// The host of the tenant.
     Tenant(String),
+}
+
+impl BaseUrl {
+    pub(crate) fn url(&self) -> &str {
+        match self {
+            BaseUrl::Explicit(url) | BaseUrl::Tenant(url) => url,
+        }
+    }
 }
 
 impl Default for Settings {
@@ -342,17 +351,15 @@ impl Settings {
     /// derived from the tenant; `None` when neither exists (a derived `base_url`
     /// is present exactly when the tenant is).
     pub fn base_url(&self) -> Option<&str> {
-        self.base_url
-            .as_ref()
-            .map(|(BaseUrl::Explicit(url) | BaseUrl::Tenant(url))| url.as_str())
+        self.base_url.as_ref().map(BaseUrl::url)
     }
 
-    /// The base URL once `tenant` replaces the resolved tenant: an explicit
-    /// `base_url` still wins, and otherwise the URL is the host of `tenant`.
-    pub fn base_url_for_tenant(&self, tenant: &str) -> String {
+    /// The base URL for `tenant`: an explicit `base_url` wins, otherwise the
+    /// host of `tenant`.
+    pub(crate) fn base_url_for_tenant(&self, tenant: &str) -> BaseUrl {
         match &self.base_url {
-            Some(BaseUrl::Explicit(url)) => url.clone(),
-            _ => tenant_base_url(tenant),
+            Some(explicit @ BaseUrl::Explicit(_)) => explicit.clone(),
+            _ => BaseUrl::Tenant(tenant_base_url(tenant)),
         }
     }
 
@@ -1194,7 +1201,7 @@ mod tests {
             .base_url("https://example.test")
             .build();
         assert_eq!(
-            settings.base_url_for_tenant("other"),
+            settings.base_url_for_tenant("other").url(),
             "https://example.test"
         );
     }
@@ -1203,7 +1210,7 @@ mod tests {
     fn base_url_for_tenant_derives_from_the_new_tenant() {
         let settings = Settings::builder().tenant("acme").build();
         assert_eq!(
-            settings.base_url_for_tenant("other"),
+            settings.base_url_for_tenant("other").url(),
             "https://other.antithesis.com"
         );
     }

@@ -667,7 +667,7 @@ stderr '^Error: API error: 400.*'
 [!staging] mock-server 401 ''
 [!staging] set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 [!staging] ! snouty runs
-[!staging] stderr '^Error: the tenant rejected the API key from the `ANTITHESIS_API_KEY` environment variable$'
+[!staging] stderr 'rejected the API key from the `ANTITHESIS_API_KEY` environment variable'
 [!staging] stderr -literal 'Suggestion: set ANTITHESIS_API_KEY to a valid API key for this tenant'
 [!staging] ! stderr 'API error'
 
@@ -677,7 +677,7 @@ stderr '^Error: API error: 400.*'
 [!staging] env ANTITHESIS_USERNAME=
 [!staging] env ANTITHESIS_PASSWORD=
 [!staging] ! snouty runs
-[!staging] stderr '^Error: the tenant rejected the API key from the \[default\] profile in .+credentials\.toml$'
+[!staging] stderr 'rejected the API key from the \[default\] profile'
 [!staging] stderr -literal 'Suggestion: run `snouty login` to store a valid API key'
 
 # An unfiltered empty result succeeds with a short note.

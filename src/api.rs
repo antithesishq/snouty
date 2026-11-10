@@ -798,6 +798,9 @@ pub struct AntithesisApi {
     client: generated::Client,
     base_url: String,
     cache: ApiCache,
+    /// The selected settings profile, which `snouty login` must write to
+    /// replace a rejected credential.
+    profile: Option<String>,
 }
 
 /// Stop a stream at the `limit` its request named. Release 61 ends the stream
@@ -888,6 +891,7 @@ impl AntithesisApi {
             client,
             base_url,
             cache,
+            profile: settings.profile().map(str::to_owned),
         })
     }
 
@@ -918,7 +922,12 @@ impl AntithesisApi {
     /// Render a failed API call for the user, with the credential of this
     /// client.
     async fn api_error(&self, err: ClientError<()>) -> Report {
-        format_api_client_error(err, &self.client.inner().credential).await
+        format_api_client_error(
+            err,
+            &self.client.inner().credential,
+            self.profile.as_deref(),
+        )
+        .await
     }
 
     /// Resolve the error from a launch call.
@@ -2044,15 +2053,24 @@ fn char_pos_to_byte_offset(body: &str, line: usize, column: usize) -> usize {
     body.len()
 }
 
-/// Render a failed API call for the user, status first. A 401 or 403 names
-/// the rejected `credential` instead, and suggests the one way to replace it.
-async fn format_api_client_error(err: ClientError<()>, credential: &SourcedCredential) -> Report {
+/// Render a failed API call for the user, status first. A rejection names
+/// the rejected `credential` instead, and suggests the one way to replace it
+/// for the selected `profile`.
+///
+/// A rejection is a 401, or a 403 with no body: the gateway answers a bad key
+/// with an empty 403 (#180). A 403 with a body can deny a valid credential
+/// access to one resource, so it keeps its status.
+async fn format_api_client_error(
+    err: ClientError<()>,
+    credential: &SourcedCredential,
+    profile: Option<&str>,
+) -> Report {
     match classify_client_error(err).await {
         ApiFailure::Response {
             status, message, ..
-        } if matches!(status, 401 | 403) => {
+        } if status == 401 || (status == 403 && message.trim().is_empty()) => {
             api_error_report(status, rejection_message(credential), &message)
-                .suggestion(rejection_suggestion(credential))
+                .suggestion(rejection_suggestion(credential, profile))
         }
         ApiFailure::Response {
             status,
@@ -2512,7 +2530,7 @@ mod tests {
         let parse_err = serde_json::from_slice::<serde_json::Value>(b"").unwrap_err();
         let err = ClientError::<()>::InvalidResponsePayload(bytes::Bytes::new(), parse_err);
 
-        let report = format_api_client_error(err, &env_api_key()).await;
+        let report = format_api_client_error(err, &env_api_key(), None).await;
         let message = format!("{report}");
         let debug = format!("{report:?}");
 
@@ -2540,7 +2558,8 @@ mod tests {
     #[tokio::test]
     async fn format_api_client_error_names_a_rejected_credential() {
         for status in [401, 403] {
-            let report = format_api_client_error(served_error(status, ""), &env_api_key()).await;
+            let report =
+                format_api_client_error(served_error(status, ""), &env_api_key(), None).await;
             let rendered = format!("{report:?}");
 
             assert_eq!(crate::error::api_error_status(&report), Some(status));
@@ -2556,6 +2575,24 @@ mod tests {
             );
             assert!(!rendered.contains(&status.to_string()), "got: {rendered}");
         }
+    }
+
+    // A 403 with a body can deny a valid credential, so it is not a rejection.
+    #[tokio::test]
+    async fn format_api_client_error_keeps_a_403_with_a_body() {
+        let report = format_api_client_error(
+            served_error(403, r#"{"message":"no"}"#),
+            &env_api_key(),
+            None,
+        )
+        .await;
+        let rendered = format!("{report:?}");
+
+        assert!(
+            rendered.contains("API error: 403 Forbidden"),
+            "got: {rendered}"
+        );
+        assert!(!rendered.contains("rejected"), "got: {rendered}");
     }
 
     /// A served error, in the shape the generated client hands every HTTP
@@ -2575,7 +2612,8 @@ mod tests {
     #[tokio::test]
     async fn format_api_client_error_reports_the_status_for_an_empty_body() {
         for status in [429, 502] {
-            let report = format_api_client_error(served_error(status, ""), &env_api_key()).await;
+            let report =
+                format_api_client_error(served_error(status, ""), &env_api_key(), None).await;
             let debug = format!("{report:?}");
 
             assert!(
@@ -2587,7 +2625,8 @@ mod tests {
 
     #[tokio::test]
     async fn format_api_client_error_shows_a_non_empty_body() {
-        let report = format_api_client_error(served_error(400, "not json"), &env_api_key()).await;
+        let report =
+            format_api_client_error(served_error(400, "not json"), &env_api_key(), None).await;
         let debug = format!("{report:?}");
 
         assert!(debug.contains("API error: 400"), "got: {debug}");
@@ -2803,7 +2842,7 @@ mod tests {
         let parse_err = serde_json::from_slice::<serde_json::Value>(body).unwrap_err();
         let err = ClientError::<()>::InvalidResponsePayload(body.to_vec().into(), parse_err);
 
-        let report = format_api_client_error(err, &env_api_key()).await;
+        let report = format_api_client_error(err, &env_api_key(), None).await;
         // The message is the bare statement …
         let message = format!("{report}");
         assert!(message.starts_with("invalid API response payload: "));

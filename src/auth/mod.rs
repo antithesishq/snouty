@@ -154,11 +154,13 @@ pub(crate) fn rejection_message(credential: &SourcedCredential) -> String {
 }
 
 /// The one action that replaces `credential` after a tenant rejects it.
-pub(crate) fn rejection_suggestion(credential: &SourcedCredential) -> String {
-    let login = login_command(match credential.tag() {
-        CredentialSource::Stored(store) => store.profile(),
-        CredentialSource::Environment { .. } => None,
-    });
+/// `profile` is the selected profile: its own stored credential wins over the
+/// default profile's, so `snouty login` must write it.
+pub(crate) fn rejection_suggestion(
+    credential: &SourcedCredential,
+    profile: Option<&str>,
+) -> String {
+    let login = login_command(profile);
     match (credential.value(), credential.tag()) {
         (AuthenticationInfo::GithubActionsOidc(_), _) => {
             "ask Antithesis support to trust GitHub Actions OIDC tokens from this repository"
@@ -465,43 +467,58 @@ mod tests {
         let cases = [
             (
                 api_key().with_tag(env(vec![API_KEY_VAR_NAME])),
+                None,
                 "the tenant rejected the API key from the `ANTITHESIS_API_KEY` environment variable",
                 "set ANTITHESIS_API_KEY to a valid API key for this tenant",
             ),
             (
                 api_key().with_tag(file(None)),
+                None,
                 "the tenant rejected the API key from the [default] profile in /home/user/.config/snouty/credentials.toml",
                 "run `snouty login` to store a valid API key",
             ),
+            // A named profile with no credential of its own falls back to the
+            // default profile's; logging in to the named profile replaces it.
+            (
+                api_key().with_tag(file(None)),
+                Some("acme"),
+                "the tenant rejected the API key from the [default] profile in /home/user/.config/snouty/credentials.toml",
+                "run `snouty login --profile acme` to store a valid API key",
+            ),
             (
                 api_key().with_tag(keychain.clone()),
+                Some("acme"),
                 "the tenant rejected the API key from the system keychain entry named [profile_acme]",
                 "run `snouty login --profile acme` to store a valid API key",
             ),
             (
                 oauth.with_tag(keychain),
+                Some("acme"),
                 "the tenant rejected the OAuth credentials from the system keychain entry named [profile_acme]",
                 "run `snouty login --profile acme` to sign in again",
             ),
             (
                 oidc.with_tag(env(vec![OIDC_URL_VAR_NAME, OIDC_TOKEN_VAR_NAME])),
+                None,
                 "the tenant rejected the GitHub Actions OIDC token of this job",
                 "ask Antithesis support to trust GitHub Actions OIDC tokens from this repository",
             ),
             (
                 password().with_tag(env(vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME])),
+                None,
                 "the tenant rejected the username and password from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables",
                 "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`, then run `snouty login` to use an API key",
             ),
             (
                 password().with_tag(file(Some("acme"))),
+                Some("acme"),
                 "the tenant rejected the username and password from the [acme] profile in /home/user/.config/snouty/credentials.toml",
                 "run `snouty login --profile acme` to use an API key",
             ),
         ];
-        for (credential, message, suggestion) in cases {
+        for (credential, profile, message, suggestion) in cases {
             assert_eq!(rejection_message(&credential), message);
-            assert_eq!(rejection_suggestion(&credential), suggestion);
+            assert_eq!(rejection_suggestion(&credential, profile), suggestion);
         }
     }
 

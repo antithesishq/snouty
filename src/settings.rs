@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     fs,
     io::{ErrorKind, Write},
     path::{Path, PathBuf},
@@ -350,10 +349,10 @@ impl Settings {
 
     /// The base URL once `tenant` replaces the resolved tenant: an explicit
     /// `base_url` still wins, and otherwise the URL is the host of `tenant`.
-    pub fn base_url_for_tenant(&self, tenant: &str) -> Cow<'_, str> {
+    pub fn base_url_for_tenant(&self, tenant: &str) -> String {
         match &self.base_url {
-            Some(BaseUrl::Explicit(url)) => Cow::Borrowed(url),
-            _ => Cow::Owned(tenant_base_url(tenant)),
+            Some(BaseUrl::Explicit(url)) => url.clone(),
+            _ => tenant_base_url(tenant),
         }
     }
 
@@ -478,7 +477,8 @@ impl SettingsBuilder {
         let base_url = self.base_url.map(BaseUrl::Explicit).or_else(|| {
             self.tenant
                 .as_deref()
-                .map(|tenant| BaseUrl::Tenant(tenant_base_url(tenant)))
+                .map(tenant_base_url)
+                .map(BaseUrl::Tenant)
         });
 
         Settings {

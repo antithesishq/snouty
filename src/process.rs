@@ -149,7 +149,9 @@ mod tests {
     #[test]
     fn output_with_timeout_kills_and_errors_on_overrun() {
         let mut cmd = Command::new("sh");
-        cmd.args(["-c", "sleep 30"]);
+        // `exec`, so that the kill reaches the sleep: a child of the shell
+        // would hold the pipes open until it exits.
+        cmd.args(["-c", "exec sleep 30"]);
         let err = output_with_timeout(cmd, Duration::from_millis(150)).unwrap_err();
         assert!(
             format!("{err}").contains("timed out"),

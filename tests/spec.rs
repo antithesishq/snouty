@@ -200,6 +200,11 @@ fn snouty_cmd(env: &testscript_rs::TestEnvironment, args: &[String]) -> std::pro
     let cache_dir = env.current_dir.join("api-cache-isolation");
     std::fs::create_dir_all(&cache_dir).expect("create API cache isolation dir");
     cmd.env("SNOUTY_API_CACHE_DIR", &cache_dir);
+    // A retry of a request to an unreachable mock host waits 10 ms, not a
+    // second. A retry of a staging request keeps its real wait.
+    if !is_staging() {
+        cmd.env("SNOUTY_TEST_SECOND_MS", "10");
+    }
     for (k, v) in &env.env_vars {
         cmd.env(k, v);
     }
@@ -1037,120 +1042,175 @@ fn run_engine_spec_case(runtime_name: &'static str, case: EngineSpecCase) {
 
 // --- Test functions ---
 
+/// What one spec file did: its failure if it failed, and the run time of the
+/// file and of each of its commands.
+struct SpecOutcome {
+    file: String,
+    elapsed: Duration,
+    failure: Option<String>,
+    command_times: Vec<(Duration, String)>,
+}
+
+fn run_spec_file(file: String, staging: bool) -> SpecOutcome {
+    let start = Instant::now();
+    let result = execute_spec_file(&file, staging);
+    let elapsed = start.elapsed();
+    let (outcome, failure) = match result {
+        Ok(()) => ("ok", None),
+        Err(e) if e.to_string().contains("SKIP:") => ("skipped", None),
+        Err(e) => ("FAILED", Some(e.to_string())),
+    };
+    eprintln!("spec {file}: {outcome} in {:.1}s", elapsed.as_secs_f64());
+    let command_times = COMMAND_TIMES
+        .take()
+        .into_iter()
+        .map(|(time, label)| (time, format!("{file}: {label}")))
+        .collect();
+    SpecOutcome {
+        file,
+        elapsed,
+        failure,
+        command_times,
+    }
+}
+
+fn execute_spec_file(file: &str, staging: bool) -> testscript_rs::Result<()> {
+    testscript::run("specs")
+        .files([file])
+        .condition("staging", staging)
+        .setup(|env| {
+            env.set_env_var("RUST_LOG", "debug");
+            set_fake_secret_vars(env);
+            if let Some(path) = filtered_path_without_binary("snouty-update") {
+                env.set_env_var("PATH", &path);
+            }
+            Ok(())
+        })
+        .command("snouty", cmd_snouty)
+        .command("mock-server", cmd_mock_server)
+        .command("mock-runs-server", cmd_mock_runs_server)
+        .command("mock-proxy", cmd_mock_proxy)
+        .command("env_from_json", cmd_env_from_json)
+        .command("env_from_json_find", cmd_env_from_json_find)
+        .command("file", cmd_file)
+        .command("set-env", cmd_set_env)
+        .command("substitute", cmd_substitute)
+        .command("snouty-bg", |env, args| {
+            let child = snouty_cmd(env, args)
+                .spawn()
+                .map_err(|e| err(format!("spawn snouty-bg: {e}")))?;
+            env.background_processes.insert("snouty".to_string(), child);
+            Ok(())
+        })
+        .command("isolate-home", |env, args| {
+            // Usage: isolate-home <name>
+            //
+            // `snouty login` persists credentials.toml and settings.toml
+            // under the global settings dir, which is `$XDG_CONFIG_HOME/snouty`
+            // when that var is set and otherwise `$HOME/.config/snouty`. The
+            // shared spec setup pins an isolated XDG_CONFIG_HOME, so here we
+            // point HOME at a fresh per-section temp dir and clear
+            // XDG_CONFIG_HOME (snouty treats an empty value as unset) so the
+            // login writes land under — and are read back from — that HOME.
+            // Each <name> gives a section of the spec its own home, keeping its
+            // writes isolated from sibling sections and from the developer's
+            // real ~/.config.
+            let name = args.first().map_or("home", String::as_str);
+            let home = env.work_dir.join(name);
+            std::fs::create_dir_all(&home)
+                .map_err(|e| err(format!("failed to create isolated HOME: {e}")))?;
+            let home = home
+                .to_str()
+                .ok_or_else(|| err("isolated HOME path is not valid UTF-8".to_string()))?;
+            env.set_env_var("HOME", home);
+            env.set_env_var("XDG_CONFIG_HOME", "");
+            Ok(())
+        })
+        .command("setup-docs-db", |env, _args| {
+            // Usage: setup-docs-db
+            // Seeds an isolated cache home with the fixture docs.db and points
+            // the binary at it via XDG_CACHE_HOME (snouty reads the DB from
+            // <cache home>/snouty/docs.db).
+            let fixture =
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/docs.db");
+            let cache_home = env.work_dir.join("cache");
+            let snouty_dir = cache_home.join("snouty");
+            std::fs::create_dir_all(&snouty_dir)
+                .map_err(|e| err(format!("failed to create cache dir: {e}")))?;
+            std::fs::copy(&fixture, snouty_dir.join("docs.db"))
+                .map_err(|e| err(format!("failed to copy fixture docs.db: {e}")))?;
+            env.set_env_var("XDG_CACHE_HOME", cache_home.to_str().unwrap());
+            Ok(())
+        })
+        .execute()
+}
+
+/// Runs each file in `specs/`, or only the files that `SNOUTY_SPEC` names:
+/// `SNOUTY_SPEC=doctor,runs` runs `doctor.txt` and `runs.txt`.
 #[test]
 fn spec_tests() {
     let staging = is_staging();
     let specs_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("specs");
-    let mut files: Vec<String> = std::fs::read_dir(&specs_dir)
-        .expect("read specs/")
-        .filter_map(Result::ok)
-        .filter(|e| e.path().extension().is_some_and(|ext| ext == "txt"))
-        .filter_map(|e| e.file_name().into_string().ok())
-        .collect();
-    files.sort();
+    let files: Vec<String> = if let Ok(only) = std::env::var("SNOUTY_SPEC") {
+        only.split(',')
+            .map(|name| {
+                let file = format!("{name}.txt");
+                assert!(specs_dir.join(&file).is_file(), "no spec file specs/{file}");
+                file
+            })
+            .collect()
+    } else {
+        let mut files: Vec<String> = std::fs::read_dir(&specs_dir)
+            .expect("read specs/")
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "txt"))
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect();
+        files.sort();
+        files
+    };
+
+    let outcomes: Vec<SpecOutcome> = if staging {
+        // One file at a time, so that the live progress lines read in order
+        // and the files do not compete for the shared staging tenant. A
+        // failure stops the run: the later files would wait on the same fault.
+        let mut outcomes = Vec::new();
+        for file in files {
+            eprintln!("spec {file}");
+            let outcome = run_spec_file(file, staging);
+            let failed = outcome.failure.is_some();
+            outcomes.push(outcome);
+            if failed {
+                break;
+            }
+        }
+        outcomes
+    } else {
+        // The files share no state, and most of their time is a wait for a
+        // child process, so each one gets a thread.
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = files
+                .into_iter()
+                .map(|file| scope.spawn(move || run_spec_file(file, staging)))
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("a spec thread panicked"))
+                .collect()
+        })
+    };
 
     let mut file_times = Vec::new();
     let mut command_times = Vec::new();
-    let mut failure = None;
-    for file in files {
-        eprintln!("spec {file}");
-        let start = Instant::now();
-        let result = testscript::run("specs")
-            .files([file.clone()])
-            .condition("staging", staging)
-            .setup(|env| {
-                env.set_env_var("RUST_LOG", "debug");
-                set_fake_secret_vars(env);
-                if let Some(path) = filtered_path_without_binary("snouty-update") {
-                    env.set_env_var("PATH", &path);
-                }
-                Ok(())
-            })
-            .command("snouty", cmd_snouty)
-            .command("mock-server", cmd_mock_server)
-            .command("mock-runs-server", cmd_mock_runs_server)
-            .command("mock-proxy", cmd_mock_proxy)
-            .command("env_from_json", cmd_env_from_json)
-            .command("env_from_json_find", cmd_env_from_json_find)
-            .command("file", cmd_file)
-            .command("set-env", cmd_set_env)
-            .command("substitute", cmd_substitute)
-            .command("snouty-bg", |env, args| {
-                let child = snouty_cmd(env, args)
-                    .spawn()
-                    .map_err(|e| err(format!("spawn snouty-bg: {e}")))?;
-                env.background_processes.insert("snouty".to_string(), child);
-                Ok(())
-            })
-            .command("isolate-home", |env, args| {
-                // Usage: isolate-home <name>
-                //
-                // `snouty login` persists credentials.toml and settings.toml
-                // under the global settings dir, which is `$XDG_CONFIG_HOME/snouty`
-                // when that var is set and otherwise `$HOME/.config/snouty`. The
-                // shared spec setup pins an isolated XDG_CONFIG_HOME, so here we
-                // point HOME at a fresh per-section temp dir and clear
-                // XDG_CONFIG_HOME (snouty treats an empty value as unset) so the
-                // login writes land under — and are read back from — that HOME.
-                // Each <name> gives a section of the spec its own home, keeping its
-                // writes isolated from sibling sections and from the developer's
-                // real ~/.config.
-                let name = args.first().map_or("home", String::as_str);
-                let home = env.work_dir.join(name);
-                std::fs::create_dir_all(&home)
-                    .map_err(|e| err(format!("failed to create isolated HOME: {e}")))?;
-                let home = home
-                    .to_str()
-                    .ok_or_else(|| err("isolated HOME path is not valid UTF-8".to_string()))?;
-                env.set_env_var("HOME", home);
-                env.set_env_var("XDG_CONFIG_HOME", "");
-                Ok(())
-            })
-            .command("setup-docs-db", |env, _args| {
-                // Usage: setup-docs-db
-                // Seeds an isolated cache home with the fixture docs.db and points
-                // the binary at it via XDG_CACHE_HOME (snouty reads the DB from
-                // <cache home>/snouty/docs.db).
-                let fixture =
-                    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/docs.db");
-                let cache_home = env.work_dir.join("cache");
-                let snouty_dir = cache_home.join("snouty");
-                std::fs::create_dir_all(&snouty_dir)
-                    .map_err(|e| err(format!("failed to create cache dir: {e}")))?;
-                std::fs::copy(&fixture, snouty_dir.join("docs.db"))
-                    .map_err(|e| err(format!("failed to copy fixture docs.db: {e}")))?;
-                env.set_env_var("XDG_CACHE_HOME", cache_home.to_str().unwrap());
-                Ok(())
-            })
-            .execute();
-
-        let elapsed = start.elapsed();
-        let outcome = match result {
-            Ok(()) => "ok",
-            Err(e) if e.to_string().contains("SKIP:") => "skipped",
-            Err(e) => {
-                failure = Some(e);
-                "FAILED"
-            }
-        };
-        eprintln!("spec {file}: {outcome} in {:.1}s", elapsed.as_secs_f64());
-        command_times.extend(
-            COMMAND_TIMES
-                .take()
-                .into_iter()
-                .map(|(time, label)| (time, format!("{file}: {label}"))),
-        );
-        file_times.push((elapsed, file));
-        if failure.is_some() {
-            break;
-        }
+    let mut failures = Vec::new();
+    for outcome in outcomes {
+        file_times.push((outcome.elapsed, outcome.file));
+        command_times.extend(outcome.command_times);
+        failures.extend(outcome.failure);
     }
-
     print_slowest("spec files", file_times, 5);
     print_slowest("commands", command_times, 10);
-    if let Some(failure) = failure {
-        panic!("\n{failure}");
-    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
 
 fn print_slowest(what: &str, mut times: Vec<(Duration, String)>, count: usize) {

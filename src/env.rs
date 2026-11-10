@@ -1,6 +1,8 @@
 //! Reading environment variables with snouty's "empty means unset" policy.
 
 use std::env::{self, VarError};
+use std::sync::LazyLock;
+use std::time::Duration;
 
 use color_eyre::eyre::{Result, eyre};
 
@@ -23,6 +25,35 @@ use color_eyre::eyre::{Result, eyre};
 /// A value that is present but not valid Unicode is an error.
 pub(crate) fn var(key: &str) -> Result<Option<String>> {
     interpret(key, env::var(key))
+}
+
+/// The tests set this to the length of one second of a fixed wait, in
+/// milliseconds, so that they do not wait out the real one. It is not a
+/// setting, and no help page names it.
+pub(crate) const TEST_SECOND_MS_VAR_NAME: &str = "SNOUTY_TEST_SECOND_MS";
+
+/// The length of one second of a fixed wait, as a fraction of a real second:
+/// 1.0 unless [`TEST_SECOND_MS_VAR_NAME`] is set.
+pub(crate) fn wait_scale() -> f64 {
+    static SCALE: LazyLock<f64> = LazyLock::new(|| {
+        var(TEST_SECOND_MS_VAR_NAME)
+            .ok()
+            .flatten()
+            .map_or(1.0, |ms| {
+                let ms: u32 = ms
+                    .parse()
+                    .unwrap_or_else(|e| panic!("{TEST_SECOND_MS_VAR_NAME}={ms}: {e}"));
+                f64::from(ms) / 1000.0
+            })
+    });
+    *SCALE
+}
+
+/// A fixed wait of the nominal length `wait`, in the seconds of
+/// [`wait_scale`]. Only the API retry backoff, the docs connect timeout and
+/// the MCP progress interval use it: a wait that the user sets does not.
+pub(crate) fn scaled_wait(wait: Duration) -> Duration {
+    wait.mul_f64(wait_scale())
 }
 
 /// The empty-as-unset policy, factored out of the environment read so it can be

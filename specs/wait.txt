@@ -122,7 +122,7 @@ mock-runs-server
 # is a minute later, so a wait that stops at the first poll returns before
 # the timeout.
 mock-runs-server
-[!staging] ! snouty runs wait session-loading --until ready --timeout 3s
+[!staging] ! snouty runs wait session-loading --until ready --timeout 1s
 [!staging] stderr 'timed out waiting for run session-loading'
 
 # `--until complete` is the default: it waits for a terminal state.

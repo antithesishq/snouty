@@ -43,7 +43,8 @@ one so the next step reviews a clean diff.
 
 1. **Simplify**: launch a subagent (Agent tool, general-purpose) with the
    prompt "Invoke the simplify skill on the current branch's diff against
-   origin/main and apply the fixes." Review and commit what it changed.
+   origin/main and apply the fixes. Do not run the tests." Review what it
+   changed, run the tests that the changes touch, and commit.
 2. **Code review**: launch a subagent with the prompt "Invoke the code-review
    skill on the current branch's diff against origin/main and report the
    findings." Fix the real findings yourself and commit.
@@ -51,7 +52,9 @@ one so the next step reviews a clean diff.
    simplify-comments skill on the current branch's diff against origin/main
    and report the findings." Fix the real findings yourself and commit.
 4. Run `mise run test` and the checks that AGENTS.md "Workflow" names before
-   a push, and commit any remaining changes.
+   a push, and commit any remaining changes. This is the one full test run.
+   After a fix in steps 1 to 3, or for a review comment in step 5, run only
+   the tests that the fix touches.
 
 ## 4. Submit the PR
 

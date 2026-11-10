@@ -83,6 +83,8 @@ class WatcherTest(unittest.TestCase):
         self.now = 0.0
         self.set_woke(False)
         watch_prs.reported_failures.clear()
+        watch_prs.verdict_since.clear()
+        setattr(watch_prs, "agree_seconds", 45.0)  # noqa: B010 (a module, to pyright)
 
     def set_woke(self, value: bool) -> None:
         setattr(watch_prs, "woke", value)  # noqa: B010 (a module, to pyright)
@@ -104,6 +106,8 @@ class WatcherTest(unittest.TestCase):
         """Run the script. `settle` is 0 by default, so a run ends on the
         poll that prints its first event. None leaves the script's default.
         """
+        # Each run is a new process: it keeps only what its state file holds.
+        watch_prs.verdict_since.clear()
         out = io.StringIO()
         if settle is not None:
             argv = ("--settle", str(settle), *argv)
@@ -140,11 +144,33 @@ class Poll(WatcherTest):
         )
         self.assertTrue(watch_prs.woke)
 
+    def test_a_verdict_needs_agreement_for_a_whole_interval(self):
+        self.gh.view["statusCheckRollup"] = [{"name": "lint", "conclusion": "SUCCESS"}]
+        seen: set[str] = set()
+        self.assertEqual(self.poll(seen), [])
+        self.now += 15
+        self.assertEqual(self.poll(seen), [])
+        self.now += 30
+        self.assertEqual(self.poll(seen), ["PR #1 all checks passed for aaaaaaa"])
+
+    def test_replay_keeps_the_saved_state_until_it_polls(self):
+        self.gh.comments = [comment(5, WRITER)]
+        self.run_main("--exit-on-event", "1")
+        self.gh.down = True
+        self.run_main("--exit-on-event", "--replay", "1")
+        self.gh.down = False
+        self.gh.comments.append(comment(6, WRITER))
+        self.assertEqual(
+            self.run_main("--exit-on-event", "1"),
+            (0, ["PR #1 comment by reviewer (id 6)"]),
+        )
+
     def test_pass_and_base_move_need_no_reaction(self):
         self.gh.view["statusCheckRollup"] = [{"name": "lint", "conclusion": "SUCCESS"}]
         self.gh.view["baseRefOid"] = "c" * 40
         seen: set[str] = set()
         self.poll(seen)
+        self.now += 45
         self.gh.view["baseRefOid"] = "d" * 40
         self.assertEqual(
             self.poll(seen),
@@ -261,11 +287,21 @@ class Main(WatcherTest):
 
         self.on_sleep = merge_after_the_limit
         status, lines = self.run_main("--exit-on-event", "1")
-        self.assertEqual((status, lines[-1]), (0, "PR #1 merged"))
+        self.assertEqual(
+            (status, lines),
+            (
+                0,
+                [
+                    "gh failed: HTTP 403",
+                    "PR #1 comment by reviewer (id 5) [write access unknown]",
+                ],
+            ),
+        )
 
     def test_an_unwritable_state_directory_stops_the_run_before_any_event(self):
-        self.state_home.chmod(0o500)
-        self.addCleanup(self.state_home.chmod, 0o700)
+        # A file where the directory must go fails for any user. Root ignores
+        # the mode bits of a directory.
+        (self.state_home / "watch-prs").write_text("")
         self.gh.comments = [comment(5, WRITER)]
         status, lines = self.run_main("--exit-on-event", "1")
         self.assertEqual(status, 2)

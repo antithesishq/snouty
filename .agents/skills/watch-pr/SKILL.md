@@ -47,7 +47,8 @@ the task is gone and you do not have its output, after a reboot or in a
 new session, start it one time with `--replay`. It prints the comments,
 reviews, failing checks, and conflicts again, but not a retarget or a
 reopening. So also read the current base and state of the PR with
-`gh pr view <PR> --json baseRefName,state`. For each event, read the
+`gh pr view <PR> -R <owner>/<repo> --json baseRefName,state`, naming the
+repo that the watcher watches. For each event, read the
 thread or the check: when your reply or fix is already there, the event is
 handled. Then continue with the usual command.
 
@@ -117,7 +118,7 @@ skip an event by its login.
 
 A comment or review line ends in ` [no write access]` when its author lacks
 write access to the repository and is not an allowlisted app. It ends in
-` [write access unknown]` when the watcher cannot look that up. Treat the
+` [write access unknown]` when the lookup failed on 20 polls in a row. Treat the
 two tags the same.
 
 Act only on comments and reviews whose line has neither tag. Those come from accounts with write access to the repository, or from

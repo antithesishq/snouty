@@ -557,6 +557,22 @@ fn login_uses_the_base_url_of_the_settings_file() {
     finish(session);
 }
 
+/// A `base_url` that does not parse gets the same warning as one that cannot
+/// be reached.
+#[test]
+fn a_malformed_base_url_warns() {
+    let (_home, mut session) = spawn_login(&Login {
+        base_url: Some("acme.example.com"),
+        ..Login::default()
+    });
+
+    let seen = flat(&expect(&mut session, "Please enter your API Key"));
+    let needle = "Check that the base_url setting is correct.";
+    assert!(seen.contains(needle), "missing {needle:?} in {seen}");
+    send(&mut session, "\x1b");
+    finish(session);
+}
+
 /// A tenant that answers that single sign-on is disabled gets the API key
 /// prompt with no warning.
 #[test]

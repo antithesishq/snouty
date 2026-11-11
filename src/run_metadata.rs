@@ -41,7 +41,7 @@ fn detect_with(dir: &Path, env: impl Fn(&str) -> Option<String>) -> Params {
     params.insert(RUN_CALLER_TYPE, "snouty");
     let checkout = read_git(dir, &mut params);
     read_github_actions(&env, checkout.as_deref(), &mut params);
-    if let Some(agent) = crate::user_agent::detect_agent(&env) {
+    if let Some(agent) = crate::agent::detect(&env) {
         params.insert(ATTRS_AGENT, agent.name);
         for (key, value) in [
             (ATTRS_AGENT_VERSION, agent.version),

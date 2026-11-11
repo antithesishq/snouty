@@ -1,5 +1,6 @@
 mod api_cache;
 
+pub mod agent;
 pub mod api;
 pub mod auth;
 pub mod browser;

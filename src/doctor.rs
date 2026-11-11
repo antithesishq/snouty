@@ -656,7 +656,6 @@ fn version_check(
              reporting (added in release 56); if you expect a current tenant, a \
              proxy or route may be intercepting the request",
         ),
-        // 401/403: the request was rejected.
         Err(VersionError::Http(status @ (401 | 403))) => {
             Check::fail(CheckId::Api, "Antithesis API rejected authentication")
                 .note(Level::Error, format!("the API returned HTTP {status}"))
@@ -692,8 +691,7 @@ fn version_check(
 }
 
 /// What to check first when the tenant of `profile` rejects the credential
-/// in use. A proxy can also reject the request before it reaches Antithesis,
-/// so each note names that too rather than blame the credential outright.
+/// in use. A proxy can also reject the request, so each note names a proxy too.
 fn rejected_credential_next_step(
     in_use: Option<&SourcedCredential>,
     profile: Option<&str>,
@@ -703,9 +701,8 @@ fn rejected_credential_next_step(
         return format!("verify your credentials; if they are valid, {PROXY}");
     };
     let source = describe_source(in_use.tag());
-    // The profile being checked, not the one the credential came from: a
-    // named profile with no credential of its own falls back to the default
-    // profile's, and a bare `snouty login` would replace that one instead.
+    // A named profile with no credential uses the default profile's. Log in
+    // to the checked profile, so the new credential takes precedence.
     let login = login_command(profile);
     match (in_use.value(), in_use.tag()) {
         (AuthenticationInfo::OAuth(_), _) => {
@@ -719,8 +716,7 @@ fn rejected_credential_next_step(
             "verify the API key read from {source}, or run {login} to replace it; \
              if it is valid, {PROXY}"
         ),
-        // An API key from the environment. The client refuses a password, so
-        // the probe never sends one.
+        // An API key from the environment. The client refuses a password.
         (credential, _) => {
             format!("verify the {credential} in {source}; if it is valid, {PROXY}")
         }
@@ -1432,8 +1428,7 @@ mod tests {
         }
     }
 
-    /// The note names the source and kind of the rejected credential, not an
-    /// environment variable that may play no part.
+    /// The note names the source and kind of the rejected credential.
     #[test]
     fn version_auth_rejection_names_the_credential_in_use() {
         let note_for = |source: SourcedCredential, profile: Option<&str>| {
@@ -1466,8 +1461,8 @@ mod tests {
         assert!(stored.contains("snouty login"), "{stored}");
         assert!(!stored.contains("ANTITHESIS_API_KEY"), "{stored}");
 
-        // A named profile that falls back to the default profile's key is
-        // fixed by a login to the named profile, not to the default one.
+        // A named profile that uses the default profile's key needs a login
+        // to the named profile.
         let fallback = note_for(file_api_key_source(), Some("staging"));
         assert!(fallback.contains("[default] profile"), "{fallback}");
         assert!(

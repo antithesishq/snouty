@@ -260,6 +260,7 @@ stderr '"run.caller_type": "ci"'
 
 # Under an AI agent harness, the launch records the agent, its version and its
 #    session ID as attrs, and a --param replaces a recorded value.
+env CLAUDECODE=1
 env AI_AGENT=claude-code_2-1-322_agent
 env CLAUDE_CODE_SESSION_ID=d83903be-202d-46c7-8831-50dfd8cdf5bc
 mock-server 200 '{"message":"Success","runId":"run-123"}'
@@ -267,6 +268,7 @@ snouty launch --launcher basic_test --config-image config:latest --max-compute-h
 stderr '"attrs.agent": "claude-code"'
 stderr '"attrs.agent_version": "2.1.322"'
 stderr '"attrs.agent_session_id": "other"'
+env CLAUDECODE=
 env AI_AGENT=
 env CLAUDE_CODE_SESSION_ID=
 

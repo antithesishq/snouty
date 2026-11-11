@@ -84,39 +84,47 @@ pub struct Agent {
 }
 
 /// Identify the AI agent harness that runs snouty, with its version and
-/// session ID when the harness exports them. `AI_AGENT` has the form
-/// `<name>_<version>_<kind>`, with dashes in the version, for example
-/// `claude-code_2-1-267_agent`, or is only a name, such as `pi`.
+/// session ID when the harness exports them. The harness's own variables win
+/// over `AI_AGENT`, which any harness can set and a child process inherits.
+/// `AI_AGENT` has the form `<name>_<version>_<kind>`, with dashes in the
+/// version, for example `claude-code_2-1-267_agent`, or is only a name, such
+/// as `pi`.
 pub fn detect(env: &impl Fn(&str) -> Option<String>) -> Option<Agent> {
-    let (name, version, harness) = read_trimmed(env, "AI_AGENT")
-        .and_then(|raw| {
-            let mut fields = raw.split('_');
-            let name = fields.next().and_then(sanitize_hint)?;
-            let version = fields
-                .next()
-                .filter(|v| {
-                    v.starts_with(|c: char| c.is_ascii_digit())
-                        && v.chars()
-                            .all(|c| c.is_ascii_digit() || matches!(c, '-' | '.'))
-                })
-                .map(|v| v.replace('-', "."));
-            let harness = HARNESSES.iter().find(|harness| harness.name == name);
-            Some((name, version, harness))
-        })
-        .or_else(|| {
-            marker_harness(env).map(|harness| (harness.name.to_owned(), None, Some(harness)))
-        })?;
-    let version = version.or_else(|| read_trimmed(env, harness?.version?));
-    let session_id = harness.and_then(|harness| {
-        harness
+    let ai_agent = read_trimmed(env, "AI_AGENT").and_then(|raw| {
+        let mut fields = raw.split('_');
+        let name = fields.next().and_then(sanitize_hint)?;
+        let version = fields
+            .next()
+            .filter(|v| {
+                v.starts_with(|c: char| c.is_ascii_digit())
+                    && v.chars()
+                        .all(|c| c.is_ascii_digit() || matches!(c, '-' | '.'))
+            })
+            .map(|v| v.replace('-', "."));
+        Some((name, version))
+    });
+    let Some(harness) = marker_harness(env) else {
+        let (name, version) = ai_agent?;
+        return Some(Agent {
+            name,
+            version,
+            session_id: None,
+        });
+    };
+    // Claude Code exports its version only in `AI_AGENT`.
+    let ai_agent_version = ai_agent
+        .filter(|(name, _)| name == harness.name)
+        .and_then(|(_, version)| version);
+    Some(Agent {
+        name: harness.name.to_owned(),
+        version: harness
+            .version
+            .and_then(|var| read_trimmed(env, var))
+            .or(ai_agent_version),
+        session_id: harness
             .session_id
             .iter()
-            .find_map(|var| read_trimmed(env, var))
-    });
-    Some(Agent {
-        name,
-        version,
-        session_id,
+            .find_map(|var| read_trimmed(env, var)),
     })
 }
 
@@ -236,6 +244,19 @@ mod tests {
     }
 
     #[test]
+    fn detect_prefers_harness_variables_to_ai_agent() {
+        // Codex that runs inside an agent that set `AI_AGENT`.
+        let env = env_of(&[
+            ("AI_AGENT", "acme_9-9-9_agent"),
+            ("CODEX_THREAD_ID", "019a-thread"),
+        ]);
+        assert_eq!(
+            detect(&env),
+            Some(agent("codex", None, Some("019a-thread")))
+        );
+    }
+
+    #[test]
     fn detect_without_version_or_session() {
         assert_eq!(
             detect(&env_of(&[("AI_AGENT", "pi")])),
@@ -257,6 +278,15 @@ mod tests {
         assert_eq!(
             detect(&env_of(&[("AI_AGENT", "_1-0"), ("CLAUDECODE", "1")])),
             Some(agent("claude-code", None, None))
+        );
+        // Without a harness variable, `AI_AGENT` names a harness, but its
+        // session variable is not read.
+        assert_eq!(
+            detect(&env_of(&[
+                ("AI_AGENT", "claude-code_2-1-267_agent"),
+                ("CLAUDE_CODE_SESSION_ID", "abc")
+            ])),
+            Some(agent("claude-code", Some("2.1.267"), None))
         );
         assert_eq!(detect(&env_of(&[])), None);
     }

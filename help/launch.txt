@@ -51,8 +51,6 @@ User-defined attributes are params with an `attrs.` prefix. The server records t
 
 The launch records the commit, branch and repository of the git checkout that holds the config dir (or the current directory, without --config). In GitHub Actions, it also records the pull request and the user who started the workflow. `snouty runs show` lists them under Version Control. A {{ t("--param")? }} replaces a recorded value, and {{ t("--no-vcs")? }} records no commit, branch, repository or pull request.
 
-When an AI agent runs the launch, the launch records the agent, its version and its session ID in the attributes `agent`, `agent_version` and `agent_session_id`, when the agent makes them available.
-
 In GitHub Actions, set ANTITHESIS_GITHUB_TOKEN to a GitHub token that can write commit statuses, and the run shows as the `continuous-testing/antithesis` commit status of the commit: pending at launch, and the result when the run ends. With {{ t("--test-name")? }}, the status is `continuous-testing/antithesis (<test-name>)`.
 
 Additional container images that the config parser can't discover (e.g. an image referenced only in a Kubernetes CRD field) can be registered with the antithesis.images param, a semicolon-delimited [REGISTRY/]NAME(:TAG|@DIGEST) list:

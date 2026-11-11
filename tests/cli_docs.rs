@@ -33,7 +33,7 @@ fn docs_update_sets_custom_user_agent() {
 
     assert_eq!(
         mock_server.user_agent(),
-        Some(user_agent_with(Some("test-harness_1-2-3")))
+        Some(user_agent_with(Some("test-harness/1.2.3")))
     );
 }
 

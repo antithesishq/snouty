@@ -1076,7 +1076,7 @@ pub enum RunsCommands {
         detail: bool,
 
         /// Also emit the logs that the run's log filters drop (retroactive
-        /// logging). Adds a short setup step that the timeout does not cover
+        /// logging)
         #[arg(long, requires = "events")]
         include_filtered_logs: bool,
 

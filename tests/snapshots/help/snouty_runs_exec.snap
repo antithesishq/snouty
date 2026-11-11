@@ -37,8 +37,7 @@ follow-up command from.
 --include-filtered-logs adds the logs that the run's log filters drop to the
 events: the lines that `antithesis.filter_logs_matching` and
 `antithesis.filter_source_matching` suppress (retroactive logging). It needs
---events. It adds a short setup step before the script executes, which --timeout
-does not cover.
+--events.
 
 The command fails when the script fails, times out, or its stream ends early.
 
@@ -93,7 +92,7 @@ Options:
 
       --include-filtered-logs
           Also emit the logs that the run's log filters drop (retroactive
-          logging). Adds a short setup step that the timeout does not cover
+          logging)
 
       --source-run-id <SOURCE_RUN_ID>
           Run that a cold moment comes from; the server loads the moment into

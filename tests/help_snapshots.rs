@@ -11,14 +11,6 @@ use snouty::testutils::names_a_flag_or_command;
 /// The width of `--help` off a terminal, where the layout is fixed.
 const PIPE_WIDTH: usize = 80;
 
-/// `snouty` as a user sees it off a terminal, with no unstable feature on.
-/// Whether a gated command is listed depends on `SNOUTY_UNSTABLE_FEATURES`,
-/// which a developer's shell can set, so this hides `mcp`.
-fn features_off() -> clap::Command {
-    let cli = help::attach(Cli::command(), Attach::Eager(PIPE_WIDTH));
-    at_pipe_width(cli.mut_subcommand("mcp", |command| command.hide(true)))
-}
-
 fn at_pipe_width(command: clap::Command) -> clap::Command {
     command
         .term_width(PIPE_WIDTH)
@@ -55,7 +47,7 @@ fn help() {
             let args = std::iter::once("snouty")
                 .chain(path.iter().map(String::as_str))
                 .chain(["--help"]);
-            let err = features_off()
+            let err = at_pipe_width(help::attach(Cli::command(), Attach::Eager(PIPE_WIDTH)))
                 .try_get_matches_from(args)
                 .expect_err("--help prints the help");
             assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);

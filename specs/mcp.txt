@@ -1,38 +1,20 @@
 # snouty mcp
 #
-# An MCP server on the stdio transport, gated behind the `mcp` unstable
-# feature. tests/mcp.rs drives the server with an MCP client, and covers
-# what a tool call returns. This spec covers the command, its gate, and the
-# params of a tool.
+# An MCP server on the stdio transport. tests/mcp.rs drives the server with
+# an MCP client, and covers what a tool call returns. This spec covers the
+# command and the params of a tool.
 
-# 1. With the feature off, snouty refuses the command, names the variable
-#    that enables it, and points to its help.
-! snouty mcp
-stderr '`snouty mcp` is an unstable feature and is not enabled'
-stderr 'enable it by setting SNOUTY_UNSTABLE_FEATURES=mcp'
-stderr 'run `snouty mcp --help` for what it does'
-
-# 2. An unknown id does not enable it.
-env SNOUTY_UNSTABLE_FEATURES=runs-exec
-! snouty mcp
-stderr 'SNOUTY_UNSTABLE_FEATURES=mcp'
-
-# 3. With the feature on, `settings show` lists it in its features row.
-env SNOUTY_UNSTABLE_FEATURES=mcp
-snouty settings show
-stdout '^features\s+mcp$'
-
-# 4. At least one tool call must be able to run.
+# 1. At least one tool call must be able to run.
 ! snouty mcp --max-concurrent-calls 0
 stderr 'invalid value .0. for .--max-concurrent-calls'
 
-# 5. A client that closes stdin before it sends a request stops the server,
+# 2. A client that closes stdin before it sends a request stops the server,
 #    which exits 0.
 stdin empty.txt
 snouty mcp
 ! stdout .
 
-# 6. A command that prints the same in both forms has no `json` param, and
+# 3. A command that prints the same in both forms has no `json` param, and
 #    `detail` is never a param. A bad param fails before any command runs.
 #    `version` needs no API, and with `json` returns the version as JSON.
 # Stdin closes as soon as the server reads calls.jsonl, and a call still

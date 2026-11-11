@@ -21,19 +21,6 @@
           "type": "positional",
           "value": "mcp"
         }
-      ],
-      "environmentVariables": [
-        {
-          "name": "SNOUTY_UNSTABLE_FEATURES",
-          "description": "Unstable features to turn on. snouty mcp needs mcp, which is always on",
-          "value": "mcp,{features}",
-          "variables": {
-            "features": {
-              "description": "More unstable features to turn on, comma-separated",
-              "default": ""
-            }
-          }
-        }
       ]
     }
   ]

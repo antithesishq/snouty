@@ -15,7 +15,7 @@ scrollback; adjacent asciinema recordings preserve colors and redraws. JSON
 commands use pipes so their structured output stays separate from stderr. A
 story that models a log file uses pipes too, with stderr in the stdout pipe.
 
-There are these kinds of story:
+There are five kinds of story:
 
   * goal stories — capture one command's output and judge it against a user goal
     (the bulk of the gallery; slugs like `runs-events-single`). The run stories
@@ -192,20 +192,9 @@ class Result:
         return self.stdout if not self.stderr else f"{self.stdout}{self.stderr}"
 
 
-def _write_browser_shims(script: str) -> Path:
-    """A new directory holding `xdg-open` and `open`, each running `script`.
-    The caller removes it."""
-    shims = Path(tempfile.mkdtemp(prefix="snouty-gallery-shim."))
-    for prog in ("xdg-open", "open"):
-        shim = shims / prog
-        shim.write_text(script)
-        shim.chmod(0o755)
-    return shims
-
-
-# Drops any ambient ANTITHESIS_* variables from a story's environment, so a
-# story shows the state it seeded and no real secret reaches a captured file.
 def _no_ambient_antithesis_env() -> dict[str, None]:
+    """Unset each ambient ANTITHESIS_* variable, so that a story shows the
+    state it seeded and no real secret reaches a captured file."""
     return {k: None for k in os.environ if k.startswith("ANTITHESIS_")}
 
 
@@ -218,7 +207,11 @@ class Snouty:
         self.binary = binary
         # `runs show --web` shells out to xdg-open/open. Drop no-op shims on PATH
         # (and point $BROWSER at one) so regenerating never spawns a browser.
-        self._shim = _write_browser_shims("#!/bin/sh\nexit 0\n")
+        self._shim = Path(tempfile.mkdtemp(prefix="snouty-gallery-shim."))
+        for prog in ("xdg-open", "open"):
+            shim = self._shim / prog
+            shim.write_text("#!/bin/sh\nexit 0\n")
+            shim.chmod(0o755)
         self._env = dict(os.environ)
         self._env["PATH"] = f"{self._shim}{os.pathsep}{self._env.get('PATH', '')}"
         self._env["BROWSER"] = str(self._shim / "xdg-open")
@@ -247,11 +240,6 @@ class Snouty:
                 self._children.add(child)
             else:
                 self._children.discard(child)
-
-    @property
-    def path(self) -> str:
-        """The PATH that snouty runs with, the no-op browser shims first."""
-        return self._env["PATH"]
 
     def env_with(self, overrides: dict[str, str | None]) -> dict[str, str]:
         """The environment a snouty child inherits, with `overrides` applied: a
@@ -501,14 +489,11 @@ class LaunchGuard:
 
 
 # ---------------------------------------------------------------------------
-# Mock tenant: the credential stories that a live tenant cannot show.
+# Mock tenant
 #
-# A live tenant cannot show a rejected credential on demand, a single sign-on
-# that a script completes, a renewal, or a GitHub Actions job. So these stories
-# point snouty at a mock tenant on the loopback, with ANTITHESIS_BASE_URL. Each
-# story gets its own mock, so concurrent stories cannot change each other's
-# state. The mock knows only the fake secrets, and it accepts only
-# `_FAKE_API_KEY_B` and the tokens that it issued.
+# Each story gets its own mock, so concurrent stories cannot change each
+# other's state. The mock accepts only `_FAKE_API_KEY_B` and the tokens that it
+# issued.
 # ---------------------------------------------------------------------------
 
 
@@ -530,26 +515,11 @@ class MockTenantSpec:
     actions: ActionsJob | None = None
 
 
-# The run that the mock's `runs list` returns.
 _MOCK_RUN_ID = "0180b2554d40227f5a05c4d65055252b-67-0"
-
-# The fake browser that completes a single sign-on: it loads the sign-in page
-# that snouty opens, follows its link to the mock's identity provider, and the
-# identity provider redirects to snouty's callback. It ignores the proxy
-# variables, because every address it opens is on the loopback.
-_FAKE_BROWSER = """\
-import html, os, re, sys, time, urllib.request
-opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-for _ in range(100):
-    try:
-        page = opener.open(sys.argv[1], timeout=5).read().decode()
-        break
-    except OSError:
-        time.sleep(0.1)
-idp = os.environ["ANTITHESIS_BASE_URL"]
-link = next(h for h in re.findall(r'href="([^"]+)"', page) if h.startswith(idp))
-opener.open(html.unescape(link), timeout=5).read()
-"""
+# Every address that the mock and snouty open is on the loopback, so a proxy
+# must not carry it.
+_LOOPBACK = "127.0.0.1,localhost"
+_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def _b64u(data: bytes) -> str:
@@ -557,19 +527,17 @@ def _b64u(data: bytes) -> str:
 
 
 class MockTenant:
-    """A mock tenant on the loopback that behaves as `spec` says. It speaks
-    the CLI single sign-on routes with a real PKCE check, the refresh route,
-    `GET /api/version`, `GET /api/v0/runs`, and a GitHub Actions token
-    endpoint. Use it as a context manager."""
+    """A mock tenant on the loopback that behaves as `spec` says, with a real
+    PKCE check. Its identity provider signs the user in at once: it sends the
+    authorization code to snouty's callback itself, so no browser is needed.
+    Use it as a context manager."""
 
     def __init__(self, spec: MockTenantSpec) -> None:
         self.spec = spec
-        # The PKCE challenge and the callback port of the one sign-on.
+        # Each mock serves one sign-on.
         self._challenge = ""
-        self._callback_port = 0
         self._accepted = {f"Bearer {_FAKE_API_KEY_B}"}
         self._lock = threading.Lock()
-        self._bin = _write_browser_shims(f"#!{sys.executable}\n{_FAKE_BROWSER}")
         tenant = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -606,15 +574,14 @@ class MockTenant:
     def __exit__(self, *exc: object) -> None:
         self._server.shutdown()
         self._server.server_close()
-        shutil.rmtree(self._bin, ignore_errors=True)
 
-    def env(self, path: str) -> dict[str, str | None]:
-        """The environment that points snouty at this tenant. `path` is the
-        PATH that the story would have: the fake browser goes in front of it."""
+    def env(self) -> dict[str, str | None]:
+        """The environment that points snouty at this tenant."""
         oidc = self.spec.actions is not None
         return {
             "ANTITHESIS_BASE_URL": self.url,
-            "PATH": f"{self._bin}{os.pathsep}{path}",
+            "NO_PROXY": _LOOPBACK,
+            "no_proxy": _LOOPBACK,
             "ACTIONS_ID_TOKEN_REQUEST_URL": (
                 f"{self.url}/actions/token?api-version=2.0" if oidc else None
             ),
@@ -640,16 +607,15 @@ class MockTenant:
             case "POST", "/auth/cli/login":
                 login = json.loads(body)
                 self._challenge = login["code_challenge"]
-                self._callback_port = login["port"]
-                return 200, {"location": f"{self.url}/idp/authorize"}, ""
-            case "GET", "/idp/authorize":
-                callback = (
-                    f"http://localhost:{self._callback_port}/callback?"
-                    + urllib.parse.urlencode(
+                callback = f"http://127.0.0.1:{login['port']}/callback?" + (
+                    urllib.parse.urlencode(
                         {"code": _FAKE_OAUTH_CODE, "state": _FAKE_OAUTH_FLOW_TOKEN}
                     )
                 )
-                return 302, {}, callback
+                threading.Thread(
+                    target=_NO_PROXY_OPENER.open, args=(callback,), daemon=True
+                ).start()
+                return 200, {"location": f"{self.url}/idp/authorize"}, ""
             case "POST", "/auth/cli/token":
                 encoded = auth.removeprefix("Bearer ")
                 pair = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
@@ -1892,8 +1858,8 @@ class Story:
     # under `$XDG_CONFIG_HOME/snouty` — those would otherwise leak in and mask a
     # story that models an unconfigured machine (e.g. the no-auth doctor stories).
     isolate_config: bool = False
-    # Run against a mock tenant that behaves as this says, rather than the
-    # live tenant (see `MockTenant`).
+    # When set, the story runs against a mock tenant (see `MockTenant`); when
+    # None, against the live tenant.
     tenant: MockTenantSpec | None = None
     stdin: str | None = None
     # -- MCP tool help stories ---------------------------------------------
@@ -4891,10 +4857,9 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
 # keychain is a no-op, so credentials land in the file backend — the realistic
 # default here.
 #
-# `snouty login` asks the tenant whether single sign-on is available before it
-# asks for credentials. Each story runs against a mock tenant (see
-# `MockTenant`): by default, one without CLI single sign-on, so login asks for an
-# API key with no credential menu.
+# Each story runs against a mock tenant (see `MockTenant`), by default one
+# without CLI single sign-on, so login asks for an API key with no credential
+# menu.
 # ---------------------------------------------------------------------------
 
 # Fake secrets, never a real credential, and redacted again before embedding
@@ -4912,11 +4877,7 @@ _FAKE_OAUTH_FLOW_TOKEN = "fake-oauth-flow-token"
 _FAKE_OIDC_REQUEST_TOKEN = "fake-oidc-request-token"
 _FAKE_OIDC_TOKEN = "fake-oidc-token"
 # A PASETO that expired in 2019: test vector 2-S-1.
-_FAKE_PASETO_A = (
-    "v2.public.eyJkYXRhIjoidGhpcyBpcyBhIHNpZ25lZCBtZXNzYWdlIiwiZXhwIjoiMjAxOS0wMS0wMVQwMDow"
-    "MDowMCswMDowMCJ9HQr8URrGntTu7Dz9J2IF23d1M7-9lH9xiqdGyJNvzp4angPW5Esc7C5huy_M8I8_DjJK2"
-    "ZXC2SUYuOFM-Q_5Cw"
-)
+_FAKE_PASETO_A = "v2.public.eyJkYXRhIjoidGhpcyBpcyBhIHNpZ25lZCBtZXNzYWdlIiwiZXhwIjoiMjAxOS0wMS0wMVQwMDowMDowMCswMDowMCJ9HQr8URrGntTu7Dz9J2IF23d1M7-9lH9xiqdGyJNvzp4angPW5Esc7C5huy_M8I8_DjJK2ZXC2SUYuOFM-Q_5Cw"
 _TENANT = "acme"
 _REPO = "registry.example.com/acme/app"
 _SETTINGS = ".config/snouty/settings.toml"
@@ -4949,7 +4910,6 @@ _TTY_RUBRIC = (
 )
 
 
-# A tenant without CLI single sign-on, the default for a TTY story.
 _NO_SSO = MockTenantSpec()
 
 
@@ -5222,7 +5182,7 @@ def build_mock_tenant_stories() -> list[Story]:
             "not expired.",
             ["runs", "list"],
             succeeds_with(_MOCK_RUN_ID),
-            MockTenantSpec(sso=True),
+            MockTenantSpec(),
             seed_files=_SEED_EXPIRED_OAUTH,
         ),
         _mock_story(
@@ -5234,7 +5194,7 @@ def build_mock_tenant_stories() -> list[Story]:
             "that fixes it: `snouty login`.",
             ["runs", "list"],
             fails_with("snouty login"),
-            MockTenantSpec(sso=True, refresh_revoked=True),
+            MockTenantSpec(refresh_revoked=True),
             seed_files=_SEED_EXPIRED_OAUTH,
         ),
         _mock_story(
@@ -5424,7 +5384,7 @@ def _write_help_story(
 
 
 # Redact the secret values from persisted TOML before embedding it in a story —
-# belt-and-suspenders on top of the fake secrets the TTY stories type.
+# belt-and-suspenders on top of the fake secrets the stories use.
 _SECRET_LINE = re.compile(
     r'^(\s*(?:api_key|password|antithesis_token|refresh_token)\s*=\s*)"[^"]*"',
     re.MULTILINE,
@@ -5612,7 +5572,7 @@ def run_mcp_story(sn: Snouty, story: Story) -> StoryRun:
 def run_story(sn: Snouty, story: Story) -> StoryRun:
     if story.tenant is not None:
         with MockTenant(story.tenant) as tenant:
-            env = {**(story.env or {}), **tenant.env(sn.path)}
+            env = {**(story.env or {}), **tenant.env()}
             return run_story(sn, replace(story, env=env, tenant=None))
     if story.precaptured is not None:
         return StoryRun(story, story.precaptured, None)
@@ -5732,7 +5692,7 @@ def main() -> int:
     # manifests/ dir) are synthesized here for this run only.
     fixtures_dir = Path(tempfile.mkdtemp(prefix="snouty-gallery-fixtures."))
 
-    # Which story groups does this run actually need? The TTY stories need no
+    # Which story groups does this run actually need? The offline stories need no
     # API, discovery, or container runtime, so `--only login-*` must not drag in
     # (and fail on) live-API discovery or a Docker daemon. Decide up front from
     # cheaply-enumerable slugs which groups are in scope.
@@ -5853,8 +5813,8 @@ def main() -> int:
             guard = LaunchGuard.for_tenant(sn)
             regular += build_stories(disc, guard)
         regular += [s for s in validate_stories if s not in early]
-        # TTY, mock tenant and MCP tool help stories need no external
-        # dependencies, so they always run.
+        # The offline and MCP tool help stories need no external dependencies,
+        # so they always run.
         regular += build_offline_stories()
         regular += mcp_stories
         regular = [s for s in regular if selected(s.slug)]

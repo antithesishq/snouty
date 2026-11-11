@@ -47,7 +47,6 @@ fn help() {
             let args = std::iter::once("snouty")
                 .chain(path.iter().map(String::as_str))
                 .chain(["--help"]);
-            // `snouty` as a user sees it off a terminal.
             let err = at_pipe_width(help::attach(Cli::command(), Attach::Eager(PIPE_WIDTH)))
                 .try_get_matches_from(args)
                 .expect_err("--help prints the help");

@@ -16,8 +16,9 @@
 #     the future counts as stale.
 #   - Documentation update requests send a User-Agent header in the form
 #     snouty/<version> (<os>; <arch>; rust<rust-version>). When an AI agent
-#     harness runs snouty, the header ends with `; agent=<value>` inside the
-#     parentheses, where <value> is the AI_AGENT variable or the harness name.
+#     harness runs snouty, the header ends with `; agent=<name>/<version>`
+#     inside the parentheses, or `; agent=<name>` when the harness exports no
+#     version.
 #   - Cached documentation is stored at docs.db under Snouty's cache
 #     directory ($XDG_CACHE_HOME/snouty), along with an ETag file used to
 #     avoid re-downloading an unchanged database.

@@ -257,10 +257,15 @@ fn repository_check(repository: Option<&str>) -> Check {
 }
 
 /// `selected` is the profile that the user selects, if any.
-fn authn_checks(sources: &[SourcedCredential], selected: Option<&str>) -> Vec<Check> {
+fn authn_checks(
+    sources: &[SourcedCredential],
+    selected: Option<&str>,
+    github_actions: bool,
+) -> Vec<Check> {
     let Some((credentials, behind)) = sources.split_first() else {
         return vec![missing_credentials_check(
             crate::auth::NO_CREDENTIALS_MESSAGE,
+            github_actions,
         )];
     };
 
@@ -294,8 +299,11 @@ fn authn_checks(sources: &[SourcedCredential], selected: Option<&str>) -> Vec<Ch
             let check = Check::fail(id, "the API key is empty")
                 .note(Level::Error, "an empty API key cannot authenticate");
             match credentials.tag() {
+                // The lookup rejects a blank environment key with
+                // `BlankApiKey`, which `collect_checks` reports.
                 CredentialSource::Environment { .. } => {
-                    enrich_with_source(with_credential_remedy(check), credentials, selected)
+                    enrich_with_source(check, credentials, selected)
+                        .note(Level::Note, crate::auth::BlankApiKey::SUGGESTION)
                 }
                 CredentialSource::Stored(store) => enrich_with_source(check, credentials, selected)
                     .note(Level::Note, login_to_replace(store.profile())),
@@ -343,27 +351,18 @@ fn authn_checks(sources: &[SourcedCredential], selected: Option<&str>) -> Vec<Ch
     checks
 }
 
-fn missing_credentials_check(message: impl Into<String>) -> Check {
-    with_credential_remedy(
-        Check::fail(CheckId::Credentials { kind: None }, message).note(
-            Level::Error,
-            "snouty needs credentials to authenticate with Antithesis",
-        ),
-    )
-}
-
-/// The remedy notes for a credential shortfall. Every credential kind except
+/// The check for a credential shortfall. Every credential kind except
 /// username and password is accepted, so the notes name the ways to get one
 /// rather than naming an API key alone.
-fn with_credential_remedy(check: Check) -> Check {
-    check
+fn missing_credentials_check(message: impl Into<String>, github_actions: bool) -> Check {
+    Check::fail(CheckId::Credentials { kind: None }, message)
         .note(
-            Level::Note,
-            "run `snouty login` to sign in and store credentials",
+            Level::Error,
+            "snouty needs credentials to authenticate with Antithesis",
         )
         .note(
             Level::Note,
-            "or set ANTITHESIS_API_KEY; ask Antithesis support for an API key if you don't have one",
+            crate::auth::no_credentials_suggestion(github_actions),
         )
 }
 
@@ -537,13 +536,28 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
     checks.push(repository_check(settings.repository()));
 
     // Authentication (synchronous-only by design).
+    let github_actions = crate::auth::in_github_actions();
     let in_use = match AuthenticationInfo::available_ambient_credentials(settings.profile()) {
         Ok(sources) => {
-            checks.extend(authn_checks(&sources, settings.profile()));
+            checks.extend(authn_checks(&sources, settings.profile(), github_actions));
             sources.into_iter().next()
         }
+        // A blank environment key hides every other credential, so its fix
+        // is the variable, not a way to get a credential.
+        Err(err) if err.downcast_ref::<crate::auth::BlankApiKey>().is_some() => {
+            checks.push(
+                Check::fail(
+                    CheckId::Credentials {
+                        kind: Some(CredentialKind::ApiKey),
+                    },
+                    err.to_string(),
+                )
+                .note(Level::Note, crate::auth::BlankApiKey::SUGGESTION),
+            );
+            None
+        }
         Err(err) => {
-            checks.push(missing_credentials_check(err.to_string()));
+            checks.push(missing_credentials_check(err.to_string(), github_actions));
             None
         }
     };
@@ -890,6 +904,7 @@ mod tests {
                 vec![API_KEY_VAR_NAME],
             )],
             None,
+            false,
         );
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, Status::Ok);
@@ -910,6 +925,7 @@ mod tests {
                     profile,
                 )],
                 selected,
+                false,
             );
             checks[0]
                 .notes
@@ -940,7 +956,7 @@ mod tests {
     #[test]
     fn a_password_alone_is_one_check_with_one_next_step() {
         let notes = |source: SourcedCredential| {
-            let checks = authn_checks(&[source], None);
+            let checks = authn_checks(&[source], None, false);
             assert_eq!(
                 checks.len(),
                 1,
@@ -1025,17 +1041,11 @@ mod tests {
 
     #[test]
     fn auth_nothing_set_errors_and_only_mentions_api_key() {
-        let checks = [missing_credentials_check("PANIC PANIC PANIC")];
+        let checks = [missing_credentials_check("PANIC PANIC PANIC", false)];
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, Status::Error);
         assert!(checks[0].message.contains("PANIC PANIC PANIC"));
         assert!(checks[0].notes.iter().any(|n| n.level == Level::Error));
-        assert!(
-            checks[0]
-                .notes
-                .iter()
-                .any(|n| n.text.contains("ask Antithesis support"))
-        );
         assert!(
             checks[0]
                 .notes
@@ -1060,10 +1070,30 @@ mod tests {
     /// A user who meets both messages reads one wording, not two.
     #[test]
     fn auth_no_source_reports_the_shared_no_credentials_message() {
-        let checks = authn_checks(&[], None);
+        let checks = authn_checks(&[], None, false);
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, Status::Error);
         assert_eq!(checks[0].message, crate::auth::NO_CREDENTIALS_MESSAGE);
+    }
+
+    /// `snouty login` cannot run in a GitHub Actions job, so there the
+    /// notes name the OIDC permission instead.
+    #[test]
+    fn no_credential_in_github_actions_names_the_oidc_permission() {
+        let notes = |github_actions| {
+            authn_checks(&[], None, github_actions)[0]
+                .notes
+                .iter()
+                .map(|n| n.text.clone())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let ci = notes(true);
+        assert!(ci.contains("id-token: write"), "{ci}");
+        assert!(!ci.contains("snouty login"), "{ci}");
+        let local = notes(false);
+        assert!(local.contains("snouty login"), "{local}");
+        assert!(!local.contains("id-token"), "{local}");
     }
 
     fn from_env(value: AuthenticationInfo, variables: Vec<&'static str>) -> SourcedCredential {
@@ -1104,7 +1134,7 @@ mod tests {
 
     #[test]
     fn one_credential_source_reports_no_conflict() {
-        let checks = authn_checks(&[file_api_key_source()], None);
+        let checks = authn_checks(&[file_api_key_source()], None, false);
         assert!(!checks.iter().any(|c| c.id == CheckId::CredentialSources));
     }
 
@@ -1113,7 +1143,7 @@ mod tests {
     /// problem and the one step that fixes it.
     #[test]
     fn a_password_hiding_an_api_key_is_one_check_with_one_next_step() {
-        let checks = authn_checks(&[env_password_source(), file_api_key_source()], None);
+        let checks = authn_checks(&[env_password_source(), file_api_key_source()], None, false);
         assert_eq!(
             checks.len(),
             1,
@@ -1181,7 +1211,7 @@ mod tests {
     /// step is to unset it.
     #[test]
     fn an_environment_credential_that_hides_a_stored_one_is_a_warning() {
-        let checks = authn_checks(&[env_api_key_source(), file_api_key_source()], None);
+        let checks = authn_checks(&[env_api_key_source(), file_api_key_source()], None, false);
         let check = checks
             .iter()
             .find(|c| c.id == CheckId::CredentialSources)
@@ -1207,7 +1237,7 @@ mod tests {
             vec![file_api_key_source(), oidc_source()],
             vec![env_api_key_source(), oidc_source()],
         ] {
-            let checks = authn_checks(&sources, None);
+            let checks = authn_checks(&sources, None, false);
             assert_eq!(
                 checks.iter().map(|c| c.status).collect::<Vec<_>>(),
                 [Status::Ok],
@@ -1232,6 +1262,7 @@ mod tests {
                     from_file(api_key(FAKE_API_KEY_A), None),
                 ],
                 Some("prod"),
+                false,
             );
             assert_eq!(checks.len(), 1);
             assert_eq!(checks[0].status, status);
@@ -1571,7 +1602,7 @@ mod tests {
             ),
         ];
         for (sources, status, kind) in cases {
-            let checks = authn_checks(&sources, None);
+            let checks = authn_checks(&sources, None, false);
             assert_eq!(checks[0].id, CheckId::Credentials { kind });
             assert_eq!(checks[0].status, status);
         }
@@ -1581,7 +1612,7 @@ mod tests {
 
     #[test]
     fn json_report_carries_checks() {
-        let checks = vec![missing_credentials_check("PANIC PANIC PANIC")];
+        let checks = vec![missing_credentials_check("PANIC PANIC PANIC", false)];
         let report = Report {
             ok: false,
             checks: &checks,

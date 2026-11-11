@@ -8,8 +8,28 @@
 ! snouty doctor
 stderr '.*No Antithesis credentials found.*'
 stderr '.*needs credentials to authenticate.*'
-stderr '.*ask Antithesis support.*'
+stderr -literal 'run `snouty login` or set ANTITHESIS_API_KEY'
 ! stderr '.*ANTITHESIS_USERNAME.*'
+
+# In a GitHub Actions job, doctor names the OIDC permission, not `snouty login`.
+env GITHUB_ACTIONS=true
+! snouty doctor
+stderr -literal 'add `id-token: write` to the job'
+! stderr 'run .snouty login. or set'
+env GITHUB_ACTIONS=
+
+# A blank ANTITHESIS_API_KEY hides every other credential, so doctor says to
+# fix the variable, in CI or not.
+env GITHUB_ACTIONS=true
+env ANTITHESIS_API_KEY=' '
+! snouty doctor
+stderr '^  ✗ ANTITHESIS_API_KEY is blank$'
+stderr -literal 'set ANTITHESIS_API_KEY to your API key, or unset it to use the stored credential'
+! stderr 'id-token'
+! snouty doctor --json
+stdout '"id": "credentials",\s*"kind": "api_key",\s*"status": "error"'
+env ANTITHESIS_API_KEY=
+env GITHUB_ACTIONS=
 
 # --json emits a structured report on stdout and still exits non-zero when a
 # required credential is missing (so CI can gate on it).
@@ -40,7 +60,7 @@ stderr '^      NOTE: read from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWOR
 stderr '^      NOTE: run `snouty login` to store an API key, then `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`$'
 ! stderr 'Using password credentials'
 ! stderr 'No credentials the API commands accept'
-! stderr 'snouty login. to sign in'
+! stderr 'run .snouty login. or set'
 # One source only, so doctor says nothing about a conflict.
 ! stderr 'hides a stored credential'
 ! snouty doctor --json
@@ -205,7 +225,7 @@ snouty doctor
 stderr '^  ⚠ the username and password are hiding your API key$'
 stderr '^      WARNING: snouty uses the username and password from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables, which `snouty runs` refuses$'
 stderr '^      NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in the credentials file$'
-! stderr 'snouty login. to sign in'
+! stderr 'run .snouty login. or set'
 ! stderr 'hides a stored credential'
 ! stderr 'Using password credentials'
 

@@ -303,7 +303,7 @@ On every other platform, snouty writes `credentials.toml` next to the global set
 
 ### API key
 
-An API key works with every command, and needs no browser. Ask Antithesis support for one if you do not have one.
+An API key works with every command, and needs no browser.
 
 ```sh
 export ANTITHESIS_API_KEY="your-api-key"

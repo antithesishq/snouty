@@ -163,9 +163,10 @@ fn first_with_own_credential(
         matched = true;
     }
     if matched {
-        return Err(user_error(
-            "no credential found; run `snouty login` or set ANTITHESIS_API_KEY",
-        ));
+        return Err(user_error(format!(
+            "no credential found; {}",
+            crate::auth::no_credentials_suggestion(crate::auth::in_github_actions())
+        )));
     }
     Ok(None)
 }
@@ -672,9 +673,11 @@ mod tests {
         let stored = [(None, FAKE_API_KEY_A)];
         let err =
             select_for_acme(other_then_acme_dev_and_prod(), self::stored(&stored)).unwrap_err();
+        // CI runs this test in GitHub Actions, which changes the suggestion.
+        let suggestion = crate::auth::no_credentials_suggestion(crate::auth::in_github_actions());
         assert_eq!(
             err.to_string(),
-            "no credential found; run `snouty login` or set ANTITHESIS_API_KEY"
+            format!("no credential found; {suggestion}")
         );
     }
 

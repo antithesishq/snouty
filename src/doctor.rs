@@ -356,10 +356,6 @@ fn missing_credentials_check(message: impl Into<String>, github_actions: bool) -
             Level::Note,
             crate::auth::no_credentials_suggestion(github_actions),
         )
-        .note(
-            Level::Note,
-            "ask Antithesis support for an API key if you don't have one",
-        )
 }
 
 /// The single check for a username and password that hide a credential the
@@ -977,12 +973,6 @@ mod tests {
         assert_eq!(checks[0].status, Status::Error);
         assert!(checks[0].message.contains("PANIC PANIC PANIC"));
         assert!(checks[0].notes.iter().any(|n| n.level == Level::Error));
-        assert!(
-            checks[0]
-                .notes
-                .iter()
-                .any(|n| n.text.contains("ask Antithesis support"))
-        );
         assert!(
             checks[0]
                 .notes

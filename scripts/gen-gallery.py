@@ -3434,15 +3434,14 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "Fresh install — doctor tells me what to configure",
             "I just installed snouty and haven't set any credentials; I want doctor to tell me what I need.",
             "doctor identifies the missing credentials and offers `snouty login` or "
-            "ANTITHESIS_API_KEY, with a support contact for obtaining a key. It must not "
-            "recommend legacy username/password authentication (issue #145).",
+            "ANTITHESIS_API_KEY. It must not recommend legacy username/password "
+            "authentication (issue #145).",
             ["doctor"],
             doctor_check(
                 contains=(
                     "No Antithesis credentials found",
                     "snouty login",
                     "ANTITHESIS_API_KEY",
-                    "ask Antithesis support",
                 ),
                 absent=("ANTITHESIS_USERNAME", "ANTITHESIS_PASSWORD"),
                 ok=False,

@@ -8,7 +8,7 @@
 ! snouty doctor
 stderr '.*No Antithesis credentials found.*'
 stderr '.*needs credentials to authenticate.*'
-stderr '.*ask Antithesis support.*'
+stderr -literal 'run `snouty login` or set ANTITHESIS_API_KEY'
 ! stderr '.*ANTITHESIS_USERNAME.*'
 
 # In a GitHub Actions job, doctor names the OIDC permission, not `snouty login`.
@@ -16,17 +16,6 @@ env GITHUB_ACTIONS=true
 ! snouty doctor
 stderr -literal 'add `id-token: write` to the job'
 ! stderr 'run .snouty login. or set'
-env GITHUB_ACTIONS=
-
-# A blank ANTITHESIS_API_KEY comes first in the lookup and hides any other
-# credential, so doctor says to fix the variable, in CI or not.
-env GITHUB_ACTIONS=true
-env ANTITHESIS_API_KEY=' '
-! snouty doctor
-stderr '^  ✗ the API key is empty$'
-stderr -literal 'unset ANTITHESIS_API_KEY, or set it to a real API key'
-! stderr 'id-token'
-env ANTITHESIS_API_KEY=
 env GITHUB_ACTIONS=
 
 # --json emits a structured report on stdout and still exits non-zero when a

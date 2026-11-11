@@ -344,12 +344,11 @@ class DoctorGalleryChecks(unittest.TestCase):
 
     def test_no_auth_requires_setup_actions(self):
         output = """No Antithesis credentials found
-run `snouty login` to sign in and store credentials
-or set ANTITHESIS_API_KEY; ask Antithesis support for an API key if you don't have one
+run `snouty login` or set ANTITHESIS_API_KEY
 """
         passed, detail = self.check("doctor-no-auth", output, 1)
         self.assertTrue(passed, detail)
-        for action in ("snouty login", "ANTITHESIS_API_KEY", "ask Antithesis support"):
+        for action in ("snouty login", "ANTITHESIS_API_KEY"):
             with self.subTest(action=action):
                 passed, _ = self.check("doctor-no-auth", output.replace(action, ""), 1)
                 self.assertFalse(passed)

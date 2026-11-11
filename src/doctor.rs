@@ -632,7 +632,7 @@ fn release_floor_check(version: &ApiVersion, floor: &ReleaseFloor) -> Option<Che
 /// Pure over the result so it can be unit-tested without the network.
 fn version_check(
     host: &str,
-    in_use: Option<&SourcedCredential>,
+    in_use: &SourcedCredential,
     profile: Option<&str>,
     result: std::result::Result<ApiVersion, VersionError>,
 ) -> Check {
@@ -692,14 +692,8 @@ fn version_check(
 
 /// What to check first when the tenant of `profile` rejects the credential
 /// in use. A proxy can also reject the request, so each note names a proxy too.
-fn rejected_credential_next_step(
-    in_use: Option<&SourcedCredential>,
-    profile: Option<&str>,
-) -> String {
+fn rejected_credential_next_step(in_use: &SourcedCredential, profile: Option<&str>) -> String {
     const PROXY: &str = "a proxy may be rejecting the request before it reaches Antithesis";
-    let Some(in_use) = in_use else {
-        return format!("verify your credentials; if they are valid, {PROXY}");
-    };
     let source = describe_source(in_use.tag());
     // A named profile with no credential uses the default profile's. Log in
     // to the checked profile, so the new credential takes precedence.
@@ -709,12 +703,12 @@ fn rejected_credential_next_step(
             format!("run {login} to sign in again; if the new sign-in is also rejected, {PROXY}")
         }
         (AuthenticationInfo::GithubActionsOidc(_), _) => format!(
-            "the tenant may not accept GitHub Actions OIDC tokens from this repository; \
-             ask Antithesis support to trust it, or {PROXY}"
+            "ask Antithesis support to trust GitHub Actions OIDC tokens from this \
+             repository; if the tenant already trusts them, {PROXY}"
         ),
         (AuthenticationInfo::ApiKey { .. }, CredentialSource::Stored(_)) => format!(
-            "verify the API key read from {source}, or run {login} to replace it; \
-             if it is valid, {PROXY}"
+            "run {login} to replace the API key read from {source}; \
+             if the new key is also rejected, {PROXY}"
         ),
         // An API key from the environment. The client refuses a password.
         (credential, _) => {
@@ -740,7 +734,9 @@ pub async fn cmd_doctor(
         // resolved settings (base url / tenant), and `verbose` logs the
         // request/response.
         let mut api_failed = false;
-        if let Ok(api) = AntithesisApi::new(settings, verbose) {
+        if let Ok(api) = AntithesisApi::new(settings, verbose)
+            && let Some(in_use) = &in_use
+        {
             let host = api.host();
             // Renew here so that a rejected renewal fails the credentials
             // check, not the API check. The version request would fail the same way, so
@@ -762,7 +758,7 @@ pub async fn cmd_doctor(
                 {
                     checks.push(version_check(
                         &host,
-                        in_use.as_ref(),
+                        in_use,
                         settings.profile(),
                         Err(VersionError::Unreachable(err.root_cause().to_string())),
                     ));
@@ -794,12 +790,7 @@ pub async fn cmd_doctor(
                     checks.extend(release_floor_checks(version, &features::enabled()));
                 }
                 api_failed = matches!(version, Err(VersionError::Unreachable(_)));
-                checks.push(version_check(
-                    &host,
-                    in_use.as_ref(),
-                    settings.profile(),
-                    version,
-                ));
+                checks.push(version_check(&host, in_use, settings.profile(), version));
             }
         }
 
@@ -1373,7 +1364,7 @@ mod tests {
     fn version_ok_reports_both_versions() {
         let check = version_check(
             "tenant.antithesis.com",
-            None,
+            &env_api_key_source(),
             None,
             Ok(ApiVersion::new("v1".into(), "56.0".into())),
         );
@@ -1392,7 +1383,7 @@ mod tests {
     fn version_404_is_reachable_but_warns() {
         let check = version_check(
             "tenant.antithesis.com",
-            None,
+            &env_api_key_source(),
             None,
             Err(VersionError::Http(404)),
         );
@@ -1414,7 +1405,7 @@ mod tests {
         for status in [401, 403] {
             let check = version_check(
                 "tenant.antithesis.com",
-                None,
+                &env_api_key_source(),
                 None,
                 Err(VersionError::Http(status)),
             );
@@ -1434,7 +1425,7 @@ mod tests {
         let note_for = |source: SourcedCredential, profile: Option<&str>| {
             let check = version_check(
                 "tenant.antithesis.com",
-                Some(&source),
+                &source,
                 profile,
                 Err(VersionError::Http(401)),
             );
@@ -1480,7 +1471,7 @@ mod tests {
     fn version_bad_response_is_not_reported_as_unreachable() {
         let check = version_check(
             "tenant.antithesis.com",
-            None,
+            &env_api_key_source(),
             None,
             Err(VersionError::BadResponse(
                 "invalid type: null, expected struct ApiVersion".into(),
@@ -1500,7 +1491,7 @@ mod tests {
     fn version_unreachable_names_the_host_and_includes_the_error() {
         let check = version_check(
             "tenant.antithesis.com",
-            None,
+            &env_api_key_source(),
             None,
             Err(VersionError::Unreachable("connection refused".into())),
         );
@@ -1522,7 +1513,7 @@ mod tests {
     fn version_5xx_is_unavailable_with_status() {
         let check = version_check(
             "tenant.antithesis.com",
-            None,
+            &env_api_key_source(),
             None,
             Err(VersionError::Http(503)),
         );
@@ -1535,7 +1526,7 @@ mod tests {
     fn version_unexpected_status_is_an_error_with_status() {
         let check = version_check(
             "tenant.antithesis.com",
-            None,
+            &env_api_key_source(),
             None,
             Err(VersionError::Http(429)),
         );

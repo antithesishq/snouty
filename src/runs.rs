@@ -18,9 +18,9 @@ use serde_json::{Map, Value, json};
 use chrono::{DateTime, Utc};
 
 use crate::api::{
-    AntithesisApi, Event, EventProperty, ExecRequest, MIN_STREAM_RELEASE, Moment, NonEventProperty,
-    Property, PropertyStatus, RewarmSource, RunDetail, RunStatus, RunSummary, RunsFilterOptions,
-    SearchLimit, SearchMode,
+    AntithesisApi, Event, EventProperty, ExecOutput, ExecRequest, MIN_STREAM_RELEASE, Moment,
+    NonEventProperty, Property, PropertyStatus, RewarmSource, RunDetail, RunStatus, RunSummary,
+    RunsFilterOptions, SearchLimit, SearchMode,
 };
 use crate::cli::{RunsCommands, RunsListArgs, RunsSearchArgs, WaitUntil};
 use crate::error::{api_error_message, api_error_status, user_error};
@@ -255,6 +255,7 @@ pub async fn cmd_runs(
             container,
             timeout,
             events,
+            include_filtered_logs,
             source_run_id,
             source_session_id,
             ..
@@ -268,7 +269,14 @@ pub async fn cmd_runs(
                 script: resolve_exec_script(script)?,
                 container,
                 timeout: timeout.map(Duration::from),
-                events,
+                // clap makes --include-filtered-logs require --events.
+                output: if events {
+                    ExecOutput::Events {
+                        include_filtered_logs,
+                    }
+                } else {
+                    ExecOutput::Script
+                },
                 rewarm,
             };
             cmd_runs_exec(&run_id, exec, settings, output.verbose, mode).await
@@ -2208,7 +2216,8 @@ async fn exec_when_ready(
         EventOutput::Json { .. } => (true, false),
         EventOutput::Text { detail } => (false, detail),
     };
-    let mut renderer = exec.events.then(|| EventStreamRenderer::new(detail));
+    let mut renderer =
+        matches!(exec.output, ExecOutput::Events { .. }).then(|| EventStreamRenderer::new(detail));
     // A cold moment is in its rewarm source, not in RUN_ID, so a debugging
     // session at that moment starts from the source.
     let (rewarm_flag, target_flag, target) = match &exec.rewarm {
@@ -4856,6 +4865,7 @@ mod tests {
             started_at: None,
             completed_at: None,
             launcher: launcher.to_string(),
+            launcher_display_name: None,
             creator: None,
             description: None,
             parameters,
@@ -5430,7 +5440,7 @@ mod tests {
                 script: "true".to_owned(),
                 container: None,
                 timeout: None,
-                events: false,
+                output: ExecOutput::Script,
                 rewarm: None,
             }
         }

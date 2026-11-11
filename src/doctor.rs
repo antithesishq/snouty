@@ -660,21 +660,67 @@ pub async fn cmd_doctor(
         // unauthenticated users to set a key. The client is built from the
         // resolved settings (base url / tenant), and `verbose` logs the
         // request/response.
-        let mut api_unreachable = false;
+        let mut api_failed = false;
         if let Ok(api) = AntithesisApi::new(settings, verbose) {
             let host = api.host();
-            let version = api.get_version().await;
-            if let Ok(version) = &version {
-                checks.extend(release_floor_checks(version, &features::enabled()));
+            // Renew here so that a rejected renewal fails the credentials
+            // check, not the API check. The version request would fail the same way, so
+            // skip it.
+            let renewal = if api.authentication().expired() {
+                api.refresh_authentication().await
+            } else {
+                Ok(())
+            };
+            if let Err(err) = renewal {
+                api_failed = true;
+                let auth = api.authentication();
+                // An OAuth token is refreshed by the tenant, so a request
+                // that got no response means that the tenant is unreachable.
+                if matches!(auth, AuthenticationInfo::OAuth(_))
+                    && err
+                        .downcast_ref::<reqwest::Error>()
+                        .is_some_and(|e| e.status().is_none() && !e.is_decode())
+                {
+                    checks.push(version_check(
+                        &host,
+                        Err(VersionError::Unreachable(err.root_cause().to_string())),
+                    ));
+                } else {
+                    let check = checks
+                        .iter_mut()
+                        .find(|c| matches!(c.id, CheckId::Credentials { .. }))
+                        .expect(
+                            "the client uses the credential that the credentials check reports",
+                        );
+                    check.status = Status::Error;
+                    check.message = match auth {
+                        AuthenticationInfo::GithubActionsOidc(_) => {
+                            "could not get a GitHub Actions OIDC token".to_owned()
+                        }
+                        _ => format!("the {auth} expired and could not be renewed"),
+                    };
+                    check.notes.insert(
+                        0,
+                        Note {
+                            level: Level::Error,
+                            text: format!("{err:#}"),
+                        },
+                    );
+                }
+            } else {
+                let version = api.get_version().await;
+                if let Ok(version) = &version {
+                    checks.extend(release_floor_checks(version, &features::enabled()));
+                }
+                api_failed = matches!(version, Err(VersionError::Unreachable(_)));
+                checks.push(version_check(&host, version));
             }
-            api_unreachable = matches!(version, Err(VersionError::Unreachable(_)));
-            checks.push(version_check(&host, version));
         }
 
         // A client that fails to build (bad proxy URL or extra header) skips
-        // the API check too. Skip the probe when the API check could not reach
-        // the tenant: the probe would only wait out its timeout.
-        if !api_unreachable
+        // the API check too. Skip the probe when the tenant could be
+        // unreachable: the probe would only wait out its timeout.
+        if !api_failed
             && let Some(base_url) = settings.base_url()
             && let Ok(client) = HttpClient::new(settings, verbose)
         {

@@ -39,6 +39,9 @@ class FakeGh:
         self.lists_down = False
 
     def run(self, cmd: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[0] == "git":
+            # The current directory is the top level of a checkout.
+            return subprocess.CompletedProcess(cmd, 0, f"{os.getcwd()}\n")
         if self.down:
             return subprocess.CompletedProcess(cmd, 1, "", "gh is down\n")
         answer = self.answer(cmd[1:])
@@ -83,6 +86,8 @@ class WatcherTest(unittest.TestCase):
         self.now = 0.0
         self.set_woke(False)
         watch_prs.reported_failures.clear()
+        watch_prs.verdict_since.clear()
+        setattr(watch_prs, "agree_seconds", 45.0)  # noqa: B010 (a module, to pyright)
 
     def set_woke(self, value: bool) -> None:
         setattr(watch_prs, "woke", value)  # noqa: B010 (a module, to pyright)
@@ -104,6 +109,8 @@ class WatcherTest(unittest.TestCase):
         """Run the script. `settle` is 0 by default, so a run ends on the
         poll that prints its first event. None leaves the script's default.
         """
+        # Each run is a new process: it keeps only what its state file holds.
+        watch_prs.verdict_since.clear()
         out = io.StringIO()
         if settle is not None:
             argv = ("--settle", str(settle), *argv)
@@ -140,11 +147,33 @@ class Poll(WatcherTest):
         )
         self.assertTrue(watch_prs.woke)
 
+    def test_a_verdict_needs_agreement_for_a_whole_interval(self):
+        self.gh.view["statusCheckRollup"] = [{"name": "lint", "conclusion": "SUCCESS"}]
+        seen: set[str] = set()
+        self.assertEqual(self.poll(seen), [])
+        self.now += 15
+        self.assertEqual(self.poll(seen), [])
+        self.now += 30
+        self.assertEqual(self.poll(seen), ["PR #1 all checks passed for aaaaaaa"])
+
+    def test_replay_keeps_the_saved_state_until_it_polls(self):
+        self.gh.comments = [comment(5, WRITER)]
+        self.run_main("--exit-on-event", "1")
+        self.gh.down = True
+        self.run_main("--exit-on-event", "--replay", "1")
+        self.gh.down = False
+        self.gh.comments.append(comment(6, WRITER))
+        self.assertEqual(
+            self.run_main("--exit-on-event", "1"),
+            (0, ["PR #1 comment by reviewer (id 6)"]),
+        )
+
     def test_pass_and_base_move_need_no_reaction(self):
         self.gh.view["statusCheckRollup"] = [{"name": "lint", "conclusion": "SUCCESS"}]
         self.gh.view["baseRefOid"] = "c" * 40
         seen: set[str] = set()
         self.poll(seen)
+        self.now += 45
         self.gh.view["baseRefOid"] = "d" * 40
         self.assertEqual(
             self.poll(seen),
@@ -248,24 +277,69 @@ class Main(WatcherTest):
             ],
         )
 
-    def test_a_failed_lookup_for_one_comment_does_not_end_the_run(self):
+    def test_a_failed_lookup_prints_as_unknown_then_with_its_trust(self):
         self.gh.comments = [comment(5, WRITER)]
         self.gh.lookup_down = True
+        self.assertEqual(
+            self.run_main("--exit-on-event", "1"),
+            (
+                0,
+                [
+                    "gh failed: HTTP 403",
+                    "PR #1 comment by reviewer (id 5) [write access unknown]",
+                ],
+            ),
+        )
+        # A restart that still cannot look it up prints nothing new.
         polls = 0
 
-        def merge_after_the_limit():
+        def recover_on_third_sleep():
             nonlocal polls
             polls += 1
-            if polls == watch_prs.GH_FAILED_POLLS + 1:
-                self.gh.view["state"] = "MERGED"
+            if polls == 3:
+                self.gh.lookup_down = False
 
-        self.on_sleep = merge_after_the_limit
+        self.on_sleep = recover_on_third_sleep
         status, lines = self.run_main("--exit-on-event", "1")
-        self.assertEqual((status, lines[-1]), (0, "PR #1 merged"))
+        self.assertEqual((status, lines[-1]), (0, "PR #1 comment by reviewer (id 5)"))
+        self.assertEqual(polls, 3)
+
+    def test_a_pending_lookup_does_not_hold_back_the_close(self):
+        self.gh.comments = [comment(5, WRITER)]
+        self.gh.lookup_down = True
+
+        def fail_on_a_second_poll():
+            raise AssertionError("the comment waited for another poll")
+
+        # The comment prints on the first poll, before the PR can close.
+        self.on_sleep = fail_on_a_second_poll
+        status, lines = self.run_main("--exit-on-event", "1")
+        self.assertEqual(
+            (status, [line for line in lines if line.startswith("PR #1 comment")]),
+            (0, ["PR #1 comment by reviewer (id 5) [write access unknown]"]),
+        )
+        self.gh.view["state"] = "MERGED"
+        self.assertEqual(self.run_main("--exit-on-event", "1"), (0, ["PR #1 merged"]))
+
+    def test_one_author_costs_one_lookup_per_poll(self):
+        self.gh.comments = [comment(5, WRITER), comment(6, WRITER), comment(7, WRITER)]
+        self.gh.lookup_down = True
+        calls = []
+        run = self.gh.run
+
+        def counting_run(cmd, **kw):
+            if "/collaborators/" in " ".join(cmd):
+                calls.append(cmd)
+            return run(cmd, **kw)
+
+        self.gh.run = counting_run
+        self.poll(set())
+        self.assertEqual(len(calls), 1)
 
     def test_an_unwritable_state_directory_stops_the_run_before_any_event(self):
-        self.state_home.chmod(0o500)
-        self.addCleanup(self.state_home.chmod, 0o700)
+        # A file where the directory must go fails for any user. Root ignores
+        # the mode bits of a directory.
+        (self.state_home / "watch-prs").write_text("")
         self.gh.comments = [comment(5, WRITER)]
         status, lines = self.run_main("--exit-on-event", "1")
         self.assertEqual(status, 2)

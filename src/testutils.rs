@@ -1733,6 +1733,7 @@ fn mock_route_execute_command(run_id: &str, req_body: &str) -> (u16, String) {
                 "container",
                 "timeout_seconds",
                 "include_system_logs",
+                "include_filtered_logs",
                 "source_run_id",
                 "source_session_id",
             ]

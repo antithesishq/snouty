@@ -63,8 +63,6 @@ pub fn cmd_settings_show(settings: &Settings, json: bool) -> Result<()> {
     let credentials = credentials_file_path()
         .filter(|path| path.is_file())
         .map(|path| SettingsFile::new(SettingsFileType::Credentials, &path));
-    // The settings files that snouty read, then the credentials file when it
-    // exists.
     let files: Vec<&SettingsFile> = settings.files().iter().chain(&credentials).collect();
     let mut stdout = stdio::stdout();
     if json {

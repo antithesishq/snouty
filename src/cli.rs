@@ -13,12 +13,8 @@ use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand, V
 use crate::api::{
     FaultTolerance, PerformanceTier, RunStatus, SearchLimit, SourceRunId, SourceSessionId,
 };
-use color_eyre::Section;
-use color_eyre::eyre::Report;
 
 use crate::docker_credential::HELPER_NAME;
-use crate::error::user_error;
-use crate::features::{self, Feature};
 use crate::help::{self, Attach};
 use crate::params::MAX_SETUP_TIMEOUT_MINUTES;
 use crate::render::{self, CodeSpans};
@@ -334,10 +330,7 @@ pub enum Commands {
     },
 
     /// Serve snouty's run, docs, doctor and settings commands to AI agents over MCP
-    #[command(
-        hide = !features::is_enabled(Feature::Mcp),
-        arg = json(JsonShape::None),
-    )]
+    #[command(arg = json(JsonShape::None))]
     Mcp(McpArgs),
 }
 
@@ -453,30 +446,6 @@ pub fn parse() -> Cli {
         // --help, --version, and the help page for a bare `snouty`.
         Err(err) => err.exit(),
     }
-}
-
-/// Refuses a gated command while its feature is off. A hidden subcommand is
-/// still callable, so dispatch checks this first.
-pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Report> {
-    let (feature, path) = match command {
-        Commands::Mcp(_) => (Feature::Mcp, "snouty mcp"),
-        _ => return None,
-    };
-    if enabled.contains(&feature) {
-        return None;
-    }
-    Some(
-        user_error(format!(
-            "`{path}` is an unstable feature and is not enabled"
-        ))
-        .note(format!(
-            "enable it by setting {}={}",
-            features::UNSTABLE_FEATURES_VAR_NAME,
-            feature
-        ))
-        .note("an unstable feature can change or go away in any release")
-        .suggestion(format!("run `{path} --help` for what it does")),
-    )
 }
 
 /// clap value parser for a run ID. The ID is one segment of an API path, and

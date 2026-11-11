@@ -1,7 +1,5 @@
 Serve snouty's run, docs, doctor and settings commands to AI agents over MCP
 
-This command is gated behind the `mcp` unstable feature, because its tools and their output can still change. Enable it by setting SNOUTY_UNSTABLE_FEATURES=mcp. An unstable feature can change or go away in any release.
-
 Starts a Model Context Protocol server on stdin and stdout. An agent starts `snouty mcp` itself and talks to it over the stdio transport. The server stops when stdin closes.
 
 The tools:
@@ -14,4 +12,4 @@ A tool call has no time limit and no output limit, and the result arrives only w
 {{ t("--settings")? }}, {{ t("--profile")? }} and {{ t("--verbose")? }}, and the ANTITHESIS_* environment variables, apply to every tool call as they do for the other commands.
 
 Example, to add snouty to Claude Code:
-  claude mcp add snouty -e SNOUTY_UNSTABLE_FEATURES=mcp -- snouty mcp
+  claude mcp add snouty -- snouty mcp

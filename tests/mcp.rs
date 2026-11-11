@@ -45,7 +45,6 @@ fn snouty_mcp_from(exe: &Path, server: &MockApiServer, home: &Path) -> tokio::pr
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", home)
         .env("XDG_CACHE_HOME", home.join("cache"))
-        .env("SNOUTY_UNSTABLE_FEATURES", "mcp")
         .env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1")
         .env("ANTITHESIS_TENANT", "testtenant")
         .env("ANTITHESIS_BASE_URL", server.url())
@@ -254,26 +253,6 @@ async fn tools_return_detailed_output_or_json() {
     );
 
     client.cancel().await.expect("close snouty mcp");
-}
-
-/// `snouty --help` lists `mcp` only while its feature is on.
-#[tokio::test]
-async fn mcp_is_listed_only_with_its_feature_on() {
-    for (features, listed) in [("mcp", true), ("", false)] {
-        let mut root = tokio::process::Command::new(env!("CARGO_BIN_EXE_snouty"));
-        root.arg("--help")
-            .env_clear()
-            .env("SNOUTY_UNSTABLE_FEATURES", features);
-        let output = root.output().await.expect("run snouty --help");
-        let help = String::from_utf8_lossy(&output.stdout);
-        let has_mcp = help
-            .lines()
-            .any(|line| line.trim_start().starts_with("mcp "));
-        assert_eq!(
-            has_mcp, listed,
-            "SNOUTY_UNSTABLE_FEATURES={features}\n{help}"
-        );
-    }
 }
 
 #[tokio::test]
@@ -607,16 +586,5 @@ fn mcp_registry_entry_matches_the_crate() {
     assert_eq!(
         package["packageArguments"],
         json!([{"type": "positional", "value": "mcp"}])
-    );
-    let feature_var = package["environmentVariables"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|var| var["name"] == snouty::features::UNSTABLE_FEATURES_VAR_NAME)
-        .unwrap();
-    let features = feature_var["value"].as_str().unwrap();
-    assert_eq!(
-        features.split(',').next(),
-        Some(snouty::features::Feature::Mcp.to_string().as_str())
     );
 }

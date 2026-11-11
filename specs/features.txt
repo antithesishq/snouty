@@ -18,15 +18,15 @@ env SNOUTY_UNSTABLE_FEATURES=from-the-future,runs-exec
 ! snouty runs exec run-1 -123 1.0 'uname -a'
 stderr 'No Antithesis credentials found.*'
 
-# 2. `snouty settings show` omits unknown ids. Both ids listed here are
-#    unknown, so the row does not print.
-env SNOUTY_UNSTABLE_FEATURES=runs-search,runs-exec
+# 2. `snouty settings show` omits unknown ids. The ids listed here are
+#    retired, so the row does not print.
+env SNOUTY_UNSTABLE_FEATURES=runs-search,runs-exec,mcp
 snouty settings show
 stdout '^\s*update_channel\s'
 ! stdout '^\s*features\s'
 snouty settings show --json
 ! stdout '"features"'
-! stdout 'runs-search|runs-exec'
+! stdout 'runs-search|runs-exec|mcp'
 
 # 3. An empty value counts as unset, so the row does not print.
 env SNOUTY_UNSTABLE_FEATURES=

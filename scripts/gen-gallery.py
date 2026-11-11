@@ -310,7 +310,6 @@ class Snouty:
         """Start `snouty mcp`, initialize a session, send each `(method,
         params)` request, and return each response's `result`, in order. The
         server stops when its stdin closes."""
-        env = self.env_with({"SNOUTY_UNSTABLE_FEATURES": "mcp"})
         messages = [
             {
                 "jsonrpc": "2.0",
@@ -335,7 +334,7 @@ class Snouty:
             input="".join(json.dumps(m) + "\n" for m in messages),
             capture_output=True,
             text=True,
-            env=env,
+            env=self._env,
             timeout=MCP_TIMEOUT,
         )
         responses = {}

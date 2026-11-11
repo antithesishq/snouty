@@ -378,7 +378,7 @@ fn a_different_api_key_asks_before_it_replaces_the_stored_key() {
 
     let shown = rendered_lines(&seen).join(" ");
     assert!(
-        shown.contains("credentials.toml, replacing your stored API key."),
+        shown.contains("in the credentials file, replacing your stored API key."),
         "{seen}"
     );
     let lines = rendered_lines(&seen);
@@ -399,7 +399,7 @@ fn an_api_key_that_replaces_a_stored_password_says_so() {
     send(&mut session, "y\r");
     let seen = finish(session);
 
-    // The temp path makes this line longer than the PTY, so snouty wraps it.
+    // This line is longer than the PTY, so snouty wraps it.
     let lines = rendered_lines(&seen);
     let start = lines
         .iter()
@@ -411,17 +411,16 @@ fn an_api_key_that_replaces_a_stored_password_says_so() {
             .position(|line| line.ends_with('.'))
             .unwrap_or_else(|| panic!("the credentials line does not end: {seen}"));
     assert!(end > start, "the credentials line is not wrapped: {seen}");
-    // A temp path longer than the PTY overflows on a line of its own.
     for line in &lines[start..=end] {
         assert!(
-            line.chars().count() <= PTY_COLS as usize || !line.contains(' '),
+            line.chars().count() <= PTY_COLS as usize,
             "{line:?}: {seen}"
         );
     }
     assert!(
         lines[start..=end]
             .join(" ")
-            .ends_with("credentials.toml, replacing your stored username and password."),
+            .ends_with("in the credentials file, replacing your stored username and password."),
         "the credentials line is split mid-word: {seen}"
     );
     let creds = credentials(home.path());
@@ -475,8 +474,9 @@ fn a_redirected_summary_keeps_whole_lines() {
         summary
             .lines()
             .any(|line| line.starts_with("Stored your API key in ")
-                && line
-                    .ends_with("credentials.toml, replacing your stored username and password.")),
+                && line.ends_with(
+                    "in the credentials file, replacing your stored username and password."
+                )),
         "{summary}"
     );
 }

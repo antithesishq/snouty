@@ -21,6 +21,6 @@ stderr '.*Value may not be empty or whitespace.*'
 # that is longer than a terminal.
 isolate-home summary
 snouty login --tenant spec-tenant --repository registry.example.com/a-long-repository-name
-stdout '^Saved tenant `spec-tenant` and repository `registry.example.com/a-long-repository-name` to .*settings\.toml\.$'
+stdout '^Saved tenant `spec-tenant` and repository `registry.example.com/a-long-repository-name`\.$'
 stdout '^Skipped credential storage — snouty will read credentials from the environment, such as ANTITHESIS_API_KEY\.$'
 stdout '^Run `snouty doctor` to verify your setup\.$'

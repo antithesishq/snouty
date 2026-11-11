@@ -224,14 +224,14 @@ env ANTITHESIS_TENANT=testtenant
 snouty doctor
 stderr '^  ⚠ the username and password are hiding your API key$'
 stderr '^      WARNING: snouty uses the username and password from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables, which `snouty runs` refuses$'
-stderr '^      NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in .+credentials\.toml$'
+stderr '^      NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in the credentials file$'
 ! stderr 'run .snouty login. or set'
 ! stderr 'hides a stored credential'
 ! stderr 'Using password credentials'
 
 snouty doctor --json
 stdout '"id": "credentials",\s*"kind": "password",\s*"status": "warn"'
-stdout '"text": "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in .*credentials\.toml"'
+stdout '"text": "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in the credentials file"'
 ! stdout '"id": "credential_sources"'
 ! stdout '"id": "basic_auth"'
 ! stdout '${FAKE_API_KEY_A@R}|${FAKE_PASSWORD@R}'
@@ -254,7 +254,7 @@ env ANTITHESIS_PASSWORD=
 env ANTITHESIS_TENANT=testtenant
 snouty doctor
 stderr '^  ⚠ username/password for user \[storeduser\] only works for `snouty launch` and `snouty debug`$'
-stderr '^      NOTE: read from the \[default\] profile in .+credentials\.toml$'
+stderr '^      NOTE: read from the credentials file$'
 stderr '^      NOTE: run `snouty login` to replace it with an API key$'
 ! stderr 'unset ANTITHESIS'
 ! stderr 'Using password credentials'
@@ -267,7 +267,7 @@ stdout '"id": "credentials",\s*"kind": "password",\s*"status": "warn"'
 # A bare `snouty login` writes the default profile, so for a password stored
 # under a named profile the next step names that profile.
 snouty --profile prod doctor
-stderr '^      NOTE: read from the \[prod\] profile in .+credentials\.toml$'
+stderr '^      NOTE: read from the `prod` profile of the credentials file$'
 stderr '^      NOTE: run `snouty login --profile prod` to replace it with an API key$'
 
 # A credentials file snouty cannot parse sits behind the exported API key. No
@@ -294,7 +294,7 @@ env ANTITHESIS_USERNAME=
 env ANTITHESIS_PASSWORD=
 snouty doctor --offline
 stderr '^  ✓ OAuth credentials used$'
-stderr '^      NOTE: read from the \[default\] profile in .+credentials\.toml$'
+stderr '^      NOTE: read from the credentials file$'
 snouty doctor --offline --json
 stdout '"id": "credentials",\s*"kind": "oauth",\s*"status": "ok"'
 ! stdout '${FAKE_ACCESS_TOKEN_A@R}'
@@ -305,7 +305,7 @@ set-env ACTIONS_ID_TOKEN_REQUEST_URL http://127.0.0.1:1/token
 set-env ACTIONS_ID_TOKEN_REQUEST_TOKEN ${FAKE_OIDC_REQUEST_TOKEN}
 snouty --profile prod doctor --offline
 stderr '^  ✓ OAuth credentials used$'
-stderr 'read from the \[prod\] profile'
+stderr 'read from the `prod` profile'
 ! stderr '⚠ .*credential'
 env ACTIONS_ID_TOKEN_REQUEST_URL=
 env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
@@ -314,7 +314,7 @@ env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 snouty --profile prod doctor --offline
 stderr '⚠ the environment hides a stored credential'
-stderr -literal '`unset ANTITHESIS_API_KEY` to use the OAuth credentials in the [prod] profile'
+stderr -literal '`unset ANTITHESIS_API_KEY` to use the OAuth credentials in the `prod` profile'
 snouty --profile prod doctor --offline --json
 stdout '"id": "credential_sources",\s*"status": "warn"'
 env ANTITHESIS_API_KEY=
@@ -340,7 +340,7 @@ env ANTITHESIS_PASSWORD=
 env ANTITHESIS_TENANT=testtenant
 ! snouty doctor --offline
 stderr '^  ✗ the API key is empty$'
-stderr '^      NOTE: read from the \[default\] profile in .+credentials\.toml$'
+stderr '^      NOTE: read from the credentials file$'
 ! stderr 'API key provided'
 ! snouty doctor --offline --json
 stdout '"id": "credentials",\s*"kind": "api_key",\s*"status": "error"'

@@ -95,6 +95,29 @@ checksum_source = "mise-versions"
 url = "https://github.com/docker/compose/releases/download/v5.6.1/docker-compose-darwin-x86_64"
 url_api = "https://api.github.com/repos/docker/compose/releases/assets/661714745"
 
+[[tools."github:github/gh-actions-lock"]]
+version = "0.4.1"
+backend = "github:github/gh-actions-lock"
+specifiers = ["0.4.1"]
+
+[tools."github:github/gh-actions-lock"."platforms.linux-x64"]
+checksum = "sha256:39deb2fe714dbf74b073d8245fc7f3d50cd0eee18d5c0900e9e849ae933ae17e"
+url = "https://github.com/github/gh-actions-lock/releases/download/v0.4.1/linux-amd64"
+url_api = "https://api.github.com/repos/github/gh-actions-lock/releases/assets/702813259"
+provenance = "github-attestations"
+
+[tools."github:github/gh-actions-lock"."platforms.macos-arm64"]
+checksum = "sha256:f205ea5dbbda67165e08aab1fb6395290ca62f0a038bf27d4b684abd0816635c"
+url = "https://github.com/github/gh-actions-lock/releases/download/v0.4.1/darwin-arm64"
+url_api = "https://api.github.com/repos/github/gh-actions-lock/releases/assets/702813195"
+provenance = "github-attestations"
+
+[tools."github:github/gh-actions-lock"."platforms.macos-x64"]
+checksum = "sha256:4ef64599440398999f184321d5237df131721434901ecaaf3da6aa018bdd1f8f"
+url = "https://github.com/github/gh-actions-lock/releases/download/v0.4.1/darwin-amd64"
+url_api = "https://api.github.com/repos/github/gh-actions-lock/releases/assets/702813196"
+provenance = "github-attestations"
+
 [[tools."github:github/gh-aw"]]
 version = "1.0.1"
 backend = "github:github/gh-aw"

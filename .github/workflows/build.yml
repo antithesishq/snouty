@@ -109,17 +109,22 @@ jobs:
         run: mise run lint:typos
   # The runner rejects a job whose actions the lockfile does not cover.
   lockfile:
-    runs-on: ubuntu-slim
-    env:
-      GH_TOKEN: ${{ github.token }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
-      # Keep this pin equal to the one in the actions:lock task in mise.toml.
-      - run: gh extension install github/gh-actions-lock --pin v0.4.1
-      - run: gh actions-lock --verify
+      - uses: $/.github/actions/setup-tools
+        with:
+          cache: "false"
+          mise-tools: github:github/gh-actions-lock
+          mise-cache: "false"
+
+      - name: Verify the lockfile
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh-actions-lock --verify
   # Each step runs even when an earlier one fails, so one run reports every
   # finding.
   lint:

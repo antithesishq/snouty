@@ -57,15 +57,51 @@ const HARNESSES: &[AgentHarness] = &[
         session_id: ["CODEX_THREAD_ID", "CODEX_SESSION_ID"],
     ),
     harness!("gemini", markers: ["GEMINI_CLI"]),
-    harness!("opencode", markers: ["OPENCODE"]),
-    harness!("pi", markers: ["PI_CODING_AGENT"]),
+    // Kilo Code is a fork of opencode that also sets `OPENCODE`.
+    harness!("kilo", markers: ["KILO_PID"]),
+    harness!("opencode", markers: ["OPENCODE", "OPENCODE_PID"]),
+    harness!(
+        "pi",
+        markers: ["PI_CODING_AGENT"],
+        session_id: ["PI_SESSION_ID"],
+    ),
     harness!("auggie", markers: ["AUGMENT_AGENT"]),
-    harness!("goose", markers: ["GOOSE_TERMINAL"]),
-    harness!("kiro", markers: ["AGENT_CONTEXT_OUT"]),
-    harness!("junie", markers: ["JUNIE_DATA", "JUNIE_SHIM_PATH"]),
-    harness!("cursor", markers: ["CURSOR_AGENT"]),
-    harness!("copilot", markers: ["COPILOT_AGENT"]),
+    harness!(
+        "kiro",
+        markers: ["AGENT_CONTEXT_OUT"],
+        session_id: ["KIRO_SESSION_ID"],
+    ),
+    harness!(
+        "junie",
+        markers: ["JUNIE_DATA", "JUNIE_SHIM_PATH", "JUNIE_TMPDIR", "MATTERHORN_TASK"],
+        session_id: ["MATTERHORN_SESSION_ID"],
+    ),
+    harness!(
+        "cursor",
+        markers: ["CURSOR_AGENT", "CURSOR_INVOKED_AS"],
+        session_id: ["CURSOR_CONVERSATION_ID"],
+    ),
+    harness!(
+        "copilot",
+        markers: ["COPILOT_CLI"],
+        session_id: ["COPILOT_AGENT_SESSION_ID"],
+    ),
+    harness!("crush", markers: ["CRUSH"]),
+    harness!(
+        "qwen-code",
+        markers: ["QWEN_CODE"],
+        session_id: ["QWEN_CODE_SESSION_ID"],
+    ),
+    harness!("droid", markers: [], session_id: ["FACTORY_SESSION_ID"]),
+    // Goose 1.30 and later set only `AGENT_SESSION_ID` on shell commands.
+    // That name is generic, so goose comes after every other agent.
+    harness!(
+        "goose",
+        markers: ["GOOSE_TERMINAL"],
+        session_id: ["AGENT_SESSION_ID"],
+    ),
     harness!("cline", markers: ["CLINE_ACTIVE"]),
+    harness!("roo", markers: ["ROO_ACTIVE"]),
 ];
 
 impl AgentHarness {
@@ -208,6 +244,28 @@ mod tests {
         assert_eq!(
             detect(&env_of(&[("CODEX_SESSION_ID", "019a-session")])),
             Some(agent("codex", None, Some("019a-session")))
+        );
+    }
+
+    #[test]
+    fn detect_orders_harnesses_that_share_variables() {
+        // Kilo Code also sets opencode's marker.
+        assert_eq!(
+            detect(&env_of(&[("OPENCODE", "1"), ("KILO_PID", "42")])),
+            Some(agent("kilo", None, None))
+        );
+        // Goose's generic session variable loses to another agent's marker.
+        assert_eq!(
+            detect(&env_of(&[
+                ("AGENT_SESSION_ID", "20261111_3"),
+                ("QWEN_CODE", "1"),
+                ("QWEN_CODE_SESSION_ID", "qwen-session"),
+            ])),
+            Some(agent("qwen-code", None, Some("qwen-session")))
+        );
+        assert_eq!(
+            detect(&env_of(&[("AGENT_SESSION_ID", "20261111_3")])),
+            Some(agent("goose", None, Some("20261111_3")))
         );
     }
 

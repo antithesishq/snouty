@@ -3500,8 +3500,8 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                     "the username and password are hiding your API key",
                     "WARNING: snouty uses the username and password from the `ANTITHESIS_USERNAME`",
                     "which `snouty runs` refuses",
-                    "NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in",
-                    "credentials.toml",
+                    "NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in "
+                    "the credentials file",
                 ),
                 absent=(
                     "run `snouty login` to sign in",

@@ -733,21 +733,21 @@ fn renewal_failure(
     auth: &AuthenticationInfo,
     profile: Option<&str>,
     refused: bool,
-) -> (String, String) {
+) -> (&'static str, String) {
     match auth {
         AuthenticationInfo::GithubActionsOidc(_) if refused => (
-            "GitHub Actions refused to issue an OIDC token".to_owned(),
-            "check that the job has `id-token: write` in its `permissions`, and rerun it"
+            "GitHub Actions refused to issue an OIDC token",
+            "rerun the job, and check that snouty gets this job's own `ACTIONS_ID_TOKEN_REQUEST_TOKEN`"
                 .to_owned(),
         ),
         AuthenticationInfo::GithubActionsOidc(_) => (
-            "GitHub Actions did not issue an OIDC token".to_owned(),
+            "GitHub Actions did not issue an OIDC token",
             "rerun the job: the GitHub Actions token endpoint failed".to_owned(),
         ),
         // Only `snouty login` stores an OAuth credential, so it also
         // replaces one that cannot be renewed.
         _ => (
-            "the sign-in expired and could not be renewed".to_owned(),
+            "the sign-in expired and could not be renewed",
             format!("run {} to sign in again", login_command(profile)),
         ),
     }
@@ -785,12 +785,11 @@ pub async fn cmd_doctor(
             if let Err(err) = renewal {
                 api_failed = true;
                 let auth = api.authentication();
+                let http_err = err.downcast_ref::<reqwest::Error>();
                 // An OAuth token is refreshed by the tenant, so a request
                 // that got no response means that the tenant is unreachable.
                 if matches!(auth, AuthenticationInfo::OAuth(_))
-                    && err
-                        .downcast_ref::<reqwest::Error>()
-                        .is_some_and(|e| e.status().is_none() && !e.is_decode())
+                    && http_err.is_some_and(|e| e.status().is_none() && !e.is_decode())
                 {
                     checks.push(version_check(
                         &host,
@@ -806,14 +805,12 @@ pub async fn cmd_doctor(
                             "the client uses the credential that the credentials check reports",
                         );
                     // A 4xx means that the endpoint refused the request.
-                    let refused = err
-                        .downcast_ref::<reqwest::Error>()
+                    let refused = http_err
                         .and_then(reqwest::Error::status)
                         .is_some_and(|s| s.is_client_error());
-                    let (message, next_step) =
-                        renewal_failure(auth, settings.profile(), refused);
+                    let (message, next_step) = renewal_failure(auth, settings.profile(), refused);
                     check.status = Status::Error;
-                    check.message = message;
+                    check.message = message.to_owned();
                     // The status and URL do not change the next step, so
                     // only --verbose shows them.
                     if verbose {
@@ -1528,14 +1525,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let oauth = oauth_credential_in(dir.path(), FAKE_ACCESS_TOKEN_A, None);
         let oidc = oidc_source().value().clone();
-        let owned = |(m, n): (&str, &str)| (m.to_owned(), n.to_owned());
         for refused in [false, true] {
             assert_eq!(
                 renewal_failure(&oauth, None, refused),
-                owned((
+                (
                     "the sign-in expired and could not be renewed",
-                    "run `snouty login` to sign in again"
-                ))
+                    "run `snouty login` to sign in again".to_owned()
+                )
             );
         }
         assert_eq!(
@@ -1544,17 +1540,18 @@ mod tests {
         );
         assert_eq!(
             renewal_failure(&oidc, None, true),
-            owned((
+            (
                 "GitHub Actions refused to issue an OIDC token",
-                "check that the job has `id-token: write` in its `permissions`, and rerun it"
-            ))
+                "rerun the job, and check that snouty gets this job's own `ACTIONS_ID_TOKEN_REQUEST_TOKEN`"
+                    .to_owned()
+            )
         );
         assert_eq!(
             renewal_failure(&oidc, None, false),
-            owned((
+            (
                 "GitHub Actions did not issue an OIDC token",
-                "rerun the job: the GitHub Actions token endpoint failed"
-            ))
+                "rerun the job: the GitHub Actions token endpoint failed".to_owned()
+            )
         );
     }
 

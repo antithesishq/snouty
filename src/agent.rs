@@ -69,13 +69,11 @@ const HARNESSES: &[AgentHarness] = &[
 ];
 
 impl AgentHarness {
-    fn is_marked(&self, env: &impl Fn(&str) -> Option<String>) -> bool {
-        self.markers.iter().any(|var| env(var).is_some())
-    }
-
     /// The first harness in [`HARNESSES`] that a marker marks.
     fn detect(env: &impl Fn(&str) -> Option<String>) -> Option<&'static Self> {
-        HARNESSES.iter().find(|harness| harness.is_marked(env))
+        HARNESSES
+            .iter()
+            .find(|harness| harness.markers.iter().any(|var| env(var).is_some()))
     }
 }
 
@@ -128,13 +126,6 @@ pub fn detect(env: &impl Fn(&str) -> Option<String>) -> Option<Agent> {
     let ai_agent_version = ai_agent
         .filter(|agent| agent.name == harness.name)
         .and_then(|agent| agent.version);
-    // A child agent inherits the variables of the agent that started it, so
-    // when two harnesses are marked, a session ID can be the parent's.
-    let nested = HARNESSES
-        .iter()
-        .filter(|harness| harness.is_marked(env))
-        .nth(1)
-        .is_some();
     Some(Agent {
         name: harness.name.to_owned(),
         version: harness
@@ -144,7 +135,6 @@ pub fn detect(env: &impl Fn(&str) -> Option<String>) -> Option<Agent> {
         session_id: harness
             .session_id
             .iter()
-            .filter(|_| !nested)
             .find_map(|var| read_trimmed(env, var)),
     })
 }
@@ -242,22 +232,5 @@ mod tests {
             Some(agent("pi", None, None))
         );
         assert_eq!(detect(&env_of(&[])), None);
-    }
-
-    #[test]
-    fn detect_with_two_harnesses_records_no_session() {
-        // Codex that Claude Code started.
-        let env = env_of(&[
-            ("CLAUDECODE", "1"),
-            ("AI_AGENT", "claude-code_2-1-267_agent"),
-            ("CLAUDE_CODE_SESSION_ID", "outer"),
-            ("CODEX_THREAD_ID", "inner"),
-        ]);
-        assert_eq!(
-            detect(&env),
-            Some(agent("claude-code", Some("2.1.267"), None))
-        );
-        let env = env_of(&[("CLAUDECODE", "1"), ("CODEX_THREAD_ID", "inner")]);
-        assert_eq!(detect(&env), Some(agent("claude-code", None, None)));
     }
 }

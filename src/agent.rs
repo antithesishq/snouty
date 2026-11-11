@@ -8,6 +8,10 @@ struct AgentHarness {
     /// Any one of these marks the harness. It includes the version and
     /// session variables.
     markers: &'static [&'static str],
+    /// Variables with a generic name, which another tool could also set. They
+    /// mark the harness only when no other harness's variable is set, and
+    /// `AI_AGENT` names no other agent.
+    generic: &'static [&'static str],
     version: Option<&'static str>,
     /// The first of these that is set holds the session ID.
     session_id: &'static [&'static str],
@@ -21,6 +25,7 @@ macro_rules! harness {
         markers: [$($marker:literal),* $(,)?]
         $(, version: $version:literal)?
         $(, session_id: [$($session:literal),* $(,)?])?
+        $(, generic: [$($generic:literal),* $(,)?])?
         $(,)?
     ) => {
         AgentHarness {
@@ -28,6 +33,7 @@ macro_rules! harness {
             markers: &[$($marker,)* $($version,)? $($($session,)*)?],
             version: harness!(@option $($version)?),
             session_id: &[$($($session),*)?],
+            generic: &[$($($generic),*)?],
         }
     };
     (@option) => { None };
@@ -35,8 +41,8 @@ macro_rules! harness {
 }
 
 /// The first harness whose variable is set wins, so a harness whose variable
-/// another harness also sets, or whose variable has a generic name, comes
-/// later.
+/// another harness also sets comes later. Agents come before IDE terminals so
+/// an agent that runs inside an IDE wins.
 const HARNESSES: &[AgentHarness] = &[
     harness!(
         "claude-code",
@@ -68,6 +74,19 @@ const HARNESSES: &[AgentHarness] = &[
     ),
     harness!("auggie", markers: ["AUGMENT_AGENT"]),
     harness!(
+        "kiro",
+        markers: [],
+        session_id: ["KIRO_SESSION_ID"],
+        generic: ["AGENT_CONTEXT_OUT"],
+    ),
+    // Goose 1.30 and later set only `AGENT_SESSION_ID` on shell commands.
+    harness!(
+        "goose",
+        markers: ["GOOSE_TERMINAL"],
+        session_id: ["AGENT_SESSION_ID"],
+        generic: ["AGENT_SESSION_ID"],
+    ),
+    harness!(
         "junie",
         markers: ["JUNIE_DATA", "JUNIE_SHIM_PATH", "JUNIE_TMPDIR", "MATTERHORN_TASK"],
         session_id: ["MATTERHORN_SESSION_ID"],
@@ -91,25 +110,25 @@ const HARNESSES: &[AgentHarness] = &[
     harness!("droid", markers: [], session_id: ["FACTORY_SESSION_ID"]),
     harness!("cline", markers: ["CLINE_ACTIVE"]),
     harness!("roo", markers: ["ROO_ACTIVE"]),
-    harness!(
-        "kiro",
-        markers: ["AGENT_CONTEXT_OUT"],
-        session_id: ["KIRO_SESSION_ID"],
-    ),
-    // Goose 1.30 and later set only `AGENT_SESSION_ID` on shell commands.
-    harness!(
-        "goose",
-        markers: ["GOOSE_TERMINAL"],
-        session_id: ["AGENT_SESSION_ID"],
-    ),
 ];
 
 impl AgentHarness {
-    /// The first harness in [`HARNESSES`] that a marker marks.
-    fn detect(env: &impl Fn(&str) -> Option<String>) -> Option<&'static Self> {
+    /// The first harness in [`HARNESSES`] that a variable without a generic
+    /// name marks.
+    fn detect_specific(env: &impl Fn(&str) -> Option<String>) -> Option<&'static Self> {
+        HARNESSES.iter().find(|harness| {
+            harness
+                .markers
+                .iter()
+                .any(|var| !harness.generic.contains(var) && env(var).is_some())
+        })
+    }
+
+    /// The first harness in [`HARNESSES`] that a generic variable marks.
+    fn detect_generic(env: &impl Fn(&str) -> Option<String>) -> Option<&'static Self> {
         HARNESSES
             .iter()
-            .find(|harness| harness.markers.iter().any(|var| env(var).is_some()))
+            .find(|harness| harness.generic.iter().any(|var| env(var).is_some()))
     }
 }
 
@@ -153,10 +172,17 @@ fn parse_ai_agent(raw: &str) -> Option<Agent> {
 ///
 /// A harness's own variables win. `AI_AGENT` gives the version of a harness
 /// that exports none of its own, and names a harness that snouty does not
-/// know.
+/// know. A generic variable counts last.
 pub fn detect(env: &impl Fn(&str) -> Option<String>) -> Option<Agent> {
     let ai_agent = read_trimmed(env, "AI_AGENT").and_then(|raw| parse_ai_agent(&raw));
-    let Some(harness) = AgentHarness::detect(env) else {
+    let harness = AgentHarness::detect_specific(env).or_else(|| {
+        AgentHarness::detect_generic(env).filter(|harness| {
+            ai_agent
+                .as_ref()
+                .is_none_or(|agent| agent.name == harness.name)
+        })
+    });
+    let Some(harness) = harness else {
         return ai_agent;
     };
     let ai_agent_version = ai_agent
@@ -284,12 +310,39 @@ mod tests {
             detect(&env_of(&[("OPENCODE", "1"), ("KILO_PID", "42")])),
             Some(agent("kilo", None, None))
         );
+        // An agent wins over the IDE terminal it runs in.
+        assert_eq!(
+            detect(&env_of(&[
+                ("GOOSE_TERMINAL", "1"),
+                ("CLINE_ACTIVE", "true")
+            ])),
+            Some(agent("goose", None, None))
+        );
+        assert_eq!(
+            detect(&env_of(&[("KIRO_SESSION_ID", "k"), ("ROO_ACTIVE", "true")])),
+            Some(agent("kiro", None, Some("k")))
+        );
+    }
+
+    #[test]
+    fn detect_counts_generic_variables_last() {
         assert_eq!(
             detect(&env_of(&[
                 ("AGENT_SESSION_ID", "20261111_3"),
                 ("CLINE_ACTIVE", "true"),
             ])),
             Some(agent("cline", None, None))
+        );
+        assert_eq!(
+            detect(&env_of(&[
+                ("AGENT_CONTEXT_OUT", "/tmp/out"),
+                ("AI_AGENT", "acme_1-0_agent"),
+            ])),
+            Some(agent("acme", Some("1.0"), None))
+        );
+        assert_eq!(
+            detect(&env_of(&[("AGENT_CONTEXT_OUT", "/tmp/out")])),
+            Some(agent("kiro", None, None))
         );
     }
 

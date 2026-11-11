@@ -179,8 +179,18 @@ jobs:
       CARGO_BUILD_TARGET: x86_64-unknown-linux-musl
     steps:
       # musl-gcc compiles the aws-lc and mimalloc C sources.
+      #
+      # The runner image lists the Azure and Canonical archives in
+      # apt-mirrors.txt, and apt tries them in priority order. All three
+      # names resolve through Canonical's DNS, so a Canonical outage takes
+      # out every one. kernel.org's mirror, last, keeps apt working then.
+      # apt checks every index against the Ubuntu keyring, so a mirror
+      # cannot change what is trusted.
       - name: Install musl-tools
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+        run: |
+          printf 'https://mirrors.edge.kernel.org/ubuntu/\tpriority:4\n' |
+            sudo tee -a /etc/apt/apt-mirrors.txt
+          sudo apt-get update && sudo apt-get install -y musl-tools
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

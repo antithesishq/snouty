@@ -81,6 +81,13 @@ skip = [
     { crate = "schemars@0.8", reason = "progenitor and typify, at build time" },
     { crate = "schemars_derive@0.8", reason = "schemars 0.8" },
     { crate = "serde_derive_internals@0.29", reason = "schemars_derive 0.8" },
+    # rmcp 3.9 is on sha2 0.11. cacache 13.1, ssri 9.2 and headers 0.4, all the
+    # latest, are on sha2 0.10 and digest 0.10.
+    { crate = "sha2@0.10", reason = "cacache, ssri and snouty" },
+    { crate = "digest@0.10", reason = "sha2 0.10, sha1 and sha-1" },
+    { crate = "block-buffer@0.10", reason = "digest 0.10" },
+    { crate = "crypto-common@0.1", reason = "digest 0.10" },
+    { crate = "cpufeatures@0.2", reason = "sha2 0.10, sha1 and sha-1" },
 ]
 
 [sources]

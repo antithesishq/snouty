@@ -728,8 +728,7 @@ fn rejected_credential_next_step(in_use: &SourcedCredential, profile: Option<&st
 }
 
 /// The message of the credentials check when `auth` could not be renewed,
-/// and the one step that fixes it. `status` is the status that the token
-/// endpoint answered, if it answered.
+/// and the next step.
 fn renewal_failure(
     auth: &AuthenticationInfo,
     profile: Option<&str>,
@@ -824,9 +823,8 @@ pub async fn cmd_doctor(
                         }
                         _ => "the tenant",
                     };
-                    // The status, or the cause of an HTTP failure, without
-                    // the URL; --verbose shows the whole error. An error that
-                    // is not HTTP says no more than the message.
+                    // Leave the URL out by default. An error that is not
+                    // HTTP adds nothing to the message.
                     let cause = if verbose {
                         Some(format!("{err:#}"))
                     } else {
@@ -1545,8 +1543,6 @@ mod tests {
         );
     }
 
-    /// A credential that cannot be renewed gets a plain message and the one
-    /// step that fixes it, for each credential that is renewed.
     #[test]
     fn renewal_failure_names_the_next_step_for_each_credential() {
         let dir = tempfile::tempdir().unwrap();

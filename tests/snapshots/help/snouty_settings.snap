@@ -3,8 +3,8 @@ source: tests/help_snapshots.rs
 ---
 Show snouty's settings, and trust or deny a project settings file
 
-`settings show` prints the settings that snouty resolved, and the files it read,
-the credentials file among them. `settings trust` and `settings deny` decide
+`settings show` prints the settings that snouty resolved, the settings files it
+read, and the credentials file. `settings trust` and `settings deny` decide
 whether snouty uses a project settings file (./.snouty.toml).
 
 snouty reads two settings files. The global settings file holds your own

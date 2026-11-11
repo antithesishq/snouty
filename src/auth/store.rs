@@ -239,9 +239,9 @@ fn clear_from_file_if_present(profile: Option<&str>) {
     let Some(path) = credentials_file_path() else {
         return;
     };
-    let Some(parent_dir) = path.parent() else {
-        return;
-    };
+    let parent_dir = path
+        .parent()
+        .expect("the credentials file path is a file name joined to a dir");
 
     if let Ok(Some(contents)) = read_to_string_if_file_exists(&path)
         && let Ok(mut creds_file) = parse_credentials_file_toml(&contents, &path)

@@ -58,23 +58,14 @@ fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, 
     rows
 }
 
-/// The settings files that snouty read, then the credentials file when it
-/// exists.
-fn files(settings: &Settings) -> Vec<SettingsFile> {
+pub fn cmd_settings_show(settings: &Settings, json: bool) -> Result<()> {
+    let rows = rows(settings, &features::enabled());
     let credentials = credentials_file_path()
         .filter(|path| path.is_file())
         .map(|path| SettingsFile::new(SettingsFileType::Credentials, &path));
-    settings
-        .files()
-        .iter()
-        .cloned()
-        .chain(credentials)
-        .collect()
-}
-
-pub fn cmd_settings_show(settings: &Settings, json: bool) -> Result<()> {
-    let rows = rows(settings, &features::enabled());
-    let files = files(settings);
+    // The settings files that snouty read, then the credentials file when it
+    // exists.
+    let files: Vec<&SettingsFile> = settings.files().iter().chain(&credentials).collect();
     let mut stdout = stdio::stdout();
     if json {
         let object: Map<String, Value> = rows

@@ -1,6 +1,6 @@
 Show snouty's settings, and trust or deny a project settings file
 
-`{{ t("settings show")? }}` prints the settings that snouty resolved, and the files it read, the credentials file among them. `{{ t("settings trust")? }}` and `{{ t("settings deny")? }}` decide whether snouty uses a project settings file (./.snouty.toml).
+`{{ t("settings show")? }}` prints the settings that snouty resolved, the settings files it read, and the credentials file. `{{ t("settings trust")? }}` and `{{ t("settings deny")? }}` decide whether snouty uses a project settings file (./.snouty.toml).
 
 snouty reads two settings files. The global settings file holds your own settings, and `{{ t("snouty login")? }}` writes it. It is settings.toml in the global settings directory: $XDG_CONFIG_HOME/snouty, or ~/.config/snouty when XDG_CONFIG_HOME is not set. The project settings file holds the settings of one project. It is .snouty.toml in the current directory, and snouty does not look for it in parent directories. A value in the project settings file overrides the same value in the global settings file.
 

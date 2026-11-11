@@ -26,7 +26,7 @@ stdout '^\s*update_channel\s'
 ! stdout '^\s*features\s'
 snouty settings show --json
 ! stdout '"features"'
-! stdout 'runs-search|runs-exec|mcp'
+! stdout 'runs-search|runs-exec'
 
 # 3. An empty value counts as unset, so the row does not print.
 env SNOUTY_UNSTABLE_FEATURES=

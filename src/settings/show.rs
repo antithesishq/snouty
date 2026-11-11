@@ -97,3 +97,24 @@ pub fn cmd_settings_show(settings: &Settings, json: bool) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_features_row_lists_the_enabled_features_only_when_there_are_any() {
+        let settings = Settings::default();
+        let row = |features: &[Feature]| {
+            rows(&settings, features)
+                .into_iter()
+                .find(|(name, _, _)| *name == "features")
+                .map(|(_, value, text)| (value, text))
+        };
+        assert_eq!(row(&[]), None);
+        assert_eq!(
+            row(&[Feature::Example]),
+            Some((json!("example"), "example".to_owned()))
+        );
+    }
+}

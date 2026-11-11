@@ -1,5 +1,6 @@
 //! The run metadata that `snouty launch` reads from its environment: the git
-//! checkout of the config dir, and the GitHub Actions workflow run.
+//! checkout of the config dir, the GitHub Actions workflow run, and the AI
+//! agent harness that runs snouty.
 
 use std::path::Path;
 use std::time::Duration;
@@ -40,6 +41,15 @@ fn detect_with(dir: &Path, env: impl Fn(&str) -> Option<String>) -> Params {
     params.insert(RUN_CALLER_TYPE, "snouty");
     let checkout = read_git(dir, &mut params);
     read_github_actions(&env, checkout.as_deref(), &mut params);
+    if let Some(agent) = crate::agent::detect(&env) {
+        params.insert("attrs.agent", agent.name);
+        if let Some(version) = agent.version {
+            params.insert("attrs.agent_version", version);
+        }
+        if let Some(session_id) = agent.session_id {
+            params.insert("attrs.agent_session_id", session_id);
+        }
+    }
     params
 }
 

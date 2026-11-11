@@ -92,7 +92,6 @@ from typing import TypeVar
 import pexpect
 import pyte
 
-TEAMS: dict[str, str | None] = {"SNOUTY_UNSTABLE_FEATURES": "teams"}
 # A syntactically-valid but nonexistent run id, for clean-error stories.
 UNKNOWN_RUN = "ffffffffffffffffffffffffffffffff-54-5"
 # A run ID that only the `debug-bad-duration` story names, so that the guard
@@ -1423,7 +1422,7 @@ def gallery_run(sn: Snouty, reuse: bool) -> GalleryRun:
     ensure_example_images()
     # The timestamp helps a person tell the gallery's runs apart in the web UI.
     description = f"{GALLERY_RUN_DESCRIPTION} {datetime.now().isoformat()}"
-    launch = sn.run(gallery_launch_args(description), env=TEAMS)
+    launch = sn.run(gallery_launch_args(description))
     run = launched_run_id(launch.stdout)
     if not launch.ok or run is None:
         raise GalleryError(
@@ -2560,19 +2559,6 @@ def exec_json(needle: str, *, system_events: bool):
     return chk
 
 
-def help_without_teams_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-    """A help story, whose help names --duration and none of the flags that
-    the `teams` feature gates."""
-    ok, detail = help_story_check(sr, reg)
-    if not ok or sr.help_result is None:
-        return (ok, detail)
-    text = sr.help_result.combined
-    named = [f for f in ("--max-compute-hours", "--setup-timeout") if f in text]
-    if named or "--duration" not in text or "Deprecated" in text:
-        return (False, f"help names gated flags {named!r} or misdescribes --duration")
-    return (True, detail)
-
-
 def help_story_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     """Gate a help story: the `--help` must be well-formed (exit 0, has a Usage
     line), any documented `align_tokens` must appear in BOTH the help and the
@@ -3335,7 +3321,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                 guard, DURATION_RUN, "must be from 30 minutes to 6 hours"
             ),
             json_capable=False,
-            env={**guarded, **TEAMS},
+            env=guarded,
         ),
         Story(
             "launch-bare-setup-timeout",
@@ -3358,7 +3344,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                 guard, SETUP_TIMEOUT_IMAGE, "a bare number is not permitted"
             ),
             json_capable=False,
-            env={**guarded, **TEAMS},
+            env=guarded,
         ),
         # -- doctor (one story per distinct auth output) --------------------
         Story(
@@ -3619,7 +3605,6 @@ def build_launch_stories(x: GalleryRun) -> list[Story]:
             x.launch.args,
             launched_run(x.run),
             json_capable=False,
-            env=TEAMS,
             precaptured=x.launch,
         )
     ]
@@ -4065,8 +4050,6 @@ def _help_story(
     samples: list[tuple[str, list[str]]] | None = None,
     align: tuple[str, ...] = (),
     expect_ok: bool = True,
-    env: dict[str, str | None] | None = None,
-    check=help_story_check,
 ) -> Story:
     args = args or []
     judge = HELP_RUBRIC + (_OUTPUT_RUBRIC if args else _HELP_ONLY_RUBRIC)
@@ -4076,13 +4059,12 @@ def _help_story(
         goal=goal,
         judge=judge,
         args=args,
-        check=check,
+        check=help_story_check,
         json_capable=False,
         help_cmd=help_cmd,
         samples=samples,
         align_tokens=align,
         expect_ok=expect_ok,
-        env=env,
     )
 
 
@@ -4293,18 +4275,6 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "split across two lines. Each example for a launcher that needs a config image "
             "should pass one, so that I can copy it as written.",
             ["launch"],
-            env=TEAMS,
-        ),
-        _help_story(
-            "help-launch-without-teams",
-            "Understand how to size a run without the teams feature",
-            "Without the `teams` unstable feature, I run `snouty launch --help` to learn how "
-            "long my run fuzzes. The help should name --duration and not call it deprecated. "
-            "It should not name --max-compute-hours or --setup-timeout, which need the "
-            "feature.",
-            ["launch"],
-            env={"SNOUTY_UNSTABLE_FEATURES": None},
-            check=help_without_teams_check,
         ),
         _help_story(
             "help-debug",

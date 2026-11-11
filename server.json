@@ -29,7 +29,7 @@
           "value": "mcp,{features}",
           "variables": {
             "features": {
-              "description": "More unstable features to turn on, comma-separated, such as teams",
+              "description": "More unstable features to turn on, comma-separated",
               "default": ""
             }
           }

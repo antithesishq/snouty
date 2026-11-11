@@ -22,7 +22,7 @@ use snouty::config;
 use snouty::container;
 use snouty::docs;
 use snouty::error::user_error;
-use snouty::features::{self, Feature};
+use snouty::features;
 use snouty::login::cmd_login;
 use snouty::params::{
     ANT_CONFIG_IMAGE, ANT_DEBUGGING_DURATION, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_RUN_ID,
@@ -224,9 +224,7 @@ async fn cmd_launch(
         params.insert(ANT_DESCRIPTION, description);
     }
     if let Some(duration) = args.duration {
-        if features::is_enabled(Feature::Teams) {
-            eprintln!("warning: --duration is deprecated, use --max-compute-hours instead");
-        }
+        eprintln!("warning: --duration is deprecated, use --max-compute-hours instead");
         // The API wants a bare minute count, not the human `1h30m` Display form.
         params.insert(ANT_DURATION, duration.minutes().to_string());
     }

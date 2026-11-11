@@ -124,8 +124,7 @@ impl GithubActionsOidcToken {
 /// Split out from [`GithubActionsOidcToken::refresh`] so the
 /// HTTP exchange can be unit-tested against a local server without mutating the
 /// process environment (which would race other tests under threaded
-/// `cargo test`). The request URL already carries a query string, so the
-/// audience is appended with `&`.
+/// `cargo test`).
 async fn fetch_github_actions_oidc_credentials(
     actions_id_url: &str,
     actions_id_request_token: &str,
@@ -139,7 +138,8 @@ async fn fetch_github_actions_oidc_credentials(
         .timeout(OIDC_REQUEST_TIMEOUT)
         .build()?;
     let response: OidcTokenResponse = client
-        .get(format!("{actions_id_url}&audience=antithesis"))
+        .get(actions_id_url)
+        .query(&[("audience", "antithesis")])
         .bearer_auth(actions_id_request_token)
         .send()
         .await?
@@ -169,9 +169,10 @@ mod tests {
 
     /// Spawn a one-shot HTTP server that records the request it receives and
     /// answers it with `status` (e.g. `"200 OK"`) and a JSON `body`. Returns the
-    /// request URL — already carrying a query string, like the real Actions
-    /// endpoint — and a channel that yields the captured request once it arrives.
+    /// request URL, `path_and_query` on that server, and a channel that yields
+    /// the captured request once it arrives.
     fn spawn_oidc_token_server(
+        path_and_query: &str,
         status: &'static str,
         body: &str,
     ) -> (String, Receiver<CapturedRequest>) {
@@ -222,7 +223,7 @@ mod tests {
             response_stream.flush().expect("flush response");
         });
 
-        (format!("http://{addr}/token?api-version=2.0"), rx)
+        (format!("http://{addr}{path_and_query}"), rx)
     }
 
     /// The JSON envelope that GitHub's Actions OIDC endpoint wraps the token in.
@@ -232,39 +233,51 @@ mod tests {
 
     #[tokio::test]
     async fn github_actions_oidc_exchange_sends_bearer_token_and_audience() {
-        // The endpoint returns the JWT wrapped in a JSON envelope, exactly as
-        // GitHub's Actions OIDC endpoint does.
-        let (url, requests) = spawn_oidc_token_server("200 OK", &oidc_token_body());
+        // GitHub.com's URL carries `?api-version=…`; a self-hosted one may
+        // carry no query at all. The audience must be a query parameter in both.
+        for (path_and_query, expected_target) in [
+            (
+                "/token?api-version=2.0",
+                "/token?api-version=2.0&audience=antithesis",
+            ),
+            ("/token", "/token?audience=antithesis"),
+        ] {
+            // The endpoint returns the JWT wrapped in a JSON envelope, exactly
+            // as GitHub's Actions OIDC endpoint does.
+            let (url, requests) =
+                spawn_oidc_token_server(path_and_query, "200 OK", &oidc_token_body());
 
-        let token = fetch_github_actions_oidc_credentials(&url, FAKE_OIDC_REQUEST_TOKEN)
-            .await
-            .unwrap();
+            let token = fetch_github_actions_oidc_credentials(&url, FAKE_OIDC_REQUEST_TOKEN)
+                .await
+                .unwrap();
 
-        assert_eq!(token, FAKE_OIDC_TOKEN);
+            assert_eq!(token, FAKE_OIDC_TOKEN);
 
-        let request = requests
-            .recv_timeout(Duration::from_secs(5))
-            .expect("server should have received a request");
+            let request = requests
+                .recv_timeout(Duration::from_secs(5))
+                .expect("server should have received a request");
 
-        // The Antithesis audience is appended onto the (already query-bearing) URL.
-        assert!(
-            request.request_line.contains("audience=antithesis"),
-            "request line missing audience: {:?}",
-            request.request_line
-        );
-        // The Actions request token is presented as a bearer credential.
-        assert_eq!(
-            request.authorization.as_deref(),
-            Some(format!("Bearer {FAKE_OIDC_REQUEST_TOKEN}").as_str())
-        );
+            assert_eq!(
+                request.request_line,
+                format!("GET {expected_target} HTTP/1.1")
+            );
+            // The Actions request token is presented as a bearer credential.
+            assert_eq!(
+                request.authorization.as_deref(),
+                Some(format!("Bearer {FAKE_OIDC_REQUEST_TOKEN}").as_str())
+            );
+        }
     }
 
     #[tokio::test]
     async fn github_actions_oidc_exchange_errors_on_non_success_status() {
         // A rejected request token (or any non-2xx) must surface as an error
         // rather than letting the error body be mistaken for a token.
-        let (url, _requests) =
-            spawn_oidc_token_server("403 Forbidden", r#"{"message":"bad credentials"}"#);
+        let (url, _requests) = spawn_oidc_token_server(
+            "/token?api-version=2.0",
+            "403 Forbidden",
+            r#"{"message":"bad credentials"}"#,
+        );
 
         let result = fetch_github_actions_oidc_credentials(&url, FAKE_OIDC_REQUEST_TOKEN).await;
         assert!(result.is_err(), "expected an error for a 403 response");

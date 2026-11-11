@@ -12,7 +12,6 @@ use crate::auth::{
 };
 use crate::compose;
 use crate::container;
-use crate::features::{self, Feature};
 use crate::login::{CliOAuthConfig, fetch_cli_config};
 use crate::render::OutputOptions;
 use crate::settings::Settings;
@@ -528,9 +527,6 @@ struct ReleaseFloor {
     serves: &'static str,
     min: (u64, u64),
     consequence: &'static str,
-    /// The feature that gates what this floor serves. A floor reports
-    /// nothing while its feature is off.
-    feature: Option<Feature>,
 }
 
 const RELEASE_FLOORS: [ReleaseFloor; 5] = [
@@ -539,21 +535,18 @@ const RELEASE_FLOORS: [ReleaseFloor; 5] = [
         serves: "the events-search API",
         min: MIN_SEARCH_RELEASE,
         consequence: "`runs search` and `runs events` can fail or hang",
-        feature: None,
     },
     ReleaseFloor {
         id: CheckId::ExecuteCommand,
         serves: "the execute-command `container` field",
         min: MIN_EXEC_RELEASE,
         consequence: "`runs exec` fails",
-        feature: None,
     },
     ReleaseFloor {
         id: CheckId::CancelRun,
         serves: "the cancel-run API",
         min: MIN_CANCEL_RELEASE,
         consequence: "`runs cancel` fails",
-        feature: None,
     },
     ReleaseFloor {
         id: CheckId::LaunchParams,
@@ -561,25 +554,18 @@ const RELEASE_FLOORS: [ReleaseFloor; 5] = [
         min: MIN_LAUNCH_PARAMS_RELEASE,
         consequence: "`launch --max-compute-hours`, `launch --setup-timeout` and \
                       `debug --duration` have no effect",
-        feature: Some(Feature::Teams),
     },
     ReleaseFloor {
         id: CheckId::RunStream,
         serves: "property streaming",
         min: MIN_STREAM_RELEASE,
         consequence: "`runs stream` is not available",
-        feature: None,
     },
 ];
 
-fn release_floor_checks(version: &ApiVersion, enabled: &[Feature]) -> Vec<Check> {
+fn release_floor_checks(version: &ApiVersion) -> Vec<Check> {
     RELEASE_FLOORS
         .iter()
-        .filter(|floor| {
-            floor
-                .feature
-                .is_none_or(|feature| enabled.contains(&feature))
-        })
         .filter_map(|floor| release_floor_check(version, floor))
         .collect()
 }
@@ -743,7 +729,7 @@ pub async fn cmd_doctor(
             } else {
                 let version = api.get_version().await;
                 if let Ok(version) = &version {
-                    checks.extend(release_floor_checks(version, &features::enabled()));
+                    checks.extend(release_floor_checks(version));
                 }
                 api_failed = matches!(version, Err(VersionError::Unreachable(_)));
                 checks.push(version_check(&host, version));
@@ -752,8 +738,13 @@ pub async fn cmd_doctor(
 
         // A client that fails to build (bad proxy URL or extra header) skips
         // the API check too. Skip the probe when the tenant could be
-        // unreachable: the probe would only wait out its timeout.
+        // unreachable: the probe would only wait out its timeout. Skip it
+        // when a credential works, too: that user does not need OAuth login.
+        let credential_works = checks
+            .iter()
+            .any(|c| c.id == CheckId::Api && c.status == Status::Ok);
         if !api_failed
+            && !credential_works
             && let Some(base_url) = settings.base_url()
             && let Ok(client) = HttpClient::new(settings, verbose)
         {
@@ -1289,7 +1280,7 @@ mod tests {
     #[test]
     fn exec_release_floor_warns_below_64() {
         let ids = |release: String| -> Vec<CheckId> {
-            release_floor_checks(&ApiVersion::new("v1".into(), release), &[Feature::Teams])
+            release_floor_checks(&ApiVersion::new("v1".into(), release))
                 .into_iter()
                 .map(|check| check.id)
                 .collect()
@@ -1301,19 +1292,6 @@ mod tests {
             [&[CheckId::ExecuteCommand][..], &newer].concat()
         );
         assert_eq!(ids(format!("{major}.{minor}")), newer);
-    }
-
-    #[test]
-    fn launch_params_floor_needs_the_teams_feature() {
-        let version = ApiVersion::new("v1".into(), "65.9".into());
-        let ids = |enabled: &[Feature]| -> Vec<CheckId> {
-            release_floor_checks(&version, enabled)
-                .into_iter()
-                .map(|check| check.id)
-                .collect()
-        };
-        assert!(ids(&[]).is_empty());
-        assert_eq!(ids(&[Feature::Teams]), [CheckId::LaunchParams]);
     }
 
     #[test]

@@ -480,7 +480,6 @@ pub(super) fn tool_help(mut params: JsonObject) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::{self, Feature};
     use crate::mcp::object;
 
     #[test]
@@ -680,15 +679,12 @@ mod tests {
     /// the unit pattern and a description that gives the duration format.
     #[test]
     fn duration_params_need_a_unit() {
-        let mut durations = vec![
+        let durations = [
             (ToolName::RunsWait, "poll_interval"),
             (ToolName::RunsWait, "timeout"),
             (ToolName::RunsExec, "timeout"),
+            (ToolName::Debug, "duration"),
         ];
-        // The debug tool omits the param while its flag is hidden.
-        if features::is_enabled(Feature::Teams) {
-            durations.push((ToolName::Debug, "duration"));
-        }
         for name in ToolName::ALL {
             for param in &name.spec().params {
                 assert_eq!(

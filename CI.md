@@ -90,7 +90,7 @@ jobs:
             --config ./antithesis \
             --test-name "$test_name" \
             --description "$description" \
-            --duration 30m \
+            --max-compute-hours 24 \
             "${source_flag[@]}"
 ```
 
@@ -178,7 +178,7 @@ antithesis:
       snouty launch \
         --launcher basic_test \
         --config ./antithesis \
-        --duration 30m \
+        --max-compute-hours 24 \
         $source_flag
 ```
 
@@ -207,7 +207,7 @@ steps:
       snouty launch \
         --launcher basic_test \
         --config ./antithesis \
-        --duration 30m \
+        --max-compute-hours 24 \
         $$source_flag
 ```
 
@@ -241,7 +241,7 @@ jobs:
           snouty launch \
             --launcher basic_test \
             --config ./antithesis \
-            --duration 30m \
+            --max-compute-hours 24 \
             $source_flag
 workflows:
   antithesis:

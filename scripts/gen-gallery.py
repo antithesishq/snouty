@@ -90,7 +90,7 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from enum import Enum
+from enum import Enum, auto
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import islice
 from pathlib import Path
@@ -192,6 +192,23 @@ class Result:
         return self.stdout if not self.stderr else f"{self.stdout}{self.stderr}"
 
 
+def _write_browser_shims(script: str) -> Path:
+    """A new directory holding `xdg-open` and `open`, each running `script`.
+    The caller removes it."""
+    shims = Path(tempfile.mkdtemp(prefix="snouty-gallery-shim."))
+    for prog in ("xdg-open", "open"):
+        shim = shims / prog
+        shim.write_text(script)
+        shim.chmod(0o755)
+    return shims
+
+
+# Drops any ambient ANTITHESIS_* variables from a story's environment, so a
+# story shows the state it seeded and no real secret reaches a captured file.
+def _no_ambient_antithesis_env() -> dict[str, None]:
+    return {k: None for k in os.environ if k.startswith("ANTITHESIS_")}
+
+
 class Snouty:
     """Shells out to the snouty binary. The gallery is a black-box test of the
     CLI, so we never reach into snouty's internals — we run it and read what a
@@ -201,11 +218,7 @@ class Snouty:
         self.binary = binary
         # `runs show --web` shells out to xdg-open/open. Drop no-op shims on PATH
         # (and point $BROWSER at one) so regenerating never spawns a browser.
-        self._shim = Path(tempfile.mkdtemp(prefix="snouty-gallery-shim."))
-        for prog in ("xdg-open", "open"):
-            shim = self._shim / prog
-            shim.write_text("#!/bin/sh\nexit 0\n")
-            shim.chmod(0o755)
+        self._shim = _write_browser_shims("#!/bin/sh\nexit 0\n")
         self._env = dict(os.environ)
         self._env["PATH"] = f"{self._shim}{os.pathsep}{self._env.get('PATH', '')}"
         self._env["BROWSER"] = str(self._shim / "xdg-open")
@@ -234,6 +247,11 @@ class Snouty:
                 self._children.add(child)
             else:
                 self._children.discard(child)
+
+    @property
+    def path(self) -> str:
+        """The PATH that snouty runs with, the no-op browser shims first."""
+        return self._env["PATH"]
 
     def env_with(self, overrides: dict[str, str | None]) -> dict[str, str]:
         """The environment a snouty child inherits, with `overrides` applied: a
@@ -497,8 +515,8 @@ class LaunchGuard:
 class ActionsJob(Enum):
     """What the mock's GitHub Actions token endpoint does with a request."""
 
-    ISSUES_TOKEN = "issues a token"
-    REJECTS_REQUEST = "rejects the request token"
+    ISSUES_TOKEN = auto()
+    REJECTS_REQUEST = auto()
 
 
 @dataclass(frozen=True)
@@ -551,11 +569,7 @@ class MockTenant:
         self._callback_port = 0
         self._accepted = {f"Bearer {_FAKE_API_KEY_B}"}
         self._lock = threading.Lock()
-        self._bin = Path(tempfile.mkdtemp(prefix="snouty-browser."))
-        for prog in ("xdg-open", "open"):
-            browser = self._bin / prog
-            browser.write_text(f"#!{sys.executable}\n{_FAKE_BROWSER}")
-            browser.chmod(0o755)
+        self._bin = _write_browser_shims(f"#!{sys.executable}\n{_FAKE_BROWSER}")
         tenant = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -649,7 +663,10 @@ class MockTenant:
                     return 400, {"error": "invalid_grant"}, ""
                 return self._issue_oauth(_FAKE_ACCESS_TOKEN_A, _FAKE_REFRESH_TOKEN_B)
             case "POST", "/auth/cli/refresh":
-                if self.spec.refresh_revoked or auth != f"Bearer {_FAKE_REFRESH_TOKEN_A}":
+                if (
+                    self.spec.refresh_revoked
+                    or auth != f"Bearer {_FAKE_REFRESH_TOKEN_A}"
+                ):
                     return 401, {"error": "invalid refresh token"}, ""
                 return self._issue_oauth(_FAKE_ACCESS_TOKEN_B, _FAKE_REFRESH_TOKEN_B)
             case "GET", "/actions/token":
@@ -4932,6 +4949,10 @@ _TTY_RUBRIC = (
 )
 
 
+# A tenant without CLI single sign-on, the default for a TTY story.
+_NO_SSO = MockTenantSpec()
+
+
 def _tty_story(
     slug: str,
     title: str,
@@ -4942,7 +4963,7 @@ def _tty_story(
     *,
     seed_files: dict[str, str] | None = None,
     post_capture: tuple[str, ...] = (_SETTINGS, _CREDS),
-    tenant: MockTenantSpec = MockTenantSpec(),
+    tenant: MockTenantSpec = _NO_SSO,
 ) -> Story:
     return Story(
         slug=slug,
@@ -5135,14 +5156,38 @@ def build_tty_stories() -> list[Story]:
     ]
 
 
-# A configured machine whose only credential is the one that the story gives.
-def _mock_tenant_env(**credential: str) -> dict[str, str | None]:
-    return {
-        **{k: None for k in os.environ if k.startswith("ANTITHESIS_")},
-        "ANTITHESIS_TENANT": _TENANT,
-        "ANTITHESIS_REPOSITORY": _REPO,
-        **credential,
-    }
+def _mock_story(
+    slug: str,
+    title: str,
+    goal: str,
+    judge: str,
+    args: list[str],
+    check: Callable[[StoryRun, Registry], tuple[bool, str]],
+    tenant: MockTenantSpec,
+    *,
+    seed_files: dict[str, str] | None = None,
+    **credential: str,
+) -> Story:
+    """A story on a configured machine with an isolated config, whose only
+    credential is the one that the story gives (or seeds)."""
+    return Story(
+        slug,
+        title,
+        goal,
+        judge,
+        args,
+        check,
+        json_capable=False,
+        env={
+            **_no_ambient_antithesis_env(),
+            "ANTITHESIS_TENANT": _TENANT,
+            "ANTITHESIS_REPOSITORY": _REPO,
+            **credential,
+        },
+        isolate_config=True,
+        seed_files=seed_files,
+        tenant=tenant,
+    )
 
 
 # A single sign-on whose access token expired, as `snouty login` stores it.
@@ -5155,10 +5200,9 @@ _SEED_EXPIRED_OAUTH = {
 
 
 def build_mock_tenant_stories() -> list[Story]:
-    """The credential stories that need a mock tenant, other than login: a
-    rejected credential, a renewal, and a GitHub Actions job."""
+    """The mock tenant stories other than login."""
     return [
-        Story(
+        _mock_story(
             "runs-key-rejected",
             "My API key is rejected",
             "My API key was revoked, and I do not know it yet. I list my runs.",
@@ -5166,12 +5210,10 @@ def build_mock_tenant_stories() -> list[Story]:
             "how to give a working one.",
             ["runs", "list"],
             fails_with("snouty login"),
-            json_capable=False,
-            env=_mock_tenant_env(ANTITHESIS_API_KEY=_FAKE_API_KEY_A),
-            isolate_config=True,
-            tenant=MockTenantSpec(),
+            MockTenantSpec(),
+            ANTITHESIS_API_KEY=_FAKE_API_KEY_A,
         ),
-        Story(
+        _mock_story(
             "runs-sso-refresh",
             "My single sign-on session renews itself",
             "I signed in with single sign-on some time ago, and my access token has expired. "
@@ -5180,13 +5222,10 @@ def build_mock_tenant_stories() -> list[Story]:
             "not expired.",
             ["runs", "list"],
             succeeds_with(_MOCK_RUN_ID),
-            json_capable=False,
-            env=_mock_tenant_env(),
-            isolate_config=True,
+            MockTenantSpec(sso=True),
             seed_files=_SEED_EXPIRED_OAUTH,
-            tenant=MockTenantSpec(sso=True),
         ),
-        Story(
+        _mock_story(
             "runs-sso-refresh-revoked",
             "My single sign-on session was revoked",
             "I signed in with single sign-on, but my session was revoked, and my access "
@@ -5195,13 +5234,10 @@ def build_mock_tenant_stories() -> list[Story]:
             "that fixes it: `snouty login`.",
             ["runs", "list"],
             fails_with("snouty login"),
-            json_capable=False,
-            env=_mock_tenant_env(),
-            isolate_config=True,
+            MockTenantSpec(sso=True, refresh_revoked=True),
             seed_files=_SEED_EXPIRED_OAUTH,
-            tenant=MockTenantSpec(sso=True, refresh_revoked=True),
         ),
-        Story(
+        _mock_story(
             "doctor-oidc",
             "Check a GitHub Actions job that signs in with OIDC",
             "My GitHub Actions job has `id-token: write` and no API key. I want doctor to "
@@ -5212,12 +5248,9 @@ def build_mock_tenant_stories() -> list[Story]:
             doctor_check(
                 contains=("GitHub Actions OIDC token", "Antithesis API reachable")
             ),
-            json_capable=False,
-            env=_mock_tenant_env(),
-            isolate_config=True,
-            tenant=MockTenantSpec(actions=ActionsJob.ISSUES_TOKEN),
+            MockTenantSpec(actions=ActionsJob.ISSUES_TOKEN),
         ),
-        Story(
+        _mock_story(
             "doctor-oidc-forbidden",
             "GitHub Actions refuses the job an OIDC token",
             "My GitHub Actions job signs in with OIDC, but GitHub refuses to give it a token. "
@@ -5228,12 +5261,14 @@ def build_mock_tenant_stories() -> list[Story]:
             doctor_check(
                 contains=("could not get a GitHub Actions OIDC token",), ok=False
             ),
-            json_capable=False,
-            env=_mock_tenant_env(),
-            isolate_config=True,
-            tenant=MockTenantSpec(actions=ActionsJob.REJECTS_REQUEST),
+            MockTenantSpec(actions=ActionsJob.REJECTS_REQUEST),
         ),
     ]
+
+
+def build_offline_stories() -> list[Story]:
+    """The TTY and mock tenant stories, which need no external dependencies."""
+    return [*build_tty_stories(), *build_mock_tenant_stories()]
 
 
 # ---------------------------------------------------------------------------
@@ -5512,7 +5547,7 @@ def run_tty_story(sn: Snouty, story: Story) -> StoryRun:
                 "HOME": str(home),
                 "TERM": "xterm-256color",
                 "XDG_CONFIG_HOME": None,
-                **{k: None for k in os.environ if k.startswith("ANTITHESIS_")},
+                **_no_ambient_antithesis_env(),
                 **(story.env or {}),
             }
         )
@@ -5577,7 +5612,7 @@ def run_mcp_story(sn: Snouty, story: Story) -> StoryRun:
 def run_story(sn: Snouty, story: Story) -> StoryRun:
     if story.tenant is not None:
         with MockTenant(story.tenant) as tenant:
-            env = {**(story.env or {}), **tenant.env(sn.env_with({})["PATH"])}
+            env = {**(story.env or {}), **tenant.env(sn.path)}
             return run_story(sn, replace(story, env=env, tenant=None))
     if story.precaptured is not None:
         return StoryRun(story, story.precaptured, None)
@@ -5655,7 +5690,7 @@ def main() -> int:
             print(s.slug)
         for s in build_validate_stories(None):
             print(s.slug)
-        for s in [*build_tty_stories(), *build_mock_tenant_stories()]:
+        for s in build_offline_stories():
             print(s.slug)
         # The MCP tool help stories come from the tools that the binary lists.
         binary = args.snouty or repo_root / "target" / "debug" / "snouty"
@@ -5717,8 +5752,7 @@ def main() -> int:
         listed_run_slugs() if args.run else ([], [], [])
     )
     validate_slugs = {s.slug for s in build_validate_stories(None)}
-    tty_slugs = {s.slug for s in build_tty_stories()}
-    mock_tenant_slugs = {s.slug for s in build_mock_tenant_stories()}
+    offline_slugs = {s.slug for s in build_offline_stories()}
     need_ready = any(selected(s) for s in ready_slugs)
     need_final = any(selected(s) for s in final_slugs)
     need_run = need_ready or need_final or any(selected(s) for s in launch_slugs)
@@ -5734,8 +5768,7 @@ def main() -> int:
             *ready_slugs,
             *final_slugs,
             *validate_slugs,
-            *tty_slugs,
-            *mock_tenant_slugs,
+            *offline_slugs,
             *(s.slug for s in mcp_stories),
         ]
         unmatched = [
@@ -5822,8 +5855,7 @@ def main() -> int:
         regular += [s for s in validate_stories if s not in early]
         # TTY, mock tenant and MCP tool help stories need no external
         # dependencies, so they always run.
-        regular += build_tty_stories()
-        regular += build_mock_tenant_stories()
+        regular += build_offline_stories()
         regular += mcp_stories
         regular = [s for s in regular if selected(s.slug)]
 

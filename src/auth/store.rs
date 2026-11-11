@@ -109,20 +109,17 @@ impl CredentialStore {
     /// The credentials file for `profile`, or `None` when the global settings
     /// dir is unknown.
     pub(super) fn credentials_file(profile: Option<&str>) -> Option<Self> {
-        try_get_credentials_file_path().map(|(_dir, path)| Self::CredentialsFile {
+        credentials_file_path().map(|path| Self::CredentialsFile {
             path,
             profile: profile.map(str::to_owned),
         })
     }
 }
 
-fn try_get_credentials_file_path() -> Option<(PathBuf, PathBuf)> {
-    if let Some(snouty_settings_dir) = global_settings_dir() {
-        let path = snouty_settings_dir.join(CREDENTIALS_FILENAME);
-        Some((snouty_settings_dir, path))
-    } else {
-        None
-    }
+/// Where the credentials file is, or `None` when the global settings dir is
+/// unknown. The file need not exist.
+pub(crate) fn credentials_file_path() -> Option<PathBuf> {
+    global_settings_dir().map(|dir| dir.join(CREDENTIALS_FILENAME))
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -239,9 +236,12 @@ pub(crate) fn keychain_entry_name(profile: Option<&str>) -> String {
 }
 
 fn clear_from_file_if_present(profile: Option<&str>) {
-    let Some((parent_dir, path)) = try_get_credentials_file_path() else {
+    let Some(path) = credentials_file_path() else {
         return;
     };
+    let parent_dir = path
+        .parent()
+        .expect("the credentials file path is a file name joined to a dir");
 
     if let Ok(Some(contents)) = read_to_string_if_file_exists(&path)
         && let Ok(mut creds_file) = parse_credentials_file_toml(&contents, &path)
@@ -258,7 +258,7 @@ fn clear_from_file_if_present(profile: Option<&str>) {
 
         if changed {
             let profile_phrase = if profile.is_some() { "the same" } else { "no" };
-            match rewrite_credentials_file(&creds_file, &parent_dir, &path) {
+            match rewrite_credentials_file(&creds_file, parent_dir, &path) {
                 Ok(()) => warn!(
                     "The supplied credentials were stored in the keychain, but an entry under {profile_phrase} profile name was also present in the user credentials file. Cleared the entry from the credentials file in favor of what was committed to the keychain."
                 ),

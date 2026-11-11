@@ -30,7 +30,9 @@ use oidc::{OIDC_TOKEN_VAR_NAME, OIDC_URL_VAR_NAME};
 use password::apply_password_policy;
 pub(crate) use password::{PASSWORD_VAR_NAME, PasswordPolicy, USERNAME_VAR_NAME};
 pub use store::initialize_credential_store;
-pub(crate) use store::{CredentialStore, PersistableCredentials, keychain_entry_name, persist};
+pub(crate) use store::{
+    CredentialStore, PersistableCredentials, credentials_file_path, keychain_entry_name, persist,
+};
 
 /// Every environment variable that ambient credential resolution reads. A test
 /// harness that isolates itself from the developer's shell must clear all of

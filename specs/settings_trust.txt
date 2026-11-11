@@ -62,7 +62,7 @@ snouty settings deny
 stderr 'Denied .*\.snouty\.toml'
 snouty settings show
 stdout 'tenant +not set'
-stdout '^settings files: none$'
+stdout '^files: none$'
 cp acme.toml .snouty.toml
 snouty settings show
 stdout 'tenant +not set'

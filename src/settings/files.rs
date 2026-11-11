@@ -1,4 +1,5 @@
-//! The settings files that [`super::Settings::resolve`] read.
+//! The files that `settings show` lists: the settings files that
+//! [`super::Settings::resolve`] read, and the credentials file.
 
 use std::fmt;
 use std::fs;
@@ -6,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-/// Which of snouty's two settings files a file is.
+/// Which file a [`SettingsFile`] is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SettingsFileType {
@@ -14,6 +15,8 @@ pub enum SettingsFileType {
     Project,
     /// `settings.toml` in the global settings dir.
     Global,
+    /// `credentials.toml` in the global settings dir.
+    Credentials,
 }
 
 impl fmt::Display for SettingsFileType {
@@ -21,11 +24,12 @@ impl fmt::Display for SettingsFileType {
         f.write_str(match self {
             Self::Project => "project",
             Self::Global => "global",
+            Self::Credentials => "credentials",
         })
     }
 }
 
-/// A settings file that snouty read.
+/// A file that `settings show` lists.
 #[derive(Clone, Debug, Serialize)]
 pub struct SettingsFile {
     #[serde(rename = "type")]

@@ -128,12 +128,11 @@ jobs:
           tag=latest
           case $version in *-*) tag=next ;; esac
           npm publish ./package --access public --tag "$tag"
-      # Runs for -rc.N tags too, so an -rc.N becomes the registry's latest
-      # version until the stable release. TODO: skip prereleases once the mcp
-      # feature is stable. MCP_PRIVATE_KEY is a hex Ed25519 key.
-      # Its public half is in the antithesis.com TXT record
-      # `v=MCPv1; k=ed25519; p=...`.
+      # Skips a prerelease, which would become the registry's latest version.
+      # MCP_PRIVATE_KEY is a hex Ed25519 key. Its public half is in the
+      # antithesis.com TXT record `v=MCPv1; k=ed25519; p=...`.
       - name: Publish to the MCP Registry
+        if: ${{ !contains(steps.entry.outputs.version, '-') }}
         env:
           MCP_PRIVATE_KEY: ${{ secrets.MCP_PRIVATE_KEY }}
           name: ${{ steps.entry.outputs.name }}

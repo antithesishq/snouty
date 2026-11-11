@@ -15,8 +15,7 @@ pub enum SettingsFileType {
     Project,
     /// `settings.toml` in the global settings dir.
     Global,
-    /// `credentials.toml` in the global settings dir, which `snouty login`
-    /// writes.
+    /// `credentials.toml` in the global settings dir.
     Credentials,
 }
 

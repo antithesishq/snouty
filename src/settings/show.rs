@@ -59,7 +59,7 @@ fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, 
 }
 
 /// The settings files that snouty read, then the credentials file when it
-/// exists, so that one command says where `snouty login` stored a credential.
+/// exists.
 fn files(settings: &Settings) -> Vec<SettingsFile> {
     let credentials = credentials_file_path()
         .filter(|path| path.is_file())

@@ -2,7 +2,7 @@
 #
 # Prints each setting with the value snouty resolved for it, one row each, on
 # stdout, then a table of the settings files that snouty read and the
-# credentials file.
+# credentials file when it exists.
 # --json prints both as one JSON object: `settings`, with null for a setting
 # that is not set and has no default, and `files`.
 

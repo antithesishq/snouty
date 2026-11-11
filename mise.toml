@@ -41,7 +41,21 @@ task.quiet = true
 # success. A failing command stops the task, and mise reports the failure.
 [tasks."aw:compile"]
 description = "Compile the gh-aw workflows in .github/workflows into their lock files"
-run = ["gh-aw compile --actions-lock", "echo '✓ aw:compile passed'"]
+run = ["gh-aw compile", "echo '✓ aw:compile passed'"]
+# A compiled workflow can use new actions, so relock after it.
+depends_post = ["actions:lock"]
+
+[tasks."actions:lock"]
+description = "Record the commit of each workflow action in .github/workflows/actions.lock"
+# gh runs extensions only from its own directory, so this is not a mise tool.
+# Keep the pin in step with the lockfile job in build.yml. --no-narrow keeps
+# each ref as written, so the workflows that dist and gh-aw generate stay as
+# generated.
+run = [
+    "gh extension install github/gh-actions-lock --pin v0.4.1 --force",
+    "gh actions-lock --no-narrow",
+    "echo '✓ actions:lock done'",
+]
 
 [tasks.lint]
 description = "Run every lint that CI runs"

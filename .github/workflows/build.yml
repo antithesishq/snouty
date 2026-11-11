@@ -119,6 +119,7 @@ jobs:
         with:
           persist-credentials: false
 
+      # The same pin as the actions:lock task in mise.toml.
       - run: gh extension install github/gh-actions-lock --pin v0.4.1
       - run: gh actions-lock --verify
   # Each step runs even when an earlier one fails, so one run reports every

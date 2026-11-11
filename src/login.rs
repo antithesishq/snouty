@@ -1,6 +1,5 @@
 use std::fmt::Write as _;
 use std::io::{self, IsTerminal};
-use std::path::Path;
 use std::time::Duration;
 
 use askama::Template;
@@ -233,7 +232,7 @@ async fn do_cmd_login(
         None
     };
 
-    let settings_path = update_settings_in_global_file(
+    update_settings_in_global_file(
         Some(tenant_to_use.clone()),
         Some(repository_to_use.clone()),
         None,
@@ -245,7 +244,6 @@ async fn do_cmd_login(
         &tenant_to_use,
         &repository_to_use,
         profile_to_use.as_deref(),
-        &settings_path,
         written,
         stored.as_ref(),
     );
@@ -259,12 +257,10 @@ fn print_login_summary(
     tenant: &str,
     repository: &str,
     profile: Option<&str>,
-    settings_path: &Path,
     written: Option<Tagged<&str, CredentialStore>>,
     stored: Option<&Tagged<AuthenticationInfo, CredentialStore>>,
 ) {
-    // Wrap each line at word boundaries on a terminal: a long settings path
-    // otherwise makes the terminal cut the line mid-word.
+    // Wrap each line at word boundaries on a terminal, so that no word is cut.
     let say = |line: &str| println!("{}", crate::render::wrap_stdout_if_tty(line));
     let scope = match profile {
         Some(p) => format!(" under profile `{p}`"),
@@ -277,10 +273,7 @@ fn print_login_summary(
     if !repository.is_empty() {
         let _ = write!(saved, " and repository `{repository}`");
     }
-    say(&format!(
-        "\nSaved {saved}{scope} to {}.",
-        settings_path.display()
-    ));
+    say(&format!("\nSaved {saved}{scope}."));
     match (written, stored) {
         (Some(written), _) => {
             say(&format!(
@@ -309,7 +302,7 @@ fn print_login_summary(
 fn location(store: &CredentialStore) -> String {
     match store {
         CredentialStore::Keychain { .. } => "the system keychain".to_owned(),
-        CredentialStore::CredentialsFile { path, .. } => path.display().to_string(),
+        CredentialStore::CredentialsFile { .. } => "the credentials file".to_owned(),
     }
 }
 
@@ -1897,7 +1890,7 @@ mod tests {
     /// Run `/usr/bin/security` under `home` so its keychain preferences (default
     /// keychain, search list) land in the same `$HOME/Library/Preferences`
     /// snouty reads back — see [`login_persists_to_real_macos_keychain`].
-    fn security(home: &Path, args: &[&str]) -> std::process::Output {
+    fn security(home: &std::path::Path, args: &[&str]) -> std::process::Output {
         Command::new("/usr/bin/security")
             .args(args)
             .env("HOME", home)

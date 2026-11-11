@@ -12,7 +12,6 @@ use crate::auth::{
 };
 use crate::compose;
 use crate::container;
-use crate::features::{self, Feature};
 use crate::login::{CliOAuthConfig, fetch_cli_config};
 use crate::render::OutputOptions;
 use crate::settings::Settings;
@@ -217,10 +216,6 @@ impl Check {
     }
 }
 
-/// What doctor prints for the profile when none is selected: no profile means
-/// snouty uses the default one, not that a value is missing.
-const DEFAULT_PROFILE: &str = "default";
-
 /// The full doctor report, as emitted by `--json`. The resolved settings
 /// are `settings show`'s job.
 #[derive(Serialize)]
@@ -261,10 +256,16 @@ fn repository_check(repository: Option<&str>) -> Check {
     }
 }
 
-fn authn_checks(sources: &[SourcedCredential]) -> Vec<Check> {
+/// `selected` is the profile that the user selects, if any.
+fn authn_checks(
+    sources: &[SourcedCredential],
+    selected: Option<&str>,
+    github_actions: bool,
+) -> Vec<Check> {
     let Some((credentials, behind)) = sources.split_first() else {
         return vec![missing_credentials_check(
             crate::auth::NO_CREDENTIALS_MESSAGE,
+            github_actions,
         )];
     };
 
@@ -287,23 +288,29 @@ fn authn_checks(sources: &[SourcedCredential]) -> Vec<Check> {
         AuthenticationInfo::GithubActionsOidc(_) => enrich_with_source(
             Check::ok(id, "GitHub Actions OIDC token provided"),
             credentials,
+            selected,
         ),
-        AuthenticationInfo::OAuth(_) => {
-            enrich_with_source(Check::ok(id, "OAuth credentials used"), credentials)
-        }
+        AuthenticationInfo::OAuth(_) => enrich_with_source(
+            Check::ok(id, "OAuth credentials used"),
+            credentials,
+            selected,
+        ),
         credential if credential.has_blank_api_key() => {
             let check = Check::fail(id, "the API key is empty")
                 .note(Level::Error, "an empty API key cannot authenticate");
             match credentials.tag() {
+                // The lookup rejects a blank environment key with
+                // `BlankApiKey`, which `collect_checks` reports.
                 CredentialSource::Environment { .. } => {
-                    enrich_with_source(with_credential_remedy(check), credentials)
+                    enrich_with_source(check, credentials, selected)
+                        .note(Level::Note, crate::auth::BlankApiKey::SUGGESTION)
                 }
-                CredentialSource::Stored(store) => enrich_with_source(check, credentials)
+                CredentialSource::Stored(store) => enrich_with_source(check, credentials, selected)
                     .note(Level::Note, login_to_replace(store.profile())),
             }
         }
         AuthenticationInfo::ApiKey { .. } => {
-            enrich_with_source(Check::ok(id, "API key provided"), credentials)
+            enrich_with_source(Check::ok(id, "API key provided"), credentials, selected)
         }
         // A username and password that hide a credential the API accepts:
         // the one thing to do is free that credential (issue #292).
@@ -311,10 +318,15 @@ fn authn_checks(sources: &[SourcedCredential]) -> Vec<Check> {
             if let Some(hidden) = hidden
                 && !matches!(hidden.value(), AuthenticationInfo::Password { .. }) =>
         {
-            return vec![hidden_credential_check(credentials, variables, hidden)];
+            return vec![hidden_credential_check(
+                credentials,
+                variables,
+                hidden,
+                selected,
+            )];
         }
         AuthenticationInfo::Password { username, .. } => {
-            return vec![password_only_check(credentials, username)];
+            return vec![password_only_check(credentials, username, selected)];
         }
     };
 
@@ -330,36 +342,27 @@ fn authn_checks(sources: &[SourcedCredential]) -> Vec<Check> {
                 format!(
                     "snouty is using the {} from {}",
                     credentials.value(),
-                    describe_source(credentials.tag())
+                    describe_source(credentials.tag(), selected)
                 ),
             )
-            .note(Level::Note, unset_to_use(variables, hidden)),
+            .note(Level::Note, unset_to_use(variables, hidden, selected)),
         );
     }
     checks
 }
 
-fn missing_credentials_check(message: impl Into<String>) -> Check {
-    with_credential_remedy(
-        Check::fail(CheckId::Credentials { kind: None }, message).note(
-            Level::Error,
-            "snouty needs credentials to authenticate with Antithesis",
-        ),
-    )
-}
-
-/// The remedy notes for a credential shortfall. Every credential kind except
+/// The check for a credential shortfall. Every credential kind except
 /// username and password is accepted, so the notes name the ways to get one
 /// rather than naming an API key alone.
-fn with_credential_remedy(check: Check) -> Check {
-    check
+fn missing_credentials_check(message: impl Into<String>, github_actions: bool) -> Check {
+    Check::fail(CheckId::Credentials { kind: None }, message)
         .note(
-            Level::Note,
-            "run `snouty login` to sign in and store credentials",
+            Level::Error,
+            "snouty needs credentials to authenticate with Antithesis",
         )
         .note(
             Level::Note,
-            "or set ANTITHESIS_API_KEY; ask Antithesis support for an API key if you don't have one",
+            crate::auth::no_credentials_suggestion(github_actions),
         )
 }
 
@@ -371,6 +374,7 @@ fn hidden_credential_check(
     in_use: &SourcedCredential,
     variables: &[&str],
     hidden: &SourcedCredential,
+    selected: Option<&str>,
 ) -> Check {
     Check::warn(
         CheckId::credentials(in_use),
@@ -383,10 +387,10 @@ fn hidden_credential_check(
         Level::Warning,
         format!(
             "snouty uses the username and password from {}, which `snouty runs` refuses",
-            describe_source(in_use.tag())
+            describe_source(in_use.tag(), selected)
         ),
     )
-    .note(Level::Note, unset_to_use(variables, hidden))
+    .note(Level::Note, unset_to_use(variables, hidden, selected))
 }
 
 /// The single check for a username and password with no credential the API
@@ -394,7 +398,11 @@ fn hidden_credential_check(
 /// together suggested `snouty login` twice. The next step depends on the
 /// source: `snouty login` replaces a stored password, but an exported one
 /// still hides the new credential until the user unsets it.
-fn password_only_check(in_use: &SourcedCredential, username: &str) -> Check {
+fn password_only_check(
+    in_use: &SourcedCredential,
+    username: &str,
+    selected: Option<&str>,
+) -> Check {
     let next_step = match in_use.tag() {
         CredentialSource::Environment { variables } => format!(
             "run `snouty login` to store an API key, then {}",
@@ -414,15 +422,26 @@ fn password_only_check(in_use: &SourcedCredential, username: &str) -> Check {
             "username/password is deprecated, and `snouty runs` and other API commands refuse it",
         ),
         in_use,
+        selected,
     )
     .note(Level::Note, next_step)
 }
 
-/// The next step for a stored password. A bare `snouty login` writes the
-/// default profile, so a named profile is passed on.
+/// The next step for a stored password.
 fn login_to_replace(profile: Option<&str>) -> String {
-    let flag = profile.map_or(String::new(), |p| format!(" --profile {p}"));
-    format!("run `snouty login{flag}` to replace it with an API key")
+    format!(
+        "run {} to replace it with an API key",
+        login_command(profile)
+    )
+}
+
+/// `snouty login` for `profile`. A bare `snouty login` writes the default
+/// profile, so a named profile is passed on.
+fn login_command(profile: Option<&str>) -> String {
+    match profile {
+        Some(p) => format!("`snouty login --profile {p}`"),
+        None => "`snouty login`".to_owned(),
+    }
 }
 
 fn unset(variables: &[&str]) -> String {
@@ -431,31 +450,31 @@ fn unset(variables: &[&str]) -> String {
 
 /// The one step that frees `hidden`, a stored credential that the
 /// environment variables `variables` hide.
-fn unset_to_use(variables: &[&str], hidden: &SourcedCredential) -> String {
+fn unset_to_use(variables: &[&str], hidden: &SourcedCredential, selected: Option<&str>) -> String {
     format!(
         "{} to use the {} in {}",
         unset(variables),
         hidden.value(),
-        describe_source(hidden.tag())
+        describe_source(hidden.tag(), selected)
     )
 }
 
 /// A phrase that reads after "read from" or after the name of a credential
 /// kind.
-fn describe_source(source: &CredentialSource) -> String {
+fn describe_source(source: &CredentialSource, selected: Option<&str>) -> String {
     match source {
         CredentialSource::Environment { variables } => format!(
             "the `{}` environment variable{}",
             variables.join("` and `"),
             if variables.len() == 1 { "" } else { "s" }
         ),
-        CredentialSource::Stored(CredentialStore::CredentialsFile { path, profile }) => format!(
-            // `Display`, not `Debug`: `{:?}` on a path adds quotes of its
-            // own, which read as a second set of brackets around the name.
-            "the [{}] profile in {}",
-            profile.as_deref().unwrap_or(DEFAULT_PROFILE),
-            path.display(),
-        ),
+        CredentialSource::Stored(CredentialStore::CredentialsFile { profile, .. }) => match profile
+        {
+            Some(p) => format!("the `{p}` profile of the credentials file"),
+            // A selected profile with no credential falls back to these.
+            None if selected.is_some() => "the default profile of the credentials file".to_owned(),
+            None => "the credentials file".to_owned(),
+        },
         CredentialSource::Stored(CredentialStore::Keychain { profile }) => format!(
             "system keychain entry named [{}]",
             keychain_entry_name(profile.as_deref())
@@ -463,17 +482,21 @@ fn describe_source(source: &CredentialSource) -> String {
     }
 }
 
-fn enrich_with_source(check: Check, credential: &SourcedCredential) -> Check {
+fn enrich_with_source(
+    check: Check,
+    credential: &SourcedCredential,
+    selected: Option<&str>,
+) -> Check {
     check.note(
         Level::Note,
-        format!("read from {}", describe_source(credential.tag())),
+        format!("read from {}", describe_source(credential.tag(), selected)),
     )
 }
 
 /// Binary health checks: local tooling, the required settings
 /// (tenant/repository), and authentication. `settings show` reports the
 /// resolved values themselves.
-fn collect_checks(settings: &Settings) -> Vec<Check> {
+fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>) {
     let mut checks: Vec<Check> = Vec::new();
 
     // Container runtime (for building/pushing images). Report the real engine
@@ -513,12 +536,33 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
     checks.push(repository_check(settings.repository()));
 
     // Authentication (synchronous-only by design).
-    match AuthenticationInfo::available_ambient_credentials(settings.profile()) {
-        Ok(sources) => checks.extend(authn_checks(&sources)),
-        Err(err) => checks.push(missing_credentials_check(err.to_string())),
-    }
+    let github_actions = crate::auth::in_github_actions();
+    let in_use = match AuthenticationInfo::available_ambient_credentials(settings.profile()) {
+        Ok(sources) => {
+            checks.extend(authn_checks(&sources, settings.profile(), github_actions));
+            sources.into_iter().next()
+        }
+        // A blank environment key hides every other credential, so its fix
+        // is the variable, not a way to get a credential.
+        Err(err) if err.downcast_ref::<crate::auth::BlankApiKey>().is_some() => {
+            checks.push(
+                Check::fail(
+                    CheckId::Credentials {
+                        kind: Some(CredentialKind::ApiKey),
+                    },
+                    err.to_string(),
+                )
+                .note(Level::Note, crate::auth::BlankApiKey::SUGGESTION),
+            );
+            None
+        }
+        Err(err) => {
+            checks.push(missing_credentials_check(err.to_string(), github_actions));
+            None
+        }
+    };
 
-    checks
+    (checks, in_use)
 }
 
 /// An API or a flag that some commands assume the tenant serves, from a
@@ -528,9 +572,6 @@ struct ReleaseFloor {
     serves: &'static str,
     min: (u64, u64),
     consequence: &'static str,
-    /// The feature that gates what this floor serves. A floor reports
-    /// nothing while its feature is off.
-    feature: Option<Feature>,
 }
 
 const RELEASE_FLOORS: [ReleaseFloor; 5] = [
@@ -539,21 +580,18 @@ const RELEASE_FLOORS: [ReleaseFloor; 5] = [
         serves: "the events-search API",
         min: MIN_SEARCH_RELEASE,
         consequence: "`runs search` and `runs events` can fail or hang",
-        feature: None,
     },
     ReleaseFloor {
         id: CheckId::ExecuteCommand,
         serves: "the execute-command `container` field",
         min: MIN_EXEC_RELEASE,
         consequence: "`runs exec` fails",
-        feature: None,
     },
     ReleaseFloor {
         id: CheckId::CancelRun,
         serves: "the cancel-run API",
         min: MIN_CANCEL_RELEASE,
         consequence: "`runs cancel` fails",
-        feature: None,
     },
     ReleaseFloor {
         id: CheckId::LaunchParams,
@@ -561,25 +599,18 @@ const RELEASE_FLOORS: [ReleaseFloor; 5] = [
         min: MIN_LAUNCH_PARAMS_RELEASE,
         consequence: "`launch --max-compute-hours`, `launch --setup-timeout` and \
                       `debug --duration` have no effect",
-        feature: Some(Feature::Teams),
     },
     ReleaseFloor {
         id: CheckId::RunStream,
         serves: "property streaming",
         min: MIN_STREAM_RELEASE,
         consequence: "`runs stream` is not available",
-        feature: None,
     },
 ];
 
-fn release_floor_checks(version: &ApiVersion, enabled: &[Feature]) -> Vec<Check> {
+fn release_floor_checks(version: &ApiVersion) -> Vec<Check> {
     RELEASE_FLOORS
         .iter()
-        .filter(|floor| {
-            floor
-                .feature
-                .is_none_or(|feature| enabled.contains(&feature))
-        })
         .filter_map(|floor| release_floor_check(version, floor))
         .collect()
 }
@@ -615,7 +646,12 @@ fn release_floor_check(version: &ApiVersion, floor: &ReleaseFloor) -> Option<Che
 /// even a 404 on an older backend that lacks it — proves connectivity, so only
 /// rejected auth, an API error, or a failure to reach the API is a problem.
 /// Pure over the result so it can be unit-tested without the network.
-fn version_check(host: &str, result: std::result::Result<ApiVersion, VersionError>) -> Check {
+fn version_check(
+    host: &str,
+    in_use: &SourcedCredential,
+    profile: Option<&str>,
+    result: std::result::Result<ApiVersion, VersionError>,
+) -> Check {
     match result {
         Ok(v) => Check::ok(CheckId::Api, "Antithesis API reachable")
             .note(
@@ -636,17 +672,10 @@ fn version_check(host: &str, result: std::result::Result<ApiVersion, VersionErro
              reporting (added in release 56); if you expect a current tenant, a \
              proxy or route may be intercepting the request",
         ),
-        // 401/403: the request was rejected. Most often the API key is wrong,
-        // but a proxy can also reject before the request reaches the API, so we
-        // name both rather than blaming the key outright.
         Err(VersionError::Http(status @ (401 | 403))) => {
             Check::fail(CheckId::Api, "Antithesis API rejected authentication")
                 .note(Level::Error, format!("the API returned HTTP {status}"))
-                .note(
-                    Level::Note,
-                    "verify ANTITHESIS_API_KEY is valid; if it is, a proxy may be \
-                     rejecting the request before it reaches Antithesis",
-                )
+                .note(Level::Note, rejected_credential_next_step(in_use, profile))
         }
         // 5xx: we reached something, but it's erroring — connectivity is broken
         // by a server error and auth status is unknown.
@@ -677,12 +706,32 @@ fn version_check(host: &str, result: std::result::Result<ApiVersion, VersionErro
     }
 }
 
+/// The one step that fixes `in_use` when the tenant of `profile` rejects it.
+fn rejected_credential_next_step(in_use: &SourcedCredential, profile: Option<&str>) -> String {
+    match (in_use.value(), in_use.tag()) {
+        (AuthenticationInfo::GithubActionsOidc(_), _) => {
+            "ask Antithesis support to trust GitHub Actions OIDC tokens from this repository"
+                .to_owned()
+        }
+        // `snouty login` cannot help: the environment hides what it stores.
+        (credential, CredentialSource::Environment { variables }) => format!(
+            "set `{}` to a valid {credential}",
+            variables.join("` and `")
+        ),
+        // A named profile with no credential uses the default profile's, so
+        // the login goes to the checked profile.
+        (_, CredentialSource::Stored(_)) => {
+            format!("run {} to fix authentication", login_command(profile))
+        }
+    }
+}
+
 pub async fn cmd_doctor(
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
     offline: bool,
 ) -> Result<()> {
-    let mut checks = collect_checks(settings);
+    let (mut checks, in_use) = collect_checks(settings);
 
     if !offline {
         // Connectivity + version check (network). Skipped with --offline. Only
@@ -694,7 +743,9 @@ pub async fn cmd_doctor(
         // resolved settings (base url / tenant), and `verbose` logs the
         // request/response.
         let mut api_failed = false;
-        if let Ok(api) = AntithesisApi::new(settings, verbose) {
+        if let Ok(api) = AntithesisApi::new(settings, verbose)
+            && let Some(in_use) = &in_use
+        {
             let host = api.host();
             // Renew here so that a rejected renewal fails the credentials
             // check, not the API check. The version request would fail the same way, so
@@ -716,6 +767,8 @@ pub async fn cmd_doctor(
                 {
                     checks.push(version_check(
                         &host,
+                        in_use,
+                        settings.profile(),
                         Err(VersionError::Unreachable(err.root_cause().to_string())),
                     ));
                 } else {
@@ -743,17 +796,22 @@ pub async fn cmd_doctor(
             } else {
                 let version = api.get_version().await;
                 if let Ok(version) = &version {
-                    checks.extend(release_floor_checks(version, &features::enabled()));
+                    checks.extend(release_floor_checks(version));
                 }
                 api_failed = matches!(version, Err(VersionError::Unreachable(_)));
-                checks.push(version_check(&host, version));
+                checks.push(version_check(&host, in_use, settings.profile(), version));
             }
         }
 
         // A client that fails to build (bad proxy URL or extra header) skips
         // the API check too. Skip the probe when the tenant could be
-        // unreachable: the probe would only wait out its timeout.
+        // unreachable: the probe would only wait out its timeout. Skip it
+        // when a credential works, too: that user does not need OAuth login.
+        let credential_works = checks
+            .iter()
+            .any(|c| c.id == CheckId::Api && c.status == Status::Ok);
         if !api_failed
+            && !credential_works
             && let Some(base_url) = settings.base_url()
             && let Ok(client) = HttpClient::new(settings, verbose)
         {
@@ -838,29 +896,37 @@ mod tests {
 
     #[test]
     fn auth_api_key_set_is_a_single_bare_ok_check() {
-        let checks = authn_checks(&[from_env(
-            AuthenticationInfo::ApiKey {
-                api_key: FAKE_API_KEY_A.to_owned(),
-            },
-            vec![API_KEY_VAR_NAME],
-        )]);
+        let checks = authn_checks(
+            &[from_env(
+                AuthenticationInfo::ApiKey {
+                    api_key: FAKE_API_KEY_A.to_owned(),
+                },
+                vec![API_KEY_VAR_NAME],
+            )],
+            None,
+            false,
+        );
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, Status::Ok);
         assert!(checks[0].message.contains("API key provided"));
     }
 
-    /// A credential read from a file names the profile it came from and the
-    /// path, as a sentence. The path goes through `Display`, so it carries no
-    /// quotes of its own.
+    /// A credential read from a file names its profile, `default` included,
+    /// and the default profile when a selected profile falls back to it. It
+    /// does not name the path of the file.
     #[test]
-    fn auth_from_a_file_names_the_profile_and_the_path() {
-        let note = |profile: Option<&str>| {
-            let checks = authn_checks(&[from_file(
-                AuthenticationInfo::ApiKey {
-                    api_key: FAKE_API_KEY_A.to_owned(),
-                },
-                profile,
-            )]);
+    fn auth_from_a_file_names_a_named_profile_but_no_path() {
+        let note_for = |profile: Option<&str>, selected: Option<&str>| {
+            let checks = authn_checks(
+                &[from_file(
+                    AuthenticationInfo::ApiKey {
+                        api_key: FAKE_API_KEY_A.to_owned(),
+                    },
+                    profile,
+                )],
+                selected,
+                false,
+            );
             checks[0]
                 .notes
                 .iter()
@@ -868,17 +934,21 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        assert!(
-            note(None).contains("read from the [default] profile in /tmp/credentials.toml"),
-            "got: {}",
-            note(None)
+        let note = |profile| note_for(profile, profile);
+        assert_eq!(note(None), "read from the credentials file");
+        // `--profile default` selects `[profile.default]`, not the top level.
+        assert_eq!(
+            note(Some("default")),
+            "read from the `default` profile of the credentials file"
         );
-        assert!(
-            note(Some("prod")).contains("read from the [prod] profile in /tmp/credentials.toml"),
-            "got: {}",
-            note(Some("prod"))
+        assert_eq!(
+            note(Some("prod")),
+            "read from the `prod` profile of the credentials file"
         );
-        assert!(!note(None).contains('"'), "the path must not be quoted");
+        assert_eq!(
+            note_for(None, Some("prod")),
+            "read from the default profile of the credentials file"
+        );
     }
 
     /// Only a username and password: one warning, whose next step depends on
@@ -886,7 +956,7 @@ mod tests {
     #[test]
     fn a_password_alone_is_one_check_with_one_next_step() {
         let notes = |source: SourcedCredential| {
-            let checks = authn_checks(&[source]);
+            let checks = authn_checks(&[source], None, false);
             assert_eq!(
                 checks.len(),
                 1,
@@ -944,10 +1014,7 @@ mod tests {
             )),
             [
                 deprecated,
-                (
-                    Level::Note,
-                    "read from the [default] profile in /tmp/credentials.toml".to_owned()
-                ),
+                (Level::Note, "read from the credentials file".to_owned()),
                 (
                     Level::Note,
                     "run `snouty login` to replace it with an API key".to_owned()
@@ -974,17 +1041,11 @@ mod tests {
 
     #[test]
     fn auth_nothing_set_errors_and_only_mentions_api_key() {
-        let checks = [missing_credentials_check("PANIC PANIC PANIC")];
+        let checks = [missing_credentials_check("PANIC PANIC PANIC", false)];
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, Status::Error);
         assert!(checks[0].message.contains("PANIC PANIC PANIC"));
         assert!(checks[0].notes.iter().any(|n| n.level == Level::Error));
-        assert!(
-            checks[0]
-                .notes
-                .iter()
-                .any(|n| n.text.contains("ask Antithesis support"))
-        );
         assert!(
             checks[0]
                 .notes
@@ -1009,10 +1070,30 @@ mod tests {
     /// A user who meets both messages reads one wording, not two.
     #[test]
     fn auth_no_source_reports_the_shared_no_credentials_message() {
-        let checks = authn_checks(&[]);
+        let checks = authn_checks(&[], None, false);
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, Status::Error);
         assert_eq!(checks[0].message, crate::auth::NO_CREDENTIALS_MESSAGE);
+    }
+
+    /// `snouty login` cannot run in a GitHub Actions job, so there the
+    /// notes name the OIDC permission instead.
+    #[test]
+    fn no_credential_in_github_actions_names_the_oidc_permission() {
+        let notes = |github_actions| {
+            authn_checks(&[], None, github_actions)[0]
+                .notes
+                .iter()
+                .map(|n| n.text.clone())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let ci = notes(true);
+        assert!(ci.contains("id-token: write"), "{ci}");
+        assert!(!ci.contains("snouty login"), "{ci}");
+        let local = notes(false);
+        assert!(local.contains("snouty login"), "{local}");
+        assert!(!local.contains("id-token"), "{local}");
     }
 
     fn from_env(value: AuthenticationInfo, variables: Vec<&'static str>) -> SourcedCredential {
@@ -1053,7 +1134,7 @@ mod tests {
 
     #[test]
     fn one_credential_source_reports_no_conflict() {
-        let checks = authn_checks(&[file_api_key_source()]);
+        let checks = authn_checks(&[file_api_key_source()], None, false);
         assert!(!checks.iter().any(|c| c.id == CheckId::CredentialSources));
     }
 
@@ -1062,7 +1143,7 @@ mod tests {
     /// problem and the one step that fixes it.
     #[test]
     fn a_password_hiding_an_api_key_is_one_check_with_one_next_step() {
-        let checks = authn_checks(&[env_password_source(), file_api_key_source()]);
+        let checks = authn_checks(&[env_password_source(), file_api_key_source()], None, false);
         assert_eq!(
             checks.len(),
             1,
@@ -1097,7 +1178,7 @@ mod tests {
                 (
                     Level::Note,
                     "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in \
-                    the [default] profile in /tmp/credentials.toml"
+                    the credentials file"
                 ),
             ]
         );
@@ -1130,7 +1211,7 @@ mod tests {
     /// step is to unset it.
     #[test]
     fn an_environment_credential_that_hides_a_stored_one_is_a_warning() {
-        let checks = authn_checks(&[env_api_key_source(), file_api_key_source()]);
+        let checks = authn_checks(&[env_api_key_source(), file_api_key_source()], None, false);
         let check = checks
             .iter()
             .find(|c| c.id == CheckId::CredentialSources)
@@ -1139,7 +1220,7 @@ mod tests {
         assert_eq!(
             check.notes.last().unwrap().text,
             "`unset ANTITHESIS_API_KEY` to use the API key in \
-            the [default] profile in /tmp/credentials.toml"
+            the credentials file"
         );
     }
 
@@ -1156,7 +1237,7 @@ mod tests {
             vec![file_api_key_source(), oidc_source()],
             vec![env_api_key_source(), oidc_source()],
         ] {
-            let checks = authn_checks(&sources);
+            let checks = authn_checks(&sources, None, false);
             assert_eq!(
                 checks.iter().map(|c| c.status).collect::<Vec<_>>(),
                 [Status::Ok],
@@ -1175,10 +1256,14 @@ mod tests {
             password: FAKE_PASSWORD.to_owned(),
         };
         for (in_use, status) in [(password, Status::Warn), (api_key(""), Status::Error)] {
-            let checks = authn_checks(&[
-                from_file(in_use, Some("prod")),
-                from_file(api_key(FAKE_API_KEY_A), None),
-            ]);
+            let checks = authn_checks(
+                &[
+                    from_file(in_use, Some("prod")),
+                    from_file(api_key(FAKE_API_KEY_A), None),
+                ],
+                Some("prod"),
+                false,
+            );
             assert_eq!(checks.len(), 1);
             assert_eq!(checks[0].status, status);
             assert_eq!(
@@ -1289,7 +1374,7 @@ mod tests {
     #[test]
     fn exec_release_floor_warns_below_64() {
         let ids = |release: String| -> Vec<CheckId> {
-            release_floor_checks(&ApiVersion::new("v1".into(), release), &[Feature::Teams])
+            release_floor_checks(&ApiVersion::new("v1".into(), release))
                 .into_iter()
                 .map(|check| check.id)
                 .collect()
@@ -1304,22 +1389,11 @@ mod tests {
     }
 
     #[test]
-    fn launch_params_floor_needs_the_teams_feature() {
-        let version = ApiVersion::new("v1".into(), "65.9".into());
-        let ids = |enabled: &[Feature]| -> Vec<CheckId> {
-            release_floor_checks(&version, enabled)
-                .into_iter()
-                .map(|check| check.id)
-                .collect()
-        };
-        assert!(ids(&[]).is_empty());
-        assert_eq!(ids(&[Feature::Teams]), [CheckId::LaunchParams]);
-    }
-
-    #[test]
     fn version_ok_reports_both_versions() {
         let check = version_check(
             "tenant.antithesis.com",
+            &env_api_key_source(),
+            None,
             Ok(ApiVersion::new("v1".into(), "56.0".into())),
         );
         assert_eq!(check.status, Status::Ok);
@@ -1335,7 +1409,12 @@ mod tests {
 
     #[test]
     fn version_404_is_reachable_but_warns() {
-        let check = version_check("tenant.antithesis.com", Err(VersionError::Http(404)));
+        let check = version_check(
+            "tenant.antithesis.com",
+            &env_api_key_source(),
+            None,
+            Err(VersionError::Http(404)),
+        );
         assert_eq!(check.status, Status::Ok);
         assert!(check.message.contains("reachable"));
         // The warning explains the 404 without definitively blaming an old
@@ -1352,7 +1431,12 @@ mod tests {
     #[test]
     fn version_auth_rejection_reports_the_status_code() {
         for status in [401, 403] {
-            let check = version_check("tenant.antithesis.com", Err(VersionError::Http(status)));
+            let check = version_check(
+                "tenant.antithesis.com",
+                &env_api_key_source(),
+                None,
+                Err(VersionError::Http(status)),
+            );
             assert_eq!(check.status, Status::Error);
             assert!(
                 check
@@ -1360,19 +1444,52 @@ mod tests {
                     .iter()
                     .any(|n| n.text.contains(&status.to_string()))
             );
-            assert!(
-                check
-                    .notes
-                    .iter()
-                    .any(|n| n.text.contains("ANTITHESIS_API_KEY"))
-            );
         }
+    }
+
+    /// A stored credential gets `snouty login`, with `--profile` for a named
+    /// profile. Another source gets the step that fixes it.
+    #[test]
+    fn version_auth_rejection_names_the_fix_for_the_source() {
+        let note_for = |in_use: SourcedCredential, profile| {
+            version_check(
+                "tenant.antithesis.com",
+                &in_use,
+                profile,
+                Err(VersionError::Http(401)),
+            )
+            .notes
+            .into_iter()
+            .find(|n| n.level == Level::Note)
+            .expect("a rejection carries a next step")
+            .text
+        };
+        let note = |profile| note_for(file_api_key_source(), profile);
+        assert_eq!(note(None), "run `snouty login` to fix authentication");
+        assert_eq!(
+            note(Some("default")),
+            "run `snouty login --profile default` to fix authentication"
+        );
+        assert_eq!(
+            note(Some("staging")),
+            "run `snouty login --profile staging` to fix authentication"
+        );
+        assert_eq!(
+            note_for(env_api_key_source(), Some("staging")),
+            "set `ANTITHESIS_API_KEY` to a valid API key"
+        );
+        assert_eq!(
+            note_for(oidc_source(), None),
+            "ask Antithesis support to trust GitHub Actions OIDC tokens from this repository"
+        );
     }
 
     #[test]
     fn version_bad_response_is_not_reported_as_unreachable() {
         let check = version_check(
             "tenant.antithesis.com",
+            &env_api_key_source(),
+            None,
             Err(VersionError::BadResponse(
                 "invalid type: null, expected struct ApiVersion".into(),
             )),
@@ -1391,6 +1508,8 @@ mod tests {
     fn version_unreachable_names_the_host_and_includes_the_error() {
         let check = version_check(
             "tenant.antithesis.com",
+            &env_api_key_source(),
+            None,
             Err(VersionError::Unreachable("connection refused".into())),
         );
         assert_eq!(check.status, Status::Error);
@@ -1409,7 +1528,12 @@ mod tests {
 
     #[test]
     fn version_5xx_is_unavailable_with_status() {
-        let check = version_check("tenant.antithesis.com", Err(VersionError::Http(503)));
+        let check = version_check(
+            "tenant.antithesis.com",
+            &env_api_key_source(),
+            None,
+            Err(VersionError::Http(503)),
+        );
         assert_eq!(check.status, Status::Error);
         assert!(check.message.contains("unavailable"));
         assert!(check.notes.iter().any(|n| n.text.contains("503")));
@@ -1417,7 +1541,12 @@ mod tests {
 
     #[test]
     fn version_unexpected_status_is_an_error_with_status() {
-        let check = version_check("tenant.antithesis.com", Err(VersionError::Http(429)));
+        let check = version_check(
+            "tenant.antithesis.com",
+            &env_api_key_source(),
+            None,
+            Err(VersionError::Http(429)),
+        );
         assert_eq!(check.status, Status::Error);
         assert!(check.notes.iter().any(|n| n.text.contains("429")));
     }
@@ -1473,7 +1602,7 @@ mod tests {
             ),
         ];
         for (sources, status, kind) in cases {
-            let checks = authn_checks(&sources);
+            let checks = authn_checks(&sources, None, false);
             assert_eq!(checks[0].id, CheckId::Credentials { kind });
             assert_eq!(checks[0].status, status);
         }
@@ -1483,7 +1612,7 @@ mod tests {
 
     #[test]
     fn json_report_carries_checks() {
-        let checks = vec![missing_credentials_check("PANIC PANIC PANIC")];
+        let checks = vec![missing_credentials_check("PANIC PANIC PANIC", false)];
         let report = Report {
             ok: false,
             checks: &checks,

@@ -47,6 +47,45 @@ pub(crate) const CREDENTIAL_ENV_VARS: [&str; 5] = [
 /// Every command and `snouty doctor` state these words for an empty result.
 pub(crate) const NO_CREDENTIALS_MESSAGE: &str = "No Antithesis credentials found";
 
+/// `ANTITHESIS_API_KEY` is set but blank. The environment comes first in the
+/// lookup, so a blank key hides every other credential until it changes.
+/// `snouty doctor` reads this error to name that fix, not the no-credential
+/// one.
+#[derive(Debug)]
+pub(crate) struct BlankApiKey;
+
+impl BlankApiKey {
+    pub(crate) const SUGGESTION: &str =
+        "set ANTITHESIS_API_KEY to your API key, or unset it to use the stored credential";
+}
+
+impl std::fmt::Display for BlankApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{API_KEY_VAR_NAME} is blank")
+    }
+}
+
+impl std::error::Error for BlankApiKey {}
+
+/// Whether snouty runs in a GitHub Actions job, where `snouty login` cannot
+/// run. A job without the `id-token: write` permission has no OIDC token, so
+/// its first error names that permission. A value that is not valid Unicode
+/// is not `true`, so it needs no error.
+pub(crate) fn in_github_actions() -> bool {
+    std::env::var_os("GITHUB_ACTIONS").is_some_and(|v| v == "true")
+}
+
+/// The next step when no credential is found. Every no-credential message
+/// uses it, so that each one changes the same way in GitHub Actions.
+pub(crate) fn no_credentials_suggestion(github_actions: bool) -> &'static str {
+    if github_actions {
+        "add `id-token: write` to the job's `permissions` to use GitHub Actions OIDC, \
+         or set ANTITHESIS_API_KEY from a secret"
+    } else {
+        "run `snouty login` or set ANTITHESIS_API_KEY"
+    }
+}
+
 #[derive(Clone)]
 pub enum AuthenticationInfo {
     ApiKey { api_key: String },
@@ -164,6 +203,14 @@ impl<'a> CredentialLookup<'a> {
 impl AuthenticationInfo {
     fn try_from_env() -> Result<Option<SourcedCredential>> {
         if let Some(api_key) = env::var(API_KEY_VAR_NAME)? {
+            // An API key holds no whitespace, and a CI secret often ends in a
+            // newline. `snouty login` trims a pasted key the same way.
+            let api_key = api_key.trim().to_owned();
+            if api_key.is_empty() {
+                return Err(color_eyre::eyre::Report::new(BlankApiKey)
+                    .suppress_backtrace(true)
+                    .suggestion(BlankApiKey::SUGGESTION));
+            }
             return Ok(Some(Self::ApiKey { api_key }.with_tag(
                 CredentialSource::Environment {
                     variables: vec![API_KEY_VAR_NAME],
@@ -261,7 +308,7 @@ impl AuthenticationInfo {
         match Self::find(profile, Fallback::DefaultProfile)? {
             Some(found) => Ok(apply_password_policy(found, policy)?.untag()),
             None => Err(user_error(NO_CREDENTIALS_MESSAGE)
-                .suggestion("run `snouty login` or set ANTITHESIS_API_KEY")),
+                .suggestion(no_credentials_suggestion(in_github_actions()))),
         }
     }
 

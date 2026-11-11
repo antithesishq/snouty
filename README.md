@@ -211,16 +211,11 @@ For any one setting, snouty uses the first value it finds, highest precedence fi
 
 When a subcommand or a flag, or the Antithesis API it calls, is still changing shape, snouty can keep it behind a gate, turned on by naming its feature in `SNOUTY_UNSTABLE_FEATURES` (a comma-separated list). Anything behind this gate can change its behavior, its flags, or its id, or go away, in any release.
 
-| Feature | Enables                                                                                                              |
-| ------- | -------------------------------------------------------------------------------------------------------------------- |
-| `mcp`   | `snouty mcp`, the MCP server. Its tools and their output can still change.                                           |
-| `teams` | `launch --max-compute-hours`, `launch --setup-timeout` and `debug --duration`. They need tenant version 66 or newer. |
-
-An id that snouty does not know, such as the retired `runs-exec`, has no effect.
+No feature is behind this gate now. An id that snouty does not know, such as the retired `mcp` or `runs-exec`, has no effect.
 
 ## MCP server
 
-`snouty mcp` serves most of snouty's commands to AI agents as [Model Context Protocol](https://modelcontextprotocol.io) tools, over the stdio transport. It is an unstable feature: set `SNOUTY_UNSTABLE_FEATURES=mcp` to turn it on. The agent starts the server itself.
+`snouty mcp` serves most of snouty's commands to AI agents as [Model Context Protocol](https://modelcontextprotocol.io) tools, over the stdio transport. The agent starts the server itself.
 
 Run `snouty login` once before you add the server. The server uses snouty's credentials and configuration to access Antithesis. The MCP server has no authentication of its own and communicates with clients only over `stdio` (stdin, stdout).
 
@@ -233,7 +228,7 @@ The server sets no time or output limit on a tool call. The client sets them: wh
 ### Claude Code
 
 ```sh
-claude mcp add snouty --scope user -e SNOUTY_UNSTABLE_FEATURES=mcp -- snouty mcp
+claude mcp add snouty --scope user -- snouty mcp
 ```
 
 `--scope user` makes the server available in every project. Without it, the server is added only for the current project. Run `claude mcp list` to check that it connects.
@@ -241,7 +236,7 @@ claude mcp add snouty --scope user -e SNOUTY_UNSTABLE_FEATURES=mcp -- snouty mcp
 ### Codex
 
 ```sh
-codex mcp add snouty --env SNOUTY_UNSTABLE_FEATURES=mcp -- snouty mcp
+codex mcp add snouty -- snouty mcp
 ```
 
 Run `codex mcp list` to check it, and start a new session to use it.
@@ -255,8 +250,7 @@ A JSON config for a stdio server looks like this one. The key names can be diffe
   "mcpServers": {
     "snouty": {
       "command": "snouty",
-      "args": ["mcp"],
-      "env": { "SNOUTY_UNSTABLE_FEATURES": "mcp" }
+      "args": ["mcp"]
     }
   }
 }
@@ -264,7 +258,7 @@ A JSON config for a stdio server looks like this one. The key names can be diffe
 
 ### Debugging the MCP server
 
-1. Set `RUST_LOG=debug` in the server's environment, and add `--verbose` to its args. For example: `claude mcp add snouty -e SNOUTY_UNSTABLE_FEATURES=mcp -e RUST_LOG=debug -- snouty --verbose mcp`.
+1. Set `RUST_LOG=debug` in the server's environment, and add `--verbose` to its args. For example: `claude mcp add snouty -e RUST_LOG=debug -- snouty --verbose mcp`.
 2. Read the server's stderr in the client. In Claude Code, start `claude --debug` and use `/mcp` to see the server's state. The server logs each command line that it runs, as `running: snouty --json …`.
 3. Run the logged command yourself, in a terminal. It prints what the tool call returned. Set `RUST_LOG=debug` on it too, to see its own debug log: the server does not pass `RUST_LOG` to its tool calls.
 
@@ -309,7 +303,7 @@ On every other platform, snouty writes `credentials.toml` next to the global set
 
 ### API key
 
-An API key works with every command, and needs no browser. Ask Antithesis support for one if you do not have one.
+An API key works with every command, and needs no browser.
 
 ```sh
 export ANTITHESIS_API_KEY="your-api-key"

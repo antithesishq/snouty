@@ -8,8 +8,28 @@
 ! snouty doctor
 stderr '.*No Antithesis credentials found.*'
 stderr '.*needs credentials to authenticate.*'
-stderr '.*ask Antithesis support.*'
+stderr -literal 'run `snouty login` or set ANTITHESIS_API_KEY'
 ! stderr '.*ANTITHESIS_USERNAME.*'
+
+# In a GitHub Actions job, doctor names the OIDC permission, not `snouty login`.
+env GITHUB_ACTIONS=true
+! snouty doctor
+stderr -literal 'add `id-token: write` to the job'
+! stderr 'run .snouty login. or set'
+env GITHUB_ACTIONS=
+
+# A blank ANTITHESIS_API_KEY hides every other credential, so doctor says to
+# fix the variable, in CI or not.
+env GITHUB_ACTIONS=true
+env ANTITHESIS_API_KEY=' '
+! snouty doctor
+stderr '^  ✗ ANTITHESIS_API_KEY is blank$'
+stderr -literal 'set ANTITHESIS_API_KEY to your API key, or unset it to use the stored credential'
+! stderr 'id-token'
+! snouty doctor --json
+stdout '"id": "credentials",\s*"kind": "api_key",\s*"status": "error"'
+env ANTITHESIS_API_KEY=
+env GITHUB_ACTIONS=
 
 # --json emits a structured report on stdout and still exits non-zero when a
 # required credential is missing (so CI can gate on it).
@@ -40,7 +60,7 @@ stderr '^      NOTE: read from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWOR
 stderr '^      NOTE: run `snouty login` to store an API key, then `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`$'
 ! stderr 'Using password credentials'
 ! stderr 'No credentials the API commands accept'
-! stderr 'snouty login. to sign in'
+! stderr 'run .snouty login. or set'
 # One source only, so doctor says nothing about a conflict.
 ! stderr 'hides a stored credential'
 ! snouty doctor --json
@@ -69,19 +89,14 @@ stdout '"id": "credentials",\s*"kind": "password",\s*"status": "warn"'
 [!staging] stderr 'tenant release is too old for the cancel-run API'
 [!staging] stderr 'tenant release is too old for the execute-command .container. field'
 [!staging] stderr 'release 64.0\) — .runs exec. fails'
-[!staging] ! stderr 'compute-hours'
+[!staging] stderr 'tenant release is too old for the compute-hours'
 [!staging] stderr 'tenant release is too old for property streaming'
 [!staging] snouty doctor --json
 [!staging] stdout '"id": "events_search",\s*"status": "warn"'
 [!staging] stdout '"id": "cancel_run",\s*"status": "warn"'
 [!staging] stdout '"id": "execute_command",\s*"status": "warn"'
 [!staging] stdout '"id": "run_stream",\s*"status": "warn"'
-[!staging] ! stdout 'launch_params'
-# The launch-params floor applies only with the teams feature.
-[!staging] env SNOUTY_UNSTABLE_FEATURES=teams
-[!staging] snouty doctor --json
 [!staging] stdout '"id": "launch_params",\s*"status": "warn"'
-[!staging] env SNOUTY_UNSTABLE_FEATURES=
 
 # 404: typically an older tenant predating the version endpoint, but possibly a
 # proxy/route intercepting the request — either way it's still reachable and
@@ -209,14 +224,14 @@ env ANTITHESIS_TENANT=testtenant
 snouty doctor
 stderr '^  ⚠ the username and password are hiding your API key$'
 stderr '^      WARNING: snouty uses the username and password from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables, which `snouty runs` refuses$'
-stderr '^      NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in .+credentials\.toml$'
-! stderr 'snouty login. to sign in'
+stderr '^      NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in the credentials file$'
+! stderr 'run .snouty login. or set'
 ! stderr 'hides a stored credential'
 ! stderr 'Using password credentials'
 
 snouty doctor --json
 stdout '"id": "credentials",\s*"kind": "password",\s*"status": "warn"'
-stdout '"text": "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in .*credentials\.toml"'
+stdout '"text": "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in the credentials file"'
 ! stdout '"id": "credential_sources"'
 ! stdout '"id": "basic_auth"'
 ! stdout '${FAKE_API_KEY_A@R}|${FAKE_PASSWORD@R}'
@@ -239,7 +254,7 @@ env ANTITHESIS_PASSWORD=
 env ANTITHESIS_TENANT=testtenant
 snouty doctor
 stderr '^  ⚠ username/password for user \[storeduser\] only works for `snouty launch` and `snouty debug`$'
-stderr '^      NOTE: read from the \[default\] profile in .+credentials\.toml$'
+stderr '^      NOTE: read from the credentials file$'
 stderr '^      NOTE: run `snouty login` to replace it with an API key$'
 ! stderr 'unset ANTITHESIS'
 ! stderr 'Using password credentials'
@@ -252,7 +267,7 @@ stdout '"id": "credentials",\s*"kind": "password",\s*"status": "warn"'
 # A bare `snouty login` writes the default profile, so for a password stored
 # under a named profile the next step names that profile.
 snouty --profile prod doctor
-stderr '^      NOTE: read from the \[prod\] profile in .+credentials\.toml$'
+stderr '^      NOTE: read from the `prod` profile of the credentials file$'
 stderr '^      NOTE: run `snouty login --profile prod` to replace it with an API key$'
 
 # A credentials file snouty cannot parse sits behind the exported API key. No
@@ -279,7 +294,7 @@ env ANTITHESIS_USERNAME=
 env ANTITHESIS_PASSWORD=
 snouty doctor --offline
 stderr '^  ✓ OAuth credentials used$'
-stderr '^      NOTE: read from the \[default\] profile in .+credentials\.toml$'
+stderr '^      NOTE: read from the credentials file$'
 snouty doctor --offline --json
 stdout '"id": "credentials",\s*"kind": "oauth",\s*"status": "ok"'
 ! stdout '${FAKE_ACCESS_TOKEN_A@R}'
@@ -290,7 +305,7 @@ set-env ACTIONS_ID_TOKEN_REQUEST_URL http://127.0.0.1:1/token
 set-env ACTIONS_ID_TOKEN_REQUEST_TOKEN ${FAKE_OIDC_REQUEST_TOKEN}
 snouty --profile prod doctor --offline
 stderr '^  ✓ OAuth credentials used$'
-stderr 'read from the \[prod\] profile'
+stderr 'read from the `prod` profile'
 ! stderr '⚠ .*credential'
 env ACTIONS_ID_TOKEN_REQUEST_URL=
 env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
@@ -299,7 +314,7 @@ env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 snouty --profile prod doctor --offline
 stderr '⚠ the environment hides a stored credential'
-stderr -literal '`unset ANTITHESIS_API_KEY` to use the OAuth credentials in the [prod] profile'
+stderr -literal '`unset ANTITHESIS_API_KEY` to use the OAuth credentials in the `prod` profile'
 snouty --profile prod doctor --offline --json
 stdout '"id": "credential_sources",\s*"status": "warn"'
 env ANTITHESIS_API_KEY=
@@ -325,7 +340,7 @@ env ANTITHESIS_PASSWORD=
 env ANTITHESIS_TENANT=testtenant
 ! snouty doctor --offline
 stderr '^  ✗ the API key is empty$'
-stderr '^      NOTE: read from the \[default\] profile in .+credentials\.toml$'
+stderr '^      NOTE: read from the credentials file$'
 ! stderr 'API key provided'
 ! snouty doctor --offline --json
 stdout '"id": "credentials",\s*"kind": "api_key",\s*"status": "error"'

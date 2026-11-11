@@ -53,6 +53,13 @@ stderr "invalid value '..' for '--run-id <RUN_ID>': invalid run ID"
 stderr 'No Antithesis credentials found.*'
 stderr -literal 'Suggestion: run `snouty login` or set ANTITHESIS_API_KEY'
 
+# In a GitHub Actions job, where `snouty login` cannot run, the suggestion
+# names the OIDC permission and a secret instead.
+env GITHUB_ACTIONS=true
+! snouty runs
+stderr -literal 'Suggestion: add `id-token: write` to the job\'s `permissions` to use GitHub Actions OIDC, or set ANTITHESIS_API_KEY from a secret'
+env GITHUB_ACTIONS=
+
 # With only username/password configured, the command fails fast with a clear
 # message instead of sending a request the API would reject with a 403.
 env ANTITHESIS_USERNAME=testuser

@@ -15,7 +15,7 @@ scrollback; adjacent asciinema recordings preserve colors and redraws. JSON
 commands use pipes so their structured output stays separate from stderr. A
 story that models a log file uses pipes too, with stderr in the stdout pipe.
 
-There are three kinds of story:
+There are five kinds of story:
 
   * goal stories — capture one command's output and judge it against a user goal
     (the bulk of the gallery; slugs like `runs-events-single`). The run stories
@@ -45,6 +45,10 @@ There are three kinds of story:
     real pseudo-terminal and record the conversation: one *frame* per prompt,
     an asciinema recording to replay, and the files the command persisted. See
     "TTY stories" below.
+  * mock tenant stories — run snouty against a mock tenant on the loopback,
+    for the credential paths that a live tenant cannot show on demand: single
+    sign-on, token renewal, GitHub Actions OIDC and a rejected credential (see
+    `MockTenant`). The TTY stories use a mock tenant too.
 
 Credentials come from the usual ANTITHESIS_* environment variables (snouty reads
 them). Behaviour is controlled with flags, not env vars:
@@ -62,9 +66,11 @@ how snouty changes affect command output.
 from __future__ import annotations
 
 import argparse
+import base64
 import codecs
 import fnmatch
 import functools
+import hashlib
 import json
 import os
 import random
@@ -82,8 +88,9 @@ import urllib.request
 from collections import Counter
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from enum import Enum, auto
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import islice
 from pathlib import Path
@@ -92,7 +99,6 @@ from typing import TypeVar
 import pexpect
 import pyte
 
-TEAMS: dict[str, str | None] = {"SNOUTY_UNSTABLE_FEATURES": "teams"}
 # A syntactically-valid but nonexistent run id, for clean-error stories.
 UNKNOWN_RUN = "ffffffffffffffffffffffffffffffff-54-5"
 # A run ID that only the `debug-bad-duration` story names, so that the guard
@@ -184,6 +190,12 @@ class Result:
         # Terminal captures already merge both streams in stdout in display
         # order. JSON captures keep stderr separate from the structured data.
         return self.stdout if not self.stderr else f"{self.stdout}{self.stderr}"
+
+
+def _no_ambient_antithesis_env() -> dict[str, None]:
+    """Unset each ambient ANTITHESIS_* variable, so that a story shows the
+    state it seeded and no real secret reaches a captured file."""
+    return {k: None for k in os.environ if k.startswith("ANTITHESIS_")}
 
 
 class Snouty:
@@ -311,7 +323,6 @@ class Snouty:
         """Start `snouty mcp`, initialize a session, send each `(method,
         params)` request, and return each response's `result`, in order. The
         server stops when its stdin closes."""
-        env = self.env_with({"SNOUTY_UNSTABLE_FEATURES": "mcp"})
         messages = [
             {
                 "jsonrpc": "2.0",
@@ -336,7 +347,7 @@ class Snouty:
             input="".join(json.dumps(m) + "\n" for m in messages),
             capture_output=True,
             text=True,
-            env=env,
+            env=self._env,
             timeout=MCP_TIMEOUT,
         )
         responses = {}
@@ -474,6 +485,186 @@ class LaunchGuard:
     def close(self) -> None:
         self._server.shutdown()
         self._server.server_close()
+
+
+# ---------------------------------------------------------------------------
+# Mock tenant
+#
+# Each story gets its own mock, so concurrent stories cannot change each
+# other's state. The mock accepts only `_FAKE_API_KEY_B` and the tokens that it
+# issued.
+# ---------------------------------------------------------------------------
+
+
+class ActionsJob(Enum):
+    """What the mock's GitHub Actions token endpoint does with a request."""
+
+    ISSUES_TOKEN = auto()
+    REJECTS_REQUEST = auto()
+
+
+@dataclass(frozen=True)
+class MockTenantSpec:
+    """How a story's mock tenant behaves. When `sso` is False, the tenant has
+    no CLI single sign-on: `/auth/cli/config` answers 403. When `actions` is
+    set, the story runs as a GitHub Actions job with `id-token: write`."""
+
+    sso: bool = False
+    refresh_revoked: bool = False
+    actions: ActionsJob | None = None
+
+
+_MOCK_RUN_ID = "0180b2554d40227f5a05c4d65055252b-67-0"
+# Every address that the mock and snouty open is on the loopback, so a proxy
+# must not carry it.
+_LOOPBACK = "127.0.0.1,localhost"
+_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _b64u(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+class MockTenant:
+    """A mock tenant on the loopback that behaves as `spec` says, with a real
+    PKCE check. Its identity provider signs the user in at once: it sends the
+    authorization code to snouty's callback itself, so no browser is needed.
+    Use it as a context manager."""
+
+    def __init__(self, spec: MockTenantSpec) -> None:
+        self.spec = spec
+        # Each mock serves one sign-on.
+        self._challenge = ""
+        self._accepted = {f"Bearer {_FAKE_API_KEY_B}"}
+        self._lock = threading.Lock()
+        tenant = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def handle_request(self) -> None:
+                body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                url = urllib.parse.urlsplit(self.path)
+                query = dict(urllib.parse.parse_qsl(url.query))
+                auth = self.headers.get("Authorization") or ""
+                with tenant._lock:
+                    status, reply, location = tenant.answer(
+                        self.command, url.path, query, auth, body
+                    )
+                data = b"" if reply is None else json.dumps(reply).encode()
+                self.send_response(status)
+                if location:
+                    self.send_header("Location", location)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            do_GET = do_POST = handle_request
+
+            def log_message(self, format: str, *args) -> None:
+                pass
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self._server.server_address[1]}"
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    def __enter__(self) -> MockTenant:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+    def env(self) -> dict[str, str | None]:
+        """The environment that points snouty at this tenant."""
+        oidc = self.spec.actions is not None
+        return {
+            "ANTITHESIS_BASE_URL": self.url,
+            "NO_PROXY": _LOOPBACK,
+            # The operator's keychain entry would hide the seeded credential,
+            # and a login would overwrite it.
+            "SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE": "1",
+            "no_proxy": _LOOPBACK,
+            "ACTIONS_ID_TOKEN_REQUEST_URL": (
+                f"{self.url}/actions/token?api-version=2.0" if oidc else None
+            ),
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN": (
+                _FAKE_OIDC_REQUEST_TOKEN if oidc else None
+            ),
+        }
+
+    def _issue_oauth(self, access: str, refresh: str) -> tuple[int, object, str]:
+        self._accepted.add(f"Bearer {access}")
+        return 200, {"antithesis_token": access, "refresh_token": refresh}, ""
+
+    def answer(
+        self, method: str, path: str, query: dict[str, str], auth: str, body: bytes
+    ) -> tuple[int, object, str]:
+        """The status, JSON body (None for an empty body) and `Location` of the
+        reply to one request."""
+        match method, path:
+            case "GET", "/auth/cli/config":
+                if not self.spec.sso:
+                    return 403, {"error": "forbidden"}, ""
+                return 200, {"port_strategy": "ephemeral"}, ""
+            case "POST", "/auth/cli/login":
+                login = json.loads(body)
+                self._challenge = login["code_challenge"]
+                callback = f"http://127.0.0.1:{login['port']}/callback?" + (
+                    urllib.parse.urlencode(
+                        {"code": _FAKE_OAUTH_CODE, "state": _FAKE_OAUTH_FLOW_TOKEN}
+                    )
+                )
+                threading.Thread(
+                    target=_NO_PROXY_OPENER.open, args=(callback,), daemon=True
+                ).start()
+                return 200, {"location": f"{self.url}/idp/authorize"}, ""
+            case "POST", "/auth/cli/token":
+                encoded = auth.removeprefix("Bearer ")
+                pair = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+                code, _, verifier = pair.decode().partition(":")
+                challenge = _b64u(hashlib.sha256(verifier.encode()).digest())
+                if (
+                    code != _FAKE_OAUTH_CODE
+                    or challenge != self._challenge
+                    or json.loads(body).get("flow_token") != _FAKE_OAUTH_FLOW_TOKEN
+                ):
+                    return 400, {"error": "invalid_grant"}, ""
+                return self._issue_oauth(_FAKE_ACCESS_TOKEN_A, _FAKE_REFRESH_TOKEN_B)
+            case "POST", "/auth/cli/refresh":
+                if (
+                    self.spec.refresh_revoked
+                    or auth != f"Bearer {_FAKE_REFRESH_TOKEN_A}"
+                ):
+                    return 401, {"error": "invalid refresh token"}, ""
+                return self._issue_oauth(_FAKE_ACCESS_TOKEN_B, _FAKE_REFRESH_TOKEN_B)
+            case "GET", "/actions/token":
+                if (
+                    self.spec.actions is not ActionsJob.ISSUES_TOKEN
+                    or auth != f"Bearer {_FAKE_OIDC_REQUEST_TOKEN}"
+                    or query.get("audience") != "antithesis"
+                ):
+                    return 403, {"message": "Bad credentials"}, ""
+                self._accepted.add(f"GHA {_FAKE_OIDC_TOKEN}")
+                return 200, {"count": 1, "value": _FAKE_OIDC_TOKEN}, ""
+        if not path.startswith("/api/"):
+            return 404, {"error": "not found"}, ""
+        if auth not in self._accepted:
+            return 401, None, ""
+        match path:
+            case "/api/version":
+                return 200, {"latest_api_version": "v1", "release_version": "67.0"}, ""
+            case "/api/v0/runs":
+                created = datetime.now(UTC) - timedelta(hours=1)
+                run = {
+                    "run_id": _MOCK_RUN_ID,
+                    "status": "completed",
+                    "created_at": created.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "launcher": "basic_test",
+                    "creator": {"name": "acme", "type": "user"},
+                    "parameters": {"antithesis.test_name": "nightly"},
+                }
+                return 200, {"data": [run]}, ""
+        return 404, {"error": "not found"}, ""
 
 
 # ---------------------------------------------------------------------------
@@ -1423,7 +1614,7 @@ def gallery_run(sn: Snouty, reuse: bool) -> GalleryRun:
     ensure_example_images()
     # The timestamp helps a person tell the gallery's runs apart in the web UI.
     description = f"{GALLERY_RUN_DESCRIPTION} {datetime.now().isoformat()}"
-    launch = sn.run(gallery_launch_args(description), env=TEAMS)
+    launch = sn.run(gallery_launch_args(description))
     run = launched_run_id(launch.stdout)
     if not launch.ok or run is None:
         raise GalleryError(
@@ -1669,6 +1860,9 @@ class Story:
     # under `$XDG_CONFIG_HOME/snouty` — those would otherwise leak in and mask a
     # story that models an unconfigured machine (e.g. the no-auth doctor stories).
     isolate_config: bool = False
+    # When set, the story runs against a mock tenant (see `MockTenant`); when
+    # None, against the live tenant.
+    tenant: MockTenantSpec | None = None
     stdin: str | None = None
     # -- MCP tool help stories ---------------------------------------------
     # The MCP tool whose tool list entry and `tool_help` the story shows.
@@ -2560,19 +2754,6 @@ def exec_json(needle: str, *, system_events: bool):
     return chk
 
 
-def help_without_teams_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-    """A help story, whose help names --duration and none of the flags that
-    the `teams` feature gates."""
-    ok, detail = help_story_check(sr, reg)
-    if not ok or sr.help_result is None:
-        return (ok, detail)
-    text = sr.help_result.combined
-    named = [f for f in ("--max-compute-hours", "--setup-timeout") if f in text]
-    if named or "--duration" not in text or "Deprecated" in text:
-        return (False, f"help names gated flags {named!r} or misdescribes --duration")
-    return (True, detail)
-
-
 def help_story_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     """Gate a help story: the `--help` must be well-formed (exit 0, has a Usage
     line), any documented `align_tokens` must appear in BOTH the help and the
@@ -3335,7 +3516,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                 guard, DURATION_RUN, "must be from 30 minutes to 6 hours"
             ),
             json_capable=False,
-            env={**guarded, **TEAMS},
+            env=guarded,
         ),
         Story(
             "launch-bare-setup-timeout",
@@ -3358,7 +3539,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                 guard, SETUP_TIMEOUT_IMAGE, "a bare number is not permitted"
             ),
             json_capable=False,
-            env={**guarded, **TEAMS},
+            env=guarded,
         ),
         # -- doctor (one story per distinct auth output) --------------------
         Story(
@@ -3448,15 +3629,14 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "Fresh install — doctor tells me what to configure",
             "I just installed snouty and haven't set any credentials; I want doctor to tell me what I need.",
             "doctor identifies the missing credentials and offers `snouty login` or "
-            "ANTITHESIS_API_KEY, with a support contact for obtaining a key. It must not "
-            "recommend legacy username/password authentication (issue #145).",
+            "ANTITHESIS_API_KEY. It must not recommend legacy username/password "
+            "authentication (issue #145).",
             ["doctor"],
             doctor_check(
                 contains=(
                     "No Antithesis credentials found",
                     "snouty login",
                     "ANTITHESIS_API_KEY",
-                    "ask Antithesis support",
                 ),
                 absent=("ANTITHESIS_USERNAME", "ANTITHESIS_PASSWORD"),
                 ok=False,
@@ -3491,7 +3671,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                 absent=(
                     "No credentials the API commands accept",
                     "Using password credentials",
-                    "run `snouty login` to sign in",
+                    "run `snouty login` or set ANTITHESIS_API_KEY",
                 ),
             ),
             json_capable=False,
@@ -3514,11 +3694,11 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                     "the username and password are hiding your API key",
                     "WARNING: snouty uses the username and password from the `ANTITHESIS_USERNAME`",
                     "which `snouty runs` refuses",
-                    "NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in",
-                    "credentials.toml",
+                    "NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in "
+                    "the credentials file",
                 ),
                 absent=(
-                    "run `snouty login` to sign in",
+                    "run `snouty login` or set ANTITHESIS_API_KEY",
                     "hides a stored credential",
                     "Using password credentials",
                 ),
@@ -3619,7 +3799,6 @@ def build_launch_stories(x: GalleryRun) -> list[Story]:
             x.launch.args,
             launched_run(x.run),
             json_capable=False,
-            env=TEAMS,
             precaptured=x.launch,
         )
     ]
@@ -4065,8 +4244,6 @@ def _help_story(
     samples: list[tuple[str, list[str]]] | None = None,
     align: tuple[str, ...] = (),
     expect_ok: bool = True,
-    env: dict[str, str | None] | None = None,
-    check=help_story_check,
 ) -> Story:
     args = args or []
     judge = HELP_RUBRIC + (_OUTPUT_RUBRIC if args else _HELP_ONLY_RUBRIC)
@@ -4076,13 +4253,12 @@ def _help_story(
         goal=goal,
         judge=judge,
         args=args,
-        check=check,
+        check=help_story_check,
         json_capable=False,
         help_cmd=help_cmd,
         samples=samples,
         align_tokens=align,
         expect_ok=expect_ok,
-        env=env,
     )
 
 
@@ -4293,18 +4469,6 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "split across two lines. Each example for a launcher that needs a config image "
             "should pass one, so that I can copy it as written.",
             ["launch"],
-            env=TEAMS,
-        ),
-        _help_story(
-            "help-launch-without-teams",
-            "Understand how to size a run without the teams feature",
-            "Without the `teams` unstable feature, I run `snouty launch --help` to learn how "
-            "long my run fuzzes. The help should name --duration and not call it deprecated. "
-            "It should not name --max-compute-hours or --setup-timeout, which need the "
-            "feature.",
-            ["launch"],
-            env={"SNOUTY_UNSTABLE_FEATURES": None},
-            check=help_without_teams_check,
         ),
         _help_story(
             "help-debug",
@@ -4694,9 +4858,9 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
 # keychain is a no-op, so credentials land in the file backend — the realistic
 # default here.
 #
-# The tenant is contacted for real: `snouty login` asks it whether single
-# sign-on is available before it asks for credentials, so a story shows what a
-# human would see on that tenant.
+# Each story runs against a mock tenant (see `MockTenant`), by default one
+# without CLI single sign-on, so login asks for an API key with no credential
+# menu.
 # ---------------------------------------------------------------------------
 
 # Fake secrets, never a real credential, and redacted again before embedding
@@ -4705,6 +4869,16 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
 _FAKE_API_KEY_A = "antithesis_api_key_v2_fake-a_9Pgw"
 _FAKE_API_KEY_B = "antithesis_api_key_v2_fake-b-longer_7Qxz"
 _FAKE_PASSWORD = "fake-password"
+_FAKE_ACCESS_TOKEN_A = "fake-access-token-a"
+_FAKE_ACCESS_TOKEN_B = "fake-access-token-b"
+_FAKE_REFRESH_TOKEN_A = "fake-refresh-token-a"
+_FAKE_REFRESH_TOKEN_B = "fake-refresh-token-b"
+_FAKE_OAUTH_CODE = "fake-oauth-code"
+_FAKE_OAUTH_FLOW_TOKEN = "fake-oauth-flow-token"
+_FAKE_OIDC_REQUEST_TOKEN = "fake-oidc-request-token"
+_FAKE_OIDC_TOKEN = "fake-oidc-token"
+# A PASETO that expired in 2019: test vector 2-S-1.
+_FAKE_PASETO_A = "v2.public.eyJkYXRhIjoidGhpcyBpcyBhIHNpZ25lZCBtZXNzYWdlIiwiZXhwIjoiMjAxOS0wMS0wMVQwMDowMDowMCswMDowMCJ9HQr8URrGntTu7Dz9J2IF23d1M7-9lH9xiqdGyJNvzp4angPW5Esc7C5huy_M8I8_DjJK2ZXC2SUYuOFM-Q_5Cw"
 _TENANT = "acme"
 _REPO = "registry.example.com/acme/app"
 _SETTINGS = ".config/snouty/settings.toml"
@@ -4713,8 +4887,6 @@ _SEED_SETTINGS_TOML = f'tenant = "{_TENANT}"\nrepository = "{_REPO}"\n'
 # A `credentials.toml` exactly as `snouty login` writes it.
 _SEED_CREDS_TOML = f'[default]\ntype = "ApiKey"\napi_key = "{_FAKE_API_KEY_A}"\n'
 
-# The gallery's tenant does not resolve, so login asks for the API key with no
-# credential menu.
 _ASK_TENANT = "What Antithesis tenant"
 _ASK_REPO = "What container repository"
 _ASK_CREDENTIALS = "What kind of credentials"
@@ -4739,6 +4911,9 @@ _TTY_RUBRIC = (
 )
 
 
+_NO_SSO = MockTenantSpec()
+
+
 def _tty_story(
     slug: str,
     title: str,
@@ -4749,6 +4924,7 @@ def _tty_story(
     *,
     seed_files: dict[str, str] | None = None,
     post_capture: tuple[str, ...] = (_SETTINGS, _CREDS),
+    tenant: MockTenantSpec = _NO_SSO,
 ) -> Story:
     return Story(
         slug=slug,
@@ -4761,11 +4937,12 @@ def _tty_story(
         dialogue=dialogue,
         seed_files=seed_files,
         post_capture=post_capture,
+        tenant=tenant,
     )
 
 
 def build_tty_stories() -> list[Story]:
-    return [
+    stories = [
         _tty_story(
             "login-fresh-apikey",
             "First-time setup with an API key",
@@ -4902,9 +5079,7 @@ def build_tty_stories() -> list[Story]:
                 (_ASK_KEY, _FAKE_API_KEY_B + ENTER),
             ),
             tty_persisted(
-                # The live tenant decides the probe's outcome, so only the
-                # request is checked.
-                prompts=(f"> GET https://{_TENANT}.antithesis.com/auth/cli/config",),
+                prompts=("/auth/cli/config", "< 403 Forbidden"),
                 files=(
                     (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_API_KEY_B}"')),
                 ),
@@ -4913,6 +5088,155 @@ def build_tty_stories() -> list[Story]:
             seed_files={_SETTINGS: _SEED_SETTINGS_TOML},
         ),
     ]
+    # Linux only: the macOS browser opener has a fixed path, so the sign-in
+    # would open a real browser. On Linux, the no-op shim on PATH stops that.
+    if sys.platform != "linux":
+        return stories
+    return [
+        *stories,
+        _tty_story(
+            "login-sso",
+            "First-time setup with single sign-on",
+            "I just installed snouty, and my company signs in to Antithesis with single "
+            "sign-on. I want to sign in with my browser.",
+            ["login"],
+            (
+                (_ASK_TENANT, _TENANT + ENTER),
+                (_ASK_REPO, _REPO + ENTER),
+                (_ASK_CREDENTIALS, ENTER),
+            ),
+            tty_persisted(
+                prompts=(_ASK_CREDENTIALS, "Single sign-on", "snouty doctor"),
+                files=(
+                    (
+                        _CREDS,
+                        (
+                            'type = "OAuth"',
+                            f'antithesis_token = "{_FAKE_ACCESS_TOKEN_A}"',
+                            f'refresh_token = "{_FAKE_REFRESH_TOKEN_B}"',
+                        ),
+                    ),
+                ),
+                secrets_absent=(_FAKE_ACCESS_TOKEN_A, _FAKE_REFRESH_TOKEN_B),
+            ),
+            tenant=MockTenantSpec(sso=True),
+        ),
+    ]
+
+
+def _mock_story(
+    slug: str,
+    title: str,
+    goal: str,
+    judge: str,
+    args: list[str],
+    check: Callable[[StoryRun, Registry], tuple[bool, str]],
+    tenant: MockTenantSpec,
+    *,
+    seed_files: dict[str, str] | None = None,
+    **credential: str,
+) -> Story:
+    """A story on a configured machine with an isolated config, whose only
+    credential is the one that the story gives (or seeds)."""
+    return Story(
+        slug,
+        title,
+        goal,
+        judge,
+        args,
+        check,
+        json_capable=False,
+        env={
+            **_no_ambient_antithesis_env(),
+            "ANTITHESIS_TENANT": _TENANT,
+            "ANTITHESIS_REPOSITORY": _REPO,
+            **credential,
+        },
+        isolate_config=True,
+        seed_files=seed_files,
+        tenant=tenant,
+    )
+
+
+# A single sign-on whose access token expired, as `snouty login` stores it.
+_SEED_EXPIRED_OAUTH = {
+    _CREDS: (
+        f'[default]\ntype = "OAuth"\nantithesis_token = "{_FAKE_PASETO_A}"\n'
+        f'refresh_token = "{_FAKE_REFRESH_TOKEN_A}"\n'
+    )
+}
+
+
+def build_mock_tenant_stories() -> list[Story]:
+    """The mock tenant stories other than login."""
+    return [
+        _mock_story(
+            "runs-key-rejected",
+            "My API key is rejected",
+            "My API key was revoked, and I do not know it yet. I list my runs.",
+            "snouty fails, says that the tenant rejected the credential, and tells the user "
+            "how to give a working one.",
+            ["runs", "list"],
+            fails_with("snouty login"),
+            MockTenantSpec(),
+            ANTITHESIS_API_KEY=_FAKE_API_KEY_A,
+        ),
+        _mock_story(
+            "runs-sso-refresh",
+            "My single sign-on session renews itself",
+            "I signed in with single sign-on some time ago, and my access token has expired. "
+            "I list my runs.",
+            "snouty renews the token without a word and lists the runs, as if the token had "
+            "not expired.",
+            ["runs", "list"],
+            succeeds_with(_MOCK_RUN_ID),
+            MockTenantSpec(),
+            seed_files=_SEED_EXPIRED_OAUTH,
+        ),
+        _mock_story(
+            "runs-sso-refresh-revoked",
+            "My single sign-on session was revoked",
+            "I signed in with single sign-on, but my session was revoked, and my access "
+            "token has expired. I list my runs.",
+            "snouty fails, says that the session cannot be renewed, and names the one command "
+            "that fixes it: `snouty login`.",
+            ["runs", "list"],
+            fails_with("snouty login"),
+            MockTenantSpec(refresh_revoked=True),
+            seed_files=_SEED_EXPIRED_OAUTH,
+        ),
+        _mock_story(
+            "doctor-oidc",
+            "Check a GitHub Actions job that signs in with OIDC",
+            "My GitHub Actions job has `id-token: write` and no API key. I want doctor to "
+            "confirm that snouty can use the job's OIDC token.",
+            "doctor reports the GitHub Actions OIDC token as the credential, names the "
+            "environment variables it comes from, and reaches the API with it.",
+            ["doctor"],
+            doctor_check(
+                contains=("GitHub Actions OIDC token", "Antithesis API reachable")
+            ),
+            MockTenantSpec(actions=ActionsJob.ISSUES_TOKEN),
+        ),
+        _mock_story(
+            "doctor-oidc-forbidden",
+            "GitHub Actions refuses the job an OIDC token",
+            "My GitHub Actions job signs in with OIDC, but GitHub refuses to give it a token. "
+            "I want doctor to tell me what is wrong.",
+            "doctor fails on the credential, says that snouty could not get a GitHub Actions "
+            "OIDC token, and does not blame the network or the tenant.",
+            ["doctor"],
+            doctor_check(
+                contains=("could not get a GitHub Actions OIDC token",), ok=False
+            ),
+            MockTenantSpec(actions=ActionsJob.REJECTS_REQUEST),
+        ),
+    ]
+
+
+def build_offline_stories() -> list[Story]:
+    """The TTY and mock tenant stories, which need no external dependencies."""
+    return [*build_tty_stories(), *build_mock_tenant_stories()]
 
 
 # ---------------------------------------------------------------------------
@@ -5068,8 +5392,11 @@ def _write_help_story(
 
 
 # Redact the secret values from persisted TOML before embedding it in a story —
-# belt-and-suspenders on top of the fake secrets the TTY stories type.
-_SECRET_LINE = re.compile(r'^(\s*(?:api_key|password)\s*=\s*)"[^"]*"', re.MULTILINE)
+# belt-and-suspenders on top of the fake secrets the stories use.
+_SECRET_LINE = re.compile(
+    r'^(\s*(?:api_key|password|antithesis_token|refresh_token)\s*=\s*)"[^"]*"',
+    re.MULTILINE,
+)
 
 
 def _redact_secrets(text: str) -> str:
@@ -5188,7 +5515,7 @@ def run_tty_story(sn: Snouty, story: Story) -> StoryRun:
                 "HOME": str(home),
                 "TERM": "xterm-256color",
                 "XDG_CONFIG_HOME": None,
-                **{k: None for k in os.environ if k.startswith("ANTITHESIS_")},
+                **_no_ambient_antithesis_env(),
                 **(story.env or {}),
             }
         )
@@ -5251,6 +5578,10 @@ def run_mcp_story(sn: Snouty, story: Story) -> StoryRun:
 
 
 def run_story(sn: Snouty, story: Story) -> StoryRun:
+    if story.tenant is not None:
+        with MockTenant(story.tenant) as tenant:
+            env = {**(story.env or {}), **tenant.env()}
+            return run_story(sn, replace(story, env=env, tenant=None))
     if story.precaptured is not None:
         return StoryRun(story, story.precaptured, None)
     if story.before is not None:
@@ -5327,7 +5658,7 @@ def main() -> int:
             print(s.slug)
         for s in build_validate_stories(None):
             print(s.slug)
-        for s in build_tty_stories():
+        for s in build_offline_stories():
             print(s.slug)
         # The MCP tool help stories come from the tools that the binary lists.
         binary = args.snouty or repo_root / "target" / "debug" / "snouty"
@@ -5369,7 +5700,7 @@ def main() -> int:
     # manifests/ dir) are synthesized here for this run only.
     fixtures_dir = Path(tempfile.mkdtemp(prefix="snouty-gallery-fixtures."))
 
-    # Which story groups does this run actually need? The TTY stories need no
+    # Which story groups does this run actually need? The offline stories need no
     # API, discovery, or container runtime, so `--only login-*` must not drag in
     # (and fail on) live-API discovery or a Docker daemon. Decide up front from
     # cheaply-enumerable slugs which groups are in scope.
@@ -5389,7 +5720,7 @@ def main() -> int:
         listed_run_slugs() if args.run else ([], [], [])
     )
     validate_slugs = {s.slug for s in build_validate_stories(None)}
-    tty_slugs = {s.slug for s in build_tty_stories()}
+    offline_slugs = {s.slug for s in build_offline_stories()}
     need_ready = any(selected(s) for s in ready_slugs)
     need_final = any(selected(s) for s in final_slugs)
     need_run = need_ready or need_final or any(selected(s) for s in launch_slugs)
@@ -5405,7 +5736,7 @@ def main() -> int:
             *ready_slugs,
             *final_slugs,
             *validate_slugs,
-            *tty_slugs,
+            *offline_slugs,
             *(s.slug for s in mcp_stories),
         ]
         unmatched = [
@@ -5490,9 +5821,9 @@ def main() -> int:
             guard = LaunchGuard.for_tenant(sn)
             regular += build_stories(disc, guard)
         regular += [s for s in validate_stories if s not in early]
-        # TTY and MCP tool help stories need no external dependencies, so they
-        # always run.
-        regular += build_tty_stories()
+        # The offline and MCP tool help stories need no external dependencies,
+        # so they always run.
+        regular += build_offline_stories()
         regular += mcp_stories
         regular = [s for s in regular if selected(s.slug)]
 

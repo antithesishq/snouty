@@ -3491,7 +3491,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                 absent=(
                     "No credentials the API commands accept",
                     "Using password credentials",
-                    "run `snouty login` to sign in",
+                    "run `snouty login` or set ANTITHESIS_API_KEY",
                 ),
             ),
             json_capable=False,
@@ -3518,7 +3518,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                     "credentials.toml",
                 ),
                 absent=(
-                    "run `snouty login` to sign in",
+                    "run `snouty login` or set ANTITHESIS_API_KEY",
                     "hides a stored credential",
                     "Using password credentials",
                 ),

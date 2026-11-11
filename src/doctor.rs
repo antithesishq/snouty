@@ -344,21 +344,15 @@ fn authn_checks(sources: &[SourcedCredential], github_actions: bool) -> Vec<Chec
     checks
 }
 
-fn missing_credentials_check(message: impl Into<String>, github_actions: bool) -> Check {
-    with_credential_remedy(
-        Check::fail(CheckId::Credentials { kind: None }, message).note(
-            Level::Error,
-            "snouty needs credentials to authenticate with Antithesis",
-        ),
-        github_actions,
-    )
-}
-
-/// The remedy notes for a credential shortfall. Every credential kind except
+/// The check for a credential shortfall. Every credential kind except
 /// username and password is accepted, so the notes name the ways to get one
 /// rather than naming an API key alone.
-fn with_credential_remedy(check: Check, github_actions: bool) -> Check {
-    check
+fn missing_credentials_check(message: impl Into<String>, github_actions: bool) -> Check {
+    Check::fail(CheckId::Credentials { kind: None }, message)
+        .note(
+            Level::Error,
+            "snouty needs credentials to authenticate with Antithesis",
+        )
         .note(
             Level::Note,
             crate::auth::no_credentials_suggestion(github_actions),

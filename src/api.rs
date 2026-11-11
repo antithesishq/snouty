@@ -865,7 +865,7 @@ impl AntithesisApi {
         // tenant resolved; surface the tenant diagnostic, since that's what a
         // user normally sets.
         let base_url = normalize_base_url(crate::settings::require_setting(
-            settings.base_url(),
+            settings.base_url().as_deref(),
             "tenant",
         )?);
         debug!("initializing API client for {base_url}");

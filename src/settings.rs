@@ -95,6 +95,8 @@ pub struct Settings {
     profile: Option<String>,
     tenant: Option<String>,
     repository: Option<String>,
+    /// The `base_url` setting. [`Settings::base_url`] falls back to the
+    /// tenant's host.
     base_url: Option<String>,
     https_proxy: Option<String>,
     container_engine: Option<String>,
@@ -333,7 +335,14 @@ impl Settings {
     /// The base URL to talk to: an explicit `base_url` if set, otherwise one
     /// derived from the tenant; `None` when neither exists (a derived `base_url`
     /// is present exactly when the tenant is).
-    pub fn base_url(&self) -> Option<&str> {
+    pub fn base_url(&self) -> Option<String> {
+        self.base_url
+            .clone()
+            .or_else(|| self.tenant.as_deref().map(tenant_base_url))
+    }
+
+    /// The `base_url` setting, without the fallback to the tenant's host.
+    pub(crate) fn explicit_base_url(&self) -> Option<&str> {
         self.base_url.as_deref()
     }
 
@@ -450,22 +459,16 @@ impl SettingsBuilder {
         self
     }
 
-    /// Finish the build, applying the derived values: `base_url` falls back to
-    /// a tenant-derived host, and the cache size cap falls back to its default.
-    /// [`Settings::resolve`] and the test constructors both finish here, so the
-    /// derivation is exercised the same way everywhere.
+    /// Finish the build, applying the derived values: the cache size cap falls
+    /// back to its default. [`Settings::resolve`] and the test constructors
+    /// both finish here, so the derivation is exercised the same way
+    /// everywhere.
     pub fn build(self) -> Settings {
-        let base_url = self.base_url.or_else(|| {
-            self.tenant
-                .as_ref()
-                .map(|tenant| format!("https://{tenant}.antithesis.com"))
-        });
-
         Settings {
             profile: self.profile,
             tenant: self.tenant,
             repository: self.repository,
-            base_url,
+            base_url: self.base_url,
             https_proxy: self.https_proxy,
             container_engine: self.container_engine,
             update_channel: self.update_channel,
@@ -601,6 +604,11 @@ fn update_table(
     insert_key_if_non_empty(target, "repository", repository);
     insert_key_if_non_empty(target, "base_url", base_url);
     insert_key_if_non_empty(target, "container_engine", container_engine);
+}
+
+/// The base URL of `tenant` when no `base_url` is set.
+pub(crate) fn tenant_base_url(tenant: &str) -> String {
+    format!("https://{tenant}.antithesis.com")
 }
 
 /// Validate that `tenant` is safe to interpolate into the derived base URL
@@ -1150,7 +1158,10 @@ mod tests {
     #[test]
     fn base_url_falls_back_to_tenant_host() {
         let settings = Settings::builder().tenant("acme").build();
-        assert_eq!(settings.base_url(), Some("https://acme.antithesis.com"));
+        assert_eq!(
+            settings.base_url().as_deref(),
+            Some("https://acme.antithesis.com")
+        );
     }
 
     #[test]
@@ -1159,13 +1170,13 @@ mod tests {
             .tenant("acme")
             .base_url("https://example.test")
             .build();
-        assert_eq!(settings.base_url(), Some("https://example.test"));
+        assert_eq!(settings.base_url().as_deref(), Some("https://example.test"));
     }
 
     #[test]
     fn base_url_without_tenant_is_none() {
         let settings = Settings::default();
-        assert_eq!(settings.base_url(), None);
+        assert_eq!(settings.base_url().as_deref(), None);
     }
 
     #[test]
@@ -1332,6 +1343,6 @@ mod tests {
             .tenant("evil.com#")
             .base_url("https://ok.example")
             .build();
-        assert_eq!(s.base_url(), Some("https://ok.example"));
+        assert_eq!(s.base_url().as_deref(), Some("https://ok.example"));
     }
 }

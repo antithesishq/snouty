@@ -23,9 +23,8 @@ use sha2::{Digest, Sha256};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 
-use crate::settings;
 use crate::{
-    api::HttpClient,
+    api::{HttpClient, normalize_base_url},
     auth::{
         AuthenticationInfo, CredentialStore, PersistableCredentials, is_blank_api_key, persist,
     },
@@ -33,7 +32,7 @@ use crate::{
     error::user_error,
     render::{OutputOptions, sanitize, wrap_if_tty},
     settings::{
-        ANTITHESIS_PROFILE_ENV_VAR_NAME, Settings, update_settings_in_global_file,
+        ANTITHESIS_PROFILE_ENV_VAR_NAME, Settings, tenant_base_url, update_settings_in_global_file,
         validate_tenant_host,
     },
     tag::{Tag, Tagged},
@@ -207,7 +206,16 @@ async fn do_cmd_login(
     let written = if prompter.is_interactive() {
         let stored_value = stored.as_ref().map(Tagged::value);
         let client = HttpClient::new(current_settings, verbose)?;
-        match prompt_for_auth(prompter, &client, &tenant_to_use, stored_value).await? {
+        let explicit_base_url = current_settings.explicit_base_url();
+        match prompt_for_auth(
+            prompter,
+            &client,
+            explicit_base_url,
+            &tenant_to_use,
+            stored_value,
+        )
+        .await?
+        {
             Some(credentials) => {
                 let kind = match &credentials {
                     PersistableCredentials::ApiKey { .. } => "API key",
@@ -346,29 +354,37 @@ impl std::fmt::Display for AuthSetupType {
 }
 
 /// Returns the credential to store, or `None` when the user skips, keeps
-/// `stored`, or declines to replace it.
+/// `stored`, or declines to replace it. Signs in at `explicit_base_url`, the
+/// `base_url` setting that later commands call, or else at the host of
+/// `tenant`.
 async fn prompt_for_auth(
     prompter: &dyn Prompter,
     client: &HttpClient,
+    explicit_base_url: Option<&str>,
     tenant: &str,
     stored: Option<&AuthenticationInfo>,
 ) -> Result<Option<PersistableCredentials>> {
-    // ANTITHESIS_BASE_URL trumps the supplied tenant because the former is used by spec tests
-    let base_url = env::var(settings::ANTITHESIS_BASE_URL_VAR_NAME)?
-        .unwrap_or_else(|| format!("https://{tenant}.antithesis.com"));
-    let oauth_config = fetch_cli_config(client, &base_url).await;
+    let url = normalize_base_url(
+        explicit_base_url.map_or_else(|| tenant_base_url(tenant), str::to_owned),
+    );
+    let oauth_config = fetch_cli_config(client, &url).await;
 
-    // A connect error or timeout most often means a misspelled tenant. Any
-    // HTTP answer, such as 403, means the tenant exists. A body error comes
-    // after an answer.
+    // A URL that does not parse, a connect error or a timeout most often means
+    // a misspelled tenant or base_url. Any HTTP answer, such as 403, means the
+    // host exists. A body error comes after an answer.
     if let Err(err) = &oauth_config
         && let Some(transport) = err.downcast_ref::<reqwest::Error>()
-        && (transport.is_connect() || (transport.is_timeout() && !transport.is_body()))
+        && (transport.is_builder()
+            || transport.is_connect()
+            || (transport.is_timeout() && !transport.is_body()))
     {
+        let check = match explicit_base_url {
+            Some(_) => "Check that the base_url setting is correct.".to_owned(),
+            None => format!("Check that the tenant name `{tenant}` is correct."),
+        };
         let warning = wrap_if_tty(&format!(
-            "warning: could not reach {base_url}{CLI_CONFIG_PATH} to check for single \
-             sign-on: {}. Check that the tenant name `{tenant}` is correct. Login \
-             continues with an API key.",
+            "warning: could not reach {url}{CLI_CONFIG_PATH} to check for single \
+             sign-on: {}. {check} Login continues with an API key.",
             root_cause(transport)
         ));
         eprintln!("{}", console::style(warning).yellow().for_stderr());
@@ -423,7 +439,7 @@ async fn prompt_for_auth(
         {
             Ok(None)
         }
-        Some(AuthSetupType::OAuth) => complete_oauth_login(client, &base_url, &oauth_config?)
+        Some(AuthSetupType::OAuth) => complete_oauth_login(client, &url, &oauth_config?)
             .await
             .map(Some),
     }

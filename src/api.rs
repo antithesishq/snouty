@@ -775,10 +775,9 @@ pub struct ExecRequest {
 pub enum ExecOutput {
     /// Only the script's output.
     Script,
-    /// Every event of the timeline while the script executes.
-    Events,
-    /// Every event, and the logs that the run's log filters drop.
-    EventsWithFilteredLogs,
+    /// Every event of the timeline while the script executes, and with
+    /// `include_filtered_logs`, the logs that the run's log filters drop.
+    Events { include_filtered_logs: bool },
 }
 
 /// The run that a cold moment comes from, by run ID or by session ID. The
@@ -1130,9 +1129,14 @@ impl AntithesisApi {
             container: exec
                 .container
                 .unwrap_or_else(|| EXEC_HOST_CONTAINER.to_string()),
-            include_system_logs: (!matches!(exec.output, ExecOutput::Script)).then_some(true),
-            include_filtered_logs: matches!(exec.output, ExecOutput::EventsWithFilteredLogs)
-                .then_some(true),
+            include_system_logs: matches!(exec.output, ExecOutput::Events { .. }).then_some(true),
+            include_filtered_logs: matches!(
+                exec.output,
+                ExecOutput::Events {
+                    include_filtered_logs: true
+                }
+            )
+            .then_some(true),
             // The wire field is a whole number of seconds.
             timeout_seconds: exec.timeout.map(|timeout| timeout.as_secs()),
             source_run_id,

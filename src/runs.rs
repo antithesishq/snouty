@@ -269,11 +269,13 @@ pub async fn cmd_runs(
                 script: resolve_exec_script(script)?,
                 container,
                 timeout: timeout.map(Duration::from),
-                output: match (events, include_filtered_logs) {
-                    // clap makes --include-filtered-logs require --events.
-                    (false, _) => ExecOutput::Script,
-                    (true, false) => ExecOutput::Events,
-                    (true, true) => ExecOutput::EventsWithFilteredLogs,
+                // clap makes --include-filtered-logs require --events.
+                output: if events {
+                    ExecOutput::Events {
+                        include_filtered_logs,
+                    }
+                } else {
+                    ExecOutput::Script
                 },
                 rewarm,
             };
@@ -2215,7 +2217,7 @@ async fn exec_when_ready(
         EventOutput::Text { detail } => (false, detail),
     };
     let mut renderer =
-        (!matches!(exec.output, ExecOutput::Script)).then(|| EventStreamRenderer::new(detail));
+        matches!(exec.output, ExecOutput::Events { .. }).then(|| EventStreamRenderer::new(detail));
     // A cold moment is in its rewarm source, not in RUN_ID, so a debugging
     // session at that moment starts from the source.
     let (rewarm_flag, target_flag, target) = match &exec.rewarm {

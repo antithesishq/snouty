@@ -418,11 +418,19 @@ fn password_only_check(in_use: &SourcedCredential, username: &str) -> Check {
     .note(Level::Note, next_step)
 }
 
-/// The next step for a stored password. A bare `snouty login` writes the
-/// default profile, so a named profile is passed on.
+/// The next step for a stored password.
 fn login_to_replace(profile: Option<&str>) -> String {
+    format!(
+        "run {} to replace it with an API key",
+        login_command(profile)
+    )
+}
+
+/// `snouty login` for `profile`. A bare `snouty login` writes the default
+/// profile, so a named profile is passed on.
+fn login_command(profile: Option<&str>) -> String {
     let flag = profile.map_or(String::new(), |p| format!(" --profile {p}"));
-    format!("run `snouty login{flag}` to replace it with an API key")
+    format!("`snouty login{flag}`")
 }
 
 fn unset(variables: &[&str]) -> String {
@@ -470,11 +478,10 @@ fn enrich_with_source(check: Check, credential: &SourcedCredential) -> Check {
     )
 }
 
-/// Binary health checks: local tooling, the required settings
-/// (tenant/repository), and authentication. `settings show` reports the
+/// The checks that need no network (local tooling, the required
+/// tenant/repository settings, and authentication), and the credential that
+/// the API client authenticates with, if any. `settings show` reports the
 /// resolved values themselves.
-/// The checks that need no network, and the credential that the API client
-/// authenticates with, if any.
 fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>) {
     let mut checks: Vec<Check> = Vec::new();
 
@@ -692,23 +699,26 @@ fn rejected_credential_next_step(in_use: Option<&SourcedCredential>) -> String {
         return format!("verify your credentials; if they are valid, {PROXY}");
     };
     let source = describe_source(in_use.tag());
+    let login = login_command(match in_use.tag() {
+        CredentialSource::Stored(store) => store.profile(),
+        CredentialSource::Environment { .. } => None,
+    });
     match (in_use.value(), in_use.tag()) {
-        (AuthenticationInfo::ApiKey { .. }, CredentialSource::Environment { .. }) => {
-            format!("verify the API key in {source}; if it is valid, {PROXY}")
+        (AuthenticationInfo::OAuth(_), _) => {
+            format!("run {login} to sign in again; if the new sign-in is also rejected, {PROXY}")
         }
-        (AuthenticationInfo::ApiKey { .. }, CredentialSource::Stored(_)) => format!(
-            "verify the API key read from {source}, or run `snouty login` to replace it; \
-             if it is valid, {PROXY}"
-        ),
-        (AuthenticationInfo::OAuth(_), _) => format!(
-            "run `snouty login` to sign in again; if the new sign-in is also rejected, {PROXY}"
-        ),
         (AuthenticationInfo::GithubActionsOidc(_), _) => format!(
             "the tenant may not accept GitHub Actions OIDC tokens from this repository; \
              ask Antithesis support to trust it, or {PROXY}"
         ),
-        (AuthenticationInfo::Password { .. }, _) => {
-            format!("verify the username and password in {source}; if they are valid, {PROXY}")
+        (AuthenticationInfo::ApiKey { .. }, CredentialSource::Stored(_)) => format!(
+            "verify the API key read from {source}, or run {login} to replace it; \
+             if it is valid, {PROXY}"
+        ),
+        // An API key from the environment. The client refuses a password, so
+        // the probe never sends one.
+        (credential, _) => {
+            format!("verify the {credential} in {source}; if it is valid, {PROXY}")
         }
     }
 }
@@ -1392,7 +1402,7 @@ mod tests {
         for status in [401, 403] {
             let check = version_check(
                 "tenant.antithesis.com",
-                Some(&env_api_key_source()),
+                None,
                 Err(VersionError::Http(status)),
             );
             assert_eq!(check.status, Status::Error);

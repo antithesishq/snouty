@@ -183,6 +183,14 @@ impl<'a> CredentialLookup<'a> {
 impl AuthenticationInfo {
     fn try_from_env() -> Result<Option<SourcedCredential>> {
         if let Some(api_key) = env::var(API_KEY_VAR_NAME)? {
+            // An API key holds no whitespace, and a CI secret often ends in a
+            // newline. `snouty login` trims a pasted key the same way.
+            let api_key = api_key.trim().to_owned();
+            if api_key.is_empty() {
+                return Err(user_error(format!("{API_KEY_VAR_NAME} is blank")).suggestion(
+                    format!("set {API_KEY_VAR_NAME} to your API key, or unset it to use the stored credential"),
+                ));
+            }
             return Ok(Some(Self::ApiKey { api_key }.with_tag(
                 CredentialSource::Environment {
                     variables: vec![API_KEY_VAR_NAME],

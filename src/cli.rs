@@ -455,44 +455,28 @@ pub fn parse() -> Cli {
     }
 }
 
-/// Refuses a gated command or flag while its feature is off. A hidden
-/// subcommand or flag is still callable, so dispatch checks this first.
+/// Refuses a gated command while its feature is off. A hidden subcommand is
+/// still callable, so dispatch checks this first.
 pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Report> {
     let (feature, path) = match command {
-        Commands::Mcp(_) => (Feature::Mcp, "snouty mcp".to_owned()),
-        Commands::Launch(args) | Commands::Run(args) => {
-            let flag = if args.max_compute_hours.is_some() {
-                "--max-compute-hours"
-            } else if args.setup_timeout.is_some() {
-                "--setup-timeout"
-            } else {
-                return None;
-            };
-            (Feature::Teams, format!("snouty launch {flag}"))
-        }
-        Commands::Debug(args) if args.duration.is_some() => {
-            (Feature::Teams, "snouty debug --duration".to_owned())
-        }
+        Commands::Mcp(_) => (Feature::Mcp, "snouty mcp"),
         _ => return None,
     };
     if enabled.contains(&feature) {
         return None;
     }
-    let report = user_error(format!(
-        "`{path}` is an unstable feature and is not enabled"
-    ))
-    .note(format!(
-        "enable it by setting {}={}",
-        features::UNSTABLE_FEATURES_VAR_NAME,
-        feature
-    ))
-    .note("an unstable feature can change or go away in any release");
-    // A hidden flag has no help to point to, so only a command gets the suggestion.
-    Some(if matches!(command, Commands::Mcp(_)) {
-        report.suggestion(format!("run `{path} --help` for what it does"))
-    } else {
-        report
-    })
+    Some(
+        user_error(format!(
+            "`{path}` is an unstable feature and is not enabled"
+        ))
+        .note(format!(
+            "enable it by setting {}={}",
+            features::UNSTABLE_FEATURES_VAR_NAME,
+            feature
+        ))
+        .note("an unstable feature can change or go away in any release")
+        .suggestion(format!("run `{path} --help` for what it does")),
+    )
 }
 
 /// clap value parser for a run ID. The ID is one segment of an API path, and
@@ -738,11 +722,9 @@ pub struct LaunchArgs {
         long,
         value_parser = |v: &str| LAUNCH_DURATION.parse(v),
         conflicts_with = "max_compute_hours",
-        help = LAUNCH_DURATION.help(if features::is_enabled(Feature::Teams) {
-            "Deprecated: use --max-compute-hours. Test duration, at least 1 minute."
-        } else {
-            "Test duration, at least 1 minute."
-        }),
+        help = LAUNCH_DURATION.help(
+            "Deprecated: use --max-compute-hours. Test duration, at least 1 minute.",
+        ),
     )]
     pub duration: Option<HumanDuration>,
 
@@ -753,14 +735,12 @@ pub struct LaunchArgs {
     #[arg(
         long,
         value_parser = clap::value_parser!(u16).range(1..=1000),
-        hide = !features::is_enabled(Feature::Teams),
     )]
     pub max_compute_hours: Option<u16>,
 
     #[arg(
         long,
         value_parser = |v: &str| SETUP_TIMEOUT.parse(v),
-        hide = !features::is_enabled(Feature::Teams),
         help = "Fail the run immediately if setup takes longer than this, in whole \
                 minutes with a unit, such as 10m, from 1m to 30m. The default is 5m. \
                 Requires tenant version 66 or newer",
@@ -865,7 +845,6 @@ pub struct DebugArgs {
     #[arg(
         long,
         value_parser = |v: &str| DEBUG_DURATION.parse(v),
-        hide = !features::is_enabled(Feature::Teams),
         help = DEBUG_DURATION.help(
             "How long the session stays available, from 30 minutes to 6 hours. Requires \
              tenant version 66 or newer.",

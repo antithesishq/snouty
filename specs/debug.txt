@@ -56,16 +56,7 @@ mock-server 200 '{}'
 stderr 'invalid value .*not-a-number.*'
 stderr 'vtime is not a finite decimal number'
 
-# Without the teams feature, help hides --duration and snouty refuses it
-#    before any API call.
-snouty debug --help
-! stdout '--duration'
-! snouty debug --input-hash abc --run-id run-1 --vtime 1 --duration 2h
-stderr '`snouty debug --duration` is an unstable feature and is not enabled'
-stderr 'enable it by setting SNOUTY_UNSTABLE_FEATURES=teams'
-
-# The teams feature enables --duration, for the rest of this file.
-env SNOUTY_UNSTABLE_FEATURES=teams
+# Help lists --duration.
 snouty debug --help
 stdout '--duration'
 

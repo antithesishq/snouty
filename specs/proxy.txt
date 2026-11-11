@@ -49,6 +49,12 @@ stdout '^RUN ID +STATUS +CREATED +LAUNCHER +RUN$'
 stdout 'run-1.*completed'
 
 # doctor's OAuth probe also goes through the proxy. The mock answers
-# `port_strategy: disabled`.
-snouty doctor
+# `port_strategy: disabled`. A working API key does not need OAuth login, so
+# doctor skips the probe and warns only once the key is cleared.
+snouty --verbose doctor
+! stderr '/auth/cli/config'
+! stderr 'CLI OAuth login is not enabled'
+env ANTITHESIS_API_KEY=
+! snouty --verbose doctor
+stderr '^> GET http://mock\.invalid/auth/cli/config$'
 stderr '^  ⚠ CLI OAuth login is not enabled for this tenant$'

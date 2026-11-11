@@ -581,6 +581,9 @@ class MockTenant:
         return {
             "ANTITHESIS_BASE_URL": self.url,
             "NO_PROXY": _LOOPBACK,
+            # The operator's keychain entry would hide the seeded credential,
+            # and a login would overwrite it.
+            "SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE": "1",
             "no_proxy": _LOOPBACK,
             "ACTIONS_ID_TOKEN_REQUEST_URL": (
                 f"{self.url}/actions/token?api-version=2.0" if oidc else None
@@ -4941,7 +4944,7 @@ def _tty_story(
 
 
 def build_tty_stories() -> list[Story]:
-    return [
+    stories = [
         _tty_story(
             "login-fresh-apikey",
             "First-time setup with an API key",
@@ -5086,6 +5089,13 @@ def build_tty_stories() -> list[Story]:
             ),
             seed_files={_SETTINGS: _SEED_SETTINGS_TOML},
         ),
+    ]
+    # Linux only: the macOS browser opener has a fixed path, so the sign-in
+    # would open a real browser. On Linux, the no-op shim on PATH stops that.
+    if sys.platform != "linux":
+        return stories
+    return [
+        *stories,
         _tty_story(
             "login-sso",
             "First-time setup with single sign-on",

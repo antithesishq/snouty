@@ -12,7 +12,6 @@ use crate::auth::{
 };
 use crate::compose;
 use crate::container;
-use crate::features::{self, Feature};
 use crate::login::{CliOAuthConfig, fetch_cli_config};
 use crate::render::OutputOptions;
 use crate::settings::Settings;
@@ -429,8 +428,10 @@ fn login_to_replace(profile: Option<&str>) -> String {
 /// `snouty login` for `profile`. A bare `snouty login` writes the default
 /// profile, so a named profile is passed on.
 fn login_command(profile: Option<&str>) -> String {
-    let flag = profile.map_or(String::new(), |p| format!(" --profile {p}"));
-    format!("`snouty login{flag}`")
+    match profile.filter(|p| *p != DEFAULT_PROFILE) {
+        Some(p) => format!("`snouty login --profile {p}`"),
+        None => "`snouty login`".to_owned(),
+    }
 }
 
 fn unset(variables: &[&str]) -> String {
@@ -478,11 +479,10 @@ fn enrich_with_source(check: Check, credential: &SourcedCredential) -> Check {
     )
 }
 
-/// The checks that need no network (local tooling, the required
-/// tenant/repository settings, and authentication), and the credential that
-/// the API client authenticates with, if any. `settings show` reports the
+/// Binary health checks: local tooling, the required settings
+/// (tenant/repository), and authentication. `settings show` reports the
 /// resolved values themselves.
-fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>) {
+fn collect_checks(settings: &Settings) -> Vec<Check> {
     let mut checks: Vec<Check> = Vec::new();
 
     // Container runtime (for building/pushing images). Report the real engine
@@ -522,18 +522,12 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
     checks.push(repository_check(settings.repository()));
 
     // Authentication (synchronous-only by design).
-    let in_use = match AuthenticationInfo::available_ambient_credentials(settings.profile()) {
-        Ok(sources) => {
-            checks.extend(authn_checks(&sources));
-            sources.into_iter().next()
-        }
-        Err(err) => {
-            checks.push(missing_credentials_check(err.to_string()));
-            None
-        }
-    };
+    match AuthenticationInfo::available_ambient_credentials(settings.profile()) {
+        Ok(sources) => checks.extend(authn_checks(&sources)),
+        Err(err) => checks.push(missing_credentials_check(err.to_string())),
+    }
 
-    (checks, in_use)
+    checks
 }
 
 /// An API or a flag that some commands assume the tenant serves, from a
@@ -543,9 +537,6 @@ struct ReleaseFloor {
     serves: &'static str,
     min: (u64, u64),
     consequence: &'static str,
-    /// The feature that gates what this floor serves. A floor reports
-    /// nothing while its feature is off.
-    feature: Option<Feature>,
 }
 
 const RELEASE_FLOORS: [ReleaseFloor; 5] = [
@@ -554,21 +545,18 @@ const RELEASE_FLOORS: [ReleaseFloor; 5] = [
         serves: "the events-search API",
         min: MIN_SEARCH_RELEASE,
         consequence: "`runs search` and `runs events` can fail or hang",
-        feature: None,
     },
     ReleaseFloor {
         id: CheckId::ExecuteCommand,
         serves: "the execute-command `container` field",
         min: MIN_EXEC_RELEASE,
         consequence: "`runs exec` fails",
-        feature: None,
     },
     ReleaseFloor {
         id: CheckId::CancelRun,
         serves: "the cancel-run API",
         min: MIN_CANCEL_RELEASE,
         consequence: "`runs cancel` fails",
-        feature: None,
     },
     ReleaseFloor {
         id: CheckId::LaunchParams,
@@ -576,25 +564,18 @@ const RELEASE_FLOORS: [ReleaseFloor; 5] = [
         min: MIN_LAUNCH_PARAMS_RELEASE,
         consequence: "`launch --max-compute-hours`, `launch --setup-timeout` and \
                       `debug --duration` have no effect",
-        feature: Some(Feature::Teams),
     },
     ReleaseFloor {
         id: CheckId::RunStream,
         serves: "property streaming",
         min: MIN_STREAM_RELEASE,
         consequence: "`runs stream` is not available",
-        feature: None,
     },
 ];
 
-fn release_floor_checks(version: &ApiVersion, enabled: &[Feature]) -> Vec<Check> {
+fn release_floor_checks(version: &ApiVersion) -> Vec<Check> {
     RELEASE_FLOORS
         .iter()
-        .filter(|floor| {
-            floor
-                .feature
-                .is_none_or(|feature| enabled.contains(&feature))
-        })
         .filter_map(|floor| release_floor_check(version, floor))
         .collect()
 }
@@ -632,7 +613,6 @@ fn release_floor_check(version: &ApiVersion, floor: &ReleaseFloor) -> Option<Che
 /// Pure over the result so it can be unit-tested without the network.
 fn version_check(
     host: &str,
-    in_use: &SourcedCredential,
     profile: Option<&str>,
     result: std::result::Result<ApiVersion, VersionError>,
 ) -> Check {
@@ -656,10 +636,15 @@ fn version_check(
              reporting (added in release 56); if you expect a current tenant, a \
              proxy or route may be intercepting the request",
         ),
+        // A named profile with no credential uses the default profile's, so
+        // the login goes to the checked profile.
         Err(VersionError::Http(status @ (401 | 403))) => {
             Check::fail(CheckId::Api, "Antithesis API rejected authentication")
                 .note(Level::Error, format!("the API returned HTTP {status}"))
-                .note(Level::Note, rejected_credential_next_step(in_use, profile))
+                .note(
+                    Level::Note,
+                    format!("run {} to fix authentication", login_command(profile)),
+                )
         }
         // 5xx: we reached something, but it's erroring — connectivity is broken
         // by a server error and auth status is unknown.
@@ -690,39 +675,12 @@ fn version_check(
     }
 }
 
-/// What to check first when the tenant of `profile` rejects the credential
-/// in use. A proxy can also reject the request, so each note names a proxy too.
-fn rejected_credential_next_step(in_use: &SourcedCredential, profile: Option<&str>) -> String {
-    const PROXY: &str = "a proxy may be rejecting the request before it reaches Antithesis";
-    let source = describe_source(in_use.tag());
-    // A named profile with no credential uses the default profile's. Log in
-    // to the checked profile, so the new credential takes precedence.
-    let login = login_command(profile);
-    match (in_use.value(), in_use.tag()) {
-        (AuthenticationInfo::OAuth(_), _) => {
-            format!("run {login} to sign in again; if the new sign-in is also rejected, {PROXY}")
-        }
-        (AuthenticationInfo::GithubActionsOidc(_), _) => format!(
-            "ask Antithesis support to trust GitHub Actions OIDC tokens from this \
-             repository; if the tenant already trusts them, {PROXY}"
-        ),
-        (AuthenticationInfo::ApiKey { .. }, CredentialSource::Stored(_)) => format!(
-            "run {login} to replace the API key read from {source}; \
-             if the new key is also rejected, {PROXY}"
-        ),
-        // An API key from the environment. The client refuses a password.
-        (credential, _) => {
-            format!("verify the {credential} in {source}; if it is valid, {PROXY}")
-        }
-    }
-}
-
 pub async fn cmd_doctor(
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
     offline: bool,
 ) -> Result<()> {
-    let (mut checks, in_use) = collect_checks(settings);
+    let mut checks = collect_checks(settings);
 
     if !offline {
         // Connectivity + version check (network). Skipped with --offline. Only
@@ -734,9 +692,7 @@ pub async fn cmd_doctor(
         // resolved settings (base url / tenant), and `verbose` logs the
         // request/response.
         let mut api_failed = false;
-        if let Ok(api) = AntithesisApi::new(settings, verbose)
-            && let Some(in_use) = &in_use
-        {
+        if let Ok(api) = AntithesisApi::new(settings, verbose) {
             let host = api.host();
             // Renew here so that a rejected renewal fails the credentials
             // check, not the API check. The version request would fail the same way, so
@@ -758,7 +714,6 @@ pub async fn cmd_doctor(
                 {
                     checks.push(version_check(
                         &host,
-                        in_use,
                         settings.profile(),
                         Err(VersionError::Unreachable(err.root_cause().to_string())),
                     ));
@@ -787,17 +742,22 @@ pub async fn cmd_doctor(
             } else {
                 let version = api.get_version().await;
                 if let Ok(version) = &version {
-                    checks.extend(release_floor_checks(version, &features::enabled()));
+                    checks.extend(release_floor_checks(version));
                 }
                 api_failed = matches!(version, Err(VersionError::Unreachable(_)));
-                checks.push(version_check(&host, in_use, settings.profile(), version));
+                checks.push(version_check(&host, settings.profile(), version));
             }
         }
 
         // A client that fails to build (bad proxy URL or extra header) skips
         // the API check too. Skip the probe when the tenant could be
-        // unreachable: the probe would only wait out its timeout.
+        // unreachable: the probe would only wait out its timeout. Skip it
+        // when a credential works, too: that user does not need OAuth login.
+        let credential_works = checks
+            .iter()
+            .any(|c| c.id == CheckId::Api && c.status == Status::Ok);
         if !api_failed
+            && !credential_works
             && let Some(base_url) = settings.base_url()
             && let Ok(client) = HttpClient::new(settings, verbose)
         {
@@ -1333,7 +1293,7 @@ mod tests {
     #[test]
     fn exec_release_floor_warns_below_64() {
         let ids = |release: String| -> Vec<CheckId> {
-            release_floor_checks(&ApiVersion::new("v1".into(), release), &[Feature::Teams])
+            release_floor_checks(&ApiVersion::new("v1".into(), release))
                 .into_iter()
                 .map(|check| check.id)
                 .collect()
@@ -1348,23 +1308,9 @@ mod tests {
     }
 
     #[test]
-    fn launch_params_floor_needs_the_teams_feature() {
-        let version = ApiVersion::new("v1".into(), "65.9".into());
-        let ids = |enabled: &[Feature]| -> Vec<CheckId> {
-            release_floor_checks(&version, enabled)
-                .into_iter()
-                .map(|check| check.id)
-                .collect()
-        };
-        assert!(ids(&[]).is_empty());
-        assert_eq!(ids(&[Feature::Teams]), [CheckId::LaunchParams]);
-    }
-
-    #[test]
     fn version_ok_reports_both_versions() {
         let check = version_check(
             "tenant.antithesis.com",
-            &env_api_key_source(),
             None,
             Ok(ApiVersion::new("v1".into(), "56.0".into())),
         );
@@ -1381,12 +1327,7 @@ mod tests {
 
     #[test]
     fn version_404_is_reachable_but_warns() {
-        let check = version_check(
-            "tenant.antithesis.com",
-            &env_api_key_source(),
-            None,
-            Err(VersionError::Http(404)),
-        );
+        let check = version_check("tenant.antithesis.com", None, Err(VersionError::Http(404)));
         assert_eq!(check.status, Status::Ok);
         assert!(check.message.contains("reachable"));
         // The warning explains the 404 without definitively blaming an old
@@ -1405,7 +1346,6 @@ mod tests {
         for status in [401, 403] {
             let check = version_check(
                 "tenant.antithesis.com",
-                &env_api_key_source(),
                 None,
                 Err(VersionError::Http(status)),
             );
@@ -1419,59 +1359,37 @@ mod tests {
         }
     }
 
-    /// The note names the source and kind of the rejected credential.
+    /// The note names only `snouty login`, with `--profile` for a named
+    /// profile.
     #[test]
-    fn version_auth_rejection_names_the_credential_in_use() {
-        let note_for = |source: SourcedCredential, profile: Option<&str>| {
-            let check = version_check(
+    fn version_auth_rejection_suggests_login() {
+        let note = |profile| {
+            version_check(
                 "tenant.antithesis.com",
-                &source,
                 profile,
                 Err(VersionError::Http(401)),
-            );
-            let note = check
-                .notes
-                .iter()
-                .find(|n| n.level == Level::Note)
-                .expect("a rejection carries a next step")
-                .text
-                .clone();
-            assert!(note.contains("proxy"), "{note}");
-            note
+            )
+            .notes
+            .into_iter()
+            .find(|n| n.level == Level::Note)
+            .expect("a rejection carries a next step")
+            .text
         };
-        let note = |source| note_for(source, None);
-
-        let env = note(env_api_key_source());
-        assert!(
-            env.contains("`ANTITHESIS_API_KEY` environment variable"),
-            "{env}"
+        assert_eq!(note(None), "run `snouty login` to fix authentication");
+        assert_eq!(
+            note(Some("default")),
+            "run `snouty login` to fix authentication"
         );
-
-        let stored = note(file_api_key_source());
-        assert!(stored.contains("[default] profile"), "{stored}");
-        assert!(stored.contains("snouty login"), "{stored}");
-        assert!(!stored.contains("ANTITHESIS_API_KEY"), "{stored}");
-
-        // A named profile that uses the default profile's key needs a login
-        // to the named profile.
-        let fallback = note_for(file_api_key_source(), Some("staging"));
-        assert!(fallback.contains("[default] profile"), "{fallback}");
-        assert!(
-            fallback.contains("`snouty login --profile staging`"),
-            "{fallback}"
+        assert_eq!(
+            note(Some("staging")),
+            "run `snouty login --profile staging` to fix authentication"
         );
-
-        let oidc = note(oidc_source());
-        assert!(oidc.contains("GitHub Actions OIDC"), "{oidc}");
-        assert!(!oidc.contains("API key"), "{oidc}");
-        assert!(!oidc.contains("ANTITHESIS_API_KEY"), "{oidc}");
     }
 
     #[test]
     fn version_bad_response_is_not_reported_as_unreachable() {
         let check = version_check(
             "tenant.antithesis.com",
-            &env_api_key_source(),
             None,
             Err(VersionError::BadResponse(
                 "invalid type: null, expected struct ApiVersion".into(),
@@ -1491,7 +1409,6 @@ mod tests {
     fn version_unreachable_names_the_host_and_includes_the_error() {
         let check = version_check(
             "tenant.antithesis.com",
-            &env_api_key_source(),
             None,
             Err(VersionError::Unreachable("connection refused".into())),
         );
@@ -1511,12 +1428,7 @@ mod tests {
 
     #[test]
     fn version_5xx_is_unavailable_with_status() {
-        let check = version_check(
-            "tenant.antithesis.com",
-            &env_api_key_source(),
-            None,
-            Err(VersionError::Http(503)),
-        );
+        let check = version_check("tenant.antithesis.com", None, Err(VersionError::Http(503)));
         assert_eq!(check.status, Status::Error);
         assert!(check.message.contains("unavailable"));
         assert!(check.notes.iter().any(|n| n.text.contains("503")));
@@ -1524,12 +1436,7 @@ mod tests {
 
     #[test]
     fn version_unexpected_status_is_an_error_with_status() {
-        let check = version_check(
-            "tenant.antithesis.com",
-            &env_api_key_source(),
-            None,
-            Err(VersionError::Http(429)),
-        );
+        let check = version_check("tenant.antithesis.com", None, Err(VersionError::Http(429)));
         assert_eq!(check.status, Status::Error);
         assert!(check.notes.iter().any(|n| n.text.contains("429")));
     }

@@ -84,26 +84,24 @@ pub struct Agent {
 /// `<name>_<version>_<kind>`, with dashes in the version, for example
 /// `claude-code_2-1-267_agent`, or is only a name, such as `pi`.
 pub fn detect(env: &impl Fn(&str) -> Option<String>) -> Option<Agent> {
-    let parsed = read_hint(env, "AI_AGENT").and_then(|hint| {
-        let mut fields = hint.split('_');
-        let name = fields.next().filter(|name| !name.is_empty())?.to_owned();
-        let version = fields
-            .next()
-            .filter(|v| {
-                v.starts_with(|c: char| c.is_ascii_digit())
-                    && v.chars()
-                        .all(|c| c.is_ascii_digit() || matches!(c, '-' | '.'))
-            })
-            .map(|v| v.replace('-', "."));
-        Some((name, version))
-    });
-    let (name, version, harness) = if let Some((name, version)) = parsed {
-        let harness = HARNESSES.iter().find(|harness| harness.name == name);
-        (name, version, harness)
-    } else {
-        let harness = marker_harness(env)?;
-        (harness.name.to_owned(), None, Some(harness))
-    };
+    let (name, version, harness) = read_hint(env, "AI_AGENT")
+        .and_then(|hint| {
+            let mut fields = hint.split('_');
+            let name = fields.next().filter(|name| !name.is_empty())?;
+            let version = fields
+                .next()
+                .filter(|v| {
+                    v.starts_with(|c: char| c.is_ascii_digit())
+                        && v.chars()
+                            .all(|c| c.is_ascii_digit() || matches!(c, '-' | '.'))
+                })
+                .map(|v| v.replace('-', "."));
+            let harness = HARNESSES.iter().find(|harness| harness.name == name);
+            Some((name.to_owned(), version, harness))
+        })
+        .or_else(|| {
+            marker_harness(env).map(|harness| (harness.name.to_owned(), None, Some(harness)))
+        })?;
     let version = version.or_else(|| read_hint(env, harness?.version?));
     let session_id = harness.and_then(|harness| {
         harness

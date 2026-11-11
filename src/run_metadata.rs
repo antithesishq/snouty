@@ -43,13 +43,11 @@ fn detect_with(dir: &Path, env: impl Fn(&str) -> Option<String>) -> Params {
     read_github_actions(&env, checkout.as_deref(), &mut params);
     if let Some(agent) = crate::agent::detect(&env) {
         params.insert(ATTRS_AGENT, agent.name);
-        for (key, value) in [
-            (ATTRS_AGENT_VERSION, agent.version),
-            (ATTRS_AGENT_SESSION_ID, agent.session_id),
-        ] {
-            if let Some(value) = value {
-                params.insert(key, value);
-            }
+        if let Some(version) = agent.version {
+            params.insert(ATTRS_AGENT_VERSION, version);
+        }
+        if let Some(session_id) = agent.session_id {
+            params.insert(ATTRS_AGENT_SESSION_ID, session_id);
         }
     }
     params

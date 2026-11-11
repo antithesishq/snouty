@@ -1,5 +1,6 @@
 use color_eyre::eyre::Result;
 use log::debug;
+use reqwest::StatusCode;
 use serde::Serialize;
 
 use crate::api::{
@@ -726,6 +727,50 @@ fn rejected_credential_next_step(in_use: &SourcedCredential, profile: Option<&st
     }
 }
 
+/// The message of the credentials check when `auth` could not be renewed,
+/// and the next step. A 5xx, a 408 or a 429 is temporary, and another 4xx
+/// refuses the credential.
+fn renewal_failure(
+    auth: &AuthenticationInfo,
+    profile: Option<&str>,
+    status: Option<StatusCode>,
+) -> (&'static str, String) {
+    let temporary = status.is_some_and(|s| {
+        s.is_server_error()
+            || matches!(
+                s,
+                StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
+            )
+    });
+    let refused = !temporary && status.is_some_and(|s| s.is_client_error());
+    match auth {
+        AuthenticationInfo::GithubActionsOidc(_) if refused => (
+            "GitHub Actions refused to issue an OIDC token",
+            "rerun the job, and check that snouty gets this job's own \
+             `ACTIONS_ID_TOKEN_REQUEST_TOKEN`"
+                .to_owned(),
+        ),
+        AuthenticationInfo::GithubActionsOidc(_) => (
+            "GitHub Actions did not issue an OIDC token",
+            "rerun the job".to_owned(),
+        ),
+        AuthenticationInfo::OAuth(_) if temporary => (
+            "the tenant could not renew the sign-in",
+            format!(
+                "try again later, or run {} to sign in again",
+                login_command(profile)
+            ),
+        ),
+        AuthenticationInfo::OAuth(_) => (
+            "the sign-in expired and could not be renewed",
+            format!("run {} to sign in again", login_command(profile)),
+        ),
+        AuthenticationInfo::ApiKey { .. } | AuthenticationInfo::Password { .. } => {
+            unreachable!("an API key and a password never expire")
+        }
+    }
+}
+
 pub async fn cmd_doctor(
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
@@ -758,12 +803,11 @@ pub async fn cmd_doctor(
             if let Err(err) = renewal {
                 api_failed = true;
                 let auth = api.authentication();
+                let http_err = err.downcast_ref::<reqwest::Error>();
                 // An OAuth token is refreshed by the tenant, so a request
                 // that got no response means that the tenant is unreachable.
                 if matches!(auth, AuthenticationInfo::OAuth(_))
-                    && err
-                        .downcast_ref::<reqwest::Error>()
-                        .is_some_and(|e| e.status().is_none() && !e.is_decode())
+                    && http_err.is_some_and(|e| e.status().is_none() && !e.is_decode())
                 {
                     checks.push(version_check(
                         &host,
@@ -778,20 +822,25 @@ pub async fn cmd_doctor(
                         .expect(
                             "the client uses the credential that the credentials check reports",
                         );
+                    let status = http_err.and_then(reqwest::Error::status);
+                    let (message, next_step) = renewal_failure(auth, settings.profile(), status);
                     check.status = Status::Error;
-                    check.message = match auth {
-                        AuthenticationInfo::GithubActionsOidc(_) => {
-                            "could not get a GitHub Actions OIDC token".to_owned()
-                        }
-                        _ => format!("the {auth} expired and could not be renewed"),
-                    };
-                    check.notes.insert(
-                        0,
-                        Note {
-                            level: Level::Error,
-                            text: format!("{err:#}"),
-                        },
-                    );
+                    message.clone_into(&mut check.message);
+                    // The error names status codes and URLs, so only
+                    // --verbose shows it.
+                    if verbose {
+                        check.notes.insert(
+                            0,
+                            Note {
+                                level: Level::Error,
+                                text: format!("{err:#}"),
+                            },
+                        );
+                    }
+                    check.notes.push(Note {
+                        level: Level::Note,
+                        text: next_step,
+                    });
                 }
             } else {
                 let version = api.get_version().await;
@@ -1482,6 +1531,60 @@ mod tests {
             note_for(oidc_source(), None),
             "ask Antithesis support to trust GitHub Actions OIDC tokens from this repository"
         );
+    }
+
+    #[test]
+    fn renewal_failure_names_the_next_step_for_each_credential() {
+        let dir = tempfile::tempdir().unwrap();
+        let oauth = oauth_credential_in(dir.path(), FAKE_ACCESS_TOKEN_A, None);
+        let oidc = oidc_source().value().clone();
+        let login = "run `snouty login` to sign in again";
+        let expired = "the sign-in expired and could not be renewed";
+        for status in [None, Some(StatusCode::UNAUTHORIZED)] {
+            assert_eq!(
+                renewal_failure(&oauth, None, status),
+                (expired, login.to_owned())
+            );
+        }
+        assert_eq!(
+            renewal_failure(&oauth, Some("staging"), Some(StatusCode::UNAUTHORIZED)).1,
+            "run `snouty login --profile staging` to sign in again"
+        );
+        for status in [
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::REQUEST_TIMEOUT,
+            StatusCode::TOO_MANY_REQUESTS,
+        ] {
+            assert_eq!(
+                renewal_failure(&oauth, None, Some(status)),
+                (
+                    "the tenant could not renew the sign-in",
+                    "try again later, or run `snouty login` to sign in again".to_owned()
+                )
+            );
+        }
+        assert_eq!(
+            renewal_failure(&oidc, None, Some(StatusCode::FORBIDDEN)),
+            (
+                "GitHub Actions refused to issue an OIDC token",
+                "rerun the job, and check that snouty gets this job's own \
+                 `ACTIONS_ID_TOKEN_REQUEST_TOKEN`"
+                    .to_owned()
+            )
+        );
+        for status in [
+            None,
+            Some(StatusCode::SERVICE_UNAVAILABLE),
+            Some(StatusCode::TOO_MANY_REQUESTS),
+        ] {
+            assert_eq!(
+                renewal_failure(&oidc, None, status),
+                (
+                    "GitHub Actions did not issue an OIDC token",
+                    "rerun the job".to_owned()
+                )
+            );
+        }
     }
 
     #[test]

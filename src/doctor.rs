@@ -8,7 +8,7 @@ use crate::api::{
     normalize_base_url,
 };
 use crate::auth::{
-    AuthenticationInfo, CredentialSource, SourcedCredential, login_command, unset_command,
+    AuthenticationInfo, CredentialSource, CredentialStore, SourcedCredential, keychain_entry_name,
 };
 use crate::compose;
 use crate::container;
@@ -217,6 +217,10 @@ impl Check {
     }
 }
 
+/// What doctor prints for the profile when none is selected: no profile means
+/// snouty uses the default one, not that a value is missing.
+const DEFAULT_PROFILE: &str = "default";
+
 /// The full doctor report, as emitted by `--json`. The resolved settings
 /// are `settings show`'s job.
 #[derive(Serialize)]
@@ -326,7 +330,7 @@ fn authn_checks(sources: &[SourcedCredential]) -> Vec<Check> {
                 format!(
                     "snouty is using the {} from {}",
                     credentials.value(),
-                    credentials.tag()
+                    describe_source(credentials.tag())
                 ),
             )
             .note(Level::Note, unset_to_use(variables, hidden)),
@@ -379,7 +383,7 @@ fn hidden_credential_check(
         Level::Warning,
         format!(
             "snouty uses the username and password from {}, which `snouty runs` refuses",
-            in_use.tag()
+            describe_source(in_use.tag())
         ),
     )
     .note(Level::Note, unset_to_use(variables, hidden))
@@ -394,7 +398,7 @@ fn password_only_check(in_use: &SourcedCredential, username: &str) -> Check {
     let next_step = match in_use.tag() {
         CredentialSource::Environment { variables } => format!(
             "run `snouty login` to store an API key, then {}",
-            unset_command(variables)
+            unset(variables)
         ),
         CredentialSource::Stored(store) => login_to_replace(store.profile()),
     };
@@ -414,12 +418,15 @@ fn password_only_check(in_use: &SourcedCredential, username: &str) -> Check {
     .note(Level::Note, next_step)
 }
 
-/// The next step for a stored password.
+/// The next step for a stored password. A bare `snouty login` writes the
+/// default profile, so a named profile is passed on.
 fn login_to_replace(profile: Option<&str>) -> String {
-    format!(
-        "run {} to replace it with an API key",
-        login_command(profile)
-    )
+    let flag = profile.map_or(String::new(), |p| format!(" --profile {p}"));
+    format!("run `snouty login{flag}` to replace it with an API key")
+}
+
+fn unset(variables: &[&str]) -> String {
+    format!("`unset {}`", variables.join(" "))
 }
 
 /// The one step that frees `hidden`, a stored credential that the
@@ -427,14 +434,40 @@ fn login_to_replace(profile: Option<&str>) -> String {
 fn unset_to_use(variables: &[&str], hidden: &SourcedCredential) -> String {
     format!(
         "{} to use the {} in {}",
-        unset_command(variables),
+        unset(variables),
         hidden.value(),
-        hidden.tag()
+        describe_source(hidden.tag())
     )
 }
 
+/// A phrase that reads after "read from" or after the name of a credential
+/// kind.
+fn describe_source(source: &CredentialSource) -> String {
+    match source {
+        CredentialSource::Environment { variables } => format!(
+            "the `{}` environment variable{}",
+            variables.join("` and `"),
+            if variables.len() == 1 { "" } else { "s" }
+        ),
+        CredentialSource::Stored(CredentialStore::CredentialsFile { path, profile }) => format!(
+            // `Display`, not `Debug`: `{:?}` on a path adds quotes of its
+            // own, which read as a second set of brackets around the name.
+            "the [{}] profile in {}",
+            profile.as_deref().unwrap_or(DEFAULT_PROFILE),
+            path.display(),
+        ),
+        CredentialSource::Stored(CredentialStore::Keychain { profile }) => format!(
+            "system keychain entry named [{}]",
+            keychain_entry_name(profile.as_deref())
+        ),
+    }
+}
+
 fn enrich_with_source(check: Check, credential: &SourcedCredential) -> Check {
-    check.note(Level::Note, format!("read from {}", credential.tag()))
+    check.note(
+        Level::Note,
+        format!("read from {}", describe_source(credential.tag())),
+    )
 }
 
 /// Binary health checks: local tooling, the required settings
@@ -799,7 +832,6 @@ mod tests {
     };
 
     use super::*;
-    use crate::auth::CredentialStore;
     use crate::tag::Tag;
 
     // ---- auth_checks (env-only auth) -----------------------------------

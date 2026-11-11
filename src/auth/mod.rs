@@ -94,96 +94,7 @@ pub(crate) enum CredentialSource {
     Stored(CredentialStore),
 }
 
-/// A phrase that reads after "read from" or after the name of a credential
-/// kind.
-impl std::fmt::Display for CredentialSource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Environment { variables } => write!(
-                f,
-                "the `{}` environment variable{}",
-                variables.join("` and `"),
-                if variables.len() == 1 { "" } else { "s" }
-            ),
-            // `{:?}` on a path adds quotes, which read as a second set of
-            // brackets around the name.
-            Self::Stored(CredentialStore::CredentialsFile { path, profile }) => write!(
-                f,
-                "the [{}] profile in {}",
-                profile.as_deref().unwrap_or(DEFAULT_PROFILE),
-                path.display(),
-            ),
-            Self::Stored(CredentialStore::Keychain { profile }) => write!(
-                f,
-                "the system keychain entry named [{}]",
-                keychain_entry_name(profile.as_deref())
-            ),
-        }
-    }
-}
-
-/// The name of the profile when none is selected: no profile means snouty
-/// uses the default one, not that a value is missing.
-const DEFAULT_PROFILE: &str = "default";
-
-/// The `snouty login` command that stores the credential of `profile`. A bare
-/// `snouty login` writes the default profile.
-pub(crate) fn login_command(profile: Option<&str>) -> String {
-    match profile {
-        Some(profile) => format!("`snouty login --profile {profile}`"),
-        None => "`snouty login`".to_string(),
-    }
-}
-
-pub(crate) fn unset_command(variables: &[&str]) -> String {
-    format!("`unset {}`", variables.join(" "))
-}
-
 pub(crate) type SourcedCredential = Tagged<AuthenticationInfo, CredentialSource>;
-
-/// The error message for a tenant that rejects `credential`. It names the
-/// credential and its source.
-pub(crate) fn rejection_message(credential: &SourcedCredential) -> String {
-    match credential.value() {
-        // The job supplies the token, so its source names nothing to fix.
-        AuthenticationInfo::GithubActionsOidc(_) => {
-            "the tenant rejected the GitHub Actions OIDC token of this job".to_string()
-        }
-        kind => format!("the tenant rejected the {kind} from {}", credential.tag()),
-    }
-}
-
-/// The one action that replaces `credential` after a tenant rejects it.
-/// `profile` is the selected profile: its own stored credential wins over the
-/// default profile's, so `snouty login` must write it.
-pub(crate) fn rejection_suggestion(
-    credential: &SourcedCredential,
-    profile: Option<&str>,
-) -> String {
-    let login = login_command(profile);
-    match (credential.value(), credential.tag()) {
-        (AuthenticationInfo::GithubActionsOidc(_), _) => {
-            "ask Antithesis support to trust GitHub Actions OIDC tokens from this repository"
-                .to_string()
-        }
-        (AuthenticationInfo::ApiKey { .. }, CredentialSource::Environment { .. }) => {
-            format!("set {API_KEY_VAR_NAME} to a valid API key for this tenant")
-        }
-        (AuthenticationInfo::ApiKey { .. }, CredentialSource::Stored(_)) => {
-            format!("run {login} to store a valid API key")
-        }
-        (AuthenticationInfo::OAuth(_), _) => format!("run {login} to sign in again"),
-        (AuthenticationInfo::Password { .. }, CredentialSource::Environment { variables }) => {
-            format!(
-                "{}, then run {login} to use an API key",
-                unset_command(variables)
-            )
-        }
-        (AuthenticationInfo::Password { .. }, CredentialSource::Stored(_)) => {
-            format!("run {login} to use an API key")
-        }
-    }
-}
 
 /// A place snouty looks for credentials. More than one can hold a credential
 /// at once, and the first in resolution order then wins.
@@ -279,12 +190,9 @@ impl AuthenticationInfo {
     /// a named profile does not use the stored credential of the default
     /// profile. The environment applies to every profile. It makes no network
     /// call, and `policy` applies to a username and password.
-    pub(crate) fn find_own(
-        profile: Option<&str>,
-        policy: PasswordPolicy,
-    ) -> Result<Option<SourcedCredential>> {
+    pub(crate) fn find_own(profile: Option<&str>, policy: PasswordPolicy) -> Result<Option<Self>> {
         Self::find(profile, Fallback::None)?
-            .map(|found| apply_password_policy(found, policy))
+            .map(|found| Ok(apply_password_policy(found, policy)?.untag()))
             .transpose()
     }
 
@@ -349,9 +257,9 @@ impl AuthenticationInfo {
     pub(crate) fn for_ambient_configuration(
         profile: Option<&str>,
         policy: PasswordPolicy,
-    ) -> Result<SourcedCredential> {
+    ) -> Result<Self> {
         match Self::find(profile, Fallback::DefaultProfile)? {
-            Some(found) => apply_password_policy(found, policy),
+            Some(found) => Ok(apply_password_policy(found, policy)?.untag()),
             None => Err(user_error(NO_CREDENTIALS_MESSAGE)
                 .suggestion("run `snouty login` or set ANTITHESIS_API_KEY")),
         }
@@ -407,20 +315,6 @@ impl AuthenticationInfo {
     }
 }
 
-#[cfg(test)]
-impl AuthenticationInfo {
-    /// The credential as if it came from the environment variables of its
-    /// kind.
-    pub(crate) fn in_environment(self) -> SourcedCredential {
-        let variables = match self {
-            Self::Password { .. } => vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
-            Self::GithubActionsOidc(_) => vec![OIDC_URL_VAR_NAME, OIDC_TOKEN_VAR_NAME],
-            Self::ApiKey { .. } | Self::OAuth(_) => vec![API_KEY_VAR_NAME],
-        };
-        self.with_tag(CredentialSource::Environment { variables })
-    }
-}
-
 fn to_header_value(content: &str, sensitive: bool) -> Result<HeaderValue> {
     let mut hv = HeaderValue::from_str(content).wrap_err("failed to build Authorization header")?;
     hv.set_sensitive(sensitive);
@@ -430,97 +324,6 @@ fn to_header_value(content: &str, sensitive: bool) -> Result<HeaderValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutils::fake_secrets::{
-        FAKE_ACCESS_TOKEN_A, FAKE_API_KEY_A, FAKE_OIDC_REQUEST_TOKEN, FAKE_PASSWORD,
-    };
-
-    #[test]
-    fn a_rejection_names_the_credential_its_source_and_one_action() {
-        let api_key = || AuthenticationInfo::ApiKey {
-            api_key: FAKE_API_KEY_A.to_owned(),
-        };
-        let password = || AuthenticationInfo::Password {
-            username: "user".to_owned(),
-            password: FAKE_PASSWORD.to_owned(),
-        };
-        let env = |variables| CredentialSource::Environment { variables };
-        let file = |profile: Option<&str>| {
-            CredentialSource::Stored(CredentialStore::CredentialsFile {
-                path: "/home/user/.config/snouty/credentials.toml".into(),
-                profile: profile.map(str::to_owned),
-            })
-        };
-        let keychain = CredentialSource::Stored(CredentialStore::Keychain {
-            profile: Some("acme".to_owned()),
-        });
-        let oauth = AuthenticationInfo::OAuth(RefreshableOAuthToken::new(
-            CredentialStore::Keychain {
-                profile: Some("acme".to_owned()),
-            },
-            FAKE_ACCESS_TOKEN_A.to_owned(),
-            None,
-        ));
-        let oidc = AuthenticationInfo::GithubActionsOidc(GithubActionsOidcToken::new(
-            "http://127.0.0.1:9/token".to_owned(),
-            FAKE_OIDC_REQUEST_TOKEN.to_owned(),
-        ));
-        let cases = [
-            (
-                api_key().with_tag(env(vec![API_KEY_VAR_NAME])),
-                None,
-                "the tenant rejected the API key from the `ANTITHESIS_API_KEY` environment variable",
-                "set ANTITHESIS_API_KEY to a valid API key for this tenant",
-            ),
-            (
-                api_key().with_tag(file(None)),
-                None,
-                "the tenant rejected the API key from the [default] profile in /home/user/.config/snouty/credentials.toml",
-                "run `snouty login` to store a valid API key",
-            ),
-            // A named profile with no credential of its own falls back to the
-            // default profile's; logging in to the named profile replaces it.
-            (
-                api_key().with_tag(file(None)),
-                Some("acme"),
-                "the tenant rejected the API key from the [default] profile in /home/user/.config/snouty/credentials.toml",
-                "run `snouty login --profile acme` to store a valid API key",
-            ),
-            (
-                api_key().with_tag(keychain.clone()),
-                Some("acme"),
-                "the tenant rejected the API key from the system keychain entry named [profile_acme]",
-                "run `snouty login --profile acme` to store a valid API key",
-            ),
-            (
-                oauth.with_tag(keychain),
-                Some("acme"),
-                "the tenant rejected the OAuth credentials from the system keychain entry named [profile_acme]",
-                "run `snouty login --profile acme` to sign in again",
-            ),
-            (
-                oidc.with_tag(env(vec![OIDC_URL_VAR_NAME, OIDC_TOKEN_VAR_NAME])),
-                None,
-                "the tenant rejected the GitHub Actions OIDC token of this job",
-                "ask Antithesis support to trust GitHub Actions OIDC tokens from this repository",
-            ),
-            (
-                password().with_tag(env(vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME])),
-                None,
-                "the tenant rejected the username and password from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables",
-                "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`, then run `snouty login` to use an API key",
-            ),
-            (
-                password().with_tag(file(Some("acme"))),
-                Some("acme"),
-                "the tenant rejected the username and password from the [acme] profile in /home/user/.config/snouty/credentials.toml",
-                "run `snouty login --profile acme` to use an API key",
-            ),
-        ];
-        for (credential, profile, message, suggestion) in cases {
-            assert_eq!(rejection_message(&credential), message);
-            assert_eq!(rejection_suggestion(&credential, profile), suggestion);
-        }
-    }
 
     #[test]
     fn a_named_profile_uses_the_default_profile_only_with_the_fallback() {

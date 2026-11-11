@@ -15,9 +15,7 @@ use reqwest::{Client, Proxy};
 use serde::de::DeserializeOwned;
 
 use crate::api_cache::{self, ApiCache, CachePolicy};
-use crate::auth::{
-    AuthenticationInfo, PasswordPolicy, SourcedCredential, rejection_message, rejection_suggestion,
-};
+use crate::auth::{AuthenticationInfo, PasswordPolicy};
 use crate::env;
 use crate::error::{ApiError, user_error};
 use crate::params::{
@@ -806,9 +804,6 @@ pub struct AntithesisApi {
     client: generated::Client,
     base_url: String,
     cache: ApiCache,
-    /// The selected settings profile, which `snouty login` must write to
-    /// replace a rejected credential.
-    profile: Option<String>,
 }
 
 /// Stop a stream at the `limit` its request named. Release 61 ends the stream
@@ -862,7 +857,7 @@ impl AntithesisApi {
     #[allow(clippy::needless_pass_by_value)]
     pub(crate) fn build(
         settings: &Settings,
-        credential: SourcedCredential,
+        authn_info: AuthenticationInfo,
         verbose: bool,
         cache: ResponseCache,
     ) -> Result<Self> {
@@ -892,14 +887,13 @@ impl AntithesisApi {
         let client = generated::Client::new_with_client(
             &base_url,
             http.client.clone(),
-            ClientState { credential, http },
+            ClientState { authn_info, http },
         );
 
         Ok(Self {
             client,
             base_url,
             cache,
-            profile: settings.profile().map(str::to_owned),
         })
     }
 
@@ -919,42 +913,15 @@ impl AntithesisApi {
     /// Whether the client authenticates with the deprecated username and
     /// password, which only the launch endpoints accept.
     pub fn uses_password(&self) -> bool {
-        matches!(self.authentication(), AuthenticationInfo::Password { .. })
+        matches!(
+            self.client.inner().authn_info,
+            AuthenticationInfo::Password { .. }
+        )
     }
 
     /// The credential that the client authenticates with.
     pub(crate) fn authentication(&self) -> &AuthenticationInfo {
-        self.client.inner().credential.value()
-    }
-
-    /// Render a failed API call for the user, with the credential of this
-    /// client.
-    async fn api_error(&self, err: ClientError<()>) -> Report {
-        format_api_client_error(
-            err,
-            &self.client.inner().credential,
-            self.profile.as_deref(),
-        )
-        .await
-    }
-
-    /// Resolve the error from a launch call.
-    ///
-    /// Any 2xx is success. The spec documents only 202, and the generated client
-    /// surfaces any other 2xx as `UnexpectedResponse`. Earlier releases answered
-    /// 200. On orbitinghail, release 67.0 answers 202 for `basic_test` and
-    /// `debugging`, but nobody has checked the other launchers. A 4xx or 5xx
-    /// becomes the error of [`Self::api_error`]; `build.rs` leaves it
-    /// undocumented. TODO: drop the any-2xx arm once every launcher is seen to
-    /// answer 202 and no supported release answers 200.
-    async fn recover_launch_error<T: DeserializeOwned>(&self, err: ClientError<()>) -> Result<T> {
-        match err {
-            ClientError::UnexpectedResponse(response) if response.status().is_success() => response
-                .json::<T>()
-                .await
-                .wrap_err("parsing launch response body"),
-            err => Err(self.api_error(err).await),
-        }
+        &self.client.inner().authn_info
     }
 
     /// Refreshes the credential of the client, through
@@ -990,7 +957,7 @@ impl AntithesisApi {
                 }
                 return Err(format_api_error(404, &error_body_message(&body)));
             }
-            Err(err) => self.recover_launch_error(err).await?,
+            Err(err) => recover_launch_error(err).await?,
         };
         Ok(LaunchResponse {
             run_id: response.run_id,
@@ -1002,7 +969,7 @@ impl AntithesisApi {
         let response: generated::types::LaunchMvdResponse =
             match self.client.launch_mvd().body(body).send().await {
                 Ok(response) => response.into_inner(),
-                Err(err) => self.recover_launch_error(err).await?,
+                Err(err) => recover_launch_error(err).await?,
             };
         Ok(LaunchResponse {
             run_id: response.run_id,
@@ -1017,7 +984,7 @@ impl AntithesisApi {
                 let policy = self.cache.headers_policy(response.headers());
                 Ok(response.into_inner().with_tag(policy))
             }
-            Err(err) => Err(run_not_found(run_id, self.api_error(err).await)),
+            Err(err) => Err(run_not_found(run_id, format_api_client_error(err).await)),
         }
     }
 
@@ -1039,7 +1006,7 @@ impl AntithesisApi {
     pub async fn cancel_run(&self, run_id: &str) -> Result<()> {
         match self.client.cancel_run().run_id(run_id).send().await {
             Ok(_) => Ok(()),
-            Err(err) => Err(self.api_error(err).await),
+            Err(err) => Err(format_api_client_error(err).await),
         }
     }
 
@@ -1087,7 +1054,7 @@ impl AntithesisApi {
                 let policy = self.cache.headers_policy(response.headers());
                 Ok(json_lines(response.into_inner().into_inner()).with_tag(policy))
             }
-            Err(err) => Err(self.api_error(err).await),
+            Err(err) => Err(format_api_client_error(err).await),
         }
     }
 
@@ -1139,7 +1106,7 @@ impl AntithesisApi {
                 };
                 Ok(stream.with_tag(policy))
             }
-            Err(err) => Err(self.api_error(err).await),
+            Err(err) => Err(format_api_client_error(err).await),
         }
     }
 
@@ -1178,7 +1145,7 @@ impl AntithesisApi {
         let request = self.client.execute_command().run_id(run_id).body(body);
         match request.send().await {
             Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
-            Err(err) => Err(self.api_error(err).await),
+            Err(err) => Err(format_api_client_error(err).await),
         }
     }
 
@@ -1226,7 +1193,7 @@ impl AntithesisApi {
         let request = self.client.stream_run_status().run_id(run_id).body(body);
         match request.send().await {
             Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
-            Err(err) => Err(self.api_error(err).await),
+            Err(err) => Err(format_api_client_error(err).await),
         }
     }
 
@@ -1239,7 +1206,7 @@ impl AntithesisApi {
             .property_id(property_id);
         match request.send().await {
             Ok(response) => normalize_property(response.into_inner()),
-            Err(err) => Err(self.api_error(err).await),
+            Err(err) => Err(format_api_client_error(err).await),
         }
     }
 
@@ -1276,7 +1243,7 @@ impl AntithesisApi {
                 json_lines(response.into_inner().into_inner()),
                 limit,
             )),
-            Err(err) => Err(self.api_error(err).await),
+            Err(err) => Err(format_api_client_error(err).await),
         }
     }
 
@@ -1287,7 +1254,7 @@ impl AntithesisApi {
         let request = self.client.search_count().run_id(run_id).body(body);
         match request.send().await {
             Ok(response) => Ok(response.into_inner().count),
-            Err(err) => Err(self.api_error(err).await),
+            Err(err) => Err(format_api_client_error(err).await),
         }
     }
 
@@ -1337,7 +1304,7 @@ impl AntithesisApi {
 
         match request.send().await {
             Ok(response) => Ok(response.into_inner()),
-            Err(err) => Err(self.api_error(err).await),
+            Err(err) => Err(format_api_client_error(err).await),
         }
     }
 
@@ -1368,7 +1335,7 @@ impl AntithesisApi {
                             response.into_inner();
                         Ok((data, next_cursor))
                     }
-                    Err(err) => Err(self.api_error(err).await),
+                    Err(err) => Err(format_api_client_error(err).await),
                 }
             },
         )
@@ -1383,7 +1350,7 @@ impl AntithesisApi {
         match self.client.get_usage().run_id(run_id).send().await {
             Ok(response) => Ok(Some(response.into_inner())),
             Err(err) => {
-                let err = self.api_error(err).await;
+                let err = format_api_client_error(err).await;
                 if crate::error::api_error_status(&err) == Some(404) {
                     Ok(None)
                 } else {
@@ -1417,14 +1384,14 @@ impl AntithesisApi {
                 let policy = self.cache.headers_policy(response.headers());
                 Ok(response.into_inner().with_tag(policy))
             }
-            Err(err) => Err(self.api_error(err).await),
+            Err(err) => Err(format_api_client_error(err).await),
         }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct ClientState {
-    credential: SourcedCredential,
+    authn_info: AuthenticationInfo,
     /// The `exec` hook logs through this client when `--verbose` is set.
     http: HttpClient,
 }
@@ -1435,7 +1402,7 @@ impl ClientHooks<ClientState> for generated::Client {
         request: &mut reqwest::Request,
         _info: &OperationInfo,
     ) -> std::result::Result<(), ClientError<E>> {
-        let auth = self.inner().credential.value();
+        let auth = &self.inner().authn_info;
         // An expired credential is refreshed first, and a GitHub Actions
         // OIDC credential is expired until its first token. When the refresh
         // fails, the request fails with the reason, rather than meet a 401.
@@ -1477,7 +1444,7 @@ impl ClientHooks<ClientState> for generated::Client {
             {
                 // When the refresh fails, such as for an API key or for want
                 // of a refresh token, the 401 surfaces.
-                let auth = state.credential.value();
+                let auth = &state.authn_info;
                 let refreshed = auth
                     .refresh(self.client(), self.baseurl())
                     .await
@@ -1903,6 +1870,25 @@ fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
     .wrap_err("failed to build launch request")
 }
 
+/// Resolve the error from a launch call.
+///
+/// Any 2xx is success. The spec documents only 202, and the generated client
+/// surfaces any other 2xx as `UnexpectedResponse`. Earlier releases answered
+/// 200. On orbitinghail, release 67.0 answers 202 for `basic_test` and
+/// `debugging`, but nobody has checked the other launchers. A 4xx or 5xx
+/// becomes an error that leads with the status, which `build.rs` leaves
+/// undocumented. TODO: drop the any-2xx arm once every launcher is seen to
+/// answer 202 and no supported release answers 200.
+async fn recover_launch_error<T: DeserializeOwned>(err: ClientError<()>) -> Result<T> {
+    match err {
+        ClientError::UnexpectedResponse(response) if response.status().is_success() => response
+            .json::<T>()
+            .await
+            .wrap_err("parsing launch response body"),
+        err => Err(format_api_client_error(err).await),
+    }
+}
+
 fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequest> {
     // cmd_debug has validated the params and checked that exactly one of
     // run_id or session_id is set, so they fit one MvdParams variant.
@@ -1963,26 +1949,11 @@ pub(crate) fn run_version(run_id: &str) -> Option<u32> {
     version.parse::<u32>().ok()
 }
 
-fn status_reason(status: u16) -> &'static str {
-    reqwest::StatusCode::from_u16(status)
+fn format_api_error(status: u16, body: &str) -> Report {
+    let reason = reqwest::StatusCode::from_u16(status)
         .ok()
         .and_then(|s| s.canonical_reason())
-        .unwrap_or("")
-}
-
-fn format_api_error(status: u16, body: &str) -> Report {
-    let reason = status_reason(status);
-    let msg = if reason.is_empty() {
-        format!("API error: {status}")
-    } else {
-        format!("API error: {status} {reason}")
-    };
-    api_error_report(status, msg, body)
-}
-
-/// An [`ApiError`] for `status` whose message is `msg`, then `body`.
-fn api_error_report(status: u16, mut msg: String, body: &str) -> Report {
-    let reason = status_reason(status);
+        .unwrap_or("");
     let body = body.trim();
     // Servers often echo the status reason at the front of the body
     // ("Bad Request — Bad request: invalid vtime"); drop the redundant echo
@@ -1995,6 +1966,11 @@ fn api_error_report(status: u16, mut msg: String, body: &str) -> Report {
         _ => body,
     };
 
+    let mut msg = format!("API error: {status}");
+    if !reason.is_empty() {
+        msg.push(' ');
+        msg.push_str(reason);
+    }
     if !body.is_empty() {
         // A multi-line body carries a layout of its own — a caret under the
         // offending token, for one. It goes on its own line and takes the same
@@ -2014,6 +1990,15 @@ fn api_error_report(status: u16, mut msg: String, body: &str) -> Report {
         status,
         message: msg,
     });
+    // The "what to check" for an auth failure is guidance, not part of the error
+    // statement, so it rides along as a suggestion note.
+    let report = if matches!(status, 401 | 403) {
+        report.suggestion(
+            "run `snouty doctor` to see which credential snouty sent, and `snouty login` to replace it",
+        )
+    } else {
+        report
+    };
     // A 4xx is the user's to fix (bad credentials, unknown run id, invalid
     // filter, …), so it prints as a clean message — no backtrace, even under
     // `RUST_BACKTRACE`. 5xx and other statuses are genuine faults and keep theirs.
@@ -2068,25 +2053,9 @@ fn char_pos_to_byte_offset(body: &str, line: usize, column: usize) -> usize {
     body.len()
 }
 
-/// Render a failed API call for the user, status first. A rejection names
-/// the rejected `credential` instead, and suggests the one way to replace it
-/// for the selected `profile`.
-///
-/// A rejection is a 401, or a 403 with no body: the gateway answers a bad key
-/// with an empty 403 (#180). A 403 with a body can deny a valid credential
-/// access to one resource, so it keeps its status.
-async fn format_api_client_error(
-    err: ClientError<()>,
-    credential: &SourcedCredential,
-    profile: Option<&str>,
-) -> Report {
+/// Render a failed API call for the user, status first.
+async fn format_api_client_error(err: ClientError<()>) -> Report {
     match classify_client_error(err).await {
-        ApiFailure::Response {
-            status, message, ..
-        } if status == 401 || (status == 403 && message.trim().is_empty()) => {
-            api_error_report(status, rejection_message(credential), &message)
-                .suggestion(rejection_suggestion(credential, profile))
-        }
         ApiFailure::Response {
             status,
             message,
@@ -2382,8 +2351,7 @@ mod tests {
             AuthenticationInfo::Password {
                 username: FAKE_USERNAME.to_owned(),
                 password: FAKE_PASSWORD.to_owned(),
-            }
-            .in_environment(),
+            },
             false,
             cache_dir.map_or(ResponseCache::Disabled, |d| {
                 ResponseCache::Dir(d.path().to_path_buf())
@@ -2545,7 +2513,7 @@ mod tests {
         let parse_err = serde_json::from_slice::<serde_json::Value>(b"").unwrap_err();
         let err = ClientError::<()>::InvalidResponsePayload(bytes::Bytes::new(), parse_err);
 
-        let report = format_api_client_error(err, &env_api_key(), None).await;
+        let report = format_api_client_error(err).await;
         let message = format!("{report}");
         let debug = format!("{report:?}");
 
@@ -2561,55 +2529,6 @@ mod tests {
         );
     }
 
-    fn env_api_key() -> SourcedCredential {
-        AuthenticationInfo::ApiKey {
-            api_key: FAKE_API_KEY_A.to_owned(),
-        }
-        .in_environment()
-    }
-
-    // The message omits the status, but the report keeps it for callers that
-    // classify the failure.
-    #[tokio::test]
-    async fn format_api_client_error_names_a_rejected_credential() {
-        for status in [401, 403] {
-            let report =
-                format_api_client_error(served_error(status, ""), &env_api_key(), None).await;
-            let rendered = format!("{report:?}");
-
-            assert_eq!(crate::error::api_error_status(&report), Some(status));
-            assert!(
-                rendered.contains(
-                    "the tenant rejected the API key from the `ANTITHESIS_API_KEY` environment variable"
-                ),
-                "got: {rendered}"
-            );
-            assert!(
-                rendered.contains("set ANTITHESIS_API_KEY to a valid API key"),
-                "got: {rendered}"
-            );
-            assert!(!rendered.contains(&status.to_string()), "got: {rendered}");
-        }
-    }
-
-    // A 403 with a body can deny a valid credential, so it is not a rejection.
-    #[tokio::test]
-    async fn format_api_client_error_keeps_a_403_with_a_body() {
-        let report = format_api_client_error(
-            served_error(403, r#"{"message":"no"}"#),
-            &env_api_key(),
-            None,
-        )
-        .await;
-        let rendered = format!("{report:?}");
-
-        assert!(
-            rendered.contains("API error: 403 Forbidden"),
-            "got: {rendered}"
-        );
-        assert!(!rendered.contains("rejected"), "got: {rendered}");
-    }
-
     /// A served error, in the shape the generated client hands every HTTP
     /// failure to the formatters: no error response is documented, so the
     /// status and the raw body both survive.
@@ -2622,13 +2541,13 @@ mod tests {
         ClientError::UnexpectedResponse(response)
     }
 
-    // With no body, the status is the whole message. The gateway sends no body
-    // for some rejections, such as rate limits, on any endpoint.
+    // The status is the whole message when the server sent no body — which is
+    // what the gateway does for some rejections, on any endpoint. The point of
+    // #180 is that the status survives that; nothing further is added.
     #[tokio::test]
     async fn format_api_client_error_reports_the_status_for_an_empty_body() {
-        for status in [429, 502] {
-            let report =
-                format_api_client_error(served_error(status, ""), &env_api_key(), None).await;
+        for status in [401, 429, 502] {
+            let report = format_api_client_error(served_error(status, "")).await;
             let debug = format!("{report:?}");
 
             assert!(
@@ -2640,8 +2559,7 @@ mod tests {
 
     #[tokio::test]
     async fn format_api_client_error_shows_a_non_empty_body() {
-        let report =
-            format_api_client_error(served_error(400, "not json"), &env_api_key(), None).await;
+        let report = format_api_client_error(served_error(400, "not json")).await;
         let debug = format!("{report:?}");
 
         assert!(debug.contains("API error: 400"), "got: {debug}");
@@ -2857,7 +2775,7 @@ mod tests {
         let parse_err = serde_json::from_slice::<serde_json::Value>(body).unwrap_err();
         let err = ClientError::<()>::InvalidResponsePayload(body.to_vec().into(), parse_err);
 
-        let report = format_api_client_error(err, &env_api_key(), None).await;
+        let report = format_api_client_error(err).await;
         // The message is the bare statement …
         let message = format!("{report}");
         assert!(message.starts_with("invalid API response payload: "));
@@ -2919,8 +2837,7 @@ mod tests {
             AuthenticationInfo::Password {
                 username: FAKE_USERNAME.to_owned(),
                 password: FAKE_PASSWORD.to_owned(),
-            }
-            .in_environment(),
+            },
             true,
             ResponseCache::Disabled,
         )
@@ -2935,8 +2852,7 @@ mod tests {
             AuthenticationInfo::Password {
                 username: FAKE_USERNAME.to_owned(),
                 password: FAKE_PASSWORD.to_owned(),
-            }
-            .in_environment(),
+            },
             true,
             ResponseCache::Disabled,
         )
@@ -4547,8 +4463,7 @@ mod tests {
             AuthenticationInfo::Password {
                 username: FAKE_USERNAME.to_owned(),
                 password: FAKE_PASSWORD.to_owned(),
-            }
-            .in_environment(),
+            },
             false,
             ResponseCache::Dir(bogus),
         )
@@ -4622,7 +4537,7 @@ mod tests {
 
         let api = AntithesisApi::build(
             &Settings::for_test_base_url(&mock_server.uri()),
-            auth.in_environment(),
+            auth,
             false,
             ResponseCache::Disabled,
         )
@@ -4700,7 +4615,7 @@ mod tests {
         );
         let api = AntithesisApi::build(
             &Settings::for_test_base_url(&mock_server.uri()),
-            auth.in_environment(),
+            auth,
             false,
             ResponseCache::Disabled,
         )
@@ -4735,7 +4650,7 @@ mod tests {
         );
         let api = AntithesisApi::build(
             &Settings::for_test_base_url(&mock_server.uri()),
-            auth.in_environment(),
+            auth,
             false,
             ResponseCache::Disabled,
         )
@@ -4806,7 +4721,7 @@ mod tests {
         );
         let api = AntithesisApi::build(
             &Settings::for_test_base_url(&mock_server.uri()),
-            auth.in_environment(),
+            auth,
             false,
             ResponseCache::Disabled,
         )
@@ -4860,7 +4775,7 @@ mod tests {
         let auth = oauth_with_newer_stored_token(&creds_dir, FAKE_ACCESS_TOKEN_A);
         let api = AntithesisApi::build(
             &Settings::for_test_base_url(&mock_server.uri()),
-            auth.in_environment(),
+            auth,
             false,
             ResponseCache::Disabled,
         )
@@ -4917,7 +4832,7 @@ mod tests {
         );
         let api = AntithesisApi::build(
             &Settings::for_test_base_url(&mock_server.uri()),
-            auth.in_environment(),
+            auth,
             false,
             ResponseCache::Disabled,
         )
@@ -4955,7 +4870,7 @@ mod tests {
         let auth = oauth_credential_in(creds_dir.path(), "access-token", None);
         let api = AntithesisApi::build(
             &Settings::for_test_base_url(&mock_server.uri()),
-            auth.in_environment(),
+            auth,
             false,
             ResponseCache::Disabled,
         )
@@ -4992,8 +4907,7 @@ mod tests {
             &Settings::for_test_base_url(&mock_server.uri()),
             AuthenticationInfo::ApiKey {
                 api_key: FAKE_API_KEY_A.to_owned(),
-            }
-            .in_environment(),
+            },
             false,
             ResponseCache::Disabled,
         )
@@ -5032,7 +4946,7 @@ mod tests {
         ));
         AntithesisApi::build(
             &Settings::for_test_base_url(&server.uri()),
-            auth.in_environment(),
+            auth,
             false,
             ResponseCache::Disabled,
         )

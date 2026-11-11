@@ -662,24 +662,6 @@ stderr '^Error: API error: 400.*'
 [!staging] stderr 'API error: 429 Too Many Requests.*'
 [!staging] stderr '^Suggestion: retry after 3600s \(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\) to respect the server.s rate limit$'
 
-# The error names the rejected credential and its source. The suggestion gives
-# the one way to replace it from that source.
-[!staging] mock-server 401 ''
-[!staging] set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
-[!staging] ! snouty runs
-[!staging] stderr 'rejected the API key from the `ANTITHESIS_API_KEY` environment variable'
-[!staging] stderr -literal 'Suggestion: set ANTITHESIS_API_KEY to a valid API key for this tenant'
-[!staging] ! stderr 'API error'
-
-[!staging] isolate-home stored_key
-[!staging] substitute ~/.config/snouty/credentials.toml
-[!staging] env ANTITHESIS_API_KEY=
-[!staging] env ANTITHESIS_USERNAME=
-[!staging] env ANTITHESIS_PASSWORD=
-[!staging] ! snouty runs
-[!staging] stderr 'rejected the API key from the \[default\] profile'
-[!staging] stderr -literal 'Suggestion: run `snouty login` to store a valid API key'
-
 # An unfiltered empty result succeeds with a short note.
 [!staging] mock-runs-server
 [!staging] snouty runs properties run-empty
@@ -1254,8 +1236,3 @@ stderr 'the server reported an error mid-stream: mock stream failure'
 -- probe-runs-error.ndjson --
 {"id":"run-stream-error","kind":"test"}
 {"id":"run-1","kind":"test"}
-
--- stored_key/.config/snouty/credentials.toml --
-[default]
-type = "ApiKey"
-api_key = "${FAKE_API_KEY_A}"

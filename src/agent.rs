@@ -62,13 +62,17 @@ const HARNESSES: &[Harness] = &[
 /// Claude Code sets it to a value such as `claude-code_2-1-267_agent`, and Pi
 /// sets it to `pi`. `env` replaces [`crate::env::var`] so a test does not change the
 /// process environment.
-pub fn hint(env: impl Fn(&str) -> Option<String>) -> Option<String> {
-    read_hint(&env, "AI_AGENT").or_else(|| marker_harness(&env).map(|h| h.name.to_owned()))
+pub fn hint(env: &impl Fn(&str) -> Option<String>) -> Option<String> {
+    env("AI_AGENT")
+        .and_then(|raw| sanitize_hint(&raw))
+        .or_else(|| marker_harness(env).map(|h| h.name.to_owned()))
 }
 
-/// The value of `var`, sanitized by [`sanitize_hint`].
-fn read_hint(env: &impl Fn(&str) -> Option<String>, var: &str) -> Option<String> {
-    env(var).and_then(|raw| sanitize_hint(&raw))
+/// The value of `var` with surrounding whitespace removed, if any is left.
+fn read_trimmed(env: &impl Fn(&str) -> Option<String>, var: &str) -> Option<String> {
+    let value = env(var)?;
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_owned())
 }
 
 /// The AI agent harness that runs snouty.
@@ -84,10 +88,10 @@ pub struct Agent {
 /// `<name>_<version>_<kind>`, with dashes in the version, for example
 /// `claude-code_2-1-267_agent`, or is only a name, such as `pi`.
 pub fn detect(env: &impl Fn(&str) -> Option<String>) -> Option<Agent> {
-    let (name, version, harness) = read_hint(env, "AI_AGENT")
-        .and_then(|hint| {
-            let mut fields = hint.split('_');
-            let name = fields.next().filter(|name| !name.is_empty())?;
+    let (name, version, harness) = read_trimmed(env, "AI_AGENT")
+        .and_then(|raw| {
+            let mut fields = raw.split('_');
+            let name = fields.next().and_then(sanitize_hint)?;
             let version = fields
                 .next()
                 .filter(|v| {
@@ -97,17 +101,17 @@ pub fn detect(env: &impl Fn(&str) -> Option<String>) -> Option<Agent> {
                 })
                 .map(|v| v.replace('-', "."));
             let harness = HARNESSES.iter().find(|harness| harness.name == name);
-            Some((name.to_owned(), version, harness))
+            Some((name, version, harness))
         })
         .or_else(|| {
             marker_harness(env).map(|harness| (harness.name.to_owned(), None, Some(harness)))
         })?;
-    let version = version.or_else(|| read_hint(env, harness?.version?));
+    let version = version.or_else(|| read_trimmed(env, harness?.version?));
     let session_id = harness.and_then(|harness| {
         harness
             .session_id
             .iter()
-            .find_map(|var| read_hint(env, var))
+            .find_map(|var| read_trimmed(env, var))
     });
     Some(Agent {
         name,
@@ -154,28 +158,28 @@ mod tests {
             ("AI_AGENT", "claude-code_2-1-267_agent"),
             ("CLAUDECODE", "1"),
         ]);
-        assert_eq!(hint(env).as_deref(), Some("claude-code_2-1-267_agent"));
+        assert_eq!(hint(&env).as_deref(), Some("claude-code_2-1-267_agent"));
 
         let env = env_of(&[("AI_AGENT", "bad agent;\r\n(1.0)")]);
-        assert_eq!(hint(env).as_deref(), Some("badagent1.0"));
+        assert_eq!(hint(&env).as_deref(), Some("badagent1.0"));
     }
 
     #[test]
     fn hint_falls_back_to_harness_markers() {
         assert_eq!(
-            hint(env_of(&[("CLAUDECODE", "1")])).as_deref(),
+            hint(&env_of(&[("CLAUDECODE", "1")])).as_deref(),
             Some("claude-code")
         );
         assert_eq!(
-            hint(env_of(&[("CODEX_THREAD_ID", "abc")])).as_deref(),
+            hint(&env_of(&[("CODEX_THREAD_ID", "abc")])).as_deref(),
             Some("codex")
         );
-        assert_eq!(hint(env_of(&[("AI_AGENT", "  ")])), None);
+        assert_eq!(hint(&env_of(&[("AI_AGENT", "  ")])), None);
         assert_eq!(
-            hint(env_of(&[("AI_AGENT", "()"), ("CLAUDECODE", "1")])).as_deref(),
+            hint(&env_of(&[("AI_AGENT", "()"), ("CLAUDECODE", "1")])).as_deref(),
             Some("claude-code")
         );
-        assert_eq!(hint(env_of(&[])), None);
+        assert_eq!(hint(&env_of(&[])), None);
     }
 
     fn agent(name: &str, version: Option<&str>, session_id: Option<&str>) -> Agent {
@@ -209,6 +213,14 @@ mod tests {
             ("CODEX_VERSION", "0.98.0"),
             ("CODEX_SESSION_ID", "019a-session"),
         ]);
+        let long_id = format!("id:{}", "x".repeat(100));
+        assert_eq!(
+            detect(&env_of(&[
+                ("CLAUDECODE", "1"),
+                ("CLAUDE_CODE_SESSION_ID", &long_id)
+            ])),
+            Some(agent("claude-code", None, Some(&long_id)))
+        );
         assert_eq!(
             detect(&env),
             Some(agent("codex", Some("0.98.0"), Some("019a-thread")))
@@ -252,7 +264,7 @@ mod tests {
     #[test]
     fn hint_is_capped() {
         let long = "x".repeat(500);
-        let hint = hint(env_of(&[("AI_AGENT", &long)])).unwrap();
+        let hint = hint(&env_of(&[("AI_AGENT", &long)])).unwrap();
         assert_eq!(hint.len(), AGENT_HINT_MAX_LEN);
     }
 

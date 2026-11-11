@@ -7,7 +7,7 @@ use crate::{agent, env};
 /// When an AI agent harness runs snouty, the string ends with an
 /// `agent=<value>` field that names the harness.
 pub fn user_agent() -> String {
-    user_agent_with(agent::hint(|name| env::var(name).ok().flatten()).as_deref())
+    user_agent_with(agent::hint(&|name| env::var(name).ok().flatten()).as_deref())
 }
 
 /// The User-Agent string with `agent` as the trailing `agent=` field. `None`

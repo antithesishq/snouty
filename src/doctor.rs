@@ -458,13 +458,12 @@ fn describe_source(source: &CredentialSource) -> String {
             variables.join("` and `"),
             if variables.len() == 1 { "" } else { "s" }
         ),
-        CredentialSource::Stored(CredentialStore::CredentialsFile { path, profile }) => format!(
-            // `Display`, not `Debug`: `{:?}` on a path adds quotes of its
-            // own, which read as a second set of brackets around the name.
-            "the [{}] profile in {}",
-            profile.as_deref().unwrap_or(DEFAULT_PROFILE),
-            path.display(),
-        ),
+        CredentialSource::Stored(CredentialStore::CredentialsFile { profile, .. }) => {
+            match profile.as_deref().filter(|p| *p != DEFAULT_PROFILE) {
+                Some(p) => format!("the `{p}` profile of the credentials file"),
+                None => "the credentials file".to_owned(),
+            }
+        }
         CredentialSource::Stored(CredentialStore::Keychain { profile }) => format!(
             "system keychain entry named [{}]",
             keychain_entry_name(profile.as_deref())
@@ -857,7 +856,7 @@ mod tests {
     /// path, as a sentence. The path goes through `Display`, so it carries no
     /// quotes of its own.
     #[test]
-    fn auth_from_a_file_names_the_profile_and_the_path() {
+    fn auth_from_a_file_names_a_named_profile_but_no_path() {
         let note = |profile: Option<&str>| {
             let checks = authn_checks(&[from_file(
                 AuthenticationInfo::ApiKey {
@@ -872,17 +871,12 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        assert!(
-            note(None).contains("read from the [default] profile in /tmp/credentials.toml"),
-            "got: {}",
-            note(None)
+        assert_eq!(note(None), "read from the credentials file");
+        assert_eq!(note(Some("default")), "read from the credentials file");
+        assert_eq!(
+            note(Some("prod")),
+            "read from the `prod` profile of the credentials file"
         );
-        assert!(
-            note(Some("prod")).contains("read from the [prod] profile in /tmp/credentials.toml"),
-            "got: {}",
-            note(Some("prod"))
-        );
-        assert!(!note(None).contains('"'), "the path must not be quoted");
     }
 
     /// Only a username and password: one warning, whose next step depends on
@@ -948,10 +942,7 @@ mod tests {
             )),
             [
                 deprecated,
-                (
-                    Level::Note,
-                    "read from the [default] profile in /tmp/credentials.toml".to_owned()
-                ),
+                (Level::Note, "read from the credentials file".to_owned()),
                 (
                     Level::Note,
                     "run `snouty login` to replace it with an API key".to_owned()
@@ -1101,7 +1092,7 @@ mod tests {
                 (
                     Level::Note,
                     "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in \
-                    the [default] profile in /tmp/credentials.toml"
+                    the credentials file"
                 ),
             ]
         );
@@ -1143,7 +1134,7 @@ mod tests {
         assert_eq!(
             check.notes.last().unwrap().text,
             "`unset ANTITHESIS_API_KEY` to use the API key in \
-            the [default] profile in /tmp/credentials.toml"
+            the credentials file"
         );
     }
 

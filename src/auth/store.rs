@@ -119,16 +119,7 @@ impl CredentialStore {
 /// Where the credentials file is, or `None` when the global settings dir is
 /// unknown. The file need not exist.
 pub(crate) fn credentials_file_path() -> Option<PathBuf> {
-    try_get_credentials_file_path().map(|(_dir, path)| path)
-}
-
-fn try_get_credentials_file_path() -> Option<(PathBuf, PathBuf)> {
-    if let Some(snouty_settings_dir) = global_settings_dir() {
-        let path = snouty_settings_dir.join(CREDENTIALS_FILENAME);
-        Some((snouty_settings_dir, path))
-    } else {
-        None
-    }
+    global_settings_dir().map(|dir| dir.join(CREDENTIALS_FILENAME))
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -245,9 +236,10 @@ pub(crate) fn keychain_entry_name(profile: Option<&str>) -> String {
 }
 
 fn clear_from_file_if_present(profile: Option<&str>) {
-    let Some((parent_dir, path)) = try_get_credentials_file_path() else {
+    let Some(parent_dir) = global_settings_dir() else {
         return;
     };
+    let path = parent_dir.join(CREDENTIALS_FILENAME);
 
     if let Ok(Some(contents)) = read_to_string_if_file_exists(&path)
         && let Ok(mut creds_file) = parse_credentials_file_toml(&contents, &path)

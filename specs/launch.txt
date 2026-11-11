@@ -10,19 +10,7 @@
 # checks above the skip (arg parsing, schema validation) fail before any API
 # call and run in both modes.
 
-# Without the teams feature, help hides --max-compute-hours and
-#    --setup-timeout, and snouty refuses them before any request.
-snouty launch --help
-! stdout '--max-compute-hours|--setup-timeout'
-! stdout 'Deprecated: use --max-compute-hours'
-! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24
-stderr '`snouty launch --max-compute-hours` is an unstable feature and is not enabled'
-stderr 'enable it by setting SNOUTY_UNSTABLE_FEATURES=teams'
-! snouty launch --launcher basic_test --config-image config:latest --setup-timeout 10m
-stderr '`snouty launch --setup-timeout` is an unstable feature and is not enabled'
-
-# The teams feature enables the flags, for the rest of this file.
-env SNOUTY_UNSTABLE_FEATURES=teams
+# Help lists --max-compute-hours and --setup-timeout.
 snouty launch --help
 stdout '--max-compute-hours'
 stdout '--setup-timeout'
@@ -205,14 +193,6 @@ stderr 'No Antithesis credentials found.*'
 # tenant credentials, and no `snouty launch` command may execute with them —
 # safety must not depend on where the command fails.
 [staging] skip
-
-# Without the teams feature, --duration is not deprecated.
-env SNOUTY_UNSTABLE_FEATURES=
-mock-server 200 '{"runId":"run-123","statusCode":200}'
-snouty launch --launcher basic_test --config-image config:latest --duration 30m
-stderr '"antithesis.duration": "30"'
-! stderr '--duration is deprecated'
-env SNOUTY_UNSTABLE_FEATURES=teams
 
 # --param cannot override typed flag values.
 mock-server 200 '{"message":"Success","runId":"run-123"}'

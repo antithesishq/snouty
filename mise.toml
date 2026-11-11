@@ -52,7 +52,7 @@ description = "Record the commit of each workflow action in .github/workflows/ac
 # each ref as written, so the workflows that dist and gh-aw generate stay as
 # generated.
 run = [
-    "gh extension install github/gh-actions-lock --pin v0.4.1 --force",
+    "gh actions-lock --version 2>/dev/null | grep -qx 'actions-lock version v0.4.1' || gh extension install github/gh-actions-lock --pin v0.4.1 --force",
     "gh actions-lock --no-narrow",
     "echo '✓ actions:lock done'",
 ]

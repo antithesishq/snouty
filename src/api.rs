@@ -1994,7 +1994,7 @@ fn format_api_error(status: u16, body: &str) -> Report {
     // statement, so it rides along as a suggestion note.
     let report = if matches!(status, 401 | 403) {
         report.suggestion(
-            "run `snouty doctor` to see which credential snouty sent, and `snouty login` to replace it",
+            "run `snouty doctor` to debug the issue, and `snouty login` to reauthenticate",
         )
     } else {
         report

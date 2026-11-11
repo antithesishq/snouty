@@ -677,25 +677,6 @@ fn version_check(host: &str, result: std::result::Result<ApiVersion, VersionErro
     }
 }
 
-/// Warns that the tenant has CLI OAuth login disabled, but only when no
-/// credential has worked against the API: a user whose API key works does not
-/// need OAuth login.
-fn oauth_disabled_check(checks: &[Check]) -> Option<Check> {
-    let has_working_credential = checks
-        .iter()
-        .any(|c| c.id == CheckId::Api && c.status == Status::Ok);
-    (!has_working_credential).then(|| {
-        Check::warn(
-            CheckId::OauthConfigured,
-            "CLI OAuth login is not enabled for this tenant",
-        )
-        .note(
-            Level::Note,
-            "request that your tenant administrator enable OAuth login for the CLI",
-        )
-    })
-}
-
 pub async fn cmd_doctor(
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
@@ -771,13 +752,27 @@ pub async fn cmd_doctor(
 
         // A client that fails to build (bad proxy URL or extra header) skips
         // the API check too. Skip the probe when the tenant could be
-        // unreachable: the probe would only wait out its timeout.
+        // unreachable: the probe would only wait out its timeout. Skip it
+        // when a credential works, too: that user does not need OAuth login.
+        let credential_works = checks
+            .iter()
+            .any(|c| c.id == CheckId::Api && c.status == Status::Ok);
         if !api_failed
+            && !credential_works
             && let Some(base_url) = settings.base_url()
             && let Ok(client) = HttpClient::new(settings, verbose)
         {
             match fetch_cli_config(&client, &normalize_base_url(base_url)).await {
-                Ok(CliOAuthConfig::Disabled) => checks.extend(oauth_disabled_check(&checks)),
+                Ok(CliOAuthConfig::Disabled) => checks.push(
+                    Check::warn(
+                        CheckId::OauthConfigured,
+                        "CLI OAuth login is not enabled for this tenant",
+                    )
+                    .note(
+                        Level::Note,
+                        "request that your tenant administrator enable OAuth login for the CLI",
+                    ),
+                ),
                 Ok(CliOAuthConfig::Fixed { .. } | CliOAuthConfig::Ephemeral) => {}
                 // An error does not tell whether OAuth is enabled.
                 Err(err) => debug!("could not read the tenant's OAuth configuration: {err:#}"),
@@ -1490,23 +1485,6 @@ mod tests {
     }
 
     // ---- JSON report ----------------------------------------------------
-
-    #[test]
-    fn oauth_disabled_warns_only_without_a_working_credential() {
-        let working = [Check::ok(CheckId::Api, "Antithesis API reachable")];
-        assert!(oauth_disabled_check(&working).is_none());
-
-        let rejected = [Check::fail(
-            CheckId::Api,
-            "Antithesis API rejected authentication",
-        )];
-        let no_api_check = [missing_credentials_check("no credentials")];
-        for checks in [&rejected[..], &no_api_check[..]] {
-            let check = oauth_disabled_check(checks).expect("a warning");
-            assert_eq!(check.id, CheckId::OauthConfigured);
-            assert_eq!(check.status, Status::Warn);
-        }
-    }
 
     #[test]
     fn json_report_carries_checks() {

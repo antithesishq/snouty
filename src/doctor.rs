@@ -633,6 +633,7 @@ fn release_floor_check(version: &ApiVersion, floor: &ReleaseFloor) -> Option<Che
 fn version_check(
     host: &str,
     in_use: Option<&SourcedCredential>,
+    profile: Option<&str>,
     result: std::result::Result<ApiVersion, VersionError>,
 ) -> Check {
     match result {
@@ -659,7 +660,7 @@ fn version_check(
         Err(VersionError::Http(status @ (401 | 403))) => {
             Check::fail(CheckId::Api, "Antithesis API rejected authentication")
                 .note(Level::Error, format!("the API returned HTTP {status}"))
-                .note(Level::Note, rejected_credential_next_step(in_use))
+                .note(Level::Note, rejected_credential_next_step(in_use, profile))
         }
         // 5xx: we reached something, but it's erroring — connectivity is broken
         // by a server error and auth status is unknown.
@@ -690,19 +691,22 @@ fn version_check(
     }
 }
 
-/// What to check first when the tenant rejects the credential in use. A
-/// proxy can also reject the request before it reaches Antithesis, so each
-/// note names that too rather than blame the credential outright.
-fn rejected_credential_next_step(in_use: Option<&SourcedCredential>) -> String {
+/// What to check first when the tenant of `profile` rejects the credential
+/// in use. A proxy can also reject the request before it reaches Antithesis,
+/// so each note names that too rather than blame the credential outright.
+fn rejected_credential_next_step(
+    in_use: Option<&SourcedCredential>,
+    profile: Option<&str>,
+) -> String {
     const PROXY: &str = "a proxy may be rejecting the request before it reaches Antithesis";
     let Some(in_use) = in_use else {
         return format!("verify your credentials; if they are valid, {PROXY}");
     };
     let source = describe_source(in_use.tag());
-    let login = login_command(match in_use.tag() {
-        CredentialSource::Stored(store) => store.profile(),
-        CredentialSource::Environment { .. } => None,
-    });
+    // The profile being checked, not the one the credential came from: a
+    // named profile with no credential of its own falls back to the default
+    // profile's, and a bare `snouty login` would replace that one instead.
+    let login = login_command(profile);
     match (in_use.value(), in_use.tag()) {
         (AuthenticationInfo::OAuth(_), _) => {
             format!("run {login} to sign in again; if the new sign-in is also rejected, {PROXY}")
@@ -763,6 +767,7 @@ pub async fn cmd_doctor(
                     checks.push(version_check(
                         &host,
                         in_use.as_ref(),
+                        settings.profile(),
                         Err(VersionError::Unreachable(err.root_cause().to_string())),
                     ));
                 } else {
@@ -793,7 +798,12 @@ pub async fn cmd_doctor(
                     checks.extend(release_floor_checks(version, &features::enabled()));
                 }
                 api_failed = matches!(version, Err(VersionError::Unreachable(_)));
-                checks.push(version_check(&host, in_use.as_ref(), version));
+                checks.push(version_check(
+                    &host,
+                    in_use.as_ref(),
+                    settings.profile(),
+                    version,
+                ));
             }
         }
 
@@ -1368,6 +1378,7 @@ mod tests {
         let check = version_check(
             "tenant.antithesis.com",
             None,
+            None,
             Ok(ApiVersion::new("v1".into(), "56.0".into())),
         );
         assert_eq!(check.status, Status::Ok);
@@ -1383,7 +1394,12 @@ mod tests {
 
     #[test]
     fn version_404_is_reachable_but_warns() {
-        let check = version_check("tenant.antithesis.com", None, Err(VersionError::Http(404)));
+        let check = version_check(
+            "tenant.antithesis.com",
+            None,
+            None,
+            Err(VersionError::Http(404)),
+        );
         assert_eq!(check.status, Status::Ok);
         assert!(check.message.contains("reachable"));
         // The warning explains the 404 without definitively blaming an old
@@ -1403,6 +1419,7 @@ mod tests {
             let check = version_check(
                 "tenant.antithesis.com",
                 None,
+                None,
                 Err(VersionError::Http(status)),
             );
             assert_eq!(check.status, Status::Error);
@@ -1419,10 +1436,11 @@ mod tests {
     /// environment variable that may play no part.
     #[test]
     fn version_auth_rejection_names_the_credential_in_use() {
-        let note = |source: SourcedCredential| {
+        let note_for = |source: SourcedCredential, profile: Option<&str>| {
             let check = version_check(
                 "tenant.antithesis.com",
                 Some(&source),
+                profile,
                 Err(VersionError::Http(401)),
             );
             let note = check
@@ -1435,6 +1453,7 @@ mod tests {
             assert!(note.contains("proxy"), "{note}");
             note
         };
+        let note = |source| note_for(source, None);
 
         let env = note(env_api_key_source());
         assert!(
@@ -1447,6 +1466,15 @@ mod tests {
         assert!(stored.contains("snouty login"), "{stored}");
         assert!(!stored.contains("ANTITHESIS_API_KEY"), "{stored}");
 
+        // A named profile that falls back to the default profile's key is
+        // fixed by a login to the named profile, not to the default one.
+        let fallback = note_for(file_api_key_source(), Some("staging"));
+        assert!(fallback.contains("[default] profile"), "{fallback}");
+        assert!(
+            fallback.contains("`snouty login --profile staging`"),
+            "{fallback}"
+        );
+
         let oidc = note(oidc_source());
         assert!(oidc.contains("GitHub Actions OIDC"), "{oidc}");
         assert!(!oidc.contains("API key"), "{oidc}");
@@ -1457,6 +1485,7 @@ mod tests {
     fn version_bad_response_is_not_reported_as_unreachable() {
         let check = version_check(
             "tenant.antithesis.com",
+            None,
             None,
             Err(VersionError::BadResponse(
                 "invalid type: null, expected struct ApiVersion".into(),
@@ -1477,6 +1506,7 @@ mod tests {
         let check = version_check(
             "tenant.antithesis.com",
             None,
+            None,
             Err(VersionError::Unreachable("connection refused".into())),
         );
         assert_eq!(check.status, Status::Error);
@@ -1495,7 +1525,12 @@ mod tests {
 
     #[test]
     fn version_5xx_is_unavailable_with_status() {
-        let check = version_check("tenant.antithesis.com", None, Err(VersionError::Http(503)));
+        let check = version_check(
+            "tenant.antithesis.com",
+            None,
+            None,
+            Err(VersionError::Http(503)),
+        );
         assert_eq!(check.status, Status::Error);
         assert!(check.message.contains("unavailable"));
         assert!(check.notes.iter().any(|n| n.text.contains("503")));
@@ -1503,7 +1538,12 @@ mod tests {
 
     #[test]
     fn version_unexpected_status_is_an_error_with_status() {
-        let check = version_check("tenant.antithesis.com", None, Err(VersionError::Http(429)));
+        let check = version_check(
+            "tenant.antithesis.com",
+            None,
+            None,
+            Err(VersionError::Http(429)),
+        );
         assert_eq!(check.status, Status::Error);
         assert!(check.notes.iter().any(|n| n.text.contains("429")));
     }

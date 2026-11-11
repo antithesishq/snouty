@@ -47,6 +47,23 @@ pub(crate) const CREDENTIAL_ENV_VARS: [&str; 5] = [
 /// Every command and `snouty doctor` state these words for an empty result.
 pub(crate) const NO_CREDENTIALS_MESSAGE: &str = "No Antithesis credentials found";
 
+/// Whether snouty runs in a GitHub Actions job, where `snouty login` cannot
+/// run. A job without the `id-token: write` permission has no OIDC token, so
+/// its first error names that permission.
+pub(crate) fn in_github_actions() -> Result<bool> {
+    Ok(env::var("GITHUB_ACTIONS")?.as_deref() == Some("true"))
+}
+
+/// The next step when no credential is found.
+pub(crate) fn no_credentials_suggestion(github_actions: bool) -> &'static str {
+    if github_actions {
+        "add `id-token: write` to the job's `permissions` to use GitHub Actions OIDC, \
+         or set ANTITHESIS_API_KEY from a secret"
+    } else {
+        "run `snouty login` or set ANTITHESIS_API_KEY"
+    }
+}
+
 #[derive(Clone)]
 pub enum AuthenticationInfo {
     ApiKey { api_key: String },
@@ -261,7 +278,7 @@ impl AuthenticationInfo {
         match Self::find(profile, Fallback::DefaultProfile)? {
             Some(found) => Ok(apply_password_policy(found, policy)?.untag()),
             None => Err(user_error(NO_CREDENTIALS_MESSAGE)
-                .suggestion("run `snouty login` or set ANTITHESIS_API_KEY")),
+                .suggestion(no_credentials_suggestion(in_github_actions()?))),
         }
     }
 

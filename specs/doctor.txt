@@ -11,6 +11,13 @@ stderr '.*needs credentials to authenticate.*'
 stderr '.*ask Antithesis support.*'
 ! stderr '.*ANTITHESIS_USERNAME.*'
 
+# In a GitHub Actions job, doctor names the OIDC permission, not `snouty login`.
+env GITHUB_ACTIONS=true
+! snouty doctor
+stderr -literal 'add `id-token: write` to the job'
+! stderr 'snouty login. to sign in'
+env GITHUB_ACTIONS=
+
 # --json emits a structured report on stdout and still exits non-zero when a
 # required credential is missing (so CI can gate on it).
 ! snouty doctor --json

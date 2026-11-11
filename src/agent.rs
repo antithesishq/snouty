@@ -26,7 +26,7 @@ impl Harness {
 }
 
 /// Agents come before IDE terminals so an agent that runs inside an IDE
-/// wins. Claude Code puts its version in `AI_AGENT`.
+/// wins.
 const HARNESSES: &[Harness] = &[
     Harness {
         session_id: &["CLAUDE_CODE_SESSION_ID"],
@@ -58,24 +58,21 @@ const HARNESSES: &[Harness] = &[
     Harness::new("cline", &["CLINE_ACTIVE"]),
 ];
 
-/// Identify the AI agent harness that runs snouty, if any. `AI_AGENT` wins;
-/// Claude Code sets it to a value such as `claude-code_2-1-267_agent`, and Pi
-/// sets it to `pi`. `env` replaces [`crate::env::var`] so a test does not change the
-/// process environment.
+/// The agent hint for the User-Agent header: the sanitized `AI_AGENT`, else
+/// the name of the harness that a marker variable marks. `env` replaces
+/// [`crate::env::var`] so a test does not change the process environment.
 pub fn hint(env: &impl Fn(&str) -> Option<String>) -> Option<String> {
     env("AI_AGENT")
         .and_then(|raw| sanitize_hint(&raw))
         .or_else(|| marker_harness(env).map(|h| h.name.to_owned()))
 }
 
-/// The value of `var` with surrounding whitespace removed, if any is left.
 fn read_trimmed(env: &impl Fn(&str) -> Option<String>, var: &str) -> Option<String> {
     let value = env(var)?;
     let value = value.trim();
     (!value.is_empty()).then(|| value.to_owned())
 }
 
-/// The AI agent harness that runs snouty.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Agent {
     pub name: String,
@@ -84,12 +81,11 @@ pub struct Agent {
 }
 
 /// Identify the AI agent harness that runs snouty, with its version and
-/// session ID when the harness exports them. The harness's own variables win
-/// over `AI_AGENT`, which any harness can set and a child process inherits.
-/// `AI_AGENT` has the form `<name>_<version>_<kind>`, with dashes in the
-/// version, for example `claude-code_2-1-267_agent`, or is only a name, such
-/// as `pi`.
+/// session ID when the harness exports them. A harness's own variables win
+/// over `AI_AGENT`, which is a shared convention that any harness can set.
 pub fn detect(env: &impl Fn(&str) -> Option<String>) -> Option<Agent> {
+    // `AI_AGENT` is `<name>_<version>_<kind>` with dashes in the version
+    // (`claude-code_2-1-267_agent`), or only a name (`pi`).
     let ai_agent = read_trimmed(env, "AI_AGENT").and_then(|raw| {
         let mut fields = raw.split('_');
         let name = fields.next().and_then(sanitize_hint)?;
@@ -128,7 +124,6 @@ pub fn detect(env: &impl Fn(&str) -> Option<String>) -> Option<Agent> {
     })
 }
 
-/// The first harness in [`HARNESSES`] that one of its markers marks.
 fn marker_harness(env: &impl Fn(&str) -> Option<String>) -> Option<&'static Harness> {
     HARNESSES
         .iter()
@@ -216,11 +211,6 @@ mod tests {
                 Some("d83903be-202d-46c7-8831-50dfd8cdf5bc")
             ))
         );
-        let env = env_of(&[
-            ("CODEX_THREAD_ID", "019a-thread"),
-            ("CODEX_VERSION", "0.98.0"),
-            ("CODEX_SESSION_ID", "019a-session"),
-        ]);
         let long_id = format!("id:{}", "x".repeat(100));
         assert_eq!(
             detect(&env_of(&[
@@ -229,6 +219,11 @@ mod tests {
             ])),
             Some(agent("claude-code", None, Some(&long_id)))
         );
+        let env = env_of(&[
+            ("CODEX_THREAD_ID", "019a-thread"),
+            ("CODEX_VERSION", "0.98.0"),
+            ("CODEX_SESSION_ID", "019a-session"),
+        ]);
         assert_eq!(
             detect(&env),
             Some(agent("codex", Some("0.98.0"), Some("019a-thread")))
@@ -262,7 +257,7 @@ mod tests {
             detect(&env_of(&[("AI_AGENT", "pi")])),
             Some(agent("pi", None, None))
         );
-        // A second field that is not a version is not one.
+        // A non-numeric second field gives no version.
         assert_eq!(
             detect(&env_of(&[("AI_AGENT", "acme_beta")])),
             Some(agent("acme", None, None))
@@ -279,8 +274,8 @@ mod tests {
             detect(&env_of(&[("AI_AGENT", "_1-0"), ("CLAUDECODE", "1")])),
             Some(agent("claude-code", None, None))
         );
-        // Without a harness variable, `AI_AGENT` names a harness, but its
-        // session variable is not read.
+        // Without a marker, the session variable of the harness that
+        // `AI_AGENT` names is not read.
         assert_eq!(
             detect(&env_of(&[
                 ("AI_AGENT", "claude-code_2-1-267_agent"),

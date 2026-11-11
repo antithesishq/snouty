@@ -197,6 +197,19 @@ stdout 'include_system_logs=absent'
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --events
 stdout '\[bash_command\] .*include_system_logs=true'
 
+# --include-filtered-logs asks the server for the logs that the run's log
+# filters drop; without it, the request leaves the field out.
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --events
+stdout 'include_filtered_logs=absent'
+
+snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --events --include-filtered-logs
+stdout 'include_filtered_logs=true'
+
+# --include-filtered-logs streams its logs as events, so it requires --events.
+! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --include-filtered-logs
+stderr 'the following required arguments were not provided'
+stderr '--events'
+
 # --events prints every event of the timeline as `runs logs` does, all on
 # stdout: a `moment INPUT_HASH` divider, then `VTIME [source] payload` lines. The
 # trailer still goes to stderr.

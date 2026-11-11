@@ -1075,6 +1075,11 @@ pub enum RunsCommands {
         #[arg(short = 'd', long, requires = "events")]
         detail: bool,
 
+        /// Also emit the logs that the run's log filters drop (retroactive
+        /// logging)
+        #[arg(long, requires = "events")]
+        include_filtered_logs: bool,
+
         /// Run that a cold moment comes from; the server loads the moment
         /// into the run. Omit it in a debugging session for a moment of the
         /// run that the debugging session was launched from

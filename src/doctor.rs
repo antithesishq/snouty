@@ -295,13 +295,10 @@ fn authn_checks(sources: &[SourcedCredential], github_actions: bool) -> Vec<Chec
             let check = Check::fail(id, "the API key is empty")
                 .note(Level::Error, "an empty API key cannot authenticate");
             match credentials.tag() {
-                // The environment comes first in the lookup, so a blank key
-                // there hides any login or OIDC token until it changes.
+                // The lookup rejects a blank environment key with
+                // `BlankApiKey`, which `collect_checks` reports.
                 CredentialSource::Environment { .. } => enrich_with_source(check, credentials)
-                    .note(
-                        Level::Note,
-                        "unset ANTITHESIS_API_KEY, or set it to a real API key",
-                    ),
+                    .note(Level::Note, crate::auth::BlankApiKey::SUGGESTION),
                 CredentialSource::Stored(store) => enrich_with_source(check, credentials)
                     .note(Level::Note, login_to_replace(store.profile())),
             }
@@ -511,6 +508,17 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
     let github_actions = crate::auth::in_github_actions();
     match AuthenticationInfo::available_ambient_credentials(settings.profile()) {
         Ok(sources) => checks.extend(authn_checks(&sources, github_actions)),
+        // A blank environment key hides every other credential, so its fix
+        // is the variable, not a way to get a credential.
+        Err(err) if err.downcast_ref::<crate::auth::BlankApiKey>().is_some() => checks.push(
+            Check::fail(
+                CheckId::Credentials {
+                    kind: Some(CredentialKind::ApiKey),
+                },
+                err.to_string(),
+            )
+            .note(Level::Note, crate::auth::BlankApiKey::SUGGESTION),
+        ),
         Err(err) => checks.push(missing_credentials_check(err.to_string(), github_actions)),
     }
 

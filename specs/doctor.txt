@@ -18,6 +18,19 @@ stderr -literal 'add `id-token: write` to the job'
 ! stderr 'run .snouty login. or set'
 env GITHUB_ACTIONS=
 
+# A blank ANTITHESIS_API_KEY hides every other credential, so doctor says to
+# fix the variable, in CI or not.
+env GITHUB_ACTIONS=true
+env ANTITHESIS_API_KEY=' '
+! snouty doctor
+stderr '^  ✗ ANTITHESIS_API_KEY is blank$'
+stderr -literal 'set ANTITHESIS_API_KEY to your API key, or unset it to use the stored credential'
+! stderr 'id-token'
+! snouty doctor --json
+stdout '"id": "credentials",\s*"kind": "api_key",\s*"status": "error"'
+env ANTITHESIS_API_KEY=
+env GITHUB_ACTIONS=
+
 # --json emits a structured report on stdout and still exits non-zero when a
 # required credential is missing (so CI can gate on it).
 ! snouty doctor --json

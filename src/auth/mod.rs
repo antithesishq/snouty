@@ -47,6 +47,26 @@ pub(crate) const CREDENTIAL_ENV_VARS: [&str; 5] = [
 /// Every command and `snouty doctor` state these words for an empty result.
 pub(crate) const NO_CREDENTIALS_MESSAGE: &str = "No Antithesis credentials found";
 
+/// `ANTITHESIS_API_KEY` is set but blank. The environment comes first in the
+/// lookup, so a blank key hides every other credential until it changes.
+/// `snouty doctor` reads this error to name that fix, not the no-credential
+/// one.
+#[derive(Debug)]
+pub(crate) struct BlankApiKey;
+
+impl BlankApiKey {
+    pub(crate) const SUGGESTION: &str =
+        "set ANTITHESIS_API_KEY to your API key, or unset it to use the stored credential";
+}
+
+impl std::fmt::Display for BlankApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{API_KEY_VAR_NAME} is blank")
+    }
+}
+
+impl std::error::Error for BlankApiKey {}
+
 /// Whether snouty runs in a GitHub Actions job, where `snouty login` cannot
 /// run. A job without the `id-token: write` permission has no OIDC token, so
 /// its first error names that permission. A value that is not valid Unicode
@@ -187,9 +207,9 @@ impl AuthenticationInfo {
             // newline. `snouty login` trims a pasted key the same way.
             let api_key = api_key.trim().to_owned();
             if api_key.is_empty() {
-                return Err(user_error(format!("{API_KEY_VAR_NAME} is blank")).suggestion(
-                    format!("set {API_KEY_VAR_NAME} to your API key, or unset it to use the stored credential"),
-                ));
+                return Err(color_eyre::eyre::Report::new(BlankApiKey)
+                    .suppress_backtrace(true)
+                    .suggestion(BlankApiKey::SUGGESTION));
             }
             return Ok(Some(Self::ApiKey { api_key }.with_tag(
                 CredentialSource::Environment {

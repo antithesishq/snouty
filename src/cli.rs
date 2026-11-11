@@ -455,8 +455,8 @@ pub fn parse() -> Cli {
     }
 }
 
-/// Refuses a gated command or flag while its feature is off. A hidden
-/// subcommand or flag is still callable, so dispatch checks this first.
+/// Refuses a gated command while its feature is off. A hidden subcommand is
+/// still callable, so dispatch checks this first.
 pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Report> {
     let (feature, path) = match command {
         Commands::Mcp(_) => (Feature::Mcp, "snouty mcp"),

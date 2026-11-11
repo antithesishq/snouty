@@ -32,7 +32,7 @@ use crate::{
     error::user_error,
     render::{OutputOptions, sanitize, wrap_if_tty},
     settings::{
-        ANTITHESIS_PROFILE_ENV_VAR_NAME, BaseUrl, Settings, update_settings_in_global_file,
+        ANTITHESIS_PROFILE_ENV_VAR_NAME, Settings, tenant_base_url, update_settings_in_global_file,
         validate_tenant_host,
     },
     tag::{Tag, Tagged},
@@ -206,9 +206,16 @@ async fn do_cmd_login(
     let written = if prompter.is_interactive() {
         let stored_value = stored.as_ref().map(Tagged::value);
         let client = HttpClient::new(current_settings, verbose)?;
-        // Sign in at the URL that later commands call.
-        let base_url = current_settings.base_url_for_tenant(&tenant_to_use);
-        match prompt_for_auth(prompter, &client, &base_url, &tenant_to_use, stored_value).await? {
+        let explicit_base_url = current_settings.explicit_base_url();
+        match prompt_for_auth(
+            prompter,
+            &client,
+            explicit_base_url,
+            &tenant_to_use,
+            stored_value,
+        )
+        .await?
+        {
             Some(credentials) => {
                 let kind = match &credentials {
                     PersistableCredentials::ApiKey { .. } => "API key",
@@ -347,15 +354,19 @@ impl std::fmt::Display for AuthSetupType {
 }
 
 /// Returns the credential to store, or `None` when the user skips, keeps
-/// `stored`, or declines to replace it.
+/// `stored`, or declines to replace it. Signs in at `explicit_base_url`, the
+/// `base_url` setting that later commands call, or else at the host of
+/// `tenant`.
 async fn prompt_for_auth(
     prompter: &dyn Prompter,
     client: &HttpClient,
-    base_url: &BaseUrl,
+    explicit_base_url: Option<&str>,
     tenant: &str,
     stored: Option<&AuthenticationInfo>,
 ) -> Result<Option<PersistableCredentials>> {
-    let url = normalize_base_url(base_url.as_ref());
+    let url = normalize_base_url(
+        explicit_base_url.map_or_else(|| tenant_base_url(tenant), str::to_owned),
+    );
     let oauth_config = fetch_cli_config(client, &url).await;
 
     // A URL that does not parse, a connect error or a timeout most often means
@@ -367,9 +378,9 @@ async fn prompt_for_auth(
             || transport.is_connect()
             || (transport.is_timeout() && !transport.is_body()))
     {
-        let check = match base_url {
-            BaseUrl::Explicit(_) => "Check that the base_url setting is correct.".to_owned(),
-            BaseUrl::Tenant(_) => format!("Check that the tenant name `{tenant}` is correct."),
+        let check = match explicit_base_url {
+            Some(_) => "Check that the base_url setting is correct.".to_owned(),
+            None => format!("Check that the tenant name `{tenant}` is correct."),
         };
         let warning = wrap_if_tty(&format!(
             "warning: could not reach {url}{CLI_CONFIG_PATH} to check for single \

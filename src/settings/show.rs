@@ -29,7 +29,7 @@ fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, 
         text_row("profile", settings.profile(), "default"),
         text_row("tenant", settings.tenant(), NOT_SET),
         text_row("repository", settings.repository(), NOT_SET),
-        text_row("base_url", settings.base_url(), NOT_SET),
+        text_row("base_url", settings.base_url().as_deref(), NOT_SET),
         text_row("https_proxy", settings.https_proxy(), NOT_SET),
         text_row(
             "container_engine",

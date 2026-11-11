@@ -166,7 +166,7 @@ A matching environment variable always overrides the file. The supported keys an
 
 A credential is never read from a settings file. `snouty login` keeps credentials apart from settings — see [Authentication](#authentication).
 
-Run `snouty settings show` to print the value that snouty resolved for each setting, and the settings files it read.
+Run `snouty settings show` to print the value that snouty resolved for each setting, the settings files it read, and the credentials file.
 
 ### Trusting a project settings file
 

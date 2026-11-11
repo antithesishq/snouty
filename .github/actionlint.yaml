@@ -1,9 +1,10 @@
 # actionlint (https://github.com/rhysd/actionlint) checks every workflow in
 # .github/workflows. Two of them are generated: an edit there is lost or
-# rejected when the generator runs, so this file silences what we cannot fix.
+# rejected when the generator runs. This file silences what we cannot fix in
+# them, and what actionlint does not know yet.
 paths:
-  # actionlint 1.7.12 does not know the `$/` form of a same-repository action,
-  # which gh-actions-lock needs to lock the action's dependencies.
+  # actionlint 1.7.12 rejects the `$/` form of a local action, which
+  # gh-actions-lock needs. TODO: remove when actionlint accepts `$/`.
   .github/workflows/*.yml:
     ignore:
       - 'specifying action "\$/'

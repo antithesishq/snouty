@@ -107,9 +107,7 @@ jobs:
 
       - name: Spell Check Repo
         run: mise run lint:typos
-  # Checks that .github/workflows/actions.lock covers every action and that
-  # each locked commit is still where its tag points. The runner rejects a job
-  # whose actions the lockfile does not cover.
+  # The runner rejects a job whose actions the lockfile does not cover.
   lockfile:
     runs-on: ubuntu-slim
     env:
@@ -119,7 +117,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # The same pin as the actions:lock task in mise.toml.
+      # Keep this pin equal to the one in the actions:lock task in mise.toml.
       - run: gh extension install github/gh-actions-lock --pin v0.4.1
       - run: gh actions-lock --verify
   # Each step runs even when an earlier one fails, so one run reports every

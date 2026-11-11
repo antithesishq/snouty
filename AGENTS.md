@@ -282,7 +282,8 @@ its generator, as `.github/zizmor.yml` describes.
 
 The workflows pin each action to a tag, and `.github/workflows/actions.lock`
 records the commit of each tag. The local composite actions pin each action to
-a commit, because the lockfile cannot lock them. After you change a `uses:` or
+a commit: the lockfile locks them only through the workflows that use them, so
+zizmor requires the pin. After you change a `uses:` or
 add a workflow, run `mise run actions:lock`; the `lockfile` job in CI fails
 until you do. `mise run aw:compile` runs it for you.
 

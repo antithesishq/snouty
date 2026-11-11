@@ -15,7 +15,18 @@ stderr '.*ask Antithesis support.*'
 env GITHUB_ACTIONS=true
 ! snouty doctor
 stderr -literal 'add `id-token: write` to the job'
-! stderr 'snouty login. to sign in'
+! stderr 'run .snouty login. or set'
+env GITHUB_ACTIONS=
+
+# A blank ANTITHESIS_API_KEY comes first in the lookup and hides any other
+# credential, so doctor says to fix the variable, in CI or not.
+env GITHUB_ACTIONS=true
+env ANTITHESIS_API_KEY=' '
+! snouty doctor
+stderr '^  ✗ the API key is empty$'
+stderr -literal 'unset ANTITHESIS_API_KEY, or set it to a real API key'
+! stderr 'id-token'
+env ANTITHESIS_API_KEY=
 env GITHUB_ACTIONS=
 
 # --json emits a structured report on stdout and still exits non-zero when a
@@ -47,7 +58,7 @@ stderr '^      NOTE: read from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWOR
 stderr '^      NOTE: run `snouty login` to store an API key, then `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`$'
 ! stderr 'Using password credentials'
 ! stderr 'No credentials the API commands accept'
-! stderr 'snouty login. to sign in'
+! stderr 'run .snouty login. or set'
 # One source only, so doctor says nothing about a conflict.
 ! stderr 'hides a stored credential'
 ! snouty doctor --json
@@ -217,7 +228,7 @@ snouty doctor
 stderr '^  ⚠ the username and password are hiding your API key$'
 stderr '^      WARNING: snouty uses the username and password from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables, which `snouty runs` refuses$'
 stderr '^      NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in .+credentials\.toml$'
-! stderr 'snouty login. to sign in'
+! stderr 'run .snouty login. or set'
 ! stderr 'hides a stored credential'
 ! stderr 'Using password credentials'
 

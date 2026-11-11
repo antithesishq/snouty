@@ -296,9 +296,13 @@ fn authn_checks(sources: &[SourcedCredential], github_actions: bool) -> Vec<Chec
             let check = Check::fail(id, "the API key is empty")
                 .note(Level::Error, "an empty API key cannot authenticate");
             match credentials.tag() {
-                CredentialSource::Environment { .. } => {
-                    enrich_with_source(with_credential_remedy(check, github_actions), credentials)
-                }
+                // The environment comes first in the lookup, so a blank key
+                // there hides any login or OIDC token until it changes.
+                CredentialSource::Environment { .. } => enrich_with_source(check, credentials)
+                    .note(
+                        Level::Note,
+                        "unset ANTITHESIS_API_KEY, or set it to a real API key",
+                    ),
                 CredentialSource::Stored(store) => enrich_with_source(check, credentials)
                     .note(Level::Note, login_to_replace(store.profile())),
             }
@@ -352,20 +356,17 @@ fn missing_credentials_check(message: impl Into<String>, github_actions: bool) -
 
 /// The remedy notes for a credential shortfall. Every credential kind except
 /// username and password is accepted, so the notes name the ways to get one
-/// rather than naming an API key alone. `snouty login` cannot run in a
-/// GitHub Actions job, so there the notes name the OIDC permission instead.
+/// rather than naming an API key alone.
 fn with_credential_remedy(check: Check, github_actions: bool) -> Check {
-    let first = if github_actions {
-        "add `id-token: write` to the job's `permissions` to use GitHub Actions OIDC"
-    } else {
-        "run `snouty login` to sign in and store credentials"
-    };
-    let second = if github_actions {
-        "or set ANTITHESIS_API_KEY from a secret; ask Antithesis support for an API key if you don't have one"
-    } else {
-        "or set ANTITHESIS_API_KEY; ask Antithesis support for an API key if you don't have one"
-    };
-    check.note(Level::Note, first).note(Level::Note, second)
+    check
+        .note(
+            Level::Note,
+            crate::auth::no_credentials_suggestion(github_actions),
+        )
+        .note(
+            Level::Note,
+            "ask Antithesis support for an API key if you don't have one",
+        )
 }
 
 /// The single check for a username and password that hide a credential the
@@ -518,7 +519,7 @@ fn collect_checks(settings: &Settings) -> Vec<Check> {
     checks.push(repository_check(settings.repository()));
 
     // Authentication (synchronous-only by design).
-    let github_actions = crate::auth::in_github_actions().unwrap_or(false);
+    let github_actions = crate::auth::in_github_actions();
     match AuthenticationInfo::available_ambient_credentials(settings.profile()) {
         Ok(sources) => checks.extend(authn_checks(&sources, github_actions)),
         Err(err) => checks.push(missing_credentials_check(err.to_string(), github_actions)),

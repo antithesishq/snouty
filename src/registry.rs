@@ -163,9 +163,10 @@ fn first_with_own_credential(
         matched = true;
     }
     if matched {
-        return Err(user_error(
-            "no credential found; run `snouty login` or set ANTITHESIS_API_KEY",
-        ));
+        return Err(user_error(format!(
+            "no credential found; {}",
+            crate::auth::no_credentials_suggestion(crate::auth::in_github_actions())
+        )));
     }
     Ok(None)
 }

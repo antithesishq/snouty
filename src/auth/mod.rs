@@ -49,12 +49,14 @@ pub(crate) const NO_CREDENTIALS_MESSAGE: &str = "No Antithesis credentials found
 
 /// Whether snouty runs in a GitHub Actions job, where `snouty login` cannot
 /// run. A job without the `id-token: write` permission has no OIDC token, so
-/// its first error names that permission.
-pub(crate) fn in_github_actions() -> Result<bool> {
-    Ok(env::var("GITHUB_ACTIONS")?.as_deref() == Some("true"))
+/// its first error names that permission. A value that is not valid Unicode
+/// is not `true`, so it needs no error.
+pub(crate) fn in_github_actions() -> bool {
+    std::env::var_os("GITHUB_ACTIONS").is_some_and(|v| v == "true")
 }
 
-/// The next step when no credential is found.
+/// The next step when no credential is found. Every no-credential message
+/// uses it, so that each one changes the same way in GitHub Actions.
 pub(crate) fn no_credentials_suggestion(github_actions: bool) -> &'static str {
     if github_actions {
         "add `id-token: write` to the job's `permissions` to use GitHub Actions OIDC, \
@@ -278,7 +280,7 @@ impl AuthenticationInfo {
         match Self::find(profile, Fallback::DefaultProfile)? {
             Some(found) => Ok(apply_password_policy(found, policy)?.untag()),
             None => Err(user_error(NO_CREDENTIALS_MESSAGE)
-                .suggestion(no_credentials_suggestion(in_github_actions()?))),
+                .suggestion(no_credentials_suggestion(in_github_actions()))),
         }
     }
 

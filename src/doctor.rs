@@ -216,10 +216,6 @@ impl Check {
     }
 }
 
-/// What doctor prints for the profile when none is selected: no profile means
-/// snouty uses the default one, not that a value is missing.
-const DEFAULT_PROFILE: &str = "default";
-
 /// The full doctor report, as emitted by `--json`. The resolved settings
 /// are `settings show`'s job.
 #[derive(Serialize)]
@@ -428,7 +424,7 @@ fn login_to_replace(profile: Option<&str>) -> String {
 /// `snouty login` for `profile`. A bare `snouty login` writes the default
 /// profile, so a named profile is passed on.
 fn login_command(profile: Option<&str>) -> String {
-    match profile.filter(|p| *p != DEFAULT_PROFILE) {
+    match profile {
         Some(p) => format!("`snouty login --profile {p}`"),
         None => "`snouty login`".to_owned(),
     }
@@ -458,12 +454,11 @@ fn describe_source(source: &CredentialSource) -> String {
             variables.join("` and `"),
             if variables.len() == 1 { "" } else { "s" }
         ),
-        CredentialSource::Stored(CredentialStore::CredentialsFile { profile, .. }) => {
-            match profile.as_deref().filter(|p| *p != DEFAULT_PROFILE) {
-                Some(p) => format!("the `{p}` profile of the credentials file"),
-                None => "the credentials file".to_owned(),
-            }
-        }
+        CredentialSource::Stored(CredentialStore::CredentialsFile { profile, .. }) => match profile
+        {
+            Some(p) => format!("the `{p}` profile of the credentials file"),
+            None => "the credentials file".to_owned(),
+        },
         CredentialSource::Stored(CredentialStore::Keychain { profile }) => format!(
             "system keychain entry named [{}]",
             keychain_entry_name(profile.as_deref())
@@ -872,7 +867,11 @@ mod tests {
                 .join(" ")
         };
         assert_eq!(note(None), "read from the credentials file");
-        assert_eq!(note(Some("default")), "read from the credentials file");
+        // `--profile default` selects `[profile.default]`, not the top level.
+        assert_eq!(
+            note(Some("default")),
+            "read from the `default` profile of the credentials file"
+        );
         assert_eq!(
             note(Some("prod")),
             "read from the `prod` profile of the credentials file"
@@ -1369,7 +1368,7 @@ mod tests {
         assert_eq!(note(None), "run `snouty login` to fix authentication");
         assert_eq!(
             note(Some("default")),
-            "run `snouty login` to fix authentication"
+            "run `snouty login --profile default` to fix authentication"
         );
         assert_eq!(
             note(Some("staging")),

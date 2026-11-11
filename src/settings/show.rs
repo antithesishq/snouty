@@ -3,7 +3,8 @@ use std::io::Write;
 use color_eyre::eyre::Result;
 use serde_json::{Map, Value, json};
 
-use super::Settings;
+use super::{Settings, SettingsFile, SettingsFileType};
+use crate::auth::credentials_file_path;
 use crate::features::{self, Feature};
 use crate::render::{render_kv, sanitize};
 use crate::stdio;
@@ -57,15 +58,30 @@ fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, 
     rows
 }
 
+/// The settings files that snouty read, then the credentials file when it
+/// exists, so that one command says where `snouty login` stored a credential.
+fn files(settings: &Settings) -> Vec<SettingsFile> {
+    let credentials = credentials_file_path()
+        .filter(|path| path.is_file())
+        .map(|path| SettingsFile::new(SettingsFileType::Credentials, &path));
+    settings
+        .files()
+        .iter()
+        .cloned()
+        .chain(credentials)
+        .collect()
+}
+
 pub fn cmd_settings_show(settings: &Settings, json: bool) -> Result<()> {
     let rows = rows(settings, &features::enabled());
+    let files = files(settings);
     let mut stdout = stdio::stdout();
     if json {
         let object: Map<String, Value> = rows
             .into_iter()
             .map(|(name, value, _)| (name.to_owned(), value))
             .collect();
-        let report = json!({ "settings": object, "files": settings.files() });
+        let report = json!({ "settings": object, "files": files });
         writeln!(stdout, "{}", serde_json::to_string_pretty(&report)?)?;
     } else {
         let text: Vec<(&str, String)> = rows
@@ -73,9 +89,8 @@ pub fn cmd_settings_show(settings: &Settings, json: bool) -> Result<()> {
             .map(|(name, _, text)| (name, text))
             .collect();
         write!(stdout, "{}", render_kv(&text, 0, usize::MAX))?;
-        let files = settings.files();
         if files.is_empty() {
-            writeln!(stdout, "\nsettings files: none")?;
+            writeln!(stdout, "\nfiles: none")?;
         } else {
             let rows = files
                 .iter()

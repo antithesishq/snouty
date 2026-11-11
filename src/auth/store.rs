@@ -109,11 +109,17 @@ impl CredentialStore {
     /// The credentials file for `profile`, or `None` when the global settings
     /// dir is unknown.
     pub(super) fn credentials_file(profile: Option<&str>) -> Option<Self> {
-        try_get_credentials_file_path().map(|(_dir, path)| Self::CredentialsFile {
+        credentials_file_path().map(|path| Self::CredentialsFile {
             path,
             profile: profile.map(str::to_owned),
         })
     }
+}
+
+/// Where the credentials file is, or `None` when the global settings dir is
+/// unknown. The file need not exist.
+pub(crate) fn credentials_file_path() -> Option<PathBuf> {
+    try_get_credentials_file_path().map(|(_dir, path)| path)
 }
 
 fn try_get_credentials_file_path() -> Option<(PathBuf, PathBuf)> {

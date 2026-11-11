@@ -2120,9 +2120,9 @@ def contains_all(*needles: str):
 
 
 def settings_show_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-    # A machine with no settings file prints "settings files: none" instead of
-    # the table.
-    ok, detail = expect_message("TYPE", "settings files: none")(sr, reg)
+    # A machine with no settings or credentials file prints "files: none"
+    # instead of the table.
+    ok, detail = expect_message("TYPE", "files: none")(sr, reg)
     if not ok:
         return (ok, detail)
     if not re.search(
@@ -3718,7 +3718,8 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "settings files, before I run a command against my tenant.",
             "settings show prints one aligned row per setting, with `not set` (or the default) "
             "for a setting that is not configured, and a size with its unit, then a TYPE/PATH "
-            "table of the settings files it read, project before global.",
+            "table of the files it read: project settings, global settings, then the "
+            "credentials file when it exists.",
             ["settings", "show"],
             settings_show_check,
             json_capable=False,

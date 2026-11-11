@@ -1,7 +1,8 @@
 # snouty settings show
 #
 # Prints each setting with the value snouty resolved for it, one row each, on
-# stdout, then a table of the settings files that snouty read.
+# stdout, then a table of the settings files that snouty read and the
+# credentials file.
 # --json prints both as one JSON object: `settings`, with null for a setting
 # that is not set and has no default, and `files`.
 
@@ -15,7 +16,7 @@ stdout '^https_proxy +not set$'
 stdout '^container_engine +auto-detect$'
 stdout '^update_channel +stable$'
 stdout '^api_cache_max_file_size +10\.0 MiB$'
-stdout '^settings files: none$'
+stdout '^files: none$'
 
 # 2. Values resolve through the usual chain. The base URL derives from the
 #    tenant. A size prints in binary units.
@@ -38,7 +39,12 @@ set-env XDG_CONFIG_HOME ${WORK}/cfg
 snouty --settings chosen.toml settings show
 stdout '(?s)^project +/[^\n]*/chosen\.toml\nglobal +/[^\n]*/cfg/snouty/settings\.toml$'
 
-# 4. --json prints the settings, keyed by setting, and the files. A size is a
+# 4. The credentials file follows the settings files, when it exists.
+cp credentials.toml cfg/snouty/credentials.toml
+snouty --settings chosen.toml settings show
+stdout '(?s)^global +/[^\n]*/cfg/snouty/settings\.toml\ncredentials +/[^\n]*/cfg/snouty/credentials\.toml$'
+
+# 5. --json prints the settings, keyed by setting, and the files. A size is a
 #    number of bytes.
 snouty --json --settings chosen.toml settings show
 stdout '"settings": \{'
@@ -46,10 +52,12 @@ stdout '"tenant": "acme"'
 stdout '"repository": "global-repo"'
 stdout '"profile": null'
 stdout '"api_cache_max_file_size": 1000'
-stdout '(?s)"files": \[.*"type": "project",\n +"path": "/[^\n]*/chosen\.toml".*"type": "global",\n +"path": "/[^\n]*/cfg/snouty/settings\.toml"'
+stdout '(?s)"files": \[.*"type": "project",\n +"path": "/[^\n]*/chosen\.toml".*"type": "global",\n +"path": "/[^\n]*/cfg/snouty/settings\.toml".*"type": "credentials",\n +"path": "/[^\n]*/cfg/snouty/credentials\.toml"'
 
 -- cfg/snouty/settings.toml --
 repository = "global-repo"
+-- credentials.toml --
+[default]
 -- chosen.toml --
 [profile.staging]
 repository = "registry.example.com/staging"

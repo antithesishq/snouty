@@ -5223,11 +5223,16 @@ def build_mock_tenant_stories() -> list[Story]:
             "GitHub Actions refuses the job an OIDC token",
             "My GitHub Actions job signs in with OIDC, but GitHub refuses to give it a token. "
             "I want doctor to tell me what is wrong.",
-            "doctor fails on the credential, says that snouty could not get a GitHub Actions "
-            "OIDC token, and does not blame the network or the tenant.",
+            "doctor fails on the credential, says that GitHub Actions refused to issue an "
+            "OIDC token, says to rerun the job, and does not blame the network or the "
+            "tenant.",
             ["doctor"],
             doctor_check(
-                contains=("could not get a GitHub Actions OIDC token",), ok=False
+                contains=(
+                    "GitHub Actions refused to issue an OIDC token",
+                    "rerun the job",
+                ),
+                ok=False,
             ),
             MockTenantSpec(actions=ActionsJob.REJECTS_REQUEST),
         ),

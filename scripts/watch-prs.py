@@ -83,9 +83,6 @@ GH_FAILED_POLLS = 20
 # In a PR's seen events once its merge or close has printed.
 CLOSED = "closed"
 
-# Failed write-access lookups in a row, by event key.
-lookup_failures: dict[str, int] = {}
-
 # The check verdict of each PR, and when the polls began to agree on it.
 verdict_since: dict[int, tuple[str, float]] = {}
 # How long the polls must agree on a verdict: the poll interval.
@@ -154,12 +151,13 @@ ALLOWED_ACCOUNT_IDS = {
 
 
 def trusted(
-    slug: str, user: dict[str, Any], write_access: dict[int, bool]
+    slug: str, user: dict[str, Any], write_access: dict[int, bool | None]
 ) -> bool | None:
     """Whether an account is allowlisted or can write to the repo. None
     means the lookup failed: the caller retries on the next poll.
     `write_access` caches lookups by account id for one poll only, so a
-    revoked writer loses trust at the next poll.
+    revoked writer loses trust at the next poll, and an author whose lookup
+    fails costs one call per poll.
     """
     uid = user.get("id")
     if uid in ALLOWED_ACCOUNT_IDS:
@@ -176,6 +174,7 @@ def trusted(
             ]
         )
         if perm is None:
+            write_access[uid] = None
             return None
         # The lookup goes by login; the id check proves the login still
         # names the same account.
@@ -329,7 +328,7 @@ def poll_pr(
             for rc in paginate(f"repos/{slug}/pulls/{pr}/comments")
         ]
     )
-    write_access: dict[int, bool] = {}
+    write_access: dict[int, bool | None] = {}
     for key, item, line in events:
         if key in seen:
             continue
@@ -338,19 +337,16 @@ def poll_pr(
             continue
         ok = trusted(slug, item.get("user") or {}, write_access)
         if ok is None:
-            # A short outage clears on a later poll. A lookup that fails on
-            # every poll would hide the event for good, so after
-            # GH_FAILED_POLLS failures it prints, and the reader treats it as
-            # untrusted.
-            lookup_failures[key] = lookup_failures.get(key, 0) + 1
-            if lookup_failures[key] < GH_FAILED_POLLS:
-                continue
-            line = f"{line} [write access unknown]"
-        elif not ok:
-            line = f"{line} [no write access]"
-        lookup_failures.pop(key, None)
+            # The event prints at once, as untrusted, so that a lookup that
+            # fails for good hides nothing. The watcher keeps trying, and
+            # prints the event again when a lookup gives its real trust.
+            if f"unknown:{key}" not in seen:
+                seen.add(f"unknown:{key}")
+                emit(f"{line} [write access unknown]")
+            continue
         seen.add(key)
-        emit(line)
+        seen.discard(f"unknown:{key}")
+        emit(line if ok else f"{line} [no write access]")
 
     failure_results = {
         "failure",

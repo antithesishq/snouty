@@ -26,25 +26,51 @@ pub fn user_agent_with(agent: Option<&str>) -> String {
 
 const AGENT_HINT_MAX_LEN: usize = 64;
 
-/// The variable each harness exports to the commands it runs, paired with
-/// the harness name. Each row is verified in the harness's own documentation
-/// or source. Agents come before IDE terminals so an agent that runs inside an
-/// IDE wins.
-const AGENT_MARKERS: &[(&str, &str)] = &[
-    ("CLAUDECODE", "claude-code"),
-    ("CODEX_THREAD_ID", "codex"),
-    ("CODEX_SANDBOX", "codex"),
-    ("GEMINI_CLI", "gemini"),
-    ("OPENCODE", "opencode"),
-    ("PI_CODING_AGENT", "pi"),
-    ("AUGMENT_AGENT", "auggie"),
-    ("GOOSE_TERMINAL", "goose"),
-    ("AGENT_CONTEXT_OUT", "kiro"),
-    ("JUNIE_DATA", "junie"),
-    ("JUNIE_SHIM_PATH", "junie"),
-    ("CURSOR_AGENT", "cursor"),
-    ("COPILOT_AGENT", "copilot"),
-    ("CLINE_ACTIVE", "cline"),
+/// A harness and the variables it exports to the commands it runs. Each
+/// variable is verified in the harness's own documentation or source, or
+/// observed in its environment.
+struct Harness {
+    name: &'static str,
+    /// Any one of these marks the harness.
+    markers: &'static [&'static str],
+    version: Option<&'static str>,
+    /// The first of these that is set holds the session ID.
+    session_id: &'static [&'static str],
+}
+
+impl Harness {
+    const fn new(name: &'static str, markers: &'static [&'static str]) -> Self {
+        Self {
+            name,
+            markers,
+            version: None,
+            session_id: &[],
+        }
+    }
+}
+
+/// Agents come before IDE terminals so an agent that runs inside an IDE
+/// wins. Claude Code puts its version in `AI_AGENT`.
+const HARNESSES: &[Harness] = &[
+    Harness {
+        session_id: &["CLAUDE_CODE_SESSION_ID"],
+        ..Harness::new("claude-code", &["CLAUDECODE"])
+    },
+    Harness {
+        version: Some("CODEX_VERSION"),
+        session_id: &["CODEX_THREAD_ID", "CODEX_SESSION_ID"],
+        ..Harness::new("codex", &["CODEX_THREAD_ID", "CODEX_SANDBOX"])
+    },
+    Harness::new("gemini", &["GEMINI_CLI"]),
+    Harness::new("opencode", &["OPENCODE"]),
+    Harness::new("pi", &["PI_CODING_AGENT"]),
+    Harness::new("auggie", &["AUGMENT_AGENT"]),
+    Harness::new("goose", &["GOOSE_TERMINAL"]),
+    Harness::new("kiro", &["AGENT_CONTEXT_OUT"]),
+    Harness::new("junie", &["JUNIE_DATA", "JUNIE_SHIM_PATH"]),
+    Harness::new("cursor", &["CURSOR_AGENT"]),
+    Harness::new("copilot", &["COPILOT_AGENT"]),
+    Harness::new("cline", &["CLINE_ACTIVE"]),
 ];
 
 /// Identify the AI agent harness that runs snouty, if any. `AI_AGENT` wins;
@@ -64,18 +90,6 @@ pub struct Agent {
     pub version: Option<String>,
     pub session_id: Option<String>,
 }
-
-/// The variables that hold the version and the session ID of each harness,
-/// as observed in the harness's environment. The first session variable that
-/// is set wins. Claude Code puts its version in `AI_AGENT`.
-const AGENT_VARS: &[(&str, Option<&str>, &[&str])] = &[
-    ("claude-code", None, &["CLAUDE_CODE_SESSION_ID"]),
-    (
-        "codex",
-        Some("CODEX_VERSION"),
-        &["CODEX_THREAD_ID", "CODEX_SESSION_ID"],
-    ),
-];
 
 /// Identify the AI agent harness that runs snouty, with its version and
 /// session ID when the harness exports them. `AI_AGENT` has the form
@@ -99,10 +113,10 @@ pub fn detect_agent(env: &impl Fn(&str) -> Option<String>) -> Option<Agent> {
         })
         .or_else(|| Some((marker_agent(env)?.to_owned(), None)))?;
     let read = |var: &str| env(var).and_then(|raw| sanitize_agent_hint(&raw));
-    let vars = AGENT_VARS.iter().find(|(agent, ..)| *agent == name);
-    let version = version.or_else(|| read(vars?.1?));
+    let harness = HARNESSES.iter().find(|harness| harness.name == name);
+    let version = version.or_else(|| read(harness?.version?));
     let session_id =
-        vars.and_then(|(.., session_vars)| session_vars.iter().find_map(|var| read(var)));
+        harness.and_then(|harness| harness.session_id.iter().find_map(|var| read(var)));
     Some(Agent {
         name,
         version,
@@ -110,12 +124,13 @@ pub fn detect_agent(env: &impl Fn(&str) -> Option<String>) -> Option<Agent> {
     })
 }
 
-/// The name of the first harness in [`AGENT_MARKERS`] whose variable is set.
+/// The name of the first harness in [`HARNESSES`] that one of its markers
+/// marks.
 fn marker_agent(env: impl Fn(&str) -> Option<String>) -> Option<&'static str> {
-    AGENT_MARKERS
+    HARNESSES
         .iter()
-        .find(|(var, _)| env(var).is_some())
-        .map(|(_, name)| *name)
+        .find(|harness| harness.markers.iter().any(|var| env(var).is_some()))
+        .map(|harness| harness.name)
 }
 
 /// The User-Agent comment grammar reserves `;`, `(` and `)`, so only

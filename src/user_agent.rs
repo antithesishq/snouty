@@ -1,5 +1,5 @@
-//! The User-Agent header snouty sends, and the AI agent harness detection
-//! that feeds it.
+//! The User-Agent header snouty sends, and the detection of the AI agent
+//! harness that runs snouty.
 
 use crate::env;
 
@@ -54,12 +54,68 @@ const AGENT_MARKERS: &[(&str, &str)] = &[
 fn agent_hint(env: impl Fn(&str) -> Option<String>) -> Option<String> {
     env("AI_AGENT")
         .and_then(|raw| sanitize_agent_hint(&raw))
-        .or_else(|| {
-            AGENT_MARKERS
-                .iter()
-                .find(|(var, _)| env(var).is_some())
-                .map(|(_, name)| name.to_string())
+        .or_else(|| marker_agent(env).map(str::to_owned))
+}
+
+/// The AI agent harness that runs snouty.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Agent {
+    pub name: String,
+    pub version: Option<String>,
+    pub session_id: Option<String>,
+}
+
+/// The variables that hold the version and the session ID of each harness,
+/// as observed in the harness's environment. The first session variable that
+/// is set wins. Claude Code puts its version in `AI_AGENT`.
+const AGENT_VARS: &[(&str, Option<&str>, &[&str])] = &[
+    ("claude-code", None, &["CLAUDE_CODE_SESSION_ID"]),
+    (
+        "codex",
+        Some("CODEX_VERSION"),
+        &["CODEX_THREAD_ID", "CODEX_SESSION_ID"],
+    ),
+];
+
+/// Identify the AI agent harness that runs snouty, with its version and
+/// session ID when the harness exports them. `AI_AGENT` has the form
+/// `<name>_<version>_<kind>`, with dashes in the version, for example
+/// `claude-code_2-1-267_agent`, or is only a name, such as `pi`.
+pub fn detect_agent(env: &impl Fn(&str) -> Option<String>) -> Option<Agent> {
+    let (name, version) = env("AI_AGENT")
+        .and_then(|raw| sanitize_agent_hint(&raw))
+        .and_then(|hint| {
+            let mut fields = hint.split('_');
+            let name = fields.next().filter(|name| !name.is_empty())?.to_owned();
+            let version = fields
+                .next()
+                .filter(|v| v.starts_with(|c: char| c.is_ascii_digit()))
+                .filter(|v| {
+                    v.chars()
+                        .all(|c| c.is_ascii_digit() || matches!(c, '-' | '.'))
+                })
+                .map(|v| v.replace('-', "."));
+            Some((name, version))
         })
+        .or_else(|| Some((marker_agent(env)?.to_owned(), None)))?;
+    let read = |var: &str| env(var).and_then(|raw| sanitize_agent_hint(&raw));
+    let vars = AGENT_VARS.iter().find(|(agent, ..)| *agent == name);
+    let version = version.or_else(|| read(vars?.1?));
+    let session_id =
+        vars.and_then(|(.., session_vars)| session_vars.iter().find_map(|var| read(var)));
+    Some(Agent {
+        name,
+        version,
+        session_id,
+    })
+}
+
+/// The name of the first harness in [`AGENT_MARKERS`] whose variable is set.
+fn marker_agent(env: impl Fn(&str) -> Option<String>) -> Option<&'static str> {
+    AGENT_MARKERS
+        .iter()
+        .find(|(var, _)| env(var).is_some())
+        .map(|(_, name)| *name)
 }
 
 /// The User-Agent comment grammar reserves `;`, `(` and `)`, so only
@@ -118,6 +174,77 @@ mod tests {
             Some("claude-code")
         );
         assert_eq!(agent_hint(env_of(&[])), None);
+    }
+
+    fn agent(name: &str, version: Option<&str>, session_id: Option<&str>) -> Agent {
+        Agent {
+            name: name.to_owned(),
+            version: version.map(str::to_owned),
+            session_id: session_id.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn detect_agent_reads_name_version_and_session() {
+        let env = env_of(&[
+            ("AI_AGENT", "claude-code_2-1-267_agent"),
+            ("CLAUDECODE", "1"),
+            (
+                "CLAUDE_CODE_SESSION_ID",
+                "d83903be-202d-46c7-8831-50dfd8cdf5bc",
+            ),
+        ]);
+        assert_eq!(
+            detect_agent(&env),
+            Some(agent(
+                "claude-code",
+                Some("2.1.267"),
+                Some("d83903be-202d-46c7-8831-50dfd8cdf5bc")
+            ))
+        );
+        let env = env_of(&[
+            ("CODEX_THREAD_ID", "019a-thread"),
+            ("CODEX_VERSION", "0.98.0"),
+            ("CODEX_SESSION_ID", "019a-session"),
+        ]);
+        assert_eq!(
+            detect_agent(&env),
+            Some(agent("codex", Some("0.98.0"), Some("019a-thread")))
+        );
+        let env = env_of(&[
+            ("CODEX_SANDBOX", "seatbelt"),
+            ("CODEX_SESSION_ID", "019a-session"),
+        ]);
+        assert_eq!(
+            detect_agent(&env),
+            Some(agent("codex", None, Some("019a-session")))
+        );
+    }
+
+    #[test]
+    fn detect_agent_without_version_or_session() {
+        assert_eq!(
+            detect_agent(&env_of(&[("AI_AGENT", "pi")])),
+            Some(agent("pi", None, None))
+        );
+        // A second field that is not a version is not one.
+        assert_eq!(
+            detect_agent(&env_of(&[("AI_AGENT", "acme_beta")])),
+            Some(agent("acme", None, None))
+        );
+        // A session variable of another harness is not read.
+        assert_eq!(
+            detect_agent(&env_of(&[
+                ("GEMINI_CLI", "1"),
+                ("CLAUDE_CODE_SESSION_ID", "abc")
+            ])),
+            Some(agent("gemini", None, None))
+        );
+        assert_eq!(
+            detect_agent(&env_of(&[("AI_AGENT", "_1-0"), ("CLAUDECODE", "1")])),
+            Some(agent("claude-code", None, None))
+        );
+        assert_eq!(detect_agent(&env_of(&[])), None);
     }
 
     #[test]

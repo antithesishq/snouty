@@ -1,7 +1,5 @@
 //! The detection of the AI agent harness that runs snouty.
 
-const AGENT_HINT_MAX_LEN: usize = 64;
-
 /// A harness and the variables it exports to the commands it runs. Each
 /// variable is verified in the harness's own documentation or source, or
 /// observed in its environment.
@@ -57,6 +55,26 @@ const HARNESSES: &[Harness] = &[
     Harness::new("copilot", &["COPILOT_AGENT"]),
     Harness::new("cline", &["CLINE_ACTIVE"]),
 ];
+
+fn marker_harness(env: &impl Fn(&str) -> Option<String>) -> Option<&'static Harness> {
+    HARNESSES
+        .iter()
+        .find(|harness| harness.markers.iter().any(|var| env(var).is_some()))
+}
+
+const AGENT_HINT_MAX_LEN: usize = 64;
+
+/// The User-Agent comment grammar reserves `;`, `(` and `)`, so only
+/// `[A-Za-z0-9._/-]` survives, and the result is capped at
+/// [`AGENT_HINT_MAX_LEN`] so it cannot bloat the request.
+fn sanitize_hint(raw: &str) -> Option<String> {
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
+        .take(AGENT_HINT_MAX_LEN)
+        .collect();
+    (!cleaned.is_empty()).then_some(cleaned)
+}
 
 /// The agent hint for the User-Agent header: the sanitized `AI_AGENT`, else
 /// the name of the harness that a marker variable marks. `env` replaces
@@ -132,24 +150,6 @@ pub fn detect(env: &impl Fn(&str) -> Option<String>) -> Option<Agent> {
     })
 }
 
-fn marker_harness(env: &impl Fn(&str) -> Option<String>) -> Option<&'static Harness> {
-    HARNESSES
-        .iter()
-        .find(|harness| harness.markers.iter().any(|var| env(var).is_some()))
-}
-
-/// The User-Agent comment grammar reserves `;`, `(` and `)`, so only
-/// `[A-Za-z0-9._/-]` survives, and the result is capped at
-/// [`AGENT_HINT_MAX_LEN`] so it cannot bloat the request.
-fn sanitize_hint(raw: &str) -> Option<String> {
-    let cleaned: String = raw
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
-        .take(AGENT_HINT_MAX_LEN)
-        .collect();
-    (!cleaned.is_empty()).then_some(cleaned)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,6 +191,30 @@ mod tests {
             Some("claude-code")
         );
         assert_eq!(hint(&env_of(&[])), None);
+    }
+
+    #[test]
+    fn hint_is_capped() {
+        let long = "x".repeat(500);
+        let hint = hint(&env_of(&[("AI_AGENT", &long)])).unwrap();
+        assert_eq!(hint.len(), AGENT_HINT_MAX_LEN);
+    }
+
+    /// Whatever the environment holds, the hint that reaches the wire fits
+    /// the User-Agent comment grammar and the length cap, and a hint that
+    /// already passed is left alone.
+    #[hegel::test]
+    fn sanitize_hint_is_safe_and_idempotent(tc: hegel::TestCase) {
+        let raw = tc.draw(hegel::generators::text());
+        let Some(once) = sanitize_hint(&raw) else {
+            return;
+        };
+        assert!(once.len() <= AGENT_HINT_MAX_LEN);
+        assert!(
+            once.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
+        );
+        assert_eq!(sanitize_hint(&once).as_deref(), Some(once.as_str()));
     }
 
     fn agent(name: &str, version: Option<&str>, session_id: Option<&str>) -> Agent {
@@ -309,29 +333,5 @@ mod tests {
             Some(agent("claude-code", Some("2.1.267"), None))
         );
         assert_eq!(detect(&env_of(&[])), None);
-    }
-
-    #[test]
-    fn hint_is_capped() {
-        let long = "x".repeat(500);
-        let hint = hint(&env_of(&[("AI_AGENT", &long)])).unwrap();
-        assert_eq!(hint.len(), AGENT_HINT_MAX_LEN);
-    }
-
-    /// Whatever the environment holds, the hint that reaches the wire fits
-    /// the User-Agent comment grammar and the length cap, and a hint that
-    /// already passed is left alone.
-    #[hegel::test]
-    fn sanitize_hint_is_safe_and_idempotent(tc: hegel::TestCase) {
-        let raw = tc.draw(hegel::generators::text());
-        let Some(once) = sanitize_hint(&raw) else {
-            return;
-        };
-        assert!(once.len() <= AGENT_HINT_MAX_LEN);
-        assert!(
-            once.chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
-        );
-        assert_eq!(sanitize_hint(&once).as_deref(), Some(once.as_str()));
     }
 }

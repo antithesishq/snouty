@@ -738,8 +738,13 @@ pub async fn cmd_doctor(
 
         // A client that fails to build (bad proxy URL or extra header) skips
         // the API check too. Skip the probe when the tenant could be
-        // unreachable: the probe would only wait out its timeout.
+        // unreachable: the probe would only wait out its timeout. Skip it
+        // when a credential works, too: that user does not need OAuth login.
+        let credential_works = checks
+            .iter()
+            .any(|c| c.id == CheckId::Api && c.status == Status::Ok);
         if !api_failed
+            && !credential_works
             && let Some(base_url) = settings.base_url()
             && let Ok(client) = HttpClient::new(settings, verbose)
         {

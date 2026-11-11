@@ -153,6 +153,7 @@ stderr '.*could not connect to 127.0.0.1.*'
 [!staging] env ANTITHESIS_PASSWORD=
 [!staging] ! snouty doctor
 [!staging] stderr '^  ✗ the sign-in expired and could not be renewed$'
+[!staging] stderr '^      ERROR: the tenant answered 401 Unauthorized$'
 [!staging] stderr '^      NOTE: run `snouty login` to sign in again$'
 [!staging] ! stderr 'Antithesis API'
 [!staging] ! stderr 'auth/cli/refresh'
@@ -181,7 +182,8 @@ set-env ACTIONS_ID_TOKEN_REQUEST_URL http://127.0.0.1:1/token?api-version=2.0
 set-env ACTIONS_ID_TOKEN_REQUEST_TOKEN ${FAKE_OIDC_REQUEST_TOKEN}
 ! snouty doctor
 stderr '^  ✗ GitHub Actions did not issue an OIDC token$'
-stderr '^      NOTE: rerun the job: the GitHub Actions token endpoint failed$'
+stderr '^      ERROR: the GitHub Actions token endpoint failed: '
+stderr '^      NOTE: rerun the job$'
 ! stderr 'Antithesis API'
 env ACTIONS_ID_TOKEN_REQUEST_URL=
 env ACTIONS_ID_TOKEN_REQUEST_TOKEN=

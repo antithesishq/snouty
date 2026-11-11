@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-/// Which of snouty's files a file is.
+/// Which file a [`SettingsFile`] is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SettingsFileType {
@@ -30,7 +30,7 @@ impl fmt::Display for SettingsFileType {
     }
 }
 
-/// A file that snouty read.
+/// A file that `settings show` lists.
 #[derive(Clone, Debug, Serialize)]
 pub struct SettingsFile {
     #[serde(rename = "type")]

@@ -1,7 +1,6 @@
 mod support;
 
 use predicates::prelude::*;
-use snouty::features::UNSTABLE_FEATURES_VAR_NAME;
 use support::*;
 
 #[test]
@@ -62,7 +61,6 @@ fn launch_with_typed_flags() {
     let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     snouty_with_mock(&mock_url)
-        .env(UNSTABLE_FEATURES_VAR_NAME, "teams")
         .args([
             "launch",
             "--launcher",
@@ -194,7 +192,6 @@ fn launch_param_cannot_override_typed_flag() {
     let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);
 
     snouty_with_mock(&mock_url)
-        .env(UNSTABLE_FEATURES_VAR_NAME, "teams")
         .args([
             "launch",
             "--launcher",

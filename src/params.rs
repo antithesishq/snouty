@@ -60,9 +60,6 @@ pub const ANT_GITHUB_CALLBACK_URL: &str = "antithesis.integrations.github.callba
 pub const ANT_GITHUB_TOKEN: &str = "antithesis.integrations.github.token";
 /// Prefix of the user-defined `attrs.<name>` parameters the server records on a run.
 pub const ATTRS_PREFIX: &str = "attrs.";
-pub const ATTRS_AGENT: &str = "attrs.agent";
-pub const ATTRS_AGENT_VERSION: &str = "attrs.agent_version";
-pub const ATTRS_AGENT_SESSION_ID: &str = "attrs.agent_session_id";
 /// Prefix of the version control params.
 pub const VCS_PREFIX: &str = "vcs.";
 pub const VCS_REPO_TYPE: &str = "vcs.repo_type";

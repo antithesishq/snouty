@@ -11,10 +11,10 @@ use log::debug;
 use serde::Deserialize;
 
 use crate::params::{
-    ANT_GITHUB_CALLBACK_URL, ANT_GITHUB_TOKEN, ANT_TEST_NAME, ATTRS_AGENT, ATTRS_AGENT_SESSION_ID,
-    ATTRS_AGENT_VERSION, Params, RUN_CALLER_TYPE, RUN_CREATOR_NAME, RUN_CRON_SCHEDULE, VCS_PR_ID,
-    VCS_PR_LINK, VCS_PR_OWNER, VCS_PR_TITLE, VCS_REPO_BRANCH, VCS_REPO_NAME, VCS_REPO_OWNER,
-    VCS_REPO_TYPE, VCS_VERSION_ID, VCS_VERSION_LINK,
+    ANT_GITHUB_CALLBACK_URL, ANT_GITHUB_TOKEN, ANT_TEST_NAME, Params, RUN_CALLER_TYPE,
+    RUN_CREATOR_NAME, RUN_CRON_SCHEDULE, VCS_PR_ID, VCS_PR_LINK, VCS_PR_OWNER, VCS_PR_TITLE,
+    VCS_REPO_BRANCH, VCS_REPO_NAME, VCS_REPO_OWNER, VCS_REPO_TYPE, VCS_VERSION_ID,
+    VCS_VERSION_LINK,
 };
 
 const GITHUB_TOKEN_VAR_NAME: &str = "ANTITHESIS_GITHUB_TOKEN";
@@ -42,12 +42,12 @@ fn detect_with(dir: &Path, env: impl Fn(&str) -> Option<String>) -> Params {
     let checkout = read_git(dir, &mut params);
     read_github_actions(&env, checkout.as_deref(), &mut params);
     if let Some(agent) = crate::agent::detect(&env) {
-        params.insert(ATTRS_AGENT, agent.name);
+        params.insert("attrs.agent", agent.name);
         if let Some(version) = agent.version {
-            params.insert(ATTRS_AGENT_VERSION, version);
+            params.insert("attrs.agent_version", version);
         }
         if let Some(session_id) = agent.session_id {
-            params.insert(ATTRS_AGENT_SESSION_ID, session_id);
+            params.insert("attrs.agent_session_id", session_id);
         }
     }
     params

@@ -61,6 +61,8 @@ const HARNESSES: &[Harness] = &[
 /// The agent hint for the User-Agent header: the sanitized `AI_AGENT`, else
 /// the name of the harness that a marker variable marks. `env` replaces
 /// [`crate::env::var`] so a test does not change the process environment.
+/// Unlike [`detect`], it keeps the raw `AI_AGENT` first, so the `agent=` field
+/// that the server already reads does not change.
 pub fn hint(env: &impl Fn(&str) -> Option<String>) -> Option<String> {
     env("AI_AGENT")
         .and_then(|raw| sanitize_hint(&raw))
@@ -99,7 +101,13 @@ pub fn detect(env: &impl Fn(&str) -> Option<String>) -> Option<Agent> {
             .map(|v| v.replace('-', "."));
         Some((name, version))
     });
-    let Some(harness) = marker_harness(env) else {
+    // A child agent inherits the markers of the agent that started it, so
+    // when two harnesses are marked, their session variables cannot tell
+    // which one runs snouty.
+    let mut marked = HARNESSES
+        .iter()
+        .filter(|harness| harness.markers.iter().any(|var| env(var).is_some()));
+    let (Some(harness), None) = (marked.next(), marked.next()) else {
         let (name, version) = ai_agent?;
         return Some(Agent {
             name,
@@ -249,6 +257,23 @@ mod tests {
             detect(&env),
             Some(agent("codex", None, Some("019a-thread")))
         );
+    }
+
+    #[test]
+    fn detect_with_two_harnesses_reads_only_ai_agent() {
+        // Codex that Claude Code started.
+        let env = env_of(&[
+            ("CLAUDECODE", "1"),
+            ("AI_AGENT", "claude-code_2-1-267_agent"),
+            ("CLAUDE_CODE_SESSION_ID", "outer"),
+            ("CODEX_THREAD_ID", "inner"),
+        ]);
+        assert_eq!(
+            detect(&env),
+            Some(agent("claude-code", Some("2.1.267"), None))
+        );
+        let env = env_of(&[("CLAUDECODE", "1"), ("CODEX_THREAD_ID", "inner")]);
+        assert_eq!(detect(&env), None);
     }
 
     #[test]

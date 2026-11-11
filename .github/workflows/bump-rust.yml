@@ -24,9 +24,9 @@ jobs:
       issues: write
       pull-requests: read
     steps:
-      - uses: samueldr/lix-gha-installer-action@a0fee77b2a98bb7c5c0ed7ae6d6ad4903dbdad0d # v2026-06-15
+      - uses: samueldr/lix-gha-installer-action@v2026-06-15
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           ref: main
           persist-credentials: false

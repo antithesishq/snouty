@@ -280,6 +280,15 @@ fails on licenses, bans and sources; only the nightly and manual runs fail on
 advisories. Do not fix a zizmor finding in a generated workflow by hand; change
 its generator, as `.github/zizmor.yml` describes.
 
+The workflows pin each action to a tag, and `.github/workflows/actions.lock`
+records the commit of each tag. The local composite actions pin each action to
+a commit, because the lockfile cannot lock them. After you change a `uses:` or
+add a workflow, install the extension (`gh extension install
+github/gh-actions-lock`) and run `gh actions-lock --no-narrow`; the `lockfile`
+job in CI fails until you do. `--no-narrow` keeps a ref as written, so it does
+not change the workflows that dist and gh-aw generate. `mise run aw:compile`
+runs it for you.
+
 The Python scripts share one set of dependencies, in the top-level
 `pyproject.toml` and `uv.lock`. Do not declare dependencies in a script.
 

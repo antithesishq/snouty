@@ -52,7 +52,7 @@ jobs:
       should_skip: ${{ steps.skip_check.outputs.should_skip }}
     steps:
       - id: skip_check
-        uses: fkirc/skip-duplicate-actions@b974a9395958c231af965b70070979a577efa578 # v5.3.2
+        uses: fkirc/skip-duplicate-actions@v5.3.2
         with:
           paths_ignore: '["**.md"]'
 
@@ -77,12 +77,12 @@ jobs:
     env:
       SNOUTY_TEST_RUNTIME: podman
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{secrets.GITHUB_TOKEN}}
           persist-credentials: false
 
-      - uses: ./.github/actions/setup-tools
+      - uses: $/.github/actions/setup-tools
 
       # snouty always drives Docker Compose v2 via the `docker-compose` binary,
       # independent of the image runtime. Here that binary reaches podman over
@@ -152,7 +152,7 @@ jobs:
       # The key tracks the script, so editing its image list re-primes the cache
       # without anyone having to remember to bump a version.
       - name: Cache test images
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache@v6.1.0
         with:
           path: ~/test-images
           key: test-images-podman-${{ hashFiles('scripts/setup-test-images.sh') }}
@@ -178,9 +178,9 @@ jobs:
     needs: skip-check
     if: needs.skip-check.outputs.should_skip != 'true'
     steps:
-      - uses: samueldr/lix-gha-installer-action@a0fee77b2a98bb7c5c0ed7ae6d6ad4903dbdad0d # v2026-06-15
+      - uses: samueldr/lix-gha-installer-action@v2026-06-15
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{secrets.GITHUB_TOKEN}}
           persist-credentials: false

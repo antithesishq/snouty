@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      - uses: actions/github-script@v9.0.0
         id: generate-msg
         with:
           script: |
@@ -29,7 +29,7 @@ jobs:
             core.setOutput("msg", message);
 
       - name: Send a stream message
-        uses: zulip/github-actions-zulip/send-message@f675f2b4eb2a95fae974215476dcb7ad8dfeff6b # v2.0.2
+        uses: zulip/github-actions-zulip/send-message@v2.0.2
         with:
           api-key: ${{ secrets.ZULIP_API_KEY }}
           email: ${{ secrets.ZULIP_BOT_EMAIL }}

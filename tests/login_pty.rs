@@ -57,8 +57,6 @@ const REGISTRY: &str =
 
 const CREDENTIALS_FILE: &str = ".config/snouty/credentials.toml";
 
-const REPLACE_PASSWORD: &str = "Replace your stored username and password?";
-
 const EMPTY_REFUSED: &str = "An empty value is not valid.";
 
 const RETAINED: &str = "Retained your previously stored credentials";
@@ -386,21 +384,6 @@ fn an_api_key_asks_before_it_replaces_stored_oauth_tokens() {
     assert_eq!(credentials(home.path()), stored);
 }
 
-/// Login asks before a new API key replaces a stored username and password,
-/// and a bare Enter answers no: the credentials file stays as it was. The
-/// password cannot sign in, so the login fails.
-#[test]
-fn declining_keeps_a_stored_password() {
-    let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &password_credentials())]);
-    expect(&mut session, "Please enter your API Key");
-    send(&mut session, &format!("{FAKE_API_KEY_A}\r"));
-    expect(&mut session, REPLACE_PASSWORD);
-    send(&mut session, "\r");
-    finish_with_failure(session);
-
-    assert_eq!(credentials(home.path()), password_credentials());
-}
-
 /// Login asks before a new API key replaces a different stored key, and the
 /// summary says that it replaced it.
 #[test]
@@ -425,15 +408,13 @@ fn a_different_api_key_asks_before_it_replaces_the_stored_key() {
     assert!(creds.contains(&api_key_line(FAKE_API_KEY_B)), "{creds}");
 }
 
-/// A new API key that overwrites a stored username and password says so in the
-/// summary, because a script that still uses the password will no longer work.
+/// A new API key that overwrites a stored username and password, without a
+/// question, says so in the summary, because a script that still uses the password will no longer work.
 #[test]
 fn an_api_key_that_replaces_a_stored_password_says_so() {
     let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &password_credentials())]);
     expect(&mut session, "Please enter your API Key");
     send(&mut session, &format!("{FAKE_API_KEY_A}\r"));
-    expect(&mut session, REPLACE_PASSWORD);
-    send(&mut session, "y\r");
     let seen = finish(session);
 
     // This line is longer than the PTY, so snouty wraps it.
@@ -494,8 +475,6 @@ fn a_redirected_summary_keeps_whole_lines() {
     });
     expect(&mut session, "Please enter your API Key");
     send(&mut session, &format!("{FAKE_API_KEY_A}\r"));
-    expect(&mut session, REPLACE_PASSWORD);
-    send(&mut session, "y\r");
     // Read the PTY to its end before the wait: on macOS a child cannot exit
     // while its terminal output is unread.
     Expect::expect(&mut session, expectrl::Eof).expect("read the PTY to its end");

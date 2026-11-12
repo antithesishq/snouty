@@ -185,12 +185,29 @@ impl std::fmt::Debug for PersistableCredentials {
 }
 
 impl PersistableCredentials {
+    /// The credential for a request that checks `self` before login stores
+    /// it. It never refreshes, so the check reads and writes no store. A new
+    /// OAuth access token goes out as a bearer token, the same header that a
+    /// stored OAuth credential sends.
+    pub(crate) fn for_check(&self) -> AuthenticationInfo {
+        match self {
+            Self::ApiKey { api_key }
+            | Self::OAuth {
+                antithesis_token: api_key,
+                ..
+            } => AuthenticationInfo::ApiKey {
+                api_key: api_key.clone(),
+            },
+            Self::Password { username, password } => AuthenticationInfo::Password {
+                username: username.clone(),
+                password: password.clone(),
+            },
+        }
+    }
+
     /// An OAuth credential keeps a copy of `store`, to write a refreshed token
     /// back to it.
-    pub(crate) fn convert_to_authentication_info(
-        self,
-        store: &CredentialStore,
-    ) -> AuthenticationInfo {
+    fn convert_to_authentication_info(self, store: &CredentialStore) -> AuthenticationInfo {
         match self {
             Self::ApiKey { api_key } => AuthenticationInfo::ApiKey { api_key },
             Self::OAuth {
@@ -366,5 +383,28 @@ impl CredentialsFile {
                 .and_then(|by_profile| by_profile.get(name).cloned()),
             None => self.default,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutils::fake_secrets::{FAKE_ACCESS_TOKEN_A, FAKE_REFRESH_TOKEN_A};
+
+    /// A new OAuth credential is checked with the header that it sends once
+    /// it is stored, and without a store that a refresh could write to.
+    #[test]
+    fn an_oauth_credential_is_checked_as_its_bearer_token() -> Result<()> {
+        let credentials = PersistableCredentials::OAuth {
+            antithesis_token: FAKE_ACCESS_TOKEN_A.to_owned(),
+            refresh_token: Some(FAKE_REFRESH_TOKEN_A.to_owned()),
+        };
+        let check = credentials.for_check();
+        assert!(matches!(check, AuthenticationInfo::ApiKey { .. }));
+        assert_eq!(
+            check.auth_header()?,
+            format!("Bearer {FAKE_ACCESS_TOKEN_A}").as_str()
+        );
+        Ok(())
     }
 }

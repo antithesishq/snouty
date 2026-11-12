@@ -16,9 +16,6 @@ stderr '.*Value may not be empty or whitespace.*'
 ! snouty --profile "" login
 stderr '.*Value may not be empty or whitespace.*'
 
-# The tenant's registry endpoint is not on staging yet.
-[staging] skip
-
 # Without a TTY, login signs in with the credential from the environment,
 # saves the tenant and the tenant's registry, skips credential storage, and
 # prints the summary as whole lines, so a script can match a line that is
@@ -26,16 +23,29 @@ stderr '.*Value may not be empty or whitespace.*'
 isolate-home summary
 mock-runs-server
 snouty login --tenant spec-tenant
-stdout '^Saved tenant `spec-tenant` and repository `registry.testtenant.antithesis.com`\.$'
+stdout '^Saved tenant `spec-tenant` and repository `[^`/]+\.[^`]+`\.$'
+[!staging] stdout '^Saved tenant `spec-tenant` and repository `registry.testtenant.antithesis.com`\.$'
 stdout '^Skipped credential storage — snouty will read credentials from the environment, such as ANTITHESIS_API_KEY\.$'
 stdout '^Run `snouty doctor` to verify your setup\.$'
-! stdout 'docker login'
-file ~/.config/snouty/settings.toml 'repository = "registry.testtenant.antithesis.com"'
+file ~/.config/snouty/settings.toml 'repository = "[^"]+"'
+[!staging] file ~/.config/snouty/settings.toml 'repository = "registry.testtenant.antithesis.com"'
 
 # --repository takes the place of the tenant's registry.
 isolate-home repository_flag
 snouty login --tenant spec-tenant --repository registry.example.com/a-long-repository-name
 stdout '^Saved tenant `spec-tenant` and repository `registry.example.com/a-long-repository-name`\.$'
+
+# Without a credential, login fails before it saves anything.
+isolate-home no_credential
+env ANTITHESIS_API_KEY=
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
+! snouty login --tenant spec-tenant
+stderr 'No Antithesis credentials found'
+! exists no_credential/.config/snouty/settings.toml
+
+# The cases below need a registry response that staging cannot give.
+[staging] skip
 
 # A registry that takes the Docker login is saved, and login names the
 # commands that sign in to it.
@@ -47,19 +57,17 @@ stdout -literal '`docker login registry.example.com`'
 stdout -literal '`podman login registry.example.com`'
 file ~/.config/snouty/settings.toml 'repository = "registry.example.com/acme"'
 
+# A registry login kind that snouty does not know gets no sign-in advice.
+isolate-home unknown_registry
+mock-server 200 '{"auth":"some-new-kind","registry_url":"registry.example.com/acme"}'
+snouty login --tenant spec-tenant
+! stdout 'docker login'
+file ~/.config/snouty/settings.toml 'repository = "registry.example.com/acme"'
+
 # A credential that the tenant rejects fails the login, which saves nothing.
 isolate-home rejected
 mock-server 401 '{"message":"Invalid or expired bearer token."}'
-set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 ! snouty login --tenant spec-tenant
 stderr 'did not accept the credential'
+stderr -literal 'set a valid ANTITHESIS_API_KEY'
 ! exists rejected/.config/snouty/settings.toml
-
-# Without a credential, login fails before it saves anything.
-isolate-home no_credential
-env ANTITHESIS_API_KEY=
-env ANTITHESIS_USERNAME=
-env ANTITHESIS_PASSWORD=
-! snouty login --tenant spec-tenant
-stderr 'No Antithesis credentials found'
-! exists no_credential/.config/snouty/settings.toml

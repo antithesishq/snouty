@@ -205,10 +205,6 @@ async fn do_cmd_login(
             stored.as_ref().map(Tagged::value),
         )
         .await?
-        .map(|credentials| {
-            CredentialStore::for_login(profile_to_use.as_deref()).map(|store| (credentials, store))
-        })
-        .transpose()?
     } else {
         warn!(
             "Cannot collect credentials unless running in a TTY. Please provide credentials via environment variables or rerun `snouty login` in an interactive session"
@@ -219,7 +215,7 @@ async fn do_cmd_login(
     // Without a new credential, the registry request authenticates as every
     // later command does.
     let authentication = match &new_credentials {
-        Some((credentials, store)) => credentials.clone().convert_to_authentication_info(store),
+        Some(credentials) => credentials.for_check(),
         None => AuthenticationInfo::for_ambient_configuration(
             profile_to_use.as_deref(),
             PasswordPolicy::Reject,
@@ -232,49 +228,53 @@ async fn do_cmd_login(
         ResponseCache::Default,
     )?;
     // The registry request is also the check that the credential works, so a
-    // failure saves nothing. A tenant that does not serve the endpoint answers
-    // 404, and then --repository takes the place of its answer.
-    let (repository_to_use, docker_login) = match (repository, api.get_registry().await) {
-        (Some(repository), Ok(_)) => (repository, None),
-        (None, Ok(registry)) => {
+    // failure saves nothing.
+    let registry = api.get_registry().await.map_err(|err| {
+        if api_error_status(&err) != Some(401) {
+            return err;
+        }
+        let rejected = user_error(format!("{} did not accept the credential", api.host()));
+        if new_credentials.is_some() {
+            rejected.suggestion("run `snouty login` again, and enter a valid credential")
+        } else {
+            rejected.suggestion(
+                "set a valid ANTITHESIS_API_KEY, or run `snouty login` in a terminal and enter a valid credential",
+            )
+        }
+    })?;
+    if registry.registry_url.trim().is_empty() {
+        return Err(
+            user_error(format!("{} reports no container registry", api.host()))
+                .suggestion("run `snouty login --repository <repository>`"),
+        );
+    }
+    let (repository_to_use, docker_login) = match repository {
+        Some(repository) => (repository, None),
+        None => {
             let docker_login = match registry.auth {
-                RegistryResponseAuth::Antithesis => None,
                 // `docker login` takes the host, not a repository path.
-                RegistryResponseAuth::Docker | RegistryResponseAuth::Other(_) => Some(
+                RegistryResponseAuth::Docker => Some(
                     registry_host(&registry.registry_url)
                         .unwrap_or(&registry.registry_url)
                         .to_owned(),
                 ),
+                // A login kind that this snouty does not know gets no advice.
+                RegistryResponseAuth::Antithesis | RegistryResponseAuth::Other(_) => None,
             };
             (registry.registry_url, docker_login)
         }
-        (repository, Err(err)) => match (api_error_status(&err), repository) {
-            (Some(401), _) => {
-                return Err(
-                    user_error(format!("{} did not accept the credential", api.host()))
-                        .suggestion("run `snouty login` again, and enter a valid credential"),
-                );
-            }
-            (Some(404), Some(repository)) => (repository, None),
-            (Some(404), None) => {
-                return Err(user_error(format!(
-                    "{} does not report its container registry",
-                    api.host()
-                ))
-                .suggestion("run `snouty login --repository <repository>`"));
-            }
-            _ => return Err(err),
-        },
     };
 
     let written = new_credentials
-        .map(|(credentials, store)| {
+        .map(|credentials| {
+            let store = CredentialStore::for_login(profile_to_use.as_deref())?;
             let kind = match &credentials {
                 PersistableCredentials::ApiKey { .. } => "API key",
                 PersistableCredentials::Password { .. } => "username and password",
                 PersistableCredentials::OAuth { .. } => "OAuth credentials",
             };
-            store.store(credentials).map(|()| kind.with_tag(store))
+            store.store(credentials)?;
+            Ok::<_, color_eyre::Report>(kind.with_tag(store))
         })
         .transpose()?;
 
@@ -488,7 +488,7 @@ async fn prompt_for_auth(
 }
 
 /// Whether to store a new credential of kind `new` over `stored`. Asks the
-/// user unless nothing is stored.
+/// user unless nothing or a username and password is stored.
 fn confirm_replacement(
     prompter: &dyn Prompter,
     stored: Option<&AuthenticationInfo>,
@@ -496,7 +496,10 @@ fn confirm_replacement(
 ) -> Result<bool> {
     match (stored, new) {
         // Signing in again only renews the session that the stored tokens hold.
-        (None, _) | (Some(AuthenticationInfo::OAuth(_)), AuthSetupType::OAuth) => Ok(true),
+        // Login cannot pass with a username and password, so keeping one is
+        // no choice.
+        (None | Some(AuthenticationInfo::Password { .. }), _)
+        | (Some(AuthenticationInfo::OAuth(_)), AuthSetupType::OAuth) => Ok(true),
         (Some(stored), _) => prompter.confirm(&format!("Replace your stored {stored}?")),
     }
 }
@@ -1584,80 +1587,45 @@ mod tests {
         Ok(())
     }
 
-    /// A tenant that does not report its registry needs --repository, and
-    /// without it the login saves nothing.
+    /// A tenant that reports a blank registry fails the login, which saves
+    /// nothing.
     #[tokio::test]
-    async fn login_needs_the_repository_flag_when_the_tenant_reports_no_registry() -> Result<()> {
-        let env = LoginEnv::with_registry(404, r#"{"error":"Not Found"}"#);
+    async fn login_saves_nothing_when_the_tenant_reports_a_blank_registry() -> Result<()> {
+        let env = LoginEnv::with_registry(200, r#"{"auth":"antithesis","registry_url":" "}"#);
         let settings = env.resolve_settings(None)?;
-
         let prompter = Script::default().secret(FAKE_API_KEY_A).build();
+
         let err = login_with_flags(None, &settings, &prompter)
             .await
-            .expect_err("no registry and no --repository must fail the login");
+            .expect_err("a blank registry must fail the login");
+
         assert!(
-            format!("{err:#}").contains("does not report its container registry"),
+            format!("{err:#}").contains("reports no container registry"),
             "{err:#}"
         );
         assert!(env.settings().is_empty(), "{}", env.settings());
         assert!(env.credentials().is_empty(), "{}", env.credentials());
-
-        let prompter = Script::default().secret(FAKE_API_KEY_A).build();
-        login_with_flags(Some("myrepo"), &settings, &prompter).await?;
-        assert!(env.settings().contains(r#"repository = "myrepo""#));
-        assert!(env.credentials().contains(&api_key_line(FAKE_API_KEY_A)));
         Ok(())
     }
 
-    /// Login reads a username and password an older snouty stored, asks for an
-    /// API key, asks to replace them, and replaces them on a yes.
+    /// Login replaces a username and password that an older snouty stored
+    /// with an API key, without asking, because login cannot pass with them.
     #[tokio::test]
     async fn login_replaces_a_stored_username_and_password_with_an_api_key() -> Result<()> {
         let env = LoginEnv::new();
         env.seed(".config/snouty/credentials.toml", &password_credentials());
         let settings = env.resolve_settings(None)?;
+        // An empty script after the key panics if the flow asks anything more.
         let prompter = Script::default()
             .input("mytenant")
             .secret(FAKE_API_KEY_A)
-            .confirm(true)
             .build();
 
         login(None, &settings, &prompter).await?;
 
-        assert!(
-            prompter
-                .prompts()
-                .contains(&"Replace your stored username and password?".to_owned()),
-            "{:?}",
-            prompter.prompts()
-        );
         let creds = env.credentials();
         assert!(creds.contains(r#"type = "ApiKey""#), "{creds}");
         assert!(!creds.contains(FAKE_PASSWORD), "{creds}");
-        Ok(())
-    }
-
-    /// Declining to replace a stored username and password leaves the
-    /// credentials file as it was. The password cannot fetch the registry, so
-    /// the login fails and saves no settings.
-    #[tokio::test]
-    async fn login_keeps_a_stored_password_when_the_user_declines() -> Result<()> {
-        let env = LoginEnv::new();
-        env.seed(".config/snouty/credentials.toml", &password_credentials());
-        let settings = env.resolve_settings(None)?;
-        let prompter = Script::default()
-            .input("mytenant")
-            .secret(FAKE_API_KEY_A)
-            .confirm(false)
-            .build();
-
-        assert!(
-            login(None, &settings, &prompter).await.is_err(),
-            "a username and password cannot fetch the registry"
-        );
-
-        assert_eq!(env.credentials(), password_credentials());
-        assert!(env.settings().is_empty(), "{}", env.settings());
         Ok(())
     }
 

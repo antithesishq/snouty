@@ -5014,15 +5014,13 @@ def build_tty_stories() -> list[Story]:
             (
                 (_ASK_TENANT, ENTER),
                 (_ASK_KEY, _FAKE_API_KEY_B + ENTER),
-                (_ASK_REPLACE_PASSWORD, "y" + ENTER),
             ),
             tty_persisted(
                 prompts=(
                     _ASK_KEY,
-                    _ASK_REPLACE_PASSWORD,
                     ", replacing your stored username and password.",
                 ),
-                absent_prompts=(_ASK_CREDENTIALS,),
+                absent_prompts=(_ASK_CREDENTIALS, _ASK_REPLACE_PASSWORD),
                 files=(
                     (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_API_KEY_B}"')),
                 ),
@@ -5052,31 +5050,6 @@ def build_tty_stories() -> list[Story]:
                     (_SETTINGS, (f'repository = "{_REPO}"',)),
                 ),
                 secrets_absent=(_FAKE_PASSWORD,),
-                expect_ok=False,
-            ),
-            seed_files={
-                _SETTINGS: _SEED_SETTINGS_TOML,
-                _CREDS: _SEED_PASSWORD_CREDS_TOML,
-            },
-        ),
-        _tty_story(
-            "login-declines-replacing-password",
-            "Decline to replace a stored username/password",
-            "An older snouty stored my username and password. I typed an API key at login, but "
-            "then decided to keep the password for now.",
-            ["login"],
-            (
-                (_ASK_TENANT, ENTER),
-                (_ASK_KEY, _FAKE_API_KEY_B + ENTER),
-                (_ASK_REPLACE_PASSWORD, "n" + ENTER),
-            ),
-            tty_persisted(
-                prompts=(_ASK_REPLACE_PASSWORD, _PASSWORD_REFUSED),
-                files=(
-                    (_CREDS, ('type = "Password"', f'password = "{_FAKE_PASSWORD}"')),
-                    (_SETTINGS, (f'repository = "{_REPO}"',)),
-                ),
-                secrets_absent=(_FAKE_API_KEY_B, _FAKE_PASSWORD),
                 expect_ok=False,
             ),
             seed_files={

@@ -31,7 +31,7 @@ use password::apply_password_policy;
 pub(crate) use password::{PASSWORD_VAR_NAME, PasswordPolicy, USERNAME_VAR_NAME};
 pub use store::initialize_credential_store;
 pub(crate) use store::{
-    CredentialStore, PersistableCredentials, credentials_file_path, keychain_entry_name,
+    CredentialStore, PersistableCredentials, credentials_file_path, keychain_entry_name, persist,
 };
 
 /// Every environment variable that ambient credential resolution reads. A test
@@ -284,8 +284,8 @@ impl AuthenticationInfo {
     }
 
     /// The credential stored for `profile`: its keychain entry, else its
-    /// section of the credentials file. This is what [`CredentialStore::store`]
-    /// for `profile` replaces. The environment and other profiles are not read.
+    /// section of the credentials file. This is what [`persist`] for `profile`
+    /// replaces. The environment and other profiles are not read.
     ///
     /// The [`PasswordPolicy`] gate does not run, so only a caller that never
     /// authenticates with the result may call it.

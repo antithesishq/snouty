@@ -91,6 +91,7 @@ pub fn cache_dir() -> Option<PathBuf> {
 /// `Default` is every setting unset (with the `stable` update channel and the
 /// default cache size cap) — handy when a caller needs a `Settings` without
 /// resolving anything.
+#[derive(Clone)]
 pub struct Settings {
     profile: Option<String>,
     tenant: Option<String>,
@@ -376,17 +377,11 @@ impl Settings {
         self.profile.as_deref()
     }
 
+    /// These settings with `tenant` in place of the tenant setting.
     pub(crate) fn with_tenant(&self, tenant: &str) -> Self {
         Settings {
-            profile: self.profile.clone(),
             tenant: Some(tenant.to_owned()),
-            repository: self.repository.clone(),
-            base_url: self.base_url.clone(),
-            https_proxy: self.https_proxy.clone(),
-            container_engine: self.container_engine.clone(),
-            update_channel: self.update_channel,
-            api_cache_max_file_size: self.api_cache_max_file_size,
-            files: self.files.clone(),
+            ..self.clone()
         }
     }
 

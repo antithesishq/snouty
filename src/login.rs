@@ -22,10 +22,13 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 
 use crate::{
-    api::{AntithesisApi, HttpClient, RegistryResponseAuth, ResponseCache, normalize_base_url},
+    api::{
+        AntithesisApi, HttpClient, RegistryResponse, RegistryResponseAuth, ResponseCache,
+        normalize_base_url,
+    },
     auth::{
         AuthenticationInfo, CredentialStore, PasswordPolicy, PersistableCredentials,
-        is_blank_api_key,
+        is_blank_api_key, persist,
     },
     container::registry_host,
     env,
@@ -144,7 +147,7 @@ impl Prompter for InquirePrompter {
     }
 }
 
-/// With `output.verbose`, login logs its OAuth requests to stderr.
+/// With `output.verbose`, login logs its requests to stderr.
 pub async fn cmd_login(
     tenant: Option<String>,
     repository: Option<String>,
@@ -176,10 +179,14 @@ async fn do_cmd_login(
         .or_else(|| env::var(ANTITHESIS_PROFILE_ENV_VAR_NAME).ok().flatten());
 
     let tenant_to_use = match tenant {
-        Some(arg_value) if !arg_value.is_empty() => arg_value,
-        Some(_) | None => {
-            prompt_for_value(prompter, "Antithesis tenant", current_settings.tenant())?
+        Some(tenant) => tenant,
+        None if !prompter.is_interactive() => {
+            return Err(eyre!("Cannot prompt for value when not running in a TTY"));
         }
+        None => prompter.input(
+            "What Antithesis tenant would you like to use?",
+            current_settings.tenant(),
+        )?,
     };
     validate_tenant_host(&tenant_to_use)?;
 
@@ -212,42 +219,13 @@ async fn do_cmd_login(
         None
     };
 
-    // Without a new credential, the registry request authenticates as every
-    // later command does.
-    let authentication = match &new_credentials {
-        Some(credentials) => credentials.for_check(),
-        None => AuthenticationInfo::for_ambient_configuration(
-            profile_to_use.as_deref(),
-            PasswordPolicy::Reject,
-        )?,
-    };
-    let api = AntithesisApi::build(
+    let registry = fetch_registry(
         &api_settings,
-        authentication,
+        new_credentials.as_ref(),
+        profile_to_use.as_deref(),
         verbose,
-        ResponseCache::Default,
-    )?;
-    // The registry request is also the check that the credential works, so a
-    // failure saves nothing.
-    let registry = api.get_registry().await.map_err(|err| {
-        if api_error_status(&err) != Some(401) {
-            return err;
-        }
-        let rejected = user_error(format!("{} did not accept the credential", api.host()));
-        if new_credentials.is_some() {
-            rejected.suggestion("run `snouty login` again, and enter a valid credential")
-        } else {
-            rejected.suggestion(
-                "set a valid ANTITHESIS_API_KEY, or run `snouty login` in a terminal and enter a valid credential",
-            )
-        }
-    })?;
-    if registry.registry_url.trim().is_empty() {
-        return Err(
-            user_error(format!("{} reports no container registry", api.host()))
-                .suggestion("run `snouty login --repository <repository>`"),
-        );
-    }
+    )
+    .await?;
     let (repository_to_use, docker_login) = if let Some(repository) = repository {
         (repository, None)
     } else {
@@ -264,18 +242,18 @@ async fn do_cmd_login(
         (registry.registry_url, docker_login)
     };
 
-    let written = new_credentials
-        .map(|credentials| {
-            let store = CredentialStore::for_login(profile_to_use.as_deref())?;
+    // The kind of credential login wrote, and where.
+    let written = match new_credentials {
+        Some(credentials) => {
             let kind = match &credentials {
                 PersistableCredentials::ApiKey { .. } => "API key",
                 PersistableCredentials::Password { .. } => "username and password",
                 PersistableCredentials::OAuth { .. } => "OAuth credentials",
             };
-            store.store(credentials)?;
-            Ok::<_, color_eyre::Report>(kind.with_tag(store))
-        })
-        .transpose()?;
+            Some(kind.with_tag(persist(credentials, profile_to_use.as_deref())?))
+        }
+        None => None,
+    };
 
     update_settings_in_global_file(
         Some(tenant_to_use.clone()),
@@ -295,6 +273,42 @@ async fn do_cmd_login(
     );
 
     Ok(())
+}
+
+/// `GET /api/v1/registry` with `new_credentials`, or else with the credential
+/// that later commands use. The request is also the check that the credential
+/// works. The returned registry URL is not blank.
+async fn fetch_registry(
+    settings: &Settings,
+    new_credentials: Option<&PersistableCredentials>,
+    profile: Option<&str>,
+    verbose: bool,
+) -> Result<RegistryResponse> {
+    let authentication = match new_credentials {
+        Some(credentials) => credentials.for_check(),
+        None => AuthenticationInfo::for_ambient_configuration(profile, PasswordPolicy::Reject)?,
+    };
+    let api = AntithesisApi::build(settings, authentication, verbose, ResponseCache::Default)?;
+    let registry = api.get_registry().await.map_err(|err| {
+        if api_error_status(&err) != Some(401) {
+            return err;
+        }
+        let rejected = user_error(format!("{} did not accept the credential", api.host()));
+        if new_credentials.is_some() {
+            rejected.suggestion("run `snouty login` again, and enter a valid credential")
+        } else {
+            rejected.suggestion(
+                "set a valid ANTITHESIS_API_KEY, or run `snouty login` in a terminal and enter a valid credential",
+            )
+        }
+    })?;
+    if registry.registry_url.trim().is_empty() {
+        return Err(
+            user_error(format!("{} reports no container registry", api.host()))
+                .suggestion("run `snouty login --repository <repository>`"),
+        );
+    }
+    Ok(registry)
 }
 
 /// Confirm what `snouty login` persisted, where, and the obvious next step —
@@ -360,20 +374,6 @@ fn replacing(stored: Option<&Tagged<AuthenticationInfo, CredentialStore>>) -> St
     stored
         .map(|stored| format!(", replacing your stored {}", stored.value()))
         .unwrap_or_default()
-}
-
-fn prompt_for_value(
-    prompter: &dyn Prompter,
-    value_name: &str,
-    previous_value: Option<&str>,
-) -> Result<String> {
-    if !prompter.is_interactive() {
-        return Err(eyre!("Cannot prompt for value when not running in a TTY"));
-    }
-    prompter.input(
-        &format!("What {value_name} would you like to use?"),
-        previous_value,
-    )
 }
 
 /// The credential kinds `snouty login` sets up. A username and password comes
@@ -1339,7 +1339,7 @@ mod tests {
     const OAUTH: &str = "Single sign-on (OAuth)";
 
     /// A per-test isolated environment: an exclusive env lock, a throwaway `$HOME`,
-    /// and an in-process mock backend for the OAuth-config probe.
+    /// and an in-process mock backend for the OAuth-config probe and the registry.
     struct LoginEnv {
         home: tempfile::TempDir,
         // Held for the test's lifetime so no other test mutates env concurrently.
@@ -1349,7 +1349,7 @@ mod tests {
     impl LoginEnv {
         /// Isolated env whose `/auth/cli/config` reports OAuth disabled.
         fn new() -> Self {
-            Self::with_backend(OAUTH_DISABLED, 200, REGISTRY_ANTITHESIS)
+            Self::with_oauth_config(OAUTH_DISABLED)
         }
 
         /// Isolated env whose `/auth/cli/config` returns `config_body`.

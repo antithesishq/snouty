@@ -147,12 +147,13 @@ impl<'a> GuestConnection<'a> {
             .kill_on_drop(true)
             .status()
             .await
-            .wrap_err("failed to open guest shell")?;
+            .wrap_err("failed to open a shell in the simulation environment")?;
         Ok(status)
     }
 
     pub fn exec_interactive_shell(&self) -> Result<std::process::ExitCode> {
-        Err(self.shell_command().exec()).wrap_err("failed to open guest shell")
+        Err(self.shell_command().exec())
+            .wrap_err("failed to open a shell in the simulation environment")
     }
 }
 
@@ -173,7 +174,7 @@ impl Vm {
     ) -> Result<Self> {
         let run_dir = fs::canonicalize(run_dir)?;
         if platform != SimulatePlatform::default() {
-            eprintln!("Warning: this guest architecture requires software emulation on this host.");
+            eprintln!("Warning: this architecture requires software emulation on this host.");
         } else if cfg!(target_os = "linux")
             && OpenOptions::new()
                 .read(true)
@@ -190,7 +191,7 @@ impl Vm {
         };
         let deadline = Instant::now()
             .checked_add(startup_timeout)
-            .ok_or_else(|| eyre!("guest startup timeout is too large"))?;
+            .ok_or_else(|| eyre!("startup timeout is too large"))?;
         let client_key = ClientKey::generate(&run_dir).await?;
         // QEMU 10.2 splits hostfwd at the first hyphen. Keep the path short
         // and free of hyphens, including when the cache path is long.
@@ -325,11 +326,11 @@ impl Vm {
                     () = sleep(Duration::from_millis(50)) => {}
                 }
             }
-        }).await.map_err(|_| eyre!("guest startup timed out waiting for SSH readiness marker (antithesis_host.status=ssh_ready)"))??;
+        }).await.map_err(|_| eyre!("simulation environment startup timed out waiting for SSH readiness marker (antithesis_host.status=ssh_ready)"))??;
         tokio::time::timeout_at(deadline, self.wait_ssh_login(boot_console))
             .await
             .map_err(|_| {
-                eyre!("guest startup timed out waiting for SSH login after readiness marker")
+                eyre!("simulation environment startup timed out waiting for SSH login after readiness marker")
             })?
     }
 
@@ -357,7 +358,7 @@ impl Vm {
             let output = match result {
                 Ok(output) => output,
                 Err(error) => {
-                    log::debug!("guest SSH readiness check failed: {error:#}");
+                    log::debug!("SSH readiness check failed: {error:#}");
                     sleep(SSH_READY_RETRY_INTERVAL).await;
                     continue;
                 }
@@ -368,7 +369,10 @@ impl Vm {
             }
             let error = String::from_utf8_lossy(&output.stderr);
             if error.contains("Permission denied") || error.contains("no such identity") {
-                bail!("guest SSH authentication failed: {}", error.trim());
+                bail!(
+                    "SSH authentication to the simulation environment failed: {}",
+                    error.trim()
+                );
             }
             sleep(SSH_READY_RETRY_INTERVAL).await;
         }
@@ -408,13 +412,14 @@ impl Vm {
         let output = output_async(command, Duration::from_secs(120)).await?;
         if !output.status.success() {
             bail!(
-                "guest command failed ({})\nstdout:\n{}\nstderr:\n{}",
+                "command in the simulation environment failed ({})\nstdout:\n{}\nstderr:\n{}",
                 output.status,
                 String::from_utf8_lossy(&output.stdout).trim_end(),
                 String::from_utf8_lossy(&output.stderr).trim_end()
             );
         }
-        String::from_utf8(output.stdout).wrap_err("guest command returned invalid UTF-8")
+        String::from_utf8(output.stdout)
+            .wrap_err("command in the simulation environment returned invalid UTF-8")
     }
 
     pub async fn upload_config(&self, directory: &Path) -> Result<()> {
@@ -473,7 +478,7 @@ impl Vm {
     }
 
     pub fn boot_diagnostics(&self) -> String {
-        let mut result = format!("Guest logs: {}", self.run_dir.display());
+        let mut result = format!("Simulation environment logs: {}", self.run_dir.display());
         for name in ["qemu.log", "boot.log"] {
             if let Ok(mut file) = File::open(self.run_dir.join(name)) {
                 let _ = file
@@ -496,7 +501,7 @@ impl Vm {
         let powered_off = timeout(Duration::from_secs(2), async {
             // Poweroff can close SSH before it reports success.
             if let Err(error) = self.run_script("poweroff -f\n").await {
-                log::debug!("guest poweroff request failed: {error:#}");
+                log::debug!("poweroff request failed: {error:#}");
             }
             while self.is_running()? {
                 sleep(Duration::from_millis(50)).await;

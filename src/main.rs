@@ -554,8 +554,8 @@ fn cmd_completions(shell: Shell) -> io::Result<()> {
     ).map_err(io::Error::other)?;
     let without_platform_values = platform_values.replace_all(&generated, "");
     let descriptions = [
-        "Boot the guest and open a root shell without starting Compose",
-        "Guest and workload image platform (default",
+        "Boot the simulation environment and open a root shell without starting Compose",
+        "Simulation environment and workload image platform (default",
     ];
     let mut filtered = without_platform_values
         .lines()

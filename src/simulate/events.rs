@@ -179,7 +179,7 @@ impl Event {
                 .unwrap_or_default()
         };
         match &self.kind {
-            EventKind::SshReady => "Guest SSH ready".into(),
+            EventKind::SshReady => "Simulation environment SSH ready".into(),
             EventKind::SetupComplete { message } => {
                 let suffix = message
                     .as_ref()
@@ -579,7 +579,7 @@ mod tests {
         );
     }
 
-    // Instrumentation serial output from local antithesis-guest:v61.2 under TCG.
+    // Instrumentation serial output from a local antithesis-guest image under TCG.
     #[test]
     fn observed_composer_failure_and_output_are_preserved() {
         let events: Vec<_> = include_str!("../../tests/fixtures/simulate/observed.log")

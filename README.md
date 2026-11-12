@@ -213,7 +213,7 @@ When a subcommand or a flag, or the Antithesis API it calls, is still changing s
 
 | Feature    | Enables                                                                |
 | ---------- | ---------------------------------------------------------------------- |
-| `simulate` | `snouty simulate`. Run a Compose setup in a local Antithesis guest VM. |
+| `simulate` | `snouty simulate`. Run a Compose setup in a local Antithesis simulation environment. |
 
 An id that snouty does not know, such as the retired `mcp` or `runs-exec`, has no effect.
 
@@ -427,7 +427,7 @@ This project was originally developed by [orbitinghail](https://orbitinghail.dev
 ### Local simulation (experimental)
 
 On x86-64 or ARM64 Linux and macOS hosts, enable `simulate` to run an Antithesis
-Compose setup in a local guest VM:
+Compose setup in a local simulation environment:
 
 ```sh
 SNOUTY_UNSTABLE_FEATURES=simulate snouty simulate ./config
@@ -435,27 +435,29 @@ SNOUTY_UNSTABLE_FEATURES=simulate snouty simulate ./config
 
 Install QEMU 10.2 or later, built with libslirp 4.7 or later, OpenSSH, tar,
 and the container engine and Compose tools described above. Simulation
-converts the workload images into a read-only EROFS image, which the guest
-imports into its Podman image store at boot. It lives under
-`$XDG_CACHE_HOME/snouty/simulate` (default `$HOME/.cache/snouty/simulate`) and
-is removed when the simulation exits. ARM64 guests also require
-`qemu-system-aarch64` and EDK2 AArch64 UEFI.
-The guest platform defaults to the host architecture. Use `--platform arm64` to
-run an ARM64 guest and ARM64 workload images on an x86-64 host.
-The guest image defaults to `antithesis-guest:v<RELEASE>` in your configured
-repository, using the tenant release from `/api/version`. This lookup requires
-an API key. Use `--guest-image IMAGE` to override it. The guest image must
-contain `/guest.iso`. Snouty uses the local image for the selected platform
+converts the workload images into a read-only EROFS image, which the
+simulation environment imports into its Podman image store at boot. It lives
+under `$XDG_CACHE_HOME/snouty/simulate` (default `$HOME/.cache/snouty/simulate`)
+and is removed when the simulation exits. An ARM64 simulation environment also
+requires `qemu-system-aarch64` and EDK2 AArch64 UEFI.
+The simulation environment uses the host architecture by default. Use
+`--platform arm64` to run an ARM64 simulation environment and ARM64 workload
+images on an x86-64 host.
+The simulation environment image defaults to `antithesis-guest` in your
+configured repository, at the version this release of snouty pins. No API key
+is required. Use `--environment-image IMAGE` to override it; an image without a
+tag or digest gets the pinned version. The image must contain `/guest.iso`.
+Snouty uses the local image for the selected platform
 when present and pulls it otherwise. Workload images must already exist locally.
 Only directories with `docker-compose.yaml` are supported; Kubernetes and
 arbitrary host bind mounts are not supported.
 
 The VM uses 1 CPU and 15000 MiB of RAM by default. Use `--memory MIB` to lower
-guest memory on smaller hosts. Values above 15000 MiB are rejected.
+its memory on smaller hosts. Values above 15000 MiB are rejected.
 SSH files are private to the run; Snouty does not change user configuration.
 
 Rollouts repeat until interrupted. Use `--disable-restart` to start one rollout
-and keep streaming its logs. `--timeout 5m` limits guest startup, not the run.
+and keep streaming its logs. `--timeout 5m` limits startup, not the run.
 Use `--node-kills` to make the classic fault injector attempt a node kill every
 60 virtual seconds on average. It restarts the node after a normally distributed
 delay of 2 seconds with a standard deviation of 1 second. The standard

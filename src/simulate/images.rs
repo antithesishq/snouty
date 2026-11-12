@@ -77,7 +77,7 @@ impl Images {
     pub async fn inspect(&self, reference: &str, platform: SimulatePlatform) -> Result<Image> {
         #[derive(Deserialize)]
         struct Inspect {
-            // Podman v5.8.2: local antithesis-guest:v61.2 inspect uses Id and Architecture.
+            // Podman: inspect of a local antithesis-guest image uses Id and Architecture.
             #[serde(rename = "Id")]
             id: ImageId,
             #[serde(rename = "Architecture")]
@@ -128,7 +128,7 @@ impl Images {
             let output = output_async(pull, IMAGE_TIMEOUT).await?;
             if !output.status.success() {
                 bail!(
-                    "cannot pull guest image {reference}: {}",
+                    "cannot pull simulation environment image {reference}: {}",
                     String::from_utf8_lossy(&output.stderr)
                 );
             }
@@ -210,7 +210,7 @@ impl Images {
         }
         let metadata = std::fs::symlink_metadata(&staged_iso)?;
         if !metadata.is_file() || metadata.len() == 0 {
-            bail!("guest image /guest.iso must be a nonempty regular file");
+            bail!("simulation environment image: /guest.iso must be a nonempty regular file");
         }
         container.remove().await?;
         std::fs::rename(&staged_iso, &iso)?;

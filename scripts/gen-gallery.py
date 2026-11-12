@@ -4494,9 +4494,10 @@ def build_help_stories(d: Discovery) -> list[Story]:
         # tests/cli_simulate.rs covers SSH readiness, startup diagnostics, and command failures.
         _help_story(
             "help-simulate",
-            "Understand guest simulation",
-            "I want to run a Compose setup in a guest VM and understand image "
-            "selection with antithesis-guest:v66.0 in the configured repository without an API key, "
+            "Understand local simulation",
+            "I want to run a Compose setup in a local simulation environment and understand image "
+            "selection with the pinned version in the configured repository without an API key, "
+            "an --environment-image without a tag getting that version, "
             "and the native host architecture, "
             "Linux and macOS requirements with QEMU 10.2 or later and libslirp 4.7 or later, "
             "setup_complete before test composer and fault injection start, "
@@ -4507,10 +4508,10 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "--fault-tolerance defaulting to resilient and none keeping faults paused "
             "through test composer, startup timeout, "
             "configure.py options for fault tolerance and exclusions, "
-            "interruption with a brief guest poweroff wait and final log drain, "
+            "interruption with a brief poweroff wait and final log drain, "
             "failure status, the runs-compatible human log rendering, and "
             "active-fault annotations in JSON output. It should also show how to attach "
-            "a second terminal to a running guest, with the ID printed after boot. "
+            "a second terminal to a running simulation environment, with the ID printed after boot. "
             "Internal testing overrides must stay out of help.",
             ["simulate"],
         ),

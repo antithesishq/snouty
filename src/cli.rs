@@ -299,7 +299,7 @@ pub enum Commands {
     #[command(arg = json(JsonShape::None))]
     Validate(ValidateArgs),
 
-    /// Run a Compose setup in an Antithesis guest VM
+    /// Run a Compose setup in a local Antithesis simulation environment
     #[command(
         hide = !features::is_enabled(Feature::Simulate),
         arg = json(JsonShape::Lines),
@@ -701,11 +701,12 @@ pub struct SimulateArgs {
     #[arg(required_unless_present_any = ["shell", "attach"])]
     pub config: Option<std::path::PathBuf>,
 
-    /// Container image containing /guest.iso (default: REPOSITORY/antithesis-guest:v66.0)
+    /// Container image of the simulation environment, containing /guest.iso; without a tag or
+    /// digest, uses the pinned version (default: REPOSITORY/antithesis-guest)
     #[arg(long, value_parser = validate_non_empty, conflicts_with = "attach")]
-    pub guest_image: Option<String>,
+    pub environment_image: Option<String>,
 
-    /// Guest and workload image platform (default: native host platform)
+    /// Simulation environment and workload image platform (default: native host platform)
     #[arg(long, hide = true, value_enum, default_value_t = SimulatePlatform::default(), conflicts_with = "attach")]
     pub platform: SimulatePlatform,
 
@@ -727,11 +728,11 @@ pub struct SimulateArgs {
     #[arg(long, conflicts_with = "attach")]
     pub fault_exclusions: Option<FaultExclusions>,
 
-    /// Guest memory in MiB (maximum: 15000)
+    /// Simulation environment memory in MiB (maximum: 15000)
     #[arg(long, default_value_t = 15000, value_parser = clap::value_parser!(u64).range(1..=15000), conflicts_with = "attach")]
     pub memory: u64,
 
-    /// Boot the guest and open a root shell without starting Compose
+    /// Boot the simulation environment and open a root shell without starting Compose
     #[arg(
         long,
         hide = true,
@@ -743,7 +744,7 @@ pub struct SimulateArgs {
     #[arg(long, value_name = "ID", conflicts_with = "config")]
     pub attach: Option<SimulationId>,
 
-    /// Maximum time to wait for guest startup (for example, 5m or 300s)
+    /// Maximum time to wait for simulation environment startup (for example, 5m or 300s)
     #[arg(long, default_value = "5m", value_parser = |s: &str| STARTUP_TIMEOUT.parse(s), conflicts_with = "attach")]
     pub timeout: HumanDuration,
 }

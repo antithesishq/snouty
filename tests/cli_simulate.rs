@@ -184,7 +184,7 @@ impl Simulation {
                 if matches!(mode, "default-image" | "local-iso-default-image") {
                     vec![]
                 } else {
-                    vec!["--guest-image", "guest:test"]
+                    vec!["--environment-image", "guest:test"]
                 },
             )
             .args([
@@ -405,7 +405,7 @@ fn openssh_connects_through_snouty_fd_proxy() {
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(!error.contains("mm_receive_fd"), "{error}");
     assert!(
-        !error.contains("failed to pass guest SSH socket"),
+        !error.contains("failed to pass the simulation environment's SSH socket"),
         "{error}"
     );
 }
@@ -588,7 +588,7 @@ fn start_shell_simulation(mode: &str) -> (TempDir, OsSession) {
         .args([
             "simulate",
             "--shell",
-            "--guest-image",
+            "--environment-image",
             "guest:test",
             "--timeout",
             "10s",
@@ -1058,7 +1058,7 @@ fn ssh_login_keeps_startup_deadline_and_qemu_exit_detection() {
     for (mode, expected) in [
         (
             "login-timeout",
-            "guest startup timed out waiting for SSH login after readiness marker",
+            "simulation environment startup timed out waiting for SSH login after readiness marker",
         ),
         ("login-qemu-exit", "QEMU exited before SSH became ready"),
     ] {
@@ -1079,7 +1079,7 @@ fn ssh_authentication_failure_stops_qemu_without_waiting_for_timeout() {
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains("guest SSH authentication failed"),
+        stderr.contains("SSH authentication to the simulation environment failed"),
         "{stderr}"
     );
     assert!(stderr.contains("Permission denied (publickey)"), "{stderr}");
@@ -1320,7 +1320,7 @@ fn failed_guest_pull_never_starts_qemu() {
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains("cannot pull guest image guest:test"),
+        stderr.contains("cannot pull simulation environment image guest:test"),
         "{stderr}"
     );
     assert!(stderr.contains("registry denied fixture"), "{stderr}");
@@ -1335,7 +1335,8 @@ fn startup_timeout_reaps_qemu_and_reports_boot_diagnostics() {
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains("guest startup timed out waiting for SSH readiness marker"),
+        stderr
+            .contains("simulation environment startup timed out waiting for SSH readiness marker"),
         "{stderr}"
     );
     assert!(stderr.contains("private boot console"), "{stderr}");
@@ -1351,7 +1352,7 @@ fn startup_timeout_reaps_qemu_and_reports_boot_diagnostics() {
 #[test]
 fn unread_output_pipe_does_not_block_signal_cleanup() {
     let mut simulation = Simulation::start("blocked-output");
-    simulation.wait_for("stderr", "Streaming guest logs");
+    simulation.wait_for("stderr", "Streaming simulation logs");
     std::thread::sleep(Duration::from_millis(200));
     kill(
         Pid::from_raw(simulation.child.id().cast_signed()),
@@ -1372,7 +1373,7 @@ fn unread_output_pipe_does_not_block_signal_cleanup() {
 #[test]
 fn unread_output_backlog_preserves_command_and_assertion_failures() {
     let mut simulation = Simulation::start("blocked-output-failures");
-    simulation.wait_for("stderr", "Streaming guest logs");
+    simulation.wait_for("stderr", "Streaming simulation logs");
     std::thread::sleep(Duration::from_millis(200));
     kill(
         Pid::from_raw(simulation.child.id().cast_signed()),
@@ -1417,7 +1418,7 @@ async fn guest_image_defaults_to_configured_repository() {
         simulation.wait_for("stdout", "workload running");
         assert_eq!(
             simulation.read("guest_image"),
-            "registry.example/team/antithesis-guest:v66.0"
+            "registry.example/team/antithesis-guest:v67.3"
         );
         kill(
             Pid::from_raw(simulation.child.id().cast_signed()),
@@ -1436,7 +1437,7 @@ fn default_guest_image_works_without_api_access() {
     simulation.wait_for("stdout", "workload running");
     assert_eq!(
         simulation.read("guest_image"),
-        "registry.example/team/antithesis-guest:v66.0"
+        "registry.example/team/antithesis-guest:v67.3"
     );
     kill(
         Pid::from_raw(simulation.child.id().cast_signed()),
@@ -1563,8 +1564,8 @@ fn configure_failure_stops_simulation_before_compose() {
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
     for expected in [
-        "Simulation failed: configuring guest faults with configure.py",
-        "guest command failed (exit status: 42)",
+        "Simulation failed: configuring faults with configure.py",
+        "command in the simulation environment failed (exit status: 42)",
         "stdout:\nconfigure.py configuration details",
         "stderr:\nconfigure.py rejected configuration",
     ] {
@@ -1656,7 +1657,7 @@ fn fault_pause_failure_stops_simulation_before_compose() {
     assert_eq!(simulation.read("faults_paused"), "yes");
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains("Simulation failed: disabling guest faults: guest command failed (exit status: 1)\nstdout:\n\nstderr:\n"),
+        stderr.contains("Simulation failed: disabling faults: command in the simulation environment failed (exit status: 1)\nstdout:\n\nstderr:\n"),
         "{stderr}"
     );
     assert!(!simulation.root().join("compose_started").exists());

@@ -9,7 +9,8 @@ pub fn pass_ssh_socket(path: &Path) -> Result<()> {
 
     use nix::sys::socket::{ControlMessage, MsgFlags, sendmsg};
 
-    let socket = UnixStream::connect(path).wrap_err("failed to connect to guest SSH socket")?;
+    let socket = UnixStream::connect(path)
+        .wrap_err("failed to connect to the simulation environment's SSH socket")?;
     sendmsg::<()>(
         nix::libc::STDOUT_FILENO,
         &[IoSlice::new(&[0])],
@@ -17,7 +18,7 @@ pub fn pass_ssh_socket(path: &Path) -> Result<()> {
         MsgFlags::empty(),
         None,
     )
-    .wrap_err("failed to pass guest SSH socket to OpenSSH")?;
+    .wrap_err("failed to pass the simulation environment's SSH socket to OpenSSH")?;
     Ok(())
 }
 

@@ -34,7 +34,7 @@ const WORKLOAD_KIND: &str = include_str!("assets/workload-kind.sh");
 const RECREATE: &str = include_str!("assets/recreate.sh");
 const STATUS: &str = include_str!("assets/status.sh");
 const ATTACH_READY: &str = "attach-ready";
-const GUEST_VERSION: &str = "v66.0";
+const GUEST_VERSION: &str = "v67.3";
 const GUEST_ISO_ENV: &str = "SNOUTY_SIMULATE_GUEST_ISO";
 
 #[derive(Deserialize)]
@@ -72,7 +72,7 @@ async fn add_entropy(guest: &Vm) -> Result<tokio::time::Instant> {
             u64::from_ne_bytes(bytes)
         ))
         .await
-        .wrap_err("adding guest entropy")?;
+        .wrap_err("adding entropy")?;
     Ok(next)
 }
 
@@ -317,7 +317,7 @@ pub(super) async fn run(
     settings: &Settings,
     options: OutputOptions,
 ) -> Result<ExitCode> {
-    let guest = resolve_guest(args.guest_image, settings)?;
+    let guest = resolve_guest(args.environment_image, settings)?;
     let runtime = container::runtime(settings)?;
     container::warn_ambiguous_engine(settings, runtime.as_ref(), options.json);
     let compose = compose::DockerCompose::resolve(runtime.as_ref(), config.clone())?;
@@ -356,12 +356,12 @@ pub(super) async fn run(
     let mut consumed = 0;
     let mut instrumentation = None;
     let execution = async {
-        eprintln!("Preparing guest image...");
+        eprintln!("Preparing simulation environment image...");
         let iso = guest.iso(&images, run_dir.path(), args.platform).await?;
         eprintln!("Preparing workload images...");
         let inject_disk =
             workload_inject_disk(&images, references, run_dir.path(), args.platform).await?;
-        eprintln!("Booting guest...");
+        eprintln!("Booting simulation environment...");
         vm = Some(
             Vm::boot(
                 &iso,
@@ -378,7 +378,7 @@ pub(super) async fn run(
         guest
             .run_script(PREPARE)
             .await
-            .wrap_err("preparing guest")?;
+            .wrap_err("preparing the simulation environment")?;
         let mut configure = format!(
             "set -euo pipefail\n/opt/antithesis/bin/fault_scripts/randomization/configure.py --fault-tolerance {}",
             shell_quote(&args.fault_tolerance.to_string())
@@ -395,17 +395,17 @@ pub(super) async fn run(
         guest
             .run_script(&configure)
             .await
-            .wrap_err("configuring guest faults with configure.py")?;
+            .wrap_err("configuring faults with configure.py")?;
         if args.fault_tolerance == crate::api::FaultTolerance::None {
             guest
                 .run_script(DISABLE_FAULTS)
                 .await
-                .wrap_err("disabling guest faults")?;
+                .wrap_err("disabling faults")?;
         } else {
             guest
                 .run_script("fault_injector_update --pause\n")
                 .await
-                .wrap_err("pausing guest faults before setup")?;
+                .wrap_err("pausing faults before setup")?;
         }
         std::fs::write(run_dir.path().join(ATTACH_READY), "")?;
         if output.json {
@@ -427,8 +427,8 @@ pub(super) async fn run(
         guest
             .run_script(START)
             .await
-            .wrap_err("starting guest Compose project")?;
-        eprintln!("Streaming guest logs. Interrupt to stop simulation.");
+            .wrap_err("starting Compose project")?;
+        eprintln!("Streaming simulation logs. Interrupt to stop simulation.");
         let mut cycle = WorkloadCycle::WaitingForSetup;
         let mut health = tokio::time::interval(Duration::from_secs(2));
         let logs = logs.as_mut().expect("log stream opened");
@@ -442,11 +442,11 @@ pub(super) async fn run(
                         && matches!(cycle, WorkloadCycle::WaitingForSetup)
                     {
                         if args.fault_tolerance != crate::api::FaultTolerance::None {
-                            guest.run_script("fault_injector_update --unpause\n").await.wrap_err("unpausing guest faults")?;
+                            guest.run_script("fault_injector_update --unpause\n").await.wrap_err("unpausing faults")?;
                         }
-                        let workload = guest.run_script(WORKLOAD_KIND).await.wrap_err("classifying guest workload")?;
-                        let workload = serde_json::from_str::<WorkloadKind>(&workload).wrap_err("reading guest workload kind")?;
-                        guest.run_script(START_COMPOSER).await.wrap_err("starting guest test composer")?;
+                        let workload = guest.run_script(WORKLOAD_KIND).await.wrap_err("classifying workload")?;
+                        let workload = serde_json::from_str::<WorkloadKind>(&workload).wrap_err("reading workload kind")?;
+                        guest.run_script(START_COMPOSER).await.wrap_err("starting test composer")?;
                         cycle = WorkloadCycle::Running { entropy_at: add_entropy(guest).await?, workload };
                     }
                     output.event(&line, &mut summary, RunPhase::Running).await?;
@@ -465,10 +465,10 @@ pub(super) async fn run(
                 } => {
                     if !guest.is_running()? { bail!("QEMU exited unexpectedly\n{}", guest.boot_diagnostics()); }
                     if let WorkloadCycle::Running { entropy_at, ref workload } = cycle {
-                        let status = tokio::time::timeout(Duration::from_secs(15), guest.run_script(STATUS)).await.wrap_err("guest health check timed out")?.wrap_err("checking guest service health")?;
+                        let status = tokio::time::timeout(Duration::from_secs(15), guest.run_script(STATUS)).await.wrap_err("health check timed out")?.wrap_err("checking service health")?;
                         if matches!(serde_json::from_str::<ComposerStatus>(&status).wrap_err("reading test composer status")?, ComposerStatus::Completed) {
                             if matches!(workload, WorkloadKind::Composed) && !args.disable_restart {
-                                guest.run_script(RECREATE).await.wrap_err("recreating guest Compose project")?;
+                                guest.run_script(RECREATE).await.wrap_err("recreating Compose project")?;
                                 cycle = WorkloadCycle::WaitingForSetup;
                             } else {
                                 eprintln!("Test composer completed; leaving the local Compose project running");
@@ -629,7 +629,7 @@ fn resolve_guest(image: Option<String>, settings: &Settings) -> Result<Guest> {
         return Ok(Guest::Iso(iso));
     }
     Ok(Guest::Image(if let Some(image) = image {
-        image
+        with_default_tag(image)
     } else {
         let repository = crate::settings::require_setting(settings.repository(), "repository")?;
         format!(
@@ -639,19 +639,30 @@ fn resolve_guest(image: Option<String>, settings: &Settings) -> Result<Guest> {
     }))
 }
 
+/// Tag a `--environment-image` that names neither a tag nor a digest with
+/// [`GUEST_VERSION`], so `REPOSITORY/antithesis-guest` means the default
+/// release instead of `latest`.
+fn with_default_tag(image: String) -> String {
+    if crate::container::image_repo(&image) == image {
+        format!("{image}:{GUEST_VERSION}")
+    } else {
+        image
+    }
+}
+
 pub(super) async fn shell(args: SimulateArgs, settings: &Settings) -> Result<ExitCode> {
     interactive_terminal("--shell")?;
-    let guest = resolve_guest(args.guest_image, settings)?;
+    let guest = resolve_guest(args.environment_image, settings)?;
     let runtime = container::runtime(settings)?;
     container::warn_ambiguous_engine(settings, runtime.as_ref(), false);
     let images = Images::from_runtime(runtime.as_ref());
     let run_dir = tempfile::Builder::new()
         .prefix("snouty-simulate-")
         .tempdir()?;
-    eprintln!("Preparing guest image...");
+    eprintln!("Preparing simulation environment image...");
     let iso = guest.iso(&images, run_dir.path(), args.platform).await?;
     let inject_disk = inject_disk(Vec::new(), run_dir.path()).await?;
-    eprintln!("Booting guest...");
+    eprintln!("Booting simulation environment...");
     let mut signals = Signals::install()?;
     let mut guest = tokio::select! {
         biased;
@@ -666,7 +677,7 @@ pub(super) async fn shell(args: SimulateArgs, settings: &Settings) -> Result<Exi
             &inject_disk,
         ) => result?,
     };
-    eprintln!("Opening guest shell. Exit the shell to stop the VM.");
+    eprintln!("Opening a shell in the simulation environment. Exit the shell to stop it.");
     let shell = tokio::select! {
         biased;
         reason = signals.receive() => Err(reason),
@@ -685,7 +696,7 @@ pub(super) async fn shell(args: SimulateArgs, settings: &Settings) -> Result<Exi
         && !status.success()
         && !powered_off
     {
-        bail!("guest shell exited with status: {status}");
+        bail!("shell exited with status: {status}");
     }
     shutdown_result?;
     Ok(match shell {
@@ -750,6 +761,22 @@ async fn drain(
 mod tests {
     use super::*;
     use hegel::generators;
+
+    #[test]
+    fn guest_image_without_tag_gets_default_version() {
+        for (image, expected) in [
+            ("guest", format!("guest:{GUEST_VERSION}")),
+            (
+                "localhost:5000/team/antithesis-guest",
+                format!("localhost:5000/team/antithesis-guest:{GUEST_VERSION}"),
+            ),
+            ("guest:test", "guest:test".to_string()),
+            ("guest@sha256:abc", "guest@sha256:abc".to_string()),
+            ("guest:test@sha256:abc", "guest:test@sha256:abc".to_string()),
+        ] {
+            assert_eq!(with_default_tag(image.to_string()), expected, "{image}");
+        }
+    }
 
     #[hegel::test]
     fn recorded_failures_survive_interruption(tc: hegel::TestCase) {

@@ -59,7 +59,7 @@ file ~/.config/snouty/settings.toml 'repository = "registry.example.com/acme"'
 
 # A registry login kind that snouty does not know gets no sign-in advice.
 isolate-home unknown_registry
-mock-server 200 '{"auth":"some-new-kind","registry_url":"registry.example.com/acme"}'
+mock-server 200 '{"auth":"NEW_KIND","registry_url":"registry.example.com/acme"}'
 snouty login --tenant spec-tenant
 ! stdout 'docker login'
 file ~/.config/snouty/settings.toml 'repository = "registry.example.com/acme"'

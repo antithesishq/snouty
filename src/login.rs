@@ -248,21 +248,20 @@ async fn do_cmd_login(
                 .suggestion("run `snouty login --repository <repository>`"),
         );
     }
-    let (repository_to_use, docker_login) = match repository {
-        Some(repository) => (repository, None),
-        None => {
-            let docker_login = match registry.auth {
-                // `docker login` takes the host, not a repository path.
-                RegistryResponseAuth::Docker => Some(
-                    registry_host(&registry.registry_url)
-                        .unwrap_or(&registry.registry_url)
-                        .to_owned(),
-                ),
-                // A login kind that this snouty does not know gets no advice.
-                RegistryResponseAuth::Antithesis | RegistryResponseAuth::Other(_) => None,
-            };
-            (registry.registry_url, docker_login)
-        }
+    let (repository_to_use, docker_login) = if let Some(repository) = repository {
+        (repository, None)
+    } else {
+        let docker_login = match registry.auth {
+            // `docker login` takes the host, not a repository path.
+            RegistryResponseAuth::Docker => Some(
+                registry_host(&registry.registry_url)
+                    .unwrap_or(&registry.registry_url)
+                    .to_owned(),
+            ),
+            // A login kind that this snouty does not know gets no advice.
+            RegistryResponseAuth::Antithesis | RegistryResponseAuth::Other(_) => None,
+        };
+        (registry.registry_url, docker_login)
     };
 
     let written = new_credentials

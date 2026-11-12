@@ -6,9 +6,9 @@
 //! `transfer-containers.py`. This module reads tar streams and writes the
 //! image file directly, so it runs on any host OS: no Linux file system
 //! semantics (symlinks, device nodes, xattrs, ownership) reach the host file
-//! system. The guest mounts the image and imports the tree into
-//! `/var/lib/containers/storage`, where Podman and CRI-O run its images as if
-//! they had pulled them.
+//! system. The simulation environment mounts the image and imports the tree
+//! into `/var/lib/containers/storage`, where Podman and CRI-O run its images as
+//! if they had pulled them.
 //!
 //! Several archives can go into one image. Images and layers that two of
 //! them share are written once.

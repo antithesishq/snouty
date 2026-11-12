@@ -8,9 +8,12 @@ name: slow tests
 # roughly two minutes. They run here instead, after merge.
 #
 # What still gates a pull request lives in build.yml: both Ubuntu legs run the
-# whole suite against a real engine, built for musl like the Linux release
+# whole suite except the qemu group against a real engine, built for musl like the Linux release
 # binaries, and the arm64 macOS leg runs every test that does not need one. This workflow adds the two environments that costs the most
 # to reach — macOS with a working podman, and nix — on top of that.
+#
+# test-qemu boots a toy simulation environment ISO in real QEMU. It is here, not in build.yml,
+# until it proves stable on GitHub's runners.
 #
 # A release branch is the exception: it runs these legs before the merge, not
 # after. A release ships the exact tree on that branch, so the two environments
@@ -172,6 +175,42 @@ jobs:
       # macOS leg in build.yml, against this same commit.
       - name: Test
         run: cargo nextest run --filterset 'group(container)'
+
+  # The tests that boot the toy environment ISO from tests/environment in real QEMU: the
+  # `qemu` group in .config/nextest.toml.
+  test-qemu:
+    runs-on: ubuntu-latest
+    needs: skip-check
+    if: needs.skip-check.outputs.should_skip != 'true'
+    timeout-minutes: 30
+    steps:
+      - uses: samueldr/lix-gha-installer-action@a0fee77b2a98bb7c5c0ed7ae6d6ad4903dbdad0d # v2026-06-15
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: ${{secrets.GITHUB_TOKEN}}
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-tools
+
+      # The runner has /dev/kvm, but only root can open it. Without KVM, QEMU
+      # falls back to TCG, and the tests still pass, more slowly.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # QEMU from the pinned nixpkgs. The Ubuntu package is too old for the
+      # `hostfwd=unix:` forward that snouty uses.
+      - name: Install QEMU
+        run: |
+          nix-build nixpkgs.nix -A qemu_test -o "$RUNNER_TEMP/qemu"
+          echo "$RUNNER_TEMP/qemu/bin" >> "$GITHUB_PATH"
+
+      - name: Test
+        run: mise run test:qemu
 
   build-nix:
     runs-on: ubuntu-latest

@@ -7,9 +7,9 @@ use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+use expectrl::Expect;
 use expectrl::process::unix::WaitStatus;
 use expectrl::session::OsSession;
-use expectrl::{ControlCode, Expect};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use tempfile::TempDir;
@@ -21,18 +21,10 @@ struct Simulation {
 
 impl Simulation {
     fn start(mode: &str) -> Self {
-        Self::start_with_options(mode, "http://127.0.0.1:1", None)
+        Self::start_with_api(mode, "http://127.0.0.1:1")
     }
 
     fn start_with_api(mode: &str, api_url: &str) -> Self {
-        Self::start_with_options(mode, api_url, None)
-    }
-
-    fn start_with_memory(mode: &str, memory: &str) -> Self {
-        Self::start_with_options(mode, "http://127.0.0.1:1", Some(memory))
-    }
-
-    fn start_with_options(mode: &str, api_url: &str, memory: Option<&str>) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         let bin = root.join("bin");
@@ -77,12 +69,12 @@ impl Simulation {
         fs::write(root.join("mode"), mode).unwrap();
         let qemu_data = root.join("share/qemu");
         fs::create_dir_all(qemu_data.join("firmware")).unwrap();
-        let x86_code = qemu_data.join("guest-x86-code.fd");
-        let x86_vars = qemu_data.join("guest-x86-vars.fd");
+        let x86_code = qemu_data.join("environment-x86-code.fd");
+        let x86_vars = qemu_data.join("environment-x86-vars.fd");
         fs::write(&x86_code, "x86 firmware code").unwrap();
         fs::write(&x86_vars, "x86 firmware variables").unwrap();
         fs::write(
-            qemu_data.join("firmware/00-guest-x86.json"),
+            qemu_data.join("firmware/00-environment-x86.json"),
             serde_json::json!({
                 "interface-types": ["uefi"],
                 "mapping": {
@@ -95,8 +87,8 @@ impl Simulation {
             .to_string(),
         )
         .unwrap();
-        let code = qemu_data.join("guest-arm-code.fd");
-        let vars = qemu_data.join("guest-arm-vars.fd");
+        let code = qemu_data.join("environment-arm-code.fd");
+        let vars = qemu_data.join("environment-arm-vars.fd");
         fs::write(&code, "QEMU firmware code").unwrap();
         fs::write(&vars, "QEMU firmware variables").unwrap();
         let secure_code = qemu_data.join("secure-arm-code.fd");
@@ -113,7 +105,7 @@ impl Simulation {
         )
         .unwrap();
         fs::write(
-            qemu_data.join("firmware/01-guest-arm.json"),
+            qemu_data.join("firmware/01-environment-arm.json"),
             serde_json::json!({
                 "interface-types": ["uefi"],
                 "mapping": {
@@ -147,9 +139,6 @@ impl Simulation {
         }
         let mut paths = vec![bin];
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-        if matches!(mode, "local-iso" | "local-iso-default-image") {
-            fs::write(root.join("local guest.iso"), b"local ISO fixture").unwrap();
-        }
         let child = Command::new(assert_cmd::cargo::cargo_bin!("snouty"))
             .env_clear()
             .env("PATH", std::env::join_paths(paths).unwrap())
@@ -166,27 +155,22 @@ impl Simulation {
             .env("ANTITHESIS_BASE_URL", api_url)
             .env("ANTITHESIS_REPOSITORY", "registry.example/team/")
             .envs(match mode {
-                "local-iso" | "local-iso-default-image" => {
-                    vec![("SNOUTY_SIMULATE_GUEST_ISO", "local guest.iso")]
-                }
                 "missing-local-iso" => vec![("SNOUTY_SIMULATE_GUEST_ISO", "missing.iso")],
                 "directory-local-iso" => vec![("SNOUTY_SIMULATE_GUEST_ISO", "config")],
                 "empty-local-iso" => vec![("SNOUTY_SIMULATE_GUEST_ISO", "")],
                 _ => vec![],
             })
-            .args(if mode == "human" || mode == "human-blocked-upload" {
+            .args(if mode == "human-blocked-upload" {
                 vec!["simulate"]
             } else {
                 vec!["--json", "simulate"]
             })
             .arg(config)
-            .args(
-                if matches!(mode, "default-image" | "local-iso-default-image") {
-                    vec![]
-                } else {
-                    vec!["--environment-image", "guest:test"]
-                },
-            )
+            .args(if mode == "default-image" {
+                vec![]
+            } else {
+                vec!["--environment-image", "environment:test"]
+            })
             .args([
                 "--platform",
                 if mode.starts_with("arm64") {
@@ -197,11 +181,7 @@ impl Simulation {
             ])
             .args([
                 "--timeout",
-                if matches!(mode, "startup-timeout" | "login-timeout") {
-                    "1s"
-                } else {
-                    "10s"
-                },
+                if mode == "login-timeout" { "1s" } else { "10s" },
             ])
             .args(if mode == "clean-once" {
                 vec!["--disable-restart"]
@@ -226,7 +206,6 @@ impl Simulation {
             } else {
                 Vec::new()
             })
-            .args(memory.into_iter().flat_map(|memory| ["--memory", memory]))
             .stdin(Stdio::null())
             .stdout(if mode.starts_with("blocked-output") {
                 Stdio::piped()
@@ -285,7 +264,21 @@ impl Simulation {
 }
 
 impl Drop for Simulation {
+    /// Asks snouty to stop first, so that it removes its socket directory in
+    /// /tmp, which ignores TMPDIR.
     fn drop(&mut self) {
+        if self.child.try_wait().is_ok_and(|status| status.is_none()) {
+            let _ = kill(
+                Pid::from_raw(self.child.id().cast_signed()),
+                Signal::SIGTERM,
+            );
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while self.child.try_wait().is_ok_and(|status| status.is_none())
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
         for file in ["qemu_pid", "qemu_child_pid"] {
@@ -297,138 +290,7 @@ impl Drop for Simulation {
 }
 
 #[test]
-fn configured_memory_is_passed_to_qemu() {
-    let mut simulation = Simulation::start_with_memory("clean-once", "4096");
-    simulation.wait_for("qemu_args", "-m");
-    let args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
-    assert!(args.windows(2).any(|args| args == ["-m", "4096"]));
-}
-
-#[test]
-fn simulation_attaches_workload_images_as_a_read_only_erofs_drive() {
-    let mut simulation = Simulation::start("clean-once");
-    simulation.wait_for("stdout", "workload");
-    let args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
-    let images_drive = simulation.read("images_drive");
-    assert!(images_drive.ends_with("/images.erofs,if=none,id=inject,format=raw,readonly=on"));
-    let drives: Vec<_> = args
-        .windows(2)
-        .filter(|args| args[0] == "-drive" || args[0] == "-device")
-        .map(|args| args[1].as_str())
-        .filter(|arg| !arg.starts_with("virtio-net-pci"))
-        .collect();
-    assert_eq!(
-        drives,
-        [
-            images_drive.as_str(),
-            "virtio-blk-pci,drive=inject,serial=antithesis-inject"
-        ]
-    );
-    assert_eq!(simulation.read("images_drive_magic"), "e2e1f5e0");
-    let run_dir = simulation.read("run_dir");
-    kill(
-        Pid::from_raw(simulation.child.id().cast_signed()),
-        Signal::SIGTERM,
-    )
-    .unwrap();
-    simulation.finish();
-    assert!(!Path::new(&run_dir).join("images.erofs").exists());
-}
-
-#[test]
-fn guest_has_no_vga_and_lets_qemu_assign_the_network_address() {
-    let mut simulation = Simulation::start("clean-once");
-    simulation.wait_for("qemu_args", "-vga");
-    let args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
-    assert!(args.windows(2).any(|args| args == ["-vga", "none"]));
-    assert!(args.iter().any(|arg| arg == "virtio-net-pci,netdev=net0"));
-}
-
-#[test]
-fn guest_has_no_unused_default_devices() {
-    let mut simulation = Simulation::start("clean-once");
-    simulation.wait_for("qemu_args", "-nodefaults");
-    let args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
-    assert!(args.iter().any(|arg| arg == "-nodefaults"));
-}
-
-#[test]
-fn openssh_connects_through_snouty_fd_proxy() {
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixListener;
-
-    let mut simulation = Simulation::start("clean-once");
-    simulation.wait_for("ssh_config", "ProxyCommand");
-    let config = simulation.read("ssh_config");
-    let args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
-    let socket = args
-        .iter()
-        .find_map(|arg| {
-            arg.strip_prefix("user,id=net0,hostfwd=unix:")
-                .and_then(|arg| arg.strip_suffix("-:22,restrict=yes"))
-        })
-        .unwrap();
-    let listener = UnixListener::bind(socket).unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let server = std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let mut stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(Instant::now() < deadline, "SSH proxy did not connect");
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(error) => panic!("{error}"),
-            }
-        };
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        stream.write_all(b"SSH-2.0-snouty_test\r\n").unwrap();
-        let mut banner = String::new();
-        BufReader::new(stream).read_line(&mut banner).unwrap();
-        assert!(banner.starts_with("SSH-2.0-"), "{banner:?}");
-    });
-    let config_path = simulation.root().join("proxy_config");
-    fs::write(&config_path, config).unwrap();
-    let output = Command::new("ssh")
-        .arg("-F")
-        .arg(config_path)
-        .args(["guest_vm", "true"])
-        .stdin(Stdio::null())
-        .output()
-        .unwrap();
-    server.join().unwrap();
-    // The fake server closes after the SSH banner exchange, before key exchange.
-    assert!(!output.status.success());
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(!error.contains("mm_receive_fd"), "{error}");
-    assert!(
-        !error.contains("failed to pass the simulation environment's SSH socket"),
-        "{error}"
-    );
-}
-
-#[test]
-fn guest_uses_q35_with_acceleration_fallback() {
-    let mut simulation = Simulation::start("clean-once");
-    simulation.wait_for("qemu_args", "i8042=off");
-    let args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
-    let accelerator = if cfg!(target_os = "macos") {
-        "hvf:tcg"
-    } else {
-        "kvm:tcg"
-    };
-    assert!(
-        args.windows(2)
-            .any(|args| { args == ["-machine", &format!("q35,i8042=off,accel={accelerator}")] })
-    );
-    assert!(args.windows(2).any(|args| args == ["-cpu", "max"]));
-}
-
-#[test]
-fn arm64_guest_uses_uefi_and_arm64_images() {
+fn arm64_environment_uses_uefi_and_arm64_images() {
     let mut simulation = Simulation::start("arm64");
     simulation.wait_for("stdout", "workload running");
     assert_eq!(simulation.read("qemu_tool"), "qemu-system-aarch64");
@@ -470,7 +332,7 @@ fn arm64_guest_uses_uefi_and_arm64_images() {
     let pull: serde_json::Value = serde_json::from_str(&simulation.read("pull_args")).unwrap();
     assert_eq!(
         pull,
-        serde_json::json!(["pull", "--platform", "linux/arm64", "guest:test"])
+        serde_json::json!(["pull", "--platform", "linux/arm64", "environment:test"])
     );
     let create: Vec<String> = serde_json::from_str(&simulation.read("create_args")).unwrap();
     assert!(
@@ -513,7 +375,7 @@ fn combined_firmware_uses_bios_without_copying_image() {
 }
 
 #[test]
-fn arm64_guest_rejects_amd64_workload_images() {
+fn arm64_environment_rejects_amd64_workload_images() {
     let mut simulation = Simulation::start("arm64-wrong-workload");
     let output = simulation.finish();
     assert_eq!(output.status.code(), Some(1));
@@ -547,62 +409,6 @@ fn interrupted_startup_cleanup_ignores_unowned_paths() {
     assert_eq!(fs::read_to_string(sentinel).unwrap(), "keep");
 }
 
-fn start_shell_simulation(mode: &str) -> (TempDir, OsSession) {
-    let directory = tempfile::tempdir().unwrap();
-    let root = directory.path();
-    let bin = root.join("bin");
-    fs::create_dir(&bin).unwrap();
-    let python = which::which("python3").expect("simulation fixtures require Python 3");
-    let script = bin.join("mock_tools.py");
-    fs::write(
-        &script,
-        format!(
-            "#!{}\n{}",
-            python.display(),
-            include_str!("fixtures/simulate/mock_tools.py")
-        ),
-    )
-    .unwrap();
-    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-    for tool in ["docker", "ssh", "ssh-keygen", "qemu-system-x86_64"] {
-        symlink(&script, bin.join(tool)).unwrap();
-    }
-    fs::write(root.join("mode"), mode).unwrap();
-    let home = root.join("home");
-    fs::create_dir(&home).unwrap();
-    let mut paths = vec![bin];
-    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("snouty"));
-    command
-        .env_clear()
-        .env("PATH", std::env::join_paths(paths).unwrap())
-        .env("HOME", &home)
-        .env("XDG_CONFIG_HOME", root.join("settings"))
-        .env("XDG_CACHE_HOME", root.join("cache"))
-        .env("XDG_RUNTIME_DIR", root.join("runtime"))
-        .env("SNOUTY_UNSTABLE_FEATURES", "simulate")
-        .env("SNOUTY_CONTAINER_ENGINE", "docker")
-        .env("TMPDIR", root)
-        .current_dir(root)
-        .env("TERM", "xterm-256color")
-        .args([
-            "simulate",
-            "--shell",
-            "--environment-image",
-            "guest:test",
-            "--timeout",
-            "10s",
-        ]);
-    if mode == "shell-local-iso" {
-        let iso = root.join("local guest.iso");
-        fs::write(&iso, b"local ISO fixture").unwrap();
-        command.env("SNOUTY_SIMULATE_GUEST_ISO", iso);
-    }
-    let mut session = OsSession::spawn(command).expect("spawn shell simulation on a PTY");
-    session.set_expect_timeout(Some(Duration::from_secs(15)));
-    (directory, session)
-}
-
 fn attach_command(root: &Path, id: &str) -> Command {
     let mut paths = vec![root.join("bin")];
     paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
@@ -620,88 +426,6 @@ fn attach_command(root: &Path, id: &str) -> Command {
         .current_dir(root)
         .args(["simulate", "--attach", id]);
     command
-}
-
-#[test]
-fn hidden_shell_uses_local_guest_iso() {
-    let (directory, mut session) = start_shell_simulation("shell-local-iso");
-    let root = directory.path();
-    Expect::expect(&mut session, "guest shell ready").unwrap();
-    let args: Vec<String> =
-        serde_json::from_str(&fs::read_to_string(root.join("qemu_args")).unwrap()).unwrap();
-    let iso = fs::canonicalize(root.join("local guest.iso")).unwrap();
-    assert!(
-        args.windows(2)
-            .any(|args| args[0] == "-cdrom" && Path::new(&args[1]) == iso)
-    );
-    for marker in ["guest_image", "pull_args", "create_args"] {
-        assert!(!root.join(marker).exists(), "{marker}");
-    }
-    Expect::send_line(&mut session, "exit").unwrap();
-    Expect::expect(&mut session, expectrl::Eof).unwrap();
-    assert!(matches!(
-        session.get_process().wait().unwrap(),
-        WaitStatus::Exited(_, 0)
-    ));
-    assert_eq!(fs::read(iso).unwrap(), b"local ISO fixture");
-}
-
-#[test]
-fn hidden_shell_bypasses_compose_and_owns_the_terminal() {
-    let (directory, mut session) = start_shell_simulation("shell");
-    let root = directory.path();
-    let boot =
-        Expect::expect(&mut session, "private boot console").expect("boot console is visible");
-    assert!(!boot.as_bytes().windows(5).any(|bytes| bytes == b"\x1b[18t"));
-    assert!(!boot.as_bytes().windows(4).any(|bytes| bytes == b"\x1b[6n"));
-    Expect::expect(&mut session, "guest shell ready").expect("guest shell opened");
-    let qemu_args: Vec<String> =
-        serde_json::from_str(&fs::read_to_string(root.join("qemu_args")).unwrap()).unwrap();
-    // The guest imports the inject drive at boot, so it is always attached.
-    assert!(
-        qemu_args
-            .iter()
-            .any(|arg| arg == "virtio-blk-pci,drive=inject,serial=antithesis-inject")
-    );
-    assert_eq!(
-        fs::read_to_string(root.join("images_drive_magic")).unwrap(),
-        "e2e1f5e0"
-    );
-    Expect::send_line(&mut session, "whoami").expect("write to guest shell");
-    Expect::expect(&mut session, "root").expect("guest shell replied");
-    Expect::send_line(&mut session, "poweroff").expect("power off guest");
-    let closing =
-        Expect::expect(&mut session, "Stopping simulation...").expect("simulation stopped");
-    let tail = Expect::expect(&mut session, expectrl::Eof).expect("simulation closed its terminal");
-    let status = session
-        .get_process()
-        .wait()
-        .expect("wait for shell simulation");
-    let poweroff = fs::read_to_string(root.join("guest_poweroff")).unwrap_or_default();
-    assert!(
-        matches!(status, WaitStatus::Exited(_, 0)),
-        "shell simulation failed: {status:?}; guest_poweroff={poweroff:?}\n{}",
-        String::from_utf8_lossy(tail.as_bytes())
-    );
-    assert_eq!(
-        fs::read_to_string(root.join("shell_opened")).unwrap(),
-        "yes"
-    );
-    assert_eq!(
-        fs::read_to_string(root.join("shell_input")).unwrap(),
-        "whoami\npoweroff"
-    );
-    assert!(!root.join("rollout_started").exists());
-    assert_eq!(poweroff, "yes");
-    let closing = String::from_utf8_lossy(closing.as_bytes());
-    assert_eq!(
-        closing.matches("Connection to 127.0.0.1 closed.").count(),
-        1
-    );
-    assert!(!closing.contains("closed by remote host"));
-    assert_eq!(fs::read_to_string(root.join("qemu_signal")).unwrap(), "15");
-    let run_dir = fs::read_to_string(root.join("run_dir")).unwrap();
-    assert!(!Path::new(&run_dir).exists());
 }
 
 #[test]
@@ -730,7 +454,7 @@ fn attach_opens_shell_without_stopping_compose_simulation() {
 
     let mut shell = OsSession::spawn(attach_command(simulation.root(), id)).unwrap();
     shell.set_expect_timeout(Some(Duration::from_secs(15)));
-    Expect::expect(&mut shell, "guest shell ready").unwrap();
+    Expect::expect(&mut shell, "environment shell ready").unwrap();
     Expect::send_line(&mut shell, "whoami").unwrap();
     Expect::expect(&mut shell, "root").unwrap();
     Expect::send_line(&mut shell, "exit").unwrap();
@@ -829,40 +553,6 @@ fn attach_rejects_a_stopped_simulation_with_retained_logs() {
 }
 
 #[test]
-fn interrupting_shell_boot_stops_qemu_and_removes_runtime_files() {
-    let (directory, mut session) = start_shell_simulation("shell-booting");
-    let root = directory.path();
-    Expect::expect(&mut session, "private boot console").expect("guest started booting");
-    Expect::send(&mut session, ControlCode::ETX).expect("interrupt guest boot");
-    let tail = Expect::expect(&mut session, expectrl::Eof).expect("simulation closed its terminal");
-    let status = session
-        .get_process()
-        .wait()
-        .expect("wait for shell simulation");
-    assert!(
-        matches!(status, WaitStatus::Exited(_, 130)),
-        "shell simulation failed: {status:?}\n{}",
-        String::from_utf8_lossy(tail.as_bytes())
-    );
-    for file in ["qemu_pid", "qemu_child_pid"] {
-        let pid: i32 = fs::read_to_string(root.join(file))
-            .unwrap()
-            .parse()
-            .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while kill(Pid::from_raw(pid), None).is_ok() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(
-            kill(Pid::from_raw(pid), None).is_err(),
-            "child {pid} survived interrupt"
-        );
-    }
-    let run_dir = fs::read_to_string(root.join("run_dir")).unwrap();
-    assert!(!Path::new(&run_dir).exists());
-}
-
-#[test]
 fn assertion_failure_is_latched_until_interruption_and_children_are_reaped() {
     let mut simulation = Simulation::start("assertion");
     simulation.wait_for("stdout", "still running after assertion");
@@ -918,32 +608,10 @@ fn assertion_failure_is_latched_until_interruption_and_children_are_reaped() {
         "existing host key\n"
     );
     assert_eq!(simulation.read("key_mode"), "0o600");
-    assert_eq!(simulation.read("authorized_key"), "fixture public key\n");
     let private_key = simulation.read("private_key_path");
     let public_key = simulation.read("public_key_path");
     assert!(!Path::new(&private_key).exists());
     assert!(!Path::new(&public_key).exists());
-    let qemu_args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
-    let fw_cfg = qemu_args
-        .windows(2)
-        .find(|args| args[0] == "-fw_cfg")
-        .map(|args| &args[1])
-        .unwrap();
-    assert_eq!(
-        fw_cfg,
-        &format!("name=opt/antithesis/authorized_key,file={public_key}")
-    );
-    assert!(
-        !qemu_args
-            .iter()
-            .any(|arg| arg == &format!("name=opt/antithesis/authorized_key,file={private_key}"))
-    );
-    assert!(
-        qemu_args
-            .iter()
-            .any(|arg| arg.contains("hostfwd=unix:/tmp/snouty")
-                && arg.ends_with("-:22,restrict=yes"))
-    );
     let ssh_config = simulation.read("ssh_config");
     assert!(ssh_config.contains("IdentitiesOnly yes"));
     assert!(ssh_config.contains("IdentityAgent none"));
@@ -954,21 +622,11 @@ fn assertion_failure_is_latched_until_interruption_and_children_are_reaped() {
     assert!(ssh_config.contains("ProxyUseFdpass yes"));
     assert!(ssh_config.contains(" internal-ssh-proxy "));
     assert!(!ssh_config.contains("\n Port "));
-    let socket = qemu_args
-        .iter()
-        .find_map(|arg| {
-            arg.strip_prefix("user,id=net0,hostfwd=unix:")
-                .and_then(|arg| arg.strip_suffix("-:22,restrict=yes"))
-        })
-        .unwrap();
-    assert!(ssh_config.contains(socket));
-    assert!(!Path::new(socket).parent().unwrap().exists());
     assert!(!ssh_config.contains(".pub"));
-    assert!(!simulation.read("qemu_args").contains("-qmp"));
 }
 
 #[test]
-fn json_events_are_annotated_with_guest_faults() {
+fn json_events_are_annotated_with_environment_faults() {
     let mut simulation = Simulation::start("fault-annotation");
     simulation.wait_for("stdout", "balance stays positive");
     kill(
@@ -1155,7 +813,7 @@ fn clean_single_rollout_keeps_streaming_and_preserves_signal_exit_status() {
 }
 
 #[test]
-fn interrupt_powers_off_guest_and_drains_final_output() {
+fn interrupt_powers_off_environment_and_drains_final_output() {
     let mut simulation = Simulation::start("clean-once");
     simulation.wait_for("stdout", "workload running");
     let start = Instant::now();
@@ -1251,32 +909,7 @@ fn assertion_written_at_shutdown_is_included_in_final_status() {
 }
 
 #[test]
-fn local_guest_iso_bypasses_image_resolution_and_download() {
-    for mode in ["local-iso", "local-iso-default-image"] {
-        let mut simulation = Simulation::start(mode);
-        simulation.wait_for("compose_started", "yes");
-        let args: Vec<String> = serde_json::from_str(&simulation.read("qemu_args")).unwrap();
-        let iso = fs::canonicalize(simulation.root().join("local guest.iso")).unwrap();
-        assert!(
-            args.windows(2)
-                .any(|args| args[0] == "-cdrom" && Path::new(&args[1]) == iso)
-        );
-        for marker in ["guest_image", "pull_args", "create_args"] {
-            assert!(!simulation.root().join(marker).exists(), "{marker}");
-        }
-        assert!(simulation.root().join("save_args").exists());
-        kill(
-            Pid::from_raw(simulation.child.id().cast_signed()),
-            Signal::SIGTERM,
-        )
-        .unwrap();
-        simulation.finish();
-        assert_eq!(fs::read(iso).unwrap(), b"local ISO fixture");
-    }
-}
-
-#[test]
-fn invalid_local_guest_iso_aborts_without_falling_back_to_an_image() {
+fn invalid_local_environment_iso_aborts_without_falling_back_to_an_image() {
     for mode in [
         "missing-local-iso",
         "directory-local-iso",
@@ -1291,20 +924,20 @@ fn invalid_local_guest_iso_aborts_without_falling_back_to_an_image() {
                 .contains("SNOUTY_SIMULATE_GUEST_ISO")
         );
         assert!(!simulation.root().join("qemu_pid").exists());
-        assert!(!simulation.root().join("guest_image").exists());
+        assert!(!simulation.root().join("environment_image").exists());
     }
 }
 
 #[test]
-fn missing_guest_image_is_pulled_before_boot() {
-    let mut simulation = Simulation::start("missing-guest");
+fn missing_environment_image_is_pulled_before_boot() {
+    let mut simulation = Simulation::start("missing-environment");
     simulation.wait_for("stdout", "workload running");
     let args: serde_json::Value = serde_json::from_str(&simulation.read("pull_args")).unwrap();
     assert_eq!(
         args,
-        serde_json::json!(["pull", "--platform", "linux/amd64", "guest:test"])
+        serde_json::json!(["pull", "--platform", "linux/amd64", "environment:test"])
     );
-    assert_eq!(simulation.read("pulled"), "guest:test");
+    assert_eq!(simulation.read("pulled"), "environment:test");
     kill(
         Pid::from_raw(simulation.child.id().cast_signed()),
         Signal::SIGTERM,
@@ -1314,39 +947,18 @@ fn missing_guest_image_is_pulled_before_boot() {
 }
 
 #[test]
-fn failed_guest_pull_never_starts_qemu() {
+fn failed_environment_pull_never_starts_qemu() {
     let mut simulation = Simulation::start("pull-failure");
     let output = simulation.finish();
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains("cannot pull simulation environment image guest:test"),
+        stderr.contains("cannot pull simulation environment image environment:test"),
         "{stderr}"
     );
     assert!(stderr.contains("registry denied fixture"), "{stderr}");
     assert!(!simulation.root().join("qemu_pid").exists());
     assert!(!simulation.root().join("pulled").exists());
-}
-
-#[test]
-fn startup_timeout_reaps_qemu_and_reports_boot_diagnostics() {
-    let mut simulation = Simulation::start("startup-timeout");
-    let output = simulation.finish();
-    assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(
-        stderr
-            .contains("simulation environment startup timed out waiting for SSH readiness marker"),
-        "{stderr}"
-    );
-    assert!(stderr.contains("private boot console"), "{stderr}");
-    let pid: i32 = simulation.read("qemu_pid").parse().unwrap();
-    assert!(
-        kill(Pid::from_raw(pid), None).is_err(),
-        "QEMU survived startup timeout"
-    );
-    assert!(!simulation.root().join("rollout_started").exists());
-    assert!(!simulation.root().join("ssh_invoked").exists());
 }
 
 #[test]
@@ -1400,7 +1012,7 @@ fn unread_output_backlog_preserves_command_and_assertion_failures() {
 }
 
 #[tokio::test]
-async fn guest_image_defaults_to_configured_repository() {
+async fn environment_image_defaults_to_configured_repository() {
     let server = wiremock::MockServer::start().await;
     wiremock::Mock::given(wiremock::matchers::method("GET"))
         .and(wiremock::matchers::path("/api/version"))
@@ -1417,7 +1029,7 @@ async fn guest_image_defaults_to_configured_repository() {
         let mut simulation = Simulation::start_with_api("default-image", &api_url);
         simulation.wait_for("stdout", "workload running");
         assert_eq!(
-            simulation.read("guest_image"),
+            simulation.read("environment_image"),
             "registry.example/team/antithesis-guest:v67.3"
         );
         kill(
@@ -1432,11 +1044,11 @@ async fn guest_image_defaults_to_configured_repository() {
 }
 
 #[test]
-fn default_guest_image_works_without_api_access() {
+fn default_environment_image_works_without_api_access() {
     let mut simulation = Simulation::start("default-image");
     simulation.wait_for("stdout", "workload running");
     assert_eq!(
-        simulation.read("guest_image"),
+        simulation.read("environment_image"),
         "registry.example/team/antithesis-guest:v67.3"
     );
     kill(

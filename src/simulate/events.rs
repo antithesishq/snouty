@@ -36,7 +36,7 @@ fn frame(line: &str) -> Option<Frame<'_>> {
     })
 }
 
-/// Convert one guest instrumentation frame to the log-entry shape consumed by
+/// Convert one environment instrumentation frame to the log-entry shape consumed by
 /// fault annotation and event rendering.
 #[allow(
     clippy::case_sensitive_file_extension_comparisons,
@@ -680,7 +680,7 @@ mod tests {
     }
 
     #[test]
-    fn guest_faults_annotate_later_log_entries() {
+    fn environment_faults_annotate_later_log_entries() {
         let mut annotator = FaultAnnotator::default();
         let mut fault = log_entry(
             r#"1 [fault_injector] [JSON] {"fault":{"name":"clog","type":"network","affected_nodes":["workload"],"max_duration":2}}"#,

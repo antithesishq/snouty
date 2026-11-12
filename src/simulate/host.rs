@@ -15,7 +15,7 @@ use super::{
     events::{self, Event, Failure},
     images::Images,
     serial::{LogStream, MAX_RECORD_BYTES, serial_lines},
-    vm::{BootOutput, GuestConnection, Vm},
+    vm::{BootOutput, EnvironmentConnection, Vm},
 };
 use crate::{
     OutputOptions,
@@ -34,8 +34,8 @@ const WORKLOAD_KIND: &str = include_str!("assets/workload-kind.sh");
 const RECREATE: &str = include_str!("assets/recreate.sh");
 const STATUS: &str = include_str!("assets/status.sh");
 const ATTACH_READY: &str = "attach-ready";
-const GUEST_VERSION: &str = "v67.3";
-const GUEST_ISO_ENV: &str = "SNOUTY_SIMULATE_GUEST_ISO";
+const ENVIRONMENT_VERSION: &str = "v67.3";
+const ENVIRONMENT_ISO_ENV: &str = "SNOUTY_SIMULATE_GUEST_ISO";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -62,11 +62,11 @@ enum WorkloadCycle {
     },
 }
 
-async fn add_entropy(guest: &Vm) -> Result<tokio::time::Instant> {
+async fn add_entropy(environment: &Vm) -> Result<tokio::time::Instant> {
     let mut bytes = [0; 8];
     getrandom::fill(&mut bytes).map_err(|error| eyre!("generating entropy seed: {error}"))?;
     let next = tokio::time::Instant::now() + Duration::from_secs(30);
-    guest
+    environment
         .run_script(&format!(
             "/etc/fuzzing/add_entropy {} true\n",
             u64::from_ne_bytes(bytes)
@@ -124,7 +124,7 @@ pub(super) fn attach(id: &SimulationId) -> Result<ExitCode> {
     {
         bail!("simulation {id} is no longer running");
     }
-    GuestConnection::new(&path).exec_interactive_shell()
+    EnvironmentConnection::new(&path).exec_interactive_shell()
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -317,7 +317,7 @@ pub(super) async fn run(
     settings: &Settings,
     options: OutputOptions,
 ) -> Result<ExitCode> {
-    let guest = resolve_guest(args.environment_image, settings)?;
+    let environment = resolve_environment(args.environment_image, settings)?;
     let runtime = container::runtime(settings)?;
     container::warn_ambiguous_engine(settings, runtime.as_ref(), options.json);
     let compose = compose::DockerCompose::resolve(runtime.as_ref(), config.clone())?;
@@ -357,7 +357,9 @@ pub(super) async fn run(
     let mut instrumentation = None;
     let execution = async {
         eprintln!("Preparing simulation environment image...");
-        let iso = guest.iso(&images, run_dir.path(), args.platform).await?;
+        let iso = environment
+            .iso(&images, run_dir.path(), args.platform)
+            .await?;
         eprintln!("Preparing workload images...");
         let inject_disk =
             workload_inject_disk(&images, references, run_dir.path(), args.platform).await?;
@@ -374,8 +376,8 @@ pub(super) async fn run(
             )
             .await?,
         );
-        let guest = vm.as_mut().expect("guest booted");
-        guest
+        let environment = vm.as_mut().expect("environment booted");
+        environment
             .run_script(PREPARE)
             .await
             .wrap_err("preparing the simulation environment")?;
@@ -392,17 +394,17 @@ pub(super) async fn run(
             .expect("writing to a String cannot fail");
         }
         configure.push('\n');
-        guest
+        environment
             .run_script(&configure)
             .await
             .wrap_err("configuring faults with configure.py")?;
         if args.fault_tolerance == crate::api::FaultTolerance::None {
-            guest
+            environment
                 .run_script(DISABLE_FAULTS)
                 .await
                 .wrap_err("disabling faults")?;
         } else {
-            guest
+            environment
                 .run_script("fault_injector_update --pause\n")
                 .await
                 .wrap_err("pausing faults before setup")?;
@@ -420,11 +422,11 @@ pub(super) async fn run(
             return Ok::<_, color_eyre::Report>(());
         }
         eprintln!("Uploading Compose configuration...");
-        guest.upload_config(config.dir()).await?;
-        instrumentation = Some(guest.instrumentation_log().to_owned());
-        consumed = std::fs::metadata(guest.instrumentation_log())?.len();
-        logs = Some(serial_lines(guest.instrumentation_log(), consumed)?);
-        guest
+        environment.upload_config(config.dir()).await?;
+        instrumentation = Some(environment.instrumentation_log().to_owned());
+        consumed = std::fs::metadata(environment.instrumentation_log())?.len();
+        logs = Some(serial_lines(environment.instrumentation_log(), consumed)?);
+        environment
             .run_script(START)
             .await
             .wrap_err("starting Compose project")?;
@@ -442,12 +444,12 @@ pub(super) async fn run(
                         && matches!(cycle, WorkloadCycle::WaitingForSetup)
                     {
                         if args.fault_tolerance != crate::api::FaultTolerance::None {
-                            guest.run_script("fault_injector_update --unpause\n").await.wrap_err("unpausing faults")?;
+                            environment.run_script("fault_injector_update --unpause\n").await.wrap_err("unpausing faults")?;
                         }
-                        let workload = guest.run_script(WORKLOAD_KIND).await.wrap_err("classifying workload")?;
+                        let workload = environment.run_script(WORKLOAD_KIND).await.wrap_err("classifying workload")?;
                         let workload = serde_json::from_str::<WorkloadKind>(&workload).wrap_err("reading workload kind")?;
-                        guest.run_script(START_COMPOSER).await.wrap_err("starting test composer")?;
-                        cycle = WorkloadCycle::Running { entropy_at: add_entropy(guest).await?, workload };
+                        environment.run_script(START_COMPOSER).await.wrap_err("starting test composer")?;
+                        cycle = WorkloadCycle::Running { entropy_at: add_entropy(environment).await?, workload };
                     }
                     output.event(&line, &mut summary, RunPhase::Running).await?;
                     if output.closed { return Ok::<_, color_eyre::Report>(()); }
@@ -463,12 +465,12 @@ pub(super) async fn run(
                         } => {},
                     }
                 } => {
-                    if !guest.is_running()? { bail!("QEMU exited unexpectedly\n{}", guest.boot_diagnostics()); }
+                    if !environment.is_running()? { bail!("QEMU exited unexpectedly\n{}", environment.boot_diagnostics()); }
                     if let WorkloadCycle::Running { entropy_at, ref workload } = cycle {
-                        let status = tokio::time::timeout(Duration::from_secs(15), guest.run_script(STATUS)).await.wrap_err("health check timed out")?.wrap_err("checking service health")?;
+                        let status = tokio::time::timeout(Duration::from_secs(15), environment.run_script(STATUS)).await.wrap_err("health check timed out")?.wrap_err("checking service health")?;
                         if matches!(serde_json::from_str::<ComposerStatus>(&status).wrap_err("reading test composer status")?, ComposerStatus::Completed) {
                             if matches!(workload, WorkloadKind::Composed) && !args.disable_restart {
-                                guest.run_script(RECREATE).await.wrap_err("recreating Compose project")?;
+                                environment.run_script(RECREATE).await.wrap_err("recreating Compose project")?;
                                 cycle = WorkloadCycle::WaitingForSetup;
                             } else {
                                 eprintln!("Test composer completed; leaving the local Compose project running");
@@ -479,7 +481,7 @@ pub(super) async fn run(
                     match &mut cycle {
                         WorkloadCycle::Running { entropy_at, .. } | WorkloadCycle::ComposerCompleted { entropy_at } => {
                             if tokio::time::Instant::now() >= *entropy_at {
-                                *entropy_at = add_entropy(guest).await?;
+                                *entropy_at = add_entropy(environment).await?;
                             }
                         }
                         WorkloadCycle::WaitingForSetup => {},
@@ -505,10 +507,10 @@ pub(super) async fn run(
         .as_ref()
         .and_then(|path| std::fs::metadata(path).ok())
         .map_or(consumed, |m| m.len());
-    if let Some(guest) = &mut vm {
+    if let Some(environment) = &mut vm {
         eprintln!("Stopping simulation...");
         let shutdown = tokio::select! {
-            result = guest.shutdown() => result,
+            result = environment.shutdown() => result,
             _ = signals.receive() => Ok(()),
         };
         if let Err(error) = shutdown {
@@ -584,7 +586,7 @@ async fn workload_inject_disk(
     Ok(disk)
 }
 
-/// Convert image archives into the read-only EROFS drive that the guest
+/// Convert image archives into the read-only EROFS drive that the environment
 /// imports at boot. With no archives the drive holds an empty store.
 async fn inject_disk(archives: Vec<PathBuf>, run_dir: &Path) -> Result<PathBuf> {
     let disk = run_dir.join("images.erofs");
@@ -599,12 +601,12 @@ async fn inject_disk(archives: Vec<PathBuf>, run_dir: &Path) -> Result<PathBuf> 
     Ok(disk)
 }
 
-enum Guest {
+enum Environment {
     Iso(PathBuf),
     Image(String),
 }
 
-impl Guest {
+impl Environment {
     async fn iso(
         self,
         images: &Images,
@@ -613,38 +615,42 @@ impl Guest {
     ) -> Result<PathBuf> {
         match self {
             Self::Iso(path) => Ok(path),
-            Self::Image(image) => images.guest_iso(&image, run_dir, platform).await,
+            Self::Image(image) => images.environment_iso(&image, run_dir, platform).await,
         }
     }
 }
 
-fn resolve_guest(image: Option<String>, settings: &Settings) -> Result<Guest> {
-    if let Some(path) = std::env::var_os(GUEST_ISO_ENV) {
+fn resolve_environment(image: Option<String>, settings: &Settings) -> Result<Environment> {
+    if let Some(path) = std::env::var_os(ENVIRONMENT_ISO_ENV) {
         let path = PathBuf::from(path);
-        let iso = std::fs::canonicalize(&path)
-            .wrap_err_with(|| format!("cannot use {GUEST_ISO_ENV} path {}", path.display()))?;
+        let iso = std::fs::canonicalize(&path).wrap_err_with(|| {
+            format!("cannot use {ENVIRONMENT_ISO_ENV} path {}", path.display())
+        })?;
         if !iso.is_file() {
-            bail!("{GUEST_ISO_ENV} path is not a file: {}", path.display());
+            bail!(
+                "{ENVIRONMENT_ISO_ENV} path is not a file: {}",
+                path.display()
+            );
         }
-        return Ok(Guest::Iso(iso));
+        return Ok(Environment::Iso(iso));
     }
-    Ok(Guest::Image(if let Some(image) = image {
+    Ok(Environment::Image(if let Some(image) = image {
         with_default_tag(image)
     } else {
         let repository = crate::settings::require_setting(settings.repository(), "repository")?;
         format!(
-            "{}/antithesis-guest:{GUEST_VERSION}",
+            "{}/antithesis-guest:{ENVIRONMENT_VERSION}",
             repository.trim_end_matches('/')
         )
     }))
 }
 
 /// Tag a `--environment-image` that names neither a tag nor a digest with
-/// [`GUEST_VERSION`], so `REPOSITORY/antithesis-guest` means the default
+/// [`ENVIRONMENT_VERSION`], so `REPOSITORY/antithesis-guest` means the default
 /// release instead of `latest`.
 fn with_default_tag(image: String) -> String {
     if crate::container::image_repo(&image) == image {
-        format!("{image}:{GUEST_VERSION}")
+        format!("{image}:{ENVIRONMENT_VERSION}")
     } else {
         image
     }
@@ -652,19 +658,26 @@ fn with_default_tag(image: String) -> String {
 
 pub(super) async fn shell(args: SimulateArgs, settings: &Settings) -> Result<ExitCode> {
     interactive_terminal("--shell")?;
-    let guest = resolve_guest(args.environment_image, settings)?;
-    let runtime = container::runtime(settings)?;
-    container::warn_ambiguous_engine(settings, runtime.as_ref(), false);
-    let images = Images::from_runtime(runtime.as_ref());
+    let environment = resolve_environment(args.environment_image, settings)?;
     let run_dir = tempfile::Builder::new()
         .prefix("snouty-simulate-")
         .tempdir()?;
     eprintln!("Preparing simulation environment image...");
-    let iso = guest.iso(&images, run_dir.path(), args.platform).await?;
+    // Only an environment image needs a container engine.
+    let iso = match environment {
+        Environment::Iso(iso) => iso,
+        Environment::Image(image) => {
+            let runtime = container::runtime(settings)?;
+            container::warn_ambiguous_engine(settings, runtime.as_ref(), false);
+            Images::from_runtime(runtime.as_ref())
+                .environment_iso(&image, run_dir.path(), args.platform)
+                .await?
+        }
+    };
     let inject_disk = inject_disk(Vec::new(), run_dir.path()).await?;
     eprintln!("Booting simulation environment...");
     let mut signals = Signals::install()?;
-    let mut guest = tokio::select! {
+    let mut environment = tokio::select! {
         biased;
         reason = signals.receive() => return Ok(Summary::default().exit_code(reason)),
         result = Vm::boot(
@@ -675,21 +688,32 @@ pub(super) async fn shell(args: SimulateArgs, settings: &Settings) -> Result<Exi
             args.memory,
             args.platform,
             &inject_disk,
-        ) => result?,
+        ) => match result {
+            Ok(environment) => environment,
+            // The error names this directory for its logs.
+            Err(error) => {
+                let _ = run_dir.keep();
+                return Err(error);
+            }
+        },
     };
     eprintln!("Opening a shell in the simulation environment. Exit the shell to stop it.");
     let shell = tokio::select! {
         biased;
         reason = signals.receive() => Err(reason),
-        result = guest.interactive_shell() => Ok(result?),
+        result = environment.interactive_shell() => Ok(result?),
     };
     let powered_off = match shell {
-        Ok(status) if !status.success() => guest.wait_for_poweroff(Duration::from_secs(2)).await?,
+        Ok(status) if !status.success() => {
+            environment
+                .wait_for_poweroff(Duration::from_secs(2))
+                .await?
+        }
         _ => false,
     };
     eprintln!("Stopping simulation...");
     let shutdown_result = tokio::select! {
-        result = guest.shutdown() => result,
+        result = environment.shutdown() => result,
         _ = signals.receive() => Ok(()),
     };
     if let Ok(status) = shell
@@ -763,16 +787,22 @@ mod tests {
     use hegel::generators;
 
     #[test]
-    fn guest_image_without_tag_gets_default_version() {
+    fn environment_image_without_tag_gets_default_version() {
         for (image, expected) in [
-            ("guest", format!("guest:{GUEST_VERSION}")),
+            ("environment", format!("environment:{ENVIRONMENT_VERSION}")),
             (
                 "localhost:5000/team/antithesis-guest",
-                format!("localhost:5000/team/antithesis-guest:{GUEST_VERSION}"),
+                format!("localhost:5000/team/antithesis-guest:{ENVIRONMENT_VERSION}"),
             ),
-            ("guest:test", "guest:test".to_string()),
-            ("guest@sha256:abc", "guest@sha256:abc".to_string()),
-            ("guest:test@sha256:abc", "guest:test@sha256:abc".to_string()),
+            ("environment:test", "environment:test".to_string()),
+            (
+                "environment@sha256:abc",
+                "environment@sha256:abc".to_string(),
+            ),
+            (
+                "environment:test@sha256:abc",
+                "environment:test@sha256:abc".to_string(),
+            ),
         ] {
             assert_eq!(with_default_tag(image.to_string()), expected, "{image}");
         }

@@ -47,19 +47,19 @@ elif name == 'docker':
     elif args[:2] == ['image', 'inspect']:
         reference = args[-1]
         platform = args[3] if args[2:3] == ['--platform'] else 'linux/amd64'
-        if reference == 'guest:test' and mode in ('missing-guest', 'pull-failure') and not (root / 'pulled').exists():
-            sys.exit('No such image: guest:test')
+        if reference == 'environment:test' and mode in ('missing-environment', 'pull-failure') and not (root / 'pulled').exists():
+            sys.exit('No such image: environment:test')
         if reference != 'workload:test':
-            record('guest_image', reference)
+            record('environment_image', reference)
         architecture = 'arm64' if platform == 'linux/arm64' else 'amd64'
-        if mode == 'arm64' and reference == 'guest:test' and not (root / 'pulled').exists():
+        if mode == 'arm64' and reference == 'environment:test' and not (root / 'pulled').exists():
             architecture = 'amd64'
         if mode == 'arm64-wrong-workload' and reference == 'workload:test':
             architecture = 'amd64'
         image_id = 'b' if architecture == 'arm64' else 'a'
         print(json.dumps([{'Id': 'sha256:' + image_id * 64, 'Architecture': architecture}]))
     elif args[0] == 'cp':
-        Path(args[-1]).write_bytes(b'guest ISO fixture')
+        Path(args[-1]).write_bytes(b'environment ISO fixture')
     elif args[0] == 'save':
         record('save_args', json.dumps(args))
         output = args.index('--output') + 1
@@ -68,7 +68,7 @@ elif name == 'docker':
         record('pull_args', json.dumps(args))
         if mode == 'pull-failure':
             sys.exit('registry denied fixture')
-        record('pulled', 'guest:test')
+        record('pulled', 'environment:test')
     elif args[0] in ('create', 'rm'):
         if args[0] == 'create':
             record('create_args', json.dumps(args))
@@ -84,27 +84,18 @@ elif name == 'ssh':
     identity = next(line.split(maxsplit=1)[1] for line in config.read_text().splitlines() if line.strip().startswith('IdentityFile '))
     private_key = config.parent / identity
     record('key_mode', oct(private_key.stat().st_mode & 0o777))
-    if args[2:] == ['-o', 'LogLevel=ERROR', '-tt', 'guest_vm']:
-        record('shell_opened', 'yes')
-        print('guest shell ready', flush=True)
-        commands = []
+    if args[2:] == ['-o', 'LogLevel=ERROR', '-tt', 'environment']:
+        print('environment shell ready', flush=True)
         for line in sys.stdin:
             command = line.strip()
-            commands.append(command)
-            record('shell_input', '\n'.join(commands))
             if command == 'whoami':
                 print('root', flush=True)
             elif command == 'exit':
                 sys.exit(0)
-            elif command == 'poweroff':
-                record('guest_poweroff', 'yes')
-                os.kill(int((root / 'qemu_pid').read_text()), signal.SIGTERM)
-                print('Connection to 127.0.0.1 closed.', file=sys.stderr)
-                sys.exit(255)
             else:
                 sys.exit('unexpected shell input: ' + repr(command))
         sys.exit(0)
-    assert args[2] == 'guest_vm', args
+    assert args[2] == 'environment', args
     options = args[3:-1]
     command = args[-1]
     if command == 'true':
@@ -128,7 +119,6 @@ elif name == 'ssh':
             sys.exit('root@127.0.0.1: Permission denied (publickey).')
     elif command == 'bash -s':
         script = sys.stdin.read()
-        record('batch_script', script)
         if script == 'poweroff -f\n':
             record('poweroff_requested', 'yes')
             if mode in ('poweroff-hangs', 'poweroff-second-interrupt'):
@@ -178,7 +168,7 @@ elif name == 'ssh':
                 contents = "11.0 [fault_injector] [JSON] '{\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"workload\"],\"max_duration\":2}}'\n11.1 [fault_injector] [JSON] '{\"fault\":{\"name\":\"kill\",\"type\":\"node\",\"affected_nodes\":[\"echo-server\"],\"max_duration\":2}}'\n11.2 [workload] [JSON] '{\"antithesis_assert\":{\"message\":\"balance stays positive\",\"assert_type\":\"always\",\"must_hit\":true,\"hit\":true,\"condition\":false}}'\n"
             if mode == 'malformed-json':
                 contents = "12.0 [workload] [JSON] '{broken json}'\n"
-            if mode in ('composer-failure', 'clean-once', 'missing-guest', 'default-image', 'human', 'arm64', 'poweroff-fails', 'poweroff-hangs', 'poweroff-second-interrupt'):
+            if mode in ('composer-failure', 'clean-once', 'missing-environment', 'default-image', 'arm64', 'poweroff-fails', 'poweroff-hangs', 'poweroff-second-interrupt'):
                 contents = '12.0 [workload] [STDOUT] \'workload running\'\n'
             if mode.startswith('blocked-output'):
                 contents = ''
@@ -246,33 +236,15 @@ elif name == 'ssh-keygen':
     record('private_key_path', private_key)
     record('public_key_path', public_key)
 elif name in ('qemu-system-x86_64', 'qemu-system-aarch64'):
-    if '-fw_cfg' not in args:
-        sys.exit('unexpected QEMU command: ' + repr(args))
-    fw_cfg = args[args.index('-fw_cfg') + 1]
-    prefix = 'name=opt/antithesis/authorized_key,file='
-    assert fw_cfg.startswith(prefix), fw_cfg
-    public_key = Path(fw_cfg.removeprefix(prefix))
-    assert public_key.name == 'id_ed25519.pub', public_key
-    authorized_key = public_key.read_text()
     record('qemu_pid', os.getpid())
     record('qemu_tool', name)
     record('qemu_args', json.dumps(args))
-    for drive in (args[i + 1] for i, arg in enumerate(args) if arg == '-drive'):
-        if 'readonly=on' in drive:
-            image = Path(drive.split(',')[0].removeprefix('file='))
-            # The EROFS superblock starts at byte 1024 with this magic.
-            record('images_drive', drive)
-            record('images_drive_magic', image.read_bytes()[1024:1028].hex())
     record('run_dir', Path.cwd())
-    record('authorized_key', authorized_key)
     Path('boot.log').write_bytes(b'\x1b[18t\x1b[6nprivate boot console\n')
     Path('instrumentation.log').touch()
     if mode == 'boot-failure':
         Path('boot.log').write_text('fatal boot fixture\n')
         sys.exit(23)
-    if mode == 'startup-timeout':
-        while True:
-            time.sleep(1)
     child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
     record('qemu_child_pid', child.pid)
     def stop(signum, _frame):
@@ -291,25 +263,24 @@ elif name in ('qemu-system-x86_64', 'qemu-system-aarch64'):
     signal.signal(signal.SIGUSR1, stop)
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    if mode != 'shell-booting':
-        with Path('instrumentation.log').open('a') as output:
-            output.write("1 [boot] [JSON] '{\"antithesis_setup\":{\"status\":\"complete\"}}'\n")
+    with Path('instrumentation.log').open('a') as output:
+        output.write("1 [boot] [JSON] '{\"antithesis_setup\":{\"status\":\"complete\"}}'\n")
+        output.flush()
+        if mode == 'fragmented-ready':
+            record('marker_pending', 'yes')
+            while not (root / 'emit_marker').exists():
+                time.sleep(0.01)
+        marker = "2 [antithesis/ssh-ready.json] [JSON] '{\"antithesis_host\":{\"status\":\"ssh_ready\"}}'\n"
+        record('ssh_ready', 'yes')
+        if mode == 'fragmented-ready':
+            output.write(marker[:-1])
             output.flush()
-            if mode == 'fragmented-ready':
-                record('marker_pending', 'yes')
-                while not (root / 'emit_marker').exists():
-                    time.sleep(0.01)
-            marker = "2 [antithesis/ssh-ready.json] [JSON] '{\"antithesis_host\":{\"status\":\"ssh_ready\"}}'\n"
-            record('ssh_ready', 'yes')
-            if mode == 'fragmented-ready':
-                output.write(marker[:-1])
-                output.flush()
-                record('marker_partial', 'yes')
-                while not (root / 'finish_marker').exists():
-                    time.sleep(0.01)
-                output.write(marker[-1:])
-            else:
-                output.write(marker)
+            record('marker_partial', 'yes')
+            while not (root / 'finish_marker').exists():
+                time.sleep(0.01)
+            output.write(marker[-1:])
+        else:
+            output.write(marker)
     while True:
         time.sleep(1)
 else:

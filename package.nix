@@ -58,13 +58,13 @@ rustPlatform.buildRustPackage (finalAttrs: {
     sqlite
   ];
 
-  # The sandbox has no container engine, so the tests that need one do not run.
-  # The shims answer the engine probes of `snouty doctor`, which specs/doctor.txt
-  # needs.
+  # The sandbox has no container engine and no QEMU, so the tests that need
+  # one do not run. The shims answer the engine probes of `snouty doctor`,
+  # which specs/doctor.txt needs.
   useNextest = true;
   cargoTestFlags = [
     "--filterset"
-    "not group(container)"
+    "not group(container) and not group(qemu)"
   ];
   preCheck = ''
     export PATH="$PWD/scripts/no-engine-shims:$PATH"

@@ -120,11 +120,11 @@ pub struct Vm {
     instrumentation: PathBuf,
 }
 
-pub struct GuestConnection<'a> {
+pub struct EnvironmentConnection<'a> {
     run_dir: &'a Path,
 }
 
-impl<'a> GuestConnection<'a> {
+impl<'a> EnvironmentConnection<'a> {
     pub fn new(run_dir: &'a Path) -> Self {
         Self { run_dir }
     }
@@ -135,7 +135,7 @@ impl<'a> GuestConnection<'a> {
             .current_dir(self.run_dir)
             .arg("-F")
             .arg(self.run_dir.join("ssh_config"))
-            .args(["-o", "LogLevel=ERROR", "-tt", "guest_vm"])
+            .args(["-o", "LogLevel=ERROR", "-tt", "environment"])
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
@@ -158,7 +158,7 @@ impl<'a> GuestConnection<'a> {
 }
 
 /// The serial number of the inject drive, which names it
-/// `/dev/disk/by-id/virtio-antithesis-inject` in the guest. virtio-blk
+/// `/dev/disk/by-id/virtio-antithesis-inject` in the environment. virtio-blk
 /// allows 20 bytes.
 const INJECT_DRIVE_SERIAL: &str = "antithesis-inject";
 
@@ -204,7 +204,7 @@ impl Vm {
         fs::write(
             &ssh_config,
             format!(
-                "Host guest_vm\n ProxyCommand {proxy}\n ProxyUseFdpass yes\n User root\n IdentityFile {}\n IdentitiesOnly yes\n IdentityAgent none\n UserKnownHostsFile /dev/null\n GlobalKnownHostsFile /dev/null\n StrictHostKeyChecking no\n UpdateHostKeys no\n LogLevel ERROR\n BatchMode yes\n ConnectTimeout 2\n ServerAliveInterval 5\n ServerAliveCountMax 3\n Compression no\n ControlMaster no\n ControlPath none\n",
+                "Host environment\n ProxyCommand {proxy}\n ProxyUseFdpass yes\n User root\n IdentityFile {}\n IdentitiesOnly yes\n IdentityAgent none\n UserKnownHostsFile /dev/null\n GlobalKnownHostsFile /dev/null\n StrictHostKeyChecking no\n UpdateHostKeys no\n LogLevel ERROR\n BatchMode yes\n ConnectTimeout 2\n ServerAliveInterval 5\n ServerAliveCountMax 3\n Compression no\n ControlMaster no\n ControlPath none\n",
                 client_key.identity_file.display()
             ),
         )?;
@@ -224,7 +224,7 @@ impl Vm {
             ))
             .args(["-nodefaults", "-smp", "1", "-m"])
             .arg(memory_mib.to_string());
-        // The read-only EROFS image of the workload images, which the guest
+        // The read-only EROFS image of the workload images, which the environment
         // imports at boot. `if=virtio` cannot set the serial that names it.
         command
             .arg("-drive")
@@ -390,7 +390,7 @@ impl Vm {
     fn ssh(&self) -> tokio::process::Command {
         let mut command = self.ssh_base();
         command
-            .arg("guest_vm")
+            .arg("environment")
             .stdin(Stdio::null())
             .process_group(0)
             .kill_on_drop(true);
@@ -398,7 +398,7 @@ impl Vm {
     }
 
     pub async fn interactive_shell(&self) -> Result<std::process::ExitStatus> {
-        GuestConnection::new(&self.run_dir)
+        EnvironmentConnection::new(&self.run_dir)
             .interactive_shell()
             .await
     }

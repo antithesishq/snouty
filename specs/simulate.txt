@@ -3,22 +3,22 @@ env SNOUTY_UNSTABLE_FEATURES=
 snouty --help
 ! stdout 'simulate +Run'
 ! stdout 'internal-ssh-proxy'
-! snouty simulate empty --environment-image guest:latest
+! snouty simulate empty --environment-image environment:latest
 stderr 'is an unstable feature and is not enabled'
 stderr 'SNOUTY_UNSTABLE_FEATURES=simulate'
 
 env SNOUTY_UNSTABLE_FEATURES=simulate
 
-! snouty simulate empty --environment-image guest:latest --memory 0
+! snouty simulate empty --environment-image environment:latest --memory 0
 stderr '0 is not in 1\.\.=15000'
-! snouty simulate empty --environment-image guest:latest --memory 15001
+! snouty simulate empty --environment-image environment:latest --memory 15001
 stderr '15001 is not in 1\.\.=15000'
-! snouty simulate empty --environment-image guest:latest --disable-node-kills
+! snouty simulate empty --environment-image environment:latest --disable-node-kills
 stderr 'unexpected argument'
-! snouty simulate empty --environment-image guest:latest --platform other
+! snouty simulate empty --environment-image environment:latest --platform other
 stderr 'invalid value'
 
-# Fault settings are parsed before booting a guest.
+# Fault settings are parsed before booting the simulation environment.
 ! snouty simulate empty --node-kills
 stderr 'unexpected argument'
 ! snouty simulate empty --fault-tolerance unknown
@@ -61,22 +61,22 @@ snouty completions powershell
 
 ! snouty simulate empty
 stderr 'does not contain.*docker-compose.yaml.*manifests/'
-! snouty simulate --environment-image guest:latest
+! snouty simulate --environment-image environment:latest
 stderr 'required.*'
 stderr '<CONFIG>'
-! snouty simulate --shell --environment-image guest:latest
+! snouty simulate --shell --environment-image environment:latest
 stderr 'requires an interactive terminal'
-! snouty simulate --shell --platform arm64 --environment-image guest:latest
+! snouty simulate --shell --platform arm64 --environment-image environment:latest
 stderr 'requires an interactive terminal'
-! snouty --json simulate --shell --environment-image guest:latest
+! snouty --json simulate --shell --environment-image environment:latest
 stderr '\-\-shell cannot be combined with \-\-json'
-! snouty simulate empty --shell --environment-image guest:latest
+! snouty simulate empty --shell --environment-image environment:latest
 stderr 'cannot be used with'
-! snouty simulate --shell --disable-restart --environment-image guest:latest
+! snouty simulate --shell --disable-restart --environment-image environment:latest
 stderr 'cannot be used with'
-! snouty simulate empty --disable-faults --environment-image guest:latest
+! snouty simulate empty --disable-faults --environment-image environment:latest
 stderr 'unexpected argument'
-! snouty simulate --shell --fault-tolerance none --environment-image guest:latest
+! snouty simulate --shell --fault-tolerance none --environment-image environment:latest
 stderr 'cannot be used with'
 ! snouty simulate --attach ../other
 stderr 'invalid simulation ID'
@@ -86,28 +86,28 @@ stderr 'cannot be used with'
 stderr '\-\-attach cannot be combined with \-\-json'
 ! snouty simulate --attach simulate-abc
 stderr 'interactive terminal'
-! snouty simulate empty --environment-image guest:latest --timeout 0s
+! snouty simulate empty --environment-image environment:latest --timeout 0s
 stderr 'startup timeout must be greater than zero'
-! snouty simulate empty --environment-image guest:latest --timeout nonsense
+! snouty simulate empty --environment-image environment:latest --timeout nonsense
 stderr 'invalid value'
 
 # Detection matches validate before requiring a container engine.
-! snouty simulate /nonexistent/path --environment-image guest:latest
+! snouty simulate /nonexistent/path --environment-image environment:latest
 stderr 'not a directory'
-! snouty simulate empty --environment-image guest:latest
+! snouty simulate empty --environment-image environment:latest
 stderr 'does not contain.*docker-compose.yaml.*manifests/'
-! snouty simulate yml_dir --environment-image guest:latest
+! snouty simulate yml_dir --environment-image environment:latest
 stderr 'rename'
-! snouty simulate ambiguous --environment-image guest:latest
+! snouty simulate ambiguous --environment-image environment:latest
 stderr 'both docker-compose.yaml and a manifests/ subdirectory'
-! snouty simulate yml_dir/docker-compose.yml --environment-image guest:latest
+! snouty simulate yml_dir/docker-compose.yml --environment-image environment:latest
 stderr 'not a directory'
-! snouty simulate kubernetes --environment-image guest:latest
+! snouty simulate kubernetes --environment-image environment:latest
 stderr 'Kubernetes.*not supported'
 
 # The internal SSH proxy is available without the simulate feature or settings.
 env SNOUTY_UNSTABLE_FEATURES=
-! snouty --settings missing.toml internal-ssh-proxy /nonexistent/guest.sock
+! snouty --settings missing.toml internal-ssh-proxy /nonexistent/environment.sock
 stderr 'failed to connect to the simulation environment.s SSH socket'
 ! snouty internal-ssh-proxy
 stderr '<SOCKET>'

@@ -109,13 +109,13 @@ impl Images {
         Ok(Image { id: image.id })
     }
 
-    pub async fn guest_iso(
+    pub async fn environment_iso(
         &self,
         reference: &str,
         run_dir: &Path,
         platform: SimulatePlatform,
     ) -> Result<PathBuf> {
-        // Local guest images permit testing a guest release before it is published.
+        // Local environment images permit testing a release before it is published.
         if self.inspect(reference, platform).await.is_err() {
             let mut pull = Command::new(&self.engine);
             pull.args([
@@ -319,7 +319,7 @@ create)
   ;;
 cp)
   if [ -f "$root/fail-copy" ]; then exit 3; fi
-  printf 'guest iso' > "$3"
+  printf 'environment iso' > "$3"
   ;;
 rm)
   rm -f "$root/container"
@@ -357,7 +357,7 @@ esac
         std::fs::write(directory.path().join("fail-copy"), "").unwrap();
         assert!(
             images
-                .extract_iso("guest:test", &cache, SimulatePlatform::Amd64)
+                .extract_iso("environment:test", &cache, SimulatePlatform::Amd64)
                 .await
                 .is_err()
         );
@@ -366,14 +366,14 @@ esac
         assert!(directory.path().join("removed").exists());
         std::fs::remove_file(directory.path().join("fail-copy")).unwrap();
         let iso = images
-            .extract_iso("guest:test", &cache, SimulatePlatform::Amd64)
+            .extract_iso("environment:test", &cache, SimulatePlatform::Amd64)
             .await
             .unwrap();
-        assert_eq!(std::fs::read(&iso).unwrap(), b"guest iso");
+        assert_eq!(std::fs::read(&iso).unwrap(), b"environment iso");
         std::fs::remove_file(directory.path().join("started")).unwrap();
         assert_eq!(
             images
-                .extract_iso("guest:test", &cache, SimulatePlatform::Amd64)
+                .extract_iso("environment:test", &cache, SimulatePlatform::Amd64)
                 .await
                 .unwrap(),
             iso
@@ -389,7 +389,7 @@ esac
         let cache = directory.path().join("cache");
         let task = tokio::spawn(async move {
             images
-                .extract_iso("guest:test", &cache, SimulatePlatform::Amd64)
+                .extract_iso("environment:test", &cache, SimulatePlatform::Amd64)
                 .await
         });
         wait_for(&directory.path().join("started")).await;

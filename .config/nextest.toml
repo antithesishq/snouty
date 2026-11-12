@@ -19,11 +19,21 @@
 # when that happens. The shims in scripts/no-engine-shims deliberately do not
 # weaken this — they answer only the two probes `snouty doctor` makes, and fail
 # the `podman info` that resolves a runtime for the tests.
+#
+# The `qemu` group is the tests that boot a simulation environment ISO in real QEMU. They need
+# QEMU and the ISO that `SNOUTY_TEST_ENVIRONMENT_ISO` names, so only the test-qemu
+# job in slow-tests.yml runs them, through `mise run test:qemu`. Every other
+# Linux run, and the Nix build sandbox, excludes the group.
 
 [test-groups]
 # Naming the group is the point; the cap is the default parallelism rather than
 # a narrower limit, so grouping does not itself serialize these tests.
 container = { max-threads = "num-cpus" }
+qemu = { max-threads = "num-cpus" }
+
+[[profile.default.overrides]]
+filter = "binary_id(snouty::simulate_qemu)"
+test-group = "qemu"
 
 [[profile.default.overrides]]
 filter = """

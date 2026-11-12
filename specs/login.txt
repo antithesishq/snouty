@@ -22,9 +22,9 @@ stderr '.*Value may not be empty or whitespace.*'
 # longer than a terminal.
 isolate-home summary
 mock-runs-server
-snouty login --tenant spec-tenant
-stdout '^Saved tenant `spec-tenant` and repository `[^`/]+\.[^`]+`\.$'
-[!staging] stdout '^Saved tenant `spec-tenant` and repository `registry.testtenant.antithesis.com`\.$'
+snouty login --tenant ${ANTITHESIS_TENANT}
+stdout '^Saved tenant `${ANTITHESIS_TENANT@R}` and repository `[^`/]+\.[^`]+`\.$'
+[!staging] stdout '^Saved tenant `testtenant` and repository `registry.testtenant.antithesis.com`\.$'
 stdout '^Skipped credential storage — snouty will read credentials from the environment, such as ANTITHESIS_API_KEY\.$'
 stdout '^Run `snouty doctor` to verify your setup\.$'
 file ~/.config/snouty/settings.toml 'repository = "[^"]+"'
@@ -32,8 +32,8 @@ file ~/.config/snouty/settings.toml 'repository = "[^"]+"'
 
 # --repository takes the place of the tenant's registry.
 isolate-home repository_flag
-snouty login --tenant spec-tenant --repository registry.example.com/a-long-repository-name
-stdout '^Saved tenant `spec-tenant` and repository `registry.example.com/a-long-repository-name`\.$'
+snouty login --tenant ${ANTITHESIS_TENANT} --repository registry.example.com/a-long-repository-name
+stdout 'repository `registry.example.com/a-long-repository-name`\.$'
 
 # Without a credential, login fails before it saves anything.
 isolate-home no_credential

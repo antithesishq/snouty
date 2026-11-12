@@ -91,13 +91,16 @@ fn session_root() -> Result<PathBuf> {
                 return Err(error.into());
             }
         }
+        // Other commands share the cache directory and create it with the
+        // umask. Each run directory is private, so its parents only need to
+        // be safe from other users.
         let metadata = std::fs::symlink_metadata(&directory)?;
         if !metadata.is_dir()
             || metadata.uid() != nix::unistd::geteuid().as_raw()
-            || metadata.permissions().mode() & 0o077 != 0
+            || metadata.permissions().mode() & 0o022 != 0
         {
             bail!(
-                "simulation state directory is not private: {}",
+                "simulation state directory must be owned by you and not writable by other users: {}",
                 directory.display()
             );
         }
@@ -248,21 +251,40 @@ impl Output {
         }
     }
 
-    async fn event(&mut self, line: &str, summary: &mut Summary, phase: RunPhase) -> Result<()> {
-        let event = events::parse_line(line)?;
-        let mut entry = if event.is_some() || events::is_fault_injector_line(line) {
-            events::log_entry(line)?
-        } else {
-            None
+    /// Record one instrumentation line in `summary`, then print it. Recording
+    /// happens before the first await, so a cancelled call never loses a
+    /// failure. A malformed line counts as an infrastructure failure, and
+    /// the simulation goes on.
+    async fn event(
+        &mut self,
+        line: &str,
+        summary: &mut Summary,
+        phase: RunPhase,
+    ) -> Result<Option<Event>> {
+        let parsed = events::parse_line(line).and_then(|event| {
+            let entry = if event.is_some() || events::is_fault_injector_line(line) {
+                events::log_entry(line)?
+            } else {
+                None
+            };
+            Ok((event, entry))
+        });
+        let (event, mut entry) = match parsed {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                summary.infrastructure_failures += 1;
+                eprintln!("Invalid instrumentation event: {error:#}");
+                return Ok(None);
+            }
         };
         if let Some(entry) = &mut entry {
             self.annotator.annotate(entry);
         }
-        if let Some(event) = event {
-            summary.observe(&event, phase);
+        if let Some(event) = &event {
+            summary.observe(event, phase);
             if !self.closed {
                 let line = if self.json {
-                    let mut value = serde_json::to_value(&event)?;
+                    let mut value = serde_json::to_value(event)?;
                     if let Some(entry) = &entry {
                         value["active_faults"] = entry["active_faults"].clone();
                     }
@@ -288,7 +310,7 @@ impl Output {
                 self.line(line).await?;
             }
         }
-        Ok(())
+        Ok(event)
     }
 }
 
@@ -439,7 +461,9 @@ pub(super) async fn run(
                 line = logs.next() => {
                     let (end, line) = line.ok_or_eyre("instrumentation stream ended")??;
                     consumed = end;
-                    if let Some(event) = events::parse_line(&line)?
+                    let event = output.event(&line, &mut summary, RunPhase::Running).await?;
+                    if output.closed { return Ok::<_, color_eyre::Report>(()); }
+                    if let Some(event) = event
                         && matches!(event.kind, events::EventKind::SetupComplete { .. })
                         && matches!(cycle, WorkloadCycle::WaitingForSetup)
                     {
@@ -451,8 +475,6 @@ pub(super) async fn run(
                         environment.run_script(START_COMPOSER).await.wrap_err("starting test composer")?;
                         cycle = WorkloadCycle::Running { entropy_at: add_entropy(environment).await?, workload };
                     }
-                    output.event(&line, &mut summary, RunPhase::Running).await?;
-                    if output.closed { return Ok::<_, color_eyre::Report>(()); }
                 },
                 () = async {
                     tokio::select! {
@@ -496,7 +518,7 @@ pub(super) async fn run(
             Ok(()) => Termination::OutputClosed,
             Err(error) => {
                 summary.infrastructure_failures += 1;
-                eprintln!("Simulation failed: {error:#}");
+                eprintln!("Simulation failed: {error:?}");
                 Termination::InfrastructureFailure
             },
         },
@@ -577,7 +599,7 @@ async fn workload_inject_disk(
 ) -> Result<PathBuf> {
     let references: Vec<_> = references.into_iter().collect();
     for reference in &references {
-        images.inspect(reference, platform).await?;
+        images.inspect(reference, platform)?;
     }
     let archive = run_dir.join("images.tar");
     images.save(&references, &archive, platform).await?;
@@ -771,10 +793,10 @@ async fn drain(
         )
         .await
         {
-            Ok(Ok(())) => {}
+            Ok(Ok(_)) => {}
             Ok(Err(error)) => {
                 summary.infrastructure_failures += 1;
-                eprintln!("Invalid instrumentation event: {error:#}");
+                eprintln!("Writing instrumentation event failed: {error:#}");
             }
             Err(_) => output.closed = true,
         }

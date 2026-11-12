@@ -47,13 +47,13 @@ elif name == 'docker':
     elif args[:2] == ['image', 'inspect']:
         reference = args[-1]
         platform = args[3] if args[2:3] == ['--platform'] else 'linux/amd64'
-        if reference == 'environment:test' and mode in ('missing-environment', 'pull-failure') and not (root / 'pulled').exists():
-            sys.exit('No such image: environment:test')
+        if reference != 'workload:test' and mode == 'inspect-failure':
+            sys.exit('Cannot connect to the Docker daemon fixture')
+        if reference != 'workload:test' and mode in ('missing-environment', 'pull-failure', 'arm64') and not (root / 'pulled').exists():
+            sys.exit('Error: No such image: ' + reference)
         if reference != 'workload:test':
             record('environment_image', reference)
         architecture = 'arm64' if platform == 'linux/arm64' else 'amd64'
-        if mode == 'arm64' and reference == 'environment:test' and not (root / 'pulled').exists():
-            architecture = 'amd64'
         if mode == 'arm64-wrong-workload' and reference == 'workload:test':
             architecture = 'amd64'
         image_id = 'b' if architecture == 'arm64' else 'a'
@@ -109,12 +109,6 @@ elif name == 'ssh':
         if mode == 'login-qemu-exit':
             os.kill(int((root / 'qemu_pid').read_text()), signal.SIGTERM)
             time.sleep(60)
-        if mode == 'ssh-retry':
-            first_attempt = root / 'first_ssh_attempt'
-            if not first_attempt.exists():
-                record('first_ssh_attempt', time.monotonic())
-                sys.exit(255)
-            record('ssh_retry_delay', time.monotonic() - float(first_attempt.read_text()))
         if mode == 'auth-failure':
             sys.exit('root@127.0.0.1: Permission denied (publickey).')
     elif command == 'bash -s':
@@ -165,9 +159,9 @@ elif name == 'ssh':
             log = Path.cwd() / 'instrumentation.log'
             contents = "11.2 [workload] [JSON] '{\"antithesis_assert\":{\"message\":\"balance stays positive\",\"assert_type\":\"always\",\"must_hit\":true,\"hit\":true,\"condition\":false}}'\n12.0 [workload] [STDOUT] 'still running after assertion'\n"
             if mode == 'fault-annotation':
-                contents = "11.0 [fault_injector] [JSON] '{\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"workload\"],\"max_duration\":2}}'\n11.1 [fault_injector] [JSON] '{\"fault\":{\"name\":\"kill\",\"type\":\"node\",\"affected_nodes\":[\"echo-server\"],\"max_duration\":2}}'\n11.2 [workload] [JSON] '{\"antithesis_assert\":{\"message\":\"balance stays positive\",\"assert_type\":\"always\",\"must_hit\":true,\"hit\":true,\"condition\":false}}'\n"
+                contents = "11.0 [fault_injector] [JSON] '{\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"workload\"],\"max_duration\":2}}'\n11.2 [workload] [JSON] '{\"antithesis_assert\":{\"message\":\"balance stays positive\",\"assert_type\":\"always\",\"must_hit\":true,\"hit\":true,\"condition\":false}}'\n"
             if mode == 'malformed-json':
-                contents = "12.0 [workload] [JSON] '{broken json}'\n"
+                contents = "12.0 [workload] [JSON] '{broken json}'\n12.1 [workload] [STDOUT] 'still running after malformed line'\n"
             if mode in ('composer-failure', 'clean-once', 'missing-environment', 'default-image', 'arm64', 'poweroff-fails', 'poweroff-hangs', 'poweroff-second-interrupt'):
                 contents = '12.0 [workload] [STDOUT] \'workload running\'\n'
             if mode.startswith('blocked-output'):

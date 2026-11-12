@@ -67,6 +67,30 @@ impl std::fmt::Display for Architecture {
     }
 }
 
+/// The container engine behind a [`ContainerRuntime`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Engine {
+    Docker,
+    Podman,
+}
+
+impl std::fmt::Display for Engine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Engine::Docker => "docker",
+            Engine::Podman => "podman",
+        })
+    }
+}
+
+/// What `image inspect` reports about a local image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageDetails {
+    /// The content ID, such as `sha256:...`.
+    pub id: String,
+    pub architecture: Architecture,
+}
+
 /// The tenant registry credential that `snouty launch` presents when it
 /// pushes: [`registry::USERNAME`] and `secret`, for `registry`.
 /// `settings_path` and `profile` are the `--settings` and `--profile` flags
@@ -130,21 +154,38 @@ pub trait ContainerRuntime: Send + Sync {
     /// The CLI command name (e.g. "podman" or "docker").
     fn name(&self) -> &str;
 
-    /// The underlying engine ("podman" or "docker"), independent of which binary
-    /// invokes it. These diverge only for podman-in-disguise (podman installed
-    /// as the `docker` binary), where [`name`](Self::name) is `"docker"` but the
-    /// engine is really podman.
-    fn engine_kind(&self) -> &'static str;
+    /// The underlying engine, independent of which binary invokes it. These
+    /// diverge only for podman-in-disguise (podman installed as the `docker`
+    /// binary), where [`name`](Self::name) is `"docker"` but the engine is
+    /// really podman.
+    fn engine_kind(&self) -> Engine;
 
     /// Clone into a boxed trait object.
     fn clone_box(&self) -> Box<dyn ContainerRuntime>;
 
+    /// Return a [`Command`] pre-configured with the runtime binary and given
+    /// args.
+    fn command(&self, args: &[&str]) -> Command {
+        let mut cmd = Command::new(self.name());
+        cmd.args(args);
+        cmd
+    }
+
     /// Return a [`tokio::process::Command`] pre-configured with the runtime
     /// binary and given args.
     fn tokio_command(&self, args: &[&str]) -> tokio::process::Command {
-        let mut cmd = tokio::process::Command::new(self.name());
-        cmd.args(args);
-        cmd
+        self.command(args).into()
+    }
+
+    /// The arguments that select `platform` for `image inspect` and
+    /// `image save`. Only Docker takes a platform for these commands.
+    fn image_platform_args(&self, platform: Option<&Architecture>) -> Vec<String> {
+        match (self.engine_kind(), platform) {
+            (Engine::Docker, Some(platform)) => {
+                vec!["--platform".into(), format!("linux/{platform}")]
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// The `DOCKER_HOST` value `docker-compose` should use to drive this
@@ -163,27 +204,38 @@ pub trait ContainerRuntime: Send + Sync {
     /// (e.g. `example.com/foo/image@sha256:...`).
     fn image_push(&self, image_ref: &str) -> Result<String>;
 
-    /// Return whether the image is available in the local image store.
-    fn image_exists(&self, image_ref: &str) -> Result<bool> {
+    /// Return whether the image is available in the local image store, for
+    /// `platform` if given.
+    fn image_exists(&self, image_ref: &str, platform: Option<&Architecture>) -> Result<bool> {
         let runtime = self.name();
-        let output = Command::new(runtime)
-            .args(["image", "inspect", image_ref])
+        let output = self
+            .command(&["image", "inspect"])
+            .args(self.image_platform_args(platform))
+            .arg(image_ref)
             .output()
             .wrap_err(format!("failed to run '{runtime} image inspect'"))?;
         image_exists_from_inspect_output(runtime, image_ref, &output)
     }
 
-    /// Return the local image architecture (for example `amd64` or `arm64`).
-    fn image_architecture(&self, image_ref: &str) -> Result<Architecture> {
+    /// Inspect a local image, for `platform` if given.
+    fn image_inspect(
+        &self,
+        image_ref: &str,
+        platform: Option<&Architecture>,
+    ) -> Result<ImageDetails> {
+        #[derive(serde::Deserialize)]
+        struct Inspect {
+            #[serde(rename = "Id")]
+            id: String,
+            #[serde(rename = "Architecture")]
+            architecture: String,
+        }
+
         let runtime = self.name();
-        let output = Command::new(runtime)
-            .args([
-                "image",
-                "inspect",
-                "--format",
-                "{{.Architecture}}",
-                image_ref,
-            ])
+        let output = self
+            .command(&["image", "inspect"])
+            .args(self.image_platform_args(platform))
+            .arg(image_ref)
             .output()
             .wrap_err(format!("failed to run '{runtime} image inspect'"))?;
 
@@ -195,19 +247,22 @@ pub trait ContainerRuntime: Send + Sync {
                 .with_section(move || stderr.trim().to_string().header("Stderr:"));
         }
 
-        let architecture = std::str::from_utf8(&output.stdout)
-            .wrap_err("failed to parse image inspect output")?
-            .trim();
-
-        if architecture.is_empty() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let images: Vec<Inspect> = serde_json::from_slice(&output.stdout).wrap_err(format!(
+            "'{runtime} image inspect {image_ref}' returned invalid JSON"
+        ))?;
+        let image = images
+            .into_iter()
+            .next()
+            .ok_or_else(|| eyre!("'{runtime} image inspect {image_ref}' returned no image"))?;
+        if image.architecture.is_empty() {
             return Err(eyre!(
                 "'{runtime} image inspect {image_ref}' returned empty architecture"
-            ))
-            .with_section(move || stderr.header("Stderr:"));
+            ));
         }
-
-        Ok(Architecture::from(architecture))
+        Ok(ImageDetails {
+            id: image.id,
+            architecture: Architecture::from(image.architecture.as_str()),
+        })
     }
 
     /// Read the `repo@sha256:...` digest references the local store associates
@@ -577,8 +632,8 @@ impl ContainerRuntime for PodmanRuntime {
         &self.cmd
     }
 
-    fn engine_kind(&self) -> &'static str {
-        "podman"
+    fn engine_kind(&self) -> Engine {
+        Engine::Podman
     }
 
     fn clone_box(&self) -> Box<dyn ContainerRuntime> {
@@ -772,8 +827,8 @@ impl ContainerRuntime for DockerRuntime {
         &self.cmd
     }
 
-    fn engine_kind(&self) -> &'static str {
-        "docker"
+    fn engine_kind(&self) -> Engine {
+        Engine::Docker
     }
 
     fn insecure_registry_flag(&self) -> &'static str {
@@ -1009,7 +1064,7 @@ pub fn warn_ambiguous_engine(settings: &Settings, rt: &dyn ContainerRuntime, jso
     let engine = rt.engine_kind();
     let detected = available
         .iter()
-        .map(|e| e.engine_kind())
+        .map(|e| e.engine_kind().to_string())
         .collect::<Vec<_>>()
         .join(" and ");
     eprintln!(
@@ -1672,8 +1727,9 @@ esac
             // The config image must always be amd64: Antithesis does not support
             // arm64, and this build runs unchanged on arm hosts.
             let arch = rt
-                .image_architecture(&image_ref)
-                .unwrap_or_else(|e| panic!("{}: {e:?}", rt.name()));
+                .image_inspect(&image_ref, None)
+                .unwrap_or_else(|e| panic!("{}: {e:?}", rt.name()))
+                .architecture;
             assert_eq!(
                 arch,
                 Architecture::Amd64,
@@ -1769,7 +1825,7 @@ esac
     #[test]
     fn explicit_docker_runs_real_docker() {
         let rt = select_runtime(EngineChoice::Docker, CliKind::Docker, CliKind::Podman).unwrap();
-        assert_eq!(rt.engine_kind(), "docker");
+        assert_eq!(rt.engine_kind(), Engine::Docker);
         assert_eq!(rt.name(), "docker");
     }
 
@@ -1815,7 +1871,7 @@ esac
     #[test]
     fn explicit_podman_runs_podman() {
         let rt = select_runtime(EngineChoice::Podman, CliKind::Docker, CliKind::Podman).unwrap();
-        assert_eq!(rt.engine_kind(), "podman");
+        assert_eq!(rt.engine_kind(), Engine::Podman);
         assert_eq!(rt.name(), "podman");
     }
 
@@ -1861,7 +1917,7 @@ esac
     fn auto_prefers_podman() {
         for docker in [CliKind::Docker, CliKind::Podman, CliKind::Missing] {
             let rt = select_runtime(EngineChoice::Auto, docker, CliKind::Podman).unwrap();
-            assert_eq!(rt.engine_kind(), "podman", "docker: {docker:?}");
+            assert_eq!(rt.engine_kind(), Engine::Podman, "docker: {docker:?}");
             assert_eq!(rt.name(), "podman", "docker: {docker:?}");
         }
     }
@@ -1869,14 +1925,14 @@ esac
     #[test]
     fn auto_falls_back_to_real_docker() {
         let rt = select_runtime(EngineChoice::Auto, CliKind::Docker, CliKind::Missing).unwrap();
-        assert_eq!(rt.engine_kind(), "docker");
+        assert_eq!(rt.engine_kind(), Engine::Docker);
         assert_eq!(rt.name(), "docker");
     }
 
     #[test]
     fn auto_runs_podman_docker_as_podman() {
         let rt = select_runtime(EngineChoice::Auto, CliKind::Podman, CliKind::Missing).unwrap();
-        assert_eq!(rt.engine_kind(), "podman");
+        assert_eq!(rt.engine_kind(), Engine::Podman);
         assert_eq!(rt.name(), "docker");
     }
 

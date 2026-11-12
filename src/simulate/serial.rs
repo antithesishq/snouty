@@ -16,7 +16,13 @@ pub(super) fn serial_lines(path: &Path, start: u64) -> Result<LogStream> {
         (file, Vec::<u8>::new(), start),
         |(mut file, mut pending, mut offset)| async move {
             loop {
-                if let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+                // The limit applies to one record and its newline, not to
+                // the bytes read after it.
+                let newline = pending.iter().position(|byte| *byte == b'\n');
+                if newline.map_or(pending.len(), |end| end + 1) > MAX_RECORD_BYTES {
+                    bail!("instrumentation line exceeds 4 MiB");
+                }
+                if let Some(end) = newline {
                     let bytes: Vec<_> = pending.drain(..=end).collect();
                     let line = String::from_utf8_lossy(&bytes[..end]).into_owned();
                     offset += bytes.len() as u64;
@@ -28,9 +34,6 @@ pub(super) fn serial_lines(path: &Path, start: u64) -> Result<LogStream> {
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 } else {
                     pending.extend_from_slice(&buffer[..count]);
-                    if pending.len() > MAX_RECORD_BYTES {
-                        bail!("instrumentation line exceeds 4 MiB");
-                    }
                 }
             }
         },
@@ -79,6 +82,22 @@ mod tests {
         std::fs::write(file.path(), vec![b'x'; 4 * 1024 * 1024 + 1]).unwrap();
         assert!(stream.next().await.unwrap().is_err());
         assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn bytes_after_a_record_do_not_count_toward_its_limit() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut stream = serial_lines(file.path(), 0).unwrap();
+        let mut contents = vec![b'x'; MAX_RECORD_BYTES - 100];
+        contents.push(b'\n');
+        contents.extend_from_slice(&[b'y'; 8192]);
+        contents.push(b'\n');
+        std::fs::write(file.path(), &contents).unwrap();
+        let (_, first) = stream.next().await.unwrap().unwrap();
+        assert_eq!(first.len(), MAX_RECORD_BYTES - 100);
+        let (offset, second) = stream.next().await.unwrap().unwrap();
+        assert_eq!(second.len(), 8192);
+        assert_eq!(offset, contents.len() as u64);
     }
 
     #[hegel::test]

@@ -137,6 +137,14 @@ impl Simulation {
             )
             .unwrap();
         }
+        if mode == "shared-cache" {
+            // `snouty docs` and `simulate --shell` create these with the umask.
+            let simulate = root.join("cache/snouty/simulate");
+            fs::create_dir_all(&simulate).unwrap();
+            for directory in [simulate.parent().unwrap(), &simulate] {
+                fs::set_permissions(directory, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
         let mut paths = vec![bin];
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
         let child = Command::new(assert_cmd::cargo::cargo_bin!("snouty"))
@@ -646,10 +654,7 @@ fn json_events_are_annotated_with_environment_faults() {
         .unwrap();
     assert_eq!(
         assertion["active_faults"],
-        serde_json::json!({
-            "network_clog": {"vtime": 11.0},
-            "node_kill": {"echo-server": 11.1}
-        })
+        serde_json::json!({"network_clog": {"vtime": 11.0}})
     );
 }
 
@@ -689,11 +694,9 @@ fn ssh_waits_for_a_complete_readiness_record() {
 }
 
 #[test]
-fn ssh_readiness_retries_promptly_after_a_failed_connection() {
-    let mut simulation = Simulation::start("ssh-retry");
+fn ssh_login_check_allows_a_slow_connection() {
+    let mut simulation = Simulation::start("clean-once");
     simulation.wait_for("rollout_started", "yes");
-    let delay: f64 = simulation.read("ssh_retry_delay").parse().unwrap();
-    assert!(delay < 0.8, "SSH retry took {delay} seconds");
     let options: Vec<String> = serde_json::from_str(&simulation.read("readiness_options")).unwrap();
     assert_eq!(options, ["-o", "ConnectTimeout=30"]);
     assert!(simulation.read("ssh_config").contains("ConnectTimeout 2"));
@@ -737,7 +740,7 @@ fn ssh_authentication_failure_stops_qemu_without_waiting_for_timeout() {
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains("SSH authentication to the simulation environment failed"),
+        stderr.contains("SSH login to the simulation environment failed"),
         "{stderr}"
     );
     assert!(stderr.contains("Permission denied (publickey)"), "{stderr}");
@@ -767,13 +770,32 @@ fn composer_failure_is_reported_after_workload_start() {
 }
 
 #[test]
-fn malformed_instrumentation_fails_and_cleans_up_vm() {
+fn malformed_instrumentation_is_counted_and_streaming_continues() {
     let mut simulation = Simulation::start("malformed-json");
+    simulation.wait_for("stdout", "still running after malformed line");
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
     let output = simulation.finish();
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("invalid instrumentation JSON"), "{stderr}");
+    let summary: serde_json::Value = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .find(|event: &serde_json::Value| event["type"] == "summary")
+        .unwrap();
+    assert_eq!(summary["failures"]["infrastructure_failures"], 1);
     assert_eq!(simulation.read("poweroff_requested"), "yes");
+}
+
+#[test]
+fn shared_cache_directory_created_by_other_commands_is_accepted() {
+    let mut simulation = Simulation::start("shared-cache");
+    simulation.wait_for("rollout_started", "yes");
 }
 
 #[test]
@@ -944,6 +966,20 @@ fn missing_environment_image_is_pulled_before_boot() {
     )
     .unwrap();
     assert_eq!(simulation.finish().status.code(), Some(143));
+}
+
+#[test]
+fn environment_inspect_failure_is_reported_without_pulling() {
+    let mut simulation = Simulation::start("inspect-failure");
+    let output = simulation.finish();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("Cannot connect to the Docker daemon fixture"),
+        "{stderr}"
+    );
+    assert!(!simulation.root().join("pull_args").exists());
+    assert!(!simulation.root().join("qemu_pid").exists());
 }
 
 #[test]
@@ -1176,10 +1212,10 @@ fn configure_failure_stops_simulation_before_compose() {
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
     for expected in [
-        "Simulation failed: configuring faults with configure.py",
-        "command in the simulation environment failed (exit status: 42)",
-        "stdout:\nconfigure.py configuration details",
-        "stderr:\nconfigure.py rejected configuration",
+        "0: configuring faults with configure.py",
+        "1: command in the simulation environment failed (exit status: 42)",
+        "stdout:\n      configure.py configuration details",
+        "stderr:\n      configure.py rejected configuration",
     ] {
         assert!(
             stderr.contains(expected),
@@ -1269,7 +1305,7 @@ fn fault_pause_failure_stops_simulation_before_compose() {
     assert_eq!(simulation.read("faults_paused"), "yes");
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains("Simulation failed: disabling faults: command in the simulation environment failed (exit status: 1)\nstdout:\n\nstderr:\n"),
+        stderr.contains("0: disabling faults\n   1: command in the simulation environment failed (exit status: 1)"),
         "{stderr}"
     );
     assert!(!simulation.root().join("compose_started").exists());

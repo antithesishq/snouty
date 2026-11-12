@@ -1923,7 +1923,7 @@ fn spinner(message: impl Into<std::borrow::Cow<'static, str>>) -> ProgressBar {
 
 /// What a command shows on stderr while it waits: a spinner on a terminal,
 /// else a line at once and a line each whole minute.
-enum ReadyDisplay {
+pub(crate) enum ReadyDisplay {
     Hidden,
     Spinner(ProgressBar),
     Lines {
@@ -1935,7 +1935,7 @@ enum ReadyDisplay {
 }
 
 impl ReadyDisplay {
-    fn new(waiting: &'static str) -> Self {
+    pub(crate) fn new(waiting: &'static str) -> Self {
         match ProgressMode::of_stderr() {
             ProgressMode::Hidden => Self::Hidden,
             ProgressMode::Lines => Self::Lines {
@@ -1947,7 +1947,7 @@ impl ReadyDisplay {
         }
     }
 
-    fn show(&mut self) {
+    pub(crate) fn show(&mut self) {
         if let Self::Lines {
             waiting,
             start,
@@ -1974,7 +1974,7 @@ impl ReadyDisplay {
     }
 
     /// End the display, and print nothing.
-    fn clear(&self) {
+    pub(crate) fn clear(&self) {
         if let Self::Spinner(spinner) = self {
             spinner.finish_and_clear();
         }
@@ -2468,7 +2468,7 @@ impl FaultAnnotator {
                     ) || update_faults;
                 }
 
-                if fault_type.eq("node") && matches!(fault_name, "kill" | "pause" | "throttle") {
+                if fault_type.eq("node") && (fault_name.eq("pause") || fault_name.eq("throttle")) {
                     update_faults = self.active_fault_windows.add_node_fault(
                         fault_name.to_string(),
                         target.to_string(),
@@ -4136,13 +4136,13 @@ mod tests {
                 json!({
                     "moment": { "vtime": "1" },
                     "source": { "name": "fault_injector" },
-                    "fault": { "name": "reboot" }
+                    "fault": { "name": "kill" }
                 })
             )),
             Some(
                 concat!(
                     r#"{"moment":{"vtime":1.0},"source":{"name":"fault_injector"},"#,
-                    r#""fault":{"name":"reboot"},"#,
+                    r#""fault":{"name":"kill"},"#,
                     r#""active_faults":{}}"#
                 )
                 .to_string()
@@ -4178,7 +4178,7 @@ mod tests {
             json!({
                 "moment": { "vtime": "1" },
                 "source": { "name": "fault_injector" },
-                "fault": { "name": "reboot" }
+                "fault": { "name": "kill" }
             })
         ));
 
@@ -4825,37 +4825,6 @@ mod tests {
                 .to_string()
             )
         );
-    }
-
-    #[test]
-    fn node_kill_is_annotated_until_its_duration_expires() {
-        let mut annotator = FaultAnnotator::default();
-        let mut kill = json!({
-            "moment": {"vtime": "1"},
-            "source": {"name": "fault_injector"},
-            "fault": {
-                "name": "kill",
-                "type": "node",
-                "affected_nodes": ["echo-server"],
-                "max_duration": 2
-            }
-        });
-        annotator.annotate(&mut kill);
-        assert_eq!(
-            kill["active_faults"],
-            json!({"node_kill": {"echo-server": 1.0}})
-        );
-
-        let mut during = json!({"moment": {"vtime": "2"}});
-        annotator.annotate(&mut during);
-        assert_eq!(
-            during["active_faults"],
-            json!({"node_kill": {"echo-server": 1.0}})
-        );
-
-        let mut after = json!({"moment": {"vtime": "4"}});
-        annotator.annotate(&mut after);
-        assert_eq!(after["active_faults"], json!({}));
     }
 
     fn summary(

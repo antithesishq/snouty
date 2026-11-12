@@ -280,7 +280,7 @@ fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRu
 
     let run = |config: &Path, action: &str| -> Output {
         let mut command = std::process::Command::new(runtime.name());
-        if runtime.engine_kind() == "podman" {
+        if runtime.engine_kind() == snouty::container::Engine::Podman {
             command.args([action, "--tls-verify=false", &image]);
             command.env("REGISTRY_AUTH_FILE", config.join("config.json"));
         } else {
@@ -541,7 +541,7 @@ sed '{to_host}' | exec '{helper}' "$@"
         .unwrap()
     };
 
-    let cases = if runtime.engine_kind() == "podman" {
+    let cases = if runtime.engine_kind() == snouty::container::Engine::Podman {
         vec![AuthCase::Podman]
     } else if docker_reads_auth_config(&real_engine) {
         vec![

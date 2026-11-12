@@ -5,20 +5,18 @@ use std::process::Stdio;
 use std::str::FromStr;
 use std::time::Duration;
 
-use color_eyre::eyre::{Context, Result, bail, eyre};
-use serde::Deserialize;
-use tokio::process::Command;
+use color_eyre::eyre::{Context, Result, bail};
 
-use crate::container::{Architecture, ContainerRuntime};
+use crate::container::{Architecture, ContainerRuntime, Engine};
 use crate::process::{output_async, output_with_timeout};
+use crate::runs::ReadyDisplay;
 use crate::simulate::SimulatePlatform;
 
 const IMAGE_TIMEOUT: Duration = Duration::from_mins(30);
 const CREATE_TIMEOUT: Duration = Duration::from_secs(60);
 const SHA256_PREFIX: &str = "sha256:";
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(try_from = "String")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ImageId(String);
 
 impl FromStr for ImageId {
@@ -33,14 +31,6 @@ impl FromStr for ImageId {
     }
 }
 
-impl TryFrom<String> for ImageId {
-    type Error = color_eyre::eyre::Report;
-
-    fn try_from(value: String) -> Result<Self> {
-        value.parse()
-    }
-}
-
 impl fmt::Display for ImageId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{SHA256_PREFIX}{}", self.0)
@@ -51,94 +41,87 @@ pub(super) struct Image {
     pub id: ImageId,
 }
 
-#[derive(Clone, Copy)]
-enum Engine {
-    Docker,
-    Podman,
-}
-
 pub(super) struct Images {
-    engine: String,
-    kind: Engine,
+    runtime: Box<dyn ContainerRuntime>,
 }
 
 impl Images {
     pub fn from_runtime(runtime: &dyn ContainerRuntime) -> Self {
         Self {
-            engine: runtime.name().to_owned(),
-            kind: match runtime.engine_kind() {
-                "docker" => Engine::Docker,
-                "podman" => Engine::Podman,
-                _ => unreachable!("container runtime has an unsupported engine kind"),
-            },
+            runtime: runtime.clone_box(),
         }
     }
 
-    pub async fn inspect(&self, reference: &str, platform: SimulatePlatform) -> Result<Image> {
-        #[derive(Deserialize)]
-        struct Inspect {
-            // Podman: inspect of a local antithesis-guest image uses Id and Architecture.
-            #[serde(rename = "Id")]
-            id: ImageId,
-            #[serde(rename = "Architecture")]
-            architecture: String,
-        }
-        let mut cmd = Command::new(&self.engine);
-        cmd.args(["image", "inspect"]);
-        if matches!(self.kind, Engine::Docker) {
-            cmd.args(["--platform", &format!("linux/{platform}")]);
-        }
-        cmd.arg(reference).stdin(Stdio::null());
-        let output = output_async(cmd, Duration::from_secs(60)).await?;
-        if !output.status.success() {
+    /// Inspect a local image and check that it runs on `platform`. This
+    /// blocks briefly, as other local image checks do.
+    pub fn inspect(&self, reference: &str, platform: SimulatePlatform) -> Result<Image> {
+        let platform = Architecture::from(platform);
+        let details = self
+            .runtime
+            .image_inspect(reference, Some(&platform))
+            .wrap_err_with(|| format!("cannot inspect image {reference}"))?;
+        if details.architecture != platform {
             bail!(
-                "cannot inspect image {reference}: {}",
-                String::from_utf8_lossy(&output.stderr)
+                "image {reference} uses {}; simulate requires {platform}",
+                details.architecture
             );
         }
-        let images: Vec<Inspect> =
-            serde_json::from_slice(&output.stdout).wrap_err("invalid image inspect response")?;
-        let image = images
-            .into_iter()
-            .next()
-            .ok_or_else(|| eyre!("image inspect returned no image"))?;
-        let architecture = Architecture::from(image.architecture.as_str());
-        if architecture != Architecture::from(platform) {
-            bail!("image {reference} uses {architecture}; simulate requires {platform}");
-        }
-        Ok(Image { id: image.id })
+        Ok(Image {
+            id: details.id.parse()?,
+        })
     }
 
+    /// Extract the ISO of the environment image `reference`. A local image
+    /// permits testing a release before it is published; a missing one is
+    /// pulled.
     pub async fn environment_iso(
         &self,
         reference: &str,
         run_dir: &Path,
         platform: SimulatePlatform,
     ) -> Result<PathBuf> {
-        // Local environment images permit testing a release before it is published.
-        if self.inspect(reference, platform).await.is_err() {
-            let mut pull = Command::new(&self.engine);
-            pull.args([
-                "pull",
-                "--platform",
-                &format!("linux/{platform}"),
-                reference,
-            ])
-            .stdin(Stdio::null());
-            let output = output_async(pull, IMAGE_TIMEOUT).await?;
-            if !output.status.success() {
-                bail!(
-                    "cannot pull simulation environment image {reference}: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
+        if !self
+            .runtime
+            .image_exists(reference, Some(&Architecture::from(platform)))?
+        {
+            self.pull(reference, platform).await?;
         }
-        let image = self.inspect(reference, platform).await?;
+        let image = self.inspect(reference, platform)?;
         let cache = crate::settings::cache_dir()
             .unwrap_or_else(|| run_dir.to_owned())
             .join("simulate")
             .join(image.id.to_string());
         self.extract_iso(reference, &cache, platform).await
+    }
+
+    /// Pull `reference` with the engine's own registry credentials. For the
+    /// Antithesis registry, those come from `snouty docker-credential`.
+    async fn pull(&self, reference: &str, platform: SimulatePlatform) -> Result<()> {
+        let mut pull = self.runtime.tokio_command(&[
+            "pull",
+            "--platform",
+            &format!("linux/{platform}"),
+            reference,
+        ]);
+        pull.stdin(Stdio::null());
+        let mut display = ReadyDisplay::new("pulling the simulation environment image");
+        let output = output_async(pull, IMAGE_TIMEOUT);
+        tokio::pin!(output);
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        let output = loop {
+            tokio::select! {
+                output = &mut output => break output?,
+                _ = tick.tick() => display.show(),
+            }
+        };
+        display.clear();
+        if !output.status.success() {
+            bail!(
+                "cannot pull simulation environment image {reference}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(())
     }
 
     async fn extract_iso(
@@ -164,24 +147,23 @@ impl Images {
                 .to_string_lossy()
                 .replace('.', "")
         );
-        let engine = self.engine.clone();
+        let runtime = self.runtime.clone_box();
         let reference = reference.to_owned();
         // The worker retains cleanup ownership when its caller is cancelled.
         let container = tokio::task::spawn_blocking(move || {
             let container = ExtractionContainer {
-                engine,
+                runtime,
                 name: Some(name),
             };
-            let mut create = std::process::Command::new(&container.engine);
-            create
-                .args([
-                    "create",
-                    "--platform",
-                    &format!("linux/{platform}"),
-                    "--name",
-                ])
-                .arg(container.name.as_deref().expect("container name assigned"))
-                .args([&reference, "/bin/true"]);
+            let create = container.runtime.command(&[
+                "create",
+                "--platform",
+                &format!("linux/{platform}"),
+                "--name",
+                container.name.as_deref().expect("container name assigned"),
+                &reference,
+                "/bin/true",
+            ]);
             let output = output_with_timeout(create, CREATE_TIMEOUT)?;
             if !output.status.success() {
                 bail!(
@@ -193,14 +175,14 @@ impl Images {
         })
         .await??;
         let staged_iso = staging.path().join("guest.iso");
-        let mut copy = Command::new(&self.engine);
-        copy.arg("cp")
-            .arg(format!(
+        let mut copy = self.runtime.tokio_command(&[
+            "cp",
+            &format!(
                 "{}:/guest.iso",
                 container.name.as_deref().expect("container name assigned")
-            ))
-            .arg(&staged_iso)
-            .stdin(Stdio::null());
+            ),
+        ]);
+        copy.arg(&staged_iso).stdin(Stdio::null());
         let output = output_async(copy, IMAGE_TIMEOUT).await?;
         if !output.status.success() {
             bail!(
@@ -227,12 +209,12 @@ impl Images {
         if references.is_empty() {
             bail!("no workload images to export");
         }
-        let mut command = Command::new(&self.engine);
-        command.arg("save");
-        if matches!(self.kind, Engine::Docker) {
-            command.args(["--platform", &format!("linux/{platform}")]);
-        }
-        if matches!(self.kind, Engine::Podman) {
+        let mut command = self.runtime.tokio_command(&["save"]);
+        command.args(
+            self.runtime
+                .image_platform_args(Some(&Architecture::from(platform))),
+        );
+        if self.runtime.engine_kind() == Engine::Podman {
             // Without this flag Podman interprets extra arguments as tags of one image.
             command.args(["--format", "docker-archive", "--multi-image-archive"]);
         }
@@ -253,20 +235,18 @@ impl Images {
 }
 
 struct ExtractionContainer {
-    engine: String,
+    runtime: Box<dyn ContainerRuntime>,
     name: Option<String>,
 }
 
 impl ExtractionContainer {
     async fn remove(mut self) -> Result<()> {
-        let mut command = Command::new(&self.engine);
-        command
-            .args([
-                "rm",
-                "--force",
-                self.name.as_deref().expect("container name assigned"),
-            ])
-            .stdin(Stdio::null());
+        let mut command = self.runtime.tokio_command(&[
+            "rm",
+            "--force",
+            self.name.as_deref().expect("container name assigned"),
+        ]);
+        command.stdin(Stdio::null());
         let output = output_async(command, Duration::from_secs(10)).await?;
         if !output.status.success() {
             bail!(
@@ -282,8 +262,7 @@ impl ExtractionContainer {
 impl Drop for ExtractionContainer {
     fn drop(&mut self) {
         let Some(name) = self.name.take() else { return };
-        let mut command = std::process::Command::new(&self.engine);
-        command.args(["rm", "--force", &name]);
+        let command = self.runtime.command(&["rm", "--force", &name]);
         match output_with_timeout(command, Duration::from_secs(10)) {
             Ok(output) if !output.status.success() => log::warn!(
                 "cannot remove ISO extraction container {name}: {}",
@@ -334,8 +313,7 @@ esac
         .unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         Images {
-            engine: path.to_string_lossy().into_owned(),
-            kind: Engine::Podman,
+            runtime: Box::new(crate::container::PodmanRuntime::new(path.to_string_lossy())),
         }
     }
 

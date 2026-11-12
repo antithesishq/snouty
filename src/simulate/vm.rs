@@ -21,7 +21,6 @@ use super::{
 };
 
 const AUTHORIZED_KEY_FW_CFG: &str = "opt/antithesis/authorized_key";
-const SSH_READY_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 #[cfg(target_os = "linux")]
 const QEMU_ACCELERATOR: &str = "kvm:tcg";
 #[cfg(target_os = "macos")]
@@ -327,55 +326,39 @@ impl Vm {
                 }
             }
         }).await.map_err(|_| eyre!("simulation environment startup timed out waiting for SSH readiness marker (antithesis_host.status=ssh_ready)"))??;
-        tokio::time::timeout_at(deadline, self.wait_ssh_login(boot_console))
+        tokio::time::timeout_at(deadline, self.check_ssh_login(boot_console))
             .await
             .map_err(|_| {
                 eyre!("simulation environment startup timed out waiting for SSH login after readiness marker")
             })?
     }
 
-    async fn wait_ssh_login(&mut self, boot_console: &mut BootConsole) -> Result<()> {
-        loop {
-            boot_console.flush(&self.run_dir.join("boot.log"))?;
-            if !self.is_running()? {
-                bail!("QEMU exited before SSH became ready");
-            }
-            let mut command = self.ssh();
-            command.args(["-o", "ConnectTimeout=30", "true"]);
-            let output = output_async(command, Duration::from_secs(60));
-            tokio::pin!(output);
-            let result = loop {
-                tokio::select! {
-                    result = &mut output => break result,
-                    () = sleep(Duration::from_millis(50)) => {
-                        boot_console.flush(&self.run_dir.join("boot.log"))?;
-                        if !self.is_running()? {
-                            bail!("QEMU exited before SSH became ready");
-                        }
+    /// Log in once. The environment writes the readiness marker after sshd
+    /// listens, so a failed login is an error, not a reason to retry.
+    async fn check_ssh_login(&mut self, boot_console: &mut BootConsole) -> Result<()> {
+        let mut command = self.ssh();
+        command.args(["-o", "ConnectTimeout=30", "true"]);
+        let output = output_async(command, Duration::from_secs(60));
+        tokio::pin!(output);
+        let output = loop {
+            tokio::select! {
+                result = &mut output => break result?,
+                () = sleep(Duration::from_millis(50)) => {
+                    boot_console.flush(&self.run_dir.join("boot.log"))?;
+                    if !self.is_running()? {
+                        bail!("QEMU exited before SSH became ready");
                     }
                 }
-            };
-            let output = match result {
-                Ok(output) => output,
-                Err(error) => {
-                    log::debug!("SSH readiness check failed: {error:#}");
-                    sleep(SSH_READY_RETRY_INTERVAL).await;
-                    continue;
-                }
-            };
-            if output.status.success() {
-                boot_console.flush(&self.run_dir.join("boot.log"))?;
-                return Ok(());
             }
-            let error = String::from_utf8_lossy(&output.stderr);
-            if error.contains("Permission denied") || error.contains("no such identity") {
-                bail!(
-                    "SSH authentication to the simulation environment failed: {}",
-                    error.trim()
-                );
-            }
-            sleep(SSH_READY_RETRY_INTERVAL).await;
+        };
+        if !output.status.success() {
+            bail!(
+                "SSH login to the simulation environment failed ({}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
         }
+        Ok(())
     }
 
     fn ssh_base(&self) -> tokio::process::Command {

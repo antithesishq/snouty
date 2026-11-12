@@ -229,6 +229,12 @@ async fn do_cmd_login(
     let (repository_to_use, docker_login) = if let Some(repository) = repository {
         (repository, None)
     } else {
+        if registry.registry_url.trim().is_empty() {
+            return Err(
+                user_error(format!("{tenant_to_use} reports no container registry"))
+                    .suggestion("run `snouty login --repository <repository>`"),
+            );
+        }
         let docker_login = match registry.auth {
             // `docker login` takes the host, not a repository path.
             RegistryResponseAuth::Docker => Some(
@@ -277,7 +283,7 @@ async fn do_cmd_login(
 
 /// `GET /api/v1/registry` with `new_credentials`, or else with the credential
 /// that later commands use. The request is also the check that the credential
-/// works. The returned registry URL is not blank.
+/// works.
 async fn fetch_registry(
     settings: &Settings,
     new_credentials: Option<&PersistableCredentials>,
@@ -289,7 +295,7 @@ async fn fetch_registry(
         None => AuthenticationInfo::for_ambient_configuration(profile, PasswordPolicy::Reject)?,
     };
     let api = AntithesisApi::build(settings, authentication, verbose, ResponseCache::Default)?;
-    let registry = api.get_registry().await.map_err(|err| {
+    api.get_registry().await.map_err(|err| {
         if api_error_status(&err) != Some(401) {
             return err;
         }
@@ -301,14 +307,7 @@ async fn fetch_registry(
                 "set a valid ANTITHESIS_API_KEY, or run `snouty login` in a terminal and enter a valid credential",
             )
         }
-    })?;
-    if registry.registry_url.trim().is_empty() {
-        return Err(
-            user_error(format!("{} reports no container registry", api.host()))
-                .suggestion("run `snouty login --repository <repository>`"),
-        );
-    }
-    Ok(registry)
+    })
 }
 
 /// Confirm what `snouty login` persisted, where, and the obvious next step —
@@ -1587,7 +1586,7 @@ mod tests {
     }
 
     /// A tenant that reports a blank registry fails the login, which saves
-    /// nothing.
+    /// nothing, unless --repository is given.
     #[tokio::test]
     async fn login_saves_nothing_when_the_tenant_reports_a_blank_registry() -> Result<()> {
         let env = LoginEnv::with_registry(200, r#"{"auth":"antithesis","registry_url":" "}"#);
@@ -1604,6 +1603,11 @@ mod tests {
         );
         assert!(env.settings().is_empty(), "{}", env.settings());
         assert!(env.credentials().is_empty(), "{}", env.credentials());
+
+        // --repository takes the place of the blank registry.
+        let prompter = Script::default().secret(FAKE_API_KEY_A).build();
+        login_with_flags(Some("myrepo"), &settings, &prompter).await?;
+        assert!(env.settings().contains(r#"repository = "myrepo""#));
         Ok(())
     }
 

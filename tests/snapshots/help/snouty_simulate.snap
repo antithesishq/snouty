@@ -12,10 +12,10 @@ that shell does not stop the simulation.
 
 Accepts a directory containing docker-compose.yaml, as validate does. Kubernetes
 configurations are not supported. Workload images must exist in the local
-container engine. The simulation environment image defaults to antithesis-guest
-in the configured repository, at the version this release of snouty pins. An
---environment-image without a tag or digest gets that version. No API key is
-required.
+container engine. The simulation environment image defaults to
+antithesis-environment in the configured repository, at the version this release
+of snouty pins. An --environment-image without a tag or digest gets that
+version. No API key is required.
 
 Requires Linux or macOS and QEMU 10.2 or later, built with libslirp 4.7 or
 later. Uses 1 CPU and 15000 MiB of memory by default. Use --memory to lower its
@@ -62,7 +62,7 @@ Options:
       --environment-image <ENVIRONMENT_IMAGE>
           Container image of the simulation environment, containing /guest.iso;
           without a tag or digest, uses the pinned version (default:
-          REPOSITORY/antithesis-guest)
+          REPOSITORY/antithesis-environment)
 
       --disable-restart
           Keep the stack running after composer completion, with entropy refresh

@@ -702,7 +702,7 @@ pub struct SimulateArgs {
     pub config: Option<std::path::PathBuf>,
 
     /// Container image of the simulation environment, containing /guest.iso; without a tag or
-    /// digest, uses the pinned version (default: REPOSITORY/antithesis-guest)
+    /// digest, uses the pinned version (default: REPOSITORY/antithesis-environment)
     #[arg(long, value_parser = validate_non_empty, conflicts_with = "attach")]
     pub environment_image: Option<String>,
 

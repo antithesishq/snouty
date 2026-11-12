@@ -443,7 +443,7 @@ requires `qemu-system-aarch64` and EDK2 AArch64 UEFI.
 The simulation environment uses the host architecture by default. Use
 `--platform arm64` to run an ARM64 simulation environment and ARM64 workload
 images on an x86-64 host.
-The simulation environment image defaults to `antithesis-guest` in your
+The simulation environment image defaults to `antithesis-environment` in your
 configured repository, at the version this release of snouty pins. No API key
 is required. Use `--environment-image IMAGE` to override it; an image without a
 tag or digest gets the pinned version. The image must contain `/guest.iso`.

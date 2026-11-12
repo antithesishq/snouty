@@ -661,14 +661,14 @@ fn resolve_environment(image: Option<String>, settings: &Settings) -> Result<Env
     } else {
         let repository = crate::settings::require_setting(settings.repository(), "repository")?;
         format!(
-            "{}/antithesis-guest:{ENVIRONMENT_VERSION}",
+            "{}/antithesis-environment:{ENVIRONMENT_VERSION}",
             repository.trim_end_matches('/')
         )
     }))
 }
 
 /// Tag a `--environment-image` that names neither a tag nor a digest with
-/// [`ENVIRONMENT_VERSION`], so `REPOSITORY/antithesis-guest` means the default
+/// [`ENVIRONMENT_VERSION`], so `REPOSITORY/antithesis-environment` means the default
 /// release instead of `latest`.
 fn with_default_tag(image: String) -> String {
     if crate::container::image_repo(&image) == image {
@@ -813,8 +813,8 @@ mod tests {
         for (image, expected) in [
             ("environment", format!("environment:{ENVIRONMENT_VERSION}")),
             (
-                "localhost:5000/team/antithesis-guest",
-                format!("localhost:5000/team/antithesis-guest:{ENVIRONMENT_VERSION}"),
+                "localhost:5000/team/antithesis-environment",
+                format!("localhost:5000/team/antithesis-environment:{ENVIRONMENT_VERSION}"),
             ),
             ("environment:test", "environment:test".to_string()),
             (

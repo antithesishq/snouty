@@ -579,7 +579,7 @@ mod tests {
         );
     }
 
-    // Instrumentation serial output from a local antithesis-guest image under TCG.
+    // Instrumentation serial output from a local antithesis-environment image under TCG.
     #[test]
     fn observed_composer_failure_and_output_are_preserved() {
         let events: Vec<_> = include_str!("../../tests/fixtures/simulate/observed.log")

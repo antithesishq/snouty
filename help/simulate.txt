@@ -4,7 +4,7 @@ This command is gated behind the 'simulate' unstable feature. Enable it with SNO
 
 After the simulation environment boots, it prints a run ID. Open a second terminal and use `{{ t("snouty simulate --attach <ID>")? }}` to open a shell in it. Leaving that shell does not stop the simulation.
 
-Accepts a directory containing docker-compose.yaml, as validate does. Kubernetes configurations are not supported. Workload images must exist in the local container engine. The simulation environment image defaults to antithesis-guest in the configured repository, at the version this release of snouty pins. An {{ t("--environment-image")? }} without a tag or digest gets that version. No API key is required.
+Accepts a directory containing docker-compose.yaml, as validate does. Kubernetes configurations are not supported. Workload images must exist in the local container engine. The simulation environment image defaults to antithesis-environment in the configured repository, at the version this release of snouty pins. An {{ t("--environment-image")? }} without a tag or digest gets that version. No API key is required.
 
 Requires Linux or macOS and QEMU 10.2 or later, built with libslirp 4.7 or later. Uses 1 CPU and 15000 MiB of memory by default. Use {{ t("--memory")? }} to lower its memory when the host has less RAM. The simulation environment uses the host architecture by default. SSH configuration is private to this run; user configuration is not changed.
 

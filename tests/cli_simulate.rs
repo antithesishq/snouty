@@ -1066,7 +1066,7 @@ async fn environment_image_defaults_to_configured_repository() {
         simulation.wait_for("stdout", "workload running");
         assert_eq!(
             simulation.read("environment_image"),
-            "registry.example/team/antithesis-guest:v67.3"
+            "registry.example/team/antithesis-environment:v67.3"
         );
         kill(
             Pid::from_raw(simulation.child.id().cast_signed()),
@@ -1085,7 +1085,7 @@ fn default_environment_image_works_without_api_access() {
     simulation.wait_for("stdout", "workload running");
     assert_eq!(
         simulation.read("environment_image"),
-        "registry.example/team/antithesis-guest:v67.3"
+        "registry.example/team/antithesis-environment:v67.3"
     );
     kill(
         Pid::from_raw(simulation.child.id().cast_signed()),

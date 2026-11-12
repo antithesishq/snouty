@@ -689,7 +689,7 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
             (
                 "GET",
                 "/api/v1/registry",
-                json!({"auth": "antithesis", "registry_url": "registry.pty-tenant.antithesis.com"}),
+                serde_json::from_str::<Value>(REGISTRY).expect("parse REGISTRY"),
             ),
         ] {
             Mock::given(method(verb))

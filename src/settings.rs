@@ -376,6 +376,21 @@ impl Settings {
         self.profile.as_deref()
     }
 
+    /// These settings with `tenant` in place of the resolved tenant.
+    pub(crate) fn with_tenant(&self, tenant: &str) -> Self {
+        Settings {
+            profile: self.profile.clone(),
+            tenant: Some(tenant.to_owned()),
+            repository: self.repository.clone(),
+            base_url: self.base_url.clone(),
+            https_proxy: self.https_proxy.clone(),
+            container_engine: self.container_engine.clone(),
+            update_channel: self.update_channel,
+            api_cache_max_file_size: self.api_cache_max_file_size,
+            files: self.files.clone(),
+        }
+    }
+
     /// Start building a `Settings` from explicit values, with no environment
     /// or filesystem IO — for callers (and tests) that already hold the
     /// values. Set only what's needed and finish with

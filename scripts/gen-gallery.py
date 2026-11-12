@@ -4904,7 +4904,6 @@ _ASK_CREDENTIALS = "What kind of credentials"
 _ASK_KEY = "Please enter your API Key"
 _EMPTY_KEY_REFUSED = "An empty value is not valid."
 _ASK_REPLACE_PASSWORD = "Replace your stored username and password?"
-_RETAINED = "Retained your previously stored credentials"
 _PASSWORD_REFUSED = "does not accept username/password authentication"
 # A `credentials.toml` with a username and password, as an older snouty wrote it.
 _SEED_PASSWORD_CREDS_TOML = (
@@ -5132,7 +5131,10 @@ def build_tty_stories() -> list[Story]:
                 (_ASK_KEY, _FAKE_API_KEY_B + ENTER),
             ),
             tty_persisted(
-                prompts=("`docker login registry.example.com`", "`podman login registry.example.com`"),
+                prompts=(
+                    "`docker login registry.example.com`",
+                    "`podman login registry.example.com`",
+                ),
                 files=((_SETTINGS, (f'repository = "{_REPO}"',)),),
                 secrets_absent=(_FAKE_API_KEY_B,),
             ),

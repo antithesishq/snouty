@@ -27,6 +27,7 @@ use crate::{
         AuthenticationInfo, CredentialStore, PasswordPolicy, PersistableCredentials,
         is_blank_api_key,
     },
+    container::registry_host,
     env,
     error::{api_error_status, user_error},
     render::{OutputOptions, sanitize, wrap_if_tty},
@@ -192,14 +193,7 @@ async fn do_cmd_login(
         .flatten()
         .filter(|stored| !stored.value().has_blank_api_key());
 
-    let mut api_settings = Settings::builder().tenant(&tenant_to_use);
-    if let Some(base_url) = current_settings.explicit_base_url() {
-        api_settings = api_settings.base_url(base_url);
-    }
-    if let Some(proxy) = current_settings.https_proxy() {
-        api_settings = api_settings.https_proxy(proxy);
-    }
-    let api_settings = api_settings.build();
+    let api_settings = current_settings.with_tenant(&tenant_to_use);
 
     // The new credential, and where login stores it.
     let new_credentials = if prompter.is_interactive() {
@@ -207,7 +201,7 @@ async fn do_cmd_login(
         prompt_for_auth(
             prompter,
             &client,
-            current_settings.explicit_base_url(),
+            api_settings.explicit_base_url(),
             &tenant_to_use,
             stored.as_ref().map(Tagged::value),
         )
@@ -240,40 +234,40 @@ async fn do_cmd_login(
     )?;
     // The registry request is also the check that the credential works, so a
     // failure saves nothing. A 404 still means that the tenant accepted the
-    // credential, so --repository can take the place of its answer.
-    let registry = match api.get_registry().await {
-        Ok(registry) => Ok(registry),
-        Err(err) => match api_error_status(&err) {
-            Some(401) => {
+    // credential, so --repository can take the place of its answer. The
+    // second value is the registry that the user must sign in to with Docker
+    // or Podman.
+    let (repository_to_use, docker_login) = match (repository, api.get_registry().await) {
+        (Some(repository), Ok(_)) => (repository, None),
+        (None, Ok(registry)) => {
+            let docker_login = match registry.auth {
+                RegistryResponseAuth::Antithesis => None,
+                // `docker login` takes the host, not a repository path.
+                RegistryResponseAuth::Docker | RegistryResponseAuth::Other(_) => Some(
+                    registry_host(&registry.registry_url)
+                        .unwrap_or(&registry.registry_url)
+                        .to_owned(),
+                ),
+            };
+            (registry.registry_url, docker_login)
+        }
+        (repository, Err(err)) => match (api_error_status(&err), repository) {
+            (Some(401), _) => {
                 return Err(
                     user_error(format!("{} did not accept the credential", api.host()))
                         .suggestion("run `snouty login` again, and enter a valid credential"),
                 );
             }
-            Some(404) => Err(user_error(format!(
-                "{} does not report its container registry",
-                api.host()
-            ))
-            .suggestion("run `snouty login --repository <repository>`")),
+            (Some(404), Some(repository)) => (repository, None),
+            (Some(404), None) => {
+                return Err(user_error(format!(
+                    "{} does not report its container registry",
+                    api.host()
+                ))
+                .suggestion("run `snouty login --repository <repository>`"));
+            }
             _ => return Err(err),
         },
-    };
-
-    // The repository, and the registry that the user must sign in to with
-    // Docker or Podman.
-    let (repository_to_use, docker_login) = match (repository, registry) {
-        (Some(repository), _) => (repository, None),
-        (None, Ok(registry)) => {
-            let docker_login = match registry.auth {
-                RegistryResponseAuth::Antithesis => None,
-                // `docker login` takes the host, not a repository path.
-                RegistryResponseAuth::Docker | RegistryResponseAuth::Other(_) => {
-                    registry.registry_url.split('/').next().map(str::to_owned)
-                }
-            };
-            (registry.registry_url, docker_login)
-        }
-        (None, Err(err)) => return Err(err),
     };
 
     let written = new_credentials

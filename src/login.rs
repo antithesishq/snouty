@@ -195,7 +195,6 @@ async fn do_cmd_login(
 
     let api_settings = current_settings.with_tenant(&tenant_to_use);
 
-    // The new credential, and where login stores it.
     let new_credentials = if prompter.is_interactive() {
         let client = HttpClient::new(&api_settings, verbose)?;
         prompt_for_auth(
@@ -233,10 +232,8 @@ async fn do_cmd_login(
         ResponseCache::Default,
     )?;
     // The registry request is also the check that the credential works, so a
-    // failure saves nothing. A 404 still means that the tenant accepted the
-    // credential, so --repository can take the place of its answer. The
-    // second value is the registry that the user must sign in to with Docker
-    // or Podman.
+    // failure saves nothing. A tenant that does not serve the endpoint answers
+    // 404, and then --repository takes the place of its answer.
     let (repository_to_use, docker_login) = match (repository, api.get_registry().await) {
         (Some(repository), Ok(_)) => (repository, None),
         (None, Ok(registry)) => {
@@ -1437,9 +1434,8 @@ mod tests {
 
     /// Start a TCP server that answers `GET /api/v1/registry` with
     /// `registry_status` and `registry_body`, and every other request with 200
-    /// and `config_body`. Returns its base URL. The listener thread is
-    /// intentionally leaked — it lives for the test process, which is fine for
-    /// a test.
+    /// and `config_body`. Returns its base URL. The listener thread leaks, and
+    /// lives until the test process exits.
     fn spawn_mock_server(
         config_body: &'static str,
         registry_status: u16,

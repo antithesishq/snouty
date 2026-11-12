@@ -4894,8 +4894,7 @@ _CREDS = ".config/snouty/credentials.toml"
 # The registry that the mock tenant reports.
 _TENANT_REGISTRY = f"registry.{_TENANT}.antithesis.com"
 _SEED_SETTINGS_TOML = f'tenant = "{_TENANT}"\nrepository = "{_REPO}"\n'
-# A `credentials.toml` exactly as `snouty login` writes it. The mock tenant
-# rejects key A, and accepts key B.
+# A `credentials.toml` exactly as `snouty login` writes it.
 _SEED_CREDS_TOML = f'[default]\ntype = "ApiKey"\napi_key = "{_FAKE_API_KEY_A}"\n'
 _SEED_CREDS_B_TOML = f'[default]\ntype = "ApiKey"\napi_key = "{_FAKE_API_KEY_B}"\n'
 

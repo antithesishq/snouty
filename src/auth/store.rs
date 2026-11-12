@@ -106,8 +106,8 @@ impl CredentialStore {
         }
     }
 
-    /// Stores `credentials` for `snouty login`. A keychain entry replaces the
-    /// credentials-file entry of the same profile.
+    /// A keychain entry also removes the credentials-file entry of the same
+    /// profile.
     pub(crate) fn store(&self, credentials: PersistableCredentials) -> Result<()> {
         self.persist(credentials)?;
         if matches!(self, Self::Keychain { .. }) {

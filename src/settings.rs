@@ -376,7 +376,6 @@ impl Settings {
         self.profile.as_deref()
     }
 
-    /// These settings with `tenant` in place of the resolved tenant.
     pub(crate) fn with_tenant(&self, tenant: &str) -> Self {
         Settings {
             profile: self.profile.clone(),

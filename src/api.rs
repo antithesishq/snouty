@@ -49,8 +49,9 @@ pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
     BuildLogLine, Event, EventProperty, ExecuteCommandRequestSourceRunId as SourceRunId,
     ExecuteCommandRequestSourceSessionId as SourceSessionId, FaultTolerance, Moment,
-    NonEventProperty, PerformanceTier, Property, PropertyStatus, RunDetail, RunDetailSubStatus,
-    RunStatus, RunStreamNotificationType, RunSummary, UsageEntry,
+    NonEventProperty, PerformanceTier, Property, PropertyStatus, RegistryResponse,
+    RegistryResponseAuth, RunDetail, RunDetailSubStatus, RunStatus, RunStreamNotificationType,
+    RunSummary, UsageEntry,
 };
 
 /// The outcome of a launch or debugging-launch request, and the `--json` output
@@ -1006,6 +1007,15 @@ impl AntithesisApi {
     pub async fn cancel_run(&self, run_id: &str) -> Result<()> {
         match self.client.cancel_run().run_id(run_id).send().await {
             Ok(_) => Ok(()),
+            Err(err) => Err(format_api_client_error(err).await),
+        }
+    }
+
+    /// The registry that the tenant's container images are pushed to, and
+    /// the login to push with.
+    pub async fn get_registry(&self) -> Result<RegistryResponse> {
+        match self.client.get_registry().send().await {
+            Ok(response) => Ok(response.into_inner()),
             Err(err) => Err(format_api_client_error(err).await),
         }
     }

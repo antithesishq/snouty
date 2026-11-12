@@ -31,7 +31,7 @@ use password::apply_password_policy;
 pub(crate) use password::{PASSWORD_VAR_NAME, PasswordPolicy, USERNAME_VAR_NAME};
 pub use store::initialize_credential_store;
 pub(crate) use store::{
-    CredentialStore, PersistableCredentials, credentials_file_path, keychain_entry_name, persist,
+    CredentialStore, PersistableCredentials, credentials_file_path, keychain_entry_name,
 };
 
 /// Every environment variable that ambient credential resolution reads. A test

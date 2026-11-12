@@ -94,6 +94,28 @@ impl CredentialStore {
         }
     }
 
+    /// Where `snouty login` stores the credential of `profile`: the
+    /// keychain, or the credentials file when there is no keychain.
+    pub(crate) fn for_login(profile: Option<&str>) -> Result<Self> {
+        if keychain_entry(profile)?.is_some() {
+            Ok(Self::keychain(profile))
+        } else {
+            Self::credentials_file(profile).ok_or_eyre(
+                "Could not determine settings directory. Please ensure $XDG_CONFIG_HOME or $HOME is set",
+            )
+        }
+    }
+
+    /// Stores `credentials` for `snouty login`. A keychain entry replaces the
+    /// credentials-file entry of the same profile.
+    pub(crate) fn store(&self, credentials: PersistableCredentials) -> Result<()> {
+        self.persist(credentials)?;
+        if matches!(self, Self::Keychain { .. }) {
+            clear_from_file_if_present(self.profile());
+        }
+        Ok(())
+    }
+
     pub(super) fn resolve(self) -> Result<Option<Tagged<AuthenticationInfo, Self>>> {
         Ok(self
             .load()?
@@ -165,7 +187,10 @@ impl std::fmt::Debug for PersistableCredentials {
 impl PersistableCredentials {
     /// An OAuth credential keeps a copy of `store`, to write a refreshed token
     /// back to it.
-    fn convert_to_authentication_info(self, store: &CredentialStore) -> AuthenticationInfo {
+    pub(crate) fn convert_to_authentication_info(
+        self,
+        store: &CredentialStore,
+    ) -> AuthenticationInfo {
         match self {
             Self::ApiKey { api_key } => AuthenticationInfo::ApiKey { api_key },
             Self::OAuth {
@@ -198,26 +223,6 @@ pub fn initialize_credential_store() -> Result<()> {
 pub fn initialize_credential_store() -> Result<()> {
     // pass
     Ok(())
-}
-
-/// Stores `credentials` in the keychain, or in the credentials file when there
-/// is no keychain.
-pub(crate) fn persist(
-    credentials: PersistableCredentials,
-    profile: Option<&str>,
-) -> Result<CredentialStore> {
-    let store = if keychain_entry(profile)?.is_some() {
-        CredentialStore::keychain(profile)
-    } else {
-        CredentialStore::credentials_file(profile).ok_or_eyre(
-            "Could not determine settings directory. Please ensure $XDG_CONFIG_HOME or $HOME is set",
-        )?
-    };
-    store.persist(credentials)?;
-    if matches!(store, CredentialStore::Keychain { .. }) {
-        clear_from_file_if_present(profile);
-    }
-    Ok(store)
 }
 
 /// The keychain entry of `profile`, or `None` when there is no keychain.

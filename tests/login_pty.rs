@@ -50,6 +50,11 @@ fn row_of_stars() -> String {
 /// The `GET /auth/cli/config` body that reports OAuth disabled for the CLI.
 const OAUTH_DISABLED: &str = r#"{"port_strategy":"disabled"}"#;
 
+/// The `GET /api/v1/registry` body of a registry that takes the Antithesis
+/// credential.
+const REGISTRY: &str =
+    r#"{"auth":"antithesis","registry_url":"registry.pty-tenant.antithesis.com"}"#;
+
 const CREDENTIALS_FILE: &str = ".config/snouty/credentials.toml";
 
 const REPLACE_PASSWORD: &str = "Replace your stored username and password?";
@@ -64,9 +69,32 @@ const KEPT_ANSWER: &str = "Please enter your API Key (********9Pgw) kept";
 /// The answered API key line when a new key replaces the stored key.
 const NEW_KEY_ANSWER: &str = "Please enter your API Key (********9Pgw) ********";
 
+/// Start a mock backend that answers `GET /api/v1/registry` with [`REGISTRY`]
+/// and every other request with [`OAUTH_DISABLED`]. Returns its base URL.
+fn start_backend() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the mock backend");
+    let url = format!("http://{}", listener.local_addr().expect("local address"));
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let mut buf = [0u8; 4096];
+            let n = std::io::Read::read(&mut stream, &mut buf).unwrap_or(0);
+            let body = if buf[..n].starts_with(b"GET /api/v1/registry ") {
+                REGISTRY
+            } else {
+                OAUTH_DISABLED
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+        }
+    });
+    url
+}
+
 /// Spawn `snouty login --tenant … --repository …` on a PTY against an
-/// isolated `$HOME` and a mock backend that answers the `/auth/cli/config`
-/// probe with [`OAUTH_DISABLED`].
+/// isolated `$HOME` and the backend of [`start_backend`].
 fn start_login() -> (tempfile::TempDir, OsSession) {
     start_login_with(&[])
 }
@@ -97,8 +125,7 @@ const STDOUT_FILE: &str = "stdout.txt";
 struct Login<'a> {
     /// Each `(path, contents)` is written under the temp `$HOME` first.
     seed: &'a [(&'a str, &'a str)],
-    /// Without it, a mock backend answers the `/auth/cli/config` probe with
-    /// [`OAUTH_DISABLED`].
+    /// Without it, the backend of [`start_backend`].
     base_url: Option<&'a str>,
     /// Each `(name, value)` is set for the child.
     env: &'a [(&'a str, &'a str)],
@@ -134,10 +161,7 @@ fn spawn_login(login: &Login) -> (tempfile::TempDir, OsSession) {
         .env("TERM", "xterm-256color")
         .env(
             "ANTITHESIS_BASE_URL",
-            login.base_url.map_or_else(
-                || support::start_mock_server(OAUTH_DISABLED, 200),
-                str::to_owned,
-            ),
+            login.base_url.map_or_else(start_backend, str::to_owned),
         )
         // Force file-based credential storage so a macOS run doesn't touch
         // the real keychain.
@@ -196,6 +220,19 @@ fn finish(mut session: OsSession) -> String {
     assert!(
         matches!(status, WaitStatus::Exited(_, 0)),
         "login failed: {status:?}"
+    );
+    seen
+}
+
+/// Wait for the end of the output and a failed exit. Returns the consumed
+/// text.
+fn finish_with_failure(mut session: OsSession) -> String {
+    let seen = Expect::expect(&mut session, expectrl::Eof).expect("read the PTY to its end");
+    let seen = String::from_utf8_lossy(seen.as_bytes()).into_owned();
+    let status = session.get_process().wait().expect("wait for snouty login");
+    assert!(
+        matches!(status, WaitStatus::Exited(_, code) if code != 0),
+        "login must fail: {status:?}\n{seen}"
     );
     seen
 }
@@ -319,7 +356,8 @@ fn bare_enter_without_a_stored_key_asks_again() {
 }
 
 /// A bare Enter does not replace a stored username and password with an empty
-/// key: the prompt refuses it, and Esc then keeps the password.
+/// key: the prompt refuses it, and Esc then keeps the password. The password
+/// cannot sign in, so the login fails.
 #[test]
 fn bare_enter_keeps_a_stored_password() {
     let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &password_credentials())]);
@@ -327,9 +365,8 @@ fn bare_enter_keeps_a_stored_password() {
     send(&mut session, "\r");
     expect(&mut session, EMPTY_REFUSED);
     send(&mut session, "\x1b");
-    let seen = finish(session);
+    finish_with_failure(session);
 
-    assert!(seen.contains(RETAINED), "{seen}");
     assert_eq!(credentials(home.path()), password_credentials());
 }
 
@@ -350,7 +387,8 @@ fn an_api_key_asks_before_it_replaces_stored_oauth_tokens() {
 }
 
 /// Login asks before a new API key replaces a stored username and password,
-/// and a bare Enter answers no: the credentials file stays as it was.
+/// and a bare Enter answers no: the credentials file stays as it was. The
+/// password cannot sign in, so the login fails.
 #[test]
 fn declining_keeps_a_stored_password() {
     let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &password_credentials())]);
@@ -358,9 +396,8 @@ fn declining_keeps_a_stored_password() {
     send(&mut session, &format!("{FAKE_API_KEY_A}\r"));
     expect(&mut session, REPLACE_PASSWORD);
     send(&mut session, "\r");
-    let seen = finish(session);
+    finish_with_failure(session);
 
-    assert!(seen.contains(RETAINED), "{seen}");
     assert_eq!(credentials(home.path()), password_credentials());
 }
 
@@ -482,10 +519,13 @@ fn a_redirected_summary_keeps_whole_lines() {
 }
 
 /// Esc at the API key prompt skips credential storage and writes no
-/// credentials file.
+/// credentials file. The key in the environment signs in.
 #[test]
 fn esc_at_the_api_key_prompt_skips_credential_storage() {
-    let (home, mut session) = start_login();
+    let (home, mut session) = spawn_login(&Login {
+        env: &[("ANTITHESIS_API_KEY", FAKE_API_KEY_B)],
+        ..Login::default()
+    });
     expect(&mut session, "hit Esc to skip");
     send(&mut session, "\x1b");
     let seen = finish(session);
@@ -510,9 +550,10 @@ fn flat(seen: &str) -> String {
 }
 
 /// When the OAuth configuration probe gets no response, login warns that the
-/// base URL may be wrong, offers only an API key, and saves the tenant.
+/// base URL may be wrong and offers only an API key. The key cannot sign in
+/// at that URL, so the login fails and saves nothing.
 #[test]
-fn an_unreachable_base_url_warns_and_login_continues() {
+fn an_unreachable_base_url_warns_and_login_fails() {
     let refused = refused_base_url();
     let (home, mut session) = spawn_login(&Login {
         base_url: Some(&refused),
@@ -529,12 +570,9 @@ fn an_unreachable_base_url_warns_and_login_continues() {
     }
     send(&mut session, FAKE_API_KEY_A);
     send(&mut session, "\r");
-    finish(session);
+    finish_with_failure(session);
 
-    let settings = std::fs::read_to_string(home.path().join(".config/snouty/settings.toml"))
-        .expect("read settings.toml");
-    assert!(settings.contains(r#"tenant = "pty-tenant""#), "{settings}");
-    assert!(credentials(home.path()).contains(FAKE_API_KEY_A));
+    assert!(!home.path().join(".config/snouty").exists());
 }
 
 /// Login checks for single sign-on at the `base_url` of the settings file, not
@@ -554,7 +592,7 @@ fn login_uses_the_base_url_of_the_settings_file() {
     let needle = format!("could not reach {refused}/auth/cli/config");
     assert!(seen.contains(&needle), "missing {needle:?} in {seen}");
     send(&mut session, "\x1b");
-    finish(session);
+    finish_with_failure(session);
 }
 
 /// A `base_url` that does not parse gets the same warning as one that cannot
@@ -570,14 +608,17 @@ fn a_malformed_base_url_warns() {
     let needle = "Check that the base_url setting is correct.";
     assert!(seen.contains(needle), "missing {needle:?} in {seen}");
     send(&mut session, "\x1b");
-    finish(session);
+    finish_with_failure(session);
 }
 
 /// A tenant that answers that single sign-on is disabled gets the API key
 /// prompt with no warning.
 #[test]
 fn a_tenant_without_oauth_gets_no_warning() {
-    let (_home, mut session) = start_login();
+    let (_home, mut session) = spawn_login(&Login {
+        env: &[("ANTITHESIS_API_KEY", FAKE_API_KEY_B)],
+        ..Login::default()
+    });
     let seen = flat(&expect(&mut session, "Please enter your API Key"));
     assert!(!seen.contains("warning"), "{seen}");
     send(&mut session, "\x1b");
@@ -599,7 +640,7 @@ fn verbose_logs_why_the_oauth_probe_failed() {
     expect(&mut session, "* request failed: ");
     expect(&mut session, "Please enter your API Key");
     send(&mut session, "\x1b");
-    finish(session);
+    finish_with_failure(session);
 }
 
 /// `--verbose` logs the three OAuth requests of a single sign-on to stderr,
@@ -644,6 +685,11 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
                 "POST",
                 "/auth/cli/token",
                 json!({"antithesis_token": FAKE_ACCESS_TOKEN_A, "refresh_token": FAKE_REFRESH_TOKEN_A}),
+            ),
+            (
+                "GET",
+                "/api/v1/registry",
+                json!({"auth": "antithesis", "registry_url": "registry.pty-tenant.antithesis.com"}),
             ),
         ] {
             Mock::given(method(verb))

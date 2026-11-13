@@ -350,6 +350,37 @@ fn container_log_tail(log: &tempfile::NamedTempFile) -> String {
     tail.chars().take(MAX_TAIL).collect()
 }
 
+/// Start a backend for `snouty login` that answers `GET /api/v1/registry`
+/// with `registry_status` and `registry_body`, and every other request with
+/// 200 and `config_body`. Returns its base URL. The listener thread leaks, and
+/// lives until the test process exits.
+pub fn spawn_login_backend(
+    config_body: &'static str,
+    registry_status: u16,
+    registry_body: &'static str,
+) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind the mock backend");
+    let addr = listener.local_addr().expect("mock backend address");
+    thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let Some(request) = mock_read_request(&mut stream) else {
+                continue;
+            };
+            let (status, body) = if request.starts_with("GET /api/v1/registry ") {
+                (registry_status, registry_body)
+            } else {
+                (200, config_body)
+            };
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    format!("http://{addr}")
+}
+
 /// A repo prefix unique to this call, so tests that share one registry — every
 /// test does when [`TEST_REGISTRY_VAR`] is set — never push to the same repo.
 /// That matters beyond hygiene: `pin_images` skips the push when the registry
@@ -586,6 +617,8 @@ pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
 ///   for any other known run, 404 for an unknown run
 /// - `GET  /api/v0/usage` — paginated usage entries
 /// - `GET  /api/v0/usage/{run_id}` — one usage entry (404 for any other run)
+/// - `GET  /api/v1/registry` — the `antithesis` registry of the tenant
+///   `testtenant`
 /// - `GET  /auth/cli/config` — `{"port_strategy":"disabled"}`
 /// - `POST /auth/cli/refresh` — [`fake_secrets::FAKE_ACCESS_TOKEN_B`]
 /// - `GET  /github-actions/token` — the GitHub Actions OIDC token endpoint:
@@ -796,6 +829,13 @@ fn mock_route(
     let ndjson = "application/x-ndjson";
 
     match (method, path_part) {
+        ("GET", "/api/v1/registry") => (
+            200,
+            r#"{"auth":"antithesis","registry_url":"registry.testtenant.antithesis.com"}"#
+                .to_string(),
+            json,
+            NO_CACHE_CACHE_CONTROL,
+        ),
         ("GET", "/auth/cli/config") => (
             200,
             r#"{"port_strategy":"disabled"}"#.to_string(),

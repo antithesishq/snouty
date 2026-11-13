@@ -96,6 +96,7 @@ pub fn cache_dir() -> Option<PathBuf> {
 /// `Default` is every setting unset (with the `stable` update channel and the
 /// default cache size cap) — handy when a caller needs a `Settings` without
 /// resolving anything.
+#[derive(Clone)]
 pub struct Settings {
     profile: Option<String>,
     tenant: Option<String>,
@@ -388,6 +389,14 @@ impl Settings {
         self.profile.as_deref()
     }
 
+    /// These settings with `tenant` in place of the tenant setting.
+    pub(crate) fn with_tenant(&self, tenant: &str) -> Self {
+        Settings {
+            tenant: Some(tenant.to_owned()),
+            ..self.clone()
+        }
+    }
+
     /// Start building a `Settings` from explicit values, with no environment
     /// or filesystem IO — for callers (and tests) that already hold the
     /// values. Set only what's needed and finish with
@@ -503,11 +512,10 @@ fn explicit_settings_path(flag: Option<PathBuf>) -> Result<Option<PathBuf>> {
 }
 
 /// Writes `tenant` and `registry` into the global `settings.toml`, in the
-/// table of `profile_to_update` or else the top-level table. A blank value is
-/// not written.
+/// table of `profile_to_update` or else the top-level table.
 pub(crate) fn update_settings_in_global_file(
-    tenant: Option<String>,
-    registry: Option<String>,
+    tenant: &str,
+    registry: &str,
     profile_to_update: Option<&str>,
 ) -> Result<()> {
     let path = global_settings_dir()
@@ -585,24 +593,11 @@ pub(crate) fn mkdir(path: &Path, recursive: bool, permissions: u32) -> Result<()
     Ok(())
 }
 
-/// Inserts `value` at `key` unless it is `None` or empty, and returns whether
-/// it did.
-fn insert_key_if_non_empty(target: &mut Table, key: &str, value: Option<String>) -> bool {
-    match value {
-        Some(value) if !value.is_empty() => {
-            target.insert(key.to_owned(), Value::String(value));
-            true
-        }
-        _ => false,
-    }
-}
-
-fn update_table(target: &mut Table, tenant: Option<String>, registry: Option<String>) {
-    insert_key_if_non_empty(target, "tenant", tenant);
-    if insert_key_if_non_empty(target, REGISTRY_KEY, registry) {
-        // The table never holds the old name beside the new one.
-        target.remove(REPOSITORY_KEY);
-    }
+fn update_table(target: &mut Table, tenant: &str, registry: &str) {
+    target.insert("tenant".to_owned(), Value::from(tenant));
+    target.insert(REGISTRY_KEY.to_owned(), Value::from(registry));
+    // The table never holds the old name beside the new one.
+    target.remove(REPOSITORY_KEY);
 }
 
 /// The base URL of `tenant` when no `base_url` is set.

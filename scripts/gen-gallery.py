@@ -507,11 +507,14 @@ class ActionsJob(Enum):
 class MockTenantSpec:
     """How a story's mock tenant behaves. When `sso` is False, the tenant has
     no CLI single sign-on: `/auth/cli/config` answers 403. When `actions` is
-    set, the story runs as a GitHub Actions job with `id-token: write`."""
+    set, the story runs as a GitHub Actions job with `id-token: write`. When
+    `docker_registry` is True, `/api/v1/registry` names a registry that takes
+    the Docker login rather than the Antithesis credential."""
 
     sso: bool = False
     refresh_revoked: bool = False
     actions: ActionsJob | None = None
+    docker_registry: bool = False
 
 
 _MOCK_RUN_ID = "0180b2554d40227f5a05c4d65055252b-67-0"
@@ -653,6 +656,10 @@ class MockTenant:
         match path:
             case "/api/version":
                 return 200, {"latest_api_version": "v1", "release_version": "67.0"}, ""
+            case "/api/v1/registry":
+                if self.spec.docker_registry:
+                    return 200, {"auth": "docker", "registry_url": _REGISTRY}, ""
+                return 200, {"auth": "antithesis", "registry_url": _TENANT_REGISTRY}, ""
             case "/api/v0/runs":
                 created = datetime.now(UTC) - timedelta(hours=1)
                 run = {
@@ -4884,17 +4891,19 @@ _TENANT = "acme"
 _REGISTRY = "registry.example.com/acme/app"
 _SETTINGS = ".config/snouty/settings.toml"
 _CREDS = ".config/snouty/credentials.toml"
+# The registry that the mock tenant reports.
+_TENANT_REGISTRY = f"registry.{_TENANT}.antithesis.com"
 _SEED_SETTINGS_TOML = f'tenant = "{_TENANT}"\nregistry = "{_REGISTRY}"\n'
 # A `credentials.toml` exactly as `snouty login` writes it.
 _SEED_CREDS_TOML = f'[default]\ntype = "ApiKey"\napi_key = "{_FAKE_API_KEY_A}"\n'
+_SEED_CREDS_B_TOML = f'[default]\ntype = "ApiKey"\napi_key = "{_FAKE_API_KEY_B}"\n'
 
 _ASK_TENANT = "What Antithesis tenant"
-_ASK_REPO = "What container registry"
 _ASK_CREDENTIALS = "What kind of credentials"
 _ASK_KEY = "Please enter your API Key"
 _EMPTY_KEY_REFUSED = "An empty value is not valid."
 _ASK_REPLACE_PASSWORD = "Replace your stored username and password?"
-_RETAINED = "Retained your previously stored credentials"
+_PASSWORD_REFUSED = "login needs an API key or a single sign-on"
 # A `credentials.toml` with a username and password, as an older snouty wrote it.
 _SEED_PASSWORD_CREDS_TOML = (
     f'[default]\ntype = "Password"\nusername = "puser"\npassword = "{_FAKE_PASSWORD}"\n'
@@ -4947,18 +4956,21 @@ def build_tty_stories() -> list[Story]:
         _tty_story(
             "login-fresh-apikey",
             "First-time setup with an API key",
-            "I just installed snouty and want to configure my tenant, registry, and API key.",
+            "I just installed snouty and want to configure my tenant and API key, and find "
+            "out where to push my images.",
             ["login"],
             (
                 (_ASK_TENANT, _TENANT + ENTER),
-                (_ASK_REPO, _REGISTRY + ENTER),
                 (_ASK_KEY, _FAKE_API_KEY_B + ENTER),
             ),
             tty_persisted(
-                prompts=(_ASK_TENANT, _ASK_REPO, _ASK_KEY),
-                absent_prompts=(_ASK_CREDENTIALS,),
+                prompts=(_ASK_TENANT, _ASK_KEY, _TENANT_REGISTRY),
+                absent_prompts=(_ASK_CREDENTIALS, "docker login"),
                 files=(
-                    (_SETTINGS, (f'tenant = "{_TENANT}"', f'registry = "{_REGISTRY}"')),
+                    (
+                        _SETTINGS,
+                        (f'tenant = "{_TENANT}"', f'registry = "{_TENANT_REGISTRY}"'),
+                    ),
                     (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_API_KEY_B}"')),
                 ),
                 secrets_absent=(_FAKE_API_KEY_B,),
@@ -4967,28 +4979,30 @@ def build_tty_stories() -> list[Story]:
         _tty_story(
             "login-reuse-default",
             "Re-run login and keep my stored values",
-            "I already logged in; re-running should offer my previous tenant, registry, and key "
-            "back so I can just hit enter.",
+            "I already logged in; re-running should offer my previous tenant and key back so I "
+            "can just hit enter.",
             ["login"],
             (
                 (_ASK_TENANT, ENTER),
-                (_ASK_REPO, ENTER),
                 (_ASK_KEY, ENTER),
             ),
             tty_persisted(
-                prompts=(_TENANT, _REGISTRY, f"{_ASK_KEY} (********9Pgw) kept"),
+                prompts=(_TENANT, f"{_ASK_KEY} (********7Qxz) kept"),
                 # Keeping the stored key replaces nothing, and shows no new mask.
-                absent_prompts=("replacing your stored", "(********9Pgw) ********"),
+                absent_prompts=("replacing your stored", "(********7Qxz) ********"),
                 files=(
-                    (_SETTINGS, (f'tenant = "{_TENANT}"', f'registry = "{_REGISTRY}"')),
+                    (
+                        _SETTINGS,
+                        (f'tenant = "{_TENANT}"', f'registry = "{_TENANT_REGISTRY}"'),
+                    ),
                     # Every answer was a bare Enter, so the stored key must survive.
-                    (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_API_KEY_A}"')),
+                    (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_API_KEY_B}"')),
                 ),
-                secrets_absent=(_FAKE_API_KEY_A,),
+                secrets_absent=(_FAKE_API_KEY_B,),
             ),
             seed_files={
                 _SETTINGS: _SEED_SETTINGS_TOML,
-                _CREDS: _SEED_CREDS_TOML,
+                _CREDS: _SEED_CREDS_B_TOML,
             },
         ),
         _tty_story(
@@ -4999,17 +5013,14 @@ def build_tty_stories() -> list[Story]:
             ["login"],
             (
                 (_ASK_TENANT, ENTER),
-                (_ASK_REPO, ENTER),
                 (_ASK_KEY, _FAKE_API_KEY_B + ENTER),
-                (_ASK_REPLACE_PASSWORD, "y" + ENTER),
             ),
             tty_persisted(
                 prompts=(
                     _ASK_KEY,
-                    _ASK_REPLACE_PASSWORD,
                     ", replacing your stored username and password.",
                 ),
-                absent_prompts=(_ASK_CREDENTIALS,),
+                absent_prompts=(_ASK_CREDENTIALS, _ASK_REPLACE_PASSWORD),
                 files=(
                     (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_API_KEY_B}"')),
                 ),
@@ -5024,44 +5035,22 @@ def build_tty_stories() -> list[Story]:
             "login-enter-keeps-stored-password",
             "Hit Enter through login with a stored username/password",
             "An older snouty stored my username and password. I re-ran login to check my settings "
-            "and hit Enter at every prompt. My working credentials must not be lost.",
+            "and hit Enter at every prompt. My stored credentials must not be lost, and I want "
+            "to know that login could not sign in with them.",
             ["login"],
             (
                 (_ASK_TENANT, ENTER),
-                (_ASK_REPO, ENTER),
                 (_ASK_KEY, ENTER),
                 (_EMPTY_KEY_REFUSED, ESC),
             ),
             tty_persisted(
-                prompts=(_ASK_KEY, _EMPTY_KEY_REFUSED, _RETAINED),
+                prompts=(_ASK_KEY, _EMPTY_KEY_REFUSED, _PASSWORD_REFUSED),
                 files=(
                     (_CREDS, ('type = "Password"', f'password = "{_FAKE_PASSWORD}"')),
+                    (_SETTINGS, (f'registry = "{_REGISTRY}"',)),
                 ),
                 secrets_absent=(_FAKE_PASSWORD,),
-            ),
-            seed_files={
-                _SETTINGS: _SEED_SETTINGS_TOML,
-                _CREDS: _SEED_PASSWORD_CREDS_TOML,
-            },
-        ),
-        _tty_story(
-            "login-declines-replacing-password",
-            "Decline to replace a stored username/password",
-            "An older snouty stored my username and password. I typed an API key at login, but "
-            "then decided to keep the password for now.",
-            ["login"],
-            (
-                (_ASK_TENANT, ENTER),
-                (_ASK_REPO, ENTER),
-                (_ASK_KEY, _FAKE_API_KEY_B + ENTER),
-                (_ASK_REPLACE_PASSWORD, "n" + ENTER),
-            ),
-            tty_persisted(
-                prompts=(_ASK_REPLACE_PASSWORD, _RETAINED),
-                files=(
-                    (_CREDS, ('type = "Password"', f'password = "{_FAKE_PASSWORD}"')),
-                ),
-                secrets_absent=(_FAKE_API_KEY_B, _FAKE_PASSWORD),
+                expect_ok=False,
             ),
             seed_files={
                 _SETTINGS: _SEED_SETTINGS_TOML,
@@ -5076,7 +5065,6 @@ def build_tty_stories() -> list[Story]:
             ["--verbose", "login"],
             (
                 (_ASK_TENANT, ENTER),
-                (_ASK_REPO, ENTER),
                 (_ASK_KEY, _FAKE_API_KEY_B + ENTER),
             ),
             tty_persisted(
@@ -5087,6 +5075,42 @@ def build_tty_stories() -> list[Story]:
                 secrets_absent=(_FAKE_API_KEY_B,),
             ),
             seed_files={_SETTINGS: _SEED_SETTINGS_TOML},
+        ),
+        _tty_story(
+            "login-key-rejected",
+            "Log in with a revoked API key",
+            "I pasted an old API key at login without knowing that it was revoked.",
+            ["login"],
+            (
+                (_ASK_TENANT, _TENANT + ENTER),
+                (_ASK_KEY, _FAKE_API_KEY_A + ENTER),
+            ),
+            tty_persisted(
+                prompts=("did not accept the credential", "snouty login"),
+                absent_files=(_SETTINGS, _CREDS),
+                secrets_absent=(_FAKE_API_KEY_A,),
+                expect_ok=False,
+            ),
+        ),
+        _tty_story(
+            "login-docker-registry",
+            "Log in to a tenant that pushes to my own registry",
+            "My tenant pushes images to our own registry, which takes our Docker login. I want "
+            "to set up snouty and know what else I must do before I push.",
+            ["login"],
+            (
+                (_ASK_TENANT, _TENANT + ENTER),
+                (_ASK_KEY, _FAKE_API_KEY_B + ENTER),
+            ),
+            tty_persisted(
+                prompts=(
+                    "`docker login registry.example.com`",
+                    "`podman login registry.example.com`",
+                ),
+                files=((_SETTINGS, (f'registry = "{_REGISTRY}"',)),),
+                secrets_absent=(_FAKE_API_KEY_B,),
+            ),
+            tenant=MockTenantSpec(docker_registry=True),
         ),
     ]
     # Linux only: the macOS browser opener has a fixed path, so the sign-in
@@ -5103,7 +5127,6 @@ def build_tty_stories() -> list[Story]:
             ["login"],
             (
                 (_ASK_TENANT, _TENANT + ENTER),
-                (_ASK_REPO, _REGISTRY + ENTER),
                 (_ASK_CREDENTIALS, ENTER),
             ),
             tty_persisted(

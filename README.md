@@ -6,7 +6,7 @@ A CLI for the [Antithesis](https://antithesis.com) API. See the [REST API refere
 
 Snouty provides the following subcommands. Invoke `snouty <command> --help` to find out more.
 
-- `snouty login`: sign in and store your tenant, container registry, and credentials.
+- `snouty login`: sign in, and store your tenant, its container registry, and your credentials.
 - `snouty launch`: push images and kick off an Antithesis run.
 - `snouty runs`: list and inspect Antithesis test runs and their results.
   - `snouty runs list`: list runs, with status/launcher/date filters.
@@ -124,7 +124,7 @@ If you set up [shell completions](#shell-completions), also remove the snouty li
 
 Using the API requires at least a **tenant** and a credential. `snouty launch` also needs a **registry** — the container registry it pushes the config image to. The registry is a host, optionally with a path, such as `registry.example.com/team`. Docs commands need no configuration at all.
 
-The quickest way is `snouty login`, which asks for each value and stores the result:
+The quickest way is `snouty login`, which asks for your tenant and credential, checks the credential, and stores the tenant's container registry:
 
 ```sh
 snouty login
@@ -280,7 +280,7 @@ Run `snouty doctor` to see which credential snouty resolves, and where it comes 
 
 ### Browser sign-in with `snouty login`
 
-`snouty login` asks for your tenant and your container registry, then asks how you want to authenticate. It writes the tenant and the registry to the global settings file, and it stores the credential separately.
+`snouty login` asks for your tenant, then asks how you want to authenticate. It signs in to the tenant and gets the tenant's container registry. It writes the tenant and the registry to the global settings file, and it stores the credential separately. When the tenant rejects the credential, login saves nothing. Use `--registry` to push to a different registry. When the registry does not accept your snouty credential, login tells you to sign in to it with `docker login` or `podman login`.
 
 ```sh
 snouty login

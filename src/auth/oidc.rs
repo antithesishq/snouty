@@ -15,6 +15,11 @@ use super::{
 };
 use crate::{env, tag::Tag};
 
+/// The next step when the tenant rejects a GitHub Actions OIDC token. The
+/// job already holds `id-token: write`, because it got the token.
+pub(crate) const OIDC_REJECTED_NEXT_STEP: &str =
+    "ask Antithesis support to trust GitHub Actions OIDC tokens from this repository";
+
 pub(super) const OIDC_URL_VAR_NAME: &str = "ACTIONS_ID_TOKEN_REQUEST_URL";
 pub(super) const OIDC_TOKEN_VAR_NAME: &str = "ACTIONS_ID_TOKEN_REQUEST_TOKEN";
 

@@ -77,6 +77,7 @@ isolate-home rejected
 mock-server 401 '{"message":"Invalid or expired bearer token."}'
 ! snouty login --tenant spec-tenant
 stderr 'did not accept the credential; nothing was saved'
+stderr -literal 'set ANTITHESIS_API_KEY to a valid key, or unset it'
 ! exists rejected/.config/snouty/settings.toml
 
 # A 403 rejects the credential just like a 401.
@@ -86,14 +87,34 @@ mock-server 403 ''
 stderr 'did not accept the credential; nothing was saved'
 ! exists rejected_403/.config/snouty/settings.toml
 
-# A username and password from the environment cannot pass the check.
+# A GitHub Actions OIDC token that the tenant rejects needs Antithesis to trust
+# it: the job already has `id-token: write`, and ANTITHESIS_API_KEY does not
+# hold the token.
 mock-runs-server
 env ANTITHESIS_API_KEY=
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
+isolate-home oidc_rejected
+set-env GITHUB_ACTIONS true
+set-env ACTIONS_ID_TOKEN_REQUEST_URL ${ANTITHESIS_BASE_URL}/github-actions/token?api-version=2.0
+set-env ACTIONS_ID_TOKEN_REQUEST_TOKEN ${FAKE_OIDC_REQUEST_TOKEN}
+! snouty login --tenant spec-tenant
+stderr 'did not accept the credential; nothing was saved'
+stderr 'ask Antithesis support to trust GitHub Actions OIDC tokens'
+! stderr 'unset it'
+
+# A username and password from the environment cannot pass the check, and the
+# suggestion names the variables, because every later command reads them first.
+mock-runs-server
+env ANTITHESIS_API_KEY=
+env GITHUB_ACTIONS=
+env ACTIONS_ID_TOKEN_REQUEST_URL=
 set-env ANTITHESIS_USERNAME puser
 set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
 isolate-home env_password
 ! snouty login --tenant spec-tenant
 stderr 'nothing was saved'
+stderr -literal 'unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD'
 
 # A tenant that does not serve the registry endpoint answers 404. Without a
 # terminal, login keeps the tenant's saved registry, and fails without one.

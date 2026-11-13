@@ -27,8 +27,9 @@ use crate::{
         normalize_base_url,
     },
     auth::{
-        AuthenticationInfo, CredentialStore, PersistableCredentials, in_github_actions,
-        is_blank_api_key, no_credentials_suggestion, persist,
+        AuthenticationInfo, CredentialSource, CredentialStore, OIDC_REJECTED_NEXT_STEP,
+        PersistableCredentials, in_github_actions, is_blank_api_key, no_credentials_suggestion,
+        persist,
     },
     container::registry_host,
     env,
@@ -312,12 +313,23 @@ async fn fetch_registry(
         Some(_) => None,
         None => AuthenticationInfo::find_ambient(profile)?,
     };
-    let next_step = if interactive {
-        "run `snouty login` again, and enter an API key or sign in with single sign-on"
-    } else if in_github_actions() {
-        no_credentials_suggestion(true)
-    } else {
-        "set ANTITHESIS_API_KEY, or run `snouty login` in a terminal"
+    let next_step = match ambient.as_ref().map(|found| (found.value(), found.tag())) {
+        // Every later command reads the environment first, so a credential
+        // at the prompt would not replace one there. A GitHub Actions OIDC
+        // token is also tagged Environment, but ANTITHESIS_API_KEY does not
+        // hold it.
+        Some((AuthenticationInfo::ApiKey { .. }, CredentialSource::Environment { .. })) => {
+            "set ANTITHESIS_API_KEY to a valid key, or unset it"
+        }
+        Some((AuthenticationInfo::GithubActionsOidc(_), _)) => OIDC_REJECTED_NEXT_STEP,
+        Some((AuthenticationInfo::Password { .. }, CredentialSource::Environment { .. })) => {
+            "unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD, and set ANTITHESIS_API_KEY"
+        }
+        _ if interactive => {
+            "run `snouty login` again, and enter an API key or sign in with single sign-on"
+        }
+        _ if in_github_actions() => no_credentials_suggestion(true),
+        _ => "set ANTITHESIS_API_KEY, or run `snouty login` in a terminal",
     };
     let authentication = match (new_credentials, ambient) {
         (Some(credentials), _) => credentials.for_check(),

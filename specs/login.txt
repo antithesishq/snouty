@@ -80,8 +80,9 @@ stderr 'did not accept the credential; nothing was saved'
 stderr -literal 'set ANTITHESIS_API_KEY to a valid key, or unset it'
 ! exists rejected/.config/snouty/settings.toml
 
-# A GitHub Actions OIDC token that the tenant rejects keeps the GitHub Actions
-# advice, because ANTITHESIS_API_KEY does not hold it.
+# A GitHub Actions OIDC token that the tenant rejects needs Antithesis to trust
+# it: the job already has `id-token: write`, and ANTITHESIS_API_KEY does not
+# hold the token.
 mock-runs-server
 env ANTITHESIS_API_KEY=
 env ANTITHESIS_USERNAME=
@@ -92,7 +93,7 @@ set-env ACTIONS_ID_TOKEN_REQUEST_URL ${ANTITHESIS_BASE_URL}/github-actions/token
 set-env ACTIONS_ID_TOKEN_REQUEST_TOKEN ${FAKE_OIDC_REQUEST_TOKEN}
 ! snouty login --tenant spec-tenant
 stderr 'did not accept the credential; nothing was saved'
-stderr 'id-token: write'
+stderr 'ask Antithesis support to trust GitHub Actions OIDC tokens'
 ! stderr 'unset it'
 
 # A username and password from the environment cannot pass the check, and the
@@ -109,10 +110,11 @@ stderr 'nothing was saved'
 stderr -literal 'unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD'
 
 # A tenant that does not serve the registry endpoint answers 404. Without a
-# terminal, login keeps the saved registry, and fails when none is saved.
+# terminal, login keeps the tenant's saved registry, and fails without one.
 isolate-home no_endpoint
 mock-server 404 '{"message":"Resource not found"}'
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
+env ANTITHESIS_TENANT=
 env ANTITHESIS_USERNAME=
 env ANTITHESIS_PASSWORD=
 ! snouty login --tenant spec-tenant
@@ -123,3 +125,7 @@ snouty login --tenant spec-tenant --registry registry.example.com/acme
 file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
 snouty login --tenant spec-tenant
 stdout 'registry `registry.example.com/acme`'
+# The saved registry of another tenant is not kept.
+! snouty login --tenant other-tenant
+stderr -literal 'run `snouty login --registry <registry>`'
+file ~/.config/snouty/settings.toml 'tenant = "spec-tenant"'

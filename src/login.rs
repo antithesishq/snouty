@@ -27,8 +27,9 @@ use crate::{
         normalize_base_url,
     },
     auth::{
-        AuthenticationInfo, CredentialSource, CredentialStore, PersistableCredentials,
-        in_github_actions, is_blank_api_key, no_credentials_suggestion, persist,
+        AuthenticationInfo, CredentialSource, CredentialStore, OIDC_REJECTED_NEXT_STEP,
+        PersistableCredentials, in_github_actions, is_blank_api_key, no_credentials_suggestion,
+        persist,
     },
     container::registry_host,
     env,
@@ -229,6 +230,9 @@ async fn do_cmd_login(
         verbose,
     )
     .await?;
+    let saved_registry = current_settings
+        .registry()
+        .filter(|_| current_settings.tenant() == Some(tenant_to_use.as_str()));
     let (registry_to_use, docker_login) = match (registry, tenant_registry) {
         (Some(registry), _) => (Some(registry), None),
         (None, Some(tenant_registry)) => {
@@ -245,15 +249,15 @@ async fn do_cmd_login(
             (Some(tenant_registry.registry_url), docker_login)
         }
         // A tenant that does not report its registry: ask, or keep the saved
-        // one.
+        // one. A saved registry of another tenant is neither offered nor kept.
         (None, None) if interactive => (
             Some(prompter.input(
                 "What container registry would you like to use?",
-                current_settings.registry(),
+                saved_registry,
             )?),
             None,
         ),
-        (None, None) => (current_settings.registry().map(str::to_owned), None),
+        (None, None) => (saved_registry.map(str::to_owned), None),
     };
     let registry_to_use = registry_to_use
         .filter(|registry| !registry.trim().is_empty())
@@ -317,6 +321,7 @@ async fn fetch_registry(
         Some((AuthenticationInfo::ApiKey { .. }, CredentialSource::Environment { .. })) => {
             "set ANTITHESIS_API_KEY to a valid key, or unset it"
         }
+        Some((AuthenticationInfo::GithubActionsOidc(_), _)) => OIDC_REJECTED_NEXT_STEP,
         Some((AuthenticationInfo::Password { .. }, CredentialSource::Environment { .. })) => {
             "unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD, and set ANTITHESIS_API_KEY"
         }

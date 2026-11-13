@@ -364,9 +364,10 @@ pub fn spawn_login_backend(
     let addr = listener.local_addr().expect("mock backend address");
     thread::spawn(move || {
         for mut stream in listener.incoming().flatten() {
-            let mut buf = [0u8; 4096];
-            let n = stream.read(&mut buf).unwrap_or(0);
-            let (status, body) = if buf[..n].starts_with(b"GET /api/v1/registry ") {
+            let Some(request) = mock_read_request(&mut stream) else {
+                continue;
+            };
+            let (status, body) = if request.starts_with("GET /api/v1/registry ") {
                 (registry_status, registry_body)
             } else {
                 (200, config_body)
@@ -383,9 +384,9 @@ pub fn spawn_login_backend(
 
 /// A repo prefix unique to this call, so tests that share one registry — every
 /// test does when [`TEST_REGISTRY_VAR`] is set — never push to the same repo.
-/// That matters beyond hygiene: `pin_images` skips the push when the registry
-/// already serves the digest, so a shared repo would silently stop exercising
-/// the push path. Include the runtime in `label` when a test loops over engines.
+/// That matters beyond hygiene: `pin_images` skips the push when an image that
+/// the compose file names at its push destination is already served, so a
+/// shared repo could stop exercising the push path. Include the runtime in `label` when a test loops over engines.
 pub fn unique_image_prefix(label: &str) -> String {
     format!(
         "snouty-test-{label}-{}-{}",

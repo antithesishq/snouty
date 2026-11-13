@@ -319,7 +319,7 @@ mod tests {
             })
             .unwrap();
 
-        // The token holds the stale token (as if it just expired / 401'd).
+        // The token holds the stale token, as if the API just rejected it.
         let token = RefreshableOAuthToken::new(
             store,
             FAKE_ACCESS_TOKEN_A.to_owned(),

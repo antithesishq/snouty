@@ -659,12 +659,18 @@ impl MockApiServer {
                             NO_CACHE_CACHE_CONTROL,
                         )
                     } else if bearer_token.is_some_and(|token| !mock_check_auth(&request, token)) {
-                        (
-                            401,
-                            r#"{"message":"Invalid or expired bearer token."}"#.to_string(),
-                            "application/json",
-                            NO_CACHE_CACHE_CONTROL,
-                        )
+                        if github_actions {
+                            (
+                                401,
+                                r#"{"message":"Invalid or expired bearer token."}"#.to_string(),
+                                "application/json",
+                                NO_CACHE_CACHE_CONTROL,
+                            )
+                        } else {
+                            // An Antithesis tenant answers any rejected
+                            // credential with an empty 403.
+                            (403, String::new(), "text/plain", NO_CACHE_CACHE_CONTROL)
+                        }
                     } else {
                         let req_body = mock_request_body(&request);
                         mock_route(&method, &path, req_body, empty)

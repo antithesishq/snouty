@@ -25,6 +25,7 @@ use crate::{
 pub(crate) use api_key::{API_KEY_VAR_NAME, is_blank_api_key};
 pub use oauth::RefreshableOAuthToken;
 pub use oidc::GithubActionsOidcToken;
+pub(crate) use oidc::OIDC_REJECTED_NEXT_STEP;
 #[cfg(test)]
 use oidc::{OIDC_TOKEN_VAR_NAME, OIDC_URL_VAR_NAME};
 use password::apply_password_policy;

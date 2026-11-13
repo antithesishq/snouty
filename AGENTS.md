@@ -212,7 +212,7 @@ break the logic (a branch, a condition, a request field), not a string.
 - A test does not wait out a fixed time. Pause the tokio clock
   (`start_paused`) in a unit test. For a wait inside the binary, set
   `SNOUTY_TEST_SECOND_MS`, which shortens the retry backoff, the docs connect
-  timeout and the MCP progress interval. Do not add a second variable of this
+  timeout, the OAuth request timeout and the MCP progress interval. Do not add a second variable of this
   type.
 
 ## Comments, changelog, and prose

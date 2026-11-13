@@ -442,15 +442,14 @@ async fn prompt_for_auth(
     );
     let oauth_config = fetch_cli_config(client, &url).await;
 
-    // A URL that does not parse, a connect error or a timeout most often means
-    // a misspelled tenant or base_url. Any HTTP answer, such as 403, means the
-    // host exists. A body error comes after an answer. The registry check
-    // after the prompt uses the same URL, so stop before the prompt.
+    // A URL that does not parse or a connect error, which includes a connect
+    // timeout, most often means a misspelled tenant or base_url. The registry
+    // check after the prompt uses the same URL, so stop before the prompt.
+    // Any other error, such as a slow answer, means the host exists: login
+    // continues without single sign-on.
     if let Err(err) = &oauth_config
         && let Some(transport) = err.downcast_ref::<reqwest::Error>()
-        && (transport.is_builder()
-            || transport.is_connect()
-            || (transport.is_timeout() && !transport.is_body()))
+        && (transport.is_builder() || transport.is_connect())
     {
         let check = match explicit_base_url {
             Some(_) => "check that the base_url setting is correct".to_owned(),
@@ -665,7 +664,9 @@ async fn send_oauth(
     client: &HttpClient,
     request: reqwest::RequestBuilder,
 ) -> reqwest::Result<reqwest::Response> {
-    client.send(request.timeout(OAUTH_HTTP_TIMEOUT)).await
+    client
+        .send(request.timeout(crate::env::scaled_wait(OAUTH_HTTP_TIMEOUT)))
+        .await
 }
 
 /// `GET /auth/cli/config` — the redirect strategy for this tenant. The route is

@@ -15,7 +15,7 @@ fn write_manifest(dir: &Path) {
 #[test]
 fn launch_config_rejects_nonexistent_dir() {
     snouty()
-        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+        .env("ANTITHESIS_REGISTRY", "registry.example.com/repo")
         .args([
             "launch",
             "--launcher",
@@ -33,7 +33,7 @@ fn launch_config_rejects_dir_without_compose() {
     let dir = TempDir::new().unwrap();
 
     snouty()
-        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+        .env("ANTITHESIS_REGISTRY", "registry.example.com/repo")
         .args([
             "launch",
             "--launcher",
@@ -52,7 +52,7 @@ fn launch_config_rejects_yml_extension() {
     std::fs::write(dir.path().join("docker-compose.yml"), "version: '3'\n").unwrap();
 
     snouty()
-        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+        .env("ANTITHESIS_REGISTRY", "registry.example.com/repo")
         .args([
             "launch",
             "--launcher",
@@ -71,7 +71,7 @@ fn launch_config_conflicts_with_config_image_param() {
     std::fs::write(dir.path().join("docker-compose.yaml"), "version: '3'\n").unwrap();
 
     snouty()
-        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+        .env("ANTITHESIS_REGISTRY", "registry.example.com/repo")
         .args([
             "launch",
             "--launcher",
@@ -102,14 +102,14 @@ fn launch_config_requires_registry_env() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "Could not resolve Antithesis repository",
+            "Could not resolve Antithesis registry",
         ));
 }
 
 #[test]
 fn launch_config_long_flag_accepted() {
     snouty()
-        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+        .env("ANTITHESIS_REGISTRY", "registry.example.com/repo")
         .args([
             "launch",
             "--launcher",
@@ -128,7 +128,7 @@ fn launch_config_conflicts_with_param_config_image() {
     std::fs::write(dir.path().join("docker-compose.yaml"), "version: '3'\n").unwrap();
 
     snouty()
-        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+        .env("ANTITHESIS_REGISTRY", "registry.example.com/repo")
         .args([
             "launch",
             "--launcher",
@@ -146,7 +146,7 @@ fn launch_config_conflicts_with_param_config_image() {
 #[test]
 fn launch_config_k8s_dir_is_accepted() {
     // Directory with manifests/ subdirectory should pass detect_config and
-    // proceed to the ANTITHESIS_REPOSITORY env-var check.
+    // proceed to the ANTITHESIS_REGISTRY env-var check.
     let dir = TempDir::new().unwrap();
     write_manifest(dir.path());
 
@@ -161,7 +161,7 @@ fn launch_config_k8s_dir_is_accepted() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "Could not resolve Antithesis repository",
+            "Could not resolve Antithesis registry",
         ));
 }
 
@@ -171,7 +171,7 @@ fn launch_config_rejects_empty_manifests_dir() {
     std::fs::create_dir(dir.path().join("manifests")).unwrap();
 
     snouty()
-        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+        .env("ANTITHESIS_REGISTRY", "registry.example.com/repo")
         .args([
             "launch",
             "--launcher",
@@ -191,7 +191,7 @@ fn launch_config_rejects_ambiguous_dir() {
     write_manifest(dir.path());
 
     snouty()
-        .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+        .env("ANTITHESIS_REGISTRY", "registry.example.com/repo")
         .args([
             "launch",
             "--launcher",

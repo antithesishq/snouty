@@ -213,7 +213,7 @@ fn snouty_cmd(env: &testscript_rs::TestEnvironment, args: &[String]) -> std::pro
 /// The isolated `XDG_CONFIG_HOME` for a spec's snouty subprocess: a per-spec dir
 /// with no `snouty/` subdir, so a developer's or CI's real
 /// `~/.config/snouty/settings.toml` can't leak in and change resolved
-/// tenant/repository/etc. (The project file is already isolated — each spec runs
+/// tenant/registry/etc. (The project file is already isolated — each spec runs
 /// in its own work dir, so `./.snouty.toml` doesn't exist unless the spec makes
 /// it.)
 ///
@@ -1018,7 +1018,7 @@ fn run_engine_spec_case(runtime_name: &'static str, case: EngineSpecCase) {
             set_fake_secret_vars(env);
             env.set_env_var("SNOUTY_CONTAINER_ENGINE", &name);
             if let Some(addr) = registry_addr_for_setup.as_deref() {
-                env.set_env_var("ANTITHESIS_REPOSITORY", addr);
+                env.set_env_var("ANTITHESIS_REGISTRY", addr);
             }
             Ok(())
         })

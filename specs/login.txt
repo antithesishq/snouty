@@ -8,8 +8,8 @@ isolate-home empty_args
 ! snouty login --tenant ""
 stderr '.*Value may not be empty or whitespace.*'
 
-# The same for a supplied-but-empty --repository.
-! snouty login --repository ""
+# The same for a supplied-but-empty --registry.
+! snouty login --registry ""
 stderr '.*Value may not be empty or whitespace.*'
 
 # And for the global --profile flag given an empty value.
@@ -23,17 +23,24 @@ stderr '.*Value may not be empty or whitespace.*'
 isolate-home summary
 mock-runs-server
 snouty login --tenant ${ANTITHESIS_TENANT}
-stdout '^Saved tenant `${ANTITHESIS_TENANT@R}` and repository `[^`/]+\.[^`]+`\.$'
-[!staging] stdout '^Saved tenant `testtenant` and repository `registry.testtenant.antithesis.com`\.$'
+stdout '^Saved tenant `${ANTITHESIS_TENANT@R}` and registry `[^`/]+\.[^`]+`\.$'
+[!staging] stdout '^Saved tenant `testtenant` and registry `registry.testtenant.antithesis.com`\.$'
 stdout '^Skipped credential storage — snouty will read credentials from the environment, such as ANTITHESIS_API_KEY\.$'
 stdout '^Run `snouty doctor` to verify your setup\.$'
-file ~/.config/snouty/settings.toml 'repository = "[^"]+"'
-[!staging] file ~/.config/snouty/settings.toml 'repository = "registry.testtenant.antithesis.com"'
+file ~/.config/snouty/settings.toml 'registry = "[^"]+"'
+[!staging] file ~/.config/snouty/settings.toml 'registry = "registry.testtenant.antithesis.com"'
 
-# --repository takes the place of the tenant's registry.
+# --registry takes the place of the tenant's registry.
+isolate-home registry_flag
+snouty login --tenant ${ANTITHESIS_TENANT} --registry registry.example.com/a-long-registry-path
+stdout 'registry `registry.example.com/a-long-registry-path`\.$'
+file ~/.config/snouty/settings.toml 'registry = "registry.example.com/a-long-registry-path"'
+
+# --repository, the old name of --registry, still works.
 isolate-home repository_flag
-snouty login --tenant ${ANTITHESIS_TENANT} --repository registry.example.com/a-long-repository-name
-stdout 'repository `registry.example.com/a-long-repository-name`\.$'
+snouty login --tenant ${ANTITHESIS_TENANT} --repository registry.example.com/old-flag
+stdout 'registry `registry.example.com/old-flag`\.$'
+file ~/.config/snouty/settings.toml 'registry = "registry.example.com/old-flag"'
 
 # Without a credential, login fails before it saves anything.
 isolate-home no_credential
@@ -56,14 +63,14 @@ set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 snouty login --tenant spec-tenant
 stdout -literal '`docker login registry.example.com`'
 stdout -literal '`podman login registry.example.com`'
-file ~/.config/snouty/settings.toml 'repository = "registry.example.com/acme"'
+file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
 
 # A registry login kind that snouty does not know gets no sign-in advice.
 isolate-home unknown_registry
 mock-server 200 '{"auth":"NEW_KIND","registry_url":"registry.example.com/acme"}'
 snouty login --tenant spec-tenant
 ! stdout 'docker login'
-file ~/.config/snouty/settings.toml 'repository = "registry.example.com/acme"'
+file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
 
 # A credential that the tenant rejects fails the login, which saves nothing.
 isolate-home rejected

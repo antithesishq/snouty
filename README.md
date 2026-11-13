@@ -122,9 +122,9 @@ If you set up [shell completions](#shell-completions), also remove the snouty li
 
 ## Configuration
 
-Using the API requires at least a **tenant** and a credential. `snouty launch` also needs a **repository** — the container registry it pushes the config image to. Docs commands need no configuration at all.
+Using the API requires at least a **tenant** and a credential. `snouty launch` also needs a **registry** — the container registry it pushes the config image to. The registry is a host, optionally with a path, such as `registry.example.com/team`. Docs commands need no configuration at all.
 
-The quickest way is `snouty login`, which asks for your tenant and credential, checks the credential, and stores the tenant's registry as your repository:
+The quickest way is `snouty login`, which asks for your tenant and credential, checks the credential, and stores the tenant's container registry:
 
 ```sh
 snouty login
@@ -134,7 +134,7 @@ Settings can also come from environment variables or a TOML settings file. An en
 
 ```sh
 export ANTITHESIS_TENANT="your-tenant"
-export ANTITHESIS_REPOSITORY="us-central1-docker.pkg.dev/your-project/your-repo"
+export ANTITHESIS_REGISTRY="us-central1-docker.pkg.dev/your-project/your-repo"
 export ANTITHESIS_API_KEY="your-api-key"
 ```
 
@@ -150,7 +150,7 @@ Settings can instead live in a TOML file. Snouty reads two, the first taking pre
 ```toml
 # .snouty.toml
 tenant = "your-tenant"
-repository = "us-central1-docker.pkg.dev/your-project/your-repo"
+registry = "us-central1-docker.pkg.dev/your-project/your-repo"
 ```
 
 A matching environment variable always overrides the file. The supported keys and their environment-variable equivalents are:
@@ -158,7 +158,7 @@ A matching environment variable always overrides the file. The supported keys an
 | Settings key                | Environment variable              | Purpose                                                                          |
 | --------------------------- | --------------------------------- | -------------------------------------------------------------------------------- |
 | `tenant`                    | `ANTITHESIS_TENANT`               | Your Antithesis tenant. Becomes the API host, `https://<tenant>.antithesis.com`.  |
-| `repository`                | `ANTITHESIS_REPOSITORY`           | Container registry that `snouty launch` pushes the config image to.              |
+| `registry`                  | `ANTITHESIS_REGISTRY`             | Container registry that `snouty launch` pushes the config image to.              |
 | `base_url`                  | `ANTITHESIS_BASE_URL`             | API URL, replacing the one derived from the tenant. See the proxy section below. |
 | `container_engine`          | `SNOUTY_CONTAINER_ENGINE`         | Force `docker` or `podman` instead of auto-detecting.                            |
 | `update_channel`            | `SNOUTY_UPDATE_CHANNEL`           | `stable` (default) or `unstable`, for `snouty update`.                           |
@@ -188,11 +188,11 @@ A settings file can define named profiles for switching between environments. Se
 ```toml
 # .snouty.toml
 tenant = "default-tenant"
-repository = "registry.example.com/default"
+registry = "registry.example.com/default"
 
 [profile.staging]
 tenant = "staging-tenant"
-repository = "registry.example.com/staging"
+registry = "registry.example.com/staging"
 ```
 
 ```sh
@@ -280,11 +280,11 @@ Run `snouty doctor` to see which credential snouty resolves, and where it comes 
 
 ### Browser sign-in with `snouty login`
 
-`snouty login` asks for your tenant, then asks how you want to authenticate. It signs in to the tenant and gets the tenant's container registry. It writes the tenant and the registry, as your repository, to the global settings file, and it stores the credential separately. When the tenant rejects the credential, login saves nothing. Use `--repository` to push to a different repository. When the registry does not accept your snouty credential, login tells you to sign in to it with `docker login` or `podman login`.
+`snouty login` asks for your tenant, then asks how you want to authenticate. It signs in to the tenant and gets the tenant's container registry. It writes the tenant and the registry to the global settings file, and it stores the credential separately. When the tenant rejects the credential, login saves nothing. Use `--registry` to push to a different registry. When the registry does not accept your snouty credential, login tells you to sign in to it with `docker login` or `podman login`.
 
 ```sh
 snouty login
-snouty login --tenant "your-tenant" --repository "us-central1-docker.pkg.dev/your-project/your-repo"
+snouty login --tenant "your-tenant" --registry "us-central1-docker.pkg.dev/your-project/your-repo"
 snouty login --profile staging
 ```
 
@@ -353,7 +353,7 @@ To set it up, add the registry to `credHelpers` in `~/.docker/config.json` for D
 }
 ```
 
-The helper uses the same [settings](#settings-files) as snouty in the directory where Docker runs it, including `./.snouty.toml`. With `--profile` or `ANTITHESIS_PROFILE`, the helper uses that profile. Otherwise, it uses the first profile whose `repository` is on `registry.<tenant>.antithesis.com`.
+The helper uses the same [settings](#settings-files) as snouty in the directory where Docker runs it, including `./.snouty.toml`. With `--profile` or `ANTITHESIS_PROFILE`, the helper uses that profile. Otherwise, it uses the first profile whose `registry` is on `registry.<tenant>.antithesis.com`.
 
 The shell script installer, the npm package and the Nix packages install `docker-credential-snouty`. For another install method, make the alias yourself, in a directory on your `PATH`:
 
@@ -363,7 +363,7 @@ ln -s "$(command -v snouty)" ~/.local/bin/docker-credential-snouty
 
 Then `docker push`, `docker pull`, `podman push` and `podman pull` automatically use your snouty credentials for the Antithesis docker registry.
 
-`snouty launch --config` does not need the helper. When the repository is on the tenant registry, snouty gives your credential to Docker or Podman when it pushes the images of the launch. For Docker, this needs Docker 28.3.0 or later. With an older Docker, configure the helper as shown above. For Podman, snouty gives a temporary auth file, which holds no secret, that sends Podman to `docker-credential-snouty`, and links that helper to itself in its config directory (`$XDG_CONFIG_HOME/snouty` or `~/.config/snouty`). A username and password does not work with the registry, so with it, Docker or Podman pushes with its own credentials.
+`snouty launch --config` does not need the helper. When the `registry` setting names the tenant registry, snouty gives your credential to Docker or Podman when it pushes the images of the launch. For Docker, this needs Docker 28.3.0 or later. With an older Docker, configure the helper as shown above. For Podman, snouty gives a temporary auth file, which holds no secret, that sends Podman to `docker-credential-snouty`, and links that helper to itself in its config directory (`$XDG_CONFIG_HOME/snouty` or `~/.config/snouty`). A username and password does not work with the registry, so with it, Docker or Podman pushes with its own credentials.
 
 ### Username and password (deprecated)
 

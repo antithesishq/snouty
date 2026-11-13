@@ -1,17 +1,17 @@
 # snouty launch --config — dropping the registry address from every pin
 #
 # The Antithesis builder does not have to resolve the address this machine
-# uses to reach the tenant repository, so snouty writes no address into
-# `antithesis.config_image` or into a compose pin that names that repository.
+# uses to reach the tenant registry, so snouty writes no address into
+# `antithesis.config_image` or into a compose pin that names that registry.
 # An image from another registry cannot simply lose its address, because the
 # platform would then read the bare name as the tenant's own. snouty copies
 # such an image to `snouty-mirror/<address>/<path>` below the tenant
-# repository, where `snouty-mirror` carries no dot and no colon, so no runtime
+# registry, where `snouty-mirror` carries no dot and no colon, so no runtime
 # reads the address that follows it as an address.
 
 # Keep the harness registry address, because the cases below point
-# ANTITHESIS_REPOSITORY at paths inside it.
-set-env REGISTRY ${ANTITHESIS_REPOSITORY}
+# ANTITHESIS_REGISTRY at paths inside it.
+set-env REGISTRY ${ANTITHESIS_REGISTRY}
 
 # An image that names another registry is copied below `snouty-mirror/`, and
 # the config image pin carries no address.
@@ -57,21 +57,21 @@ build-image --platform linux/amd64 snouty-mirror/ghcr.io/snouty-spec/collide:v1 
 stderr 'both push to .*/snouty-mirror/ghcr.io/snouty-spec/collide:v1'
 ! stderr 'Pushing image:'
 
-# A repository beside the tenant's own, at the same address: the registry
-# serves those bytes, but only under the address this machine uses. Seed it by
-# launching with the neighbour as the repository, so the registry holds
+# An image repository beside the tenant's own, at the same address: the
+# registry serves those bytes, but only under the address this machine uses.
+# Seed it by launching with the neighbour as the registry setting, so the registry holds
 # `<address>/other-team/neighbour:v1` and the local store records that digest.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
-set-env ANTITHESIS_REPOSITORY ${REGISTRY}/other-team
+set-env ANTITHESIS_REGISTRY ${REGISTRY}/other-team
 build-image --platform linux/amd64 neighbour:v1 images/sidecar
 snouty launch --launcher basic_test -c neighbour_seed_config --duration 30m
 stderr 'Pushing image: .*/other-team/neighbour:v1'
 
-# Now launch from the tenant repository beside it. A pin of the neighbour
+# Now launch from the tenant registry beside it. A pin of the neighbour
 # would carry the address, so snouty copies the image into the tenant
-# repository instead.
+# registry instead.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
-set-env ANTITHESIS_REPOSITORY ${REGISTRY}/tenant
+set-env ANTITHESIS_REGISTRY ${REGISTRY}/tenant
 substitute neighbour_config/docker-compose.yaml
 snouty launch --launcher basic_test -c neighbour_config --duration 30m
 stderr 'Pushing image: .*/tenant/snouty-mirror/.*/other-team/neighbour:v1'

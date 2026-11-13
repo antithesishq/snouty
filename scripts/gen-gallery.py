@@ -658,7 +658,7 @@ class MockTenant:
                 return 200, {"latest_api_version": "v1", "release_version": "67.0"}, ""
             case "/api/v1/registry":
                 if self.spec.docker_registry:
-                    return 200, {"auth": "docker", "registry_url": _REPO}, ""
+                    return 200, {"auth": "docker", "registry_url": _REGISTRY}, ""
                 return 200, {"auth": "antithesis", "registry_url": _TENANT_REGISTRY}, ""
             case "/api/v0/runs":
                 created = datetime.now(UTC) - timedelta(hours=1)
@@ -2816,7 +2816,7 @@ def help_story_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
 # the value, so an inherited secret is never printed and a placeholder is purely
 # a stand-in.
 def _doctor_env(
-    *, api_key: bool, username: bool, password: bool, tenant: bool, repo: bool
+    *, api_key: bool, username: bool, password: bool, tenant: bool, registry: bool
 ) -> dict[str, str | None]:
     def want(name: str, set_it: bool, placeholder: str) -> str | None:
         return (os.environ.get(name) or placeholder) if set_it else None
@@ -2826,8 +2826,8 @@ def _doctor_env(
         "ANTITHESIS_USERNAME": want("ANTITHESIS_USERNAME", username, "demo-user"),
         "ANTITHESIS_PASSWORD": want("ANTITHESIS_PASSWORD", password, _FAKE_PASSWORD),
         "ANTITHESIS_TENANT": want("ANTITHESIS_TENANT", tenant, "demo-tenant"),
-        "ANTITHESIS_REPOSITORY": want(
-            "ANTITHESIS_REPOSITORY", repo, "registry.example.com/acme/demo"
+        "ANTITHESIS_REGISTRY": want(
+            "ANTITHESIS_REGISTRY", registry, "registry.example.com/acme/demo"
         ),
     }
 
@@ -3577,7 +3577,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             ),
             json_capable=False,
             env=_doctor_env(
-                api_key=True, username=False, password=False, tenant=True, repo=True
+                api_key=True, username=False, password=False, tenant=True, registry=True
             ),
         ),
         Story(
@@ -3595,7 +3595,11 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             # TEST-NET-1) so the connect attempt is black-holed.
             env={
                 **_doctor_env(
-                    api_key=True, username=False, password=False, tenant=True, repo=True
+                    api_key=True,
+                    username=False,
+                    password=False,
+                    tenant=True,
+                    registry=True,
                 ),
                 "ANTITHESIS_BASE_URL": "http://192.0.2.1",
             },
@@ -3628,7 +3632,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             ),
             json_capable=False,
             env=_doctor_env(
-                api_key=True, username=True, password=True, tenant=True, repo=True
+                api_key=True, username=True, password=True, tenant=True, registry=True
             ),
         ),
         Story(
@@ -3650,7 +3654,11 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             ),
             json_capable=False,
             env=_doctor_env(
-                api_key=False, username=False, password=False, tenant=False, repo=False
+                api_key=False,
+                username=False,
+                password=False,
+                tenant=False,
+                registry=False,
             ),
             isolate_config=True,
         ),
@@ -3683,7 +3691,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             ),
             json_capable=False,
             env=_doctor_env(
-                api_key=False, username=True, password=True, tenant=True, repo=True
+                api_key=False, username=True, password=True, tenant=True, registry=True
             ),
         ),
         Story(
@@ -3712,7 +3720,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             ),
             json_capable=False,
             env=_doctor_env(
-                api_key=False, username=True, password=True, tenant=True, repo=True
+                api_key=False, username=True, password=True, tenant=True, registry=True
             ),
             isolate_config=True,
             seed_files={_CREDS: _SEED_CREDS_TOML},
@@ -3765,14 +3773,18 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             json_capable=False,
             expect_ok=False,
             env=_doctor_env(
-                api_key=False, username=False, password=False, tenant=False, repo=False
+                api_key=False,
+                username=False,
+                password=False,
+                tenant=False,
+                registry=False,
             ),
             isolate_config=True,
         ),
         Story(
             "doctor-json-ready",
             "Allow CI when local configuration is ready",
-            "I have configured my tenant, repository, and API key. I want a script "
+            "I have configured my tenant, container registry, and API key. I want a script "
             "to confirm my local setup without a network request.",
             "`doctor --json --offline` prints `ok: true` and exits zero. Its checks "
             "array contains successful tenant and credentials checks, the credentials "
@@ -3782,7 +3794,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             doctor_json_check,
             json_capable=False,
             env=_doctor_env(
-                api_key=True, username=False, password=False, tenant=True, repo=True
+                api_key=True, username=False, password=False, tenant=True, registry=True
             ),
             isolate_config=True,
         ),
@@ -4888,12 +4900,12 @@ _FAKE_OIDC_TOKEN = "fake-oidc-token"
 # A PASETO that expired in 2019: test vector 2-S-1.
 _FAKE_PASETO_A = "v2.public.eyJkYXRhIjoidGhpcyBpcyBhIHNpZ25lZCBtZXNzYWdlIiwiZXhwIjoiMjAxOS0wMS0wMVQwMDowMDowMCswMDowMCJ9HQr8URrGntTu7Dz9J2IF23d1M7-9lH9xiqdGyJNvzp4angPW5Esc7C5huy_M8I8_DjJK2ZXC2SUYuOFM-Q_5Cw"
 _TENANT = "acme"
-_REPO = "registry.example.com/acme/app"
+_REGISTRY = "registry.example.com/acme/app"
 _SETTINGS = ".config/snouty/settings.toml"
 _CREDS = ".config/snouty/credentials.toml"
 # The registry that the mock tenant reports.
 _TENANT_REGISTRY = f"registry.{_TENANT}.antithesis.com"
-_SEED_SETTINGS_TOML = f'tenant = "{_TENANT}"\nrepository = "{_REPO}"\n'
+_SEED_SETTINGS_TOML = f'tenant = "{_TENANT}"\nregistry = "{_REGISTRY}"\n'
 # A `credentials.toml` exactly as `snouty login` writes it.
 _SEED_CREDS_TOML = f'[default]\ntype = "ApiKey"\napi_key = "{_FAKE_API_KEY_A}"\n'
 _SEED_CREDS_B_TOML = f'[default]\ntype = "ApiKey"\napi_key = "{_FAKE_API_KEY_B}"\n'
@@ -4969,7 +4981,7 @@ def build_tty_stories() -> list[Story]:
                 files=(
                     (
                         _SETTINGS,
-                        (f'tenant = "{_TENANT}"', f'repository = "{_TENANT_REGISTRY}"'),
+                        (f'tenant = "{_TENANT}"', f'registry = "{_TENANT_REGISTRY}"'),
                     ),
                     (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_API_KEY_B}"')),
                 ),
@@ -4993,7 +5005,7 @@ def build_tty_stories() -> list[Story]:
                 files=(
                     (
                         _SETTINGS,
-                        (f'tenant = "{_TENANT}"', f'repository = "{_TENANT_REGISTRY}"'),
+                        (f'tenant = "{_TENANT}"', f'registry = "{_TENANT_REGISTRY}"'),
                     ),
                     # Every answer was a bare Enter, so the stored key must survive.
                     (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_API_KEY_B}"')),
@@ -5047,7 +5059,7 @@ def build_tty_stories() -> list[Story]:
                 prompts=(_ASK_KEY, _EMPTY_KEY_REFUSED, _PASSWORD_REFUSED),
                 files=(
                     (_CREDS, ('type = "Password"', f'password = "{_FAKE_PASSWORD}"')),
-                    (_SETTINGS, (f'repository = "{_REPO}"',)),
+                    (_SETTINGS, (f'registry = "{_REGISTRY}"',)),
                 ),
                 secrets_absent=(_FAKE_PASSWORD,),
                 expect_ok=False,
@@ -5107,7 +5119,7 @@ def build_tty_stories() -> list[Story]:
                     "`docker login registry.example.com`",
                     "`podman login registry.example.com`",
                 ),
-                files=((_SETTINGS, (f'repository = "{_REPO}"',)),),
+                files=((_SETTINGS, (f'registry = "{_REGISTRY}"',)),),
                 secrets_absent=(_FAKE_API_KEY_B,),
             ),
             tenant=MockTenantSpec(docker_registry=True),
@@ -5173,7 +5185,7 @@ def _mock_story(
         env={
             **_no_ambient_antithesis_env(),
             "ANTITHESIS_TENANT": _TENANT,
-            "ANTITHESIS_REPOSITORY": _REPO,
+            "ANTITHESIS_REGISTRY": _REGISTRY,
             **credential,
         },
         isolate_config=True,

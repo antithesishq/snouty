@@ -62,7 +62,7 @@ impl fmt::Display for TenantRegistryError {
 impl std::error::Error for TenantRegistryError {}
 
 /// Parses a server URL as a registry client gives it: a host, with an
-/// optional scheme and path. A repository, such as
+/// optional scheme and path. A host with a path, such as
 /// `registry.acme.antithesis.com/team/app`, parses to its registry. The host
 /// ignores case, and may take the port 443, which a registry client uses when
 /// it names no port.
@@ -93,12 +93,12 @@ impl FromStr for TenantRegistry {
     }
 }
 
-/// The tenant registry that `settings` push to: the registry of the
-/// repository, when it is the registry of the tenant of the same settings.
-/// `None` when the repository is on another registry, or when the tenant or
-/// the repository is not set.
+/// The tenant registry that `settings` push to: the host of the `registry`
+/// setting, when it is the registry of the tenant of the same settings.
+/// `None` when the setting names another registry, or when the tenant or the
+/// registry is not set.
 pub fn tenant_registry(settings: &Settings) -> Option<TenantRegistry> {
-    let registry: TenantRegistry = settings.repository()?.parse().ok()?;
+    let registry: TenantRegistry = settings.registry()?.parse().ok()?;
     registry
         .tenant
         .eq_ignore_ascii_case(settings.tenant()?)
@@ -453,8 +453,10 @@ mod tests {
         assert!(err.to_string().contains("snouty login"), "{err}");
     }
 
-    fn settings(profile: Option<&str>, tenant: &str, repository: &str) -> Settings {
-        let builder = Settings::builder().tenant(tenant).repository(repository);
+    fn settings(profile: Option<&str>, tenant: &str, registry_setting: &str) -> Settings {
+        let builder = Settings::builder()
+            .tenant(tenant)
+            .registry(registry_setting);
         match profile {
             Some(profile) => builder.profile(profile),
             None => builder,
@@ -566,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn the_tenant_registry_is_the_repository_host_of_that_tenant() {
+    fn the_tenant_registry_is_the_registry_host_of_that_tenant() {
         let cases = [
             ("acme", "registry.acme.antithesis.com/app", true),
             ("acme", "registry.acme.antithesis.com", true),
@@ -578,11 +580,11 @@ mod tests {
             ("ACME", "registry.acme.antithesis.com/app", true),
             ("eu.acme", "registry.eu.acme.antithesis.com/app", true),
         ];
-        for (tenant, repository, matches) in cases {
+        for (tenant, registry_setting, matches) in cases {
             assert_eq!(
-                tenant_registry(&settings(None, tenant, repository)),
+                tenant_registry(&settings(None, tenant, registry_setting)),
                 matches.then(|| registry(&format!("registry.{tenant}.antithesis.com"))),
-                "{tenant} {repository}"
+                "{tenant} {registry_setting}"
             );
         }
         assert_eq!(

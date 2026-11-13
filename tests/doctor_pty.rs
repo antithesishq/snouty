@@ -27,7 +27,7 @@ fn long_notes_wrap_under_their_text() {
         .env("HOME", home.path())
         .env("TERM", "xterm-256color")
         .env("ANTITHESIS_TENANT", "pty-tenant")
-        .env("ANTITHESIS_REPOSITORY", "pty-repo")
+        .env("ANTITHESIS_REGISTRY", "pty-registry")
         // Username/password credentials draw the long deprecation warning.
         .env("ANTITHESIS_USERNAME", "pty-user")
         .env(

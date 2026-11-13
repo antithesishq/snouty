@@ -39,7 +39,7 @@ fn helper_process(bin: &Path, home: &TempDir) -> std::process::Command {
         .env("HOME", home.path())
         .env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1")
         .env("ANTITHESIS_TENANT", "acme")
-        .env("ANTITHESIS_REPOSITORY", "registry.acme.antithesis.com/app")
+        .env("ANTITHESIS_REGISTRY", "registry.acme.antithesis.com/app")
         .env("ANTITHESIS_API_KEY", FAKE_API_KEY_A);
     command
 }
@@ -253,7 +253,7 @@ fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRu
             "sed 's/{addr}/registry.acme.antithesis.com/' | exec env -i {ca_env}\
              HOME='{home}' SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE=1 \
              ANTITHESIS_TENANT=acme \
-             ANTITHESIS_REPOSITORY=registry.acme.antithesis.com/app \
+             ANTITHESIS_REGISTRY=registry.acme.antithesis.com/app \
              ANTITHESIS_API_KEY={FAKE_API_KEY_A} '{helper}' \"$@\"\n",
             addr = addr.replace('.', r"\."),
             home = home.display(),
@@ -342,7 +342,7 @@ fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRu
 /// - Podman gets it from `docker-credential-snouty`, which the launch links
 ///   in the global settings dir and puts first on the `PATH` of podman.
 ///
-/// The tenant and the repository come from the trusted `./.snouty.toml` of
+/// The tenant and the registry come from the trusted `./.snouty.toml` of
 /// the launch, which each helper reads, because it runs in the working
 /// directory of the launch. During the push, no file in `TMPDIR` (where
 /// snouty keeps the auth file), `$XDG_CONFIG_HOME` (where it links the
@@ -446,7 +446,7 @@ fn launch_pushes_with_the_registry_auth(runtime: &dyn snouty::container::Contain
     let repo = snouty::testutils::unique_image_prefix(&format!("launch-auth-{engine}"));
     std::fs::write(
         work.join(".snouty.toml"),
-        format!("tenant = \"acme\"\nrepository = \"{TENANT_HOST}/{repo}\"\n"),
+        format!("tenant = \"acme\"\nregistry = \"{TENANT_HOST}/{repo}\"\n"),
     )
     .unwrap();
     // The launch and each helper use ./.snouty.toml only because the user
@@ -564,7 +564,7 @@ sed '{to_host}' | exec '{helper}' "$@"
         let mut command = std::process::Command::new(SNOUTY);
         for var in [
             "ANTITHESIS_TENANT",
-            "ANTITHESIS_REPOSITORY",
+            "ANTITHESIS_REGISTRY",
             "ANTITHESIS_PROFILE",
             "ANTITHESIS_USERNAME",
             "ANTITHESIS_PASSWORD",

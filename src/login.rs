@@ -150,14 +150,14 @@ impl Prompter for InquirePrompter {
 /// With `output.verbose`, login logs its requests to stderr.
 pub async fn cmd_login(
     tenant: Option<String>,
-    repository: Option<String>,
+    registry: Option<String>,
     profile: Option<&str>,
     current_settings: &Settings,
     output: OutputOptions,
 ) -> Result<()> {
     do_cmd_login(
         tenant,
-        repository,
+        registry,
         profile,
         current_settings,
         output,
@@ -168,7 +168,7 @@ pub async fn cmd_login(
 
 async fn do_cmd_login(
     tenant: Option<String>,
-    repository: Option<String>,
+    registry: Option<String>,
     profile: Option<&str>,
     current_settings: &Settings,
     OutputOptions { verbose, .. }: OutputOptions,
@@ -219,7 +219,7 @@ async fn do_cmd_login(
         None
     };
 
-    let registry = fetch_registry(
+    let tenant_registry = fetch_registry(
         &api_settings,
         new_credentials.as_ref(),
         profile_to_use.as_deref(),
@@ -227,26 +227,26 @@ async fn do_cmd_login(
         verbose,
     )
     .await?;
-    let (repository_to_use, docker_login) = if let Some(repository) = repository {
-        (repository, None)
+    let (registry_to_use, docker_login) = if let Some(registry) = registry {
+        (registry, None)
     } else {
-        if registry.registry_url.trim().is_empty() {
+        if tenant_registry.registry_url.trim().is_empty() {
             return Err(
                 user_error(format!("{tenant_to_use} reports no container registry"))
-                    .suggestion("run `snouty login --repository <repository>`"),
+                    .suggestion("run `snouty login --registry <registry>`"),
             );
         }
-        let docker_login = match registry.auth {
-            // `docker login` takes the host, not a repository path.
+        let docker_login = match tenant_registry.auth {
+            // `docker login` takes the host, not the path after it.
             RegistryResponseAuth::Docker => Some(
-                registry_host(&registry.registry_url)
-                    .unwrap_or(&registry.registry_url)
+                registry_host(&tenant_registry.registry_url)
+                    .unwrap_or(&tenant_registry.registry_url)
                     .to_owned(),
             ),
             // A login kind that this snouty does not know gets no advice.
             RegistryResponseAuth::Antithesis | RegistryResponseAuth::Other(_) => None,
         };
-        (registry.registry_url, docker_login)
+        (tenant_registry.registry_url, docker_login)
     };
 
     // The kind of credential login wrote, and where.
@@ -264,7 +264,7 @@ async fn do_cmd_login(
 
     update_settings_in_global_file(
         Some(tenant_to_use.clone()),
-        Some(repository_to_use.clone()),
+        Some(registry_to_use.clone()),
         None,
         None,
         profile_to_use.as_deref(),
@@ -272,7 +272,7 @@ async fn do_cmd_login(
 
     print_login_summary(
         &tenant_to_use,
-        &repository_to_use,
+        &registry_to_use,
         profile_to_use.as_deref(),
         written,
         stored.as_ref(),
@@ -347,7 +347,7 @@ async fn fetch_registry(
 /// otherwise a successful login exits silently, leaving the user unsure it took.
 fn print_login_summary(
     tenant: &str,
-    repository: &str,
+    registry: &str,
     profile: Option<&str>,
     written: Option<Tagged<&str, CredentialStore>>,
     stored: Option<&Tagged<AuthenticationInfo, CredentialStore>>,
@@ -360,8 +360,8 @@ fn print_login_summary(
         None => String::new(),
     };
     say(&format!(
-        "\nSaved tenant `{tenant}` and repository `{}`{scope}.",
-        sanitize(repository)
+        "\nSaved tenant `{tenant}` and registry `{}`{scope}.",
+        sanitize(registry)
     ));
     match (written, stored) {
         (Some(written), _) => {
@@ -1420,6 +1420,7 @@ mod tests {
                     "XDG_CONFIG_HOME",
                     "ANTITHESIS_PROFILE",
                     "ANTITHESIS_TENANT",
+                    "ANTITHESIS_REGISTRY",
                     "ANTITHESIS_REPOSITORY",
                     "ANTITHESIS_HTTPS_PROXY",
                     "CONTAINER_ENGINE",
@@ -1497,7 +1498,7 @@ mod tests {
         format!("http://{addr}")
     }
 
-    /// [`do_cmd_login`] without `--tenant`, `--repository`, or `--verbose`.
+    /// [`do_cmd_login`] without `--tenant`, `--registry`, or `--verbose`.
     async fn login(
         profile: Option<&str>,
         settings: &Settings,
@@ -1514,16 +1515,16 @@ mod tests {
         .await
     }
 
-    /// [`do_cmd_login`] with `--tenant mytenant`, and `--repository` when
-    /// `repository` is set.
+    /// [`do_cmd_login`] with `--tenant mytenant`, and `--registry` when
+    /// `registry` is set.
     async fn login_with_flags(
-        repository: Option<&str>,
+        registry: Option<&str>,
         settings: &Settings,
         prompter: &dyn Prompter,
     ) -> Result<()> {
         do_cmd_login(
             Some("mytenant".to_owned()),
-            repository.map(str::to_owned),
+            registry.map(str::to_owned),
             None,
             settings,
             OutputOptions::default(),
@@ -1548,7 +1549,7 @@ mod tests {
         let stored = env.settings();
         assert!(stored.contains(r#"tenant = "mytenant""#), "{stored}");
         assert!(
-            stored.contains(&format!(r#"repository = "{REGISTRY_URL}""#)),
+            stored.contains(&format!(r#"registry = "{REGISTRY_URL}""#)),
             "{stored}"
         );
         let creds = env.credentials();
@@ -1557,8 +1558,8 @@ mod tests {
         Ok(())
     }
 
-    /// With `--tenant` and `--repository` supplied, only the credential prompt is
-    /// shown, and the repository takes the place of the tenant's registry.
+    /// With `--tenant` and `--registry` supplied, only the credential prompt is
+    /// shown, and the given registry takes the place of the tenant's registry.
     #[tokio::test]
     async fn login_flags_skip_the_tenant_prompt_and_override_the_registry() -> Result<()> {
         let env = LoginEnv::new();
@@ -1573,7 +1574,35 @@ mod tests {
         );
         let stored = env.settings();
         assert!(stored.contains(r#"tenant = "mytenant""#), "{stored}");
-        assert!(stored.contains(r#"repository = "myrepo""#), "{stored}");
+        assert!(stored.contains(r#"registry = "myrepo""#), "{stored}");
+        Ok(())
+    }
+
+    /// A `repository` key, the old name of `registry`, still loads as the
+    /// registry. Login writes `registry`, and removes `repository` from the
+    /// table that it writes.
+    #[tokio::test]
+    async fn login_replaces_the_old_repository_key_with_registry() -> Result<()> {
+        let env = LoginEnv::new();
+        env.seed(
+            ".config/snouty/settings.toml",
+            "repository = \"old\"\n[profile.p]\nrepository = \"old-p\"\n",
+        );
+        let settings = env.resolve_settings(None)?;
+        assert_eq!(settings.registry(), Some("old"));
+        let prompter = Script::default().secret(FAKE_API_KEY_A).build();
+
+        login_with_flags(Some("myrepo"), &settings, &prompter).await?;
+
+        let stored: toml::Table = env.settings().parse()?;
+        assert_eq!(stored["registry"].as_str(), Some("myrepo"), "{stored}");
+        assert!(!stored.contains_key("repository"), "{stored}");
+        // Login writes only the top-level table, so the profile keeps its key.
+        assert_eq!(
+            stored["profile"]["p"]["repository"].as_str(),
+            Some("old-p"),
+            "{stored}"
+        );
         Ok(())
     }
 
@@ -1598,7 +1627,7 @@ mod tests {
         Ok(())
     }
 
-    /// A registry that takes the Docker login is saved as the repository.
+    /// A registry that takes the Docker login is saved as the registry.
     #[tokio::test]
     async fn login_saves_a_registry_that_takes_the_docker_login() -> Result<()> {
         let env = LoginEnv::with_registry(
@@ -1612,14 +1641,14 @@ mod tests {
 
         let stored = env.settings();
         assert!(
-            stored.contains(r#"repository = "registry.example.com/acme""#),
+            stored.contains(r#"registry = "registry.example.com/acme""#),
             "{stored}"
         );
         Ok(())
     }
 
     /// A tenant that reports a blank registry fails the login, which saves
-    /// nothing, unless --repository is given.
+    /// nothing, unless --registry is given.
     #[tokio::test]
     async fn login_saves_nothing_when_the_tenant_reports_a_blank_registry() -> Result<()> {
         let env = LoginEnv::with_registry(200, r#"{"auth":"antithesis","registry_url":" "}"#);
@@ -1637,10 +1666,10 @@ mod tests {
         assert!(env.settings().is_empty(), "{}", env.settings());
         assert!(env.credentials().is_empty(), "{}", env.credentials());
 
-        // --repository takes the place of the blank registry.
+        // --registry takes the place of the blank registry.
         let prompter = Script::default().secret(FAKE_API_KEY_A).build();
         login_with_flags(Some("myrepo"), &settings, &prompter).await?;
-        assert!(env.settings().contains(r#"repository = "myrepo""#));
+        assert!(env.settings().contains(r#"registry = "myrepo""#));
         Ok(())
     }
 
@@ -1703,7 +1732,7 @@ mod tests {
     }
 
     /// A tenant that isn't a valid hostname is rejected after the prompt, before
-    /// the repository/credential prompts and before anything is persisted.
+    /// the registry/credential prompts and before anything is persisted.
     #[tokio::test]
     async fn login_rejects_an_invalid_tenant() -> Result<()> {
         let env = LoginEnv::new();
@@ -1719,7 +1748,7 @@ mod tests {
             format!("{err:#}").contains("a tenant must be a valid hostname"),
             "unexpected error: {err:#}"
         );
-        // Only the tenant was prompted; the flow bailed before repository/credentials.
+        // Only the tenant was prompted; the flow bailed before registry/credentials.
         assert_eq!(prompter.prompts().len(), 1, "{:?}", prompter.prompts());
         assert!(env.settings().is_empty(), "nothing should be persisted");
         Ok(())
@@ -1991,7 +2020,7 @@ mod tests {
     }
 
     /// Esc at the API key prompt skips credential storage: login checks the
-    /// credential from the environment, saves the tenant and repository, and
+    /// credential from the environment, saves the tenant and registry, and
     /// writes no credentials file.
     #[tokio::test]
     async fn login_skips_credential_storage_on_esc() -> Result<()> {

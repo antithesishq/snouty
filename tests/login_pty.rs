@@ -91,7 +91,7 @@ fn start_backend() -> String {
     url
 }
 
-/// Spawn `snouty login --tenant … --repository …` on a PTY against an
+/// Spawn `snouty login --tenant … --registry …` on a PTY against an
 /// isolated `$HOME` and the backend of [`start_backend`].
 fn start_login() -> (tempfile::TempDir, OsSession) {
     start_login_with(&[])
@@ -118,7 +118,7 @@ enum Stdout {
 
 const STDOUT_FILE: &str = "stdout.txt";
 
-/// How [`spawn_login`] runs `snouty login --tenant … --repository …`.
+/// How [`spawn_login`] runs `snouty login --tenant … --registry …`.
 #[derive(Default)]
 struct Login<'a> {
     /// Each `(path, contents)` is written under the temp `$HOME` first.
@@ -149,8 +149,8 @@ fn spawn_login(login: &Login) -> (tempfile::TempDir, OsSession) {
             "login",
             "--tenant",
             "pty-tenant",
-            "--repository",
-            "pty-repo",
+            "--registry",
+            "pty-registry",
         ])
         .args(login.args)
         .env_clear()

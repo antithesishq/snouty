@@ -300,13 +300,21 @@ async fn fetch_registry(
     } else {
         "set ANTITHESIS_API_KEY, or run `snouty login` in a terminal"
     };
-    let (authentication, from_environment) = match new_credentials {
+    let (authentication, key_from_environment) = match new_credentials {
         Some(credentials) => (credentials.for_check(), false),
         // A read error of a stored credential passes through as it is.
         None => match AuthenticationInfo::find_ambient(profile)? {
             Some(found) if !matches!(found.value(), AuthenticationInfo::Password { .. }) => {
-                let from_environment = matches!(found.tag(), CredentialSource::Environment { .. });
-                (found.untag(), from_environment)
+                // A GitHub Actions OIDC token is also tagged Environment, but
+                // ANTITHESIS_API_KEY does not hold it.
+                let key_from_environment = matches!(
+                    (found.value(), found.tag()),
+                    (
+                        AuthenticationInfo::ApiKey { .. },
+                        CredentialSource::Environment { .. }
+                    )
+                );
+                (found.untag(), key_from_environment)
             }
             _ => {
                 return Err(user_error(format!(
@@ -323,7 +331,7 @@ async fn fetch_registry(
         }
         // Every later command reads the environment first, so a new key at the
         // prompt would not replace a rejected one there.
-        let next_step = if from_environment {
+        let next_step = if key_from_environment {
             "set ANTITHESIS_API_KEY to a valid key, or unset it"
         } else {
             next_step

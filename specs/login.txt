@@ -72,3 +72,18 @@ mock-server 401 '{"message":"Invalid or expired bearer token."}'
 stderr 'did not accept the credential; nothing was saved'
 stderr -literal 'set ANTITHESIS_API_KEY to a valid key, or unset it'
 ! exists rejected/.config/snouty/settings.toml
+
+# A GitHub Actions OIDC token that the tenant rejects keeps the GitHub Actions
+# advice, because ANTITHESIS_API_KEY does not hold it.
+mock-runs-server
+env ANTITHESIS_API_KEY=
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
+isolate-home oidc_rejected
+set-env GITHUB_ACTIONS true
+set-env ACTIONS_ID_TOKEN_REQUEST_URL ${ANTITHESIS_BASE_URL}/github-actions/token?api-version=2.0
+set-env ACTIONS_ID_TOKEN_REQUEST_TOKEN ${FAKE_OIDC_REQUEST_TOKEN}
+! snouty login --tenant spec-tenant
+stderr 'did not accept the credential; nothing was saved'
+stderr 'id-token: write'
+! stderr 'unset it'

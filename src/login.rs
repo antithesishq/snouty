@@ -27,8 +27,8 @@ use crate::{
         normalize_base_url,
     },
     auth::{
-        AuthenticationInfo, CredentialStore, PasswordPolicy, PersistableCredentials,
-        is_blank_api_key, persist,
+        AuthenticationInfo, CredentialSource, CredentialStore, PersistableCredentials,
+        in_github_actions, is_blank_api_key, no_credentials_suggestion, persist,
     },
     container::registry_host,
     env,
@@ -295,30 +295,43 @@ async fn fetch_registry(
     let tenant = settings.tenant().unwrap_or_default();
     let next_step = if interactive {
         "run `snouty login` again, and enter an API key or sign in with single sign-on"
+    } else if in_github_actions() {
+        no_credentials_suggestion(true)
     } else {
         "set ANTITHESIS_API_KEY, or run `snouty login` in a terminal"
     };
-    let authentication = match new_credentials {
-        Some(credentials) => credentials.for_check(),
-        None => AuthenticationInfo::for_ambient_configuration(profile, PasswordPolicy::Reject)
-            .map_err(|err| {
-                debug!("no credential to check: {err:#}");
-                user_error(format!(
+    let (authentication, from_environment) = match new_credentials {
+        Some(credentials) => (credentials.for_check(), false),
+        // A read error of a stored credential passes through as it is.
+        None => match AuthenticationInfo::find_ambient(profile)? {
+            Some(found) if !matches!(found.value(), AuthenticationInfo::Password { .. }) => {
+                let from_environment = matches!(found.tag(), CredentialSource::Environment { .. });
+                (found.untag(), from_environment)
+            }
+            _ => {
+                return Err(user_error(format!(
                     "login needs an API key or a single sign-on to check with `{tenant}`; nothing was saved"
                 ))
-                .suggestion(next_step)
-            })?,
+                .suggestion(next_step));
+            }
+        },
     };
     let api = AntithesisApi::build(settings, authentication, verbose, ResponseCache::Default)?;
     api.get_registry().await.map_err(|err| {
-        if api_error_status(&err) == Some(401) {
-            user_error(format!(
-                "`{tenant}` did not accept the credential; nothing was saved"
-            ))
-            .suggestion(next_step)
-        } else {
-            err
+        if api_error_status(&err) != Some(401) {
+            return err;
         }
+        // Every later command reads the environment first, so a new key at the
+        // prompt would not replace a rejected one there.
+        let next_step = if from_environment {
+            "set ANTITHESIS_API_KEY to a valid key, or unset it"
+        } else {
+            next_step
+        };
+        user_error(format!(
+            "`{tenant}` did not accept the credential; nothing was saved"
+        ))
+        .suggestion(next_step)
     })
 }
 
@@ -1991,6 +2004,27 @@ mod tests {
             !env.config_dir().join("credentials.toml").exists(),
             "Esc at the API key prompt must write no credentials file"
         );
+        Ok(())
+    }
+
+    /// A stored credential that cannot be read fails the login with the read
+    /// error, not with a claim that no credential exists.
+    #[tokio::test]
+    async fn login_reports_a_stored_credential_that_cannot_be_read() -> Result<()> {
+        let env = LoginEnv::new();
+        env.seed(".config/snouty/credentials.toml", "not = [valid toml");
+        let settings = env.resolve_settings(None)?;
+        let prompter = Script::default().input("mytenant").skip_secret().build();
+
+        let err = login(None, &settings, &prompter)
+            .await
+            .expect_err("an unreadable credential must fail the login");
+
+        assert!(
+            !format!("{err:#}").contains("login needs an API key"),
+            "{err:#}"
+        );
+        assert!(env.settings().is_empty(), "{}", env.settings());
         Ok(())
     }
 

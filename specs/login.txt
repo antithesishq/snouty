@@ -70,5 +70,5 @@ isolate-home rejected
 mock-server 401 '{"message":"Invalid or expired bearer token."}'
 ! snouty login --tenant spec-tenant
 stderr 'did not accept the credential; nothing was saved'
-stderr -literal 'set ANTITHESIS_API_KEY, or run `snouty login` in a terminal'
+stderr -literal 'set ANTITHESIS_API_KEY to a valid key, or unset it'
 ! exists rejected/.config/snouty/settings.toml

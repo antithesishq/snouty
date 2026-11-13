@@ -21,16 +21,14 @@ stderr 'Pushing image:.*sidecar'
 stderr '"antithesis.config_image":.*@sha256:'
 ! stderr '"antithesis.images"'
 
-# Relaunching after a successful push skips re-pushing: the registry round
-# trip confirms the pushed digest is already there. docker-only — podman's
-# push digest differs from its local digest (recompression), so podman
-# re-pushes by design. The positive skip lines below cover both service images,
-# so there are no negated assertions here.
-[docker] mock-server 200 '{"runId":"run-123","statusCode":200}'
-[docker] snouty launch --launcher basic_test -c push_config --duration 30m
-[docker] stderr 'Image already in a registry, skipping push:.*myapp'
-[docker] stderr 'Image already in a registry, skipping push:.*sidecar'
-[docker] stderr '"antithesis.config_image":.*@sha256:'
+# A relaunch pushes both service images again, and never asks the tenant
+# registry for the earlier push.
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+snouty launch --launcher basic_test -c push_config --duration 30m
+stderr 'Pushing image:.*myapp'
+stderr 'Pushing image:.*sidecar'
+! stderr 'skipping push'
+stderr '"antithesis.config_image":.*@sha256:'
 
 # A registry-qualified third-party image that is NOT in the local store fails
 # fast — snouty never pulls, so the user must pull it themselves first.
@@ -58,7 +56,7 @@ build-image --platform linux/amd64 myapp:latest images/myapp
 snouty launch --launcher basic_test -c mixed_config --duration 30m --allow-remote-images
 stderr '^warning: these images are not in the local image store, so snouty cannot validate and pin them:$'
 stderr '^  docker.io/library/nginx-snouty-absent:latest$'
-stderr '(Pushing image|Image already in a registry, skipping push):.*myapp'
+stderr 'Pushing image:.*myapp'
 ! stderr '(Pushing image|skipping push):.*nginx-snouty-absent'
 stderr '"antithesis.config_image":.*@sha256:'
 

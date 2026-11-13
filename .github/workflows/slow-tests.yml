@@ -202,12 +202,9 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      # QEMU from the pinned nixpkgs. The Ubuntu package is too old for the
-      # `hostfwd=unix:` forward that snouty uses.
+      # Ubuntu 24.04 has QEMU 8.2, the oldest version that snouty supports.
       - name: Install QEMU
-        run: |
-          nix-build nixpkgs.nix -A qemu_test -o "$RUNNER_TEMP/qemu"
-          echo "$RUNNER_TEMP/qemu/bin" >> "$GITHUB_PATH"
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86
 
       - name: Test
         run: mise run test:qemu

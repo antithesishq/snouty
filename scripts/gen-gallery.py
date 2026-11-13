@@ -4499,7 +4499,7 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "selection with the pinned version in the configured repository without an API key, "
             "an --environment-image without a tag getting that version, "
             "and the native host architecture, "
-            "Linux and macOS requirements with QEMU 10.2 or later and libslirp 4.7 or later, "
+            "Linux and macOS requirements with QEMU 8.2 or later, "
             "setup_complete before test composer and fault injection start, "
             "host-controlled fault rerandomization with a fresh seed and force=true, "
             "calling add_entropy after composer readiness and every 30 seconds even after it exits, "

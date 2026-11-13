@@ -17,11 +17,10 @@ antithesis-environment in the configured repository, at the version this release
 of snouty pins. An --environment-image without a tag or digest gets that
 version. No API key is required.
 
-Requires Linux or macOS and QEMU 10.2 or later, built with libslirp 4.7 or
-later. Uses 1 CPU and 15000 MiB of memory by default. Use --memory to lower its
-memory when the host has less RAM. The simulation environment uses the host
-architecture by default. SSH configuration is private to this run; user
-configuration is not changed.
+Requires Linux or macOS and QEMU 8.2 or later. Uses 1 CPU and 15000 MiB of
+memory by default. Use --memory to lower its memory when the host has less RAM.
+The simulation environment uses the host architecture by default. SSH
+configuration is private to this run; user configuration is not changed.
 
 Waits for setup_complete before starting test composer on each rollout. After
 the composer watch is ready, calls add_entropy with a fresh random seed and

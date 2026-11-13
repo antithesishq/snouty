@@ -306,9 +306,6 @@ pub enum Commands {
     )]
     Simulate(SimulateArgs),
 
-    #[command(hide = true, arg = json(JsonShape::None))]
-    InternalSshProxy { socket: std::path::PathBuf },
-
     /// Check environment configuration
     #[command(arg = json(JsonShape::Object))]
     Doctor(DoctorArgs),

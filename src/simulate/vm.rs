@@ -17,6 +17,7 @@ use super::firmware::platform_firmware;
 use super::{
     SimulatePlatform,
     events::{self, EventKind},
+    qmp::{self, Qmp},
     serial::serial_lines,
 };
 
@@ -112,7 +113,6 @@ impl SeaBiosConsoleFilter {
 
 pub struct Vm {
     child: Child,
-    _socket_directory: tempfile::TempDir,
     client_key: Option<ClientKey>,
     ssh_config: PathBuf,
     run_dir: PathBuf,
@@ -192,21 +192,6 @@ impl Vm {
             .checked_add(startup_timeout)
             .ok_or_else(|| eyre!("startup timeout is too large"))?;
         let client_key = ClientKey::generate(&run_dir).await?;
-        // QEMU 10.2 splits hostfwd at the first hyphen. Keep the path short
-        // and free of hyphens, including when the cache path is long.
-        let socket_directory = tempfile::Builder::new()
-            .prefix("snouty")
-            .tempdir_in("/tmp")?;
-        let socket = socket_directory.path().join("ssh.sock");
-        let proxy = super::ssh_proxy::proxy_command(&std::env::current_exe()?, &socket)?;
-        let ssh_config = run_dir.join("ssh_config");
-        fs::write(
-            &ssh_config,
-            format!(
-                "Host environment\n ProxyCommand {proxy}\n ProxyUseFdpass yes\n User root\n IdentityFile {}\n IdentitiesOnly yes\n IdentityAgent none\n UserKnownHostsFile /dev/null\n GlobalKnownHostsFile /dev/null\n StrictHostKeyChecking no\n UpdateHostKeys no\n LogLevel ERROR\n BatchMode yes\n ConnectTimeout 2\n ServerAliveInterval 5\n ServerAliveCountMax 3\n Compression no\n ControlMaster no\n ControlPath none\n",
-                client_key.identity_file.display()
-            ),
-        )?;
         let mut command = Command::new(match platform {
             SimulatePlatform::Amd64 => "qemu-system-x86_64",
             SimulatePlatform::Arm64 => "qemu-system-aarch64",
@@ -268,30 +253,79 @@ impl Vm {
                 client_key.public_key.display()
             ))
             .args(["-device", "virtio-net-pci,netdev=net0", "-netdev"])
-            .arg(format!(
-                "user,id=net0,hostfwd=unix:{}-:22,restrict=yes",
-                socket.display()
-            ))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            // QEMU binds a free port and holds it; forward_ssh asks which.
+            .arg("user,id=net0,hostfwd=tcp:127.0.0.1:0-:22,restrict=yes")
+            .args(["-qmp", "stdio"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
             .stderr(File::create(run_dir.join("qemu.log"))?)
             .process_group(0);
+        let mut child = command.spawn().wrap_err("failed to start QEMU")?;
+        let qmp_input = child.stdin.take().expect("QEMU stdin is piped");
+        let qmp_output = child.stdout.take().expect("QEMU stdout is piped");
         let mut vm = Self {
-            child: command.spawn().wrap_err("failed to start QEMU")?,
-            _socket_directory: socket_directory,
+            child,
             client_key: Some(client_key),
-            ssh_config,
+            ssh_config: run_dir.join("ssh_config"),
             instrumentation: run_dir.join("instrumentation.log"),
             run_dir: run_dir.clone(),
         };
         let mut boot_console = BootConsole::new(boot_output);
-        let result = vm.wait_ready(&mut boot_console, deadline).await;
+        let result = async {
+            tokio::time::timeout_at(deadline, vm.forward_ssh(qmp_output, qmp_input))
+                .await
+                .map_err(|_| {
+                    eyre!(
+                        "simulation environment startup timed out waiting for QEMU to forward SSH"
+                    )
+                })??;
+            vm.wait_ready(&mut boot_console, deadline).await
+        }
+        .await;
         boot_console.flush(&vm.run_dir.join("boot.log"))?;
         boot_console.filter.finish();
         match result {
             Ok(()) => Ok(vm),
             Err(error) => Err(error).wrap_err(vm.boot_diagnostics()),
         }
+    }
+
+    /// Writes the SSH configuration for the port that QEMU forwards to the
+    /// environment's sshd. QEMU keeps running when the QMP connection closes.
+    async fn forward_ssh(
+        &self,
+        output: std::process::ChildStdout,
+        input: std::process::ChildStdin,
+    ) -> Result<()> {
+        let port = async {
+            Qmp::connect(
+                tokio::process::ChildStdout::from_std(output)?,
+                tokio::process::ChildStdin::from_std(input)?,
+            )
+            .await?
+            .host_forward_port(22)
+            .await
+        }
+        .await
+        .map_err(|error| {
+            if error.is::<qmp::Disconnected>() {
+                eyre!("QEMU exited before SSH became ready")
+            } else {
+                error
+            }
+        })?;
+        let client_key = self
+            .client_key
+            .as_ref()
+            .expect("the client key lives until snouty sees QEMU exit");
+        fs::write(
+            &self.ssh_config,
+            format!(
+                "Host environment\n HostName 127.0.0.1\n Port {port}\n User root\n IdentityFile {}\n IdentitiesOnly yes\n IdentityAgent none\n UserKnownHostsFile /dev/null\n GlobalKnownHostsFile /dev/null\n StrictHostKeyChecking no\n UpdateHostKeys no\n LogLevel ERROR\n BatchMode yes\n ConnectTimeout 2\n ServerAliveInterval 5\n ServerAliveCountMax 3\n Compression no\n ControlMaster no\n ControlPath none\n",
+                client_key.identity_file.display()
+            ),
+        )?;
+        Ok(())
     }
 
     async fn wait_ready(
@@ -608,7 +642,6 @@ mod tests {
         let pid = Pid::from_raw(child.id().cast_signed());
         let vm = Vm {
             child,
-            _socket_directory: tempfile::tempdir().unwrap(),
             client_key: Some(ClientKey {
                 _directory: tempfile::tempdir_in(run_dir.path()).unwrap(),
                 identity_file: PathBuf::new(),
@@ -634,7 +667,6 @@ mod tests {
         child.wait().unwrap();
         let mut vm = Vm {
             child,
-            _socket_directory: tempfile::tempdir().unwrap(),
             client_key: Some(ClientKey {
                 _directory: key_directory,
                 identity_file: PathBuf::new(),

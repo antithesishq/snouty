@@ -135,7 +135,6 @@ impl Simulation {
 struct Environment {
     run_dir: PathBuf,
     qemu: Pid,
-    socket_directory: PathBuf,
 }
 
 impl Environment {
@@ -155,20 +154,7 @@ impl Environment {
         let qemu = qemu_processes(&run_dir)
             .pop()
             .expect("QEMU runs in the run directory");
-        let command_line = fs::read(format!("/proc/{qemu}/cmdline")).unwrap();
-        let socket = command_line
-            .split(|byte| *byte == 0)
-            .find_map(|arg| {
-                String::from_utf8_lossy(arg)
-                    .split_once("hostfwd=unix:")
-                    .and_then(|(_, rest)| rest.split_once("-:22").map(|(path, _)| path.to_owned()))
-            })
-            .expect("QEMU forwards SSH to a socket");
-        Self {
-            run_dir,
-            qemu,
-            socket_directory: Path::new(&socket).parent().unwrap().to_owned(),
-        }
+        Self { run_dir, qemu }
     }
 
     fn public_key(&self) -> String {
@@ -193,11 +179,6 @@ impl Environment {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(!self.run_dir.exists(), "{}", self.run_dir.display());
-        assert!(
-            !self.socket_directory.exists(),
-            "{}",
-            self.socket_directory.display()
-        );
     }
 }
 

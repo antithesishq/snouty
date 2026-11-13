@@ -433,9 +433,9 @@ Compose setup in a local simulation environment:
 SNOUTY_UNSTABLE_FEATURES=simulate snouty simulate ./config
 ```
 
-Install QEMU 10.2 or later, built with libslirp 4.7 or later, OpenSSH, tar,
-and the container engine and Compose tools described above. Simulation
-converts the workload images into a read-only EROFS image, which the
+Install QEMU 8.2 or later, OpenSSH, tar, and the container engine and Compose
+tools described above. Simulation converts the workload images into a
+read-only EROFS image, which the
 simulation environment imports into its Podman image store at boot. It lives
 under `$XDG_CACHE_HOME/snouty/simulate` (default `$HOME/.cache/snouty/simulate`)
 and is removed when the simulation exits. An ARM64 simulation environment also

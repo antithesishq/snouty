@@ -239,6 +239,18 @@ elif name in ('qemu-system-x86_64', 'qemu-system-aarch64'):
     if mode == 'boot-failure':
         Path('boot.log').write_text('fatal boot fixture\n')
         sys.exit(23)
+    print(json.dumps({'QMP': {'version': {}, 'capabilities': []}}), flush=True)
+    assert json.loads(sys.stdin.readline()) == {'execute': 'qmp_capabilities'}
+    print(json.dumps({'return': {}}), flush=True)
+    assert json.loads(sys.stdin.readline()) == {
+        'execute': 'human-monitor-command',
+        'arguments': {'command-line': 'info usernet'},
+    }
+    print(json.dumps({'return': (
+        'Hub -1 (net0):\r\n'
+        '  Protocol[State]    FD  Source Address  Port   Dest. Address  Port RecvQ SendQ\r\n'
+        '  TCP[HOST_FORWARD]   3       127.0.0.1 34825       10.0.2.15    22     0     0\r\n'
+    )}), flush=True)
     child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
     record('qemu_child_pid', child.pid)
     def stop(signum, _frame):

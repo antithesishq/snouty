@@ -2,7 +2,6 @@
 env SNOUTY_UNSTABLE_FEATURES=
 snouty --help
 ! stdout 'simulate +Run'
-! stdout 'internal-ssh-proxy'
 ! snouty simulate empty --environment-image environment:latest
 stderr 'is an unstable feature and is not enabled'
 stderr 'SNOUTY_UNSTABLE_FEATURES=simulate'
@@ -104,13 +103,6 @@ stderr 'both docker-compose.yaml and a manifests/ subdirectory'
 stderr 'not a directory'
 ! snouty simulate kubernetes --environment-image environment:latest
 stderr 'Kubernetes.*not supported'
-
-# The internal SSH proxy is available without the simulate feature or settings.
-env SNOUTY_UNSTABLE_FEATURES=
-! snouty --settings missing.toml internal-ssh-proxy /nonexistent/environment.sock
-stderr 'failed to connect to the simulation environment.s SSH socket'
-! snouty internal-ssh-proxy
-stderr '<SOCKET>'
 
 -- empty/.keep --
 -- yml_dir/docker-compose.yml --

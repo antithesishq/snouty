@@ -56,6 +56,18 @@ fn runs_prints_empty_state() {
         .stdout(predicate::str::contains("No runs found."));
 }
 
+/// A spec cannot check an exit status other than 0 or 1.
+#[test]
+fn runs_coverage_exits_2_after_a_stream_error() {
+    let mock = start_runs_server(false);
+
+    snouty_with_mock_server(&mock)
+        .args(["runs", "coverage", "run-stream-error"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("mock stream failure"));
+}
+
 #[test]
 fn launch_with_typed_flags() {
     let mock_url = start_mock_server(r#"{"runId":"run-123","statusCode":200}"#, 200);

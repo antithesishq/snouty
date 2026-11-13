@@ -60,6 +60,10 @@ stdout 'work\.Spin\.func1'
 ! stdout 'rusthello::spin$'
 stderr '^3 locations · run completed$'
 
+# A repeated --module sends one request.
+snouty --verbose runs coverage run-1 --module go-20e55e2f1623 --module go-20e55e2f1623
+stderr -count=1 '^> GET .*module_id=go-20e55e2f1623'
+
 snouty runs coverage run-1 --unreached
 stdout '^MODULE +LOCATION +FUNCTION$'
 stdout -count=2 '^.+$'

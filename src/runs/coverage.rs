@@ -9,7 +9,6 @@ use color_eyre::eyre::{Report, Result};
 use console::truncate_str;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use serde::Serialize;
-use serde_json::Value;
 
 use crate::OutputOptions;
 use crate::api::{
@@ -195,19 +194,19 @@ pub(super) async fn cmd_runs_coverage(
     let modules: Vec<Option<&str>> = if module_ids.is_empty() {
         vec![None]
     } else {
-        module_ids.iter().map(|id| Some(id.as_str())).collect()
+        let unique: indexmap::IndexSet<&str> = module_ids.iter().map(String::as_str).collect();
+        unique.into_iter().map(Some).collect()
     };
-    let streams = futures_util::future::try_join_all(modules.into_iter().map(|module_id| {
-        let covered = reach.map(|reach| reach == Reach::Reached);
-        api.get_coverage_locations(&run_id, module_id, covered, follow)
-    }))
-    .await?;
+    let covered = reach.map(|reach| reach == Reach::Reached);
+    let open = |module_id| api.get_coverage_locations(&run_id, module_id, covered, follow);
     // A followed stream sends each location as the run reaches it, so the
-    // streams interleave. Otherwise each module's locations stay together.
+    // streams are open together and interleave. Otherwise each module's
+    // request opens when the one before it ends.
     let mut lines = if follow {
+        let streams = futures_util::future::try_join_all(modules.into_iter().map(open)).await?;
         stream::select_all(streams).boxed()
     } else {
-        stream::iter(streams).flatten().boxed()
+        stream::iter(modules).then(open).try_flatten().boxed()
     };
 
     let layout = LocationLayout {
@@ -225,7 +224,7 @@ pub(super) async fn cmd_runs_coverage(
         }
         // A followed stream sends the locations of a module that loads later
         // unreached, before the run reaches them.
-        if reach == Some(Reach::Reached) && value.get("first_reached").is_none_or(Value::is_null) {
+        if reach == Some(Reach::Reached) && value.get("first_reached").is_none() {
             continue;
         }
         if json {
@@ -250,7 +249,9 @@ pub(super) async fn cmd_runs_coverage(
         run_status(&run.status)
     );
     if !run.status.is_terminal() && !follow {
-        let follow_hint = if reach == Some(Reach::Unreached) {
+        // --follow does not combine with --unreached, and the MCP tool has no
+        // follow param.
+        let follow_hint = if reach == Some(Reach::Unreached) || crate::mcp::in_tool_call() {
             ""
         } else {
             "use --follow or "
@@ -347,6 +348,7 @@ impl LocationLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     fn module(id: &str, name: &str, language: Option<&str>, has_catalog: bool) -> CoverageModule {
         serde_json::from_value(serde_json::json!({

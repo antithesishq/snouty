@@ -280,7 +280,7 @@ Run `snouty doctor` to see which credential snouty resolves, and where it comes 
 
 ### Browser sign-in with `snouty login`
 
-`snouty login` asks for your tenant, then asks how you want to authenticate. It signs in to the tenant and gets the tenant's container registry. It writes the tenant and the registry to the global settings file, and it stores the credential separately. When the tenant rejects the credential, login saves nothing. Use `--registry` to push to a different registry. When the registry does not accept your snouty credential, login tells you to sign in to it with `docker login` or `podman login`.
+`snouty login` asks for your tenant, then asks how you want to authenticate. It gets the tenant's container registry, which also checks the credential. It writes the tenant and the registry to the global settings file, and it stores the credential separately. When the tenant rejects the credential, login saves nothing. When the tenant does not report a registry, login asks for one and does not check the credential. Use `--registry` to push to a different registry. When the registry does not accept your snouty credential, login tells you to sign in to it with `docker login` or `podman login`.
 
 ```sh
 snouty login

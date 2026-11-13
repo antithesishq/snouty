@@ -503,7 +503,7 @@ fn explicit_settings_path(flag: Option<PathBuf>) -> Result<Option<PathBuf>> {
 }
 
 /// Writes `tenant` and `registry` into the global `settings.toml`, in the
-/// table of `profile_to_update` or else the top-level table. A blank value is
+/// table of `profile_to_update` or else the top-level table. An empty value is
 /// not written.
 pub(crate) fn update_settings_in_global_file(
     tenant: Option<String>,

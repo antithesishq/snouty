@@ -5,10 +5,11 @@ Sign in and store your snouty configuration
 
 Sign in to the tenant, then save the tenant, its container registry and your
 credential in the global snouty settings file, optionally under a named profile.
-Login checks the credential with the tenant first, and saves nothing when the
-tenant rejects it. Information not provided via args is asked for at the
-terminal. Without a terminal, login uses the credential that other commands use,
-such as ANTITHESIS_API_KEY or a stored credential.
+When the tenant reports its container registry, login checks the credential with
+the tenant first, and saves nothing when the tenant rejects it. Information not
+provided via args is asked for at the terminal. Without a terminal, login uses
+the credential that other commands use, such as ANTITHESIS_API_KEY or a stored
+credential.
 
 Login saves the container registry that the tenant reports. When the tenant does
 not report one, login asks for it, or without a terminal keeps the saved one.

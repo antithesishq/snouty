@@ -775,55 +775,49 @@ fn push_destination(image: &str, prefix: &str) -> Result<String> {
     ))
 }
 
-/// Find a registry that already serves `image`'s local bytes, returning
-/// the digest-pinned reference to use, or `None` when the image must be
-/// pushed.
+/// Find the registry of `image` itself, such as `docker.io/library/redis`
+/// for `redis:7`, when it already serves `image`'s local bytes. Returns the
+/// digest-pinned reference to use, or `None` when the image must be pushed.
 ///
-/// Candidate digests come from the local store's repo digests, for two
-/// repositories: the image's own (e.g. `docker.io/library/redis` for
-/// `redis:7`) and its push destination under `prefix`, where a previous
-/// snouty push would have put it. A candidate counts only when the registry
-/// confirms it serves the digest (a manifest-only round trip — never a pull or
-/// push) AND the platform can run amd64 from it: a manifest list must offer an
-/// amd64 entry, while a single manifest shares the local image's architecture,
-/// so the local image must be amd64.
+/// Candidate digests are the local store's repo digests for that
+/// repository. A candidate counts only when the registry confirms it serves
+/// the digest (a manifest-only round trip — never a pull or push) AND the
+/// platform can run amd64 from it: a manifest list must offer an amd64 entry,
+/// while a single manifest shares the local image's architecture, so the
+/// local image must be amd64.
 ///
-/// Depends only on the container engine, not on compose state, so it is a
-/// free function rather than a [`DockerCompose`] method.
+/// The registry of `prefix` is asked only for an image that the author named
+/// at its push destination, whose manifest list a push would replace with
+/// the local platform. Any other image is never looked up there: a push
+/// deduplicates the layers that the registry holds, so the check would save
+/// little, and the Antithesis registry does not serve the config blobs that
+/// `manifest inspect` reads. An image at the registry's address outside
+/// `prefix` goes to the push path, because a test run cannot resolve that
+/// address.
 fn find_remote_pin(rt: &dyn ContainerRuntime, image: &str, prefix: &str) -> Result<Option<String>> {
+    let repo = normalize_repo(image_repo(image));
+    let registry_address = registry_host(prefix);
+    let at_destination = normalize_repo(image_repo(&push_destination(image, prefix)?)) == repo;
+    if !at_destination
+        && registry_address.is_some_and(|address| registry_host(image) == Some(address))
+    {
+        return Ok(None);
+    }
     let repo_digests = rt.image_repo_digests(image)?;
     let tag = image_ref_tag(image);
-
-    let mut repos = Vec::new();
-    // The caller strips `prefix` off the pin, and only the push destination
-    // is spelled so that it survives the strip. A repository at the
-    // registry's own address never survives it either, because the strip
-    // matches `prefix` whole — and that address is the one a test run cannot
-    // resolve, so those bytes go to the push path.
-    let registry_address = registry_host(prefix);
-    if registry_address.is_none() || registry_host(image) != registry_address {
-        repos.push(normalize_repo(image_repo(image)));
-    }
-    let dest_repo = normalize_repo(image_repo(&push_destination(image, prefix)?));
-    if !repos.contains(&dest_repo) {
-        repos.push(dest_repo);
-    }
-
-    for repo in &repos {
-        // A pull typically records several digests per repo (the
-        // per-arch manifest and the manifest list) — try them all.
-        for digest in digests_for_repo(repo, &repo_digests) {
-            let amd64_ok = match rt.remote_manifest(&format!("{repo}@{digest}")) {
-                RemoteManifest::NotFound => continue,
-                RemoteManifest::List { has_amd64 } => has_amd64,
-                RemoteManifest::Single => rt.image_architecture(image)? == Architecture::Amd64,
-            };
-            if amd64_ok {
-                return Ok(Some(format!("{repo}:{tag}@{digest}")));
-            }
-            // Served, but not runnable as amd64 — keep looking; the push
-            // path's local arch check produces the actionable error.
+    // A pull typically records several digests per repo (the per-arch
+    // manifest and the manifest list) — try them all.
+    for digest in digests_for_repo(&repo, &repo_digests) {
+        let amd64_ok = match rt.remote_manifest(&format!("{repo}@{digest}")) {
+            RemoteManifest::NotFound => continue,
+            RemoteManifest::List { has_amd64 } => has_amd64,
+            RemoteManifest::Single => rt.image_architecture(image)? == Architecture::Amd64,
+        };
+        if amd64_ok {
+            return Ok(Some(format!("{repo}:{tag}@{digest}")));
         }
+        // Served, but not runnable as amd64 — keep looking; the push path's
+        // local arch check produces the actionable error.
     }
     Ok(None)
 }
@@ -1873,20 +1867,61 @@ services:
             vec!["reg.example.com/myapp:v1".to_string()]
         );
     }
+    /// An image that the author named at its push destination keeps the
+    /// manifest-list pin there: a push would replace the list with the local,
+    /// non-amd64 platform.
     #[test]
-    fn pin_images_skips_push_for_previously_pushed_image() {
+    fn pin_images_pins_a_manifest_list_at_its_push_destination() {
+        if !has_compose() {
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+        let rt = FakeRuntime {
+            available_images: BTreeMap::from([("reg.example.com/app:v1".to_string(), true)]),
+            architectures: BTreeMap::from([(
+                "reg.example.com/app:v1".to_string(),
+                "arm64".to_string(),
+            )]),
+            repo_digests: BTreeMap::from([(
+                "reg.example.com/app:v1".to_string(),
+                vec!["reg.example.com/app@sha256:list".to_string()],
+            )]),
+            remote_manifests: BTreeMap::from([(
+                "reg.example.com/app@sha256:list".to_string(),
+                RemoteManifest::List { has_amd64: true },
+            )]),
+            ..Default::default()
+        };
+        let out = pin_with_fake(
+            &rt,
+            "services:\n  app:\n    image: reg.example.com/app:v1\n",
+            "reg.example.com",
+        )
+        .unwrap();
+        assert!(out.contains("image: app:v1@sha256:list"), "{out}");
+        assert!(rt.pushed.lock().unwrap().is_empty());
+    }
+
+    /// An image that an earlier launch pushed to the tenant registry is
+    /// pushed again, and snouty never asks the tenant registry for its
+    /// manifest: the push deduplicates the layers.
+    #[test]
+    fn pin_images_pushes_a_previously_pushed_image_again() {
         if !has_compose() {
             // Loud in CI (skip_or_fail panics there) so a runner missing
             // docker-compose can't silently drop this coverage.
             skip_or_fail("docker-compose (Docker Compose v2) is not available");
             return;
         }
-        // A bare local image pushed by an earlier launch: the
-        // registry-prefixed candidate verifies, so no re-push. The manifest
-        // is single-platform, so the local architecture must be amd64.
         let rt = FakeRuntime {
             available_images: BTreeMap::from([("myapp:latest".to_string(), true)]),
-            architectures: BTreeMap::from([("myapp:latest".to_string(), "amd64".to_string())]),
+            architectures: BTreeMap::from([
+                ("myapp:latest".to_string(), "amd64".to_string()),
+                (
+                    "reg.example.com/myapp:latest".to_string(),
+                    "amd64".to_string(),
+                ),
+            ]),
             repo_digests: BTreeMap::from([(
                 "myapp:latest".to_string(),
                 vec!["reg.example.com/myapp@sha256:pushedearlier".to_string()],
@@ -1903,53 +1938,10 @@ services:
             "reg.example.com",
         )
         .unwrap();
-        assert!(
-            out.contains("image: myapp:latest@sha256:pushedearlier"),
-            "expected pin to the previously pushed digest, got: {out}"
-        );
-        assert!(
-            rt.pushed.lock().unwrap().is_empty(),
-            "nothing should be pushed"
-        );
-    }
-    /// A second launch of a mirrored image finds the copy the first launch
-    /// pushed, so the mirror path is a stable address rather than a new path
-    /// per run.
-    #[test]
-    fn pin_images_skips_push_for_a_previously_mirrored_image() {
-        if !has_compose() {
-            skip_or_fail("docker-compose (Docker Compose v2) is not available");
-            return;
-        }
-        let rt = FakeRuntime {
-            available_images: BTreeMap::from([("ghcr.io/org/app:v1".to_string(), true)]),
-            architectures: BTreeMap::from([(
-                "ghcr.io/org/app:v1".to_string(),
-                "amd64".to_string(),
-            )]),
-            repo_digests: BTreeMap::from([(
-                "ghcr.io/org/app:v1".to_string(),
-                vec!["reg.example.com/snouty-mirror/ghcr.io/org/app@sha256:mirrored".to_string()],
-            )]),
-            remote_manifests: BTreeMap::from([(
-                "reg.example.com/snouty-mirror/ghcr.io/org/app@sha256:mirrored".to_string(),
-                RemoteManifest::Single,
-            )]),
-            ..Default::default()
-        };
-        let out = pin_with_fake(
-            &rt,
-            "services:\n  app:\n    image: ghcr.io/org/app:v1\n",
-            "reg.example.com",
-        )
-        .unwrap();
-        assert!(
-            out.contains("image: snouty-mirror/ghcr.io/org/app:v1@sha256:mirrored"),
-            "expected the pin to the earlier copy, got: {out}"
-        );
-        assert!(
-            rt.pushed.lock().unwrap().is_empty(),
-            "nothing should be pushed"
+        assert!(!out.contains("pushedearlier"), "{out}");
+        assert_eq!(
+            *rt.pushed.lock().unwrap(),
+            vec!["reg.example.com/myapp:latest".to_string()]
         );
     }
 

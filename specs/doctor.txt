@@ -69,7 +69,7 @@ stdout '"id": "credentials",\s*"kind": "password",\s*"status": "warn"'
 # --- API connectivity + version check (issue #146) ---
 # Cases that fabricate a status via mock-server are [!staging]-gated: under
 # SNOUTY_STAGING, mock-server passes through to the real API where fabricated
-# responses don't hold. The 401 case is the exception — a bad key provokes the
+# responses don't hold. The 403 case is the exception — a bad key provokes the
 # same status from the real gateway, so it runs in both modes. The --offline
 # and unreachable cases use a controlled local setup and run in both modes. The
 # mock + --offline cases assume a container runtime (CI provisions one); the
@@ -108,24 +108,22 @@ stdout '"id": "credentials",\s*"kind": "password",\s*"status": "warn"'
 [!staging] stderr '.*returned 404.*'
 [!staging] stderr '.*proxy.*'
 
-# 401 with an EMPTY body — exactly what the API gateway returns for a bad
+# 403 with an EMPTY body — exactly what the API gateway returns for a bad
 # token (content-type: text/plain, zero length). The HTTP status is what
 # classifies the failure, so doctor names the rejected credentials instead of
 # reporting the API as unreachable because the body didn't parse (issue #180).
 # This block runs against staging too: mock-server passes through to the real
 # gateway, and the bad key below provokes a real rejection, so the issue #180
-# scenario is exercised end to end rather than only against a mock of it. The
-# mock answers 401; the live gateway answers 403 for a bad key (the probes on
-# issue #180 recorded both). Either status is an authentication rejection, so
-# the assertion accepts both. Against staging, the empty ANTITHESIS_BASE_URL
-# sends the request to the tenant's own gateway: a proxy base URL can replace
-# the bad key with a real credential, and then the gateway accepts it.
-mock-server 401 ''
+# scenario is exercised end to end rather than only against a mock of it.
+# Against staging, the empty ANTITHESIS_BASE_URL sends the request to the
+# tenant's own gateway: a proxy base URL can replace the bad key with a real
+# credential, and then the gateway accepts it.
+mock-server 403 ''
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 [staging] env ANTITHESIS_BASE_URL=
 ! snouty doctor
 stderr '.*Antithesis API rejected authentication.*'
-stderr '.*returned HTTP 40[13].*'
+stderr '.*returned HTTP 403.*'
 ! stderr '.*Antithesis API unreachable.*'
 
 # --offline skips the network check entirely: no version line, no API contact.
@@ -145,7 +143,7 @@ stderr '.*could not connect to 127.0.0.1.*'
 
 # An expired OAuth token whose refresh is rejected fails the credentials
 # check, and doctor does not report the API as unreachable.
-[!staging] mock-server 401 ''
+[!staging] mock-server 403 ''
 [!staging] isolate-home expired_oauth
 [!staging] substitute ~/.config/snouty/credentials.toml
 [!staging] env ANTITHESIS_API_KEY=

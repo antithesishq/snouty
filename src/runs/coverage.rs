@@ -14,7 +14,7 @@ use crate::OutputOptions;
 use crate::api::{
     AntithesisApi, CoverageModule, CoverageModuleInstance, LocationCoverage, Reach, RunStatus,
 };
-use crate::cli::RunsCoverageArgs;
+use crate::cli::{ReachArg, RunsCoverageArgs};
 use crate::render::sanitize;
 use crate::settings::Settings;
 use crate::stdio;
@@ -169,17 +169,10 @@ pub(super) async fn cmd_runs_coverage(
     let RunsCoverageArgs {
         run_id,
         module_ids,
-        reached,
-        unreached,
+        reach: ReachArg(reach),
         follow,
         detail,
     } = args;
-    // clap makes --reached and --unreached exclusive.
-    let reach = match (reached, unreached) {
-        (true, _) => Some(Reach::Reached),
-        (_, true) => Some(Reach::Unreached),
-        _ => None,
-    };
 
     let api = AntithesisApi::new(settings, verbose)?;
     // The endpoint takes one module, so each --module is its own request.

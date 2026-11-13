@@ -204,8 +204,9 @@ fn finish(mut session: OsSession) -> String {
     seen
 }
 
-/// Wait for the end of the output and a failed exit.
-fn finish_with_failure(mut session: OsSession) {
+/// Wait for the end of the output and a failed exit. Returns the consumed
+/// text.
+fn finish_with_failure(mut session: OsSession) -> String {
     let seen = Expect::expect(&mut session, expectrl::Eof).expect("read the PTY to its end");
     let seen = String::from_utf8_lossy(seen.as_bytes()).into_owned();
     let status = session.get_process().wait().expect("wait for snouty login");
@@ -213,6 +214,7 @@ fn finish_with_failure(mut session: OsSession) {
         matches!(status, WaitStatus::Exited(_, code) if code != 0),
         "login must fail: {status:?}\n{seen}"
     );
+    seen
 }
 
 /// The lines snouty rendered in `seen`, without ANSI escape sequences or the
@@ -509,29 +511,26 @@ fn flat(seen: &str) -> String {
     rendered_lines(seen).join(" ")
 }
 
-/// When the OAuth configuration probe gets no response, login warns that the
-/// base URL may be wrong and offers only an API key. The key cannot sign in
-/// at that URL, so the login fails and saves nothing.
+/// When the OAuth configuration probe gets no response, the base URL is
+/// most likely wrong, and no credential can sign in there. Login fails before
+/// it asks for a credential, and saves nothing.
 #[test]
-fn an_unreachable_base_url_warns_and_login_fails() {
+fn an_unreachable_base_url_fails_before_the_api_key_prompt() {
     let refused = refused_base_url();
-    let (home, mut session) = spawn_login(&Login {
+    let (home, session) = spawn_login(&Login {
         base_url: Some(&refused),
         ..Login::default()
     });
 
-    let seen = flat(&expect(&mut session, "Please enter your API Key"));
+    let seen = flat(&finish_with_failure(session));
     for needle in [
-        format!("warning: could not reach {refused}/auth/cli/config to check for single sign-on: "),
-        "Check that the base_url setting is correct.".to_owned(),
-        "Login continues with an API key.".to_owned(),
+        format!("could not reach {refused}: "),
+        "nothing was saved".to_owned(),
+        "check that the base_url setting is correct".to_owned(),
     ] {
         assert!(seen.contains(&needle), "missing {needle:?} in {seen}");
     }
-    send(&mut session, FAKE_API_KEY_A);
-    send(&mut session, "\r");
-    finish_with_failure(session);
-
+    assert!(!seen.contains("API Key"), "{seen}");
     assert!(!home.path().join(".config/snouty").exists());
 }
 
@@ -541,34 +540,55 @@ fn an_unreachable_base_url_warns_and_login_fails() {
 fn login_uses_the_base_url_of_the_settings_file() {
     let refused = refused_base_url();
     let settings = format!("base_url = \"{refused}\"\n");
-    let (_home, mut session) = spawn_login(&Login {
+    let (_home, session) = spawn_login(&Login {
         seed: &[(".config/snouty/settings.toml", &settings)],
         // An empty value counts as unset, so the settings file decides.
         base_url: Some(""),
         ..Login::default()
     });
 
-    let seen = flat(&expect(&mut session, "Please enter your API Key"));
-    let needle = format!("could not reach {refused}/auth/cli/config");
+    let seen = flat(&finish_with_failure(session));
+    let needle = format!("could not reach {refused}: ");
     assert!(seen.contains(&needle), "missing {needle:?} in {seen}");
-    send(&mut session, "\x1b");
-    finish_with_failure(session);
 }
 
-/// A `base_url` that does not parse gets the same warning as one that cannot
-/// be reached.
+/// A `base_url` that does not parse fails the same way as one that cannot be
+/// reached.
 #[test]
-fn a_malformed_base_url_warns() {
-    let (_home, mut session) = spawn_login(&Login {
+fn a_malformed_base_url_fails_before_the_api_key_prompt() {
+    let (_home, session) = spawn_login(&Login {
         base_url: Some("acme.example.com"),
         ..Login::default()
     });
 
-    let seen = flat(&expect(&mut session, "Please enter your API Key"));
-    let needle = "Check that the base_url setting is correct.";
+    let seen = flat(&finish_with_failure(session));
+    let needle = "check that the base_url setting is correct";
     assert!(seen.contains(needle), "missing {needle:?} in {seen}");
-    send(&mut session, "\x1b");
-    finish_with_failure(session);
+    assert!(!seen.contains("API Key"), "{seen}");
+}
+
+/// A tenant that accepts the connection but does not answer the OAuth
+/// configuration probe in time exists, so login continues to the API key
+/// prompt. The registry check then fails in bounded time, and saves nothing.
+#[test]
+fn a_tenant_that_does_not_answer_gets_the_api_key_prompt_and_then_fails() {
+    // The kernel accepts connections into the backlog, but nothing reads them.
+    let stalled = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a port");
+    let base_url = format!("http://{}", stalled.local_addr().expect("local address"));
+    let (home, mut session) = spawn_login(&Login {
+        base_url: Some(&base_url),
+        env: &[(snouty::testutils::TEST_SECOND_MS_VAR_NAME, "100")],
+        ..Login::default()
+    });
+
+    let seen = flat(&expect(&mut session, "Please enter your API Key"));
+    assert!(!seen.contains("could not reach"), "{seen}");
+    send(&mut session, FAKE_API_KEY_A);
+    send(&mut session, "\r");
+    let seen = flat(&finish_with_failure(session));
+    let needle = "`pty-tenant` did not answer the registry check in time; nothing was saved";
+    assert!(seen.contains(needle), "missing {needle:?} in {seen}");
+    assert!(!home.path().join(".config/snouty").exists());
 }
 
 /// A tenant that answers that single sign-on is disabled gets the API key
@@ -585,8 +605,8 @@ fn a_tenant_without_oauth_gets_no_warning() {
     finish(session);
 }
 
-/// When the OAuth configuration probe gets no response, login offers only an
-/// API key, and `--verbose` says why the probe failed.
+/// When the OAuth configuration probe gets no response, `--verbose` says why
+/// the probe failed.
 #[test]
 fn verbose_logs_why_the_oauth_probe_failed() {
     let refused = refused_base_url();
@@ -598,8 +618,6 @@ fn verbose_logs_why_the_oauth_probe_failed() {
 
     expect(&mut session, &format!("> GET {refused}/auth/cli/config"));
     expect(&mut session, "* request failed: ");
-    expect(&mut session, "Please enter your API Key");
-    send(&mut session, "\x1b");
     finish_with_failure(session);
 }
 

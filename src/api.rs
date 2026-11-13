@@ -494,7 +494,8 @@ const _: fn(RunStreamNotificationType) = |kind| match kind {
 };
 
 /// Caps connection setup (DNS, TCP, TLS) so no command hangs on an unreachable host.
-/// Callers set no read or total timeout: a connected request may run for a long time.
+/// Most callers set no read or total timeout: a connected request may run for a
+/// long time. `snouty login` bounds its requests, because it must not hang.
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A reqwest builder with a rustls crypto provider installed: aws-lc-rs,

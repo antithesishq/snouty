@@ -23,8 +23,8 @@ use tokio::sync::mpsc;
 
 use crate::{
     api::{
-        AntithesisApi, HttpClient, RegistryResponse, RegistryResponseAuth, ResponseCache,
-        normalize_base_url,
+        AntithesisApi, CONNECT_TIMEOUT, HttpClient, RegistryResponse, RegistryResponseAuth,
+        ResponseCache, normalize_base_url,
     },
     auth::{
         AuthenticationInfo, CredentialSource, CredentialStore, OIDC_REJECTED_NEXT_STEP,
@@ -34,7 +34,7 @@ use crate::{
     container::registry_host,
     env,
     error::{api_error_status, rejects_credential, user_error},
-    render::{OutputOptions, sanitize, wrap_if_tty},
+    render::{OutputOptions, sanitize},
     settings::{
         ANTITHESIS_PROFILE_ENV_VAR_NAME, Settings, tenant_base_url, update_settings_in_global_file,
         validate_tenant_host,
@@ -43,10 +43,15 @@ use crate::{
     util::root_cause,
 };
 
-/// The endpoint that tells whether the tenant offers CLI single sign-on.
-const CLI_CONFIG_PATH: &str = "/auth/cli/config";
+/// Longer than [`CONNECT_TIMEOUT`], so that a host that cannot be reached
+/// fails with a connect error, and only a slow answer hits this limit.
+const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const _: () = assert!(OAUTH_HTTP_TIMEOUT.as_secs() > CONNECT_TIMEOUT.as_secs());
 
-const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+/// The longest wait for the registry check. The API client has only a connect
+/// timeout, and a tenant that accepts a connection but does not answer would
+/// otherwise hold the login forever.
+const REGISTRY_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long to wait for the browser to redirect back to the loopback server
 /// before giving up — generous enough for the user to complete an interactive
@@ -344,7 +349,16 @@ async fn fetch_registry(
         }
     };
     let api = AntithesisApi::build(settings, authentication, verbose, ResponseCache::Default)?;
-    match api.get_registry().await {
+    let registry =
+        tokio::time::timeout(env::scaled_wait(REGISTRY_CHECK_TIMEOUT), api.get_registry())
+            .await
+            .map_err(|_| {
+                user_error(format!(
+                    "`{tenant}` did not answer the registry check in time; nothing was saved"
+                ))
+                .suggestion("run `snouty login` again later")
+            })?;
+    match registry {
         Ok(registry) => Ok(Some(registry)),
         Err(err) => match api_error_status(&err) {
             Some(404) => {
@@ -457,25 +471,24 @@ async fn prompt_for_auth(
     );
     let oauth_config = fetch_cli_config(client, &url).await;
 
-    // A URL that does not parse, a connect error or a timeout most often means
-    // a misspelled tenant or base_url. Any HTTP answer, such as 403, means the
-    // host exists. A body error comes after an answer.
+    // A URL that does not parse or a connect error, which includes a connect
+    // timeout, most often means a misspelled tenant or base_url. The registry
+    // check after the prompt uses the same URL, so stop before the prompt.
+    // Any other error, such as a slow answer, means the host exists: login
+    // continues without single sign-on.
     if let Err(err) = &oauth_config
         && let Some(transport) = err.downcast_ref::<reqwest::Error>()
-        && (transport.is_builder()
-            || transport.is_connect()
-            || (transport.is_timeout() && !transport.is_body()))
+        && (transport.is_builder() || transport.is_connect())
     {
         let check = match explicit_base_url {
-            Some(_) => "Check that the base_url setting is correct.".to_owned(),
-            None => format!("Check that the tenant name `{tenant}` is correct."),
+            Some(_) => "check that the base_url setting is correct".to_owned(),
+            None => format!("check that the tenant name `{tenant}` is correct"),
         };
-        let warning = wrap_if_tty(&format!(
-            "warning: could not reach {url}{CLI_CONFIG_PATH} to check for single \
-             sign-on: {}. {check} Login continues with an API key.",
+        return Err(user_error(format!(
+            "could not reach {url}: {}; nothing was saved",
             root_cause(transport)
-        ));
-        eprintln!("{}", console::style(warning).yellow().for_stderr());
+        ))
+        .suggestion(check));
     }
 
     let oauth_offered = oauth_config
@@ -680,7 +693,9 @@ async fn send_oauth(
     client: &HttpClient,
     request: reqwest::RequestBuilder,
 ) -> reqwest::Result<reqwest::Response> {
-    client.send(request.timeout(OAUTH_HTTP_TIMEOUT)).await
+    client
+        .send(request.timeout(crate::env::scaled_wait(OAUTH_HTTP_TIMEOUT)))
+        .await
 }
 
 /// `GET /auth/cli/config` — the redirect strategy for this tenant. The route is
@@ -690,7 +705,7 @@ pub(crate) async fn fetch_cli_config(
     client: &HttpClient,
     base_url: &str,
 ) -> Result<CliOAuthConfig> {
-    let response = send_oauth(client, client.get(format!("{base_url}{CLI_CONFIG_PATH}")))
+    let response = send_oauth(client, client.get(format!("{base_url}/auth/cli/config")))
         .await
         .wrap_err("failed to contact the tenant's OAuth configuration endpoint")?;
 
@@ -1559,11 +1574,11 @@ mod tests {
         Ok(())
     }
 
-    /// A `repository` key, the old name of `registry`, still loads as the
+    /// A `repository` key, an alias for `registry`, loads as the
     /// registry. Login writes `registry`, and removes `repository` from the
     /// table that it writes.
     #[tokio::test]
-    async fn login_replaces_the_old_repository_key_with_registry() -> Result<()> {
+    async fn login_replaces_the_repository_alias_with_registry() -> Result<()> {
         let env = LoginEnv::new();
         env.seed(
             ".config/snouty/settings.toml",

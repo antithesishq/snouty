@@ -14,6 +14,7 @@ use crate::auth::{
 };
 use crate::compose;
 use crate::container;
+use crate::error::rejects_credential;
 use crate::login::{CliOAuthConfig, fetch_cli_config};
 use crate::render::OutputOptions;
 use crate::settings::Settings;
@@ -674,7 +675,7 @@ fn version_check(
              reporting (added in release 56); if you expect a current tenant, a \
              proxy or route may be intercepting the request",
         ),
-        Err(VersionError::Http(status @ (401 | 403))) => {
+        Err(VersionError::Http(status)) if rejects_credential(status) => {
             Check::fail(CheckId::Api, "Antithesis API rejected authentication")
                 .note(Level::Error, format!("the API returned HTTP {status}"))
                 .note(Level::Note, rejected_credential_next_step(in_use, profile))

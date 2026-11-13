@@ -63,6 +63,7 @@ trait Prompter {
     fn is_interactive(&self) -> bool;
 
     /// A free-text line, pre-filled with `default` when the user just hits enter.
+    /// The prompt asks again on a blank answer, so the result is never blank.
     fn input(&self, prompt: &str, default: Option<&str>) -> Result<String>;
 
     /// A single-choice menu over `items`, initially highlighting `default`.
@@ -94,7 +95,15 @@ impl Prompter for InquirePrompter {
     }
 
     fn input(&self, prompt: &str, default: Option<&str>) -> Result<String> {
-        let mut text = Text::new(prompt);
+        // `inquire` gives the default for an empty answer before it runs the
+        // validator.
+        let mut text = Text::new(prompt).with_validator(|input: &str| {
+            Ok(if input.trim().is_empty() {
+                Validation::Invalid("An empty value is not valid.".into())
+            } else {
+                Validation::Valid
+            })
+        });
         if let Some(default) = default {
             text = text.with_default(default);
         }
@@ -1324,8 +1333,13 @@ mod tests {
             true
         }
 
-        fn input(&self, prompt: &str, _default: Option<&str>) -> Result<String> {
+        fn input(&self, prompt: &str, default: Option<&str>) -> Result<String> {
             match self.next("input", prompt) {
+                Answer::Input(value)
+                    if value.trim().is_empty() && !(default.is_some() && value.is_empty()) =>
+                {
+                    panic!("the real prompt refuses the blank answer {value:?} at {prompt:?}")
+                }
                 Answer::Input(value) => Ok(value),
                 _ => panic!("next scripted answer was not an input at {prompt:?}"),
             }

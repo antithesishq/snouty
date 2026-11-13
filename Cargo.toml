@@ -56,7 +56,7 @@ headers = "0.4"
 hyper = "1"
 # `snouty mcp`: the MCP server, on the stdio transport.
 rmcp = { version = "3.5", default-features = false, features = ["server", "transport-io"] }
-json-patch = "4"
+json-patch = "5"
 jsonschema = { version = "0.60", default-features = false }
 log = "0.4"
 open = "5"
@@ -152,7 +152,7 @@ tokio = { version = "1", features = ["test-util"] }
 testscript-rs = { git = "https://github.com/antithesishq/testscript-rs.git", branch = "main" }
 ctor = "1"
 wiremock = "0.6"
-hegeltest = { version = "0.51.0", features = ["static-engine"] }
+hegeltest = { version = "0.52.0", features = ["static-engine"] }
 expectrl = "0.9"
 strip-ansi-escapes = "0.2.1"
 # Waits on a spec command with a deadline (tests/spec.rs).

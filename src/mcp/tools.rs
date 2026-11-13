@@ -343,10 +343,7 @@ impl ToolSpec {
                 }
             })
             .collect();
-        let about = command
-            .get_about()
-            .map(ToString::to_string)
-            .unwrap_or_default();
+        let about = command.get_about().map_or_default(ToString::to_string);
         let description = format!(
             "{about}. Returns what {} prints.",
             command_lines(name, supports_detail, &params)

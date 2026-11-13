@@ -67,9 +67,8 @@ pub fn password_credentials() -> String {
 /// A `credentials.toml` that holds [`fake_secrets::FAKE_ACCESS_TOKEN_A`] and
 /// `refresh_token` in `[default]`.
 pub fn oauth_credentials(refresh_token: Option<&str>) -> String {
-    let refresh_line = refresh_token
-        .map(|token| format!("refresh_token = \"{token}\"\n"))
-        .unwrap_or_default();
+    let refresh_line =
+        refresh_token.map_or_default(|token| format!("refresh_token = \"{token}\"\n"));
     format!(
         "[default]\ntype = \"OAuth\"\nantithesis_token = \"{}\"\n{refresh_line}",
         fake_secrets::FAKE_ACCESS_TOKEN_A

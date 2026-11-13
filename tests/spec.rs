@@ -961,14 +961,12 @@ fn find_runtime(runtime_name: &str) -> Option<Box<dyn snouty::container::Contain
 }
 
 fn cleanup_engine_images(runtime_name: &str, built_images: &[String], registry_addr: Option<&str>) {
-    let prefixed: Vec<String> = registry_addr
-        .map(|addr| {
-            built_images
-                .iter()
-                .map(|image| format!("{addr}/{image}"))
-                .collect()
-        })
-        .unwrap_or_default();
+    let prefixed: Vec<String> = registry_addr.map_or_default(|addr| {
+        built_images
+            .iter()
+            .map(|image| format!("{addr}/{image}"))
+            .collect()
+    });
     let images: Vec<&str> = built_images
         .iter()
         .chain(&prefixed)
@@ -1030,8 +1028,8 @@ fn run_engine_spec_case(runtime_name: &'static str, case: EngineSpecCase) {
         .command("substitute", cmd_substitute)
         .execute();
 
-    let built_images = ENGINE_CTX
-        .with_borrow_mut(|ctx| ctx.take().map(|ctx| ctx.built_images).unwrap_or_default());
+    let built_images =
+        ENGINE_CTX.with_borrow_mut(|ctx| ctx.take().map_or_default(|ctx| ctx.built_images));
     cleanup_engine_images(engine.name(), &built_images, registry_addr.as_deref());
 
     if let Err(e) = result {

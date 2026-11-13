@@ -164,13 +164,15 @@ A matching environment variable always overrides the file. The supported keys an
 | `update_channel`            | `SNOUTY_UPDATE_CHANNEL`           | `stable` (default) or `unstable`, for `snouty update`.                           |
 | `api_cache_max_file_size`   | `SNOUTY_API_CACHE_MAX_FILE_SIZE`  | Largest response the API cache stores, as `10 MB`, `10 MiB` or a byte count.     |
 
+`repository` and `ANTITHESIS_REPOSITORY` are old names for `registry` and `ANTITHESIS_REGISTRY`, and still set the registry.
+
 A credential is never read from a settings file. `snouty login` keeps credentials apart from settings — see [Authentication](#authentication).
 
 Run `snouty settings show` to print the value that snouty resolved for each setting, the settings files it read, and the credentials file.
 
 ### Trusting a project settings file
 
-snouty uses `./.snouty.toml` only after you trust it. Until you trust or deny the file, each command that reads the settings stops with an error. Review the file, then decide:
+snouty uses `./.snouty.toml` only after you trust it. Until you trust or deny the file, each command that reads the settings stops with an error. A project settings file can send your credentials or images to another server: snouty sends your API key to `base_url`, sends its requests through `https_proxy`, and pushes your images to `registry` (or its old name, `repository`). Review the whole file, with every profile in it, then decide:
 
 ```sh
 snouty settings trust   # use ./.snouty.toml while its content stays the same

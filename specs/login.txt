@@ -26,7 +26,7 @@ stdout '^Skipped credential storage — snouty will read credentials from the en
 stdout '^Run `snouty doctor` to verify your setup\.$'
 file ~/.config/snouty/settings.toml 'registry = "registry.example.com/a-long-registry-path"'
 
-# --repository, the old name of --registry, still works.
+# --repository is an alias for --registry.
 isolate-home repository_flag
 snouty login --tenant spec-tenant --repository registry.example.com/old-flag
 stdout 'registry `registry.example.com/old-flag`\.$'

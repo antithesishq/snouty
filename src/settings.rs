@@ -24,7 +24,7 @@ pub const ANTITHESIS_PROFILE_ENV_VAR_NAME: &str = "ANTITHESIS_PROFILE";
 pub const SNOUTY_SETTINGS_PATH_VAR_NAME: &str = "SNOUTY_SETTINGS_PATH";
 pub const ANTITHESIS_TENANT_VAR_NAME: &str = "ANTITHESIS_TENANT";
 pub const ANTITHESIS_REGISTRY_VAR_NAME: &str = "ANTITHESIS_REGISTRY";
-/// The old name of [`ANTITHESIS_REGISTRY_VAR_NAME`], which still works.
+/// An alias for [`ANTITHESIS_REGISTRY_VAR_NAME`].
 const ANTITHESIS_REPOSITORY_VAR_NAME: &str = "ANTITHESIS_REPOSITORY";
 pub const ANTITHESIS_BASE_URL_VAR_NAME: &str = "ANTITHESIS_BASE_URL";
 pub const ANTITHESIS_HTTPS_PROXY_VAR_NAME: &str = "ANTITHESIS_HTTPS_PROXY";
@@ -35,7 +35,7 @@ pub const PROJECT_SETTINGS_FILENAME: &str = ".snouty.toml";
 const GLOBAL_SETTINGS_FILENAME: &str = "settings.toml";
 const PROFILE_KEY: &str = "profile";
 const REGISTRY_KEY: &str = "registry";
-/// The old name of [`REGISTRY_KEY`], which still works.
+/// An alias for [`REGISTRY_KEY`].
 const REPOSITORY_KEY: &str = "repository";
 const NO_GLOBAL_SETTINGS_DIR: &str = "Could not determine global settings directory. Ensure either $XDG_CONFIG_HOME or $HOME is set.";
 
@@ -600,7 +600,7 @@ fn insert_key_if_non_empty(target: &mut Table, key: &str, value: Option<String>)
 fn update_table(target: &mut Table, tenant: Option<String>, registry: Option<String>) {
     insert_key_if_non_empty(target, "tenant", tenant);
     if insert_key_if_non_empty(target, REGISTRY_KEY, registry) {
-        // The table never holds the old name beside the new one.
+        // The table never holds the alias beside `registry`.
         target.remove(REPOSITORY_KEY);
     }
 }
@@ -730,8 +730,8 @@ fn resolve_integer_value(
     resolve_value_with(integer_value, &[key], &[env_var], profile, project, global)
 }
 
-/// [`resolve_value`] for a setting with more than one name, such as a new name
-/// and an old one. Each layer reads the names in order, so the first name wins
+/// [`resolve_value`] for a setting with more than one name, such as a name
+/// and its alias. Each layer reads the names in order, so the first name wins
 /// over a later one in the same layer, and a higher layer wins over both.
 fn resolve_value_with(
     read: ValueReader,

@@ -1449,11 +1449,11 @@ mod tests {
         Ok(())
     }
 
-    /// A `repository` key, the old name of `registry`, still loads as the
+    /// A `repository` key, an alias for `registry`, loads as the
     /// registry. Login writes `registry`, and removes `repository` from the
     /// table that it writes.
     #[tokio::test]
-    async fn login_replaces_the_old_repository_key_with_registry() -> Result<()> {
+    async fn login_replaces_the_repository_alias_with_registry() -> Result<()> {
         let env = LoginEnv::new();
         env.seed(
             ".config/snouty/settings.toml",

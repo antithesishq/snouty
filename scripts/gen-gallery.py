@@ -926,6 +926,9 @@ class Discovery:
     fail_hash: str = ""
     fail_vtime: str = ""
     fail_event_kw: str = ""  # needle the incomplete run's events story matches on
+    # A module of `success` with symbols, for the `runs coverage --module`
+    # stories. Empty when the run has none, and then those stories fail.
+    coverage_module: str = ""
 
 
 class RunScan:
@@ -1418,8 +1421,27 @@ def discover(sn: Snouty) -> Discovery:
         fail_hash=str(fail_moment["input_hash"]),
         fail_vtime=str(fail_moment["vtime"]),
         fail_event_kw=fail_event_kw,
+        coverage_module=_pick_coverage_module(sn, success),
     )
     return disc
+
+
+def _pick_coverage_module(sn: Snouty, run: str) -> str:
+    """The module of `run` with symbols and the fewest locations, or "" when
+    the run has none, or the tenant does not serve modules. Only the coverage
+    stories fail then, not the whole gallery."""
+    try:
+        modules = sn.json_lines(["runs", "modules", run])
+    except GalleryError as err:
+        print(f"  coverage module: none ({err})", file=sys.stderr)
+        return ""
+    with_symbols = [m for m in modules if m.get("has_catalog")]
+    if not with_symbols:
+        print("  coverage module: none (no module has symbols)", file=sys.stderr)
+        return ""
+    module = min(with_symbols, key=lambda m: m["num_locations"])["module_id"]
+    print(f"  coverage module: {module}", file=sys.stderr)
+    return module
 
 
 @dataclass
@@ -2034,6 +2056,19 @@ def properties_pass_and_fail(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         has_p and has_f and no_desc,
         f"{len(rows)} props, passing={has_p} failing={has_f} no description={no_desc}",
     )
+
+
+def all_reached(reached: bool):
+    """Every location has `first_reached` (or none has). The reached half must
+    be non-empty; the unreached half may be empty when the run reached all."""
+
+    def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+        rows = sr.rows or []
+        bad = [r for r in rows if ("first_reached" in r) != reached]
+        ok = not bad and (bool(rows) or not reached)
+        return (ok, f"{len(rows)} locations, {len(bad)} in the wrong half")
+
+    return chk
 
 
 def all_launcher(value: str):
@@ -3024,6 +3059,46 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             ["runs", "list", "-n", "3", "--verbose"],
             verbose_api_calls,
         ),
+        # -- coverage --------------------------------------------------------
+        Story(
+            "runs-modules",
+            "Check that a run instrumented each component",
+            "I want to see which instrumented modules my run loaded, and in which containers, "
+            "so I can spot a component that ran uninstrumented.",
+            "One row per module per program, with MODULE/NAME/PROGRAM/CONTAINER/LANG/LOCATIONS/"
+            "SYMBOLS columns and full module IDs, then a status line that counts the modules and "
+            "containers and says the run completed.",
+            ["runs", "modules", d.success],
+            non_empty_table,
+        ),
+        Story(
+            "runs-coverage--reached",
+            "See which code a run reached, and where first",
+            "I want the locations of one module that the run reached, with the moment of each, "
+            "so I can read the logs up to it.",
+            "One row per reached location with MODULE/LOCATION/FUNCTION/HASH/VTIME columns, every "
+            "row has a HASH and a VTIME that `runs logs` takes, and a status line counts the rows.",
+            ["runs", "coverage", d.success, "--reached", "--module", d.coverage_module],
+            all_reached(True),
+        ),
+        Story(
+            "runs-coverage--unreached",
+            "Find code that a run never reached",
+            "I want the locations of one module that the run never reached, instead of adding a "
+            "Reachable assertion and launching again.",
+            "One row per unreached location with MODULE/LOCATION/FUNCTION columns and no HASH or "
+            "VTIME, then a status line; or, when the run reached every location, only the status "
+            "line that says 0 locations.",
+            [
+                "runs",
+                "coverage",
+                d.success,
+                "--unreached",
+                "--module",
+                d.coverage_module,
+            ],
+            all_reached(False),
+        ),
         # -- single-run metadata -------------------------------------------
         Story(
             "runs-show",
@@ -3443,6 +3518,15 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             fails_with("run not found"),
             json_capable=False,
             expect_ok=False,
+        ),
+        Story(
+            "runs-coverage-unknown",
+            "Wrong run ID — coverage reports a clean error",
+            "I pass a run id that doesn't exist; I want a clean error.",
+            "A clean error, not a crash or stack trace.",
+            ["runs", "coverage", UNKNOWN_RUN],
+            expect_message("error", "not found"),
+            json_capable=False,
         ),
         Story(
             "runs-build-logs-unknown",
@@ -4400,6 +4484,45 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "I want the help to tell me where a property ID comes from and what the lookup shows.",
             ["runs", "property"],
             ["runs", "property", s, d.fail_prop_id],
+        ),
+        _help_story(
+            "help-runs-modules",
+            "Learn how to check a run's instrumentation",
+            "I want the help to tell me what each column means, which module IDs I can predict "
+            "from my build, and why a module can be missing.",
+            ["runs", "modules"],
+            ["runs", "modules", s],
+            align=(
+                "MODULE",
+                "NAME",
+                "PROGRAM",
+                "CONTAINER",
+                "LANG",
+                "LOCATIONS",
+                "SYMBOLS",
+            ),
+        ),
+        _help_story(
+            "help-runs-coverage",
+            "Learn how to read a run's coverage",
+            "I want the help to tell me what a row means, how to narrow the output to a module or "
+            "to reached code, and how to go from a location to its logs.",
+            ["runs", "coverage"],
+            ["runs", "coverage", s, "--reached", "--module", d.coverage_module],
+            samples=[
+                (
+                    "with --unreached",
+                    [
+                        "runs",
+                        "coverage",
+                        s,
+                        "--unreached",
+                        "--module",
+                        d.coverage_module,
+                    ],
+                )
+            ],
+            align=("MODULE", "LOCATION", "FUNCTION", "HASH", "VTIME"),
         ),
         _help_story(
             "help-runs-build-logs",

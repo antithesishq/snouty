@@ -89,6 +89,12 @@ fn painted_message(report: &Report) -> String {
     }
 }
 
+/// Whether an API answer of `status` rejects the credential. A tenant answers
+/// a bad credential with 401 or 403, so every check treats the two alike.
+pub fn rejects_credential(status: u16) -> bool {
+    matches!(status, 401 | 403)
+}
+
 /// Returns the HTTP status of the first [`ApiError`] in the report's chain, if
 /// any. Works through `wrap_err` context, so callers can add context without
 /// losing the structured status.

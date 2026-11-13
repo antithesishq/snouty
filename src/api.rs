@@ -1428,9 +1428,10 @@ impl ClientHooks<ClientState> for generated::Client {
         let state = self.inner();
         let http = &state.http;
 
-        // Keep a resendable copy so that, when a request gets a 401, a
-        // refreshed credential can retry it once. The 401 also covers a token
-        // that expired while `execute_with_retry` waited out a 429.
+        // Keep a resendable copy so that, when the server rejects the
+        // credential, a refreshed credential can retry the request once. The
+        // rejection also covers a token that expired while
+        // `execute_with_retry` waited out a 429.
         let retry_request = request.try_clone();
 
         http.log_request(&request, LoggedBody::Shown);
@@ -1440,10 +1441,10 @@ impl ClientHooks<ClientState> for generated::Client {
 
         let result = match (result, retry_request) {
             (Ok(response), Some(mut retry_request))
-                if response.status() == reqwest::StatusCode::UNAUTHORIZED =>
+                if crate::error::rejects_credential(response.status().as_u16()) =>
             {
                 // When the refresh fails, such as for an API key or for want
-                // of a refresh token, the 401 surfaces.
+                // of a refresh token, the rejected response surfaces.
                 let auth = &state.authn_info;
                 let refreshed = auth
                     .refresh(self.client(), self.baseurl())
@@ -1459,7 +1460,7 @@ impl ClientHooks<ClientState> for generated::Client {
                             .await
                     }
                     Err(err) => {
-                        log::warn!("cannot refresh the credential after a 401: {err:#}");
+                        log::warn!("cannot refresh the rejected credential: {err:#}");
                         Ok(response)
                     }
                 }
@@ -1992,7 +1993,7 @@ fn format_api_error(status: u16, body: &str) -> Report {
     });
     // The "what to check" for an auth failure is guidance, not part of the error
     // statement, so it rides along as a suggestion note.
-    let report = if matches!(status, 401 | 403) {
+    let report = if crate::error::rejects_credential(status) {
         report.suggestion(
             "run `snouty doctor` to debug the issue, and `snouty login` to reauthenticate",
         )
@@ -4974,16 +4975,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oidc_401_fetches_a_new_token_and_retries_once() {
-        let server = MockServer::start().await;
-        let first = jwt_expiring_in(chrono::TimeDelta::minutes(5));
-        let second = jwt_expiring_in(chrono::TimeDelta::minutes(6));
-        let api = oidc_api(&server, &first, &second).await;
-        mount_run_for_oidc_token(&server, &first, 401).await;
-        mount_run_for_oidc_token(&server, &second, 200).await;
+    async fn oidc_401_or_403_fetches_a_new_token_and_retries_once() {
+        for status in [401, 403] {
+            let server = MockServer::start().await;
+            let first = jwt_expiring_in(chrono::TimeDelta::minutes(5));
+            let second = jwt_expiring_in(chrono::TimeDelta::minutes(6));
+            let api = oidc_api(&server, &first, &second).await;
+            mount_run_for_oidc_token(&server, &first, status).await;
+            mount_run_for_oidc_token(&server, &second, 200).await;
 
-        api.get_run("run-1").await.unwrap();
-        server.verify().await;
+            api.get_run("run-1").await.unwrap();
+            server.verify().await;
+        }
     }
 
     // A re-send after a 429 wait carries the token of the first send. When

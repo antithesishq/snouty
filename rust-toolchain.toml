@@ -2,5 +2,5 @@
 # version is the MSRV, `rust-version` in Cargo.toml. bump-rust.yml moves both to
 # the newest stable release each week.
 [toolchain]
-channel = "1.99.1"
+channel = "1.100.0"
 components = ["clippy", "llvm-tools", "rustfmt"]

@@ -4,7 +4,7 @@ members = ["snouty-macros"]
 # Both crates inherit this. It is the minor version of the toolchain that
 # rust-toolchain.toml pins, which CI and the release builds use.
 [workspace.package]
-rust-version = "1.99"
+rust-version = "1.100"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

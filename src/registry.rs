@@ -453,8 +453,10 @@ mod tests {
         assert!(err.to_string().contains("snouty login"), "{err}");
     }
 
-    fn settings(profile: Option<&str>, tenant: &str, repository: &str) -> Settings {
-        let builder = Settings::builder().tenant(tenant).registry(repository);
+    fn settings(profile: Option<&str>, tenant: &str, registry_setting: &str) -> Settings {
+        let builder = Settings::builder()
+            .tenant(tenant)
+            .registry(registry_setting);
         match profile {
             Some(profile) => builder.profile(profile),
             None => builder,
@@ -578,11 +580,11 @@ mod tests {
             ("ACME", "registry.acme.antithesis.com/app", true),
             ("eu.acme", "registry.eu.acme.antithesis.com/app", true),
         ];
-        for (tenant, repository, matches) in cases {
+        for (tenant, registry_setting, matches) in cases {
             assert_eq!(
-                tenant_registry(&settings(None, tenant, repository)),
+                tenant_registry(&settings(None, tenant, registry_setting)),
                 matches.then(|| registry(&format!("registry.{tenant}.antithesis.com"))),
-                "{tenant} {repository}"
+                "{tenant} {registry_setting}"
             );
         }
         assert_eq!(

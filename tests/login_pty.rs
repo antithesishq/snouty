@@ -127,7 +127,13 @@ fn spawn_login(login: &Login) -> (tempfile::TempDir, OsSession) {
         Stdout::File => PtyCommand::new(&format!(r#"exec "$0" "$@" > "$HOME/{STDOUT_FILE}""#)),
     };
     command
-        .args(["login", "--tenant", "pty-tenant", "--registry", "pty-repo"])
+        .args([
+            "login",
+            "--tenant",
+            "pty-tenant",
+            "--registry",
+            "pty-registry",
+        ])
         .args(login.args)
         .env_clear()
         .envs(support::ca_env())
@@ -198,8 +204,7 @@ fn finish(mut session: OsSession) -> String {
     seen
 }
 
-/// Wait for the end of the output and a failed exit. Returns the consumed
-/// text.
+/// Wait for the end of the output and a failed exit.
 fn finish_with_failure(mut session: OsSession) {
     let seen = Expect::expect(&mut session, expectrl::Eof).expect("read the PTY to its end");
     let seen = String::from_utf8_lossy(seen.as_bytes()).into_owned();
@@ -384,7 +389,8 @@ fn a_different_api_key_asks_before_it_replaces_the_stored_key() {
 }
 
 /// A new API key that overwrites a stored username and password, without a
-/// question, says so in the summary, because a script that still uses the password will no longer work.
+/// question, says so in the summary, because a script that still uses the
+/// password will no longer work.
 #[test]
 fn an_api_key_that_replaces_a_stored_password_says_so() {
     let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &password_credentials())]);

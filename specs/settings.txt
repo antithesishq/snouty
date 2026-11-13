@@ -61,9 +61,9 @@ stdout 'registry.*env-path-repo'
 snouty --settings other.toml settings show
 stdout 'registry.*other/repo'
 
-# 10. `repository`, the old name of `registry`, still loads as the registry.
-#     When a table holds both names, `registry` wins. A profile with the old
-#     name still wins over a top-level value with the new name.
+# 10. `repository` is an alias for `registry`, and loads as the registry.
+#     When a table holds both keys, `registry` wins. A profile with the alias
+#     still wins over a top-level `registry`.
 snouty --settings old-key.toml settings show
 stdout '^registry +old-key$'
 snouty --settings both-keys.toml settings show
@@ -71,7 +71,7 @@ stdout '^registry +new-key$'
 snouty --settings both-keys.toml --profile old settings show
 stdout '^registry +old-profile$'
 
-# 11. ANTITHESIS_REPOSITORY, the old name of ANTITHESIS_REGISTRY, still loads,
+# 11. ANTITHESIS_REPOSITORY, an alias for ANTITHESIS_REGISTRY, loads,
 #     and wins over the files. When both are set, ANTITHESIS_REGISTRY wins.
 env ANTITHESIS_REPOSITORY=old-env
 snouty --settings both-keys.toml settings show

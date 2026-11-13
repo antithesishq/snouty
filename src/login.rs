@@ -227,27 +227,41 @@ async fn do_cmd_login(
         verbose,
     )
     .await?;
-    let (registry_to_use, docker_login) = if let Some(registry) = registry {
-        (registry, None)
-    } else {
-        if tenant_registry.registry_url.trim().is_empty() {
-            return Err(
-                user_error(format!("{tenant_to_use} reports no container registry"))
-                    .suggestion("run `snouty login --registry <registry>`"),
-            );
+    let (registry_to_use, docker_login) = match (registry, tenant_registry) {
+        (Some(registry), _) => (registry, None),
+        (None, Some(tenant_registry)) => {
+            let docker_login = match tenant_registry.auth {
+                // `docker login` takes the host, not the path after it.
+                RegistryResponseAuth::Docker => Some(
+                    registry_host(&tenant_registry.registry_url)
+                        .unwrap_or(&tenant_registry.registry_url)
+                        .to_owned(),
+                ),
+                // A login kind that this snouty does not know gets no advice.
+                RegistryResponseAuth::Antithesis | RegistryResponseAuth::Other(_) => None,
+            };
+            (tenant_registry.registry_url, docker_login)
         }
-        let docker_login = match tenant_registry.auth {
-            // `docker login` takes the host, not the path after it.
-            RegistryResponseAuth::Docker => Some(
-                registry_host(&tenant_registry.registry_url)
-                    .unwrap_or(&tenant_registry.registry_url)
-                    .to_owned(),
-            ),
-            // A login kind that this snouty does not know gets no advice.
-            RegistryResponseAuth::Antithesis | RegistryResponseAuth::Other(_) => None,
-        };
-        (tenant_registry.registry_url, docker_login)
+        // A tenant that does not report its registry: ask, or keep the saved
+        // one.
+        (None, None) if prompter.is_interactive() => (
+            prompter.input(
+                "What container registry would you like to use?",
+                current_settings.registry(),
+            )?,
+            None,
+        ),
+        (None, None) => (
+            current_settings.registry().unwrap_or_default().to_owned(),
+            None,
+        ),
     };
+    if registry_to_use.trim().is_empty() {
+        return Err(user_error(format!(
+            "login needs a container registry for `{tenant_to_use}`; nothing was saved"
+        ))
+        .suggestion("run `snouty login --registry <registry>`"));
+    }
 
     // The kind of credential login wrote, and where.
     let written = match new_credentials {
@@ -284,14 +298,16 @@ async fn do_cmd_login(
 
 /// `GET /api/v1/registry` with `new_credentials`, or else with the credential
 /// that later commands use. The request is also the check that the credential
-/// works. `interactive` picks the next step that an error suggests.
+/// works. `None` means that the tenant does not serve the endpoint, which
+/// tenants before it answer with 404. `interactive` picks the next step that
+/// an error suggests.
 async fn fetch_registry(
     settings: &Settings,
     new_credentials: Option<&PersistableCredentials>,
     profile: Option<&str>,
     interactive: bool,
     verbose: bool,
-) -> Result<RegistryResponse> {
+) -> Result<Option<RegistryResponse>> {
     let tenant = settings.tenant().unwrap_or_default();
     let next_step = if interactive {
         "run `snouty login` again, and enter an API key or sign in with single sign-on"
@@ -334,22 +350,26 @@ async fn fetch_registry(
         },
     };
     let api = AntithesisApi::build(settings, authentication, verbose, ResponseCache::Default)?;
-    api.get_registry().await.map_err(|err| {
-        if api_error_status(&err) != Some(401) {
-            return err;
+    match api.get_registry().await {
+        Ok(registry) => return Ok(Some(registry)),
+        Err(err) if api_error_status(&err) == Some(404) => {
+            debug!("the tenant does not report its registry: {err:#}");
+            return Ok(None);
         }
-        // Every later command reads the environment first, so a new key at the
-        // prompt would not replace a rejected one there.
-        let next_step = if key_from_environment {
-            "set ANTITHESIS_API_KEY to a valid key, or unset it"
-        } else {
-            next_step
-        };
-        user_error(format!(
-            "`{tenant}` did not accept the credential; nothing was saved"
-        ))
-        .suggestion(next_step)
-    })
+        Err(err) if api_error_status(&err) != Some(401) => return Err(err),
+        Err(_) => {}
+    }
+    // Every later command reads the environment first, so a new key at the
+    // prompt would not replace a rejected one there.
+    let next_step = if key_from_environment {
+        "set ANTITHESIS_API_KEY to a valid key, or unset it"
+    } else {
+        next_step
+    };
+    Err(user_error(format!(
+        "`{tenant}` did not accept the credential; nothing was saved"
+    ))
+    .suggestion(next_step))
 }
 
 /// Confirm what `snouty login` persisted, where, and the obvious next step —
@@ -1656,6 +1676,36 @@ mod tests {
         Ok(())
     }
 
+    /// A tenant that does not serve the registry endpoint answers 404, and
+    /// login asks for the registry, offering the saved one.
+    #[tokio::test]
+    async fn login_asks_for_the_registry_when_the_tenant_does_not_report_it() -> Result<()> {
+        let env = LoginEnv::with_registry(404, r#"{"message":"Resource not found"}"#);
+        env.seed(
+            ".config/snouty/settings.toml",
+            "registry = \"saved.example.com/app\"\n",
+        );
+        let settings = env.resolve_settings(None)?;
+        let prompter = Script::default()
+            .secret(FAKE_API_KEY_A)
+            .input("typed.example.com/app")
+            .build();
+
+        login_with_flags(None, &settings, &prompter).await?;
+
+        assert_eq!(
+            prompter.prompts().last().map(String::as_str),
+            Some("What container registry would you like to use?")
+        );
+        let stored = env.settings();
+        assert!(
+            stored.contains(r#"registry = "typed.example.com/app""#),
+            "{stored}"
+        );
+        assert!(env.credentials().contains(&api_key_line(FAKE_API_KEY_A)));
+        Ok(())
+    }
+
     /// A tenant that reports a blank registry fails the login, which saves
     /// nothing, unless --registry is given.
     #[tokio::test]
@@ -1669,7 +1719,7 @@ mod tests {
             .expect_err("a blank registry must fail the login");
 
         assert!(
-            format!("{err:#}").contains("reports no container registry"),
+            format!("{err:#}").contains("login needs a container registry"),
             "{err:#}"
         );
         assert!(env.settings().is_empty(), "{}", env.settings());

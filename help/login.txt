@@ -2,7 +2,7 @@ Sign in and store your snouty configuration
 
 Sign in to the tenant, then save the tenant, its container registry and your credential in the global snouty settings file, optionally under a named profile. Login checks the credential with the tenant first, and saves nothing when the tenant rejects it. Information not provided via args is asked for at the terminal. Without a terminal, login uses the credential from the environment, such as ANTITHESIS_API_KEY.
 
-Login saves the container registry that the tenant reports. Use --registry to push to a different registry, such as `registry.example.com/team`: a host, optionally with a path. When the registry does not accept your snouty credential, sign in to it with `docker login` or `podman login`.
+Login saves the container registry that the tenant reports. When the tenant does not report one, login asks for it, or without a terminal keeps the saved one. Use --registry to push to a different registry, such as `registry.example.com/team`: a host, optionally with a path. When the registry does not accept your snouty credential, sign in to it with `docker login` or `podman login`.
 
 NOTE: `snouty login` will offer to reuse your existing configuration values, including any sourced from a local .snouty.toml file or the file specified by --settings or via the SNOUTY_SETTINGS_PATH environment variable. However, snouty login will save the specified configuration and credentials to the "global" files in your home directory.
 

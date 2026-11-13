@@ -107,3 +107,19 @@ isolate-home env_password
 ! snouty login --tenant spec-tenant
 stderr 'nothing was saved'
 stderr -literal 'unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD'
+
+# A tenant that does not serve the registry endpoint answers 404. Without a
+# terminal, login keeps the saved registry, and fails when none is saved.
+isolate-home no_endpoint
+mock-server 404 '{"message":"Resource not found"}'
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
+! snouty login --tenant spec-tenant
+stderr 'nothing was saved'
+stderr -literal 'run `snouty login --registry <registry>`'
+! exists no_endpoint/.config/snouty/settings.toml
+snouty login --tenant spec-tenant --registry registry.example.com/acme
+file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
+snouty login --tenant spec-tenant
+stdout 'registry `registry.example.com/acme`'

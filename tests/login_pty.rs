@@ -562,13 +562,13 @@ fn a_malformed_base_url_fails_before_the_api_key_prompt() {
 
 /// A tenant that accepts the connection but does not answer the OAuth
 /// configuration probe in time exists, so login continues to the API key
-/// prompt.
+/// prompt. The registry check then fails in bounded time, and saves nothing.
 #[test]
-fn a_slow_tenant_gets_the_api_key_prompt() {
+fn a_tenant_that_does_not_answer_gets_the_api_key_prompt_and_then_fails() {
     // The kernel accepts connections into the backlog, but nothing reads them.
     let stalled = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a port");
     let base_url = format!("http://{}", stalled.local_addr().expect("local address"));
-    let (_home, mut session) = spawn_login(&Login {
+    let (home, mut session) = spawn_login(&Login {
         base_url: Some(&base_url),
         env: &[(snouty::testutils::TEST_SECOND_MS_VAR_NAME, "100")],
         ..Login::default()
@@ -576,8 +576,12 @@ fn a_slow_tenant_gets_the_api_key_prompt() {
 
     let seen = flat(&expect(&mut session, "Please enter your API Key"));
     assert!(!seen.contains("could not reach"), "{seen}");
-    send(&mut session, "\x1b");
-    finish_with_failure(session);
+    send(&mut session, FAKE_API_KEY_A);
+    send(&mut session, "\r");
+    let seen = flat(&finish_with_failure(session));
+    let needle = "`pty-tenant` did not answer the registry check in time; nothing was saved";
+    assert!(seen.contains(needle), "missing {needle:?} in {seen}");
+    assert!(!home.path().join(".config/snouty").exists());
 }
 
 /// A tenant that answers that single sign-on is disabled gets the API key

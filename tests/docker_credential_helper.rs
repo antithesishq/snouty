@@ -565,6 +565,7 @@ sed '{to_host}' | exec '{helper}' "$@"
         for var in [
             "ANTITHESIS_TENANT",
             "ANTITHESIS_REGISTRY",
+            "ANTITHESIS_REPOSITORY",
             "ANTITHESIS_PROFILE",
             "ANTITHESIS_USERNAME",
             "ANTITHESIS_PASSWORD",

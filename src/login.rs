@@ -319,11 +319,11 @@ async fn fetch_registry(
         // token is also tagged Environment, but ANTITHESIS_API_KEY does not
         // hold it.
         Some((AuthenticationInfo::ApiKey { .. }, CredentialSource::Environment { .. })) => {
-            "set ANTITHESIS_API_KEY to a valid key, or unset it"
+            "set `ANTITHESIS_API_KEY` to a valid API key"
         }
         Some((AuthenticationInfo::GithubActionsOidc(_), _)) => OIDC_REJECTED_NEXT_STEP,
         Some((AuthenticationInfo::Password { .. }, CredentialSource::Environment { .. })) => {
-            "unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD, and set ANTITHESIS_API_KEY"
+            "unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD"
         }
         _ if interactive => {
             "run `snouty login` again, and enter an API key or sign in with single sign-on"

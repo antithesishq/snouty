@@ -268,11 +268,11 @@ stdout '\s*"runId": "run-123".*'
 
 # Gateway-level rejections (auth, rate limiting) on the launch/debug endpoints
 # return an EMPTY body rather than the Launch_Error_Response envelope — verified
-# against the live API, which answers a bad token with 401/403 and no payload.
+# against the live API, which answers a bad token with 403 and no payload.
 # The HTTP status is the only thing the server said, so it is the whole message.
-mock-server 401 ''
+mock-server 403 ''
 ! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
-stderr 'API error: 401 Unauthorized.*'
+stderr 'API error: 403 Forbidden.*'
 stderr -literal 'Suggestion: run `snouty doctor` to debug the issue, and `snouty login` to reauthenticate'
 
 # A 429 is retried, a mutation such as a debugging launch too, and --verbose

@@ -317,8 +317,7 @@ impl DockerCompose {
         let host = self
             .docker_host
             .as_deref()
-            .map(|h| format!("DOCKER_HOST={h} "))
-            .unwrap_or_default();
+            .map_or_default(|h| format!("DOCKER_HOST={h} "));
         let compose_file = abs(&self.config.dir().join("docker-compose.yaml"));
         let mut hint = format!("{host}{} -f {}", self.cli, compose_file.display());
         if let Some(overlay) = overlay {

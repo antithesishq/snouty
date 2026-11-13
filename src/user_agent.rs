@@ -22,7 +22,7 @@ pub fn user_agent() -> String {
 /// The User-Agent string with `agent` as the trailing `agent=` field. `None`
 /// omits the field.
 pub fn user_agent_with(agent: Option<&str>) -> String {
-    let agent = agent.map(|a| format!("; agent={a}")).unwrap_or_default();
+    let agent = agent.map_or_default(|a| format!("; agent={a}"));
     format!(
         "snouty/{} ({}; {}; rust{}{agent})",
         env!("CARGO_PKG_VERSION"),

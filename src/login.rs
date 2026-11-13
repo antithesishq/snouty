@@ -420,9 +420,7 @@ fn location(store: &CredentialStore) -> String {
 /// The summary's ", replacing your stored …" clause. Every write replaces
 /// `stored`, because login writes nothing when the user keeps it.
 fn replacing(stored: Option<&Tagged<AuthenticationInfo, CredentialStore>>) -> String {
-    stored
-        .map(|stored| format!(", replacing your stored {}", stored.value()))
-        .unwrap_or_default()
+    stored.map_or_default(|stored| format!(", replacing your stored {}", stored.value()))
 }
 
 /// The credential kinds `snouty login` sets up. A username and password comes
@@ -937,9 +935,7 @@ fn parse_callback_params(query: &str) -> Result<CallbackParams> {
     }
 
     if let Some(error) = error {
-        let detail = error_description
-            .map(|d| format!(": {d}"))
-            .unwrap_or_default();
+        let detail = error_description.map_or_default(|d| format!(": {d}"));
         return Err(user_error(format!(
             "the identity provider reported an authorization error ({error}){detail}"
         )));

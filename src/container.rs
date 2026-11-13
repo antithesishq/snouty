@@ -233,13 +233,12 @@ pub trait ContainerRuntime: Send + Sync {
             .get(0)
             .and_then(|img| img.get("RepoDigests"))
             .and_then(|d| d.as_array())
-            .map(|entries| {
+            .map_or_default(|entries| {
                 entries
                     .iter()
                     .filter_map(|v| v.as_str().map(str::to_string))
                     .collect()
-            })
-            .unwrap_or_default())
+            }))
     }
 
     /// Ask the registry named by `image_ref` (typically `repo@sha256:...`)

@@ -223,6 +223,7 @@ async fn do_cmd_login(
         &api_settings,
         new_credentials.as_ref(),
         profile_to_use.as_deref(),
+        prompter.is_interactive(),
         verbose,
     )
     .await?;
@@ -283,29 +284,40 @@ async fn do_cmd_login(
 
 /// `GET /api/v1/registry` with `new_credentials`, or else with the credential
 /// that later commands use. The request is also the check that the credential
-/// works.
+/// works. `interactive` picks the next step that an error suggests.
 async fn fetch_registry(
     settings: &Settings,
     new_credentials: Option<&PersistableCredentials>,
     profile: Option<&str>,
+    interactive: bool,
     verbose: bool,
 ) -> Result<RegistryResponse> {
+    let tenant = settings.tenant().unwrap_or_default();
+    let next_step = if interactive {
+        "run `snouty login` again, and enter an API key or sign in with single sign-on"
+    } else {
+        "set ANTITHESIS_API_KEY, or run `snouty login` in a terminal"
+    };
     let authentication = match new_credentials {
         Some(credentials) => credentials.for_check(),
-        None => AuthenticationInfo::for_ambient_configuration(profile, PasswordPolicy::Reject)?,
+        None => AuthenticationInfo::for_ambient_configuration(profile, PasswordPolicy::Reject)
+            .map_err(|err| {
+                debug!("no credential to check: {err:#}");
+                user_error(format!(
+                    "login needs an API key or a single sign-on to check with `{tenant}`; nothing was saved"
+                ))
+                .suggestion(next_step)
+            })?,
     };
     let api = AntithesisApi::build(settings, authentication, verbose, ResponseCache::Default)?;
     api.get_registry().await.map_err(|err| {
-        if api_error_status(&err) != Some(401) {
-            return err;
-        }
-        let rejected = user_error(format!("{} did not accept the credential", api.host()));
-        if new_credentials.is_some() {
-            rejected.suggestion("run `snouty login` again, and enter a valid credential")
+        if api_error_status(&err) == Some(401) {
+            user_error(format!(
+                "`{tenant}` did not accept the credential; nothing was saved"
+            ))
+            .suggestion(next_step)
         } else {
-            rejected.suggestion(
-                "set a valid ANTITHESIS_API_KEY, or run `snouty login` in a terminal and enter a valid credential",
-            )
+            err
         }
     })
 }

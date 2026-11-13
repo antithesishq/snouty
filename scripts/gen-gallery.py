@@ -4903,7 +4903,7 @@ _ASK_CREDENTIALS = "What kind of credentials"
 _ASK_KEY = "Please enter your API Key"
 _EMPTY_KEY_REFUSED = "An empty value is not valid."
 _ASK_REPLACE_PASSWORD = "Replace your stored username and password?"
-_PASSWORD_REFUSED = "does not accept username/password authentication"
+_PASSWORD_REFUSED = "login needs an API key or a single sign-on"
 # A `credentials.toml` with a username and password, as an older snouty wrote it.
 _SEED_PASSWORD_CREDS_TOML = (
     f'[default]\ntype = "Password"\nusername = "puser"\npassword = "{_FAKE_PASSWORD}"\n'

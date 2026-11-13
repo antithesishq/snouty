@@ -41,7 +41,8 @@ env ANTITHESIS_API_KEY=
 env ANTITHESIS_USERNAME=
 env ANTITHESIS_PASSWORD=
 ! snouty login --tenant spec-tenant
-stderr 'No Antithesis credentials found'
+stderr 'nothing was saved'
+stderr -literal 'set ANTITHESIS_API_KEY, or run `snouty login` in a terminal'
 ! exists no_credential/.config/snouty/settings.toml
 
 # The cases below need a registry response that staging cannot give.
@@ -68,6 +69,6 @@ file ~/.config/snouty/settings.toml 'repository = "registry.example.com/acme"'
 isolate-home rejected
 mock-server 401 '{"message":"Invalid or expired bearer token."}'
 ! snouty login --tenant spec-tenant
-stderr 'did not accept the credential'
-stderr -literal 'set a valid ANTITHESIS_API_KEY'
+stderr 'did not accept the credential; nothing was saved'
+stderr -literal 'set ANTITHESIS_API_KEY, or run `snouty login` in a terminal'
 ! exists rejected/.config/snouty/settings.toml

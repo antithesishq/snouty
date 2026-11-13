@@ -110,6 +110,9 @@ struct Login<'a> {
     /// Each `(name, value)` is set for the child.
     env: &'a [(&'a str, &'a str)],
     stdout: Stdout,
+    /// Without `--registry pty-repo`, login takes the registry from the
+    /// tenant, or asks for it.
+    no_registry_flag: bool,
     args: &'a [&'a str],
 }
 
@@ -127,7 +130,12 @@ fn spawn_login(login: &Login) -> (tempfile::TempDir, OsSession) {
         Stdout::File => PtyCommand::new(&format!(r#"exec "$0" "$@" > "$HOME/{STDOUT_FILE}""#)),
     };
     command
-        .args(["login", "--tenant", "pty-tenant", "--registry", "pty-repo"])
+        .args(["login", "--tenant", "pty-tenant"])
+        .args(if login.no_registry_flag {
+            &[][..]
+        } else {
+            &["--registry", "pty-repo"][..]
+        })
         .args(login.args)
         .env_clear()
         .envs(support::ca_env())
@@ -582,6 +590,37 @@ fn a_tenant_that_does_not_answer_gets_the_api_key_prompt_and_then_fails() {
     let needle = "`pty-tenant` did not answer the registry check in time; nothing was saved";
     assert!(seen.contains(needle), "missing {needle:?} in {seen}");
     assert!(!home.path().join(".config/snouty").exists());
+}
+
+/// On a tenant that does not report its registry, a bare Enter at the registry
+/// prompt is refused, and the prompt asks again. The pasted API key is kept.
+#[test]
+fn bare_enter_at_the_registry_prompt_asks_again() {
+    let base_url = spawn_login_backend(OAUTH_DISABLED, 404, r#"{"message":"Resource not found"}"#);
+    let (home, mut session) = spawn_login(&Login {
+        base_url: Some(&base_url),
+        no_registry_flag: true,
+        ..Login::default()
+    });
+    expect(&mut session, "Please enter your API Key");
+    send(&mut session, &format!("{FAKE_API_KEY_A}\r"));
+    expect(
+        &mut session,
+        "What container registry would you like to use?",
+    );
+    send(&mut session, "\r");
+    expect(&mut session, EMPTY_REFUSED);
+    send(&mut session, "typed.example.com/app\r");
+    finish(session);
+
+    let settings = std::fs::read_to_string(home.path().join(".config/snouty/settings.toml"))
+        .expect("read the settings");
+    assert!(
+        settings.contains(r#"registry = "typed.example.com/app""#),
+        "{settings}"
+    );
+    let creds = credentials(home.path());
+    assert!(creds.contains(&api_key_line(FAKE_API_KEY_A)), "{creds}");
 }
 
 /// A tenant that answers that single sign-on is disabled gets the API key

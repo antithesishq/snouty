@@ -789,17 +789,19 @@ fn push_destination(image: &str, prefix: &str) -> Result<String> {
 ///
 /// The registry of `prefix` is asked only for an image that the author named
 /// at its push destination, whose manifest list a push would replace with
-/// the local platform. A local image is never looked up at its push
-/// destination: a push deduplicates the layers that the registry holds, so
-/// the check would save little, and the Antithesis registry does not serve
-/// the config blobs that `manifest inspect` reads. An image at the
-/// registry's address outside `prefix` goes to the push path, because a test
-/// run cannot resolve that address.
+/// the local platform. Any other image is never looked up there: a push
+/// deduplicates the layers that the registry holds, so the check would save
+/// little, and the Antithesis registry does not serve the config blobs that
+/// `manifest inspect` reads. An image at the registry's address outside
+/// `prefix` goes to the push path, because a test run cannot resolve that
+/// address.
 fn find_remote_pin(rt: &dyn ContainerRuntime, image: &str, prefix: &str) -> Result<Option<String>> {
     let repo = normalize_repo(image_repo(image));
     let registry_address = registry_host(prefix);
     let at_destination = normalize_repo(image_repo(&push_destination(image, prefix)?)) == repo;
-    if !at_destination && registry_address.is_some() && registry_host(image) == registry_address {
+    if !at_destination
+        && registry_address.is_some_and(|address| registry_host(image) == Some(address))
+    {
         return Ok(None);
     }
     let repo_digests = rt.image_repo_digests(image)?;

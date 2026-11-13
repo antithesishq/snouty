@@ -177,10 +177,11 @@ async fn do_cmd_login(
     let profile_to_use = profile
         .map(str::to_owned)
         .or_else(|| env::var(ANTITHESIS_PROFILE_ENV_VAR_NAME).ok().flatten());
+    let interactive = prompter.is_interactive();
 
     let tenant_to_use = match tenant {
         Some(tenant) => tenant,
-        None if !prompter.is_interactive() => {
+        None if !interactive => {
             return Err(eyre!("Cannot prompt for value when not running in a TTY"));
         }
         None => prompter.input(
@@ -202,7 +203,7 @@ async fn do_cmd_login(
 
     let api_settings = current_settings.with_tenant(&tenant_to_use);
 
-    let new_credentials = if prompter.is_interactive() {
+    let new_credentials = if interactive {
         let client = HttpClient::new(&api_settings, verbose)?;
         prompt_for_auth(
             prompter,
@@ -221,14 +222,15 @@ async fn do_cmd_login(
 
     let tenant_registry = fetch_registry(
         &api_settings,
+        &tenant_to_use,
         new_credentials.as_ref(),
         profile_to_use.as_deref(),
-        prompter.is_interactive(),
+        interactive,
         verbose,
     )
     .await?;
     let (registry_to_use, docker_login) = match (registry, tenant_registry) {
-        (Some(registry), _) => (registry, None),
+        (Some(registry), _) => (Some(registry), None),
         (None, Some(tenant_registry)) => {
             let docker_login = match tenant_registry.auth {
                 // `docker login` takes the host, not the path after it.
@@ -240,28 +242,27 @@ async fn do_cmd_login(
                 // A login kind that this snouty does not know gets no advice.
                 RegistryResponseAuth::Antithesis | RegistryResponseAuth::Other(_) => None,
             };
-            (tenant_registry.registry_url, docker_login)
+            (Some(tenant_registry.registry_url), docker_login)
         }
         // A tenant that does not report its registry: ask, or keep the saved
         // one.
-        (None, None) if prompter.is_interactive() => (
-            prompter.input(
+        (None, None) if interactive => (
+            Some(prompter.input(
                 "What container registry would you like to use?",
                 current_settings.registry(),
-            )?,
+            )?),
             None,
         ),
-        (None, None) => (
-            current_settings.registry().unwrap_or_default().to_owned(),
-            None,
-        ),
+        (None, None) => (current_settings.registry().map(str::to_owned), None),
     };
-    if registry_to_use.trim().is_empty() {
-        return Err(user_error(format!(
-            "login needs a container registry for `{tenant_to_use}`; nothing was saved"
-        ))
-        .suggestion("run `snouty login --registry <registry>`"));
-    }
+    let registry_to_use = registry_to_use
+        .filter(|registry| !registry.trim().is_empty())
+        .ok_or_else(|| {
+            user_error(format!(
+                "login needs a container registry for `{tenant_to_use}`; nothing was saved"
+            ))
+            .suggestion("run `snouty login --registry <registry>`")
+        })?;
 
     // The kind of credential login wrote, and where.
     let written = match new_credentials {
@@ -276,13 +277,7 @@ async fn do_cmd_login(
         None => None,
     };
 
-    update_settings_in_global_file(
-        Some(tenant_to_use.clone()),
-        Some(registry_to_use.clone()),
-        None,
-        None,
-        profile_to_use.as_deref(),
-    )?;
+    update_settings_in_global_file(&tenant_to_use, &registry_to_use, profile_to_use.as_deref())?;
 
     print_login_summary(
         &tenant_to_use,
@@ -296,80 +291,68 @@ async fn do_cmd_login(
     Ok(())
 }
 
-/// `GET /api/v1/registry` with `new_credentials`, or else with the credential
-/// that later commands use. The request is also the check that the credential
-/// works. `None` means that the tenant does not serve the endpoint, which
-/// tenants before it answer with 404. `interactive` picks the next step that
-/// an error suggests.
+/// `GET /api/v1/registry` on `tenant` with `new_credentials`, or else with
+/// the credential that later commands use. The request is also the check
+/// that the credential works. `None` means that the tenant does not serve the
+/// endpoint, which tenants before it answer with 404. `interactive` picks the
+/// next step that an error suggests.
 async fn fetch_registry(
     settings: &Settings,
+    tenant: &str,
     new_credentials: Option<&PersistableCredentials>,
     profile: Option<&str>,
     interactive: bool,
     verbose: bool,
 ) -> Result<Option<RegistryResponse>> {
-    let tenant = settings.tenant().unwrap_or_default();
-    let next_step = if interactive {
-        "run `snouty login` again, and enter an API key or sign in with single sign-on"
-    } else if in_github_actions() {
-        no_credentials_suggestion(true)
-    } else {
-        "set ANTITHESIS_API_KEY, or run `snouty login` in a terminal"
+    // A read error of a stored credential passes through as it is.
+    let ambient = match new_credentials {
+        Some(_) => None,
+        None => AuthenticationInfo::find_ambient(profile)?,
     };
-    let (authentication, key_from_environment) = match new_credentials {
-        Some(credentials) => (credentials.for_check(), false),
-        // A read error of a stored credential passes through as it is.
-        None => match AuthenticationInfo::find_ambient(profile)? {
-            Some(found) if !matches!(found.value(), AuthenticationInfo::Password { .. }) => {
-                // A GitHub Actions OIDC token is also tagged Environment, but
-                // ANTITHESIS_API_KEY does not hold it.
-                let key_from_environment = matches!(
-                    (found.value(), found.tag()),
-                    (
-                        AuthenticationInfo::ApiKey { .. },
-                        CredentialSource::Environment { .. }
-                    )
-                );
-                (found.untag(), key_from_environment)
-            }
-            found => {
-                // Every later command reads the environment first, so a key
-                // at the prompt would not replace a password there.
-                let password_in_environment = found.is_some_and(|found| {
-                    matches!(found.tag(), CredentialSource::Environment { .. })
-                });
-                return Err(user_error(format!(
-                    "login needs an API key or a single sign-on to check with `{tenant}`; nothing was saved"
-                ))
-                .suggestion(if password_in_environment {
-                    "unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD, and set ANTITHESIS_API_KEY"
-                } else {
-                    next_step
-                }));
-            }
-        },
+    let next_step = match ambient.as_ref().map(|found| (found.value(), found.tag())) {
+        // Every later command reads the environment first, so a credential
+        // at the prompt would not replace one there. A GitHub Actions OIDC
+        // token is also tagged Environment, but ANTITHESIS_API_KEY does not
+        // hold it.
+        Some((AuthenticationInfo::ApiKey { .. }, CredentialSource::Environment { .. })) => {
+            "set ANTITHESIS_API_KEY to a valid key, or unset it"
+        }
+        Some((AuthenticationInfo::Password { .. }, CredentialSource::Environment { .. })) => {
+            "unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD, and set ANTITHESIS_API_KEY"
+        }
+        _ if interactive => {
+            "run `snouty login` again, and enter an API key or sign in with single sign-on"
+        }
+        _ if in_github_actions() => no_credentials_suggestion(true),
+        _ => "set ANTITHESIS_API_KEY, or run `snouty login` in a terminal",
+    };
+    let authentication = match (new_credentials, ambient) {
+        (Some(credentials), _) => credentials.for_check(),
+        (None, Some(found)) if !matches!(found.value(), AuthenticationInfo::Password { .. }) => {
+            found.untag()
+        }
+        (None, _) => {
+            return Err(user_error(format!(
+                "login needs an API key or a single sign-on to check with `{tenant}`; nothing was saved"
+            ))
+            .suggestion(next_step));
+        }
     };
     let api = AntithesisApi::build(settings, authentication, verbose, ResponseCache::Default)?;
     match api.get_registry().await {
-        Ok(registry) => return Ok(Some(registry)),
-        Err(err) if api_error_status(&err) == Some(404) => {
-            debug!("the tenant does not report its registry: {err:#}");
-            return Ok(None);
-        }
-        Err(err) if api_error_status(&err) != Some(401) => return Err(err),
-        Err(_) => {}
+        Ok(registry) => Ok(Some(registry)),
+        Err(err) => match api_error_status(&err) {
+            Some(404) => {
+                debug!("the tenant does not report its registry: {err:#}");
+                Ok(None)
+            }
+            Some(401) => Err(user_error(format!(
+                "`{tenant}` did not accept the credential; nothing was saved"
+            ))
+            .suggestion(next_step)),
+            _ => Err(err),
+        },
     }
-    // Every later command reads the environment first, so a new key at the
-    // prompt would not replace a rejected one there.
-    let next_step = if key_from_environment {
-        "set ANTITHESIS_API_KEY to a valid key, or unset it"
-    } else {
-        next_step
-    };
-    Err(user_error(format!(
-        "`{tenant}` did not accept the credential; nothing was saved"
-    ))
-    .suggestion(next_step))
 }
 
 /// Confirm what `snouty login` persisted, where, and the obvious next step —
@@ -1235,10 +1218,8 @@ mod tests {
 
     use std::cell::RefCell;
     use std::collections::VecDeque;
-    use std::io::{Read, Write};
     use std::path::PathBuf;
     use std::sync::Mutex;
-    use std::thread;
 
     use crate::settings::Settings;
     use crate::testutils::fake_secrets::{
@@ -1247,6 +1228,7 @@ mod tests {
     };
     use crate::testutils::{
         api_key_credentials, api_key_line, oauth_credentials, password_credentials,
+        spawn_login_backend,
     };
     use color_eyre::eyre::Result;
 
@@ -1432,7 +1414,7 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let home = tempfile::TempDir::new().expect("create temp HOME");
-            let base_url = spawn_mock_server(config_body, registry_status, registry_body);
+            let base_url = spawn_login_backend(config_body, registry_status, registry_body);
 
             // SAFETY: the `ENV_LOCK` guard we hold serializes every test in this
             // binary that touches process-global env, so nothing else reads or
@@ -1494,37 +1476,6 @@ mod tests {
         fn resolve_settings(&self, profile: Option<&str>) -> Result<Settings> {
             Settings::resolve(None, profile.map(str::to_owned))
         }
-    }
-
-    /// Start a TCP server that answers `GET /api/v1/registry` with
-    /// `registry_status` and `registry_body`, and every other request with 200
-    /// and `config_body`. Returns its base URL. The listener thread leaks, and
-    /// lives until the test process exits.
-    fn spawn_mock_server(
-        config_body: &'static str,
-        registry_status: u16,
-        registry_body: &'static str,
-    ) -> String {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock server");
-        let addr = listener.local_addr().expect("mock server addr");
-        thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                let mut stream = stream;
-                let mut buf = [0u8; 4096];
-                let n = stream.read(&mut buf).unwrap_or(0);
-                let (status, body) = if buf[..n].starts_with(b"GET /api/v1/registry ") {
-                    (registry_status, registry_body)
-                } else {
-                    (200, config_body)
-                };
-                let response = format!(
-                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                let _ = stream.write_all(response.as_bytes());
-            }
-        });
-        format!("http://{addr}")
     }
 
     /// [`do_cmd_login`] without `--tenant`, `--registry`, or `--verbose`.

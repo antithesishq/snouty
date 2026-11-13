@@ -28,7 +28,7 @@ use expectrl::process::unix::WaitStatus;
 use expectrl::session::OsSession;
 use snouty::testutils::fake_secrets::{FAKE_API_KEY_A, FAKE_API_KEY_B, FAKE_PASSWORD};
 use snouty::testutils::{
-    api_key_credentials, api_key_line, oauth_credentials, password_credentials,
+    api_key_credentials, api_key_line, oauth_credentials, password_credentials, spawn_login_backend,
 };
 use support::pty::PtyCommand;
 
@@ -67,28 +67,10 @@ const KEPT_ANSWER: &str = "Please enter your API Key (********9Pgw) kept";
 /// The answered API key line when a new key replaces the stored key.
 const NEW_KEY_ANSWER: &str = "Please enter your API Key (********9Pgw) ********";
 
-/// Start a mock backend that answers `GET /api/v1/registry` with [`REGISTRY`]
-/// and every other request with [`OAUTH_DISABLED`]. Returns its base URL.
+/// A backend that answers `GET /api/v1/registry` with [`REGISTRY`] and every
+/// other request with [`OAUTH_DISABLED`]. Returns its base URL.
 fn start_backend() -> String {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the mock backend");
-    let url = format!("http://{}", listener.local_addr().expect("local address"));
-    std::thread::spawn(move || {
-        for mut stream in listener.incoming().flatten() {
-            let mut buf = [0u8; 4096];
-            let n = std::io::Read::read(&mut stream, &mut buf).unwrap_or(0);
-            let body = if buf[..n].starts_with(b"GET /api/v1/registry ") {
-                REGISTRY
-            } else {
-                OAUTH_DISABLED
-            };
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
-        }
-    });
-    url
+    spawn_login_backend(OAUTH_DISABLED, 200, REGISTRY)
 }
 
 /// Spawn `snouty login --tenant … --registry …` on a PTY against an
@@ -224,7 +206,7 @@ fn finish(mut session: OsSession) -> String {
 
 /// Wait for the end of the output and a failed exit. Returns the consumed
 /// text.
-fn finish_with_failure(mut session: OsSession) -> String {
+fn finish_with_failure(mut session: OsSession) {
     let seen = Expect::expect(&mut session, expectrl::Eof).expect("read the PTY to its end");
     let seen = String::from_utf8_lossy(seen.as_bytes()).into_owned();
     let status = session.get_process().wait().expect("wait for snouty login");
@@ -232,7 +214,6 @@ fn finish_with_failure(mut session: OsSession) -> String {
         matches!(status, WaitStatus::Exited(_, code) if code != 0),
         "login must fail: {status:?}\n{seen}"
     );
-    seen
 }
 
 /// The lines snouty rendered in `seen`, without ANSI escape sequences or the

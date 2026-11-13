@@ -1085,6 +1085,51 @@ pub enum RunsCommands {
     /// Show the compute hours that runs used
     #[command(arg = json(JsonShape::Lines))]
     Usage(RunsUsageArgs),
+
+    /// List the instrumented modules that a run loaded, and where
+    #[command(arg = json(JsonShape::Lines))]
+    Modules {
+        /// Run ID
+        #[arg(value_parser = parse_run_id)]
+        run_id: String,
+    },
+
+    /// List the instrumented code locations of a run, and when the run first
+    /// reached each one
+    #[command(arg = json(JsonShape::Lines))]
+    Coverage(RunsCoverageArgs),
+}
+
+#[derive(Args)]
+pub struct RunsCoverageArgs {
+    /// Run ID
+    #[arg(value_parser = parse_run_id)]
+    pub run_id: String,
+
+    /// Only list the locations of this module (repeatable)
+    #[arg(
+        long = "module",
+        value_name = "MODULE_ID",
+        value_parser = clap::builder::NonEmptyStringValueParser::new(),
+    )]
+    pub module_ids: Vec<String>,
+
+    /// Only list the locations that the run reached
+    #[arg(long, conflicts_with = "unreached")]
+    pub reached: bool,
+
+    /// Only list the locations that the run has not reached
+    #[arg(long, conflicts_with = "follow")]
+    pub unreached: bool,
+
+    /// Keep the connection open, and print each location as the run reaches
+    /// it, until the run finishes
+    #[arg(short = 'f', long)]
+    pub follow: bool,
+
+    /// Print each vtime whole
+    #[arg(short = 'd', long)]
+    pub detail: bool,
 }
 
 #[derive(Args)]

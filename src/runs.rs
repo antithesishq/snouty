@@ -121,7 +121,9 @@ macro_rules! outln {
     ($($arg:tt)*) => {{ writeln!(crate::stdio::stdout(), $($arg)*) }};
 }
 
-// Declared after the macros above, so that the module can use them.
+// Declared after the macros above, so that the modules can use them.
+mod coverage;
+pub use coverage::CoverageCut;
 pub mod usage;
 
 pub async fn cmd_runs(
@@ -143,6 +145,7 @@ pub async fn cmd_runs(
             (render.raw, render.detail)
         }
         Some(RunsCommands::Search(args)) => (args.render.raw, args.render.detail),
+        Some(RunsCommands::Coverage(args)) => (false, args.detail),
         _ => (false, false),
     };
     reject_detail_with_json(output.json, detail)?;
@@ -306,6 +309,12 @@ pub async fn cmd_runs(
             cmd_runs_search(args, settings, output.verbose, mode).await
         }
         Some(RunsCommands::Usage(args)) => usage::cmd_runs_usage(args, settings, output).await,
+        Some(RunsCommands::Modules { run_id }) => {
+            coverage::cmd_runs_modules(&run_id, settings, output).await
+        }
+        Some(RunsCommands::Coverage(args)) => {
+            coverage::cmd_runs_coverage(args, settings, output).await
+        }
     }
 }
 
@@ -2343,11 +2352,11 @@ fn normalize_vtime_field(entry: &mut Value, key: &str) -> Option<VTime> {
 /// own (an event's payload is arbitrary workload JSON), but data records
 /// always carry their schema's required envelope — `moment` for log/event
 /// records, `timestamp` for build log lines, `type` for run status
-/// notifications — which `Stream_Error` never has, so the envelope's absence
-/// disambiguates.
+/// notifications, `module_id` for coverage locations — which `Stream_Error`
+/// never has, so the envelope's absence disambiguates.
 fn stream_error_message(entry: &Value) -> Option<&str> {
     let obj = entry.as_object()?;
-    if ["moment", "timestamp", "type"]
+    if ["moment", "timestamp", "type", "module_id"]
         .iter()
         .any(|key| obj.contains_key(*key))
     {

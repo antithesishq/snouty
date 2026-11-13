@@ -110,4 +110,6 @@ help_pages! {
     RunsEvents => "runs_events.txt", ["runs", "events"];
     RunsSearch => "runs_search.txt", ["runs", "search"];
     RunsUsage => "runs_usage.txt", ["runs", "usage"];
+    RunsModules => "runs_modules.txt", ["runs", "modules"];
+    RunsCoverage => "runs_coverage.txt", ["runs", "coverage"];
 }

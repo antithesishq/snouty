@@ -23,8 +23,8 @@ use tokio::sync::mpsc;
 
 use crate::{
     api::{
-        AntithesisApi, HttpClient, RegistryResponse, RegistryResponseAuth, ResponseCache,
-        normalize_base_url,
+        AntithesisApi, CONNECT_TIMEOUT, HttpClient, RegistryResponse, RegistryResponseAuth,
+        ResponseCache, normalize_base_url,
     },
     auth::{
         AuthenticationInfo, CredentialSource, CredentialStore, OIDC_REJECTED_NEXT_STEP,
@@ -43,7 +43,15 @@ use crate::{
     util::root_cause,
 };
 
-const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+/// Longer than [`CONNECT_TIMEOUT`], so that a host that cannot be reached
+/// fails with a connect error, and only a slow answer hits this limit.
+const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const _: () = assert!(OAUTH_HTTP_TIMEOUT.as_secs() > CONNECT_TIMEOUT.as_secs());
+
+/// The longest wait for the registry check. The API client has only a connect
+/// timeout, and a tenant that accepts a connection but does not answer would
+/// otherwise hold the login forever.
+const REGISTRY_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long to wait for the browser to redirect back to the loopback server
 /// before giving up — generous enough for the user to complete an interactive
@@ -341,7 +349,16 @@ async fn fetch_registry(
         }
     };
     let api = AntithesisApi::build(settings, authentication, verbose, ResponseCache::Default)?;
-    match api.get_registry().await {
+    let registry =
+        tokio::time::timeout(env::scaled_wait(REGISTRY_CHECK_TIMEOUT), api.get_registry())
+            .await
+            .map_err(|_| {
+                user_error(format!(
+                    "`{tenant}` did not answer the registry check in time; nothing was saved"
+                ))
+                .suggestion("run `snouty login` again later")
+            })?;
+    match registry {
         Ok(registry) => Ok(Some(registry)),
         Err(err) => match api_error_status(&err) {
             Some(404) => {

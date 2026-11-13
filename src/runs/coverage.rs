@@ -76,8 +76,8 @@ pub(super) async fn cmd_runs_modules(
         return Ok(());
     }
 
-    // A status read before the listing ends can only be older, so its
-    // "more modules may load" stays true.
+    // Read the status concurrently: a status older than the listing still
+    // makes "more modules may load" true.
     let (modules, run): (Vec<ModuleInstances>, _) =
         futures_util::try_join!(modules.try_collect(), api.get_run(run_id))?;
     if !modules.is_empty() {
@@ -157,7 +157,6 @@ fn count(n: usize, noun: &str) -> String {
     }
 }
 
-/// `run in progress`, `run completed`.
 fn run_status(status: &RunStatus) -> String {
     format!("run {}", status.to_string().replace('_', " "))
 }
@@ -199,9 +198,8 @@ pub(super) async fn cmd_runs_coverage(
     };
     let covered = reach.map(|reach| reach == Reach::Reached);
     let open = |module_id| api.get_coverage_locations(&run_id, module_id, covered, follow);
-    // A followed stream sends each location as the run reaches it, so the
-    // streams are open together and interleave. Otherwise each module's
-    // request opens when the one before it ends.
+    // A followed stream stays open until the run ends, so open every module
+    // at once. Otherwise read one module at a time.
     let mut lines = if follow {
         let streams = futures_util::future::try_join_all(modules.into_iter().map(open)).await?;
         stream::select_all(streams).boxed()
@@ -222,8 +220,8 @@ pub(super) async fn cmd_runs_coverage(
             }
             return Err(Report::new(CoverageCut(message.to_string())).note(MID_STREAM_NOTE));
         }
-        // A followed stream sends the locations of a module that loads later
-        // unreached, before the run reaches them.
+        // A followed stream also sends the unreached locations of a module
+        // that loads later (the getCoverageLocations description says so).
         if reach == Some(Reach::Reached) && value.get("first_reached").is_none() {
             continue;
         }
@@ -314,7 +312,8 @@ impl LocationLayout {
         ])
     }
 
-    /// The vtime cut, never rounded, to five decimals.
+    /// The vtime truncated to five decimals, or whole with `detail`. It
+    /// never rounds.
     fn vtime(&self, vtime: VTime) -> String {
         let mut text = vtime.to_string();
         if !self.detail

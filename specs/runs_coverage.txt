@@ -89,7 +89,7 @@ stdout -count=4 '^\{"module_id":'
 stdout '"first_reached":\{"run_seconds":31\.4,"moment":\{"input_hash":"-3625518438076122494","vtime":"12\.846102431882170"\}\}'
 ! stderr ' · run '
 
-# A Stream_Error line passes through to stdout, and the exit status is 2.
+# A Stream_Error line passes through to stdout, and the command fails.
 ! snouty --json runs coverage run-stream-error
 stdout -count=2 '^\{.*$'
 stdout '^\{"error":"mock stream failure"\}$'

@@ -183,9 +183,8 @@ pub(crate) fn truncate_path(path: &str, width: usize) -> String {
     if measure_text_width(path) <= width {
         return path.to_string();
     }
-    // The longest tail that starts at a `/` and fits beside the ellipsis, else
-    // the longest tail that fits. Measure each tail whole: measuring one char
-    // at a time miscounts escape sequences.
+    // Measure each tail whole: measuring one char at a time miscounts escape
+    // sequences.
     let fits = |start: usize| measure_text_width(&path[start..]) < width;
     let start = path
         .match_indices('/')
@@ -298,7 +297,6 @@ mod tests {
             truncate_path("/usr/share/dotnet/dotnet", 24),
             "/usr/share/dotnet/dotnet"
         );
-        // A last component wider than the cell is cut inside the component.
         assert_eq!(truncate_path("/bin/averylongname", 6), "…gname");
     }
 

@@ -1,6 +1,6 @@
 # snouty launch --config and the tenant registry
 #
-# When the repository is on the tenant registry,
+# When the registry setting names the tenant registry,
 # registry.<tenant>.antithesis.com, snouty gives the registry secret to the
 # container runtime when it pushes. The secret is an API key, a GitHub Actions
 # OIDC token, or an OAuth token, with the username snouty-token. The registry
@@ -41,7 +41,7 @@ env REGISTRY_AUTH_FILE=
 env DOCKER_AUTH_CONFIG=
 env ANTITHESIS_TENANT=acme
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
-env ANTITHESIS_REPOSITORY=registry.acme.antithesis.com/repo
+env ANTITHESIS_REGISTRY=registry.acme.antithesis.com/repo
 
 # Docker gets the credential in DOCKER_AUTH_CONFIG. A failed push shows the
 # error of Docker.
@@ -79,7 +79,7 @@ rm config/snouty/docker-credential-snouty
 # profiles use the registry. Docker gets them too, for a helper that its
 # config runs.
 env ANTITHESIS_TENANT=
-env ANTITHESIS_REPOSITORY=
+env ANTITHESIS_REGISTRY=
 ! snouty launch --settings two-profiles.toml --profile b --launcher basic_k8s_test -c k8s_config
 stderr 'settings: profile=\[b\] path=\[two-profiles\.toml\]$'
 stderr 'helper: \{"ServerURL":"registry\.acme\.antithesis\.com","Username":"snouty-token","Secret":"${FAKE_API_KEY_A@R}"\}'
@@ -107,7 +107,7 @@ env SNOUTY_CONTAINER_ENGINE=docker
 
 # The tenant registry does not accept a username and password, so snouty
 # gives no credential, and the runtime pushes with its own.
-env ANTITHESIS_REPOSITORY=registry.acme.antithesis.com/repo
+env ANTITHESIS_REGISTRY=registry.acme.antithesis.com/repo
 env ANTITHESIS_API_KEY=
 set-env ANTITHESIS_USERNAME ${FAKE_USERNAME}
 set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
@@ -118,12 +118,12 @@ env ANTITHESIS_USERNAME=
 env ANTITHESIS_PASSWORD=
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 
-# A repository on a different registry, or on the tenant registry of a
+# A registry setting that names a different registry, or the tenant registry of a
 # different tenant, pushes with no credential from snouty.
-env ANTITHESIS_REPOSITORY=registry.example.com/repo
+env ANTITHESIS_REGISTRY=registry.example.com/repo
 ! snouty launch --launcher basic_k8s_test -c k8s_config
 stderr 'fake docker: push registry.example.com/repo/snouty-config:\S+ REGISTRY_AUTH_FILE=\[\] DOCKER_AUTH_CONFIG=\[\]'
-env ANTITHESIS_REPOSITORY=registry.other.antithesis.com/repo
+env ANTITHESIS_REGISTRY=registry.other.antithesis.com/repo
 env SNOUTY_CONTAINER_ENGINE=podman
 ! snouty launch --launcher basic_k8s_test -c k8s_config
 stderr 'fake podman: push --digestfile=\S+ registry.other.antithesis.com/repo/snouty-config:\S+ REGISTRY_AUTH_FILE=\[\] DOCKER_AUTH_CONFIG=\[\]'
@@ -133,7 +133,7 @@ stderr 'fake podman: push --digestfile=\S+ registry.other.antithesis.com/repo/sn
 
 # A push that succeeds launches the run.
 mock-runs-server
-env ANTITHESIS_REPOSITORY=registry.testtenant.antithesis.com/repo
+env ANTITHESIS_REGISTRY=registry.testtenant.antithesis.com/repo
 env SNOUTY_CONTAINER_ENGINE=docker
 env STUB_PUSH_OK=1
 snouty launch --launcher basic_k8s_test -c k8s_config
@@ -224,14 +224,14 @@ esac
 -- two-profiles.toml --
 [profile.a]
 tenant = "acme"
-repository = "registry.acme.antithesis.com/repo"
+registry = "registry.acme.antithesis.com/repo"
 
 [profile.b]
 tenant = "acme"
-repository = "registry.acme.antithesis.com/repo"
+registry = "registry.acme.antithesis.com/repo"
 -- project/.snouty.toml --
 tenant = "acme"
-repository = "registry.acme.antithesis.com/repo"
+registry = "registry.acme.antithesis.com/repo"
 -- k8s_config/manifests/ns.yaml --
 apiVersion: v1
 kind: Namespace

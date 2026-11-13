@@ -11,11 +11,11 @@
 # config_trust.txt).
 snouty settings trust
 
-# 1. tenant/repository come from the project .snouty.toml in the working
+# 1. tenant/registry come from the project .snouty.toml in the working
 #    directory (top-level defaults).
 snouty settings show
 stdout 'tenant.*acme'
-stdout 'repository.*acme/repo'
+stdout 'registry.*acme/repo'
 
 # 2. A profile selected with --profile overrides the top-level default; the
 #    active profile is also named in its own row.
@@ -51,19 +51,38 @@ snouty settings show
 stdout 'update_channel.*unstable'
 
 # 8. SNOUTY_SETTINGS_PATH selects the project file in place of ./.snouty.toml.
-#    Observed via repository, since no earlier step set ANTITHESIS_REPOSITORY
+#    Observed via registry, since no earlier step set ANTITHESIS_REGISTRY
 #    (ANTITHESIS_TENANT is already pinned from step 5, so tenant won't show it).
 env SNOUTY_SETTINGS_PATH=env-settings.toml
 snouty settings show
-stdout 'repository.*env-path-repo'
+stdout 'registry.*env-path-repo'
 
 # 9. The --settings flag wins over SNOUTY_SETTINGS_PATH.
 snouty --settings other.toml settings show
-stdout 'repository.*other/repo'
+stdout 'registry.*other/repo'
+
+# 10. `repository`, the old name of `registry`, still loads as the registry.
+#     When a table holds both names, `registry` wins. A profile with the old
+#     name still wins over a top-level value with the new name.
+snouty --settings old-key.toml settings show
+stdout '^registry +old-key$'
+snouty --settings both-keys.toml settings show
+stdout '^registry +new-key$'
+snouty --settings both-keys.toml --profile old settings show
+stdout '^registry +old-profile$'
+
+# 11. ANTITHESIS_REPOSITORY, the old name of ANTITHESIS_REGISTRY, still loads,
+#     and wins over the files. When both are set, ANTITHESIS_REGISTRY wins.
+env ANTITHESIS_REPOSITORY=old-env
+snouty --settings both-keys.toml settings show
+stdout '^registry +old-env$'
+env ANTITHESIS_REGISTRY=new-env
+snouty --settings both-keys.toml settings show
+stdout '^registry +new-env$'
 
 -- .snouty.toml --
 tenant = "acme"
-repository = "acme/repo"
+registry = "acme/repo"
 
 [profile.staging]
 tenant = "staging-tenant"
@@ -72,6 +91,14 @@ tenant = "staging-tenant"
 tenant = "prod-tenant"
 -- other.toml --
 tenant = "other-tenant"
-repository = "other/repo"
+registry = "other/repo"
 -- env-settings.toml --
-repository = "env-path-repo"
+registry = "env-path-repo"
+-- old-key.toml --
+repository = "old-key"
+-- both-keys.toml --
+repository = "old-key"
+registry = "new-key"
+
+[profile.old]
+repository = "old-profile"

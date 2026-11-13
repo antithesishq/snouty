@@ -16,7 +16,7 @@ files in your home directory.
 
 Examples:
   snouty login
-  snouty login --tenant "mytenant" --repository "repository"
+  snouty login --tenant "mytenant" --registry "registry.example.com/team"
   snouty login --profile "profile"
 
 Usage: snouty login [OPTIONS]
@@ -25,7 +25,7 @@ Options:
       --tenant <TENANT>
           
 
-      --repository <REPOSITORY>
+      --registry <REGISTRY>
           
 
   -h, --help

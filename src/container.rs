@@ -1155,7 +1155,7 @@ fn is_path_segment(segment: &str) -> bool {
             .all(|c| alnum(c) || matches!(c, '.' | '_' | '-'))
 }
 
-/// The name a copy of `image` takes below the tenant's repository:
+/// The name a copy of `image` takes below the tenant's registry:
 /// `ghcr.io/org/app:v1` becomes `snouty-mirror/ghcr.io/org/app:v1`. A
 /// reference that names no host is a copy of nothing and is returned
 /// unchanged.
@@ -1181,8 +1181,8 @@ pub fn mirror_path(image: &str) -> Result<String> {
     if !is_path_segment(&segment) {
         return Err(user_error(format!(
             "snouty copies `{image}` to `{MIRROR_PREFIX}/{segment}/{rest}` in your \
-             repository, and `{segment}` is not a legal image path segment. Push the \
-             image to your repository yourself, and name that copy in the compose file."
+             container registry, and `{segment}` is not a legal image path segment. Push \
+             the image to your registry yourself, and name that copy in the compose file."
         )));
     }
     Ok(format!("{MIRROR_PREFIX}/{segment}/{rest}"))
@@ -1191,7 +1191,7 @@ pub fn mirror_path(image: &str) -> Result<String> {
 /// `image` without the address of `registry`, which is the spelling this
 /// machine uses to reach that registry — often a proxy or mirror alias that a
 /// test run cannot resolve. The platform resolves the bare name that remains
-/// against the tenant's own repository.
+/// against the tenant's own registry.
 ///
 /// An image outside `registry` keeps its address, because nothing else names
 /// those bytes.

@@ -10,7 +10,7 @@ automation. Text output is for people and may be reformatted at any time.
 ## Recipes
 
 - [Stream a run's logs at its failure moment](#stream-a-runs-logs-at-its-failure-moment)
-- [Copy private images into your repository](#copy-private-images-into-your-repository)
+- [Copy private images into your registry](#copy-private-images-into-your-registry)
 
 ## Stream a run's logs at its failure moment
 
@@ -39,7 +39,7 @@ placeholder `{"input_hash": "0", "vtime": 0}` — which streams nothing.
 numeric check (`.vtime != 0`), and skip the log fetch rather than streaming an
 empty timeline.
 
-## Copy private images into your repository
+## Copy private images into your registry
 
 *snouty 0.7.2 · 2026-09-23 · source: [#298](https://github.com/antithesishq/snouty/issues/298)*
 
@@ -49,15 +49,15 @@ launch: it checks each image with your local container engine, which is logged
 in as you, so the private image looks fine. The run then fails when Antithesis
 tries to pull it.
 
-The fix is to copy each private image into your Antithesis repository and point
+The fix is to copy each private image into your Antithesis container registry and point
 the compose file at the copy:
 
 ```sh
-repo=$(snouty settings show --json | jq -r .settings.repository)
+registry=$(snouty settings show --json | jq -r .settings.registry)
 
 for image in ghcr.io/your-org/app:v1 ghcr.io/your-org/worker:v1; do
   host=$(echo "${image%%/*}" | sed 's/:/__/')
-  copy="$repo/snouty-mirror/$host/${image#*/}"
+  copy="$registry/snouty-mirror/$host/${image#*/}"
   docker pull --platform linux/amd64 "$image"
   docker tag "$image" "$copy"
   docker push "$copy"
@@ -67,11 +67,11 @@ done
 
 Replace each private image in `docker-compose.yaml` with the `image:` line the
 script prints, then launch as usual. snouty sees that the copy is already in
-your repository and uses it without pushing it again. Rerun the script whenever
+your registry and uses it without pushing it again. Rerun the script whenever
 a private image changes.
 
 The copy keeps the registry host in its path, so `ghcr.io/your-org/app:v1`
-becomes `$repo/snouty-mirror/ghcr.io/your-org/app:v1`. This is the same path
+becomes `$registry/snouty-mirror/ghcr.io/your-org/app:v1`. This is the same path
 snouty uses when it pushes an image itself, and it keeps images from two
 registries apart. A port's `:` becomes `__`, because a path can't contain a
 colon. The script assumes every image names its registry host.

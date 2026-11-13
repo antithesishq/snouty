@@ -121,7 +121,7 @@ enum CheckId {
     ContainerRuntime,
     DockerCompose,
     Tenant,
-    Repository,
+    Registry,
     /// `kind` is `None` when no credential is found.
     Credentials {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -228,7 +228,7 @@ struct Report<'a> {
 /// The tenant is required by every command, so a missing one fails doctor.
 /// (A broken settings file never reaches here — it fails at startup, before
 /// doctor runs — so the resolved value is simply present or absent.)
-/// `snouty login` sets tenant, repository, and credentials in one pass, so every
+/// `snouty login` sets tenant, registry, and credentials in one pass, so every
 /// check that reports one of them missing points at it. Each says so in its own
 /// words: on an unconfigured machine all three fire at once, and the same
 /// sentence three times reads as noise rather than as advice.
@@ -242,17 +242,17 @@ fn tenant_check(tenant: Option<&str>) -> Check {
     }
 }
 
-/// The repository (a container registry) is only needed to build and push a
-/// config image (`snouty launch --config`), so a missing one is a warning, not
-/// a failure — read-only use (`snouty runs`, `snouty debug`) doesn't need it.
-fn repository_check(repository: Option<&str>) -> Check {
-    match repository {
-        Some(_) => Check::ok(CheckId::Repository, "repository is set"),
-        None => Check::warn(CheckId::Repository, "repository is not set")
-            .note(Level::Warning, "repository is needed for `snouty launch`")
+/// The container registry is only needed to build and push a config image
+/// (`snouty launch --config`), so a missing one is a warning, not a failure —
+/// read-only use (`snouty runs`, `snouty debug`) doesn't need it.
+fn registry_check(registry: Option<&str>) -> Check {
+    match registry {
+        Some(_) => Check::ok(CheckId::Registry, "container registry is set"),
+        None => Check::warn(CheckId::Registry, "container registry is not set")
+            .note(Level::Warning, "the registry is needed for `snouty launch`")
             .note(
                 Level::Note,
-                "run `snouty login` to set it, or set ANTITHESIS_REPOSITORY",
+                "run `snouty login` to set it, or set ANTITHESIS_REGISTRY",
             ),
     }
 }
@@ -495,7 +495,7 @@ fn enrich_with_source(
 }
 
 /// Binary health checks: local tooling, the required settings
-/// (tenant/repository), and authentication. `settings show` reports the
+/// (tenant/registry), and authentication. `settings show` reports the
 /// resolved values themselves.
 fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>) {
     let mut checks: Vec<Check> = Vec::new();
@@ -531,10 +531,10 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
         ),
     }
 
-    // Required settings. tenant is needed by every command; repository is
+    // Required settings. tenant is needed by every command; registry is
     // launch-only, so a missing one is a warning.
     checks.push(tenant_check(settings.tenant()));
-    checks.push(repository_check(settings.repository()));
+    checks.push(registry_check(settings.registry()));
 
     // Authentication (synchronous-only by design).
     let github_actions = crate::auth::in_github_actions();
@@ -1347,16 +1347,16 @@ mod tests {
     }
 
     #[test]
-    fn repository_check_is_ok_when_resolved() {
-        let check = repository_check(Some("acme/repo"));
+    fn registry_check_is_ok_when_resolved() {
+        let check = registry_check(Some("registry.acme.antithesis.com/team"));
         assert_eq!(check.status, Status::Ok);
     }
 
     #[test]
-    fn repository_check_only_warns_when_missing() {
-        // Following main's #147 decision: repository is launch-only, so a missing
-        // one is a warning, not a failure.
-        let check = repository_check(None);
+    fn registry_check_only_warns_when_missing() {
+        // Following main's #147 decision: the registry is launch-only, so a
+        // missing one is a warning, not a failure.
+        let check = registry_check(None);
         assert_eq!(check.status, Status::Warn);
         assert!(check.notes.iter().any(|n| n.text.contains("snouty launch")));
         assert!(check.notes.iter().any(|n| n.text.contains("snouty login")));

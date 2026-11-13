@@ -23,7 +23,9 @@ pub use trust::{SETTINGS_TRUST_VAR_NAME, UntrustedSettingsFile, deny, trust};
 pub const ANTITHESIS_PROFILE_ENV_VAR_NAME: &str = "ANTITHESIS_PROFILE";
 pub const SNOUTY_SETTINGS_PATH_VAR_NAME: &str = "SNOUTY_SETTINGS_PATH";
 pub const ANTITHESIS_TENANT_VAR_NAME: &str = "ANTITHESIS_TENANT";
-pub const ANTITHESIS_REPOSITORY_VAR_NAME: &str = "ANTITHESIS_REPOSITORY";
+pub const ANTITHESIS_REGISTRY_VAR_NAME: &str = "ANTITHESIS_REGISTRY";
+/// The old name of [`ANTITHESIS_REGISTRY_VAR_NAME`], which still works.
+const ANTITHESIS_REPOSITORY_VAR_NAME: &str = "ANTITHESIS_REPOSITORY";
 pub const ANTITHESIS_BASE_URL_VAR_NAME: &str = "ANTITHESIS_BASE_URL";
 pub const ANTITHESIS_HTTPS_PROXY_VAR_NAME: &str = "ANTITHESIS_HTTPS_PROXY";
 pub const CONTAINER_ENGINE_VAR_NAME: &str = "SNOUTY_CONTAINER_ENGINE";
@@ -32,6 +34,9 @@ pub const API_CACHE_MAX_FILE_SIZE_VAR_NAME: &str = "SNOUTY_API_CACHE_MAX_FILE_SI
 pub const PROJECT_SETTINGS_FILENAME: &str = ".snouty.toml";
 const GLOBAL_SETTINGS_FILENAME: &str = "settings.toml";
 const PROFILE_KEY: &str = "profile";
+const REGISTRY_KEY: &str = "registry";
+/// The old name of [`REGISTRY_KEY`], which still works.
+const REPOSITORY_KEY: &str = "repository";
 const NO_GLOBAL_SETTINGS_DIR: &str = "Could not determine global settings directory. Ensure either $XDG_CONFIG_HOME or $HOME is set.";
 
 /// snouty's subdirectory under an XDG base dir: `$<xdg_var>/snouty`, falling
@@ -94,7 +99,7 @@ pub fn cache_dir() -> Option<PathBuf> {
 pub struct Settings {
     profile: Option<String>,
     tenant: Option<String>,
-    repository: Option<String>,
+    registry: Option<String>,
     /// The `base_url` setting. [`Settings::base_url`] falls back to the
     /// tenant's host.
     base_url: Option<String>,
@@ -264,7 +269,14 @@ impl SettingsFiles {
         };
 
         let tenant = resolve("tenant", ANTITHESIS_TENANT_VAR_NAME)?;
-        let repository = resolve("repository", ANTITHESIS_REPOSITORY_VAR_NAME)?;
+        let registry = resolve_value_with(
+            string_value,
+            &[REGISTRY_KEY, REPOSITORY_KEY],
+            &[ANTITHESIS_REGISTRY_VAR_NAME, ANTITHESIS_REPOSITORY_VAR_NAME],
+            profile.as_deref(),
+            self.project.as_ref(),
+            self.global.as_ref(),
+        )?;
         let base_url = resolve("base_url", ANTITHESIS_BASE_URL_VAR_NAME)?;
         let https_proxy = resolve("https_proxy", ANTITHESIS_HTTPS_PROXY_VAR_NAME)?;
         let container_engine = resolve("container_engine", CONTAINER_ENGINE_VAR_NAME)?;
@@ -308,7 +320,7 @@ impl SettingsFiles {
         Ok(SettingsBuilder {
             profile,
             tenant,
-            repository,
+            registry,
             base_url,
             https_proxy,
             container_engine,
@@ -328,8 +340,8 @@ impl Settings {
     }
 
     /// The resolved container registry, or `None` if unset.
-    pub fn repository(&self) -> Option<&str> {
-        self.repository.as_deref()
+    pub fn registry(&self) -> Option<&str> {
+        self.registry.as_deref()
     }
 
     /// The base URL to talk to: an explicit `base_url` if set, otherwise one
@@ -401,7 +413,7 @@ impl Settings {
 pub struct SettingsBuilder {
     profile: Option<String>,
     tenant: Option<String>,
-    repository: Option<String>,
+    registry: Option<String>,
     base_url: Option<String>,
     https_proxy: Option<String>,
     container_engine: Option<String>,
@@ -424,8 +436,8 @@ impl SettingsBuilder {
     }
 
     #[must_use]
-    pub fn repository(mut self, value: &str) -> Self {
-        self.repository = Some(value.to_string());
+    pub fn registry(mut self, value: &str) -> Self {
+        self.registry = Some(value.to_string());
         self
     }
 
@@ -467,7 +479,7 @@ impl SettingsBuilder {
         Settings {
             profile: self.profile,
             tenant: self.tenant,
-            repository: self.repository,
+            registry: self.registry,
             base_url: self.base_url,
             https_proxy: self.https_proxy,
             container_engine: self.container_engine,
@@ -490,12 +502,12 @@ fn explicit_settings_path(flag: Option<PathBuf>) -> Result<Option<PathBuf>> {
     }
 }
 
-/// Writes `tenant` and `repository` into the global `settings.toml`, in the
+/// Writes `tenant` and `registry` into the global `settings.toml`, in the
 /// table of `profile_to_update` or else the top-level table. A blank value is
 /// not written.
 pub(crate) fn update_settings_in_global_file(
     tenant: Option<String>,
-    repository: Option<String>,
+    registry: Option<String>,
     profile_to_update: Option<&str>,
 ) -> Result<()> {
     let path = global_settings_dir()
@@ -530,9 +542,9 @@ pub(crate) fn update_settings_in_global_file(
                 "The settings file at {:?} is malformed: `profile` should be a table of named profiles",
                 &path
             ))?;
-        update_table(entry_as_table_mut(profiles, profile), tenant, repository);
+        update_table(entry_as_table_mut(profiles, profile), tenant, registry);
     } else {
-        update_table(&mut contents, tenant, repository);
+        update_table(&mut contents, tenant, registry);
     }
 
     write_global_toml(GLOBAL_SETTINGS_FILENAME, &contents)?;
@@ -573,17 +585,24 @@ pub(crate) fn mkdir(path: &Path, recursive: bool, permissions: u32) -> Result<()
     Ok(())
 }
 
-fn insert_key_if_non_empty(target: &mut Table, key: &str, value: Option<String>) {
-    if let Some(value) = value
-        && !value.is_empty()
-    {
-        target.insert(key.to_owned(), Value::String(value));
+/// Inserts `value` at `key` unless it is `None` or empty, and returns whether
+/// it did.
+fn insert_key_if_non_empty(target: &mut Table, key: &str, value: Option<String>) -> bool {
+    match value {
+        Some(value) if !value.is_empty() => {
+            target.insert(key.to_owned(), Value::String(value));
+            true
+        }
+        _ => false,
     }
 }
 
-fn update_table(target: &mut Table, tenant: Option<String>, repository: Option<String>) {
+fn update_table(target: &mut Table, tenant: Option<String>, registry: Option<String>) {
     insert_key_if_non_empty(target, "tenant", tenant);
-    insert_key_if_non_empty(target, "repository", repository);
+    if insert_key_if_non_empty(target, REGISTRY_KEY, registry) {
+        // The table never holds the old name beside the new one.
+        target.remove(REPOSITORY_KEY);
+    }
 }
 
 /// The base URL of `tenant` when no `base_url` is set.
@@ -694,7 +713,7 @@ fn resolve_value(
     project: Option<&Table>,
     global: Option<&Table>,
 ) -> Result<Option<String>> {
-    resolve_value_with(string_value, key, env_var, profile, project, global)
+    resolve_value_with(string_value, &[key], &[env_var], profile, project, global)
 }
 
 /// [`resolve_value`] for a numeric setting: the file layers accept a bare TOML
@@ -708,35 +727,44 @@ fn resolve_integer_value(
     project: Option<&Table>,
     global: Option<&Table>,
 ) -> Result<Option<String>> {
-    resolve_value_with(integer_value, key, env_var, profile, project, global)
+    resolve_value_with(integer_value, &[key], &[env_var], profile, project, global)
 }
 
+/// [`resolve_value`] for a setting with more than one name, such as a new name
+/// and an old one. Each layer reads the names in order, so the first name wins
+/// over a later one in the same layer, and a higher layer wins over both.
 fn resolve_value_with(
     read: ValueReader,
-    key: &str,
-    env_var: &str,
+    keys: &[&str],
+    env_vars: &[&str],
     profile: Option<&str>,
     project: Option<&Table>,
     global: Option<&Table>,
 ) -> Result<Option<String>> {
     // The environment variable always has highest precedence.
-    if let Some(value) = env::var(env_var)? {
-        return Ok(Some(value));
+    for env_var in env_vars {
+        if let Some(value) = env::var(env_var)? {
+            return Ok(Some(value));
+        }
     }
 
     // A named profile is consulted before defaults, project before global.
     if let Some(profile) = profile {
         for table in [project, global].into_iter().flatten() {
-            if let Some(value) = profile_value(table, profile, key, read)? {
-                return Ok(Some(value));
+            for key in keys {
+                if let Some(value) = profile_value(table, profile, key, read)? {
+                    return Ok(Some(value));
+                }
             }
         }
     }
 
     // Finally fall back to top-level defaults, project before global.
     for table in [project, global].into_iter().flatten() {
-        if let Some(value) = read(table, key, key)? {
-            return Ok(Some(value));
+        for key in keys {
+            if let Some(value) = read(table, key, key)? {
+                return Ok(Some(value));
+            }
         }
     }
 
@@ -916,7 +944,7 @@ mod tests {
             None
         );
         assert_eq!(
-            profile_value(&table, "staging", "repository", string_value).unwrap(),
+            profile_value(&table, "staging", "registry", string_value).unwrap(),
             None
         );
     }

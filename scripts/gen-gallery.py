@@ -2819,8 +2819,8 @@ def _doctor_env(
         "ANTITHESIS_USERNAME": want("ANTITHESIS_USERNAME", username, "demo-user"),
         "ANTITHESIS_PASSWORD": want("ANTITHESIS_PASSWORD", password, _FAKE_PASSWORD),
         "ANTITHESIS_TENANT": want("ANTITHESIS_TENANT", tenant, "demo-tenant"),
-        "ANTITHESIS_REPOSITORY": want(
-            "ANTITHESIS_REPOSITORY", repo, "registry.example.com/acme/demo"
+        "ANTITHESIS_REGISTRY": want(
+            "ANTITHESIS_REGISTRY", repo, "registry.example.com/acme/demo"
         ),
     }
 
@@ -3765,7 +3765,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
         Story(
             "doctor-json-ready",
             "Allow CI when local configuration is ready",
-            "I have configured my tenant, repository, and API key. I want a script "
+            "I have configured my tenant, container registry, and API key. I want a script "
             "to confirm my local setup without a network request.",
             "`doctor --json --offline` prints `ok: true` and exits zero. Its checks "
             "array contains successful tenant and credentials checks, the credentials "
@@ -4881,15 +4881,15 @@ _FAKE_OIDC_TOKEN = "fake-oidc-token"
 # A PASETO that expired in 2019: test vector 2-S-1.
 _FAKE_PASETO_A = "v2.public.eyJkYXRhIjoidGhpcyBpcyBhIHNpZ25lZCBtZXNzYWdlIiwiZXhwIjoiMjAxOS0wMS0wMVQwMDowMDowMCswMDowMCJ9HQr8URrGntTu7Dz9J2IF23d1M7-9lH9xiqdGyJNvzp4angPW5Esc7C5huy_M8I8_DjJK2ZXC2SUYuOFM-Q_5Cw"
 _TENANT = "acme"
-_REPO = "registry.example.com/acme/app"
+_REGISTRY = "registry.example.com/acme/app"
 _SETTINGS = ".config/snouty/settings.toml"
 _CREDS = ".config/snouty/credentials.toml"
-_SEED_SETTINGS_TOML = f'tenant = "{_TENANT}"\nrepository = "{_REPO}"\n'
+_SEED_SETTINGS_TOML = f'tenant = "{_TENANT}"\nregistry = "{_REGISTRY}"\n'
 # A `credentials.toml` exactly as `snouty login` writes it.
 _SEED_CREDS_TOML = f'[default]\ntype = "ApiKey"\napi_key = "{_FAKE_API_KEY_A}"\n'
 
 _ASK_TENANT = "What Antithesis tenant"
-_ASK_REPO = "What container repository"
+_ASK_REPO = "What container registry"
 _ASK_CREDENTIALS = "What kind of credentials"
 _ASK_KEY = "Please enter your API Key"
 _EMPTY_KEY_REFUSED = "An empty value is not valid."
@@ -4947,18 +4947,18 @@ def build_tty_stories() -> list[Story]:
         _tty_story(
             "login-fresh-apikey",
             "First-time setup with an API key",
-            "I just installed snouty and want to configure my tenant, repository, and API key.",
+            "I just installed snouty and want to configure my tenant, registry, and API key.",
             ["login"],
             (
                 (_ASK_TENANT, _TENANT + ENTER),
-                (_ASK_REPO, _REPO + ENTER),
+                (_ASK_REPO, _REGISTRY + ENTER),
                 (_ASK_KEY, _FAKE_API_KEY_B + ENTER),
             ),
             tty_persisted(
                 prompts=(_ASK_TENANT, _ASK_REPO, _ASK_KEY),
                 absent_prompts=(_ASK_CREDENTIALS,),
                 files=(
-                    (_SETTINGS, (f'tenant = "{_TENANT}"', f'repository = "{_REPO}"')),
+                    (_SETTINGS, (f'tenant = "{_TENANT}"', f'registry = "{_REGISTRY}"')),
                     (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_API_KEY_B}"')),
                 ),
                 secrets_absent=(_FAKE_API_KEY_B,),
@@ -4967,7 +4967,7 @@ def build_tty_stories() -> list[Story]:
         _tty_story(
             "login-reuse-default",
             "Re-run login and keep my stored values",
-            "I already logged in; re-running should offer my previous tenant, repository, and key "
+            "I already logged in; re-running should offer my previous tenant, registry, and key "
             "back so I can just hit enter.",
             ["login"],
             (
@@ -4976,11 +4976,11 @@ def build_tty_stories() -> list[Story]:
                 (_ASK_KEY, ENTER),
             ),
             tty_persisted(
-                prompts=(_TENANT, _REPO, f"{_ASK_KEY} (********9Pgw) kept"),
+                prompts=(_TENANT, _REGISTRY, f"{_ASK_KEY} (********9Pgw) kept"),
                 # Keeping the stored key replaces nothing, and shows no new mask.
                 absent_prompts=("replacing your stored", "(********9Pgw) ********"),
                 files=(
-                    (_SETTINGS, (f'tenant = "{_TENANT}"', f'repository = "{_REPO}"')),
+                    (_SETTINGS, (f'tenant = "{_TENANT}"', f'registry = "{_REGISTRY}"')),
                     # Every answer was a bare Enter, so the stored key must survive.
                     (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_API_KEY_A}"')),
                 ),
@@ -5103,7 +5103,7 @@ def build_tty_stories() -> list[Story]:
             ["login"],
             (
                 (_ASK_TENANT, _TENANT + ENTER),
-                (_ASK_REPO, _REPO + ENTER),
+                (_ASK_REPO, _REGISTRY + ENTER),
                 (_ASK_CREDENTIALS, ENTER),
             ),
             tty_persisted(
@@ -5150,7 +5150,7 @@ def _mock_story(
         env={
             **_no_ambient_antithesis_env(),
             "ANTITHESIS_TENANT": _TENANT,
-            "ANTITHESIS_REPOSITORY": _REPO,
+            "ANTITHESIS_REGISTRY": _REGISTRY,
             **credential,
         },
         isolate_config=True,

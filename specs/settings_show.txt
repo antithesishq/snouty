@@ -10,7 +10,7 @@
 snouty settings show
 stdout '^profile +default$'
 stdout '^tenant +not set$'
-stdout '^repository +not set$'
+stdout '^registry +not set$'
 stdout '^base_url +not set$'
 stdout '^https_proxy +not set$'
 stdout '^container_engine +auto-detect$'
@@ -26,7 +26,7 @@ env SNOUTY_API_CACHE_MAX_FILE_SIZE=1000
 snouty --settings chosen.toml --profile staging settings show
 stdout '^profile +staging$'
 stdout '^tenant +acme$'
-stdout '^repository +registry\.example\.com/staging$'
+stdout '^registry +registry\.example\.com/staging$'
 stdout '^base_url +https://acme\.antithesis\.com$'
 stdout '^https_proxy +http://proxy\.example\.com:3128$'
 stdout '^api_cache_max_file_size +1000 B$'
@@ -49,15 +49,15 @@ stdout '(?s)^global +/[^\n]*/cfg/snouty/settings\.toml\ncredentials +/[^\n]*/cfg
 snouty --json --settings chosen.toml settings show
 stdout '"settings": \{'
 stdout '"tenant": "acme"'
-stdout '"repository": "global-repo"'
+stdout '"registry": "global-repo"'
 stdout '"profile": null'
 stdout '"api_cache_max_file_size": 1000'
 stdout '(?s)"files": \[.*"type": "project",\n +"path": "/[^\n]*/chosen\.toml".*"type": "global",\n +"path": "/[^\n]*/cfg/snouty/settings\.toml".*"type": "credentials",\n +"path": "/[^\n]*/cfg/snouty/credentials\.toml"'
 
 -- cfg/snouty/settings.toml --
-repository = "global-repo"
+registry = "global-repo"
 -- credentials.toml --
 [default]
 -- chosen.toml --
 [profile.staging]
-repository = "registry.example.com/staging"
+registry = "registry.example.com/staging"

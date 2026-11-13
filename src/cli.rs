@@ -318,8 +318,8 @@ pub enum Commands {
         #[arg(long, value_parser = validate_non_empty)]
         tenant: Option<String>,
 
-        #[arg(long, value_parser = validate_non_empty)]
-        repository: Option<String>,
+        #[arg(long, alias = "repository", value_parser = validate_non_empty)]
+        registry: Option<String>,
     },
 
     /// Give Docker or Podman the credential for the tenant's container registry

@@ -121,8 +121,8 @@ async fn run(cli: Cli) -> Result<()> {
             SettingsCommands::Deny(args) => snouty::settings::deny(&args.path)
                 .map(|path| eprintln!("Denied {}", path.display())),
         },
-        Commands::Login { tenant, repository } => {
-            cmd_login(tenant, repository, profile.as_deref(), &settings?, output).await
+        Commands::Login { tenant, registry } => {
+            cmd_login(tenant, registry, profile.as_deref(), &settings?, output).await
         }
         Commands::Launch(args) => {
             cmd_launch(args, &settings?, settings_path, profile, output).await
@@ -267,7 +267,7 @@ async fn cmd_launch(
 
     let config_image_ref = if let Some(config_dir) = &args.config {
         let detected = config::detect_config(config_dir)?;
-        let registry = snouty::settings::require_setting(settings.repository(), "repository")?;
+        let registry = snouty::settings::require_setting(settings.registry(), "registry")?;
 
         let image_ref = container::generate_image_ref(registry);
         params.insert(ANT_CONFIG_IMAGE, &image_ref);

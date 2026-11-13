@@ -533,7 +533,7 @@ impl DockerCompose {
     /// decides what happens to an image that is not local.
     ///
     /// A reference into `registry` itself comes back bare, because
-    /// Antithesis resolves such a name against the tenant's own repository.
+    /// Antithesis resolves such a name against the tenant's own registry.
     pub fn pin_images(
         &self,
         rt: &dyn ContainerRuntime,
@@ -674,7 +674,7 @@ fn find_served_images<'a>(
     Ok((served, unserved))
 }
 
-/// Push each local image in `images` into the tenant repository at `prefix`,
+/// Push each local image in `images` into the tenant registry at `prefix`,
 /// and map it to its pushed digest reference. No push overwrites the tenant
 /// tag that Antithesis reads for an image in `remote`.
 fn push_images<'a>(
@@ -723,9 +723,9 @@ fn push_images<'a>(
         .collect()
 }
 
-/// The tag in the tenant repository at `prefix` that Antithesis reads first
+/// The tag in the tenant registry at `prefix` that Antithesis reads first
 /// for `image`, or `None` when `image` names another registry. Antithesis
-/// resolves a bare name against the tenant repository before public
+/// resolves a bare name against the tenant registry before public
 /// registries.
 fn tenant_tag(image: &str, prefix: &str) -> Option<String> {
     let path = strip_registry(image, prefix);
@@ -734,7 +734,7 @@ fn tenant_tag(image: &str, prefix: &str) -> Option<String> {
 
 /// The new `image:` reference of each service whose reference changes. An
 /// image that is not in `references` keeps its reference as written, and
-/// every reference loses the address of the tenant repository at `prefix`.
+/// every reference loses the address of the tenant registry at `prefix`.
 fn service_rewrites(
     contents: &ComposeContents,
     references: &BTreeMap<&str, String>,
@@ -762,7 +762,7 @@ pub enum MissingImages {
     /// time.
     AssumeRemote,
 }
-/// Where snouty pushes `image` inside the tenant repository at `prefix`.
+/// Where snouty pushes `image` inside the tenant registry at `prefix`.
 ///
 /// The path below `prefix` never opens with a registry host, so the compose
 /// pin can drop `prefix` and still name the same bytes. A host the author
@@ -1953,10 +1953,10 @@ services:
         );
     }
 
-    /// A repository beside the tenant's own, at the same address: the
-    /// registry serves those bytes, but only under the address this machine
-    /// uses, and a test run cannot resolve it. snouty copies the image into
-    /// the tenant repository instead of pinning the address.
+    /// An image repository beside the tenant registry, at the same address:
+    /// the registry serves those bytes, but only under the address this
+    /// machine uses, and a test run cannot resolve it. snouty copies the image
+    /// into the tenant registry instead of pinning the address.
     #[test]
     fn pin_images_copies_a_neighbour_repository_at_our_own_address() {
         if !has_compose() {
@@ -2421,8 +2421,8 @@ services:
     }
     #[test]
     fn push_images_does_not_push_over_a_tenant_tag_that_a_remote_image_reads() {
-        // A reference into the tenant repository, and a bare name, which
-        // Antithesis resolves against the tenant repository first.
+        // A reference into the tenant registry, and a bare name, which
+        // Antithesis resolves against the tenant registry first.
         for (local, remote) in [
             ("own:v2", "reg.example.com/own:v2"),
             ("reg.example.com/own:v2", "own:v2"),
@@ -2461,7 +2461,7 @@ services:
             service_rewrites(&contents, &references, "reg.example.com/"),
             BTreeMap::from([
                 ("app".to_string(), "myapp:latest@sha256:a".to_string()),
-                // A remote image in the tenant repository loses the address
+                // A remote image in the tenant registry loses the address
                 // too, so Antithesis does not need to resolve it.
                 ("own".to_string(), "own:v2".to_string()),
             ])

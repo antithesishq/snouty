@@ -787,15 +787,21 @@ fn push_destination(image: &str, prefix: &str) -> Result<String> {
 /// while a single manifest shares the local image's architecture, so the
 /// local image must be amd64.
 ///
-/// The registry of `prefix` is never asked. A push deduplicates the layers
-/// that it already holds, so the check would save little, and the tenant
-/// registry does not serve the config blobs that `manifest inspect` reads.
+/// The registry of `prefix` is asked only for an image that the author named
+/// at its push destination, whose manifest list a push would replace with
+/// the local platform. A local image is never looked up at its push
+/// destination: a push deduplicates the layers that the registry holds, so
+/// the check would save little, and the Antithesis registry does not serve
+/// the config blobs that `manifest inspect` reads. An image at the
+/// registry's address outside `prefix` goes to the push path, because a test
+/// run cannot resolve that address.
 fn find_remote_pin(rt: &dyn ContainerRuntime, image: &str, prefix: &str) -> Result<Option<String>> {
+    let repo = normalize_repo(image_repo(image));
     let registry_address = registry_host(prefix);
-    if registry_address.is_some() && registry_host(image) == registry_address {
+    let at_destination = normalize_repo(image_repo(&push_destination(image, prefix)?)) == repo;
+    if !at_destination && registry_address.is_some() && registry_host(image) == registry_address {
         return Ok(None);
     }
-    let repo = normalize_repo(image_repo(image));
     let repo_digests = rt.image_repo_digests(image)?;
     let tag = image_ref_tag(image);
     // A pull typically records several digests per repo (the per-arch
@@ -1860,6 +1866,41 @@ services:
             vec!["reg.example.com/myapp:v1".to_string()]
         );
     }
+    /// An image that the author named at its push destination keeps the
+    /// manifest-list pin there: a push would replace the list with the local,
+    /// non-amd64 platform.
+    #[test]
+    fn pin_images_pins_a_manifest_list_at_its_push_destination() {
+        if !has_compose() {
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+        let rt = FakeRuntime {
+            available_images: BTreeMap::from([("reg.example.com/app:v1".to_string(), true)]),
+            architectures: BTreeMap::from([(
+                "reg.example.com/app:v1".to_string(),
+                "arm64".to_string(),
+            )]),
+            repo_digests: BTreeMap::from([(
+                "reg.example.com/app:v1".to_string(),
+                vec!["reg.example.com/app@sha256:list".to_string()],
+            )]),
+            remote_manifests: BTreeMap::from([(
+                "reg.example.com/app@sha256:list".to_string(),
+                RemoteManifest::List { has_amd64: true },
+            )]),
+            ..Default::default()
+        };
+        let out = pin_with_fake(
+            &rt,
+            "services:\n  app:\n    image: reg.example.com/app:v1\n",
+            "reg.example.com",
+        )
+        .unwrap();
+        assert!(out.contains("image: app:v1@sha256:list"), "{out}");
+        assert!(rt.pushed.lock().unwrap().is_empty());
+    }
+
     /// An image that an earlier launch pushed to the tenant registry is
     /// pushed again, and snouty never asks the tenant registry for its
     /// manifest: the push deduplicates the layers.

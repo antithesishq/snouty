@@ -94,3 +94,16 @@ set-env ACTIONS_ID_TOKEN_REQUEST_TOKEN ${FAKE_OIDC_REQUEST_TOKEN}
 stderr 'did not accept the credential; nothing was saved'
 stderr 'id-token: write'
 ! stderr 'unset it'
+
+# A username and password from the environment cannot pass the check, and the
+# suggestion names the variables, because every later command reads them first.
+mock-runs-server
+env ANTITHESIS_API_KEY=
+env GITHUB_ACTIONS=
+env ACTIONS_ID_TOKEN_REQUEST_URL=
+set-env ANTITHESIS_USERNAME puser
+set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
+isolate-home env_password
+! snouty login --tenant spec-tenant
+stderr 'nothing was saved'
+stderr -literal 'unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD'

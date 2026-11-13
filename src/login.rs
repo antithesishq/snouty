@@ -316,11 +316,20 @@ async fn fetch_registry(
                 );
                 (found.untag(), key_from_environment)
             }
-            _ => {
+            found => {
+                // Every later command reads the environment first, so a key
+                // at the prompt would not replace a password there.
+                let password_in_environment = found.is_some_and(|found| {
+                    matches!(found.tag(), CredentialSource::Environment { .. })
+                });
                 return Err(user_error(format!(
                     "login needs an API key or a single sign-on to check with `{tenant}`; nothing was saved"
                 ))
-                .suggestion(next_step));
+                .suggestion(if password_in_environment {
+                    "unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD, and set ANTITHESIS_API_KEY"
+                } else {
+                    next_step
+                }));
             }
         },
     };

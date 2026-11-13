@@ -183,22 +183,21 @@ pub(crate) fn truncate_path(path: &str, width: usize) -> String {
     if measure_text_width(path) <= width {
         return path.to_string();
     }
-    // The longest tail that fits beside the ellipsis.
-    let mut start = path.len();
-    let mut tail_width = 0;
-    for (index, c) in path.char_indices().rev() {
-        tail_width += measure_text_width(c.encode_utf8(&mut [0; 4]));
-        if tail_width + 1 > width {
-            break;
-        }
-        start = index;
-    }
-    let tail = &path[start..];
-    let tail = match tail.find('/') {
-        Some(slash) if slash > 0 => &tail[slash..],
-        _ => tail,
-    };
-    format!("…{tail}")
+    // The longest tail that starts at a `/` and fits beside the ellipsis, else
+    // the longest tail that fits. Measure each tail whole: measuring one char
+    // at a time miscounts escape sequences.
+    let fits = |start: usize| measure_text_width(&path[start..]) < width;
+    let start = path
+        .match_indices('/')
+        .map(|(slash, _)| slash)
+        .find(|&slash| fits(slash))
+        .or_else(|| {
+            path.char_indices()
+                .map(|(index, _)| index)
+                .find(|&i| fits(i))
+        })
+        .unwrap_or(path.len());
+    format!("…{}", &path[start..])
 }
 
 #[cfg(test)]
@@ -291,8 +290,14 @@ mod tests {
 
     #[test]
     fn truncate_path_cuts_at_a_component() {
-        assert_eq!(truncate_path("/usr/share/dotnet/dotnet", 19), "…/dotnet/dotnet");
-        assert_eq!(truncate_path("/usr/share/dotnet/dotnet", 24), "/usr/share/dotnet/dotnet");
+        assert_eq!(
+            truncate_path("/usr/share/dotnet/dotnet", 19),
+            "…/dotnet/dotnet"
+        );
+        assert_eq!(
+            truncate_path("/usr/share/dotnet/dotnet", 24),
+            "/usr/share/dotnet/dotnet"
+        );
         // A last component wider than the cell is cut inside the component.
         assert_eq!(truncate_path("/bin/averylongname", 6), "…gname");
     }

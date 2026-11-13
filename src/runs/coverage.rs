@@ -1,6 +1,7 @@
 //! `runs modules` and `runs coverage`: the run coverage API.
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::io::Write;
 
 use color_eyre::Section;
@@ -21,7 +22,7 @@ use crate::stdio;
 use crate::table::{Align, Column, Fit, Table, truncate_path};
 use crate::vtime::VTime;
 
-use super::{stream_error_message, terminal_width};
+use super::{MID_STREAM_NOTE, stream_error_message, terminal_width};
 
 /// The failure of `runs coverage` when the server ends the locations with a
 /// `Stream_Error` line. snouty exits with status 2 for it, so that a script
@@ -76,12 +77,14 @@ pub(super) async fn cmd_runs_modules(
         return Ok(());
     }
 
-    let modules: Vec<ModuleInstances> = modules.try_collect().await?;
+    // A status read before the listing ends can only be older, so its
+    // "more modules may load" stays true.
+    let (modules, run): (Vec<ModuleInstances>, _) =
+        futures_util::try_join!(modules.try_collect(), api.get_run(run_id))?;
     if !modules.is_empty() {
         outln!("{}", render_modules_table(&modules, terminal_width()))?;
     }
-    let run = api.get_run(run_id).await?.untag();
-    eprintln!("{}", modules_status_line(&modules, &run.status));
+    eprintln!("{}", modules_status_line(&modules, &run.untag().status));
     Ok(())
 }
 
@@ -89,36 +92,44 @@ pub(super) async fn cmd_runs_modules(
 /// and program. A module that no program has loaded yet gets one row with
 /// blank CONTAINER and PROGRAM.
 fn render_modules_table(modules: &[ModuleInstances], width: usize) -> String {
-    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut pairs: Vec<(&CoverageModule, &str, &str)> = Vec::new();
     for ModuleInstances { module, instances } in modules {
-        let row = |container: &str, program: &str| {
-            vec![
-                sanitize(&module.module_id),
-                sanitize(&module.name),
-                sanitize(program),
-                sanitize(container),
-                module.language.as_deref().map(sanitize).unwrap_or_default(),
-                module.num_locations.to_string(),
-                if module.has_catalog { "yes" } else { "no" }.to_string(),
-            ]
-        };
         if instances.is_empty() {
-            rows.push(row("", ""));
+            pairs.push((module, "", ""));
         }
         for instance in instances {
-            rows.push(row(&instance.container_name, &instance.program_path));
+            pairs.push((module, &instance.container_name, &instance.program_path));
         }
     }
-    rows.sort_by(|a, b| (&a[0], &a[3], &a[2]).cmp(&(&b[0], &b[3], &b[2])));
+    pairs.sort_by_key(|&(module, container, program)| (&module.module_id, container, program));
+    let rows = pairs.into_iter().map(|(module, container, program)| {
+        vec![
+            sanitize(&module.module_id),
+            sanitize(&module.name),
+            sanitize(program),
+            sanitize(container),
+            module.language.as_deref().map_or_default(sanitize),
+            module.num_locations.to_string(),
+            if module.has_catalog { "yes" } else { "no" }.to_string(),
+        ]
+    });
     Table::builder()
         .column(Column::new("MODULE"))
-        .column(Column::new("NAME").fit(Fit::Truncate { floor: 12 }).priority(1))
+        .column(
+            Column::new("NAME")
+                .fit(Fit::Truncate { floor: 12 })
+                .priority(1),
+        )
         .column(Column::new("PROGRAM").fit(Fit::TruncatePath { floor: 19 }))
-        .column(Column::new("CONTAINER").fit(Fit::Truncate { floor: 10 }).priority(1))
+        .column(
+            Column::new("CONTAINER")
+                .fit(Fit::Truncate { floor: 10 })
+                .priority(1),
+        )
         .column(Column::new("LANG"))
         .column(Column::new("LOCATIONS").align(Align::Right))
         .column(Column::new("SYMBOLS"))
-        .render(rows, width)
+        .render(rows.collect(), width)
 }
 
 /// `7 modules in 6 containers · run in progress (more modules may load)`.
@@ -130,9 +141,9 @@ fn modules_status_line(modules: &[ModuleInstances], status: &RunStatus) -> Strin
         .collect();
     let mut line = count(modules.len(), "module");
     if !modules.is_empty() {
-        line.push_str(&format!(" in {}", count(containers.len(), "container")));
+        let _ = write!(line, " in {}", count(containers.len(), "container"));
     }
-    line.push_str(&format!(" · {}", run_status(status)));
+    let _ = write!(line, " · {}", run_status(status));
     if !status.is_terminal() {
         line.push_str(" (more modules may load)");
     }
@@ -178,7 +189,6 @@ pub(super) async fn cmd_runs_coverage(
         (_, true) => Some(Reach::Unreached),
         _ => None,
     };
-    let covered = reach.map(|reach| reach == Reach::Reached);
 
     let api = AntithesisApi::new(settings, verbose)?;
     // The endpoint takes one module, so each --module is its own request.
@@ -187,11 +197,10 @@ pub(super) async fn cmd_runs_coverage(
     } else {
         module_ids.iter().map(|id| Some(id.as_str())).collect()
     };
-    let streams = futures_util::future::try_join_all(
-        modules
-            .into_iter()
-            .map(|module_id| api.get_coverage_locations(&run_id, module_id, covered, follow)),
-    )
+    let streams = futures_util::future::try_join_all(modules.into_iter().map(|module_id| {
+        let covered = reach.map(|reach| reach == Reach::Reached);
+        api.get_coverage_locations(&run_id, module_id, covered, follow)
+    }))
     .await?;
     // A followed stream sends each location as the run reaches it, so the
     // streams interleave. Otherwise each module's locations stay together.
@@ -212,12 +221,11 @@ pub(super) async fn cmd_runs_coverage(
             if json {
                 outln!("{value}")?;
             }
-            return Err(Report::new(CoverageCut(message.to_string()))
-                .note("the locations before the error may be incomplete"));
+            return Err(Report::new(CoverageCut(message.to_string())).note(MID_STREAM_NOTE));
         }
         // A followed stream sends the locations of a module that loads later
         // unreached, before the run reaches them.
-        if reach == Some(Reach::Reached) && !is_reached(&value) {
+        if reach == Some(Reach::Reached) && value.get("first_reached").is_none_or(Value::is_null) {
             continue;
         }
         if json {
@@ -236,22 +244,22 @@ pub(super) async fn cmd_runs_coverage(
     }
 
     let run = api.get_run(&run_id).await?.untag();
-    eprintln!("{} · {}", count(printed, "location"), run_status(&run.status));
+    eprintln!(
+        "{} · {}",
+        count(printed, "location"),
+        run_status(&run.status)
+    );
     if !run.status.is_terminal() && !follow {
+        let follow_hint = if reach == Some(Reach::Unreached) {
+            ""
+        } else {
+            "use --follow or "
+        };
         eprintln!(
-            "{}",
-            if reach == Some(Reach::Unreached) {
-                "this may be a partial snapshot, re-run the command for more locations"
-            } else {
-                "this may be a partial snapshot, use --follow or re-run the command for more locations"
-            }
+            "this may be a partial snapshot, {follow_hint}re-run the command for more locations"
         );
     }
     Ok(())
-}
-
-fn is_reached(location: &Value) -> bool {
-    location.get("first_reached").is_some_and(|v| !v.is_null())
 }
 
 /// The columns of `runs coverage`. Rows print as they arrive, so the columns
@@ -273,21 +281,15 @@ const HASH_WIDTH: usize = 20;
 
 impl LocationLayout {
     fn header(&self) -> String {
-        self.join([
-            "MODULE".into(),
-            "LOCATION".into(),
-            "FUNCTION".into(),
-            "HASH".into(),
-            "VTIME".into(),
-        ])
+        self.join(["MODULE", "LOCATION", "FUNCTION", "HASH", "VTIME"])
     }
 
     fn row(&self, location: &LocationCoverage) -> String {
-        let mut place = location.file.as_deref().map(sanitize).unwrap_or_default();
+        let mut place = location.file.as_deref().map_or_default(sanitize);
         if let Some(line) = location.begin_line {
-            place.push_str(&format!(":{line}"));
+            let _ = write!(place, ":{line}");
             if let Some(column) = location.begin_column {
-                place.push_str(&format!(":{column}"));
+                let _ = write!(place, ":{column}");
             }
         }
         let mut function = sanitize(&location.function);
@@ -302,10 +304,16 @@ impl LocationLayout {
             ),
             None => (String::new(), String::new()),
         };
-        self.join([sanitize(&location.module_id), place, function, hash, vtime])
+        self.join([
+            &sanitize(&location.module_id),
+            &place,
+            &function,
+            &hash,
+            &vtime,
+        ])
     }
 
-    /// The vtime cut, never rounded, to five decimals, as `runs logs` cuts it.
+    /// The vtime cut, never rounded, to five decimals.
     fn vtime(&self, vtime: VTime) -> String {
         let mut text = vtime.to_string();
         if !self.detail
@@ -317,17 +325,22 @@ impl LocationLayout {
         text
     }
 
-    fn join(&self, [module, location, function, hash, vtime]: [String; 5]) -> String {
-        let pad = |text: String, width: usize| format!("{text:<width$}  ");
-        let mut line = pad(module, MODULE_WIDTH) + &pad(location, LOCATION_WIDTH);
+    fn join(&self, [module, location, function, hash, vtime]: [&str; 5]) -> String {
+        let mut line = String::new();
+        let _ = write!(
+            line,
+            "{module:<MODULE_WIDTH$}  {location:<LOCATION_WIDTH$}  "
+        );
         if self.moment {
-            line += &pad(function, FUNCTION_WIDTH);
-            line += &pad(hash, HASH_WIDTH);
-            line += &vtime;
+            let _ = write!(
+                line,
+                "{function:<FUNCTION_WIDTH$}  {hash:<HASH_WIDTH$}  {vtime}"
+            );
         } else {
-            line += &function;
+            line += function;
         }
-        line.trim_end().to_string()
+        line.truncate(line.trim_end().len());
+        line
     }
 }
 
@@ -358,7 +371,12 @@ mod tests {
     fn modules() -> Vec<ModuleInstances> {
         vec![
             ModuleInstances {
-                module: module("go-20e55e2f1623", "instrhello/internal/work", Some("Go"), true),
+                module: module(
+                    "go-20e55e2f1623",
+                    "instrhello/internal/work",
+                    Some("Go"),
+                    true,
+                ),
                 instances: vec![
                     instance("goworker", "/usr/local/bin/worker"),
                     instance("driver", "/usr/local/bin/driver"),

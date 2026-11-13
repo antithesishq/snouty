@@ -47,10 +47,11 @@ mod generated {
 use crate::ndjson::{JsonStream, json_lines};
 pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
-    BuildLogLine, CoverageModule, CoverageModuleInstance, Event, EventProperty, ExecuteCommandRequestSourceRunId as SourceRunId,
-    ExecuteCommandRequestSourceSessionId as SourceSessionId, FaultTolerance, Moment,
-    NonEventProperty, PerformanceTier, Property, PropertyStatus, RunDetail, RunDetailSubStatus,
-    LocationCoverage, RunStatus, RunStreamNotificationType, RunSummary, UsageEntry,
+    BuildLogLine, CoverageModule, CoverageModuleInstance, Event, EventProperty,
+    ExecuteCommandRequestSourceRunId as SourceRunId,
+    ExecuteCommandRequestSourceSessionId as SourceSessionId, FaultTolerance, LocationCoverage,
+    Moment, NonEventProperty, PerformanceTier, Property, PropertyStatus, RunDetail,
+    RunDetailSubStatus, RunStatus, RunStreamNotificationType, RunSummary, UsageEntry,
 };
 
 /// The outcome of a launch or debugging-launch request, and the `--json` output
@@ -1199,29 +1200,25 @@ impl AntithesisApi {
 
     /// Stream the modules that the run loaded, in the order that the server
     /// published them.
-    pub fn stream_run_modules(
-        &self,
-        run_id: &str,
-    ) -> impl futures_util::Stream<Item = Result<CoverageModule>> + '_ {
-        let run_id = run_id.to_string();
-        paginate_exhaust(move |after| {
-            let run_id = run_id.clone();
-            async move {
-                let mut request = self
-                    .client
-                    .list_run_modules()
-                    .run_id(&run_id)
-                    .limit(COVERAGE_PAGE_LIMIT);
-                if let Some(cursor) = after {
-                    request = request.after(cursor.as_str());
+    pub fn stream_run_modules<'a>(
+        &'a self,
+        run_id: &'a str,
+    ) -> impl futures_util::Stream<Item = Result<CoverageModule>> + 'a {
+        paginate_exhaust(move |after| async move {
+            let mut request = self
+                .client
+                .list_run_modules()
+                .run_id(run_id)
+                .limit(COVERAGE_PAGE_LIMIT);
+            if let Some(cursor) = after {
+                request = request.after(cursor.as_str());
+            }
+            match request.send().await {
+                Ok(response) => {
+                    let page = response.into_inner();
+                    Ok((page.data, page.has_more.then(|| page.cursor.to_string())))
                 }
-                match request.send().await {
-                    Ok(response) => {
-                        let page = response.into_inner();
-                        Ok((page.data, page.has_more.then(|| page.cursor.to_string())))
-                    }
-                    Err(err) => Err(run_not_found(&run_id, format_api_client_error(err).await)),
-                }
+                Err(err) => Err(run_not_found(run_id, format_api_client_error(err).await)),
             }
         })
     }

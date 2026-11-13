@@ -383,9 +383,15 @@ fn untype_prefixed_params(spec: &mut serde_json::Value) {
     let properties = spec
         .pointer_mut("/components/schemas/Params/properties")
         .and_then(serde_json::Value::as_object_mut)
-        .expect("openapi spec has no Params.properties; update `untype_prefixed_params` in build.rs");
+        .expect(
+            "openapi spec has no Params.properties; update `untype_prefixed_params` in build.rs",
+        );
     let before = properties.len();
-    properties.retain(|key, _| !["attrs.", "run.", "vcs."].iter().any(|p| key.starts_with(p)));
+    properties.retain(|key, _| {
+        !["attrs.", "run.", "vcs."]
+            .iter()
+            .any(|p| key.starts_with(p))
+    });
     assert_ne!(
         properties.len(),
         before,

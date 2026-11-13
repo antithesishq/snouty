@@ -1100,6 +1100,8 @@ pub enum RunsCommands {
     Coverage(RunsCoverageArgs),
 }
 
+// Each bool is a separate clap flag.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Args)]
 pub struct RunsCoverageArgs {
     /// Run ID

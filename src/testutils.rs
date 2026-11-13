@@ -1309,10 +1309,17 @@ fn mock_route_get_run_build_logs(run_id: &str) -> (u16, String) {
     (200, lines.join("\n") + "\n")
 }
 
+type MockModule = (
+    &'static str,
+    &'static str,
+    Option<&'static str>,
+    &'static [(&'static str, &'static str)],
+);
+
 /// The modules of every known run: (`module_id`, name, language, the
 /// instances as (container, program)). The module without a language has no
 /// symbol catalog.
-const MOCK_MODULES: &[(&str, &str, Option<&str>, &[(&str, &str)])] = &[
+const MOCK_MODULES: &[MockModule] = &[
     (
         "d85d838a38496ad7233432355829abc7d2333c33",
         "rusthello",
@@ -1384,20 +1391,21 @@ fn mock_route_list_module_instances(run_id: &str, module_id: &str) -> (u16, Stri
 /// that the flag was sent.
 fn mock_route_coverage_locations(run_id: &str, query: Option<&str>) -> (u16, String) {
     let rust = "d85d838a38496ad7233432355829abc7d2333c33";
-    let location = |module_id: &str, address: &str, function: &str, line: u32, reached: Option<&str>| {
-        let mut location = serde_json::json!({
-            "module_id": module_id, "address": address, "file": "src/main.rs",
-            "function": function, "begin_line": line, "begin_column": 5,
-            "end_line": line, "end_column": 5,
-        });
-        if let Some(vtime) = reached {
-            location["first_reached"] = serde_json::json!({
-                "run_seconds": 31.4,
-                "moment": {"input_hash": "-3625518438076122494", "vtime": vtime},
+    let location =
+        |module_id: &str, address: &str, function: &str, line: u32, reached: Option<&str>| {
+            let mut location = serde_json::json!({
+                "module_id": module_id, "address": address, "file": "src/main.rs",
+                "function": function, "begin_line": line, "begin_column": 5,
+                "end_line": line, "end_column": 5,
             });
-        }
-        location
-    };
+            if let Some(vtime) = reached {
+                location["first_reached"] = serde_json::json!({
+                    "run_seconds": 31.4,
+                    "moment": {"input_hash": "-3625518438076122494", "vtime": vtime},
+                });
+            }
+            location
+        };
     if run_id == "run-stream-error" {
         let lines = [
             location(rust, "1", "rusthello::main", 13, Some("12.846102431882170")).to_string(),
@@ -1421,10 +1429,22 @@ fn mock_route_coverage_locations(run_id: &str, query: Option<&str>) -> (u16, Str
         location(rust, "1", "rusthello::main", 13, Some("12.846102431882170")),
         location(rust, "2", "rusthello::spin", 7, Some("12.851377005412904")),
         location(rust, "3", "rusthello::spin", 9, None),
-        location("go-20e55e2f1623", "4", "work.Spin.func1", 17, Some("140.17209334451")),
+        location(
+            "go-20e55e2f1623",
+            "4",
+            "work.Spin.func1",
+            17,
+            Some("140.17209334451"),
+        ),
     ];
     if mock_query_param(query, "is_streaming").as_deref() == Some("true") {
-        locations.push(location(rust, "5", "rusthello::followed", 21, Some("301.118034990128")));
+        locations.push(location(
+            rust,
+            "5",
+            "rusthello::followed",
+            21,
+            Some("301.118034990128"),
+        ));
     }
     let module_id = mock_query_param(query, "module_id");
     let lines: Vec<String> = locations

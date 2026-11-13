@@ -1415,7 +1415,7 @@ impl ClientHooks<ClientState> for generated::Client {
         let auth = &self.inner().authn_info;
         // An expired credential is refreshed first, and a GitHub Actions
         // OIDC credential is expired until its first token. When the refresh
-        // fails, the request fails with the reason, rather than meet a 401.
+        // fails, the request fails with the reason, and is not sent.
         if auth.expired() {
             auth.refresh(self.client(), self.baseurl())
                 .await
@@ -2557,7 +2557,7 @@ mod tests {
     // #180 is that the status survives that; nothing further is added.
     #[tokio::test]
     async fn format_api_client_error_reports_the_status_for_an_empty_body() {
-        for status in [401, 429, 502] {
+        for status in [403, 429, 502] {
             let report = format_api_client_error(served_error(status, "")).await;
             let debug = format!("{report:?}");
 
@@ -3193,11 +3193,12 @@ mod tests {
         assert_eq!(version.release_version, "58.6");
     }
 
-    // The gateway rejects a bad token with a documented status and an *empty*
-    // body (content-type: text/plain). Before the transport-level normalization
-    // that body failed `Error_Response` parsing, which cost the status and left
-    // `snouty doctor` reporting the API as unreachable instead of as rejecting
-    // authentication. Every non-conforming error body must keep its status:
+    // The gateway rejects a bad token with 403 and an *empty* body
+    // (content-type: text/plain). 403 is not documented for this operation,
+    // but 401 is: before the transport-level normalization, an empty body
+    // with a documented status failed `Error_Response` parsing, which cost the
+    // status and left `snouty doctor` reporting the API as unreachable instead
+    // of as rejecting authentication. Every non-conforming error body must keep its status:
     // empty, an intermediary's HTML page, or an unexpected JSON shape.
     //
     // The mocks' `.expect(1)` also pins the retry contract: a served error
@@ -3205,6 +3206,7 @@ mod tests {
     #[tokio::test]
     async fn get_version_keeps_the_status_for_non_conforming_error_bodies() {
         let cases = [
+            (403, ""),
             (401, ""),
             (401, "<html><body>Unauthorized</body></html>"),
             (406, r#"{"statusCode":406}"#),
@@ -4485,7 +4487,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oauth_401_triggers_refresh_and_retries_once() {
+    async fn oauth_403_triggers_refresh_and_retries_once() {
         use wiremock::matchers::header;
 
         let mock_server = MockServer::start().await;
@@ -4514,7 +4516,7 @@ mod tests {
                 "authorization",
                 format!("Bearer {FAKE_ACCESS_TOKEN_A}"),
             ))
-            .respond_with(ResponseTemplate::new(401))
+            .respond_with(ResponseTemplate::new(403))
             .expect(1)
             .mount(&mock_server)
             .await;
@@ -4554,7 +4556,7 @@ mod tests {
         )
         .unwrap();
 
-        // The initial 401 drives a refresh and a single retry, which succeeds.
+        // The initial 403 drives a refresh and a single retry, which succeeds.
         let run = api.get_run("run-1").await.unwrap().untag();
         assert_eq!(run.run_id, "run-1");
 
@@ -4649,7 +4651,7 @@ mod tests {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1"))
-            .respond_with(ResponseTemplate::new(401))
+            .respond_with(ResponseTemplate::new(403))
             .expect(0)
             .mount(&mock_server)
             .await;
@@ -4751,7 +4753,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_401_adopts_a_newer_stored_token_without_a_refresh_token() {
+    async fn a_403_adopts_a_newer_stored_token_without_a_refresh_token() {
         use wiremock::matchers::header;
 
         let mock_server = MockServer::start().await;
@@ -4767,7 +4769,7 @@ mod tests {
                 "authorization",
                 format!("Bearer {FAKE_ACCESS_TOKEN_A}"),
             ))
-            .respond_with(ResponseTemplate::new(401))
+            .respond_with(ResponseTemplate::new(403))
             .expect(1)
             .mount(&mock_server)
             .await;
@@ -4782,7 +4784,7 @@ mod tests {
             .mount(&mock_server)
             .await;
         let creds_dir = TempDir::new().unwrap();
-        // The expiry of this token is unknown, so only the 401 drives the reload.
+        // The expiry of this token is unknown, so only the 403 drives the reload.
         let auth = oauth_with_newer_stored_token(&creds_dir, FAKE_ACCESS_TOKEN_A);
         let api = AntithesisApi::build(
             &Settings::for_test_base_url(&mock_server.uri()),
@@ -4825,7 +4827,7 @@ mod tests {
             "authorization",
             format!("Bearer {FAKE_ACCESS_TOKEN_A}"),
         ))
-        .respond_with(ResponseTemplate::new(401))
+        .respond_with(ResponseTemplate::new(403))
         .mount(&mock_server)
         .await;
         Mock::given(header(
@@ -4859,23 +4861,23 @@ mod tests {
             .into_iter()
             .filter(|request| request.url.path() == "/api/v0/runs/run-1")
             .count();
-        // Every stale-token 429, the 401, and one refreshed-token 429.
+        // Every stale-token 429, the 403, and one refreshed-token 429.
         assert_eq!(run_requests, MAX_RETRIES as usize + 2);
     }
 
     #[tokio::test]
-    async fn oauth_without_refresh_token_does_not_retry_on_401() {
+    async fn oauth_without_refresh_token_does_not_retry_on_403() {
         let mock_server = MockServer::start().await;
 
         // `.expect(1)` asserts the endpoint is hit exactly once — i.e. no retry.
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1"))
-            .respond_with(ResponseTemplate::new(401))
+            .respond_with(ResponseTemplate::new(403))
             .expect(1)
             .mount(&mock_server)
             .await;
 
-        // OAuth, with no refresh token and nothing newer stored, so the 401
+        // OAuth, with no refresh token and nothing newer stored, so the 403
         // passes straight through.
         let creds_dir = TempDir::new().unwrap();
         let auth = oauth_credential_in(creds_dir.path(), "access-token", None);
@@ -4890,7 +4892,7 @@ mod tests {
         let result = api.get_run("run-1").await;
         assert!(
             result.is_err(),
-            "a 401 with no refresh token should surface as an error, not be retried away"
+            "a 403 with no refresh token should surface as an error, not be retried away"
         );
 
         let requests = mock_server.received_requests().await.unwrap();
@@ -4903,17 +4905,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_key_credential_does_not_retry_on_401() {
+    async fn api_key_credential_does_not_retry_on_403() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("GET"))
             .and(path("/api/v0/runs/run-1"))
-            .respond_with(ResponseTemplate::new(401))
+            .respond_with(ResponseTemplate::new(403))
             .expect(1)
             .mount(&mock_server)
             .await;
 
-        // An API key can't refresh, so the 401 surfaces without a retry.
+        // An API key can't refresh, so the 403 surfaces without a retry.
         let api = AntithesisApi::build(
             &Settings::for_test_base_url(&mock_server.uri()),
             AuthenticationInfo::ApiKey {
@@ -4927,7 +4929,7 @@ mod tests {
         let result = api.get_run("run-1").await;
         assert_eq!(
             crate::error::api_error_status(&result.unwrap_err()),
-            Some(401)
+            Some(403)
         );
 
         let requests = mock_server.received_requests().await.unwrap();
@@ -5000,10 +5002,10 @@ mod tests {
     }
 
     // A re-send after a 429 wait carries the token of the first send. When
-    // that token expired during the wait, its 401 refreshes the credential
+    // that token expired during the wait, its 403 refreshes the credential
     // and retries the request.
     #[tokio::test]
-    async fn a_token_that_expires_during_a_rate_limit_wait_is_refreshed_after_its_401() {
+    async fn a_token_that_expires_during_a_rate_limit_wait_is_refreshed_after_its_403() {
         let server = MockServer::start().await;
         let first = jwt_expiring_in(chrono::TimeDelta::minutes(5));
         let second = jwt_expiring_in(chrono::TimeDelta::minutes(6));
@@ -5015,7 +5017,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        mount_run_for_oidc_token(&server, &first, 401).await;
+        mount_run_for_oidc_token(&server, &first, 403).await;
         mount_run_for_oidc_token(&server, &second, 200).await;
 
         api.get_run("run-1").await.unwrap();

@@ -1,6 +1,6 @@
 //! `runs modules` and `runs coverage`: the run coverage API.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt::Write as _;
 use std::io::Write;
 
@@ -12,7 +12,7 @@ use serde::Serialize;
 
 use crate::OutputOptions;
 use crate::api::{
-    AntithesisApi, CoverageModule, CoverageModuleInstance, LocationCoverage, RunStatus,
+    AntithesisApi, CoverageModule, CoverageModuleInstance, LocationCoverage, Reach, RunStatus,
 };
 use crate::cli::RunsCoverageArgs;
 use crate::render::sanitize;
@@ -21,17 +21,17 @@ use crate::stdio;
 use crate::table::{Align, Column, Fit, Table, truncate_path};
 use crate::vtime::VTime;
 
-use super::{MID_STREAM_NOTE, stream_error_message, terminal_width};
+use super::{MID_STREAM_ERROR, MID_STREAM_NOTE, stream_error_message, terminal_width};
 
 /// The failure of `runs coverage` when the server ends the locations with a
-/// `Stream_Error` line. snouty exits with status 2 for it, so that a script
-/// can tell a partial download from a failed request.
+/// `Stream_Error` line. snouty exits with status 3 for it, so that a script
+/// can tell a partial download from a failed request or a usage error.
 #[derive(Debug)]
 pub struct CoverageCut(String);
 
 impl std::fmt::Display for CoverageCut {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "the server reported an error mid-stream: {}", self.0)
+        write!(f, "{MID_STREAM_ERROR}: {}", self.0)
     }
 }
 
@@ -161,13 +161,6 @@ fn run_status(status: &RunStatus) -> String {
     format!("run {}", status.to_string().replace('_', " "))
 }
 
-/// Which half of the location set `runs coverage` lists.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Reach {
-    Reached,
-    Unreached,
-}
-
 pub(super) async fn cmd_runs_coverage(
     args: RunsCoverageArgs,
     settings: &Settings,
@@ -196,8 +189,7 @@ pub(super) async fn cmd_runs_coverage(
         let unique: indexmap::IndexSet<&str> = module_ids.iter().map(String::as_str).collect();
         unique.into_iter().map(Some).collect()
     };
-    let covered = reach.map(|reach| reach == Reach::Reached);
-    let open = |module_id| api.get_coverage_locations(&run_id, module_id, covered, follow);
+    let open = |module_id| api.get_coverage_locations(&run_id, module_id, reach, follow);
     // A followed stream stays open until the run ends, so open every module
     // at once. Otherwise read one module at a time.
     let mut lines = if follow {
@@ -212,7 +204,9 @@ pub(super) async fn cmd_runs_coverage(
         tty: stdio::stdout().is_terminal(),
         detail,
     };
-    let mut printed: usize = 0;
+    // Without --reached, a followed stream sends a location again when the run
+    // reaches it, so the count is of distinct locations.
+    let mut locations: HashSet<(String, String)> = HashSet::new();
     while let Some(value) = lines.try_next().await? {
         if let Some(message) = stream_error_message(&value) {
             if json {
@@ -225,16 +219,20 @@ pub(super) async fn cmd_runs_coverage(
         if reach == Some(Reach::Reached) && value.get("first_reached").is_none() {
             continue;
         }
+        let first = locations.is_empty();
+        locations.insert((
+            value["module_id"].as_str().unwrap_or_default().to_string(),
+            value["address"].as_str().unwrap_or_default().to_string(),
+        ));
         if json {
             outln!("{value}")?;
         } else {
-            if printed == 0 {
+            if first {
                 outln!("{}", console::style(layout.header()).bold())?;
             }
             let location: LocationCoverage = serde_json::from_value(value)?;
             outln!("{}", layout.row(&location))?;
         }
-        printed += 1;
     }
     if json {
         return Ok(());
@@ -243,7 +241,7 @@ pub(super) async fn cmd_runs_coverage(
     let run = api.get_run(&run_id).await?.untag();
     eprintln!(
         "{} · {}",
-        count(printed, "location"),
+        count(locations.len(), "location"),
         run_status(&run.status)
     );
     if !run.status.is_terminal() && !follow {

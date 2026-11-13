@@ -31,7 +31,7 @@ own line. A reached location has `first_reached`, with the moment and
 `run_seconds`, the time in seconds from the start of the run. So
 `snouty runs coverage <run_id> --json > coverage.ndjson` downloads the coverage.
 If the server reports an error during the output, snouty prints its error line,
-and exits with status 2.
+and exits with status 3.
 
 Examples:
   snouty runs coverage <run_id> --reached --module <module_id>

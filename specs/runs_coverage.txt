@@ -81,6 +81,7 @@ stderr -literal 'this may be a partial snapshot, use --follow or re-run the comm
 snouty --verbose runs coverage run-2 --follow
 stderr 'is_streaming=true'
 stdout 'rusthello::followed'
+stderr '^5 locations · run in progress$'
 ! stderr 'partial snapshot'
 
 # --json passes the locations through, with no status line.

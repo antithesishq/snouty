@@ -2367,9 +2367,10 @@ fn stream_error_message(entry: &Value) -> Option<&str> {
 
 /// The failure a `Stream_Error` line becomes.
 fn mid_stream_error(message: &str) -> color_eyre::eyre::Report {
-    eyre!("the server reported an error mid-stream: {message}").note(MID_STREAM_NOTE)
+    eyre!("{MID_STREAM_ERROR}: {message}").note(MID_STREAM_NOTE)
 }
 
+const MID_STREAM_ERROR: &str = "the server reported an error mid-stream";
 const MID_STREAM_NOTE: &str = "output produced before the error may be incomplete";
 
 /// Event lines ready to consume: a `Stream_Error` line fails the stream, and

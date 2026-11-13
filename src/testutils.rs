@@ -1386,9 +1386,9 @@ fn mock_route_list_module_instances(run_id: &str, module_id: &str) -> (u16, Stri
 
 /// The locations of run-1 and run-2: two reached and one unreached location
 /// of the Rust module, and one reached location of a Go module. The route
-/// filters by `module_id` and `covered`, as the server does. Each request
-/// with `is_streaming` echoes it in a last reached location, so a spec sees
-/// that the flag was sent.
+/// filters by `module_id` and `covered`, as the server does. A request with
+/// `is_streaming` gets a location of a module that loads later, and the
+/// unreached location again once it is reached.
 fn mock_route_coverage_locations(run_id: &str, query: Option<&str>) -> (u16, String) {
     let rust = "d85d838a38496ad7233432355829abc7d2333c33";
     let location =
@@ -1445,6 +1445,7 @@ fn mock_route_coverage_locations(run_id: &str, query: Option<&str>) -> (u16, Str
             21,
             Some("301.118034990128"),
         ));
+        locations.push(location(rust, "3", "rusthello::spin", 9, Some("302.5")));
     }
     let module_id = mock_query_param(query, "module_id");
     let lines: Vec<String> = locations

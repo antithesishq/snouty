@@ -85,7 +85,7 @@ async fn main() {
         let rendered = snouty::error::render_report(&report);
         eprintln!("{}", snouty::wrap_if_tty(&rendered));
         std::process::exit(if report.is::<snouty::runs::CoverageCut>() {
-            2
+            3
         } else {
             1
         });

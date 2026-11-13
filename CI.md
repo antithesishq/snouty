@@ -5,7 +5,7 @@
 Each CI job needs these environment variables:
 
 - `ANTITHESIS_TENANT`: your tenant.
-- `ANTITHESIS_REPOSITORY`: the container registry for your images, with `--config`. Log in to it in the job before the launch. On the tenant registry, `registry.<tenant>.antithesis.com`, snouty pushes with its own credential instead. That needs Docker 28.3.0 or later, or the [Docker credential helper](README.md#docker-credential-helper). The tenant registry must be enabled on your tenant: contact Antithesis support to request it.
+- `ANTITHESIS_REGISTRY`: the container registry for your images, with `--config`. Log in to it in the job before the launch. On the tenant registry, `registry.<tenant>.antithesis.com`, snouty pushes with its own credential instead. That needs Docker 28.3.0 or later, or the [Docker credential helper](README.md#docker-credential-helper). The tenant registry must be enabled on your tenant: contact Antithesis support to request it.
 - `ANTITHESIS_API_KEY`: an API key, stored as a secret. GitHub Actions can use [OIDC](#github-actions-oidc) instead.
 
 snouty does not choose a `--source` for you. A run without `--source` is ephemeral: its results do not go into the property history of any source. To record history for a branch, pass `--source` only in the jobs that build that branch, such as pushes to `main` and nightly schedules. Do not pass a pull request's branch name as the source: a pull request from a fork can use any branch name, such as `main`.
@@ -41,7 +41,7 @@ jobs:
       contents: read
     env:
       ANTITHESIS_TENANT: my-tenant
-      ANTITHESIS_REPOSITORY: us-central1-docker.pkg.dev/molten-verve-216720/my-tenant-repository
+      ANTITHESIS_REGISTRY: us-central1-docker.pkg.dev/molten-verve-216720/my-tenant-repository
       ANTITHESIS_API_KEY: ${{ secrets.ANTITHESIS_API_KEY }}
       # The runner has Podman too, and snouty prefers it by default.
       SNOUTY_CONTAINER_ENGINE: docker
@@ -158,7 +158,7 @@ antithesis:
   services: [docker:dind]
   variables:
     ANTITHESIS_TENANT: my-tenant
-    ANTITHESIS_REPOSITORY: us-central1-docker.pkg.dev/molten-verve-216720/my-tenant-repository
+    ANTITHESIS_REGISTRY: us-central1-docker.pkg.dev/molten-verve-216720/my-tenant-repository
   before_script:
     - apk add --no-cache curl git xz
     - curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
@@ -191,7 +191,7 @@ steps:
   - label: Antithesis
     env:
       ANTITHESIS_TENANT: my-tenant
-      ANTITHESIS_REPOSITORY: us-central1-docker.pkg.dev/molten-verve-216720/my-tenant-repository
+      ANTITHESIS_REGISTRY: us-central1-docker.pkg.dev/molten-verve-216720/my-tenant-repository
     command: |
       curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
       export PATH="$$HOME/.local/bin:$$PATH"
@@ -223,7 +223,7 @@ jobs:
       image: ubuntu-2404:current
     environment:
       ANTITHESIS_TENANT: my-tenant
-      ANTITHESIS_REPOSITORY: us-central1-docker.pkg.dev/molten-verve-216720/my-tenant-repository
+      ANTITHESIS_REGISTRY: us-central1-docker.pkg.dev/molten-verve-216720/my-tenant-repository
     steps:
       - checkout
       - run: |

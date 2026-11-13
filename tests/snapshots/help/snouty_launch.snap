@@ -82,16 +82,17 @@ for the run to finish, use `snouty runs wait <run_id>`. The run ID is the
 use `snouty runs stream <run_id>`.
 
 Credentials come from `snouty login` or from the environment variables below.
-Tenant and repository may be set via the environment variables below, or in a
-settings file (./.snouty.toml by default; see the global --settings/--profile
-flags and the README). Environment variables take precedence.
+Tenant and container registry may be set via the environment variables below, or
+in a settings file (./.snouty.toml by default; see the global
+--settings/--profile flags and the README). Environment variables take
+precedence.
 
 Environment variables (override any settings file):
   ANTITHESIS_TENANT       Your Antithesis tenant name.
   ANTITHESIS_API_KEY      API key authentication.
   ANTITHESIS_USERNAME     Username (deprecated).
   ANTITHESIS_PASSWORD     Password (deprecated).
-  ANTITHESIS_REPOSITORY   Container registry for pushing images.
+  ANTITHESIS_REGISTRY     Container registry for pushing images.
   ANTITHESIS_GITHUB_TOKEN GitHub token used by Antithesis to update GitHub
   commit status.
   SNOUTY_CONTAINER_ENGINE Force "docker" or "podman" (auto-detected by default).

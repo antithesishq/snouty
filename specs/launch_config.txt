@@ -3,16 +3,16 @@
 # The --config/-c flag points to a local directory containing a
 # docker-compose.yaml file that will be pushed as a config image.
 
-# Requires ANTITHESIS_REPOSITORY when --config is used.
+# Requires ANTITHESIS_REGISTRY when --config is used.
 ! snouty launch --launcher basic_test -c config
-stderr 'Could not resolve Antithesis repository.*'
+stderr 'Could not resolve Antithesis registry.*'
 
 # Kubernetes config directories (manifests/ subdirectory) are also accepted
-# by --config and likewise require ANTITHESIS_REPOSITORY.
+# by --config and likewise require ANTITHESIS_REGISTRY.
 ! snouty launch --launcher basic_k8s_test -c k8s_config
-stderr 'Could not resolve Antithesis repository.*'
+stderr 'Could not resolve Antithesis registry.*'
 
-env ANTITHESIS_REPOSITORY=registry.example.com/repo
+env ANTITHESIS_REGISTRY=registry.example.com/repo
 
 # Rejects a nonexistent directory.
 ! snouty launch --launcher basic_test -c /nonexistent/path

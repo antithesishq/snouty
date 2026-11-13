@@ -6,5 +6,5 @@ NOTE: `snouty login` will offer to reuse your existing configuration values, inc
 
 Examples:
   snouty login
-  snouty login --tenant "mytenant" --repository "repository"
+  snouty login --tenant "mytenant" --registry "registry.example.com/team"
   snouty login --profile "profile"

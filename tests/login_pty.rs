@@ -64,7 +64,7 @@ const KEPT_ANSWER: &str = "Please enter your API Key (********9Pgw) kept";
 /// The answered API key line when a new key replaces the stored key.
 const NEW_KEY_ANSWER: &str = "Please enter your API Key (********9Pgw) ********";
 
-/// Spawn `snouty login --tenant … --repository …` on a PTY against an
+/// Spawn `snouty login --tenant … --registry …` on a PTY against an
 /// isolated `$HOME` and a mock backend that answers the `/auth/cli/config`
 /// probe with [`OAUTH_DISABLED`].
 fn start_login() -> (tempfile::TempDir, OsSession) {
@@ -92,7 +92,7 @@ enum Stdout {
 
 const STDOUT_FILE: &str = "stdout.txt";
 
-/// How [`spawn_login`] runs `snouty login --tenant … --repository …`.
+/// How [`spawn_login`] runs `snouty login --tenant … --registry …`.
 #[derive(Default)]
 struct Login<'a> {
     /// Each `(path, contents)` is written under the temp `$HOME` first.
@@ -120,13 +120,7 @@ fn spawn_login(login: &Login) -> (tempfile::TempDir, OsSession) {
         Stdout::File => PtyCommand::new(&format!(r#"exec "$0" "$@" > "$HOME/{STDOUT_FILE}""#)),
     };
     command
-        .args([
-            "login",
-            "--tenant",
-            "pty-tenant",
-            "--repository",
-            "pty-repo",
-        ])
+        .args(["login", "--tenant", "pty-tenant", "--registry", "pty-repo"])
         .args(login.args)
         .env_clear()
         .envs(support::ca_env())

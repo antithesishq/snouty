@@ -479,7 +479,7 @@ fn doctor_reports_missing_env_vars() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("tenant"))
-        .stderr(predicate::str::contains("repository"));
+        .stderr(predicate::str::contains("registry"));
 }
 
 #[test]
@@ -611,7 +611,7 @@ fn help_examples_pass_preflight() {
             // pre-flight checks, before it builds an image.
             let output = snouty_with_mock(&mock_url)
                 .current_dir(dir.path())
-                .env("ANTITHESIS_REPOSITORY", "registry.example.com/repo")
+                .env("ANTITHESIS_REGISTRY", "registry.example.com/repo")
                 .env(snouty::settings::CONTAINER_ENGINE_VAR_NAME, "none")
                 .args(&args[1..])
                 .output()

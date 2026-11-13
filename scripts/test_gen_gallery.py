@@ -245,7 +245,11 @@ class DoctorGalleryChecks(unittest.TestCase):
                 self.assertTrue(passed, detail)
 
         self.ready["checks"].append(
-            {"id": "repository", "status": "warn", "message": "repository is not set"}
+            {
+                "id": "registry",
+                "status": "warn",
+                "message": "container registry is not set",
+            }
         )
         passed, detail = self.check("doctor-json-ready", json.dumps(self.ready), 0)
         self.assertTrue(passed, detail)

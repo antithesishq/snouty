@@ -146,14 +146,14 @@ impl Prompter for InquirePrompter {
 /// With `output.verbose`, login logs its OAuth requests to stderr.
 pub async fn cmd_login(
     tenant: Option<String>,
-    repository: Option<String>,
+    registry: Option<String>,
     profile: Option<&str>,
     current_settings: &Settings,
     output: OutputOptions,
 ) -> Result<()> {
     do_cmd_login(
         tenant,
-        repository,
+        registry,
         profile,
         current_settings,
         output,
@@ -164,7 +164,7 @@ pub async fn cmd_login(
 
 async fn do_cmd_login(
     tenant: Option<String>,
-    repository: Option<String>,
+    registry: Option<String>,
     profile: Option<&str>,
     current_settings: &Settings,
     OutputOptions { verbose, .. }: OutputOptions,
@@ -180,13 +180,9 @@ async fn do_cmd_login(
     };
     validate_tenant_host(&tenant_to_use)?;
 
-    let repository_to_use = match repository {
-        Some(repository) => repository,
-        None => prompt_for_value(
-            prompter,
-            "container repository",
-            current_settings.repository(),
-        )?,
+    let registry_to_use = match registry {
+        Some(registry) => registry,
+        None => prompt_for_value(prompter, "container registry", current_settings.registry())?,
     };
 
     // The credential stored for the profile, which a new credential replaces.
@@ -232,13 +228,13 @@ async fn do_cmd_login(
 
     update_settings_in_global_file(
         Some(tenant_to_use.clone()),
-        Some(repository_to_use.clone()),
+        Some(registry_to_use.clone()),
         profile_to_use.as_deref(),
     )?;
 
     print_login_summary(
         &tenant_to_use,
-        &repository_to_use,
+        &registry_to_use,
         profile_to_use.as_deref(),
         written,
         stored.as_ref(),
@@ -251,7 +247,7 @@ async fn do_cmd_login(
 /// otherwise a successful login exits silently, leaving the user unsure it took.
 fn print_login_summary(
     tenant: &str,
-    repository: &str,
+    registry: &str,
     profile: Option<&str>,
     written: Option<Tagged<&str, CredentialStore>>,
     stored: Option<&Tagged<AuthenticationInfo, CredentialStore>>,
@@ -262,12 +258,12 @@ fn print_login_summary(
         Some(p) => format!(" under profile `{p}`"),
         None => String::new(),
     };
-    // Only mention what was actually recorded: a blank repository is intentionally
+    // Only mention what was actually recorded: a blank registry is intentionally
     // not persisted (see `insert_key_if_non_empty` in settings.rs), so don't claim
     // we saved one.
     let mut saved = format!("tenant `{tenant}`");
-    if !repository.is_empty() {
-        let _ = write!(saved, " and repository `{repository}`");
+    if !registry.is_empty() {
+        let _ = write!(saved, " and registry `{registry}`");
     }
     say(&format!("\nSaved {saved}{scope}."));
     match (written, stored) {
@@ -1310,6 +1306,7 @@ mod tests {
                     "XDG_CONFIG_HOME",
                     "ANTITHESIS_PROFILE",
                     "ANTITHESIS_TENANT",
+                    "ANTITHESIS_REGISTRY",
                     "ANTITHESIS_REPOSITORY",
                     "ANTITHESIS_HTTPS_PROXY",
                     "CONTAINER_ENGINE",
@@ -1377,7 +1374,7 @@ mod tests {
         format!("http://{addr}")
     }
 
-    /// [`do_cmd_login`] without `--tenant`, `--repository`, or `--verbose`.
+    /// [`do_cmd_login`] without `--tenant`, `--registry`, or `--verbose`.
     async fn login(
         profile: Option<&str>,
         settings: &Settings,
@@ -1394,7 +1391,7 @@ mod tests {
         .await
     }
 
-    /// A fresh login with no flags prompts for tenant, repository, and credential
+    /// A fresh login with no flags prompts for tenant, registry, and credential
     /// kind, then persists an API key.
     #[tokio::test]
     async fn login_collects_and_persists_an_api_key() -> Result<()> {
@@ -1410,17 +1407,17 @@ mod tests {
 
         let stored = env.settings();
         assert!(stored.contains(r#"tenant = "mytenant""#), "{stored}");
-        assert!(stored.contains(r#"repository = "myrepo""#), "{stored}");
+        assert!(stored.contains(r#"registry = "myrepo""#), "{stored}");
         let creds = env.credentials();
         assert!(creds.contains(r#"type = "ApiKey""#), "{creds}");
         assert!(creds.contains(&api_key_line(FAKE_API_KEY_A)), "{creds}");
         Ok(())
     }
 
-    /// With `--tenant` and `--repository` supplied, only the credential prompt is
-    /// shown — the tenant/repository prompts are skipped.
+    /// With `--tenant` and `--registry` supplied, only the credential prompt is
+    /// shown — the tenant/registry prompts are skipped.
     #[tokio::test]
-    async fn login_flags_skip_the_tenant_and_repository_prompts() -> Result<()> {
+    async fn login_flags_skip_the_tenant_and_registry_prompts() -> Result<()> {
         let env = LoginEnv::new();
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default().secret(FAKE_API_KEY_A).build();
@@ -1445,10 +1442,46 @@ mod tests {
         assert!(
             !prompts
                 .iter()
-                .any(|p| p.contains("What container repository would you like to use")),
-            "repository should not be prompted when --repository is given: {prompts:?}"
+                .any(|p| p.contains("What container registry would you like to use")),
+            "registry should not be prompted when --registry is given: {prompts:?}"
         );
         assert!(env.settings().contains(r#"tenant = "mytenant""#));
+        Ok(())
+    }
+
+    /// A `repository` key, an alias for `registry`, loads as the
+    /// registry. Login writes `registry`, and removes `repository` from the
+    /// table that it writes.
+    #[tokio::test]
+    async fn login_replaces_the_repository_alias_with_registry() -> Result<()> {
+        let env = LoginEnv::new();
+        env.seed(
+            ".config/snouty/settings.toml",
+            "repository = \"old\"\n[profile.p]\nrepository = \"old-p\"\n",
+        );
+        let settings = env.resolve_settings(None)?;
+        assert_eq!(settings.registry(), Some("old"));
+        let prompter = Script::default().secret(FAKE_API_KEY_A).build();
+
+        do_cmd_login(
+            Some("mytenant".to_owned()),
+            Some("myrepo".to_owned()),
+            None,
+            &settings,
+            OutputOptions::default(),
+            &prompter,
+        )
+        .await?;
+
+        let stored: toml::Table = env.settings().parse()?;
+        assert_eq!(stored["registry"].as_str(), Some("myrepo"), "{stored}");
+        assert!(!stored.contains_key("repository"), "{stored}");
+        // Login writes only the top-level table, so the profile keeps its key.
+        assert_eq!(
+            stored["profile"]["p"]["repository"].as_str(),
+            Some("old-p"),
+            "{stored}"
+        );
         Ok(())
     }
 
@@ -1482,7 +1515,7 @@ mod tests {
     }
 
     /// Declining to replace a stored username and password leaves the
-    /// credentials file as it was. The tenant and repository are still saved.
+    /// credentials file as it was. The tenant and registry are still saved.
     #[tokio::test]
     async fn login_keeps_a_stored_password_when_the_user_declines() -> Result<()> {
         let env = LoginEnv::new();
@@ -1542,7 +1575,7 @@ mod tests {
     }
 
     /// A tenant that isn't a valid hostname is rejected after the prompt, before
-    /// the repository/credential prompts and before anything is persisted.
+    /// the registry/credential prompts and before anything is persisted.
     #[tokio::test]
     async fn login_rejects_an_invalid_tenant() -> Result<()> {
         let env = LoginEnv::new();
@@ -1558,7 +1591,7 @@ mod tests {
             format!("{err:#}").contains("a tenant must be a valid hostname"),
             "unexpected error: {err:#}"
         );
-        // Only the tenant was prompted; the flow bailed before repository/credentials.
+        // Only the tenant was prompted; the flow bailed before registry/credentials.
         assert_eq!(prompter.prompts().len(), 1, "{:?}", prompter.prompts());
         assert!(env.settings().is_empty(), "nothing should be persisted");
         Ok(())
@@ -1840,7 +1873,7 @@ mod tests {
     }
 
     /// Esc at the API key prompt skips credential storage: the tenant and
-    /// repository are still saved, and no credentials file is written.
+    /// registry are still saved, and no credentials file is written.
     #[tokio::test]
     async fn login_skips_credential_storage_on_esc() -> Result<()> {
         let env = LoginEnv::new();

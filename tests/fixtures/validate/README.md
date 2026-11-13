@@ -62,11 +62,11 @@ snouty validate tests/fixtures/validate/timeout --timeout 5s
 `validate` runs a config locally; `launch` submits it to Antithesis. `--config`
 points at the directory, which snouty builds and pushes as the config image —
 the compose service images must already exist locally (snouty never pulls).
-Set your tenant, repository, and credentials first (see `snouty launch --help`).
+Set your tenant, container registry, and credentials first (see `snouty launch --help`).
 
 ```sh
 ANTITHESIS_TENANT=your-tenant \
-ANTITHESIS_REPOSITORY=us-central1-docker.pkg.dev/your-proj/your-repo \
+ANTITHESIS_REGISTRY=us-central1-docker.pkg.dev/your-proj/your-repo \
 ANTITHESIS_API_KEY=… \
   snouty launch \
     --launcher basic_test \

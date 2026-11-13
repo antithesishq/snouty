@@ -490,15 +490,14 @@ fn explicit_settings_path(flag: Option<PathBuf>) -> Result<Option<PathBuf>> {
     }
 }
 
-/// Writes the given fields into the global `settings.toml`, returning the path it
-/// wrote so callers (e.g. `snouty login`) can tell the user where it landed.
+/// Writes `tenant` and `repository` into the global `settings.toml`, in the
+/// table of `profile_to_update` or else the top-level table. An empty value is
+/// not written.
 pub(crate) fn update_settings_in_global_file(
     tenant: Option<String>,
     repository: Option<String>,
-    base_url: Option<String>,
-    container_engine: Option<String>,
     profile_to_update: Option<&str>,
-) -> Result<PathBuf> {
+) -> Result<()> {
     let path = global_settings_dir()
         .ok_or_eyre(NO_GLOBAL_SETTINGS_DIR)?
         .join(GLOBAL_SETTINGS_FILENAME);
@@ -531,24 +530,13 @@ pub(crate) fn update_settings_in_global_file(
                 "The settings file at {:?} is malformed: `profile` should be a table of named profiles",
                 &path
             ))?;
-        update_table(
-            entry_as_table_mut(profiles, profile),
-            tenant,
-            repository,
-            base_url,
-            container_engine,
-        );
+        update_table(entry_as_table_mut(profiles, profile), tenant, repository);
     } else {
-        update_table(
-            &mut contents,
-            tenant,
-            repository,
-            base_url,
-            container_engine,
-        );
+        update_table(&mut contents, tenant, repository);
     }
 
-    write_global_toml(GLOBAL_SETTINGS_FILENAME, &contents)
+    write_global_toml(GLOBAL_SETTINGS_FILENAME, &contents)?;
+    Ok(())
 }
 
 /// Atomically write `value` as TOML to `filename` in the global settings dir,
@@ -593,17 +581,9 @@ fn insert_key_if_non_empty(target: &mut Table, key: &str, value: Option<String>)
     }
 }
 
-fn update_table(
-    target: &mut Table,
-    tenant: Option<String>,
-    repository: Option<String>,
-    base_url: Option<String>,
-    container_engine: Option<String>,
-) {
+fn update_table(target: &mut Table, tenant: Option<String>, repository: Option<String>) {
     insert_key_if_non_empty(target, "tenant", tenant);
     insert_key_if_non_empty(target, "repository", repository);
-    insert_key_if_non_empty(target, "base_url", base_url);
-    insert_key_if_non_empty(target, "container_engine", container_engine);
 }
 
 /// The base URL of `tenant` when no `base_url` is set.

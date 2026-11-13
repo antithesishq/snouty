@@ -175,16 +175,14 @@ async fn do_cmd_login(
         .or_else(|| env::var(ANTITHESIS_PROFILE_ENV_VAR_NAME).ok().flatten());
 
     let tenant_to_use = match tenant {
-        Some(arg_value) if !arg_value.is_empty() => arg_value,
-        Some(_) | None => {
-            prompt_for_value(prompter, "Antithesis tenant", current_settings.tenant())?
-        }
+        Some(tenant) => tenant,
+        None => prompt_for_value(prompter, "Antithesis tenant", current_settings.tenant())?,
     };
     validate_tenant_host(&tenant_to_use)?;
 
     let repository_to_use = match repository {
-        Some(arg_value) if !arg_value.is_empty() => arg_value,
-        Some(_) | None => prompt_for_value(
+        Some(repository) => repository,
+        None => prompt_for_value(
             prompter,
             "container repository",
             current_settings.repository(),
@@ -235,8 +233,6 @@ async fn do_cmd_login(
     update_settings_in_global_file(
         Some(tenant_to_use.clone()),
         Some(repository_to_use.clone()),
-        None,
-        None,
         profile_to_use.as_deref(),
     )?;
 

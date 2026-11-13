@@ -77,7 +77,8 @@ isolate-home rejected
 mock-server 401 '{"message":"Invalid or expired bearer token."}'
 ! snouty login --tenant spec-tenant
 stderr 'did not accept the credential; nothing was saved'
-stderr -literal 'set ANTITHESIS_API_KEY to a valid key, or unset it'
+stderr -literal 'set `ANTITHESIS_API_KEY` to a valid API key'
+! stderr 'unset it'
 ! exists rejected/.config/snouty/settings.toml
 
 # A 403 rejects the credential just like a 401.
@@ -115,6 +116,7 @@ isolate-home env_password
 ! snouty login --tenant spec-tenant
 stderr 'nothing was saved'
 stderr -literal 'unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD'
+! stderr 'set ANTITHESIS_API_KEY'
 
 # A tenant that does not serve the registry endpoint answers 404. Without a
 # terminal, login keeps the tenant's saved registry, and fails without one.

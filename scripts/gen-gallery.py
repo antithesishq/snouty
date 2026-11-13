@@ -2829,6 +2829,8 @@ def _doctor_env(
         "ANTITHESIS_REGISTRY": want(
             "ANTITHESIS_REGISTRY", registry, "registry.example.com/acme/demo"
         ),
+        # The old name of ANTITHESIS_REGISTRY still sets the registry.
+        "ANTITHESIS_REPOSITORY": None,
     }
 
 

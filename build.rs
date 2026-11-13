@@ -52,6 +52,7 @@ fn generate_api_client(out_dir: &Path) {
     untype_error_responses(&mut spec_value);
     unrequire_exec_defaults(&mut spec_value);
     drop_property_description(&mut spec_value);
+    untype_prefixed_params(&mut spec_value);
     drop_launch_status_code(&mut spec_value);
     mark_vtime_schema(&mut spec_value);
     for &(param, schema) in LAUNCH_ENUM_PARAMS {
@@ -372,6 +373,24 @@ fn drop_property_description(spec: &mut serde_json::Value) {
         "/components/schemas/Property_Base/properties",
         "description",
         "drop_property_description",
+    );
+}
+
+/// Keep the `attrs.*`, `run.*` and `vcs.*` run parameters in the `extra` map
+/// of the generated `Params`. snouty reads them by key from that map, and
+/// `attrs.<NAME>` names a pattern, not a key.
+fn untype_prefixed_params(spec: &mut serde_json::Value) {
+    let properties = spec
+        .pointer_mut("/components/schemas/Params/properties")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("openapi spec has no Params.properties; update `untype_prefixed_params` in build.rs");
+    let before = properties.len();
+    properties.retain(|key, _| !["attrs.", "run.", "vcs."].iter().any(|p| key.starts_with(p)));
+    assert_ne!(
+        properties.len(),
+        before,
+        "openapi spec types no attrs.*, run.* or vcs.* parameter; \
+         delete `untype_prefixed_params` in build.rs"
     );
 }
 

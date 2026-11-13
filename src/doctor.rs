@@ -1486,6 +1486,7 @@ mod tests {
                 Err(VersionError::Http(status)),
             );
             assert_eq!(check.status, Status::Error);
+            assert_eq!(check.message, "Antithesis API rejected authentication");
             assert!(
                 check
                     .notes
@@ -1504,7 +1505,7 @@ mod tests {
                 "tenant.antithesis.com",
                 &in_use,
                 profile,
-                Err(VersionError::Http(401)),
+                Err(VersionError::Http(403)),
             )
             .notes
             .into_iter()
@@ -1539,14 +1540,14 @@ mod tests {
         let oidc = oidc_source().value().clone();
         let login = "run `snouty login` to sign in again";
         let expired = "the sign-in expired and could not be renewed";
-        for status in [None, Some(StatusCode::UNAUTHORIZED)] {
+        for status in [None, Some(StatusCode::FORBIDDEN)] {
             assert_eq!(
                 renewal_failure(&oauth, None, status),
                 (expired, login.to_owned())
             );
         }
         assert_eq!(
-            renewal_failure(&oauth, Some("staging"), Some(StatusCode::UNAUTHORIZED)).1,
+            renewal_failure(&oauth, Some("staging"), Some(StatusCode::FORBIDDEN)).1,
             "run `snouty login --profile staging` to sign in again"
         );
         for status in [

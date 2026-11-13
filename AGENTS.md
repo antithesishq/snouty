@@ -45,6 +45,9 @@ All code must be simple and idiomatic.
   branches and messages that your change makes dead.
 - Validate a value once, where it enters, and trust it after that. Do not
   guard against input that cannot occur.
+- snouty is a CLI, not a library. The crate is published only so that
+  `cargo install snouty` works, so its Rust API has no users: rename, hide or
+  remove a public item freely, and do not call that a breaking change.
 
 ### Types
 

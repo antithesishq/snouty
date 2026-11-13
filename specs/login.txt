@@ -16,7 +16,7 @@ stderr '.*Value may not be empty or whitespace.*'
 ! snouty --profile "" login
 stderr '.*Value may not be empty or whitespace.*'
 
-# Without a TTY, login signs in with the credential from the environment,
+# Without a TTY, login signs in with the credential that other commands use,
 # saves the tenant and the tenant's registry, skips credential storage, and
 # prints the summary as whole lines, so a script can match a line that is
 # longer than a terminal.

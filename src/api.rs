@@ -1444,7 +1444,7 @@ impl ClientHooks<ClientState> for generated::Client {
                 if crate::error::rejects_credential(response.status().as_u16()) =>
             {
                 // When the refresh fails, such as for an API key or for want
-                // of a refresh token, the 401 surfaces.
+                // of a refresh token, the rejected response surfaces.
                 let auth = &state.authn_info;
                 let refreshed = auth
                     .refresh(self.client(), self.baseurl())
@@ -1460,10 +1460,7 @@ impl ClientHooks<ClientState> for generated::Client {
                             .await
                     }
                     Err(err) => {
-                        log::warn!(
-                            "cannot refresh the credential after a {}: {err:#}",
-                            response.status()
-                        );
+                        log::warn!("cannot refresh the rejected credential: {err:#}");
                         Ok(response)
                     }
                 }

@@ -80,6 +80,13 @@ stderr 'did not accept the credential; nothing was saved'
 stderr -literal 'set ANTITHESIS_API_KEY to a valid key, or unset it'
 ! exists rejected/.config/snouty/settings.toml
 
+# A 403 rejects the credential just like a 401.
+isolate-home rejected_403
+mock-server 403 ''
+! snouty login --tenant spec-tenant
+stderr 'did not accept the credential; nothing was saved'
+! exists rejected_403/.config/snouty/settings.toml
+
 # A GitHub Actions OIDC token that the tenant rejects needs Antithesis to trust
 # it: the job already has `id-token: write`, and ANTITHESIS_API_KEY does not
 # hold the token.

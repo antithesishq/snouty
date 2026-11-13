@@ -33,7 +33,7 @@ use crate::{
     },
     container::registry_host,
     env,
-    error::{api_error_status, user_error},
+    error::{api_error_status, rejects_credential, user_error},
     render::{OutputOptions, sanitize, wrap_if_tty},
     settings::{
         ANTITHESIS_PROFILE_ENV_VAR_NAME, Settings, tenant_base_url, update_settings_in_global_file,
@@ -351,7 +351,7 @@ async fn fetch_registry(
                 debug!("the tenant does not report its registry: {err:#}");
                 Ok(None)
             }
-            Some(401) => Err(user_error(format!(
+            Some(status) if rejects_credential(status) => Err(user_error(format!(
                 "`{tenant}` did not accept the credential; nothing was saved"
             ))
             .suggestion(next_step)),

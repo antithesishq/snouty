@@ -15,7 +15,8 @@ that `runs modules` lists for it.
 Use --module to show only the locations of a module. Give it more than once for
 more modules. Use --reached to show only the locations that the run reached, and
 --unreached to show only the locations that it did not reach. While the run is
-in progress, the output is the coverage up to now.
+in progress, the output is the coverage up to now. While the run starts, the
+command waits until the run has coverage.
 
 VTIME is cut to five decimals. With --detail, it prints whole. On a terminal, a
 long LOCATION or FUNCTION is shortened. After the rows, a status line on stderr

@@ -926,9 +926,6 @@ class Discovery:
     fail_hash: str = ""
     fail_vtime: str = ""
     fail_event_kw: str = ""  # needle the incomplete run's events story matches on
-    # A module of `success` with symbols, for the `runs coverage --module`
-    # stories. Empty when the run has none, and then those stories fail.
-    coverage_module: str = ""
 
 
 class RunScan:
@@ -1421,7 +1418,6 @@ def discover(sn: Snouty) -> Discovery:
         fail_hash=str(fail_moment["input_hash"]),
         fail_vtime=str(fail_moment["vtime"]),
         fail_event_kw=fail_event_kw,
-        coverage_module=_pick_coverage_module(sn, success),
     )
     return disc
 
@@ -1482,6 +1478,12 @@ class FinalCaptures:
     stream_json: Result | None = None
     # The ID of EXAMPLE_BUG_PROPERTY in the run, or "" when it has none.
     bug_prop_id: str = ""
+    # `runs coverage --reached --follow`, started right after the launch, or
+    # None when its story is not selected.
+    coverage_follow: Result | None = None
+    # A module of the run with symbols, for the `runs coverage --module`
+    # stories, or "" when the run has none.
+    coverage_module: str = ""
 
 
 EXAMPLE_DIR = Path(__file__).resolve().parent.parent / "examples" / "antithesis"
@@ -3059,46 +3061,6 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             ["runs", "list", "-n", "3", "--verbose"],
             verbose_api_calls,
         ),
-        # -- coverage --------------------------------------------------------
-        Story(
-            "runs-modules",
-            "Check that a run instrumented each component",
-            "I want to see which instrumented modules my run loaded, and in which containers, "
-            "so I can spot a component that ran uninstrumented.",
-            "One row per module per program, with MODULE/NAME/PROGRAM/CONTAINER/LANG/LOCATIONS/"
-            "SYMBOLS columns and full module IDs, then a status line that counts the modules and "
-            "containers and says the run completed.",
-            ["runs", "modules", d.success],
-            non_empty_table,
-        ),
-        Story(
-            "runs-coverage--reached",
-            "See which code a run reached, and where first",
-            "I want the locations of one module that the run reached, with the moment of each, "
-            "so I can read the logs up to it.",
-            "One row per reached location with MODULE/LOCATION/FUNCTION/HASH/VTIME columns, every "
-            "row has a HASH and a VTIME that `runs logs` takes, and a status line counts the rows.",
-            ["runs", "coverage", d.success, "--reached", "--module", d.coverage_module],
-            all_reached(True),
-        ),
-        Story(
-            "runs-coverage--unreached",
-            "Find code that a run never reached",
-            "I want the locations of one module that the run never reached, instead of adding a "
-            "Reachable assertion and launching again.",
-            "One row per unreached location with MODULE/LOCATION/FUNCTION columns and no HASH or "
-            "VTIME, then a status line; or, when the run reached every location, only the status "
-            "line that says 0 locations.",
-            [
-                "runs",
-                "coverage",
-                d.success,
-                "--unreached",
-                "--module",
-                d.coverage_module,
-            ],
-            all_reached(False),
-        ),
         # -- single-run metadata -------------------------------------------
         Story(
             "runs-show",
@@ -4129,6 +4091,26 @@ def stream_args(run: str) -> list[str]:
     return ["runs", "stream", run]
 
 
+def coverage_follow_args(run: str) -> list[str]:
+    return ["runs", "coverage", run, "--reached", "--follow"]
+
+
+def coverage_followed(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+    """`runs coverage --reached --follow` from the launch to the end of the
+    run: some reached rows, and a status line that says the run completed."""
+    out = sr.result.combined
+    rows = [
+        line
+        for line in out.splitlines()
+        if re.match(r"^\S+ +\S+ +\S+ +-?\d+ +\d", line)
+    ]
+    done = re.search(r"\d+ locations? · run completed", out) is not None
+    return (
+        sr.result.ok and bool(rows) and done,
+        f"exit={sr.result.returncode}, {len(rows)} reached rows, completed={done}",
+    )
+
+
 def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
     """Stories about the gallery's run once it is final: the streams that
     followed it from its launch, and its results."""
@@ -4196,6 +4178,91 @@ def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
             ["runs", "property", x.run, f.bug_prop_id],
             bug_property,
             json_capable=False,
+        ),
+        Story(
+            "runs-modules",
+            "Check that my run instrumented each component",
+            "I want to see which instrumented modules my run loaded, and in which containers, "
+            "so I can spot a component that ran uninstrumented.",
+            "One row per module per program, with MODULE/NAME/PROGRAM/CONTAINER/LANG/LOCATIONS/"
+            "SYMBOLS columns and full module IDs: Python modules in the bank and workload "
+            "containers. Then a status line that counts the modules and containers and says the "
+            "run completed.",
+            ["runs", "modules", x.run],
+            non_empty_table,
+        ),
+        Story(
+            "runs-coverage--reached",
+            "See which code my run reached, and where first",
+            "I want the locations of one module that the run reached, with the moment of each, "
+            "so I can read the logs up to it.",
+            "One row per reached location with MODULE/LOCATION/FUNCTION/HASH/VTIME columns, every "
+            "row has a HASH and a VTIME that `runs logs` takes, and a status line counts the rows.",
+            ["runs", "coverage", x.run, "--reached", "--module", f.coverage_module],
+            all_reached(True),
+        ),
+        Story(
+            "runs-coverage--unreached",
+            "Find code that my run never reached",
+            "I want the locations of one module that the run never reached, instead of adding a "
+            "Reachable assertion and launching again.",
+            "One row per unreached location with MODULE/LOCATION/FUNCTION columns and no HASH or "
+            "VTIME, then a status line; or, when the run reached every location, only the status "
+            "line that says 0 locations.",
+            ["runs", "coverage", x.run, "--unreached", "--module", f.coverage_module],
+            all_reached(False),
+        ),
+        Story(
+            "runs-coverage-run--follow",
+            "Watch my run reach new code",
+            "I just launched a run, and I want to see each location the moment the run first "
+            "reaches it, until the run ends.",
+            "A header, then the locations reached so far, then each newly reached location as "
+            "it arrives, every row with a HASH and a VTIME, and no row without them. It ends "
+            "with a status line that counts the locations and says the run completed. Exit 0.",
+            coverage_follow_args(x.run),
+            coverage_followed,
+            json_capable=False,
+            precaptured=f.coverage_follow,
+        ),
+        _help_story(
+            "help-runs-modules",
+            "Learn how to check a run's instrumentation",
+            "I want the help to tell me what each column means, which module IDs I can predict "
+            "from my build, and why a module can be missing.",
+            ["runs", "modules"],
+            ["runs", "modules", x.run],
+            align=(
+                "MODULE",
+                "NAME",
+                "PROGRAM",
+                "CONTAINER",
+                "LANG",
+                "LOCATIONS",
+                "SYMBOLS",
+            ),
+        ),
+        _help_story(
+            "help-runs-coverage",
+            "Learn how to read a run's coverage",
+            "I want the help to tell me what a row means, how to narrow the output to a module or "
+            "to reached code, and how to go from a location to its logs.",
+            ["runs", "coverage"],
+            ["runs", "coverage", x.run, "--reached", "--module", f.coverage_module],
+            samples=[
+                (
+                    "with --unreached",
+                    [
+                        "runs",
+                        "coverage",
+                        x.run,
+                        "--unreached",
+                        "--module",
+                        f.coverage_module,
+                    ],
+                )
+            ],
+            align=("MODULE", "LOCATION", "FUNCTION", "HASH", "VTIME"),
         ),
         Story(
             "runs-stream-run-final",
@@ -4484,45 +4551,6 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "I want the help to tell me where a property ID comes from and what the lookup shows.",
             ["runs", "property"],
             ["runs", "property", s, d.fail_prop_id],
-        ),
-        _help_story(
-            "help-runs-modules",
-            "Learn how to check a run's instrumentation",
-            "I want the help to tell me what each column means, which module IDs I can predict "
-            "from my build, and why a module can be missing.",
-            ["runs", "modules"],
-            ["runs", "modules", s],
-            align=(
-                "MODULE",
-                "NAME",
-                "PROGRAM",
-                "CONTAINER",
-                "LANG",
-                "LOCATIONS",
-                "SYMBOLS",
-            ),
-        ),
-        _help_story(
-            "help-runs-coverage",
-            "Learn how to read a run's coverage",
-            "I want the help to tell me what a row means, how to narrow the output to a module or "
-            "to reached code, and how to go from a location to its logs.",
-            ["runs", "coverage"],
-            ["runs", "coverage", s, "--reached", "--module", d.coverage_module],
-            samples=[
-                (
-                    "with --unreached",
-                    [
-                        "runs",
-                        "coverage",
-                        s,
-                        "--unreached",
-                        "--module",
-                        d.coverage_module,
-                    ],
-                )
-            ],
-            align=("MODULE", "LOCATION", "FUNCTION", "HASH", "VTIME"),
         ),
         _help_story(
             "help-runs-build-logs",
@@ -5916,6 +5944,7 @@ def main() -> int:
 
         stream: Future[Result] | None = None
         stream_json: Future[Result] | None = None
+        coverage_follow: Future[Result] | None = None
         rewarm: Future[tuple[str, dict, dict]] | None = None
         if need_run:
             # When `--only` selects `launch`, launch a new run so the story has
@@ -5936,6 +5965,12 @@ def main() -> int:
             if selected("runs-stream-run--json"):
                 stream_json = in_background(
                     lambda: sn.run(["--json", *args_stream], timeout=STREAM_TIMEOUT)
+                )
+            if selected("runs-coverage-run--follow"):
+                coverage_follow = in_background(
+                    lambda: sn.run(
+                        coverage_follow_args(run.run), timeout=STREAM_TIMEOUT
+                    )
                 )
             if need_ready:
                 # The rewarm source is another run, so it is found while the
@@ -6009,6 +6044,10 @@ def main() -> int:
                 wait=sn.run(["runs", "wait", run.run, "--timeout", RUN_FINAL_TIMEOUT]),
                 stream=stream.result() if stream is not None else None,
                 stream_json=stream_json.result() if stream_json is not None else None,
+                coverage_follow=(
+                    coverage_follow.result() if coverage_follow is not None else None
+                ),
+                coverage_module=_pick_coverage_module(sn, run.run),
             )
             props = sn.json_lines(["runs", "properties", run.run])
             final.bug_prop_id = property_id_named(props, EXAMPLE_BUG_PROPERTY)

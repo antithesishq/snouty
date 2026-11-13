@@ -5333,6 +5333,49 @@ mod tests {
             assert!(!debug.contains("list valid moments with"), "got: {debug}");
         }
 
+        // The locations endpoint answers 404 while the run starts.
+        #[tokio::test(start_paused = true)]
+        async fn coverage_waits_while_the_run_starts() {
+            let server = mock_get_run(
+                "run-1",
+                200,
+                json!({
+                    "run_id": "run-1",
+                    "status": "starting",
+                    "created_at": "2025-03-20T02:00:00Z",
+                    "launcher": "nightly"
+                }),
+            )
+            .await;
+            let locations = "/api/v0/runs/run-1/coverage/locations";
+            Mock::given(method("GET"))
+                .and(path(locations))
+                .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "nope"})))
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(locations))
+                .respond_with(ResponseTemplate::new(200).set_body_string(
+                    "{\"module_id\":\"m\",\"address\":\"1\",\"function\":\"f\"}\n",
+                ))
+                .mount(&server)
+                .await;
+            let api = test_api(&server.uri());
+            let stream = ready::send_when_ready(
+                &api,
+                "run-1",
+                READY_POLL,
+                coverage::COVERAGE_RETRY,
+                || api.get_coverage_locations("run-1", None, None, false),
+                |_, err| err,
+            )
+            .await
+            .unwrap();
+            let lines: Vec<Value> = stream.try_collect().await.unwrap();
+            assert_eq!(lines.len(), 1);
+        }
+
         // A missing run keeps the plain "run not found" with no moment talk.
         #[tokio::test]
         async fn logs_error_reports_a_missing_run_without_the_suggestion() {

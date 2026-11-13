@@ -1279,7 +1279,7 @@ impl AntithesisApi {
         }
         match request.send().await {
             Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
-            Err(err) => Err(run_not_found(run_id, format_api_client_error(err).await)),
+            Err(err) => Err(format_api_client_error(err).await),
         }
     }
 

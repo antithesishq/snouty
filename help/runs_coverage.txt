@@ -2,7 +2,7 @@ List the instrumented code locations of a run, and when the run first reached ea
 
 Each row is one location: MODULE, LOCATION, FUNCTION, HASH and VTIME. MODULE is the module ID that `{{ t("runs modules")? }}` lists. LOCATION is the source file, line and column. HASH and VTIME give the moment where the run first reached the location, and are blank for a location that the run has not reached. Pass them as the input_hash and vtime of `{{ t("runs logs")? }}` to read the logs up to that moment. The rows give no container: to show the coverage of one container, pass the module IDs that `{{ t("runs modules")? }}` lists for it.
 
-Use {{ t("--module")? }} to show only the locations of a module.{% if cli %} Give it more than once for more modules.{% else %} List more module IDs for more modules.{% endif %} Use {{ t("--reached")? }} to show only the locations that the run reached, and {{ t("--unreached")? }} to show only the locations that it did not reach. While the run is in progress, the output is the coverage up to now.
+Use {{ t("--module")? }} to show only the locations of a module.{% if cli %} Give it more than once for more modules.{% else %} List more module IDs for more modules.{% endif %} Use {{ t("--reached")? }} to show only the locations that the run reached, and {{ t("--unreached")? }} to show only the locations that it did not reach. While the run is in progress, the output is the coverage up to now. While the run starts, the command waits until the run has coverage.
 
 {% if cli %}
 VTIME is cut to five decimals. With {{ t("--detail")? }}, it prints whole. On a terminal, a long LOCATION or FUNCTION is shortened. After the rows, a status line on stderr counts the locations, and gives the run's status.

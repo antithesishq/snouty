@@ -15,13 +15,15 @@ use crate::api::{
     AntithesisApi, CoverageModule, CoverageModuleInstance, LocationCoverage, Reach, RunStatus,
 };
 use crate::cli::{ReachArg, RunsCoverageArgs};
+use crate::error::api_error_status;
 use crate::render::sanitize;
 use crate::settings::Settings;
 use crate::stdio;
 use crate::table::{Align, Column, Fit, Table, truncate_path};
 use crate::vtime::VTime;
 
-use super::{MID_STREAM_ERROR, MID_STREAM_NOTE, stream_error_message, terminal_width};
+use super::ready::{self, Needs, RetryDecision, RetryPolicy};
+use super::{MID_STREAM_ERROR, MID_STREAM_NOTE, READY_POLL, stream_error_message, terminal_width};
 
 /// The failure of `runs coverage` when the server ends the locations with a
 /// `Stream_Error` line. snouty exits with status 3 for it, so that a script
@@ -36,6 +38,15 @@ impl std::fmt::Display for CoverageCut {
 }
 
 impl std::error::Error for CoverageCut {}
+
+/// The locations endpoint answers 404 while the run starts (orbitinghail,
+/// release 67.6, for a run launched a moment before). An unknown run fails
+/// when snouty reads it after the 404.
+pub(super) const COVERAGE_RETRY: RetryPolicy = RetryPolicy {
+    needs: Needs::Live,
+    waiting: "waiting for the run's coverage",
+    decide: |_, err| RetryDecision::retry_if(api_error_status(err) == Some(404)),
+};
 
 /// How many instance lists `runs modules` reads at the same time.
 const INSTANCE_REQUESTS: usize = 8;
@@ -182,7 +193,17 @@ pub(super) async fn cmd_runs_coverage(
         let unique: indexmap::IndexSet<&str> = module_ids.iter().map(String::as_str).collect();
         unique.into_iter().map(Some).collect()
     };
-    let open = |module_id| api.get_coverage_locations(&run_id, module_id, reach, follow);
+    let (api, run_id) = (&api, run_id.as_str());
+    let open = |module_id| {
+        ready::send_when_ready(
+            api,
+            run_id,
+            READY_POLL,
+            COVERAGE_RETRY,
+            move || api.get_coverage_locations(run_id, module_id, reach, follow),
+            |_, err| err,
+        )
+    };
     // A followed stream stays open until the run ends, so open every module
     // at once. Otherwise read one module at a time.
     let mut lines = if follow {
@@ -231,7 +252,7 @@ pub(super) async fn cmd_runs_coverage(
         return Ok(());
     }
 
-    let run = api.get_run(&run_id).await?.untag();
+    let run = api.get_run(run_id).await?.untag();
     eprintln!(
         "{} · {}",
         count(locations.len(), "location"),

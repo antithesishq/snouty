@@ -15,7 +15,24 @@ stderr 'cannot be used with'
 ! snouty --json runs coverage run-1 --detail
 stderr 'detail'
 
-# TODO: remove once the staging tenant serves the coverage API.
+# A run that has reached locations lists its modules, and its locations with
+# their moments. Only runs created after the coverage API shipped have
+# locations.
+mock-runs-server
+[!staging] snouty --json runs list
+[staging] snouty --json runs list --created-after 2026-11-13T23:00:00Z --limit 100
+env_from_json_find run_id launcher!=debugging -- runs coverage $R_run_id --reached
+snouty runs modules $R_run_id
+stdout '^MODULE +NAME +PROGRAM +CONTAINER +LANG +LOCATIONS +SYMBOLS$'
+stderr '^\d+ modules? in \d+ containers? · run '
+snouty runs coverage $R_run_id --reached
+stdout '^MODULE +LOCATION +FUNCTION +HASH +VTIME$'
+stdout '^\S+ +\S+ +\S+ +-?\d+ +\d+\.?\d*$'
+stderr '^\d+ locations? · run '
+snouty --json runs coverage $R_run_id --reached
+stdout '^\{.*"module_id":.*"first_reached":\{.*"moment":\{"input_hash":"-?\d+","vtime":'
+
+# The rest of this file checks mock data.
 [staging] skip
 
 # One row for each program that loads a module, then the counts and the run

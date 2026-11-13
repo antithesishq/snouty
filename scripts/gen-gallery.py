@@ -635,7 +635,7 @@ class MockTenant:
                     self.spec.refresh_revoked
                     or auth != f"Bearer {_FAKE_REFRESH_TOKEN_A}"
                 ):
-                    return 401, {"error": "invalid refresh token"}, ""
+                    return 403, {"error": "invalid refresh token"}, ""
                 return self._issue_oauth(_FAKE_ACCESS_TOKEN_B, _FAKE_REFRESH_TOKEN_B)
             case "GET", "/actions/token":
                 if (
@@ -649,7 +649,7 @@ class MockTenant:
         if not path.startswith("/api/"):
             return 404, {"error": "not found"}, ""
         if auth not in self._accepted:
-            return 401, None, ""
+            return 403, None, ""
         match path:
             case "/api/version":
                 return 200, {"latest_api_version": "v1", "release_version": "67.0"}, ""

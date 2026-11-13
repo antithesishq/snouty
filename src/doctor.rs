@@ -13,6 +13,7 @@ use crate::auth::{
 };
 use crate::compose;
 use crate::container;
+use crate::error::rejects_credential;
 use crate::login::{CliOAuthConfig, fetch_cli_config};
 use crate::render::OutputOptions;
 use crate::settings::Settings;
@@ -673,7 +674,7 @@ fn version_check(
              reporting (added in release 56); if you expect a current tenant, a \
              proxy or route may be intercepting the request",
         ),
-        Err(VersionError::Http(status @ (401 | 403))) => {
+        Err(VersionError::Http(status)) if rejects_credential(status) => {
             Check::fail(CheckId::Api, "Antithesis API rejected authentication")
                 .note(Level::Error, format!("the API returned HTTP {status}"))
                 .note(Level::Note, rejected_credential_next_step(in_use, profile))
@@ -1487,6 +1488,7 @@ mod tests {
                 Err(VersionError::Http(status)),
             );
             assert_eq!(check.status, Status::Error);
+            assert_eq!(check.message, "Antithesis API rejected authentication");
             assert!(
                 check
                     .notes
@@ -1505,7 +1507,7 @@ mod tests {
                 "tenant.antithesis.com",
                 &in_use,
                 profile,
-                Err(VersionError::Http(401)),
+                Err(VersionError::Http(403)),
             )
             .notes
             .into_iter()
@@ -1540,14 +1542,14 @@ mod tests {
         let oidc = oidc_source().value().clone();
         let login = "run `snouty login` to sign in again";
         let expired = "the sign-in expired and could not be renewed";
-        for status in [None, Some(StatusCode::UNAUTHORIZED)] {
+        for status in [None, Some(StatusCode::FORBIDDEN)] {
             assert_eq!(
                 renewal_failure(&oauth, None, status),
                 (expired, login.to_owned())
             );
         }
         assert_eq!(
-            renewal_failure(&oauth, Some("staging"), Some(StatusCode::UNAUTHORIZED)).1,
+            renewal_failure(&oauth, Some("staging"), Some(StatusCode::FORBIDDEN)).1,
             "run `snouty login --profile staging` to sign in again"
         );
         for status in [

@@ -5376,6 +5376,43 @@ mod tests {
             assert_eq!(lines.len(), 1);
         }
 
+        // A ready run's 404 is not the start-up 404, so it fails at once.
+        // A retry would wait READY_POLL, longer than the timeout. The clock
+        // is not paused: a paused clock advances while the request waits.
+        #[tokio::test]
+        async fn coverage_fails_a_404_from_a_ready_run() {
+            let server = mock_get_run(
+                "run-1",
+                200,
+                json!({
+                    "run_id": "run-1",
+                    "status": "in_progress",
+                    "sub_status": "Ready",
+                    "created_at": "2025-03-20T02:00:00Z",
+                    "launcher": "nightly"
+                }),
+            )
+            .await;
+            Mock::given(method("GET"))
+                .and(path("/api/v0/runs/run-1/coverage/locations"))
+                .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "nope"})))
+                .mount(&server)
+                .await;
+            let api = test_api(&server.uri());
+            let send = ready::send_when_ready(
+                &api,
+                "run-1",
+                READY_POLL,
+                coverage::COVERAGE_RETRY,
+                || api.get_coverage_locations("run-1", None, None, false),
+                |_, err| err,
+            );
+            let result = tokio::time::timeout(Duration::from_secs(5), send)
+                .await
+                .expect("the 404 fails without a retry");
+            assert_eq!(api_error_status(&result.err().unwrap()), Some(404));
+        }
+
         // A missing run keeps the plain "run not found" with no moment talk.
         #[tokio::test]
         async fn logs_error_reports_a_missing_run_without_the_suggestion() {

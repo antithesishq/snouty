@@ -311,7 +311,7 @@ async fn cmd_launch(
             // Podman gets the secret from the helper: for it, this is an early credential check.
             match snouty::registry::launch_secret(&api).await? {
                 Some(secret) => rt.use_tenant_registry_auth(container::TenantRegistryAuth {
-                    registry: tenant_registry,
+                    registry: tenant_registry.clone(),
                     secret,
                     settings_path,
                     profile,

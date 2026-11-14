@@ -617,7 +617,7 @@ fn a_bad_answer_at_the_registry_prompt_asks_again() {
     );
     let bad = "typed.example.com:+80";
     send(&mut session, &format!("{bad}\r"));
-    expect(&mut session, "the port must be a number");
+    expect(&mut session, "invalid port number");
     send(&mut session, &"\x7f".repeat(bad.len()));
     send(&mut session, "typed.example.com/app\r");
     finish(session);

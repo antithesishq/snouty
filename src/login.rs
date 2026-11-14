@@ -32,7 +32,7 @@ use crate::{
     },
     env,
     error::{api_error_status, rejects_credential, user_error},
-    registry::{Registry, TenantRegistry},
+    registry::Registry,
     render::{OutputOptions, sanitize},
     settings::{
         ANTITHESIS_PROFILE_ENV_VAR_NAME, Settings, tenant_base_url, update_settings_in_global_file,
@@ -486,9 +486,8 @@ fn print_login_summary(
     // The snouty credential signs in to the tenant's own registry. Any other
     // registry takes its own login.
     let own_registry = registry
-        .host()
-        .parse::<TenantRegistry>()
-        .is_ok_and(|own| own.tenant().eq_ignore_ascii_case(tenant));
+        .antithesis_tenant()
+        .is_some_and(|own| own.eq_ignore_ascii_case(tenant));
     if !own_registry {
         // `docker login` takes the host, not the path after it.
         let host = registry.host();

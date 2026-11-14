@@ -16,17 +16,36 @@ the output path, the review namespace, and the API base path
 
 ### Cut code from git
 
+Read the changed files with `git diff --numstat -z -M <base> <head>`. A
+renamed file gives both of its paths. Diff a renamed file with both paths:
+git applies the pathspec before it finds renames, so with only the new path
+the whole file shows as added.
+
 Get each changed file as one hunk with
-`git diff -U1000000 <base> <head> -- <path>`. Parse it into rows of
-`(kind, old line, new line, text)`. A diff block names a file and a range
-of new-side line numbers. A deleted row has no new number, so give it the
-new number of the next kept row, and include it when that number is in the
-range:
+`git diff -M -U1000000 <base> <head> -- <old path> <path>`. Parse it into
+rows of `(kind, old line, new line, text)`. A diff block names a file and a
+range of new-side line numbers. A deleted row has no new number, so give it
+the new number of the next kept row, or the last new number when no kept
+row follows. Include it when that number is in the range:
 
 ```python
+def changed_files():
+    """{path at head: (path at base, added, deleted)}"""
+    f, out, i = git("diff", "--numstat", "-z", "-M", BASE, HEAD).split("\0"), {}, 0
+    while f[i]:
+        added, deleted, path = f[i].split("\t")
+        if path:
+            out[path] = (path, added, deleted); i += 1
+        else:  # a rename: the old and new paths follow
+            out[f[i + 2]] = (f[i + 1], added, deleted); i += 3
+    return out
+
+FILES = changed_files()
+
 def rows(path):
     out, old, new, in_hunk = [], 0, 0, False
-    for line in git("diff", "-U1000000", BASE, HEAD, "--", path).split("\n"):
+    diff = git("diff", "-M", "-U1000000", BASE, HEAD, "--", FILES[path][0], path)
+    for line in diff.split("\n"):
         if line.startswith("@@"):
             in_hunk, old, new = True, 1, 1
         elif not in_hunk or line.startswith("\\"):
@@ -42,9 +61,11 @@ def rows(path):
     return out
 
 def slice_rows(path, a, b):
-    rs, pos, nxt = rows(path), [], 10**9
+    rs = rows(path)
+    side = 2 if any(r[2] for r in rs) else 1  # a deleted file has only old numbers
+    pos, nxt = [], max((r[side] for r in rs if r[side]), default=0)
     for r in reversed(rs):
-        nxt = r[2] if r[2] is not None else nxt
+        nxt = r[side] if r[side] is not None else nxt
         pos.append(nxt)
     pos.reverse()
     out = [r for r, p in zip(rs, pos) if a <= p <= b]
@@ -54,15 +75,16 @@ def slice_rows(path, a, b):
 
 For a first walkthrough, `BASE` is the merge base. For a follow-up, see
 `references/follow-up.md`. For a new file, `-U1000000` gives one hunk of
-added rows. A deleted file has no new-side numbers: cut it with a range on
-the old side.
+added rows. A deleted file has no new-side numbers, so `slice_rows` takes
+its range on the old side. Show a renamed file under its new path, and
+name the old path in the caption.
 
 Cut background snippets from `git show <head>:<path>`, lines `a` to `b`.
 Assert that the range exists. These asserts fail the build when the branch
 moves under a range. Then fix the range. Do not remove the assert.
 
-Get `git diff --numstat <base> <head>` for the file tree. Assert that each
-file in scope appears in at least one diff block.
+Build the file tree from `FILES`. Assert that each file in scope appears in
+at least one diff block.
 
 ### Content as data
 
@@ -106,8 +128,15 @@ Write helpers for repeated markup, such as `table(head, rows)` and
 
 One HTML file. All CSS and JavaScript are inline. Load scripts only from
 cdnjs.cloudflare.com, cdn.jsdelivr.net or unpkg.com, with an exact version,
-and fonts only from Google Fonts. Check each URL with `curl -sI` before you
-publish.
+and fonts only from Google Fonts. The page shares its origin with the review
+API, so a changed CDN file could read the code and submit a review. Give
+each external script an `integrity` hash and `crossorigin="anonymous"`.
+Make the hash from the file that you check:
+
+```sh
+u=https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js
+echo "sha384-$(curl -sf "$u" | openssl dgst -sha384 -binary | openssl base64 -A)"
+```
 
 ### Layout
 

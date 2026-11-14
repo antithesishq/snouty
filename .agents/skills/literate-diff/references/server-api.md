@@ -8,7 +8,8 @@ the machine share it.
 ## Command line
 
 ```text
-server.py --root DIR --port PORT --ns NAME=TITLE [--ns NAME=TITLE ...] [--static DIR]
+server.py --root DIR --port PORT --ns NAME=TITLE [--ns NAME=TITLE ...]
+          [--origin URL ...] [--static DIR]
 ```
 
 - `--root`: the data directory. Each namespace keeps its data in
@@ -17,9 +18,29 @@ server.py --root DIR --port PORT --ns NAME=TITLE [--ns NAME=TITLE ...] [--static
   `myrepo-pr42=myrepo PR #42` and `myrepo-pr42-r2=myrepo PR #42, follow-up`.
   A name matches `^[A-Za-z0-9_-]{1,64}$`, and is not `health` or
   `review-api`. The title goes in the Markdown heading.
+- `--origin`: an origin, such as `https://myhost.example`, from which the
+  reviewer opens the page through a proxy. Give one for each such origin.
 - `--static`: also serve the files in this directory, for a machine with no
   web server (see `references/hosting.md`).
 - Bind to `127.0.0.1` only. The API has no authentication.
+
+## Request checks
+
+A bind to `127.0.0.1` does not stop other sites. Any page that the
+reviewer's browser opens can send requests to `127.0.0.1`, and a site can
+use DNS rebinding to look like the same origin. A forged submit wakes the
+agent with instructions from an attacker. So check each request before
+routing it, and answer `403` when a check fails:
+
+- `Host` is `127.0.0.1:<port>`, `localhost:<port>`, or the host of an
+  `--origin`. This blocks DNS rebinding.
+- When a `POST`, `PUT` or `DELETE` sends `Origin`, it is
+  `http://127.0.0.1:<port>`, `http://localhost:<port>`, or an `--origin`.
+- A `POST` or `PUT` has the media type `application/json` in
+  `Content-Type` (a `charset` parameter is allowed). Another site can
+  send that type only after a CORS preflight, and the server answers no
+  preflight.
+- Never send `Access-Control-Allow-*` headers.
 
 At start, create `reviews/` and `submitted/` and an empty `SUBMITTED` file
 for each namespace. Existing data stays.
@@ -50,7 +71,9 @@ All bodies are JSON. Each response has `Content-Type: application/json` and
 
 Rules:
 
-- At most one review is pending. The first comment creates it.
+- At most one review is pending. The first comment creates it. After a
+  submit, the next comment starts a new pending review in the same
+  namespace, and the reviewer can submit it too.
 - A comment or review ID matches `^[A-Za-z0-9_-]{1,64}$`. A new review ID is
   the UTC time and 6 hex characters: `20260101T120000Z-a1b2c3`.
 - A `PUT` or `DELETE` of a comment in a submitted review is `409`.
@@ -97,10 +120,12 @@ Rules:
 Validate the anchor field by field: `kind` is `diff`, `bg` or `prose`; `id`
 is not blank and at most 400 characters; `step` and the line numbers are
 integers from 0 to 10,000,000; `file` is required for `diff` and `bg`;
-`side` is `L` or `R` for `diff`; `para` is required for `prose`. Swap
-`line_start` and `line_end` when they are reversed. Cut `quote` to 8000
-characters. `body` is not blank and at most 20,000 characters. `summary` is
-at most 50,000 characters. Keep only the known fields.
+`side` and `start_side` are `L` or `R` for `diff`; `para` is required for
+`prose`. Swap `line_start` and `line_end` when they are reversed, but for
+`diff` only when `start_side` equals `side`: numbers on two sides cannot be
+compared. Cut `quote` to 8000 characters. `body` is not blank and at most
+20,000 characters. `summary` is at most 50,000 characters. Keep only the
+known fields.
 
 ## Storage
 
@@ -155,5 +180,6 @@ Rename this.
 Say what the user can do instead.
 ````
 
-A deleted-side location adds ` (old side)`. A background location ends
-with `, in a background panel`.
+A deleted-side location adds ` (old side)`. A range whose two ends are on
+different sides names each side, such as `src/a.rs:L100-R95`. A background
+location ends with `, in a background panel`.

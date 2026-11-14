@@ -63,8 +63,10 @@ the answer.
 Use a new namespace and a new page directory, such as `<ns>-r2` and
 `<name>-r2`. Change the API base and the `localStorage` key in the page.
 Add the namespace to the server (see "Reuse what is there" in
-`references/hosting.md`). The first review stays as it was. Test the page as
-for the first one, then start the watcher on `<ns>-r2/SUBMITTED`.
+`references/hosting.md`). The first round stays live, and the watcher
+still reads its `SUBMITTED` file. Stop the watcher while you test the
+page as for the first one. Start it again after you delete the test data:
+it covers `<ns>-r2` too.
 
 ## Explainer reports
 

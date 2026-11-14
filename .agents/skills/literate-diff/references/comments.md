@@ -44,7 +44,10 @@ The `Review` button opens a drawer:
   quote, marked as not on this page.
 - **`Finish review`** opens a summary text area and three verdicts:
   `Comment`, `Request changes` and `Approve`, each with a one-line
-  explanation. `Submit review` sends them. On success, clear the pending
+  explanation. `Submit review` first syncs the queue. While the queue is
+  not empty or the server is unreachable, it does not submit and says why,
+  so the review holds every comment that the reviewer sees. Then it sends
+  the verdict and summary. On success, clear the pending
   list, show the review ID, and refresh past reviews. On an error, show the
   server's message in the form.
 - **Past reviews**: the submitted reviews, newest first, with verdict, time
@@ -61,9 +64,12 @@ wrote (see "Markup contract" in `references/page.md`):
 | `id` | see below |
 | `step`, `step_title` | the step number and its nav title |
 | `pos` | the index of the anchor element among the step's rows and `[data-pa]` elements, for sorting |
-| `quote` | diff: the rows, each with its `+`, `-` or space; bg: the rows; prose: the element's text, at most 1500 characters |
+| `quote` | diff: the rows, each with its `+`, `-` or space; bg: the rows; prose: the element's text. At most 8000 characters for diff and bg, and 1500 for prose |
 | `file`, `line_start`, `line_end` | diff and bg only |
 | `side`, `start_side` | diff only: `R` for a row with `data-n` (new side), `L` for a deleted row (`data-o`) |
+
+The start of a range is its top row on the page, and the end is its bottom
+row, whichever way the reviewer dragged.
 | `para` | prose only: the `data-pa` value |
 
 The IDs:
@@ -87,13 +93,16 @@ an element's text for a quote.
 - Keep the comments and a queue of operations (`put` or `del`, by ID) in
   `localStorage`, under a key for the namespace. Apply each change to the
   page at once, add it to the queue, and then sync.
+- Send each body as JSON with `Content-Type: application/json`. The server
+  refuses a `POST` or `PUT` without it.
 - To sync, send the queued operations in order, then load
   `GET /review`. The server's list replaces the local one.
-- A network error, an HTTP 502, 503 or 504, or a body that is not JSON
-  means that the server is unreachable. Keep the queue, show a banner (the
-  server is unreachable; comments stay in this browser and save when it is
-  back), and try again every 10 seconds.
-- A 400, 404 or 409 is final. Drop the operation and show a short message.
+- A network error, any 5xx status, or a body that is not JSON means that
+  the server is unreachable. Keep the queue, show a banner (the server is
+  unreachable; comments stay in this browser and save when it is back),
+  and try again every 10 seconds.
+- Any 4xx status is final. Drop the operation and show a short message
+  with the server's error. A `404` on a delete needs no message.
 - Sync every 30 seconds while the page is open, so that two tabs agree.
 - Wrap each `localStorage` call in `try`/`catch`. The page must work
   without it.

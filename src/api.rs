@@ -49,9 +49,8 @@ pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
     BuildLogLine, Event, EventProperty, ExecuteCommandRequestSourceRunId as SourceRunId,
     ExecuteCommandRequestSourceSessionId as SourceSessionId, FaultTolerance, Moment,
-    NonEventProperty, PerformanceTier, Property, PropertyStatus, RegistryResponse,
-    RegistryResponseAuth, RunDetail, RunDetailSubStatus, RunStatus, RunStreamNotificationType,
-    RunSummary, UsageEntry,
+    NonEventProperty, PerformanceTier, Property, PropertyStatus, RegistryResponse, RunDetail,
+    RunDetailSubStatus, RunStatus, RunStreamNotificationType, RunSummary, UsageEntry,
 };
 
 /// The outcome of a launch or debugging-launch request, and the `--json` output
@@ -730,7 +729,6 @@ pub(crate) enum ResponseCache {
     /// directory under the system temp dir — the default for every command.
     Default,
     /// No response cache: every request reaches the server.
-    #[cfg(test)]
     Disabled,
     /// Cache under this directory.
     #[cfg(test)]
@@ -859,7 +857,7 @@ impl AntithesisApi {
         )
     }
 
-    // Outside tests, the only `ResponseCache` variant carries no data to move.
+    // Outside tests, no `ResponseCache` variant carries data to move.
     #[allow(clippy::needless_pass_by_value)]
     pub(crate) fn build(
         settings: &Settings,
@@ -879,7 +877,6 @@ impl AntithesisApi {
         let http = HttpClient::new(settings, verbose)?;
         let cache_dir = match cache {
             ResponseCache::Default => api_cache::default_dir(),
-            #[cfg(test)]
             ResponseCache::Disabled => None,
             #[cfg(test)]
             ResponseCache::Dir(dir) => Some(dir),
@@ -1018,9 +1015,13 @@ impl AntithesisApi {
 
     /// The registry that the tenant's container images are pushed to, and
     /// the login to push with.
-    pub async fn get_registry(&self) -> Result<RegistryResponse> {
+    #[cached(value)]
+    pub async fn get_registry(&self) -> Result<Tagged<RegistryResponse, CachePolicy>> {
         match self.client.get_registry().send().await {
-            Ok(response) => Ok(response.into_inner()),
+            Ok(response) => {
+                let policy = self.cache.headers_policy(response.headers());
+                Ok(response.into_inner().with_tag(policy))
+            }
             Err(err) => Err(format_api_client_error(err).await),
         }
     }
@@ -4028,6 +4029,31 @@ mod tests {
 
         assert_eq!(first.run_id, "run-1");
         assert_eq!(second.run_id, "run-1");
+    }
+
+    /// The registry is cached like every other read: only when the server
+    /// allows it. The live endpoint answers `no-cache`.
+    #[tokio::test]
+    async fn the_registry_is_served_from_the_cache_when_the_server_allows_it() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/registry"))
+            .respond_with(cacheable().set_body_json(serde_json::json!({
+                "auth": "antithesis",
+                "registry_url": "registry.acme.antithesis.com",
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let cache_dir = TempDir::new().unwrap();
+        let api = test_api_optionally_with_cache(&mock_server, Some(&cache_dir));
+
+        let first = api.get_registry().await.unwrap().untag();
+        let second = api.get_registry().await.unwrap().untag();
+
+        assert_eq!(first.registry_url, "registry.acme.antithesis.com");
+        assert_eq!(second.registry_url, first.registry_url);
     }
 
     #[tokio::test]

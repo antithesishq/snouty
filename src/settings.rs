@@ -512,18 +512,20 @@ fn explicit_settings_path(flag: Option<PathBuf>) -> Result<Option<PathBuf>> {
 }
 
 /// Writes `tenant` and `registry` into the global `settings.toml`, in the
-/// table of `profile_to_update` or else the top-level table.
+/// table of `profile_to_update` or else the top-level table. Returns what
+/// puts the file back as it was.
 pub(crate) fn update_settings_in_global_file(
     tenant: &str,
     registry: &str,
     profile_to_update: Option<&str>,
-) -> Result<()> {
+) -> Result<PreviousSettingsFile> {
     let path = global_settings_dir()
         .ok_or_eyre(NO_GLOBAL_SETTINGS_DIR)?
         .join(GLOBAL_SETTINGS_FILENAME);
-    let mut contents = match read_to_string_if_file_exists(&path)? {
+    let previous = read_to_string_if_file_exists(&path)?;
+    let mut contents = match &previous {
         Some(contents) => {
-            if let Ok(table) = parse_settings(&contents, &path) {
+            if let Ok(table) = parse_settings(contents, &path) {
                 table
             } else {
                 let backup = back_up_unparsable_file(&path)?;
@@ -556,7 +558,29 @@ pub(crate) fn update_settings_in_global_file(
     }
 
     write_global_toml(GLOBAL_SETTINGS_FILENAME, &contents)?;
-    Ok(())
+    Ok(PreviousSettingsFile {
+        path,
+        contents: previous,
+    })
+}
+
+/// The global settings file before [`update_settings_in_global_file`]
+/// changed it: its text, or `None` when there was no file.
+#[must_use]
+pub(crate) struct PreviousSettingsFile {
+    path: PathBuf,
+    contents: Option<String>,
+}
+
+impl PreviousSettingsFile {
+    /// Put the file back as it was.
+    pub(crate) fn restore(self) -> Result<()> {
+        match self.contents {
+            Some(contents) => fs::write(&self.path, contents),
+            None => fs::remove_file(&self.path),
+        }
+        .wrap_err_with(|| format!("could not restore {}", self.path.display()))
+    }
 }
 
 /// Atomically write `value` as TOML to `filename` in the global settings dir,

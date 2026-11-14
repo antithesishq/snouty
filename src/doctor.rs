@@ -15,10 +15,14 @@ use crate::auth::{
 use crate::compose;
 use crate::container;
 use crate::error::rejects_credential;
-use crate::login::{CliOAuthConfig, REGISTRY_CHECK_TIMEOUT, fetch_cli_config};
+use crate::login::{CliOAuthConfig, REGISTRY_TIMEOUT, fetch_cli_config};
 use crate::registry::normalize_host;
 use crate::render::OutputOptions;
 use crate::settings::Settings;
+
+/// The longest wait for the OAuth probe. Doctor only reports what the probe
+/// finds, so it does not wait as long as login does.
+const OAUTH_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Outcome of a single health check. Only `Error` fails doctor; `Warn` is
 /// surfaced but the run still passes.
@@ -901,7 +905,7 @@ pub async fn cmd_doctor(
                         .is_some_and(|release| release >= MIN_REGISTRY_RELEASE)
                     {
                         let reported = tokio::time::timeout(
-                            crate::env::scaled_wait(REGISTRY_CHECK_TIMEOUT),
+                            crate::env::scaled_wait(REGISTRY_TIMEOUT),
                             api.get_registry(),
                         )
                         .await;
@@ -913,7 +917,7 @@ pub async fn cmd_doctor(
                                     .expect("collect_checks reports the registry");
                                 *check = registry_check(
                                     settings.registry(),
-                                    Some(&reported.registry_url),
+                                    Some(&reported.untag().registry_url),
                                     settings.profile(),
                                 );
                             }
@@ -943,7 +947,9 @@ pub async fn cmd_doctor(
             && let Some(base_url) = settings.base_url()
             && let Ok(client) = HttpClient::new(settings, verbose)
         {
-            match fetch_cli_config(&client, &normalize_base_url(base_url)).await {
+            match fetch_cli_config(&client, &normalize_base_url(base_url), OAUTH_PROBE_TIMEOUT)
+                .await
+            {
                 Ok(CliOAuthConfig::Disabled) => checks.push(
                     Check::warn(
                         CheckId::OauthConfigured,

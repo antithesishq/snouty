@@ -673,3 +673,29 @@ fn doctor_finishes_when_the_tenant_does_not_report_its_registry() {
         .assert()
         .stderr(predicate::str::contains("✓ container registry is set"));
 }
+
+/// doctor's OAuth probe gives up on a tenant that accepts the connection but
+/// does not answer after 10 seconds, which a shorter second makes 1.
+#[test]
+fn doctor_gives_up_on_a_silent_oauth_probe_after_ten_seconds() {
+    // The kernel accepts connections into the backlog, but nothing reads them.
+    let stalled = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base_url = format!("http://{}", stalled.local_addr().unwrap());
+    let home = tempfile::TempDir::new().unwrap();
+
+    let start = std::time::Instant::now();
+    snouty()
+        .arg("doctor")
+        .env("HOME", home.path())
+        .env("ANTITHESIS_TENANT", "testtenant")
+        .env("ANTITHESIS_BASE_URL", &base_url)
+        .env(snouty::testutils::TEST_SECOND_MS_VAR_NAME, "100")
+        .output()
+        .unwrap();
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "doctor waited {elapsed:?}"
+    );
+}

@@ -109,6 +109,20 @@ async fn print_event_lines(
     Ok(())
 }
 
+/// `1 module`, `3 locations`.
+fn count(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
+/// `run in progress`, `run completed`.
+fn run_status(status: &RunStatus) -> String {
+    format!("run {}", status.to_string().replace('_', " "))
+}
+
 /// `print!`/`println!`, but routed through `write!`/`writeln!` to stdout so a
 /// closed pipe (e.g. `snouty runs list | head`) surfaces as an `io::Error` the
 /// caller propagates with `?` — `println!` would panic instead. Each call
@@ -121,7 +135,8 @@ macro_rules! outln {
     ($($arg:tt)*) => {{ writeln!(crate::stdio::stdout(), $($arg)*) }};
 }
 
-// Declared after the macros above, so that the module can use them.
+// Declared after the macros above, so that the modules can use them.
+mod modules;
 pub mod usage;
 
 pub async fn cmd_runs(
@@ -306,6 +321,9 @@ pub async fn cmd_runs(
             cmd_runs_search(args, settings, output.verbose, mode).await
         }
         Some(RunsCommands::Usage(args)) => usage::cmd_runs_usage(args, settings, output).await,
+        Some(RunsCommands::Modules { run_id }) => {
+            modules::cmd_runs_modules(&run_id, settings, output).await
+        }
     }
 }
 

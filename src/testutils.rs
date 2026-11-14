@@ -864,6 +864,15 @@ fn mock_route(
                 }
                 let (s, b) = mock_route_get_run_logs(run_id);
                 (s, b, ndjson, mock_run_terminal(run_id))
+            } else if let Some(run_id) = rest.strip_suffix("/modules") {
+                let (s, b) = mock_route_list_run_modules(run_id);
+                (s, b, json, false)
+            } else if let Some((run_id, module_id)) = rest
+                .strip_suffix("/instances")
+                .and_then(|rest| rest.split_once("/modules/"))
+            {
+                let (s, b) = mock_route_list_module_instances(run_id, module_id);
+                (s, b, json, false)
             } else if let Some(run_id) = rest.strip_suffix("/properties") {
                 let (s, b) = mock_route_list_run_properties(run_id, query);
                 (s, b, json, false)
@@ -1301,6 +1310,81 @@ fn mock_route_get_run_build_logs(run_id: &str) -> (u16, String) {
         r#"{"timestamp":"2025-03-20T02:01:20Z","stream":"stdout","text":"Build complete"}"#,
     ];
     (200, lines.join("\n") + "\n")
+}
+
+type MockModule = (
+    &'static str,
+    &'static str,
+    Option<&'static str>,
+    &'static [(&'static str, &'static str)],
+);
+
+/// The modules of every known run: (`module_id`, name, language, the
+/// instances as (container, program)). The module without a language has no
+/// symbol catalog.
+const MOCK_MODULES: &[MockModule] = &[
+    (
+        "d85d838a38496ad7233432355829abc7d2333c33",
+        "rusthello",
+        Some("native"),
+        &[("rustok", "/usr/local/bin/rusthello")],
+    ),
+    (
+        "go-20e55e2f1623",
+        "instrhello/internal/work",
+        Some("Go"),
+        &[
+            ("goworker", "/usr/local/bin/worker"),
+            ("driver", "/usr/local/bin/driver"),
+        ],
+    ),
+    (
+        "dotnet-e798e24c32e9",
+        "dotnethello",
+        None,
+        &[("dotnet", "/usr/share/dotnet/dotnet")],
+    ),
+];
+
+fn mock_route_list_run_modules(run_id: &str) -> (u16, String) {
+    if !mock_run_known(run_id) {
+        return mock_run_not_found(run_id);
+    }
+    let data: Vec<serde_json::Value> = MOCK_MODULES
+        .iter()
+        .map(|&(module_id, name, language, _)| match language {
+            Some(language) => serde_json::json!({
+                "module_id": module_id, "name": name, "has_catalog": true,
+                "language": language, "instrumentor": "mock", "num_files": 1,
+                "num_functions": 2, "num_locations": 9,
+            }),
+            None => serde_json::json!({
+                "module_id": module_id, "name": name, "has_catalog": false,
+                "num_locations": 9,
+            }),
+        })
+        .collect();
+    let body = serde_json::json!({"data": data, "cursor": "modules-end", "has_more": false});
+    (200, body.to_string())
+}
+
+fn mock_route_list_module_instances(run_id: &str, module_id: &str) -> (u16, String) {
+    let module = MOCK_MODULES.iter().find(|(id, ..)| *id == module_id);
+    let (Some(&(_, _, _, instances)), true) = (module, mock_run_known(run_id)) else {
+        return (404, MOCK_BARE_404_BODY.to_string());
+    };
+    let data: Vec<serde_json::Value> = instances
+        .iter()
+        .map(|&(container, program)| {
+            serde_json::json!({
+                "instance_id": format!("{container}:{program}"),
+                "container_name": container,
+                "program_path": program,
+            })
+        })
+        .collect();
+    let body = serde_json::json!({"data": data, "cursor": "instances-end", "has_more": false});
+    (200, body.to_string())
 }
 
 fn mock_route_get_run_logs(run_id: &str) -> (u16, String) {

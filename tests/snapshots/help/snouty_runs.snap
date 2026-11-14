@@ -3,7 +3,7 @@ source: tests/help_snapshots.rs
 ---
 Interact with test runs
 
-List, inspect, wait on, cancel, run commands in, and read the logs and
+List, inspect, wait on, cancel, run commands in, and read the logs, coverage and
 compute-hour usage of Antithesis test runs.
 
 When no subcommand is given, lists recent runs (same as `snouty runs list`).
@@ -25,6 +25,7 @@ Examples:
   snouty runs search <run_id> 'contains({output_text: "error"})'
   snouty runs exec <run_id> <input_hash> <vtime> 'uname -a'
   snouty runs usage --rollup week
+  snouty runs modules <run_id>
 
 Usage: snouty runs [OPTIONS] [COMMAND]
 
@@ -42,6 +43,7 @@ Commands:
   events      Search events in a run
   search      Query events with the event-set DSL
   usage       Show the compute hours that runs used
+  modules     List the instrumented modules that a run loaded, and where
   help        Print this message or the help of the given subcommand(s)
 
 Options:

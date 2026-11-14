@@ -3,7 +3,7 @@
   "info": {
     "title": "Antithesis API",
     "version": "1.0.0",
-    "description": "The Antithesis API enables programmatic access to the Antithesis autonomous testing environments. List runs, inspect run details, and retrieve logs.\n\n### Authentication\n\nPass the API key in the `Authorization` header as `Authorization: Bearer <api_key>`. To obtain an API key, please email us at [support@antithesis.com](mailto:support@antithesis.com) or talk to your forward deployed engineer.\n\n### Versioning\n\nAll endpoints are versioned via a path prefix:\n\n- `/api/v0/...` **Preview.** APIs accessed from the `v0` route are in preview. They may change or be removed.\n- `/api/v1/...` **Stable.** The first version with a compatibility commitment.\n\nIn the future only breaking changes trigger a new major version (e.g., `v2`). When that happens the previous version (`v1`) remains available, and preview APIs restart under `v0`.",
+    "description": "The Antithesis API enables programmatic access to the Antithesis autonomous testing environments. List runs, inspect run details, and retrieve logs. We recommend using [Snouty CLI](https://github.com/antithesishq/snouty) as the client for this API.\n\n### Authentication\n\nPass the API key in the `Authorization` header as `Authorization: Bearer <api_key>`. To obtain an API key, please email us at [support@antithesis.com](mailto:support@antithesis.com) or talk to your forward deployed engineer.\n\n### Versioning\n\nAll endpoints are versioned via a path prefix:\n\n- `/api/v0/...` **Preview.** APIs accessed from the `v0` route are in preview. They may change or be removed.\n- `/api/v1/...` **Stable.** The first version with a compatibility commitment.\n\nIn the future only breaking changes trigger a new major version (e.g., `v2`). When that happens the previous version (`v1`) remains available, and preview APIs restart under `v0`.",
     "contact": {
       "name": "Antithesis Team",
       "url": "https://www.antithesis.com",
@@ -36,8 +36,14 @@
       "name": "Launch",
       "description": "Launch a test run or debugging session.\n\nAuthenticate with an API key in the `Authorization` header (see **Authentication** above). Basic auth (previously used by [webhooks](/docs/reference/webhook/overview/)) is also accepted for backwards compatibility but is now deprecated. Use API keys for all new integrations.\n\nTo use basic auth, pass your tenant's machine credentials (user and password):\n\n```bash\ncurl --fail -u 'USER:PASSWORD' -X POST https://<TENANT>.antithesis.com/api/v1/launch/{launcher_name}\n```"
     },
-    {"name": "Modules", "description": "Lists instrumented modules loaded during a test run and the programs that\nloaded them. Every module that loaded with coverage instrumentation is\nincluded, whether or not the build published a symbol catalog for it;\nhas_catalog tells them apart. A symbol catalog describes the files,\nfunctions, and instrumented code locations in a module's build.\n\nEach module appears once per run, identified by module_id. Treat this\nidentifier as an opaque string; name is a display label and need\nnot be unique. File, function, and location counts describe the catalog,\nregardless of which code has executed. A module without a catalog reports\na location count; but its file and function counts are\nnull. These endpoints do not report\ncoverage results.\n\nAn instance identifies a program that loaded a module in a named container.\nThe same (module_id, container_name, program_path) combination appears only\nonce per run, even across multiple processes, container restarts, or repeated\nloads. Instances group processes by program path; they do not enumerate\nindividual process lifetimes.\n\nprogram_path is the path to the process's executable. For interpreted\nprograms, this is the interpreter binary. Different scripts using the\nsame interpreter path in the same named container share an instance for\neach module they load in common.\nContainer names and program paths are served as recorded, without rewriting\nthem.\n\nModules and instances may take time to appear after loading. A module appears before\nany of its instances.\n\nEach list is ordered by when entries first become available through this\nAPI, which may differ from the order in which modules were loaded. Entries\nkeep their positions, and new entries are always added after existing\nones. Repeated loads do not move or duplicate entries.\n\nUse each list's cursor to fetch subsequent pages or poll for new entries.\nAn empty page does not mean the list is final. The module list and each module's\ninstance list have separate cursors; neither reports updates to entries\nalready listed."},
-    {"name": "Module instances", "description": "Programs that loaded modules in named containers."},
+    {
+      "name": "Registry",
+      "description": "Where to push container images."
+    },
+    {
+      "name": "Coverage",
+      "description": "Information about test coverage in the run."
+    },
     {
       "name": "Usage",
       "description": "Information about usage"
@@ -45,10 +51,6 @@
     {
       "name": "Version",
       "description": "API and release version information."
-    },
-    {
-      "name": "Registry",
-      "description": "Where to push container images."
     }
   ],
   "paths": {
@@ -339,7 +341,7 @@
           "Test runs"
         ],
         "summary": "Stream updates for a run",
-        "description": "Streams updates about a test run while the run is in progress. By default, you get a notification when Antithesis finds new properties, and when properties pass or fail. You can also opt in to notifications when Antithesis finds new examples for a property. When the run finishes, the stream sends `RUN_FINALIZED` and closes.\n\nThe stream only sends changes that happen after you connect. To get a complete, up-to-date view of a run's properties, open the stream first, then fetch the current properties from the [List test run properties](/docs/reference/rest_api/#op-listRunProperties) endpoint.\n\nRuns created before Antithesis 65.3 do not support streaming and return 409. Instead, call the [List test run properties](/docs/reference/rest_api/#op-listRunProperties) endpoint on completed runs.\n\nOutput is streamed as newline-delimited JSON (NDJSON), with one notification per line. Each notification has a `type`, and a `data` list of the properties associated with it.\n\nWhen Antithesis finds a property's first example or counterexample, it sends a `NEW_EXAMPLES_FOUND` notification. The property's `examples` or `counterexamples` list contains the new example. Later examples only increase `example_count` and `counterexample_count`.\n\nIf the stream closes without sending `RUN_FINALIZED`, or ends with an error, the run may still be in progress. Reconnecting doesn't resend notifications you missed, so reconnect and then reload the current properties.",
+        "description": "Streams updates about a test run's properties while the run is in progress. By default, you get a notification when Antithesis first encounters a property, and when properties pass or fail. You can also opt in to notifications when Antithesis finds new examples for a property. When the run finishes, the stream sends `RUN_FINALIZED` and closes.\n\nThe stream only sends changes that happen after you connect. To get a complete, up-to-date view of a run's properties, open the stream first, then fetch the current properties from the [List test run properties](/docs/reference/rest_api/#op-listRunProperties) endpoint.\n\nRuns created before Antithesis 66 do not support streaming and return 409. Instead, call the [List test run properties](/docs/reference/rest_api/#op-listRunProperties) endpoint on completed runs.\n\nOutput is streamed as newline-delimited JSON (NDJSON), with one notification per line. Each notification has a `type`, and a `data` list of the properties associated with it.\n\nWhen Antithesis finds a property's first example or counterexample, it sends a `NEW_EXAMPLES_FOUND` notification. The property's `examples` or `counterexamples` list contains the new example. Later examples only increase `example_count` and `counterexample_count`.\n\nIf the stream closes without sending `RUN_FINALIZED`, or ends with an error, the run may still be in progress. Reconnecting doesn't resend notifications you missed, so reconnect and then reload the current properties.",
         "parameters": [
           {
             "name": "run_id",
@@ -681,14 +683,14 @@
             "$ref": "#/components/responses/NotFound"
           },
           "409": {
-            "description": "The run was created before Antithesis 65.3 and does not support streaming. List its saved results with the [List test run properties](/docs/reference/rest_api/#op-listRunProperties) endpoint.",
+            "description": "The run was created before Antithesis 66 and does not support streaming. List its saved results with the [List test run properties](/docs/reference/rest_api/#op-listRunProperties) endpoint.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error_Response"
                 },
                 "example": {
-                  "message": "Conflict: Streaming is not available for this run. Streaming requires a run created with Antithesis version 65.3 or later. You can still view this run's saved property results."
+                  "message": "Conflict: Streaming is not available for this run. Streaming requires a run created with Antithesis version 66 or later. You can still view this run's saved property results."
                 }
               }
             }
@@ -917,7 +919,7 @@
       "get": {
         "operationId": "listRunProperties",
         "summary": "List test run properties",
-        "description": "Returns a paginated list of a test run's properties and their current status: Passing, Failing, or Pending (not yet resolved). Each property includes a sample of its examples and counterexamples. Use the `status` parameter to filter by status.\n\nTo get the next page, pass the `next_cursor` value from the previous response as `after`, and keep the same `status` filter. Results are read live, so properties can change while you page through them. If a cursor has expired, the endpoint returns `400 Bad Request`, and you need to start again from the first page. Query parameters that the endpoint doesn't recognize are ignored.\n\nCompleted runs return the results Antithesis stored when the run finished. For cancelled and incomplete runs, results are calculated when you request them, which can take a while for a large run.\n\nRuns created before Antithesis version 65.3 return their saved results in an older format. Their properties are only Passing or Failing, so filtering on Pending returns no properties, and the response doesn't include `total_count` or `response_count`.\n\nProperty results aren't available for test runs created before Antithesis version 54.5. Requests for these runs return `404 Not Found`.",
+        "description": "Returns a paginated list of a test run's properties and their current status: Passing, Failing, or Pending (not yet resolved). Each property includes a sample of its examples and counterexamples. Use the `status` parameter to filter by status.\n\nTo get the next page, pass the `next_cursor` value from the previous response as `after`, and keep the same `status` filter. Results are read live, so properties can change while you page through them. If a cursor has expired, the endpoint returns `400 Bad Request`, and you need to start again from the first page. Query parameters that the endpoint doesn't recognize are ignored.\n\nCompleted runs return the results Antithesis stored when the run finished. For cancelled and incomplete runs, results are calculated when you request them, which can take a while for a large run.\n\nRuns created before Antithesis version 66 return their saved results in an older format. Their properties are only Passing or Failing, so filtering on Pending returns no properties, and the response doesn't include `total_count` or `response_count`.\n\nProperty results aren't available for test runs created before Antithesis version 54.5. Requests for these runs return `404 Not Found`.",
         "tags": [
           "Test runs"
         ],
@@ -1033,7 +1035,7 @@
           "Test runs"
         ],
         "summary": "Get a test run property",
-        "description": "Returns a single property from a test run, in the same form as the [List test run properties](/docs/reference/rest_api/#op-listRunProperties) endpoint. For a run in progress, the property can change between requests. For a completed run, the endpoint returns the property's final result.\n\nFor runs created before Antithesis version 65.3, the property comes from the run's saved results. The status can only be Passing or Failing (not Pending), and it doesn't include `category`, `team`, `event_set`, or `passing_predicate`.",
+        "description": "Returns a single property from a test run, in the same form as the [List test run properties](/docs/reference/rest_api/#op-listRunProperties) endpoint. For a run in progress, the property can change between requests. For a completed run, the endpoint returns the property's final result.\n\nFor runs created before Antithesis version 66, the property comes from the run's saved results. The status can only be Passing or Failing (not Pending), and it doesn't include `category`, `team`, `event_set`, or `passing_predicate`.",
         "parameters": [
           {
             "name": "run_id",
@@ -1764,45 +1766,6 @@
         }
       }
     },
-    "/api/v1/registry": {
-      "get": {
-        "tags": ["Registry"],
-        "operationId": "getRegistry",
-        "summary": "Get where to push container images",
-        "description": "Returns the registry this tenant's container images are pushed to, and whose login to push with. `antithesis`: authenticate to `registry_url` with the same credential as this API. `docker`: use the login already configured in Docker for `registry_url`.",
-        "responses": {
-          "200": {
-            "description": "Registry information.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Registry_Response"
-                },
-                "example": {
-                  "auth": "antithesis",
-                  "registry_url": "registry.example.antithesis.com"
-                }
-              }
-            }
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "404": {
-            "$ref": "#/components/responses/NotFound"
-          },
-          "406": {
-            "$ref": "#/components/responses/NotAcceptable"
-          },
-          "429": {
-            "$ref": "#/components/responses/TooManyRequests"
-          },
-          "500": {
-            "$ref": "#/components/responses/InternalError"
-          }
-        }
-      }
-    },
     "/api/v1/launch/debugging": {
       "parameters": [],
       "post": {
@@ -1888,23 +1851,62 @@
         }
       }
     },
+    "/api/v0/registry": {
+      "get": {
+        "tags": ["Registry"],
+        "operationId": "getRegistry",
+        "summary": "Get where to push container images",
+        "description": "Returns the registry this tenant's container images are pushed to, and whose login to push with. `antithesis`: authenticate to `registry_url` with the same credential as this API. `docker`: use the login already configured in Docker for `registry_url`.",
+        "responses": {
+          "200": {
+            "description": "Registry information.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Registry_Response"
+                },
+                "example": {
+                  "auth": "antithesis",
+                  "registry_url": "registry.example.antithesis.com"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
     "/api/v0/runs/{run_id}/modules": {
       "get": {
         "operationId": "listRunModules",
         "summary": "List modules loaded in a test run",
-        "description": "Returns one entry per module_id, ordered by first publication.\n\nOmit after to begin at the start of the collection. The returned cursor marks the position immediately after the last module in this page. Pass it unchanged as after to fetch modules from that position onward. An empty page still returns a cursor for polling. When has_more is false, clients may poll using that cursor to discover modules published later.\n\nLoading an existing module again does not create another module entry. New container/program combinations appear in that module's instances collection.\n\nA known run with no published modules returns an empty page.",
+        "description": "Lists instrumented modules loaded during a test run and the programs that\nloaded them. Every module that loaded with coverage instrumentation is\nincluded, whether or not the build published a symbol catalog for it;\nhas_catalog tells them apart. A symbol catalog describes the files,\nfunctions, and instrumented code locations in a module's build.\n\nEach module appears once per run, identified by module_id. Treat this\nidentifier as an opaque string; name is a display label and need\nnot be unique. File, function, and location counts describe the catalog,\nregardless of which code has executed. A module without a catalog reports\na location count; but its file and function counts are\nnull. These endpoints do not report\ncoverage results.\n\nAn instance identifies a program that loaded a module in a named container.\nThe same (module_id, container_name, program_path) combination appears only\nonce per run, even across multiple processes, container restarts, or repeated\nloads. Instances group processes by program path; they do not enumerate\nindividual process lifetimes.\n\nprogram_path is the path to the process's executable. For interpreted\nprograms, this is the interpreter binary. Different scripts using the\nsame interpreter path in the same named container share an instance for\neach module they load in common.\nContainer names and program paths are served as recorded, without rewriting\nthem.\n\nModules and instances may take time to appear after loading. A module appears before\nany of its instances.\n\nEach list is ordered by when entries first become available through this\nAPI, which may differ from the order in which modules were loaded. Entries\nkeep their positions, and new entries are always added after existing\nones. Repeated loads do not move or duplicate entries.\n\nUse each list's cursor to fetch subsequent pages or poll for new entries.\nAn empty page does not mean the list is final. The module list and each module's\ninstance list have separate cursors; neither reports updates to entries\nalready listed.\n\nReturns one entry per module_id, ordered by first publication.\n\nOmit after to begin at the start of the collection. The returned cursor marks the position immediately after the last module in this page. Pass it unchanged as after to fetch modules from that position onward. An empty page still returns a cursor for polling. When has_more is false, clients may poll using that cursor to discover modules published later.\n\nLoading an existing module again does not create another module entry. New container/program combinations appear in that module's instances collection.\n\nA known run with no published modules returns an empty page.",
         "tags": [
-          "Modules"
+          "Coverage"
         ],
         "parameters": [
           {
-            "$ref": "#/components/parameters/CoverageRunId"
+            "$ref": "#/components/parameters/Coverage_Run_Id"
           },
           {
-            "$ref": "#/components/parameters/CoverageLimit"
+            "$ref": "#/components/parameters/Coverage_Limit"
           },
           {
-            "$ref": "#/components/parameters/CoverageAfter"
+            "$ref": "#/components/parameters/Coverage_After"
           }
         ],
         "responses": {
@@ -1913,7 +1915,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CoverageModuleListResponse"
+                  "$ref": "#/components/schemas/Coverage_Module_List_Response"
                 },
                 "example": {
                   "data": [
@@ -1931,10 +1933,6 @@
                       "module_id": "4d1e0f9a8b7c6d5e4f9f4a1c0e7b2d8e3f5a6b4c",
                       "name": "ledger-worker",
                       "has_catalog": false,
-                      "language": null,
-                      "instrumentor": null,
-                      "num_files": null,
-                      "num_functions": null,
                       "num_locations": 48213
                     }
                   ],
@@ -1978,13 +1976,13 @@
       "get": {
         "operationId": "getRunModule",
         "summary": "Get one loaded module",
-        "description": "Returns the same module representation used by the modules listing.\n\nUse /api/v0/runs/{run_id}/modules/{module_id}/instances to list the programs that loaded this module.\n\nReturns 404 if the run does not exist or the module has not been published in this run.",
+        "description": "Returns the same module representation used by the modules listing.\n\nUse /api/v0/runs/{run_id}/modules/{module_id}/instances to list the programs that loaded this module.\n\nReturns 404 if the run does not exist or the module has not been announced in this run.",
         "tags": [
-          "Modules"
+          "Coverage"
         ],
         "parameters": [
           {
-            "$ref": "#/components/parameters/CoverageRunId"
+            "$ref": "#/components/parameters/Coverage_Run_Id"
           },
           {
             "name": "module_id",
@@ -2002,7 +2000,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CoverageModule"
+                  "$ref": "#/components/schemas/Coverage_Module"
                 }
               }
             }
@@ -2041,13 +2039,13 @@
       "get": {
         "operationId": "listRunModuleInstances",
         "summary": "List programs that loaded a module in a test run",
-        "description": "Returns instances of the specified module, ordered by first publication.\n\nWithin this module's instances, each (container_name, program_path) combination appears once. Multiple processes and container restarts with the same container name and program path do not create additional instances. Individual process lifetimes are not enumerated.\n\nOmit after to begin at the start of the collection. The returned cursor marks the next position to examine, not an instance ID. It can advance past instances of other modules, even when this page is empty. Pass it unchanged as after to resume without repeating instances from this page. When has_more is false, clients may poll using that cursor to discover instances published later. Each module's instances have a separate cursor.\n\nA published module with no published instances returns an empty page. Returns 404 if the run does not exist or the module has not been published in this run.",
+        "description": "Returns instances of the specified module, ordered by first publication.\n\nWithin this module's instances, each (container_name, program_path) combination appears once. Multiple processes and container restarts with the same container name and program path do not create additional instances. Individual process lifetimes are not enumerated.\n\nOmit after to begin at the start of the collection. The returned cursor marks the next position to examine, not an instance ID. It can advance past instances of other modules, even when this page is empty. Pass it unchanged as after to resume without repeating instances from this page. When has_more is false, clients may poll using that cursor to discover instances announced later. Each module's instances have a separate cursor.\n\nA announced module with no associated instances returns an empty page. Returns 404 if the run does not exist or the module has not been announced in this run.",
         "tags": [
-          "Module instances"
+          "Coverage"
         ],
         "parameters": [
           {
-            "$ref": "#/components/parameters/CoverageRunId"
+            "$ref": "#/components/parameters/Coverage_Run_Id"
           },
           {
             "name": "module_id",
@@ -2059,10 +2057,10 @@
             }
           },
           {
-            "$ref": "#/components/parameters/CoverageLimit"
+            "$ref": "#/components/parameters/Coverage_Limit"
           },
           {
-            "$ref": "#/components/parameters/CoverageAfter"
+            "$ref": "#/components/parameters/Coverage_After"
           }
         ],
         "responses": {
@@ -2071,7 +2069,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CoverageModuleInstanceListResponse"
+                  "$ref": "#/components/schemas/Coverage_Module_Instance_List_Response"
                 },
                 "example": {
                   "data": [
@@ -2088,6 +2086,130 @@
                   ],
                   "cursor": "opaque-instance-cursor",
                   "has_more": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "406": {
+            "$ref": "#/components/responses/NotAcceptable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/v0/runs/{run_id}/coverage/locations": {
+      "get": {
+        "operationId": "getCoverageLocations",
+        "summary": "Stream coverage per location",
+        "description": "Streams per-location coverage as newline-delimited JSON (NDJSON), one instrumented location per line, ordered by module, then address. Every other coverage view derives from this data. By default the server returns the locations as of the request and closes the connection. With `is_streaming=true` on a live test run, the connection stays open after them: the locations of each module the guest announces later follow with `first_reached` unset, and each location is sent again, with `first_reached` set, when it is first reached, until the run finishes. These follow-up lines arrive in the order they are observed, not by module and address. `is_streaming` has no effect on a finished run and is incompatible with `covered=false`.",
+        "tags": [
+          "Coverage"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Coverage_Run_Id"
+          },
+          {
+            "name": "module_id",
+            "in": "query",
+            "description": "Only stream locations from this module.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "covered",
+            "in": "query",
+            "description": "Only stream locations that were reached (`true`) or never reached (`false`) during the run. When omitted, the response will include both covered locations (rows with a `first_reached` property) and uncovered locations (rows without a `first_reached` property). On streaming responses, a row may first report as uncovered and later report as covered.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "is_streaming",
+            "in": "query",
+            "description": "When `true` on a live test run, keep the connection open and stream newly announced modules' locations and newly reached locations until the run finishes. When `false`, close the connection once the current locations have been returned. Has no effect on a finished run. Cannot be combined with `covered=false`.",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A stream of per-location coverage in NDJSON format. Each line is a JSON object.",
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Location_Coverage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Stream_Error"
+                    }
+                  ]
+                },
+                "examples": {
+                  "covered_location": {
+                    "summary": "A location that was reached",
+                    "value": {
+                      "module_id": "c1d2e3f4a5b60718293a4b5c6d7e8f9012345678",
+                      "address": "4856880",
+                      "file": "src/raft/append.cc",
+                      "function": "raft::Log::append",
+                      "begin_line": 57,
+                      "begin_column": 9,
+                      "end_line": 57,
+                      "end_column": 9,
+                      "first_reached": {
+                        "run_seconds": 512.3,
+                        "moment": {
+                          "input_hash": "-3625518438076122494",
+                          "vtime": "398.4898056755774"
+                        }
+                      }
+                    }
+                  },
+                  "uncovered_location": {
+                    "summary": "A location that was never reached",
+                    "value": {
+                      "module_id": "c1d2e3f4a5b60718293a4b5c6d7e8f9012345678",
+                      "address": "4856920",
+                      "file": "src/raft/append.cc",
+                      "function": "raft::Log::truncate",
+                      "begin_line": 92,
+                      "begin_column": 5,
+                      "end_line": 92,
+                      "end_column": 5
+                    }
+                  }
                 }
               }
             }
@@ -2410,7 +2532,7 @@
   },
   "components": {
     "parameters": {
-      "CoverageRunId": {
+      "Coverage_Run_Id": {
         "name": "run_id",
         "in": "path",
         "required": true,
@@ -2419,7 +2541,7 @@
           "type": "string"
         }
       },
-      "CoverageLimit": {
+      "Coverage_Limit": {
         "name": "limit",
         "in": "query",
         "required": false,
@@ -2431,7 +2553,7 @@
           "maximum": 1000
         }
       },
-      "CoverageAfter": {
+      "Coverage_After": {
         "name": "after",
         "in": "query",
         "required": false,
@@ -2443,16 +2565,12 @@
       }
     },
     "schemas": {
-      "CoverageModule": {
+      "Coverage_Module": {
         "type": "object",
         "required": [
           "module_id",
           "name",
           "has_catalog",
-          "language",
-          "instrumentor",
-          "num_files",
-          "num_functions",
           "num_locations"
         ],
         "properties": {
@@ -2466,31 +2584,27 @@
           },
           "has_catalog": {
             "type": "boolean",
-            "description": "Whether a symbol catalog is available for this module. When false, the module ran coverage-instrumented code but nothing describes its files, functions, or locations: language, instrumentor, and the file and function counts are null, and no file, function, or location detail will be available for it. Usually the module's binary was not provided for symbolization when the environment was built."
+            "description": "Whether a symbol catalog is available for this module. When false, the module ran coverage-instrumented code but nothing describes its files, functions, or locations: language, instrumentor, and the file and function counts are omitted, and no file, function, or location detail will be available for it. Usually the module's binary was not provided for symbolization when the environment was built."
           },
           "language": {
             "type": "string",
-            "description": "Language recorded in the catalog header, or null if unavailable. Values are not a closed enumeration.",
-            "nullable": true
+            "description": "Language recorded in the catalog header. Omitted if unavailable. Values are not a closed enumeration."
           },
           "instrumentor": {
             "type": "string",
-            "description": "Instrumentor recorded in the catalog header, or null if unavailable. Values are not a closed enumeration.",
-            "nullable": true
+            "description": "Instrumentor recorded in the catalog header. Omitted if unavailable. Values are not a closed enumeration."
           },
           "num_files": {
             "type": "integer",
             "format": "int64",
             "minimum": 0,
-            "description": "Number of distinct file entries in the published catalog. Null when has_catalog is false.",
-            "nullable": true
+            "description": "Number of distinct file entries in the published catalog. Omitted when has_catalog is false."
           },
           "num_functions": {
             "type": "integer",
             "format": "int64",
             "minimum": 0,
-            "description": "Number of function entries in the published catalog, grouped by file and qualified function name. Null when has_catalog is false.",
-            "nullable": true
+            "description": "Number of function entries in the published catalog, grouped by file and qualified function name. Omitted when has_catalog is false."
           },
           "num_locations": {
             "type": "integer",
@@ -2498,9 +2612,10 @@
             "minimum": 0,
             "description": "Number of coverage locations in the published catalog or, when has_catalog is false, the number of instrumentation points the program reported when it loaded the module. This is not a count of source lines or hits."
           }
-        }
+        },
+        "additionalProperties": true
       },
-      "CoverageModuleInstance": {
+      "Coverage_Module_Instance": {
         "type": "object",
         "required": [
           "instance_id",
@@ -2521,9 +2636,10 @@
             "description": "Path to the process's executable, as recorded at runtime. For\ninterpreted programs, this is the interpreter binary. Compared\nexactly as recorded, without normalization or remapping.\n"
           }
         },
+        "additionalProperties": true,
         "description": "A program that loaded the module identified by module_id in the request path."
       },
-      "CoveragePage": {
+      "Coverage_Page": {
         "type": "object",
         "required": [
           "cursor",
@@ -2539,12 +2655,13 @@
             "type": "boolean",
             "description": "Whether more matching entries were available beyond this page when the request was evaluated. False does not mean the collection is final. Clients may poll using the returned cursor."
           }
-        }
+        },
+        "additionalProperties": true
       },
-      "CoverageModuleListResponse": {
+      "Coverage_Module_List_Response": {
         "allOf": [
           {
-            "$ref": "#/components/schemas/CoveragePage"
+            "$ref": "#/components/schemas/Coverage_Page"
           },
           {
             "type": "object",
@@ -2555,17 +2672,17 @@
               "data": {
                 "type": "array",
                 "items": {
-                  "$ref": "#/components/schemas/CoverageModule"
+                  "$ref": "#/components/schemas/Coverage_Module"
                 }
               }
             }
           }
         ]
       },
-      "CoverageModuleInstanceListResponse": {
+      "Coverage_Module_Instance_List_Response": {
         "allOf": [
           {
-            "$ref": "#/components/schemas/CoveragePage"
+            "$ref": "#/components/schemas/Coverage_Page"
           },
           {
             "type": "object",
@@ -2576,7 +2693,7 @@
               "data": {
                 "type": "array",
                 "items": {
-                  "$ref": "#/components/schemas/CoverageModuleInstance"
+                  "$ref": "#/components/schemas/Coverage_Module_Instance"
                 }
               }
             }
@@ -2779,25 +2896,6 @@
         },
         "additionalProperties": true
       },
-      "Registry_Response": {
-        "type": "object",
-        "description": "Where this tenant's container images are pushed, and whose login to push with.",
-        "required": ["auth", "registry_url"],
-        "properties": {
-          "auth": {
-            "type": "string",
-            "enum": ["antithesis", "docker"],
-            "description": "`antithesis`: authenticate to `registry_url` with the same credential as this API. `docker`: use the login already configured in Docker for `registry_url`.",
-            "example": "antithesis"
-          },
-          "registry_url": {
-            "type": "string",
-            "description": "The registry host and path to push to, without a scheme.",
-            "example": "registry.example.antithesis.com"
-          }
-        },
-        "additionalProperties": true
-      },
       "Launch_MVD_Response": {
         "type": "object",
         "description": "Response returned when a debugging session request is successfully accepted.",
@@ -2841,7 +2939,7 @@
         "required": ["params"],
         "properties": {
           "params": {
-            "description": "Launch parameters. All parameters are optional.",
+            "description": "Launch parameters. All parameters are optional. All vcs.* parameters are filled in by the [Antithesis GitHub Action](https://github.com/antithesishq/antithesis-trigger-action) if the test run is triggered by it; but you can set them by hand.",
             "allOf": [
               {
                 "$ref": "#/components/schemas/Params"
@@ -2863,6 +2961,25 @@
                 "$ref": "#/components/schemas/MVD_Params"
               }
             ]
+          }
+        },
+        "additionalProperties": true
+      },
+      "Registry_Response": {
+        "type": "object",
+        "description": "Where this tenant's container images are pushed, and whose login to push with.",
+        "required": ["auth", "registry_url"],
+        "properties": {
+          "auth": {
+            "type": "string",
+            "enum": ["antithesis", "docker"],
+            "description": "`antithesis`: authenticate to `registry_url` with the same credential as this API. `docker`: use the login already configured in Docker for `registry_url`.",
+            "example": "antithesis"
+          },
+          "registry_url": {
+            "type": "string",
+            "description": "The registry host and path to push to, without a scheme.",
+            "example": "registry.example.antithesis.com"
           }
         },
         "additionalProperties": true
@@ -3092,13 +3209,13 @@
           },
           "antithesis.fault_exclusions": {
             "type": "string",
-            "description": "A regular expression matching the containers (or pods, on Kubernetes) that faults must leave alone: network faults, container pauses, kills and stops, CPU throttling and clock faults all skip a matching container. Matched against the container name. Uses the [Rust regex](https://docs.rs/regex/latest/regex/#syntax) syntax: no lookaround and no backreferences. At most 1024 characters. Thread pausing is machine-wide and has no container to match, so it is not affected. Defaults to no exclusions.",
+            "description": "A regular expression that identifies containers (or pods, on Kubernetes) that are excluded from fault injection. Defaults to no exclusions.\\\nThe expression is matched against the container name and uses the [Rust regex](https://docs.rs/regex/latest/regex/#syntax) syntax, which does not support lookaround or backreferences. The maximum length is 1024 characters.\\\nThread pausing faults are not affected, because they are not scoped to a container.",
             "example": "^(raft-client|raft-monitor)$"
           },
           "antithesis.fault_tolerance": {
             "type": "string",
             "enum": ["none", "resilient", "high_availability", "legacy"],
-            "description": "Which faults Antithesis injects, by how much disruption the system is expected to survive. `none`: no faults. `resilient`: slow, lossy and paused: degraded network links, bad nodes, thread pauses, container pauses of up to 10 seconds, CPU throttling and clock jitter. `high_availability`: everything in `resilient` plus the faults that take things down: network partitions, stopped links, killed and stopped containers or pods. `legacy`: all network faults and thread pausing are enabled by default. Not recommended except for backwards compatibility with a custom notebook.",
+            "description": "The level of faults that Antithesis injects:\\\n`none`: No faults.\\\n`resilient`: Faults that degrade the system without stopping any node or network link: baseline latency, `Slowed` or `Jammed` clogs, node pauses, CPU modulation, thread pausing, and clock skips.\\\n`high_availability`: Everything in `resilient`, plus partitions, `Stopped` clogs, and node termination.\\\n`legacy`: Enables all network faults and thread pausing. Not recommended except for backwards compatibility with a custom notebook.",
             "example": "resilient"
           },
           "antithesis.filter_logs_matching": {
@@ -3137,11 +3254,97 @@
             "type": "string",
             "description": "An identifier used to separate property history in reports. Each property's history is generated from all previous runs sharing the same source value. Useful for tracking test history per branch.",
             "example": "main"
+          },
+          "attrs.<NAME>": {
+            "type": "string",
+            "description": "Arbitrary key-value annotations for the run. Replace `<NAME>` with any name you choose, and pass as many `attrs.*` parameters as you like. Used to filter test runs in the Runs view.",
+            "example": "staging"
+          },
+          "run.caller_name": {
+            "type": "string",
+            "description": "The name of the application or script that launched the run, such as `antithesis-trigger-action` or `explore_the_multiverse.sh`.",
+            "example": "antithesis-trigger-action"
+          },
+          "run.caller_type": {
+            "type": "string",
+            "enum": ["antithesis_ui", "antithesis_scheduler", "internal_scheduler", "antithesis_cli", "github_action", "snouty", "user", "unknown"],
+            "description": "The type of application or script that launched the run.",
+            "example": "github_action"
+          },
+          "run.creator_name": {
+            "type": "string",
+            "description": "A unique identifier for the person who launched the run, directly or indirectly.",
+            "example": "jane.doe"
+          },
+          "run.cron_schedule": {
+            "type": "string",
+            "description": "For recurring runs, a valid cron expression for when the run is scheduled. Omit it, or pass an empty string, for a one-off run.",
+            "example": "0 2 * * 1-5"
+          },
+          "run.team": {
+            "type": "string",
+            "description": "The team responsible for the run. Lets you filter runs by team, separately from the user or repository, which may be shared across teams.",
+            "example": "Payments Team"
+          },
+          "vcs.pr_id": {
+            "type": "string",
+            "description": "For runs started from a GitHub pull request, the PR number.",
+            "example": "482"
+          },
+          "vcs.pr_link": {
+            "type": "string",
+            "description": "For runs started from a GitHub pull request, the link to the PR.",
+            "example": "https://github.com/acme/payments-service/pull/482"
+          },
+          "vcs.pr_owner": {
+            "type": "string",
+            "description": "For runs started from a GitHub pull request, the GitHub username of the PR's author.",
+            "example": "janedoe"
+          },
+          "vcs.pr_title": {
+            "type": "string",
+            "description": "For runs started from a GitHub pull request, the title of the PR.",
+            "example": "Fix duplicate charge on retry"
+          },
+          "vcs.repo_branch": {
+            "type": "string",
+            "description": "For runs started from a version control repository, the branch under test.",
+            "example": "fix/duplicate-charge"
+          },
+          "vcs.repo_name": {
+            "type": "string",
+            "description": "For runs started from a version control repository, the repository name.",
+            "example": "payments-service"
+          },
+          "vcs.repo_owner": {
+            "type": "string",
+            "description": "For runs started from a version control repository, the repository owner.",
+            "example": "acme"
+          },
+          "vcs.repo_type": {
+            "type": "string",
+            "description": "For runs started from a version control repository, the type of version control, such as `github`, `gitlab` or `mercurial`.",
+            "example": "github"
+          },
+          "vcs.system_name": {
+            "type": "string",
+            "description": "A readable name for the system under test that doesn't change between versions.",
+            "example": "Ledger API"
+          },
+          "vcs.version_id": {
+            "type": "string",
+            "description": "A unique identifier for this version of the system under test. For runs started from a version control repository, the hash of the commit under test.",
+            "example": "a1b2c3d4e5f678901234567890abcdef12345678"
+          },
+          "vcs.version_link": {
+            "type": "string",
+            "description": "For runs started from a web-hosted version control repository, a link to the commit under test.",
+            "example": "https://github.com/acme/payments-service/commit/a1b2c3d4e5f678901234567890abcdef12345678"
           }
         },
         "additionalProperties": {
           "type": "string",
-          "description": "Additional parameters including tooling integration parameters (e.g. `antithesis.integrations.<type>.callback_url`, `antithesis.integrations.<type>.token` where type is `github`, `discord`, or `slack`)."
+          "description": "Tooling integration parameters (`antithesis.integrations.<type>.callback_url` and `antithesis.integrations.<type>.token`, where type is `github`, `discord`, or `slack`), and any custom parameters Antithesis has created for your tenant. Other unrecognized parameters are discarded."
         }
       },
       "MVD_Params": {
@@ -3290,12 +3493,12 @@
           "total_count": {
             "type": "integer",
             "minimum": 0,
-            "description": "Total properties matching the status filter at the time of the read. Omitted for runs created before Antithesis version 65.3."
+            "description": "Total properties matching the status filter at the time of the read. Omitted for runs created before Antithesis version 66."
           },
           "response_count": {
             "type": "integer",
             "minimum": 0,
-            "description": "Number of properties in this page. Omitted for runs created before Antithesis version 65.3."
+            "description": "Number of properties in this page. Omitted for runs created before Antithesis version 66."
           },
           "next_cursor": {
             "type": "string",
@@ -3444,12 +3647,95 @@
           "Failing",
           "Pending"
         ],
-        "description": "Current property status. Pending means the property has not resolved. Runs created before Antithesis version 65.3 report only Passing or Failing."
+        "description": "Current property status. Pending means the property has not resolved. Runs created before Antithesis version 66 report only Passing or Failing."
       },
       "Run_Status": {
         "type": "string",
         "enum": ["starting", "in_progress", "completed", "cancelled", "incomplete", "unknown"],
         "description": "Current lifecycle status of a test run. `starting`: the run is being set up. `in_progress`: the run is actively running. `completed`: the run finished successfully. `cancelled`: the run was cancelled before completion. `incomplete`: the run did not complete successfully. `unknown`: the status of the run is unknown."
+      },
+      "First_Reached": {
+        "type": "object",
+        "description": "When the run first reached an item; for a function, when it reached any of the function's locations. Omitted if the run never reached it.",
+        "required": [
+          "run_seconds",
+          "moment"
+        ],
+        "properties": {
+          "run_seconds": {
+            "type": "number",
+            "description": "Seconds after exploration began.",
+            "example": 512.3
+          },
+          "moment": {
+            "description": "The branch and step in which the run first observed the item.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Moment"
+              }
+            ]
+          }
+        },
+        "additionalProperties": true
+      },
+      "Location_Coverage": {
+        "type": "object",
+        "description": "One instrumented location, with whether and when the run first reached it.",
+        "required": [
+          "module_id",
+          "address",
+          "function"
+        ],
+        "properties": {
+          "module_id": {
+            "type": "string",
+            "description": "Opaque ID of the module the location belongs to.",
+            "example": "c1d2e3f4a5b60718293a4b5c6d7e8f9012345678"
+          },
+          "address": {
+            "type": "string",
+            "description": "Address as a decimal string. Unique within the module; treat it as opaque. Included to distinguish between edges that have the same syntactic representation (such as an `if` statement's match and fall-though edges in a Python program)",
+            "example": "4856880"
+          },
+          "file": {
+            "type": "string",
+            "description": "Source file as recorded at build time. Omitted if the compiler recorded none.",
+            "example": "src/raft/append.cc"
+          },
+          "function": {
+            "type": "string",
+            "description": "Function containing this location, demangled where possible.",
+            "example": "raft::Log::append"
+          },
+          "class": {
+            "type": "string",
+            "description": "Class or type enclosing the location's function: the binary name in Java, the full type name in C#, the receiver's base type for a Go method, the enclosing class's qualified name in Python, and the nearest enclosing class in JavaScript. Omitted for functions outside any class, and for native and WebAssembly modules, whose catalogs record none."
+          },
+          "begin_line": {
+            "type": "integer",
+            "description": "First line of the location. Omitted if not recorded.",
+            "example": 57
+          },
+          "begin_column": {
+            "type": "integer",
+            "description": "First column of the location. Omitted if not recorded.",
+            "example": 9
+          },
+          "end_line": {
+            "type": "integer",
+            "description": "Last line of the location. Omitted if not recorded.",
+            "example": 57
+          },
+          "end_column": {
+            "type": "integer",
+            "description": "Last column of the location. Omitted if not recorded.",
+            "example": 9
+          },
+          "first_reached": {
+            "$ref": "#/components/schemas/First_Reached"
+          }
+        },
+        "additionalProperties": true
       },
       "Creator_Info": {
         "type": "object",

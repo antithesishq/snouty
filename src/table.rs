@@ -21,6 +21,10 @@ pub(crate) enum Fit {
     Fixed,
     /// Cut cells with an ellipsis, down to `floor` columns.
     Truncate { floor: usize },
+    /// Cut the start of a path with an ellipsis, down to `floor` columns. The
+    /// cut falls at a `/` when one fits, so the cell keeps its last whole
+    /// components: `…/dotnet/dotnet`.
+    TruncatePath { floor: usize },
     /// Wrap cells at spaces, down to `floor` columns. Continuation lines start
     /// under the column. A word that is longer than the column stays whole,
     /// and widens the column.
@@ -103,7 +107,9 @@ impl Table {
             let column = &self.columns[index];
             let floor = match column.fit {
                 Fit::Fixed => continue,
-                Fit::Truncate { floor } | Fit::Wrap { floor } => floor,
+                Fit::Truncate { floor } | Fit::TruncatePath { floor } | Fit::Wrap { floor } => {
+                    floor
+                }
             };
             let floor = floor.max(measure_text_width(column.header));
             let shrink = excess.min(widths[index].saturating_sub(floor));
@@ -124,6 +130,7 @@ impl Table {
                     .map(|((cell, column), &width)| match column.fit {
                         Fit::Fixed => vec![cell],
                         Fit::Truncate { .. } => vec![truncate_str(&cell, width, "…").into_owned()],
+                        Fit::TruncatePath { .. } => vec![truncate_path(&cell, width)],
                         Fit::Wrap { .. } => {
                             let wrapped = wrap_text(&cell, width, CodeSpans::Ignore);
                             if wrapped.is_empty() {
@@ -168,6 +175,28 @@ impl Table {
         }
         out.join("\n")
     }
+}
+
+/// `path` cut at the start to at most `width` columns, as
+/// [`Fit::TruncatePath`] describes.
+pub(crate) fn truncate_path(path: &str, width: usize) -> String {
+    if measure_text_width(path) <= width {
+        return path.to_string();
+    }
+    // Measure each tail whole: measuring one char at a time miscounts escape
+    // sequences.
+    let fits = |start: usize| measure_text_width(&path[start..]) < width;
+    let start = path
+        .match_indices('/')
+        .map(|(slash, _)| slash)
+        .find(|&slash| fits(slash))
+        .or_else(|| {
+            path.char_indices()
+                .map(|(index, _)| index)
+                .find(|&i| fits(i))
+        })
+        .unwrap_or(path.len());
+    format!("…{}", &path[start..])
 }
 
 #[cfg(test)]
@@ -258,6 +287,19 @@ mod tests {
         assert_eq!(out.lines().nth(1), Some("aaaaaa  bbb…"));
     }
 
+    #[test]
+    fn truncate_path_cuts_at_a_component() {
+        assert_eq!(
+            truncate_path("/usr/share/dotnet/dotnet", 19),
+            "…/dotnet/dotnet"
+        );
+        assert_eq!(
+            truncate_path("/usr/share/dotnet/dotnet", 24),
+            "/usr/share/dotnet/dotnet"
+        );
+        assert_eq!(truncate_path("/bin/averylongname", 6), "…gname");
+    }
+
     fn wrap_table(floor: usize) -> Table {
         Table::builder()
             .column(Column::new("STATUS"))
@@ -340,8 +382,10 @@ mod tests {
         };
         let fixed = table(Fit::Fixed).render(rows.clone(), usize::MAX);
         let truncated = table(Fit::Truncate { floor: 0 }).render(rows.clone(), usize::MAX);
+        let path = table(Fit::TruncatePath { floor: 0 }).render(rows.clone(), usize::MAX);
         let wrapped = table(Fit::Wrap { floor: 0 }).render(rows, usize::MAX);
         assert_eq!(truncated, fixed);
+        assert_eq!(path, fixed);
         assert_eq!(wrapped, fixed);
     }
 
@@ -366,9 +410,14 @@ mod tests {
                 .min_value(first + 3)
                 .max_value(first + 80),
         );
+        let fit = if tc.draw(generators::booleans()) {
+            Fit::Truncate { floor: 0 }
+        } else {
+            Fit::TruncatePath { floor: 0 }
+        };
         let out = Table::builder()
             .column(Column::new("A"))
-            .column(Column::new("B").fit(Fit::Truncate { floor: 0 }))
+            .column(Column::new("B").fit(fit))
             .render(rows, width);
         for line in out.lines() {
             assert!(measure_text_width(line) <= width, "{line:?} > {width}");

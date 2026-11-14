@@ -1,0 +1,39 @@
+# snouty runs modules
+#
+# runs modules lists a run's modules (`GET /api/v0/runs/{run_id}/modules`),
+# each with the programs that loaded it (`.../modules/{module_id}/instances`).
+
+# A run with instrumented modules lists them, then the counts and the run
+# status on stderr.
+mock-runs-server
+snouty --json runs list --status completed --limit 100
+env_from_json_find run_id launcher!=debugging -- runs modules $R_run_id
+snouty runs modules $R_run_id
+stdout '^MODULE +NAME +PROGRAM +CONTAINER +LANG +LOCATIONS +SYMBOLS$'
+stderr '^\d+ modules? in \d+ containers? · run completed$'
+snouty --json runs modules $R_run_id
+stdout '^\{.*"module_id":.*"num_locations":\d+.*"instances":\[\{.*"container_name":.*"program_path":.*\]\}$'
+! stderr ' · run '
+
+! snouty runs modules ffffffffffffffffffffffffffffffff-54-5
+stderr 'run not found: ffffffffffffffffffffffffffffffff-54-5'
+
+# The rest of this file checks mock data.
+[staging] skip
+
+# One row for each program that loads a module.
+mock-runs-server
+snouty runs modules run-1
+stdout '^go-20e55e2f1623 +instrhello/internal/work +/usr/local/bin/driver +driver +Go +9 +yes$'
+stdout '^go-20e55e2f1623 +instrhello/internal/work +/usr/local/bin/worker +goworker +Go +9 +yes$'
+stdout '^dotnet-e798e24c32e9 +dotnethello +/usr/share/dotnet/dotnet +dotnet +9 +no$'
+stderr '^3 modules in 4 containers · run completed$'
+
+# A run in progress says that more modules may load.
+snouty runs modules run-2
+stderr 'run in progress \(more modules may load\)$'
+
+# --json prints one object per module, with its instances.
+snouty --json runs modules run-1
+stdout -count=3 '^\{.*"instances":\[.*\]\}$'
+stdout '^\{"has_catalog":false,"module_id":"dotnet-e798e24c32e9",'

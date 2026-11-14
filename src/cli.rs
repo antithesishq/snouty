@@ -1085,6 +1085,14 @@ pub enum RunsCommands {
     /// Show the compute hours that runs used
     #[command(arg = json(JsonShape::Lines))]
     Usage(RunsUsageArgs),
+
+    /// List the instrumented modules that a run loaded, and where
+    #[command(arg = json(JsonShape::Lines))]
+    Modules {
+        /// Run ID
+        #[arg(value_parser = parse_run_id)]
+        run_id: String,
+    },
 }
 
 #[derive(Args)]

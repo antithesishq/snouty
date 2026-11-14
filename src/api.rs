@@ -47,7 +47,8 @@ mod generated {
 use crate::ndjson::{JsonStream, json_lines};
 pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
-    BuildLogLine, Event, EventProperty, ExecuteCommandRequestSourceRunId as SourceRunId,
+    BuildLogLine, CoverageModule, CoverageModuleInstance, Event, EventProperty,
+    ExecuteCommandRequestSourceRunId as SourceRunId,
     ExecuteCommandRequestSourceSessionId as SourceSessionId, FaultTolerance, Moment,
     NonEventProperty, PerformanceTier, Property, PropertyStatus, RunDetail, RunDetailSubStatus,
     RunStatus, RunStreamNotificationType, RunSummary, UsageEntry,
@@ -1197,6 +1198,57 @@ impl AntithesisApi {
         }
     }
 
+    /// Stream the modules that the run loaded, in the order that the server
+    /// published them.
+    pub fn stream_run_modules<'a>(
+        &'a self,
+        run_id: &'a str,
+    ) -> impl futures_util::Stream<Item = Result<CoverageModule>> + 'a {
+        paginate_exhaust(move |after| async move {
+            let mut request = self
+                .client
+                .list_run_modules()
+                .run_id(run_id)
+                .limit(COVERAGE_PAGE_LIMIT);
+            if let Some(cursor) = after {
+                request = request.after(cursor.as_str());
+            }
+            match request.send().await {
+                Ok(response) => {
+                    let page = response.into_inner();
+                    Ok((page.data, page.has_more.then(|| page.cursor.to_string())))
+                }
+                Err(err) => Err(run_not_found(run_id, format_api_client_error(err).await)),
+            }
+        })
+    }
+
+    /// Stream the programs that loaded the module `module_id` in the run.
+    pub fn stream_module_instances<'a>(
+        &'a self,
+        run_id: &'a str,
+        module_id: &'a str,
+    ) -> impl futures_util::Stream<Item = Result<CoverageModuleInstance>> + 'a {
+        paginate_exhaust(move |after| async move {
+            let mut request = self
+                .client
+                .list_run_module_instances()
+                .run_id(run_id)
+                .module_id(module_id)
+                .limit(COVERAGE_PAGE_LIMIT);
+            if let Some(cursor) = after {
+                request = request.after(cursor.as_str());
+            }
+            match request.send().await {
+                Ok(response) => {
+                    let page = response.into_inner();
+                    Ok((page.data, page.has_more.then(|| page.cursor.to_string())))
+                }
+                Err(err) => Err(format_api_client_error(err).await),
+            }
+        })
+    }
+
     /// Fetch one property by its ID.
     pub async fn get_run_property(&self, run_id: &str, property_id: &str) -> Result<Property> {
         let request = self
@@ -1902,6 +1954,9 @@ fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequ
 /// this and `MIN_BUILD_LOGS_VERSION` once runs from releases before 54 no
 /// longer appear in `runs list`.
 const MIN_PROPERTIES_VERSION: u32 = 52;
+
+/// The largest page that the module and module instance lists accept.
+const COVERAGE_PAGE_LIMIT: NonZeroU64 = NonZeroU64::new(1000).unwrap();
 
 /// The tenant version that first served the run build logs resource. Runs
 /// created on older tenants 404 on `/runs/{run_id}/build_logs`.
@@ -3559,6 +3614,7 @@ mod tests {
         assert_eq!(
             operations,
             [
+                "get getCoverageLocations",
                 "get getRegistry",
                 "get getRun",
                 "get getRunBuildLogs",

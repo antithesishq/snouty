@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use color_eyre::Section;
 use color_eyre::eyre::{Context, OptionExt, Result, eyre};
 use log::debug;
 use tempfile::NamedTempFile;
@@ -12,6 +13,7 @@ use toml::{Table, Value};
 use crate::cli::UpdateChannel;
 use crate::env;
 use crate::error::user_error;
+use crate::registry::Registry;
 
 mod files;
 mod show;
@@ -96,10 +98,11 @@ pub fn cache_dir() -> Option<PathBuf> {
 /// `Default` is every setting unset (with the `stable` update channel and the
 /// default cache size cap) — handy when a caller needs a `Settings` without
 /// resolving anything.
+#[derive(Clone)]
 pub struct Settings {
     profile: Option<String>,
     tenant: Option<String>,
-    registry: Option<String>,
+    registry: Option<RegistrySetting>,
     /// The `base_url` setting. [`Settings::base_url`] falls back to the
     /// tenant's host.
     base_url: Option<String>,
@@ -108,6 +111,23 @@ pub struct Settings {
     update_channel: UpdateChannel,
     api_cache_max_file_size: u64,
     files: Vec<SettingsFile>,
+}
+
+/// The `registry` setting as written, and the [`Registry`] it parses to, or
+/// why it does not parse. A setting that does not parse fails only the
+/// commands that use it, so that `snouty doctor` can report it and
+/// `snouty login` can replace it.
+#[derive(Clone)]
+struct RegistrySetting {
+    text: String,
+    parsed: Result<Registry, String>,
+}
+
+impl RegistrySetting {
+    fn new(text: String) -> Self {
+        let parsed = text.parse();
+        Self { text, parsed }
+    }
 }
 
 impl Default for Settings {
@@ -339,9 +359,29 @@ impl Settings {
         self.tenant.as_deref()
     }
 
-    /// The resolved container registry, or `None` if unset.
-    pub fn registry(&self) -> Option<&str> {
-        self.registry.as_deref()
+    /// The resolved container registry, or why the setting is not one;
+    /// `None` if unset.
+    pub fn registry(&self) -> Option<Result<&Registry, &str>> {
+        self.registry
+            .as_ref()
+            .map(|setting| setting.parsed.as_ref().map_err(String::as_str))
+    }
+
+    /// The `registry` setting as written, or `None` if unset, for the commands
+    /// that report the setting rather than push to it.
+    pub fn registry_as_written(&self) -> Option<&str> {
+        self.registry.as_ref().map(|setting| setting.text.as_str())
+    }
+
+    /// The container registry, for a command that pushes to it: an error
+    /// when the setting is unset or is not a registry.
+    pub fn require_registry(&self) -> Result<&Registry> {
+        match self.registry() {
+            Some(Ok(registry)) => Ok(registry),
+            Some(Err(err)) => Err(user_error(format!("invalid registry setting: {err}"))
+                .suggestion("run `snouty login` to set it, or set ANTITHESIS_REGISTRY")),
+            None => Err(missing_setting("registry")),
+        }
     }
 
     /// The base URL to talk to: an explicit `base_url` if set, otherwise one
@@ -386,6 +426,14 @@ impl Settings {
 
     pub(crate) fn profile(&self) -> Option<&str> {
         self.profile.as_deref()
+    }
+
+    /// These settings with `tenant` in place of the tenant setting.
+    pub(crate) fn with_tenant(&self, tenant: &str) -> Self {
+        Settings {
+            tenant: Some(tenant.to_owned()),
+            ..self.clone()
+        }
     }
 
     /// Start building a `Settings` from explicit values, with no environment
@@ -479,7 +527,7 @@ impl SettingsBuilder {
         Settings {
             profile: self.profile,
             tenant: self.tenant,
-            registry: self.registry,
+            registry: self.registry.map(RegistrySetting::new),
             base_url: self.base_url,
             https_proxy: self.https_proxy,
             container_engine: self.container_engine,
@@ -503,21 +551,25 @@ fn explicit_settings_path(flag: Option<PathBuf>) -> Result<Option<PathBuf>> {
 }
 
 /// Writes `tenant` and `registry` into the global `settings.toml`, in the
-/// table of `profile_to_update` or else the top-level table. An empty value is
-/// not written.
+/// table of `profile_to_update` or else the top-level table. Returns what
+/// puts the file back as it was.
 pub(crate) fn update_settings_in_global_file(
-    tenant: Option<String>,
-    registry: Option<String>,
+    tenant: &str,
+    registry: &str,
     profile_to_update: Option<&str>,
-) -> Result<()> {
+) -> Result<PreviousSettingsFile> {
     let path = global_settings_dir()
         .ok_or_eyre(NO_GLOBAL_SETTINGS_DIR)?
         .join(GLOBAL_SETTINGS_FILENAME);
-    let mut contents = match read_to_string_if_file_exists(&path)? {
+    let mut previous = read_to_string_if_file_exists(&path)?;
+    let mut contents = match &previous {
         Some(contents) => {
-            if let Ok(table) = parse_settings(&contents, &path) {
+            if let Ok(table) = parse_settings(contents, &path) {
                 table
             } else {
+                // The backup keeps the unparsable text, so a restore leaves
+                // no settings file.
+                previous = None;
                 let backup = back_up_unparsable_file(&path)?;
                 // Paths go on their own lines: they are the two things the
                 // user may need to copy, and they are what made the one-line
@@ -548,7 +600,30 @@ pub(crate) fn update_settings_in_global_file(
     }
 
     write_global_toml(GLOBAL_SETTINGS_FILENAME, &contents)?;
-    Ok(())
+    Ok(PreviousSettingsFile {
+        path,
+        contents: previous,
+    })
+}
+
+/// The global settings file before [`update_settings_in_global_file`]
+/// changed it: its text, or `None` when there was no file or the file did
+/// not parse and was backed up.
+#[must_use]
+pub(crate) struct PreviousSettingsFile {
+    path: PathBuf,
+    contents: Option<String>,
+}
+
+impl PreviousSettingsFile {
+    /// Put the file back as it was.
+    pub(crate) fn restore(self) -> Result<()> {
+        match self.contents {
+            Some(contents) => write_atomically(&self.path, contents.as_bytes()),
+            None => fs::remove_file(&self.path).map_err(Into::into),
+        }
+        .wrap_err_with(|| format!("could not restore {}", self.path.display()))
+    }
 }
 
 /// Atomically write `value` as TOML to `filename` in the global settings dir,
@@ -557,10 +632,31 @@ fn write_global_toml(filename: &str, value: &impl serde::Serialize) -> Result<Pa
     let settings_dir = global_settings_dir().ok_or_eyre(NO_GLOBAL_SETTINGS_DIR)?;
     let path = settings_dir.join(filename);
     mkdir(&settings_dir, true, 0o700)?;
-    let mut temp = NamedTempFile::new_in(&settings_dir)?;
-    temp.write_all(toml::to_string_pretty(value)?.as_bytes())?;
-    temp.persist(&path)?;
+    write_atomically(&path, toml::to_string_pretty(value)?.as_bytes())?;
     Ok(path)
+}
+
+/// Replace the file at `path` with `contents` through a temporary file in
+/// the same directory, so that a reader or a crash never leaves a partial
+/// settings or credentials file. An error means that the file at `path` was
+/// not replaced.
+pub(crate) fn write_atomically(path: &Path, contents: &[u8]) -> Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| eyre!("{} names no directory", path.display()))?;
+    let mut temp = NamedTempFile::new_in(dir)?;
+    temp.write_all(contents)?;
+    // The contents reach the disk before the rename, so that a power loss
+    // leaves the old file or the new one.
+    temp.as_file().sync_all()?;
+    temp.persist(path)?;
+    // The file is replaced, so a failure to sync the rename is not an error:
+    // some file systems refuse to sync a directory.
+    #[cfg(unix)]
+    if let Err(err) = fs::File::open(dir).and_then(|dir| dir.sync_all()) {
+        debug!("could not sync {}: {err}", dir.display());
+    }
+    Ok(())
 }
 
 fn entry_as_table_mut<'a>(table: &'a mut Table, key: &str) -> &'a mut Table {
@@ -585,24 +681,11 @@ pub(crate) fn mkdir(path: &Path, recursive: bool, permissions: u32) -> Result<()
     Ok(())
 }
 
-/// Inserts `value` at `key` unless it is `None` or empty, and returns whether
-/// it did.
-fn insert_key_if_non_empty(target: &mut Table, key: &str, value: Option<String>) -> bool {
-    match value {
-        Some(value) if !value.is_empty() => {
-            target.insert(key.to_owned(), Value::String(value));
-            true
-        }
-        _ => false,
-    }
-}
-
-fn update_table(target: &mut Table, tenant: Option<String>, registry: Option<String>) {
-    insert_key_if_non_empty(target, "tenant", tenant);
-    if insert_key_if_non_empty(target, REGISTRY_KEY, registry) {
-        // The table never holds the alias beside `registry`.
-        target.remove(REPOSITORY_KEY);
-    }
+fn update_table(target: &mut Table, tenant: &str, registry: &str) {
+    target.insert("tenant".to_owned(), Value::from(tenant));
+    target.insert(REGISTRY_KEY.to_owned(), Value::from(registry));
+    // The table never holds the alias beside `registry`.
+    target.remove(REPOSITORY_KEY);
 }
 
 /// The base URL of `tenant` when no `base_url` is set.
@@ -651,8 +734,11 @@ pub(crate) fn is_valid_tenant_host(tenant: &str) -> bool {
 /// that cannot proceed without a value funnel the `None` through here, so the
 /// message lives in one place instead of being duplicated per accessor.
 pub fn require_setting<'a>(value: Option<&'a str>, setting: &str) -> Result<&'a str> {
-    value
-        .ok_or_else(|| eyre!("Could not resolve Antithesis {setting}. Run snouty doctor to debug."))
+    value.ok_or_else(|| missing_setting(setting))
+}
+
+fn missing_setting(setting: &str) -> color_eyre::Report {
+    eyre!("Could not resolve Antithesis {setting}. Run snouty doctor to debug.")
 }
 
 /// Parse settings-file contents into a TOML table, attributing parse errors to
@@ -884,6 +970,28 @@ mod tests {
     /// the file layers deterministically under parallel execution (the
     /// environment-wins case is covered end-to-end by `specs/settings.txt`).
     const UNSET_ENV: &str = "SNOUTY_DEFINITELY_NOT_SET_ENV_VAR_98f3a";
+
+    /// A restore replaces the settings file with a new one, so that a write
+    /// that stops partway leaves the file whole.
+    #[test]
+    fn restore_replaces_the_settings_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        fs::write(&path, "tenant = \"new\"\n").unwrap();
+        // A hard link sees a write into the file, but not a new file.
+        let link = dir.path().join("link.toml");
+        fs::hard_link(&path, &link).unwrap();
+
+        PreviousSettingsFile {
+            path: path.clone(),
+            contents: Some("tenant = \"old\"\n".to_owned()),
+        }
+        .restore()
+        .unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "tenant = \"old\"\n");
+        assert_eq!(fs::read_to_string(&link).unwrap(), "tenant = \"new\"\n");
+    }
 
     fn settings_file(contents: &str) -> Table {
         contents.parse().expect("test TOML should parse")

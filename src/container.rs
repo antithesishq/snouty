@@ -15,6 +15,7 @@ use color_eyre::{
 use crate::docker_credential::{CRED_HELPER, HELPER_NAME};
 use crate::error::user_error;
 use crate::process::output_with_timeout;
+use crate::registry::Registry;
 use crate::registry::{self, TenantRegistry};
 use crate::settings::{
     ANTITHESIS_PROFILE_ENV_VAR_NAME, CONTAINER_ENGINE_VAR_NAME, SNOUTY_SETTINGS_PATH_VAR_NAME,
@@ -825,17 +826,12 @@ impl ContainerRuntime for DockerRuntime {
 }
 
 /// Generate a unique image reference with a timestamp + random suffix tag.
-pub fn generate_image_ref(registry: &str) -> String {
+pub fn generate_image_ref(registry: &Registry) -> String {
     let ts = Utc::now().format("%Y%m%d-%H%M%S");
     let mut buf = [0u8; 2];
     getrandom::fill(&mut buf).expect("failed to get random bytes");
     let suffix = format!("{:02x}{:02x}", buf[0], buf[1]);
-    format!(
-        "{}/snouty-config:{}-{}",
-        registry.trim_end_matches('/'),
-        ts,
-        suffix
-    )
+    format!("{registry}/snouty-config:{ts}-{suffix}")
 }
 
 /// Whether the `docker` binary is podman.
@@ -1146,7 +1142,7 @@ pub const MIRROR_PREFIX: &str = "snouty-mirror";
 
 /// Whether `segment` satisfies the reference grammar for one path segment: an
 /// alphanumeric opens and closes it, and `.`, `_`, and `-` join the rest.
-fn is_path_segment(segment: &str) -> bool {
+pub(crate) fn is_path_segment(segment: &str) -> bool {
     let alnum = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit();
     segment.starts_with(alnum)
         && segment.ends_with(alnum)
@@ -1716,7 +1712,8 @@ esac
 
     #[test]
     fn generate_image_ref_format() {
-        let image_ref = generate_image_ref("us-central1-docker.pkg.dev/proj/repo");
+        let image_ref =
+            generate_image_ref(&"us-central1-docker.pkg.dev/proj/repo".parse().unwrap());
         assert!(
             image_ref.starts_with("us-central1-docker.pkg.dev/proj/repo/snouty-config:"),
             "got: {image_ref}"
@@ -1730,8 +1727,8 @@ esac
     }
 
     #[test]
-    fn generate_image_ref_strips_trailing_slash() {
-        let image_ref = generate_image_ref("registry.example.com/repo/");
+    fn generate_image_ref_drops_the_scheme_and_trailing_slash_of_the_setting() {
+        let image_ref = generate_image_ref(&"https://registry.example.com/repo/".parse().unwrap());
         assert!(
             image_ref.starts_with("registry.example.com/repo/snouty-config:"),
             "got: {image_ref}"
@@ -1971,7 +1968,7 @@ esac
             "us-central1-docker.pkg.dev/proj/repo",
             "us-central1-docker.pkg.dev/proj/repo/",
         ] {
-            let bare = strip_registry(&generate_image_ref(registry), registry);
+            let bare = strip_registry(&generate_image_ref(&registry.parse().unwrap()), registry);
             assert!(bare.starts_with("snouty-config:"), "got: {bare}");
             assert!(!bare.contains('/'), "got: {bare}");
         }

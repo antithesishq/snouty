@@ -174,7 +174,8 @@ mod tests {
     /// a documented placeholder, or when it only names another value:
     /// `${VAR}`, `$VAR`, `$(command)`, `{var}`, `<VALUE>`, `[REDACTED]`, or
     /// `VALUE`. A Python `True`, `False`, or `None` is not a value either, and
-    /// nor is a GitHub Actions permission such as `"id-token": "write"`.
+    /// nor is a GitHub Actions permission such as `"id-token": "write"`, or
+    /// the login kind of `GET /api/v1/registry`, such as `"auth": "docker"`.
     fn allowed(value: &str) -> bool {
         let names_a_variable = value
             .strip_prefix('$')
@@ -187,7 +188,17 @@ mod tests {
             || value
                 .trim_matches(['\\', '[', ']'])
                 .eq_ignore_ascii_case("redacted")
-            || ["True", "False", "None", "read", "write", "none"].contains(&value)
+            || [
+                "True",
+                "False",
+                "None",
+                "read",
+                "write",
+                "none",
+                "antithesis",
+                "docker",
+            ]
+            .contains(&value)
             || value.chars().all(|c| c.is_ascii_uppercase() || c == '_')
     }
 

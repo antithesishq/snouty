@@ -1,7 +1,8 @@
-//! The tenant's container registry, `registry.<tenant>.antithesis.com`, and
-//! the credential that snouty gives it.
+//! Container registries: the registry that settings name, the tenant's own
+//! registry, `registry.<tenant>.antithesis.com`, and the credential that
+//! snouty gives it.
 //!
-//! The registry takes HTTP basic auth: the username [`USERNAME`], and an
+//! The tenant's registry takes HTTP basic auth: the username [`USERNAME`], and an
 //! Antithesis token or a GitHub Actions OIDC token as the password. The
 //! Antithesis API team gave this contract before the registry went live, so
 //! no response from it has been observed yet.
@@ -13,7 +14,9 @@ use color_eyre::eyre::{OptionExt, Result};
 
 use crate::api::AntithesisApi;
 use crate::auth::{AuthenticationInfo, PasswordPolicy, RefreshableOAuthToken};
+use crate::container::is_path_segment;
 use crate::error::user_error;
+use crate::render::sanitize;
 use crate::settings::{Settings, SettingsRequest, is_valid_tenant_host};
 
 pub const USERNAME: &str = "snouty-token";
@@ -70,11 +73,13 @@ impl FromStr for TenantRegistry {
     type Err = TenantRegistryError;
 
     fn from_str(server_url: &str) -> Result<Self, Self::Err> {
-        let server_url = server_url.trim();
-        let rest = server_url
-            .split_once("://")
-            .map_or(server_url, |(_, rest)| rest);
-        let host = rest.split('/').next().unwrap_or_default();
+        // Only the host counts: the path of an image reference, such as
+        // `team/app:v1`, is not a registry path, so this does not parse
+        // through [`Registry`].
+        let host = without_scheme(server_url)
+            .split('/')
+            .next()
+            .unwrap_or_default();
         if host.is_empty() {
             return Err(TenantRegistryError::InvalidServerUrl);
         }
@@ -93,12 +98,140 @@ impl FromStr for TenantRegistry {
     }
 }
 
+/// `text` without the whitespace around it and without a leading `http://` or
+/// `https://` in any case, which a registry client or a user can put before a
+/// registry.
+fn without_scheme(text: &str) -> &str {
+    let text = text.trim();
+    ["https://", "http://"]
+        .into_iter()
+        .find_map(|scheme| {
+            text.get(..scheme.len())
+                .filter(|prefix| prefix.eq_ignore_ascii_case(scheme))
+                .map(|_| &text[scheme.len()..])
+        })
+        .unwrap_or(text)
+}
+
+/// A container registry to push images to: a host, with an optional port
+/// and path, such as `registry.example.com:5000/team`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Registry {
+    text: String,
+    /// The length of the first segment of `text`: the host and port.
+    host_len: usize,
+}
+
+impl Registry {
+    /// The host and port, which `docker login` takes.
+    pub fn host(&self) -> &str {
+        &self.text[..self.host_len]
+    }
+}
+
+/// The registry without a scheme or a trailing `/`, so that `{registry}/`
+/// opens an image reference.
+impl fmt::Display for Registry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+/// Parses a registry as a user or a tenant gives it. The whitespace around
+/// it, a leading `http://` or `https://`, and trailing `/`s are removed. The
+/// host keeps its case. The path must be lowercase, because a container
+/// engine refuses an image reference with an uppercase path.
+impl FromStr for Registry {
+    type Err = String;
+
+    fn from_str(given: &str) -> Result<Self, Self::Err> {
+        let text = without_scheme(given).trim_end_matches('/');
+        if text.is_empty() {
+            return Err("the registry is empty".to_owned());
+        }
+        let host_len = text.find('/').unwrap_or(text.len());
+        match registry_problem(text, host_len) {
+            None => Ok(Self {
+                text: text.to_owned(),
+                host_len,
+            }),
+            Some(problem) => Err(format!(
+                "`{}` is not a container registry: {problem}",
+                sanitize(given.trim())
+            )),
+        }
+    }
+}
+
+/// What makes `text`, whose host is its first `host_len` bytes, not a
+/// registry, or `None` when it is a registry.
+fn registry_problem(text: &str, host_len: usize) -> Option<String> {
+    let (host, path) = text.split_at(host_len);
+    if text.contains(char::is_whitespace) {
+        return Some("it contains whitespace".to_owned());
+    }
+    if text.contains("://") {
+        return Some("only `http://` or `https://` can come before a registry".to_owned());
+    }
+    if host.contains('@') {
+        return Some("a user name (`user@`) is not part of a registry".to_owned());
+    }
+    let (name_is_valid, port) = match host.strip_prefix('[') {
+        // An IPv6 address, such as `[::1]:5000`.
+        Some(rest) => match rest.split_once(']') {
+            Some((address, port)) => (
+                address.parse::<std::net::Ipv6Addr>().is_ok()
+                    && (port.is_empty() || port.starts_with(':')),
+                port.strip_prefix(':'),
+            ),
+            None => (false, None),
+        },
+        None => match host.split_once(':') {
+            Some((name, port)) => (is_valid_tenant_host(name), Some(port)),
+            None => (is_valid_tenant_host(host), None),
+        },
+    };
+    let port_is_valid = |port: &str| {
+        !port.starts_with('0')
+            && port.bytes().all(|b| b.is_ascii_digit())
+            && port.parse::<u16>().is_ok()
+    };
+    if port.is_some_and(|port| !port_is_valid(port)) {
+        return Some("the port must be a number from 1 to 65535".to_owned());
+    }
+    if !name_is_valid {
+        return Some(
+            "give a host, optionally with a port and a path, such as `registry.example.com/team`"
+                .to_owned(),
+        );
+    }
+    let segment = path
+        .split('/')
+        .skip(1)
+        .find(|segment| !is_path_segment(segment))?;
+    Some(if segment.is_empty() {
+        "the path has an empty segment (`//`)".to_owned()
+    } else if segment.contains(|c: char| c.is_ascii_uppercase())
+        && is_path_segment(&segment.to_ascii_lowercase())
+    {
+        format!("the path must be lowercase: `{}`", sanitize(segment))
+    } else {
+        format!(
+            "the path segment `{}` must start and end with a letter or a digit, and hold only letters, digits, `.`, `_` and `-`",
+            sanitize(segment)
+        )
+    })
+}
+
 /// The tenant registry that `settings` push to: the host of the `registry`
 /// setting, when it is the registry of the tenant of the same settings.
 /// `None` when the setting names another registry, or when the tenant or the
 /// registry is not set.
 pub fn tenant_registry(settings: &Settings) -> Option<TenantRegistry> {
-    let registry: TenantRegistry = settings.registry()?.parse().ok()?;
+    // The host of the setting as written, so that a path that [`Registry`]
+    // refuses, such as an uppercase one that an older snouty saved, still
+    // names the tenant's registry for the credential helper.
+    let registry: TenantRegistry = settings.registry_as_written()?.parse().ok()?;
     registry
         .tenant
         .eq_ignore_ascii_case(settings.tenant()?)
@@ -577,6 +710,8 @@ mod tests {
             ("acme", "registry.acme.antithesis.com:443/app", true),
             ("ACME", "registry.acme.antithesis.com/app", true),
             ("eu.acme", "registry.eu.acme.antithesis.com/app", true),
+            ("acme", " https://registry.acme.antithesis.com/app/ ", true),
+            ("acme", "registry.acme.antithesis.com/MyTeam", true),
         ];
         for (tenant, repository, matches) in cases {
             assert_eq!(
@@ -699,5 +834,109 @@ mod tests {
             select_for_acme(profiles, self::stored(&stored)).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn registry_host_is_the_text_before_the_path() {
+        for (registry, host) in [
+            (
+                "us-central1-docker.pkg.dev/molten-verve-216720/orbitinghail-repository",
+                "us-central1-docker.pkg.dev",
+            ),
+            ("us-central1-docker.pkg.dev", "us-central1-docker.pkg.dev"),
+            (
+                "123456789012.dkr.ecr.us-east-1.amazonaws.com",
+                "123456789012.dkr.ecr.us-east-1.amazonaws.com",
+            ),
+            (
+                "123456789012.dkr.ecr.us-east-1.amazonaws.com/team/app",
+                "123456789012.dkr.ecr.us-east-1.amazonaws.com",
+            ),
+            ("registry.example.com", "registry.example.com"),
+            ("registry.example.com:443/team", "registry.example.com:443"),
+            ("localhost:5000/team", "localhost:5000"),
+            ("registry.internal", "registry.internal"),
+            ("registry", "registry"),
+            ("registry/team", "registry"),
+            ("[::1]:5000/team", "[::1]:5000"),
+            ("[::1]/team", "[::1]"),
+            ("ghcr.io/my-org", "ghcr.io"),
+            ("Registry.Example.com/team", "Registry.Example.com"),
+        ] {
+            let parsed: Registry = registry.parse().unwrap();
+            assert_eq!(parsed.host(), host, "{registry}");
+            assert_eq!(parsed.to_string(), registry);
+        }
+    }
+
+    #[test]
+    fn registry_drops_a_scheme_and_trailing_slashes() {
+        for (given, registry, host) in [
+            (
+                "https://registry.example.com",
+                "registry.example.com",
+                "registry.example.com",
+            ),
+            (
+                "HTTP://registry.example.com:5000/team/",
+                "registry.example.com:5000/team",
+                "registry.example.com:5000",
+            ),
+            (
+                " https://us-central1-docker.pkg.dev/proj/repo//\n",
+                "us-central1-docker.pkg.dev/proj/repo",
+                "us-central1-docker.pkg.dev",
+            ),
+            (
+                "registry.example.com/",
+                "registry.example.com",
+                "registry.example.com",
+            ),
+        ] {
+            let parsed: Registry = given.parse().unwrap();
+            assert_eq!(parsed.to_string(), registry, "{given:?}");
+            assert_eq!(parsed.host(), host, "{given:?}");
+        }
+    }
+
+    #[test]
+    fn registry_refuses_what_is_not_a_registry() {
+        for (registry, problem) in [
+            ("", "the registry is empty"),
+            (" ", "the registry is empty"),
+            ("https://", "the registry is empty"),
+            ("/team", "give a host"),
+            ("-registry.example.com", "give a host"),
+            ("[::1", "give a host"),
+            ("[not-ipv6]:5000", "give a host"),
+            ("registry.example.com//team", "empty segment"),
+            ("registry.example.com/-team", "path segment `-team`"),
+            ("registry.example.com/te$am", "path segment `te$am`"),
+            ("registry.example.com:", "the port must be"),
+            ("registry.example.com:99999", "the port must be"),
+            ("registry.example.com:0", "the port must be"),
+            ("registry.example.com:+80", "the port must be"),
+            ("registry.example.com:00080", "the port must be"),
+            ("[::1]:+80", "the port must be"),
+            ("user@registry.example.com", "user name"),
+            ("registry example.com", "whitespace"),
+            ("registry.example.com/te\tam", "whitespace"),
+            ("ghcr.io/MyOrg", "the path must be lowercase: `MyOrg`"),
+            ("ghcr.io/team/App", "the path must be lowercase: `App`"),
+            ("oci://registry.example.com", "only `http://` or `https://`"),
+        ] {
+            let err = registry.parse::<Registry>().unwrap_err();
+            assert!(err.contains(problem), "{registry:?}: {err}");
+        }
+    }
+
+    /// Any text that parses prints as a registry that parses to itself.
+    #[hegel::test]
+    fn a_registry_parses_from_its_display(tc: hegel::TestCase) {
+        let text = tc.draw(generators::text());
+        let Ok(once) = text.parse::<Registry>() else {
+            return;
+        };
+        assert_eq!(once.to_string().parse::<Registry>(), Ok(once), "{text:?}");
     }
 }

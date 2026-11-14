@@ -8,26 +8,184 @@ isolate-home empty_args
 ! snouty login --tenant ""
 stderr '.*Value may not be empty or whitespace.*'
 
-# The same for a supplied-but-empty --registry.
+# --registry takes a host that `docker login` accepts, optionally with a
+# port and a path, and refuses anything else before any request.
 ! snouty login --registry ""
-stderr '.*Value may not be empty or whitespace.*'
+stderr -literal 'the registry is empty'
+! snouty login --registry registry.example.com/MyOrg
+stderr -literal 'the path must be lowercase: `MyOrg`'
+! snouty login --registry registry.example.com:+80
+stderr -literal 'the port must be a number from 1 to 65535'
+! snouty login --registry user@registry.example.com
+stderr -literal 'is not a container registry'
 
 # And for the global --profile flag given an empty value.
 ! snouty --profile "" login
 stderr '.*Value may not be empty or whitespace.*'
 
-# Without a TTY, login saves the tenant and registry, skips credential
-# storage, and prints the summary as whole lines, so a script can match a line
-# that is longer than a terminal.
+# Without a TTY, login cannot ask for the tenant, and names the flag.
+isolate-home no_tenant
+! snouty login
+stderr -literal 'run `snouty login --tenant <tenant>`'
+! exists no_tenant/.config/snouty/settings.toml
+
+# Without a TTY, login signs in with the credential that other commands use,
+# saves the tenant and the tenant's registry, stores no credential, and
+# prints the summary as whole lines, so a script can match a line that is
+# longer than a terminal. The tenant's registry needs no other sign-in.
 isolate-home summary
-snouty login --tenant spec-tenant --registry registry.example.com/a-long-registry-path
-stdout '^Saved tenant `spec-tenant` and registry `registry.example.com/a-long-registry-path`\.$'
-stdout '^Skipped credential storage — snouty will read credentials from the environment, such as ANTITHESIS_API_KEY\.$'
+mock-runs-server
+snouty login --tenant ${ANTITHESIS_TENANT}
+stdout '^Saved tenant `${ANTITHESIS_TENANT@R}` and registry `[^`/]+\.[^`]+`\.$'
+[!staging] stdout '^Saved tenant `testtenant` and registry `registry.testtenant.antithesis.com`\.$'
+! stdout 'credential'
+[!staging] ! stdout 'docker login'
 stdout '^Run `snouty doctor` to verify your setup\.$'
+file ~/.config/snouty/settings.toml 'registry = "[^"]+"'
+[!staging] file ~/.config/snouty/settings.toml 'registry = "registry.testtenant.antithesis.com"'
+
+# --registry takes the place of the tenant's registry, and login names the
+# commands that sign in to it.
+isolate-home registry_flag
+snouty login --tenant ${ANTITHESIS_TENANT} --registry registry.example.com/a-long-registry-path
+stdout 'registry `registry.example.com/a-long-registry-path`\.$'
+stdout -literal '`docker login registry.example.com`'
 file ~/.config/snouty/settings.toml 'registry = "registry.example.com/a-long-registry-path"'
+
+# Login saves --registry without a scheme and a trailing `/`.
+isolate-home registry_scheme
+snouty login --tenant ${ANTITHESIS_TENANT} --registry HTTPS://registry.example.com/my-org/
+stdout -literal '`docker login registry.example.com`'
+file ~/.config/snouty/settings.toml 'registry = "registry.example.com/my-org"'
 
 # --repository is an alias for --registry.
 isolate-home repository_flag
-snouty login --tenant spec-tenant --repository registry.example.com/old-flag
+snouty login --tenant ${ANTITHESIS_TENANT} --repository registry.example.com/old-flag
 stdout 'registry `registry.example.com/old-flag`\.$'
 file ~/.config/snouty/settings.toml 'registry = "registry.example.com/old-flag"'
+
+# Without a credential, login fails before it saves anything.
+isolate-home no_credential
+env ANTITHESIS_API_KEY=
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
+! snouty login --tenant spec-tenant
+stderr 'nothing was saved'
+stderr -literal 'set ANTITHESIS_API_KEY, or run `snouty login` in a terminal'
+! exists no_credential/.config/snouty/settings.toml
+
+# The cases below need a registry response that staging cannot give.
+[staging] skip
+
+# A registry that the tenant reports, other than its own, is saved, and login
+# names the commands that sign in to it.
+isolate-home docker_registry
+mock-server 200 '{"auth":"docker","registry_url":"registry.example.com/acme"}'
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
+snouty login --tenant spec-tenant
+stdout -literal '`docker login registry.example.com`'
+stdout -literal '`podman login registry.example.com`'
+file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
+
+# `docker login` takes the registry's host: the text before the first `/`.
+# Login saves the registry as given, and never names Docker Hub for it.
+isolate-home registry_hosts
+mock-server 200 '{"auth":"antithesis","registry_url":"registry.spec-tenant.antithesis.com"}'
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
+snouty login --tenant spec-tenant --registry us-central1-docker.pkg.dev/molten-verve-216720/orbitinghail-repository
+stdout -literal '`docker login us-central1-docker.pkg.dev`'
+file ~/.config/snouty/settings.toml 'registry = "us-central1-docker.pkg.dev/molten-verve-216720/orbitinghail-repository"'
+snouty login --tenant spec-tenant --registry us-central1-docker.pkg.dev
+stdout -literal '`docker login us-central1-docker.pkg.dev`'
+file ~/.config/snouty/settings.toml 'registry = "us-central1-docker.pkg.dev"'
+snouty login --tenant spec-tenant --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com/team/app
+stdout -literal '`docker login 123456789012.dkr.ecr.us-east-1.amazonaws.com`'
+file ~/.config/snouty/settings.toml 'registry = "123456789012.dkr.ecr.us-east-1.amazonaws.com/team/app"'
+snouty login --tenant spec-tenant --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com
+stdout -literal '`docker login 123456789012.dkr.ecr.us-east-1.amazonaws.com`'
+file ~/.config/snouty/settings.toml 'registry = "123456789012.dkr.ecr.us-east-1.amazonaws.com"'
+snouty login --tenant spec-tenant --registry localhost:5000/team
+stdout -literal '`docker login localhost:5000`'
+snouty login --tenant spec-tenant --registry registry
+stdout -literal '`docker login registry`'
+! stdout 'docker\.io'
+
+# A registry that the tenant reports is saved without a scheme and a
+# trailing `/`.
+isolate-home reported_scheme
+mock-server 200 '{"auth":"docker","registry_url":"https://registry.example.com/acme/"}'
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
+snouty login --tenant spec-tenant
+stdout -literal '`docker login registry.example.com`'
+file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
+
+# A registry that the tenant reports must also be a registry host.
+isolate-home reported_url
+mock-server 200 '{"auth":"docker","registry_url":"user@registry.example.com"}'
+! snouty login --tenant spec-tenant
+stderr -literal 'is not a container registry'
+stderr 'nothing was saved'
+! exists reported_url/.config/snouty/settings.toml
+
+# A tenant that cannot be reached fails the login, which names the URL and
+# saves nothing.
+isolate-home unreachable
+env ANTITHESIS_BASE_URL=http://127.0.0.1:1
+! snouty login --tenant spec-tenant
+stderr 'could not reach http://127.0.0.1:1: .*; nothing was saved'
+stderr -literal 'check that the base_url setting is correct'
+! exists unreachable/.config/snouty/settings.toml
+
+# A credential that the tenant rejects fails the login, which saves nothing.
+isolate-home rejected
+mock-server 401 '{"message":"Invalid or expired bearer token."}'
+! snouty login --tenant spec-tenant
+stderr 'did not accept the credential; nothing was saved'
+! exists rejected/.config/snouty/settings.toml
+
+# A 403 rejects the credential just like a 401.
+isolate-home rejected_403
+mock-server 403 ''
+! snouty login --tenant spec-tenant
+stderr 'did not accept the credential; nothing was saved'
+! exists rejected_403/.config/snouty/settings.toml
+
+# A username and password from the environment cannot pass the check.
+mock-runs-server
+env ANTITHESIS_API_KEY=
+set-env ANTITHESIS_USERNAME puser
+set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
+isolate-home env_password
+! snouty login --tenant spec-tenant
+stderr 'nothing was saved'
+
+# A tenant that does not serve the registry endpoint answers 404 after it
+# accepts the credential. Without a terminal, login keeps the tenant's saved
+# registry, and fails without one.
+isolate-home no_endpoint
+mock-server 404 '{"message":"Resource not found"}'
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
+env ANTITHESIS_TENANT=
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
+! snouty login --tenant spec-tenant
+stderr 'nothing was saved'
+stderr -literal 'run `snouty login --registry <registry>`'
+! exists no_endpoint/.config/snouty/settings.toml
+snouty login --tenant spec-tenant --registry registry.example.com/acme
+file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
+snouty login --tenant spec-tenant
+stdout 'registry `registry.example.com/acme`'
+# A saved registry with a scheme is kept without it.
+cp saved_scheme.toml no_endpoint/.config/snouty/settings.toml
+snouty login --tenant spec-tenant
+stdout 'registry `registry.example.com/my-org`'
+file ~/.config/snouty/settings.toml 'registry = "registry.example.com/my-org"'
+# The saved registry of another tenant is not kept.
+! snouty login --tenant other-tenant
+stderr -literal 'run `snouty login --registry <registry>`'
+file ~/.config/snouty/settings.toml 'tenant = "spec-tenant"'
+
+-- saved_scheme.toml --
+tenant = "spec-tenant"
+registry = "https://registry.example.com/my-org/"

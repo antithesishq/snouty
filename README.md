@@ -6,7 +6,7 @@ A CLI for the [Antithesis](https://antithesis.com) API. See the [REST API refere
 
 Snouty provides the following subcommands. Invoke `snouty <command> --help` to find out more.
 
-- `snouty login`: sign in and store your tenant, container registry, and credentials.
+- `snouty login`: sign in and store your tenant and credentials.
 - `snouty launch`: push images and kick off an Antithesis run.
 - `snouty runs`: list and inspect Antithesis test runs and their results.
   - `snouty runs list`: list runs, with status/launcher/date filters.
@@ -122,9 +122,9 @@ If you set up [shell completions](#shell-completions), also remove the snouty li
 
 ## Configuration
 
-Using the API requires at least a **tenant** and a credential. `snouty launch` also needs a **registry** — the container registry it pushes the config image to. The registry is a host, optionally with a path, such as `registry.example.com/team`. Docs commands need no configuration at all.
+Using the API requires at least a **tenant** and a credential. `snouty launch` also needs a **registry** — the container registry it pushes the config image to, which `snouty login` sets for you. The registry is a host, optionally with a port and a path, such as `registry.example.com/team`. Docs commands need no configuration at all.
 
-The quickest way is `snouty login`, which asks for each value and stores the result:
+The quickest way is `snouty login`:
 
 ```sh
 snouty login
@@ -282,13 +282,7 @@ Run `snouty doctor` to see which credential snouty resolves, and where it comes 
 
 ### Browser sign-in with `snouty login`
 
-`snouty login` asks for your tenant and your container registry, then asks how you want to authenticate. It writes the tenant and the registry to the global settings file, and it stores the credential separately.
-
-```sh
-snouty login
-snouty login --tenant "your-tenant" --registry "us-central1-docker.pkg.dev/your-project/your-repo"
-snouty login --profile staging
-```
+Run `snouty login` and answer its questions. `snouty login --help` has the details.
 
 Pick **Single sign-on (OAuth)** to sign in through your identity provider. Snouty binds a loopback server, opens a browser, and waits up to five minutes for the redirect to come back. It prints the sign-in URL as well, so you can open the URL by hand when it cannot open a browser for you. The exchange uses PKCE, so no shared secret is needed.
 

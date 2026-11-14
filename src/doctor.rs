@@ -18,6 +18,10 @@ use crate::login::{CliOAuthConfig, fetch_cli_config};
 use crate::render::OutputOptions;
 use crate::settings::Settings;
 
+/// The longest wait for the OAuth probe. Doctor only reports what the probe
+/// finds, so it does not wait as long as login does.
+const OAUTH_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Outcome of a single health check. Only `Error` fails doctor; `Warn` is
 /// surfaced but the run still passes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
@@ -535,7 +539,7 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
     // Required settings. tenant is needed by every command; registry is
     // launch-only, so a missing one is a warning.
     checks.push(tenant_check(settings.tenant()));
-    checks.push(registry_check(settings.registry()));
+    checks.push(registry_check(settings.registry_as_written()));
 
     // Authentication (synchronous-only by design).
     let github_actions = crate::auth::in_github_actions();
@@ -865,7 +869,9 @@ pub async fn cmd_doctor(
             && let Some(base_url) = settings.base_url()
             && let Ok(client) = HttpClient::new(settings, verbose)
         {
-            match fetch_cli_config(&client, &normalize_base_url(base_url)).await {
+            match fetch_cli_config(&client, &normalize_base_url(base_url), OAUTH_PROBE_TIMEOUT)
+                .await
+            {
                 Ok(CliOAuthConfig::Disabled) => checks.push(
                     Check::warn(
                         CheckId::OauthConfigured,

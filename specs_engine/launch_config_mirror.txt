@@ -77,6 +77,15 @@ snouty launch --launcher basic_test -c neighbour_config --duration 30m
 stderr 'Pushing image: .*/tenant/snouty-mirror/.*/other-team/neighbour:v1'
 ! stderr 'Image already in a registry, skipping push:'
 
+# A registry setting with a scheme and a trailing `/` names the same
+# registry as one without them, so the push and the pins leave both out.
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+set-env ANTITHESIS_REGISTRY https://${REGISTRY}/scheme-team/
+build-image --platform linux/amd64 snouty-scheme:v1 images/myapp
+snouty launch --launcher basic_test -c scheme_config --duration 30m
+stderr -literal 'Pushing image: ${REGISTRY}/scheme-team/snouty-scheme:v1'
+stderr '"antithesis.config_image": "snouty-config@sha256:'
+
 -- images/myapp/content --
 placeholder
 -- images/sidecar/content --
@@ -99,6 +108,10 @@ services:
     image: ghcr.io/snouty-spec/collide:v1
   sidecar:
     image: snouty-mirror/ghcr.io/snouty-spec/collide:v1
+-- scheme_config/docker-compose.yaml --
+services:
+  app:
+    image: snouty-scheme:v1
 -- neighbour_seed_config/docker-compose.yaml --
 services:
   app:

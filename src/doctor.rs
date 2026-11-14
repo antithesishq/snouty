@@ -15,7 +15,8 @@ use crate::auth::{
 use crate::compose;
 use crate::container;
 use crate::error::rejects_credential;
-use crate::login::{CliOAuthConfig, fetch_cli_config};
+use crate::login::{CliOAuthConfig, REGISTRY_CHECK_TIMEOUT, fetch_cli_config};
+use crate::registry::normalize_host;
 use crate::render::OutputOptions;
 use crate::settings::Settings;
 
@@ -251,6 +252,8 @@ fn tenant_check(tenant: Option<&str>) -> Check {
 /// registry that differs from it is a warning too: the user can have chosen
 /// another registry on purpose, such as a proxy.
 fn registry_check(registry: Option<&str>, reported: Option<&str>, profile: Option<&str>) -> Check {
+    // `snouty login` reads a blank answer as no registry.
+    let reported = reported.filter(|reported| !reported.trim().is_empty());
     match (registry, reported) {
         (Some(registry), Some(reported)) if !registry_matches(registry, reported) => Check::warn(
             CheckId::Registry,
@@ -284,13 +287,14 @@ fn registry_check(registry: Option<&str>, reported: Option<&str>, profile: Optio
 }
 
 /// Whether the `configured` registry is the `reported` one, or a path under
-/// it, where snouty still pushes to the tenant's registry. The host is not
-/// case sensitive, and a trailing `/` does not count.
+/// it, where snouty still pushes to the tenant's registry. The host is
+/// compared as the credential helper compares it, and a trailing `/` does not
+/// count.
 fn registry_matches(configured: &str, reported: &str) -> bool {
     let split = |registry: &str| {
         let registry = registry.trim().trim_end_matches('/');
         let (host, path) = registry.split_once('/').unwrap_or((registry, ""));
-        (host.to_ascii_lowercase(), path.to_owned())
+        (normalize_host(host), path.to_owned())
     };
     let (configured_host, configured_path) = split(configured);
     let (reported_host, reported_path) = split(reported);
@@ -300,13 +304,6 @@ fn registry_matches(configured: &str, reported: &str) -> bool {
             || configured_path
                 .strip_prefix(&reported_path)
                 .is_some_and(|rest| rest.starts_with('/')))
-}
-
-/// Whether the tenant of `version` reports its registry.
-fn reports_registry(version: &ApiVersion) -> bool {
-    version
-        .release
-        .is_some_and(|release| release >= MIN_REGISTRY_RELEASE)
 }
 
 /// `selected` is the profile that the user selects, if any.
@@ -899,9 +896,17 @@ pub async fn cmd_doctor(
                 let version = api.get_version().await;
                 if let Ok(version) = &version {
                     checks.extend(release_floor_checks(version));
-                    if reports_registry(version) {
-                        match api.get_registry().await {
-                            Ok(reported) => {
+                    if version
+                        .release
+                        .is_some_and(|release| release >= MIN_REGISTRY_RELEASE)
+                    {
+                        let reported = tokio::time::timeout(
+                            crate::env::scaled_wait(REGISTRY_CHECK_TIMEOUT),
+                            api.get_registry(),
+                        )
+                        .await;
+                        match reported {
+                            Ok(Ok(reported)) => {
                                 let check = checks
                                     .iter_mut()
                                     .find(|c| c.id == CheckId::Registry)
@@ -914,7 +919,10 @@ pub async fn cmd_doctor(
                             }
                             // The registry check already reports what doctor can
                             // tell without the tenant's answer.
-                            Err(err) => debug!("could not read the tenant's registry: {err:#}"),
+                            Ok(Err(err)) => {
+                                debug!("could not read the tenant's registry: {err:#}");
+                            }
+                            Err(_) => debug!("the tenant did not report its registry in time"),
                         }
                     }
                 }
@@ -1447,6 +1455,15 @@ mod tests {
             "run `snouty login --profile prod` to use the tenant's registry"
         );
 
+        // A blank answer counts as no answer.
+        let check = registry_check(Some("proxy.example.com/acme"), Some(" "), None);
+        assert_eq!(check.status, Status::Ok);
+        let check = registry_check(None, Some(""), None);
+        assert_eq!(
+            check.notes[1].text,
+            "run `snouty login` to set it, or set ANTITHESIS_REGISTRY"
+        );
+
         // An unset registry is reported once, with the tenant's registry.
         let check = registry_check(None, Some(tenant), None);
         assert_eq!(check.message, "container registry is not set");
@@ -1463,6 +1480,14 @@ mod tests {
         assert!(registry_matches(tenant, tenant));
         assert!(registry_matches("registry.acme.antithesis.com/", tenant));
         assert!(registry_matches("REGISTRY.acme.antithesis.com", tenant));
+        assert!(registry_matches(
+            "registry.acme.antithesis.com:443/team",
+            tenant
+        ));
+        assert!(!registry_matches(
+            "registry.acme.antithesis.com:5000/team",
+            tenant
+        ));
         assert!(registry_matches(
             "registry.acme.antithesis.com/team/app",
             tenant
@@ -1483,16 +1508,6 @@ mod tests {
         assert!(!registry_matches("registry.example.com/acmes", tenant));
         assert!(!registry_matches("registry.example.com", tenant));
         assert!(!registry_matches("registry.example.com/other", tenant));
-    }
-
-    #[test]
-    fn only_a_tenant_on_release_67_reports_its_registry() {
-        let version = |release: &str| ApiVersion::new("v1".into(), release.into());
-        assert!(!reports_registry(&version("66.9")));
-        assert!(reports_registry(&version("67.0")));
-        assert!(reports_registry(&version("67.1")));
-        assert!(reports_registry(&version("68.0")));
-        assert!(!reports_registry(&version("unknown")));
     }
 
     #[test]

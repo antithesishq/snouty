@@ -61,6 +61,14 @@ impl fmt::Display for TenantRegistryError {
 
 impl std::error::Error for TenantRegistryError {}
 
+/// The registry `host` in one form: lowercase, without the port 443, which a
+/// registry client uses when it names no port.
+pub(crate) fn normalize_host(host: &str) -> String {
+    host.strip_suffix(":443")
+        .unwrap_or(host)
+        .to_ascii_lowercase()
+}
+
 /// Parses a server URL as a registry client gives it: a host, with an
 /// optional scheme and path. A host with a path, such as
 /// `registry.acme.antithesis.com/team/app`, parses to its registry. The host
@@ -78,10 +86,7 @@ impl FromStr for TenantRegistry {
         if host.is_empty() {
             return Err(TenantRegistryError::InvalidServerUrl);
         }
-        let host = host
-            .strip_suffix(":443")
-            .unwrap_or(host)
-            .to_ascii_lowercase();
+        let host = normalize_host(host);
         let tenant = host
             .strip_prefix("registry.")
             .and_then(|rest| rest.strip_suffix(".antithesis.com"))

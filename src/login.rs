@@ -50,8 +50,8 @@ const _: () = assert!(OAUTH_HTTP_TIMEOUT.as_secs() > CONNECT_TIMEOUT.as_secs());
 
 /// The longest wait for the registry check. The API client has only a connect
 /// timeout, and a tenant that accepts a connection but does not answer would
-/// otherwise hold the login forever.
-const REGISTRY_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+/// otherwise hold login or doctor forever.
+pub(crate) const REGISTRY_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long to wait for the browser to redirect back to the loopback server
 /// before giving up — generous enough for the user to complete an interactive

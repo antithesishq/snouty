@@ -625,3 +625,51 @@ fn help_examples_pass_preflight() {
         assert!(count > 0, "no examples in `{subcommand} --help`");
     }
 }
+
+/// A tenant that answers the version request but does not answer the
+/// registry request does not hold doctor: the registry check keeps what
+/// doctor can tell without the answer.
+#[test]
+fn doctor_finishes_when_the_tenant_does_not_report_its_registry() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        let mut stalled = Vec::new();
+        for mut stream in listener.incoming().flatten() {
+            let mut buf = [0u8; 4096];
+            let read = std::io::Read::read(&mut stream, &mut buf).unwrap_or(0);
+            let request = String::from_utf8_lossy(&buf[..read]);
+            if request.starts_with("GET /api/v1/registry ") {
+                stalled.push(stream);
+                continue;
+            }
+            let (status, body) = if request.starts_with("GET /api/version ") {
+                (
+                    200,
+                    r#"{"latest_api_version":"v1","release_version":"67.0"}"#,
+                )
+            } else {
+                (404, r#"{"message":"Resource not found"}"#)
+            };
+            let response = format!(
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+        }
+    });
+
+    snouty()
+        .env(
+            "ANTITHESIS_API_KEY",
+            snouty::testutils::fake_secrets::FAKE_API_KEY_A,
+        )
+        .env("ANTITHESIS_TENANT", "testtenant")
+        .env("ANTITHESIS_BASE_URL", &url)
+        .env("ANTITHESIS_REGISTRY", "proxy.example.com/testtenant")
+        .env(snouty::testutils::TEST_SECOND_MS_VAR_NAME, "100")
+        .arg("doctor")
+        .timeout(std::time::Duration::from_secs(60))
+        .assert()
+        .stderr(predicate::str::contains("✓ container registry is set"));
+}

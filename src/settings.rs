@@ -522,12 +522,15 @@ pub(crate) fn update_settings_in_global_file(
     let path = global_settings_dir()
         .ok_or_eyre(NO_GLOBAL_SETTINGS_DIR)?
         .join(GLOBAL_SETTINGS_FILENAME);
-    let previous = read_to_string_if_file_exists(&path)?;
+    let mut previous = read_to_string_if_file_exists(&path)?;
     let mut contents = match &previous {
         Some(contents) => {
             if let Ok(table) = parse_settings(contents, &path) {
                 table
             } else {
+                // The backup keeps the unparsable text, so a restore leaves
+                // no settings file.
+                previous = None;
                 let backup = back_up_unparsable_file(&path)?;
                 // Paths go on their own lines: they are the two things the
                 // user may need to copy, and they are what made the one-line
@@ -565,7 +568,8 @@ pub(crate) fn update_settings_in_global_file(
 }
 
 /// The global settings file before [`update_settings_in_global_file`]
-/// changed it: its text, or `None` when there was no file.
+/// changed it: its text, or `None` when there was no file or the file did
+/// not parse and was backed up.
 #[must_use]
 pub(crate) struct PreviousSettingsFile {
     path: PathBuf,

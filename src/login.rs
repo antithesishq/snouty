@@ -1752,6 +1752,23 @@ mod tests {
         assert!(format!("{err:#}").contains("nothing was saved"), "{err:#}");
         assert!(!env.config_dir().join("settings.toml").exists());
 
+        // A settings file that does not parse stays in its backup, and the
+        // restore leaves no settings file.
+        let unparsable = "tenant = \"oldtenant\n";
+        env.seed(".config/snouty/settings.toml", unparsable);
+        let prompter = Script::default()
+            .input("mytenant")
+            .secret(FAKE_API_KEY_A)
+            .build();
+        let err = login(None, &settings, &prompter)
+            .await
+            .expect_err("a credential that cannot be stored must fail the login");
+        assert!(format!("{err:#}").contains("nothing was saved"), "{err:#}");
+        assert!(!env.config_dir().join("settings.toml").exists());
+        assert_eq!(
+            std::fs::read_to_string(env.config_dir().join("settings.toml.bak"))?,
+            unparsable
+        );
         Ok(())
     }
 

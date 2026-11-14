@@ -139,12 +139,16 @@ impl fmt::Display for Registry {
 
 /// Parses a registry as a user or a tenant gives it. The whitespace around
 /// it, a leading `http://` or `https://`, and trailing `/`s are removed. The
-/// host and the path keep their case.
+/// host keeps its case. The path must be lowercase, because a container
+/// engine refuses an image reference with an uppercase path.
 impl FromStr for Registry {
     type Err = String;
 
     fn from_str(given: &str) -> Result<Self, Self::Err> {
         let text = without_scheme(given).trim_end_matches('/');
+        if text.is_empty() {
+            return Err("the registry is empty".to_owned());
+        }
         let host_len = text.find('/').unwrap_or(text.len());
         match registry_problem(text, host_len) {
             None => Ok(Self {
@@ -164,7 +168,7 @@ impl FromStr for Registry {
 fn registry_problem(text: &str, host_len: usize) -> Option<String> {
     let (host, path) = text.split_at(host_len);
     if text.contains(char::is_whitespace) {
-        return Some("it contains a space".to_owned());
+        return Some("it contains whitespace".to_owned());
     }
     if text.contains("://") {
         return Some("only `http://` or `https://` can come before a registry".to_owned());
@@ -201,13 +205,16 @@ fn registry_problem(text: &str, host_len: usize) -> Option<String> {
                 .to_owned(),
         );
     }
-    // Settings that an older snouty saved can name a path in uppercase.
     let segment = path
         .split('/')
         .skip(1)
-        .find(|segment| !is_path_segment(&segment.to_ascii_lowercase()))?;
+        .find(|segment| !is_path_segment(segment))?;
     Some(if segment.is_empty() {
         "the path has an empty segment (`//`)".to_owned()
+    } else if segment.contains(|c: char| c.is_ascii_uppercase())
+        && is_path_segment(&segment.to_ascii_lowercase())
+    {
+        format!("the path must be lowercase: `{}`", sanitize(segment))
     } else {
         format!(
             "the path segment `{}` must start and end with a letter or a digit, and hold only letters, digits, `.`, `_` and `-`",
@@ -850,8 +857,8 @@ mod tests {
             ("registry/team", "registry"),
             ("[::1]:5000/team", "[::1]:5000"),
             ("[::1]/team", "[::1]"),
-            ("ghcr.io/MyOrg", "ghcr.io"),
-            ("Registry.Example.com/Team", "Registry.Example.com"),
+            ("ghcr.io/my-org", "ghcr.io"),
+            ("Registry.Example.com/team", "Registry.Example.com"),
         ] {
             let parsed: Registry = registry.parse().unwrap();
             assert_eq!(parsed.host(), host, "{registry}");
@@ -873,8 +880,8 @@ mod tests {
                 "registry.example.com:5000",
             ),
             (
-                " https://us-central1-docker.pkg.dev/Proj/repo//\n",
-                "us-central1-docker.pkg.dev/Proj/repo",
+                " https://us-central1-docker.pkg.dev/proj/repo//\n",
+                "us-central1-docker.pkg.dev/proj/repo",
                 "us-central1-docker.pkg.dev",
             ),
             (
@@ -892,8 +899,9 @@ mod tests {
     #[test]
     fn registry_refuses_what_is_not_a_registry() {
         for (registry, problem) in [
-            ("", "give a host"),
-            ("https://", "give a host"),
+            ("", "the registry is empty"),
+            (" ", "the registry is empty"),
+            ("https://", "the registry is empty"),
             ("/team", "give a host"),
             ("-registry.example.com", "give a host"),
             ("[::1", "give a host"),
@@ -908,7 +916,10 @@ mod tests {
             ("registry.example.com:00080", "the port must be"),
             ("[::1]:+80", "the port must be"),
             ("user@registry.example.com", "user name"),
-            ("registry example.com", "space"),
+            ("registry example.com", "whitespace"),
+            ("registry.example.com/te\tam", "whitespace"),
+            ("ghcr.io/MyOrg", "the path must be lowercase: `MyOrg`"),
+            ("ghcr.io/team/App", "the path must be lowercase: `App`"),
             ("oci://registry.example.com", "only `http://` or `https://`"),
         ] {
             let err = registry.parse::<Registry>().unwrap_err();

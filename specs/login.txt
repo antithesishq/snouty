@@ -11,7 +11,9 @@ stderr '.*Value may not be empty or whitespace.*'
 # --registry takes a host that `docker login` accepts, optionally with a
 # port and a path, and refuses anything else before any request.
 ! snouty login --registry ""
-stderr -literal 'is not a container registry'
+stderr -literal 'the registry is empty'
+! snouty login --registry registry.example.com/MyOrg
+stderr -literal 'the path must be lowercase: `MyOrg`'
 ! snouty login --registry registry.example.com:+80
 stderr -literal 'the port must be a number from 1 to 65535'
 ! snouty login --registry user@registry.example.com
@@ -50,12 +52,11 @@ stdout 'registry `registry.example.com/a-long-registry-path`\.$'
 stdout -literal '`docker login registry.example.com`'
 file ~/.config/snouty/settings.toml 'registry = "registry.example.com/a-long-registry-path"'
 
-# Login saves --registry without a scheme and a trailing `/`, and keeps its
-# case.
+# Login saves --registry without a scheme and a trailing `/`.
 isolate-home registry_scheme
-snouty login --tenant ${ANTITHESIS_TENANT} --registry HTTPS://registry.example.com/MyOrg/
+snouty login --tenant ${ANTITHESIS_TENANT} --registry HTTPS://registry.example.com/my-org/
 stdout -literal '`docker login registry.example.com`'
-file ~/.config/snouty/settings.toml 'registry = "registry.example.com/MyOrg"'
+file ~/.config/snouty/settings.toml 'registry = "registry.example.com/my-org"'
 
 # --repository is an alias for --registry.
 isolate-home repository_flag
@@ -201,8 +202,8 @@ stdout 'registry `registry.example.com/acme`'
 # A saved registry with a scheme is kept without it.
 cp saved_scheme.toml no_endpoint/.config/snouty/settings.toml
 snouty login --tenant spec-tenant
-stdout 'registry `registry.example.com/MyOrg`'
-file ~/.config/snouty/settings.toml 'registry = "registry.example.com/MyOrg"'
+stdout 'registry `registry.example.com/my-org`'
+file ~/.config/snouty/settings.toml 'registry = "registry.example.com/my-org"'
 # The saved registry of another tenant is not kept.
 ! snouty login --tenant other-tenant
 stderr -literal 'run `snouty login --registry <registry>`'
@@ -210,4 +211,4 @@ file ~/.config/snouty/settings.toml 'tenant = "spec-tenant"'
 
 -- saved_scheme.toml --
 tenant = "spec-tenant"
-registry = "https://registry.example.com/MyOrg/"
+registry = "https://registry.example.com/my-org/"

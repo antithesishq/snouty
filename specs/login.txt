@@ -16,24 +16,33 @@ stderr '.*Value may not be empty or whitespace.*'
 ! snouty --profile "" login
 stderr '.*Value may not be empty or whitespace.*'
 
+# Without a TTY, login cannot ask for the tenant, and names the flag.
+isolate-home no_tenant
+! snouty login
+stderr -literal 'run `snouty login --tenant <tenant>`'
+! exists no_tenant/.config/snouty/settings.toml
+
 # Without a TTY, login signs in with the credential that other commands use,
-# saves the tenant and the tenant's registry, skips credential storage, and
+# saves the tenant and the tenant's registry, stores no credential, and
 # prints the summary as whole lines, so a script can match a line that is
-# longer than a terminal.
+# longer than a terminal. The tenant's registry needs no other sign-in.
 isolate-home summary
 mock-runs-server
 snouty login --tenant ${ANTITHESIS_TENANT}
 stdout '^Saved tenant `${ANTITHESIS_TENANT@R}` and registry `[^`/]+\.[^`]+`\.$'
 [!staging] stdout '^Saved tenant `testtenant` and registry `registry.testtenant.antithesis.com`\.$'
-stdout '^Skipped credential storage — snouty will read credentials from the environment, such as ANTITHESIS_API_KEY\.$'
+! stdout 'credential'
+[!staging] ! stdout 'docker login'
 stdout '^Run `snouty doctor` to verify your setup\.$'
 file ~/.config/snouty/settings.toml 'registry = "[^"]+"'
 [!staging] file ~/.config/snouty/settings.toml 'registry = "registry.testtenant.antithesis.com"'
 
-# --registry takes the place of the tenant's registry.
+# --registry takes the place of the tenant's registry, and login names the
+# commands that sign in to it.
 isolate-home registry_flag
 snouty login --tenant ${ANTITHESIS_TENANT} --registry registry.example.com/a-long-registry-path
 stdout 'registry `registry.example.com/a-long-registry-path`\.$'
+stdout -literal '`docker login registry.example.com`'
 file ~/.config/snouty/settings.toml 'registry = "registry.example.com/a-long-registry-path"'
 
 # --repository is an alias for --registry.
@@ -55,8 +64,8 @@ stderr -literal 'set ANTITHESIS_API_KEY, or run `snouty login` in a terminal'
 # The cases below need a registry response that staging cannot give.
 [staging] skip
 
-# A registry that takes the Docker login is saved, and login names the
-# commands that sign in to it.
+# A registry that the tenant reports, other than its own, is saved, and login
+# names the commands that sign in to it.
 isolate-home docker_registry
 mock-server 200 '{"auth":"docker","registry_url":"registry.example.com/acme"}'
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
@@ -65,12 +74,14 @@ stdout -literal '`docker login registry.example.com`'
 stdout -literal '`podman login registry.example.com`'
 file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
 
-# A registry login kind that snouty does not know gets no sign-in advice.
-isolate-home unknown_registry
-mock-server 200 '{"auth":"NEW_KIND","registry_url":"registry.example.com/acme"}'
-snouty login --tenant spec-tenant
-! stdout 'docker login'
-file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
+# A tenant that cannot be reached fails the login, which names the URL and
+# saves nothing.
+isolate-home unreachable
+env ANTITHESIS_BASE_URL=http://127.0.0.1:1
+! snouty login --tenant spec-tenant
+stderr 'could not reach http://127.0.0.1:1: .*; nothing was saved'
+stderr -literal 'check that the base_url setting is correct'
+! exists unreachable/.config/snouty/settings.toml
 
 # A credential that the tenant rejects fails the login, which saves nothing.
 isolate-home rejected
@@ -118,8 +129,9 @@ stderr 'nothing was saved'
 stderr -literal 'unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD'
 ! stderr 'set ANTITHESIS_API_KEY'
 
-# A tenant that does not serve the registry endpoint answers 404. Without a
-# terminal, login keeps the tenant's saved registry, and fails without one.
+# A tenant that does not serve the registry endpoint answers 404 after it
+# accepts the credential. Without a terminal, login keeps the tenant's saved
+# registry, and fails without one.
 isolate-home no_endpoint
 mock-server 404 '{"message":"Resource not found"}'
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}

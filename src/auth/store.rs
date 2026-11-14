@@ -163,11 +163,11 @@ impl std::fmt::Debug for PersistableCredentials {
 }
 
 impl PersistableCredentials {
-    /// The credential for a request that checks `self` before login stores
-    /// it. It never refreshes, so the check reads and writes no store. A new
-    /// OAuth access token goes out as a bearer token, the same header that a
-    /// stored OAuth credential sends.
-    pub(crate) fn for_check(&self) -> AuthenticationInfo {
+    /// `self` as a credential that authenticates without a store: it never
+    /// refreshes, so a request with it reads and writes no store. An OAuth
+    /// access token goes out as a bearer token, the same header that a stored
+    /// OAuth credential sends.
+    pub(crate) fn to_unrefreshable_authentication_info(&self) -> AuthenticationInfo {
         match self {
             Self::ApiKey { api_key }
             | Self::OAuth {
@@ -397,7 +397,7 @@ mod tests {
             antithesis_token: FAKE_ACCESS_TOKEN_A.to_owned(),
             refresh_token: Some(FAKE_REFRESH_TOKEN_A.to_owned()),
         };
-        let check = credentials.for_check();
+        let check = credentials.to_unrefreshable_authentication_info();
         assert!(matches!(check, AuthenticationInfo::ApiKey { .. }));
         assert_eq!(
             check.auth_header()?,

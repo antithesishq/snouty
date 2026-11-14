@@ -59,7 +59,7 @@ const CREDENTIALS_FILE: &str = ".config/snouty/credentials.toml";
 
 const EMPTY_REFUSED: &str = "An empty value is not valid.";
 
-const RETAINED: &str = "Retained your previously stored credentials";
+const UNCHANGED: &str = "Your stored credentials are unchanged.";
 
 /// The answered API key line when a bare Enter keeps the stored key.
 const KEPT_ANSWER: &str = "Please enter your API Key (********9Pgw) kept";
@@ -316,7 +316,7 @@ fn bare_enter_keeps_the_stored_api_key() {
         creds.contains(&format!(r#"api_key = "{stored}""#)),
         "a bare Enter must keep the stored key: {creds}"
     );
-    assert!(seen.contains(RETAINED), "{seen}");
+    assert!(seen.contains(UNCHANGED), "{seen}");
     assert!(!seen.contains("replacing"), "{seen}");
     let lines = rendered_lines(&seen);
     assert!(answered(&lines, KEPT_ANSWER), "{lines:#?}");
@@ -364,7 +364,7 @@ fn an_api_key_asks_before_it_replaces_stored_oauth_tokens() {
     send(&mut session, "\r");
     let seen = finish(session);
 
-    assert!(seen.contains(RETAINED), "{seen}");
+    assert!(seen.contains(UNCHANGED), "{seen}");
     assert_eq!(credentials(home.path()), stored);
 }
 
@@ -483,7 +483,8 @@ fn a_redirected_summary_keeps_whole_lines() {
 }
 
 /// Esc at the API key prompt skips credential storage and writes no
-/// credentials file. The key in the environment signs in.
+/// credentials file. The key in the environment signs in, and the summary
+/// says nothing about credentials.
 #[test]
 fn esc_at_the_api_key_prompt_skips_credential_storage() {
     let (home, mut session) = spawn_login(&Login {
@@ -494,7 +495,7 @@ fn esc_at_the_api_key_prompt_skips_credential_storage() {
     send(&mut session, "\x1b");
     let seen = finish(session);
 
-    assert!(seen.contains("Skipped credential storage"), "{seen}");
+    assert!(!seen.contains("credential"), "{seen}");
     assert!(
         !home.path().join(CREDENTIALS_FILE).exists(),
         "Esc must write no credentials file"
@@ -571,7 +572,8 @@ fn a_malformed_base_url_fails_before_the_api_key_prompt() {
 
 /// A tenant that accepts the connection but does not answer the OAuth
 /// configuration probe in time exists, so login continues to the API key
-/// prompt. The registry check then fails in bounded time, and saves nothing.
+/// prompt. The registry request then fails in bounded time, names the URL,
+/// and saves nothing.
 #[test]
 fn a_tenant_that_does_not_answer_gets_the_api_key_prompt_and_then_fails() {
     // The kernel accepts connections into the backlog, but nothing reads them.
@@ -588,8 +590,12 @@ fn a_tenant_that_does_not_answer_gets_the_api_key_prompt_and_then_fails() {
     send(&mut session, FAKE_API_KEY_A);
     send(&mut session, "\r");
     let seen = flat(&finish_with_failure(session));
-    let needle = "`pty-tenant` did not answer the registry check in time; nothing was saved";
-    assert!(seen.contains(needle), "missing {needle:?} in {seen}");
+    for needle in [
+        format!("timed out loading the registry configuration from {base_url}; nothing was saved"),
+        "check your network connection".to_owned(),
+    ] {
+        assert!(seen.contains(&needle), "missing {needle:?} in {seen}");
+    }
     assert!(!home.path().join(".config/snouty").exists());
 }
 

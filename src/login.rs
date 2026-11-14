@@ -64,8 +64,10 @@ trait Prompter {
     fn is_interactive(&self) -> bool;
 
     /// A free-text line, pre-filled with `default` when the user just hits enter.
-    /// The prompt asks again on a blank answer, so the result is never blank.
-    fn input(&self, prompt: &str, default: Option<&str>) -> Result<String>;
+    /// The prompt asks again on a blank answer, and on an answer that `check`
+    /// refuses, with the message that `check` gives. The result is never
+    /// blank, and `check` accepts it.
+    fn input(&self, prompt: &str, default: Option<&str>, check: InputCheck) -> Result<String>;
 
     /// A single-choice menu over `items`, initially highlighting `default`.
     /// Returns `None` when the user cancels (Esc).
@@ -87,6 +89,9 @@ trait Prompter {
     fn confirm(&self, prompt: &str) -> Result<bool>;
 }
 
+/// Refuses an answer to [`Prompter::input`] with a message, or accepts it.
+type InputCheck = fn(&str) -> Result<(), String>;
+
 /// The production [`Prompter`]: `inquire` prompts reading the real terminal.
 struct InquirePrompter;
 
@@ -95,12 +100,14 @@ impl Prompter for InquirePrompter {
         io::stdin().is_terminal()
     }
 
-    fn input(&self, prompt: &str, default: Option<&str>) -> Result<String> {
+    fn input(&self, prompt: &str, default: Option<&str>, check: InputCheck) -> Result<String> {
         // `inquire` gives the default for an empty answer before it runs the
         // validator.
-        let mut text = Text::new(prompt).with_validator(|input: &str| {
+        let mut text = Text::new(prompt).with_validator(move |input: &str| {
             Ok(if input.trim().is_empty() {
                 Validation::Invalid("An empty value is not valid.".into())
+            } else if let Err(message) = check(input.trim()) {
+                Validation::Invalid(message.into())
             } else {
                 Validation::Valid
             })
@@ -205,6 +212,7 @@ async fn do_cmd_login(
         None => prompter.input(
             "What Antithesis tenant would you like to use?",
             current_settings.tenant(),
+            |_| Ok(()),
         )?,
     };
     validate_tenant_host(&tenant_to_use)?;
@@ -261,6 +269,7 @@ async fn do_cmd_login(
                 None if interactive => Some(prompter.input(
                     "What container registry would you like to use?",
                     saved_registry,
+                    |answer| answer.parse::<Registry>().map(drop),
                 )?),
                 None => saved_registry.map(str::to_owned),
             };
@@ -1385,12 +1394,15 @@ mod tests {
             true
         }
 
-        fn input(&self, prompt: &str, default: Option<&str>) -> Result<String> {
+        fn input(&self, prompt: &str, default: Option<&str>, check: InputCheck) -> Result<String> {
             match self.next("input", prompt) {
                 Answer::Input(value)
                     if value.trim().is_empty() && !(default.is_some() && value.is_empty()) =>
                 {
                     panic!("the real prompt refuses the blank answer {value:?} at {prompt:?}")
+                }
+                Answer::Input(value) if !value.is_empty() && check(value.trim()).is_err() => {
+                    panic!("the real prompt refuses the answer {value:?} at {prompt:?}")
                 }
                 Answer::Input(value) => Ok(value),
                 _ => panic!("next scripted answer was not an input at {prompt:?}"),

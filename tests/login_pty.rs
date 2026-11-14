@@ -616,9 +616,9 @@ fn a_bad_answer_at_the_registry_prompt_asks_again() {
         &mut session,
         "What container registry would you like to use?",
     );
-    let bad = "https://typed.example.com";
+    let bad = "typed.example.com:+80";
     send(&mut session, &format!("{bad}\r"));
-    expect(&mut session, "is not a container registry");
+    expect(&mut session, "the port must be a number");
     send(&mut session, &"\x7f".repeat(bad.len()));
     send(&mut session, "typed.example.com/app\r");
     finish(session);

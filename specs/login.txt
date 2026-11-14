@@ -12,9 +12,9 @@ stderr '.*Value may not be empty or whitespace.*'
 # port and a path, and refuses anything else before any request.
 ! snouty login --registry ""
 stderr -literal 'is not a container registry'
-! snouty login --registry https://registry.example.com
-stderr -literal 'is not a container registry'
-! snouty login --registry registry.example.com/Team
+! snouty login --registry registry.example.com:+80
+stderr -literal 'the port must be a number from 1 to 65535'
+! snouty login --registry user@registry.example.com
 stderr -literal 'is not a container registry'
 
 # And for the global --profile flag given an empty value.
@@ -49,6 +49,13 @@ snouty login --tenant ${ANTITHESIS_TENANT} --registry registry.example.com/a-lon
 stdout 'registry `registry.example.com/a-long-registry-path`\.$'
 stdout -literal '`docker login registry.example.com`'
 file ~/.config/snouty/settings.toml 'registry = "registry.example.com/a-long-registry-path"'
+
+# Login saves --registry without a scheme and a trailing `/`, and keeps its
+# case.
+isolate-home registry_scheme
+snouty login --tenant ${ANTITHESIS_TENANT} --registry HTTPS://registry.example.com/MyOrg/
+stdout -literal '`docker login registry.example.com`'
+file ~/.config/snouty/settings.toml 'registry = "registry.example.com/MyOrg"'
 
 # --repository is an alias for --registry.
 isolate-home repository_flag
@@ -102,10 +109,18 @@ snouty login --tenant spec-tenant --registry registry
 stdout -literal '`docker login registry`'
 ! stdout 'docker\.io'
 
+# A registry that the tenant reports is saved without a scheme and a
+# trailing `/`.
+isolate-home reported_scheme
+mock-server 200 '{"auth":"docker","registry_url":"https://registry.example.com/acme/"}'
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
+snouty login --tenant spec-tenant
+stdout -literal '`docker login registry.example.com`'
+file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
+
 # A registry that the tenant reports must also be a registry host.
 isolate-home reported_url
-mock-server 200 '{"auth":"docker","registry_url":"https://registry.example.com"}'
-set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
+mock-server 200 '{"auth":"docker","registry_url":"user@registry.example.com"}'
 ! snouty login --tenant spec-tenant
 stderr -literal 'is not a container registry'
 stderr 'nothing was saved'
@@ -183,7 +198,16 @@ snouty login --tenant spec-tenant --registry registry.example.com/acme
 file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
 snouty login --tenant spec-tenant
 stdout 'registry `registry.example.com/acme`'
+# A saved registry with a scheme is kept without it.
+cp saved_scheme.toml no_endpoint/.config/snouty/settings.toml
+snouty login --tenant spec-tenant
+stdout 'registry `registry.example.com/MyOrg`'
+file ~/.config/snouty/settings.toml 'registry = "registry.example.com/MyOrg"'
 # The saved registry of another tenant is not kept.
 ! snouty login --tenant other-tenant
 stderr -literal 'run `snouty login --registry <registry>`'
 file ~/.config/snouty/settings.toml 'tenant = "spec-tenant"'
+
+-- saved_scheme.toml --
+tenant = "spec-tenant"
+registry = "https://registry.example.com/MyOrg/"

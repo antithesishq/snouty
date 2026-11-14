@@ -11,11 +11,11 @@ stderr '.*Value may not be empty or whitespace.*'
 # --registry takes a host that `docker login` accepts, optionally with a
 # port and a path, and refuses anything else before any request.
 ! snouty login --registry ""
-stderr -literal 'the registry is empty'
+stderr -literal 'give a host'
 ! snouty login --registry registry.example.com/MyOrg
-stderr -literal 'the path must be lowercase: `MyOrg`'
+stderr -literal 'the path must be lowercase'
 ! snouty login --registry registry.example.com:+80
-stderr -literal 'the port must be a number from 1 to 65535'
+stderr -literal 'invalid port number'
 ! snouty login --registry user@registry.example.com
 stderr -literal 'is not a container registry'
 

@@ -9,7 +9,8 @@ use crate::api::{
     normalize_base_url,
 };
 use crate::auth::{
-    AuthenticationInfo, CredentialSource, CredentialStore, SourcedCredential, keychain_entry_name,
+    AuthenticationInfo, CredentialSource, CredentialStore, OIDC_REJECTED_NEXT_STEP,
+    SourcedCredential, keychain_entry_name,
 };
 use crate::compose;
 use crate::container;
@@ -715,10 +716,7 @@ fn version_check(
 /// The one step that fixes `in_use` when the tenant of `profile` rejects it.
 fn rejected_credential_next_step(in_use: &SourcedCredential, profile: Option<&str>) -> String {
     match (in_use.value(), in_use.tag()) {
-        (AuthenticationInfo::GithubActionsOidc(_), _) => {
-            "ask Antithesis support to trust GitHub Actions OIDC tokens from this repository"
-                .to_owned()
-        }
+        (AuthenticationInfo::GithubActionsOidc(_), _) => OIDC_REJECTED_NEXT_STEP.to_owned(),
         // `snouty login` cannot help: the environment hides what it stores.
         (credential, CredentialSource::Environment { variables }) => format!(
             "set `{}` to a valid {credential}",

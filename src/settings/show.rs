@@ -29,7 +29,7 @@ fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, 
     let mut rows = vec![
         text_row("profile", settings.profile(), "default"),
         text_row("tenant", settings.tenant(), NOT_SET),
-        text_row("registry", settings.registry(), NOT_SET),
+        text_row("registry", settings.registry_as_written(), NOT_SET),
         text_row("base_url", settings.base_url().as_deref(), NOT_SET),
         text_row("https_proxy", settings.https_proxy(), NOT_SET),
         text_row(

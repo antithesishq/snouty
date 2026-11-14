@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use color_eyre::Section;
 use color_eyre::eyre::{Context, OptionExt, Result, eyre};
 use log::debug;
 use tempfile::NamedTempFile;
@@ -12,6 +13,7 @@ use toml::{Table, Value};
 use crate::cli::UpdateChannel;
 use crate::env;
 use crate::error::user_error;
+use crate::registry::Registry;
 
 mod files;
 mod show;
@@ -100,7 +102,7 @@ pub fn cache_dir() -> Option<PathBuf> {
 pub struct Settings {
     profile: Option<String>,
     tenant: Option<String>,
-    registry: Option<String>,
+    registry: Option<RegistrySetting>,
     /// The `base_url` setting. [`Settings::base_url`] falls back to the
     /// tenant's host.
     base_url: Option<String>,
@@ -109,6 +111,23 @@ pub struct Settings {
     update_channel: UpdateChannel,
     api_cache_max_file_size: u64,
     files: Vec<SettingsFile>,
+}
+
+/// The `registry` setting as written, and the [`Registry`] it parses to, or
+/// why it does not parse. A setting that does not parse fails only the
+/// commands that use it, so that `snouty doctor` can report it and
+/// `snouty login` can replace it.
+#[derive(Clone)]
+struct RegistrySetting {
+    text: String,
+    parsed: Result<Registry, String>,
+}
+
+impl RegistrySetting {
+    fn new(text: String) -> Self {
+        let parsed = text.parse();
+        Self { text, parsed }
+    }
 }
 
 impl Default for Settings {
@@ -340,9 +359,29 @@ impl Settings {
         self.tenant.as_deref()
     }
 
-    /// The resolved container registry, or `None` if unset.
-    pub fn registry(&self) -> Option<&str> {
-        self.registry.as_deref()
+    /// The resolved container registry, or why the setting is not one;
+    /// `None` if unset.
+    pub fn registry(&self) -> Option<Result<&Registry, &str>> {
+        self.registry
+            .as_ref()
+            .map(|setting| setting.parsed.as_ref().map_err(String::as_str))
+    }
+
+    /// The `registry` setting as written, or `None` if unset, for the commands
+    /// that report the setting rather than use it.
+    pub fn registry_as_written(&self) -> Option<&str> {
+        self.registry.as_ref().map(|setting| setting.text.as_str())
+    }
+
+    /// The container registry, for a command that pushes to it: an error
+    /// when the setting is unset or is not a registry.
+    pub fn require_registry(&self) -> Result<&Registry> {
+        match self.registry() {
+            Some(Ok(registry)) => Ok(registry),
+            Some(Err(err)) => Err(user_error(format!("invalid registry setting: {err}"))
+                .suggestion("run `snouty login` to set it, or set ANTITHESIS_REGISTRY")),
+            None => Err(missing_setting("registry")),
+        }
     }
 
     /// The base URL to talk to: an explicit `base_url` if set, otherwise one
@@ -488,7 +527,7 @@ impl SettingsBuilder {
         Settings {
             profile: self.profile,
             tenant: self.tenant,
-            registry: self.registry,
+            registry: self.registry.map(RegistrySetting::new),
             base_url: self.base_url,
             https_proxy: self.https_proxy,
             container_engine: self.container_engine,
@@ -695,8 +734,11 @@ pub(crate) fn is_valid_tenant_host(tenant: &str) -> bool {
 /// that cannot proceed without a value funnel the `None` through here, so the
 /// message lives in one place instead of being duplicated per accessor.
 pub fn require_setting<'a>(value: Option<&'a str>, setting: &str) -> Result<&'a str> {
-    value
-        .ok_or_else(|| eyre!("Could not resolve Antithesis {setting}. Run snouty doctor to debug."))
+    value.ok_or_else(|| missing_setting(setting))
+}
+
+fn missing_setting(setting: &str) -> color_eyre::Report {
+    eyre!("Could not resolve Antithesis {setting}. Run snouty doctor to debug.")
 }
 
 /// Parse settings-file contents into a TOML table, attributing parse errors to

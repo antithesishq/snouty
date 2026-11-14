@@ -368,7 +368,7 @@ impl Settings {
     }
 
     /// The `registry` setting as written, or `None` if unset, for the commands
-    /// that report the setting rather than use it.
+    /// that report the setting rather than push to it.
     pub fn registry_as_written(&self) -> Option<&str> {
         self.registry.as_ref().map(|setting| setting.text.as_str())
     }

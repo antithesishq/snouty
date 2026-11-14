@@ -245,7 +245,10 @@ fn registry_problem(text: &str, host_len: usize) -> Option<String> {
 /// `None` when the setting names another registry, or when the tenant or the
 /// registry is not set.
 pub fn tenant_registry(settings: &Settings) -> Option<TenantRegistry> {
-    let registry: TenantRegistry = settings.registry()?.ok()?.host().parse().ok()?;
+    // The host of the setting as written, so that a path that [`Registry`]
+    // refuses, such as an uppercase one that an older snouty saved, still
+    // names the tenant's registry for the credential helper.
+    let registry: TenantRegistry = settings.registry_as_written()?.parse().ok()?;
     registry
         .tenant
         .eq_ignore_ascii_case(settings.tenant()?)
@@ -727,7 +730,7 @@ mod tests {
             ("ACME", "registry.acme.antithesis.com/app", true),
             ("eu.acme", "registry.eu.acme.antithesis.com/app", true),
             ("acme", " https://registry.acme.antithesis.com/app/ ", true),
-            ("acme", "registry.acme.antithesis.com/a//b", false),
+            ("acme", "registry.acme.antithesis.com/MyTeam", true),
         ];
         for (tenant, registry_setting, matches) in cases {
             assert_eq!(

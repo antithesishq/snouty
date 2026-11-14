@@ -730,18 +730,6 @@ async fn complete_oauth_login(
     })
 }
 
-/// Send one OAuth request, bounded by `timeout`: the shared client has only
-/// a connect timeout.
-async fn send_oauth(
-    client: &HttpClient,
-    request: reqwest::RequestBuilder,
-    timeout: Duration,
-) -> reqwest::Result<reqwest::Response> {
-    client
-        .send(request.timeout(crate::env::scaled_wait(timeout)))
-        .await
-}
-
 /// `GET /auth/cli/config` — the redirect strategy for this tenant. The route is
 /// feature-gated: a tenant without CLI OIDC answers 403, which maps to
 /// [`CliOAuthConfig::Disabled`].
@@ -751,13 +739,10 @@ pub(crate) async fn fetch_cli_config(
     base_url: &str,
     timeout: Duration,
 ) -> Result<CliOAuthConfig> {
-    let response = send_oauth(
-        client,
-        client.get(format!("{base_url}/auth/cli/config")),
-        timeout,
-    )
-    .await
-    .wrap_err("failed to contact the tenant's OAuth configuration endpoint")?;
+    let response = client
+        .send_with_timeout(client.get(format!("{base_url}/auth/cli/config")), timeout)
+        .await
+        .wrap_err("failed to contact the tenant's OAuth configuration endpoint")?;
 
     if response.status() == StatusCode::FORBIDDEN {
         return Ok(CliOAuthConfig::Disabled);
@@ -860,7 +845,8 @@ async fn request_login_redirect(
             code_challenge_method: "S256",
             cli_state,
         });
-    let redirect: LoginRedirect = send_oauth(client, request, OAUTH_HTTP_TIMEOUT)
+    let redirect: LoginRedirect = client
+        .send_with_timeout(request, OAUTH_HTTP_TIMEOUT)
         .await
         .wrap_err("failed to initiate OAuth login")?
         .error_for_status()
@@ -895,7 +881,8 @@ async fn exchange_code_for_tokens(
         .post(format!("{base_url}/auth/cli/token"))
         .bearer_auth(credentials)
         .json(&TokenExchangeBody { flow_token });
-    send_oauth(client, request, OAUTH_HTTP_TIMEOUT)
+    client
+        .send_with_timeout(request, OAUTH_HTTP_TIMEOUT)
         .await
         .wrap_err("failed to exchange the authorization code for tokens")?
         .error_for_status()

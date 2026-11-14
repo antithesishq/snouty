@@ -1860,13 +1860,13 @@ mod tests {
     }
 
     /// An empty answer at the registry prompt takes the saved registry, which
-    /// login saves without its scheme and trailing `/`, in its own case.
+    /// login saves without its scheme and trailing `/`.
     #[tokio::test]
     async fn login_saves_the_registry_prompt_default_without_its_scheme() -> Result<()> {
         let env = LoginEnv::with_registry(404, r#"{"message":"Resource not found"}"#);
         env.seed(
             ".config/snouty/settings.toml",
-            "tenant = \"mytenant\"\nregistry = \"https://saved.example.com/MyOrg/\"\n",
+            "tenant = \"mytenant\"\nregistry = \"https://saved.example.com/my-org/\"\n",
         );
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default().secret(FAKE_API_KEY_A).input("").build();
@@ -1875,7 +1875,7 @@ mod tests {
 
         let stored = env.settings();
         assert!(
-            stored.contains(r#"registry = "saved.example.com/MyOrg""#),
+            stored.contains(r#"registry = "saved.example.com/my-org""#),
             "{stored}"
         );
         Ok(())

@@ -11,7 +11,7 @@ use axum::{
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
 use bytes::Bytes;
 use color_eyre::Section;
-use color_eyre::eyre::{Context, Result, eyre};
+use color_eyre::eyre::{Context, Report, Result, eyre};
 use http::{StatusCode, header};
 use inquire::validator::Validation;
 use inquire::{Confirm, Password, PasswordDisplayMode, Select, Text};
@@ -23,8 +23,8 @@ use tokio::sync::mpsc;
 
 use crate::{
     api::{
-        AntithesisApi, CONNECT_TIMEOUT, HttpClient, RegistryResponse, RegistryResponseAuth,
-        ResponseCache, normalize_base_url,
+        AntithesisApi, CONNECT_TIMEOUT, HttpClient, RegistryResponse, ResponseCache,
+        normalize_base_url,
     },
     auth::{
         AuthenticationInfo, CredentialStore, PersistableCredentials, in_github_actions,
@@ -33,6 +33,7 @@ use crate::{
     container::registry_host,
     env,
     error::{api_error_status, rejects_credential, user_error},
+    registry::TenantRegistry,
     render::{OutputOptions, sanitize},
     settings::{
         ANTITHESIS_PROFILE_ENV_VAR_NAME, Settings, tenant_base_url, update_settings_in_global_file,
@@ -47,10 +48,10 @@ use crate::{
 const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const _: () = assert!(OAUTH_HTTP_TIMEOUT.as_secs() > CONNECT_TIMEOUT.as_secs());
 
-/// The longest wait for the registry check. The API client has only a connect
-/// timeout, and a tenant that accepts a connection but does not answer would
-/// otherwise hold the login forever.
-const REGISTRY_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+/// The longest wait for the registry request. The API client has only a
+/// connect timeout, and a tenant that accepts a connection but does not answer
+/// would otherwise hold the login forever.
+const REGISTRY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long to wait for the browser to redirect back to the loopback server
 /// before giving up — generous enough for the user to complete an interactive
@@ -164,14 +165,14 @@ impl Prompter for InquirePrompter {
 /// With `output.verbose`, login logs its requests to stderr.
 pub async fn cmd_login(
     tenant: Option<String>,
-    registry: Option<String>,
+    registry_flag: Option<String>,
     profile: Option<&str>,
     current_settings: &Settings,
     output: OutputOptions,
 ) -> Result<()> {
     do_cmd_login(
         tenant,
-        registry,
+        registry_flag,
         profile,
         current_settings,
         output,
@@ -182,7 +183,7 @@ pub async fn cmd_login(
 
 async fn do_cmd_login(
     tenant: Option<String>,
-    registry: Option<String>,
+    registry_flag: Option<String>,
     profile: Option<&str>,
     current_settings: &Settings,
     OutputOptions { verbose, .. }: OutputOptions,
@@ -196,7 +197,10 @@ async fn do_cmd_login(
     let tenant_to_use = match tenant {
         Some(tenant) => tenant,
         None if !interactive => {
-            return Err(eyre!("Cannot prompt for value when not running in a TTY"));
+            return Err(user_error(
+                "login needs a tenant, and cannot ask for one without a terminal",
+            )
+            .suggestion("run `snouty login --tenant <tenant>`"));
         }
         None => prompter.input(
             "What Antithesis tenant would you like to use?",
@@ -216,14 +220,14 @@ async fn do_cmd_login(
         .filter(|stored| !stored.value().has_blank_api_key());
 
     let api_settings = current_settings.with_tenant(&tenant_to_use);
+    let tenant_url = TenantUrl::new(&api_settings, &tenant_to_use);
 
     let new_credentials = if interactive {
         let client = HttpClient::new(&api_settings, verbose)?;
         prompt_for_auth(
             prompter,
             &client,
-            api_settings.explicit_base_url(),
-            &tenant_to_use,
+            &tenant_url,
             stored.as_ref().map(Tagged::value),
         )
         .await?
@@ -236,7 +240,7 @@ async fn do_cmd_login(
 
     let tenant_registry = fetch_registry(
         &api_settings,
-        &tenant_to_use,
+        &tenant_url,
         new_credentials.as_ref(),
         profile_to_use.as_deref(),
         interactive,
@@ -246,31 +250,16 @@ async fn do_cmd_login(
     let saved_registry = current_settings
         .registry()
         .filter(|_| current_settings.tenant() == Some(tenant_to_use.as_str()));
-    let (registry_to_use, docker_login) = match (registry, tenant_registry) {
-        (Some(registry), _) => (Some(registry), None),
-        (None, Some(tenant_registry)) => {
-            let docker_login = match tenant_registry.auth {
-                // `docker login` takes the host, not the path after it.
-                RegistryResponseAuth::Docker => Some(
-                    registry_host(&tenant_registry.registry_url)
-                        .unwrap_or(&tenant_registry.registry_url)
-                        .to_owned(),
-                ),
-                // A login kind that this snouty does not know gets no advice.
-                RegistryResponseAuth::Antithesis | RegistryResponseAuth::Other(_) => None,
-            };
-            (Some(tenant_registry.registry_url), docker_login)
-        }
+    let registry_to_use = match (registry_flag, tenant_registry) {
+        (Some(registry), _) => Some(registry),
+        (None, Some(tenant_registry)) => Some(tenant_registry.registry_url),
         // A tenant that does not report its registry: ask, or keep the saved
         // one. A saved registry of another tenant is neither offered nor kept.
-        (None, None) if interactive => (
-            Some(prompter.input(
-                "What container registry would you like to use?",
-                saved_registry,
-            )?),
-            None,
-        ),
-        (None, None) => (saved_registry.map(str::to_owned), None),
+        (None, None) if interactive => Some(prompter.input(
+            "What container registry would you like to use?",
+            saved_registry,
+        )?),
+        (None, None) => saved_registry.map(str::to_owned),
     };
     let registry_to_use = registry_to_use
         .filter(|registry| !registry.trim().is_empty())
@@ -280,6 +269,8 @@ async fn do_cmd_login(
             ))
             .suggestion("run `snouty login --registry <registry>`")
         })?;
+
+    update_settings_in_global_file(&tenant_to_use, &registry_to_use, profile_to_use.as_deref())?;
 
     // The kind of credential login wrote, and where.
     let written = match new_credentials {
@@ -294,33 +285,78 @@ async fn do_cmd_login(
         None => None,
     };
 
-    update_settings_in_global_file(&tenant_to_use, &registry_to_use, profile_to_use.as_deref())?;
-
     print_login_summary(
         &tenant_to_use,
         &registry_to_use,
         profile_to_use.as_deref(),
         written,
         stored.as_ref(),
-        docker_login.as_deref(),
     );
 
     Ok(())
 }
 
-/// `GET /api/v1/registry` on `tenant` with `new_credentials`, or else with
-/// the credential that later commands use. The request is also the check
+/// Where login signs in: the `base_url` setting that later commands call, or
+/// else the host of the tenant.
+struct TenantUrl<'a> {
+    url: String,
+    tenant: &'a str,
+    explicit: bool,
+}
+
+impl<'a> TenantUrl<'a> {
+    fn new(settings: &Settings, tenant: &'a str) -> Self {
+        let explicit = settings.explicit_base_url();
+        Self {
+            url: normalize_base_url(
+                explicit.map_or_else(|| tenant_base_url(tenant), str::to_owned),
+            ),
+            tenant,
+            explicit: explicit.is_some(),
+        }
+    }
+
+    /// `err` as the error of a URL that login cannot reach, or `None` for any
+    /// other error. A URL that does not parse or a connect error, which
+    /// includes a connect timeout, most often means a misspelled tenant or
+    /// `base_url`.
+    fn unreachable(&self, err: &Report) -> Option<Report> {
+        let transport = err
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<reqwest::Error>())
+            .filter(|transport| transport.is_builder() || transport.is_connect())?;
+        let check = if self.explicit {
+            "check that the base_url setting is correct".to_owned()
+        } else {
+            format!("check that the tenant name `{}` is correct", self.tenant)
+        };
+        Some(
+            user_error(format!(
+                "could not reach {}: {}; nothing was saved",
+                self.url,
+                root_cause(transport)
+            ))
+            .suggestion(check),
+        )
+    }
+}
+
+/// `GET /api/v1/registry` at `tenant_url` with `new_credentials`, or else
+/// with the credential that later commands use. The request is also the check
 /// that the credential works. `None` means that the tenant does not serve the
-/// endpoint, which tenants before it answer with 404. `interactive` picks the
-/// next step that an error suggests.
+/// endpoint, which tenants before it answer with 404. The tenant
+/// authenticates a request before it routes it, so a 404 also means that it
+/// accepted the credential. `interactive` picks the next step that an error
+/// suggests.
 async fn fetch_registry(
     settings: &Settings,
-    tenant: &str,
+    tenant_url: &TenantUrl<'_>,
     new_credentials: Option<&PersistableCredentials>,
     profile: Option<&str>,
     interactive: bool,
     verbose: bool,
 ) -> Result<Option<RegistryResponse>> {
+    let tenant = tenant_url.tenant;
     // A read error of a stored credential passes through as it is.
     let ambient = match new_credentials {
         Some(_) => None,
@@ -334,7 +370,7 @@ async fn fetch_registry(
         "set ANTITHESIS_API_KEY, or run `snouty login` in a terminal"
     };
     let authentication = match (new_credentials, ambient) {
-        (Some(credentials), _) => credentials.for_check(),
+        (Some(credentials), _) => credentials.to_unrefreshable_authentication_info(),
         (None, Some(found)) if !matches!(found.value(), AuthenticationInfo::Password { .. }) => {
             found.untag()
         }
@@ -345,18 +381,19 @@ async fn fetch_registry(
             .suggestion(next_step));
         }
     };
-    let api = AntithesisApi::build(settings, authentication, verbose, ResponseCache::Default)?;
-    let registry =
-        tokio::time::timeout(env::scaled_wait(REGISTRY_CHECK_TIMEOUT), api.get_registry())
-            .await
-            .map_err(|_| {
-                user_error(format!(
-                    "`{tenant}` did not answer the registry check in time; nothing was saved"
-                ))
-                .suggestion("run `snouty login` again later")
-            })?;
+    // A cached answer would not check the credential.
+    let api = AntithesisApi::build(settings, authentication, verbose, ResponseCache::Disabled)?;
+    let registry = tokio::time::timeout(env::scaled_wait(REGISTRY_TIMEOUT), api.get_registry())
+        .await
+        .map_err(|_| {
+            user_error(format!(
+                "timed out loading the registry configuration from {}; nothing was saved",
+                tenant_url.url
+            ))
+            .suggestion("check your network connection, and the base_url and https_proxy settings")
+        })?;
     match registry {
-        Ok(registry) => Ok(Some(registry)),
+        Ok(registry) => Ok(Some(registry.untag())),
         Err(err) => match api_error_status(&err) {
             Some(404) => {
                 debug!("the tenant does not report its registry: {err:#}");
@@ -366,20 +403,19 @@ async fn fetch_registry(
                 "`{tenant}` did not accept the credential; nothing was saved"
             ))
             .suggestion(next_step)),
-            _ => Err(err),
+            _ => Err(tenant_url.unreachable(&err).unwrap_or(err)),
         },
     }
 }
 
-/// Confirm what `snouty login` persisted, where, and the obvious next step —
-/// otherwise a successful login exits silently, leaving the user unsure it took.
+/// Confirm what `snouty login` saved, and the obvious next step — otherwise a
+/// successful login exits silently, leaving the user unsure it took.
 fn print_login_summary(
     tenant: &str,
     registry: &str,
     profile: Option<&str>,
     written: Option<Tagged<&str, CredentialStore>>,
     stored: Option<&Tagged<AuthenticationInfo, CredentialStore>>,
-    docker_login: Option<&str>,
 ) {
     // Wrap each line at word boundaries on a terminal, so that no word is cut.
     let say = |line: &str| println!("{}", crate::render::wrap_stdout_if_tty(line));
@@ -400,21 +436,20 @@ fn print_login_summary(
                 replacing(stored)
             ));
         }
-        (None, Some(stored)) => {
-            say(&format!(
-                "Retained your previously stored credentials{scope} in {}.",
-                location(stored.tag())
-            ));
-        }
-        (None, None) => {
-            say(
-                "Skipped credential storage — snouty will read credentials from the environment, such as ANTITHESIS_API_KEY.",
-            );
-        }
+        (None, Some(_)) => say(&format!("Your stored credentials{scope} are unchanged.")),
+        (None, None) => {}
     }
-    if let Some(registry) = docker_login.map(sanitize) {
+    // The snouty credential signs in to the tenant's own registry. Any other
+    // registry takes its own login.
+    let own_registry = registry
+        .parse::<TenantRegistry>()
+        .is_ok_and(|own| own.tenant().eq_ignore_ascii_case(tenant));
+    if !own_registry {
+        // `docker login` takes the host, not the path after it. A registry
+        // that names no host is on Docker Hub.
+        let host = sanitize(registry_host(registry).unwrap_or("docker.io"));
         say(&format!(
-            "Run `docker login {registry}` or `podman login {registry}` to sign in to the registry."
+            "Run `docker login {host}` or `podman login {host}` to sign in to the registry."
         ));
     }
     say("Run `snouty doctor` to verify your setup.");
@@ -453,39 +488,23 @@ impl std::fmt::Display for AuthSetupType {
 }
 
 /// Returns the credential to store, or `None` when the user skips, keeps
-/// `stored`, or declines to replace it. Signs in at `explicit_base_url`, the
-/// `base_url` setting that later commands call, or else at the host of
-/// `tenant`.
+/// `stored`, or declines to replace it. Signs in at `tenant_url`.
 async fn prompt_for_auth(
     prompter: &dyn Prompter,
     client: &HttpClient,
-    explicit_base_url: Option<&str>,
-    tenant: &str,
+    tenant_url: &TenantUrl<'_>,
     stored: Option<&AuthenticationInfo>,
 ) -> Result<Option<PersistableCredentials>> {
-    let url = normalize_base_url(
-        explicit_base_url.map_or_else(|| tenant_base_url(tenant), str::to_owned),
-    );
-    let oauth_config = fetch_cli_config(client, &url).await;
+    let url = &tenant_url.url;
+    let oauth_config = fetch_cli_config(client, url).await;
 
-    // A URL that does not parse or a connect error, which includes a connect
-    // timeout, most often means a misspelled tenant or base_url. The registry
-    // check after the prompt uses the same URL, so stop before the prompt.
-    // Any other error, such as a slow answer, means the host exists: login
-    // continues without single sign-on.
+    // The registry request after the prompt uses the same URL, so stop before
+    // the prompt when it cannot be reached. Any other error, such as a slow
+    // answer, means the host exists: login continues without single sign-on.
     if let Err(err) = &oauth_config
-        && let Some(transport) = err.downcast_ref::<reqwest::Error>()
-        && (transport.is_builder() || transport.is_connect())
+        && let Some(unreachable) = tenant_url.unreachable(err)
     {
-        let check = match explicit_base_url {
-            Some(_) => "check that the base_url setting is correct".to_owned(),
-            None => format!("check that the tenant name `{tenant}` is correct"),
-        };
-        return Err(user_error(format!(
-            "could not reach {url}: {}; nothing was saved",
-            root_cause(transport)
-        ))
-        .suggestion(check));
+        return Err(unreachable);
     }
 
     let oauth_offered = oauth_config
@@ -537,7 +556,7 @@ async fn prompt_for_auth(
         {
             Ok(None)
         }
-        Some(AuthSetupType::OAuth) => complete_oauth_login(client, &url, &oauth_config?)
+        Some(AuthSetupType::OAuth) => complete_oauth_login(client, url, &oauth_config?)
             .await
             .map(Some),
     }
@@ -1403,6 +1422,7 @@ mod tests {
     /// and an in-process mock backend for the OAuth-config probe and the registry.
     struct LoginEnv {
         home: tempfile::TempDir,
+        base_url: String,
         // Held for the test's lifetime so no other test mutates env concurrently.
         _guard: std::sync::MutexGuard<'static, ()>,
     }
@@ -1441,6 +1461,7 @@ mod tests {
             unsafe {
                 std::env::set_var("HOME", home.path());
                 std::env::set_var("ANTITHESIS_BASE_URL", &base_url);
+                std::env::set_var("SNOUTY_API_CACHE_DIR", home.path().join("api-cache"));
                 // A stray value for any of these in the developer's shell would leak
                 // into settings resolution; clear them for a clean baseline. The
                 // credential variables come from `auth::CREDENTIAL_ENV_VARS` so this
@@ -1464,8 +1485,13 @@ mod tests {
 
             LoginEnv {
                 home,
+                base_url,
                 _guard: guard,
             }
+        }
+
+        fn api_cache_dir(&self) -> PathBuf {
+            self.home.path().join("api-cache")
         }
 
         fn config_dir(&self) -> PathBuf {
@@ -1621,6 +1647,62 @@ mod tests {
             "{err:#}"
         );
         assert!(env.settings().is_empty(), "{}", env.settings());
+        assert!(env.credentials().is_empty(), "{}", env.credentials());
+        Ok(())
+    }
+
+    /// Login never takes the registry from the response cache, which would
+    /// not check the credential.
+    #[tokio::test]
+    async fn login_does_not_read_the_registry_from_the_response_cache() -> Result<()> {
+        use crate::api_cache::{ApiCache, CachePolicy, DEFAULT_MAX_FILE_SIZE};
+
+        let env = LoginEnv::with_registry(401, r#"{"message":"Invalid or expired bearer token."}"#);
+        let cache = ApiCache::new(
+            Some(env.api_cache_dir()),
+            DEFAULT_MAX_FILE_SIZE,
+            normalize_base_url(env.base_url.clone()),
+            false,
+        );
+        let cached: RegistryResponse = serde_json::from_str(REGISTRY_ANTITHESIS)?;
+        let lifetime = CachePolicy::Cacheable(Duration::from_secs(3600));
+        cache
+            .store_value(&cache.key("get_registry", &()), &cached.with_tag(lifetime))
+            .await;
+        let settings = env.resolve_settings(None)?;
+        let prompter = Script::default().secret(FAKE_API_KEY_A).build();
+
+        let err = login_with_flags(None, &settings, &prompter)
+            .await
+            .expect_err("a rejected credential must fail the login");
+
+        assert!(
+            format!("{err:#}").contains("did not accept the credential"),
+            "{err:#}"
+        );
+        Ok(())
+    }
+
+    /// Login writes the settings before the credential, so a settings file
+    /// that login cannot update leaves the stored credentials alone.
+    #[tokio::test]
+    async fn login_stores_no_credential_when_it_cannot_write_the_settings() -> Result<()> {
+        let env = LoginEnv::new();
+        let settings = env.resolve_settings(None)?;
+        env.seed(
+            ".config/snouty/settings.toml",
+            "profile = \"not a table\"\n",
+        );
+        let prompter = Script::default()
+            .input("ptenant")
+            .secret(FAKE_API_KEY_A)
+            .build();
+
+        let err = login(Some("prod"), &settings, &prompter)
+            .await
+            .expect_err("a malformed settings file must fail the login");
+
+        assert!(format!("{err:#}").contains("malformed"), "{err:#}");
         assert!(env.credentials().is_empty(), "{}", env.credentials());
         Ok(())
     }

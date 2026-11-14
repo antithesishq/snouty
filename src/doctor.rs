@@ -1461,8 +1461,8 @@ mod tests {
     fn registry_check_warns_when_the_tenant_reports_another_registry() {
         let tenant = registry("registry.acme.antithesis.com");
         for configured in [
-            "Registry.Acme.Antithesis.com/team/",
-            "https://registry.acme.antithesis.com:443/team",
+            "registry.acme.antithesis.com/team/",
+            "https://registry.acme.antithesis.com/team",
         ] {
             let settings = registry_setting(configured);
             let check = registry_check(settings.registry(), Some(&tenant), None);

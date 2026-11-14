@@ -599,19 +599,24 @@ fn write_global_toml(filename: &str, value: &impl serde::Serialize) -> Result<Pa
 
 /// Replace the file at `path` with `contents` through a temporary file in
 /// the same directory, so that a reader or a crash never leaves a partial
-/// settings or credentials file.
+/// settings or credentials file. An error means that the file at `path` was
+/// not replaced.
 pub(crate) fn write_atomically(path: &Path, contents: &[u8]) -> Result<()> {
     let dir = path
         .parent()
         .ok_or_else(|| eyre!("{} names no directory", path.display()))?;
     let mut temp = NamedTempFile::new_in(dir)?;
     temp.write_all(contents)?;
-    // The contents reach the disk before the rename, and the rename before
-    // the return, so that a power loss leaves the old file or the new one.
+    // The contents reach the disk before the rename, so that a power loss
+    // leaves the old file or the new one.
     temp.as_file().sync_all()?;
     temp.persist(path)?;
+    // The file is replaced, so a failure to sync the rename is not an error:
+    // some file systems refuse to sync a directory.
     #[cfg(unix)]
-    fs::File::open(dir)?.sync_all()?;
+    if let Err(err) = fs::File::open(dir).and_then(|dir| dir.sync_all()) {
+        debug!("could not sync {}: {err}", dir.display());
+    }
     Ok(())
 }
 

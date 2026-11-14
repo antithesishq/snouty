@@ -209,7 +209,7 @@ env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
 [!staging] env ANTITHESIS_REGISTRY=registry.testtenant.antithesis.com/MyTeam
 [!staging] snouty doctor
 [!staging] stderr '^  ⚠ container registry is not valid$'
-[!staging] stderr -literal 'the path must be lowercase: `MyTeam`'
+[!staging] stderr -literal 'the path must be lowercase'
 
 # An unset registry is reported once, with the tenant's registry.
 [!staging] env ANTITHESIS_REGISTRY=

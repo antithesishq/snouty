@@ -100,6 +100,7 @@ toml = "1.1.2"
 http = "1.4.2"
 which = "8"
 keyring-core = "1.0.0"
+url = "2.5.8"
 textwrap = { version = "0.16.2", default-features = false, features = ["unicode-width"] }
 indoc = "2.0.7"
 sha2 = "0.10"

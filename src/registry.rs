@@ -37,7 +37,7 @@ impl Registry {
     }
 
     /// The tenant whose registry this is, when the host is
-    /// `registry.<tenant>.antithesis.com` with no port other than 443.
+    /// `registry.<tenant>.antithesis.com` with no port.
     pub fn antithesis_tenant(&self) -> Option<&str> {
         if self.0.port().is_some() {
             return None;
@@ -63,10 +63,12 @@ impl fmt::Display for Registry {
     }
 }
 
-/// Parses a registry as `docker login` does: the whitespace around it and
-/// any scheme are removed. The host is lowercase, because a container engine
-/// keys credentials by the exact host. The path must be lowercase, because a
-/// container engine refuses an image reference with an uppercase path.
+/// Parses a registry as `docker login` does: the whitespace around it, one
+/// scheme and any trailing `/` are removed. The rest must already be in its
+/// canonical form, because a container engine uses the host as written: it
+/// keys credentials by the exact host, and reads `0x7f.1` as a host name, not
+/// as `127.0.0.1`. The path takes only the characters of an image reference,
+/// in lowercase.
 impl FromStr for Registry {
     type Err = String;
 
@@ -79,7 +81,13 @@ impl FromStr for Registry {
             )
         };
         let rest = given.split_once("://").map_or(given, |(_, rest)| rest);
-        if rest.is_empty() || rest.starts_with('/') || rest.contains(char::is_whitespace) {
+        if rest.contains("://") {
+            return Err(invalid("give at most one scheme"));
+        }
+        if rest.is_empty()
+            || rest.starts_with('/')
+            || rest.contains(|c: char| c.is_whitespace() || c == '\\')
+        {
             return Err(invalid(
                 "give a host, optionally with a port and a path, such as `registry.example.com/team`",
             ));
@@ -93,13 +101,31 @@ impl FromStr for Registry {
         {
             return Err(invalid("give only a host, a port and a path"));
         }
-        if url.path().contains(|c: char| c.is_ascii_uppercase()) {
+        let rest = rest.trim_end_matches('/');
+        let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+        if authority != url.authority() {
+            return Err(invalid(&format!(
+                "write the host as `{}`",
+                sanitize(url.authority())
+            )));
+        }
+        if path.contains(|c: char| c.is_ascii_uppercase()) {
             return Err(invalid("the path must be lowercase"));
         }
-        // Without a trailing `/`, so that a registry equals the one that its
-        // display parses to.
-        let path = url.path().trim_end_matches('/').to_owned();
-        url.set_path(&path);
+        if let Some(c) = path
+            .chars()
+            .find(|c| !matches!(c, 'a'..='z' | '0'..='9' | '.' | '_' | '-' | '/'))
+        {
+            return Err(invalid(&format!(
+                "the path cannot contain `{}`; use only `a-z`, `0-9`, `.`, `_`, `-` and `/`",
+                sanitize(&c.to_string())
+            )));
+        }
+        // A `.` or `..` segment, which url removes.
+        if path != url.path().trim_end_matches('/') {
+            return Err(invalid("the path cannot contain a `.` or `..` segment"));
+        }
+        url.set_path(path);
         Ok(Self(url))
     }
 }
@@ -485,27 +511,24 @@ mod tests {
         value.parse().unwrap()
     }
 
-    /// A tenant as a host name spells it: one or more DNS labels.
+    /// A tenant as a lowercase host name spells it: one or more DNS labels.
     fn tenants() -> impl hegel::PrintableGenerator<String> {
         generators::from_regex(
-            r"[A-Za-z0-9]{1,5}(-[A-Za-z0-9]{1,4})?(\.[A-Za-z0-9]{1,5}(-[A-Za-z0-9]{1,4})?){0,2}",
+            r"[a-z0-9]{1,5}(-[a-z0-9]{1,4})?(\.[a-z0-9]{1,5}(-[a-z0-9]{1,4})?){0,2}",
         )
         .fullmatch(true)
     }
 
-    /// A scheme, a path, the port 443 and the case of the host do not
-    /// change the tenant.
+    /// A scheme and a path do not change the tenant.
     #[hegel::test]
     fn a_tenant_registry_names_its_tenant_in_any_spelling(tc: hegel::TestCase) {
         let tenant = tc.draw(tenants());
         let scheme = tc.draw(generators::sampled_from(vec!["", "https://", "http://"]));
-        let port = tc.draw(generators::sampled_from(vec!["", ":443"]));
-        let path = tc.draw(generators::from_regex(r"(/[a-z0-9/._-]*)?").fullmatch(true));
-        let url = format!("{scheme}registry.{tenant}.antithesis.com{port}{path}");
-        let lowercase = tenant.to_ascii_lowercase();
+        let path = tc.draw(generators::from_regex(r"(/[a-z0-9_-]+)*/?").fullmatch(true));
+        let url = format!("{scheme}registry.{tenant}.antithesis.com{path}");
         assert_eq!(
             registry(&url).antithesis_tenant(),
-            Some(lowercase.as_str()),
+            Some(tenant.as_str()),
             "{url}"
         );
     }
@@ -515,10 +538,7 @@ mod tests {
         for (url, tenant) in [
             ("registry.acme.antithesis.com", "acme"),
             ("registry.acme.antithesis.com/team/app", "acme"),
-            ("https://REGISTRY.Acme.antithesis.com/v2/", "acme"),
-            ("https://registry.acme.antithesis.com:443/", "acme"),
-            ("registry.acme.antithesis.com:443", "acme"),
-            ("http://registry.acme.antithesis.com:443", "acme"),
+            ("https://registry.acme.antithesis.com/v2/", "acme"),
             ("registry.eu.acme.antithesis.com", "eu.acme"),
             (" registry.acme.antithesis.com\n", "acme"),
         ] {
@@ -551,11 +571,13 @@ mod tests {
         let cases = [
             ("acme", "registry.acme.antithesis.com/app", true),
             ("acme", "registry.acme.antithesis.com", true),
-            ("acme", "REGISTRY.acme.antithesis.com/app", true),
+            // Not a registry: the host must be lowercase.
+            ("acme", "REGISTRY.acme.antithesis.com/app", false),
             ("acme", "registry.other.antithesis.com/app", false),
             ("acme", "us-docker.pkg.dev/acme/repo", false),
             ("acme", "registry.acme.antithesis.com:5000/app", false),
-            ("acme", "registry.acme.antithesis.com:443/app", true),
+            // Not a registry: the port 443 must be left out.
+            ("acme", "registry.acme.antithesis.com:443/app", false),
             ("ACME", "registry.acme.antithesis.com/app", true),
             ("eu.acme", "registry.eu.acme.antithesis.com/app", true),
             ("acme", " https://registry.acme.antithesis.com/app/ ", true),
@@ -704,12 +726,7 @@ mod tests {
             ("foo", "foo", "foo"),
             ("[::1]:5000/a", "[::1]:5000/a", "[::1]:5000"),
             (
-                "https://Registry.Example.com/team",
-                "registry.example.com/team",
-                "registry.example.com",
-            ),
-            (
-                "oci://reg.example.com:443/x",
+                "oci://reg.example.com/x",
                 "reg.example.com/x",
                 "reg.example.com",
             ),
@@ -746,9 +763,53 @@ mod tests {
             ),
             ("registry.example.com:99999", "invalid port"),
             ("registry.example.com:http", "invalid port"),
+            ("https://https://x.example.com", "give at most one scheme"),
+            (
+                "reg.example.com/.",
+                "the path cannot contain a `.` or `..` segment",
+            ),
+            (
+                "reg.example.com/a/../b",
+                "the path cannot contain a `.` or `..` segment",
+            ),
         ] {
             let err = given.parse::<Registry>().unwrap_err();
             assert!(err.contains(problem), "{given:?}: {err}");
+        }
+    }
+
+    /// The exact message, which names the spelling to use.
+    #[test]
+    fn registry_refuses_a_value_that_url_rewrites() {
+        for (given, problem) in [
+            (
+                "https://Registry.Example.com/team",
+                "write the host as `registry.example.com`",
+            ),
+            (
+                "oci://reg.example.com:443/x",
+                "write the host as `reg.example.com`",
+            ),
+            ("0x7f.1:5000", "write the host as `127.0.0.1:5000`"),
+            (
+                "bücher.example/app",
+                "write the host as `xn--bcher-kva.example`",
+            ),
+            ("reg.example.com:/x", "write the host as `reg.example.com`"),
+            (
+                "reg.example.com/équipe",
+                "the path cannot contain `é`; use only `a-z`, `0-9`, `.`, `_`, `-` and `/`",
+            ),
+            (
+                "reg.example.com/a<b",
+                "the path cannot contain `<`; use only `a-z`, `0-9`, `.`, `_`, `-` and `/`",
+            ),
+        ] {
+            let err = given.parse::<Registry>().unwrap_err();
+            assert_eq!(
+                err,
+                format!("`{given}` is not a container registry: {problem}"),
+            );
         }
     }
 

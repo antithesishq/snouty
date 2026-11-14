@@ -18,6 +18,8 @@ stderr -literal 'the path must be lowercase'
 stderr -literal 'invalid port number'
 ! snouty login --registry user@registry.example.com
 stderr -literal 'is not a container registry'
+! snouty login --registry Registry.Example.com/team
+stderr -literal 'write the host as `registry.example.com`'
 
 # And for the global --profile flag given an empty value.
 ! snouty --profile "" login

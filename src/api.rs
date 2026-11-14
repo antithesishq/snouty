@@ -106,6 +106,10 @@ pub const MIN_CANCEL_RELEASE: (u64, u64) = (63, 0);
 /// `launch --setup-timeout` and `debug --duration`. `snouty doctor` checks it.
 pub const MIN_LAUNCH_PARAMS_RELEASE: (u64, u64) = (66, 0);
 
+/// The first tenant release that reports its registry at `GET /api/v1/registry`.
+/// `snouty doctor` asks only a tenant on this release or later.
+pub const MIN_REGISTRY_RELEASE: (u64, u64) = (67, 0);
+
 /// Starts each debug log line that times or retries an API request. The spec harness
 /// picks these lines out of the stderr of a slow command.
 pub const REQUEST_LOG_PREFIX: &str = "http: ";

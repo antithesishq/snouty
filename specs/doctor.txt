@@ -185,6 +185,56 @@ stderr 'NOTE: rerun the job'
 env ACTIONS_ID_TOKEN_REQUEST_URL=
 env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
 
+# --- the tenant's registry ---
+# On release 67.0 or later, doctor compares the registry setting with the
+# registry that the tenant reports. The mock reports
+# registry.testtenant.antithesis.com. A path under it is a match.
+[!staging] mock-runs-server
+[!staging] env ANTITHESIS_REGISTRY=registry.testtenant.antithesis.com/team
+[!staging] snouty doctor
+[!staging] stderr '^  ✓ container registry is set$'
+
+# Another registry is a warning, which does not fail doctor.
+[!staging] env ANTITHESIS_REGISTRY=proxy.example.com/testtenant
+[!staging] snouty doctor
+[!staging] stderr '^  ⚠ container registry is not the tenant.s registry$'
+[!staging] stderr 'registry.testtenant.antithesis.com'
+[!staging] stderr -literal "NOTE: run `snouty login` to use the tenant's registry"
+[!staging] snouty doctor --json
+[!staging] stdout '"ok": true'
+[!staging] stdout '"id": "registry",\s*"status": "warn"'
+
+# A setting that `snouty launch` refuses is not valid, even under the
+# tenant's registry.
+[!staging] env ANTITHESIS_REGISTRY=registry.testtenant.antithesis.com/MyTeam
+[!staging] snouty doctor
+[!staging] stderr '^  ⚠ container registry is not valid$'
+[!staging] stderr -literal 'the path must be lowercase: `MyTeam`'
+
+# An unset registry is reported once, with the tenant's registry.
+[!staging] env ANTITHESIS_REGISTRY=
+[!staging] snouty doctor
+[!staging] stderr -count=1 'container registry'
+[!staging] stderr 'set it to the tenant.s registry, `registry\.testtenant\.antithesis\.com`'
+
+# A registry that the tenant reports with a scheme and a trailing `/` is the
+# same registry.
+[!staging] mock-server 200 '{"latest_api_version":"v1","release_version":"67.0","auth":"antithesis","registry_url":"https://registry.testtenant.antithesis.com/"}'
+[!staging] set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
+[!staging] env ANTITHESIS_REGISTRY=registry.testtenant.antithesis.com/team
+[!staging] snouty doctor
+[!staging] stderr '^  ✓ container registry is set$'
+
+# An older tenant does not report its registry, so doctor does not ask.
+[!staging] mock-server 200 '{"latest_api_version":"v1","release_version":"66.9"}'
+[!staging] set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
+[!staging] env ANTITHESIS_REGISTRY=proxy.example.com/testtenant
+[!staging] snouty --verbose doctor
+[!staging] stderr 'GET .*/api/version'
+[!staging] ! stderr '/api/v1/registry'
+[!staging] stderr '^  ✓ container registry is set$'
+env ANTITHESIS_REGISTRY=
+
 # --- CLI OAuth probe ---
 # The probe needs no credentials. No API key is set, so doctor skips the API
 # check. mock-server answers every request with the same response.

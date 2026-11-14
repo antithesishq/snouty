@@ -281,7 +281,6 @@ async fn do_cmd_login(
                     ))
                     .suggestion(suggestion)
                 })?
-                .trim()
                 .parse::<Registry>()
                 .map_err(|err| {
                     user_error(format!("{err}; nothing was saved")).suggestion(suggestion)
@@ -1383,18 +1382,24 @@ mod tests {
         }
 
         fn input(&self, prompt: &str, default: Option<&str>, check: InputCheck) -> Result<String> {
-            match self.next("input", prompt) {
-                Answer::Input(value)
-                    if value.trim().is_empty() && !(default.is_some() && value.is_empty()) =>
-                {
-                    panic!("the real prompt refuses the blank answer {value:?} at {prompt:?}")
-                }
-                Answer::Input(value) if !value.is_empty() && check(value.trim()).is_err() => {
-                    panic!("the real prompt refuses the answer {value:?} at {prompt:?}")
-                }
-                Answer::Input(value) => Ok(value),
-                _ => panic!("next scripted answer was not an input at {prompt:?}"),
-            }
+            let Answer::Input(value) = self.next("input", prompt) else {
+                panic!("next scripted answer was not an input at {prompt:?}");
+            };
+            // Like `inquire`, an empty answer takes the default, and the
+            // checks see the answer that results.
+            let value = match default {
+                Some(default) if value.is_empty() => default.to_owned(),
+                _ => value,
+            };
+            assert!(
+                !value.trim().is_empty(),
+                "the real prompt refuses the blank answer {value:?} at {prompt:?}"
+            );
+            assert!(
+                check(value.trim()).is_ok(),
+                "the real prompt refuses the answer {value:?} at {prompt:?}"
+            );
+            Ok(value)
         }
 
         fn select(
@@ -1842,6 +1847,49 @@ mod tests {
             "{stored}"
         );
         assert!(env.credentials().contains(&api_key_line(FAKE_API_KEY_A)));
+        Ok(())
+    }
+
+    /// An empty answer at the registry prompt takes the saved registry, which
+    /// login saves without its scheme and trailing `/`, in its own case.
+    #[tokio::test]
+    async fn login_saves_the_registry_prompt_default_without_its_scheme() -> Result<()> {
+        let env = LoginEnv::with_registry(404, r#"{"message":"Resource not found"}"#);
+        env.seed(
+            ".config/snouty/settings.toml",
+            "tenant = \"mytenant\"\nregistry = \"https://saved.example.com/MyOrg/\"\n",
+        );
+        let settings = env.resolve_settings(None)?;
+        let prompter = Script::default().secret(FAKE_API_KEY_A).input("").build();
+
+        login_with_flags(None, &settings, &prompter).await?;
+
+        let stored = env.settings();
+        assert!(
+            stored.contains(r#"registry = "saved.example.com/MyOrg""#),
+            "{stored}"
+        );
+        Ok(())
+    }
+
+    /// A registry that the tenant reports with a scheme and a trailing `/` is
+    /// saved without them.
+    #[tokio::test]
+    async fn login_saves_the_tenant_registry_without_its_scheme() -> Result<()> {
+        let env = LoginEnv::with_registry(
+            200,
+            r#"{"auth":"docker","registry_url":"https://registry.example.com/acme/"}"#,
+        );
+        let settings = env.resolve_settings(None)?;
+        let prompter = Script::default().secret(FAKE_API_KEY_A).build();
+
+        login_with_flags(None, &settings, &prompter).await?;
+
+        let stored = env.settings();
+        assert!(
+            stored.contains(r#"registry = "registry.example.com/acme""#),
+            "{stored}"
+        );
         Ok(())
     }
 

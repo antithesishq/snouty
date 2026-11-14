@@ -606,7 +606,12 @@ pub(crate) fn write_atomically(path: &Path, contents: &[u8]) -> Result<()> {
         .ok_or_else(|| eyre!("{} names no directory", path.display()))?;
     let mut temp = NamedTempFile::new_in(dir)?;
     temp.write_all(contents)?;
+    // The contents reach the disk before the rename, and the rename before
+    // the return, so that a power loss leaves the old file or the new one.
+    temp.as_file().sync_all()?;
     temp.persist(path)?;
+    #[cfg(unix)]
+    fs::File::open(dir)?.sync_all()?;
     Ok(())
 }
 

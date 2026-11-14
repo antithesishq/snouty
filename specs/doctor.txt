@@ -210,6 +210,14 @@ env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
 [!staging] stderr -count=1 'container registry'
 [!staging] stderr 'set it to the tenant.s registry, `registry\.testtenant\.antithesis\.com`'
 
+# A registry that the tenant reports with a scheme and a trailing `/` is the
+# same registry.
+[!staging] mock-server 200 '{"latest_api_version":"v1","release_version":"67.0","auth":"antithesis","registry_url":"https://registry.testtenant.antithesis.com/"}'
+[!staging] set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
+[!staging] env ANTITHESIS_REGISTRY=registry.testtenant.antithesis.com/team
+[!staging] snouty doctor
+[!staging] stderr '^  ✓ container registry is set$'
+
 # An older tenant does not report its registry, so doctor does not ask.
 [!staging] mock-server 200 '{"latest_api_version":"v1","release_version":"66.9"}'
 [!staging] set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}

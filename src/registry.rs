@@ -66,7 +66,7 @@ impl std::error::Error for TenantRegistryError {}
 
 /// The registry `host` in one form: lowercase, without the port 443, which a
 /// registry client uses when it names no port.
-pub(crate) fn normalize_host(host: &str) -> String {
+fn normalize_host(host: &str) -> String {
     host.strip_suffix(":443")
         .unwrap_or(host)
         .to_ascii_lowercase()
@@ -131,6 +131,18 @@ impl Registry {
     /// The host and port, which `docker login` takes.
     pub fn host(&self) -> &str {
         &self.text[..self.host_len]
+    }
+
+    /// Whether `self` is `other` or a path under it. The hosts compare as
+    /// the credential helper compares them: without case, and with the port
+    /// 443 the same as no port.
+    pub fn is_within(&self, other: &Registry) -> bool {
+        let path = &self.text[self.host_len..];
+        let other_path = &other.text[other.host_len..];
+        normalize_host(self.host()) == normalize_host(other.host())
+            && path
+                .strip_prefix(other_path)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
     }
 }
 
@@ -919,6 +931,37 @@ mod tests {
             let err = registry.parse::<Registry>().unwrap_err();
             assert!(err.contains(problem), "{registry:?}: {err}");
         }
+    }
+
+    #[test]
+    fn a_registry_is_within_itself_or_a_registry_above_its_path() {
+        let within = |registry: &str, other: &str| {
+            registry
+                .parse::<Registry>()
+                .unwrap()
+                .is_within(&other.parse().unwrap())
+        };
+        let tenant = "registry.acme.antithesis.com";
+        assert!(within(tenant, tenant));
+        assert!(within("registry.acme.antithesis.com/", tenant));
+        assert!(within("https://registry.acme.antithesis.com", tenant));
+        assert!(within(tenant, "https://registry.acme.antithesis.com/"));
+        assert!(within("REGISTRY.acme.antithesis.com", tenant));
+        assert!(within("registry.acme.antithesis.com:443/team", tenant));
+        assert!(!within("registry.acme.antithesis.com:5000/team", tenant));
+        assert!(within("registry.acme.antithesis.com/team/app", tenant));
+        assert!(!within("registry.other.antithesis.com", tenant));
+        assert!(!within(
+            "proxy.example.com/registry.acme.antithesis.com",
+            tenant
+        ));
+        assert!(!within("registry.acme.antithesis.com.evil", tenant));
+
+        let tenant = "registry.example.com/acme";
+        assert!(within("registry.example.com/acme/app", tenant));
+        assert!(!within("registry.example.com/acmes", tenant));
+        assert!(!within("registry.example.com", tenant));
+        assert!(!within("registry.example.com/other", tenant));
     }
 
     /// Any text that parses prints as a registry that parses to itself.

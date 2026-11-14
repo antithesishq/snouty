@@ -16,7 +16,7 @@ use crate::compose;
 use crate::container;
 use crate::error::rejects_credential;
 use crate::login::{CliOAuthConfig, REGISTRY_TIMEOUT, fetch_cli_config};
-use crate::registry::normalize_host;
+use crate::registry::Registry;
 use crate::render::OutputOptions;
 use crate::settings::Settings;
 
@@ -253,33 +253,15 @@ fn tenant_check(tenant: Option<&str>) -> Check {
 /// (`snouty launch --config`), so a missing one is a warning, not a failure —
 /// read-only use (`snouty runs`, `snouty debug`) doesn't need it. `reported`
 /// is the registry that the tenant reports, when doctor could read it. A
-/// registry that differs from it is a warning too: the user can have chosen
-/// another registry on purpose, such as a proxy.
-fn registry_check(registry: Option<&str>, reported: Option<&str>, profile: Option<&str>) -> Check {
-    // `snouty login` reads a blank answer as no registry.
-    let reported = reported.filter(|reported| !reported.trim().is_empty());
-    // Both values reach the terminal in note text, and the tenant's comes from
-    // the server.
-    let reported = reported.map(crate::render::sanitize);
-    let configured = registry.map(crate::render::sanitize);
-    match (registry, reported.as_deref()) {
-        (Some(registry), Some(reported)) if !registry_matches(registry, reported) => Check::warn(
-            CheckId::Registry,
-            "container registry is not the tenant's registry",
-        )
-        .note(
-            Level::Warning,
-            format!(
-                "snouty pushes images to `{}`, but the tenant's registry is `{reported}`",
-                configured.as_deref().unwrap_or_default()
-            ),
-        )
-        .note(
-            Level::Note,
-            format!("run {} to use the tenant's registry", login_command(profile)),
-        ),
-        (Some(_), _) => Check::ok(CheckId::Registry, "container registry is set"),
-        (None, reported) => Check::warn(CheckId::Registry, "container registry is not set")
+/// registry that is not it or a path under it is a warning too: the user can
+/// have chosen another registry on purpose, such as a proxy.
+fn registry_check(
+    registry: Option<&str>,
+    reported: Option<&Registry>,
+    profile: Option<&str>,
+) -> Check {
+    let Some(registry) = registry else {
+        return Check::warn(CheckId::Registry, "container registry is not set")
             .note(Level::Warning, "the registry is needed for `snouty launch`")
             .note(
                 Level::Note,
@@ -293,28 +275,42 @@ fn registry_check(registry: Option<&str>, reported: Option<&str>, profile: Optio
                         login_command(profile)
                     ),
                 },
-            ),
-    }
-}
-
-/// Whether the `configured` registry is the `reported` one, or a path under
-/// it, where snouty still pushes to the tenant's registry. The host is
-/// compared as the credential helper compares it, and a trailing `/` does not
-/// count.
-fn registry_matches(configured: &str, reported: &str) -> bool {
-    let split = |registry: &str| {
-        let registry = registry.trim().trim_end_matches('/');
-        let (host, path) = registry.split_once('/').unwrap_or((registry, ""));
-        (normalize_host(host), path.to_owned())
+            );
     };
-    let (configured_host, configured_path) = split(configured);
-    let (reported_host, reported_path) = split(reported);
-    configured_host == reported_host
-        && (reported_path.is_empty()
-            || configured_path == reported_path
-            || configured_path
-                .strip_prefix(&reported_path)
-                .is_some_and(|rest| rest.starts_with('/')))
+    let configured = match registry.parse::<Registry>() {
+        Ok(configured) => configured,
+        Err(err) => {
+            return Check::warn(CheckId::Registry, "container registry is not valid")
+                .note(Level::Warning, err)
+                .note(
+                    Level::Note,
+                    format!(
+                        "run {} to set it, or set ANTITHESIS_REGISTRY",
+                        login_command(profile)
+                    ),
+                );
+        }
+    };
+    match reported {
+        Some(reported) if !configured.is_within(reported) => Check::warn(
+            CheckId::Registry,
+            "container registry is not the tenant's registry",
+        )
+        .note(
+            Level::Warning,
+            format!(
+                "snouty pushes images to `{configured}`, but the tenant's registry is `{reported}`"
+            ),
+        )
+        .note(
+            Level::Note,
+            format!(
+                "run {} to use the tenant's registry",
+                login_command(profile)
+            ),
+        ),
+        _ => Check::ok(CheckId::Registry, "container registry is set"),
+    }
 }
 
 /// `selected` is the profile that the user selects, if any.
@@ -918,15 +914,22 @@ pub async fn cmd_doctor(
                         .await;
                         match reported {
                             Ok(Ok(reported)) => {
-                                let check = checks
-                                    .iter_mut()
-                                    .find(|c| c.id == CheckId::Registry)
-                                    .expect("collect_checks reports the registry");
-                                *check = registry_check(
-                                    settings.registry(),
-                                    Some(&reported.untag().registry_url),
-                                    settings.profile(),
-                                );
+                                // As in `snouty login`, a blank or invalid
+                                // answer counts as no registry.
+                                match reported.untag().registry_url.parse::<Registry>() {
+                                    Ok(reported) => {
+                                        let check = checks
+                                            .iter_mut()
+                                            .find(|c| c.id == CheckId::Registry)
+                                            .expect("collect_checks reports the registry");
+                                        *check = registry_check(
+                                            settings.registry(),
+                                            Some(&reported),
+                                            settings.profile(),
+                                        );
+                                    }
+                                    Err(err) => debug!("the tenant's registry is invalid: {err}"),
+                                }
                             }
                             // The registry check already reports what doctor can
                             // tell without the tenant's answer.
@@ -1438,6 +1441,10 @@ mod tests {
         );
     }
 
+    fn registry(text: &str) -> Registry {
+        text.parse().unwrap()
+    }
+
     #[test]
     fn registry_check_is_ok_when_resolved() {
         let check = registry_check(Some("registry.acme.antithesis.com/team"), None, None);
@@ -1446,15 +1453,23 @@ mod tests {
 
     #[test]
     fn registry_check_warns_when_the_tenant_reports_another_registry() {
-        let tenant = "registry.acme.antithesis.com";
+        let tenant = registry("registry.acme.antithesis.com");
+        for configured in [
+            "Registry.Acme.Antithesis.com/team/",
+            "https://registry.acme.antithesis.com:443/team",
+        ] {
+            let check = registry_check(Some(configured), Some(&tenant), None);
+            assert_eq!(check.status, Status::Ok, "{configured}");
+        }
+        // A tenant can report its registry with a scheme.
         let check = registry_check(
-            Some("Registry.Acme.Antithesis.com/team/"),
-            Some(tenant),
+            Some("registry.acme.antithesis.com/team"),
+            Some(&registry("https://registry.acme.antithesis.com/")),
             None,
         );
         assert_eq!(check.status, Status::Ok);
 
-        let check = registry_check(Some("proxy.example.com/acme"), Some(tenant), Some("prod"));
+        let check = registry_check(Some("proxy.example.com/acme"), Some(&tenant), Some("prod"));
         assert_eq!(check.status, Status::Warn);
         assert_eq!(check.notes[0].level, Level::Warning);
         assert!(check.notes[0].text.contains("`proxy.example.com/acme`"));
@@ -1468,17 +1483,8 @@ mod tests {
             "run `snouty login --profile prod` to use the tenant's registry"
         );
 
-        // A blank answer counts as no answer.
-        let check = registry_check(Some("proxy.example.com/acme"), Some(" "), None);
-        assert_eq!(check.status, Status::Ok);
-        let check = registry_check(None, Some(""), None);
-        assert_eq!(
-            check.notes[1].text,
-            "run `snouty login` to set it, or set ANTITHESIS_REGISTRY"
-        );
-
         // An unset registry is reported once, with the tenant's registry.
-        let check = registry_check(None, Some(tenant), None);
+        let check = registry_check(None, Some(&tenant), None);
         assert_eq!(check.message, "container registry is not set");
         assert!(
             check.notes[1]
@@ -1488,57 +1494,14 @@ mod tests {
     }
 
     #[test]
-    fn registry_check_escapes_control_characters_in_note_text() {
-        let check = registry_check(
-            Some("proxy\x1b[32m.example.com"),
-            Some("evil\x1b[31m.example.com"),
-            None,
-        );
+    fn registry_check_warns_about_a_registry_that_is_not_valid() {
+        let tenant = registry("registry.acme.antithesis.com");
+        let check = registry_check(Some("proxy\x1b[32m.example.com"), Some(&tenant), None);
+        assert_eq!(check.status, Status::Warn);
+        assert_eq!(check.message, "container registry is not valid");
         let text = &check.notes[0].text;
-        assert!(text.contains("evil\\x1B[31m.example.com"), "{text}");
         assert!(text.contains("proxy\\x1B[32m.example.com"), "{text}");
         assert!(!text.contains('\x1b'));
-
-        let check = registry_check(None, Some("evil\x1b[31m.example.com"), None);
-        let text = &check.notes[1].text;
-        assert!(text.contains("evil\\x1B[31m.example.com"), "{text}");
-        assert!(!text.contains('\x1b'));
-    }
-
-    #[test]
-    fn registry_matches_the_tenant_registry_or_a_path_under_it() {
-        let tenant = "registry.acme.antithesis.com";
-        assert!(registry_matches(tenant, tenant));
-        assert!(registry_matches("registry.acme.antithesis.com/", tenant));
-        assert!(registry_matches("REGISTRY.acme.antithesis.com", tenant));
-        assert!(registry_matches(
-            "registry.acme.antithesis.com:443/team",
-            tenant
-        ));
-        assert!(!registry_matches(
-            "registry.acme.antithesis.com:5000/team",
-            tenant
-        ));
-        assert!(registry_matches(
-            "registry.acme.antithesis.com/team/app",
-            tenant
-        ));
-        assert!(registry_matches(tenant, "registry.acme.antithesis.com/"));
-        assert!(!registry_matches("registry.other.antithesis.com", tenant));
-        assert!(!registry_matches(
-            "proxy.example.com/registry.acme.antithesis.com",
-            tenant
-        ));
-        assert!(!registry_matches(
-            "registry.acme.antithesis.com.evil",
-            tenant
-        ));
-
-        let tenant = "registry.example.com/acme";
-        assert!(registry_matches("registry.example.com/acme/app", tenant));
-        assert!(!registry_matches("registry.example.com/acmes", tenant));
-        assert!(!registry_matches("registry.example.com", tenant));
-        assert!(!registry_matches("registry.example.com/other", tenant));
     }
 
     #[test]

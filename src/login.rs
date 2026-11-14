@@ -271,7 +271,15 @@ async fn do_cmd_login(
             .suggestion("run `snouty login --registry <registry>`")
         })?;
 
-    update_settings_in_global_file(&tenant_to_use, &registry_to_use, profile_to_use.as_deref())?;
+    // The settings go first, so that a settings file that login cannot
+    // update leaves the stored credential alone. When the credential cannot
+    // be stored, the settings go back, so that the profile does not name the
+    // new tenant with the old credential.
+    let previous_settings = update_settings_in_global_file(
+        &tenant_to_use,
+        &registry_to_use,
+        profile_to_use.as_deref(),
+    )?;
 
     // The kind of credential login wrote, and where.
     let written = match new_credentials {
@@ -281,7 +289,17 @@ async fn do_cmd_login(
                 PersistableCredentials::Password { .. } => "username and password",
                 PersistableCredentials::OAuth { .. } => "OAuth credentials",
             };
-            Some(kind.with_tag(persist(credentials, profile_to_use.as_deref())?))
+            match persist(credentials, profile_to_use.as_deref()) {
+                Ok(store) => Some(kind.with_tag(store)),
+                Err(err) => {
+                    return Err(match previous_settings.restore() {
+                        Ok(()) => err.wrap_err("could not store the credential; nothing was saved"),
+                        Err(restore_err) => err.wrap_err(format!(
+                            "could not store the credential, and {restore_err:#}"
+                        )),
+                    });
+                }
+            }
         }
         None => None,
     };
@@ -508,7 +526,7 @@ async fn prompt_for_auth(
     stored: Option<&AuthenticationInfo>,
 ) -> Result<Option<PersistableCredentials>> {
     let url = &tenant_url.url;
-    let oauth_config = fetch_cli_config(client, url).await;
+    let oauth_config = fetch_cli_config(client, url, OAUTH_HTTP_TIMEOUT).await;
 
     // The registry request after the prompt uses the same URL, so stop before
     // the prompt when it cannot be reached. Any other error, such as a slow
@@ -715,27 +733,34 @@ async fn complete_oauth_login(
     })
 }
 
-/// Send one OAuth request, bounded by [`OAUTH_HTTP_TIMEOUT`]: the shared
-/// client has only a connect timeout.
+/// Send one OAuth request, bounded by `timeout`: the shared client has only
+/// a connect timeout.
 async fn send_oauth(
     client: &HttpClient,
     request: reqwest::RequestBuilder,
+    timeout: Duration,
 ) -> reqwest::Result<reqwest::Response> {
     client
-        .send(request.timeout(crate::env::scaled_wait(OAUTH_HTTP_TIMEOUT)))
+        .send(request.timeout(crate::env::scaled_wait(timeout)))
         .await
 }
 
 /// `GET /auth/cli/config` — the redirect strategy for this tenant. The route is
 /// feature-gated: a tenant without CLI OIDC answers 403, which maps to
 /// [`CliOAuthConfig::Disabled`].
+/// The request gives up after `timeout`.
 pub(crate) async fn fetch_cli_config(
     client: &HttpClient,
     base_url: &str,
+    timeout: Duration,
 ) -> Result<CliOAuthConfig> {
-    let response = send_oauth(client, client.get(format!("{base_url}/auth/cli/config")))
-        .await
-        .wrap_err("failed to contact the tenant's OAuth configuration endpoint")?;
+    let response = send_oauth(
+        client,
+        client.get(format!("{base_url}/auth/cli/config")),
+        timeout,
+    )
+    .await
+    .wrap_err("failed to contact the tenant's OAuth configuration endpoint")?;
 
     if response.status() == StatusCode::FORBIDDEN {
         return Ok(CliOAuthConfig::Disabled);
@@ -838,7 +863,7 @@ async fn request_login_redirect(
             code_challenge_method: "S256",
             cli_state,
         });
-    let redirect: LoginRedirect = send_oauth(client, request)
+    let redirect: LoginRedirect = send_oauth(client, request, OAUTH_HTTP_TIMEOUT)
         .await
         .wrap_err("failed to initiate OAuth login")?
         .error_for_status()
@@ -873,7 +898,7 @@ async fn exchange_code_for_tokens(
         .post(format!("{base_url}/auth/cli/token"))
         .bearer_auth(credentials)
         .json(&TokenExchangeBody { flow_token });
-    send_oauth(client, request)
+    send_oauth(client, request, OAUTH_HTTP_TIMEOUT)
         .await
         .wrap_err("failed to exchange the authorization code for tokens")?
         .error_for_status()
@@ -1692,6 +1717,43 @@ mod tests {
             format!("{err:#}").contains("did not accept the credential"),
             "{err:#}"
         );
+        Ok(())
+    }
+
+    /// A credential that login cannot store puts the settings file back, so
+    /// the profile does not name the new tenant with the old credential.
+    #[tokio::test]
+    async fn login_restores_the_settings_when_it_cannot_store_the_credential() -> Result<()> {
+        let env = LoginEnv::new();
+        let seeded = "tenant = \"oldtenant\"\nregistry = \"old.example.com/app\"\n";
+        env.seed(".config/snouty/settings.toml", seeded);
+        // A directory where the credentials file goes cannot be read or
+        // replaced.
+        std::fs::create_dir_all(env.config_dir().join("credentials.toml"))?;
+        let settings = env.resolve_settings(None)?;
+        let prompter = Script::default()
+            .input("mytenant")
+            .secret(FAKE_API_KEY_A)
+            .build();
+
+        let err = login(None, &settings, &prompter)
+            .await
+            .expect_err("a credential that cannot be stored must fail the login");
+
+        assert!(format!("{err:#}").contains("nothing was saved"), "{err:#}");
+        assert_eq!(env.settings(), seeded);
+
+        // With no settings file before, none is left behind.
+        std::fs::remove_file(env.config_dir().join("settings.toml"))?;
+        let prompter = Script::default()
+            .input("mytenant")
+            .secret(FAKE_API_KEY_A)
+            .build();
+        let err = login(None, &settings, &prompter)
+            .await
+            .expect_err("a credential that cannot be stored must fail the login");
+        assert!(format!("{err:#}").contains("nothing was saved"), "{err:#}");
+        assert!(!env.config_dir().join("settings.toml").exists());
         Ok(())
     }
 

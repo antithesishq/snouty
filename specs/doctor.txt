@@ -204,6 +204,13 @@ env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
 [!staging] stdout '"ok": true'
 [!staging] stdout '"id": "registry",\s*"status": "warn"'
 
+# A setting that `snouty launch` refuses is not valid, even under the
+# tenant's registry.
+[!staging] env ANTITHESIS_REGISTRY=registry.testtenant.antithesis.com/MyTeam
+[!staging] snouty doctor
+[!staging] stderr '^  ⚠ container registry is not valid$'
+[!staging] stderr -literal 'the path must be lowercase: `MyTeam`'
+
 # An unset registry is reported once, with the tenant's registry.
 [!staging] env ANTITHESIS_REGISTRY=
 [!staging] snouty doctor

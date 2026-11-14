@@ -73,11 +73,13 @@ impl FromStr for TenantRegistry {
     type Err = TenantRegistryError;
 
     fn from_str(server_url: &str) -> Result<Self, Self::Err> {
-        let server_url = server_url.trim();
-        let rest = server_url
-            .split_once("://")
-            .map_or(server_url, |(_, rest)| rest);
-        let host = rest.split('/').next().unwrap_or_default();
+        // Only the host counts: the path of an image reference, such as
+        // `team/app:v1`, is not a registry path, so this does not parse
+        // through [`Registry`].
+        let host = without_scheme(server_url)
+            .split('/')
+            .next()
+            .unwrap_or_default();
         if host.is_empty() {
             return Err(TenantRegistryError::InvalidServerUrl);
         }
@@ -96,6 +98,21 @@ impl FromStr for TenantRegistry {
     }
 }
 
+/// `text` without the whitespace around it and without a leading `http://` or
+/// `https://` in any case, which a registry client or a user can put before a
+/// registry.
+fn without_scheme(text: &str) -> &str {
+    let text = text.trim();
+    ["https://", "http://"]
+        .into_iter()
+        .find_map(|scheme| {
+            text.get(..scheme.len())
+                .filter(|prefix| prefix.eq_ignore_ascii_case(scheme))
+                .map(|_| &text[scheme.len()..])
+        })
+        .unwrap_or(text)
+}
+
 /// A container registry to push images to: a host, with an optional port
 /// and path, such as `registry.example.com:5000/team`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -112,45 +129,91 @@ impl Registry {
     }
 }
 
+/// The registry without a scheme or a trailing `/`, so that `{registry}/`
+/// opens an image reference.
 impl fmt::Display for Registry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.text)
     }
 }
 
+/// Parses a registry as a user or a tenant gives it. The whitespace around
+/// it, a leading `http://` or `https://`, and trailing `/`s are removed. The
+/// host and the path keep their case.
 impl FromStr for Registry {
     type Err = String;
 
-    fn from_str(text: &str) -> Result<Self, Self::Err> {
-        let (host, path) = match text.split_once('/') {
-            Some((host, path)) => (host, Some(path)),
-            None => (text, None),
-        };
-        let valid_port = |port: &str| port.parse::<u16>().is_ok();
-        let valid_host = match host.strip_prefix('[') {
-            // An IPv6 address, such as `[::1]:5000`.
-            Some(rest) => rest.split_once(']').is_some_and(|(address, port)| {
-                address.parse::<std::net::Ipv6Addr>().is_ok()
-                    && (port.is_empty() || port.strip_prefix(':').is_some_and(valid_port))
-            }),
-            None => match host.split_once(':') {
-                Some((name, port)) => is_valid_tenant_host(name) && valid_port(port),
-                None => is_valid_tenant_host(host),
-            },
-        };
-        let valid_path = path.is_none_or(|path| path.split('/').all(is_path_segment));
-        if valid_host && valid_path {
-            Ok(Self {
+    fn from_str(given: &str) -> Result<Self, Self::Err> {
+        let text = without_scheme(given).trim_end_matches('/');
+        let host_len = text.find('/').unwrap_or(text.len());
+        match registry_problem(text, host_len) {
+            None => Ok(Self {
                 text: text.to_owned(),
-                host_len: host.len(),
-            })
-        } else {
-            Err(format!(
-                "`{}` is not a container registry: give a host, optionally with a port and a path, such as `registry.example.com/team`",
-                sanitize(text)
-            ))
+                host_len,
+            }),
+            Some(problem) => Err(format!(
+                "`{}` is not a container registry: {problem}",
+                sanitize(given.trim())
+            )),
         }
     }
+}
+
+/// What makes `text`, whose host is its first `host_len` bytes, not a
+/// registry, or `None` when it is a registry.
+fn registry_problem(text: &str, host_len: usize) -> Option<String> {
+    let (host, path) = text.split_at(host_len);
+    if text.contains(char::is_whitespace) {
+        return Some("it contains a space".to_owned());
+    }
+    if text.contains("://") {
+        return Some("only `http://` or `https://` can come before a registry".to_owned());
+    }
+    if host.contains('@') {
+        return Some("a user name (`user@`) is not part of a registry".to_owned());
+    }
+    let (name_is_valid, port) = match host.strip_prefix('[') {
+        // An IPv6 address, such as `[::1]:5000`.
+        Some(rest) => match rest.split_once(']') {
+            Some((address, port)) => (
+                address.parse::<std::net::Ipv6Addr>().is_ok()
+                    && (port.is_empty() || port.starts_with(':')),
+                port.strip_prefix(':'),
+            ),
+            None => (false, None),
+        },
+        None => match host.split_once(':') {
+            Some((name, port)) => (is_valid_tenant_host(name), Some(port)),
+            None => (is_valid_tenant_host(host), None),
+        },
+    };
+    let port_is_valid = |port: &str| {
+        !port.starts_with('0')
+            && port.bytes().all(|b| b.is_ascii_digit())
+            && port.parse::<u16>().is_ok()
+    };
+    if port.is_some_and(|port| !port_is_valid(port)) {
+        return Some("the port must be a number from 1 to 65535".to_owned());
+    }
+    if !name_is_valid {
+        return Some(
+            "give a host, optionally with a port and a path, such as `registry.example.com/team`"
+                .to_owned(),
+        );
+    }
+    // Settings that an older snouty saved can name a path in uppercase.
+    let segment = path
+        .split('/')
+        .skip(1)
+        .find(|segment| !is_path_segment(&segment.to_ascii_lowercase()))?;
+    Some(if segment.is_empty() {
+        "the path has an empty segment (`//`)".to_owned()
+    } else {
+        format!(
+            "the path segment `{}` must start and end with a letter or a digit, and hold only letters, digits, `.`, `_` and `-`",
+            sanitize(segment)
+        )
+    })
 }
 
 /// The tenant registry that `settings` push to: the host of the `registry`
@@ -786,6 +849,9 @@ mod tests {
             ("registry", "registry"),
             ("registry/team", "registry"),
             ("[::1]:5000/team", "[::1]:5000"),
+            ("[::1]/team", "[::1]"),
+            ("ghcr.io/MyOrg", "ghcr.io"),
+            ("Registry.Example.com/Team", "Registry.Example.com"),
         ] {
             let parsed: Registry = registry.parse().unwrap();
             assert_eq!(parsed.host(), host, "{registry}");
@@ -794,22 +860,69 @@ mod tests {
     }
 
     #[test]
-    fn registry_refuses_what_is_not_a_registry() {
-        for registry in [
-            "",
-            "https://registry.example.com",
-            "registry.example.com/",
-            "registry.example.com//team",
-            "registry.example.com/Team",
-            "registry.example.com:",
-            "registry.example.com:99999",
-            "-registry.example.com",
-            "user@registry.example.com",
-            "registry example.com",
-            "[::1",
-            "[not-ipv6]:5000",
+    fn registry_drops_a_scheme_and_trailing_slashes() {
+        for (given, registry, host) in [
+            (
+                "https://registry.example.com",
+                "registry.example.com",
+                "registry.example.com",
+            ),
+            (
+                "HTTP://registry.example.com:5000/team/",
+                "registry.example.com:5000/team",
+                "registry.example.com:5000",
+            ),
+            (
+                " https://us-central1-docker.pkg.dev/Proj/repo//\n",
+                "us-central1-docker.pkg.dev/Proj/repo",
+                "us-central1-docker.pkg.dev",
+            ),
+            (
+                "registry.example.com/",
+                "registry.example.com",
+                "registry.example.com",
+            ),
         ] {
-            assert!(registry.parse::<Registry>().is_err(), "{registry:?}");
+            let parsed: Registry = given.parse().unwrap();
+            assert_eq!(parsed.to_string(), registry, "{given:?}");
+            assert_eq!(parsed.host(), host, "{given:?}");
         }
+    }
+
+    #[test]
+    fn registry_refuses_what_is_not_a_registry() {
+        for (registry, problem) in [
+            ("", "give a host"),
+            ("https://", "give a host"),
+            ("/team", "give a host"),
+            ("-registry.example.com", "give a host"),
+            ("[::1", "give a host"),
+            ("[not-ipv6]:5000", "give a host"),
+            ("registry.example.com//team", "empty segment"),
+            ("registry.example.com/-team", "path segment `-team`"),
+            ("registry.example.com/te$am", "path segment `te$am`"),
+            ("registry.example.com:", "the port must be"),
+            ("registry.example.com:99999", "the port must be"),
+            ("registry.example.com:0", "the port must be"),
+            ("registry.example.com:+80", "the port must be"),
+            ("registry.example.com:00080", "the port must be"),
+            ("[::1]:+80", "the port must be"),
+            ("user@registry.example.com", "user name"),
+            ("registry example.com", "space"),
+            ("oci://registry.example.com", "only `http://` or `https://`"),
+        ] {
+            let err = registry.parse::<Registry>().unwrap_err();
+            assert!(err.contains(problem), "{registry:?}: {err}");
+        }
+    }
+
+    /// Any text that parses prints as a registry that parses to itself.
+    #[hegel::test]
+    fn a_registry_parses_from_its_display(tc: hegel::TestCase) {
+        let text = tc.draw(generators::text());
+        let Ok(once) = text.parse::<Registry>() else {
+            return;
+        };
+        assert_eq!(once.to_string().parse::<Registry>(), Ok(once), "{text:?}");
     }
 }

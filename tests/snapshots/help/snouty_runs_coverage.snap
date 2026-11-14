@@ -1,0 +1,77 @@
+---
+source: tests/help_snapshots.rs
+---
+List the instrumented code locations of a run, and when the run first reached
+each one.
+
+Each row is one location: MODULE, LOCATION, FUNCTION, HASH and VTIME. MODULE is
+the module ID. LOCATION is the source file, line and column. HASH and VTIME give
+the moment where the run first reached the location, and are blank for a
+location that the run has not reached. Pass them as the input_hash and vtime of
+`runs logs` to read the logs up to that moment.
+
+Use --module to show only the locations of a module. Give it more than once for
+more modules. Use --reached to show only the locations that the run reached, and
+--unreached to show only the locations that it did not reach. While the run is
+in progress, the output is the coverage up to now. While the run starts, the
+command waits until the run has coverage.
+
+VTIME is cut to five decimals. With --detail, it prints whole. On a terminal, a
+long LOCATION or FUNCTION is shortened. After the rows, a status line on stderr
+counts the locations, and gives the run's status.
+
+With --follow, the command prints the locations that the run reached, then each
+new location as the run reaches it, until the run finishes. Without --reached, a
+location prints again when the run reaches it. --follow cannot be used with
+--unreached.
+
+With --json, each location prints as the JSON object that the API sends, on its
+own line. A reached location has `first_reached`, with the moment and
+`run_seconds`, the time in seconds from the start of the run. So
+`snouty runs coverage <run_id> --json > coverage.ndjson` downloads the coverage.
+If the server reports an error during the output, snouty prints its error line,
+and exits with status 3.
+
+Examples:
+  snouty runs coverage <run_id> --reached --module <module_id>
+  snouty runs coverage <run_id> --unreached --module <module_id>
+  snouty runs coverage <run_id> --reached --follow
+
+Usage: snouty runs coverage [OPTIONS] <RUN_ID>
+
+Arguments:
+  <RUN_ID>
+          Run ID
+
+Options:
+      --module <MODULE_ID>
+          Only list the locations of this module (repeatable)
+
+      --reached
+          Only list the locations that the run reached
+
+      --unreached
+          Only list the locations that the run has not reached
+
+  -f, --follow
+          Keep the connection open, and print each location as the run reaches
+          it, until the run finishes
+
+  -d, --detail
+          Print each vtime whole
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+      --json
+          Print NDJSON: one JSON object per line
+
+      --verbose
+          Log API requests to stderr (authentication tokens redacted)
+
+      --settings <SETTINGS>
+          Path to the snouty settings file (default: ./.snouty.toml; overrides
+          SNOUTY_SETTINGS_PATH)
+
+      --profile <PROFILE>
+          Settings profile to select (overrides ANTITHESIS_PROFILE)

@@ -1,0 +1,16 @@
+---
+source: tests/help_snapshots.rs
+---
+List the instrumented code locations of a run, and when the run first reached each one.
+
+Each row is one location: MODULE, LOCATION, FUNCTION, HASH and VTIME. MODULE is the module ID. LOCATION is the source file, line and column. HASH and VTIME give the moment where the run first reached the location, and are blank for a location that the run has not reached. Pass them as the input_hash and vtime of `runs_logs` to read the logs up to that moment.
+
+Use `module_ids` to show only the locations of a module. List more module IDs for more modules. Use `reached` to show only the locations that the run reached, and `unreached` to show only the locations that it did not reach. While the run is in progress, the output is the coverage up to now. While the run starts, the command waits until the run has coverage.
+
+VTIME prints whole. A status line under the rows counts the locations, and gives the run's status.
+
+With `json`, each location prints as the JSON object that the API sends, on its own line. A reached location has `first_reached`, with the moment and `run_seconds`, the time in seconds from the start of the run.
+
+Examples:
+  runs_coverage {"run_id": "<run_id>", "module_ids": ["<module_id>"], "reached": true}
+  runs_coverage {"run_id": "<run_id>", "module_ids": ["<module_id>"], "unreached": true}

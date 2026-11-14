@@ -48,9 +48,9 @@ use crate::ndjson::{JsonStream, json_lines};
 pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
     BuildLogLine, Event, EventProperty, ExecuteCommandRequestSourceRunId as SourceRunId,
-    ExecuteCommandRequestSourceSessionId as SourceSessionId, FaultTolerance, Moment,
-    NonEventProperty, PerformanceTier, Property, PropertyStatus, RunDetail, RunDetailSubStatus,
-    RunStatus, RunStreamNotificationType, RunSummary, UsageEntry,
+    ExecuteCommandRequestSourceSessionId as SourceSessionId, FaultTolerance, LocationCoverage,
+    Moment, NonEventProperty, PerformanceTier, Property, PropertyStatus, RunDetail,
+    RunDetailSubStatus, RunStatus, RunStreamNotificationType, RunSummary, UsageEntry,
 };
 
 /// The outcome of a launch or debugging-launch request, and the `--json` output
@@ -800,6 +800,13 @@ fn run_not_found(run_id: &str, err: Report) -> Report {
     }
 }
 
+/// Which half of a run's locations to list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reach {
+    Reached,
+    Unreached,
+}
+
 pub struct AntithesisApi {
     client: generated::Client,
     base_url: String,
@@ -1191,6 +1198,33 @@ impl AntithesisApi {
             property_filter,
         };
         let request = self.client.stream_run_status().run_id(run_id).body(body);
+        match request.send().await {
+            Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
+            Err(err) => Err(format_api_client_error(err).await),
+        }
+    }
+
+    /// Open the run's per-location coverage: NDJSON `Location_Coverage`
+    /// records. `reach` keeps only one half of the locations. With `follow`,
+    /// the stream stays open until the run finishes; the server refuses
+    /// `follow` with [`Reach::Unreached`].
+    pub async fn get_coverage_locations(
+        &self,
+        run_id: &str,
+        module_id: Option<&str>,
+        reach: Option<Reach>,
+        follow: bool,
+    ) -> Result<JsonStream> {
+        let mut request = self.client.get_coverage_locations().run_id(run_id);
+        if let Some(module_id) = module_id {
+            request = request.module_id(module_id);
+        }
+        if let Some(reach) = reach {
+            request = request.covered(reach == Reach::Reached);
+        }
+        if follow {
+            request = request.is_streaming(true);
+        }
         match request.send().await {
             Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
             Err(err) => Err(format_api_client_error(err).await),
@@ -3559,6 +3593,7 @@ mod tests {
         assert_eq!(
             operations,
             [
+                "get getCoverageLocations",
                 "get getRegistry",
                 "get getRun",
                 "get getRunBuildLogs",

@@ -22,6 +22,7 @@ use crate::container::{
 };
 use crate::error::user_error;
 use crate::process::{ProcessGroupChild, output_with_timeout};
+use crate::registry::Registry;
 
 /// How Docker Compose v2 is invoked on this machine.
 ///
@@ -537,10 +538,10 @@ impl DockerCompose {
     pub fn pin_images(
         &self,
         rt: &dyn ContainerRuntime,
-        registry: &str,
+        registry: &Registry,
         missing: MissingImages,
     ) -> Result<String> {
-        let prefix = format!("{}/", registry.trim_end_matches('/'));
+        let prefix = format!("{registry}/");
         let contents = self.contents(None)?;
 
         let (local, absent) = partition_by_presence(rt, distinct_images(&contents)?)?;
@@ -1630,7 +1631,7 @@ services:
             }
         };
         let compose = DockerCompose::resolve(rt, config).unwrap();
-        compose.pin_images(rt, registry, MissingImages::Reject)
+        compose.pin_images(rt, &registry.parse().unwrap(), MissingImages::Reject)
     }
     #[test]
     fn pin_images_skips_push_when_registry_serves_digest() {
@@ -2107,7 +2108,11 @@ services:
                 };
                 let compose = DockerCompose::resolve(rt.as_ref(), config)
                     .unwrap_or_else(|e| panic!("{}: DockerCompose::resolve: {e:?}", rt.name()));
-                let out = compose.pin_images(rt.as_ref(), &addr, MissingImages::Reject)?;
+                let out = compose.pin_images(
+                    rt.as_ref(),
+                    &addr.parse().unwrap(),
+                    MissingImages::Reject,
+                )?;
                 Ok(serde_yaml::from_str::<serde_yaml::Value>(&out)
                     .unwrap()
                     .get("services")

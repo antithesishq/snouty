@@ -1,7 +1,8 @@
-//! The tenant's container registry, `registry.<tenant>.antithesis.com`, and
-//! the credential that snouty gives it.
+//! Container registries: the registry that settings name, the tenant's own
+//! registry, `registry.<tenant>.antithesis.com`, and the credential that
+//! snouty gives it.
 //!
-//! The registry takes HTTP basic auth: the username [`USERNAME`], and an
+//! The tenant's registry takes HTTP basic auth: the username [`USERNAME`], and an
 //! Antithesis token or a GitHub Actions OIDC token as the password. The
 //! Antithesis API team gave this contract before the registry went live, so
 //! no response from it has been observed yet.
@@ -13,7 +14,9 @@ use color_eyre::eyre::{OptionExt, Result};
 
 use crate::api::AntithesisApi;
 use crate::auth::{AuthenticationInfo, PasswordPolicy, RefreshableOAuthToken};
+use crate::container::is_path_segment;
 use crate::error::user_error;
+use crate::render::sanitize;
 use crate::settings::{Settings, SettingsRequest, is_valid_tenant_host};
 
 pub const USERNAME: &str = "snouty-token";
@@ -95,6 +98,63 @@ impl FromStr for TenantRegistry {
         Ok(Self {
             tenant: tenant.to_owned(),
         })
+    }
+}
+
+/// A container registry to push images to: a host, with an optional port
+/// and path, such as `registry.example.com:5000/team`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Registry {
+    text: String,
+    /// The length of the first segment of `text`: the host and port.
+    host_len: usize,
+}
+
+impl Registry {
+    /// The host and port, which `docker login` takes.
+    pub fn host(&self) -> &str {
+        &self.text[..self.host_len]
+    }
+}
+
+impl fmt::Display for Registry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+impl FromStr for Registry {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let (host, path) = match text.split_once('/') {
+            Some((host, path)) => (host, Some(path)),
+            None => (text, None),
+        };
+        let valid_port = |port: &str| port.parse::<u16>().is_ok();
+        let valid_host = match host.strip_prefix('[') {
+            // An IPv6 address, such as `[::1]:5000`.
+            Some(rest) => rest.split_once(']').is_some_and(|(address, port)| {
+                address.parse::<std::net::Ipv6Addr>().is_ok()
+                    && (port.is_empty() || port.strip_prefix(':').is_some_and(valid_port))
+            }),
+            None => match host.split_once(':') {
+                Some((name, port)) => is_valid_tenant_host(name) && valid_port(port),
+                None => is_valid_tenant_host(host),
+            },
+        };
+        let valid_path = path.is_none_or(|path| path.split('/').all(is_path_segment));
+        if valid_host && valid_path {
+            Ok(Self {
+                text: text.to_owned(),
+                host_len: host.len(),
+            })
+        } else {
+            Err(format!(
+                "`{}` is not a container registry: give a host, optionally with a port and a path, such as `registry.example.com/team`",
+                sanitize(text)
+            ))
+        }
     }
 }
 
@@ -706,5 +766,55 @@ mod tests {
             select_for_acme(profiles, self::stored(&stored)).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn registry_host_is_the_text_before_the_path() {
+        for (registry, host) in [
+            (
+                "us-central1-docker.pkg.dev/molten-verve-216720/orbitinghail-repository",
+                "us-central1-docker.pkg.dev",
+            ),
+            ("us-central1-docker.pkg.dev", "us-central1-docker.pkg.dev"),
+            (
+                "123456789012.dkr.ecr.us-east-1.amazonaws.com",
+                "123456789012.dkr.ecr.us-east-1.amazonaws.com",
+            ),
+            (
+                "123456789012.dkr.ecr.us-east-1.amazonaws.com/team/app",
+                "123456789012.dkr.ecr.us-east-1.amazonaws.com",
+            ),
+            ("registry.example.com", "registry.example.com"),
+            ("registry.example.com:443/team", "registry.example.com:443"),
+            ("localhost:5000/team", "localhost:5000"),
+            ("registry.internal", "registry.internal"),
+            ("registry", "registry"),
+            ("registry/team", "registry"),
+            ("[::1]:5000/team", "[::1]:5000"),
+        ] {
+            let parsed: Registry = registry.parse().unwrap();
+            assert_eq!(parsed.host(), host, "{registry}");
+            assert_eq!(parsed.to_string(), registry);
+        }
+    }
+
+    #[test]
+    fn registry_refuses_what_is_not_a_registry() {
+        for registry in [
+            "",
+            "https://registry.example.com",
+            "registry.example.com/",
+            "registry.example.com//team",
+            "registry.example.com/Team",
+            "registry.example.com:",
+            "registry.example.com:99999",
+            "-registry.example.com",
+            "user@registry.example.com",
+            "registry example.com",
+            "[::1",
+            "[not-ipv6]:5000",
+        ] {
+            assert!(registry.parse::<Registry>().is_err(), "{registry:?}");
+        }
     }
 }

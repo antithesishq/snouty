@@ -1835,14 +1835,16 @@ impl HttpClient {
         self.client.post(url)
     }
 
-    /// Sends `request` once, with no transient retry, so a per-request timeout
-    /// bounds the whole call. The `--verbose` log withholds the body: the OAuth
-    /// requests carry the CSRF state and the flow token there.
-    pub(crate) async fn send(
+    /// Sends `request` once, with no transient retry, and gives up after
+    /// `timeout`: the client has only a connect timeout. The `--verbose` log
+    /// withholds the body: the OAuth requests carry the CSRF state and the
+    /// flow token there.
+    pub(crate) async fn send_with_timeout(
         &self,
         request: reqwest::RequestBuilder,
+        timeout: Duration,
     ) -> reqwest::Result<reqwest::Response> {
-        let request = request.build()?;
+        let request = request.timeout(crate::env::scaled_wait(timeout)).build()?;
         self.log_request(&request, LoggedBody::Withheld);
         let timing = RequestTiming::start(&request);
         let result = self.client.execute(request).await;

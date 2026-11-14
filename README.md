@@ -122,7 +122,7 @@ If you set up [shell completions](#shell-completions), also remove the snouty li
 
 ## Configuration
 
-Using the API requires at least a **tenant** and a credential. `snouty launch` also needs a **registry** — the container registry it pushes the config image to, which `snouty login` sets for you. The registry is a host, optionally with a path, such as `registry.example.com/team`. Docs commands need no configuration at all.
+Using the API requires at least a **tenant** and a credential. `snouty launch` also needs a **registry** — the container registry it pushes the config image to, which `snouty login` sets for you. The registry is a host, optionally with a port and a path, such as `registry.example.com/team`. Docs commands need no configuration at all.
 
 The quickest way is `snouty login`:
 

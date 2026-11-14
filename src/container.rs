@@ -1146,7 +1146,7 @@ pub const MIRROR_PREFIX: &str = "snouty-mirror";
 
 /// Whether `segment` satisfies the reference grammar for one path segment: an
 /// alphanumeric opens and closes it, and `.`, `_`, and `-` join the rest.
-fn is_path_segment(segment: &str) -> bool {
+pub(crate) fn is_path_segment(segment: &str) -> bool {
     let alnum = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit();
     segment.starts_with(alnum)
         && segment.ends_with(alnum)

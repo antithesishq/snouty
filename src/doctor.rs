@@ -258,14 +258,21 @@ fn tenant_check(tenant: Option<&str>) -> Check {
 fn registry_check(registry: Option<&str>, reported: Option<&str>, profile: Option<&str>) -> Check {
     // `snouty login` reads a blank answer as no registry.
     let reported = reported.filter(|reported| !reported.trim().is_empty());
-    match (registry, reported) {
+    // Both values reach the terminal in note text, and the tenant's comes from
+    // the server.
+    let reported = reported.map(crate::render::sanitize);
+    let configured = registry.map(crate::render::sanitize);
+    match (registry, reported.as_deref()) {
         (Some(registry), Some(reported)) if !registry_matches(registry, reported) => Check::warn(
             CheckId::Registry,
             "container registry is not the tenant's registry",
         )
         .note(
             Level::Warning,
-            format!("snouty pushes images to `{registry}`, but the tenant's registry is `{reported}`"),
+            format!(
+                "snouty pushes images to `{}`, but the tenant's registry is `{reported}`",
+                configured.as_deref().unwrap_or_default()
+            ),
         )
         .note(
             Level::Note,
@@ -1478,6 +1485,24 @@ mod tests {
                 .text
                 .contains("`registry.acme.antithesis.com`")
         );
+    }
+
+    #[test]
+    fn registry_check_escapes_control_characters_in_note_text() {
+        let check = registry_check(
+            Some("proxy\x1b[32m.example.com"),
+            Some("evil\x1b[31m.example.com"),
+            None,
+        );
+        let text = &check.notes[0].text;
+        assert!(text.contains("evil\\x1B[31m.example.com"), "{text}");
+        assert!(text.contains("proxy\\x1B[32m.example.com"), "{text}");
+        assert!(!text.contains('\x1b'));
+
+        let check = registry_check(None, Some("evil\x1b[31m.example.com"), None);
+        let text = &check.notes[1].text;
+        assert!(text.contains("evil\\x1B[31m.example.com"), "{text}");
+        assert!(!text.contains('\x1b'));
     }
 
     #[test]

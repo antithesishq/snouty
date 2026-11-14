@@ -31,10 +31,9 @@ use crate::{
         PersistableCredentials, in_github_actions, is_blank_api_key, no_credentials_suggestion,
         persist,
     },
-    container::registry_host,
     env,
     error::{api_error_status, rejects_credential, user_error},
-    registry::TenantRegistry,
+    registry::{Registry, TenantRegistry},
     render::{OutputOptions, sanitize},
     settings::{
         ANTITHESIS_PROFILE_ENV_VAR_NAME, Settings, tenant_base_url, update_settings_in_global_file,
@@ -166,7 +165,7 @@ impl Prompter for InquirePrompter {
 /// With `output.verbose`, login logs its requests to stderr.
 pub async fn cmd_login(
     tenant: Option<String>,
-    registry_flag: Option<String>,
+    registry_flag: Option<Registry>,
     profile: Option<&str>,
     current_settings: &Settings,
     output: OutputOptions,
@@ -184,7 +183,7 @@ pub async fn cmd_login(
 
 async fn do_cmd_login(
     tenant: Option<String>,
-    registry_flag: Option<String>,
+    registry_flag: Option<Registry>,
     profile: Option<&str>,
     current_settings: &Settings,
     OutputOptions { verbose, .. }: OutputOptions,
@@ -252,24 +251,35 @@ async fn do_cmd_login(
         .registry()
         .filter(|_| current_settings.tenant() == Some(tenant_to_use.as_str()));
     let registry_to_use = match (registry_flag, tenant_registry) {
-        (Some(registry), _) => Some(registry),
-        (None, Some(tenant_registry)) => Some(tenant_registry.registry_url),
-        // A tenant that does not report its registry: ask, or keep the saved
-        // one. A saved registry of another tenant is neither offered nor kept.
-        (None, None) if interactive => Some(prompter.input(
-            "What container registry would you like to use?",
-            saved_registry,
-        )?),
-        (None, None) => saved_registry.map(str::to_owned),
+        (Some(registry), _) => registry,
+        (None, tenant_registry) => {
+            let registry = match tenant_registry {
+                Some(tenant_registry) => Some(tenant_registry.registry_url),
+                // A tenant that does not report its registry: ask, or keep
+                // the saved one. A saved registry of another tenant is
+                // neither offered nor kept.
+                None if interactive => Some(prompter.input(
+                    "What container registry would you like to use?",
+                    saved_registry,
+                )?),
+                None => saved_registry.map(str::to_owned),
+            };
+            let suggestion = "run `snouty login --registry <registry>`";
+            registry
+                .filter(|registry| !registry.trim().is_empty())
+                .ok_or_else(|| {
+                    user_error(format!(
+                        "login needs a container registry for `{tenant_to_use}`; nothing was saved"
+                    ))
+                    .suggestion(suggestion)
+                })?
+                .trim()
+                .parse::<Registry>()
+                .map_err(|err| {
+                    user_error(format!("{err}; nothing was saved")).suggestion(suggestion)
+                })?
+        }
     };
-    let registry_to_use = registry_to_use
-        .filter(|registry| !registry.trim().is_empty())
-        .ok_or_else(|| {
-            user_error(format!(
-                "login needs a container registry for `{tenant_to_use}`; nothing was saved"
-            ))
-            .suggestion("run `snouty login --registry <registry>`")
-        })?;
 
     // The settings go first, so that a settings file that login cannot
     // update leaves the stored credential alone. When the credential cannot
@@ -277,7 +287,7 @@ async fn do_cmd_login(
     // new tenant with the old credential.
     let previous_settings = update_settings_in_global_file(
         &tenant_to_use,
-        &registry_to_use,
+        &registry_to_use.to_string(),
         profile_to_use.as_deref(),
     )?;
 
@@ -442,7 +452,7 @@ async fn fetch_registry(
 /// successful login exits silently, leaving the user unsure it took.
 fn print_login_summary(
     tenant: &str,
-    registry: &str,
+    registry: &Registry,
     profile: Option<&str>,
     written: Option<Tagged<&str, CredentialStore>>,
     stored: Option<&Tagged<AuthenticationInfo, CredentialStore>>,
@@ -454,8 +464,7 @@ fn print_login_summary(
         None => String::new(),
     };
     say(&format!(
-        "\nSaved tenant `{tenant}` and registry `{}`{scope}.",
-        sanitize(registry)
+        "\nSaved tenant `{tenant}` and registry `{registry}`{scope}."
     ));
     match (written, stored) {
         (Some(written), _) => {
@@ -472,12 +481,12 @@ fn print_login_summary(
     // The snouty credential signs in to the tenant's own registry. Any other
     // registry takes its own login.
     let own_registry = registry
+        .host()
         .parse::<TenantRegistry>()
         .is_ok_and(|own| own.tenant().eq_ignore_ascii_case(tenant));
     if !own_registry {
-        // `docker login` takes the host, not the path after it. A registry
-        // that names no host is on Docker Hub.
-        let host = sanitize(registry_host(registry).unwrap_or("docker.io"));
+        // `docker login` takes the host, not the path after it.
+        let host = registry.host();
         say(&format!(
             "Run `docker login {host}` or `podman login {host}` to sign in to the registry."
         ));
@@ -733,18 +742,6 @@ async fn complete_oauth_login(
     })
 }
 
-/// Send one OAuth request, bounded by `timeout`: the shared client has only
-/// a connect timeout.
-async fn send_oauth(
-    client: &HttpClient,
-    request: reqwest::RequestBuilder,
-    timeout: Duration,
-) -> reqwest::Result<reqwest::Response> {
-    client
-        .send(request.timeout(crate::env::scaled_wait(timeout)))
-        .await
-}
-
 /// `GET /auth/cli/config` — the redirect strategy for this tenant. The route is
 /// feature-gated: a tenant without CLI OIDC answers 403, which maps to
 /// [`CliOAuthConfig::Disabled`].
@@ -754,13 +751,10 @@ pub(crate) async fn fetch_cli_config(
     base_url: &str,
     timeout: Duration,
 ) -> Result<CliOAuthConfig> {
-    let response = send_oauth(
-        client,
-        client.get(format!("{base_url}/auth/cli/config")),
-        timeout,
-    )
-    .await
-    .wrap_err("failed to contact the tenant's OAuth configuration endpoint")?;
+    let response = client
+        .send_with_timeout(client.get(format!("{base_url}/auth/cli/config")), timeout)
+        .await
+        .wrap_err("failed to contact the tenant's OAuth configuration endpoint")?;
 
     if response.status() == StatusCode::FORBIDDEN {
         return Ok(CliOAuthConfig::Disabled);
@@ -863,7 +857,8 @@ async fn request_login_redirect(
             code_challenge_method: "S256",
             cli_state,
         });
-    let redirect: LoginRedirect = send_oauth(client, request, OAUTH_HTTP_TIMEOUT)
+    let redirect: LoginRedirect = client
+        .send_with_timeout(request, OAUTH_HTTP_TIMEOUT)
         .await
         .wrap_err("failed to initiate OAuth login")?
         .error_for_status()
@@ -898,7 +893,8 @@ async fn exchange_code_for_tokens(
         .post(format!("{base_url}/auth/cli/token"))
         .bearer_auth(credentials)
         .json(&TokenExchangeBody { flow_token });
-    send_oauth(client, request, OAUTH_HTTP_TIMEOUT)
+    client
+        .send_with_timeout(request, OAUTH_HTTP_TIMEOUT)
         .await
         .wrap_err("failed to exchange the authorization code for tokens")?
         .error_for_status()
@@ -1585,7 +1581,7 @@ mod tests {
     ) -> Result<()> {
         do_cmd_login(
             Some("mytenant".to_owned()),
-            registry.map(str::to_owned),
+            registry.map(|registry| registry.parse().unwrap()),
             None,
             settings,
             OutputOptions::default(),
@@ -1754,6 +1750,24 @@ mod tests {
             .expect_err("a credential that cannot be stored must fail the login");
         assert!(format!("{err:#}").contains("nothing was saved"), "{err:#}");
         assert!(!env.config_dir().join("settings.toml").exists());
+
+        // A settings file that does not parse stays in its backup, and the
+        // restore leaves no settings file.
+        let unparsable = "tenant = \"oldtenant\n";
+        env.seed(".config/snouty/settings.toml", unparsable);
+        let prompter = Script::default()
+            .input("mytenant")
+            .secret(FAKE_API_KEY_A)
+            .build();
+        let err = login(None, &settings, &prompter)
+            .await
+            .expect_err("a credential that cannot be stored must fail the login");
+        assert!(format!("{err:#}").contains("nothing was saved"), "{err:#}");
+        assert!(!env.config_dir().join("settings.toml").exists());
+        assert_eq!(
+            std::fs::read_to_string(env.config_dir().join("settings.toml.bak"))?,
+            unparsable
+        );
         Ok(())
     }
 

@@ -10,8 +10,12 @@ Information not provided via args is asked for at the terminal. Without a
 terminal, login checks the credential that other commands use, such as
 ANTITHESIS_API_KEY, and stores no credential.
 
-Use --registry to push your images to a registry other than your tenant's, such
-as `registry.example.com/team`: a host, optionally with a path. Then sign in to
+Usually you do not need --registry: snouty pushes your images to the registry
+that Antithesis provides for your tenant, `registry.<tenant>.antithesis.com`.
+Use --registry to push your images to a different registry, such as
+`registry.example.com/team`: a host, optionally with a port and a path. That
+registry must be registered with your Antithesis tenant or provided by
+Antithesis. If you are not sure, contact Antithesis support. Then sign in to
 that registry with `docker login` or `podman login`.
 
 NOTE: `snouty login` will offer to reuse your existing configuration values,

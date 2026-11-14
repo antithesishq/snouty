@@ -256,7 +256,7 @@ fn tenant_check(tenant: Option<&str>) -> Check {
 /// registry that is not it or a path under it is a warning too: the user can
 /// have chosen another registry on purpose, such as a proxy.
 fn registry_check(
-    registry: Option<&str>,
+    registry: Option<Result<&Registry, &str>>,
     reported: Option<&Registry>,
     profile: Option<&str>,
 ) -> Check {
@@ -277,7 +277,7 @@ fn registry_check(
                 },
             );
     };
-    let configured = match registry.parse::<Registry>() {
+    let configured = match registry {
         Ok(configured) => configured,
         Err(err) => {
             return Check::warn(CheckId::Registry, "container registry is not valid")
@@ -1445,9 +1445,15 @@ mod tests {
         text.parse().unwrap()
     }
 
+    /// Settings whose `registry` setting is `text`, as written.
+    fn registry_setting(text: &str) -> Settings {
+        Settings::builder().registry(text).build()
+    }
+
     #[test]
     fn registry_check_is_ok_when_resolved() {
-        let check = registry_check(Some("registry.acme.antithesis.com/team"), None, None);
+        let settings = registry_setting("registry.acme.antithesis.com/team");
+        let check = registry_check(settings.registry(), None, None);
         assert_eq!(check.status, Status::Ok);
     }
 
@@ -1458,18 +1464,21 @@ mod tests {
             "Registry.Acme.Antithesis.com/team/",
             "https://registry.acme.antithesis.com:443/team",
         ] {
-            let check = registry_check(Some(configured), Some(&tenant), None);
+            let settings = registry_setting(configured);
+            let check = registry_check(settings.registry(), Some(&tenant), None);
             assert_eq!(check.status, Status::Ok, "{configured}");
         }
         // A tenant can report its registry with a scheme.
+        let settings = registry_setting("registry.acme.antithesis.com/team");
         let check = registry_check(
-            Some("registry.acme.antithesis.com/team"),
+            settings.registry(),
             Some(&registry("https://registry.acme.antithesis.com/")),
             None,
         );
         assert_eq!(check.status, Status::Ok);
 
-        let check = registry_check(Some("proxy.example.com/acme"), Some(&tenant), Some("prod"));
+        let settings = registry_setting("proxy.example.com/acme");
+        let check = registry_check(settings.registry(), Some(&tenant), Some("prod"));
         assert_eq!(check.status, Status::Warn);
         assert_eq!(check.notes[0].level, Level::Warning);
         assert!(check.notes[0].text.contains("`proxy.example.com/acme`"));
@@ -1496,7 +1505,8 @@ mod tests {
     #[test]
     fn registry_check_warns_about_a_registry_that_is_not_valid() {
         let tenant = registry("registry.acme.antithesis.com");
-        let check = registry_check(Some("proxy\x1b[32m.example.com"), Some(&tenant), None);
+        let settings = registry_setting("proxy\x1b[32m.example.com");
+        let check = registry_check(settings.registry(), Some(&tenant), None);
         assert_eq!(check.status, Status::Warn);
         assert_eq!(check.message, "container registry is not valid");
         let text = &check.notes[0].text;

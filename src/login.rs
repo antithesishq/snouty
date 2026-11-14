@@ -255,38 +255,47 @@ async fn do_cmd_login(
         verbose,
     )
     .await?;
+    // A saved registry of another tenant, or one that is not a registry, is
+    // neither offered nor kept.
     let saved_registry = current_settings
         .registry()
         .filter(|_| current_settings.tenant() == Some(tenant_to_use.as_str()));
+    let suggestion = "run `snouty login --registry <registry>`";
+    let needs_registry = || {
+        user_error(format!(
+            "login needs a container registry for `{tenant_to_use}`; nothing was saved"
+        ))
+        .suggestion(suggestion)
+    };
+    let invalid =
+        |err: &str| user_error(format!("{err}; nothing was saved")).suggestion(suggestion);
     let registry_to_use = match (registry_flag, tenant_registry) {
         (Some(registry), _) => registry,
-        (None, tenant_registry) => {
-            let registry = match tenant_registry {
-                Some(tenant_registry) => Some(tenant_registry.registry_url),
-                // A tenant that does not report its registry: ask, or keep
-                // the saved one. A saved registry of another tenant is
-                // neither offered nor kept.
-                None if interactive => Some(prompter.input(
-                    "What container registry would you like to use?",
-                    saved_registry,
-                    |answer| answer.parse::<Registry>().map(drop),
-                )?),
-                None => saved_registry.map(str::to_owned),
-            };
-            let suggestion = "run `snouty login --registry <registry>`";
-            registry
-                .filter(|registry| !registry.trim().is_empty())
-                .ok_or_else(|| {
-                    user_error(format!(
-                        "login needs a container registry for `{tenant_to_use}`; nothing was saved"
-                    ))
-                    .suggestion(suggestion)
-                })?
-                .parse::<Registry>()
-                .map_err(|err| {
-                    user_error(format!("{err}; nothing was saved")).suggestion(suggestion)
-                })?
+        (None, Some(tenant_registry)) if tenant_registry.registry_url.trim().is_empty() => {
+            return Err(needs_registry());
         }
+        (None, Some(tenant_registry)) => tenant_registry
+            .registry_url
+            .parse::<Registry>()
+            .map_err(|err| invalid(&err))?,
+        // A tenant that does not report its registry: ask, or keep the saved
+        // one.
+        (None, None) if interactive => prompter
+            .input(
+                "What container registry would you like to use?",
+                saved_registry
+                    .and_then(Result::ok)
+                    .map(ToString::to_string)
+                    .as_deref(),
+                |answer| answer.parse::<Registry>().map(drop),
+            )?
+            .parse::<Registry>()
+            .map_err(|err| invalid(&err))?,
+        (None, None) => match saved_registry {
+            Some(Ok(saved)) => saved.clone(),
+            Some(Err(err)) => return Err(invalid(err)),
+            None => return Err(needs_registry()),
+        },
     };
 
     // The settings go first, so that a settings file that login cannot
@@ -1663,7 +1672,7 @@ mod tests {
             "repository = \"old\"\n[profile.p]\nrepository = \"old-p\"\n",
         );
         let settings = env.resolve_settings(None)?;
-        assert_eq!(settings.registry(), Some("old"));
+        assert_eq!(settings.registry_as_written(), Some("old"));
         let prompter = Script::default().secret(FAKE_API_KEY_A).build();
 
         login_with_flags(Some("myrepo"), &settings, &prompter).await?;

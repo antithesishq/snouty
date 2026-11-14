@@ -93,8 +93,6 @@ an element's text for a quote.
 - Keep the comments and a queue of operations (`put` or `del`, by ID) in
   `localStorage`, under a key for the namespace. Apply each change to the
   page at once, add it to the queue, and then sync.
-- Send each body as JSON with `Content-Type: application/json`. The server
-  refuses a `POST` or `PUT` without it.
 - To sync, send the queued operations in order, then load
   `GET /review`. The server's list replaces the local one.
 - A network error, any 5xx status, or a body that is not JSON means that

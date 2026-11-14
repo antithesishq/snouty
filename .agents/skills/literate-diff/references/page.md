@@ -128,15 +128,7 @@ Write helpers for repeated markup, such as `table(head, rows)` and
 
 One HTML file. All CSS and JavaScript are inline. Load scripts only from
 cdnjs.cloudflare.com, cdn.jsdelivr.net or unpkg.com, with an exact version,
-and fonts only from Google Fonts. The page shares its origin with the review
-API, so a changed CDN file could read the code and submit a review. Give
-each external script an `integrity` hash and `crossorigin="anonymous"`.
-Make the hash from the file that you check:
-
-```sh
-u=https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js
-echo "sha384-$(curl -sf "$u" | openssl dgst -sha384 -binary | openssl base64 -A)"
-```
+and fonts only from Google Fonts.
 
 ### Layout
 

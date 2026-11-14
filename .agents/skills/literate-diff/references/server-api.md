@@ -9,7 +9,7 @@ the machine share it.
 
 ```text
 server.py --root DIR --port PORT --ns NAME=TITLE [--ns NAME=TITLE ...]
-          [--origin URL ...] [--static DIR]
+          [--static DIR]
 ```
 
 - `--root`: the data directory. Each namespace keeps its data in
@@ -18,29 +18,9 @@ server.py --root DIR --port PORT --ns NAME=TITLE [--ns NAME=TITLE ...]
   `myrepo-pr42=myrepo PR #42` and `myrepo-pr42-r2=myrepo PR #42, follow-up`.
   A name matches `^[A-Za-z0-9_-]{1,64}$`, and is not `health` or
   `review-api`. The title goes in the Markdown heading.
-- `--origin`: an origin, such as `https://myhost.example`, from which the
-  reviewer opens the page through a proxy. Give one for each such origin.
-- `--static`: also serve the files in this directory, for a machine with no
-  web server (see `references/hosting.md`).
-- Bind to `127.0.0.1` only. The API has no authentication.
-
-## Request checks
-
-A bind to `127.0.0.1` does not stop other sites. Any page that the
-reviewer's browser opens can send requests to `127.0.0.1`, and a site can
-use DNS rebinding to look like the same origin. A forged submit wakes the
-agent with instructions from an attacker. So check each request before
-routing it, and answer `403` when a check fails:
-
-- `Host` is `127.0.0.1:<port>`, `localhost:<port>`, or the host of an
-  `--origin`. This blocks DNS rebinding.
-- When a `POST`, `PUT` or `DELETE` sends `Origin`, it is
-  `http://127.0.0.1:<port>`, `http://localhost:<port>`, or an `--origin`.
-- A `POST` or `PUT` has the media type `application/json` in
-  `Content-Type` (a `charset` parameter is allowed). Another site can
-  send that type only after a CORS preflight, and the server answers no
-  preflight.
-- Never send `Access-Control-Allow-*` headers.
+- `--static`: also serve the files in this directory, so that one local
+  server serves the page and the API (see `references/hosting.md`).
+- Bind to `127.0.0.1`.
 
 At start, create `reviews/` and `submitted/` and an empty `SUBMITTED` file
 for each namespace. Existing data stays.

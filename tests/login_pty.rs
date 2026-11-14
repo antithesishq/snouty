@@ -598,6 +598,40 @@ fn a_tenant_that_does_not_answer_gets_the_api_key_prompt_and_then_fails() {
     assert!(!home.path().join(".config/snouty").exists());
 }
 
+/// On a tenant that does not report its registry, the registry prompt refuses
+/// an answer that is not a registry and asks again, so the pasted API key is
+/// kept.
+#[test]
+fn a_bad_answer_at_the_registry_prompt_asks_again() {
+    let base_url = spawn_login_backend(OAUTH_DISABLED, 404, r#"{"message":"Resource not found"}"#);
+    let (home, mut session) = spawn_login(&Login {
+        base_url: Some(&base_url),
+        no_registry_flag: true,
+        ..Login::default()
+    });
+    expect(&mut session, "Please enter your API Key");
+    send(&mut session, &format!("{FAKE_API_KEY_A}\r"));
+    expect(
+        &mut session,
+        "What container registry would you like to use?",
+    );
+    let bad = "https://typed.example.com";
+    send(&mut session, &format!("{bad}\r"));
+    expect(&mut session, "is not a container registry");
+    send(&mut session, &"\x7f".repeat(bad.len()));
+    send(&mut session, "typed.example.com/app\r");
+    finish(session);
+
+    let settings = std::fs::read_to_string(home.path().join(".config/snouty/settings.toml"))
+        .expect("read the settings");
+    assert!(
+        settings.contains(r#"registry = "typed.example.com/app""#),
+        "{settings}"
+    );
+    let creds = credentials(home.path());
+    assert!(creds.contains(&api_key_line(FAKE_API_KEY_A)), "{creds}");
+}
+
 /// On a tenant that does not report its registry, a bare Enter at the registry
 /// prompt is refused, and the prompt asks again. The pasted API key is kept.
 #[test]

@@ -2816,7 +2816,7 @@ def help_story_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
 # the value, so an inherited secret is never printed and a placeholder is purely
 # a stand-in.
 def _doctor_env(
-    *, api_key: bool, username: bool, password: bool, tenant: bool, repo: bool
+    *, api_key: bool, username: bool, password: bool, tenant: bool, registry: bool
 ) -> dict[str, str | None]:
     def want(name: str, set_it: bool, placeholder: str) -> str | None:
         return (os.environ.get(name) or placeholder) if set_it else None
@@ -2827,7 +2827,7 @@ def _doctor_env(
         "ANTITHESIS_PASSWORD": want("ANTITHESIS_PASSWORD", password, _FAKE_PASSWORD),
         "ANTITHESIS_TENANT": want("ANTITHESIS_TENANT", tenant, "demo-tenant"),
         "ANTITHESIS_REGISTRY": want(
-            "ANTITHESIS_REGISTRY", repo, "registry.example.com/acme/demo"
+            "ANTITHESIS_REGISTRY", registry, "registry.example.com/acme/demo"
         ),
         # ANTITHESIS_REPOSITORY is an alias for ANTITHESIS_REGISTRY.
         "ANTITHESIS_REPOSITORY": None,
@@ -3579,7 +3579,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             ),
             json_capable=False,
             env=_doctor_env(
-                api_key=True, username=False, password=False, tenant=True, repo=True
+                api_key=True, username=False, password=False, tenant=True, registry=True
             ),
         ),
         Story(
@@ -3597,7 +3597,11 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             # TEST-NET-1) so the connect attempt is black-holed.
             env={
                 **_doctor_env(
-                    api_key=True, username=False, password=False, tenant=True, repo=True
+                    api_key=True,
+                    username=False,
+                    password=False,
+                    tenant=True,
+                    registry=True,
                 ),
                 "ANTITHESIS_BASE_URL": "http://192.0.2.1",
             },
@@ -3630,7 +3634,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             ),
             json_capable=False,
             env=_doctor_env(
-                api_key=True, username=True, password=True, tenant=True, repo=True
+                api_key=True, username=True, password=True, tenant=True, registry=True
             ),
         ),
         Story(
@@ -3652,7 +3656,11 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             ),
             json_capable=False,
             env=_doctor_env(
-                api_key=False, username=False, password=False, tenant=False, repo=False
+                api_key=False,
+                username=False,
+                password=False,
+                tenant=False,
+                registry=False,
             ),
             isolate_config=True,
         ),
@@ -3685,7 +3693,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             ),
             json_capable=False,
             env=_doctor_env(
-                api_key=False, username=True, password=True, tenant=True, repo=True
+                api_key=False, username=True, password=True, tenant=True, registry=True
             ),
         ),
         Story(
@@ -3714,7 +3722,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             ),
             json_capable=False,
             env=_doctor_env(
-                api_key=False, username=True, password=True, tenant=True, repo=True
+                api_key=False, username=True, password=True, tenant=True, registry=True
             ),
             isolate_config=True,
             seed_files={_CREDS: _SEED_CREDS_TOML},
@@ -3767,7 +3775,11 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             json_capable=False,
             expect_ok=False,
             env=_doctor_env(
-                api_key=False, username=False, password=False, tenant=False, repo=False
+                api_key=False,
+                username=False,
+                password=False,
+                tenant=False,
+                registry=False,
             ),
             isolate_config=True,
         ),
@@ -3784,7 +3796,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             doctor_json_check,
             json_capable=False,
             env=_doctor_env(
-                api_key=True, username=False, password=False, tenant=True, repo=True
+                api_key=True, username=False, password=False, tenant=True, registry=True
             ),
             isolate_config=True,
         ),

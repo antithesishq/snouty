@@ -5,8 +5,8 @@ use serde::Serialize;
 
 use crate::api::{
     AntithesisApi, ApiVersion, HttpClient, MIN_CANCEL_RELEASE, MIN_EXEC_RELEASE,
-    MIN_LAUNCH_PARAMS_RELEASE, MIN_SEARCH_RELEASE, MIN_STREAM_RELEASE, VersionError,
-    normalize_base_url,
+    MIN_LAUNCH_PARAMS_RELEASE, MIN_REGISTRY_RELEASE, MIN_SEARCH_RELEASE, MIN_STREAM_RELEASE,
+    VersionError, normalize_base_url,
 };
 use crate::auth::{
     AuthenticationInfo, CredentialSource, CredentialStore, OIDC_REJECTED_NEXT_STEP,
@@ -246,17 +246,67 @@ fn tenant_check(tenant: Option<&str>) -> Check {
 
 /// The container registry is only needed to build and push a config image
 /// (`snouty launch --config`), so a missing one is a warning, not a failure —
-/// read-only use (`snouty runs`, `snouty debug`) doesn't need it.
-fn registry_check(registry: Option<&str>) -> Check {
-    match registry {
-        Some(_) => Check::ok(CheckId::Registry, "container registry is set"),
-        None => Check::warn(CheckId::Registry, "container registry is not set")
+/// read-only use (`snouty runs`, `snouty debug`) doesn't need it. `reported`
+/// is the registry that the tenant reports, when doctor could read it. A
+/// registry that differs from it is a warning too: the user can have chosen
+/// another registry on purpose, such as a proxy.
+fn registry_check(registry: Option<&str>, reported: Option<&str>, profile: Option<&str>) -> Check {
+    match (registry, reported) {
+        (Some(registry), Some(reported)) if !registry_matches(registry, reported) => Check::warn(
+            CheckId::Registry,
+            "container registry is not the tenant's registry",
+        )
+        .note(
+            Level::Warning,
+            format!("snouty pushes images to `{registry}`, but the tenant's registry is `{reported}`"),
+        )
+        .note(
+            Level::Note,
+            format!("run {} to use the tenant's registry", login_command(profile)),
+        ),
+        (Some(_), _) => Check::ok(CheckId::Registry, "container registry is set"),
+        (None, reported) => Check::warn(CheckId::Registry, "container registry is not set")
             .note(Level::Warning, "the registry is needed for `snouty launch`")
             .note(
                 Level::Note,
-                "run `snouty login` to set it, or set ANTITHESIS_REGISTRY",
+                match reported {
+                    Some(reported) => format!(
+                        "run {} to set it to the tenant's registry, `{reported}`, or set ANTITHESIS_REGISTRY",
+                        login_command(profile)
+                    ),
+                    None => format!(
+                        "run {} to set it, or set ANTITHESIS_REGISTRY",
+                        login_command(profile)
+                    ),
+                },
             ),
     }
+}
+
+/// Whether the `configured` registry is the `reported` one, or a path under
+/// it, where snouty still pushes to the tenant's registry. The host is not
+/// case sensitive, and a trailing `/` does not count.
+fn registry_matches(configured: &str, reported: &str) -> bool {
+    let split = |registry: &str| {
+        let registry = registry.trim().trim_end_matches('/');
+        let (host, path) = registry.split_once('/').unwrap_or((registry, ""));
+        (host.to_ascii_lowercase(), path.to_owned())
+    };
+    let (configured_host, configured_path) = split(configured);
+    let (reported_host, reported_path) = split(reported);
+    configured_host == reported_host
+        && (reported_path.is_empty()
+            || configured_path == reported_path
+            || configured_path
+                .strip_prefix(&reported_path)
+                .is_some_and(|rest| rest.starts_with('/')))
+}
+
+/// Whether the tenant of `version` reports its registry.
+fn reports_registry(version: &ApiVersion) -> bool {
+    version
+        .release
+        .is_some_and(|release| release >= MIN_REGISTRY_RELEASE)
 }
 
 /// `selected` is the profile that the user selects, if any.
@@ -536,7 +586,11 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
     // Required settings. tenant is needed by every command; registry is
     // launch-only, so a missing one is a warning.
     checks.push(tenant_check(settings.tenant()));
-    checks.push(registry_check(settings.registry()));
+    checks.push(registry_check(
+        settings.registry(),
+        None,
+        settings.profile(),
+    ));
 
     // Authentication (synchronous-only by design).
     let github_actions = crate::auth::in_github_actions();
@@ -845,6 +899,24 @@ pub async fn cmd_doctor(
                 let version = api.get_version().await;
                 if let Ok(version) = &version {
                     checks.extend(release_floor_checks(version));
+                    if reports_registry(version) {
+                        match api.get_registry().await {
+                            Ok(reported) => {
+                                let check = checks
+                                    .iter_mut()
+                                    .find(|c| c.id == CheckId::Registry)
+                                    .expect("collect_checks reports the registry");
+                                *check = registry_check(
+                                    settings.registry(),
+                                    Some(&reported.registry_url),
+                                    settings.profile(),
+                                );
+                            }
+                            // The registry check already reports what doctor can
+                            // tell without the tenant's answer.
+                            Err(err) => debug!("could not read the tenant's registry: {err:#}"),
+                        }
+                    }
                 }
                 api_failed = matches!(version, Err(VersionError::Unreachable(_)));
                 checks.push(version_check(&host, in_use, settings.profile(), version));
@@ -1347,15 +1419,87 @@ mod tests {
 
     #[test]
     fn registry_check_is_ok_when_resolved() {
-        let check = registry_check(Some("registry.acme.antithesis.com/team"));
+        let check = registry_check(Some("registry.acme.antithesis.com/team"), None, None);
         assert_eq!(check.status, Status::Ok);
+    }
+
+    #[test]
+    fn registry_check_warns_when_the_tenant_reports_another_registry() {
+        let tenant = "registry.acme.antithesis.com";
+        let check = registry_check(
+            Some("Registry.Acme.Antithesis.com/team/"),
+            Some(tenant),
+            None,
+        );
+        assert_eq!(check.status, Status::Ok);
+
+        let check = registry_check(Some("proxy.example.com/acme"), Some(tenant), Some("prod"));
+        assert_eq!(check.status, Status::Warn);
+        assert_eq!(check.notes[0].level, Level::Warning);
+        assert!(check.notes[0].text.contains("`proxy.example.com/acme`"));
+        assert!(
+            check.notes[0]
+                .text
+                .contains("`registry.acme.antithesis.com`")
+        );
+        assert_eq!(
+            check.notes[1].text,
+            "run `snouty login --profile prod` to use the tenant's registry"
+        );
+
+        // An unset registry is reported once, with the tenant's registry.
+        let check = registry_check(None, Some(tenant), None);
+        assert_eq!(check.message, "container registry is not set");
+        assert!(
+            check.notes[1]
+                .text
+                .contains("`registry.acme.antithesis.com`")
+        );
+    }
+
+    #[test]
+    fn registry_matches_the_tenant_registry_or_a_path_under_it() {
+        let tenant = "registry.acme.antithesis.com";
+        assert!(registry_matches(tenant, tenant));
+        assert!(registry_matches("registry.acme.antithesis.com/", tenant));
+        assert!(registry_matches("REGISTRY.acme.antithesis.com", tenant));
+        assert!(registry_matches(
+            "registry.acme.antithesis.com/team/app",
+            tenant
+        ));
+        assert!(registry_matches(tenant, "registry.acme.antithesis.com/"));
+        assert!(!registry_matches("registry.other.antithesis.com", tenant));
+        assert!(!registry_matches(
+            "proxy.example.com/registry.acme.antithesis.com",
+            tenant
+        ));
+        assert!(!registry_matches(
+            "registry.acme.antithesis.com.evil",
+            tenant
+        ));
+
+        let tenant = "registry.example.com/acme";
+        assert!(registry_matches("registry.example.com/acme/app", tenant));
+        assert!(!registry_matches("registry.example.com/acmes", tenant));
+        assert!(!registry_matches("registry.example.com", tenant));
+        assert!(!registry_matches("registry.example.com/other", tenant));
+    }
+
+    #[test]
+    fn only_a_tenant_on_release_67_reports_its_registry() {
+        let version = |release: &str| ApiVersion::new("v1".into(), release.into());
+        assert!(!reports_registry(&version("66.9")));
+        assert!(reports_registry(&version("67.0")));
+        assert!(reports_registry(&version("67.1")));
+        assert!(reports_registry(&version("68.0")));
+        assert!(!reports_registry(&version("unknown")));
     }
 
     #[test]
     fn registry_check_only_warns_when_missing() {
         // Following main's #147 decision: the registry is launch-only, so a
         // missing one is a warning, not a failure.
-        let check = registry_check(None);
+        let check = registry_check(None, None, None);
         assert_eq!(check.status, Status::Warn);
         assert!(check.notes.iter().any(|n| n.text.contains("snouty launch")));
         assert!(check.notes.iter().any(|n| n.text.contains("snouty login")));

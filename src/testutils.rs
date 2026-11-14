@@ -836,6 +836,12 @@ fn mock_route(
     let ndjson = "application/x-ndjson";
 
     match (method, path_part) {
+        ("GET", "/api/version") => (
+            200,
+            r#"{"latest_api_version":"v1","release_version":"67.0"}"#.to_string(),
+            json,
+            NO_CACHE_CACHE_CONTROL,
+        ),
         ("GET", "/api/v1/registry") => (
             200,
             r#"{"auth":"antithesis","registry_url":"registry.testtenant.antithesis.com"}"#

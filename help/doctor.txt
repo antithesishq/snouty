@@ -4,7 +4,7 @@ Verifies that your environment is properly configured for Antithesis testing. Ru
 
 The credential can be a sign-in or an API key from {% if cli %}`{{ t("snouty login")? }}`{% else %}snouty login{% endif %}, an API key in ANTITHESIS_API_KEY, or a GitHub Actions OIDC token.
 
-doctor also contacts the Antithesis API. When credentials are configured, it reports the API and tenant versions and confirms connectivity, and it warns when the tenant release is too old for an API or a flag that some commands use. When no credential works, it also warns when CLI OAuth login is not enabled for the tenant. Pass {{ t("--offline")? }} to skip these network calls.
+doctor also contacts the Antithesis API. When credentials are configured, it reports the API and tenant versions and confirms connectivity, it warns when the tenant release is too old for an API or a flag that some commands use, and it warns when the registry setting is not the tenant's registry or a path under it. When no credential works, it also warns when CLI OAuth login is not enabled for the tenant. Pass {{ t("--offline")? }} to skip these network calls.
 
 The command fails if any required check fails.
 

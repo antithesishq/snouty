@@ -267,11 +267,11 @@ async fn cmd_launch(
 
     let config_image_ref = if let Some(config_dir) = &args.config {
         let detected = config::detect_config(config_dir)?;
-        let registry = snouty::settings::require_setting(settings.registry(), "registry")?;
+        let registry = settings.require_registry()?;
 
         let image_ref = container::generate_image_ref(registry);
         params.insert(ANT_CONFIG_IMAGE, &image_ref);
-        Some((detected, registry.to_owned(), image_ref))
+        Some((detected, registry, image_ref))
     } else {
         None
     };
@@ -329,7 +329,7 @@ async fn cmd_launch(
                 let compose = compose::DockerCompose::resolve(rt.as_ref(), compose_config.clone())?;
                 let pinned_yaml = compose.pin_images(
                     rt.as_ref(),
-                    &registry,
+                    registry,
                     if args.allow_remote_images {
                         compose::MissingImages::AssumeRemote
                     } else {
@@ -345,7 +345,7 @@ async fn cmd_launch(
         };
         params.insert(
             ANT_CONFIG_IMAGE,
-            container::strip_registry(&pinned_config, &registry),
+            container::strip_registry(&pinned_config, &registry.to_string()),
         );
     }
 

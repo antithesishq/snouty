@@ -12,6 +12,12 @@ stderr 'Could not resolve Antithesis registry.*'
 ! snouty launch --launcher basic_k8s_test -c k8s_config
 stderr 'Could not resolve Antithesis registry.*'
 
+# Rejects a registry setting that is not a registry before it builds anything.
+env 'ANTITHESIS_REGISTRY=not a registry'
+! snouty launch --launcher basic_test -c config
+stderr 'invalid registry setting: `not a registry` is not a container registry'
+stderr -literal 'Suggestion: run `snouty login` to set it, or set ANTITHESIS_REGISTRY'
+
 env ANTITHESIS_REGISTRY=registry.example.com/repo
 
 # Rejects a nonexistent directory.

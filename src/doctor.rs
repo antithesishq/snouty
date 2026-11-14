@@ -539,7 +539,7 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
     // Required settings. tenant is needed by every command; registry is
     // launch-only, so a missing one is a warning.
     checks.push(tenant_check(settings.tenant()));
-    checks.push(registry_check(settings.registry()));
+    checks.push(registry_check(settings.registry_as_written()));
 
     // Authentication (synchronous-only by design).
     let github_actions = crate::auth::in_github_actions();

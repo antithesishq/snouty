@@ -221,7 +221,7 @@ fn registry_problem(text: &str, host_len: usize) -> Option<String> {
 /// `None` when the setting names another registry, or when the tenant or the
 /// registry is not set.
 pub fn tenant_registry(settings: &Settings) -> Option<TenantRegistry> {
-    let registry: TenantRegistry = settings.registry()?.parse().ok()?;
+    let registry: TenantRegistry = settings.registry()?.ok()?.host().parse().ok()?;
     registry
         .tenant
         .eq_ignore_ascii_case(settings.tenant()?)
@@ -700,6 +700,8 @@ mod tests {
             ("acme", "registry.acme.antithesis.com:443/app", true),
             ("ACME", "registry.acme.antithesis.com/app", true),
             ("eu.acme", "registry.eu.acme.antithesis.com/app", true),
+            ("acme", " https://registry.acme.antithesis.com/app/ ", true),
+            ("acme", "registry.acme.antithesis.com/a//b", false),
         ];
         for (tenant, repository, matches) in cases {
             assert_eq!(

@@ -3,7 +3,6 @@
 
 use std::{
     collections::HashMap,
-    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -11,12 +10,12 @@ use color_eyre::eyre::{Context, OptionExt, Result, eyre};
 use keyring_core::Entry;
 use log::warn;
 use serde::{Deserialize, Serialize};
-use tempfile::NamedTempFile;
 
 use super::{AuthenticationInfo, RefreshableOAuthToken, claims::try_get_expiry_from_token};
 use crate::{
     settings::{
         back_up_unparsable_file, global_settings_dir, mkdir, read_to_string_if_file_exists,
+        write_atomically,
     },
     tag::{Tag, Tagged},
 };
@@ -259,10 +258,6 @@ fn clear_from_file_if_present(profile: Option<&str>) {
     let Some(path) = credentials_file_path() else {
         return;
     };
-    let parent_dir = path
-        .parent()
-        .expect("the credentials file path is a file name joined to a dir");
-
     if let Ok(Some(contents)) = read_to_string_if_file_exists(&path)
         && let Ok(mut creds_file) = parse_credentials_file_toml(&contents, &path)
     {
@@ -278,7 +273,7 @@ fn clear_from_file_if_present(profile: Option<&str>) {
 
         if changed {
             let profile_phrase = if profile.is_some() { "the same" } else { "no" };
-            match rewrite_credentials_file(&creds_file, parent_dir, &path) {
+            match rewrite_credentials_file(&creds_file, &path) {
                 Ok(()) => warn!(
                     "The supplied credentials were stored in the keychain, but an entry under {profile_phrase} profile name was also present in the user credentials file. Cleared the entry from the credentials file in favor of what was committed to the keychain."
                 ),
@@ -291,17 +286,8 @@ fn clear_from_file_if_present(profile: Option<&str>) {
     }
 }
 
-/// Atomically rewrite the credentials file with `creds_file` via a temp file
-/// in `parent_dir`.
-fn rewrite_credentials_file(
-    creds_file: &CredentialsFile,
-    parent_dir: &Path,
-    path: &Path,
-) -> Result<()> {
-    let mut temp = NamedTempFile::new_in(parent_dir)?;
-    temp.write_all(toml::to_string_pretty(creds_file)?.as_bytes())?;
-    temp.persist(path)?;
-    Ok(())
+fn rewrite_credentials_file(creds_file: &CredentialsFile, path: &Path) -> Result<()> {
+    write_atomically(path, toml::to_string_pretty(creds_file)?.as_bytes())
 }
 
 fn persist_to_file(
@@ -355,7 +341,7 @@ fn persist_to_file(
         current_contents.default = Some(credentials);
     }
 
-    rewrite_credentials_file(&current_contents, settings_dir, path)
+    rewrite_credentials_file(&current_contents, path)
 }
 
 pub(super) fn parse_credentials_file_toml(contents: &str, path: &Path) -> Result<CredentialsFile> {

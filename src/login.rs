@@ -1751,6 +1751,7 @@ mod tests {
             .expect_err("a credential that cannot be stored must fail the login");
         assert!(format!("{err:#}").contains("nothing was saved"), "{err:#}");
         assert!(!env.config_dir().join("settings.toml").exists());
+
         Ok(())
     }
 

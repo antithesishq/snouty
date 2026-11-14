@@ -576,8 +576,8 @@ impl PreviousSettingsFile {
     /// Put the file back as it was.
     pub(crate) fn restore(self) -> Result<()> {
         match self.contents {
-            Some(contents) => fs::write(&self.path, contents),
-            None => fs::remove_file(&self.path),
+            Some(contents) => write_atomically(&self.path, contents.as_bytes()),
+            None => fs::remove_file(&self.path).map_err(Into::into),
         }
         .wrap_err_with(|| format!("could not restore {}", self.path.display()))
     }
@@ -589,10 +589,21 @@ fn write_global_toml(filename: &str, value: &impl serde::Serialize) -> Result<Pa
     let settings_dir = global_settings_dir().ok_or_eyre(NO_GLOBAL_SETTINGS_DIR)?;
     let path = settings_dir.join(filename);
     mkdir(&settings_dir, true, 0o700)?;
-    let mut temp = NamedTempFile::new_in(&settings_dir)?;
-    temp.write_all(toml::to_string_pretty(value)?.as_bytes())?;
-    temp.persist(&path)?;
+    write_atomically(&path, toml::to_string_pretty(value)?.as_bytes())?;
     Ok(path)
+}
+
+/// Replace the file at `path` with `contents` through a temporary file in
+/// the same directory, so that a reader or a crash never leaves a partial
+/// settings or credentials file.
+pub(crate) fn write_atomically(path: &Path, contents: &[u8]) -> Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| eyre!("{} names no directory", path.display()))?;
+    let mut temp = NamedTempFile::new_in(dir)?;
+    temp.write_all(contents)?;
+    temp.persist(path)?;
+    Ok(())
 }
 
 fn entry_as_table_mut<'a>(table: &'a mut Table, key: &str) -> &'a mut Table {
@@ -903,6 +914,28 @@ mod tests {
     /// the file layers deterministically under parallel execution (the
     /// environment-wins case is covered end-to-end by `specs/settings.txt`).
     const UNSET_ENV: &str = "SNOUTY_DEFINITELY_NOT_SET_ENV_VAR_98f3a";
+
+    /// A restore replaces the settings file with a new one, so that a write
+    /// that stops partway leaves the file whole.
+    #[test]
+    fn restore_replaces_the_settings_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        fs::write(&path, "tenant = \"new\"\n").unwrap();
+        // A hard link sees a write into the file, but not a new file.
+        let link = dir.path().join("link.toml");
+        fs::hard_link(&path, &link).unwrap();
+
+        PreviousSettingsFile {
+            path: path.clone(),
+            contents: Some("tenant = \"old\"\n".to_owned()),
+        }
+        .restore()
+        .unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "tenant = \"old\"\n");
+        assert_eq!(fs::read_to_string(&link).unwrap(), "tenant = \"new\"\n");
+    }
 
     fn settings_file(contents: &str) -> Table {
         contents.parse().expect("test TOML should parse")

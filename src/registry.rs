@@ -11,10 +11,10 @@ use std::{fmt, path::PathBuf, str::FromStr};
 
 use chrono::{TimeDelta, Utc};
 use color_eyre::eyre::{OptionExt, Result};
+use url::Url;
 
 use crate::api::AntithesisApi;
 use crate::auth::{AuthenticationInfo, PasswordPolicy, RefreshableOAuthToken};
-use crate::container::is_path_segment;
 use crate::error::user_error;
 use crate::render::sanitize;
 use crate::settings::{Settings, SettingsRequest, is_valid_tenant_host};
@@ -25,107 +25,28 @@ pub const USERNAME: &str = "snouty-token";
 /// [`secret`] returns must outlive the push.
 const TOKEN_MIN_LIFETIME: TimeDelta = TimeDelta::hours(2);
 
-/// The container registry of a tenant, `registry.<tenant>.antithesis.com`.
-/// The tenant is lowercase, because a host name ignores case.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TenantRegistry {
-    tenant: String,
-}
-
-impl TenantRegistry {
-    pub fn tenant(&self) -> &str {
-        &self.tenant
-    }
-}
-
-impl fmt::Display for TenantRegistry {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "registry.{}.antithesis.com", self.tenant)
-    }
-}
-
-/// Why a text does not parse as a [`TenantRegistry`].
-#[derive(Debug, PartialEq, Eq)]
-pub enum TenantRegistryError {
-    /// The text names no host.
-    InvalidServerUrl,
-    /// The text names a host, but not a tenant registry.
-    NotTenantRegistry,
-}
-
-impl fmt::Display for TenantRegistryError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::InvalidServerUrl => "the server URL names no host",
-            Self::NotTenantRegistry => "the server URL is not registry.<tenant>.antithesis.com",
-        })
-    }
-}
-
-impl std::error::Error for TenantRegistryError {}
-
-/// Parses a server URL as a registry client gives it: a host, with an
-/// optional scheme and path. A host with a path, such as
-/// `registry.acme.antithesis.com/team/app`, parses to its registry. The host
-/// ignores case, and may take the port 443, which a registry client uses when
-/// it names no port.
-impl FromStr for TenantRegistry {
-    type Err = TenantRegistryError;
-
-    fn from_str(server_url: &str) -> Result<Self, Self::Err> {
-        // Only the host counts: the path of an image reference, such as
-        // `team/app:v1`, is not a registry path, so this does not parse
-        // through [`Registry`].
-        let host = without_scheme(server_url)
-            .split('/')
-            .next()
-            .unwrap_or_default();
-        if host.is_empty() {
-            return Err(TenantRegistryError::InvalidServerUrl);
-        }
-        let host = host
-            .strip_suffix(":443")
-            .unwrap_or(host)
-            .to_ascii_lowercase();
-        let tenant = host
-            .strip_prefix("registry.")
-            .and_then(|rest| rest.strip_suffix(".antithesis.com"))
-            .filter(|tenant| is_valid_tenant_host(tenant))
-            .ok_or(TenantRegistryError::NotTenantRegistry)?;
-        Ok(Self {
-            tenant: tenant.to_owned(),
-        })
-    }
-}
-
-/// `text` without the whitespace around it and without a leading `http://` or
-/// `https://` in any case, which a registry client or a user can put before a
-/// registry.
-fn without_scheme(text: &str) -> &str {
-    let text = text.trim();
-    ["https://", "http://"]
-        .into_iter()
-        .find_map(|scheme| {
-            text.get(..scheme.len())
-                .filter(|prefix| prefix.eq_ignore_ascii_case(scheme))
-                .map(|_| &text[scheme.len()..])
-        })
-        .unwrap_or(text)
-}
-
 /// A container registry to push images to: a host, with an optional port
 /// and path, such as `registry.example.com:5000/team`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Registry {
-    text: String,
-    /// The length of the first segment of `text`: the host and port.
-    host_len: usize,
-}
+pub struct Registry(Url);
 
 impl Registry {
     /// The host and port, which `docker login` takes.
     pub fn host(&self) -> &str {
-        &self.text[..self.host_len]
+        self.0.authority()
+    }
+
+    /// The tenant whose registry this is, when the host is
+    /// `registry.<tenant>.antithesis.com` with no port other than 443.
+    pub fn antithesis_tenant(&self) -> Option<&str> {
+        if self.0.port().is_some() {
+            return None;
+        }
+        self.0
+            .host_str()?
+            .strip_prefix("registry.")?
+            .strip_suffix(".antithesis.com")
+            .filter(|tenant| is_valid_tenant_host(tenant))
     }
 }
 
@@ -133,123 +54,87 @@ impl Registry {
 /// opens an image reference.
 impl fmt::Display for Registry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.text)
+        write!(
+            f,
+            "{}{}",
+            self.0.authority(),
+            self.0.path().trim_end_matches('/')
+        )
     }
 }
 
-/// Parses a registry as a user or a tenant gives it. The whitespace around
-/// it, a leading `http://` or `https://`, and trailing `/`s are removed. The
-/// host keeps its case. The path must be lowercase, because a container
-/// engine refuses an image reference with an uppercase path.
+/// Parses a registry as `docker login` does: the whitespace around it and
+/// any scheme are removed. The host is lowercase, because a container engine
+/// keys credentials by the exact host. The path must be lowercase, because a
+/// container engine refuses an image reference with an uppercase path.
 impl FromStr for Registry {
     type Err = String;
 
     fn from_str(given: &str) -> Result<Self, Self::Err> {
-        let text = without_scheme(given).trim_end_matches('/');
-        if text.is_empty() {
-            return Err("the registry is empty".to_owned());
-        }
-        let host_len = text.find('/').unwrap_or(text.len());
-        match registry_problem(text, host_len) {
-            None => Ok(Self {
-                text: text.to_owned(),
-                host_len,
-            }),
-            Some(problem) => Err(format!(
+        let given = given.trim();
+        let invalid = |problem: &str| {
+            format!(
                 "`{}` is not a container registry: {problem}",
-                sanitize(given.trim())
-            )),
+                sanitize(given)
+            )
+        };
+        let rest = given.split_once("://").map_or(given, |(_, rest)| rest);
+        if rest.is_empty() || rest.starts_with('/') || rest.contains(char::is_whitespace) {
+            return Err(invalid(
+                "give a host, optionally with a port and a path, such as `registry.example.com/team`",
+            ));
         }
+        let mut url =
+            Url::parse(&format!("https://{rest}")).map_err(|err| invalid(&err.to_string()))?;
+        if !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(invalid("give only a host, a port and a path"));
+        }
+        if url.path().contains(|c: char| c.is_ascii_uppercase()) {
+            return Err(invalid("the path must be lowercase"));
+        }
+        // Without a trailing `/`, so that a registry equals the one that its
+        // display parses to.
+        let path = url.path().trim_end_matches('/').to_owned();
+        url.set_path(&path);
+        Ok(Self(url))
     }
 }
 
-/// What makes `text`, whose host is its first `host_len` bytes, not a
-/// registry, or `None` when it is a registry.
-fn registry_problem(text: &str, host_len: usize) -> Option<String> {
-    let (host, path) = text.split_at(host_len);
-    if text.contains(char::is_whitespace) {
-        return Some("it contains whitespace".to_owned());
-    }
-    if text.contains("://") {
-        return Some("only `http://` or `https://` can come before a registry".to_owned());
-    }
-    if host.contains('@') {
-        return Some("a user name (`user@`) is not part of a registry".to_owned());
-    }
-    let (name_is_valid, port) = match host.strip_prefix('[') {
-        // An IPv6 address, such as `[::1]:5000`.
-        Some(rest) => match rest.split_once(']') {
-            Some((address, port)) => (
-                address.parse::<std::net::Ipv6Addr>().is_ok()
-                    && (port.is_empty() || port.starts_with(':')),
-                port.strip_prefix(':'),
-            ),
-            None => (false, None),
-        },
-        None => match host.split_once(':') {
-            Some((name, port)) => (is_valid_tenant_host(name), Some(port)),
-            None => (is_valid_tenant_host(host), None),
-        },
-    };
-    let port_is_valid = |port: &str| {
-        !port.starts_with('0')
-            && port.bytes().all(|b| b.is_ascii_digit())
-            && port.parse::<u16>().is_ok()
-    };
-    if port.is_some_and(|port| !port_is_valid(port)) {
-        return Some("the port must be a number from 1 to 65535".to_owned());
-    }
-    if !name_is_valid {
-        return Some(
-            "give a host, optionally with a port and a path, such as `registry.example.com/team`"
-                .to_owned(),
-        );
-    }
-    let segment = path
-        .split('/')
-        .skip(1)
-        .find(|segment| !is_path_segment(segment))?;
-    Some(if segment.is_empty() {
-        "the path has an empty segment (`//`)".to_owned()
-    } else if segment.contains(|c: char| c.is_ascii_uppercase())
-        && is_path_segment(&segment.to_ascii_lowercase())
-    {
-        format!("the path must be lowercase: `{}`", sanitize(segment))
-    } else {
-        format!(
-            "the path segment `{}` must start and end with a letter or a digit, and hold only letters, digits, `.`, `_` and `-`",
-            sanitize(segment)
-        )
-    })
-}
-
-/// The tenant registry that `settings` push to: the host of the `registry`
-/// setting, when it is the registry of the tenant of the same settings.
-/// `None` when the setting names another registry, or when the tenant or the
-/// registry is not set.
-pub fn tenant_registry(settings: &Settings) -> Option<TenantRegistry> {
-    // The host of the setting as written, so that a path that [`Registry`]
-    // refuses, such as an uppercase one that an older snouty saved, still
-    // names the tenant's registry for the credential helper.
-    let registry: TenantRegistry = settings.registry_as_written()?.parse().ok()?;
+/// The tenant registry that `settings` push to: the `registry` setting, when
+/// it is the registry of the tenant of the same settings. `None` when the
+/// setting names another registry or is not a registry, or when the tenant
+/// or the registry is not set.
+pub fn tenant_registry(settings: &Settings) -> Option<&Registry> {
+    let registry = settings.registry()?.ok()?;
     registry
-        .tenant
+        .antithesis_tenant()?
         .eq_ignore_ascii_case(settings.tenant()?)
         .then_some(registry)
 }
 
-/// The settings and the credential for `registry`. Settings files resolve
-/// as for every snouty command: `--settings` or `SNOUTY_SETTINGS_PATH` takes
-/// the place of `./.snouty.toml`, and the global settings file applies.
+/// Whether the tenant registry of `settings` is the registry of `tenant`.
+fn pushes_to_tenant(settings: &Settings, tenant: &str) -> bool {
+    tenant_registry(settings).and_then(Registry::antithesis_tenant) == Some(tenant)
+}
+
+/// The settings and the credential for the registry of `tenant`. Settings
+/// files resolve as for every snouty command: `--settings` or
+/// `SNOUTY_SETTINGS_PATH` takes the place of `./.snouty.toml`, and the global
+/// settings file applies.
 ///
 /// 1. When `--profile` or `ANTITHESIS_PROFILE` names a profile, use only that
 ///    profile, with the credential that every command finds for it. When the
 ///    profile fails to resolve, fail with its error. When its tenant registry
-///    is not `registry`, return `None`: do not search the other profiles.
-/// 2. Otherwise, find the profiles whose tenant registry is `registry`, in
-///    the order of [`SettingsRequest::resolve_every_profile`]: the top-level
-///    defaults first, then the named profiles. A profile that fails to
-///    resolve is skipped. Use the first of them that has its own credential
+///    is not the registry of `tenant`, return `None`: do not search the other
+///    profiles.
+/// 2. Otherwise, find the profiles whose tenant registry is the registry of
+///    `tenant`, in the order of [`SettingsRequest::resolve_every_profile`]:
+///    the top-level defaults first, then the named profiles. A profile that
+///    fails to resolve is skipped. Use the first of them that has its own credential
 ///    ([`AuthenticationInfo::find_own`]). A named profile does not use the
 ///    stored credential of the default profile, because that credential can
 ///    be for another tenant. When no profile matches, return `None`. When
@@ -259,12 +144,12 @@ pub fn tenant_registry(settings: &Settings) -> Option<TenantRegistry> {
 pub fn select_settings(
     project_settings_path: Option<PathBuf>,
     profile: Option<String>,
-    registry: &TenantRegistry,
+    tenant: &str,
 ) -> Result<Option<(Settings, AuthenticationInfo)>> {
     let request = SettingsRequest::from_flags(project_settings_path, profile)?;
     if request.profile().is_some() {
         let settings = request.resolve()?;
-        if tenant_registry(&settings).as_ref() != Some(registry) {
+        if !pushes_to_tenant(&settings, tenant) {
             return Ok(None);
         }
         let credential = AuthenticationInfo::for_ambient_configuration(
@@ -273,21 +158,22 @@ pub fn select_settings(
         )?;
         return Ok(Some((settings, credential)));
     }
-    first_with_own_credential(request.resolve_every_profile()?, registry, |profile| {
+    first_with_own_credential(request.resolve_every_profile()?, tenant, |profile| {
         AuthenticationInfo::find_own(profile, PasswordPolicy::Reject)
     })
 }
 
-/// The first of `profiles` whose tenant registry is `registry` and for whose
-/// profile `own_credential` finds a credential, with that credential.
+/// The first of `profiles` whose tenant registry is the registry of `tenant`,
+/// and for whose profile `own_credential` finds a credential, with that
+/// credential.
 fn first_with_own_credential(
     profiles: Vec<Settings>,
-    registry: &TenantRegistry,
+    tenant: &str,
     mut own_credential: impl FnMut(Option<&str>) -> Result<Option<AuthenticationInfo>>,
 ) -> Result<Option<(Settings, AuthenticationInfo)>> {
     let mut matched = false;
     for settings in profiles {
-        if tenant_registry(&settings).as_ref() != Some(registry) {
+        if !pushes_to_tenant(&settings, tenant) {
             continue;
         }
         if let Some(credential) = own_credential(settings.profile())? {
@@ -597,7 +483,7 @@ mod tests {
         .build()
     }
 
-    fn registry(value: &str) -> TenantRegistry {
+    fn registry(value: &str) -> Registry {
         value.parse().unwrap()
     }
 
@@ -609,25 +495,26 @@ mod tests {
         .fullmatch(true)
     }
 
-    /// A scheme, a path, the port 443 and the case of the
-    /// letters do not change the registry.
+    /// A scheme, a path, the port 443 and the case of the host do not
+    /// change the tenant.
     #[hegel::test]
-    fn a_server_url_names_its_tenant_registry(tc: hegel::TestCase) {
+    fn a_tenant_registry_names_its_tenant_in_any_spelling(tc: hegel::TestCase) {
         let tenant = tc.draw(tenants());
         let scheme = tc.draw(generators::sampled_from(vec!["", "https://", "http://"]));
         let port = tc.draw(generators::sampled_from(vec!["", ":443"]));
         let path = tc.draw(generators::from_regex(r"(/[a-z0-9/._-]*)?").fullmatch(true));
-        let bare = format!("registry.{tenant}.antithesis.com");
-        let url = format!("{scheme}{bare}{port}{path}");
-        let parsed = registry(&url);
-        assert_eq!(parsed.tenant(), tenant.to_ascii_lowercase(), "{url}");
-        assert_eq!(parsed.to_string(), bare.to_ascii_lowercase(), "{url}");
-        assert_eq!(parsed, registry(&bare.to_ascii_uppercase()));
+        let url = format!("{scheme}registry.{tenant}.antithesis.com{port}{path}");
+        let lowercase = tenant.to_ascii_lowercase();
+        assert_eq!(
+            registry(&url).antithesis_tenant(),
+            Some(lowercase.as_str()),
+            "{url}"
+        );
     }
 
     #[test]
     fn a_tenant_registry_names_its_tenant() {
-        let cases = [
+        for (url, tenant) in [
             ("registry.acme.antithesis.com", "acme"),
             ("registry.acme.antithesis.com/team/app", "acme"),
             ("https://REGISTRY.Acme.antithesis.com/v2/", "acme"),
@@ -636,21 +523,18 @@ mod tests {
             ("http://registry.acme.antithesis.com:443", "acme"),
             ("registry.eu.acme.antithesis.com", "eu.acme"),
             (" registry.acme.antithesis.com\n", "acme"),
-        ];
-        for (url, tenant) in cases {
-            assert_eq!(registry(url).tenant(), tenant, "{url:?}");
+        ] {
+            assert_eq!(registry(url).antithesis_tenant(), Some(tenant), "{url:?}");
         }
     }
 
     #[test]
-    fn a_server_url_of_another_registry_is_not_a_tenant_registry() {
+    fn another_registry_names_no_tenant() {
         for url in [
             "registry.acme.antithesis.com:5000",
             "http://registry.acme.antithesis.com:80/v2/",
             "acme.antithesis.com",
             "registry.antithesis.com",
-            "registry..antithesis.com",
-            "registry.a..b.antithesis.com",
             "registry.-acme.antithesis.com",
             "docker.acme.antithesis.com",
             "registry.acme.antithesis.com.example.com",
@@ -659,44 +543,8 @@ mod tests {
             "localhost:5000",
             "127.0.0.1:5000/app",
             "[::1]:5000/app",
-            "user@registry.acme.antithesis.com",
-            "\\v2",
-            "a b",
         ] {
-            assert_eq!(
-                url.parse::<TenantRegistry>(),
-                Err(TenantRegistryError::NotTenantRegistry),
-                "{url:?}"
-            );
-        }
-    }
-
-    /// Any text that parses prints as a registry that parses to itself.
-    #[hegel::test]
-    fn a_tenant_registry_parses_from_its_display(tc: hegel::TestCase) {
-        let text = tc.draw(generators::text());
-        let Ok(once) = text.parse::<TenantRegistry>() else {
-            return;
-        };
-        assert_eq!(registry(&once.to_string()), once, "{text:?}");
-    }
-
-    #[hegel::test]
-    fn a_tenant_registry_round_trips_through_its_display(tc: hegel::TestCase) {
-        let tenant = tc.draw(tenants()).to_ascii_lowercase();
-        let parsed = registry(&format!("registry.{tenant}.antithesis.com"));
-        assert_eq!(parsed.tenant(), tenant);
-        assert_eq!(registry(&parsed.to_string()), parsed);
-    }
-
-    #[test]
-    fn a_server_url_with_no_host_is_an_error() {
-        for url in ["", "  ", "https://", "https:///v2/", "/v2/"] {
-            assert_eq!(
-                url.parse::<TenantRegistry>(),
-                Err(TenantRegistryError::InvalidServerUrl),
-                "{url:?}"
-            );
+            assert_eq!(registry(url).antithesis_tenant(), None, "{url:?}");
         }
     }
 
@@ -713,12 +561,14 @@ mod tests {
             ("ACME", "registry.acme.antithesis.com/app", true),
             ("eu.acme", "registry.eu.acme.antithesis.com/app", true),
             ("acme", " https://registry.acme.antithesis.com/app/ ", true),
-            ("acme", "registry.acme.antithesis.com/MyTeam", true),
+            // Not a registry: a push to it fails.
+            ("acme", "registry.acme.antithesis.com/MyTeam", false),
         ];
         for (tenant, registry_setting, matches) in cases {
+            let settings = settings(None, tenant, registry_setting);
             assert_eq!(
-                tenant_registry(&settings(None, tenant, registry_setting)),
-                matches.then(|| registry(&format!("registry.{tenant}.antithesis.com"))),
+                tenant_registry(&settings),
+                matches.then(|| registry(registry_setting)).as_ref(),
                 "{tenant} {registry_setting}"
             );
         }
@@ -740,11 +590,7 @@ mod tests {
         profiles: Vec<Settings>,
         own_credential: impl FnMut(Option<&str>) -> Result<Option<AuthenticationInfo>>,
     ) -> Result<Option<(Option<String>, String)>> {
-        let selected = first_with_own_credential(
-            profiles,
-            &registry("registry.acme.antithesis.com"),
-            own_credential,
-        )?;
+        let selected = first_with_own_credential(profiles, "acme", own_credential)?;
         Ok(selected.map(|(settings, credential)| {
             let AuthenticationInfo::ApiKey { api_key } = credential else {
                 panic!("not an API key: {credential}");
@@ -839,96 +685,72 @@ mod tests {
     }
 
     #[test]
-    fn registry_host_is_the_text_before_the_path() {
-        for (registry, host) in [
+    fn a_registry_is_its_host_and_its_path() {
+        for (given, display, host) in [
             (
+                "us-central1-docker.pkg.dev/molten-verve-216720/orbitinghail-repository",
                 "us-central1-docker.pkg.dev/molten-verve-216720/orbitinghail-repository",
                 "us-central1-docker.pkg.dev",
             ),
-            ("us-central1-docker.pkg.dev", "us-central1-docker.pkg.dev"),
             (
+                "123456789012.dkr.ecr.us-east-1.amazonaws.com",
                 "123456789012.dkr.ecr.us-east-1.amazonaws.com",
                 "123456789012.dkr.ecr.us-east-1.amazonaws.com",
             ),
             (
+                "123456789012.dkr.ecr.us-east-1.amazonaws.com/team/app/",
                 "123456789012.dkr.ecr.us-east-1.amazonaws.com/team/app",
                 "123456789012.dkr.ecr.us-east-1.amazonaws.com",
             ),
-            ("registry.example.com", "registry.example.com"),
-            ("registry.example.com:443/team", "registry.example.com:443"),
-            ("localhost:5000/team", "localhost:5000"),
-            ("registry.internal", "registry.internal"),
-            ("registry", "registry"),
-            ("registry/team", "registry"),
-            ("[::1]:5000/team", "[::1]:5000"),
-            ("[::1]/team", "[::1]"),
-            ("ghcr.io/my-org", "ghcr.io"),
-            ("Registry.Example.com/team", "Registry.Example.com"),
-        ] {
-            let parsed: Registry = registry.parse().unwrap();
-            assert_eq!(parsed.host(), host, "{registry}");
-            assert_eq!(parsed.to_string(), registry);
-        }
-    }
-
-    #[test]
-    fn registry_drops_a_scheme_and_trailing_slashes() {
-        for (given, registry, host) in [
+            ("localhost:5000", "localhost:5000", "localhost:5000"),
+            ("foo", "foo", "foo"),
+            ("[::1]:5000/a", "[::1]:5000/a", "[::1]:5000"),
             (
-                "https://registry.example.com",
-                "registry.example.com",
+                "https://Registry.Example.com/team",
+                "registry.example.com/team",
                 "registry.example.com",
             ),
             (
-                "HTTP://registry.example.com:5000/team/",
+                "oci://reg.example.com:443/x",
+                "reg.example.com/x",
+                "reg.example.com",
+            ),
+            (
+                " HTTP://registry.example.com:5000/team//\n",
                 "registry.example.com:5000/team",
                 "registry.example.com:5000",
             ),
-            (
-                " https://us-central1-docker.pkg.dev/proj/repo//\n",
-                "us-central1-docker.pkg.dev/proj/repo",
-                "us-central1-docker.pkg.dev",
-            ),
-            (
-                "registry.example.com/",
-                "registry.example.com",
-                "registry.example.com",
-            ),
         ] {
-            let parsed: Registry = given.parse().unwrap();
-            assert_eq!(parsed.to_string(), registry, "{given:?}");
+            let parsed = registry(given);
+            assert_eq!(parsed.to_string(), display, "{given:?}");
             assert_eq!(parsed.host(), host, "{given:?}");
         }
     }
 
     #[test]
     fn registry_refuses_what_is_not_a_registry() {
-        for (registry, problem) in [
-            ("", "the registry is empty"),
-            (" ", "the registry is empty"),
-            ("https://", "the registry is empty"),
+        for (given, problem) in [
+            ("", "give a host"),
+            (" ", "give a host"),
+            ("https://", "give a host"),
             ("/team", "give a host"),
-            ("-registry.example.com", "give a host"),
-            ("[::1", "give a host"),
-            ("[not-ipv6]:5000", "give a host"),
-            ("registry.example.com//team", "empty segment"),
-            ("registry.example.com/-team", "path segment `-team`"),
-            ("registry.example.com/te$am", "path segment `te$am`"),
-            ("registry.example.com:", "the port must be"),
-            ("registry.example.com:99999", "the port must be"),
-            ("registry.example.com:0", "the port must be"),
-            ("registry.example.com:+80", "the port must be"),
-            ("registry.example.com:00080", "the port must be"),
-            ("[::1]:+80", "the port must be"),
-            ("user@registry.example.com", "user name"),
-            ("registry example.com", "whitespace"),
-            ("registry.example.com/te\tam", "whitespace"),
-            ("ghcr.io/MyOrg", "the path must be lowercase: `MyOrg`"),
-            ("ghcr.io/team/App", "the path must be lowercase: `App`"),
-            ("oci://registry.example.com", "only `http://` or `https://`"),
+            ("registry example.com", "give a host"),
+            ("ghcr.io/MyOrg", "the path must be lowercase"),
+            ("ghcr.io/team/App", "the path must be lowercase"),
+            ("u:p@registry.example.com", "only a host, a port and a path"),
+            (
+                "registry.example.com/team?q",
+                "only a host, a port and a path",
+            ),
+            (
+                "registry.example.com/team#f",
+                "only a host, a port and a path",
+            ),
+            ("registry.example.com:99999", "invalid port"),
+            ("registry.example.com:http", "invalid port"),
         ] {
-            let err = registry.parse::<Registry>().unwrap_err();
-            assert!(err.contains(problem), "{registry:?}: {err}");
+            let err = given.parse::<Registry>().unwrap_err();
+            assert!(err.contains(problem), "{given:?}: {err}");
         }
     }
 

@@ -15,8 +15,7 @@ use color_eyre::{
 use crate::docker_credential::{CRED_HELPER, HELPER_NAME};
 use crate::error::user_error;
 use crate::process::output_with_timeout;
-use crate::registry::Registry;
-use crate::registry::{self, TenantRegistry};
+use crate::registry::{self, Registry};
 use crate::settings::{
     ANTITHESIS_PROFILE_ENV_VAR_NAME, CONTAINER_ENGINE_VAR_NAME, SNOUTY_SETTINGS_PATH_VAR_NAME,
     Settings, mkdir,
@@ -72,7 +71,7 @@ impl std::fmt::Display for Architecture {
 /// of the launch. A `docker-credential-snouty` that the engine runs gets them
 /// in its environment, so that it resolves the settings of the launch.
 pub struct TenantRegistryAuth {
-    pub registry: TenantRegistry,
+    pub registry: Registry,
     pub secret: String,
     pub settings_path: Option<PathBuf>,
     pub profile: Option<String>,
@@ -83,7 +82,7 @@ pub struct TenantRegistryAuth {
 /// none of it: podman with `REGISTRY_AUTH_FILE` ignores its own auth files.
 #[derive(Clone)]
 struct TenantRegistryEnv {
-    registry: TenantRegistry,
+    registry: Registry,
     env: Vec<(&'static str, OsString)>,
     /// The podman auth file that `env` names, deleted with the last clone of
     /// the runtime.
@@ -114,9 +113,12 @@ impl TenantRegistryEnv {
 
     /// The environment for a round trip to the registry of `image_ref`.
     fn env_for(&self, image_ref: &str) -> impl Iterator<Item = (&'static str, &OsStr)> {
-        let covers = image_ref
-            .parse::<TenantRegistry>()
-            .is_ok_and(|registry| registry == self.registry);
+        // Only the host counts: the rest of an image reference, such as
+        // `team/app:V1`, is not a registry path.
+        let host = image_ref.split('/').next().unwrap_or_default();
+        let covers = host
+            .parse::<Registry>()
+            .is_ok_and(|registry| registry.host() == self.registry.host());
         self.env
             .iter()
             .filter(move |_| covers)
@@ -715,8 +717,8 @@ fn podman_registry_env(
     let path = std::env::var_os(PATH_ENV).unwrap_or_default();
     let path = std::env::join_paths(std::iter::once(dir).chain(std::env::split_paths(&path)))
         .wrap_err("cannot add the credential helper to PATH")?;
-    let contents = serde_json::json!({ "credHelpers": { auth.registry.to_string(): CRED_HELPER } })
-        .to_string();
+    let contents =
+        serde_json::json!({ "credHelpers": { auth.registry.host(): CRED_HELPER } }).to_string();
     let auth_file = tempfile::NamedTempFile::new()
         .and_then(|mut file| file.write_all(contents.as_bytes()).map(|()| file))
         .wrap_err("failed to write the registry auth file")?;
@@ -783,8 +785,7 @@ impl ContainerRuntime for DockerRuntime {
     fn use_tenant_registry_auth(&mut self, auth: TenantRegistryAuth) {
         // Only the `auth` field: the Docker CLI rejects other fields here.
         let basic = BASE64_STANDARD.encode(format!("{}:{}", registry::USERNAME, auth.secret));
-        let config =
-            serde_json::json!({ "auths": { auth.registry.to_string(): { "auth": basic } } });
+        let config = serde_json::json!({ "auths": { auth.registry.host(): { "auth": basic } } });
         let env = vec![(DOCKER_AUTH_CONFIG_ENV, config.to_string().into())];
         self.registry_env = Some(TenantRegistryEnv::new(auth, env, None));
     }
@@ -1142,7 +1143,7 @@ pub const MIRROR_PREFIX: &str = "snouty-mirror";
 
 /// Whether `segment` satisfies the reference grammar for one path segment: an
 /// alphanumeric opens and closes it, and `.`, `_`, and `-` join the rest.
-pub(crate) fn is_path_segment(segment: &str) -> bool {
+fn is_path_segment(segment: &str) -> bool {
     let alnum = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit();
     segment.starts_with(alnum)
         && segment.ends_with(alnum)

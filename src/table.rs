@@ -170,6 +170,29 @@ impl Table {
     }
 }
 
+/// `path` cut at the start with an ellipsis, to at most `width` columns. The
+/// cut falls at a `/` when one fits, so the text keeps its last whole
+/// components: `…/dotnet/dotnet`.
+pub(crate) fn truncate_path(path: &str, width: usize) -> String {
+    if measure_text_width(path) <= width {
+        return path.to_string();
+    }
+    // Measure each tail whole: measuring one char at a time miscounts escape
+    // sequences.
+    let fits = |start: usize| measure_text_width(&path[start..]) < width;
+    let start = path
+        .match_indices('/')
+        .map(|(slash, _)| slash)
+        .find(|&slash| fits(slash))
+        .or_else(|| {
+            path.char_indices()
+                .map(|(index, _)| index)
+                .find(|&i| fits(i))
+        })
+        .unwrap_or(path.len());
+    format!("…{}", &path[start..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,6 +279,19 @@ mod tests {
             .column(Column::new("B").fit(Fit::Truncate { floor: 0 }))
             .render(vec![row(&["aaaaaa", "bbbbbb"])], 12);
         assert_eq!(out.lines().nth(1), Some("aaaaaa  bbb…"));
+    }
+
+    #[test]
+    fn truncate_path_cuts_at_a_component() {
+        assert_eq!(
+            truncate_path("/usr/share/dotnet/dotnet", 19),
+            "…/dotnet/dotnet"
+        );
+        assert_eq!(
+            truncate_path("/usr/share/dotnet/dotnet", 24),
+            "/usr/share/dotnet/dotnet"
+        );
+        assert_eq!(truncate_path("/bin/averylongname", 6), "…gname");
     }
 
     fn wrap_table(floor: usize) -> Table {

@@ -1,0 +1,89 @@
+# snouty runs coverage
+#
+# runs coverage lists the run's locations
+# (`GET /api/v0/runs/{run_id}/coverage/locations`).
+
+# --unreached does not combine with --reached or --follow.
+! snouty runs coverage run-1 --reached --unreached
+stderr 'cannot be used with'
+! snouty runs coverage run-1 --unreached --follow
+stderr 'cannot be used with'
+
+# --detail is text output.
+! snouty --json runs coverage run-1 --detail
+stderr 'detail'
+
+# A run that has reached locations lists them with their moments. Only runs
+# created after the coverage API shipped have locations.
+mock-runs-server
+[!staging] snouty --json runs list
+[staging] snouty --json runs list --created-after 2026-11-13T23:00:00Z --limit 100
+env_from_json_find run_id launcher!=debugging -- runs coverage $R_run_id --reached
+snouty runs coverage $R_run_id --reached
+stdout '^MODULE +LOCATION +FUNCTION +HASH +VTIME$'
+stdout '^\S+ +\S+ +\S+ +-?\d+ +\d+\.?\d*$'
+stderr '^\d+ locations? · run '
+snouty --json runs coverage $R_run_id --reached
+stdout '^\{.*"module_id":.*"first_reached":\{.*"moment":\{"input_hash":"-?\d+","vtime":'
+
+# The rest of this file checks mock data.
+[staging] skip
+
+# Every location, then the count and the run status. An unreached location has
+# no moment.
+mock-runs-server
+snouty --verbose runs coverage run-1
+stdout '^MODULE +LOCATION +FUNCTION +HASH +VTIME$'
+stdout '^d85d838a38496ad7233432355829abc7d2333c33 +src/main.rs:13:5 +rusthello::main +-3625518438076122494 +12\.84610$'
+stdout '^d85d838a38496ad7233432355829abc7d2333c33 +src/main.rs:9:5 +rusthello::spin$'
+stderr '^4 locations · run completed$'
+stderr '^> GET .*/api/v0/runs/run-1/coverage/locations$'
+
+# --reached and --unreached send covered, and --module sends one request for
+# each module.
+snouty --verbose runs coverage run-1 --reached --module d85d838a38496ad7233432355829abc7d2333c33 --module go-20e55e2f1623
+stderr '^> GET .*/coverage/locations\?.*module_id=d85d838a38496ad7233432355829abc7d2333c33'
+stderr '^> GET .*/coverage/locations\?.*module_id=go-20e55e2f1623'
+stderr -count=2 'covered=true'
+stdout 'work\.Spin\.func1'
+! stdout 'rusthello::spin$'
+stderr '^3 locations · run completed$'
+
+# A repeated --module sends one request.
+snouty --verbose runs coverage run-1 --module go-20e55e2f1623 --module go-20e55e2f1623
+stderr -count=1 '^> GET .*module_id=go-20e55e2f1623'
+
+snouty runs coverage run-1 --unreached
+stdout '^MODULE +LOCATION +FUNCTION$'
+stdout -count=2 '^.+$'
+
+# --detail prints the vtime whole.
+snouty runs coverage run-1 --reached --detail
+stdout ' 12\.84610243188217$'
+
+# On a run in progress, the output is a snapshot.
+snouty runs coverage run-2
+stderr '^4 locations · run in progress$'
+stderr -literal 'this may be a partial snapshot, use --follow or re-run the command for more locations'
+
+# --follow sends is_streaming, and adds no snapshot note.
+snouty --verbose runs coverage run-2 --follow
+stderr 'is_streaming=true'
+stdout 'rusthello::followed'
+stderr '^5 locations · run in progress$'
+! stderr 'partial snapshot'
+
+# --json passes the locations through, with no status line.
+snouty --json runs coverage run-1
+stdout -count=4 '^\{"module_id":'
+stdout '"first_reached":\{"run_seconds":31\.4,"moment":\{"input_hash":"-3625518438076122494","vtime":"12\.846102431882170"\}\}'
+! stderr ' · run '
+
+# A Stream_Error line passes through to stdout, and the command fails.
+! snouty --json runs coverage run-stream-error
+stdout -count=2 '^\{.*$'
+stdout '^\{"error":"mock stream failure"\}$'
+stderr 'mock stream failure'
+
+! snouty runs coverage no-such-run
+stderr 'run not found: no-such-run'

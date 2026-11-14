@@ -118,6 +118,7 @@ tools! {
     RunsLogs => "runs_logs", Reads, hidden: [], required: [];
     RunsSearch => "runs_search", Reads, hidden: ["follow"], required: [];
     RunsUsage => "runs_usage", Reads, hidden: [], required: [];
+    RunsCoverage => "runs_coverage", Reads, hidden: ["follow"], required: [];
     // With no script, `runs exec` reads it from stdin, and a child's stdin is
     // null.
     RunsExec => "runs_exec", Reads, hidden: [], required: ["script"];
@@ -487,7 +488,8 @@ mod tests {
                 | ToolName::RunsWait
                 | ToolName::RunsCancel
                 | ToolName::RunsProperties
-                | ToolName::RunsBuildLogs => &["run_id"],
+                | ToolName::RunsBuildLogs
+                | ToolName::RunsCoverage => &["run_id"],
                 ToolName::RunsProperty => &["run_id", "property_id"],
                 ToolName::RunsLogs => &["run_id", "input_hash"],
                 ToolName::RunsSearch => &["run_id", "query"],

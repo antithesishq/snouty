@@ -1,0 +1,22 @@
+List the instrumented code locations of a run, and when the run first reached each one.
+
+Each row is one location: MODULE, LOCATION, FUNCTION, HASH and VTIME. MODULE is the module ID. LOCATION is the source file, line and column. HASH and VTIME give the moment where the run first reached the location, and are blank for a location that the run has not reached. Pass them as the input_hash and vtime of `{{ t("runs logs")? }}` to read the logs up to that moment.
+
+Use {{ t("--module")? }} to show only the locations of a module.{% if cli %} Give it more than once for more modules.{% else %} List more module IDs for more modules.{% endif %} Use {{ t("--reached")? }} to show only the locations that the run reached, and {{ t("--unreached")? }} to show only the locations that it did not reach. While the run is in progress, the output is the coverage up to now. While the run starts, the command waits until the run has coverage.
+
+{% if cli %}
+VTIME is cut to five decimals. With {{ t("--detail")? }}, it prints whole. On a terminal, a long LOCATION or FUNCTION is shortened. After the rows, a status line on stderr counts the locations, and gives the run's status.
+
+With {{ t("--follow")? }}, the command prints the locations that the run reached, then each new location as the run reaches it, until the run finishes. Without {{ t("--reached")? }}, a location prints again when the run reaches it. {{ t("--follow")? }} cannot be used with {{ t("--unreached")? }}.
+{% else %}
+VTIME prints whole. A status line under the rows counts the locations, and gives the run's status.
+{% endif %}
+
+With {{ t("--json")? }}, each location prints as the JSON object that the API sends, on its own line. A reached location has `first_reached`, with the moment and `run_seconds`, the time in seconds from the start of the run.{% if cli %} So `snouty runs coverage <run_id> --json > coverage.ndjson` downloads the coverage. If the server reports an error during the output, snouty prints its error line, and exits with status 3.{% endif %}
+
+Examples:
+  {{ t("snouty runs coverage <run_id> --reached --module <module_id>")? }}
+  {{ t("snouty runs coverage <run_id> --unreached --module <module_id>")? }}
+{%- if cli %}
+  snouty runs coverage <run_id> --reached --follow
+{%- endif %}

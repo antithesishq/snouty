@@ -84,7 +84,11 @@ async fn main() {
         // genuine internal faults keep theirs.
         let rendered = snouty::error::render_report(&report);
         eprintln!("{}", snouty::wrap_if_tty(&rendered));
-        std::process::exit(1);
+        std::process::exit(if report.is::<snouty::runs::CoverageCut>() {
+            3
+        } else {
+            1
+        });
     }
 }
 

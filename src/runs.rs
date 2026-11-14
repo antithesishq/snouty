@@ -109,6 +109,20 @@ async fn print_event_lines(
     Ok(())
 }
 
+/// `1 module`, `3 locations`.
+fn count(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
+/// `run in progress`, `run completed`.
+fn run_status(status: &RunStatus) -> String {
+    format!("run {}", status.to_string().replace('_', " "))
+}
+
 /// `print!`/`println!`, but routed through `write!`/`writeln!` to stdout so a
 /// closed pipe (e.g. `snouty runs list | head`) surfaces as an `io::Error` the
 /// caller propagates with `?` — `println!` would panic instead. Each call
@@ -121,7 +135,9 @@ macro_rules! outln {
     ($($arg:tt)*) => {{ writeln!(crate::stdio::stdout(), $($arg)*) }};
 }
 
-// Declared after the macros above, so that the module can use them.
+// Declared after the macros above, so that the modules can use them.
+mod coverage;
+pub use coverage::CoverageCut;
 pub mod usage;
 
 pub async fn cmd_runs(
@@ -143,6 +159,7 @@ pub async fn cmd_runs(
             (render.raw, render.detail)
         }
         Some(RunsCommands::Search(args)) => (args.render.raw, args.render.detail),
+        Some(RunsCommands::Coverage(args)) => (false, args.detail),
         _ => (false, false),
     };
     reject_detail_with_json(output.json, detail)?;
@@ -306,6 +323,9 @@ pub async fn cmd_runs(
             cmd_runs_search(args, settings, output.verbose, mode).await
         }
         Some(RunsCommands::Usage(args)) => usage::cmd_runs_usage(args, settings, output).await,
+        Some(RunsCommands::Coverage(args)) => {
+            coverage::cmd_runs_coverage(args, settings, output).await
+        }
     }
 }
 
@@ -2343,11 +2363,11 @@ fn normalize_vtime_field(entry: &mut Value, key: &str) -> Option<VTime> {
 /// own (an event's payload is arbitrary workload JSON), but data records
 /// always carry their schema's required envelope — `moment` for log/event
 /// records, `timestamp` for build log lines, `type` for run status
-/// notifications — which `Stream_Error` never has, so the envelope's absence
-/// disambiguates.
+/// notifications, `module_id` for coverage locations — which `Stream_Error`
+/// never has, so the envelope's absence disambiguates.
 fn stream_error_message(entry: &Value) -> Option<&str> {
     let obj = entry.as_object()?;
-    if ["moment", "timestamp", "type"]
+    if ["moment", "timestamp", "type", "module_id"]
         .iter()
         .any(|key| obj.contains_key(*key))
     {
@@ -2358,9 +2378,11 @@ fn stream_error_message(entry: &Value) -> Option<&str> {
 
 /// The failure a `Stream_Error` line becomes.
 fn mid_stream_error(message: &str) -> color_eyre::eyre::Report {
-    eyre!("the server reported an error mid-stream: {message}")
-        .note("output produced before the error may be incomplete")
+    eyre!("{MID_STREAM_ERROR}: {message}").note(MID_STREAM_NOTE)
 }
+
+const MID_STREAM_ERROR: &str = "the server reported an error mid-stream";
+const MID_STREAM_NOTE: &str = "output produced before the error may be incomplete";
 
 /// Event lines ready to consume: a `Stream_Error` line fails the stream, and
 /// `moment.vtime` normalized to an exact JSON number. Commands whose
@@ -5320,6 +5342,86 @@ mod tests {
                 "expected separate explanation and search suggestions, got: {debug}"
             );
             assert!(!debug.contains("list valid moments with"), "got: {debug}");
+        }
+
+        // The locations endpoint answers 404 while the run starts.
+        #[tokio::test(start_paused = true)]
+        async fn coverage_waits_while_the_run_starts() {
+            let server = mock_get_run(
+                "run-1",
+                200,
+                json!({
+                    "run_id": "run-1",
+                    "status": "starting",
+                    "created_at": "2025-03-20T02:00:00Z",
+                    "launcher": "nightly"
+                }),
+            )
+            .await;
+            let locations = "/api/v0/runs/run-1/coverage/locations";
+            Mock::given(method("GET"))
+                .and(path(locations))
+                .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "nope"})))
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(locations))
+                .respond_with(ResponseTemplate::new(200).set_body_string(
+                    "{\"module_id\":\"m\",\"address\":\"1\",\"function\":\"f\"}\n",
+                ))
+                .mount(&server)
+                .await;
+            let api = test_api(&server.uri());
+            let stream = ready::send_when_ready(
+                &api,
+                "run-1",
+                READY_POLL,
+                coverage::COVERAGE_RETRY,
+                || api.get_coverage_locations("run-1", None, None, false),
+                |_, err| err,
+            )
+            .await
+            .unwrap();
+            let lines: Vec<Value> = stream.try_collect().await.unwrap();
+            assert_eq!(lines.len(), 1);
+        }
+
+        // A ready run's 404 is not the start-up 404, so it fails at once.
+        // A retry would wait READY_POLL, longer than the timeout. The clock
+        // is not paused: a paused clock advances while the request waits.
+        #[tokio::test]
+        async fn coverage_fails_a_404_from_a_ready_run() {
+            let server = mock_get_run(
+                "run-1",
+                200,
+                json!({
+                    "run_id": "run-1",
+                    "status": "in_progress",
+                    "sub_status": "Ready",
+                    "created_at": "2025-03-20T02:00:00Z",
+                    "launcher": "nightly"
+                }),
+            )
+            .await;
+            Mock::given(method("GET"))
+                .and(path("/api/v0/runs/run-1/coverage/locations"))
+                .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "nope"})))
+                .mount(&server)
+                .await;
+            let api = test_api(&server.uri());
+            let send = ready::send_when_ready(
+                &api,
+                "run-1",
+                READY_POLL,
+                coverage::COVERAGE_RETRY,
+                || api.get_coverage_locations("run-1", None, None, false),
+                |_, err| err,
+            );
+            let result = tokio::time::timeout(Duration::from_secs(5), send)
+                .await
+                .expect("the 404 fails without a retry");
+            assert_eq!(api_error_status(&result.err().unwrap()), Some(404));
         }
 
         // A missing run keeps the plain "run not found" with no moment talk.

@@ -11,7 +11,7 @@ use clap::error::ErrorKind;
 use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
 use crate::api::{
-    FaultTolerance, PerformanceTier, RunStatus, SearchLimit, SourceRunId, SourceSessionId,
+    FaultTolerance, PerformanceTier, Reach, RunStatus, SearchLimit, SourceRunId, SourceSessionId,
 };
 
 use crate::docker_credential::HELPER_NAME;
@@ -1085,6 +1085,84 @@ pub enum RunsCommands {
     /// Show the compute hours that runs used
     #[command(arg = json(JsonShape::Lines))]
     Usage(RunsUsageArgs),
+
+    /// List the instrumented code locations of a run, and when the run first
+    /// reached each one
+    #[command(arg = json(JsonShape::Lines))]
+    Coverage(RunsCoverageArgs),
+}
+
+#[derive(Args)]
+pub struct RunsCoverageArgs {
+    /// Run ID
+    #[arg(value_parser = parse_run_id)]
+    pub run_id: String,
+
+    /// Only list the locations of this module (repeatable)
+    #[arg(
+        long = "module",
+        value_name = "MODULE_ID",
+        value_parser = clap::builder::NonEmptyStringValueParser::new(),
+    )]
+    pub module_ids: Vec<String>,
+
+    #[command(flatten)]
+    pub reach: ReachArg,
+
+    /// Keep the connection open, and print each location as the run reaches
+    /// it, until the run finishes
+    #[arg(short = 'f', long)]
+    pub follow: bool,
+
+    /// Print each vtime whole
+    #[arg(short = 'd', long)]
+    pub detail: bool,
+}
+
+/// `--reached` or `--unreached`: one half of a run's locations, or both
+/// halves when neither flag is given.
+#[derive(Clone, Copy, Default)]
+pub struct ReachArg(pub Option<Reach>);
+
+impl FromArgMatches for ReachArg {
+    fn from_arg_matches(matches: &clap::ArgMatches) -> Result<Self, clap::Error> {
+        // clap makes the flags exclusive.
+        Ok(Self(if matches.get_flag("reached") {
+            Some(Reach::Reached)
+        } else if matches.get_flag("unreached") {
+            Some(Reach::Unreached)
+        } else {
+            None
+        }))
+    }
+
+    fn update_from_arg_matches(&mut self, matches: &clap::ArgMatches) -> Result<(), clap::Error> {
+        *self = Self::from_arg_matches(matches)?;
+        Ok(())
+    }
+}
+
+impl Args for ReachArg {
+    fn augment_args(cmd: clap::Command) -> clap::Command {
+        cmd.arg(
+            clap::Arg::new("reached")
+                .long("reached")
+                .action(clap::ArgAction::SetTrue)
+                .conflicts_with("unreached")
+                .help("Only list the locations that the run reached"),
+        )
+        .arg(
+            clap::Arg::new("unreached")
+                .long("unreached")
+                .action(clap::ArgAction::SetTrue)
+                .conflicts_with("follow")
+                .help("Only list the locations that the run has not reached"),
+        )
+    }
+
+    fn augment_args_for_update(cmd: clap::Command) -> clap::Command {
+        Self::augment_args(cmd)
+    }
 }
 
 #[derive(Args)]

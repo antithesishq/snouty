@@ -109,6 +109,7 @@ async fn tools_return_detailed_output_or_json() {
             "runs_logs",
             "runs_search",
             "runs_usage",
+            "runs_coverage",
             "runs_exec",
             "runs_events",
             "debug",
@@ -121,6 +122,18 @@ async fn tools_return_detailed_output_or_json() {
             "tool_help",
         ]
     );
+
+    // The runs_coverage tool has no follow param, so its snapshot note does
+    // not suggest --follow.
+    let result = call(&client, "runs_coverage", json!({ "run_id": "run-2" })).await;
+    assert_eq!(result.is_error, Some(false));
+    let all: String = result
+        .content
+        .iter()
+        .map(|c| c.as_text().unwrap().text.as_str())
+        .collect();
+    assert!(all.contains("partial snapshot"), "{all}");
+    assert!(!all.contains("--follow"), "{all}");
 
     // runs_list returns what `snouty runs list --detail` prints: a block per
     // run. The result also has a stderr block: the note that more runs may

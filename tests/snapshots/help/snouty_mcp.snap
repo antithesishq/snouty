@@ -18,6 +18,7 @@ The tools:
   runs_logs        Stream moment logs for a run
   runs_search      Query events with the event-set DSL
   runs_usage       Show the compute hours that runs used
+  runs_modules     List the instrumented modules that a run loaded, and where
   runs_exec        Execute a command in a run that is in progress
   runs_events      Search events in a run
   debug            Launch a debugging session

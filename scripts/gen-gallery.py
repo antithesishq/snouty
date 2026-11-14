@@ -4116,6 +4116,35 @@ def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
             json_capable=False,
         ),
         Story(
+            "runs-modules",
+            "Check that my run instrumented each component",
+            "I want to see which instrumented modules my run loaded, and in which containers, "
+            "so I can spot a component that ran uninstrumented.",
+            "One row per module per program, with MODULE/NAME/PROGRAM/CONTAINER/LANG/LOCATIONS/"
+            "SYMBOLS columns and full module IDs: Python modules in the bank and workload "
+            "containers. Then a status line that counts the modules and containers and says the "
+            "run completed.",
+            ["runs", "modules", x.run],
+            non_empty_table,
+        ),
+        _help_story(
+            "help-runs-modules",
+            "Learn how to check a run's instrumentation",
+            "I want the help to tell me what each column means, which module IDs I can predict "
+            "from my build, and why a module can be missing.",
+            ["runs", "modules"],
+            ["runs", "modules", x.run],
+            align=(
+                "MODULE",
+                "NAME",
+                "PROGRAM",
+                "CONTAINER",
+                "LANG",
+                "LOCATIONS",
+                "SYMBOLS",
+            ),
+        ),
+        Story(
             "runs-stream-run-final",
             "Stream my run after it finished",
             "My run is finished, and I start its property stream; I want it to end soon.",

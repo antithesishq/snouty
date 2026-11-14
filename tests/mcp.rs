@@ -109,6 +109,7 @@ async fn tools_return_detailed_output_or_json() {
             "runs_logs",
             "runs_search",
             "runs_usage",
+            "runs_modules",
             "runs_exec",
             "runs_events",
             "debug",

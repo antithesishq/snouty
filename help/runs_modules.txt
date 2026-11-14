@@ -1,0 +1,16 @@
+List the instrumented modules that a run loaded, and the containers and programs that loaded them. Use it to check that the run instrumented each component that you expect.
+
+Each row is one module in one program: MODULE, NAME, PROGRAM, CONTAINER, LANG, LOCATIONS and SYMBOLS. MODULE is the module ID. A module that a program has not loaded yet has a blank PROGRAM and CONTAINER. LOCATIONS is the number of instrumented locations in the module, not a count of the locations that the run reached. SYMBOLS is `no` when Antithesis does not have the module's symbols, usually because the binary was not in `/symbols`. The coverage of such a module still counts, but the run has no file or function for its locations, and LANG is blank.
+
+{% if cli %}
+On a terminal, a long PROGRAM is shortened at the start, and a long NAME or CONTAINER at the end. Off a terminal, nothing is shortened. The rows are sorted by module, then container. After the table, a status line on stderr counts the modules and containers, and gives the run's status.
+{% else %}
+The rows are sorted by module, then container. A status line under the table counts the modules and containers, and gives the run's status.
+{% endif %}
+
+A module appears only after a program loads it. So while the run is in progress, more modules can appear. A process that does not start, or that starts only on a rare path, does not load its modules. A module ID is dependable for a module that the build uploads, such as a Go package's ID from its table in `/symbols`, or a native binary's GNU build ID. Antithesis assigns the IDs of other modules, such as Java, .NET and JavaScript modules.
+
+With {{ t("--json")? }}, each module prints as one JSON object on its own line, with the programs that loaded it in `instances`.
+
+Examples:
+  {{ t("snouty runs modules <run_id>")? }}

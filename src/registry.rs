@@ -14,7 +14,7 @@ use color_eyre::eyre::{OptionExt, Result};
 
 use crate::api::AntithesisApi;
 use crate::auth::{AuthenticationInfo, PasswordPolicy, RefreshableOAuthToken};
-use crate::container::{is_path_segment, is_registry_host};
+use crate::container::is_path_segment;
 use crate::error::user_error;
 use crate::render::sanitize;
 use crate::settings::{Settings, SettingsRequest, is_valid_tenant_host};
@@ -106,17 +106,9 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// The host that a push below the registry goes to, which `docker login`
-    /// takes. A runtime reads a first segment without a dot, a colon or an
-    /// uppercase letter, other than `localhost`, as a Docker Hub namespace, so
-    /// a single name such as `registry` pushes to `docker.io`.
+    /// The host and port, which `docker login` takes.
     pub fn host(&self) -> &str {
-        let first = &self.text[..self.host_len];
-        if is_registry_host(first) {
-            first
-        } else {
-            "docker.io"
-        }
+        &self.text[..self.host_len]
     }
 }
 
@@ -770,19 +762,28 @@ mod tests {
     }
 
     #[test]
-    fn registry_host_is_where_a_push_goes() {
+    fn registry_host_is_the_text_before_the_path() {
         for (registry, host) in [
+            (
+                "us-central1-docker.pkg.dev/molten-verve-216720/orbitinghail-repository",
+                "us-central1-docker.pkg.dev",
+            ),
+            ("us-central1-docker.pkg.dev", "us-central1-docker.pkg.dev"),
+            (
+                "123456789012.dkr.ecr.us-east-1.amazonaws.com",
+                "123456789012.dkr.ecr.us-east-1.amazonaws.com",
+            ),
+            (
+                "123456789012.dkr.ecr.us-east-1.amazonaws.com/team/app",
+                "123456789012.dkr.ecr.us-east-1.amazonaws.com",
+            ),
             ("registry.example.com", "registry.example.com"),
-            ("registry.example.com/team/app", "registry.example.com"),
             ("registry.example.com:443/team", "registry.example.com:443"),
             ("localhost:5000/team", "localhost:5000"),
-            ("localhost", "localhost"),
             ("registry.internal", "registry.internal"),
-            ("registry:5000", "registry:5000"),
-            ("Registry/team", "Registry"),
+            ("registry", "registry"),
+            ("registry/team", "registry"),
             ("[::1]:5000/team", "[::1]:5000"),
-            ("myorg", "docker.io"),
-            ("myorg/team", "docker.io"),
         ] {
             let parsed: Registry = registry.parse().unwrap();
             assert_eq!(parsed.host(), host, "{registry}");
@@ -807,22 +808,6 @@ mod tests {
             "[not-ipv6]:5000",
         ] {
             assert!(registry.parse::<Registry>().is_err(), "{registry:?}");
-        }
-    }
-
-    /// The host is the registry of an image that a push names below it.
-    #[hegel::test]
-    fn registry_host_matches_the_image_reference(tc: hegel::TestCase) {
-        let text = tc.draw(
-            generators::from_regex(r"[a-zA-Z0-9.-]{1,20}(:[0-9]{1,5})?(/[a-z0-9]{1,8}){0,2}")
-                .fullmatch(true),
-        );
-        if let Ok(registry) = text.parse::<Registry>() {
-            let image = format!("{registry}/app");
-            assert_eq!(
-                registry.host(),
-                crate::container::registry_host(&image).unwrap_or("docker.io")
-            );
         }
     }
 }

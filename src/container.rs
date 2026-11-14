@@ -1124,7 +1124,7 @@ pub fn image_ref_tag(image_ref: &str) -> &str {
 /// The rule a container runtime uses to read `ghcr.io/org/app` as hosted and
 /// `org/app` as Docker Hub shorthand. An uppercase letter marks a host too,
 /// because a path segment holds no uppercase.
-pub(crate) fn is_registry_host(segment: &str) -> bool {
+fn is_registry_host(segment: &str) -> bool {
     segment.contains('.')
         || segment.contains(':')
         || segment == "localhost"

@@ -79,21 +79,28 @@ stdout -literal '`docker login registry.example.com`'
 stdout -literal '`podman login registry.example.com`'
 file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
 
-# Login names the host that a push goes to: the first segment of the
-# registry, when a runtime reads it as a host. A single name with a port,
-# such as an internal registry, is a host. A single name alone is a Docker
-# Hub namespace.
+# `docker login` takes the registry's host: the text before the first `/`.
+# Login saves the registry as given, and never names Docker Hub for it.
 isolate-home registry_hosts
 mock-server 200 '{"auth":"antithesis","registry_url":"registry.spec-tenant.antithesis.com"}'
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
-snouty login --tenant spec-tenant --registry registry.example.com
-stdout -literal '`docker login registry.example.com`'
+snouty login --tenant spec-tenant --registry us-central1-docker.pkg.dev/molten-verve-216720/orbitinghail-repository
+stdout -literal '`docker login us-central1-docker.pkg.dev`'
+file ~/.config/snouty/settings.toml 'registry = "us-central1-docker.pkg.dev/molten-verve-216720/orbitinghail-repository"'
+snouty login --tenant spec-tenant --registry us-central1-docker.pkg.dev
+stdout -literal '`docker login us-central1-docker.pkg.dev`'
+file ~/.config/snouty/settings.toml 'registry = "us-central1-docker.pkg.dev"'
+snouty login --tenant spec-tenant --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com/team/app
+stdout -literal '`docker login 123456789012.dkr.ecr.us-east-1.amazonaws.com`'
+file ~/.config/snouty/settings.toml 'registry = "123456789012.dkr.ecr.us-east-1.amazonaws.com/team/app"'
+snouty login --tenant spec-tenant --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com
+stdout -literal '`docker login 123456789012.dkr.ecr.us-east-1.amazonaws.com`'
+file ~/.config/snouty/settings.toml 'registry = "123456789012.dkr.ecr.us-east-1.amazonaws.com"'
 snouty login --tenant spec-tenant --registry localhost:5000/team
 stdout -literal '`docker login localhost:5000`'
-snouty login --tenant spec-tenant --registry registry:5000
-stdout -literal '`docker login registry:5000`'
-snouty login --tenant spec-tenant --registry myorg
-stdout -literal '`docker login docker.io`'
+snouty login --tenant spec-tenant --registry registry
+stdout -literal '`docker login registry`'
+! stdout 'docker\.io'
 
 # A registry that the tenant reports must also be a registry host.
 isolate-home reported_url

@@ -170,7 +170,7 @@ Run `snouty settings show` to print the value that snouty resolved for each sett
 
 ### Trusting a project settings file
 
-snouty uses `./.snouty.toml` only after you trust it. Until you trust or deny the file, each command that reads the settings stops with an error. A project settings file can send your credentials or images to another server: snouty sends your API key to `base_url`, sends its requests through `https_proxy`, and pushes your images to `registry`. Review the whole file, with every profile in it, then decide:
+snouty uses `./.snouty.toml` only after you trust it. Until you trust or deny the file, each command that reads the settings stops with an error. A project settings file can send your credentials or images to another server: snouty sends your API key to `base_url`, sends its requests through `https_proxy`, and pushes your images to `registry` (or its alias, `repository`). Review the whole file, with every profile in it, then decide:
 
 ```sh
 snouty settings trust   # use ./.snouty.toml while its content stays the same

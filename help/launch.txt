@@ -45,4 +45,4 @@ Additional container images that the config parser can't discover (e.g. an image
 
 Use `snouty runs show --web <run_id>` to open the run in your browser. To wait for the run to finish, use `snouty runs wait <run_id>`. The run ID is the `run_id` value in the launch output, or `runId` with --json. To watch it live, use `snouty runs stream <run_id>`.
 
-`snouty login` saves your tenant, its container registry and your credential. ANTITHESIS_TENANT, ANTITHESIS_REGISTRY and ANTITHESIS_API_KEY override them.
+`{{ t("snouty login")? }}` saves your tenant, its container registry and your credential. ANTITHESIS_TENANT, ANTITHESIS_REGISTRY and ANTITHESIS_API_KEY override them.

@@ -25,13 +25,21 @@ const STATUS_CONTEXT: &str = "continuous-testing/antithesis";
 /// A slow GitHub must not keep the launch from printing the run ID.
 const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The kind of run that [`detect`] records metadata for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RunKind {
+    Launch,
+    /// A debugging session is a one-off run that must not set the commit
+    /// status, so it gets no cron schedule and no GitHub callback params.
+    Debug,
+}
+
 /// What [`detect`] records.
 #[derive(Clone, Copy)]
 pub struct Detect {
+    pub kind: RunKind,
     /// The `vcs.*` params: the commit, branch, repository and pull request.
     pub vcs: bool,
-    /// The GitHub callback params, which set the commit status of the build.
-    pub commit_status: bool,
 }
 
 /// The run metadata for a run from `dir`, as params.
@@ -48,7 +56,7 @@ fn detect_with(dir: &Path, what: Detect, env: impl Fn(&str) -> Option<String>) -
     let mut params = Params::new();
     params.insert(RUN_CALLER_TYPE, "snouty");
     let checkout = read_git(dir, &mut params);
-    read_github_actions(&env, checkout.as_deref(), what.commit_status, &mut params);
+    read_github_actions(&env, checkout.as_deref(), what.kind, &mut params);
     if !what.vcs {
         params.retain(|key| !key.starts_with(VCS_PREFIX));
     }
@@ -152,7 +160,7 @@ struct GitHubHead {
 fn read_github_actions(
     env: &impl Fn(&str) -> Option<String>,
     checkout: Option<&str>,
-    commit_status: bool,
+    kind: RunKind,
     params: &mut Params,
 ) {
     let (Some(_), Some(repository), Some(sha)) = (
@@ -219,10 +227,13 @@ fn read_github_actions(
     if let Some(actor) = env("GITHUB_ACTOR") {
         params.insert(RUN_CREATOR_NAME, actor);
     }
+    if kind == RunKind::Debug {
+        return;
+    }
     if let Some(schedule) = event.schedule {
         params.insert(RUN_CRON_SCHEDULE, schedule);
     }
-    if commit_status && let Some(token) = env(GITHUB_TOKEN_VAR_NAME) {
+    if let Some(token) = env(GITHUB_TOKEN_VAR_NAME) {
         let api = env("GITHUB_API_URL").unwrap_or_else(|| "https://api.github.com".to_owned());
         params.insert(
             ANT_GITHUB_CALLBACK_URL,
@@ -290,7 +301,7 @@ mod tests {
         read_github_actions(
             &|key| vars.get(key).map(|&v| v.to_owned()),
             checkout,
-            true,
+            RunKind::Launch,
             &mut params,
         );
         params

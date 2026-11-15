@@ -344,7 +344,9 @@ snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 
 stderr '"run.caller_type": "snouty"'
 
 # Under GitHub Actions with ANTITHESIS_GITHUB_TOKEN, the session records the
-#    build's metadata, but sends no GitHub callback params.
+#    build's metadata, but sends no GitHub callback params and no cron
+#    schedule.
+set-env GITHUB_EVENT_PATH ${WORK}/event.json
 env GITHUB_ACTIONS=true
 env GITHUB_REPOSITORY=octo/app
 env GITHUB_SHA=0123456789abcdef0123456789abcdef01234567
@@ -355,3 +357,7 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
 stderr '"run.creator_name": "octocat"'
 ! stderr 'antithesis.integrations'
+! stderr 'run.cron_schedule'
+
+-- event.json --
+{"schedule": "0 3 * * *"}

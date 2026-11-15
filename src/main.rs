@@ -29,7 +29,7 @@ use snouty::params::{
     ANT_FILTER_SOURCE_MATCHING, ANT_IS_EPHEMERAL, ANT_MAX_COMPUTE_HOURS, ANT_PERFORMANCE_TIER,
     ANT_REPORT_RECIPIENTS, ANT_SETUP_TIMEOUT, ANT_SOURCE, ANT_TEST_NAME, DuplicateKey, Params,
 };
-use snouty::run_metadata::{self, Detect};
+use snouty::run_metadata::{self, Detect, RunKind};
 use snouty::settings::Settings;
 use snouty::stdio::{self, StreamClosed};
 use snouty::validate;
@@ -289,8 +289,8 @@ async fn cmd_launch(
     params.merge_defaults(run_metadata::detect(
         args.config.as_deref().unwrap_or(Path::new(".")),
         Detect {
+            kind: RunKind::Launch,
             vcs: !args.no_vcs,
-            commit_status: true,
         },
     ));
 
@@ -462,12 +462,11 @@ async fn cmd_debug(
     params
         .extend_checked(args.params.into_iter().collect())
         .map_err(param_overrides_flag)?;
-    // A debugging session must not set the commit status of the checkout.
     params.merge_defaults(run_metadata::detect(
         Path::new("."),
         Detect {
+            kind: RunKind::Debug,
             vcs: !args.no_vcs,
-            commit_status: false,
         },
     ));
     // clap takes exactly one of --run-id and --session-id, but a --param can

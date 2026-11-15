@@ -15,8 +15,8 @@ dependencies = [
     # and one re-render per keystroke) back into the screen the user saw.
     "pexpect>=4.9",
     "pyte>=0.8.2",
-    # A throwaway certificate authority, so a mock tenant can answer at the
-    # tenant's own HTTPS host, as doctor needs to ask it for its registry.
+    # A throwaway CA, so a mock tenant can answer at the tenant's own HTTPS
+    # host.
     "trustme>=1.2.1",
 ]
 

@@ -5344,7 +5344,8 @@ mod tests {
             assert!(!debug.contains("list valid moments with"), "got: {debug}");
         }
 
-        // The locations endpoint answers 404 while the run starts.
+        // The locations endpoint answers 404 while the run starts, and for a
+        // while after the run is ready.
         #[tokio::test(start_paused = true)]
         async fn coverage_waits_while_the_run_starts() {
             let server = mock_get_run(
@@ -5352,7 +5353,8 @@ mod tests {
                 200,
                 json!({
                     "run_id": "run-1",
-                    "status": "starting",
+                    "status": "in_progress",
+                    "sub_status": "Ready",
                     "created_at": "2025-03-20T02:00:00Z",
                     "launcher": "nightly"
                 }),
@@ -5387,18 +5389,17 @@ mod tests {
             assert_eq!(lines.len(), 1);
         }
 
-        // A ready run's 404 is not the start-up 404, so it fails at once.
-        // A retry would wait READY_POLL, longer than the timeout. The clock
-        // is not paused: a paused clock advances while the request waits.
+        // A finished run's 404 fails at once. A retry would wait
+        // READY_POLL, longer than the timeout. The clock is not paused: a
+        // paused clock advances while the request waits.
         #[tokio::test]
-        async fn coverage_fails_a_404_from_a_ready_run() {
+        async fn coverage_fails_a_404_from_a_finished_run() {
             let server = mock_get_run(
                 "run-1",
                 200,
                 json!({
                     "run_id": "run-1",
-                    "status": "in_progress",
-                    "sub_status": "Ready",
+                    "status": "completed",
                     "created_at": "2025-03-20T02:00:00Z",
                     "launcher": "nightly"
                 }),

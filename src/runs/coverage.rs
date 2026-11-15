@@ -39,17 +39,16 @@ impl std::fmt::Display for CoverageCut {
 
 impl std::error::Error for CoverageCut {}
 
-/// The locations endpoint answers 404 while the run starts (orbitinghail,
-/// release 67.6, for a run launched a moment before). It answers 200 with no
-/// lines for a module that the run has not loaded, and for a run from before
-/// the coverage API, so a 404 from a ready run fails at once. An unknown run
-/// fails when snouty reads it after the 404.
+/// The locations endpoint answers 404 while the run starts, and for a minute
+/// or more after the run reports that it is ready (orbitinghail, release
+/// 67.6). A live run answers 200 with no lines for a module that it has not
+/// loaded, and so does a run from before the coverage API, so a 404 from a
+/// live run is the start-up 404. A finished run fails at once, and an unknown
+/// run fails when snouty reads it after the 404.
 pub(super) const COVERAGE_RETRY: RetryPolicy = RetryPolicy {
     needs: Needs::Live,
     waiting: "waiting for the run's coverage",
-    decide: |run, err| {
-        RetryDecision::retry_if(api_error_status(err) == Some(404) && !run.is_ready())
-    },
+    decide: |_, err| RetryDecision::retry_if(api_error_status(err) == Some(404)),
 };
 
 pub(super) async fn cmd_runs_coverage(

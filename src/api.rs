@@ -1427,9 +1427,7 @@ impl AntithesisApi {
     }
 
     /// Render a failed API call for the user. A rejected credential names
-    /// the step that fixes it. A 403 with text of its own refuses a valid
-    /// credential, as the OpenAPI spec documents, and keeps that text. The
-    /// gateway refuses a bad credential with an empty 403.
+    /// the step that fixes it, and keeps what the server said, if anything.
     async fn client_error(&self, err: ClientError<()>) -> Report {
         let (status, message) = match classify_client_error(err).await {
             ApiFailure::Response {
@@ -1440,16 +1438,12 @@ impl AntithesisApi {
         let reason = reqwest::StatusCode::from_u16(status)
             .ok()
             .and_then(|s| s.canonical_reason());
-        let said = !message.is_empty() && Some(message.as_str()) != reason;
-        if said && status == 403 {
-            return format_api_error(status, &message);
-        }
         let mut report = Report::new(ApiError {
             status,
             message: format!("the Antithesis API rejected the {}", self.authentication()),
         })
         .suppress_backtrace(true);
-        if said {
+        if !message.is_empty() && Some(message.as_str()) != reason {
             report = report.note(message);
         }
         match &self.rejected_next_step {
@@ -3278,6 +3272,11 @@ mod tests {
             (403, "", None),
             (403, "Forbidden", None),
             (
+                403,
+                r#"{"message":"You do not have permission to access this resource."}"#,
+                Some("You do not have permission to access this resource."),
+            ),
+            (
                 401,
                 r#"{"message":"Invalid or expired bearer token."}"#,
                 Some("Invalid or expired bearer token."),
@@ -3298,22 +3297,6 @@ mod tests {
                 None => assert!(!debug.contains("Note:"), "{debug}"),
             }
         }
-    }
-
-    /// A 403 with text of its own refuses a valid credential, so the error is
-    /// that text, with no step that replaces the credential.
-    #[tokio::test]
-    async fn a_403_with_its_own_text_keeps_the_text() {
-        let body = r#"{"message":"You do not have permission to access this resource."}"#;
-        let mock_server = mock_endpoint("GET", "/api/v0/registry", 403, body).await;
-        let api = test_api_optionally_with_cache(&mock_server, None);
-        let report = api.get_registry().await.unwrap_err();
-        assert_eq!(crate::error::api_error_status(&report), Some(403));
-        assert_eq!(
-            report.to_string(),
-            "API error: 403 Forbidden — You do not have permission to access this resource."
-        );
-        assert!(!format!("{report:?}").contains("Suggestion:"));
     }
 
     /// Answer the first `limited` requests to `mock_server` with 429 and

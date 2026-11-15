@@ -106,7 +106,7 @@ pub const MIN_CANCEL_RELEASE: (u64, u64) = (63, 0);
 /// `launch --setup-timeout` and `debug --duration`. `snouty doctor` checks it.
 pub const MIN_LAUNCH_PARAMS_RELEASE: (u64, u64) = (66, 0);
 
-/// The first tenant release that reports its registry at `GET /api/v1/registry`.
+/// The first tenant release that reports its registry at `GET /api/v0/registry`.
 /// `snouty doctor` asks only a tenant on this release or later.
 pub const MIN_REGISTRY_RELEASE: (u64, u64) = (67, 0);
 
@@ -3577,6 +3577,7 @@ mod tests {
         assert_eq!(
             operations,
             [
+                "get getCoverageLocations",
                 "get getRegistry",
                 "get getRun",
                 "get getRunBuildLogs",
@@ -4039,7 +4040,7 @@ mod tests {
     async fn the_registry_is_served_from_the_cache_when_the_server_allows_it() {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/v1/registry"))
+            .and(path("/api/v0/registry"))
             .respond_with(cacheable().set_body_json(serde_json::json!({
                 "auth": "antithesis",
                 "registry_url": "registry.acme.antithesis.com",

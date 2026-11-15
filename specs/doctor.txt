@@ -231,7 +231,7 @@ env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
 [!staging] env ANTITHESIS_REGISTRY=proxy.example.com/testtenant
 [!staging] snouty --verbose doctor
 [!staging] stderr 'GET .*/api/version'
-[!staging] ! stderr '/api/v1/registry'
+[!staging] ! stderr '/api/v0/registry'
 [!staging] stderr '^  ✓ container registry is set$'
 env ANTITHESIS_REGISTRY=
 

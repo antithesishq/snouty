@@ -639,7 +639,7 @@ fn doctor_finishes_when_the_tenant_does_not_report_its_registry() {
             let mut buf = [0u8; 4096];
             let read = std::io::Read::read(&mut stream, &mut buf).unwrap_or(0);
             let request = String::from_utf8_lossy(&buf[..read]);
-            if request.starts_with("GET /api/v1/registry ") {
+            if request.starts_with("GET /api/v0/registry ") {
                 stalled.push(stream);
                 continue;
             }

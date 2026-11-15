@@ -28,7 +28,7 @@ fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, 
     let max_file_size = settings.api_cache_max_file_size();
     let mut rows = vec![
         text_row("profile", settings.profile(), "default"),
-        text_row("tenant", settings.tenant(), NOT_SET),
+        text_row("tenant", settings.tenant().map(|tenant| &**tenant), NOT_SET),
         text_row(
             "registry",
             settings.registry().map(ToString::to_string).as_deref(),

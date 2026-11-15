@@ -36,10 +36,11 @@ stderr '.*https://github.com/antithesishq/snouty/releases.*'
 # malformed setting — even an explicit --channel cannot bypass it.
 env SNOUTY_UPDATE_CHANNEL=nightly
 ! snouty update
-stderr 'invalid update_channel setting'
+stderr -literal 'invalid SNOUTY_UPDATE_CHANNEL: expected'
+stderr -literal 'Suggestion: fix or unset SNOUTY_UPDATE_CHANNEL'
 stderr 'expected `stable` or `unstable`, got `nightly`'
 ! snouty update --channel stable
-stderr 'invalid update_channel setting'
+stderr 'invalid SNOUTY_UPDATE_CHANNEL'
 
 # A valid update_channel setting is accepted.
 env SNOUTY_UPDATE_CHANNEL=unstable

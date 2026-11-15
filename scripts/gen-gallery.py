@@ -508,7 +508,7 @@ class MockTenantSpec:
     """How a story's mock tenant behaves. When `sso` is False, the tenant has
     no CLI single sign-on: `/auth/cli/config` answers 403. When `actions` is
     set, the story runs as a GitHub Actions job with `id-token: write`. When
-    `docker_registry` is True, `/api/v1/registry` names a registry that takes
+    `docker_registry` is True, `/api/v0/registry` names a registry that takes
     the Docker login rather than the Antithesis credential."""
 
     sso: bool = False
@@ -656,7 +656,7 @@ class MockTenant:
         match path:
             case "/api/version":
                 return 200, {"latest_api_version": "v1", "release_version": "67.0"}, ""
-            case "/api/v1/registry":
+            case "/api/v0/registry":
                 if self.spec.docker_registry:
                     return 200, {"auth": "docker", "registry_url": _REGISTRY}, ""
                 return 200, {"auth": "antithesis", "registry_url": _TENANT_REGISTRY}, ""

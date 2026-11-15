@@ -379,7 +379,7 @@ impl<'a> TenantUrl<'a> {
     }
 }
 
-/// `GET /api/v1/registry` at `tenant_url` with `new_credentials`, or else
+/// `GET /api/v0/registry` at `tenant_url` with `new_credentials`, or else
 /// with the credential that later commands use. The request is also the check
 /// that the credential works. `None` means that the tenant does not serve the
 /// endpoint, which tenants before it answer with 404. The tenant
@@ -1461,7 +1461,7 @@ mod tests {
     const OAUTH_EPHEMERAL: &str = r#"{"port_strategy":"ephemeral"}"#;
 
     const REGISTRY_URL: &str = "registry.mytenant.antithesis.com";
-    /// `GET /api/v1/registry` body for a registry that takes the Antithesis
+    /// `GET /api/v0/registry` body for a registry that takes the Antithesis
     /// credential.
     const REGISTRY_ANTITHESIS: &str =
         r#"{"auth":"antithesis","registry_url":"registry.mytenant.antithesis.com"}"#;
@@ -1490,7 +1490,7 @@ mod tests {
             Self::with_backend(config_body, 200, REGISTRY_ANTITHESIS)
         }
 
-        /// Isolated env whose `/api/v1/registry` answers `status` and `body`.
+        /// Isolated env whose `/api/v0/registry` answers `status` and `body`.
         fn with_registry(status: u16, body: &'static str) -> Self {
             Self::with_backend(OAUTH_DISABLED, status, body)
         }

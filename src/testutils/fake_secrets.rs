@@ -175,7 +175,7 @@ mod tests {
     /// `${VAR}`, `$VAR`, `$(command)`, `{var}`, `<VALUE>`, `[REDACTED]`, or
     /// `VALUE`. A Python `True`, `False`, or `None` is not a value either, and
     /// nor is a GitHub Actions permission such as `"id-token": "write"`, or
-    /// the login kind of `GET /api/v1/registry`, such as `"auth": "docker"`.
+    /// the login kind of `GET /api/v0/registry`, such as `"auth": "docker"`.
     fn allowed(value: &str) -> bool {
         let names_a_variable = value
             .strip_prefix('$')

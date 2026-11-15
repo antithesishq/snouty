@@ -350,7 +350,7 @@ fn container_log_tail(log: &tempfile::NamedTempFile) -> String {
     tail.chars().take(MAX_TAIL).collect()
 }
 
-/// Start a backend for `snouty login` that answers `GET /api/v1/registry`
+/// Start a backend for `snouty login` that answers `GET /api/v0/registry`
 /// with `registry_status` and `registry_body`, and every other request with
 /// 200 and `config_body`. Returns its base URL. The listener thread leaks, and
 /// lives until the test process exits.
@@ -366,7 +366,7 @@ pub fn spawn_login_backend(
             let Some(request) = mock_read_request(&mut stream) else {
                 continue;
             };
-            let (status, body) = if request.starts_with("GET /api/v1/registry ") {
+            let (status, body) = if request.starts_with("GET /api/v0/registry ") {
                 (registry_status, registry_body)
             } else {
                 (200, config_body)
@@ -618,7 +618,7 @@ pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
 ///   for any other known run, 404 for an unknown run
 /// - `GET  /api/v0/usage` — paginated usage entries
 /// - `GET  /api/v0/usage/{run_id}` — one usage entry (404 for any other run)
-/// - `GET  /api/v1/registry` — the `antithesis` registry of the tenant
+/// - `GET  /api/v0/registry` — the `antithesis` registry of the tenant
 ///   `testtenant`
 /// - `GET  /auth/cli/config` — `{"port_strategy":"disabled"}`
 /// - `POST /auth/cli/refresh` — [`fake_secrets::FAKE_ACCESS_TOKEN_B`]
@@ -836,7 +836,7 @@ fn mock_route(
     let ndjson = "application/x-ndjson";
 
     match (method, path_part) {
-        ("GET", "/api/v1/registry") => (
+        ("GET", "/api/v0/registry") => (
             200,
             r#"{"auth":"antithesis","registry_url":"registry.testtenant.antithesis.com"}"#
                 .to_string(),

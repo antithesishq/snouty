@@ -26,9 +26,9 @@ use snouty::params::{
     ANT_CONFIG_IMAGE, ANT_DEBUGGING_DURATION, ANT_DEBUGGING_INPUT_HASH, ANT_DEBUGGING_RUN_ID,
     ANT_DEBUGGING_SESSION_ID, ANT_DEBUGGING_VTIME, ANT_DESCRIPTION, ANT_DURATION,
     ANT_EVENT_DESCRIPTION, ANT_FAULT_EXCLUSIONS, ANT_FAULT_TOLERANCE, ANT_FILTER_LOGS_MATCHING,
-    ANT_FILTER_SOURCE_MATCHING, ANT_IS_EPHEMERAL, ANT_MAX_COMPUTE_HOURS, ANT_PERFORMANCE_TIER,
-    ANT_REPORT_RECIPIENTS, ANT_SETUP_TIMEOUT, ANT_SOURCE, ANT_TEST_NAME, DuplicateKey, Params,
-    VCS_PREFIX,
+    ANT_FILTER_SOURCE_MATCHING, ANT_GITHUB_CALLBACK_URL, ANT_GITHUB_TOKEN, ANT_IS_EPHEMERAL,
+    ANT_MAX_COMPUTE_HOURS, ANT_PERFORMANCE_TIER, ANT_REPORT_RECIPIENTS, ANT_SETUP_TIMEOUT,
+    ANT_SOURCE, ANT_TEST_NAME, DuplicateKey, Params, VCS_PREFIX,
 };
 use snouty::run_metadata;
 use snouty::settings::Settings;
@@ -286,12 +286,11 @@ async fn cmd_launch(
         return Err(user_error("invalid arguments: no parameters provided"));
     }
 
-    let mut metadata = run_metadata::detect(args.config.as_deref().unwrap_or(Path::new(".")));
-    if args.no_vcs {
-        metadata.retain(|key| !key.starts_with(VCS_PREFIX));
-    }
     // A user value replaces the detected one.
-    params.merge_defaults(metadata);
+    params.merge_defaults(detect_run_metadata(
+        args.config.as_deref().unwrap_or(Path::new(".")),
+        args.no_vcs,
+    ));
 
     params.validate_test_params()?;
 
@@ -418,6 +417,16 @@ async fn submit_launch(
     api.launch_test(launcher, params).await
 }
 
+/// The run metadata detected from `dir`, without the `vcs.*` params when
+/// `no_vcs` is set.
+fn detect_run_metadata(dir: &Path, no_vcs: bool) -> Params {
+    let mut metadata = run_metadata::detect(dir);
+    if no_vcs {
+        metadata.retain(|key| !key.starts_with(VCS_PREFIX));
+    }
+    metadata
+}
+
 fn debug_typed_params(args: &DebugArgs) -> Params {
     let mut params = Params::new();
 
@@ -461,6 +470,11 @@ async fn cmd_debug(
     params
         .extend_checked(args.params.into_iter().collect())
         .map_err(param_overrides_flag)?;
+    // A debugging session must not set the commit status of the checkout, so
+    // only a --param sends the GitHub callback params.
+    let mut metadata = detect_run_metadata(Path::new("."), args.no_vcs);
+    metadata.retain(|key| key != ANT_GITHUB_CALLBACK_URL && key != ANT_GITHUB_TOKEN);
+    params.merge_defaults(metadata);
     // clap takes exactly one of --run-id and --session-id, but a --param can
     // add the other.
     if params.contains_key(ANT_DEBUGGING_RUN_ID) && params.contains_key(ANT_DEBUGGING_SESSION_ID) {

@@ -25,6 +25,11 @@ cannot replace the value of a dedicated flag, such as --title:
   snouty debug --run-id <run_id> --input-hash <hash> --vtime <vtime> \
     --param attrs.team=payments
 
+The session records the commit, branch and repository of the git checkout that
+holds the current directory, and the AI agent that runs snouty. A --param
+replaces a recorded value, and --no-vcs records no commit, branch, repository or
+pull request.
+
 The new session's run ID is the `run_id` value in the output, or `runId` with
 --json. The session starts at the moment that it debugs. Wait until it is ready,
 then run commands at that moment:
@@ -62,6 +67,10 @@ Options:
 
       --recipients <RECIPIENTS>
           Report recipients (semicolon-delimited email addresses)
+
+      --no-vcs
+          Do not record the commit, branch, repository and pull request in run
+          metadata
 
       --param <PARAMS>
           Extra parameters as key=value pairs (repeatable)

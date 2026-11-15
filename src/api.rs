@@ -15,7 +15,7 @@ use reqwest::{Client, Proxy};
 use serde::de::DeserializeOwned;
 
 use crate::api_cache::{self, ApiCache, CachePolicy};
-use crate::auth::{AuthenticationInfo, PasswordPolicy};
+use crate::auth::{AuthenticationInfo, PasswordPolicy, rejected_credential_next_step};
 use crate::env;
 use crate::error::{ApiError, user_error};
 use crate::params::{
@@ -808,6 +808,9 @@ pub struct AntithesisApi {
     client: generated::Client,
     base_url: String,
     cache: ApiCache,
+    /// What to do when the tenant rejects the credential, when its source is
+    /// known.
+    rejected_next_step: Option<String>,
 }
 
 /// Stop a stream at the `limit` its request named. Release 61 ends the stream
@@ -829,15 +832,7 @@ impl AntithesisApi {
     /// ([`PasswordPolicy::Reject`]); the launch commands use
     /// [`AntithesisApi::new_for_launch`].
     pub fn new(settings: &Settings, verbose: bool) -> Result<Self> {
-        Self::build(
-            settings,
-            AuthenticationInfo::for_ambient_configuration(
-                settings.profile(),
-                PasswordPolicy::Reject,
-            )?,
-            verbose,
-            ResponseCache::Default,
-        )
+        Self::ambient(settings, verbose, PasswordPolicy::Reject)
     }
 
     /// Like [`AntithesisApi::new`], but accepts the deprecated
@@ -846,15 +841,23 @@ impl AntithesisApi {
     /// only endpoints that still accept them. TODO: drop this constructor once
     /// the launch endpoints reject username/password too.
     pub fn new_for_launch(settings: &Settings, verbose: bool) -> Result<Self> {
-        Self::build(
-            settings,
-            AuthenticationInfo::for_ambient_configuration(
-                settings.profile(),
-                PasswordPolicy::WarnDeprecated,
-            )?,
-            verbose,
-            ResponseCache::Default,
-        )
+        Self::ambient(settings, verbose, PasswordPolicy::WarnDeprecated)
+    }
+
+    /// The client for the credential that every command finds. A rejection
+    /// of it names the step that fixes it at its source.
+    fn ambient(settings: &Settings, verbose: bool, policy: PasswordPolicy) -> Result<Self> {
+        let credential = AuthenticationInfo::for_ambient_configuration(settings.profile(), policy)?;
+        let next_step = rejected_credential_next_step(&credential, settings.profile());
+        Ok(Self {
+            rejected_next_step: Some(next_step),
+            ..Self::build(
+                settings,
+                credential.untag(),
+                verbose,
+                ResponseCache::Default,
+            )?
+        })
     }
 
     // Outside tests, no `ResponseCache` variant carries data to move.
@@ -897,6 +900,7 @@ impl AntithesisApi {
             client,
             base_url,
             cache,
+            rejected_next_step: None,
         })
     }
 
@@ -960,7 +964,7 @@ impl AntithesisApi {
                 }
                 return Err(format_api_error(404, &error_body_message(&body)));
             }
-            Err(err) => recover_launch_error(err).await?,
+            Err(err) => self.recover_launch_error(err).await?,
         };
         Ok(LaunchResponse {
             run_id: response.run_id,
@@ -972,7 +976,7 @@ impl AntithesisApi {
         let response: generated::types::LaunchMvdResponse =
             match self.client.launch_mvd().body(body).send().await {
                 Ok(response) => response.into_inner(),
-                Err(err) => recover_launch_error(err).await?,
+                Err(err) => self.recover_launch_error(err).await?,
             };
         Ok(LaunchResponse {
             run_id: response.run_id,
@@ -987,7 +991,7 @@ impl AntithesisApi {
                 let policy = self.cache.headers_policy(response.headers());
                 Ok(response.into_inner().with_tag(policy))
             }
-            Err(err) => Err(run_not_found(run_id, format_api_client_error(err).await)),
+            Err(err) => Err(run_not_found(run_id, self.client_error(err).await)),
         }
     }
 
@@ -1009,7 +1013,7 @@ impl AntithesisApi {
     pub async fn cancel_run(&self, run_id: &str) -> Result<()> {
         match self.client.cancel_run().run_id(run_id).send().await {
             Ok(_) => Ok(()),
-            Err(err) => Err(format_api_client_error(err).await),
+            Err(err) => Err(self.client_error(err).await),
         }
     }
 
@@ -1022,7 +1026,7 @@ impl AntithesisApi {
                 let policy = self.cache.headers_policy(response.headers());
                 Ok(response.into_inner().with_tag(policy))
             }
-            Err(err) => Err(format_api_client_error(err).await),
+            Err(err) => Err(self.client_error(err).await),
         }
     }
 
@@ -1070,7 +1074,7 @@ impl AntithesisApi {
                 let policy = self.cache.headers_policy(response.headers());
                 Ok(json_lines(response.into_inner().into_inner()).with_tag(policy))
             }
-            Err(err) => Err(format_api_client_error(err).await),
+            Err(err) => Err(self.client_error(err).await),
         }
     }
 
@@ -1122,7 +1126,7 @@ impl AntithesisApi {
                 };
                 Ok(stream.with_tag(policy))
             }
-            Err(err) => Err(format_api_client_error(err).await),
+            Err(err) => Err(self.client_error(err).await),
         }
     }
 
@@ -1161,7 +1165,7 @@ impl AntithesisApi {
         let request = self.client.execute_command().run_id(run_id).body(body);
         match request.send().await {
             Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
-            Err(err) => Err(format_api_client_error(err).await),
+            Err(err) => Err(self.client_error(err).await),
         }
     }
 
@@ -1209,7 +1213,7 @@ impl AntithesisApi {
         let request = self.client.stream_run_status().run_id(run_id).body(body);
         match request.send().await {
             Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
-            Err(err) => Err(format_api_client_error(err).await),
+            Err(err) => Err(self.client_error(err).await),
         }
     }
 
@@ -1222,7 +1226,7 @@ impl AntithesisApi {
             .property_id(property_id);
         match request.send().await {
             Ok(response) => normalize_property(response.into_inner()),
-            Err(err) => Err(format_api_client_error(err).await),
+            Err(err) => Err(self.client_error(err).await),
         }
     }
 
@@ -1259,7 +1263,7 @@ impl AntithesisApi {
                 json_lines(response.into_inner().into_inner()),
                 limit,
             )),
-            Err(err) => Err(format_api_client_error(err).await),
+            Err(err) => Err(self.client_error(err).await),
         }
     }
 
@@ -1270,7 +1274,7 @@ impl AntithesisApi {
         let request = self.client.search_count().run_id(run_id).body(body);
         match request.send().await {
             Ok(response) => Ok(response.into_inner().count),
-            Err(err) => Err(format_api_client_error(err).await),
+            Err(err) => Err(self.client_error(err).await),
         }
     }
 
@@ -1320,7 +1324,7 @@ impl AntithesisApi {
 
         match request.send().await {
             Ok(response) => Ok(response.into_inner()),
-            Err(err) => Err(format_api_client_error(err).await),
+            Err(err) => Err(self.client_error(err).await),
         }
     }
 
@@ -1351,7 +1355,7 @@ impl AntithesisApi {
                             response.into_inner();
                         Ok((data, next_cursor))
                     }
-                    Err(err) => Err(format_api_client_error(err).await),
+                    Err(err) => Err(self.client_error(err).await),
                 }
             },
         )
@@ -1366,7 +1370,7 @@ impl AntithesisApi {
         match self.client.get_usage().run_id(run_id).send().await {
             Ok(response) => Ok(Some(response.into_inner())),
             Err(err) => {
-                let err = format_api_client_error(err).await;
+                let err = self.client_error(err).await;
                 if crate::error::api_error_status(&err) == Some(404) {
                     Ok(None)
                 } else {
@@ -1400,7 +1404,46 @@ impl AntithesisApi {
                 let policy = self.cache.headers_policy(response.headers());
                 Ok(response.into_inner().with_tag(policy))
             }
-            Err(err) => Err(format_api_client_error(err).await),
+            Err(err) => Err(self.client_error(err).await),
+        }
+    }
+
+    /// Resolve the error from a launch call.
+    ///
+    /// Any 2xx is success. The spec documents only 202, and the generated client
+    /// surfaces any other 2xx as `UnexpectedResponse`. Earlier releases answered
+    /// 200. On orbitinghail, release 67.0 answers 202 for `basic_test` and
+    /// `debugging`, but nobody has checked the other launchers. A 4xx or 5xx
+    /// becomes an error that leads with the status, which `build.rs` leaves
+    /// undocumented. TODO: drop the any-2xx arm once every launcher is seen to
+    /// answer 202 and no supported release answers 200.
+    async fn recover_launch_error<T: DeserializeOwned>(&self, err: ClientError<()>) -> Result<T> {
+        match err {
+            ClientError::UnexpectedResponse(response) if response.status().is_success() => response
+                .json::<T>()
+                .await
+                .wrap_err("parsing launch response body"),
+            err => Err(self.client_error(err).await),
+        }
+    }
+
+    /// Render a failed API call for the user. A rejected credential names
+    /// the step that fixes it.
+    async fn client_error(&self, err: ClientError<()>) -> Report {
+        let report = format_api_client_error(err).await;
+        let Some(status) = crate::error::api_error_status(&report)
+            .filter(|&status| crate::error::rejects_credential(status))
+        else {
+            return report;
+        };
+        let report = Report::new(ApiError {
+            status,
+            message: format!("the Antithesis API rejected the {}", self.authentication()),
+        })
+        .suppress_backtrace(true);
+        match &self.rejected_next_step {
+            Some(next_step) => report.suggestion(next_step.clone()),
+            None => report.suggestion("run `snouty doctor` to find the credential to fix"),
         }
     }
 }
@@ -1889,25 +1932,6 @@ fn launch_request(params: &Params) -> Result<generated::types::LaunchRequest> {
     .wrap_err("failed to build launch request")
 }
 
-/// Resolve the error from a launch call.
-///
-/// Any 2xx is success. The spec documents only 202, and the generated client
-/// surfaces any other 2xx as `UnexpectedResponse`. Earlier releases answered
-/// 200. On orbitinghail, release 67.0 answers 202 for `basic_test` and
-/// `debugging`, but nobody has checked the other launchers. A 4xx or 5xx
-/// becomes an error that leads with the status, which `build.rs` leaves
-/// undocumented. TODO: drop the any-2xx arm once every launcher is seen to
-/// answer 202 and no supported release answers 200.
-async fn recover_launch_error<T: DeserializeOwned>(err: ClientError<()>) -> Result<T> {
-    match err {
-        ClientError::UnexpectedResponse(response) if response.status().is_success() => response
-            .json::<T>()
-            .await
-            .wrap_err("parsing launch response body"),
-        err => Err(format_api_client_error(err).await),
-    }
-}
-
 fn launch_mvd_request(params: &Params) -> Result<generated::types::LaunchMvdRequest> {
     // cmd_debug has validated the params and checked that exactly one of
     // run_id or session_id is set, so they fit one MvdParams variant.
@@ -2009,15 +2033,6 @@ fn format_api_error(status: u16, body: &str) -> Report {
         status,
         message: msg,
     });
-    // The "what to check" for an auth failure is guidance, not part of the error
-    // statement, so it rides along as a suggestion note.
-    let report = if crate::error::rejects_credential(status) {
-        report.suggestion(
-            "run `snouty doctor` to debug the issue, and `snouty login` to reauthenticate",
-        )
-    } else {
-        report
-    };
     // A 4xx is the user's to fix (bad credentials, unknown run id, invalid
     // filter, …), so it prints as a clean message — no backtrace, even under
     // `RUST_BACKTRACE`. 5xx and other statuses are genuine faults and keep theirs.

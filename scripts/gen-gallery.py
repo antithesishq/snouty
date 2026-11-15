@@ -5215,7 +5215,7 @@ def build_mock_tenant_stories() -> list[Story]:
             "snouty fails, says that the tenant rejected the credential, and tells the user "
             "how to give a working one.",
             ["runs", "list"],
-            fails_with("snouty login"),
+            fails_with("rejected the API key", "ANTITHESIS_API_KEY"),
             MockTenantSpec(),
             ANTITHESIS_API_KEY=_FAKE_API_KEY_A,
         ),

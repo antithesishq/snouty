@@ -9,8 +9,8 @@ use crate::api::{
     VersionError, normalize_base_url,
 };
 use crate::auth::{
-    AuthenticationInfo, CredentialSource, CredentialStore, OIDC_REJECTED_NEXT_STEP,
-    SourcedCredential, keychain_entry_name,
+    AuthenticationInfo, CredentialSource, CredentialStore, SourcedCredential, keychain_entry_name,
+    login_command, rejected_credential_next_step,
 };
 use crate::compose;
 use crate::container;
@@ -478,15 +478,6 @@ fn login_to_replace(profile: Option<&str>) -> String {
     )
 }
 
-/// `snouty login` for `profile`. A bare `snouty login` writes the default
-/// profile, so a named profile is passed on.
-fn login_command(profile: Option<&str>) -> String {
-    match profile {
-        Some(p) => format!("`snouty login --profile {p}`"),
-        None => "`snouty login`".to_owned(),
-    }
-}
-
 fn unset(variables: &[&str]) -> String {
     format!("`unset {}`", variables.join(" "))
 }
@@ -748,23 +739,6 @@ fn version_check(
         Err(VersionError::Unreachable(err)) => {
             Check::fail(CheckId::Api, "Antithesis API unreachable")
                 .note(Level::Error, format!("could not connect to {host}: {err}"))
-        }
-    }
-}
-
-/// The one step that fixes `in_use` when the tenant of `profile` rejects it.
-fn rejected_credential_next_step(in_use: &SourcedCredential, profile: Option<&str>) -> String {
-    match (in_use.value(), in_use.tag()) {
-        (AuthenticationInfo::GithubActionsOidc(_), _) => OIDC_REJECTED_NEXT_STEP.to_owned(),
-        // `snouty login` cannot help: the environment hides what it stores.
-        (credential, CredentialSource::Environment { variables }) => format!(
-            "set `{}` to a valid {credential}",
-            variables.join("` and `")
-        ),
-        // A named profile with no credential uses the default profile's, so
-        // the login goes to the checked profile.
-        (_, CredentialSource::Stored(_)) => {
-            format!("run {} to fix authentication", login_command(profile))
         }
     }
 }
@@ -1632,40 +1606,23 @@ mod tests {
         }
     }
 
-    /// A stored credential gets `snouty login`, with `--profile` for a named
-    /// profile. Another source gets the step that fixes it.
+    /// The next step comes from the source of the credential.
     #[test]
     fn version_auth_rejection_names_the_fix_for_the_source() {
-        let note_for = |in_use: SourcedCredential, profile| {
-            version_check(
-                "tenant.antithesis.com",
-                &in_use,
-                profile,
-                Err(VersionError::Http(403)),
-            )
+        let check = version_check(
+            "tenant.antithesis.com",
+            &env_api_key_source(),
+            None,
+            Err(VersionError::Http(403)),
+        );
+        let next_step = check
             .notes
             .into_iter()
             .find(|n| n.level == Level::Note)
-            .expect("a rejection carries a next step")
-            .text
-        };
-        let note = |profile| note_for(file_api_key_source(), profile);
-        assert_eq!(note(None), "run `snouty login` to fix authentication");
+            .expect("a rejection carries a next step");
         assert_eq!(
-            note(Some("default")),
-            "run `snouty login --profile default` to fix authentication"
-        );
-        assert_eq!(
-            note(Some("staging")),
-            "run `snouty login --profile staging` to fix authentication"
-        );
-        assert_eq!(
-            note_for(env_api_key_source(), Some("staging")),
+            next_step.text,
             "set `ANTITHESIS_API_KEY` to a valid API key"
-        );
-        assert_eq!(
-            note_for(oidc_source(), None),
-            "ask Antithesis support to trust GitHub Actions OIDC tokens from this repository"
         );
     }
 

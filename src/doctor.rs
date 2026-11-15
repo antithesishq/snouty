@@ -15,6 +15,7 @@ use crate::compose;
 use crate::container;
 use crate::error::rejects_credential;
 use crate::login::{CliOAuthConfig, fetch_cli_config};
+use crate::registry::Registry;
 use crate::render::OutputOptions;
 use crate::settings::Settings;
 
@@ -250,7 +251,7 @@ fn tenant_check(tenant: Option<&str>) -> Check {
 /// The container registry is only needed to build and push a config image
 /// (`snouty launch --config`), so a missing one is a warning, not a failure —
 /// read-only use (`snouty runs`, `snouty debug`) doesn't need it.
-fn registry_check(registry: Option<&str>) -> Check {
+fn registry_check(registry: Option<&Registry>) -> Check {
     match registry {
         Some(_) => Check::ok(CheckId::Registry, "container registry is set"),
         None => Check::warn(CheckId::Registry, "container registry is not set")
@@ -539,7 +540,7 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
     // Required settings. tenant is needed by every command; registry is
     // launch-only, so a missing one is a warning.
     checks.push(tenant_check(settings.tenant()));
-    checks.push(registry_check(settings.registry_as_written()));
+    checks.push(registry_check(settings.registry()));
 
     // Authentication (synchronous-only by design).
     let github_actions = crate::auth::in_github_actions();
@@ -1355,7 +1356,7 @@ mod tests {
 
     #[test]
     fn registry_check_is_ok_when_resolved() {
-        let check = registry_check(Some("registry.acme.antithesis.com/team"));
+        let check = registry_check(Some(&"registry.acme.antithesis.com/team".parse().unwrap()));
         assert_eq!(check.status, Status::Ok);
     }
 

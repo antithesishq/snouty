@@ -254,8 +254,7 @@ async fn do_cmd_login(
         verbose,
     )
     .await?;
-    // A saved registry of another tenant, or one that is not a registry, is
-    // neither offered nor kept.
+    // A saved registry of another tenant is neither offered nor kept.
     let saved_registry = current_settings
         .registry()
         .filter(|_| current_settings.tenant() == Some(tenant_to_use.as_str()));
@@ -282,10 +281,7 @@ async fn do_cmd_login(
         (None, None) if interactive => prompter
             .input(
                 "What container registry would you like to use?",
-                saved_registry
-                    .and_then(Result::ok)
-                    .map(ToString::to_string)
-                    .as_deref(),
+                saved_registry.map(ToString::to_string).as_deref(),
                 |answer| {
                     answer
                         .parse::<Registry>()
@@ -296,8 +292,7 @@ async fn do_cmd_login(
             .parse::<Registry>()
             .map_err(|err| invalid(&err.to_string()))?,
         (None, None) => match saved_registry {
-            Some(Ok(saved)) => saved.clone(),
-            Some(Err(err)) => return Err(invalid(err)),
+            Some(saved) => saved.clone(),
             None => return Err(needs_registry()),
         },
     };
@@ -1565,11 +1560,12 @@ mod tests {
             std::fs::write(path, contents).unwrap();
         }
 
-        /// Resolve settings the way `main` does, under this test's isolated `$HOME`.
+        /// Resolve settings the way `main` does for login, under this test's
+        /// isolated `$HOME`.
         // `&self` keeps the call inside the environment's lifetime.
         #[allow(clippy::unused_self)]
         fn resolve_settings(&self, profile: Option<&str>) -> Result<Settings> {
-            Settings::resolve(None, profile.map(str::to_owned))
+            Settings::resolve_for_login(None, profile.map(str::to_owned))
         }
     }
 
@@ -1664,7 +1660,7 @@ mod tests {
             "repository = \"old\"\n[profile.p]\nrepository = \"old-p\"\n",
         );
         let settings = env.resolve_settings(None)?;
-        assert_eq!(settings.registry_as_written(), Some("old"));
+        assert_eq!(settings.registry(), Some(&"old".parse()?));
         let prompter = Script::default().secret(FAKE_API_KEY_A).build();
 
         login_with_flags(Some("myrepo"), &settings, &prompter).await?;

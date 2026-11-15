@@ -100,10 +100,10 @@ impl FromStr for Registry {
 
 /// The tenant registry that `settings` push to: the `registry` setting, when
 /// it is the registry of the tenant of the same settings. `None` when the
-/// setting names another registry or is not a registry, or when the tenant
-/// or the registry is not set.
+/// setting names another registry, or when the tenant or the registry is not
+/// set.
 pub fn tenant_registry(settings: &Settings) -> Option<&Registry> {
-    let registry = settings.registry()?.ok()?;
+    let registry = settings.registry()?;
     registry
         .antithesis_tenant()?
         .eq_ignore_ascii_case(settings.tenant()?)
@@ -467,7 +467,9 @@ mod tests {
     }
 
     fn settings(profile: Option<&str>, tenant: &str, repository: &str) -> Settings {
-        let builder = Settings::builder().tenant(tenant).registry(repository);
+        let builder = Settings::builder()
+            .tenant(tenant)
+            .registry(registry(repository));
         match profile {
             Some(profile) => builder.profile(profile),
             None => builder,

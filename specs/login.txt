@@ -183,7 +183,22 @@ file ~/.config/snouty/settings.toml 'registry = "registry.example.com/my-org"'
 ! snouty login --tenant other-tenant
 stderr -literal 'run `snouty login --registry <registry>`'
 file ~/.config/snouty/settings.toml 'tenant = "spec-tenant"'
+# A saved registry that is not a registry fails other commands. Login
+# ignores it, with a warning, and replaces it.
+cp saved_invalid.toml no_endpoint/.config/snouty/settings.toml
+! snouty settings show
+stderr 'invalid registry setting: `not a registry` is not a container registry'
+stderr -literal 'Suggestion: correct the setting, or run `snouty login` to replace it'
+! snouty login --tenant spec-tenant
+stderr 'warning: ignoring the registry setting: `not a registry`'
+stderr -literal 'run `snouty login --registry <registry>`'
+snouty login --tenant spec-tenant --registry registry.example.com/acme
+file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
+snouty settings show
 
 -- saved_scheme.toml --
 tenant = "spec-tenant"
 registry = "https://registry.example.com/my-org/"
+-- saved_invalid.toml --
+tenant = "spec-tenant"
+registry = "not a registry"

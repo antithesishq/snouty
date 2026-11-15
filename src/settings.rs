@@ -5,7 +5,7 @@ use std::{
 };
 
 use color_eyre::Section;
-use color_eyre::eyre::{Context, OptionExt, Report, Result, eyre};
+use color_eyre::eyre::{Context, OptionExt, Result, eyre};
 use log::debug;
 use tempfile::NamedTempFile;
 use toml::{Table, Value};
@@ -102,7 +102,7 @@ pub fn cache_dir() -> Option<PathBuf> {
 pub struct Settings {
     profile: Option<String>,
     tenant: Option<String>,
-    registry: Option<RegistrySetting>,
+    registry: Option<Registry>,
     /// The `base_url` setting. [`Settings::base_url`] falls back to the
     /// tenant's host.
     base_url: Option<String>,
@@ -111,23 +111,6 @@ pub struct Settings {
     update_channel: UpdateChannel,
     api_cache_max_file_size: u64,
     files: Vec<SettingsFile>,
-}
-
-/// The `registry` setting as written, and the [`Registry`] it parses to, or
-/// why it does not parse. A setting that does not parse fails only the
-/// commands that use it, so that `snouty doctor` can report it and
-/// `snouty login` can replace it.
-#[derive(Clone)]
-struct RegistrySetting {
-    text: String,
-    parsed: Result<Registry, String>,
-}
-
-impl RegistrySetting {
-    fn new(text: String) -> Self {
-        let parsed = text.parse().map_err(|err: Report| err.to_string());
-        Self { text, parsed }
-    }
 }
 
 impl Default for Settings {
@@ -156,6 +139,26 @@ impl Settings {
     ) -> Result<Self> {
         SettingsRequest::from_flags(project_settings_path, profile)?.resolve()
     }
+
+    /// [`Settings::resolve`] for `snouty login`, which replaces the registry
+    /// setting: a registry setting that is not a registry is left out, with
+    /// a warning, instead of an error.
+    pub fn resolve_for_login(
+        project_settings_path: Option<PathBuf>,
+        profile: Option<String>,
+    ) -> Result<Self> {
+        let request = SettingsRequest::from_flags(project_settings_path, profile)?;
+        SettingsFiles::load(request.project_settings_path.as_deref())?
+            .resolve(request.profile, InvalidRegistry::Ignore)
+    }
+}
+
+/// What [`SettingsFiles::resolve`] does with a registry setting that is not a
+/// registry.
+#[derive(Clone, Copy)]
+enum InvalidRegistry {
+    Fail,
+    Ignore,
 }
 
 /// The settings file and the profile that the user names, by flag or by
@@ -194,7 +197,8 @@ impl SettingsRequest {
 
     /// See [`Settings::resolve`].
     pub fn resolve(self) -> Result<Settings> {
-        SettingsFiles::load(self.project_settings_path.as_deref())?.resolve(self.profile)
+        SettingsFiles::load(self.project_settings_path.as_deref())?
+            .resolve(self.profile, InvalidRegistry::Fail)
     }
 
     /// The settings of the top-level defaults, then of each named profile:
@@ -273,11 +277,15 @@ impl SettingsFiles {
         }
         Ok(std::iter::once(None)
             .chain(names.into_iter().map(|name| Some(name.clone())))
-            .filter_map(|profile| self.resolve(profile).ok())
+            .filter_map(|profile| self.resolve(profile, InvalidRegistry::Fail).ok())
             .collect())
     }
 
-    fn resolve(&self, profile: Option<String>) -> Result<Settings> {
+    fn resolve(
+        &self,
+        profile: Option<String>,
+        invalid_registry: InvalidRegistry,
+    ) -> Result<Settings> {
         let resolve = |key: &str, env_var: &str| {
             resolve_value(
                 key,
@@ -297,6 +305,22 @@ impl SettingsFiles {
             self.project.as_ref(),
             self.global.as_ref(),
         )?;
+        let registry = match registry
+            .map(|registry| registry.parse::<Registry>())
+            .transpose()
+        {
+            Ok(registry) => registry,
+            Err(err) => match invalid_registry {
+                InvalidRegistry::Fail => {
+                    return Err(user_error(format!("invalid registry setting: {err}"))
+                        .suggestion("correct the setting, or run `snouty login` to replace it"));
+                }
+                InvalidRegistry::Ignore => {
+                    eprintln!("warning: ignoring the registry setting: {err}");
+                    None
+                }
+            },
+        };
         let base_url = resolve("base_url", ANTITHESIS_BASE_URL_VAR_NAME)?;
         let https_proxy = resolve("https_proxy", ANTITHESIS_HTTPS_PROXY_VAR_NAME)?;
         let container_engine = resolve("container_engine", CONTAINER_ENGINE_VAR_NAME)?;
@@ -359,29 +383,15 @@ impl Settings {
         self.tenant.as_deref()
     }
 
-    /// The resolved container registry, or why the setting is not one;
-    /// `None` if unset.
-    pub fn registry(&self) -> Option<Result<&Registry, &str>> {
-        self.registry
-            .as_ref()
-            .map(|setting| setting.parsed.as_ref().map_err(String::as_str))
-    }
-
-    /// The `registry` setting as written, or `None` if unset, for the commands
-    /// that report the setting rather than push to it.
-    pub fn registry_as_written(&self) -> Option<&str> {
-        self.registry.as_ref().map(|setting| setting.text.as_str())
+    /// The resolved container registry, or `None` if unset.
+    pub fn registry(&self) -> Option<&Registry> {
+        self.registry.as_ref()
     }
 
     /// The container registry, for a command that pushes to it: an error
-    /// when the setting is unset or is not a registry.
+    /// when the setting is unset.
     pub fn require_registry(&self) -> Result<&Registry> {
-        match self.registry() {
-            Some(Ok(registry)) => Ok(registry),
-            Some(Err(err)) => Err(user_error(format!("invalid registry setting: {err}"))
-                .suggestion("run `snouty login` to set it, or set ANTITHESIS_REGISTRY")),
-            None => Err(missing_setting("registry")),
-        }
+        self.registry().ok_or_else(|| missing_setting("registry"))
     }
 
     /// The base URL to talk to: an explicit `base_url` if set, otherwise one
@@ -461,7 +471,7 @@ impl Settings {
 pub struct SettingsBuilder {
     profile: Option<String>,
     tenant: Option<String>,
-    registry: Option<String>,
+    registry: Option<Registry>,
     base_url: Option<String>,
     https_proxy: Option<String>,
     container_engine: Option<String>,
@@ -484,8 +494,8 @@ impl SettingsBuilder {
     }
 
     #[must_use]
-    pub fn registry(mut self, value: &str) -> Self {
-        self.registry = Some(value.to_string());
+    pub fn registry(mut self, value: Registry) -> Self {
+        self.registry = Some(value);
         self
     }
 
@@ -527,7 +537,7 @@ impl SettingsBuilder {
         Settings {
             profile: self.profile,
             tenant: self.tenant,
-            registry: self.registry.map(RegistrySetting::new),
+            registry: self.registry,
             base_url: self.base_url,
             https_proxy: self.https_proxy,
             container_engine: self.container_engine,

@@ -3573,6 +3573,7 @@ mod tests {
         assert_eq!(
             operations,
             [
+                "get getCoverageLocations",
                 "get getRegistry",
                 "get getRun",
                 "get getRunBuildLogs",
@@ -4035,7 +4036,7 @@ mod tests {
     async fn the_registry_is_served_from_the_cache_when_the_server_allows_it() {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/v1/registry"))
+            .and(path("/api/v0/registry"))
             .respond_with(cacheable().set_body_json(serde_json::json!({
                 "auth": "antithesis",
                 "registry_url": "registry.acme.antithesis.com",

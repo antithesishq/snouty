@@ -50,7 +50,7 @@ fn row_of_stars() -> String {
 /// The `GET /auth/cli/config` body that reports OAuth disabled for the CLI.
 const OAUTH_DISABLED: &str = r#"{"port_strategy":"disabled"}"#;
 
-/// The `GET /api/v1/registry` body of a registry that takes the Antithesis
+/// The `GET /api/v0/registry` body of a registry that takes the Antithesis
 /// credential.
 const REGISTRY: &str =
     r#"{"auth":"antithesis","registry_url":"registry.pty-tenant.antithesis.com"}"#;
@@ -67,7 +67,7 @@ const KEPT_ANSWER: &str = "Please enter your API Key (********9Pgw) kept";
 /// The answered API key line when a new key replaces the stored key.
 const NEW_KEY_ANSWER: &str = "Please enter your API Key (********9Pgw) ********";
 
-/// A backend that answers `GET /api/v1/registry` with [`REGISTRY`] and every
+/// A backend that answers `GET /api/v0/registry` with [`REGISTRY`] and every
 /// other request with [`OAUTH_DISABLED`]. Returns its base URL.
 fn start_backend() -> String {
     spawn_login_backend(OAUTH_DISABLED, 200, REGISTRY)
@@ -739,7 +739,7 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
             ),
             (
                 "GET",
-                "/api/v1/registry",
+                "/api/v0/registry",
                 serde_json::from_str::<Value>(REGISTRY).expect("parse REGISTRY"),
             ),
         ] {

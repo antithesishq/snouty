@@ -59,8 +59,9 @@ stderr 'both push to .*/snouty-mirror/ghcr.io/snouty-spec/collide:v1'
 
 # An image repository beside the tenant's own, at the same address: the
 # registry serves those bytes, but only under the address this machine uses.
-# Seed it by launching with the neighbour as the registry setting, so the registry holds
-# `<address>/other-team/neighbour:v1` and the local store records that digest.
+# Seed it by launching with the neighbour as the registry setting, so the
+# registry holds `<address>/other-team/neighbour:v1` and the local store
+# records that digest.
 mock-server 200 '{"runId":"run-123","statusCode":200}'
 set-env ANTITHESIS_REGISTRY ${REGISTRY}/other-team
 build-image --platform linux/amd64 neighbour:v1 images/sidecar

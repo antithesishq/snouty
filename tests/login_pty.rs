@@ -110,7 +110,7 @@ struct Login<'a> {
     /// Each `(name, value)` is set for the child.
     env: &'a [(&'a str, &'a str)],
     stdout: Stdout,
-    /// Without `--registry pty-repo`, login takes the registry from the
+    /// Without `--registry pty-registry`, login takes the registry from the
     /// tenant, or asks for it.
     no_registry_flag: bool,
     args: &'a [&'a str],
@@ -134,7 +134,7 @@ fn spawn_login(login: &Login) -> (tempfile::TempDir, OsSession) {
         .args(if login.no_registry_flag {
             &[][..]
         } else {
-            &["--registry", "pty-repo"][..]
+            &["--registry", "pty-registry"][..]
         })
         .args(login.args)
         .env_clear()
@@ -393,7 +393,8 @@ fn a_different_api_key_asks_before_it_replaces_the_stored_key() {
 }
 
 /// A new API key that overwrites a stored username and password, without a
-/// question, says so in the summary, because a script that still uses the password will no longer work.
+/// question, says so in the summary, because a script that still uses the
+/// password will no longer work.
 #[test]
 fn an_api_key_that_replaces_a_stored_password_says_so() {
     let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &password_credentials())]);

@@ -385,7 +385,8 @@ pub fn spawn_login_backend(
 /// test does when [`TEST_REGISTRY_VAR`] is set — never push to the same repo.
 /// That matters beyond hygiene: `pin_images` skips the push when an image that
 /// the compose file names at its push destination is already served, so a
-/// shared repo could stop exercising the push path. Include the runtime in `label` when a test loops over engines.
+/// shared repo could stop exercising the push path. Include the runtime in
+/// `label` when a test loops over engines.
 pub fn unique_image_prefix(label: &str) -> String {
     format!(
         "snouty-test-{label}-{}-{}",

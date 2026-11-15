@@ -1,10 +1,13 @@
 use std::{
-    fs,
+    fmt, fs,
     io::{ErrorKind, Write},
+    ops::Deref,
     path::{Path, PathBuf},
+    str::FromStr,
 };
 
-use color_eyre::eyre::{Context, OptionExt, Result, eyre};
+use color_eyre::Section;
+use color_eyre::eyre::{Context, OptionExt, Report, Result, eyre};
 use log::debug;
 use tempfile::NamedTempFile;
 use toml::{Table, Value};
@@ -12,6 +15,7 @@ use toml::{Table, Value};
 use crate::cli::UpdateChannel;
 use crate::env;
 use crate::error::user_error;
+use crate::registry::Registry;
 
 mod files;
 mod show;
@@ -96,10 +100,11 @@ pub fn cache_dir() -> Option<PathBuf> {
 /// `Default` is every setting unset (with the `stable` update channel and the
 /// default cache size cap) — handy when a caller needs a `Settings` without
 /// resolving anything.
+#[derive(Clone)]
 pub struct Settings {
     profile: Option<String>,
-    tenant: Option<String>,
-    registry: Option<String>,
+    tenant: Option<Tenant>,
+    registry: Option<Registry>,
     /// The `base_url` setting. [`Settings::base_url`] falls back to the
     /// tenant's host.
     base_url: Option<String>,
@@ -135,6 +140,113 @@ impl Settings {
         profile: Option<String>,
     ) -> Result<Self> {
         SettingsRequest::from_flags(project_settings_path, profile)?.resolve()
+    }
+}
+
+/// Where a setting's value comes from.
+#[derive(Clone, Debug)]
+enum SettingSource {
+    Env(&'static str),
+    File(PathBuf),
+}
+
+/// A settings file or an environment variable that holds a value snouty
+/// cannot use. The message names the file or the variable.
+#[derive(Debug)]
+struct SettingsError {
+    source: SettingSource,
+    message: String,
+}
+
+impl SettingsError {
+    fn report(source: SettingSource, message: String) -> Report {
+        Report::new(Self { source, message }).suppress_backtrace(true)
+    }
+}
+
+impl fmt::Display for SettingsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SettingsError {}
+
+/// `err` with a suggestion that names the fix, when `err` is a
+/// [`SettingsError`]. Login does not replace a setting that snouty cannot
+/// use, so for login (`is_login`) the suggestion is to fix the setting and
+/// then run login again.
+pub fn suggest_settings_fix(err: Report, is_login: bool) -> Report {
+    let Some(SettingsError { source, .. }) = err.downcast_ref::<SettingsError>() else {
+        return err;
+    };
+    let suggestion = match (source, is_login) {
+        (SettingSource::Env(var), true) => {
+            format!("fix or unset {var}, then run `snouty login` again")
+        }
+        (SettingSource::Env(var), false) => format!("fix or unset {var}"),
+        (SettingSource::File(path), true) => format!(
+            "fix or delete {}, then run `snouty login` again",
+            path.display()
+        ),
+        (SettingSource::File(path), false) => format!(
+            "fix {}, or delete it and run `snouty login`",
+            path.display()
+        ),
+    };
+    err.suggestion(suggestion)
+}
+
+/// A settings file that snouty read.
+#[derive(Debug)]
+struct LoadedFile {
+    table: Table,
+    path: PathBuf,
+}
+
+impl LoadedFile {
+    /// `err`, a fault in this file, as a [`SettingsError`].
+    fn error(&self, err: &Report) -> Report {
+        SettingsError::report(
+            SettingSource::File(self.path.clone()),
+            format!("{}: {err}", self.path.display()),
+        )
+    }
+}
+
+/// A setting's text, and where it was found.
+struct Found {
+    value: String,
+    source: SettingSource,
+    /// The key in the file, such as `profile.prod.tenant`, or the name of
+    /// the environment variable.
+    key: String,
+}
+
+impl Found {
+    fn parse<T: FromStr>(self) -> Result<T>
+    where
+        T::Err: fmt::Display,
+    {
+        self.parse_with(str::parse)
+    }
+
+    /// The value parsed by `parse`, or an error that names where it was
+    /// found.
+    fn parse_with<T, E: fmt::Display>(self, parse: impl FnOnce(&str) -> Result<T, E>) -> Result<T> {
+        parse(&self.value).map_err(|err| {
+            let message = match &self.source {
+                SettingSource::Env(var) => format!("invalid {var}: {err}"),
+                SettingSource::File(path) => {
+                    format!(
+                        "invalid setting `{}` in {}: {err}",
+                        self.key,
+                        path.display()
+                    )
+                }
+            };
+            SettingsError::report(self.source, message)
+        })
     }
 }
 
@@ -194,8 +306,8 @@ impl SettingsRequest {
 }
 
 struct SettingsFiles {
-    project: Option<Table>,
-    global: Option<Table>,
+    project: Option<LoadedFile>,
+    global: Option<LoadedFile>,
     /// The files that were read, most specific first.
     files: Vec<SettingsFile>,
 }
@@ -210,26 +322,22 @@ impl SettingsFiles {
         // A named project file must exist and needs no trust; the default
         // `./.snouty.toml` is optional and needs trust. (Climbing the directory
         // tree, if ever wanted, would go here.)
-        let (project, project_path) = match project_settings_path {
-            Some(path) => (load_settings_file(path, true)?, path),
-            None => (
-                load_default_project_file(trust_override)?,
-                Path::new(PROJECT_SETTINGS_FILENAME),
-            ),
+        let project = match project_settings_path {
+            Some(path) => load_settings_file(path, true)?,
+            None => load_default_project_file(trust_override)?,
         };
-        let global_path = global_settings_dir().map(|dir| dir.join(GLOBAL_SETTINGS_FILENAME));
-        let global = match &global_path {
-            Some(path) => load_settings_file(path, false)?,
+        let global = match global_settings_dir() {
+            Some(dir) => load_settings_file(&dir.join(GLOBAL_SETTINGS_FILENAME), false)?,
             None => None,
         };
         // Most specific first: the project file overrides the global one.
         let files = [
             project
-                .is_some()
-                .then(|| SettingsFile::new(SettingsFileType::Project, project_path)),
-            global_path
-                .filter(|_| global.is_some())
-                .map(|path| SettingsFile::new(SettingsFileType::Global, &path)),
+                .as_ref()
+                .map(|file| SettingsFile::new(SettingsFileType::Project, &file.path)),
+            global
+                .as_ref()
+                .map(|file| SettingsFile::new(SettingsFileType::Global, &file.path)),
         ]
         .into_iter()
         .flatten()
@@ -244,8 +352,9 @@ impl SettingsFiles {
     /// See [`SettingsRequest::resolve_every_profile`].
     fn resolve_every_profile(&self) -> Result<Vec<Settings>> {
         let mut names: Vec<&String> = Vec::new();
-        for table in [&self.project, &self.global].into_iter().flatten() {
-            for name in profiles(table)?.into_iter().flat_map(Table::keys) {
+        for file in [&self.project, &self.global].into_iter().flatten() {
+            let profiles = profiles(&file.table).map_err(|err| file.error(&err))?;
+            for name in profiles.into_iter().flat_map(Table::keys) {
                 if !names.contains(&name) {
                     names.push(name);
                 }
@@ -258,7 +367,7 @@ impl SettingsFiles {
     }
 
     fn resolve(&self, profile: Option<String>) -> Result<Settings> {
-        let resolve = |key: &str, env_var: &str| {
+        let resolve = |key: &str, env_var: &'static str| {
             resolve_value(
                 key,
                 env_var,
@@ -267,8 +376,13 @@ impl SettingsFiles {
                 self.global.as_ref(),
             )
         };
+        let text = |found: Option<Found>| found.map(|found| found.value);
 
-        let tenant = resolve("tenant", ANTITHESIS_TENANT_VAR_NAME)?;
+        // The tenant is a host name even when an explicit base_url means
+        // that no request goes to the tenant's host.
+        let tenant = resolve("tenant", ANTITHESIS_TENANT_VAR_NAME)?
+            .map(Found::parse::<Tenant>)
+            .transpose()?;
         let registry = resolve_value_with(
             string_value,
             &[REGISTRY_KEY, REPOSITORY_KEY],
@@ -276,24 +390,18 @@ impl SettingsFiles {
             profile.as_deref(),
             self.project.as_ref(),
             self.global.as_ref(),
-        )?;
-        let base_url = resolve("base_url", ANTITHESIS_BASE_URL_VAR_NAME)?;
-        let https_proxy = resolve("https_proxy", ANTITHESIS_HTTPS_PROXY_VAR_NAME)?;
-        let container_engine = resolve("container_engine", CONTAINER_ENGINE_VAR_NAME)?;
-
-        // The channel resolves to a typed value here, so an invalid setting
-        // fails at startup like any other malformed setting.
-        let update_channel = match resolve("update_channel", UPDATE_CHANNEL_VAR_NAME)? {
-            Some(value) => value
-                .parse::<UpdateChannel>()
-                .map_err(|err| user_error(format!("invalid update_channel setting: {err}")))?,
-            None => UpdateChannel::default(),
-        };
-
-        // Likewise a typed value: the largest API response body the response
-        // cache will store, as a size such as "10 MB" or a bare byte count.
-        // A bare count is naturally written as a TOML integer, so the file
-        // layers accept one (see `resolve_integer_value`).
+        )?
+        .map(Found::parse::<Registry>)
+        .transpose()?;
+        let base_url = text(resolve("base_url", ANTITHESIS_BASE_URL_VAR_NAME)?);
+        let https_proxy = text(resolve("https_proxy", ANTITHESIS_HTTPS_PROXY_VAR_NAME)?);
+        let container_engine = text(resolve("container_engine", CONTAINER_ENGINE_VAR_NAME)?);
+        let update_channel = resolve("update_channel", UPDATE_CHANNEL_VAR_NAME)?
+            .map(Found::parse::<UpdateChannel>)
+            .transpose()?
+            .unwrap_or_default();
+        // A bare byte count is naturally written as a TOML integer, so the
+        // file layers accept one (see `resolve_integer_value`).
         let api_cache_max_file_size = resolve_integer_value(
             "api_cache_max_file_size",
             API_CACHE_MAX_FILE_SIZE_VAR_NAME,
@@ -301,19 +409,8 @@ impl SettingsFiles {
             self.project.as_ref(),
             self.global.as_ref(),
         )?
-        .map(|value| parse_byte_size("api_cache_max_file_size", &value))
+        .map(|found| found.parse_with(parse_byte_size))
         .transpose()?;
-
-        // A derived base URL interpolates the tenant into the request host
-        // (`https://{tenant}.antithesis.com`) and we attach the API key to that
-        // host, so a malformed tenant would silently send credentials to an
-        // unintended endpoint. Validate it as a hostname before deriving. An
-        // explicit base_url bypasses the tenant, so only check when we'd derive.
-        if base_url.is_none()
-            && let Some(tenant) = &tenant
-        {
-            validate_tenant_host(tenant)?;
-        }
 
         // A named-field literal (not the setters) so the compiler flags this
         // site whenever a new setting is added to the builder.
@@ -335,13 +432,19 @@ impl SettingsFiles {
 impl Settings {
     /// The resolved tenant, or `None` if unset. Call sites that require it turn
     /// the `None` into an error (see [`require_setting`]); doctor reports it as-is.
-    pub fn tenant(&self) -> Option<&str> {
-        self.tenant.as_deref()
+    pub fn tenant(&self) -> Option<&Tenant> {
+        self.tenant.as_ref()
     }
 
     /// The resolved container registry, or `None` if unset.
-    pub fn registry(&self) -> Option<&str> {
-        self.registry.as_deref()
+    pub fn registry(&self) -> Option<&Registry> {
+        self.registry.as_ref()
+    }
+
+    /// The container registry, for a command that pushes to it: an error
+    /// when the setting is unset.
+    pub fn require_registry(&self) -> Result<&Registry> {
+        self.registry().ok_or_else(|| missing_setting("registry"))
     }
 
     /// The base URL to talk to: an explicit `base_url` if set, otherwise one
@@ -350,7 +453,7 @@ impl Settings {
     pub fn base_url(&self) -> Option<String> {
         self.base_url
             .clone()
-            .or_else(|| self.tenant.as_deref().map(tenant_base_url))
+            .or_else(|| self.tenant.as_ref().map(tenant_base_url))
     }
 
     /// The `base_url` setting, without the fallback to the tenant's host.
@@ -388,6 +491,14 @@ impl Settings {
         self.profile.as_deref()
     }
 
+    /// These settings with `tenant` in place of the tenant setting.
+    pub(crate) fn with_tenant(&self, tenant: Tenant) -> Self {
+        Settings {
+            tenant: Some(tenant),
+            ..self.clone()
+        }
+    }
+
     /// Start building a `Settings` from explicit values, with no environment
     /// or filesystem IO — for callers (and tests) that already hold the
     /// values. Set only what's needed and finish with
@@ -412,8 +523,8 @@ impl Settings {
 #[derive(Default)]
 pub struct SettingsBuilder {
     profile: Option<String>,
-    tenant: Option<String>,
-    registry: Option<String>,
+    tenant: Option<Tenant>,
+    registry: Option<Registry>,
     base_url: Option<String>,
     https_proxy: Option<String>,
     container_engine: Option<String>,
@@ -430,14 +541,14 @@ impl SettingsBuilder {
     }
 
     #[must_use]
-    pub fn tenant(mut self, value: &str) -> Self {
-        self.tenant = Some(value.to_string());
+    pub fn tenant(mut self, value: Tenant) -> Self {
+        self.tenant = Some(value);
         self
     }
 
     #[must_use]
-    pub fn registry(mut self, value: &str) -> Self {
-        self.registry = Some(value.to_string());
+    pub fn registry(mut self, value: Registry) -> Self {
+        self.registry = Some(value);
         self
     }
 
@@ -503,33 +614,19 @@ fn explicit_settings_path(flag: Option<PathBuf>) -> Result<Option<PathBuf>> {
 }
 
 /// Writes `tenant` and `registry` into the global `settings.toml`, in the
-/// table of `profile_to_update` or else the top-level table. An empty value is
-/// not written.
+/// table of `profile_to_update` or else the top-level table. Returns what
+/// puts the file back as it was.
 pub(crate) fn update_settings_in_global_file(
-    tenant: Option<String>,
-    registry: Option<String>,
+    tenant: &str,
+    registry: &str,
     profile_to_update: Option<&str>,
-) -> Result<()> {
+) -> Result<PreviousSettingsFile> {
     let path = global_settings_dir()
         .ok_or_eyre(NO_GLOBAL_SETTINGS_DIR)?
         .join(GLOBAL_SETTINGS_FILENAME);
-    let mut contents = match read_to_string_if_file_exists(&path)? {
-        Some(contents) => {
-            if let Ok(table) = parse_settings(&contents, &path) {
-                table
-            } else {
-                let backup = back_up_unparsable_file(&path)?;
-                // Paths go on their own lines: they are the two things the
-                // user may need to copy, and they are what made the one-line
-                // form overflow any terminal.
-                eprintln!(
-                    "note: the existing settings file could not be parsed; a new one will be written.\n  kept as a backup: {}\n  will be rewritten: {}",
-                    backup.display(),
-                    path.display(),
-                );
-                Table::new()
-            }
-        }
+    let previous = read_to_string_if_file_exists(&path)?;
+    let mut contents = match &previous {
+        Some(contents) => parse_settings(contents, &path)?,
         None => Table::new(),
     };
 
@@ -548,7 +645,29 @@ pub(crate) fn update_settings_in_global_file(
     }
 
     write_global_toml(GLOBAL_SETTINGS_FILENAME, &contents)?;
-    Ok(())
+    Ok(PreviousSettingsFile {
+        path,
+        contents: previous,
+    })
+}
+
+/// The global settings file before [`update_settings_in_global_file`]
+/// changed it: its text, or `None` when there was no file.
+#[must_use]
+pub(crate) struct PreviousSettingsFile {
+    path: PathBuf,
+    contents: Option<String>,
+}
+
+impl PreviousSettingsFile {
+    /// Put the file back as it was.
+    pub(crate) fn restore(self) -> Result<()> {
+        match self.contents {
+            Some(contents) => write_atomically(&self.path, contents.as_bytes()),
+            None => fs::remove_file(&self.path).map_err(Into::into),
+        }
+        .wrap_err_with(|| format!("could not restore {}", self.path.display()))
+    }
 }
 
 /// Atomically write `value` as TOML to `filename` in the global settings dir,
@@ -557,10 +676,31 @@ fn write_global_toml(filename: &str, value: &impl serde::Serialize) -> Result<Pa
     let settings_dir = global_settings_dir().ok_or_eyre(NO_GLOBAL_SETTINGS_DIR)?;
     let path = settings_dir.join(filename);
     mkdir(&settings_dir, true, 0o700)?;
-    let mut temp = NamedTempFile::new_in(&settings_dir)?;
-    temp.write_all(toml::to_string_pretty(value)?.as_bytes())?;
-    temp.persist(&path)?;
+    write_atomically(&path, toml::to_string_pretty(value)?.as_bytes())?;
     Ok(path)
+}
+
+/// Replace the file at `path` with `contents` through a temporary file in
+/// the same directory, so that a reader or a crash never leaves a partial
+/// settings or credentials file. An error means that the file at `path` was
+/// not replaced.
+pub(crate) fn write_atomically(path: &Path, contents: &[u8]) -> Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| eyre!("{} names no directory", path.display()))?;
+    let mut temp = NamedTempFile::new_in(dir)?;
+    temp.write_all(contents)?;
+    // The contents reach the disk before the rename, so that a power loss
+    // leaves the old file or the new one.
+    temp.as_file().sync_all()?;
+    temp.persist(path)?;
+    // The file is replaced, so a failure to sync the rename is not an error:
+    // some file systems refuse to sync a directory.
+    #[cfg(unix)]
+    if let Err(err) = fs::File::open(dir).and_then(|dir| dir.sync_all()) {
+        debug!("could not sync {}: {err}", dir.display());
+    }
+    Ok(())
 }
 
 fn entry_as_table_mut<'a>(table: &'a mut Table, key: &str) -> &'a mut Table {
@@ -585,65 +725,62 @@ pub(crate) fn mkdir(path: &Path, recursive: bool, permissions: u32) -> Result<()
     Ok(())
 }
 
-/// Inserts `value` at `key` unless it is `None` or empty, and returns whether
-/// it did.
-fn insert_key_if_non_empty(target: &mut Table, key: &str, value: Option<String>) -> bool {
-    match value {
-        Some(value) if !value.is_empty() => {
-            target.insert(key.to_owned(), Value::String(value));
-            true
-        }
-        _ => false,
-    }
-}
-
-fn update_table(target: &mut Table, tenant: Option<String>, registry: Option<String>) {
-    insert_key_if_non_empty(target, "tenant", tenant);
-    if insert_key_if_non_empty(target, REGISTRY_KEY, registry) {
-        // The table never holds the alias beside `registry`.
-        target.remove(REPOSITORY_KEY);
-    }
+fn update_table(target: &mut Table, tenant: &str, registry: &str) {
+    target.insert("tenant".to_owned(), Value::from(tenant));
+    target.insert(REGISTRY_KEY.to_owned(), Value::from(registry));
+    // The table never holds the alias beside `registry`.
+    target.remove(REPOSITORY_KEY);
 }
 
 /// The base URL of `tenant` when no `base_url` is set.
-pub(crate) fn tenant_base_url(tenant: &str) -> String {
+pub(crate) fn tenant_base_url(tenant: &Tenant) -> String {
     format!("https://{tenant}.antithesis.com")
 }
 
-/// Validate that `tenant` is safe to interpolate into the derived base URL
-/// `https://{tenant}.antithesis.com`. The tenant becomes the request host, so
-/// it must be a valid DNS hostname — one or more labels of ASCII letters,
-/// digits, and hyphens (hyphens not leading/trailing). This rejects values
-/// carrying URL-significant characters (`/`, `#`, `?`, `@`, `:`, whitespace,
-/// …) that would otherwise redirect requests — with the API key attached — to
-/// an unintended host. Dots are allowed so a multi-label tenant still works;
-/// set `ANTITHESIS_BASE_URL` directly for any URL this rejects.
-pub(crate) fn validate_tenant_host(tenant: &str) -> Result<()> {
-    if !is_valid_tenant_host(tenant) {
-        return Err(user_error(format!(
-            "invalid tenant `{tenant}`: a tenant must be a valid hostname \
-             (letters, digits, and hyphens) because it becomes the host in \
-             `https://{tenant}.antithesis.com`. Set ANTITHESIS_BASE_URL directly \
-             if you need a custom API URL."
-        )));
+/// An Antithesis tenant. The tenant becomes the host of the derived base URL
+/// `https://{tenant}.antithesis.com`, with the API key attached, so it must be
+/// a valid DNS host name: one or more labels of ASCII letters, digits, and
+/// hyphens, with no hyphen at the start or end of a label. This refuses the
+/// URL-significant characters (`/`, `#`, `?`, `@`, `:`, whitespace, …) that
+/// would send requests to another host.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tenant(String);
+
+impl FromStr for Tenant {
+    type Err = Report;
+
+    fn from_str(tenant: &str) -> Result<Self> {
+        let is_valid_label = |label: &str| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        };
+        if tenant.is_empty() || tenant.len() > 253 || !tenant.split('.').all(is_valid_label) {
+            return Err(user_error(format!(
+                "`{tenant}` is not a valid tenant: a tenant is a host name of \
+                 letters, digits, hyphens and dots"
+            )));
+        }
+        Ok(Self(tenant.to_owned()))
     }
-    Ok(())
 }
 
-/// Whether `tenant` is a valid DNS hostname, as [`validate_tenant_host`]
-/// requires.
-pub(crate) fn is_valid_tenant_host(tenant: &str) -> bool {
-    fn is_valid_label(label: &str) -> bool {
-        !label.is_empty()
-            && label.len() <= 63
-            && label
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            && !label.starts_with('-')
-            && !label.ends_with('-')
-    }
+impl Deref for Tenant {
+    type Target = str;
 
-    !tenant.is_empty() && tenant.len() <= 253 && tenant.split('.').all(is_valid_label)
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Tenant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 /// Turn a missing required setting into snouty's standard "run doctor" error.
@@ -651,40 +788,56 @@ pub(crate) fn is_valid_tenant_host(tenant: &str) -> bool {
 /// that cannot proceed without a value funnel the `None` through here, so the
 /// message lives in one place instead of being duplicated per accessor.
 pub fn require_setting<'a>(value: Option<&'a str>, setting: &str) -> Result<&'a str> {
-    value
-        .ok_or_else(|| eyre!("Could not resolve Antithesis {setting}. Run snouty doctor to debug."))
+    value.ok_or_else(|| missing_setting(setting))
+}
+
+fn missing_setting(setting: &str) -> color_eyre::Report {
+    eyre!("Could not resolve Antithesis {setting}. Run snouty doctor to debug.")
 }
 
 /// Parse settings-file contents into a TOML table, attributing parse errors to
 /// the file's path.
 fn parse_settings(contents: &str, path: &Path) -> Result<Table> {
-    contents
-        .parse::<Table>()
-        .map_err(|err| eyre!("Settings file at {:?} was not valid TOML: {err:#}", path))
+    contents.parse::<Table>().map_err(|err| {
+        SettingsError::report(
+            SettingSource::File(path.to_owned()),
+            format!(
+                "settings file {} is not valid TOML: {}",
+                path.display(),
+                format!("{err:#}").trim_end()
+            ),
+        )
+    })
 }
 
 /// Load and parse a settings file. `Ok(None)` when the file simply does not
 /// exist and was not explicitly requested; an error when it exists but cannot be
 /// read or parsed, or when an explicitly-`required` file is missing.
-fn load_settings_file(path: &Path, required: bool) -> Result<Option<Table>> {
+fn load_settings_file(path: &Path, required: bool) -> Result<Option<LoadedFile>> {
     let contents = match read_to_string_if_file_exists(path)? {
         Some(contents) => contents,
         None if !required => return Ok(None),
         None => return Err(eyre!("Settings file at {:?} was not found", path)),
     };
-    parse_settings(&contents, path).map(Some)
+    Ok(Some(LoadedFile {
+        table: parse_settings(&contents, path)?,
+        path: path.to_owned(),
+    }))
 }
 
 /// Load `./.snouty.toml` when it exists and [`trust::verdict`] allows it.
 fn load_default_project_file(
     trust_override: Option<trust::TrustOverride>,
-) -> Result<Option<Table>> {
+) -> Result<Option<LoadedFile>> {
     let path = Path::new(PROJECT_SETTINGS_FILENAME);
     let Some(contents) = read_to_string_if_file_exists(path)? else {
         return Ok(None);
     };
     match trust::verdict(path, contents.as_bytes(), trust_override)? {
-        trust::Verdict::Use => parse_settings(&contents, path).map(Some),
+        trust::Verdict::Use => Ok(Some(LoadedFile {
+            table: parse_settings(&contents, path)?,
+            path: path.to_owned(),
+        })),
         trust::Verdict::Ignore => {
             debug!("ignoring the denied settings file {}", path.display());
             Ok(None)
@@ -708,25 +861,25 @@ type ValueReader = fn(&Table, &str, &str) -> Result<Option<String>>;
 /// lower-precedence value.
 fn resolve_value(
     key: &str,
-    env_var: &str,
+    env_var: &'static str,
     profile: Option<&str>,
-    project: Option<&Table>,
-    global: Option<&Table>,
-) -> Result<Option<String>> {
+    project: Option<&LoadedFile>,
+    global: Option<&LoadedFile>,
+) -> Result<Option<Found>> {
     resolve_value_with(string_value, &[key], &[env_var], profile, project, global)
 }
 
 /// [`resolve_value`] for a numeric setting: the file layers accept a bare TOML
 /// integer (the natural form for a number) as well as a quoted string. The
-/// value still comes back as text — the caller owns the parse and its error
-/// message, exactly as for an environment variable.
+/// value still comes back as text — the caller owns the parse, exactly as for
+/// an environment variable.
 fn resolve_integer_value(
     key: &str,
-    env_var: &str,
+    env_var: &'static str,
     profile: Option<&str>,
-    project: Option<&Table>,
-    global: Option<&Table>,
-) -> Result<Option<String>> {
+    project: Option<&LoadedFile>,
+    global: Option<&LoadedFile>,
+) -> Result<Option<Found>> {
     resolve_value_with(integer_value, &[key], &[env_var], profile, project, global)
 }
 
@@ -736,34 +889,51 @@ fn resolve_integer_value(
 fn resolve_value_with(
     read: ValueReader,
     keys: &[&str],
-    env_vars: &[&str],
+    env_vars: &[&'static str],
     profile: Option<&str>,
-    project: Option<&Table>,
-    global: Option<&Table>,
-) -> Result<Option<String>> {
+    project: Option<&LoadedFile>,
+    global: Option<&LoadedFile>,
+) -> Result<Option<Found>> {
     // The environment variable always has highest precedence.
-    for env_var in env_vars {
-        if let Some(value) = env::var(env_var)? {
-            return Ok(Some(value));
+    for &env_var in env_vars {
+        let value = env::var(env_var)
+            .map_err(|err| SettingsError::report(SettingSource::Env(env_var), err.to_string()))?;
+        if let Some(value) = value {
+            return Ok(Some(Found {
+                value,
+                source: SettingSource::Env(env_var),
+                key: env_var.to_owned(),
+            }));
         }
     }
 
+    let found = |file: &LoadedFile, key: String, value: Option<String>| {
+        value.map(|value| Found {
+            value,
+            source: SettingSource::File(file.path.clone()),
+            key,
+        })
+    };
+
     // A named profile is consulted before defaults, project before global.
     if let Some(profile) = profile {
-        for table in [project, global].into_iter().flatten() {
+        for file in [project, global].into_iter().flatten() {
             for key in keys {
-                if let Some(value) = profile_value(table, profile, key, read)? {
-                    return Ok(Some(value));
+                let value = profile_value(&file.table, profile, key, read)
+                    .map_err(|err| file.error(&err))?;
+                if let Some(found) = found(file, format!("{PROFILE_KEY}.{profile}.{key}"), value) {
+                    return Ok(Some(found));
                 }
             }
         }
     }
 
     // Finally fall back to top-level defaults, project before global.
-    for table in [project, global].into_iter().flatten() {
+    for file in [project, global].into_iter().flatten() {
         for key in keys {
-            if let Some(value) = read(table, key, key)? {
-                return Ok(Some(value));
+            let value = read(&file.table, key, key).map_err(|err| file.error(&err))?;
+            if let Some(found) = found(file, (*key).to_owned(), value) {
+                return Ok(Some(found));
             }
         }
     }
@@ -839,17 +1009,13 @@ fn integer_value(table: &Table, key: &str, display: &str) -> Result<Option<Strin
 }
 
 /// Parse a byte-size setting — a size such as "10 MB" or "1.5GiB", or a bare
-/// byte count — into bytes, naming `setting` in the error. SI units are
-/// decimal (MB = 10^6 bytes); IEC units are binary (MiB = 2^20 bytes).
-fn parse_byte_size(setting: &str, value: &str) -> Result<u64> {
+/// byte count — into bytes. SI units are decimal (MB = 10^6 bytes); IEC
+/// units are binary (MiB = 2^20 bytes).
+fn parse_byte_size(value: &str) -> Result<u64, String> {
     value
         .parse::<bytesize::ByteSize>()
         .map(|size| size.as_u64())
-        .map_err(|err| {
-            user_error(format!(
-                "invalid {setting} setting (expected a size such as \"10 MB\"): {err}"
-            ))
-        })
+        .map_err(|err| format!("expected a size such as \"10 MB\": {err}"))
 }
 
 pub(crate) fn read_to_string_if_file_exists(path: &Path) -> Result<Option<String>> {
@@ -885,8 +1051,33 @@ mod tests {
     /// environment-wins case is covered end-to-end by `specs/settings.txt`).
     const UNSET_ENV: &str = "SNOUTY_DEFINITELY_NOT_SET_ENV_VAR_98f3a";
 
-    fn settings_file(contents: &str) -> Table {
-        contents.parse().expect("test TOML should parse")
+    /// A restore replaces the settings file with a new one, so that a write
+    /// that stops partway leaves the file whole.
+    #[test]
+    fn restore_replaces_the_settings_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        fs::write(&path, "tenant = \"new\"\n").unwrap();
+        // A hard link sees a write into the file, but not a new file.
+        let link = dir.path().join("link.toml");
+        fs::hard_link(&path, &link).unwrap();
+
+        PreviousSettingsFile {
+            path: path.clone(),
+            contents: Some("tenant = \"old\"\n".to_owned()),
+        }
+        .restore()
+        .unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "tenant = \"old\"\n");
+        assert_eq!(fs::read_to_string(&link).unwrap(), "tenant = \"new\"\n");
+    }
+
+    fn settings_file(contents: &str) -> LoadedFile {
+        LoadedFile {
+            table: contents.parse().expect("test TOML should parse"),
+            path: PathBuf::from("/test/settings.toml"),
+        }
     }
 
     /// Resolve `tenant` against an env var guaranteed not to be set, so the file
@@ -894,10 +1085,12 @@ mod tests {
     /// distinct value, so the resolved value alone proves which layer won.
     fn resolve_tenant(
         profile: Option<&str>,
-        project: Option<&Table>,
-        global: Option<&Table>,
+        project: Option<&LoadedFile>,
+        global: Option<&LoadedFile>,
     ) -> Option<String> {
-        resolve_value("tenant", UNSET_ENV, profile, project, global).unwrap()
+        resolve_value("tenant", UNSET_ENV, profile, project, global)
+            .unwrap()
+            .map(|found| found.value)
     }
 
     // ---- parse_settings ------------------------------------------------
@@ -1165,7 +1358,7 @@ mod tests {
 
     #[test]
     fn base_url_falls_back_to_tenant_host() {
-        let settings = Settings::builder().tenant("acme").build();
+        let settings = Settings::builder().tenant("acme".parse().unwrap()).build();
         assert_eq!(
             settings.base_url().as_deref(),
             Some("https://acme.antithesis.com")
@@ -1175,7 +1368,7 @@ mod tests {
     #[test]
     fn explicit_base_url_overrides_tenant_host() {
         let settings = Settings::builder()
-            .tenant("acme")
+            .tenant("acme".parse().unwrap())
             .base_url("https://example.test")
             .build();
         assert_eq!(settings.base_url().as_deref(), Some("https://example.test"));
@@ -1217,7 +1410,9 @@ mod tests {
     fn https_proxy_resolves_from_a_settings_file() {
         let project = settings_file("https_proxy = \"http://proxy.corp:8080\"\n");
         assert_eq!(
-            resolve_value("https_proxy", UNSET_ENV, None, Some(&project), None).unwrap(),
+            resolve_value("https_proxy", UNSET_ENV, None, Some(&project), None)
+                .unwrap()
+                .map(|found| found.value),
             Some("http://proxy.corp:8080".to_string())
         );
     }
@@ -1240,7 +1435,9 @@ mod tests {
     fn update_channel_resolves_from_a_settings_file() {
         let project = settings_file("update_channel = \"unstable\"\n");
         assert_eq!(
-            resolve_value("update_channel", UNSET_ENV, None, Some(&project), None).unwrap(),
+            resolve_value("update_channel", UNSET_ENV, None, Some(&project), None)
+                .unwrap()
+                .map(|found| found.value),
             Some("unstable".to_string())
         );
     }
@@ -1257,7 +1454,8 @@ mod tests {
                 Some(&project),
                 None
             )
-            .unwrap(),
+            .unwrap()
+            .map(|found| found.value),
             Some("1234".to_string())
         );
     }
@@ -1266,52 +1464,33 @@ mod tests {
 
     #[test]
     fn byte_sizes_parse_with_si_and_iec_units() {
-        assert_eq!(
-            parse_byte_size("api_cache_max_file_size", "10 MB").unwrap(),
-            10_000_000
-        );
-        assert_eq!(
-            parse_byte_size("api_cache_max_file_size", "10 MiB").unwrap(),
-            10 * 1024 * 1024
-        );
+        assert_eq!(parse_byte_size("10 MB").unwrap(), 10_000_000);
+        assert_eq!(parse_byte_size("10 MiB").unwrap(), 10 * 1024 * 1024);
         // Units are case-insensitive and the space is optional.
-        assert_eq!(
-            parse_byte_size("api_cache_max_file_size", "1gb").unwrap(),
-            1_000_000_000
-        );
-        assert_eq!(
-            parse_byte_size("api_cache_max_file_size", "1.5 KB").unwrap(),
-            1_500
-        );
+        assert_eq!(parse_byte_size("1gb").unwrap(), 1_000_000_000);
+        assert_eq!(parse_byte_size("1.5 KB").unwrap(), 1_500);
     }
 
     #[test]
     fn a_bare_number_parses_as_bytes() {
-        assert_eq!(
-            parse_byte_size("api_cache_max_file_size", "10485760").unwrap(),
-            10_485_760
-        );
+        assert_eq!(parse_byte_size("10485760").unwrap(), 10_485_760);
     }
 
     #[test]
-    fn a_malformed_byte_size_names_the_setting() {
+    fn a_malformed_byte_size_names_the_expected_form() {
         for bad in ["ten megabytes", "-1", ""] {
-            let err = parse_byte_size("api_cache_max_file_size", bad).unwrap_err();
-            let msg = err.to_string();
-            assert!(
-                msg.contains("api_cache_max_file_size") && msg.contains("10 MB"),
-                "unexpected error for {bad:?}: {msg}"
-            );
+            let msg = parse_byte_size(bad).unwrap_err();
+            assert!(msg.contains("10 MB"), "unexpected error for {bad:?}: {msg}");
         }
     }
 
-    // ---- validate_tenant_host -----------------------------------------
+    // ---- Tenant -----------------------------------------------------
 
     #[test]
     fn valid_tenants_pass_host_validation() {
         for tenant in ["orbitinghail", "acme", "my-tenant", "t123", "foo.bar"] {
             assert!(
-                validate_tenant_host(tenant).is_ok(),
+                tenant.parse::<Tenant>().is_ok(),
                 "expected `{tenant}` to be a valid tenant host"
             );
         }
@@ -1335,22 +1514,9 @@ mod tests {
             "trailinghyphen-",
         ] {
             assert!(
-                validate_tenant_host(tenant).is_err(),
+                tenant.parse::<Tenant>().is_err(),
                 "expected `{tenant}` to be rejected as a tenant host"
             );
         }
-    }
-
-    #[test]
-    fn explicit_base_url_bypasses_tenant_host_validation() {
-        // An explicit base_url bypasses tenant-host validation (the tenant isn't
-        // interpolated into the host), so an otherwise-invalid tenant still
-        // constructs. The derive-path validation itself is covered by
-        // validate_tenant_host's unit tests and specs/settings_tenant.txt.
-        let s = Settings::builder()
-            .tenant("evil.com#")
-            .base_url("https://ok.example")
-            .build();
-        assert_eq!(s.base_url().as_deref(), Some("https://ok.example"));
     }
 }

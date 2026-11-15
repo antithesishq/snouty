@@ -15,7 +15,7 @@ use color_eyre::{
 use crate::docker_credential::{CRED_HELPER, HELPER_NAME};
 use crate::error::user_error;
 use crate::process::output_with_timeout;
-use crate::registry::{self, TenantRegistry};
+use crate::registry::{self, Registry};
 use crate::settings::{
     ANTITHESIS_PROFILE_ENV_VAR_NAME, CONTAINER_ENGINE_VAR_NAME, SNOUTY_SETTINGS_PATH_VAR_NAME,
     Settings, mkdir,
@@ -71,7 +71,7 @@ impl std::fmt::Display for Architecture {
 /// of the launch. A `docker-credential-snouty` that the engine runs gets them
 /// in its environment, so that it resolves the settings of the launch.
 pub struct TenantRegistryAuth {
-    pub registry: TenantRegistry,
+    pub registry: Registry,
     pub secret: String,
     pub settings_path: Option<PathBuf>,
     pub profile: Option<String>,
@@ -82,7 +82,7 @@ pub struct TenantRegistryAuth {
 /// none of it: podman with `REGISTRY_AUTH_FILE` ignores its own auth files.
 #[derive(Clone)]
 struct TenantRegistryEnv {
-    registry: TenantRegistry,
+    registry: Registry,
     env: Vec<(&'static str, OsString)>,
     /// The podman auth file that `env` names, deleted with the last clone of
     /// the runtime.
@@ -113,9 +113,12 @@ impl TenantRegistryEnv {
 
     /// The environment for a round trip to the registry of `image_ref`.
     fn env_for(&self, image_ref: &str) -> impl Iterator<Item = (&'static str, &OsStr)> {
-        let covers = image_ref
-            .parse::<TenantRegistry>()
-            .is_ok_and(|registry| registry == self.registry);
+        // Only the host counts: the rest of an image reference, such as
+        // `team/app:V1`, is not a registry path.
+        let host = image_ref.split('/').next().unwrap_or_default();
+        let covers = host
+            .parse::<Registry>()
+            .is_ok_and(|registry| registry.authority() == self.registry.authority());
         self.env
             .iter()
             .filter(move |_| covers)
@@ -714,7 +717,7 @@ fn podman_registry_env(
     let path = std::env::var_os(PATH_ENV).unwrap_or_default();
     let path = std::env::join_paths(std::iter::once(dir).chain(std::env::split_paths(&path)))
         .wrap_err("cannot add the credential helper to PATH")?;
-    let contents = serde_json::json!({ "credHelpers": { auth.registry.to_string(): CRED_HELPER } })
+    let contents = serde_json::json!({ "credHelpers": { auth.registry.authority(): CRED_HELPER } })
         .to_string();
     let auth_file = tempfile::NamedTempFile::new()
         .and_then(|mut file| file.write_all(contents.as_bytes()).map(|()| file))
@@ -783,7 +786,7 @@ impl ContainerRuntime for DockerRuntime {
         // Only the `auth` field: the Docker CLI rejects other fields here.
         let basic = BASE64_STANDARD.encode(format!("{}:{}", registry::USERNAME, auth.secret));
         let config =
-            serde_json::json!({ "auths": { auth.registry.to_string(): { "auth": basic } } });
+            serde_json::json!({ "auths": { auth.registry.authority(): { "auth": basic } } });
         let env = vec![(DOCKER_AUTH_CONFIG_ENV, config.to_string().into())];
         self.registry_env = Some(TenantRegistryEnv::new(auth, env, None));
     }
@@ -825,17 +828,12 @@ impl ContainerRuntime for DockerRuntime {
 }
 
 /// Generate a unique image reference with a timestamp + random suffix tag.
-pub fn generate_image_ref(registry: &str) -> String {
+pub fn generate_image_ref(registry: &Registry) -> String {
     let ts = Utc::now().format("%Y%m%d-%H%M%S");
     let mut buf = [0u8; 2];
     getrandom::fill(&mut buf).expect("failed to get random bytes");
     let suffix = format!("{:02x}{:02x}", buf[0], buf[1]);
-    format!(
-        "{}/snouty-config:{}-{}",
-        registry.trim_end_matches('/'),
-        ts,
-        suffix
-    )
+    format!("{registry}/snouty-config:{ts}-{suffix}")
 }
 
 /// Whether the `docker` binary is podman.
@@ -1716,7 +1714,8 @@ esac
 
     #[test]
     fn generate_image_ref_format() {
-        let image_ref = generate_image_ref("us-central1-docker.pkg.dev/proj/repo");
+        let image_ref =
+            generate_image_ref(&"us-central1-docker.pkg.dev/proj/repo".parse().unwrap());
         assert!(
             image_ref.starts_with("us-central1-docker.pkg.dev/proj/repo/snouty-config:"),
             "got: {image_ref}"
@@ -1730,8 +1729,8 @@ esac
     }
 
     #[test]
-    fn generate_image_ref_strips_trailing_slash() {
-        let image_ref = generate_image_ref("registry.example.com/repo/");
+    fn generate_image_ref_drops_the_scheme_and_trailing_slash_of_the_setting() {
+        let image_ref = generate_image_ref(&"https://registry.example.com/repo/".parse().unwrap());
         assert!(
             image_ref.starts_with("registry.example.com/repo/snouty-config:"),
             "got: {image_ref}"
@@ -1971,7 +1970,7 @@ esac
             "us-central1-docker.pkg.dev/proj/repo",
             "us-central1-docker.pkg.dev/proj/repo/",
         ] {
-            let bare = strip_registry(&generate_image_ref(registry), registry);
+            let bare = strip_registry(&generate_image_ref(&registry.parse().unwrap()), registry);
             assert!(bare.starts_with("snouty-config:"), "got: {bare}");
             assert!(!bare.contains('/'), "got: {bare}");
         }

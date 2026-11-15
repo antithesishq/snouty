@@ -3,7 +3,6 @@
 
 use std::{
     collections::HashMap,
-    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -11,12 +10,12 @@ use color_eyre::eyre::{Context, OptionExt, Result, eyre};
 use keyring_core::Entry;
 use log::warn;
 use serde::{Deserialize, Serialize};
-use tempfile::NamedTempFile;
 
 use super::{AuthenticationInfo, RefreshableOAuthToken, claims::try_get_expiry_from_token};
 use crate::{
     settings::{
         back_up_unparsable_file, global_settings_dir, mkdir, read_to_string_if_file_exists,
+        write_atomically,
     },
     tag::{Tag, Tagged},
 };
@@ -163,6 +162,26 @@ impl std::fmt::Debug for PersistableCredentials {
 }
 
 impl PersistableCredentials {
+    /// `self` as a credential that authenticates without a store: it never
+    /// refreshes, so a request with it reads and writes no store. An OAuth
+    /// access token goes out as a bearer token, the same header that a stored
+    /// OAuth credential sends.
+    pub(crate) fn to_unrefreshable_authentication_info(&self) -> AuthenticationInfo {
+        match self {
+            Self::ApiKey { api_key }
+            | Self::OAuth {
+                antithesis_token: api_key,
+                ..
+            } => AuthenticationInfo::ApiKey {
+                api_key: api_key.clone(),
+            },
+            Self::Password { username, password } => AuthenticationInfo::Password {
+                username: username.clone(),
+                password: password.clone(),
+            },
+        }
+    }
+
     /// An OAuth credential keeps a copy of `store`, to write a refreshed token
     /// back to it.
     fn convert_to_authentication_info(self, store: &CredentialStore) -> AuthenticationInfo {
@@ -239,10 +258,6 @@ fn clear_from_file_if_present(profile: Option<&str>) {
     let Some(path) = credentials_file_path() else {
         return;
     };
-    let parent_dir = path
-        .parent()
-        .expect("the credentials file path is a file name joined to a dir");
-
     if let Ok(Some(contents)) = read_to_string_if_file_exists(&path)
         && let Ok(mut creds_file) = parse_credentials_file_toml(&contents, &path)
     {
@@ -258,7 +273,7 @@ fn clear_from_file_if_present(profile: Option<&str>) {
 
         if changed {
             let profile_phrase = if profile.is_some() { "the same" } else { "no" };
-            match rewrite_credentials_file(&creds_file, parent_dir, &path) {
+            match rewrite_credentials_file(&creds_file, &path) {
                 Ok(()) => warn!(
                     "The supplied credentials were stored in the keychain, but an entry under {profile_phrase} profile name was also present in the user credentials file. Cleared the entry from the credentials file in favor of what was committed to the keychain."
                 ),
@@ -271,17 +286,8 @@ fn clear_from_file_if_present(profile: Option<&str>) {
     }
 }
 
-/// Atomically rewrite the credentials file with `creds_file` via a temp file
-/// in `parent_dir`.
-fn rewrite_credentials_file(
-    creds_file: &CredentialsFile,
-    parent_dir: &Path,
-    path: &Path,
-) -> Result<()> {
-    let mut temp = NamedTempFile::new_in(parent_dir)?;
-    temp.write_all(toml::to_string_pretty(creds_file)?.as_bytes())?;
-    temp.persist(path)?;
-    Ok(())
+fn rewrite_credentials_file(creds_file: &CredentialsFile, path: &Path) -> Result<()> {
+    write_atomically(path, toml::to_string_pretty(creds_file)?.as_bytes())
 }
 
 fn persist_to_file(
@@ -335,7 +341,7 @@ fn persist_to_file(
         current_contents.default = Some(credentials);
     }
 
-    rewrite_credentials_file(&current_contents, settings_dir, path)
+    rewrite_credentials_file(&current_contents, path)
 }
 
 pub(super) fn parse_credentials_file_toml(contents: &str, path: &Path) -> Result<CredentialsFile> {
@@ -361,5 +367,28 @@ impl CredentialsFile {
                 .and_then(|by_profile| by_profile.get(name).cloned()),
             None => self.default,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutils::fake_secrets::{FAKE_ACCESS_TOKEN_A, FAKE_REFRESH_TOKEN_A};
+
+    /// A new OAuth credential is checked with the header that it sends once
+    /// it is stored, and without a store that a refresh could write to.
+    #[test]
+    fn an_oauth_credential_is_checked_as_its_bearer_token() -> Result<()> {
+        let credentials = PersistableCredentials::OAuth {
+            antithesis_token: FAKE_ACCESS_TOKEN_A.to_owned(),
+            refresh_token: Some(FAKE_REFRESH_TOKEN_A.to_owned()),
+        };
+        let check = credentials.to_unrefreshable_authentication_info();
+        assert!(matches!(check, AuthenticationInfo::ApiKey { .. }));
+        assert_eq!(
+            check.auth_header()?,
+            format!("Bearer {FAKE_ACCESS_TOKEN_A}").as_str()
+        );
+        Ok(())
     }
 }

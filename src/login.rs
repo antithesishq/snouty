@@ -276,7 +276,7 @@ async fn do_cmd_login(
         (None, Some(tenant_registry)) => tenant_registry
             .registry_url
             .parse::<Registry>()
-            .map_err(|err| invalid(&err))?,
+            .map_err(|err| invalid(&err.to_string()))?,
         // A tenant that does not report its registry: ask, or keep the saved
         // one.
         (None, None) if interactive => prompter
@@ -286,10 +286,15 @@ async fn do_cmd_login(
                     .and_then(Result::ok)
                     .map(ToString::to_string)
                     .as_deref(),
-                |answer| answer.parse::<Registry>().map(drop),
+                |answer| {
+                    answer
+                        .parse::<Registry>()
+                        .map(drop)
+                        .map_err(|err| err.to_string())
+                },
             )?
             .parse::<Registry>()
-            .map_err(|err| invalid(&err))?,
+            .map_err(|err| invalid(&err.to_string()))?,
         (None, None) => match saved_registry {
             Some(Ok(saved)) => saved.clone(),
             Some(Err(err)) => return Err(invalid(err)),

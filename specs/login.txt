@@ -12,14 +12,10 @@ stderr '.*Value may not be empty or whitespace.*'
 # port and a path, and refuses anything else before any request.
 ! snouty login --registry ""
 stderr -literal 'give a host'
-! snouty login --registry registry.example.com/MyOrg
-stderr -literal 'the path must be lowercase'
 ! snouty login --registry registry.example.com:+80
 stderr -literal 'invalid port number'
 ! snouty login --registry user@registry.example.com
 stderr -literal 'is not a container registry'
-! snouty login --registry Registry.Example.com/team
-stderr -literal 'write the host as `registry.example.com`'
 
 # And for the global --profile flag given an empty value.
 ! snouty --profile "" login
@@ -54,9 +50,9 @@ stdout 'registry `registry.example.com/a-long-registry-path`\.$'
 stdout -literal '`docker login registry.example.com`'
 file ~/.config/snouty/settings.toml 'registry = "registry.example.com/a-long-registry-path"'
 
-# Login saves --registry without a scheme and a trailing `/`.
+# Login saves --registry in lowercase, without a scheme and a trailing `/`.
 isolate-home registry_scheme
-snouty login --tenant ${ANTITHESIS_TENANT} --registry HTTPS://registry.example.com/my-org/
+snouty login --tenant ${ANTITHESIS_TENANT} --registry HTTPS://Registry.Example.com/My-Org/
 stdout -literal '`docker login registry.example.com`'
 file ~/.config/snouty/settings.toml 'registry = "registry.example.com/my-org"'
 

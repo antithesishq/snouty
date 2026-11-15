@@ -5,7 +5,7 @@ use std::{
 };
 
 use color_eyre::Section;
-use color_eyre::eyre::{Context, OptionExt, Result, eyre};
+use color_eyre::eyre::{Context, OptionExt, Report, Result, eyre};
 use log::debug;
 use tempfile::NamedTempFile;
 use toml::{Table, Value};
@@ -125,7 +125,7 @@ struct RegistrySetting {
 
 impl RegistrySetting {
     fn new(text: String) -> Self {
-        let parsed = text.parse();
+        let parsed = text.parse().map_err(|err: Report| err.to_string());
         Self { text, parsed }
     }
 }

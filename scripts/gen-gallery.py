@@ -79,7 +79,6 @@ import random
 import re
 import shlex
 import shutil
-import ssl
 import subprocess
 import sys
 import tempfile
@@ -101,7 +100,6 @@ from typing import TypeVar
 
 import pexpect
 import pyte
-import trustme
 
 # A syntactically-valid but nonexistent run id, for clean-error stories.
 UNKNOWN_RUN = "ffffffffffffffffffffffffffffffff-54-5"
@@ -513,21 +511,12 @@ class MockTenantSpec:
     no CLI single sign-on: `/auth/cli/config` answers 403. When `actions` is
     set, the story runs as a GitHub Actions job with `id-token: write`. When
     `docker_registry` is True, `/api/v0/registry` names a registry that takes
-    the Docker login rather than the Antithesis credential. When `tenant_host`
-    is True, snouty reaches the mock at the tenant's own host rather than
-    through a base_url (see `MockTenant._tenant_host_proxy`); such a mock
-    serves no loopback request, so it cannot sign in with `sso` or
-    `actions`."""
+    the Docker login rather than the Antithesis credential."""
 
     sso: bool = False
     refresh_revoked: bool = False
     actions: ActionsJob | None = None
     docker_registry: bool = False
-    tenant_host: bool = False
-
-    def __post_init__(self) -> None:
-        if self.tenant_host and (self.sso or self.actions is not None):
-            raise ValueError("a tenant_host mock cannot serve sso or actions")
 
 
 _MOCK_RUN_ID = "0180b2554d40227f5a05c4d65055252b-67-0"
@@ -579,57 +568,9 @@ class MockTenant:
             def log_message(self, format: str, *args) -> None:
                 pass
 
-        # The proxy and the CA file that snouty trusts, for `tenant_host`.
-        self._tenant_host: tuple[ThreadingHTTPServer, Path] | None = None
-        if spec.tenant_host:
-            ca_dir = Path(tempfile.mkdtemp(prefix="snouty-gallery-ca."))
-            try:
-                proxy = self._tenant_host_proxy(Handler, ca_dir / "ca.pem")
-            except BaseException:
-                shutil.rmtree(ca_dir, ignore_errors=True)
-                raise
-            self._tenant_host = (proxy, ca_dir / "ca.pem")
-            threading.Thread(target=proxy.serve_forever, daemon=True).start()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{self._server.server_address[1]}"
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
-
-    @staticmethod
-    def _tenant_host_proxy(
-        api: type[BaseHTTPRequestHandler], ca_file: Path
-    ) -> ThreadingHTTPServer:
-        """An HTTPS proxy, for ANTITHESIS_HTTPS_PROXY, that serves the mock at
-        `https://acme.antithesis.com` itself. doctor asks a tenant for its
-        registry only when no base_url is set, so snouty must reach the tenant
-        at the host that the tenant setting names. The proxy answers a CONNECT
-        to that host with a certificate from a throwaway CA, which snouty
-        trusts through SSL_CERT_FILE. It answers no plain HTTP request, and
-        snouty sends every request to it, the loopback included."""
-        ca = trustme.CA()
-        ca.cert_pem.write_to_path(str(ca_file))
-        tls = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-        ca.issue_cert(_TENANT_HOST).configure_cert(tls)
-
-        class Proxy(BaseHTTPRequestHandler):
-            def do_CONNECT(self) -> None:
-                self.close_connection = True
-                if self.path != f"{_TENANT_HOST}:443":
-                    self.send_error(403)
-                    return
-                self.send_response(200)
-                self.end_headers()
-                self.connection.settimeout(PROMPT_TIMEOUT)
-                try:
-                    with tls.wrap_socket(self.connection, server_side=True) as conn:
-                        api(conn, self.client_address, self.server)
-                except OSError:
-                    # snouty reports a failed handshake itself.
-                    pass
-
-            def log_message(self, format: str, *args) -> None:
-                pass
-
-        return ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
 
     def __enter__(self) -> MockTenant:
         return self
@@ -637,27 +578,12 @@ class MockTenant:
     def __exit__(self, *exc: object) -> None:
         self._server.shutdown()
         self._server.server_close()
-        if self._tenant_host is not None:
-            proxy, ca_file = self._tenant_host
-            proxy.shutdown()
-            proxy.server_close()
-            shutil.rmtree(ca_file.parent, ignore_errors=True)
 
     def env(self) -> dict[str, str | None]:
         """The environment that points snouty at this tenant."""
         oidc = self.spec.actions is not None
-        if self._tenant_host is None:
-            route: dict[str, str | None] = {"ANTITHESIS_BASE_URL": self.url}
-        else:
-            proxy, ca_file = self._tenant_host
-            route = {
-                "ANTITHESIS_BASE_URL": None,
-                "ANTITHESIS_HTTPS_PROXY": f"http://127.0.0.1:{proxy.server_address[1]}",
-                "SSL_CERT_FILE": str(ca_file),
-                "SSL_CERT_DIR": None,
-            }
         return {
-            **route,
+            "ANTITHESIS_BASE_URL": self.url,
             "NO_PROXY": _LOOPBACK,
             # The operator's keychain entry would hide the seeded credential,
             # and a login would overwrite it.
@@ -5002,9 +4928,8 @@ _TENANT = "acme"
 _REGISTRY = "registry.example.com/acme/app"
 _SETTINGS = ".config/snouty/settings.toml"
 _CREDS = ".config/snouty/credentials.toml"
-_TENANT_HOST = f"{_TENANT}.antithesis.com"
 # The registry that the mock tenant reports.
-_TENANT_REGISTRY = f"registry.{_TENANT_HOST}"
+_TENANT_REGISTRY = f"registry.{_TENANT}.antithesis.com"
 _SEED_SETTINGS_TOML = f'tenant = "{_TENANT}"\nregistry = "{_REGISTRY}"\n'
 # A `credentials.toml` exactly as `snouty login` writes it.
 _SEED_CREDS_TOML = f'[default]\ntype = "ApiKey"\napi_key = "{_FAKE_API_KEY_A}"\n'
@@ -5306,7 +5231,7 @@ _SEED_EXPIRED_OAUTH = {
 
 def build_mock_tenant_stories() -> list[Story]:
     """The mock tenant stories other than login."""
-    stories = [
+    return [
         _mock_story(
             "runs-key-rejected",
             "My API key is rejected",
@@ -5390,7 +5315,8 @@ def build_mock_tenant_stories() -> list[Story]:
                 ),
                 absent=("ANTITHESIS_REGISTRY",),
             ),
-            MockTenantSpec(tenant_host=True),
+            MockTenantSpec(),
+            SNOUTY_TEST_DOCTOR_ASK_REGISTRY="1",
             seed_files={_SETTINGS: _SEED_SETTINGS_TOML},
             ANTITHESIS_TENANT=None,
             ANTITHESIS_REGISTRY=None,
@@ -5416,7 +5342,8 @@ def build_mock_tenant_stories() -> list[Story]:
                 ),
                 absent=("to switch to it",),
             ),
-            MockTenantSpec(tenant_host=True),
+            MockTenantSpec(),
+            SNOUTY_TEST_DOCTOR_ASK_REGISTRY="1",
             ANTITHESIS_API_KEY=_FAKE_API_KEY_B,
         ),
         _mock_story(
@@ -5431,7 +5358,8 @@ def build_mock_tenant_stories() -> list[Story]:
                 contains=("✓ container registry is set", "Antithesis API reachable"),
                 absent=("also has an Antithesis registry",),
             ),
-            MockTenantSpec(tenant_host=True),
+            MockTenantSpec(),
+            SNOUTY_TEST_DOCTOR_ASK_REGISTRY="1",
             ANTITHESIS_API_KEY=_FAKE_API_KEY_B,
             ANTITHESIS_REGISTRY=f"https://Registry.{_TENANT.title()}.antithesis.com/app",
         ),
@@ -5454,11 +5382,6 @@ def build_mock_tenant_stories() -> list[Story]:
             MockTenantSpec(actions=ActionsJob.REJECTS_REQUEST),
         ),
     ]
-    # Linux only: snouty trusts the throwaway CA of a `tenant_host` mock
-    # through SSL_CERT_FILE, which the macOS verifier does not read.
-    if sys.platform != "linux":
-        return [s for s in stories if not (s.tenant and s.tenant.tenant_host)]
-    return stories
 
 
 def _settings_error_story(

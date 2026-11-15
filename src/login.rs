@@ -37,7 +37,7 @@ use crate::{
     registry::Registry,
     render::{OutputOptions, sanitize},
     settings::{
-        ANTITHESIS_PROFILE_ENV_VAR_NAME, Settings, Tenant, tenant_base_url,
+        ANTITHESIS_PROFILE_ENV_VAR_NAME, Settings, Tenant, saved_in_global_file, tenant_base_url,
         update_settings_in_global_file,
     },
     tag::{Tag, Tagged},
@@ -261,42 +261,33 @@ async fn do_cmd_login(
     .await?;
     let suggestion = "run `snouty login --registry <registry>`";
     // A saved registry of another tenant is neither offered nor kept.
-    let same_tenant = current_settings.tenant() == Some(&tenant_to_use);
     let saved_registry = current_settings
         .registry()
         .map(Tagged::value)
-        .filter(|_| same_tenant);
-    let custom_registry = current_settings.global_registry().filter(|_| same_tenant);
-    // The registry to save, and the custom registry that it replaces.
-    let (registry_to_use, replaced) = match (registry_flag, reported) {
+        .filter(|_| current_settings.tenant() == Some(&tenant_to_use));
+    // The registry to save, and what became of a saved custom registry.
+    let (registry_to_use, custom) = match (registry_flag, reported) {
         // --registry takes the place of the registry that the tenant reports.
         (Some(registry), _) => (registry, None),
         (None, Some(reported)) => {
             let reported = reported.registry_url.parse::<Registry>().map_err(|err| {
                 user_error(format!("{err}; nothing was saved")).suggestion(suggestion)
             })?;
-            match custom_registry.filter(|custom| **custom != reported) {
+            let custom = saved_in_global_file(profile_to_use.as_deref())
+                .filter(|(tenant, registry)| *tenant == tenant_to_use && *registry != reported)
+                .map(|(_, registry)| registry);
+            match custom {
                 None => (reported, None),
+                Some(custom) if !interactive => (custom, Some(CustomRegistry::Kept { reported })),
                 Some(custom) => {
-                    let antithesis =
-                        format!("the Antithesis-provided container registry at {reported}");
-                    if !interactive {
-                        let profile_flag = profile_to_use
-                            .as_deref()
-                            .map_or_default(|profile| format!(" --profile {profile}"));
-                        eprintln!(
-                            "{}",
-                            crate::render::wrap_if_tty(&format!(
-                                "warning: Kept registry `{custom}`. To use {antithesis}, run `snouty login --tenant {tenant_to_use} --registry {reported}{profile_flag}`."
-                            ))
-                        );
-                        (custom.clone(), None)
-                    } else if prompter
-                        .confirm(&format!("Replace registry `{custom}` with {antithesis}?"))?
-                    {
-                        (reported, Some(custom))
+                    let question = format!(
+                        "Replace registry `{custom}` with {}?",
+                        antithesis_registry(&reported)
+                    );
+                    if prompter.confirm(&question)? {
+                        (reported, Some(CustomRegistry::Replaced(custom)))
                     } else {
-                        (custom.clone(), None)
+                        (custom, None)
                     }
                 }
             }
@@ -354,6 +345,10 @@ async fn do_cmd_login(
         None => None,
     };
 
+    let replaced = match &custom {
+        Some(CustomRegistry::Replaced(replaced)) => Some(replaced),
+        _ => None,
+    };
     print_login_summary(
         &tenant_to_use,
         &registry_to_use,
@@ -362,8 +357,44 @@ async fn do_cmd_login(
         written,
         stored.as_ref(),
     );
+    if let Some(CustomRegistry::Kept { reported }) = custom {
+        let mut command = vec![
+            "snouty".to_owned(),
+            "login".to_owned(),
+            "--tenant".to_owned(),
+            tenant_to_use.to_string(),
+            "--registry".to_owned(),
+            reported.to_string(),
+        ];
+        if let Some(profile) = profile_to_use {
+            command.extend(["--profile".to_owned(), profile]);
+        }
+        let command = shlex::try_join(command.iter().map(String::as_str))
+            .unwrap_or_else(|_| command.join(" "));
+        eprintln!(
+            "{}",
+            crate::render::wrap_if_tty(&format!(
+                "warning: Kept registry `{registry_to_use}`. To use {}, run `{command}`.",
+                antithesis_registry(&reported)
+            ))
+        );
+    }
 
     Ok(())
+}
+
+/// A saved custom registry, when the tenant reports another registry.
+enum CustomRegistry {
+    /// The user chose the tenant's registry over this one.
+    Replaced(Registry),
+    /// Login kept the custom registry over `reported`, without a terminal
+    /// to ask.
+    Kept { reported: Registry },
+}
+
+/// How a question or a warning names the registry that the tenant reports.
+fn antithesis_registry(reported: &Registry) -> String {
+    format!("the Antithesis-provided container registry at {reported}")
 }
 
 /// Where login signs in: the `base_url` setting that later commands call, or
@@ -1730,6 +1761,29 @@ mod tests {
             assert_eq!(prompter.prompts()[1], REPLACE_CUSTOM);
             assert_saved_registry(&env, expected);
         }
+        Ok(())
+    }
+
+    /// The question reads the global settings file, which login writes, and
+    /// not the environment variables that hide its values.
+    #[tokio::test]
+    async fn login_asks_about_the_saved_registry_under_environment_settings() -> Result<()> {
+        let env = env_with_registry("mytenant", CUSTOM_REGISTRY);
+        // SAFETY: `env` holds the lock that serializes env mutation.
+        unsafe {
+            std::env::set_var("ANTITHESIS_TENANT", "othertenant");
+            std::env::set_var("ANTITHESIS_REGISTRY", "env.example.com/app");
+        }
+        let settings = env.resolve_settings(None)?;
+        let prompter = Script::default()
+            .secret(FAKE_API_KEY_A)
+            .confirm(false)
+            .build();
+
+        login_with_flags(None, &settings, &prompter).await?;
+
+        assert_eq!(prompter.prompts()[1], REPLACE_CUSTOM);
+        assert_saved_registry(&env, CUSTOM_REGISTRY);
         Ok(())
     }
 

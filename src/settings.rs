@@ -528,27 +528,6 @@ impl Settings {
         self.profile.as_deref()
     }
 
-    /// The registry that [`update_settings_in_global_file`] replaces: the
-    /// registry of the profile, or the top-level registry without a profile,
-    /// in the global settings file. `None` when another source sets the
-    /// registry.
-    pub(crate) fn global_registry(&self) -> Option<&Registry> {
-        let registry = self.registry()?;
-        let SettingSource::File {
-            key, global: true, ..
-        } = registry.tag()
-        else {
-            return None;
-        };
-        let key = match &self.profile {
-            Some(profile) => key.strip_prefix(&format!("{PROFILE_KEY}.{profile}."))?,
-            None => key,
-        };
-        [REGISTRY_KEY, REPOSITORY_KEY]
-            .contains(&key)
-            .then(|| registry.value())
-    }
-
     /// These settings with `tenant` in place of the tenant setting.
     pub(crate) fn with_tenant(&self, tenant: Tenant) -> Self {
         Settings {
@@ -707,6 +686,36 @@ pub(crate) fn update_settings_in_global_file(
         path,
         contents: previous,
     })
+}
+
+/// The tenant and the registry that [`update_settings_in_global_file`]
+/// replaces: those of the table of `profile`, or of the top-level table, in
+/// the global settings file. `None` when the table does not hold both, or
+/// when the file cannot be read: the update reports that error.
+pub(crate) fn saved_in_global_file(profile: Option<&str>) -> Option<(Tenant, Registry)> {
+    let path = global_settings_dir()?.join(GLOBAL_SETTINGS_FILENAME);
+    let saved = || -> Result<Option<(Tenant, Registry)>> {
+        let Some(contents) = read_to_string_if_file_exists(&path)? else {
+            return Ok(None);
+        };
+        let table = parse_settings(&contents, &path)?;
+        let read = |key: &str| match profile {
+            Some(profile) => profile_value(&table, profile, key, string_value),
+            None => string_value(&table, key, key),
+        };
+        let registry = match read(REGISTRY_KEY)? {
+            Some(registry) => Some(registry),
+            None => read(REPOSITORY_KEY)?,
+        };
+        match (read("tenant")?, registry) {
+            (Some(tenant), Some(registry)) => Ok(Some((tenant.parse()?, registry.parse()?))),
+            _ => Ok(None),
+        }
+    };
+    saved()
+        .inspect_err(|err| debug!("cannot read the saved registry: {err:#}"))
+        .ok()
+        .flatten()
 }
 
 /// The global settings file before [`update_settings_in_global_file`]

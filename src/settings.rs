@@ -1,11 +1,13 @@
 use std::{
-    fs,
+    fmt, fs,
     io::{ErrorKind, Write},
+    ops::Deref,
     path::{Path, PathBuf},
+    str::FromStr,
 };
 
 use color_eyre::Section;
-use color_eyre::eyre::{Context, OptionExt, Result, eyre};
+use color_eyre::eyre::{Context, OptionExt, Report, Result, eyre};
 use log::debug;
 use tempfile::NamedTempFile;
 use toml::{Table, Value};
@@ -356,7 +358,7 @@ impl SettingsFiles {
         if base_url.is_none()
             && let Some(tenant) = &tenant
         {
-            validate_tenant_host(tenant)?;
+            tenant.parse::<Tenant>()?;
         }
 
         // A named-field literal (not the setters) so the compiler flags this
@@ -703,40 +705,52 @@ pub(crate) fn tenant_base_url(tenant: &str) -> String {
     format!("https://{tenant}.antithesis.com")
 }
 
-/// Validate that `tenant` is safe to interpolate into the derived base URL
-/// `https://{tenant}.antithesis.com`. The tenant becomes the request host, so
-/// it must be a valid DNS hostname — one or more labels of ASCII letters,
-/// digits, and hyphens (hyphens not leading/trailing). This rejects values
-/// carrying URL-significant characters (`/`, `#`, `?`, `@`, `:`, whitespace,
-/// …) that would otherwise redirect requests — with the API key attached — to
-/// an unintended host. Dots are allowed so a multi-label tenant still works;
-/// set `ANTITHESIS_BASE_URL` directly for any URL this rejects.
-pub(crate) fn validate_tenant_host(tenant: &str) -> Result<()> {
-    if !is_valid_tenant_host(tenant) {
-        return Err(user_error(format!(
-            "invalid tenant `{tenant}`: a tenant must be a valid hostname \
-             (letters, digits, and hyphens) because it becomes the host in \
-             `https://{tenant}.antithesis.com`. Set ANTITHESIS_BASE_URL directly \
-             if you need a custom API URL."
-        )));
+/// An Antithesis tenant. The tenant becomes the host of the derived base URL
+/// `https://{tenant}.antithesis.com`, with the API key attached, so it must be
+/// a valid DNS host name: one or more labels of ASCII letters, digits, and
+/// hyphens, with no hyphen at the start or end of a label. This refuses the
+/// URL-significant characters (`/`, `#`, `?`, `@`, `:`, whitespace, …) that
+/// would send requests to another host.
+#[derive(Clone, Debug)]
+pub struct Tenant(String);
+
+impl FromStr for Tenant {
+    type Err = Report;
+
+    fn from_str(tenant: &str) -> Result<Self> {
+        let is_valid_label = |label: &str| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        };
+        if tenant.is_empty() || tenant.len() > 253 || !tenant.split('.').all(is_valid_label) {
+            return Err(user_error(format!(
+                "invalid tenant `{tenant}`: a tenant must be a valid hostname \
+                 (letters, digits, and hyphens) because it becomes the host in \
+                 `https://{tenant}.antithesis.com`. Set ANTITHESIS_BASE_URL directly \
+                 if you need a custom API URL."
+            )));
+        }
+        Ok(Self(tenant.to_owned()))
     }
-    Ok(())
 }
 
-/// Whether `tenant` is a valid DNS hostname, as [`validate_tenant_host`]
-/// requires.
-pub(crate) fn is_valid_tenant_host(tenant: &str) -> bool {
-    fn is_valid_label(label: &str) -> bool {
-        !label.is_empty()
-            && label.len() <= 63
-            && label
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            && !label.starts_with('-')
-            && !label.ends_with('-')
-    }
+impl Deref for Tenant {
+    type Target = str;
 
-    !tenant.is_empty() && tenant.len() <= 253 && tenant.split('.').all(is_valid_label)
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Tenant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 /// Turn a missing required setting into snouty's standard "run doctor" error.
@@ -1423,13 +1437,13 @@ mod tests {
         }
     }
 
-    // ---- validate_tenant_host -----------------------------------------
+    // ---- Tenant -----------------------------------------------------
 
     #[test]
     fn valid_tenants_pass_host_validation() {
         for tenant in ["orbitinghail", "acme", "my-tenant", "t123", "foo.bar"] {
             assert!(
-                validate_tenant_host(tenant).is_ok(),
+                tenant.parse::<Tenant>().is_ok(),
                 "expected `{tenant}` to be a valid tenant host"
             );
         }
@@ -1453,7 +1467,7 @@ mod tests {
             "trailinghyphen-",
         ] {
             assert!(
-                validate_tenant_host(tenant).is_err(),
+                tenant.parse::<Tenant>().is_err(),
                 "expected `{tenant}` to be rejected as a tenant host"
             );
         }
@@ -1464,7 +1478,7 @@ mod tests {
         // An explicit base_url bypasses tenant-host validation (the tenant isn't
         // interpolated into the host), so an otherwise-invalid tenant still
         // constructs. The derive-path validation itself is covered by
-        // validate_tenant_host's unit tests and specs/settings_tenant.txt.
+        // the Tenant unit tests and specs/settings_tenant.txt.
         let s = Settings::builder()
             .tenant("evil.com#")
             .base_url("https://ok.example")

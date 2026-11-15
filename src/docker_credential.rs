@@ -92,7 +92,7 @@ async fn cmd_docker_credential(
                 return Err(Report::new(CredentialsNotFound));
             };
             let Some((settings, credential)) =
-                registry::select_settings(settings_path, profile, tenant)?
+                registry::select_settings(settings_path, profile, &tenant)?
             else {
                 return Err(Report::new(CredentialsNotFound));
             };

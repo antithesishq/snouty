@@ -1,12 +1,12 @@
 # snouty login — non-interactive paths
 
-# A supplied-but-empty --tenant is rejected by the `validate_non_empty` value
-# parser at argument-parsing time — before any prompt, stdin read, or write — so
-# the command fails outright with a nonzero exit. (No stdin is provided,
-# precisely to prove nothing is read: parsing fails first.)
+# --tenant takes a host name, and refuses anything else before any prompt,
+# stdin read, or write.
 isolate-home empty_args
 ! snouty login --tenant ""
-stderr '.*Value may not be empty or whitespace.*'
+stderr -literal 'invalid tenant ``'
+! snouty login --tenant acme/x
+stderr -literal 'invalid tenant `acme/x`'
 
 # --registry takes a host that `docker login` accepts, optionally with a
 # port and a path, and refuses anything else before any request.

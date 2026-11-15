@@ -17,7 +17,7 @@ use crate::api::AntithesisApi;
 use crate::auth::{AuthenticationInfo, PasswordPolicy, RefreshableOAuthToken};
 use crate::error::user_error;
 use crate::render::sanitize;
-use crate::settings::{Settings, SettingsRequest, is_valid_tenant_host};
+use crate::settings::{Settings, SettingsRequest, Tenant};
 
 pub const USERNAME: &str = "snouty-token";
 
@@ -38,12 +38,13 @@ impl Registry {
 
     /// The tenant whose registry this is, when the host is
     /// `registry.<tenant>.antithesis.com`.
-    pub fn antithesis_tenant(&self) -> Option<&str> {
+    pub fn antithesis_tenant(&self) -> Option<Tenant> {
         self.0
             .domain()?
             .strip_prefix("registry.")?
-            .strip_suffix(".antithesis.com")
-            .filter(|tenant| is_valid_tenant_host(tenant))
+            .strip_suffix(".antithesis.com")?
+            .parse()
+            .ok()
     }
 }
 
@@ -112,7 +113,9 @@ pub fn tenant_registry(settings: &Settings) -> Option<&Registry> {
 
 /// Whether the tenant registry of `settings` is the registry of `tenant`.
 fn pushes_to_tenant(settings: &Settings, tenant: &str) -> bool {
-    tenant_registry(settings).and_then(Registry::antithesis_tenant) == Some(tenant)
+    tenant_registry(settings)
+        .and_then(Registry::antithesis_tenant)
+        .is_some_and(|own| *own == *tenant)
 }
 
 /// The settings and the credential for the registry of `tenant`. Settings
@@ -497,7 +500,7 @@ mod tests {
         let path = tc.draw(generators::from_regex(r"(/[a-z0-9_-]+)*/?").fullmatch(true));
         let url = format!("{scheme}registry.{tenant}.antithesis.com{path}");
         assert_eq!(
-            registry(&url).antithesis_tenant(),
+            registry(&url).antithesis_tenant().as_deref(),
             Some(tenant.as_str()),
             "{url}"
         );
@@ -514,7 +517,11 @@ mod tests {
             ("registry.eu.acme.antithesis.com", "eu.acme"),
             (" registry.acme.antithesis.com\n", "acme"),
         ] {
-            assert_eq!(registry(url).antithesis_tenant(), Some(tenant), "{url:?}");
+            assert_eq!(
+                registry(url).antithesis_tenant().as_deref(),
+                Some(tenant),
+                "{url:?}"
+            );
         }
     }
 
@@ -532,7 +539,11 @@ mod tests {
             "127.0.0.1:5000/app",
             "[::1]:5000/app",
         ] {
-            assert_eq!(registry(url).antithesis_tenant(), None, "{url:?}");
+            assert_eq!(
+                registry(url).antithesis_tenant().as_deref(),
+                None,
+                "{url:?}"
+            );
         }
     }
 

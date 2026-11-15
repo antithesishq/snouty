@@ -31,8 +31,8 @@ const TOKEN_MIN_LIFETIME: TimeDelta = TimeDelta::hours(2);
 pub struct Registry(Url);
 
 impl Registry {
-    /// The host and port, which `docker login` takes.
-    pub fn host(&self) -> &str {
+    /// The host and the port, which `docker login` takes.
+    pub fn authority(&self) -> &str {
         self.0.authority()
     }
 
@@ -738,7 +738,7 @@ mod tests {
         ] {
             let parsed = registry(given);
             assert_eq!(parsed.to_string(), display, "{given:?}");
-            assert_eq!(parsed.host(), host, "{given:?}");
+            assert_eq!(parsed.authority(), host, "{given:?}");
         }
     }
 

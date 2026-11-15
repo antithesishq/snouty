@@ -489,10 +489,10 @@ fn print_login_summary(
         .antithesis_tenant()
         .is_some_and(|own| own.eq_ignore_ascii_case(tenant));
     if !own_registry {
-        // `docker login` takes the host, not the path after it.
-        let host = registry.host();
+        // `docker login` takes the authority, not the path after it.
+        let authority = registry.authority();
         say(&format!(
-            "Run `docker login {host}` or `podman login {host}` to sign in to the registry."
+            "Run `docker login {authority}` or `podman login {authority}` to sign in to the registry."
         ));
     }
     say("Run `snouty doctor` to verify your setup.");

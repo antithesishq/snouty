@@ -245,7 +245,7 @@ async fn do_cmd_login(
         None
     };
 
-    let tenant_registry = fetch_registry(
+    let reported = fetch_registry(
         &api_settings,
         &tenant_url,
         new_credentials.as_ref(),
@@ -254,31 +254,26 @@ async fn do_cmd_login(
         verbose,
     )
     .await?;
+    let suggestion = "run `snouty login --registry <registry>`";
+    let invalid =
+        |err: &str| user_error(format!("{err}; nothing was saved")).suggestion(suggestion);
+    // --registry takes the place of the registry that the tenant reports.
+    let registry = match registry_flag {
+        Some(registry) => Some(registry),
+        None => reported
+            .map(|reported| reported.registry_url.parse::<Registry>())
+            .transpose()
+            .map_err(|err| invalid(&err.to_string()))?,
+    };
     // A saved registry of another tenant is neither offered nor kept.
     let saved_registry = current_settings
         .registry()
         .filter(|_| current_settings.tenant() == Some(tenant_to_use.as_str()));
-    let suggestion = "run `snouty login --registry <registry>`";
-    let needs_registry = || {
-        user_error(format!(
-            "login needs a container registry for `{tenant_to_use}`; nothing was saved"
-        ))
-        .suggestion(suggestion)
-    };
-    let invalid =
-        |err: &str| user_error(format!("{err}; nothing was saved")).suggestion(suggestion);
-    let registry_to_use = match (registry_flag, tenant_registry) {
-        (Some(registry), _) => registry,
-        (None, Some(tenant_registry)) if tenant_registry.registry_url.trim().is_empty() => {
-            return Err(needs_registry());
-        }
-        (None, Some(tenant_registry)) => tenant_registry
-            .registry_url
-            .parse::<Registry>()
-            .map_err(|err| invalid(&err.to_string()))?,
+    let registry_to_use = match registry {
+        Some(registry) => registry,
         // A tenant that does not report its registry: ask, or keep the saved
         // one.
-        (None, None) if interactive => prompter
+        None if interactive => prompter
             .input(
                 "What container registry would you like to use?",
                 saved_registry.map(ToString::to_string).as_deref(),
@@ -291,10 +286,12 @@ async fn do_cmd_login(
             )?
             .parse::<Registry>()
             .map_err(|err| invalid(&err.to_string()))?,
-        (None, None) => match saved_registry {
-            Some(saved) => saved.clone(),
-            None => return Err(needs_registry()),
-        },
+        None => saved_registry.cloned().ok_or_else(|| {
+            user_error(format!(
+                "login needs a container registry for `{tenant_to_use}`; nothing was saved"
+            ))
+            .suggestion(suggestion)
+        })?,
     };
 
     // The settings go first, so that a settings file that login cannot
@@ -1902,10 +1899,10 @@ mod tests {
         Ok(())
     }
 
-    /// A tenant that reports a blank registry fails the login, which saves
-    /// nothing, unless --registry is given.
+    /// A tenant that reports a value that is not a registry fails the login,
+    /// which saves nothing, unless --registry is given.
     #[tokio::test]
-    async fn login_saves_nothing_when_the_tenant_reports_a_blank_registry() -> Result<()> {
+    async fn login_saves_nothing_when_the_tenant_reports_no_registry_host() -> Result<()> {
         let env = LoginEnv::with_registry(200, r#"{"auth":"antithesis","registry_url":" "}"#);
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default().secret(FAKE_API_KEY_A).build();
@@ -1915,13 +1912,13 @@ mod tests {
             .expect_err("a blank registry must fail the login");
 
         assert!(
-            format!("{err:#}").contains("login needs a container registry"),
+            format!("{err:#}").contains("is not a container registry"),
             "{err:#}"
         );
         assert!(env.settings().is_empty(), "{}", env.settings());
         assert!(env.credentials().is_empty(), "{}", env.credentials());
 
-        // --registry takes the place of the blank registry.
+        // --registry takes the place of the reported value.
         let prompter = Script::default().secret(FAKE_API_KEY_A).build();
         login_with_flags(Some("myrepo"), &settings, &prompter).await?;
         assert!(env.settings().contains(r#"registry = "myrepo""#));

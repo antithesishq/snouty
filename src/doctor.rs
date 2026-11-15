@@ -15,8 +15,13 @@ use crate::compose;
 use crate::container;
 use crate::error::rejects_credential;
 use crate::login::{CliOAuthConfig, fetch_cli_config};
+use crate::registry::Registry;
 use crate::render::OutputOptions;
-use crate::settings::Settings;
+use crate::settings::{Settings, Tenant};
+
+/// The longest wait for the OAuth probe. Doctor only reports what the probe
+/// finds, so it does not wait as long as login does.
+const OAUTH_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Outcome of a single health check. Only `Error` fails doctor; `Warn` is
 /// surfaced but the run still passes.
@@ -233,7 +238,7 @@ struct Report<'a> {
 /// check that reports one of them missing points at it. Each says so in its own
 /// words: on an unconfigured machine all three fire at once, and the same
 /// sentence three times reads as noise rather than as advice.
-fn tenant_check(tenant: Option<&str>) -> Check {
+fn tenant_check(tenant: Option<&Tenant>) -> Check {
     match tenant {
         Some(_) => Check::ok(CheckId::Tenant, "tenant is set"),
         None => Check::fail(CheckId::Tenant, "tenant is not set").note(
@@ -246,7 +251,7 @@ fn tenant_check(tenant: Option<&str>) -> Check {
 /// The container registry is only needed to build and push a config image
 /// (`snouty launch --config`), so a missing one is a warning, not a failure —
 /// read-only use (`snouty runs`, `snouty debug`) doesn't need it.
-fn registry_check(registry: Option<&str>) -> Check {
+fn registry_check(registry: Option<&Registry>) -> Check {
     match registry {
         Some(_) => Check::ok(CheckId::Registry, "container registry is set"),
         None => Check::warn(CheckId::Registry, "container registry is not set")
@@ -865,7 +870,9 @@ pub async fn cmd_doctor(
             && let Some(base_url) = settings.base_url()
             && let Ok(client) = HttpClient::new(settings, verbose)
         {
-            match fetch_cli_config(&client, &normalize_base_url(base_url)).await {
+            match fetch_cli_config(&client, &normalize_base_url(base_url), OAUTH_PROBE_TIMEOUT)
+                .await
+            {
                 Ok(CliOAuthConfig::Disabled) => checks.push(
                     Check::warn(
                         CheckId::OauthConfigured,
@@ -1327,7 +1334,7 @@ mod tests {
 
     #[test]
     fn tenant_check_is_ok_when_resolved() {
-        let check = tenant_check(Some("acme"));
+        let check = tenant_check(Some(&"acme".parse().unwrap()));
         assert_eq!(check.status, Status::Ok);
     }
 
@@ -1349,7 +1356,7 @@ mod tests {
 
     #[test]
     fn registry_check_is_ok_when_resolved() {
-        let check = registry_check(Some("registry.acme.antithesis.com/team"));
+        let check = registry_check(Some(&"registry.acme.antithesis.com/team".parse().unwrap()));
         assert_eq!(check.status, Status::Ok);
     }
 

@@ -303,6 +303,14 @@ impl AuthenticationInfo {
         Ok(None)
     }
 
+    /// The credential that every command finds for `profile`, with where it
+    /// comes from, or `None` when there is none. The [`PasswordPolicy`] gate
+    /// does not run, so the caller decides what a username and password
+    /// means.
+    pub(crate) fn find_ambient(profile: Option<&str>) -> Result<Option<SourcedCredential>> {
+        Self::find(profile, Fallback::DefaultProfile)
+    }
+
     pub(crate) fn for_ambient_configuration(
         profile: Option<&str>,
         policy: PasswordPolicy,

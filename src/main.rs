@@ -106,7 +106,9 @@ async fn run(cli: Cli) -> Result<()> {
 
     // Resolve settings once, up front. Each command that reads settings
     // unwraps the result, so a bad settings file stops only those commands.
-    let settings = Settings::resolve(settings_path.clone(), profile.clone());
+    let settings = Settings::resolve(settings_path.clone(), profile.clone()).map_err(|err| {
+        snouty::settings::suggest_settings_fix(err, matches!(command, Commands::Login { .. }))
+    });
     let result = match command {
         Commands::Completions { shell } => cmd_completions(shell).map_err(Report::new),
         Commands::Version => cmd_version(output.json),
@@ -267,11 +269,11 @@ async fn cmd_launch(
 
     let config_image_ref = if let Some(config_dir) = &args.config {
         let detected = config::detect_config(config_dir)?;
-        let registry = snouty::settings::require_setting(settings.registry(), "registry")?;
+        let registry = settings.require_registry()?;
 
         let image_ref = container::generate_image_ref(registry);
         params.insert(ANT_CONFIG_IMAGE, &image_ref);
-        Some((detected, registry.to_owned(), image_ref))
+        Some((detected, registry, image_ref))
     } else {
         None
     };
@@ -311,7 +313,7 @@ async fn cmd_launch(
             // Podman gets the secret from the helper: for it, this is an early credential check.
             match snouty::registry::launch_secret(&api).await? {
                 Some(secret) => rt.use_tenant_registry_auth(container::TenantRegistryAuth {
-                    registry: tenant_registry,
+                    registry: tenant_registry.clone(),
                     secret,
                     settings_path,
                     profile,
@@ -329,7 +331,7 @@ async fn cmd_launch(
                 let compose = compose::DockerCompose::resolve(rt.as_ref(), compose_config.clone())?;
                 let pinned_yaml = compose.pin_images(
                     rt.as_ref(),
-                    &registry,
+                    registry,
                     if args.allow_remote_images {
                         compose::MissingImages::AssumeRemote
                     } else {
@@ -345,7 +347,7 @@ async fn cmd_launch(
         };
         params.insert(
             ANT_CONFIG_IMAGE,
-            container::strip_registry(&pinned_config, &registry),
+            container::strip_registry(&pinned_config, &registry.to_string()),
         );
     }
 

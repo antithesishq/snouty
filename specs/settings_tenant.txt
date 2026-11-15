@@ -1,20 +1,27 @@
 # Tenant host validation
 #
-# A derived base URL interpolates the tenant into the request host
-# (https://{tenant}.antithesis.com), and snouty attaches the API key to that
-# host. A tenant carrying URL-significant characters (a path separator, '#',
-# whitespace, ...) would silently redirect those credentialed requests to an
-# unintended endpoint, so it is rejected up front when the base URL is derived.
-# An explicit ANTITHESIS_BASE_URL bypasses the tenant and this check (covered by
-# the validate_tenant_host unit tests).
+# A tenant must be a host name wherever it comes from, even when an explicit
+# base_url means that no request goes to the tenant's host.
 
 # The project file is used only once the user trusts it (see
 # config_trust.txt).
 snouty settings trust
 
-# A tenant with a path separator would mangle the derived host; reject it.
+# A tenant with a path separator in a file fails, and names the file.
 ! snouty doctor
-stderr '.*invalid tenant.*'
+stderr 'invalid setting `tenant` in .snouty.toml: `evil.com/x` is not a valid tenant'
+stderr 'Suggestion: fix .snouty.toml'
+
+# An explicit base URL does not make it valid.
+env ANTITHESIS_BASE_URL=https://api.example.com
+! snouty doctor
+stderr '`evil.com/x` is not a valid tenant'
+
+# A tenant from the environment names the variable.
+env 'ANTITHESIS_TENANT=a b'
+! snouty doctor
+stderr -literal 'invalid ANTITHESIS_TENANT: `a b` is not a valid tenant'
+stderr -literal 'Suggestion: fix or unset ANTITHESIS_TENANT'
 
 -- .snouty.toml --
 tenant = "evil.com/x"

@@ -833,6 +833,11 @@ pub struct DebugArgs {
     #[arg(long)]
     pub recipients: Option<String>,
 
+    /// Do not record the commit, branch, repository and pull request in run
+    /// metadata
+    #[arg(long)]
+    pub no_vcs: bool,
+
     /// Extra parameters as key=value pairs (repeatable)
     #[arg(long = "param", id = "param", value_name = "PARAMS")]
     pub params: Vec<KVPair>,

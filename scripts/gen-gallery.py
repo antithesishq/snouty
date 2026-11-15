@@ -5263,7 +5263,7 @@ _SEED_EXPIRED_OAUTH = {
 
 
 def build_mock_tenant_stories() -> list[Story]:
-    """The mock tenant stories other than login."""
+    """The mock tenant stories that run without a terminal."""
     return [
         _mock_story(
             "runs-key-rejected",
@@ -5346,12 +5346,6 @@ def build_mock_tenant_stories() -> list[Story]:
             ),
             MockTenantSpec(actions=ActionsJob.REJECTS_REQUEST),
         ),
-    ]
-
-
-def build_login_script_stories() -> list[Story]:
-    """The login stories without a terminal on stdin, as in a script."""
-    return [
         Story(
             "login-script-keeps-custom-registry",
             "Re-run login in a script over my own registry",
@@ -5382,11 +5376,7 @@ def build_login_script_stories() -> list[Story]:
 
 def build_offline_stories() -> list[Story]:
     """The TTY and mock tenant stories, which need no external dependencies."""
-    return [
-        *build_tty_stories(),
-        *build_login_script_stories(),
-        *build_mock_tenant_stories(),
-    ]
+    return [*build_tty_stories(), *build_mock_tenant_stories()]
 
 
 # ---------------------------------------------------------------------------

@@ -241,6 +241,10 @@ fn credentials(home: &Path) -> String {
     std::fs::read_to_string(home.join(CREDENTIALS_FILE)).unwrap_or_default()
 }
 
+fn settings(home: &Path) -> String {
+    std::fs::read_to_string(home.join(".config/snouty/settings.toml")).expect("read the settings")
+}
+
 /// A pasted API key echoes one `*` per character, and the key itself never
 /// reaches the screen.
 #[test]
@@ -623,8 +627,7 @@ fn a_bad_answer_at_the_registry_prompt_asks_again() {
     send(&mut session, "typed.example.com/app\r");
     finish(session);
 
-    let settings = std::fs::read_to_string(home.path().join(".config/snouty/settings.toml"))
-        .expect("read the settings");
+    let settings = settings(home.path());
     assert!(
         settings.contains(r#"registry = "typed.example.com/app""#),
         "{settings}"
@@ -654,8 +657,7 @@ fn bare_enter_at_the_registry_prompt_asks_again() {
     send(&mut session, "typed.example.com/app\r");
     finish(session);
 
-    let settings = std::fs::read_to_string(home.path().join(".config/snouty/settings.toml"))
-        .expect("read the settings");
+    let settings = settings(home.path());
     assert!(
         settings.contains(r#"registry = "typed.example.com/app""#),
         "{settings}"
@@ -860,9 +862,10 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
 
 const CUSTOM_SETTINGS: &str = "tenant = \"pty-tenant\"\nregistry = \"custom.example.com/app\"\n";
 
-/// Spawn a login that takes the registry from the tenant, over a saved
-/// custom registry, and answer the API key prompt.
-fn start_login_over_a_custom_registry() -> (tempfile::TempDir, OsSession) {
+/// Run a login that takes the registry from the tenant, over a saved
+/// custom registry, and give `answer` at the question to replace it. Check
+/// the summary and the saved registry.
+fn answer_the_replace_registry_question(answer: &str, summary: &str, registry: &str) {
     let (home, mut session) = spawn_login(&Login {
         seed: &[(".config/snouty/settings.toml", CUSTOM_SETTINGS)],
         no_registry_flag: true,
@@ -872,25 +875,24 @@ fn start_login_over_a_custom_registry() -> (tempfile::TempDir, OsSession) {
     send(&mut session, &format!("{FAKE_API_KEY_A}\r"));
     expect(&mut session, "Replace registry `custom.example.com/app`");
     expect(&mut session, "(y/N)");
-    (home, session)
+    send(&mut session, answer);
+    let seen = flat(&finish(session));
+
+    assert!(seen.contains(summary), "{seen}");
+    let settings = settings(home.path());
+    assert!(
+        settings.contains(&format!(r#"registry = "{registry}""#)),
+        "{settings}"
+    );
 }
 
 /// A bare Enter at the question keeps the saved custom registry.
 #[test]
 fn bare_enter_keeps_a_saved_custom_registry() {
-    let (home, mut session) = start_login_over_a_custom_registry();
-    send(&mut session, "\r");
-    let seen = flat(&finish(session));
-
-    assert!(
-        seen.contains("Saved tenant `pty-tenant` and registry `custom.example.com/app`."),
-        "{seen}"
-    );
-    let settings = std::fs::read_to_string(home.path().join(".config/snouty/settings.toml"))
-        .expect("read the settings");
-    assert!(
-        settings.contains(r#"registry = "custom.example.com/app""#),
-        "{settings}"
+    answer_the_replace_registry_question(
+        "\r",
+        "Saved tenant `pty-tenant` and registry `custom.example.com/app`.",
+        "custom.example.com/app",
     );
 }
 
@@ -898,20 +900,9 @@ fn bare_enter_keeps_a_saved_custom_registry() {
 /// the registry that it replaced.
 #[test]
 fn yes_replaces_a_saved_custom_registry() {
-    let (home, mut session) = start_login_over_a_custom_registry();
-    send(&mut session, "y\r");
-    let seen = flat(&finish(session));
-
-    assert!(
-        seen.contains(
-            "Saved tenant `pty-tenant` and registry `registry.pty-tenant.antithesis.com`, replacing registry `custom.example.com/app`."
-        ),
-        "{seen}"
-    );
-    let settings = std::fs::read_to_string(home.path().join(".config/snouty/settings.toml"))
-        .expect("read the settings");
-    assert!(
-        settings.contains(r#"registry = "registry.pty-tenant.antithesis.com""#),
-        "{settings}"
+    answer_the_replace_registry_question(
+        "y\r",
+        "Saved tenant `pty-tenant` and registry `registry.pty-tenant.antithesis.com`, replacing registry `custom.example.com/app`.",
+        "registry.pty-tenant.antithesis.com",
     );
 }

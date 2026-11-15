@@ -11,9 +11,9 @@ use console::truncate_str;
 use futures_util::{StreamExt, TryStreamExt, stream};
 
 use crate::OutputOptions;
-use crate::api::{AntithesisApi, LocationCoverage, Reach};
+use crate::api::{AntithesisApi, LocationCoverage, MIN_COVERAGE_RELEASE, Reach, RunDetail};
 use crate::cli::{ReachArg, RunsCoverageArgs};
-use crate::error::api_error_status;
+use crate::error::{api_error_status, user_error};
 use crate::render::sanitize;
 use crate::settings::Settings;
 use crate::stdio;
@@ -39,17 +39,34 @@ impl std::fmt::Display for CoverageCut {
 
 impl std::error::Error for CoverageCut {}
 
-/// The locations endpoint answers 404 while the run starts, and for a minute
-/// or more after the run reports that it is ready (orbitinghail, release
-/// 67.6). A live run answers 200 with no lines for a module that it has not
+/// Like the other run-scoped streams, the locations endpoint serves a run once
+/// it is ready. It can still answer 404 for a minute or more after the run
+/// reports that it is ready (orbitinghail, release 67.6). A live run answers 200 with no lines for a module that it has not
 /// loaded, and so does a run from before the coverage API, so a 404 from a
-/// live run is the start-up 404. A finished run fails at once, and an unknown
-/// run fails when snouty reads it after the 404.
+/// live run of a release that has coverage is the start-up 404. A finished
+/// run fails at once, and an unknown run fails when snouty reads it after the
+/// 404.
 pub(super) const COVERAGE_RETRY: RetryPolicy = RetryPolicy {
-    needs: Needs::Live,
+    needs: Needs::Ready,
     waiting: "waiting for the run's coverage",
-    decide: |_, err| RetryDecision::retry_if(api_error_status(err) == Some(404)),
+    decide: |run, err| {
+        RetryDecision::retry_if(
+            api_error_status(err) == Some(404) && run.created_on_or_after(MIN_COVERAGE_RELEASE),
+        )
+    },
 };
+
+/// Annotate a locations error for `run`: a 404 from a run that will never
+/// have coverage.
+pub(super) fn explain_coverage_error(run: &RunDetail, err: Report) -> Report {
+    if api_error_status(&err) != Some(404) || run.created_on_or_after(MIN_COVERAGE_RELEASE) {
+        return err;
+    }
+    let (major, minor) = MIN_COVERAGE_RELEASE;
+    user_error(format!("run {} has no coverage locations", run.run_id)).note(format!(
+        "coverage needs a run created on release {major}.{minor} or later"
+    ))
+}
 
 pub(super) async fn cmd_runs_coverage(
     args: RunsCoverageArgs,
@@ -80,7 +97,7 @@ pub(super) async fn cmd_runs_coverage(
             READY_POLL,
             COVERAGE_RETRY,
             move || api.get_coverage_locations(run_id, module_id, reach, follow),
-            |_, err| err,
+            explain_coverage_error,
         )
     };
     // A followed stream stays open until the run ends, so open every module

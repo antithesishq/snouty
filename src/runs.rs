@@ -5425,6 +5425,47 @@ mod tests {
             assert_eq!(api_error_status(&result.err().unwrap()), Some(404));
         }
 
+        // A 404 from a run of a release before coverage fails at once, and
+        // names the release that coverage needs.
+        #[tokio::test]
+        async fn coverage_fails_a_404_from_a_run_before_coverage() {
+            let run_id = "ffffffffffffffffffffffffffffffff-67-0";
+            let server = mock_get_run(
+                run_id,
+                200,
+                json!({
+                    "run_id": run_id,
+                    "status": "in_progress",
+                    "sub_status": "Ready",
+                    "created_at": "2025-03-20T02:00:00Z",
+                    "launcher": "nightly"
+                }),
+            )
+            .await;
+            Mock::given(method("GET"))
+                .and(path(format!("/api/v0/runs/{run_id}/coverage/locations")))
+                .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "nope"})))
+                .mount(&server)
+                .await;
+            let api = test_api(&server.uri());
+            let send = ready::send_when_ready(
+                &api,
+                run_id,
+                READY_POLL,
+                coverage::COVERAGE_RETRY,
+                || api.get_coverage_locations(run_id, None, None, false),
+                coverage::explain_coverage_error,
+            );
+            let err = tokio::time::timeout(Duration::from_secs(5), send)
+                .await
+                .expect("the 404 fails without a retry")
+                .err()
+                .unwrap();
+            let debug = strip_ansi(&format!("{err:?}")).into_owned();
+            assert!(debug.contains("has no coverage locations"), "{debug}");
+            assert!(debug.contains("release 67.6 or later"), "{debug}");
+        }
+
         // A missing run keeps the plain "run not found" with no moment talk.
         #[tokio::test]
         async fn logs_error_reports_a_missing_run_without_the_suggestion() {

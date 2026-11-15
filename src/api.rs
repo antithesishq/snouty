@@ -91,6 +91,10 @@ pub const MIN_SEARCH_RELEASE: (u64, u64) = (62, 2);
 /// Only a run created on this release or later has a run status stream.
 pub const MIN_STREAM_RELEASE: (u64, u64) = (65, 3);
 
+/// Only a run created on this release or later has coverage locations: the
+/// earliest release seen to serve them (orbitinghail, release 67.6).
+pub const MIN_COVERAGE_RELEASE: (u64, u64) = (67, 6);
+
 /// The first tenant release whose execute-command API takes `container`.
 /// Earlier releases reject the field, and this release requires it. `runs exec`
 /// assumes the tenant meets this; `snouty doctor` checks it. TODO: drop this

@@ -5257,6 +5257,21 @@ def build_mock_tenant_stories() -> list[Story]:
             MockTenantSpec(actions=ActionsJob.ISSUES_TOKEN),
         ),
         _mock_story(
+            "doctor-registry-proxy",
+            "Check a machine that reaches Antithesis through a proxy",
+            "I set base_url to a proxy in front of the Antithesis API, and my registry "
+            "setting names the proxy's registry. I want doctor to accept that setup.",
+            "doctor reports the container registry as set. It does not suggest the "
+            "tenant's Antithesis registry, because a base_url is set.",
+            ["doctor"],
+            doctor_check(
+                contains=("container registry is set", "Antithesis API reachable"),
+                absent=("also has an Antithesis registry",),
+            ),
+            MockTenantSpec(),
+            ANTITHESIS_API_KEY=_FAKE_API_KEY_B,
+        ),
+        _mock_story(
             "doctor-oidc-forbidden",
             "GitHub Actions refuses the job an OIDC token",
             "My GitHub Actions job signs in with OIDC, but GitHub refuses to give it a token. "

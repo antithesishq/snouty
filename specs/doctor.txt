@@ -185,6 +185,44 @@ stderr 'NOTE: rerun the job'
 env ACTIONS_ID_TOKEN_REQUEST_URL=
 env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
 
+# --- the tenant's registry ---
+# doctor compares the registry setting with the tenant's registry only when
+# no base_url is set. A base_url most often names a proxy, which then serves
+# the registry too. The mock reports release 67.0 and another registry.
+[!staging] mock-runs-server
+[!staging] env ANTITHESIS_REGISTRY=proxy.example.com/testtenant
+[!staging] snouty --verbose doctor
+[!staging] stderr 'GET .*/api/version'
+[!staging] ! stderr '/api/v0/registry'
+[!staging] stderr '^  ✓ container registry is set$'
+[!staging] ! stderr 'also has an Antithesis registry'
+[!staging] snouty doctor --json
+[!staging] stdout '"id": "registry",\s*"status": "ok"'
+
+# A base_url in a settings file profile is a base_url too.
+[!staging] set-env BASE_URL ${ANTITHESIS_BASE_URL}
+[!staging] substitute base_url.toml
+[!staging] env ANTITHESIS_BASE_URL=
+[!staging] env SNOUTY_SETTINGS_PATH=base_url.toml
+[!staging] snouty --verbose --profile proxied doctor
+[!staging] stderr 'GET .*/api/version'
+[!staging] ! stderr '/api/v0/registry'
+[!staging] env SNOUTY_SETTINGS_PATH=
+[!staging] set-env ANTITHESIS_BASE_URL ${BASE_URL}
+
+# A registry setting that is not a registry fails doctor, as it fails every
+# command that reads the settings.
+[!staging] env 'ANTITHESIS_REGISTRY=not a registry'
+[!staging] ! snouty doctor
+[!staging] stderr -literal 'invalid ANTITHESIS_REGISTRY: `not a registry` is not a container registry'
+[!staging] stderr -literal 'Suggestion: fix or unset ANTITHESIS_REGISTRY'
+
+# An unset registry is reported once.
+[!staging] env ANTITHESIS_REGISTRY=
+[!staging] snouty doctor
+[!staging] stderr -count=1 'container registry'
+[!staging] stderr -literal 'NOTE: run `snouty login` to set it, or set ANTITHESIS_REGISTRY'
+
 # --- CLI OAuth probe ---
 # The probe needs no credentials. No API key is set, so doctor skips the API
 # check. mock-server answers every request with the same response.
@@ -376,6 +414,9 @@ env SNOUTY_CONTAINER_ENGINE=
 snouty doctor --offline
 stderr 'Container runtime: podman detected'
 
+-- base_url.toml --
+[profile.proxied]
+base_url = "${BASE_URL}"
 -- credential_conflict/.config/snouty/credentials.toml --
 [default]
 type = "ApiKey"

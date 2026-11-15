@@ -51,8 +51,8 @@ const _: () = assert!(OAUTH_HTTP_TIMEOUT.as_secs() > CONNECT_TIMEOUT.as_secs());
 
 /// The longest wait for the registry request. The API client has only a
 /// connect timeout, and a tenant that accepts a connection but does not answer
-/// would otherwise hold the login forever.
-const REGISTRY_TIMEOUT: Duration = Duration::from_secs(30);
+/// would otherwise hold login or doctor forever.
+pub(crate) const REGISTRY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long to wait for the browser to redirect back to the loopback server
 /// before giving up — generous enough for the user to complete an interactive
@@ -273,6 +273,7 @@ async fn do_cmd_login(
     // A saved registry of another tenant is neither offered nor kept.
     let saved_registry = current_settings
         .registry()
+        .map(Tagged::value)
         .filter(|_| current_settings.tenant() == Some(&tenant_to_use));
     let registry_to_use = match registry {
         Some(registry) => registry,
@@ -1665,7 +1666,10 @@ mod tests {
             "repository = \"old\"\n[profile.p]\nrepository = \"old-p\"\n",
         );
         let settings = env.resolve_settings(None)?;
-        assert_eq!(settings.registry(), Some(&"old".parse()?));
+        assert_eq!(
+            settings.registry().map(Tagged::value),
+            Some(&"old".parse()?)
+        );
         let prompter = Script::default().secret(FAKE_API_KEY_A).build();
 
         login_with_flags(Some("myrepo"), &settings, &prompter).await?;

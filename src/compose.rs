@@ -555,6 +555,26 @@ impl DockerCompose {
         }
 
         let (mut references, unserved) = find_served_images(rt, local, &prefix)?;
+        // A runtime cannot tag or push a reference that is pinned by digest.
+        let mut digest_pinned = contents
+            .services
+            .iter()
+            .filter(|service| {
+                service.image.contains('@') && unserved.contains(&service.image.as_str())
+            })
+            .peekable();
+        if digest_pinned.peek().is_some() {
+            let mut err = user_error(
+                "snouty cannot push an image reference that is pinned by digest. Use a tag instead.",
+            );
+            for service in digest_pinned {
+                err = err
+                    .with_note(|| format!("service '{}' names `{}`", service.name, service.image));
+            }
+            return Err(err.with_suggestion(
+                || "replace the `@sha256:...` digest with a tag in the compose file",
+            ));
+        }
         references.extend(push_images(rt, &unserved, &absent, &prefix)?);
 
         let services = service_rewrites(&contents, &references, &prefix);
@@ -793,12 +813,13 @@ fn push_destination(image: &str, prefix: &str) -> Result<String> {
 /// deduplicates the layers that the registry holds, so the check would save
 /// little, and the Antithesis registry does not serve the config blobs that
 /// `manifest inspect` reads. An image at the registry's address outside
-/// `prefix` goes to the push path, because a test run cannot resolve that
-/// address.
+/// `prefix`, or pinned by digest, goes to the push path without a lookup: a
+/// test run cannot resolve that address, and the push path refuses a digest.
 fn find_remote_pin(rt: &dyn ContainerRuntime, image: &str, prefix: &str) -> Result<Option<String>> {
     let repo = normalize_repo(image_repo(image));
     let registry_address = registry_host(prefix);
-    let at_destination = normalize_repo(image_repo(&push_destination(image, prefix)?)) == repo;
+    let at_destination = !image.contains('@')
+        && normalize_repo(image_repo(&push_destination(image, prefix)?)) == repo;
     if !at_destination
         && registry_address.is_some_and(|address| registry_host(image) == Some(address))
     {
@@ -1201,7 +1222,6 @@ fn parse_compose_ps(stdout: &str) -> Result<Vec<ComposeContainer>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::container::pinned_image_ref;
     use crate::testutils::{OCIRegistry, has_compose, require_runtimes_with_compose, skip_or_fail};
     use std::path::PathBuf;
 
@@ -1840,6 +1860,110 @@ services:
     }
 
     #[test]
+    fn pin_images_refuses_a_digest_pin_at_its_push_destination() {
+        if !has_compose() {
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+        // The registry serves the digest, but snouty does not ask it.
+        let image = "reg.example.com/app@sha256:list";
+        let rt = FakeRuntime {
+            available_images: BTreeMap::from([(image.to_string(), true)]),
+            repo_digests: BTreeMap::from([(image.to_string(), vec![image.to_string()])]),
+            remote_manifests: BTreeMap::from([(
+                image.to_string(),
+                RemoteManifest::List { has_amd64: true },
+            )]),
+            ..Default::default()
+        };
+        let err = pin_with_fake(
+            &rt,
+            &format!("services:\n  app:\n    image: {image}\n"),
+            "reg.example.com",
+        )
+        .unwrap_err();
+        let err = format!("{err:?}");
+        assert!(err.contains("pinned by digest"), "{err}");
+        assert!(
+            err.contains(&format!("service 'app' names `{image}`")),
+            "{err}"
+        );
+        assert!(rt.pushed.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn pin_images_refuses_every_digest_pin_that_it_would_push() {
+        if !has_compose() {
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+        // One image under the tenant registry's address but outside the
+        // prefix, and one that its own registry does not serve.
+        let tenant = "reg.example.com/app:v1@sha256:aaa";
+        let other = "ghcr.io/org/tool@sha256:bbb";
+        let rt = FakeRuntime {
+            available_images: BTreeMap::from([
+                (tenant.to_string(), true),
+                (other.to_string(), true),
+                ("sidecar:v1".to_string(), true),
+            ]),
+            ..Default::default()
+        };
+        let err = pin_with_fake(
+            &rt,
+            &format!(
+                "services:\n  app:\n    image: {tenant}\n  tool:\n    image: {other}\n  \
+                 sidecar:\n    image: sidecar:v1\n"
+            ),
+            "reg.example.com/team",
+        )
+        .unwrap_err();
+        let err = format!("{err:?}");
+        assert!(
+            err.contains(&format!("service 'app' names `{tenant}`")),
+            "{err}"
+        );
+        assert!(
+            err.contains(&format!("service 'tool' names `{other}`")),
+            "{err}"
+        );
+        assert!(!err.contains("sidecar"), "{err}");
+        assert!(rt.pushed.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn pin_images_keeps_a_digest_pin_that_its_registry_serves() {
+        if !has_compose() {
+            skip_or_fail("docker-compose (Docker Compose v2) is not available");
+            return;
+        }
+        let image = "redis@sha256:list";
+        let rt = FakeRuntime {
+            available_images: BTreeMap::from([(image.to_string(), true)]),
+            repo_digests: BTreeMap::from([(
+                image.to_string(),
+                vec!["docker.io/library/redis@sha256:list".to_string()],
+            )]),
+            remote_manifests: BTreeMap::from([(
+                "docker.io/library/redis@sha256:list".to_string(),
+                RemoteManifest::List { has_amd64: true },
+            )]),
+            ..Default::default()
+        };
+        let out = pin_with_fake(
+            &rt,
+            &format!("services:\n  app:\n    image: {image}\n"),
+            "reg.example.com",
+        )
+        .unwrap();
+        assert!(
+            out.contains("image: docker.io/library/redis:latest@sha256:list"),
+            "{out}"
+        );
+        assert!(rt.pushed.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn pin_images_strips_prefix_from_an_already_prefixed_source_image() {
         if !has_compose() {
             skip_or_fail("docker-compose (Docker Compose v2) is not available");
@@ -2205,7 +2329,7 @@ services:
 
         fn image_push(&self, image_ref: &str) -> Result<String> {
             self.pushed.lock().unwrap().push(image_ref.to_string());
-            Ok(pinned_image_ref(image_ref, "sha256:fakepushdigest"))
+            Ok(format!("{image_ref}@sha256:fakepushdigest"))
         }
 
         fn image_exists(&self, image_ref: &str) -> Result<bool> {

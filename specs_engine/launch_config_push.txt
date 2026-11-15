@@ -110,6 +110,30 @@ stderr 'x86-64 \(amd64\).*'
 stderr 'image '\''.*arm-launch:latest'\'' has architecture '\''arm64'\''.*'
 ! stderr 'Pushing image:'
 
+# A runtime cannot push a reference pinned by digest, so snouty refuses one
+# that it would push, before any push. A tagged push records a digest to pin.
+set-env REGISTRY ${ANTITHESIS_REGISTRY}
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+build-image --platform linux/amd64 snouty-digest:v1 images/myapp
+snouty launch --launcher basic_test -c digest_seed_config --duration 30m
+stderr 'Pushing image: .*/snouty-digest:v1'
+exec sh -c '"$SNOUTY_CONTAINER_ENGINE" image inspect --format "{\"ref\":{{json (index .RepoDigests 0)}}}" "$REGISTRY/snouty-digest:v1"'
+env_from_json 0 ref
+substitute digest_config/docker-compose.yaml
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+! snouty launch --launcher basic_test -c digest_config --duration 30m
+stderr 'cannot push an image reference that is pinned by digest'
+stderr 'service .app. names `${R_ref@R}`'
+! stderr 'Pushing image:'
+
+# The same refusal applies below a path in the tenant registry.
+mock-server 200 '{"runId":"run-123","statusCode":200}'
+set-env ANTITHESIS_REGISTRY ${REGISTRY}/team
+! snouty launch --launcher basic_test -c digest_config --duration 30m
+stderr 'service .app. names `${R_ref@R}`'
+! stderr 'Pushing image:'
+set-env ANTITHESIS_REGISTRY ${REGISTRY}
+
 # Kubernetes config: builds and pushes the config image, never sets
 # antithesis.images (the platform pulls images from the manifests).
 mock-server 200 '{"runId":"run-123","statusCode":200}'
@@ -150,6 +174,14 @@ services:
   sidecar:
     build: .
     image: sidecar:v1
+-- digest_seed_config/docker-compose.yaml --
+services:
+  app:
+    image: snouty-digest:v1
+-- digest_config/docker-compose.yaml --
+services:
+  app:
+    image: ${R_ref}
 -- external_config/docker-compose.yaml --
 services:
   app:

@@ -17,7 +17,7 @@ use crate::error::rejects_credential;
 use crate::login::{CliOAuthConfig, fetch_cli_config};
 use crate::registry::Registry;
 use crate::render::OutputOptions;
-use crate::settings::Settings;
+use crate::settings::{Settings, Tenant};
 
 /// The longest wait for the OAuth probe. Doctor only reports what the probe
 /// finds, so it does not wait as long as login does.
@@ -238,7 +238,7 @@ struct Report<'a> {
 /// check that reports one of them missing points at it. Each says so in its own
 /// words: on an unconfigured machine all three fire at once, and the same
 /// sentence three times reads as noise rather than as advice.
-fn tenant_check(tenant: Option<&str>) -> Check {
+fn tenant_check(tenant: Option<&Tenant>) -> Check {
     match tenant {
         Some(_) => Check::ok(CheckId::Tenant, "tenant is set"),
         None => Check::fail(CheckId::Tenant, "tenant is not set").note(
@@ -1334,7 +1334,7 @@ mod tests {
 
     #[test]
     fn tenant_check_is_ok_when_resolved() {
-        let check = tenant_check(Some("acme"));
+        let check = tenant_check(Some(&"acme".parse().unwrap()));
         assert_eq!(check.status, Status::Ok);
     }
 

@@ -216,7 +216,7 @@ async fn do_cmd_login(
         }
         None => prompter.input(
             "What Antithesis tenant would you like to use?",
-            current_settings.tenant(),
+            current_settings.tenant().map(|tenant| &**tenant),
         )?,
     };
 
@@ -230,7 +230,7 @@ async fn do_cmd_login(
         .flatten()
         .filter(|stored| !stored.value().has_blank_api_key());
 
-    let api_settings = current_settings.with_tenant(&tenant_to_use);
+    let api_settings = current_settings.with_tenant(tenant_to_use.clone());
     let tenant_url = TenantUrl::new(&api_settings, &tenant_to_use);
 
     let new_credentials = if interactive {
@@ -272,7 +272,7 @@ async fn do_cmd_login(
     // A saved registry of another tenant is neither offered nor kept.
     let saved_registry = current_settings
         .registry()
-        .filter(|_| current_settings.tenant() == Some(&*tenant_to_use));
+        .filter(|_| current_settings.tenant() == Some(&tenant_to_use));
     let registry_to_use = match registry {
         Some(registry) => registry,
         // A tenant that does not report its registry: ask, or keep the saved
@@ -337,12 +337,12 @@ async fn do_cmd_login(
 /// else the host of the tenant.
 struct TenantUrl<'a> {
     url: String,
-    tenant: &'a str,
+    tenant: &'a Tenant,
     explicit: bool,
 }
 
 impl<'a> TenantUrl<'a> {
-    fn new(settings: &Settings, tenant: &'a str) -> Self {
+    fn new(settings: &Settings, tenant: &'a Tenant) -> Self {
         let explicit = settings.explicit_base_url();
         Self {
             url: normalize_base_url(
@@ -1546,8 +1546,7 @@ mod tests {
             std::fs::read_to_string(self.config_dir().join("credentials.toml")).unwrap_or_default()
         }
 
-        /// Seed a file under the isolated `$HOME` (e.g. an unparsable
-        /// `settings.toml`) before running login.
+        /// Seed a file under the isolated `$HOME` before running login.
         fn seed(&self, rel: &str, contents: &str) {
             let path = self.home.path().join(rel);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1559,7 +1558,7 @@ mod tests {
         // `&self` keeps the call inside the environment's lifetime.
         #[allow(clippy::unused_self)]
         fn resolve_settings(&self, profile: Option<&str>) -> Result<Settings> {
-            Settings::resolve_for_login(None, profile.map(str::to_owned))
+            Settings::resolve(None, profile.map(str::to_owned))
         }
     }
 
@@ -1758,24 +1757,6 @@ mod tests {
             .expect_err("a credential that cannot be stored must fail the login");
         assert!(format!("{err:#}").contains("nothing was saved"), "{err:#}");
         assert!(!env.config_dir().join("settings.toml").exists());
-
-        // A settings file that does not parse stays in its backup, and the
-        // restore leaves no settings file.
-        let unparsable = "tenant = \"oldtenant\n";
-        env.seed(".config/snouty/settings.toml", unparsable);
-        let prompter = Script::default()
-            .input("mytenant")
-            .secret(FAKE_API_KEY_A)
-            .build();
-        let err = login(None, &settings, &prompter)
-            .await
-            .expect_err("a credential that cannot be stored must fail the login");
-        assert!(format!("{err:#}").contains("nothing was saved"), "{err:#}");
-        assert!(!env.config_dir().join("settings.toml").exists());
-        assert_eq!(
-            std::fs::read_to_string(env.config_dir().join("settings.toml.bak"))?,
-            unparsable
-        );
         Ok(())
     }
 

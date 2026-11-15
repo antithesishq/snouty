@@ -471,7 +471,7 @@ mod tests {
 
     fn settings(profile: Option<&str>, tenant: &str, repository: &str) -> Settings {
         let builder = Settings::builder()
-            .tenant(tenant)
+            .tenant(tenant.parse().unwrap())
             .registry(registry(repository));
         match profile {
             Some(profile) => builder.profile(profile),
@@ -569,7 +569,7 @@ mod tests {
             );
         }
         assert_eq!(
-            tenant_registry(&Settings::builder().tenant("acme").build()),
+            tenant_registry(&Settings::builder().tenant("acme".parse().unwrap()).build()),
             None
         );
     }

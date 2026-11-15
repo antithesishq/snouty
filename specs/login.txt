@@ -4,9 +4,9 @@
 # stdin read, or write.
 isolate-home empty_args
 ! snouty login --tenant ""
-stderr -literal 'invalid tenant ``'
+stderr -literal '`` is not a valid tenant'
 ! snouty login --tenant acme/x
-stderr -literal 'invalid tenant `acme/x`'
+stderr -literal '`acme/x` is not a valid tenant'
 
 # --registry takes a host that `docker login` accepts, optionally with a
 # port and a path, and refuses anything else before any request.
@@ -183,18 +183,30 @@ file ~/.config/snouty/settings.toml 'registry = "registry.example.com/my-org"'
 ! snouty login --tenant other-tenant
 stderr -literal 'run `snouty login --registry <registry>`'
 file ~/.config/snouty/settings.toml 'tenant = "spec-tenant"'
-# A saved registry that is not a registry fails other commands. Login
-# ignores it, with a warning, and replaces it.
+# A saved registry that is not a registry fails every command, login too,
+# and names the file.
 cp saved_invalid.toml no_endpoint/.config/snouty/settings.toml
 ! snouty settings show
-stderr 'invalid registry setting: `not a registry` is not a container registry'
-stderr -literal 'Suggestion: correct the setting, or run `snouty login` to replace it'
-! snouty login --tenant spec-tenant
-stderr 'warning: ignoring the registry setting: `not a registry`'
-stderr -literal 'run `snouty login --registry <registry>`'
+stderr 'invalid setting `registry` in .*settings.toml: `not a registry` is not a container registry'
+stderr 'Suggestion: fix .*/settings\.toml, or delete it and run `snouty login`'
+! snouty login --tenant spec-tenant --registry registry.example.com/acme
+stderr 'invalid setting `registry` in .*settings.toml'
+stderr 'Suggestion: fix or delete .*/settings\.toml, then run `snouty login` again'
+file ~/.config/snouty/settings.toml 'registry = "not a registry"'
+# So does a settings file that is not TOML.
+cp saved_unparsable.toml no_endpoint/.config/snouty/settings.toml
+! snouty login --tenant spec-tenant --registry registry.example.com/acme
+stderr 'settings file .*settings.toml is not valid TOML'
+stderr 'Suggestion: fix or delete .*/settings\.toml, then run `snouty login` again'
+# A bad environment variable is named in place of a file.
+rm no_endpoint/.config/snouty/settings.toml
+env 'ANTITHESIS_TENANT=not a host'
+! snouty login --tenant spec-tenant --registry registry.example.com/acme
+stderr -literal 'invalid ANTITHESIS_TENANT: `not a host` is not a valid tenant'
+stderr -literal 'Suggestion: fix or unset ANTITHESIS_TENANT, then run `snouty login` again'
+env ANTITHESIS_TENANT=
 snouty login --tenant spec-tenant --registry registry.example.com/acme
 file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
-snouty settings show
 
 -- saved_scheme.toml --
 tenant = "spec-tenant"
@@ -202,3 +214,5 @@ registry = "https://registry.example.com/my-org/"
 -- saved_invalid.toml --
 tenant = "spec-tenant"
 registry = "not a registry"
+-- saved_unparsable.toml --
+tenant = "spec-tenant

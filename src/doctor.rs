@@ -1606,7 +1606,6 @@ mod tests {
         }
     }
 
-    /// The next step comes from the source of the credential.
     #[test]
     fn version_auth_rejection_names_the_fix_for_the_source() {
         let check = version_check(

@@ -808,8 +808,7 @@ pub struct AntithesisApi {
     client: generated::Client,
     base_url: String,
     cache: ApiCache,
-    /// What to do when the tenant rejects the credential, when its source is
-    /// known.
+    /// The fix for a rejected credential, or `None` when its source is unknown.
     rejected_next_step: Option<String>,
 }
 
@@ -1428,19 +1427,25 @@ impl AntithesisApi {
     }
 
     /// Render a failed API call for the user. A rejected credential names
-    /// the step that fixes it.
+    /// the step that fixes it, and keeps what the server said, if anything.
     async fn client_error(&self, err: ClientError<()>) -> Report {
-        let report = format_api_client_error(err).await;
-        let Some(status) = crate::error::api_error_status(&report)
-            .filter(|&status| crate::error::rejects_credential(status))
-        else {
-            return report;
+        let (status, message) = match classify_client_error(err).await {
+            ApiFailure::Response {
+                status, message, ..
+            } if crate::error::rejects_credential(status) => (status, message),
+            failure => return render_api_failure(failure),
         };
-        let report = Report::new(ApiError {
+        let mut report = Report::new(ApiError {
             status,
             message: format!("the Antithesis API rejected the {}", self.authentication()),
         })
         .suppress_backtrace(true);
+        let reason = reqwest::StatusCode::from_u16(status)
+            .ok()
+            .and_then(|s| s.canonical_reason());
+        if !message.is_empty() && Some(message.as_str()) != reason {
+            report = report.note(message);
+        }
         match &self.rejected_next_step {
             Some(next_step) => report.suggestion(next_step.clone()),
             None => report.suggestion("run `snouty doctor` to find the credential to fix"),
@@ -2088,8 +2093,8 @@ fn char_pos_to_byte_offset(body: &str, line: usize, column: usize) -> usize {
 }
 
 /// Render a failed API call for the user, status first.
-async fn format_api_client_error(err: ClientError<()>) -> Report {
-    match classify_client_error(err).await {
+fn render_api_failure(failure: ApiFailure) -> Report {
+    match failure {
         ApiFailure::Response {
             status,
             message,
@@ -2543,11 +2548,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn format_api_client_error_describes_empty_invalid_payload() {
+    async fn render_api_failure_describes_empty_invalid_payload() {
         let parse_err = serde_json::from_slice::<serde_json::Value>(b"").unwrap_err();
         let err = ClientError::<()>::InvalidResponsePayload(bytes::Bytes::new(), parse_err);
 
-        let report = format_api_client_error(err).await;
+        let report = render_api_failure(classify_client_error(err).await);
         let message = format!("{report}");
         let debug = format!("{report:?}");
 
@@ -2579,9 +2584,9 @@ mod tests {
     // what the gateway does for some rejections, on any endpoint. The point of
     // #180 is that the status survives that; nothing further is added.
     #[tokio::test]
-    async fn format_api_client_error_reports_the_status_for_an_empty_body() {
+    async fn render_api_failure_reports_the_status_for_an_empty_body() {
         for status in [403, 429, 502] {
-            let report = format_api_client_error(served_error(status, "")).await;
+            let report = render_api_failure(classify_client_error(served_error(status, "")).await);
             let debug = format!("{report:?}");
 
             assert!(
@@ -2592,8 +2597,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn format_api_client_error_shows_a_non_empty_body() {
-        let report = format_api_client_error(served_error(400, "not json")).await;
+    async fn render_api_failure_shows_a_non_empty_body() {
+        let report = render_api_failure(classify_client_error(served_error(400, "not json")).await);
         let debug = format!("{report:?}");
 
         assert!(debug.contains("API error: 400"), "got: {debug}");
@@ -2804,12 +2809,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn format_api_client_error_keeps_snippet_for_non_empty_invalid_payload() {
+    async fn render_api_failure_keeps_snippet_for_non_empty_invalid_payload() {
         let body: &[u8] = b"not json";
         let parse_err = serde_json::from_slice::<serde_json::Value>(body).unwrap_err();
         let err = ClientError::<()>::InvalidResponsePayload(body.to_vec().into(), parse_err);
 
-        let report = format_api_client_error(err).await;
+        let report = render_api_failure(classify_client_error(err).await);
         // The message is the bare statement …
         let message = format!("{report}");
         assert!(message.starts_with("invalid API response payload: "));
@@ -3256,6 +3261,36 @@ mod tests {
         match api.get_version().await {
             Err(VersionError::Http(404)) => {}
             other => panic!("expected Http(404), got {other:?}"),
+        }
+    }
+
+    /// A rejection names the credential, and keeps the server's text when
+    /// there is more than the status reason.
+    #[tokio::test]
+    async fn a_rejected_credential_keeps_what_the_server_said() {
+        for (status, body, note) in [
+            (403, "", None),
+            (403, "Forbidden", None),
+            (
+                401,
+                r#"{"message":"Invalid or expired bearer token."}"#,
+                Some("Invalid or expired bearer token."),
+            ),
+        ] {
+            let mock_server = mock_endpoint("GET", "/api/v0/registry", status, body).await;
+            let api = test_api_optionally_with_cache(&mock_server, None);
+            let report = api.get_registry().await.unwrap_err();
+            assert_eq!(crate::error::api_error_status(&report), Some(status));
+            // The test client authenticates with a username and password.
+            assert_eq!(
+                report.to_string(),
+                "the Antithesis API rejected the username and password"
+            );
+            let debug = format!("{report:?}");
+            match note {
+                Some(note) => assert!(debug.contains(note), "{debug}"),
+                None => assert!(!debug.contains("Note:"), "{debug}"),
+            }
         }
     }
 

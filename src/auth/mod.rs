@@ -412,9 +412,6 @@ pub(crate) fn rejected_credential_next_step(
 mod tests {
     use super::*;
 
-    /// A credential from the environment names its variables, because a
-    /// login does not replace it. A stored credential names the login of the
-    /// selected profile.
     #[test]
     fn rejected_credential_next_step_names_the_fix_for_the_source() {
         let api_key = || AuthenticationInfo::ApiKey {
@@ -428,6 +425,10 @@ mod tests {
         assert_eq!(
             rejected_credential_next_step(&stored(None), None),
             "run `snouty login` to fix authentication"
+        );
+        assert_eq!(
+            rejected_credential_next_step(&stored(Some("default")), Some("default")),
+            "run `snouty login --profile default` to fix authentication"
         );
         // A named profile without its own credential uses the default one.
         assert_eq!(

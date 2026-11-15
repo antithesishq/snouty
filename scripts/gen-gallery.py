@@ -5252,28 +5252,21 @@ def build_mock_tenant_stories() -> list[Story]:
             "environment variables it comes from, and reaches the API with it.",
             ["doctor"],
             doctor_check(
-                contains=("GitHub Actions OIDC token", "Antithesis API reachable"),
-                absent=("not the tenant's registry",),
+                contains=("GitHub Actions OIDC token", "Antithesis API reachable")
             ),
             MockTenantSpec(actions=ActionsJob.ISSUES_TOKEN),
-            ANTITHESIS_REGISTRY=_TENANT_REGISTRY,
         ),
         _mock_story(
-            "doctor-registry-mismatch",
-            "My registry setting is not my tenant's registry",
-            "I set my container registry by hand some time ago. I want doctor to tell me "
-            "when it is not the registry that my tenant uses.",
-            "doctor warns that the container registry is not the tenant's registry, names "
-            "both registries, and gives one next step: `snouty login`. The warning does not "
-            "fail doctor.",
+            "doctor-registry-proxy",
+            "Check a machine that reaches Antithesis through a proxy",
+            "I set base_url to a proxy in front of the Antithesis API, and my registry "
+            "setting names the proxy's registry. I want doctor to accept that setup.",
+            "doctor reports the container registry as set. It does not suggest the "
+            "tenant's Antithesis registry, because a base_url is set.",
             ["doctor"],
             doctor_check(
-                contains=(
-                    "container registry is not the tenant's registry",
-                    f"`{_REGISTRY}`",
-                    f"`{_TENANT_REGISTRY}`",
-                    "run `snouty login` to use the tenant's registry",
-                ),
+                contains=("container registry is set", "Antithesis API reachable"),
+                absent=("also has an Antithesis registry",),
             ),
             MockTenantSpec(),
             ANTITHESIS_API_KEY=_FAKE_API_KEY_B,

@@ -186,23 +186,29 @@ env ACTIONS_ID_TOKEN_REQUEST_URL=
 env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
 
 # --- the tenant's registry ---
-# On release 67.0 or later, doctor compares the registry setting with the
-# registry that the tenant reports. The mock reports
-# registry.testtenant.antithesis.com. A path under it is a match.
+# doctor compares the registry setting with the tenant's registry only when
+# no base_url is set. A base_url most often names a proxy, which then serves
+# the registry too. The mock reports release 67.0 and another registry.
 [!staging] mock-runs-server
-[!staging] env ANTITHESIS_REGISTRY=registry.testtenant.antithesis.com/team
-[!staging] snouty doctor
-[!staging] stderr '^  ✓ container registry is set$'
-
-# Another registry is a warning, which does not fail doctor.
 [!staging] env ANTITHESIS_REGISTRY=proxy.example.com/testtenant
-[!staging] snouty doctor
-[!staging] stderr '^  ⚠ container registry is not the tenant.s registry$'
-[!staging] stderr 'registry.testtenant.antithesis.com'
-[!staging] stderr -literal "NOTE: run `snouty login` to use the tenant's registry"
+[!staging] snouty --verbose doctor
+[!staging] stderr 'GET .*/api/version'
+[!staging] ! stderr '/api/v0/registry'
+[!staging] stderr '^  ✓ container registry is set$'
+[!staging] ! stderr 'also has an Antithesis registry'
 [!staging] snouty doctor --json
-[!staging] stdout '"ok": true'
-[!staging] stdout '"id": "registry",\s*"status": "warn"'
+[!staging] stdout '"id": "registry",\s*"status": "ok"'
+
+# A base_url in a settings file profile is a base_url too.
+[!staging] set-env BASE_URL ${ANTITHESIS_BASE_URL}
+[!staging] substitute base_url.toml
+[!staging] env ANTITHESIS_BASE_URL=
+[!staging] env SNOUTY_SETTINGS_PATH=base_url.toml
+[!staging] snouty --verbose --profile proxied doctor
+[!staging] stderr 'GET .*/api/version'
+[!staging] ! stderr '/api/v0/registry'
+[!staging] env SNOUTY_SETTINGS_PATH=
+[!staging] set-env ANTITHESIS_BASE_URL ${BASE_URL}
 
 # A registry setting that is not a registry fails doctor, as it fails every
 # command that reads the settings.
@@ -211,29 +217,11 @@ env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
 [!staging] stderr -literal 'invalid ANTITHESIS_REGISTRY: `not a registry` is not a container registry'
 [!staging] stderr -literal 'Suggestion: fix or unset ANTITHESIS_REGISTRY'
 
-# An unset registry is reported once, with the tenant's registry.
+# An unset registry is reported once.
 [!staging] env ANTITHESIS_REGISTRY=
 [!staging] snouty doctor
 [!staging] stderr -count=1 'container registry'
-[!staging] stderr 'set it to the tenant.s registry, `registry\.testtenant\.antithesis\.com`'
-
-# A registry that the tenant reports with a scheme and a trailing `/` is the
-# same registry.
-[!staging] mock-server 200 '{"latest_api_version":"v1","release_version":"67.0","auth":"antithesis","registry_url":"https://registry.testtenant.antithesis.com/"}'
-[!staging] set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
-[!staging] env ANTITHESIS_REGISTRY=registry.testtenant.antithesis.com/team
-[!staging] snouty doctor
-[!staging] stderr '^  ✓ container registry is set$'
-
-# An older tenant does not report its registry, so doctor does not ask.
-[!staging] mock-server 200 '{"latest_api_version":"v1","release_version":"66.9"}'
-[!staging] set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
-[!staging] env ANTITHESIS_REGISTRY=proxy.example.com/testtenant
-[!staging] snouty --verbose doctor
-[!staging] stderr 'GET .*/api/version'
-[!staging] ! stderr '/api/v0/registry'
-[!staging] stderr '^  ✓ container registry is set$'
-env ANTITHESIS_REGISTRY=
+[!staging] stderr -literal 'NOTE: run `snouty login` to set it, or set ANTITHESIS_REGISTRY'
 
 # --- CLI OAuth probe ---
 # The probe needs no credentials. No API key is set, so doctor skips the API
@@ -426,6 +414,9 @@ env SNOUTY_CONTAINER_ENGINE=
 snouty doctor --offline
 stderr 'Container runtime: podman detected'
 
+-- base_url.toml --
+[profile.proxied]
+base_url = "${BASE_URL}"
 -- credential_conflict/.config/snouty/credentials.toml --
 [default]
 type = "ApiKey"

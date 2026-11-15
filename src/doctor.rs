@@ -18,7 +18,7 @@ use crate::error::rejects_credential;
 use crate::login::{CliOAuthConfig, REGISTRY_TIMEOUT, fetch_cli_config};
 use crate::registry::Registry;
 use crate::render::OutputOptions;
-use crate::settings::{Settings, Tenant};
+use crate::settings::{RegistrySource, Settings, Tenant};
 
 /// The longest wait for the OAuth probe. Doctor only reports what the probe
 /// finds, so it does not wait as long as login does.
@@ -251,52 +251,49 @@ fn tenant_check(tenant: Option<&Tenant>) -> Check {
 
 /// The container registry is only needed to build and push a config image
 /// (`snouty launch --config`), so a missing one is a warning, not a failure —
-/// read-only use (`snouty runs`, `snouty debug`) doesn't need it. `reported`
-/// is the registry that the tenant reports, when doctor could read it. A
-/// registry that is not it or a path under it is a warning too: the user can
-/// have chosen another registry on purpose, such as a proxy.
-fn registry_check(
-    registry: Option<&Registry>,
-    reported: Option<&Registry>,
-    profile: Option<&str>,
-) -> Check {
-    let Some(configured) = registry else {
-        return Check::warn(CheckId::Registry, "container registry is not set")
+/// read-only use (`snouty runs`, `snouty debug`) doesn't need it.
+fn registry_check(registry: Option<&Registry>, profile: Option<&str>) -> Check {
+    match registry {
+        Some(_) => Check::ok(CheckId::Registry, "container registry is set"),
+        None => Check::warn(CheckId::Registry, "container registry is not set")
             .note(Level::Warning, "the registry is needed for `snouty launch`")
             .note(
                 Level::Note,
-                match reported {
-                    Some(reported) => format!(
-                        "run {} to set it to the tenant's registry, `{reported}`, or set ANTITHESIS_REGISTRY",
-                        login_command(profile)
-                    ),
-                    None => format!(
-                        "run {} to set it, or set ANTITHESIS_REGISTRY",
-                        login_command(profile)
-                    ),
-                },
-            );
-    };
-    match reported {
-        Some(reported) if !configured.is_within(reported) => Check::warn(
-            CheckId::Registry,
-            "container registry is not the tenant's registry",
-        )
-        .note(
-            Level::Warning,
-            format!(
-                "snouty pushes images to `{configured}`, but the tenant's registry is `{reported}`"
+                format!(
+                    "run {} to set it, or set ANTITHESIS_REGISTRY",
+                    login_command(profile)
+                ),
             ),
+    }
+}
+
+/// The registry check when the tenant also has an Antithesis registry,
+/// `reported`, and the registry setting, `configured`, is not in it. A
+/// tenant from before release 67 can keep the registry that it used before,
+/// so this is a suggestion, not a warning. `source` names the place where
+/// the switch happens.
+fn other_registry_check(
+    configured: &Registry,
+    source: &RegistrySource,
+    reported: &Registry,
+    profile: Option<&str>,
+) -> Check {
+    let switch = match source {
+        RegistrySource::Env(var) => format!("set {var} to it"),
+        RegistrySource::GlobalFile => format!("run {} to switch to it", login_command(profile)),
+        RegistrySource::ProjectFile { path, key } => {
+            format!("set `{key}` in {} to it", path.display())
+        }
+    };
+    Check::ok(CheckId::Registry, "container registry is set")
+        .note(
+            Level::Note,
+            format!("the tenant also has an Antithesis registry, `{reported}`"),
         )
         .note(
             Level::Note,
-            format!(
-                "run {} to use the tenant's registry",
-                login_command(profile)
-            ),
-        ),
-        _ => Check::ok(CheckId::Registry, "container registry is set"),
-    }
+            format!("you can keep using `{configured}`, or {switch}"),
+        )
 }
 
 /// `selected` is the profile that the user selects, if any.
@@ -576,11 +573,7 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
     // Required settings. tenant is needed by every command; registry is
     // launch-only, so a missing one is a warning.
     checks.push(tenant_check(settings.tenant()));
-    checks.push(registry_check(
-        settings.registry(),
-        None,
-        settings.profile(),
-    ));
+    checks.push(registry_check(settings.registry(), settings.profile()));
 
     // Authentication (synchronous-only by design).
     let github_actions = crate::auth::in_github_actions();
@@ -889,9 +882,14 @@ pub async fn cmd_doctor(
                 let version = api.get_version().await;
                 if let Ok(version) = &version {
                     checks.extend(release_floor_checks(version));
-                    if version
-                        .release
-                        .is_some_and(|release| release >= MIN_REGISTRY_RELEASE)
+                    // A base_url setting most often names a proxy, which
+                    // then serves the registry too.
+                    if let Some(configured) = settings.registry()
+                        && let Some(source) = settings.registry_source()
+                        && settings.explicit_base_url().is_none()
+                        && version
+                            .release
+                            .is_some_and(|release| release >= MIN_REGISTRY_RELEASE)
                     {
                         let reported = tokio::time::timeout(
                             crate::env::scaled_wait(REGISTRY_TIMEOUT),
@@ -903,17 +901,19 @@ pub async fn cmd_doctor(
                                 // An answer that is not a registry gives
                                 // nothing to compare with.
                                 match reported.untag().registry_url.parse::<Registry>() {
-                                    Ok(reported) => {
+                                    Ok(reported) if !configured.is_within(&reported) => {
                                         let check = checks
                                             .iter_mut()
                                             .find(|c| c.id == CheckId::Registry)
                                             .expect("collect_checks reports the registry");
-                                        *check = registry_check(
-                                            settings.registry(),
-                                            Some(&reported),
+                                        *check = other_registry_check(
+                                            configured,
+                                            source,
+                                            &reported,
                                             settings.profile(),
                                         );
                                     }
+                                    Ok(_) => {}
                                     Err(err) => debug!("the tenant's registry is invalid: {err}"),
                                 }
                             }
@@ -1431,60 +1431,43 @@ mod tests {
         text.parse().unwrap()
     }
 
-    /// Settings whose `registry` setting is `text`.
-    fn registry_setting(text: &str) -> Settings {
-        Settings::builder().registry(registry(text)).build()
-    }
-
     #[test]
     fn registry_check_is_ok_when_resolved() {
-        let settings = registry_setting("registry.acme.antithesis.com/team");
-        let check = registry_check(settings.registry(), None, None);
+        let check = registry_check(Some(&registry("registry.acme.antithesis.com/team")), None);
         assert_eq!(check.status, Status::Ok);
     }
 
     #[test]
-    fn registry_check_warns_when_the_tenant_reports_another_registry() {
+    fn another_registry_is_a_suggestion_that_names_where_to_switch() {
+        let configured = registry("proxy.example.com/acme");
         let tenant = registry("registry.acme.antithesis.com");
-        for configured in [
-            "registry.acme.antithesis.com/team/",
-            "https://registry.acme.antithesis.com/team",
-        ] {
-            let settings = registry_setting(configured);
-            let check = registry_check(settings.registry(), Some(&tenant), None);
-            assert_eq!(check.status, Status::Ok, "{configured}");
-        }
-        // A tenant can report its registry with a scheme.
-        let settings = registry_setting("registry.acme.antithesis.com/team");
-        let check = registry_check(
-            settings.registry(),
-            Some(&registry("https://registry.acme.antithesis.com/")),
-            None,
-        );
-        assert_eq!(check.status, Status::Ok);
-
-        let settings = registry_setting("proxy.example.com/acme");
-        let check = registry_check(settings.registry(), Some(&tenant), Some("prod"));
-        assert_eq!(check.status, Status::Warn);
-        assert_eq!(check.notes[0].level, Level::Warning);
-        assert!(check.notes[0].text.contains("`proxy.example.com/acme`"));
-        assert!(
-            check.notes[0]
-                .text
-                .contains("`registry.acme.antithesis.com`")
-        );
+        let next_step = |source: &RegistrySource, profile: Option<&str>| {
+            let check = other_registry_check(&configured, source, &tenant, profile);
+            assert_eq!(check.status, Status::Ok);
+            assert!(check.notes.iter().all(|note| note.level == Level::Note));
+            assert_eq!(
+                check.notes[0].text,
+                "the tenant also has an Antithesis registry, `registry.acme.antithesis.com`"
+            );
+            check.notes[1].text.clone()
+        };
         assert_eq!(
-            check.notes[1].text,
-            "run `snouty login --profile prod` to use the tenant's registry"
+            next_step(&RegistrySource::GlobalFile, Some("prod")),
+            "you can keep using `proxy.example.com/acme`, or run `snouty login --profile prod` to switch to it"
         );
-
-        // An unset registry is reported once, with the tenant's registry.
-        let check = registry_check(None, Some(&tenant), None);
-        assert_eq!(check.message, "container registry is not set");
-        assert!(
-            check.notes[1]
-                .text
-                .contains("`registry.acme.antithesis.com`")
+        // `snouty login` writes the global settings file, which the
+        // environment and a project settings file override.
+        assert_eq!(
+            next_step(&RegistrySource::Env("ANTITHESIS_REGISTRY"), Some("prod")),
+            "you can keep using `proxy.example.com/acme`, or set ANTITHESIS_REGISTRY to it"
+        );
+        let project = RegistrySource::ProjectFile {
+            path: "/work/.snouty.toml".into(),
+            key: "registry".into(),
+        };
+        assert_eq!(
+            next_step(&project, None),
+            "you can keep using `proxy.example.com/acme`, or set `registry` in /work/.snouty.toml to it"
         );
     }
 
@@ -1492,10 +1475,13 @@ mod tests {
     fn registry_check_only_warns_when_missing() {
         // Following main's #147 decision: the registry is launch-only, so a
         // missing one is a warning, not a failure.
-        let check = registry_check(None, None, None);
+        let check = registry_check(None, Some("prod"));
         assert_eq!(check.status, Status::Warn);
         assert!(check.notes.iter().any(|n| n.text.contains("snouty launch")));
-        assert!(check.notes.iter().any(|n| n.text.contains("snouty login")));
+        assert_eq!(
+            check.notes[1].text,
+            "run `snouty login --profile prod` to set it, or set ANTITHESIS_REGISTRY"
+        );
     }
 
     // ---- release_floor_check -------------------------------------------

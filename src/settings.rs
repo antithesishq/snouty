@@ -104,7 +104,7 @@ pub fn cache_dir() -> Option<PathBuf> {
 pub struct Settings {
     profile: Option<String>,
     tenant: Option<Tenant>,
-    registry: Option<Registry>,
+    registry: Option<(Registry, RegistrySource)>,
     /// The `base_url` setting. [`Settings::base_url`] falls back to the
     /// tenant's host.
     base_url: Option<String>,
@@ -141,6 +141,20 @@ impl Settings {
     ) -> Result<Self> {
         SettingsRequest::from_flags(project_settings_path, profile)?.resolve()
     }
+}
+
+/// Where the registry setting comes from: the place to change it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RegistrySource {
+    Env(&'static str),
+    /// The global settings file, which `snouty login` writes.
+    GlobalFile,
+    /// The project settings file at `path`, under `key`, such as
+    /// `profile.prod.registry`. It wins over the global settings file.
+    ProjectFile {
+        path: PathBuf,
+        key: String,
+    },
 }
 
 /// Where a setting's value comes from.
@@ -391,7 +405,24 @@ impl SettingsFiles {
             self.project.as_ref(),
             self.global.as_ref(),
         )?
-        .map(Found::parse::<Registry>)
+        .map(|found| {
+            let source = match &found.source {
+                SettingSource::Env(var) => RegistrySource::Env(var),
+                SettingSource::File(path)
+                    if self
+                        .global
+                        .as_ref()
+                        .is_some_and(|global| &global.path == path) =>
+                {
+                    RegistrySource::GlobalFile
+                }
+                SettingSource::File(path) => RegistrySource::ProjectFile {
+                    path: path.clone(),
+                    key: found.key.clone(),
+                },
+            };
+            found.parse::<Registry>().map(|registry| (registry, source))
+        })
         .transpose()?;
         let base_url = text(resolve("base_url", ANTITHESIS_BASE_URL_VAR_NAME)?);
         let https_proxy = text(resolve("https_proxy", ANTITHESIS_HTTPS_PROXY_VAR_NAME)?);
@@ -438,7 +469,12 @@ impl Settings {
 
     /// The resolved container registry, or `None` if unset.
     pub fn registry(&self) -> Option<&Registry> {
-        self.registry.as_ref()
+        self.registry.as_ref().map(|(registry, _)| registry)
+    }
+
+    /// Where the registry setting comes from, or `None` if it is unset.
+    pub fn registry_source(&self) -> Option<&RegistrySource> {
+        self.registry.as_ref().map(|(_, source)| source)
     }
 
     /// The container registry, for a command that pushes to it: an error
@@ -524,7 +560,7 @@ impl Settings {
 pub struct SettingsBuilder {
     profile: Option<String>,
     tenant: Option<Tenant>,
-    registry: Option<Registry>,
+    registry: Option<(Registry, RegistrySource)>,
     base_url: Option<String>,
     https_proxy: Option<String>,
     container_engine: Option<String>,
@@ -546,9 +582,15 @@ impl SettingsBuilder {
         self
     }
 
+    /// The registry, as if the global settings file set it.
     #[must_use]
-    pub fn registry(mut self, value: Registry) -> Self {
-        self.registry = Some(value);
+    pub fn registry(self, value: Registry) -> Self {
+        self.registry_from(value, RegistrySource::GlobalFile)
+    }
+
+    #[must_use]
+    pub fn registry_from(mut self, value: Registry, source: RegistrySource) -> Self {
+        self.registry = Some((value, source));
         self
     }
 
@@ -1339,6 +1381,39 @@ mod tests {
         let project =
             "[profile.a]\n[profile.broken]\napi_cache_max_file_size = \"lots\"\n[profile.c]\n";
         assert_eq!(every_profile(project, ""), ["defaults", "a", "c"]);
+    }
+
+    #[test]
+    fn the_registry_source_names_the_file_and_the_key() {
+        let file = |path: &str, contents: &str| LoadedFile {
+            path: PathBuf::from(path),
+            ..settings_file(contents)
+        };
+        let source = |project: &str, profile: Option<&str>| {
+            SettingsFiles {
+                project: Some(file("/work/.snouty.toml", project)),
+                global: Some(file(
+                    "/home/settings.toml",
+                    "registry = \"global.example.com\"\n",
+                )),
+                files: Vec::new(),
+            }
+            .resolve(profile.map(str::to_owned))
+            .unwrap()
+            .registry_source()
+            .cloned()
+        };
+        assert_eq!(source("", None), Some(RegistrySource::GlobalFile));
+        assert_eq!(
+            source(
+                "[profile.p]\nregistry = \"project.example.com\"\n",
+                Some("p")
+            ),
+            Some(RegistrySource::ProjectFile {
+                path: PathBuf::from("/work/.snouty.toml"),
+                key: "profile.p.registry".to_owned(),
+            })
+        );
     }
 
     // ---- accessors -----------------------------------------------------

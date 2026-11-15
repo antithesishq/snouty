@@ -16,6 +16,7 @@ use crate::cli::UpdateChannel;
 use crate::env;
 use crate::error::user_error;
 use crate::registry::Registry;
+use crate::tag::{Tag, Tagged};
 
 mod files;
 mod show;
@@ -104,7 +105,7 @@ pub fn cache_dir() -> Option<PathBuf> {
 pub struct Settings {
     profile: Option<String>,
     tenant: Option<Tenant>,
-    registry: Option<(Registry, RegistrySource)>,
+    registry: Option<Tagged<Registry, SettingSource>>,
     /// The `base_url` setting. [`Settings::base_url`] falls back to the
     /// tenant's host.
     base_url: Option<String>,
@@ -143,44 +144,45 @@ impl Settings {
     }
 }
 
-/// Where the registry setting comes from: the place to change it.
+/// Where a setting's value comes from: the place to change it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RegistrySource {
+pub enum SettingSource {
     Env(&'static str),
-    /// The global settings file, which `snouty login` writes.
-    GlobalFile,
-    /// The project settings file at `path`, under `key`, such as
-    /// `profile.prod.registry`. It wins over the global settings file.
-    ProjectFile {
+    /// `key`, such as `profile.prod.registry`, in the settings file at
+    /// `path`. `global` marks the global settings file, which `snouty login`
+    /// writes; the project settings file wins over it.
+    File {
         path: PathBuf,
         key: String,
+        global: bool,
     },
 }
 
-/// Where a setting's value comes from.
-#[derive(Clone, Debug)]
-enum SettingSource {
-    Env(&'static str),
-    File(PathBuf),
-}
-
-/// A settings file or an environment variable that holds a value snouty
-/// cannot use. The message names the file or the variable.
+/// A setting or a settings file that holds a value snouty cannot use. The
+/// message names the file or the variable.
 #[derive(Debug)]
-struct SettingsError {
-    source: SettingSource,
-    message: String,
+enum SettingsError {
+    /// A setting, from `source`, whose value snouty cannot use.
+    Setting {
+        source: SettingSource,
+        message: String,
+    },
+    /// A fault in the settings file at `path` as a whole, such as TOML that
+    /// does not parse.
+    File { path: PathBuf, message: String },
 }
 
 impl SettingsError {
-    fn report(source: SettingSource, message: String) -> Report {
-        Report::new(Self { source, message }).suppress_backtrace(true)
+    fn report(self) -> Report {
+        Report::new(self).suppress_backtrace(true)
     }
 }
 
 impl fmt::Display for SettingsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
+        match self {
+            Self::Setting { message, .. } | Self::File { message, .. } => f.write_str(message),
+        }
     }
 }
 
@@ -191,22 +193,37 @@ impl std::error::Error for SettingsError {}
 /// use, so for login (`is_login`) the suggestion is to fix the setting and
 /// then run login again.
 pub fn suggest_settings_fix(err: Report, is_login: bool) -> Report {
-    let Some(SettingsError { source, .. }) = err.downcast_ref::<SettingsError>() else {
+    let Some(error) = err.downcast_ref::<SettingsError>() else {
         return err;
     };
-    let suggestion = match (source, is_login) {
-        (SettingSource::Env(var), true) => {
-            format!("fix or unset {var}, then run `snouty login` again")
+    let suggestion = match error {
+        SettingsError::Setting {
+            source: SettingSource::Env(var),
+            ..
+        } => {
+            if is_login {
+                format!("fix or unset {var}, then run `snouty login` again")
+            } else {
+                format!("fix or unset {var}")
+            }
         }
-        (SettingSource::Env(var), false) => format!("fix or unset {var}"),
-        (SettingSource::File(path), true) => format!(
-            "fix or delete {}, then run `snouty login` again",
-            path.display()
-        ),
-        (SettingSource::File(path), false) => format!(
-            "fix {}, or delete it and run `snouty login`",
-            path.display()
-        ),
+        SettingsError::Setting {
+            source: SettingSource::File { path, .. },
+            ..
+        }
+        | SettingsError::File { path, .. } => {
+            if is_login {
+                format!(
+                    "fix or delete {}, then run `snouty login` again",
+                    path.display()
+                )
+            } else {
+                format!(
+                    "fix {}, or delete it and run `snouty login`",
+                    path.display()
+                )
+            }
+        }
     };
     err.suggestion(suggestion)
 }
@@ -221,10 +238,11 @@ struct LoadedFile {
 impl LoadedFile {
     /// `err`, a fault in this file, as a [`SettingsError`].
     fn error(&self, err: &Report) -> Report {
-        SettingsError::report(
-            SettingSource::File(self.path.clone()),
-            format!("{}: {err}", self.path.display()),
-        )
+        SettingsError::File {
+            path: self.path.clone(),
+            message: format!("{}: {err}", self.path.display()),
+        }
+        .report()
     }
 }
 
@@ -232,9 +250,6 @@ impl LoadedFile {
 struct Found {
     value: String,
     source: SettingSource,
-    /// The key in the file, such as `profile.prod.tenant`, or the name of
-    /// the environment variable.
-    key: String,
 }
 
 impl Found {
@@ -251,15 +266,15 @@ impl Found {
         parse(&self.value).map_err(|err| {
             let message = match &self.source {
                 SettingSource::Env(var) => format!("invalid {var}: {err}"),
-                SettingSource::File(path) => {
-                    format!(
-                        "invalid setting `{}` in {}: {err}",
-                        self.key,
-                        path.display()
-                    )
+                SettingSource::File { path, key, .. } => {
+                    format!("invalid setting `{key}` in {}: {err}", path.display())
                 }
             };
-            SettingsError::report(self.source, message)
+            SettingsError::Setting {
+                source: self.source,
+                message,
+            }
+            .report()
         })
     }
 }
@@ -406,22 +421,10 @@ impl SettingsFiles {
             self.global.as_ref(),
         )?
         .map(|found| {
-            let source = match &found.source {
-                SettingSource::Env(var) => RegistrySource::Env(var),
-                SettingSource::File(path)
-                    if self
-                        .global
-                        .as_ref()
-                        .is_some_and(|global| &global.path == path) =>
-                {
-                    RegistrySource::GlobalFile
-                }
-                SettingSource::File(path) => RegistrySource::ProjectFile {
-                    path: path.clone(),
-                    key: found.key.clone(),
-                },
-            };
-            found.parse::<Registry>().map(|registry| (registry, source))
+            let source = found.source.clone();
+            found
+                .parse::<Registry>()
+                .map(|registry| registry.with_tag(source))
         })
         .transpose()?;
         let base_url = text(resolve("base_url", ANTITHESIS_BASE_URL_VAR_NAME)?);
@@ -467,20 +470,18 @@ impl Settings {
         self.tenant.as_ref()
     }
 
-    /// The resolved container registry, or `None` if unset.
-    pub fn registry(&self) -> Option<&Registry> {
-        self.registry.as_ref().map(|(registry, _)| registry)
-    }
-
-    /// Where the registry setting comes from, or `None` if it is unset.
-    pub fn registry_source(&self) -> Option<&RegistrySource> {
-        self.registry.as_ref().map(|(_, source)| source)
+    /// The resolved container registry, tagged with where it comes from, or
+    /// `None` if unset.
+    pub fn registry(&self) -> Option<&Tagged<Registry, SettingSource>> {
+        self.registry.as_ref()
     }
 
     /// The container registry, for a command that pushes to it: an error
     /// when the setting is unset.
     pub fn require_registry(&self) -> Result<&Registry> {
-        self.registry().ok_or_else(|| missing_setting("registry"))
+        self.registry()
+            .map(Tagged::value)
+            .ok_or_else(|| missing_setting("registry"))
     }
 
     /// The base URL to talk to: an explicit `base_url` if set, otherwise one
@@ -560,7 +561,7 @@ impl Settings {
 pub struct SettingsBuilder {
     profile: Option<String>,
     tenant: Option<Tenant>,
-    registry: Option<(Registry, RegistrySource)>,
+    registry: Option<Tagged<Registry, SettingSource>>,
     base_url: Option<String>,
     https_proxy: Option<String>,
     container_engine: Option<String>,
@@ -582,10 +583,9 @@ impl SettingsBuilder {
         self
     }
 
-    /// The registry, as if the global settings file set it.
     #[must_use]
-    pub fn registry(mut self, value: Registry) -> Self {
-        self.registry = Some((value, RegistrySource::GlobalFile));
+    pub fn registry(mut self, value: Tagged<Registry, SettingSource>) -> Self {
+        self.registry = Some(value);
         self
     }
 
@@ -836,14 +836,15 @@ fn missing_setting(setting: &str) -> color_eyre::Report {
 /// the file's path.
 fn parse_settings(contents: &str, path: &Path) -> Result<Table> {
     contents.parse::<Table>().map_err(|err| {
-        SettingsError::report(
-            SettingSource::File(path.to_owned()),
-            format!(
+        SettingsError::File {
+            path: path.to_owned(),
+            message: format!(
                 "settings file {} is not valid TOML: {}",
                 path.display(),
                 format!("{err:#}").trim_end()
             ),
-        )
+        }
+        .report()
     })
 }
 
@@ -933,13 +934,17 @@ fn resolve_value_with(
 ) -> Result<Option<Found>> {
     // The environment variable always has highest precedence.
     for &env_var in env_vars {
-        let value = env::var(env_var)
-            .map_err(|err| SettingsError::report(SettingSource::Env(env_var), err.to_string()))?;
+        let value = env::var(env_var).map_err(|err| {
+            SettingsError::Setting {
+                source: SettingSource::Env(env_var),
+                message: err.to_string(),
+            }
+            .report()
+        })?;
         if let Some(value) = value {
             return Ok(Some(Found {
                 value,
                 source: SettingSource::Env(env_var),
-                key: env_var.to_owned(),
             }));
         }
     }
@@ -947,8 +952,13 @@ fn resolve_value_with(
     let found = |file: &LoadedFile, key: String, value: Option<String>| {
         value.map(|value| Found {
             value,
-            source: SettingSource::File(file.path.clone()),
-            key,
+            source: SettingSource::File {
+                path: file.path.clone(),
+                key,
+                // A project file that `--settings` names can be the global
+                // settings file itself.
+                global: global.is_some_and(|global_file| global_file.path == file.path),
+            },
         })
     };
 
@@ -1395,18 +1405,26 @@ mod tests {
             }
             .resolve(profile.map(str::to_owned))
             .unwrap()
-            .registry_source()
-            .cloned()
+            .registry()
+            .map(|registry| registry.tag().clone())
         };
-        assert_eq!(source("", None), Some(RegistrySource::GlobalFile));
+        assert_eq!(
+            source("", None),
+            Some(SettingSource::File {
+                path: PathBuf::from("/home/settings.toml"),
+                key: "registry".to_owned(),
+                global: true,
+            })
+        );
         assert_eq!(
             source(
                 "[profile.p]\nregistry = \"project.example.com\"\n",
                 Some("p")
             ),
-            Some(RegistrySource::ProjectFile {
+            Some(SettingSource::File {
                 path: PathBuf::from("/work/.snouty.toml"),
                 key: "profile.p.registry".to_owned(),
+                global: false,
             })
         );
     }

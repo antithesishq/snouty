@@ -18,7 +18,8 @@ use crate::error::rejects_credential;
 use crate::login::{CliOAuthConfig, REGISTRY_TIMEOUT, fetch_cli_config};
 use crate::registry::Registry;
 use crate::render::OutputOptions;
-use crate::settings::{RegistrySource, Settings, Tenant};
+use crate::settings::{SettingSource, Settings, Tenant};
+use crate::tag::Tagged;
 
 /// The longest wait for the OAuth probe. Doctor only reports what the probe
 /// finds, so it does not wait as long as login does.
@@ -270,21 +271,23 @@ fn registry_check(registry: Option<&Registry>, profile: Option<&str>) -> Check {
 /// The registry check when the tenant also has an Antithesis registry,
 /// `reported`, and the registry setting, `configured`, is not in it. A
 /// tenant from before release 67 can keep the registry that it used before,
-/// so this is a suggestion, not a warning. `source` names the place where
-/// the switch happens.
+/// so this is a suggestion, not a warning. The tag of `configured` names
+/// the place where the switch happens.
 fn other_registry_check(
-    configured: &Registry,
-    source: &RegistrySource,
+    configured: &Tagged<Registry, SettingSource>,
     reported: &Registry,
     profile: Option<&str>,
 ) -> Check {
-    let switch = match source {
-        RegistrySource::Env(var) => format!("set {var} to it"),
-        RegistrySource::GlobalFile => format!("run {} to switch to it", login_command(profile)),
-        RegistrySource::ProjectFile { path, key } => {
+    let switch = match configured.tag() {
+        SettingSource::Env(var) => format!("set {var} to it"),
+        SettingSource::File { global: true, .. } => {
+            format!("run {} to switch to it", login_command(profile))
+        }
+        SettingSource::File { path, key, .. } => {
             format!("set `{key}` in {} to it", path.display())
         }
     };
+    let configured = configured.value();
     Check::ok(CheckId::Registry, "container registry is set")
         .note(
             Level::Note,
@@ -573,7 +576,10 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
     // Required settings. tenant is needed by every command; registry is
     // launch-only, so a missing one is a warning.
     checks.push(tenant_check(settings.tenant()));
-    checks.push(registry_check(settings.registry(), settings.profile()));
+    checks.push(registry_check(
+        settings.registry().map(Tagged::value),
+        settings.profile(),
+    ));
 
     // Authentication (synchronous-only by design).
     let github_actions = crate::auth::in_github_actions();
@@ -885,7 +891,6 @@ pub async fn cmd_doctor(
                     // A base_url setting most often names a proxy, which
                     // then serves the registry too.
                     if let Some(configured) = settings.registry()
-                        && let Some(source) = settings.registry_source()
                         && settings.explicit_base_url().is_none()
                         && version
                             .release
@@ -901,14 +906,13 @@ pub async fn cmd_doctor(
                                 // An answer that is not a registry gives
                                 // nothing to compare with.
                                 match reported.untag().registry_url.parse::<Registry>() {
-                                    Ok(reported) if !configured.is_within(&reported) => {
+                                    Ok(reported) if !configured.value().is_within(&reported) => {
                                         let check = checks
                                             .iter_mut()
                                             .find(|c| c.id == CheckId::Registry)
                                             .expect("collect_checks reports the registry");
                                         *check = other_registry_check(
                                             configured,
-                                            source,
                                             &reported,
                                             settings.profile(),
                                         );
@@ -1441,8 +1445,9 @@ mod tests {
     fn another_registry_is_a_suggestion_that_names_where_to_switch() {
         let configured = registry("proxy.example.com/acme");
         let tenant = registry("registry.acme.antithesis.com");
-        let next_step = |source: &RegistrySource, profile: Option<&str>| {
-            let check = other_registry_check(&configured, source, &tenant, profile);
+        let next_step = |source: SettingSource, profile: Option<&str>| {
+            let check =
+                other_registry_check(&configured.clone().with_tag(source), &tenant, profile);
             assert_eq!(check.status, Status::Ok);
             assert!(check.notes.iter().all(|note| note.level == Level::Note));
             assert_eq!(
@@ -1452,21 +1457,29 @@ mod tests {
             check.notes[1].text.clone()
         };
         assert_eq!(
-            next_step(&RegistrySource::GlobalFile, Some("prod")),
+            next_step(
+                SettingSource::File {
+                    path: "/home/.config/snouty/settings.toml".into(),
+                    key: "profile.prod.registry".into(),
+                    global: true,
+                },
+                Some("prod")
+            ),
             "you can keep using `proxy.example.com/acme`, or run `snouty login --profile prod` to switch to it"
         );
         // `snouty login` writes the global settings file, which the
         // environment and a project settings file override.
         assert_eq!(
-            next_step(&RegistrySource::Env("ANTITHESIS_REGISTRY"), Some("prod")),
+            next_step(SettingSource::Env("ANTITHESIS_REGISTRY"), Some("prod")),
             "you can keep using `proxy.example.com/acme`, or set ANTITHESIS_REGISTRY to it"
         );
-        let project = RegistrySource::ProjectFile {
+        let project = SettingSource::File {
             path: "/work/.snouty.toml".into(),
             key: "registry".into(),
+            global: false,
         };
         assert_eq!(
-            next_step(&project, None),
+            next_step(project, None),
             "you can keep using `proxy.example.com/acme`, or set `registry` in /work/.snouty.toml to it"
         );
     }

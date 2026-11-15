@@ -114,7 +114,7 @@ impl FromStr for Registry {
 /// setting names another registry, or when the tenant or the registry is not
 /// set.
 pub fn tenant_registry(settings: &Settings) -> Option<&Registry> {
-    let registry = settings.registry()?;
+    let registry = settings.registry()?.value();
     registry
         .antithesis_tenant()?
         .eq_ignore_ascii_case(settings.tenant()?)
@@ -260,6 +260,8 @@ mod tests {
     use super::*;
     use crate::api::ResponseCache;
     use crate::auth::GithubActionsOidcToken;
+    use crate::settings::{ANTITHESIS_REGISTRY_VAR_NAME, SettingSource};
+    use crate::tag::Tag;
     use crate::testutils::auth::{oauth_credential_in, paseto_expiring_in};
     use crate::testutils::fake_secrets::{
         FAKE_ACCESS_TOKEN_A, FAKE_ACCESS_TOKEN_B, FAKE_API_KEY_A, FAKE_API_KEY_B,
@@ -482,7 +484,10 @@ mod tests {
     fn settings(profile: Option<&str>, tenant: &str, registry_setting: &str) -> Settings {
         let builder = Settings::builder()
             .tenant(tenant.parse().unwrap())
-            .registry(registry(registry_setting));
+            .registry(
+                registry(registry_setting)
+                    .with_tag(SettingSource::Env(ANTITHESIS_REGISTRY_VAR_NAME)),
+            );
         match profile {
             Some(profile) => builder.profile(profile),
             None => builder,

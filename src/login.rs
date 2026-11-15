@@ -273,6 +273,7 @@ async fn do_cmd_login(
     // A saved registry of another tenant is neither offered nor kept.
     let saved_registry = current_settings
         .registry()
+        .map(Tagged::value)
         .filter(|_| current_settings.tenant() == Some(&tenant_to_use));
     let registry_to_use = match registry {
         Some(registry) => registry,
@@ -1665,7 +1666,10 @@ mod tests {
             "repository = \"old\"\n[profile.p]\nrepository = \"old-p\"\n",
         );
         let settings = env.resolve_settings(None)?;
-        assert_eq!(settings.registry(), Some(&"old".parse()?));
+        assert_eq!(
+            settings.registry().map(Tagged::value),
+            Some(&"old".parse()?)
+        );
         let prompter = Script::default().secret(FAKE_API_KEY_A).build();
 
         login_with_flags(Some("myrepo"), &settings, &prompter).await?;

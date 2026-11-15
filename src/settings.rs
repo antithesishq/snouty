@@ -689,9 +689,8 @@ pub(crate) fn update_settings_in_global_file(
 }
 
 /// The tenant and the registry that [`update_settings_in_global_file`]
-/// replaces: those of the table of `profile`, or of the top-level table, in
-/// the global settings file. `None` when the table does not hold both, or
-/// when the file cannot be read: the update reports that error.
+/// replaces, from the table of `profile` or the top-level table. `None` when
+/// the table does not hold both, or when the file cannot be read.
 pub(crate) fn saved_in_global_file(profile: Option<&str>) -> Option<(Tenant, Registry)> {
     let path = global_settings_dir()?.join(GLOBAL_SETTINGS_FILENAME);
     let saved = || -> Result<Option<(Tenant, Registry)>> {

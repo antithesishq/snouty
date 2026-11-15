@@ -862,9 +862,8 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
 
 const CUSTOM_SETTINGS: &str = "tenant = \"pty-tenant\"\nregistry = \"custom.example.com/app\"\n";
 
-/// Run a login that takes the registry from the tenant, over a saved
-/// custom registry, and give `answer` at the question to replace it. Check
-/// the summary and the saved registry.
+/// Give `answer` at the question to replace a saved custom registry, then
+/// check `summary` and the saved `registry`.
 fn answer_the_replace_registry_question(answer: &str, summary: &str, registry: &str) {
     let (home, mut session) = spawn_login(&Login {
         seed: &[(".config/snouty/settings.toml", CUSTOM_SETTINGS)],
@@ -886,7 +885,6 @@ fn answer_the_replace_registry_question(answer: &str, summary: &str, registry: &
     );
 }
 
-/// A bare Enter at the question keeps the saved custom registry.
 #[test]
 fn bare_enter_keeps_a_saved_custom_registry() {
     answer_the_replace_registry_question(
@@ -896,8 +894,7 @@ fn bare_enter_keeps_a_saved_custom_registry() {
     );
 }
 
-/// A yes at the question saves the tenant's registry, and the summary names
-/// the registry that it replaced.
+/// The summary names the registry that login replaced.
 #[test]
 fn yes_replaces_a_saved_custom_registry() {
     answer_the_replace_registry_question(

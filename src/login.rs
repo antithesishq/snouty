@@ -265,7 +265,6 @@ async fn do_cmd_login(
         .registry()
         .map(Tagged::value)
         .filter(|_| current_settings.tenant() == Some(&tenant_to_use));
-    // The registry to save, and what became of a saved custom registry.
     let (registry_to_use, custom) = match (registry_flag, reported) {
         // --registry takes the place of the registry that the tenant reports.
         (Some(registry), _) => (registry, None),
@@ -1723,8 +1722,6 @@ mod tests {
     const CUSTOM_REGISTRY: &str = "custom.example.com/app";
     const REPLACE_CUSTOM: &str = "Replace registry `custom.example.com/app` with the Antithesis-provided container registry at registry.mytenant.antithesis.com?";
 
-    /// A [`LoginEnv`] whose global settings file saves `registry` for
-    /// `tenant`.
     fn env_with_registry(tenant: &str, registry: &str) -> LoginEnv {
         let env = LoginEnv::new();
         env.seed(
@@ -1743,9 +1740,8 @@ mod tests {
         );
     }
 
-    /// Login asks before the tenant's registry replaces a saved custom
-    /// registry. A yes saves the tenant's registry, and a no keeps the
-    /// custom registry.
+    /// A yes saves the tenant's registry, and a no keeps the custom
+    /// registry.
     #[tokio::test]
     async fn login_asks_before_it_replaces_a_saved_custom_registry() -> Result<()> {
         for (agree, expected) in [(true, REGISTRY_URL), (false, CUSTOM_REGISTRY)] {
@@ -1787,7 +1783,6 @@ mod tests {
         Ok(())
     }
 
-    /// --registry replaces a saved custom registry without a question.
     #[tokio::test]
     async fn login_does_not_ask_about_the_saved_registry_with_the_registry_flag() -> Result<()> {
         let env = env_with_registry("mytenant", CUSTOM_REGISTRY);
@@ -1835,7 +1830,7 @@ mod tests {
         Ok(())
     }
 
-    /// Login asks about the custom registry of the profile that it saves.
+    /// The profile saves its custom registry under the `repository` alias.
     #[tokio::test]
     async fn login_asks_about_the_profiles_own_custom_registry() -> Result<()> {
         let env = LoginEnv::new();

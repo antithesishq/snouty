@@ -4918,8 +4918,8 @@ _ASK_KEY = "Please enter your API Key"
 _EMPTY_KEY_REFUSED = "An empty value is not valid."
 _ASK_REPLACE_PASSWORD = "Replace your stored username and password?"
 _PASSWORD_REFUSED = "login needs an API key or a single sign-on"
-# The question before the tenant's registry replaces the seeded `_REGISTRY`.
-# The terminal wraps it, so a check names its parts.
+# The terminal wraps the question to replace the seeded `_REGISTRY`, so a
+# check matches only its start.
 _ASK_REPLACE_REGISTRY = f"Replace registry `{_REGISTRY}`"
 _KEPT_REGISTRY = f"Saved tenant `{_TENANT}` and registry `{_REGISTRY}`."
 # A `credentials.toml` with a username and password, as an older snouty wrote it.

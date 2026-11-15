@@ -315,11 +315,11 @@ pub enum Commands {
     /// Sign in and store your snouty configuration
     #[command(arg = json(JsonShape::None))]
     Login {
-        #[arg(long, value_parser = validate_non_empty)]
-        tenant: Option<String>,
+        #[arg(long)]
+        tenant: Option<crate::settings::Tenant>,
 
-        #[arg(long, alias = "repository", value_parser = validate_non_empty)]
-        registry: Option<String>,
+        #[arg(long, alias = "repository")]
+        registry: Option<crate::registry::Registry>,
     },
 
     /// Give Docker or Podman the credential for the tenant's container registry

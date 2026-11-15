@@ -49,13 +49,13 @@ stdout '(?s)^global +/[^\n]*/cfg/snouty/settings\.toml\ncredentials +/[^\n]*/cfg
 snouty --json --settings chosen.toml settings show
 stdout '"settings": \{'
 stdout '"tenant": "acme"'
-stdout '"registry": "global-repo"'
+stdout '"registry": "global-registry"'
 stdout '"profile": null'
 stdout '"api_cache_max_file_size": 1000'
 stdout '(?s)"files": \[.*"type": "project",\n +"path": "/[^\n]*/chosen\.toml".*"type": "global",\n +"path": "/[^\n]*/cfg/snouty/settings\.toml".*"type": "credentials",\n +"path": "/[^\n]*/cfg/snouty/credentials\.toml"'
 
 -- cfg/snouty/settings.toml --
-registry = "global-repo"
+registry = "global-registry"
 -- credentials.toml --
 [default]
 -- chosen.toml --

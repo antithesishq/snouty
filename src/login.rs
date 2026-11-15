@@ -369,7 +369,7 @@ async fn do_cmd_login(
             command.extend(["--profile".to_owned(), profile]);
         }
         let command = shlex::try_join(command.iter().map(String::as_str))
-            .unwrap_or_else(|_| command.join(" "));
+            .expect("arguments and environment variables hold no NUL");
         eprintln!(
             "{}",
             crate::render::wrap_if_tty(&format!(
@@ -1830,13 +1830,14 @@ mod tests {
         Ok(())
     }
 
-    /// The profile saves its custom registry under the `repository` alias.
+    /// The profile saves its custom registry under the `repository` alias,
+    /// and takes the top-level tenant.
     #[tokio::test]
     async fn login_asks_about_the_profiles_own_custom_registry() -> Result<()> {
         let env = LoginEnv::new();
         env.seed(
             ".config/snouty/settings.toml",
-            &format!("[profile.prod]\ntenant = \"mytenant\"\nrepository = \"{CUSTOM_REGISTRY}\"\n"),
+            &format!("tenant = \"mytenant\"\n[profile.prod]\nrepository = \"{CUSTOM_REGISTRY}\"\n"),
         );
         let settings = env.resolve_settings(Some("prod"))?;
         let prompter = Script::default()

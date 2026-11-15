@@ -690,7 +690,8 @@ pub(crate) fn update_settings_in_global_file(
 
 /// The tenant and the registry that [`update_settings_in_global_file`]
 /// replaces, from the table of `profile` or the top-level table. `None` when
-/// the table does not hold both, or when the file cannot be read.
+/// the file holds no tenant or that table no registry, or when the file
+/// cannot be read.
 pub(crate) fn saved_in_global_file(profile: Option<&str>) -> Option<(Tenant, Registry)> {
     let path = global_settings_dir()?.join(GLOBAL_SETTINGS_FILENAME);
     let saved = || -> Result<Option<(Tenant, Registry)>> {
@@ -706,7 +707,12 @@ pub(crate) fn saved_in_global_file(profile: Option<&str>) -> Option<(Tenant, Reg
             Some(registry) => Some(registry),
             None => read(REPOSITORY_KEY)?,
         };
-        match (read("tenant")?, registry) {
+        // A profile takes the top-level tenant when it saves none.
+        let tenant = match read("tenant")? {
+            Some(tenant) => Some(tenant),
+            None => string_value(&table, "tenant", "tenant")?,
+        };
+        match (tenant, registry) {
             (Some(tenant), Some(registry)) => Ok(Some((tenant.parse()?, registry.parse()?))),
             _ => Ok(None),
         }

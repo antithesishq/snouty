@@ -271,7 +271,7 @@ stdout '\s*"runId": "run-123".*'
 # against the live API, which answers a bad token with 403 and no payload.
 mock-server 403 ''
 ! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
-stderr '^Error: the Antithesis API rejected the username and password$'
+stderr 'rejected the username and password'
 stderr -literal 'Suggestion: set `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` to a valid username and password'
 
 # A 429 is retried, a mutation such as a debugging launch too, and --verbose

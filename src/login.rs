@@ -259,15 +259,15 @@ async fn do_cmd_login(
     )
     .await?;
     let suggestion = "run `snouty login --registry <registry>`";
-    let invalid =
-        |err: &str| user_error(format!("{err}; nothing was saved")).suggestion(suggestion);
     // --registry takes the place of the registry that the tenant reports.
     let registry = match registry_flag {
         Some(registry) => Some(registry),
         None => reported
             .map(|reported| reported.registry_url.parse::<Registry>())
             .transpose()
-            .map_err(|err| invalid(&err.to_string()))?,
+            .map_err(|err| {
+                user_error(format!("{err}; nothing was saved")).suggestion(suggestion)
+            })?,
     };
     // A saved registry of another tenant is neither offered nor kept.
     let saved_registry = current_settings

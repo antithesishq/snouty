@@ -208,7 +208,8 @@ env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
 # command that reads the settings.
 [!staging] env 'ANTITHESIS_REGISTRY=not a registry'
 [!staging] ! snouty doctor
-[!staging] stderr 'invalid registry setting: `not a registry` is not a container registry'
+[!staging] stderr -literal 'invalid ANTITHESIS_REGISTRY: `not a registry` is not a container registry'
+[!staging] stderr -literal 'Suggestion: fix or unset ANTITHESIS_REGISTRY'
 
 # An unset registry is reported once, with the tenant's registry.
 [!staging] env ANTITHESIS_REGISTRY=

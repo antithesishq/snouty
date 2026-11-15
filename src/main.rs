@@ -106,7 +106,12 @@ async fn run(cli: Cli) -> Result<()> {
 
     // Resolve settings once, up front. Each command that reads settings
     // unwraps the result, so a bad settings file stops only those commands.
-    let settings = Settings::resolve(settings_path.clone(), profile.clone());
+    let settings = match command {
+        Commands::Login { .. } => {
+            Settings::resolve_for_login(settings_path.clone(), profile.clone())
+        }
+        _ => Settings::resolve(settings_path.clone(), profile.clone()),
+    };
     let result = match command {
         Commands::Completions { shell } => cmd_completions(shell).map_err(Report::new),
         Commands::Version => cmd_version(output.json),

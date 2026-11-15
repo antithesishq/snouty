@@ -1,11 +1,13 @@
 use std::{
-    fs,
+    fmt, fs,
     io::{ErrorKind, Write},
+    ops::Deref,
     path::{Path, PathBuf},
+    str::FromStr,
 };
 
 use color_eyre::Section;
-use color_eyre::eyre::{Context, OptionExt, Result, eyre};
+use color_eyre::eyre::{Context, OptionExt, Report, Result, eyre};
 use log::debug;
 use tempfile::NamedTempFile;
 use toml::{Table, Value};
@@ -102,7 +104,7 @@ pub fn cache_dir() -> Option<PathBuf> {
 pub struct Settings {
     profile: Option<String>,
     tenant: Option<String>,
-    registry: Option<RegistrySetting>,
+    registry: Option<Registry>,
     /// The `base_url` setting. [`Settings::base_url`] falls back to the
     /// tenant's host.
     base_url: Option<String>,
@@ -111,23 +113,6 @@ pub struct Settings {
     update_channel: UpdateChannel,
     api_cache_max_file_size: u64,
     files: Vec<SettingsFile>,
-}
-
-/// The `registry` setting as written, and the [`Registry`] it parses to, or
-/// why it does not parse. A setting that does not parse fails only the
-/// commands that use it, so that `snouty doctor` can report it and
-/// `snouty login` can replace it.
-#[derive(Clone)]
-struct RegistrySetting {
-    text: String,
-    parsed: Result<Registry, String>,
-}
-
-impl RegistrySetting {
-    fn new(text: String) -> Self {
-        let parsed = text.parse();
-        Self { text, parsed }
-    }
 }
 
 impl Default for Settings {
@@ -156,6 +141,26 @@ impl Settings {
     ) -> Result<Self> {
         SettingsRequest::from_flags(project_settings_path, profile)?.resolve()
     }
+
+    /// [`Settings::resolve`] for `snouty login`, which replaces the registry
+    /// setting: a registry setting that is not a registry is left out, with
+    /// a warning, instead of an error.
+    pub fn resolve_for_login(
+        project_settings_path: Option<PathBuf>,
+        profile: Option<String>,
+    ) -> Result<Self> {
+        let request = SettingsRequest::from_flags(project_settings_path, profile)?;
+        SettingsFiles::load(request.project_settings_path.as_deref())?
+            .resolve(request.profile, InvalidRegistry::Ignore)
+    }
+}
+
+/// What [`SettingsFiles::resolve`] does with a registry setting that is not a
+/// registry.
+#[derive(Clone, Copy)]
+enum InvalidRegistry {
+    Fail,
+    Ignore,
 }
 
 /// The settings file and the profile that the user names, by flag or by
@@ -194,7 +199,8 @@ impl SettingsRequest {
 
     /// See [`Settings::resolve`].
     pub fn resolve(self) -> Result<Settings> {
-        SettingsFiles::load(self.project_settings_path.as_deref())?.resolve(self.profile)
+        SettingsFiles::load(self.project_settings_path.as_deref())?
+            .resolve(self.profile, InvalidRegistry::Fail)
     }
 
     /// The settings of the top-level defaults, then of each named profile:
@@ -273,11 +279,15 @@ impl SettingsFiles {
         }
         Ok(std::iter::once(None)
             .chain(names.into_iter().map(|name| Some(name.clone())))
-            .filter_map(|profile| self.resolve(profile).ok())
+            .filter_map(|profile| self.resolve(profile, InvalidRegistry::Fail).ok())
             .collect())
     }
 
-    fn resolve(&self, profile: Option<String>) -> Result<Settings> {
+    fn resolve(
+        &self,
+        profile: Option<String>,
+        invalid_registry: InvalidRegistry,
+    ) -> Result<Settings> {
         let resolve = |key: &str, env_var: &str| {
             resolve_value(
                 key,
@@ -297,6 +307,22 @@ impl SettingsFiles {
             self.project.as_ref(),
             self.global.as_ref(),
         )?;
+        let registry = match registry
+            .map(|registry| registry.parse::<Registry>())
+            .transpose()
+        {
+            Ok(registry) => registry,
+            Err(err) => match invalid_registry {
+                InvalidRegistry::Fail => {
+                    return Err(user_error(format!("invalid registry setting: {err}"))
+                        .suggestion("correct the setting, or run `snouty login` to replace it"));
+                }
+                InvalidRegistry::Ignore => {
+                    eprintln!("warning: ignoring the registry setting: {err}");
+                    None
+                }
+            },
+        };
         let base_url = resolve("base_url", ANTITHESIS_BASE_URL_VAR_NAME)?;
         let https_proxy = resolve("https_proxy", ANTITHESIS_HTTPS_PROXY_VAR_NAME)?;
         let container_engine = resolve("container_engine", CONTAINER_ENGINE_VAR_NAME)?;
@@ -332,7 +358,7 @@ impl SettingsFiles {
         if base_url.is_none()
             && let Some(tenant) = &tenant
         {
-            validate_tenant_host(tenant)?;
+            tenant.parse::<Tenant>()?;
         }
 
         // A named-field literal (not the setters) so the compiler flags this
@@ -359,29 +385,15 @@ impl Settings {
         self.tenant.as_deref()
     }
 
-    /// The resolved container registry, or why the setting is not one;
-    /// `None` if unset.
-    pub fn registry(&self) -> Option<Result<&Registry, &str>> {
-        self.registry
-            .as_ref()
-            .map(|setting| setting.parsed.as_ref().map_err(String::as_str))
-    }
-
-    /// The `registry` setting as written, or `None` if unset, for the commands
-    /// that report the setting rather than push to it.
-    pub fn registry_as_written(&self) -> Option<&str> {
-        self.registry.as_ref().map(|setting| setting.text.as_str())
+    /// The resolved container registry, or `None` if unset.
+    pub fn registry(&self) -> Option<&Registry> {
+        self.registry.as_ref()
     }
 
     /// The container registry, for a command that pushes to it: an error
-    /// when the setting is unset or is not a registry.
+    /// when the setting is unset.
     pub fn require_registry(&self) -> Result<&Registry> {
-        match self.registry() {
-            Some(Ok(registry)) => Ok(registry),
-            Some(Err(err)) => Err(user_error(format!("invalid registry setting: {err}"))
-                .suggestion("run `snouty login` to set it, or set ANTITHESIS_REGISTRY")),
-            None => Err(missing_setting("registry")),
-        }
+        self.registry().ok_or_else(|| missing_setting("registry"))
     }
 
     /// The base URL to talk to: an explicit `base_url` if set, otherwise one
@@ -461,7 +473,7 @@ impl Settings {
 pub struct SettingsBuilder {
     profile: Option<String>,
     tenant: Option<String>,
-    registry: Option<String>,
+    registry: Option<Registry>,
     base_url: Option<String>,
     https_proxy: Option<String>,
     container_engine: Option<String>,
@@ -484,8 +496,8 @@ impl SettingsBuilder {
     }
 
     #[must_use]
-    pub fn registry(mut self, value: &str) -> Self {
-        self.registry = Some(value.to_string());
+    pub fn registry(mut self, value: Registry) -> Self {
+        self.registry = Some(value);
         self
     }
 
@@ -527,7 +539,7 @@ impl SettingsBuilder {
         Settings {
             profile: self.profile,
             tenant: self.tenant,
-            registry: self.registry.map(RegistrySetting::new),
+            registry: self.registry,
             base_url: self.base_url,
             https_proxy: self.https_proxy,
             container_engine: self.container_engine,
@@ -693,40 +705,52 @@ pub(crate) fn tenant_base_url(tenant: &str) -> String {
     format!("https://{tenant}.antithesis.com")
 }
 
-/// Validate that `tenant` is safe to interpolate into the derived base URL
-/// `https://{tenant}.antithesis.com`. The tenant becomes the request host, so
-/// it must be a valid DNS hostname — one or more labels of ASCII letters,
-/// digits, and hyphens (hyphens not leading/trailing). This rejects values
-/// carrying URL-significant characters (`/`, `#`, `?`, `@`, `:`, whitespace,
-/// …) that would otherwise redirect requests — with the API key attached — to
-/// an unintended host. Dots are allowed so a multi-label tenant still works;
-/// set `ANTITHESIS_BASE_URL` directly for any URL this rejects.
-pub(crate) fn validate_tenant_host(tenant: &str) -> Result<()> {
-    if !is_valid_tenant_host(tenant) {
-        return Err(user_error(format!(
-            "invalid tenant `{tenant}`: a tenant must be a valid hostname \
-             (letters, digits, and hyphens) because it becomes the host in \
-             `https://{tenant}.antithesis.com`. Set ANTITHESIS_BASE_URL directly \
-             if you need a custom API URL."
-        )));
+/// An Antithesis tenant. The tenant becomes the host of the derived base URL
+/// `https://{tenant}.antithesis.com`, with the API key attached, so it must be
+/// a valid DNS host name: one or more labels of ASCII letters, digits, and
+/// hyphens, with no hyphen at the start or end of a label. This refuses the
+/// URL-significant characters (`/`, `#`, `?`, `@`, `:`, whitespace, …) that
+/// would send requests to another host.
+#[derive(Clone, Debug)]
+pub struct Tenant(String);
+
+impl FromStr for Tenant {
+    type Err = Report;
+
+    fn from_str(tenant: &str) -> Result<Self> {
+        let is_valid_label = |label: &str| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        };
+        if tenant.is_empty() || tenant.len() > 253 || !tenant.split('.').all(is_valid_label) {
+            return Err(user_error(format!(
+                "invalid tenant `{tenant}`: a tenant must be a valid hostname \
+                 (letters, digits, and hyphens) because it becomes the host in \
+                 `https://{tenant}.antithesis.com`. Set ANTITHESIS_BASE_URL directly \
+                 if you need a custom API URL."
+            )));
+        }
+        Ok(Self(tenant.to_owned()))
     }
-    Ok(())
 }
 
-/// Whether `tenant` is a valid DNS hostname, as [`validate_tenant_host`]
-/// requires.
-pub(crate) fn is_valid_tenant_host(tenant: &str) -> bool {
-    fn is_valid_label(label: &str) -> bool {
-        !label.is_empty()
-            && label.len() <= 63
-            && label
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            && !label.starts_with('-')
-            && !label.ends_with('-')
-    }
+impl Deref for Tenant {
+    type Target = str;
 
-    !tenant.is_empty() && tenant.len() <= 253 && tenant.split('.').all(is_valid_label)
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Tenant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 /// Turn a missing required setting into snouty's standard "run doctor" error.
@@ -1413,13 +1437,13 @@ mod tests {
         }
     }
 
-    // ---- validate_tenant_host -----------------------------------------
+    // ---- Tenant -----------------------------------------------------
 
     #[test]
     fn valid_tenants_pass_host_validation() {
         for tenant in ["orbitinghail", "acme", "my-tenant", "t123", "foo.bar"] {
             assert!(
-                validate_tenant_host(tenant).is_ok(),
+                tenant.parse::<Tenant>().is_ok(),
                 "expected `{tenant}` to be a valid tenant host"
             );
         }
@@ -1443,7 +1467,7 @@ mod tests {
             "trailinghyphen-",
         ] {
             assert!(
-                validate_tenant_host(tenant).is_err(),
+                tenant.parse::<Tenant>().is_err(),
                 "expected `{tenant}` to be rejected as a tenant host"
             );
         }
@@ -1454,7 +1478,7 @@ mod tests {
         // An explicit base_url bypasses tenant-host validation (the tenant isn't
         // interpolated into the host), so an otherwise-invalid tenant still
         // constructs. The derive-path validation itself is covered by
-        // validate_tenant_host's unit tests and specs/settings_tenant.txt.
+        // the Tenant unit tests and specs/settings_tenant.txt.
         let s = Settings::builder()
             .tenant("evil.com#")
             .base_url("https://ok.example")

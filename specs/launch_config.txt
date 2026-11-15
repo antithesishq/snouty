@@ -16,7 +16,7 @@ stderr 'Could not resolve Antithesis registry.*'
 env 'ANTITHESIS_REGISTRY=not a registry'
 ! snouty launch --launcher basic_test -c config
 stderr 'invalid registry setting: `not a registry` is not a container registry'
-stderr -literal 'Suggestion: run `snouty login` to set it, or set ANTITHESIS_REGISTRY'
+stderr -literal 'Suggestion: correct the setting, or run `snouty login` to replace it'
 
 env ANTITHESIS_REGISTRY=registry.example.com/repo
 

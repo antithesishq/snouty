@@ -1220,8 +1220,8 @@ impl AntithesisApi {
     }
 
     /// Stream the modules that the run loaded, in the order that the server
-    /// published them. `finished` says that the run has stopped, so its pages
-    /// no longer change and are cached for good, whatever the headers say.
+    /// published them. `finished` says that the run has stopped (see
+    /// [`coverage_page_policy`]).
     ///
     /// Observed on orbitinghail, release 67.6: runs created on releases 48
     /// to 63 answer 404 `{"message":"Resource not found"}`, or 500 (see
@@ -1263,8 +1263,10 @@ impl AntithesisApi {
         }
         match request.send().await {
             Ok(response) => {
-                let policy = self.coverage_page_policy(response.headers(), finished);
-                Ok(response.into_inner().with_tag(policy))
+                let headers = self.cache.headers_policy(response.headers());
+                let page = response.into_inner();
+                let policy = coverage_page_policy(headers, finished, page.has_more);
+                Ok(page.with_tag(policy))
             }
             Err(err) => Err(format_api_client_error(err).await),
         }
@@ -1306,21 +1308,12 @@ impl AntithesisApi {
         }
         match request.send().await {
             Ok(response) => {
-                let policy = self.coverage_page_policy(response.headers(), finished);
-                Ok(response.into_inner().with_tag(policy))
+                let headers = self.cache.headers_policy(response.headers());
+                let page = response.into_inner();
+                let policy = coverage_page_policy(headers, finished, page.has_more);
+                Ok(page.with_tag(policy))
             }
             Err(err) => Err(format_api_client_error(err).await),
-        }
-    }
-
-    /// The module and instance lists answer `no-cache`, even for a completed
-    /// run (orbitinghail, release 67.6). A list only grows while its run is
-    /// live, so a page of a finished run is cached for good.
-    fn coverage_page_policy(&self, headers: &HeaderMap, finished: bool) -> CachePolicy {
-        if finished {
-            CachePolicy::IMMUTABLE
-        } else {
-            self.cache.headers_policy(headers)
         }
     }
 
@@ -2038,6 +2031,20 @@ const COVERAGE_PAGE_LIMIT: NonZeroU64 = NonZeroU64::new(1000).unwrap();
 /// The first run version with a module list (see
 /// [`AntithesisApi::stream_run_modules`]).
 const MIN_MODULES_VERSION: u32 = 64;
+
+/// The cache policy of a module or instance list page. The lists answer
+/// `no-cache`, even for a completed run (orbitinghail, release 67.6). Entries
+/// keep their positions and new ones are added after them, so once the run
+/// has stopped, a full page (`has_more`) never changes and is cached for
+/// good. The last page can still gain entries that the server publishes
+/// late, so `headers` decides for it.
+fn coverage_page_policy(headers: CachePolicy, finished: bool, has_more: bool) -> CachePolicy {
+    if finished && has_more {
+        CachePolicy::IMMUTABLE
+    } else {
+        headers
+    }
+}
 
 /// Refuse a run created before [`MIN_MODULES_VERSION`], before any request.
 pub(crate) fn ensure_module_list_supported(run_id: &str) -> Result<()> {
@@ -5453,6 +5460,20 @@ mod tests {
         assert!(
             ensure_resource_supported(&rid(51), MIN_PROPERTIES_VERSION, "run properties").is_err()
         );
+    }
+
+    #[test]
+    fn only_a_full_page_of_a_finished_run_is_immutable() {
+        let policy =
+            |finished, has_more| coverage_page_policy(CachePolicy::Uncacheable, finished, has_more);
+        assert!(matches!(
+            policy(true, true),
+            CachePolicy::Cacheable(Duration::MAX)
+        ));
+        // The last page can still gain entries, so the headers decide.
+        assert!(matches!(policy(true, false), CachePolicy::Uncacheable));
+        assert!(matches!(policy(false, true), CachePolicy::Uncacheable));
+        assert!(matches!(policy(false, false), CachePolicy::Uncacheable));
     }
 
     #[test]

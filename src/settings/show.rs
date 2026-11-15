@@ -31,7 +31,10 @@ fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, 
         text_row("tenant", settings.tenant().map(|tenant| &**tenant), NOT_SET),
         text_row(
             "registry",
-            settings.registry().map(ToString::to_string).as_deref(),
+            settings
+                .registry()
+                .map(|registry| registry.value().to_string())
+                .as_deref(),
             NOT_SET,
         ),
         text_row("base_url", settings.base_url().as_deref(), NOT_SET),

@@ -307,3 +307,57 @@ mock-server 200 '{"message":"Success","runId":"run-123"}'
 set-env ANTITHESIS_EXTRA_HEADERS not-a-valid-header-line
 ! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
 stderr 'ANTITHESIS_EXTRA_HEADERS entry missing \':\' separator: "not-a-valid-header-line".*'
+env ANTITHESIS_EXTRA_HEADERS=
+
+# Under an AI agent harness, the session records the agent, its version and
+#    its session ID as attrs, and a --param replaces a recorded value.
+env CLAUDECODE=1
+env AI_AGENT=claude-code_2-1-322_agent
+env CLAUDE_CODE_SESSION_ID=d83903be-202d-46c7-8831-50dfd8cdf5bc
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --param attrs.agent_version=other
+stderr '"attrs.agent": "claude-code"'
+stderr '"attrs.agent_version": "other"'
+stderr '"attrs.agent_session_id": "d83903be-202d-46c7-8831-50dfd8cdf5bc"'
+stderr '"run.caller_type": "snouty"'
+env CLAUDECODE=
+env AI_AGENT=
+env CLAUDE_CODE_SESSION_ID=
+
+# In a git checkout, the session records the commit, branch and repository
+#    of the current directory as `vcs.*` params, and --no-vcs turns that off.
+env GIT_CONFIG_GLOBAL=/dev/null
+env GIT_CONFIG_NOSYSTEM=1
+exec git init -q -b feature/vcs checkout
+cd checkout
+exec git -c user.name=snouty -c user.email=snouty@example.com commit -q --allow-empty -m init
+exec git remote add origin git@github.com:acme/widget.git
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
+stderr '"vcs.repo_owner": "acme"'
+stderr '"vcs.repo_branch": "feature/vcs"'
+stderr '"vcs.version_id": "[0-9a-f]{40}"'
+
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --no-vcs
+! stderr 'vcs\.'
+stderr '"run.caller_type": "snouty"'
+
+# Under GitHub Actions with ANTITHESIS_GITHUB_TOKEN, the session records the
+#    build's metadata, but sends no GitHub callback params and no cron
+#    schedule.
+set-env GITHUB_EVENT_PATH ${WORK}/event.json
+env GITHUB_ACTIONS=true
+env GITHUB_REPOSITORY=octo/app
+env GITHUB_SHA=0123456789abcdef0123456789abcdef01234567
+env GITHUB_ACTOR=octocat
+set-env ANTITHESIS_GITHUB_TOKEN ${FAKE_GITHUB_TOKEN}
+cd .
+mock-server 200 '{"message":"Success","runId":"run-123"}'
+snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
+stderr '"run.creator_name": "octocat"'
+! stderr 'antithesis.integrations'
+! stderr 'run.cron_schedule'
+
+-- event.json --
+{"schedule": "0 3 * * *"}

@@ -1,6 +1,5 @@
-//! The run metadata that `snouty launch` reads from its environment: the git
-//! checkout of the config dir, the GitHub Actions workflow run, and the AI
-//! agent harness that runs snouty.
+//! The run metadata that snouty reads from its environment: the git checkout,
+//! the GitHub Actions workflow run, and the AI agent harness that runs snouty.
 
 use std::path::Path;
 use std::time::Duration;
@@ -13,7 +12,7 @@ use serde::Deserialize;
 use crate::params::{
     ANT_GITHUB_CALLBACK_URL, ANT_GITHUB_TOKEN, ANT_TEST_NAME, Params, RUN_CALLER_TYPE,
     RUN_CREATOR_NAME, RUN_CRON_SCHEDULE, VCS_PR_ID, VCS_PR_LINK, VCS_PR_OWNER, VCS_PR_TITLE,
-    VCS_REPO_BRANCH, VCS_REPO_NAME, VCS_REPO_OWNER, VCS_REPO_TYPE, VCS_VERSION_ID,
+    VCS_PREFIX, VCS_REPO_BRANCH, VCS_REPO_NAME, VCS_REPO_OWNER, VCS_REPO_TYPE, VCS_VERSION_ID,
     VCS_VERSION_LINK,
 };
 
@@ -26,9 +25,26 @@ const STATUS_CONTEXT: &str = "continuous-testing/antithesis";
 /// A slow GitHub must not keep the launch from printing the run ID.
 const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The run metadata for a launch from `dir`, as params.
-pub fn detect(dir: &Path) -> Params {
-    detect_with(dir, |key| {
+/// The kind of run that [`detect`] records metadata for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RunKind {
+    Launch,
+    /// A debugging session is a one-off run that must not set the commit
+    /// status, so it gets no cron schedule and no GitHub callback params.
+    Debug,
+}
+
+/// What [`detect`] records.
+#[derive(Clone, Copy)]
+pub struct Detect {
+    pub kind: RunKind,
+    /// The `vcs.*` params: the commit, branch, repository and pull request.
+    pub vcs: bool,
+}
+
+/// The run metadata for a run from `dir`, as params.
+pub fn detect(dir: &Path, what: Detect) -> Params {
+    detect_with(dir, what, |key| {
         crate::env::var(key)
             .inspect_err(|e| debug!("{e}"))
             .ok()
@@ -36,11 +52,14 @@ pub fn detect(dir: &Path) -> Params {
     })
 }
 
-fn detect_with(dir: &Path, env: impl Fn(&str) -> Option<String>) -> Params {
+fn detect_with(dir: &Path, what: Detect, env: impl Fn(&str) -> Option<String>) -> Params {
     let mut params = Params::new();
     params.insert(RUN_CALLER_TYPE, "snouty");
     let checkout = read_git(dir, &mut params);
-    read_github_actions(&env, checkout.as_deref(), &mut params);
+    read_github_actions(&env, checkout.as_deref(), what.kind, &mut params);
+    if !what.vcs {
+        params.retain(|key| !key.starts_with(VCS_PREFIX));
+    }
     if let Some(agent) = crate::agent::detect(&env) {
         params.insert("attrs.agent", agent.name);
         if let Some(version) = agent.version {
@@ -141,6 +160,7 @@ struct GitHubHead {
 fn read_github_actions(
     env: &impl Fn(&str) -> Option<String>,
     checkout: Option<&str>,
+    kind: RunKind,
     params: &mut Params,
 ) {
     let (Some(_), Some(repository), Some(sha)) = (
@@ -206,6 +226,9 @@ fn read_github_actions(
     }
     if let Some(actor) = env("GITHUB_ACTOR") {
         params.insert(RUN_CREATOR_NAME, actor);
+    }
+    if kind == RunKind::Debug {
+        return;
     }
     if let Some(schedule) = event.schedule {
         params.insert(RUN_CRON_SCHEDULE, schedule);
@@ -278,6 +301,7 @@ mod tests {
         read_github_actions(
             &|key| vars.get(key).map(|&v| v.to_owned()),
             checkout,
+            RunKind::Launch,
             &mut params,
         );
         params

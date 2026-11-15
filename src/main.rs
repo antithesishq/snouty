@@ -462,8 +462,7 @@ async fn cmd_debug(
     params
         .extend_checked(args.params.into_iter().collect())
         .map_err(param_overrides_flag)?;
-    // A debugging session must not set the commit status of the checkout, so
-    // only a --param sends the GitHub callback params.
+    // A debugging session must not set the commit status of the checkout.
     params.merge_defaults(run_metadata::detect(
         Path::new("."),
         Detect {

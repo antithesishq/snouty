@@ -1,5 +1,4 @@
-//! The run metadata that `snouty launch` and `snouty debug` read from their
-//! environment: the git checkout of the config dir or the current directory,
+//! The run metadata that snouty reads from its environment: the git checkout,
 //! the GitHub Actions workflow run, and the AI agent harness that runs snouty.
 
 use std::path::Path;

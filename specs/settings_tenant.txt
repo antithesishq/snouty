@@ -6,7 +6,7 @@
 # whitespace, ...) would silently redirect those credentialed requests to an
 # unintended endpoint, so it is rejected up front when the base URL is derived.
 # An explicit ANTITHESIS_BASE_URL bypasses the tenant and this check (covered by
-# the validate_tenant_host unit tests).
+# the Tenant unit tests).
 
 # The project file is used only once the user trusts it (see
 # config_trust.txt).

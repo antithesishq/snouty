@@ -256,11 +256,11 @@ fn tenant_check(tenant: Option<&str>) -> Check {
 /// registry that is not it or a path under it is a warning too: the user can
 /// have chosen another registry on purpose, such as a proxy.
 fn registry_check(
-    registry: Option<Result<&Registry, &str>>,
+    registry: Option<&Registry>,
     reported: Option<&Registry>,
     profile: Option<&str>,
 ) -> Check {
-    let Some(registry) = registry else {
+    let Some(configured) = registry else {
         return Check::warn(CheckId::Registry, "container registry is not set")
             .note(Level::Warning, "the registry is needed for `snouty launch`")
             .note(
@@ -276,20 +276,6 @@ fn registry_check(
                     ),
                 },
             );
-    };
-    let configured = match registry {
-        Ok(configured) => configured,
-        Err(err) => {
-            return Check::warn(CheckId::Registry, "container registry is not valid")
-                .note(Level::Warning, err)
-                .note(
-                    Level::Note,
-                    format!(
-                        "run {} to set it, or set ANTITHESIS_REGISTRY",
-                        login_command(profile)
-                    ),
-                );
-        }
     };
     match reported {
         Some(reported) if !configured.is_within(reported) => Check::warn(
@@ -914,8 +900,8 @@ pub async fn cmd_doctor(
                         .await;
                         match reported {
                             Ok(Ok(reported)) => {
-                                // As in `snouty login`, a blank or invalid
-                                // answer counts as no registry.
+                                // An answer that is not a registry gives
+                                // nothing to compare with.
                                 match reported.untag().registry_url.parse::<Registry>() {
                                     Ok(reported) => {
                                         let check = checks
@@ -1445,9 +1431,9 @@ mod tests {
         text.parse().unwrap()
     }
 
-    /// Settings whose `registry` setting is `text`, as written.
+    /// Settings whose `registry` setting is `text`.
     fn registry_setting(text: &str) -> Settings {
-        Settings::builder().registry(text).build()
+        Settings::builder().registry(registry(text)).build()
     }
 
     #[test]
@@ -1500,18 +1486,6 @@ mod tests {
                 .text
                 .contains("`registry.acme.antithesis.com`")
         );
-    }
-
-    #[test]
-    fn registry_check_warns_about_a_registry_that_is_not_valid() {
-        let tenant = registry("registry.acme.antithesis.com");
-        let settings = registry_setting("proxy\x1b[32m.example.com");
-        let check = registry_check(settings.registry(), Some(&tenant), None);
-        assert_eq!(check.status, Status::Warn);
-        assert_eq!(check.message, "container registry is not valid");
-        let text = &check.notes[0].text;
-        assert!(text.contains("proxy\\x1B[32m.example.com"), "{text}");
-        assert!(!text.contains('\x1b'));
     }
 
     #[test]

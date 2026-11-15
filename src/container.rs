@@ -118,7 +118,7 @@ impl TenantRegistryEnv {
         let host = image_ref.split('/').next().unwrap_or_default();
         let covers = host
             .parse::<Registry>()
-            .is_ok_and(|registry| registry.host() == self.registry.host());
+            .is_ok_and(|registry| registry.authority() == self.registry.authority());
         self.env
             .iter()
             .filter(move |_| covers)
@@ -717,8 +717,8 @@ fn podman_registry_env(
     let path = std::env::var_os(PATH_ENV).unwrap_or_default();
     let path = std::env::join_paths(std::iter::once(dir).chain(std::env::split_paths(&path)))
         .wrap_err("cannot add the credential helper to PATH")?;
-    let contents =
-        serde_json::json!({ "credHelpers": { auth.registry.host(): CRED_HELPER } }).to_string();
+    let contents = serde_json::json!({ "credHelpers": { auth.registry.authority(): CRED_HELPER } })
+        .to_string();
     let auth_file = tempfile::NamedTempFile::new()
         .and_then(|mut file| file.write_all(contents.as_bytes()).map(|()| file))
         .wrap_err("failed to write the registry auth file")?;
@@ -785,7 +785,8 @@ impl ContainerRuntime for DockerRuntime {
     fn use_tenant_registry_auth(&mut self, auth: TenantRegistryAuth) {
         // Only the `auth` field: the Docker CLI rejects other fields here.
         let basic = BASE64_STANDARD.encode(format!("{}:{}", registry::USERNAME, auth.secret));
-        let config = serde_json::json!({ "auths": { auth.registry.host(): { "auth": basic } } });
+        let config =
+            serde_json::json!({ "auths": { auth.registry.authority(): { "auth": basic } } });
         let env = vec![(DOCKER_AUTH_CONFIG_ENV, config.to_string().into())];
         self.registry_env = Some(TenantRegistryEnv::new(auth, env, None));
     }

@@ -21,9 +21,9 @@ pub(crate) enum Fit {
     Fixed,
     /// Cut cells with an ellipsis, down to `floor` columns.
     Truncate { floor: usize },
-    /// Cut the start of a path with an ellipsis, down to `floor` columns. The
-    /// cut falls at a `/` when one fits, so the cell keeps its last whole
-    /// components: `…/dotnet/dotnet`.
+    /// Like [`Fit::Truncate`], but a cell that contains a `/` is a path, and
+    /// loses its start instead of its end. The cut falls at a `/` when one
+    /// fits, so the cell keeps its last whole components: `…/dotnet/dotnet`.
     TruncatePath { floor: usize },
     /// Wrap cells at spaces, down to `floor` columns. Continuation lines start
     /// under the column. A word that is longer than the column stays whole,
@@ -129,8 +129,12 @@ impl Table {
                 cells
                     .map(|((cell, column), &width)| match column.fit {
                         Fit::Fixed => vec![cell],
-                        Fit::Truncate { .. } => vec![truncate_str(&cell, width, "…").into_owned()],
-                        Fit::TruncatePath { .. } => vec![truncate_path(&cell, width)],
+                        Fit::TruncatePath { .. } if cell.contains('/') => {
+                            vec![truncate_path(&cell, width)]
+                        }
+                        Fit::Truncate { .. } | Fit::TruncatePath { .. } => {
+                            vec![truncate_str(&cell, width, "…").into_owned()]
+                        }
                         Fit::Wrap { .. } => {
                             let wrapped = wrap_text(&cell, width, CodeSpans::Ignore);
                             if wrapped.is_empty() {
@@ -183,19 +187,14 @@ pub(crate) fn truncate_path(path: &str, width: usize) -> String {
     if measure_text_width(path) <= width {
         return path.to_string();
     }
-    // Measure each tail whole: measuring one char at a time miscounts escape
-    // sequences.
-    let fits = |start: usize| measure_text_width(&path[start..]) < width;
-    let start = path
-        .match_indices('/')
-        .map(|(slash, _)| slash)
-        .find(|&slash| fits(slash))
-        .or_else(|| {
-            path.char_indices()
-                .map(|(index, _)| index)
-                .find(|&i| fits(i))
-        })
-        .unwrap_or(path.len());
+    // A tail narrows as its start moves right, so a binary search finds the
+    // longest tail that leaves a column for the `…`. Measure each tail whole:
+    // measuring one char at a time miscounts escape sequences.
+    let starts: Vec<usize> = path.char_indices().map(|(index, _)| index).collect();
+    let first = starts.partition_point(|&start| measure_text_width(&path[start..]) >= width);
+    let start = starts.get(first).map_or(path.len(), |&start| {
+        path[start..].find('/').map_or(start, |slash| start + slash)
+    });
     format!("…{}", &path[start..])
 }
 
@@ -298,6 +297,18 @@ mod tests {
             "/usr/share/dotnet/dotnet"
         );
         assert_eq!(truncate_path("/bin/averylongname", 6), "…gname");
+    }
+
+    #[test]
+    fn truncate_path_fit_cuts_a_cell_without_a_slash_at_the_end() {
+        let out = Table::builder()
+            .column(Column::new("A").fit(Fit::TruncatePath { floor: 0 }))
+            .render(
+                vec![row(&["averylongname"]), row(&["/bin/averylongname"])],
+                6,
+            );
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[1..], ["avery…", "…gname"]);
     }
 
     fn wrap_table(floor: usize) -> Table {

@@ -4137,13 +4137,23 @@ def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
         Story(
             "runs-modules",
             "Check that my run instrumented each component",
-            "I want to see which instrumented modules my run loaded, and in which containers, "
-            "so I can spot a component that ran uninstrumented.",
-            "One row per module per program, with MODULE/NAME/PROGRAM/CONTAINER/LANG/LOCATIONS/"
-            "SYMBOLS columns and full module IDs: Python modules in the bank and workload "
-            "containers. Then a status line that counts the modules and containers and says the "
-            "run completed.",
+            "I want to see which instrumented modules my run loaded, so I can spot a component "
+            "that ran uninstrumented.",
+            "One row per module, with MODULE/NAME/LANG/LOCATIONS/SYMBOLS columns and full module "
+            "IDs: the Python example's modules. Then a status line that counts the modules and "
+            "says the run completed.",
             ["runs", "modules", x.run],
+            non_empty_table,
+        ),
+        Story(
+            "runs-modules-detail",
+            "See which containers loaded each module",
+            "I want to see which programs, in which containers, loaded each instrumented module "
+            "of my run.",
+            "One row per module per program, with MODULE/NAME/CONTAINER/PROGRAM/LANG/LOCATIONS/"
+            "SYMBOLS columns: Python modules in the bank and workload containers. Then a status "
+            "line that counts the modules and says the run completed.",
+            ["runs", "modules", x.run, "--detail"],
             non_empty_table,
         ),
         _help_story(
@@ -4152,12 +4162,12 @@ def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
             "I want the help to tell me what each column means, which module IDs I can predict "
             "from my build, and why a module can be missing.",
             ["runs", "modules"],
-            ["runs", "modules", x.run],
+            ["runs", "modules", x.run, "--detail"],
             align=(
                 "MODULE",
                 "NAME",
-                "PROGRAM",
                 "CONTAINER",
+                "PROGRAM",
                 "LANG",
                 "LOCATIONS",
                 "SYMBOLS",

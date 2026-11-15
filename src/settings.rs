@@ -584,13 +584,8 @@ impl SettingsBuilder {
 
     /// The registry, as if the global settings file set it.
     #[must_use]
-    pub fn registry(self, value: Registry) -> Self {
-        self.registry_from(value, RegistrySource::GlobalFile)
-    }
-
-    #[must_use]
-    pub fn registry_from(mut self, value: Registry, source: RegistrySource) -> Self {
-        self.registry = Some((value, source));
+    pub fn registry(mut self, value: Registry) -> Self {
+        self.registry = Some((value, RegistrySource::GlobalFile));
         self
     }
 

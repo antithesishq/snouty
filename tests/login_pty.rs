@@ -857,3 +857,61 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
         "the credentials file does not hold the issued access token"
     );
 }
+
+const CUSTOM_SETTINGS: &str = "tenant = \"pty-tenant\"\nregistry = \"custom.example.com/app\"\n";
+
+/// Spawn a login that takes the registry from the tenant, over a saved
+/// custom registry, and answer the API key prompt.
+fn start_login_over_a_custom_registry() -> (tempfile::TempDir, OsSession) {
+    let (home, mut session) = spawn_login(&Login {
+        seed: &[(".config/snouty/settings.toml", CUSTOM_SETTINGS)],
+        no_registry_flag: true,
+        ..Login::default()
+    });
+    expect(&mut session, "Please enter your API Key");
+    send(&mut session, &format!("{FAKE_API_KEY_A}\r"));
+    expect(&mut session, "Replace registry `custom.example.com/app`");
+    expect(&mut session, "(y/N)");
+    (home, session)
+}
+
+/// A bare Enter at the question keeps the saved custom registry.
+#[test]
+fn bare_enter_keeps_a_saved_custom_registry() {
+    let (home, mut session) = start_login_over_a_custom_registry();
+    send(&mut session, "\r");
+    let seen = flat(&finish(session));
+
+    assert!(
+        seen.contains("Saved tenant `pty-tenant` and registry `custom.example.com/app`."),
+        "{seen}"
+    );
+    let settings = std::fs::read_to_string(home.path().join(".config/snouty/settings.toml"))
+        .expect("read the settings");
+    assert!(
+        settings.contains(r#"registry = "custom.example.com/app""#),
+        "{settings}"
+    );
+}
+
+/// A yes at the question saves the tenant's registry, and the summary names
+/// the registry that it replaced.
+#[test]
+fn yes_replaces_a_saved_custom_registry() {
+    let (home, mut session) = start_login_over_a_custom_registry();
+    send(&mut session, "y\r");
+    let seen = flat(&finish(session));
+
+    assert!(
+        seen.contains(
+            "Saved tenant `pty-tenant` and registry `registry.pty-tenant.antithesis.com`, replacing registry `custom.example.com/app`."
+        ),
+        "{seen}"
+    );
+    let settings = std::fs::read_to_string(home.path().join(".config/snouty/settings.toml"))
+        .expect("read the settings");
+    assert!(
+        settings.contains(r#"registry = "registry.pty-tenant.antithesis.com""#),
+        "{settings}"
+    );
+}

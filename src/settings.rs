@@ -528,6 +528,27 @@ impl Settings {
         self.profile.as_deref()
     }
 
+    /// The registry that [`update_settings_in_global_file`] replaces: the
+    /// registry of the profile, or the top-level registry without a profile,
+    /// in the global settings file. `None` when another source sets the
+    /// registry.
+    pub(crate) fn global_registry(&self) -> Option<&Registry> {
+        let registry = self.registry()?;
+        let SettingSource::File {
+            key, global: true, ..
+        } = registry.tag()
+        else {
+            return None;
+        };
+        let key = match &self.profile {
+            Some(profile) => key.strip_prefix(&format!("{PROFILE_KEY}.{profile}."))?,
+            None => key,
+        };
+        [REGISTRY_KEY, REPOSITORY_KEY]
+            .contains(&key)
+            .then(|| registry.value())
+    }
+
     /// These settings with `tenant` in place of the tenant setting.
     pub(crate) fn with_tenant(&self, tenant: Tenant) -> Self {
         Settings {

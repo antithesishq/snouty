@@ -555,26 +555,7 @@ impl DockerCompose {
         }
 
         let (mut references, unserved) = find_served_images(rt, local, &prefix)?;
-        // A runtime cannot tag or push a reference that is pinned by digest.
-        let mut digest_pinned = contents
-            .services
-            .iter()
-            .filter(|service| {
-                service.image.contains('@') && unserved.contains(&service.image.as_str())
-            })
-            .peekable();
-        if digest_pinned.peek().is_some() {
-            let mut err = user_error(
-                "snouty cannot push an image reference that is pinned by digest. Use a tag instead.",
-            );
-            for service in digest_pinned {
-                err = err
-                    .with_note(|| format!("service '{}' names `{}`", service.name, service.image));
-            }
-            return Err(err.with_suggestion(
-                || "replace the `@sha256:...` digest with a tag in the compose file",
-            ));
-        }
+        ensure_no_digest_pushes(&contents, &unserved)?;
         references.extend(push_images(rt, &unserved, &absent, &prefix)?);
 
         let services = service_rewrites(&contents, &references, &prefix);
@@ -812,9 +793,10 @@ fn push_destination(image: &str, prefix: &str) -> Result<String> {
 /// the local platform. Any other image is never looked up there: a push
 /// deduplicates the layers that the registry holds, so the check would save
 /// little, and the Antithesis registry does not serve the config blobs that
-/// `manifest inspect` reads. An image at the registry's address outside
-/// `prefix`, or pinned by digest, goes to the push path without a lookup: a
-/// test run cannot resolve that address, and the push path refuses a digest.
+/// `manifest inspect` reads. An image at the registry's address goes to the
+/// push path without a lookup when it is outside `prefix` or pinned by
+/// digest. A test run cannot resolve such an address, and the push path
+/// refuses a digest.
 fn find_remote_pin(rt: &dyn ContainerRuntime, image: &str, prefix: &str) -> Result<Option<String>> {
     let repo = normalize_repo(image_repo(image));
     let registry_address = registry_host(prefix);
@@ -883,6 +865,26 @@ fn ensure_services_have_images(contents: &ComposeContents) -> Result<()> {
     Err(err.with_suggestion(|| {
         "add an `image:` field to each service (for `build:` services, the tag the build produces)"
     }))
+}
+/// No image in `unserved`, which snouty pushes, may be pinned by digest: a
+/// push keeps the reference the compose file names, and a runtime cannot push
+/// a reference that is pinned by digest.
+fn ensure_no_digest_pushes(contents: &ComposeContents, unserved: &[&str]) -> Result<()> {
+    let pinned: Vec<_> = contents
+        .services
+        .iter()
+        .filter(|service| service.image.contains('@') && unserved.contains(&service.image.as_str()))
+        .collect();
+    if pinned.is_empty() {
+        return Ok(());
+    }
+    let mut err = user_error(
+        "snouty cannot push an image reference that is pinned by digest. Use a tag instead.",
+    );
+    for service in pinned {
+        err = err.with_note(|| format!("service '{}' names `{}`", service.name, service.image));
+    }
+    Err(err.with_suggestion(|| "replace the `@sha256:...` digest with a tag in the compose file"))
 }
 /// Stage a copy of `config_dir` with `docker-compose.yaml` replaced by
 /// `pinned_yaml`, so the config image is built from the digest-pinned compose.
@@ -1897,8 +1899,8 @@ services:
             skip_or_fail("docker-compose (Docker Compose v2) is not available");
             return;
         }
-        // One image under the tenant registry's address but outside the
-        // prefix, and one that its own registry does not serve.
+        // `tenant` is at the registry's address but outside the prefix, and
+        // no registry serves `other`.
         let tenant = "reg.example.com/app:v1@sha256:aaa";
         let other = "ghcr.io/org/tool@sha256:bbb";
         let rt = FakeRuntime {

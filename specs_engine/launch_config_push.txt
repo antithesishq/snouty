@@ -110,8 +110,8 @@ stderr 'x86-64 \(amd64\).*'
 stderr 'image '\''.*arm-launch:latest'\'' has architecture '\''arm64'\''.*'
 ! stderr 'Pushing image:'
 
-# A runtime cannot push a reference pinned by digest, so snouty refuses one
-# that it would push, before any push. A tagged push records a digest to pin.
+# snouty refuses a digest-pinned image that it would push. Push a tagged
+# image first to get a real digest to pin.
 set-env REGISTRY ${ANTITHESIS_REGISTRY}
 mock-server 200 '{"runId":"run-123","statusCode":200}'
 build-image --platform linux/amd64 snouty-digest:v1 images/myapp

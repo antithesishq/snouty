@@ -1,4 +1,5 @@
 use std::io::{self, IsTerminal};
+use std::str::FromStr;
 use std::time::Duration;
 
 use askama::Template;
@@ -36,8 +37,8 @@ use crate::{
     registry::Registry,
     render::{OutputOptions, sanitize},
     settings::{
-        ANTITHESIS_PROFILE_ENV_VAR_NAME, Settings, tenant_base_url, update_settings_in_global_file,
-        validate_tenant_host,
+        ANTITHESIS_PROFILE_ENV_VAR_NAME, Settings, Tenant, tenant_base_url,
+        update_settings_in_global_file,
     },
     tag::{Tag, Tagged},
     util::root_cause,
@@ -63,11 +64,15 @@ trait Prompter {
     /// Whether we're attached to an interactive terminal.
     fn is_interactive(&self) -> bool;
 
-    /// A free-text line, pre-filled with `default` when the user just hits enter.
-    /// The prompt asks again on a blank answer, and on an answer that `check`
-    /// refuses, with the message that `check` gives. The result is never
-    /// blank, and `check` accepts it.
-    fn input(&self, prompt: &str, default: Option<&str>, check: InputCheck) -> Result<String>;
+    /// A free-text line, pre-filled with `default` when the user just hits
+    /// enter, parsed as a `T` without the whitespace around it. The prompt
+    /// asks again on a blank answer, and on an answer that does not parse,
+    /// with the parse error.
+    fn input<T: FromStr<Err = Report> + 'static>(
+        &self,
+        prompt: &str,
+        default: Option<&str>,
+    ) -> Result<T>;
 
     /// A single-choice menu over `items`, initially highlighting `default`.
     /// Returns `None` when the user cancels (Esc).
@@ -89,9 +94,6 @@ trait Prompter {
     fn confirm(&self, prompt: &str) -> Result<bool>;
 }
 
-/// Refuses an answer to [`Prompter::input`] with a message, or accepts it.
-type InputCheck = fn(&str) -> Result<(), String>;
-
 /// The production [`Prompter`]: `inquire` prompts reading the real terminal.
 struct InquirePrompter;
 
@@ -100,22 +102,26 @@ impl Prompter for InquirePrompter {
         io::stdin().is_terminal()
     }
 
-    fn input(&self, prompt: &str, default: Option<&str>, check: InputCheck) -> Result<String> {
+    fn input<T: FromStr<Err = Report> + 'static>(
+        &self,
+        prompt: &str,
+        default: Option<&str>,
+    ) -> Result<T> {
         // `inquire` gives the default for an empty answer before it runs the
         // validator.
-        let mut text = Text::new(prompt).with_validator(move |input: &str| {
-            Ok(if input.trim().is_empty() {
-                Validation::Invalid("An empty value is not valid.".into())
-            } else if let Err(message) = check(input.trim()) {
-                Validation::Invalid(message.into())
-            } else {
-                Validation::Valid
+        let mut text = Text::new(prompt).with_validator(|input: &str| {
+            Ok(match input.trim() {
+                "" => Validation::Invalid("An empty value is not valid.".into()),
+                answer => match answer.parse::<T>() {
+                    Ok(_) => Validation::Valid,
+                    Err(err) => Validation::Invalid(err.to_string().into()),
+                },
             })
         });
         if let Some(default) = default {
             text = text.with_default(default);
         }
-        Ok(text.prompt()?)
+        text.prompt()?.trim().parse()
     }
 
     fn select(&self, prompt: &str, items: Vec<String>, default: usize) -> Result<Option<usize>> {
@@ -171,7 +177,7 @@ impl Prompter for InquirePrompter {
 
 /// With `output.verbose`, login logs its requests to stderr.
 pub async fn cmd_login(
-    tenant: Option<String>,
+    tenant: Option<Tenant>,
     registry_flag: Option<Registry>,
     profile: Option<&str>,
     current_settings: &Settings,
@@ -189,12 +195,12 @@ pub async fn cmd_login(
 }
 
 async fn do_cmd_login(
-    tenant: Option<String>,
+    tenant: Option<Tenant>,
     registry_flag: Option<Registry>,
     profile: Option<&str>,
     current_settings: &Settings,
     OutputOptions { verbose, .. }: OutputOptions,
-    prompter: &dyn Prompter,
+    prompter: &impl Prompter,
 ) -> Result<()> {
     let profile_to_use = profile
         .map(str::to_owned)
@@ -212,10 +218,8 @@ async fn do_cmd_login(
         None => prompter.input(
             "What Antithesis tenant would you like to use?",
             current_settings.tenant(),
-            |_| Ok(()),
         )?,
     };
-    validate_tenant_host(&tenant_to_use)?;
 
     // The credential stored for the profile, which a new credential replaces.
     // A read error counts as nothing stored, because storing a credential
@@ -246,7 +250,7 @@ async fn do_cmd_login(
         None
     };
 
-    let tenant_registry = fetch_registry(
+    let reported = fetch_registry(
         &api_settings,
         &tenant_url,
         new_credentials.as_ref(),
@@ -255,47 +259,35 @@ async fn do_cmd_login(
         verbose,
     )
     .await?;
-    // A saved registry of another tenant, or one that is not a registry, is
-    // neither offered nor kept.
+    let suggestion = "run `snouty login --registry <registry>`";
+    // --registry takes the place of the registry that the tenant reports.
+    let registry = match registry_flag {
+        Some(registry) => Some(registry),
+        None => reported
+            .map(|reported| reported.registry_url.parse::<Registry>())
+            .transpose()
+            .map_err(|err| {
+                user_error(format!("{err}; nothing was saved")).suggestion(suggestion)
+            })?,
+    };
+    // A saved registry of another tenant is neither offered nor kept.
     let saved_registry = current_settings
         .registry()
-        .filter(|_| current_settings.tenant() == Some(tenant_to_use.as_str()));
-    let suggestion = "run `snouty login --registry <registry>`";
-    let needs_registry = || {
-        user_error(format!(
-            "login needs a container registry for `{tenant_to_use}`; nothing was saved"
-        ))
-        .suggestion(suggestion)
-    };
-    let invalid =
-        |err: &str| user_error(format!("{err}; nothing was saved")).suggestion(suggestion);
-    let registry_to_use = match (registry_flag, tenant_registry) {
-        (Some(registry), _) => registry,
-        (None, Some(tenant_registry)) if tenant_registry.registry_url.trim().is_empty() => {
-            return Err(needs_registry());
-        }
-        (None, Some(tenant_registry)) => tenant_registry
-            .registry_url
-            .parse::<Registry>()
-            .map_err(|err| invalid(&err))?,
+        .filter(|_| current_settings.tenant() == Some(&*tenant_to_use));
+    let registry_to_use = match registry {
+        Some(registry) => registry,
         // A tenant that does not report its registry: ask, or keep the saved
         // one.
-        (None, None) if interactive => prompter
-            .input(
-                "What container registry would you like to use?",
-                saved_registry
-                    .and_then(Result::ok)
-                    .map(ToString::to_string)
-                    .as_deref(),
-                |answer| answer.parse::<Registry>().map(drop),
-            )?
-            .parse::<Registry>()
-            .map_err(|err| invalid(&err))?,
-        (None, None) => match saved_registry {
-            Some(Ok(saved)) => saved.clone(),
-            Some(Err(err)) => return Err(invalid(err)),
-            None => return Err(needs_registry()),
-        },
+        None if interactive => prompter.input(
+            "What container registry would you like to use?",
+            saved_registry.map(ToString::to_string).as_deref(),
+        )?,
+        None => saved_registry.cloned().ok_or_else(|| {
+            user_error(format!(
+                "login needs a container registry for `{tenant_to_use}`; nothing was saved"
+            ))
+            .suggestion(suggestion)
+        })?,
     };
 
     // The settings go first, so that a settings file that login cannot
@@ -501,10 +493,10 @@ fn print_login_summary(
         .antithesis_tenant()
         .is_some_and(|own| own.eq_ignore_ascii_case(tenant));
     if !own_registry {
-        // `docker login` takes the host, not the path after it.
-        let host = registry.host();
+        // `docker login` takes the authority, not the path after it.
+        let authority = registry.authority();
         say(&format!(
-            "Run `docker login {host}` or `podman login {host}` to sign in to the registry."
+            "Run `docker login {authority}` or `podman login {authority}` to sign in to the registry."
         ));
     }
     say("Run `snouty doctor` to verify your setup.");
@@ -545,7 +537,7 @@ impl std::fmt::Display for AuthSetupType {
 /// Returns the credential to store, or `None` when the user skips, keeps
 /// `stored`, or declines to replace it. Signs in at `tenant_url`.
 async fn prompt_for_auth(
-    prompter: &dyn Prompter,
+    prompter: &impl Prompter,
     client: &HttpClient,
     tenant_url: &TenantUrl<'_>,
     stored: Option<&AuthenticationInfo>,
@@ -620,7 +612,7 @@ async fn prompt_for_auth(
 /// Whether to store a new credential of kind `new` over `stored`. Asks the
 /// user unless nothing or a username and password is stored.
 fn confirm_replacement(
-    prompter: &dyn Prompter,
+    prompter: &impl Prompter,
     stored: Option<&AuthenticationInfo>,
     new: AuthSetupType,
 ) -> Result<bool> {
@@ -1401,7 +1393,11 @@ mod tests {
             true
         }
 
-        fn input(&self, prompt: &str, default: Option<&str>, check: InputCheck) -> Result<String> {
+        fn input<T: FromStr<Err = Report> + 'static>(
+            &self,
+            prompt: &str,
+            default: Option<&str>,
+        ) -> Result<T> {
             let Answer::Input(value) = self.next("input", prompt) else {
                 panic!("next scripted answer was not an input at {prompt:?}");
             };
@@ -1415,11 +1411,9 @@ mod tests {
                 !value.trim().is_empty(),
                 "the real prompt refuses the blank answer {value:?} at {prompt:?}"
             );
-            assert!(
-                check(value.trim()).is_ok(),
-                "the real prompt refuses the answer {value:?} at {prompt:?}"
-            );
-            Ok(value)
+            Ok(value.trim().parse().unwrap_or_else(|err| {
+                panic!("the real prompt refuses the answer {value:?} at {prompt:?}: {err}")
+            }))
         }
 
         fn select(
@@ -1572,11 +1566,12 @@ mod tests {
             std::fs::write(path, contents).unwrap();
         }
 
-        /// Resolve settings the way `main` does, under this test's isolated `$HOME`.
+        /// Resolve settings the way `main` does for login, under this test's
+        /// isolated `$HOME`.
         // `&self` keeps the call inside the environment's lifetime.
         #[allow(clippy::unused_self)]
         fn resolve_settings(&self, profile: Option<&str>) -> Result<Settings> {
-            Settings::resolve(None, profile.map(str::to_owned))
+            Settings::resolve_for_login(None, profile.map(str::to_owned))
         }
     }
 
@@ -1584,7 +1579,7 @@ mod tests {
     async fn login(
         profile: Option<&str>,
         settings: &Settings,
-        prompter: &dyn Prompter,
+        prompter: &impl Prompter,
     ) -> Result<()> {
         do_cmd_login(
             None,
@@ -1602,10 +1597,10 @@ mod tests {
     async fn login_with_flags(
         registry: Option<&str>,
         settings: &Settings,
-        prompter: &dyn Prompter,
+        prompter: &impl Prompter,
     ) -> Result<()> {
         do_cmd_login(
-            Some("mytenant".to_owned()),
+            Some("mytenant".parse().unwrap()),
             registry.map(|registry| registry.parse().unwrap()),
             None,
             settings,
@@ -1671,7 +1666,7 @@ mod tests {
             "repository = \"old\"\n[profile.p]\nrepository = \"old-p\"\n",
         );
         let settings = env.resolve_settings(None)?;
-        assert_eq!(settings.registry_as_written(), Some("old"));
+        assert_eq!(settings.registry(), Some(&"old".parse()?));
         let prompter = Script::default().secret(FAKE_API_KEY_A).build();
 
         login_with_flags(Some("myrepo"), &settings, &prompter).await?;
@@ -1913,10 +1908,10 @@ mod tests {
         Ok(())
     }
 
-    /// A tenant that reports a blank registry fails the login, which saves
-    /// nothing, unless --registry is given.
+    /// A tenant that reports a value that is not a registry fails the login,
+    /// which saves nothing, unless --registry is given.
     #[tokio::test]
-    async fn login_saves_nothing_when_the_tenant_reports_a_blank_registry() -> Result<()> {
+    async fn login_saves_nothing_when_the_tenant_reports_no_registry_host() -> Result<()> {
         let env = LoginEnv::with_registry(200, r#"{"auth":"antithesis","registry_url":" "}"#);
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default().secret(FAKE_API_KEY_A).build();
@@ -1926,13 +1921,13 @@ mod tests {
             .expect_err("a blank registry must fail the login");
 
         assert!(
-            format!("{err:#}").contains("login needs a container registry"),
+            format!("{err:#}").contains("is not a container registry"),
             "{err:#}"
         );
         assert!(env.settings().is_empty(), "{}", env.settings());
         assert!(env.credentials().is_empty(), "{}", env.credentials());
 
-        // --registry takes the place of the blank registry.
+        // --registry takes the place of the reported value.
         let prompter = Script::default().secret(FAKE_API_KEY_A).build();
         login_with_flags(Some("myrepo"), &settings, &prompter).await?;
         assert!(env.settings().contains(r#"registry = "myrepo""#));
@@ -1994,29 +1989,6 @@ mod tests {
 
         let stored = env.settings();
         assert!(stored.contains("[profile.prod]"), "{stored}");
-        Ok(())
-    }
-
-    /// A tenant that isn't a valid hostname is rejected after the prompt, before
-    /// the registry/credential prompts and before anything is persisted.
-    #[tokio::test]
-    async fn login_rejects_an_invalid_tenant() -> Result<()> {
-        let env = LoginEnv::new();
-        let settings = env.resolve_settings(None)?;
-        let prompter = Script::default()
-            .input("underscores_are_not_allowed")
-            .build();
-
-        let result = login(None, &settings, &prompter).await;
-
-        let err = result.expect_err("an invalid tenant must fail the login");
-        assert!(
-            format!("{err:#}").contains("a tenant must be a valid hostname"),
-            "unexpected error: {err:#}"
-        );
-        // Only the tenant was prompted; the flow bailed before registry/credentials.
-        assert_eq!(prompter.prompts().len(), 1, "{:?}", prompter.prompts());
-        assert!(env.settings().is_empty(), "nothing should be persisted");
         Ok(())
     }
 

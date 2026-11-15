@@ -1,25 +1,21 @@
 # snouty login — non-interactive paths
 
-# A supplied-but-empty --tenant is rejected by the `validate_non_empty` value
-# parser at argument-parsing time — before any prompt, stdin read, or write — so
-# the command fails outright with a nonzero exit. (No stdin is provided,
-# precisely to prove nothing is read: parsing fails first.)
+# --tenant takes a host name, and refuses anything else before any prompt,
+# stdin read, or write.
 isolate-home empty_args
 ! snouty login --tenant ""
-stderr '.*Value may not be empty or whitespace.*'
+stderr -literal 'invalid tenant ``'
+! snouty login --tenant acme/x
+stderr -literal 'invalid tenant `acme/x`'
 
 # --registry takes a host that `docker login` accepts, optionally with a
 # port and a path, and refuses anything else before any request.
 ! snouty login --registry ""
 stderr -literal 'give a host'
-! snouty login --registry registry.example.com/MyOrg
-stderr -literal 'the path must be lowercase'
 ! snouty login --registry registry.example.com:+80
 stderr -literal 'invalid port number'
 ! snouty login --registry user@registry.example.com
 stderr -literal 'is not a container registry'
-! snouty login --registry Registry.Example.com/team
-stderr -literal 'write the host as `registry.example.com`'
 
 # And for the global --profile flag given an empty value.
 ! snouty --profile "" login
@@ -54,9 +50,9 @@ stdout 'registry `registry.example.com/a-long-registry-path`\.$'
 stdout -literal '`docker login registry.example.com`'
 file ~/.config/snouty/settings.toml 'registry = "registry.example.com/a-long-registry-path"'
 
-# Login saves --registry without a scheme and a trailing `/`.
+# Login saves --registry in lowercase, without a scheme and a trailing `/`.
 isolate-home registry_scheme
-snouty login --tenant ${ANTITHESIS_TENANT} --registry HTTPS://registry.example.com/my-org/
+snouty login --tenant ${ANTITHESIS_TENANT} --registry HTTPS://Registry.Example.com/My-Org/
 stdout -literal '`docker login registry.example.com`'
 file ~/.config/snouty/settings.toml 'registry = "registry.example.com/my-org"'
 
@@ -210,7 +206,22 @@ file ~/.config/snouty/settings.toml 'registry = "registry.example.com/my-org"'
 ! snouty login --tenant other-tenant
 stderr -literal 'run `snouty login --registry <registry>`'
 file ~/.config/snouty/settings.toml 'tenant = "spec-tenant"'
+# A saved registry that is not a registry fails other commands. Login
+# ignores it, with a warning, and replaces it.
+cp saved_invalid.toml no_endpoint/.config/snouty/settings.toml
+! snouty settings show
+stderr 'invalid registry setting: `not a registry` is not a container registry'
+stderr -literal 'Suggestion: correct the setting, or run `snouty login` to replace it'
+! snouty login --tenant spec-tenant
+stderr 'warning: ignoring the registry setting: `not a registry`'
+stderr -literal 'run `snouty login --registry <registry>`'
+snouty login --tenant spec-tenant --registry registry.example.com/acme
+file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
+snouty settings show
 
 -- saved_scheme.toml --
 tenant = "spec-tenant"
 registry = "https://registry.example.com/my-org/"
+-- saved_invalid.toml --
+tenant = "spec-tenant"
+registry = "not a registry"

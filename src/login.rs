@@ -466,11 +466,6 @@ async fn fetch_registry(
     verbose: bool,
 ) -> Result<Option<RegistryResponse>> {
     let tenant = tenant_url.tenant;
-    // A read error of a stored credential passes through as it is.
-    let ambient = match new_credentials {
-        Some(_) => None,
-        None => AuthenticationInfo::find_ambient(profile)?,
-    };
     // Login can replace only a credential that it stores, and only at a
     // terminal.
     let login_again = || {
@@ -483,28 +478,40 @@ async fn fetch_registry(
             format!("set ANTITHESIS_API_KEY, or run {login} in a terminal")
         }
     };
-    // `None` for a credential that login can replace.
-    let (authentication, env_next_step) = match (new_credentials, ambient) {
-        (Some(credentials), _) => (credentials.to_unrefreshable_authentication_info(), None),
-        (None, Some(found)) if !matches!(found.value(), AuthenticationInfo::Password { .. }) => {
-            let next_step = matches!(found.tag(), CredentialSource::Environment { .. })
-                .then(|| rejected_credential_next_step(&found, profile));
-            (found.untag(), next_step)
-        }
-        (None, found) => {
-            let next_step = match found.as_ref().map(Tagged::tag) {
-                // Every later command reads the environment first, so a
-                // credential at the prompt would not replace one there.
-                Some(CredentialSource::Environment { .. }) => {
-                    "unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD".to_owned()
-                }
-                _ => login_again(),
-            };
-            return Err(user_error(format!(
-                "login needs an API key or a single sign-on to check with `{tenant}`; nothing was saved"
-            ))
-            .suggestion(next_step));
-        }
+    let nothing_to_check = || {
+        user_error(format!(
+            "login needs an API key or a single sign-on to check with `{tenant}`; nothing was saved"
+        ))
+    };
+    // The next step for a rejected credential from the environment. `None`
+    // for a credential that login can replace: then it is `login_again`.
+    let (authentication, env_next_step) = match new_credentials {
+        Some(credentials) => (credentials.to_unrefreshable_authentication_info(), None),
+        // A read error of a stored credential passes through as it is.
+        None => match AuthenticationInfo::find_ambient(profile)? {
+            None => return Err(nothing_to_check().suggestion(login_again())),
+            // Login does not check with a username and password.
+            Some(found) if matches!(found.value(), AuthenticationInfo::Password { .. }) => {
+                let next_step = match found.tag() {
+                    // Every later command reads the environment first, so a
+                    // credential at the prompt would not replace one there.
+                    CredentialSource::Environment { .. } => {
+                        "unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD".to_owned()
+                    }
+                    CredentialSource::Stored(_) => login_again(),
+                };
+                return Err(nothing_to_check().suggestion(next_step));
+            }
+            Some(found) => {
+                let next_step = match found.tag() {
+                    CredentialSource::Environment { .. } => {
+                        Some(rejected_credential_next_step(&found, profile))
+                    }
+                    CredentialSource::Stored(_) => None,
+                };
+                (found.untag(), next_step)
+            }
+        },
     };
     // A cached answer would not check the credential.
     let api = AntithesisApi::build(settings, authentication, verbose, ResponseCache::Disabled)?;

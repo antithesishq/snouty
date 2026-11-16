@@ -21,7 +21,7 @@ uv run scripts/watch-prs.py --exit-on-event <PR> [<PR> ...]
 ```
 
 The script polls in silence, for days if necessary. When an event that
-needs a reaction prints, it waits until 15 seconds pass with no other
+needs a reaction prints, it waits until 5 seconds pass with no other
 one, then exits, so events that arrive together, such as a review and its
 comments, come in one batch. `--settle seconds` changes the wait. Read all of its output,
 react to each line (step 3), then start it again with the same command and

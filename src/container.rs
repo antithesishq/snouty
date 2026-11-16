@@ -1078,6 +1078,12 @@ pub fn image_repo(image_ref: &str) -> &str {
     }
 }
 
+/// The `sha256:...` digest that pins an image reference, or `None` when the
+/// reference is not pinned by digest.
+pub fn image_digest(image_ref: &str) -> Option<&str> {
+    image_ref.rsplit_once('@').map(|(_, digest)| digest)
+}
+
 /// The tag of an image reference, or `latest` when untagged.
 pub fn image_ref_tag(image_ref: &str) -> &str {
     let no_digest = match image_ref.rfind('@') {

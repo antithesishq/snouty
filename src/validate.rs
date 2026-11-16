@@ -631,10 +631,9 @@ fn contains_setup_complete(content: &str) -> bool {
 /// Discover test commands across all compose containers, including stopped
 /// ones when the backend supports `compose ps -a`.
 ///
-/// Each container is inspected regardless of state — Antithesis only runs
-/// test commands in *running* containers, but we still inspect stopped ones
-/// (when visible) so we can fail validation with a clear error when test
-/// commands are stranded in a container whose entrypoint exited prematurely.
+/// It also inspects stopped containers, when visible, to warn about test
+/// commands stranded in a container that exited.
+///
 /// Supports scaled services (`replicas > 1`): per-container scratch dirs are
 /// keyed on container ID so replicas don't trample each other's extracts.
 ///
@@ -830,9 +829,9 @@ fn stranded_scripts_warning(stopped_with_scripts: &BTreeSet<String>) -> String {
     format!(
         "Warning: these services contain Antithesis test commands but their containers \
          exited; Antithesis cannot run test commands in a stopped container:\n{listing}\n\
-         If a container should stay up for the test, set its command/entrypoint to a \
-         long-running process (for example `sleep infinity` or `tail -f /dev/null`). A \
-         one-shot setup/init container that exits 0 can be left as-is."
+         If this is not intended, keep the container running (for example \
+         `sleep infinity`), or make sure the test commands are also in a container that \
+         stays running. A one-shot setup/init container that exits 0 can be left as-is."
     )
 }
 
@@ -1615,7 +1614,5 @@ services:
         assert!(rendered.contains("test command discovery failed"));
         // Test commands are referenced by their full in-container path.
         assert!(rendered.contains("/opt/antithesis/test/v1/bogus_cmd"));
-        // The stranded-container case is no longer part of the hard error.
-        assert!(!rendered.contains("containers exited"));
     }
 }

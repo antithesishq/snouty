@@ -156,6 +156,9 @@ snouty settings show
 stderr 'invalid setting `update_channel` in /.*/settings\.toml'
 stderr 'Suggestion: fix or delete /.*/settings\.toml$'
 file ~/.config/snouty/settings.toml 'update_channel = "betta"'
+! snouty login --tenant spec-tenant --registry registry.example.com/other
+stderr 'invalid setting `update_channel` in /.*/settings\.toml'
+file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
 env SNOUTY_UPDATE_CHANNEL=
 
 # A tenant that cannot be reached fails the login, which names the URL and

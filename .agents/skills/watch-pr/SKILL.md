@@ -64,8 +64,11 @@ PR #123 comment by <login> (id <id>)
 PR #123 review comment by <login> on <path> (id <id>)
 PR #123 review by <login>: <APPROVED|CHANGES_REQUESTED|COMMENTED> (id <id>)
 PR #123 check <name>: <failure|timed_out|cancelled|...> (job <id>)
+PR #123 all checks passed for <short-sha>
+PR #123 has no checks
 PR #123 conflicts with <branch>
 PR #123 base changed to <branch>
+PR #123 base <branch> moved to <short-sha>
 PR #123 reopened
 PR #123 merged
 PR #123 closed without merge
@@ -76,9 +79,6 @@ These events need no reaction. The script prints them for the record, and
 you read them the next time an event wakes you:
 
 ```
-PR #123 all checks passed for <short-sha>
-PR #123 has no checks
-PR #123 base <branch> moved to <short-sha>
 PR #123 is closed, as an earlier run reported
 gh failed: <message>
 ```
@@ -92,9 +92,9 @@ The script prints each failed check one time. It prints one "all checks
 passed" line per head commit once every check on it concludes success,
 skipped, or neutral. A PR with no checks gets a "has no checks" line
 instead. So you never need to read `gh pr checks` yourself, or wait for the
-checks after a push: a failure wakes you, and a pass needs nothing from
-you. The "all checks passed" line names the head commit; check that it
-names your latest push before you rely on it.
+checks after a push: a failure or a pass wakes you. The "all checks passed"
+line names the head commit; check that it names your latest push before you
+rely on it.
 
 A `gh failed: <message>` line prints one time per distinct message, and a
 failure that clears needs nothing. When the view of a PR or a list of its
@@ -180,8 +180,22 @@ share.
   ```
 - **Conflict**: merge `origin/<branch>`, the base that the event names,
   into the branch. Resolve the conflict, run the tests that the merge
-  touches, and push. A base that moves without
-  a conflict needs nothing.
+  touches, and push.
+- **Base moved**: the base branch has new commits. Merge `origin/<branch>`
+  into the branch, run the tests that the merge touches, and push. Skip
+  this while the PR is in the merge queue or set to auto-merge: a push
+  removes it from the queue. Check with:
+
+  ```
+  gh api graphql -f query='{ repository(owner:"<owner>", name:"<repo>") {
+    pullRequest(number:<PR>) { isInMergeQueue autoMergeRequest { enabledAt } } } }'
+  ```
+- **All checks passed**: check that the line names your latest push. The PR
+  can merge when its reviews allow. Tell the user. When a PR of a stack
+  waits for this one, continue with that PR.
+- **No checks**: CI did not run on the head commit. This is not a pass.
+  Find out why, for example a conflict or a workflow that waits for
+  approval, and tell the user.
 - **Base changed**: someone retargeted the PR. Compare the branch with the
   new base, and update the description (step 4) if the content of the PR
   changed.

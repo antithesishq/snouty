@@ -8,16 +8,18 @@ wherever gh works. The script exits when every watched PR is closed.
 Events that need a reaction:
 - a comment, a review comment, or a review
 - a failed CI check, with the job id that fetches its log
+- "all checks passed", once per head commit, when every check on it
+  concludes success, skipped, or neutral, or "has no checks": the PR can
+  merge, or the next PR of a stack can continue
 - a conflict with the base branch
 - a retarget to another base branch
+- the base branch tip moving to a new commit, which a stacked branch must
+  merge in
 - a merge or a close, or a reopening after a close that was printed
 
 Events that need none, which are printed for the record:
-- "all checks passed", once per head commit, when every check on it
-  concludes success, skipped, or neutral
-- "has no checks"
-- the base branch tip moving to a new commit
 - a failure of gh itself, once per distinct message
+- a close that an earlier run printed
 
 A check verdict prints only after two consecutive polls agree on it,
 because checks can register a moment after the PR's creation or after a
@@ -283,7 +285,7 @@ def poll_pr(
         or {}
     ).get("sha")
     if tip and changed(seen, "baseoid", tip, baseline=view["baseRefOid"]):
-        emit(f"PR #{pr} base {view['baseRefName']} moved to {tip[:7]}", wake=False)
+        emit(f"PR #{pr} base {view['baseRefName']} moved to {tip[:7]}")
     # GitHub answers UNKNOWN while it recomputes, after a push to either
     # branch. Seeding with MERGEABLE makes a PR that already conflicts say so
     # on the first poll.
@@ -394,7 +396,7 @@ def poll_pr(
     agreed = since is not None and since[0] == last and now - since[1] >= agree_seconds
     if verdict and agreed and f"emitted:{last}" not in seen:
         seen.add(f"emitted:{last}")
-        emit(f"PR #{pr} {verdict}", wake=False)
+        emit(f"PR #{pr} {verdict}")
 
     return True
 

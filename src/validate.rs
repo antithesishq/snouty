@@ -737,7 +737,8 @@ fn discover_scripts(
         return Err(err);
     }
 
-    // Warn, do not fail: the rest of the harness still runs.
+    // Warn, do not fail: a one-shot container that exits is a valid compose
+    // pattern, and the rest of the harness still runs.
     if !stopped_with_scripts.is_empty() {
         eprintln!(
             "{}",
@@ -818,8 +819,9 @@ fn stranded_scripts_warning(stopped_with_scripts: &BTreeSet<String>) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "Warning: the containers of these services exited, so their test commands will \
-         never run. Move the test commands to a service that keeps running:\n{listing}"
+        "Warning: these services have test commands in a container that exited, and \
+         Antithesis runs test commands only in running containers. Put the test commands \
+         in a container that keeps running:\n{listing}"
     )
 }
 

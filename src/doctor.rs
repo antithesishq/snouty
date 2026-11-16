@@ -285,7 +285,7 @@ fn other_registry_check(
             format!("run {} to switch to it", login_command(profile))
         }
         SettingSource::File { path, key } => {
-            format!("set `{key}` in {} to it", path.path.display())
+            format!("set `{key}` in {} to it", path.display())
         }
     };
     let configured = configured.value();

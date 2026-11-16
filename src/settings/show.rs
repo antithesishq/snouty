@@ -99,12 +99,7 @@ pub fn cmd_settings_show(settings: &Settings, json: bool) -> Result<()> {
         } else {
             let rows = files
                 .iter()
-                .map(|file| {
-                    vec![
-                        file.kind.to_string(),
-                        sanitize(&file.path.display().to_string()),
-                    ]
-                })
+                .map(|file| vec![file.kind.to_string(), sanitize(&file.display().to_string())])
                 .collect();
             // Both columns are fixed, so the table never needs the terminal
             // width.

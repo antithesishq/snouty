@@ -184,15 +184,16 @@ impl std::error::Error for InvalidSetting {}
 /// that snouty cannot use, so for login (`is_login`) the suggestion is to fix
 /// the setting and then run login again.
 pub fn suggest_settings_fix(err: Report, is_login: bool) -> Report {
-    let path = match err.downcast_ref() {
+    let path = match err.downcast_ref::<InvalidSetting>() {
         Some(InvalidSetting {
             source: SettingSource::Env(var),
             ..
         }) => {
+            let fix = format!("fix or unset {var}");
             let suggestion = if is_login {
-                format!("fix or unset {var}, then run `snouty login` again")
+                format!("{fix}, then run `snouty login` again")
             } else {
-                format!("fix or unset {var}")
+                fix
             };
             return err.suggestion(suggestion);
         }
@@ -201,7 +202,7 @@ pub fn suggest_settings_fix(err: Report, is_login: bool) -> Report {
             ..
         }) => path,
         None => match err.downcast_ref::<InvalidFile>() {
-            Some(InvalidFile { path, .. }) => &path.path,
+            Some(file) => &file.path.path,
             None => return err,
         },
     };
@@ -793,14 +794,14 @@ fn missing_setting(setting: &str) -> color_eyre::Report {
 fn load_default_project_file(
     trust_override: Option<trust::TrustOverride>,
 ) -> Result<Option<LoadedFile>> {
-    let path = KnownPath::new(KnownPathType::Project, Path::new(PROJECT_SETTINGS_FILENAME));
-    let Some(contents) = path.read(false)? else {
+    let file = KnownPath::new(KnownPathType::Project, Path::new(PROJECT_SETTINGS_FILENAME));
+    let Some(contents) = file.read(false)? else {
         return Ok(None);
     };
-    match trust::verdict(&path, contents.as_bytes(), trust_override)? {
-        trust::Verdict::Use => path.parse(&contents).map(Some),
+    match trust::verdict(&file.path, contents.as_bytes(), trust_override)? {
+        trust::Verdict::Use => file.parse(&contents).map(Some),
         trust::Verdict::Ignore => {
-            debug!("ignoring the denied settings file {}", path.path.display());
+            debug!("ignoring the denied settings file {}", file.path.display());
             Ok(None)
         }
     }
@@ -872,11 +873,6 @@ fn resolve_value_with(
         }
     }
 
-    let global_path = sources
-        .files
-        .iter()
-        .find(|file| file.path.kind == KnownPathType::Global)
-        .map(|file| &file.path.path);
     let found = |file: &LoadedFile, key: String, value: Option<String>| {
         value.map(|value| Found {
             value,
@@ -885,7 +881,9 @@ fn resolve_value_with(
                 key,
                 // A project file that `--settings` names can be the global
                 // settings file itself.
-                global: global_path == Some(&file.path.path),
+                global: sources.files.iter().any(|other| {
+                    other.path.kind == KnownPathType::Global && other.path.path == file.path.path
+                }),
             },
         })
     };

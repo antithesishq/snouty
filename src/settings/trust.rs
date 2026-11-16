@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 use super::{NO_GLOBAL_SETTINGS_DIR, global_settings_dir, write_global_toml};
 use crate::env;
 use crate::error::user_error;
-use crate::known_path::{KnownPath, KnownPathType, read_to_string_if_file_exists};
+use crate::known_path::read_to_string_if_file_exists;
 
 pub const SETTINGS_TRUST_VAR_NAME: &str = "SNOUTY_SETTINGS_TRUST";
 const TRUST_FILENAME: &str = "trust.toml";
@@ -72,12 +72,11 @@ pub(crate) fn trust_file_path() -> Option<PathBuf> {
 impl TrustStore {
     /// The store in the trust file at `path`; empty when there is none yet.
     fn load(path: &Path) -> Result<Self> {
-        let file = KnownPath::new(KnownPathType::Trust, path);
-        match file.read(false)? {
+        match read_to_string_if_file_exists(path)? {
             Some(contents) => toml::from_str(&contents).map_err(|err| {
                 user_error(format!(
                     "the trust file {} is not valid: {err}",
-                    file.path.display()
+                    path.display()
                 ))
                 .suggestion(format!(
                     "Delete the file, then trust or deny your project settings files again. \
@@ -104,18 +103,17 @@ pub(super) enum Verdict {
     Ignore,
 }
 
-/// The verdict for the project settings file at `path`, whose content is
+/// The verdict for the project settings file at the canonical `path`, whose content is
 /// `contents`. A file that the user has not trusted, or that changed since the
 /// user trusted it, is an error that tells how to decide.
 pub(super) fn verdict(
-    path: &KnownPath,
+    path: &Path,
     contents: &[u8],
     trust_override: Option<TrustOverride>,
 ) -> Result<Verdict> {
     if let Some(TrustOverride::All) = trust_override {
         return Ok(Verdict::Use);
     }
-    let path = &path.path;
     let Some(trust_file) = trust_file_path() else {
         return Err(user_error(format!(
             "the settings file {} is not trusted, and snouty has no place to record trust",
@@ -128,8 +126,8 @@ pub(super) fn verdict(
     match TrustStore::load(&trust_file)?.files.get(path) {
         Some(Decision::Deny) => Ok(Verdict::Ignore),
         Some(Decision::Trust { sha256 }) if *sha256 == digest(contents) => Ok(Verdict::Use),
-        Some(Decision::Trust { .. }) => Err(untrusted(path.clone(), Untrusted::Changed)),
-        None => Err(untrusted(path.clone(), Untrusted::Unknown)),
+        Some(Decision::Trust { .. }) => Err(untrusted(path.to_owned(), Untrusted::Changed)),
+        None => Err(untrusted(path.to_owned(), Untrusted::Unknown)),
     }
 }
 

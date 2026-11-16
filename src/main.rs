@@ -105,9 +105,7 @@ async fn run(cli: Cli) -> Result<()> {
 
     // Resolve settings once, up front. Each command that reads settings
     // unwraps the result, so a bad settings file stops only those commands.
-    let settings = Settings::resolve(settings_path.clone(), profile.clone()).map_err(|err| {
-        snouty::settings::suggest_settings_fix(err, matches!(command, Commands::Login { .. }))
-    });
+    let settings = Settings::resolve(settings_path.clone(), profile.clone());
     let mut removed_features = settings
         .as_ref()
         .map_or_else(|_| Vec::new(), Settings::removed_features);

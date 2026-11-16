@@ -13,10 +13,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{AuthenticationInfo, RefreshableOAuthToken, claims::try_get_expiry_from_token};
 use crate::{
-    settings::{
-        back_up_unparsable_file, global_settings_dir, mkdir, read_to_string_if_file_exists,
-        write_atomically,
-    },
+    known_path::read_to_string_if_file_exists,
+    settings::{back_up_unparsable_file, global_settings_dir, mkdir, write_atomically},
     tag::{Tag, Tagged},
 };
 

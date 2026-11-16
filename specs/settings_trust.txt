@@ -65,7 +65,8 @@ stderr 'Denied .*\.snouty\.toml'
 stderr 'settings deny`.*issues/747'
 snouty settings show
 stdout 'tenant +not set'
-stdout '^files: none$'
+! stdout '^project '
+stdout '^trust +/.*/trust\.toml$'
 cp acme.toml .snouty.toml
 snouty settings show
 stdout 'tenant +not set'

@@ -42,6 +42,8 @@ const PROFILE_KEY: &str = "profile";
 const REGISTRY_KEY: &str = "registry";
 /// An alias for [`REGISTRY_KEY`].
 const REPOSITORY_KEY: &str = "repository";
+/// The issue that removes the project settings file and named profiles.
+const REMOVAL_ISSUE_URL: &str = "https://github.com/antithesishq/snouty/issues/747";
 const NO_GLOBAL_SETTINGS_DIR: &str = "Could not determine global settings directory. Ensure either $XDG_CONFIG_HOME or $HOME is set.";
 
 /// snouty's subdirectory under an XDG base dir: `$<xdg_var>/snouty`, falling
@@ -522,6 +524,30 @@ impl Settings {
     /// The settings files that snouty read, most specific first.
     pub fn files(&self) -> &[SettingsFile] {
         &self.files
+    }
+
+    /// A warning for each feature in use that the next release removes: the
+    /// project settings file, and a named profile.
+    pub fn removal_warnings(&self) -> Vec<String> {
+        let project = self
+            .files
+            .iter()
+            .filter(|file| file.file_type == SettingsFileType::Project)
+            .map(|file| format!("the project settings file {}", file.path.display()));
+        let profile = self
+            .profile
+            .iter()
+            .map(|profile| format!("the profile `{profile}`"));
+        project
+            .chain(profile)
+            .map(|feature| {
+                format!(
+                    "warning: snouty uses {feature}. The next snouty release removes \
+                     project settings files and profiles. If you need them, add your \
+                     use case to {REMOVAL_ISSUE_URL}"
+                )
+            })
+            .collect()
     }
 
     pub(crate) fn profile(&self) -> Option<&str> {

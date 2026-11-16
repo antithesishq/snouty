@@ -108,6 +108,14 @@ async fn run(cli: Cli) -> Result<()> {
     let settings = Settings::resolve(settings_path.clone(), profile.clone()).map_err(|err| {
         snouty::settings::suggest_settings_fix(err, matches!(command, Commands::Login { .. }))
     });
+    // The credential helper runs on each push or pull, so it does not warn.
+    if let Ok(settings) = &settings
+        && !matches!(command, Commands::DockerCredential { .. })
+    {
+        for warning in settings.removal_warnings() {
+            eprintln!("{}", snouty::wrap_if_tty(&warning));
+        }
+    }
     let result = match command {
         Commands::Completions { shell } => cmd_completions(shell).map_err(Report::new),
         Commands::Version => cmd_version(output.json),

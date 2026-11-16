@@ -17,6 +17,7 @@ pub mod event_render;
 pub mod event_set_dsl;
 pub mod features;
 pub mod help;
+pub mod known_path;
 pub mod login;
 pub mod mcp;
 pub mod ndjson;

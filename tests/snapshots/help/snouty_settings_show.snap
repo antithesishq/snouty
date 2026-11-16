@@ -11,7 +11,9 @@ top-level value in the global settings file.
 
 Then it lists the settings files that snouty read: the project settings file,
 which overrides the global one, then the global settings file. After them it
-lists the credentials file, credentials.toml, when it exists.
+lists the credentials file, credentials.toml, and the trust file, trust.toml,
+when they exist. The trust file records the project settings files that you
+trusted or denied.
 
 `api_cache_max_file_size` is the largest API response that snouty caches. The
 text output shows it with a unit, such as `10.0 MiB`. The JSON value is a number
@@ -19,8 +21,8 @@ of bytes.
 
 With --json, the output is one object. `settings` holds each setting, with null
 for a setting that is not set and has no default. `files` lists the same files
-in the same order, each with its `type` (`project`, `global` or `credentials`)
-and `path`.
+in the same order, each with its `type` (`project`, `global`, `credentials` or
+`trust`) and `path`.
 
 Examples:
   snouty settings show

@@ -3743,7 +3743,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "settings show prints one aligned row per setting, with `not set` (or the default) "
             "for a setting that is not configured, and a size with its unit, then a TYPE/PATH "
             "table of the files it read: project settings, global settings, then the "
-            "credentials file when it exists.",
+            "credentials file and the trust file when they exist.",
             ["settings", "show"],
             settings_show_check,
             json_capable=False,

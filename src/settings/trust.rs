@@ -19,11 +19,10 @@ use color_eyre::eyre::{OptionExt, Report, Result, eyre};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{
-    NO_GLOBAL_SETTINGS_DIR, global_settings_dir, read_to_string_if_file_exists, write_global_toml,
-};
+use super::{NO_GLOBAL_SETTINGS_DIR, global_settings_dir, write_global_toml};
 use crate::env;
 use crate::error::user_error;
+use crate::known_path::read_to_string_if_file_exists;
 
 pub const SETTINGS_TRUST_VAR_NAME: &str = "SNOUTY_SETTINGS_TRUST";
 const TRUST_FILENAME: &str = "trust.toml";
@@ -64,11 +63,16 @@ struct TrustStore {
     files: BTreeMap<PathBuf, Decision>,
 }
 
+/// Where the trust file is, or `None` when the global settings dir is
+/// unknown. The file need not exist.
+pub(crate) fn trust_file_path() -> Option<PathBuf> {
+    global_settings_dir().map(|dir| dir.join(TRUST_FILENAME))
+}
+
 impl TrustStore {
-    /// The store in the global settings dir `dir`; empty when there is none yet.
-    fn load(dir: &Path) -> Result<Self> {
-        let path = dir.join(TRUST_FILENAME);
-        match read_to_string_if_file_exists(&path)? {
+    /// The store in the trust file at `path`; empty when there is none yet.
+    fn load(path: &Path) -> Result<Self> {
+        match read_to_string_if_file_exists(path)? {
             Some(contents) => toml::from_str(&contents).map_err(|err| {
                 user_error(format!(
                     "the trust file {} is not valid: {err}",
@@ -111,7 +115,7 @@ pub(super) fn verdict(
         return Ok(Verdict::Use);
     }
     let path = canonicalize(path)?;
-    let Some(dir) = global_settings_dir() else {
+    let Some(trust_file) = trust_file_path() else {
         return Err(user_error(format!(
             "the settings file {} is not trusted, and snouty has no place to record trust",
             path.display()
@@ -120,7 +124,7 @@ pub(super) fn verdict(
             "Set $XDG_CONFIG_HOME or $HOME. To skip the check, set {SETTINGS_TRUST_VAR_NAME}=all."
         )));
     };
-    match TrustStore::load(&dir)?.files.get(&path) {
+    match TrustStore::load(&trust_file)?.files.get(&path) {
         Some(Decision::Deny) => Ok(Verdict::Ignore),
         Some(Decision::Trust { sha256 }) if *sha256 == digest(contents) => Ok(Verdict::Use),
         Some(Decision::Trust { .. }) => Err(untrusted(path, Untrusted::Changed)),
@@ -192,8 +196,7 @@ pub fn deny(path: &Path) -> Result<PathBuf> {
 }
 
 fn record(path: PathBuf, decision: Decision) -> Result<PathBuf> {
-    let dir = global_settings_dir().ok_or_eyre(NO_GLOBAL_SETTINGS_DIR)?;
-    let mut store = TrustStore::load(&dir)?;
+    let mut store = TrustStore::load(&trust_file_path().ok_or_eyre(NO_GLOBAL_SETTINGS_DIR)?)?;
     store.files.insert(path.clone(), decision);
     write_global_toml(TRUST_FILENAME, &store)?;
     Ok(path)

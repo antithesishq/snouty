@@ -5282,6 +5282,57 @@ mod tests {
             }
         }
 
+        // A cold moment that the source cannot load names the source, and
+        // the suggestion names the flag that gave it.
+        #[test]
+        fn a_cold_moment_with_a_source_names_the_source() {
+            let source = RewarmSource::Run("src-1".parse().unwrap());
+            let err = explain_exec_error(
+                &run_in_progress(),
+                "-123",
+                "snouty debug",
+                Some(&source),
+                api_error(
+                    400,
+                    "The requested moment is not valid in the original run.",
+                ),
+            );
+            assert_eq!(
+                err.to_string(),
+                "snouty could not load moment -123 from run src-1"
+            );
+            let debug = format!("{err:?}");
+            assert!(
+                debug.contains("check that --source-run-id names the run the moment comes from"),
+                "{debug}"
+            );
+        }
+
+        // Only the 400 of a stopped run says that the run has ended. A
+        // rejected credential keeps its own error.
+        #[test]
+        fn a_stopped_run_explains_only_its_400() {
+            let mut run = run_in_progress();
+            run.status = RunStatus::Completed;
+            let err = explain_exec_error(
+                &run,
+                "-123",
+                "snouty debug",
+                None,
+                api_error(400, "Run run-1 has ended. Commands require an active run."),
+            );
+            assert_eq!(
+                err.to_string(),
+                "run run-1 is completed, and `runs exec` needs a run that is in progress"
+            );
+            for status in [401, 403] {
+                let err =
+                    explain_exec_error(&run, "-123", "snouty debug", None, api_error(status, ""));
+                assert_eq!(api_error_status(&err), Some(status));
+                assert!(!format!("{err:?}").contains("in progress"), "{err:?}");
+            }
+        }
+
         fn test_api(base_url: &str) -> AntithesisApi {
             AntithesisApi::build(
                 &Settings::for_test_base_url(base_url),

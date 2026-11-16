@@ -2299,7 +2299,8 @@ async fn read_error_body(mut response: reqwest::Response) -> String {
 /// tenant `orbitinghail`, release 62.2 — `… Event set DSL error: bogus_verb({x:
 /// "y"})`, then `^`, then `invalid with_next`), and a caret on one line runs
 /// into the text it points at. Every line gets the 200 characters, because
-/// the last line of such a body carries the reason.
+/// the last line of such a body carries the reason. The query and its caret
+/// line are not cut.
 fn error_body_message(body: &str) -> String {
     const MAX_LEN: usize = 200;
 
@@ -2324,10 +2325,24 @@ fn error_body_message(body: &str) -> String {
     let text = lay_out_dsl_error(&text);
     // `render_report` splits the error from its `Note:`/`Suggestion:` tail at
     // the first blank line, so a message that carries one prints its tail twice.
-    sanitize_multiline(text.trim())
+    let text = sanitize_multiline(text.trim());
+    let lines: Vec<&str> = text
         .lines()
         .filter(|line| !line.trim().is_empty())
-        .map(truncate)
+        .collect();
+    let is_caret = |line: &str| line.trim() == "^";
+    // A caret line and the query above it stay whole, so that a caret past
+    // the cut still points at its token.
+    lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            if is_caret(line) || lines.get(i + 1).is_some_and(|next| is_caret(next)) {
+                (*line).to_string()
+            } else {
+                truncate(line)
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -2799,13 +2814,13 @@ mod tests {
     fn error_body_message_truncates_each_line_of_a_message() {
         let query = "y".repeat(500);
         let message = error_body_message(&format!(
-            r#"{{"message":"error: {query}\n^\ninvalid verb"}}"#
+            r#"{{"message":"error: {query}\nat verb\ninvalid verb"}}"#
         ));
         let lines: Vec<&str> = message.lines().collect();
         assert_eq!(lines.len(), 3, "got: {message}");
         assert!(lines[0].ends_with('…'), "got: {}", lines[0]);
         assert_eq!(lines[0].chars().count(), 201);
-        assert_eq!(lines[1], "^");
+        assert_eq!(lines[1], "at verb");
         assert_eq!(lines[2], "invalid verb");
     }
 
@@ -4052,6 +4067,23 @@ mod tests {
             "the query is invalid:\n  bogus_verb({x: \"y\"})\n  ^\n  invalid with_next"
         );
         assert!(!format!("{report:?}").contains("pangolin"));
+        // A caret past the per-line cut still marks the token.
+        let query = format!("contains({{output_text: \"{}\"}}).bogus()", "x".repeat(250));
+        let caret = format!("{}^", " ".repeat(query.len() - 7));
+        let message = error_body_message(
+            &serde_json::json!({
+                "message": format!(
+                    "failed to execute pangolin query due to a runtime error: \
+                     Event set DSL error: {query}\n{caret}\ninvalid bogus"
+                )
+            })
+            .to_string(),
+        );
+        let report = format_api_error(400, &message);
+        assert_eq!(
+            report.to_string(),
+            format!("the query is invalid:\n  {query}\n  {caret}\n  invalid bogus")
+        );
         // Without the caret line, the shape is unknown, so the error is generic.
         let report = format_api_error(400, "Event set DSL error:\nunexpected EOF");
         assert_eq!(

@@ -314,7 +314,8 @@ stdout '(?s)^\{"status":"rewarming","percent_complete":0\}\n.*\{"status":"rewarm
 # not the moment's run). snouty names the flag. --timeout does not count the
 # rewarm, so snouty does not suggest a longer --timeout.
 ! snouty runs exec run-2 1002528785118888238 278.1311443040613 slow-rewarm --source-run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
-stderr '^Error: snouty could not load moment 1002528785118888238 from run 1f1211ea49946d4f63a92d65ee42476d-64-0$'
+stderr '^Error: the Antithesis API rejected the request$'
+stderr '^Note: .*rewarm did not reach the target moment'
 stderr 'check that --source-run-id names the run the moment comes from$'
 ! stderr 'raise --timeout'
 

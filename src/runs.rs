@@ -2084,10 +2084,16 @@ fn explain_exec_error(
             user_error(format!("moment {input_hash} is not loaded in run {run_id}"))
                 .suggestion("use --source-run-id to load a moment from a different run")
         }
-        (ExecRejection::ColdMoment | ExecRejection::BadRewarm, Some(source)) => user_error(
-            format!("snouty could not load moment {input_hash} from {source}"),
-        )
+        (ExecRejection::ColdMoment, Some(source)) => user_error(format!(
+            "snouty could not load moment {input_hash} from {source}"
+        ))
         .suggestion(format!(
+            "check that {} names the run the moment comes from",
+            rewarm_flag(source)
+        )),
+        // Any other 400: the server's text is the only detail, so the error
+        // keeps it.
+        (ExecRejection::BadRewarm, Some(source)) => err.suggestion(format!(
             "check that {} names the run the moment comes from",
             rewarm_flag(source)
         )),

@@ -32,11 +32,9 @@ pub fn user_error(message: impl Into<String>) -> Report {
     Report::new(UserError(message.into())).suppress_backtrace(true)
 }
 
-/// Error carrying the HTTP status of a failed API call structurally, so callers
-/// can classify failures (e.g. "was this a 404?") without sniffing the rendered
-/// message string. The `Display` text is snouty's message, built by the api
-/// layer; `server_message` is the text of the response body, for callers that
-/// classify by it.
+/// The HTTP status of a failed API call and the server's text, so that callers
+/// classify a failure without parsing the message. `Display` shows snouty's
+/// message, built by the api layer.
 #[derive(Debug)]
 pub struct ApiError {
     pub status: u16,

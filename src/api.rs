@@ -792,7 +792,6 @@ pub enum RewarmSource {
     Session(SourceSessionId),
 }
 
-/// `run <id>` or `session <id>`.
 impl std::fmt::Display for RewarmSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -803,9 +802,8 @@ impl std::fmt::Display for RewarmSource {
 }
 
 /// Turn the 404 of an endpoint whose 404 can only mean a bad run ID into
-/// "run not found: X", instead of the generic error for a 404. Any
-/// other error passes through untouched, so a real server fault is never
-/// masked.
+/// "run not found: X". Any other error passes through untouched, so a real
+/// server fault is never masked.
 fn run_not_found(run_id: &str, err: Report) -> Report {
     if crate::error::api_error_status(&err) == Some(404) {
         user_error(format!("run not found: {run_id}"))
@@ -2010,10 +2008,8 @@ pub(crate) fn run_version(run_id: &str) -> Option<u32> {
 
 /// Build the error for an API answer of `status` whose body says `message`.
 /// The first line is snouty's own text. The server's text follows as a note,
-/// because it is the only detail of a failure that snouty does not know. An
-/// events-search query that the server rejects in the shape that
-/// [`lay_out_dsl_error`] knows becomes "the query is invalid", with the
-/// query, the caret and the reason below it.
+/// because snouty cannot know that detail. A rejected events-search query
+/// shows only the query, the caret and the reason.
 fn format_api_error(status: u16, message: &str) -> Report {
     let reason = reqwest::StatusCode::from_u16(status)
         .ok()
@@ -2029,11 +2025,18 @@ fn format_api_error(status: u16, message: &str) -> Report {
             .trim_start(),
         _ => message,
     };
-    // [`lay_out_dsl_error`] ends the prose with the label and a line break.
+    // [`lay_out_dsl_error`] ends the prose with the label and a line break,
+    // and puts the caret on the line after the query.
     let rejected_query = detail
         .split_once(DSL_ERROR_LABEL)
         .and_then(|(_, rest)| rest.strip_prefix('\n'))
-        .filter(|_| status == 400);
+        .filter(|from_query| {
+            status == 400
+                && from_query
+                    .lines()
+                    .nth(1)
+                    .is_some_and(|line| line.trim() == "^")
+        });
     let summary = match rejected_query {
         // The query, the caret and the reason keep their lines and one indent,
         // so the caret stays under the token that it marks.
@@ -2042,8 +2045,6 @@ fn format_api_error(status: u16, message: &str) -> Report {
         }
         None => api_error_summary(status).to_string(),
     };
-    // Carry the HTTP status and the server's text structurally, so callers
-    // can classify the failure without sniffing the rendered message.
     let mut report = Report::new(ApiError {
         status,
         message: summary,
@@ -2117,7 +2118,6 @@ fn char_pos_to_byte_offset(body: &str, line: usize, column: usize) -> usize {
     body.len()
 }
 
-/// Render a failed API call for the user.
 fn render_api_failure(failure: ApiFailure) -> Report {
     match failure {
         ApiFailure::Response {
@@ -2144,7 +2144,7 @@ const DSL_ERROR_LABEL: &str = "Event set DSL error:";
 /// The server ends a prose line with the rejected query, then writes a line
 /// with one `^` whose column counts from the start of the query, then the
 /// reason (observed on tenant `orbitinghail`, release 62.2). One line break
-/// after the marker puts the query where the caret's column is right.
+/// after the label puts the query where the caret's column is right.
 ///
 /// Only that exact shape is rewritten. Any other message comes back
 /// unchanged, so a change in the server's format degrades to the raw
@@ -2264,8 +2264,6 @@ const MAX_ERROR_BODY: usize = 64 * 1024;
 /// Read up to [`MAX_ERROR_BODY`] of an error response, chunk by chunk, and drop
 /// the rest. Truncating mid-character is fine — the result is only ever
 /// displayed, and `from_utf8_lossy` renders a split character as `U+FFFD`.
-/// The debug log gets the body as it came, because the error that the user
-/// sees keeps only its message.
 async fn read_error_body(mut response: reqwest::Response) -> String {
     let mut body = Vec::new();
     while body.len() < MAX_ERROR_BODY {
@@ -2279,7 +2277,8 @@ async fn read_error_body(mut response: reqwest::Response) -> String {
         }
     }
     let body = String::from_utf8_lossy(&body).into_owned();
-    debug!("API error response body: {body}");
+    // The error that the user sees keeps only the body's message.
+    debug!("API error response body: {}", sanitize_multiline(&body));
     body
 }
 
@@ -2289,10 +2288,8 @@ async fn read_error_body(mut response: reqwest::Response) -> String {
 /// it's there. Anything else — an empty body, an HTML error page from an
 /// intermediary, the launch endpoints' `{"statusCode", "runId"}` envelope, or a
 /// shape the spec never described — is shown as it came, so the user still has
-/// something to debug with. Echoing the launch envelope is worth it even though
-/// its `statusCode` duplicates the status line: whether `runId` is present
-/// distinguishes a rejection the test launcher produced from one an intermediary
-/// made on its behalf.
+/// something to debug with. Echo the launch envelope: whether `runId` is
+/// present shows if the test launcher or an intermediary made the rejection.
 ///
 /// Runs of whitespace collapse to a single space before the cut, so that an
 /// indented error page spends its 200 characters on text rather than on
@@ -2614,9 +2611,7 @@ mod tests {
         ClientError::UnexpectedResponse(response)
     }
 
-    // The status is all the server said when it sent no body — which is what
-    // the gateway does for some rejections, on any endpoint. The point of #180
-    // is that the status survives that.
+    // The gateway sends no body for some rejections, on any endpoint.
     #[tokio::test]
     async fn render_api_failure_keeps_the_status_for_an_empty_body() {
         for status in [403, 429, 502] {
@@ -4022,8 +4017,6 @@ mod tests {
         );
     }
 
-    // The message opens with snouty's own text and names no status code. The
-    // server's text follows as a note.
     #[test]
     fn format_api_error_opens_with_snoutys_text() {
         for (status, summary) in [
@@ -4059,11 +4052,17 @@ mod tests {
             "the query is invalid:\n  bogus_verb({x: \"y\"})\n  ^\n  invalid with_next"
         );
         assert!(!format!("{report:?}").contains("pangolin"));
+        // Without the caret line, the shape is unknown, so the error is generic.
+        let report = format_api_error(400, "Event set DSL error:\nunexpected EOF");
+        assert_eq!(
+            report.to_string(),
+            "the Antithesis API rejected the request"
+        );
     }
 
     #[test]
     fn format_api_error_dedupes_reason_echoed_in_body() {
-        // "Bad Request — Bad request: …" reads twice; the echo is dropped.
+        // The note drops the status reason that the server echoes.
         let debug = plain_debug(&format_api_error(
             400,
             "Bad request: Invalid input_hash or vtime",

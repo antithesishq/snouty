@@ -87,16 +87,14 @@ pub fn cache_dir() -> Option<PathBuf> {
 
 /// snouty's resolved settings.
 ///
-/// Everything is resolved eagerly in [`Settings::resolve`]: the environment,
-/// the project settings file (`.snouty.toml`), and the global `settings.toml`
-/// are read once, each setting is resolved through the precedence chain and
-/// parsed into its type, and the result is plain owned data. A settings file
-/// that exists but can't be read or parsed, or a value that does not parse,
-/// is a hard error at construction — so by the time a `Settings` exists,
-/// every value is either resolved or simply absent, and nothing fails later.
+/// Everything is resolved eagerly in [`Settings::resolve`]: it reads the
+/// environment, the project settings file (`.snouty.toml`) and the global
+/// `settings.toml` once, resolves each setting through the precedence chain,
+/// and parses it into its type. A settings file that cannot be read or
+/// parsed, or a value that does not parse, is an error there, so nothing
+/// fails later.
 ///
-/// Each value keeps the [`SettingSource`] that it came from, so that an
-/// error can name the place to change it.
+/// Each value keeps the [`SettingSource`] that it came from.
 ///
 /// Every command shares the same resolved instance (threaded by reference), so a
 /// value resolves identically no matter which code path reads it.
@@ -169,8 +167,8 @@ fn invalid_setting(source: &SettingSource, err: impl fmt::Display) -> Report {
     }
 }
 
-/// The text of `setting` parsed by `parse`, still tagged with its source; an
-/// error that names the source.
+/// Parse the text of `setting` with `parse`, and keep its source tag. An
+/// error names the source.
 fn parse_setting<T, E: fmt::Display>(
     setting: Option<Tagged<String, SettingSource>>,
     parse: impl FnOnce(&str) -> Result<T, E>,
@@ -243,13 +241,13 @@ impl SettingsRequest {
 
 /// One source of settings.
 enum Layer {
-    /// The environment variables.
     Env,
     File(LoadedFile),
 }
 
-/// The sources of settings, most specific first. The environment, when it
-/// is a source, comes first. The first source that has a setting wins.
+/// The sources of settings, most specific first. The first source that has a
+/// setting wins. Only the first layer can be [`Layer::Env`]:
+/// [`resolve_value_with`] looks for it there.
 struct SettingsSources(Vec<Layer>);
 
 impl SettingsSources {
@@ -368,7 +366,7 @@ impl SettingsSources {
 }
 
 impl Settings {
-    /// The resolved tenant, or `None` if unset. doctor reports it as-is.
+    /// The resolved tenant, or `None` if unset.
     pub fn tenant(&self) -> Option<&Tenant> {
         self.tenant.as_ref().map(Tagged::value)
     }
@@ -396,8 +394,8 @@ impl Settings {
             .or_else(|| self.tenant().map(tenant_base_url))
     }
 
-    /// The base URL, for a command that sends requests: an error that names
-    /// the tenant, which is what a user normally sets, when there is none.
+    /// The base URL, or an error that names the tenant when there is none. A
+    /// user normally sets the tenant, not the base URL.
     pub fn require_base_url(&self) -> Result<Url> {
         self.base_url().ok_or_else(|| missing_setting("tenant"))
     }
@@ -462,8 +460,8 @@ impl Settings {
         SettingsSources::global_file()?.resolve(profile)
     }
 
-    /// These settings with `tenant`, from `snouty login --tenant` or its
-    /// prompt, in place of the tenant setting.
+    /// These settings with `tenant` in place of the tenant setting. `tenant`
+    /// comes from `snouty login --tenant` or its prompt.
     pub(crate) fn with_tenant(&self, tenant: Tenant) -> Self {
         Settings {
             tenant: Some(tenant.with_tag(SettingSource::Flag("--tenant"))),
@@ -488,9 +486,8 @@ impl Settings {
     }
 }
 
-/// Builder behind [`Settings::builder`], so a test names just the values it
-/// sets. It bypasses the resolution precedence chain entirely, and tags each
-/// value as if its environment variable set it.
+/// Builds a test `Settings` without resolution. Each value except `registry`
+/// is tagged as if its environment variable set it.
 #[cfg(test)]
 pub struct SettingsBuilder(Settings);
 
@@ -716,8 +713,8 @@ fn tenant_url(tenant: &str) -> Result<Url, url::ParseError> {
 /// a valid DNS host name: one or more labels of ASCII letters, digits, and
 /// hyphens, with no hyphen at the start or end of a label. This refuses the
 /// URL-significant characters (`/`, `#`, `?`, `@`, `:`, whitespace, …) that
-/// would send requests to another host. The derived base URL must also parse,
-/// which refuses a label such as `xn--a` that is not valid punycode.
+/// would send requests to another host. The derived base URL must also
+/// parse. This refuses a label that is not valid punycode, such as `xn--a`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tenant(String);
 
@@ -805,17 +802,15 @@ type ValueReader = fn(&Value) -> Result<String, String>;
 /// Resolve the text of a setting from `sources` with the precedence:
 /// environment variable, then the active profile in each file, then the
 /// top-level defaults in each file, most specific file first. The first layer
-/// that has the key wins. `read` reads the value out of a file: a numeric
-/// setting accepts a bare TOML integer, the natural form for a number.
+/// that has the key wins.
 ///
 /// A setting can have more than one name, such as a name and its alias. Each
 /// layer reads the names in order, so the first name wins over a later one
 /// in the same layer, and a higher layer wins over both.
 ///
-/// A layer that *has* the key but with a value of the wrong type (or a
-/// malformed `profile` section) is a hard error rather than a silent skip — a
-/// typo like `tenant = 123` should be reported, not quietly ignored in favour
-/// of a lower-precedence value.
+/// A layer that has the key with a value of the wrong type, or a malformed
+/// `profile` section, is an error. Resolution does not skip to a lower layer,
+/// so a typo such as `tenant = 123` is reported.
 fn resolve_value_with(
     read: ValueReader,
     keys: &[&str],
@@ -1369,7 +1364,7 @@ mod tests {
             ("10.0.0.1:3128", "http://10.0.0.1:3128/"),
             ("proxy.corp", "http://proxy.corp/"),
             ("localhost:3128", "http://localhost:3128/"),
-            ("socks5://proxy.corp:1080", "socks5://proxy.corp:1080"),
+            ("https://proxy.corp:8443", "https://proxy.corp:8443/"),
         ] {
             let settings = resolve_file(&format!("https_proxy = \"{proxy}\"\n")).unwrap();
             assert_eq!(

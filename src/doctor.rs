@@ -912,8 +912,7 @@ pub async fn cmd_doctor(
             }
         }
 
-        // A client that fails to build (bad extra header) skips the API check
-        // too. Skip the probe when the tenant could be
+        // A client that fails to build skips the API check too. Skip the probe when the tenant could be
         // unreachable: the probe would only wait out its timeout. Skip it
         // when a credential works, too: that user does not need OAuth login.
         let credential_works = checks

@@ -616,8 +616,8 @@ fn help_examples_pass_preflight() {
 
             let args = shlex::split(&example).unwrap();
             let mock_url = start_mock_server(r#"{"runId":"run-123"}"#, 200);
-            // An engine that is not installed stops a --config launch after
-            // the pre-flight checks, before it builds an image.
+            // The failing podman stops a --config launch after the pre-flight
+            // checks, before it builds an image.
             let output = snouty_with_mock(&mock_url)
                 .current_dir(dir.path())
                 .env("ANTITHESIS_REGISTRY", "registry.example.com/repo")

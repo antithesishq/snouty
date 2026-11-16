@@ -14,8 +14,8 @@ snouty settings trust
 stderr '^Error: invalid setting `tenant` in /.*/\.snouty\.toml: must be a string, but found integer$'
 stderr 'Suggestion: fix or delete /.*/\.snouty\.toml$'
 
-# A base_url, https_proxy or container_engine that does not parse is also an
-# error at startup, which names the variable or the key and file.
+# A base_url, https_proxy or container_engine that does not parse fails at
+# startup, and the error names its source.
 env ANTITHESIS_BASE_URL=example.com
 ! snouty --settings valid.toml settings show
 stderr '^Error: invalid ANTITHESIS_BASE_URL: '

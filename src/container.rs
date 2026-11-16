@@ -891,8 +891,8 @@ impl CliKind {
     }
 }
 
-/// The runtime for `choice`, the engine that the settings ask for or `None`
-/// for auto-detection, from what the `docker` and `podman` CLIs are.
+/// The runtime for `choice` (`None` auto-detects), from what the `docker` and
+/// `podman` CLIs are.
 /// Auto-detection prefers podman over docker, and runs a `docker` that is
 /// podman as podman. An explicit engine whose CLI is the other engine is an
 /// error.

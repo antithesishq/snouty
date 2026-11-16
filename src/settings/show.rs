@@ -64,8 +64,8 @@ fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, 
     rows
 }
 
-/// `url` without the `/` that a parsed URL with no path gets, as a user
-/// usually writes it.
+/// `url` without the trailing `/` that `Url` adds to an empty path, as a user
+/// writes it.
 fn url_text(url: &Url) -> &str {
     let text = url.as_str();
     if url.path() == "/" && url.query().is_none() && url.fragment().is_none() {

@@ -14,8 +14,7 @@ pub enum UpdateChannel {
     Unstable,
 }
 
-/// A container engine that snouty can use, in the order that auto-detection
-/// tries them.
+/// A container engine that snouty can use.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
 pub enum ContainerEngine {
     Podman,
@@ -44,7 +43,6 @@ macro_rules! named_choice {
 
 named_choice!(UpdateChannel, ContainerEngine);
 
-/// Write the clap name of `value`.
 fn write_name<E: ValueEnum>(value: &E, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.write_str(
         value

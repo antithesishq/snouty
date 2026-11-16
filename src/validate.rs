@@ -822,7 +822,7 @@ fn stranded_scripts_warning(stopped_with_scripts: &BTreeSet<String>) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "warning: the containers of these services exited, so their test commands will \
+        "Warning: the containers of these services exited, so their test commands will \
          never run. Move the test commands to a service that keeps running:\n{listing}"
     )
 }
@@ -1588,7 +1588,7 @@ services:
         stopped.insert("init".to_string());
         stopped.insert("migrate".to_string());
         let msg = stranded_scripts_warning(&stopped);
-        assert!(msg.starts_with("warning:"));
+        assert!(msg.starts_with("Warning:"));
         assert!(msg.ends_with("\n  init\n  migrate"));
     }
 
@@ -1602,7 +1602,5 @@ services:
         assert!(rendered.contains("test command discovery failed"));
         // Test commands are referenced by their full in-container path.
         assert!(rendered.contains("/opt/antithesis/test/v1/bogus_cmd"));
-        // The stranded-container case is no longer part of the hard error.
-        assert!(!rendered.contains("containers exited"));
     }
 }

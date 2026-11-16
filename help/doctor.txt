@@ -1,10 +1,10 @@
 Check environment configuration
 
-Verifies that your environment is properly configured for Antithesis testing. Runs health checks — container runtime, docker compose, the tenant and container registry settings, and your credentials (stored by {% if cli %}`{{ t("snouty login")? }}`,{% else %}snouty login, which the user runs in a terminal,{% endif %} or set in the ANTITHESIS_* environment variables). A missing tenant fails the check; a missing registry is a warning, because only {% if cli %}`snouty launch`{% else %}a launch{% endif %} needs it. doctor also warns when a credential in the environment variables hides a stored one. To see the settings that snouty resolved, run `{{ t("snouty settings show")? }}`.
+Verifies that your environment is properly configured for Antithesis testing. Runs health checks — container runtime, docker compose, the tenant and container registry settings, and your credentials (stored by {% if cli %}`{{ t("snouty login")? }}`,{% else %}snouty login, which the user runs in a terminal,{% endif %} or set in the ANTITHESIS_* environment variables). A missing registry is a warning, because only {% if cli %}`snouty launch`{% else %}a launch{% endif %} needs it. To see the settings that snouty resolved, run `{{ t("snouty settings show")? }}`.
 
 The credential can be a sign-in or an API key from {% if cli %}`{{ t("snouty login")? }}`{% else %}snouty login{% endif %}, an API key in ANTITHESIS_API_KEY, or a GitHub Actions OIDC token.
 
-doctor also contacts the Antithesis API. When credentials are configured, it reports the API and tenant versions and confirms connectivity, it warns when the tenant release is too old for an API or a flag that some commands use, and it tells you when the tenant also has an Antithesis registry that the registry setting does not use. When no credential works, it also warns when CLI OAuth login is not enabled for the tenant. Pass {{ t("--offline")? }} to skip these network calls.
+doctor also contacts the Antithesis API. It confirms that your credential works, reports the API and tenant versions, and warns when the tenant release is too old for a command. It also tells you when your tenant has an Antithesis registry that the registry setting does not use. Use {{ t("--offline")? }} to skip the checks that contact the API.
 
 The command fails if any required check fails.
 

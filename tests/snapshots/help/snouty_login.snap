@@ -3,12 +3,12 @@ source: tests/help_snapshots.rs
 ---
 Sign in and store your snouty configuration
 
-Sign in to your tenant, then save the tenant in the global snouty settings file
-and store your credential, optionally under a named profile. Login checks the
-credential with the tenant, and saves nothing when the tenant rejects it.
-Information not provided via args is asked for at the terminal. Without a
-terminal, login checks the credential that other commands use, such as
-ANTITHESIS_API_KEY, and stores no credential.
+Sign in to your tenant, then save the tenant and its container registry in the
+global snouty settings file and store your credential, optionally under a named
+profile. Login checks the credential with the tenant, and saves nothing when the
+tenant rejects it. Information not provided via args is asked for at the
+terminal. Without a terminal, login checks the credential that other commands
+use, such as ANTITHESIS_API_KEY, and stores no credential.
 
 Usually login saves the registry that your tenant reports,
 `registry.<tenant>.antithesis.com`, and you do not need --registry. When the
@@ -34,10 +34,11 @@ Usage: snouty login [OPTIONS]
 
 Options:
       --tenant <TENANT>
-          
+          Your Antithesis tenant, such as acme
 
       --registry <REGISTRY>
-          
+          The container registry to push your images to, in place of the
+          tenant's registry
 
   -h, --help
           Print help (see a summary with '-h')

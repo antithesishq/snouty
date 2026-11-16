@@ -2029,20 +2029,18 @@ fn format_api_error(status: u16, message: &str) -> Report {
             .trim_start(),
         _ => message,
     };
-    let rejected_query = (status == 400)
-        .then(|| detail.split_once(DSL_ERROR_LINE))
-        .flatten();
-    let summary = match (status, rejected_query) {
+    // [`lay_out_dsl_error`] ends the prose with the label and a line break.
+    let rejected_query = detail
+        .split_once(DSL_ERROR_LABEL)
+        .and_then(|(_, rest)| rest.strip_prefix('\n'))
+        .filter(|_| status == 400);
+    let summary = match rejected_query {
         // The query, the caret and the reason keep their lines and one indent,
         // so the caret stays under the token that it marks.
-        (_, Some((_, from_query))) => {
+        Some(from_query) => {
             format!("the query is invalid:\n{}", indent_lines(from_query, "  "))
         }
-        (404, None) => "the Antithesis API did not find the requested item".to_string(),
-        (429, None) => "the Antithesis API received too many requests".to_string(),
-        (400..=499, None) => "the Antithesis API rejected the request".to_string(),
-        (500..=599, None) => "the Antithesis API failed to complete the request".to_string(),
-        (_, None) => "the Antithesis API sent an unexpected response".to_string(),
+        None => api_error_summary(status).to_string(),
     };
     // Carry the HTTP status and the server's text structurally, so callers
     // can classify the failure without sniffing the rendered message.
@@ -2061,6 +2059,17 @@ fn format_api_error(status: u16, message: &str) -> Report {
         report.suppress_backtrace(true)
     } else {
         report
+    }
+}
+
+/// Snouty's text for an API answer of `status`.
+fn api_error_summary(status: u16) -> &'static str {
+    match status {
+        404 => "the Antithesis API did not find the requested item",
+        429 => "the Antithesis API received too many requests",
+        400..=499 => "the Antithesis API rejected the request",
+        500..=599 => "the Antithesis API failed to complete the request",
+        _ => "the Antithesis API sent an unexpected response",
     }
 }
 
@@ -2108,7 +2117,7 @@ fn char_pos_to_byte_offset(body: &str, line: usize, column: usize) -> usize {
     body.len()
 }
 
-/// Render a failed API call for the user, status first.
+/// Render a failed API call for the user.
 fn render_api_failure(failure: ApiFailure) -> Report {
     match failure {
         ApiFailure::Response {
@@ -2128,11 +2137,7 @@ fn render_api_failure(failure: ApiFailure) -> Report {
     }
 }
 
-const DSL_ERROR_MARKER: &str = "Event set DSL error: ";
-
-/// The marker line that [`lay_out_dsl_error`] ends its prose with. The query
-/// starts on the next line.
-const DSL_ERROR_LINE: &str = "Event set DSL error:\n";
+const DSL_ERROR_LABEL: &str = "Event set DSL error:";
 
 /// Break a query rejection so its caret points into the query.
 ///
@@ -2145,7 +2150,10 @@ const DSL_ERROR_LINE: &str = "Event set DSL error:\n";
 /// unchanged, so a change in the server's format degrades to the raw
 /// message, never to a caret under the wrong character.
 fn lay_out_dsl_error(message: &str) -> Cow<'_, str> {
-    let Some((prose, from_query)) = message.split_once(DSL_ERROR_MARKER) else {
+    let Some((prose, from_query)) = message
+        .split_once(DSL_ERROR_LABEL)
+        .and_then(|(prose, rest)| Some((prose, rest.strip_prefix(' ')?)))
+    else {
         return Cow::Borrowed(message);
     };
     if from_query
@@ -2155,7 +2163,7 @@ fn lay_out_dsl_error(message: &str) -> Cow<'_, str> {
     {
         return Cow::Borrowed(message);
     }
-    Cow::Owned(format!("{prose}{DSL_ERROR_LINE}{from_query}"))
+    Cow::Owned(format!("{prose}{DSL_ERROR_LABEL}\n{from_query}"))
 }
 
 /// A client error reduced to what a user-facing message is built from.
@@ -2346,6 +2354,11 @@ mod tests {
     use tempfile::TempDir;
     use wiremock::matchers::{body_json, method, path, query_param, query_param_is_missing};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// The report as the user sees it, without color.
+    fn plain_debug(report: &Report) -> String {
+        crate::event_render::strip_ansi(&format!("{report:?}")).into_owned()
+    }
 
     // The stream fetches a page only when an item is pulled from it, so a
     // caller that stops early never pays for the next page.
@@ -2615,9 +2628,12 @@ mod tests {
     #[tokio::test]
     async fn render_api_failure_shows_a_non_empty_body_as_a_note() {
         let report = render_api_failure(classify_client_error(served_error(400, "not json")).await);
-        let debug = crate::event_render::strip_ansi(&format!("{report:?}")).into_owned();
+        let debug = plain_debug(&report);
 
-        assert_eq!(report.to_string(), "the Antithesis API rejected the request");
+        assert_eq!(
+            report.to_string(),
+            "the Antithesis API rejected the request"
+        );
         assert!(debug.contains("Note: not json"), "got: {debug}");
     }
 
@@ -2734,7 +2750,7 @@ mod tests {
             "{}^",
             " ".repeat(tc.draw(generators::integers::<usize>().max_value(80)))
         );
-        let message = format!("Bad request: {DSL_ERROR_MARKER}{query}\n{caret}\n{reason}");
+        let message = format!("Bad request: {DSL_ERROR_LABEL} {query}\n{caret}\n{reason}");
 
         let laid_out = lay_out_dsl_error(&message);
         let lines: Vec<&str> = laid_out.lines().collect();
@@ -3148,7 +3164,7 @@ mod tests {
         let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
 
         let report = api.launch_test("basic_test", &params).await.unwrap_err();
-        let debug = crate::event_render::strip_ansi(&format!("{report:?}")).into_owned();
+        let debug = plain_debug(&report);
         assert!(debug.contains("Note: bad request"), "got: {debug}");
     }
 
@@ -4020,7 +4036,7 @@ mod tests {
         ] {
             let report = format_api_error(status, "vtime out of range");
             assert_eq!(report.to_string(), summary);
-            let debug = crate::event_render::strip_ansi(&format!("{report:?}")).into_owned();
+            let debug = plain_debug(&report);
             assert!(debug.contains("Note: vtime out of range"), "got: {debug}");
         }
     }
@@ -4030,10 +4046,13 @@ mod tests {
     // line with the same indent.
     #[test]
     fn format_api_error_reports_an_invalid_query() {
-        let message = error_body_message(&serde_json::json!({
-            "message": "failed to execute pangolin query due to a runtime error: \
-                        Event set DSL error: bogus_verb({x: \"y\"})\n^\ninvalid with_next"
-        }).to_string());
+        let message = error_body_message(
+            &serde_json::json!({
+                "message": "failed to execute pangolin query due to a runtime error: \
+                            Event set DSL error: bogus_verb({x: \"y\"})\n^\ninvalid with_next"
+            })
+            .to_string(),
+        );
         let report = format_api_error(400, &message);
         assert_eq!(
             report.to_string(),
@@ -4045,12 +4064,14 @@ mod tests {
     #[test]
     fn format_api_error_dedupes_reason_echoed_in_body() {
         // "Bad Request — Bad request: …" reads twice; the echo is dropped.
-        let debug = crate::event_render::strip_ansi(&format!(
-            "{:?}",
-            format_api_error(400, "Bad request: Invalid input_hash or vtime")
-        ))
-        .into_owned();
-        assert!(debug.contains("Note: Invalid input_hash or vtime"), "got: {debug}");
+        let debug = plain_debug(&format_api_error(
+            400,
+            "Bad request: Invalid input_hash or vtime",
+        ));
+        assert!(
+            debug.contains("Note: Invalid input_hash or vtime"),
+            "got: {debug}"
+        );
         // A body that is nothing but the reason echo adds nothing.
         let debug = format!("{:?}", format_api_error(400, "Bad Request"));
         assert!(!debug.contains("Note:"), "got: {debug}");

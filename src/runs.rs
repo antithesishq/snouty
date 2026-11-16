@@ -2023,8 +2023,8 @@ enum ExecRejection {
 
 /// Explain a failed `runs exec` request in `run`, which is ready or
 /// complete. `input_hash` names the request's moment, `debug_command` starts
-/// a debugging session at that moment, and `rewarm` is the rewarm source and
-/// the flag that named it, if one was given.
+/// a debugging session at that moment, and `rewarm` is the rewarm source, if
+/// one was given.
 ///
 /// A run that has stopped cannot accept a command: on orbitinghail (release
 /// 65.0), a completed test run answers 400 `Run <id> has ended. Commands
@@ -2043,7 +2043,7 @@ fn explain_exec_error(
     run: &RunDetail,
     input_hash: &str,
     debug_command: &str,
-    rewarm: Option<(&str, &RewarmSource)>,
+    rewarm: Option<&RewarmSource>,
     err: color_eyre::eyre::Report,
 ) -> color_eyre::eyre::Report {
     let Some(status) = api_error_status(&err) else {
@@ -2074,23 +2074,32 @@ fn explain_exec_error(
         _ => return err,
     };
     match (rejection, rewarm) {
-        (ExecRejection::MissingSource, Some((flag, source))) => {
-            user_error(format!("source {source} does not exist"))
-                .suggestion(format!("check that {flag} names an existing source"))
-        }
-        (ExecRejection::ColdMoment, None) => user_error(format!(
-            "moment {input_hash} is not loaded in run {run_id}"
-        ))
-        .suggestion("use --source-run-id to load a moment from a different run"),
-        (ExecRejection::ColdMoment | ExecRejection::BadRewarm, Some((flag, source))) => {
-            user_error(format!(
-                "snouty could not load moment {input_hash} from {source}"
-            ))
-            .suggestion(format!(
-                "check that {flag} names the run the moment comes from"
+        (ExecRejection::MissingSource, Some(source)) => {
+            user_error(format!("source {source} does not exist")).suggestion(format!(
+                "check that {} names an existing source",
+                rewarm_flag(source)
             ))
         }
+        (ExecRejection::ColdMoment, None) => {
+            user_error(format!("moment {input_hash} is not loaded in run {run_id}"))
+                .suggestion("use --source-run-id to load a moment from a different run")
+        }
+        (ExecRejection::ColdMoment | ExecRejection::BadRewarm, Some(source)) => user_error(
+            format!("snouty could not load moment {input_hash} from {source}"),
+        )
+        .suggestion(format!(
+            "check that {} names the run the moment comes from",
+            rewarm_flag(source)
+        )),
         _ => err,
+    }
+}
+
+/// The `runs exec` flag that names `source`.
+fn rewarm_flag(source: &RewarmSource) -> &'static str {
+    match source {
+        RewarmSource::Run(_) => "--source-run-id",
+        RewarmSource::Session(_) => "--source-session-id",
     }
 }
 
@@ -2231,12 +2240,10 @@ async fn exec_when_ready(
         matches!(exec.output, ExecOutput::Events { .. }).then(|| EventStreamRenderer::new(detail));
     // A cold moment is in its rewarm source, not in RUN_ID, so a debugging
     // session at that moment starts from the source.
-    let (rewarm_flag, target_flag, target) = match &exec.rewarm {
-        Some(RewarmSource::Run(id)) => (Some("--source-run-id"), "--run-id", id.as_str()),
-        Some(RewarmSource::Session(id)) => {
-            (Some("--source-session-id"), "--session-id", id.as_str())
-        }
-        None => (None, "--run-id", run_id),
+    let (target_flag, target) = match &exec.rewarm {
+        Some(RewarmSource::Run(id)) => ("--run-id", id.as_str()),
+        Some(RewarmSource::Session(id)) => ("--session-id", id.as_str()),
+        None => ("--run-id", run_id),
     };
     let debug_command = shell_command(
         "snouty debug",
@@ -2257,7 +2264,7 @@ async fn exec_when_ready(
                 run,
                 &exec.moment.input_hash,
                 &debug_command,
-                rewarm_flag.zip(exec.rewarm.as_ref()),
+                exec.rewarm.as_ref(),
                 err,
             )
         },
@@ -5301,7 +5308,8 @@ mod tests {
             let server = mock_get_run("BAD-ID", 404, json!({"message": "nope"})).await;
             let api = test_api(&server.uri());
             let result =
-                explain_run_scoped_error(&api, "BAD-ID", api_error(404, "Resource not found")).await;
+                explain_run_scoped_error(&api, "BAD-ID", api_error(404, "Resource not found"))
+                    .await;
             assert_eq!(format!("{result:#}"), "run not found: BAD-ID");
         }
 
@@ -5363,7 +5371,8 @@ mod tests {
         async fn logs_error_reports_a_missing_run_without_the_suggestion() {
             let server = mock_get_run("BAD-ID", 404, json!({"message": "nope"})).await;
             let api = test_api(&server.uri());
-            let result = explain_logs_error(&api, "BAD-ID", api_error(404, "Resource not found")).await;
+            let result =
+                explain_logs_error(&api, "BAD-ID", api_error(404, "Resource not found")).await;
             assert_eq!(format!("{result:#}"), "run not found: BAD-ID");
             assert!(!format!("{result:?}").contains("runs events"));
         }

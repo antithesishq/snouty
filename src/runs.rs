@@ -1730,7 +1730,7 @@ async fn cmd_runs_search(
     let stream = if args.follow {
         stream
     } else {
-        event_search::in_moment_order(stream, mode).await
+        event_search::in_moment_order(stream).await
     };
     let lines = event_search::render_event_stream(stream, mode);
     print_event_lines(lines, mode, "No events matched the query.", limit).await
@@ -1768,7 +1768,7 @@ async fn cmd_runs_events(
         api.search_run_events_query(run_id, &query, search)
     })
     .await?;
-    let stream = event_search::in_moment_order(stream, mode).await;
+    let stream = event_search::in_moment_order(stream).await;
     let lines = event_search::render_event_stream(stream, mode);
     print_event_lines(
         lines,

@@ -10,7 +10,7 @@ Output: the events print in groups, one for each input_hash, under a `moment INP
 The events print in groups, one for each input_hash, under a `moment INPUT_HASH` line. Each event under it prints as one `VTIME [source] payload` line, with the full vtime. Indented lines under an event give its source location, as `@ file:function:line`, and the details that it carries, such as an SDK assertion's details, as `details {...}`.
 {% endif %}
 
-Every term must match, case-insensitively. The result is a sample of the matching events, capped at {{ t("--limit")? }}, and not always the earliest ones. The groups print in order of their earliest vtime, and the events in each group in vtime order.{% if cli %} With {{ t("--raw")? }}, the events keep the server's order.{% endif %} Read {% if cli %}`snouty runs search --help`{% else %}`tool_help {"tool": "runs_search"}`{% endif %} to learn how to read a sample and how the run's timelines relate the events.
+Every term must match, case-insensitively. The result is a sample of the matching events, capped at {{ t("--limit")? }}, and not always the earliest ones. The groups print in order of their earliest vtime, and the events in each group in vtime order. Read {% if cli %}`snouty runs search --help`{% else %}`tool_help {"tool": "runs_search"}`{% endif %} to learn how to read a sample and how the run's timelines relate the events.
 
 The run must be ready or complete. If it is not, the command waits until it is ready, as `{{ t("snouty runs exec")? }}` does, and says that it waits.
 

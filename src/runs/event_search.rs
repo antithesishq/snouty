@@ -59,30 +59,24 @@ impl EventOutput {
 
 /// Read a closed search result to its end, and give its events back in
 /// moment order: one group for each `input_hash`, the groups by their earliest
-/// vtime, and each group's events by vtime. A group or an event without a
-/// readable vtime sorts first. Events without an `input_hash`, such as the
-/// output of a `narrow` that drops it, go last in their server order. With
-/// `--raw`, the stream passes through unchanged.
+/// vtime, and each group's events by vtime.
 ///
 /// An error, or a `Stream_Error` record, ends the read: the events before it
 /// come out sorted, then the error, so the command still fails after the
 /// rows it received.
-pub(super) async fn in_moment_order(mut events: JsonStream, mode: EventOutput) -> JsonStream {
-    if let EventOutput::Json { raw: true, .. } = mode {
-        return events;
-    }
-    let mut grouped: Vec<(String, Option<VTime>, Value)> = Vec::new();
-    let mut ungrouped = Vec::new();
+pub(super) async fn in_moment_order(mut events: JsonStream) -> JsonStream {
+    // The spec requires `moment.input_hash` and `moment.vtime` on every
+    // event, and a query cannot drop them: on orbitinghail, release 67,
+    // `contains(...).narrow(["output_text"])` still returns each event's
+    // moment.
+    let mut keyed: Vec<(String, Option<VTime>, Value)> = Vec::new();
     let mut earliest: HashMap<String, VTime> = HashMap::new();
     let mut error = None;
     while let Some(item) = events.next().await {
         match item {
             Ok(event) if stream_error_message(&event).is_none() => {
                 let moment = &event["moment"];
-                let Some(hash) = moment["input_hash"].as_str() else {
-                    ungrouped.push(event);
-                    continue;
-                };
+                let hash = moment["input_hash"].as_str().unwrap_or_default();
                 let vtime = VTime::from_json(&moment["vtime"]);
                 if let Some(vtime) = vtime {
                     match earliest.get_mut(hash) {
@@ -92,7 +86,7 @@ pub(super) async fn in_moment_order(mut events: JsonStream, mode: EventOutput) -
                         }
                     }
                 }
-                grouped.push((hash.to_string(), vtime, event));
+                keyed.push((hash.to_string(), vtime, event));
             }
             stop => {
                 error = Some(stop);
@@ -101,14 +95,12 @@ pub(super) async fn in_moment_order(mut events: JsonStream, mode: EventOutput) -
         }
     }
     // The sort is stable, so events at one moment keep their server order.
-    grouped.sort_by(|(a_hash, a_vtime, _), (b_hash, b_vtime, _)| {
+    keyed.sort_by(|(a_hash, a_vtime, _), (b_hash, b_vtime, _)| {
         (earliest.get(a_hash), a_hash, a_vtime).cmp(&(earliest.get(b_hash), b_hash, b_vtime))
     });
-    let events = grouped
+    let events = keyed
         .into_iter()
-        .map(|(_, _, event)| event)
-        .chain(ungrouped)
-        .map(Ok)
+        .map(|(_, _, event)| Ok(event))
         .chain(error);
     stream::iter(events).boxed()
 }
@@ -246,47 +238,97 @@ mod tests {
         json!({"moment": {"input_hash": hash, "vtime": vtime}, "output_text": text})
     }
 
-    async fn ordered(events: Vec<Value>) -> Vec<Value> {
-        let text = EventOutput::Text { detail: false };
-        in_moment_order(stream::iter(events.into_iter().map(Ok)).boxed(), text)
-            .await
-            .map(Result::unwrap)
-            .collect()
-            .await
+    fn ordered(events: Vec<Value>) -> Vec<Value> {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(async {
+                in_moment_order(stream::iter(events.into_iter().map(Ok)).boxed())
+                    .await
+                    .map(Result::unwrap)
+                    .collect()
+                    .await
+            })
     }
 
-    #[tokio::test]
-    async fn events_group_by_input_hash_in_vtime_order() {
+    #[test]
+    fn events_group_by_input_hash_in_vtime_order() {
         let events = vec![
             event("-1", "5.0", "a late"),
             event("2", "3.0", "b"),
-            json!({"output_text": "no moment"}),
-            json!({"moment": {"input_hash": "2", "vtime": null}, "output_text": "b, no vtime"}),
             event("-1", "1.0", "a first"),
             event("-1", "2.0", "a second"),
             event("-1", "2.0", "a second, same vtime"),
         ];
-        let sorted = ordered(events).await;
+        let sorted = ordered(events);
         let texts: Vec<&str> = sorted
             .iter()
             .map(|e| e["output_text"].as_str().unwrap())
             .collect();
         assert_eq!(
             texts,
-            [
-                "a first",
-                "a second",
-                "a second, same vtime",
-                "a late",
-                "b, no vtime",
-                "b",
-                "no moment"
-            ]
+            ["a first", "a second", "a second, same vtime", "a late", "b"]
         );
     }
 
-    #[tokio::test]
-    async fn a_stream_error_comes_after_the_events_before_it() {
+    /// Each `input_hash` is one contiguous group, the groups rise by their
+    /// earliest vtime, the vtimes rise in a group, and events at one moment
+    /// keep their input order.
+    #[hegel::test]
+    fn the_order_groups_each_input_hash_by_vtime(tc: hegel::TestCase) {
+        let n = tc.draw(hegel::generators::integers::<usize>().max_value(30));
+        let mut events = Vec::new();
+        for index in 0..n {
+            let hash = tc.draw(
+                hegel::generators::integers::<i8>()
+                    .min_value(-2)
+                    .max_value(2),
+            );
+            let ticks = tc.draw(hegel::generators::integers::<u64>().max_value(8));
+            let vtime = VTime::from_seconds(ticks as f64 / 4.0).unwrap();
+            events.push(json!({
+                "moment": {"input_hash": hash.to_string(), "vtime": vtime},
+                "index": index,
+            }));
+        }
+        let sorted = ordered(events);
+        assert_eq!(sorted.len(), n);
+        let key = |e: &Value| {
+            (
+                e["moment"]["input_hash"].as_str().unwrap().to_string(),
+                VTime::from_json(&e["moment"]["vtime"]).unwrap(),
+                e["index"].as_u64().unwrap(),
+            )
+        };
+        let mut finished: Vec<String> = Vec::new();
+        let mut group_starts: Vec<VTime> = Vec::new();
+        for pair in sorted.windows(2) {
+            let (a_hash, a_vtime, a_index) = key(&pair[0]);
+            let (b_hash, b_vtime, b_index) = key(&pair[1]);
+            if a_hash == b_hash {
+                assert!(a_vtime < b_vtime || (a_vtime == b_vtime && a_index < b_index));
+            } else {
+                assert!(
+                    !finished.contains(&b_hash),
+                    "{b_hash} split into two groups"
+                );
+                finished.push(a_hash);
+            }
+        }
+        // The first event of each group is its earliest, and the groups rise.
+        let mut last_hash = None;
+        for e in &sorted {
+            let (hash, vtime, _) = key(e);
+            if last_hash.as_ref() != Some(&hash) {
+                group_starts.push(vtime);
+                last_hash = Some(hash);
+            }
+        }
+        assert!(group_starts.is_sorted());
+    }
+
+    #[test]
+    fn a_stream_error_comes_after_the_events_before_it() {
         let stream_error = json!({"error": "subscriber fell behind"});
         let events = vec![
             event("2", "3.0", "b"),
@@ -295,7 +337,7 @@ mod tests {
             event("0", "0.5", "after the error"),
         ];
         assert_eq!(
-            ordered(events).await,
+            ordered(events),
             [event("1", "1.0", "a"), event("2", "3.0", "b"), stream_error]
         );
     }

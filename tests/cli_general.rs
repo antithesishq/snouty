@@ -579,6 +579,7 @@ fn help_examples_pass_preflight() {
     let dir = tempfile::TempDir::new().unwrap();
     std::fs::create_dir(dir.path().join("config")).unwrap();
     std::fs::write(dir.path().join("config/docker-compose.yaml"), "").unwrap();
+    let no_programs = tempfile::TempDir::new().unwrap();
 
     for subcommand in ["launch", "debug"] {
         let output = snouty().args([subcommand, "--help"]).output().unwrap();
@@ -607,18 +608,19 @@ fn help_examples_pass_preflight() {
 
             let args = shlex::split(&example).unwrap();
             let mock_url = start_mock_server(r#"{"runId":"run-123"}"#, 200);
-            // An engine that does not exist stops a --config launch after the
-            // pre-flight checks, before it builds an image.
+            // An engine that is not installed stops a --config launch after
+            // the pre-flight checks, before it builds an image.
             let output = snouty_with_mock(&mock_url)
                 .current_dir(dir.path())
                 .env("ANTITHESIS_REGISTRY", "registry.example.com/repo")
-                .env(snouty::settings::CONTAINER_ENGINE_VAR_NAME, "none")
+                .env(snouty::settings::CONTAINER_ENGINE_VAR_NAME, "podman")
+                .env("PATH", no_programs.path())
                 .args(&args[1..])
                 .output()
                 .unwrap();
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert!(
-                output.status.success() || stderr.contains("unsupported container engine 'none'"),
+                output.status.success() || stderr.contains("'podman --version' failed"),
                 "help example failed: {example}\nstderr:\n{stderr}"
             );
         }

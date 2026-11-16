@@ -287,6 +287,7 @@ fn other_registry_check(
         SettingSource::File { path, key } => {
             format!("set `{key}` in {} to it", path.display())
         }
+        SettingSource::Flag(flag) => format!("pass it with {flag}"),
     };
     let configured = configured.value();
     Check::ok(CheckId::Registry, "container registry is set")
@@ -923,7 +924,7 @@ pub async fn cmd_doctor(
             && let Some(base_url) = settings.base_url()
             && let Ok(client) = HttpClient::new(settings, verbose)
         {
-            match fetch_cli_config(&client, &normalize_base_url(base_url), OAUTH_PROBE_TIMEOUT)
+            match fetch_cli_config(&client, &normalize_base_url(&base_url), OAUTH_PROBE_TIMEOUT)
                 .await
             {
                 Ok(CliOAuthConfig::Disabled) => checks.push(

@@ -2,6 +2,7 @@ use std::io::Write;
 
 use color_eyre::eyre::Result;
 use serde_json::{Map, Value, json};
+use url::Url;
 
 use super::Settings;
 use super::trust::trust_file_path;
@@ -39,16 +40,23 @@ fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, 
                 .as_deref(),
             NOT_SET,
         ),
-        text_row("base_url", settings.base_url().as_deref(), NOT_SET),
-        text_row("https_proxy", settings.https_proxy(), NOT_SET),
+        text_row(
+            "base_url",
+            settings.base_url().as_ref().map(url_text),
+            NOT_SET,
+        ),
+        text_row("https_proxy", settings.https_proxy().map(url_text), NOT_SET),
         text_row(
             "container_engine",
-            settings.container_engine(),
+            settings
+                .container_engine()
+                .map(|engine| engine.to_string())
+                .as_deref(),
             "auto-detect",
         ),
         text_row(
             "update_channel",
-            Some(settings.update_channel().as_str()),
+            Some(&settings.update_channel().to_string()),
             NOT_SET,
         ),
         (
@@ -65,6 +73,17 @@ fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, 
         rows.push(text_row("features", Some(&ids.join(", ")), NOT_SET));
     }
     rows
+}
+
+/// `url` without the `/` that a parsed URL with no path gets, as a user
+/// usually writes it.
+fn url_text(url: &Url) -> &str {
+    let text = url.as_str();
+    if url.path() == "/" && url.query().is_none() && url.fragment().is_none() {
+        text.strip_suffix('/').unwrap_or(text)
+    } else {
+        text
+    }
 }
 
 pub fn cmd_settings_show(settings: &Settings, json: bool) -> Result<()> {

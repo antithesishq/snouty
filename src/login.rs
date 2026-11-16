@@ -417,9 +417,7 @@ impl<'a> TenantUrl<'a> {
     fn new(settings: &Settings, tenant: &'a Tenant) -> Self {
         let explicit = settings.explicit_base_url();
         Self {
-            url: normalize_base_url(
-                explicit.map_or_else(|| tenant_base_url(tenant), str::to_owned),
-            ),
+            url: normalize_base_url(&explicit.cloned().unwrap_or_else(|| tenant_base_url(tenant))),
             tenant,
             explicit: explicit.is_some(),
         }
@@ -2016,7 +2014,7 @@ mod tests {
         let cache = ApiCache::new(
             Some(env.api_cache_dir()),
             DEFAULT_MAX_FILE_SIZE,
-            normalize_base_url(env.base_url.clone()),
+            normalize_base_url(&env.base_url.parse()?),
             false,
         );
         let cached: RegistryResponse = serde_json::from_str(REGISTRY_ANTITHESIS)?;

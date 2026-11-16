@@ -19,6 +19,7 @@ use crate::help::{self, Attach};
 use crate::params::MAX_SETUP_TIMEOUT_MINUTES;
 use crate::render::{self, CodeSpans};
 use crate::runs::usage::Rollup;
+use crate::settings::UpdateChannel;
 use crate::stdio;
 use crate::time::{
     BareUnit, DURATION_EXAMPLES, HumanDuration, duration_error, duration_help, parse_timestamp_arg,
@@ -582,44 +583,6 @@ pub enum WaitUntil {
     Ready,
     /// The run is completed, cancelled, or incomplete
     Complete,
-}
-
-/// Which releases `snouty update` considers when no explicit version is given.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, ValueEnum)]
-pub enum UpdateChannel {
-    /// Install the latest release
-    #[default]
-    Stable,
-    /// Also consider pre-releases, but prefer the latest release when it is newer
-    Unstable,
-}
-
-impl UpdateChannel {
-    pub const STABLE: &'static str = "stable";
-    pub const UNSTABLE: &'static str = "unstable";
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            UpdateChannel::Stable => Self::STABLE,
-            UpdateChannel::Unstable => Self::UNSTABLE,
-        }
-    }
-}
-
-impl std::str::FromStr for UpdateChannel {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            Self::STABLE => Ok(UpdateChannel::Stable),
-            Self::UNSTABLE => Ok(UpdateChannel::Unstable),
-            other => Err(format!(
-                "expected `{}` or `{}`, got `{other}`",
-                Self::STABLE,
-                Self::UNSTABLE
-            )),
-        }
-    }
 }
 
 #[derive(Args)]
@@ -1262,24 +1225,6 @@ mod tests {
             let name = tier.to_possible_value().expect("no variant is skipped");
             assert_eq!(name.get_name(), tier.to_string());
         }
-    }
-
-    #[test]
-    fn update_channel_parses_its_named_values() {
-        assert_eq!(
-            UpdateChannel::STABLE.parse::<UpdateChannel>().unwrap(),
-            UpdateChannel::Stable
-        );
-        assert_eq!(
-            UpdateChannel::UNSTABLE.parse::<UpdateChannel>().unwrap(),
-            UpdateChannel::Unstable
-        );
-    }
-
-    #[test]
-    fn update_channel_rejects_unknown_values() {
-        let err = "nightly".parse::<UpdateChannel>().unwrap_err();
-        assert_eq!(err, "expected `stable` or `unstable`, got `nightly`");
     }
 
     #[test]

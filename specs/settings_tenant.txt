@@ -7,10 +7,11 @@
 # config_trust.txt).
 snouty settings trust
 
-# A tenant with a path separator in a file fails, and names the file.
+# A tenant with a path separator in a file fails, and names the file by its
+# absolute path.
 ! snouty doctor
-stderr 'invalid setting `tenant` in .snouty.toml: `evil.com/x` is not a valid tenant'
-stderr 'Suggestion: fix .snouty.toml'
+stderr 'invalid setting `tenant` in /.*/\.snouty\.toml: `evil.com/x` is not a valid tenant'
+stderr 'Suggestion: fix or delete /.*/\.snouty\.toml$'
 
 # An explicit base URL does not make it valid.
 env ANTITHESIS_BASE_URL=https://api.example.com

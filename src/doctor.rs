@@ -1454,7 +1454,7 @@ mod tests {
         );
         let project = SettingSource::File {
             path: KnownPath {
-                kind: KnownPathKind::Project,
+                kind: KnownPathKind::Project { explicit: false },
                 path: "/work/.snouty.toml".into(),
             },
             key: "registry".into(),

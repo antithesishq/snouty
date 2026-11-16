@@ -266,7 +266,9 @@ impl SettingsSources {
         // `./.snouty.toml` is optional and needs trust. (Climbing the directory
         // tree, if ever wanted, would go here.)
         let project = match project_settings_path {
-            Some(path) => KnownPath::new(KnownPathKind::Project, path).load(true)?,
+            Some(path) => {
+                KnownPath::new(KnownPathKind::Project { explicit: true }, path).load(true)?
+            }
             None => load_default_project_file(trust_override)?,
         };
         let global = load_global_file()?;
@@ -429,6 +431,18 @@ impl Settings {
         &self.files
     }
 
+    /// The features that these settings use and that the next release
+    /// removes: `./.snouty.toml` and a named profile.
+    pub fn removed_features(&self) -> Vec<RemovedFeature> {
+        let project = self
+            .files
+            .iter()
+            .any(|file| file.kind == KnownPathKind::Project { explicit: false })
+            .then_some(RemovedFeature::DefaultProjectFile);
+        let profile = self.profile.is_some().then_some(RemovedFeature::Profile);
+        project.into_iter().chain(profile).collect()
+    }
+
     pub(crate) fn profile(&self) -> Option<&str> {
         self.profile.as_deref()
     }
@@ -550,6 +564,43 @@ impl SettingsBuilder {
             files: self.files,
         }
     }
+}
+
+/// A feature that the next release removes.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RemovedFeature {
+    DefaultProjectFile,
+    Profile,
+    Trust,
+    Deny,
+}
+
+impl fmt::Display for RemovedFeature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DefaultProjectFile => write!(f, "./{PROJECT_SETTINGS_FILENAME}"),
+            Self::Profile => f.write_str("settings profiles"),
+            Self::Trust => f.write_str("`snouty settings trust`"),
+            Self::Deny => f.write_str("`snouty settings deny`"),
+        }
+    }
+}
+
+/// A warning that the next release removes `features`; `None` when there
+/// are none.
+pub fn removal_warning(features: &[RemovedFeature]) -> Option<String> {
+    let (last, rest) = features.split_last()?;
+    let features = if rest.is_empty() {
+        last.to_string()
+    } else {
+        let rest: Vec<String> = rest.iter().map(ToString::to_string).collect();
+        format!("{} and {last}", rest.join(", "))
+    };
+    Some(format!(
+        "warning: the next snouty release removes support for {features}. If you \
+         rely on this, file an issue at https://github.com/antithesishq/snouty/issues \
+         or contact Antithesis support."
+    ))
 }
 
 /// The project settings file that the user named: the `--settings` flag
@@ -758,8 +809,11 @@ fn load_global_file() -> Result<Option<LoadedFile>> {
 fn load_default_project_file(
     trust_override: Option<trust::TrustOverride>,
 ) -> Result<Option<LoadedFile>> {
-    let Some(file) =
-        KnownPath::new(KnownPathKind::Project, Path::new(PROJECT_SETTINGS_FILENAME)).read(false)?
+    let Some(file) = KnownPath::new(
+        KnownPathKind::Project { explicit: false },
+        Path::new(PROJECT_SETTINGS_FILENAME),
+    )
+    .read(false)?
     else {
         return Ok(None);
     };
@@ -992,7 +1046,11 @@ mod tests {
     }
 
     fn settings_file(contents: &str) -> LoadedFile {
-        loaded_file(KnownPathKind::Project, "/test/settings.toml", contents)
+        loaded_file(
+            KnownPathKind::Project { explicit: true },
+            "/test/settings.toml",
+            contents,
+        )
     }
 
     /// Leaves out the environment, so the files alone decide the result.
@@ -1167,6 +1225,38 @@ mod tests {
         );
     }
 
+    // ---- removal_warning -----------------------------------------------
+
+    #[test]
+    fn removal_warning_lists_each_feature() {
+        let features = |features: &[RemovedFeature]| {
+            removal_warning(features).map(|warning| {
+                warning
+                    .strip_prefix("warning: the next snouty release removes support for ")
+                    .and_then(|rest| rest.split_once(". ").map(|(list, _)| list.to_owned()))
+                    .unwrap()
+            })
+        };
+        assert_eq!(features(&[]), None);
+        assert_eq!(
+            features(&[RemovedFeature::Trust]).as_deref(),
+            Some("`snouty settings trust`")
+        );
+        assert_eq!(
+            features(&[RemovedFeature::DefaultProjectFile, RemovedFeature::Profile]).as_deref(),
+            Some("./.snouty.toml and settings profiles")
+        );
+        assert_eq!(
+            features(&[
+                RemovedFeature::DefaultProjectFile,
+                RemovedFeature::Profile,
+                RemovedFeature::Deny
+            ])
+            .as_deref(),
+            Some("./.snouty.toml, settings profiles and `snouty settings deny`")
+        );
+    }
+
     // ---- resolve_every_profile -----------------------------------------
 
     /// The profiles that `resolve_every_profile` gives, in order, with
@@ -1202,7 +1292,7 @@ mod tests {
         let source = |project: &str, profile: Option<&str>| {
             sources(
                 Some(loaded_file(
-                    KnownPathKind::Project,
+                    KnownPathKind::Project { explicit: true },
                     "/work/.snouty.toml",
                     project,
                 )),
@@ -1234,7 +1324,7 @@ mod tests {
             ),
             Some(SettingSource::File {
                 path: KnownPath {
-                    kind: KnownPathKind::Project,
+                    kind: KnownPathKind::Project { explicit: true },
                     path: PathBuf::from("/work/.snouty.toml"),
                 },
                 key: "profile.p.registry".to_owned(),

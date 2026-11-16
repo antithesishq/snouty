@@ -1389,6 +1389,9 @@ mod tests {
         Select(Option<usize>),
         Secret(Option<String>),
         Confirm(bool),
+        /// Not an answer: an action that runs when the flow asks the next
+        /// prompt, as if the user did it while the prompt was up.
+        Run(Box<dyn FnOnce()>),
     }
 
     /// Fluent builder for a script of [`Answer`]s, in the order the flow will ask.
@@ -1422,6 +1425,10 @@ mod tests {
             self.0.push(Answer::Confirm(value));
             self
         }
+        fn run(mut self, action: impl FnOnce() + 'static) -> Self {
+            self.0.push(Answer::Run(Box::new(action)));
+            self
+        }
         fn build(self) -> ScriptedPrompter {
             ScriptedPrompter {
                 answers: RefCell::new(self.0.into()),
@@ -1446,9 +1453,14 @@ mod tests {
     impl ScriptedPrompter {
         fn next(&self, kind: &str, prompt: &str) -> Answer {
             self.prompts.borrow_mut().push(prompt.to_owned());
-            self.answers.borrow_mut().pop_front().unwrap_or_else(|| {
-                panic!("script ran out of answers at {kind}({prompt:?})");
-            })
+            loop {
+                let answer = self.answers.borrow_mut().pop_front();
+                match answer {
+                    Some(Answer::Run(action)) => action(),
+                    Some(answer) => return answer,
+                    None => panic!("script ran out of answers at {kind}({prompt:?})"),
+                }
+            }
         }
 
         /// Every prompt string the flow asked, in order.
@@ -2065,6 +2077,35 @@ mod tests {
             .expect_err("a credential that cannot be stored must fail the login");
         assert!(format!("{err:#}").contains("nothing was saved"), "{err:#}");
         assert!(!env.config_dir().join("settings.toml").exists());
+        Ok(())
+    }
+
+    /// Login writes the settings before it stores the credential, so a
+    /// settings file that login cannot update leaves the credential unstored.
+    /// Here the file stops being valid TOML while the credential prompt is
+    /// up, after the first read.
+    #[tokio::test]
+    async fn login_stores_no_credential_when_it_cannot_write_the_settings() -> Result<()> {
+        const BROKEN: &str = "tenant = \"unclosed\n";
+        let env = LoginEnv::new();
+        let settings = env.resolve_settings(None)?;
+        let config_dir = env.config_dir();
+        let prompter = Script::default()
+            .input("mytenant")
+            .run(move || {
+                std::fs::create_dir_all(&config_dir).unwrap();
+                std::fs::write(config_dir.join("settings.toml"), BROKEN).unwrap();
+            })
+            .secret(FAKE_API_KEY_A)
+            .build();
+
+        let err = login(None, &settings, &prompter)
+            .await
+            .expect_err("a settings file that login cannot update must fail the login");
+
+        assert!(format!("{err:#}").contains("is not valid TOML"), "{err:#}");
+        assert_eq!(env.settings(), BROKEN);
+        assert!(env.credentials().is_empty(), "{}", env.credentials());
         Ok(())
     }
 

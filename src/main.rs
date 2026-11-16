@@ -30,7 +30,7 @@ use snouty::params::{
     ANT_REPORT_RECIPIENTS, ANT_SETUP_TIMEOUT, ANT_SOURCE, ANT_TEST_NAME, DuplicateKey, Params,
 };
 use snouty::run_metadata::{self, Detect, RunKind};
-use snouty::settings::Settings;
+use snouty::settings::{RemovedFeature, Settings};
 use snouty::stdio::{self, StreamClosed};
 use snouty::validate;
 
@@ -106,6 +106,27 @@ async fn run(cli: Cli) -> Result<()> {
     // Resolve settings once, up front. Each command that reads settings
     // unwraps the result, so a bad settings file stops only those commands.
     let settings = Settings::resolve(settings_path.clone(), profile.clone());
+    // The credential helper runs on each push or pull, a shell runs
+    // completions at each start, and the MCP server warned once already.
+    if !matches!(
+        command,
+        Commands::DockerCredential { .. } | Commands::Completions { .. }
+    ) && !snouty::mcp::in_tool_call()
+    {
+        let mut removed_features = settings
+            .as_ref()
+            .map_or_else(|_| Vec::new(), Settings::removed_features);
+        if let Commands::Settings { command } = &command {
+            match command {
+                SettingsCommands::Show => {}
+                SettingsCommands::Trust(_) => removed_features.push(RemovedFeature::Trust),
+                SettingsCommands::Deny(_) => removed_features.push(RemovedFeature::Deny),
+            }
+        }
+        if let Some(warning) = snouty::settings::removal_warning(&removed_features) {
+            eprintln!("{}", snouty::wrap_if_tty(&warning));
+        }
+    }
     let result = match command {
         Commands::Completions { shell } => cmd_completions(shell).map_err(Report::new),
         Commands::Version => cmd_version(output.json),

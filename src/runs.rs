@@ -838,10 +838,12 @@ async fn explain_logs_error(
 ) -> color_eyre::eyre::Report {
     let err = explain_run_scoped_error(api, run_id, err).await;
     if api_error_status(&err) == Some(404) {
-        err.suggestion("the run exists but no moment matches this hash and vtime")
-            .suggestion(format!(
-                "search for a moment using `snouty runs events {run_id} <search query>`"
-            ))
+        user_error(format!(
+            "no moment in run {run_id} matches this input hash and vtime"
+        ))
+        .suggestion(format!(
+            "search for a moment using `snouty runs events {run_id} <search query>`"
+        ))
     } else {
         err
     }
@@ -2019,15 +2021,15 @@ enum ExecRejection {
     BadRewarm,
 }
 
-/// Add suggestions to a failed `runs exec` request in a run with status
-/// `run_status`, which is ready or complete. `debug_command` starts a
-/// debugging session at the request's moment, and `rewarm_flag` names the
-/// rewarm source's flag, if one was given.
+/// Explain a failed `runs exec` request in `run`, which is ready or
+/// complete. `input_hash` names the request's moment, `debug_command` starts
+/// a debugging session at that moment, and `rewarm` is the rewarm source and
+/// the flag that named it, if one was given.
 ///
 /// A run that has stopped cannot accept a command: on orbitinghail (release
 /// 65.0), a completed test run answers 400 `Run <id> has ended. Commands
-/// require an active run.` Otherwise, the server's responses on orbitinghail
-/// mean:
+/// require an active run.` In a live run, the server's responses on
+/// orbitinghail mean:
 ///
 /// - 404 `Resource not found`: the source session (release 67.0), or any
 ///   source (release 64.0), does not exist.
@@ -2038,23 +2040,25 @@ enum ExecRejection {
 /// - Any other 400 (release 64.0): a rewarm did not finish, or the source is
 ///   not the moment's run.
 fn explain_exec_error(
-    run_status: &RunStatus,
+    run: &RunDetail,
+    input_hash: &str,
     debug_command: &str,
-    rewarm_flag: Option<&str>,
+    rewarm: Option<(&str, &RewarmSource)>,
     err: color_eyre::eyre::Report,
 ) -> color_eyre::eyre::Report {
     let Some(status) = api_error_status(&err) else {
         return err;
     };
-    if run_status.is_terminal() {
-        return err
-            .note(format!(
-                "`runs exec` needs a run that is in progress. This run is {run_status}"
-            ))
-            .suggestion(format!(
-                "start a debugging session at this moment with:\n{}",
-                indent_lines(debug_command, "  ")
-            ));
+    let run_id = &run.run_id;
+    if run.status.is_terminal() && status == 400 {
+        return user_error(format!(
+            "run {run_id} is {}, and `runs exec` needs a run that is in progress",
+            run.status
+        ))
+        .suggestion(format!(
+            "start a debugging session at this moment with:\n{}",
+            indent_lines(debug_command, "  ")
+        ));
     }
     let message = api_error_message(&err).unwrap_or_default();
     let rejection = match status {
@@ -2069,16 +2073,23 @@ fn explain_exec_error(
         400 => ExecRejection::BadRewarm,
         _ => return err,
     };
-    match (rejection, rewarm_flag) {
-        (ExecRejection::MissingSource, Some(flag)) => {
-            err.suggestion(format!("check that {flag} names an existing source"))
+    match (rejection, rewarm) {
+        (ExecRejection::MissingSource, Some((flag, source))) => {
+            user_error(format!("source {source} does not exist"))
+                .suggestion(format!("check that {flag} names an existing source"))
         }
-        (ExecRejection::ColdMoment, None) => {
-            err.suggestion("use --source-run-id to load a moment from a different run")
+        (ExecRejection::ColdMoment, None) => user_error(format!(
+            "moment {input_hash} is not loaded in run {run_id}"
+        ))
+        .suggestion("use --source-run-id to load a moment from a different run"),
+        (ExecRejection::ColdMoment | ExecRejection::BadRewarm, Some((flag, source))) => {
+            user_error(format!(
+                "snouty could not load moment {input_hash} from {source}"
+            ))
+            .suggestion(format!(
+                "check that {flag} names the run the moment comes from"
+            ))
         }
-        (ExecRejection::ColdMoment | ExecRejection::BadRewarm, Some(flag)) => err.suggestion(
-            format!("check that {flag} names the run the moment comes from"),
-        ),
         _ => err,
     }
 }
@@ -2241,7 +2252,15 @@ async fn exec_when_ready(
         poll,
         EXEC_RETRY,
         || api.execute_command(run_id, exec.clone()),
-        |run, err| explain_exec_error(&run.status, &debug_command, rewarm_flag, err),
+        |run, err| {
+            explain_exec_error(
+                run,
+                &exec.moment.input_hash,
+                &debug_command,
+                rewarm_flag.zip(exec.rewarm.as_ref()),
+                err,
+            )
+        },
     )
     .await?;
 
@@ -5208,13 +5227,26 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        fn api_error(status: u16, message: &str) -> color_eyre::eyre::Report {
+        fn api_error(status: u16, server_message: &str) -> color_eyre::eyre::Report {
             color_eyre::eyre::Report::new(ApiError {
                 status,
-                message: message.to_string(),
+                message: "the Antithesis API rejected the request".to_string(),
+                server_message: server_message.to_string(),
             })
         }
 
+        fn run_in_progress() -> RunDetail {
+            serde_json::from_value(json!({
+                "run_id": "run-1",
+                "status": "in_progress",
+                "created_at": "2025-03-20T02:00:00Z",
+                "launcher": "nightly"
+            }))
+            .unwrap()
+        }
+
+        // The server's text names API parameters that have no flag, so the
+        // error is snouty's own.
         #[test]
         fn a_cold_moment_suggests_a_source_run() {
             for message in [
@@ -5224,15 +5256,16 @@ mod tests {
                 "The requested moment is not valid in the original run.",
             ] {
                 let err = explain_exec_error(
-                    &RunStatus::InProgress,
+                    &run_in_progress(),
+                    "-123",
                     "snouty debug",
                     None,
                     api_error(400, message),
                 );
-                assert!(
-                    format!("{err:?}").contains("use --source-run-id to load"),
-                    "{message}: {err:?}"
-                );
+                assert_eq!(err.to_string(), "moment -123 is not loaded in run run-1");
+                let debug = format!("{err:?}");
+                assert!(debug.contains("use --source-run-id to load"), "{debug}");
+                assert!(!debug.contains("source_run_id"), "{debug}");
             }
         }
 
@@ -5268,7 +5301,7 @@ mod tests {
             let server = mock_get_run("BAD-ID", 404, json!({"message": "nope"})).await;
             let api = test_api(&server.uri());
             let result =
-                explain_run_scoped_error(&api, "BAD-ID", api_error(404, "API error: 404")).await;
+                explain_run_scoped_error(&api, "BAD-ID", api_error(404, "Resource not found")).await;
             assert_eq!(format!("{result:#}"), "run not found: BAD-ID");
         }
 
@@ -5290,7 +5323,7 @@ mod tests {
             let api = test_api(&server.uri());
             let result =
                 explain_run_scoped_error(&api, "run-1", api_error(404, "endpoint 404")).await;
-            assert!(format!("{result:#}").contains("endpoint 404"));
+            assert_eq!(api_error_message(&result), Some("endpoint 404"));
             assert!(!format!("{result:#}").contains("run not found"));
         }
 
@@ -5310,16 +5343,19 @@ mod tests {
             )
             .await;
             let api = test_api(&server.uri());
-            let result = explain_logs_error(&api, "run-1", api_error(404, "API error: 404")).await;
+            let result =
+                explain_logs_error(&api, "run-1", api_error(404, "Resource not found")).await;
+            assert_eq!(
+                result.to_string(),
+                "no moment in run run-1 matches this input hash and vtime"
+            );
             let debug = strip_ansi(&format!("{result:?}")).into_owned();
             assert!(
                 debug.contains(
-                    "Suggestion: the run exists but no moment matches this hash and vtime\n\
-                     Suggestion: search for a moment using `snouty runs events run-1 <search query>`"
+                    "Suggestion: search for a moment using `snouty runs events run-1 <search query>`"
                 ),
-                "expected separate explanation and search suggestions, got: {debug}"
+                "got: {debug}"
             );
-            assert!(!debug.contains("list valid moments with"), "got: {debug}");
         }
 
         // A missing run keeps the plain "run not found" with no moment talk.
@@ -5327,7 +5363,7 @@ mod tests {
         async fn logs_error_reports_a_missing_run_without_the_suggestion() {
             let server = mock_get_run("BAD-ID", 404, json!({"message": "nope"})).await;
             let api = test_api(&server.uri());
-            let result = explain_logs_error(&api, "BAD-ID", api_error(404, "API error: 404")).await;
+            let result = explain_logs_error(&api, "BAD-ID", api_error(404, "Resource not found")).await;
             assert_eq!(format!("{result:#}"), "run not found: BAD-ID");
             assert!(!format!("{result:?}").contains("runs events"));
         }
@@ -5743,7 +5779,7 @@ mod tests {
                 .unwrap_err();
 
             let report = format!("{err:?}");
-            assert!(report.contains("This run is completed"), "got: {report}");
+            assert!(report.contains("run run-w is completed"), "got: {report}");
             assert_eq!(
                 request_methods(&server).await,
                 ["GET", "POST", "GET", "POST", "GET"]
@@ -5766,9 +5802,9 @@ mod tests {
                 .await
                 .unwrap_err();
 
-            // The note reads the run after the refusal, not before the send.
+            // The error reads the run after the refusal, not before the send.
             let report = format!("{err:?}");
-            assert!(report.contains("This run is completed"), "got: {report}");
+            assert!(report.contains("run run-w is completed"), "got: {report}");
         }
 
         #[tokio::test]

@@ -377,21 +377,23 @@ mock-server 404 '{"statusCode":404,"runId":null}'
 ! snouty launch --launcher no_such_launcher --max-compute-hours 24
 stderr 'unknown launcher: no_such_launcher'
 stderr 'ask support@antithesis\.com for the launchers on your tenant'
-! stderr 'API error'
+! stderr 'Antithesis API'
 
 # A 404 without the envelope, such as an HTML page from a wrong host, keeps
 # the generic API error, because it does not show that the launcher is unknown.
 mock-server 404 '<html><body>404 Not Found</body></html>'
 ! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24
-stderr 'API error: 404 Not Found'
+stderr '^Error: the Antithesis API did not find the requested item$'
 ! stderr 'unknown launcher'
 
-# Other errors that reach the test launcher show the HTTP status and the body.
+# Other errors that reach the test launcher show what the status means, and
+# the body as a note.
 # (The launcher does no request validation beyond auth, so it never returns a
 # 400.) TODO: test a 400 here once the launcher validates requests.
 mock-server 500 '{"statusCode":500,"runId":null}'
 ! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24
-stderr 'API error: 500 Internal Server Error.*'
+stderr '^Error: the Antithesis API failed to complete the request$'
+stderr '^Note: \{"statusCode":500,"runId":null\}$'
 
 # `snouty run` still works but prints a deprecation warning.
 mock-server 200 '{"message":"Success","runId":"run-123"}'

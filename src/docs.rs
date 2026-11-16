@@ -190,10 +190,8 @@ async fn fetch_db_if_changed() -> Result<Option<(Vec<u8>, String)>> {
     }
 
     if !status.is_success() {
-        bail!(
-            "API error: {} - failed to download documentation database",
-            status.as_u16()
-        );
+        log::debug!("the documentation server answered {status}");
+        bail!("failed to download the documentation database");
     }
 
     let etag = response

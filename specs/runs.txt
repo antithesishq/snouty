@@ -642,31 +642,34 @@ mock-runs-server empty
 snouty runs
 stdout 'No runs found\.'
 
-# API errors are reported with status code and body. A 4xx is the user's to
-# fix, so it prints as a clean message with no backtrace/internal noise. The
+# An API error opens with snouty's own text, with no status code, and the
+# server's text follows as a note. A 4xx is the user's to fix, so it prints as
+# a clean message with no backtrace/internal noise. The
 # generic mock-server directive only sets username/password, which `snouty
 # runs` rejects before making a request, so set an API key explicitly rather
 # than relying on one leaking from an earlier mock-runs-server block.
 mock-server 400 '{"message":"bad request"}'
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 ! snouty runs
-stderr '^Error: API error: 400.*'
+stderr '^Error: the Antithesis API rejected the request$'
+stderr '^Note: bad request$'
+! stderr '400'
 # The message sits on the `Error:` line itself: a single failure has no cause
 # chain to number, so no `0:` frame appears.
-! stderr '0: API error'
+! stderr '0: '
 ! stderr 'Backtrace omitted'
 
 # A rejection with no body at all is the API gateway's shape for rate-limit
 # failures (content-type: text/plain, zero length). The status is all the
-# server said, so it is all snouty reports — the point of issue #180 is that
-# the status survives an unparsable body rather than being lost with it. The
+# server said, so snouty reports what the status means — the point of issue
+# #180 is that the status survives an unparsable body. The
 # Retry-After is longer than snouty waits, so the 429 surfaces at once. The
 # error names the wait and the time that the Retry-After asks for, in RFC 3339
 # UTC, so that the user or a wrapping script can wait until then.
 [!staging] mock-server -header 'Retry-After: 3600' 429 ''
 [!staging] set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 [!staging] ! snouty runs
-[!staging] stderr 'API error: 429 Too Many Requests.*'
+[!staging] stderr '^Error: the Antithesis API received too many requests$'
 [!staging] stderr '^Suggestion: retry after 3600s \(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\) to respect the server.s rate limit$'
 
 # A rejected API key from the environment names the variable to fix, because
@@ -723,23 +726,23 @@ stdout '^STATUS +✓ +✗ +ID +NAME$'
 stdout '^pass +0 +0 +No events property$'
 
 # A bad run id gives the same friendly "run not found" message across every
-# run-scoped subcommand, instead of leaking a raw "API error: 404 Not Found".
+# run-scoped subcommand, instead of leaking the generic API error.
 # The run-scoped endpoints 404 for an unknown run; snouty probes the run and
 # reports it as missing rather than passing the bare API error through.
 mock-runs-server
 ! snouty runs show no-such-run
 stderr '.*run not found: no-such-run.*'
-! stderr '.*API error.*'
+! stderr 'Antithesis API'
 
 mock-runs-server
 ! snouty runs properties no-such-run
 stderr '.*run not found: no-such-run.*'
-! stderr '.*API error.*'
+! stderr 'Antithesis API'
 
 mock-runs-server
 ! snouty runs build-logs no-such-run
 stderr '.*run not found: no-such-run.*'
-! stderr '.*API error.*'
+! stderr 'Antithesis API'
 
 # A successful but empty build-logs stream prints an explicit note in text
 # mode, so the user isn't left wondering whether anything happened.
@@ -770,22 +773,21 @@ exec cat probe-runs-error.ndjson
 mock-runs-server
 ! snouty runs events no-such-run --match anything
 stderr '.*run not found: no-such-run.*'
-! stderr '.*API error.*'
+! stderr 'Antithesis API'
 
 mock-runs-server
 ! snouty runs logs no-such-run -123 1.0
 stderr '.*run not found: no-such-run.*'
-! stderr '.*API error.*'
+! stderr 'Antithesis API'
 ! stderr 'Suggestion:'
 
-# A missing moment in an existing run gives two separate suggestions.
-# The recovery command includes the run ID and the required search query.
+# A missing moment in an existing run says so, and the suggestion names the
+# command that searches for a moment, with the run ID.
 mock-runs-server
 ! snouty runs logs run-1 0 999999.0
-stderr '^Error: API error: 404 Not Found — Resource not found$'
-stderr '^Suggestion: the run exists but no moment matches this hash and vtime$'
+stderr '^Error: no moment in run run-1 matches this input hash and vtime$'
 stderr '^Suggestion: search for a moment using `snouty runs events run-1 <search query>`$'
-! stderr 'list valid moments with'
+! stderr 'Resource not found'
 
 # `snouty runs properties` requires a run ID.
 ! snouty runs properties
@@ -1027,7 +1029,7 @@ mock-runs-server
 #    suggestion about the tenant release.
 mock-runs-server
 [!staging] ! snouty runs events 0df9ac1f5155c14f88ea41f5ad503e07-61-1 --match anything
-[!staging] stderr 'API error: 404 Not Found — Resource not found'
+[!staging] stderr '^Error: the Antithesis API did not find the requested item$'
 [!staging] ! stderr 'run not found'
 [!staging] stderr 'tenant releases before 62\.2 do not serve the events-search API'
 [!staging] ! stderr 'waiting for the run'
@@ -1102,16 +1104,16 @@ mock-runs-server
 snouty runs search $R_run_id 'contains({output_text: "x"})' --check
 stdout 'query is valid'
 
-# An invalid query fails with the server's rejection: the query, a caret under
-# the offending token, the reason. The server writes the query at the end of
-# its prose line with the caret's column counted from the query's start;
-# snouty breaks the line after `Event set DSL error:` so the query starts a
+# An invalid query fails with "the query is invalid", then the server's
+# rejection: the query, a caret under the offending token, the reason. The
+# server writes the query at the end of its prose line with the caret's column
+# counted from the query's start; snouty drops the prose so the query starts a
 # line of its own, and every line takes the same indent, so the caret points
 # at the token above it.
 mock-runs-server
 ! snouty runs search $R_run_id 'bogus_verb({x: "y"})' --check
-stderr 'API error: 400 Bad Request'
-[!staging] stderr 'Event set DSL error:\n  bogus_verb\(\{x: "y"\}\)\n  \^\n  invalid with_next'
+stderr '^Error: the query is invalid:\n  bogus_verb\(\{x: "y"\}\)\n  \^\n  invalid with_next'
+! stderr 'Event set DSL error'
 
 # The mode switches pick conflicting response modes, so clap rejects the pairing.
 mock-runs-server
@@ -1140,8 +1142,7 @@ stdout '^\{"count":3\}$'
 # The count endpoint rejects an invalid query with the same error as a search.
 mock-runs-server
 ! snouty runs search $R_run_id 'bogus_verb({x: "y"})' --count
-stderr 'API error: 400 Bad Request'
-stderr 'Event set DSL error:\n  bogus_verb'
+stderr '^Error: the query is invalid:\n  bogus_verb'
 
 # An unknown run reports "run not found".
 mock-runs-server

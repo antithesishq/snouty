@@ -287,7 +287,6 @@ fn other_registry_check(
         SettingSource::File { path, key } => {
             format!("set `{key}` in {} to it", path.display())
         }
-        SettingSource::Flag(flag) => format!("pass it with {flag}"),
     };
     let configured = configured.value();
     Check::ok(CheckId::Registry, "container registry is set")

@@ -18,6 +18,7 @@ use crate::auth::{AuthenticationInfo, PasswordPolicy, RefreshableOAuthToken};
 use crate::error::user_error;
 use crate::render::sanitize;
 use crate::settings::{Settings, SettingsRequest, Tenant};
+use crate::tag::Tagged;
 
 pub const USERNAME: &str = "snouty-token";
 
@@ -114,16 +115,37 @@ impl FromStr for Registry {
 /// setting names another registry, or when the tenant or the registry is not
 /// set.
 pub fn tenant_registry(settings: &Settings) -> Option<&Registry> {
-    let registry = settings.registry()?.value();
+    tenant_registry_of(settings.tenant(), settings.registry().map(Tagged::value))
+}
+
+/// [`tenant_registry`] of the `tenant` and `registry` settings.
+fn tenant_registry_of<'a>(
+    tenant: Option<&Tenant>,
+    registry: Option<&'a Registry>,
+) -> Option<&'a Registry> {
+    let registry = registry?;
     registry
         .antithesis_tenant()?
-        .eq_ignore_ascii_case(settings.tenant()?)
+        .eq_ignore_ascii_case(tenant?)
         .then_some(registry)
 }
 
 /// Whether the tenant registry of `settings` is the registry of `tenant`.
 fn pushes_to_tenant(settings: &Settings, tenant: &str) -> bool {
-    tenant_registry(settings)
+    pushes_to(
+        settings.tenant(),
+        settings.registry().map(Tagged::value),
+        tenant,
+    )
+}
+
+/// [`pushes_to_tenant`] of the `tenant_setting` and `registry_setting`.
+fn pushes_to(
+    tenant_setting: Option<&Tenant>,
+    registry_setting: Option<&Registry>,
+    tenant: &str,
+) -> bool {
+    tenant_registry_of(tenant_setting, registry_setting)
         .and_then(Registry::antithesis_tenant)
         .is_some_and(|own| *own == *tenant)
 }
@@ -140,8 +162,10 @@ fn pushes_to_tenant(settings: &Settings, tenant: &str) -> bool {
 ///    profiles.
 /// 2. Otherwise, find the profiles whose tenant registry is the registry of
 ///    `tenant`, in the order of [`SettingsRequest::resolve_every_profile`]:
-///    the top-level defaults first, then the named profiles. A profile that
-///    fails to resolve is skipped. Use the first of them that has its own credential
+///    the top-level defaults first, then the named profiles. A profile whose
+///    tenant or registry fails to resolve is skipped. A matching profile that
+///    fails to resolve, reached before one with a credential, fails with its
+///    error. Use the first of them that has its own credential
 ///    ([`AuthenticationInfo::find_own`]). A named profile does not use the
 ///    stored credential of the default profile, because that credential can
 ///    be for another tenant. When no profile matches, return `None`. When
@@ -166,21 +190,26 @@ pub fn select_settings(
         .untag();
         return Ok(Some((settings, credential)));
     }
-    first_with_own_credential(request.resolve_every_profile()?, tenant, |profile| {
+    let profiles = request.resolve_every_profile(|tenant_setting, registry_setting| {
+        pushes_to(tenant_setting, registry_setting, tenant)
+    })?;
+    first_with_own_credential(profiles, tenant, |profile| {
         AuthenticationInfo::find_own(profile, PasswordPolicy::Reject)
     })
 }
 
 /// The first of `profiles` whose tenant registry is the registry of `tenant`,
 /// and for whose profile `own_credential` finds a credential, with that
-/// credential.
+/// credential. A profile that failed to resolve before that one gives its
+/// error.
 fn first_with_own_credential(
-    profiles: Vec<Settings>,
+    profiles: Vec<Result<Settings>>,
     tenant: &str,
     mut own_credential: impl FnMut(Option<&str>) -> Result<Option<AuthenticationInfo>>,
 ) -> Result<Option<(Settings, AuthenticationInfo)>> {
     let mut matched = false;
     for settings in profiles {
+        let settings = settings?;
         if !pushes_to_tenant(&settings, tenant) {
             continue;
         }
@@ -602,6 +631,7 @@ mod tests {
         profiles: Vec<Settings>,
         own_credential: impl FnMut(Option<&str>) -> Result<Option<AuthenticationInfo>>,
     ) -> Result<Option<(Option<String>, String)>> {
+        let profiles = profiles.into_iter().map(Ok).collect();
         let selected = first_with_own_credential(profiles, "acme", own_credential)?;
         Ok(selected.map(|(settings, credential)| {
             let AuthenticationInfo::ApiKey { api_key } = credential else {

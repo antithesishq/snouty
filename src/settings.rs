@@ -94,7 +94,7 @@ pub fn cache_dir() -> Option<PathBuf> {
 /// parsed, or a value that does not parse, is an error there, so nothing
 /// fails later.
 ///
-/// Each value keeps the [`SettingSource`] that it came from.
+/// Each value but the tenant keeps the [`SettingSource`] that it came from.
 ///
 /// Every command shares the same resolved instance (threaded by reference), so a
 /// value resolves identically no matter which code path reads it.
@@ -102,7 +102,8 @@ pub fn cache_dir() -> Option<PathBuf> {
 #[cfg_attr(test, derive(Default))]
 pub struct Settings {
     profile: Option<String>,
-    tenant: Option<Tagged<Tenant, SettingSource>>,
+    /// Untagged: login replaces it with a tenant that no setting gives.
+    tenant: Option<Tenant>,
     registry: Option<Tagged<Registry, SettingSource>>,
     /// The `base_url` setting. [`Settings::base_url`] falls back to the
     /// tenant's host.
@@ -146,9 +147,6 @@ pub enum SettingSource {
         path: KnownPath,
         key: String,
     },
-    /// A command-line flag, such as `snouty login --tenant`, or the prompt
-    /// that asks for its value.
-    Flag(&'static str),
 }
 
 /// An error for the value from `source`, which snouty cannot use because of
@@ -163,7 +161,6 @@ fn invalid_setting(source: &SettingSource, err: impl fmt::Display) -> Report {
             path.display()
         ))
         .suggestion(format!("fix or delete {}", path.display())),
-        SettingSource::Flag(flag) => user_error(format!("invalid {flag}: {err}")),
     }
 }
 
@@ -230,13 +227,23 @@ impl SettingsRequest {
     /// environment variable still overrides every profile. The profile that
     /// the user names is not used.
     ///
-    /// A profile that fails to resolve, such as one with an invalid tenant, is
-    /// left out: a caller that searches the profiles must not fail on a
-    /// profile it does not use.
-    pub fn resolve_every_profile(&self) -> Result<Vec<Settings>> {
+    /// Only the profiles whose tenant and registry `wanted` accepts are
+    /// resolved. A profile whose tenant or registry fails to resolve is left
+    /// out: a caller that searches the profiles must not fail on a profile it
+    /// does not use. A wanted profile that fails to resolve gives its error.
+    pub fn resolve_every_profile(
+        &self,
+        wanted: impl Fn(Option<&Tenant>, Option<&Registry>) -> bool,
+    ) -> Result<Vec<Result<Settings>>> {
         SettingsSources::from_ambient(self.project_settings_path.as_deref())?
-            .resolve_every_profile()
+            .resolve_every_profile(wanted)
     }
+}
+
+/// The settings that name the place that a profile pushes to.
+struct Destination {
+    tenant: Option<Tenant>,
+    registry: Option<Tagged<Registry, SettingSource>>,
 }
 
 /// One source of settings.
@@ -298,7 +305,10 @@ impl SettingsSources {
     }
 
     /// See [`SettingsRequest::resolve_every_profile`].
-    fn resolve_every_profile(&self) -> Result<Vec<Settings>> {
+    fn resolve_every_profile(
+        &self,
+        wanted: impl Fn(Option<&Tenant>, Option<&Registry>) -> bool,
+    ) -> Result<Vec<Result<Settings>>> {
         let mut names: Vec<&String> = Vec::new();
         for file in self.files() {
             let profiles = profiles(file)?;
@@ -310,8 +320,44 @@ impl SettingsSources {
         }
         Ok(std::iter::once(None)
             .chain(names.into_iter().map(|name| Some(name.clone())))
-            .filter_map(|profile| self.resolve(profile).ok())
+            .filter(|profile| {
+                self.resolve_destination(profile.as_deref())
+                    .is_ok_and(|to| {
+                        wanted(to.tenant.as_ref(), to.registry.as_ref().map(Tagged::value))
+                    })
+            })
+            .map(|profile| self.resolve(profile))
             .collect())
+    }
+
+    /// The tenant and the registry of `profile`.
+    fn resolve_destination(&self, profile: Option<&str>) -> Result<Destination> {
+        // The tenant is a host name even when an explicit base_url means
+        // that no request goes to the tenant's host.
+        let tenant = parse_setting(
+            resolve_value_with(
+                string_value,
+                &["tenant"],
+                &[ANTITHESIS_TENANT_VAR_NAME],
+                profile,
+                self,
+            )?,
+            str::parse,
+        )?;
+        let registry = parse_setting(
+            resolve_value_with(
+                string_value,
+                &[REGISTRY_KEY, REPOSITORY_KEY],
+                &[ANTITHESIS_REGISTRY_VAR_NAME, ANTITHESIS_REPOSITORY_VAR_NAME],
+                profile,
+                self,
+            )?,
+            str::parse,
+        )?;
+        Ok(Destination {
+            tenant: tenant.map(Tagged::untag),
+            registry,
+        })
     }
 
     fn resolve(&self, profile: Option<String>) -> Result<Settings> {
@@ -319,20 +365,10 @@ impl SettingsSources {
         let text = |key: &str, env_var: &'static str| {
             resolve_value_with(string_value, &[key], &[env_var], name, self)
         };
+        let Destination { tenant, registry } = self.resolve_destination(name)?;
         Ok(Settings {
-            // The tenant is a host name even when an explicit base_url means
-            // that no request goes to the tenant's host.
-            tenant: parse_setting(text("tenant", ANTITHESIS_TENANT_VAR_NAME)?, str::parse)?,
-            registry: parse_setting(
-                resolve_value_with(
-                    string_value,
-                    &[REGISTRY_KEY, REPOSITORY_KEY],
-                    &[ANTITHESIS_REGISTRY_VAR_NAME, ANTITHESIS_REPOSITORY_VAR_NAME],
-                    name,
-                    self,
-                )?,
-                str::parse,
-            )?,
+            tenant,
+            registry,
             base_url: parse_setting(
                 text("base_url", ANTITHESIS_BASE_URL_VAR_NAME)?,
                 parse_base_url,
@@ -368,7 +404,7 @@ impl SettingsSources {
 impl Settings {
     /// The resolved tenant, or `None` if unset.
     pub fn tenant(&self) -> Option<&Tenant> {
-        self.tenant.as_ref().map(Tagged::value)
+        self.tenant.as_ref()
     }
 
     /// The resolved container registry, tagged with where it comes from, or
@@ -464,7 +500,7 @@ impl Settings {
     /// comes from `snouty login --tenant` or its prompt.
     pub(crate) fn with_tenant(&self, tenant: Tenant) -> Self {
         Settings {
-            tenant: Some(tenant.with_tag(SettingSource::Flag("--tenant"))),
+            tenant: Some(tenant),
             ..self.clone()
         }
     }
@@ -486,8 +522,8 @@ impl Settings {
     }
 }
 
-/// Builds a test `Settings` without resolution. Each value except `registry`
-/// is tagged as if its environment variable set it.
+/// Builds a test `Settings` without resolution. Each tagged value except
+/// `registry` is tagged as if its environment variable set it.
 #[cfg(test)]
 pub struct SettingsBuilder(Settings);
 
@@ -501,7 +537,7 @@ impl SettingsBuilder {
 
     #[must_use]
     pub fn tenant(mut self, value: Tenant) -> Self {
-        self.0.tenant = Some(value.with_tag(SettingSource::Env(ANTITHESIS_TENANT_VAR_NAME)));
+        self.0.tenant = Some(value);
         self
     }
 
@@ -937,14 +973,22 @@ fn parse_base_url(text: &str) -> Result<Url, String> {
 }
 
 /// Parse an `https_proxy` setting as reqwest reads a proxy: a value without
-/// a scheme, such as `proxy.corp:3128`, is an `http://` URL.
-fn parse_proxy_url(text: &str) -> Result<Url, url::ParseError> {
-    match Url::parse(text) {
+/// a scheme, such as `proxy.corp:3128`, is an `http://` URL. reqwest, built
+/// without its `socks` feature, accepts only an http or https proxy.
+fn parse_proxy_url(text: &str) -> Result<Url, String> {
+    let url = match Url::parse(text) {
         Ok(url) if url.has_host() => Ok(url),
         Ok(_) | Err(url::ParseError::RelativeUrlWithoutBase) => {
             Url::parse(&format!("http://{text}"))
         }
         Err(err) => Err(err),
+    }
+    .map_err(|err| err.to_string())?;
+    match url.scheme() {
+        "http" | "https" => Ok(url),
+        scheme => Err(format!(
+            "expected an http or https proxy URL, got the scheme `{scheme}`"
+        )),
     }
 }
 
@@ -1225,13 +1269,18 @@ mod tests {
     // ---- resolve_every_profile -----------------------------------------
 
     /// The profiles that `resolve_every_profile` gives, in order, with
-    /// `defaults` for the top-level defaults.
-    fn every_profile(project: &str, global: &str) -> Vec<String> {
+    /// `defaults` for the top-level defaults and `error` for a profile that
+    /// fails to resolve. `wanted` accepts the profiles of the tenant `acme`,
+    /// or every profile when `acme_only` is false.
+    fn every_profile(project: &str, global: &str, acme_only: bool) -> Vec<String> {
         sources(Some(settings_file(project)), Some(settings_file(global)))
-            .resolve_every_profile()
+            .resolve_every_profile(|tenant, _| !acme_only || tenant.is_some_and(|t| **t == *"acme"))
             .unwrap()
             .iter()
-            .map(|settings| settings.profile().unwrap_or("defaults").to_owned())
+            .map(|settings| match settings {
+                Ok(settings) => settings.profile().unwrap_or("defaults").to_owned(),
+                Err(_) => "error".to_owned(),
+            })
             .collect()
     }
 
@@ -1240,16 +1289,24 @@ mod tests {
         let project = "[profile.zulu]\n[profile.mike]\n";
         let global = "[profile.alpha]\n[profile.zulu]\n[profile.kilo]\n";
         assert_eq!(
-            every_profile(project, global),
+            every_profile(project, global, false),
             ["defaults", "mike", "zulu", "alpha", "kilo"]
         );
     }
 
     #[test]
-    fn every_profile_skips_a_profile_that_fails_to_resolve() {
-        let project =
-            "[profile.a]\n[profile.broken]\napi_cache_max_file_size = \"lots\"\n[profile.c]\n";
-        assert_eq!(every_profile(project, ""), ["defaults", "a", "c"]);
+    fn every_profile_skips_a_profile_whose_tenant_fails_to_resolve() {
+        let project = "[profile.a]\n[profile.broken]\ntenant = \"a/b\"\n[profile.c]\n";
+        assert_eq!(every_profile(project, "", false), ["defaults", "a", "c"]);
+    }
+
+    /// A bad value that the search does not read hides no profile: the
+    /// wanted profile gives its error, and another profile is left out.
+    #[test]
+    fn a_wanted_profile_that_fails_to_resolve_gives_its_error() {
+        let project = "[profile.acme]\ntenant = \"acme\"\ncontainer_engine = \"none\"\n\
+                       [profile.other]\ntenant = \"other\"\ncontainer_engine = \"none\"\n";
+        assert_eq!(every_profile(project, "", true), ["error"]);
     }
 
     #[test]
@@ -1398,6 +1455,11 @@ mod tests {
             error("base_url = \"localhost:8080\"\n"),
             "invalid setting `base_url` in /test/settings.toml: \
              expected a URL such as https://acme.antithesis.com"
+        );
+        assert_eq!(
+            error("https_proxy = \"htps://proxy.corp:3128\"\n"),
+            "invalid setting `https_proxy` in /test/settings.toml: \
+             expected an http or https proxy URL, got the scheme `htps`"
         );
         assert_eq!(
             error("https_proxy = \"http://\"\n"),

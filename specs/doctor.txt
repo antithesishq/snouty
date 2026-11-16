@@ -210,6 +210,37 @@ env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
 [!staging] env SNOUTY_SETTINGS_PATH=
 [!staging] set-env ANTITHESIS_BASE_URL ${BASE_URL}
 
+# SNOUTY_TEST_DOCTOR_ASK_REGISTRY makes doctor ask the tenant behind a
+# base_url too, so that the comparison runs against the mock. A registry
+# outside the tenant's gets the ✓ check and two notes. The second note names
+# the way to switch, which depends on where the setting comes from.
+[!staging] env SNOUTY_TEST_DOCTOR_ASK_REGISTRY=1
+[!staging] snouty --verbose doctor
+[!staging] stderr 'GET .*/api/v0/registry'
+[!staging] stderr '^  ✓ container registry is set$'
+[!staging] stderr -literal 'NOTE: the tenant also has an Antithesis registry, `registry.testtenant.antithesis.com`'
+[!staging] stderr -literal 'NOTE: you can keep using `proxy.example.com/testtenant`, or set ANTITHESIS_REGISTRY to it'
+
+# The same registry in the global settings file names `snouty login`.
+[!staging] set-env CONFIG_HOME ${XDG_CONFIG_HOME}
+[!staging] set-env XDG_CONFIG_HOME ${WORK}/registry_cfg
+[!staging] env ANTITHESIS_REGISTRY=
+[!staging] snouty doctor
+[!staging] stderr '^  ✓ container registry is set$'
+[!staging] stderr -literal 'NOTE: the tenant also has an Antithesis registry, `registry.testtenant.antithesis.com`'
+[!staging] stderr -literal 'NOTE: you can keep using `proxy.example.com/testtenant`, or run `snouty login` to switch to it'
+[!staging] ! stderr 'ANTITHESIS_REGISTRY'
+[!staging] set-env XDG_CONFIG_HOME ${CONFIG_HOME}
+
+# A path under the tenant's own registry gets no note.
+[!staging] env ANTITHESIS_REGISTRY=registry.testtenant.antithesis.com/app
+[!staging] snouty --verbose doctor
+[!staging] stderr 'GET .*/api/v0/registry'
+[!staging] stderr '^  ✓ container registry is set$'
+[!staging] ! stderr 'also has an Antithesis registry'
+[!staging] env SNOUTY_TEST_DOCTOR_ASK_REGISTRY=
+[!staging] env ANTITHESIS_REGISTRY=proxy.example.com/testtenant
+
 # A registry setting that is not a registry fails doctor, as it fails every
 # command that reads the settings.
 [!staging] env 'ANTITHESIS_REGISTRY=not a registry'
@@ -414,6 +445,8 @@ env SNOUTY_CONTAINER_ENGINE=
 snouty doctor --offline
 stderr 'Container runtime: podman detected'
 
+-- registry_cfg/snouty/settings.toml --
+registry = "proxy.example.com/testtenant"
 -- base_url.toml --
 [profile.proxied]
 base_url = "${BASE_URL}"

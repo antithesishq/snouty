@@ -53,6 +53,20 @@ pub(crate) fn scaled_wait(wait: Duration) -> Duration {
     wait.mul_f64(wait_scale())
 }
 
+/// The tests set this so that doctor asks the tenant for its registry when a
+/// `base_url` is set, because the mock tenant is reachable only at a
+/// `base_url`. It is not a user setting.
+const TEST_DOCTOR_ASK_REGISTRY_VAR_NAME: &str = "SNOUTY_TEST_DOCTOR_ASK_REGISTRY";
+
+/// True when [`TEST_DOCTOR_ASK_REGISTRY_VAR_NAME`] is set.
+pub(crate) fn test_doctor_asks_registry() -> bool {
+    // This variable must not fail a command.
+    var(TEST_DOCTOR_ASK_REGISTRY_VAR_NAME)
+        .ok()
+        .flatten()
+        .is_some()
+}
+
 /// The empty-as-unset policy, factored out of the environment read so it can be
 /// unit-tested without mutating process-global state (which would race other
 /// tests under threaded `cargo test`).

@@ -13,4 +13,4 @@ Output: a `moment INPUT_HASH` divider is emitted at the start of each branch. Ea
 Examples:
   {{ t("snouty runs logs <run_id> <input_hash>")? }}
   {{ t("snouty runs logs <run_id> -123 <vtime>")? }}
-  {{ t("snouty runs logs <run_id> <input_hash> <vtime> --begin-vtime <begin_vtime>")? }}
+  {{ t("snouty runs logs <run_id> --begin-vtime <begin_vtime> <input_hash> <vtime>")? }}

@@ -124,7 +124,7 @@ env_from_json 0 ref
 substitute digest_config/docker-compose.yaml
 [docker] mock-server 200 '{"runId":"run-123","statusCode":200}'
 [docker] snouty launch --launcher basic_test -c digest_config --duration 30m
-[docker] stderr 'Image already in a registry, skipping push: .*/snouty-digest:latest@sha256:'
+[docker] stderr 'Image already in a registry, skipping push: .*/snouty-digest@sha256:'
 [docker] ! stderr 'Pushing image: .*snouty-digest'
 mock-server 200 '{"runId":"run-123","statusCode":200}'
 set-env ANTITHESIS_REGISTRY ${REGISTRY}/team

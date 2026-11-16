@@ -116,7 +116,7 @@ stderr 'image '\''.*arm-launch:latest'\'' has architecture '\''arm64'\''.*'
 # digest differs from its push digest, so the registry does not serve it.
 set-env REGISTRY ${ANTITHESIS_REGISTRY}
 mock-server 200 '{"runId":"run-123","statusCode":200}'
-build-image --platform linux/amd64 snouty-digest:v1 images/myapp
+build-image --platform linux/amd64 snouty-digest:v1 images/digest
 snouty launch --launcher basic_test -c digest_seed_config --duration 30m
 stderr 'Pushing image: .*/snouty-digest:v1'
 exec sh -c '"$SNOUTY_CONTAINER_ENGINE" image inspect --format "{\"ref\":{{json (index .RepoDigests 0)}}}" "$REGISTRY/snouty-digest:v1"'
@@ -163,6 +163,8 @@ stderr '"vcs.version_id": "[0-9a-f]{40}"'
 
 -- images/myapp/content --
 placeholder
+-- images/digest/content --
+digest placeholder
 -- images/sidecar/content --
 placeholder
 -- images/arm_launch/Dockerfile --

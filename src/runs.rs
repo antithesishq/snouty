@@ -684,6 +684,10 @@ async fn cmd_runs_properties(
         outln!("{}", render_properties_table(&properties))?;
     }
 
+    if !json && let Some(note) = unreached_note(run_id, &properties) {
+        eprintln!("\n{}", wrap_if_tty(&note));
+    }
+
     // The list endpoint reports a property as Pending while the server
     // still processes a finished run's data, with nonzero example counts
     // (antithesis-orbitinghail tenant, release 67).
@@ -729,17 +733,66 @@ async fn cmd_runs_property(
 
 fn print_properties_detail(run_id: &str, properties: &[Property]) -> Result<()> {
     outln!("{}", render_properties_detail(properties))?;
-    // One next step for the whole listing: every HASH/VTIME row above feeds it.
-    let has_moments = properties.iter().any(|p| match p {
-        Property::EventProperty(p) => !p.examples.is_empty() || !p.counterexamples.is_empty(),
-        Property::NonEventProperty(_) => false,
-    });
-    if has_moments {
-        outln!(
-            "\nview logs leading up to an example:\n  snouty runs logs {run_id} <hash> <vtime>"
-        )?;
+    if let Some(hint) = logs_hint(run_id, properties) {
+        outln!("\n{hint}")?;
     }
     Ok(())
+}
+
+/// One next step for the whole listing: the `runs logs` command for the first
+/// failing moment in display order, else the first passing one. Each is the
+/// earliest moment of its property, as in the top row of its table.
+fn logs_hint(run_id: &str, properties: &[Property]) -> Option<String> {
+    let sections = group_property_sections(properties);
+    let event_properties = || {
+        sections
+            .iter()
+            .flat_map(|(_, props)| props)
+            .filter_map(|p| match p {
+                Property::EventProperty(p) => Some(p),
+                Property::NonEventProperty(_) => None,
+            })
+    };
+    fn earliest(events: &[Event]) -> Option<&Event> {
+        events.iter().min_by_key(|e| e.moment.vtime)
+    }
+    let (status, event) = event_properties()
+        .find_map(|p| earliest(&p.counterexamples))
+        .map(|e| ("failing", e))
+        .or_else(|| {
+            event_properties()
+                .find_map(|p| earliest(&p.examples))
+                .map(|e| ("passing", e))
+        })?;
+    Some(format!(
+        "view logs leading up to a {status} example:\n  snouty runs logs {run_id} {} {}",
+        sanitize(&event.moment.input_hash),
+        event.moment.vtime
+    ))
+}
+
+/// A note for the failing event properties with no examples and no
+/// counterexamples: the run never reached them. A run that stopped early, for
+/// example in setup, shows many of them (observed on the orbitinghail tenant,
+/// release 67: 64 of 80 properties of an incomplete run). A completed run can
+/// show some too.
+fn unreached_note(run_id: &str, properties: &[Property]) -> Option<String> {
+    let unreached = properties
+        .iter()
+        .filter(|p| {
+            matches!(p, Property::EventProperty(_))
+                && is_failing(p)
+                && property_example_counts(p) == (0, 0)
+        })
+        .count();
+    let what = match unreached {
+        0 => return None,
+        1 => "1 failing property has no examples, because the run did not reach it".to_string(),
+        n => format!("{n} failing properties have no examples, because the run did not reach them"),
+    };
+    Some(format!(
+        "{what}. To see if the run stopped early, run `snouty runs show {run_id}`."
+    ))
 }
 
 fn no_properties_message(filter: &PropertyFilter) -> String {
@@ -3262,6 +3315,69 @@ mod tests {
         assert!(
             out.contains("Examples  0 passing examples and 1 failing example\n  STATUS"),
             "examples table should be indented\n{out}"
+        );
+    }
+
+    // The hint fills in the earliest failing moment of the first property in
+    // display order, and falls back to a passing moment when none fails.
+    #[test]
+    fn logs_hint_names_a_real_moment() {
+        let passing = event_property(
+            "a passes",
+            PropertyStatus::Passing,
+            None,
+            vec![event("-7", "9.5"), event("-8", "1.25")],
+            vec![],
+        );
+        let system = non_event_property("b system", PropertyStatus::Failing, vec![], vec![json!(1)]);
+        let failing = event_property(
+            "c fails",
+            PropertyStatus::Failing,
+            None,
+            vec![event("-1", "0.5")],
+            vec![event("-2", "8.0"), event("-3", "4.5")],
+        );
+        let unreached = event_property("d fails", PropertyStatus::Failing, None, vec![], vec![]);
+
+        assert_eq!(
+            logs_hint("run-1", &[passing.clone(), system.clone(), failing]).as_deref(),
+            Some("view logs leading up to a failing example:\n  snouty runs logs run-1 -3 4.5")
+        );
+        assert_eq!(
+            logs_hint("run-1", &[passing, system.clone()]).as_deref(),
+            Some("view logs leading up to a passing example:\n  snouty runs logs run-1 -8 1.25")
+        );
+        assert_eq!(logs_hint("run-1", &[system, unreached]), None);
+    }
+
+    // Only a failing event property with no examples of either kind counts.
+    #[test]
+    fn unreached_note_counts_failing_properties_with_no_examples() {
+        let unreached = || event_property("u", PropertyStatus::Failing, None, vec![], vec![]);
+        let others = [
+            event_property("pass", PropertyStatus::Passing, None, vec![], vec![]),
+            event_property("pending", PropertyStatus::Pending, None, vec![], vec![]),
+            event_property("fail", PropertyStatus::Failing, None, vec![], vec![event("-1", "1.0")]),
+            non_event_property("system", PropertyStatus::Failing, vec![], vec![]),
+        ];
+        assert_eq!(unreached_note("run-1", &others), None);
+
+        let mut props = others.to_vec();
+        props.push(unreached());
+        assert_eq!(
+            unreached_note("run-1", &props).as_deref(),
+            Some(
+                "1 failing property has no examples, because the run did not reach it. \
+                 To see if the run stopped early, run `snouty runs show run-1`."
+            )
+        );
+        props.push(unreached());
+        assert_eq!(
+            unreached_note("run-1", &props).as_deref(),
+            Some(
+                "2 failing properties have no examples, because the run did not reach them. \
+                 To see if the run stopped early, run `snouty runs show run-1`."
+            )
         );
     }
 

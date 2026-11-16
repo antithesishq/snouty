@@ -45,7 +45,7 @@ fn long_name_wraps_under_its_value() {
     let screen = run_on_pty(
         "runs properties run-1 --name counter --detail",
         PTY_COLS,
-        "<hash> <vtime>",
+        "45.334635781589895",
     );
 
     let lines: Vec<&str> = screen.lines().collect();

@@ -826,7 +826,7 @@ class PropertyExamplesCheck(unittest.TestCase):
 
     def test_passes_with_one_logs_command_for_the_run(self):
         passed, detail = self.check(
-            f"\nview logs:\n  snouty runs logs {self.RUN} <hash> <vtime>\n"
+            f"\nview logs:\n  snouty runs logs {self.RUN} -2397511140710350372 67.13026605779305\n"
         )
         self.assertTrue(passed, detail)
 

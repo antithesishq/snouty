@@ -782,11 +782,12 @@ fn push_destination(image: &str, prefix: &str) -> Result<String> {
 /// digest-pinned reference to use, or `None` when the image must be pushed.
 ///
 /// Candidate digests are the local store's repo digests for that
-/// repository. A candidate counts only when the registry confirms it serves
-/// the digest (a manifest-only round trip — never a pull or push) AND the
-/// platform can run amd64 from it: a manifest list must offer an amd64 entry,
-/// while a single manifest shares the local image's architecture, so the
-/// local image must be amd64.
+/// repository, or only the author's digest when `image` is digest-pinned
+/// (that pin is then kept as written). A candidate counts only when the
+/// registry confirms it serves the digest (a manifest-only round trip —
+/// never a pull or push) AND the platform can run amd64 from it: a manifest
+/// list must offer an amd64 entry, while a single manifest shares the local
+/// image's architecture, so the local image must be amd64.
 ///
 /// The registry of `prefix` is asked only for an image that the author named
 /// at its push destination, whose manifest list a push would replace with
@@ -818,7 +819,7 @@ fn find_remote_pin(rt: &dyn ContainerRuntime, image: &str, prefix: &str) -> Resu
         if serves_amd64(rt, image, &repo, &digest)? {
             return Ok(Some(format!("{repo}:{tag}@{digest}")));
         }
-        // Served, but not runnable as amd64 — keep looking; the push path's
+        // Not served, or not runnable as amd64 — keep looking; the push path's
         // local arch check produces the actionable error.
     }
     Ok(None)
@@ -834,6 +835,7 @@ fn serves_amd64(rt: &dyn ContainerRuntime, image: &str, repo: &str, digest: &str
         RemoteManifest::Single => rt.image_architecture(image)? == Architecture::Amd64,
     })
 }
+
 /// Set the `image:` field of each service named in `references` to its
 /// reference. Other services keep their `image:` field.
 fn rewrite_compose_images(yaml: &str, references: &BTreeMap<String, String>) -> Result<String> {

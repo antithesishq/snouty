@@ -525,6 +525,7 @@ impl DockerCompose {
 
     /// Return the `docker-compose.yaml` contents canonicalized, with each
     /// local image rewritten to a digest reference (`name:tag@sha256:...`).
+    /// A digest pin that its registry serves keeps the reference as written.
     ///
     /// The local image store is the single source of truth for what a launch
     /// runs — snouty never pulls. A local image is rewritten to the digest in

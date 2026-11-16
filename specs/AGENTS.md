@@ -31,7 +31,9 @@ SNOUTY_SPEC=doctor,runs cargo nextest run spec_tests
 
 The files run at the same time, except against staging. The runner sets
 `SNOUTY_TEST_SECOND_MS`, which shortens the retry waits of snouty. A case that
-reads a real wait clears it first: `env SNOUTY_TEST_SECOND_MS=`.
+reads a real wait clears it first: `env SNOUTY_TEST_SECOND_MS=`. A case that
+needs doctor to compare the registry setting with the mock tenant's registry
+sets `env SNOUTY_TEST_DOCTOR_ASK_REGISTRY=1`.
 
 A file in `specs_engine/`
 does not run until you add it to `tests/spec.rs` by hand: one

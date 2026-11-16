@@ -164,8 +164,6 @@ A matching environment variable always overrides the file. The supported keys an
 | `update_channel`            | `SNOUTY_UPDATE_CHANNEL`           | `stable` (default) or `unstable`, for `snouty update`.                           |
 | `api_cache_max_file_size`   | `SNOUTY_API_CACHE_MAX_FILE_SIZE`  | Largest response the API cache stores, as `10 MB`, `10 MiB` or a byte count.     |
 
-`repository` and `ANTITHESIS_REPOSITORY` are aliases for `registry` and `ANTITHESIS_REGISTRY`.
-
 A credential is never read from a settings file. `snouty login` keeps credentials apart from settings — see [Authentication](#authentication).
 
 Run `snouty settings show` to print the value that snouty resolved for each setting, the settings files it read, and the credentials file.

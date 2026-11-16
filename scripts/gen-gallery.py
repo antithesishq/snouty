@@ -30,7 +30,8 @@ There are five kinds of story:
     results. The gallery reuses a live run that an earlier gallery launched,
     or launches one. The run stories take about 25 minutes. `--no-run` leaves
     them out. When the gallery fails after it launched a run, it cancels the
-    run.
+    run. The `settings-invalid-*` stories seed a settings file or variable
+    that snouty cannot use, and need no API.
   * help stories — capture `snouty <cmd> --help` next to that command's default
     output (slugs like `help-runs-properties`) and judge whether the help is
     informative, clear, concise, consistent, and *aligned* with what the command
@@ -46,9 +47,10 @@ There are five kinds of story:
     an asciinema recording to replay, and the files the command persisted. See
     "TTY stories" below.
   * mock tenant stories — run snouty against a mock tenant on the loopback,
-    for the credential paths that a live tenant cannot show on demand: single
-    sign-on, token renewal, GitHub Actions OIDC and a rejected credential (see
-    `MockTenant`). The TTY stories use a mock tenant too.
+    for the paths that a live tenant cannot show on demand: single sign-on,
+    token renewal, GitHub Actions OIDC, a rejected credential, and a tenant
+    registry that is not the configured one (see `MockTenant`). The TTY
+    stories use a mock tenant too.
 
 Credentials come from the usual ANTITHESIS_* environment variables (snouty reads
 them). Behaviour is controlled with flags, not env vars:
@@ -2369,18 +2371,23 @@ def _sample_note_ok(text: str) -> bool:
     return (m[1] is not None) == sampled
 
 
+_LOGS_COMMAND = re.compile(r"^\s*snouty runs logs (\S+)", re.MULTILINE)
+
+
 def property_has_examples(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     """Example moments with no `Details` row, totals that say when the table
-    is a sample, plus the one trailing next step they feed."""
+    is a sample, and exactly one `snouty runs logs` command, for the story's
+    run (`args[2]`)."""
     text = sr.result.combined
     rows = _has_moment_rows(text)
     no_details = _DETAILS_ROW.search(text) is None
     sample = _sample_note_ok(text)
-    hint = contains_text(text, "view logs leading up to an example:")
+    hints = _LOGS_COMMAND.findall(text)
+    hint = hints == [sr.story.args[2]]
     return (
         rows and no_details and sample and hint,
         f"moment rows={rows}, no Details row={no_details}, sample note={sample}, "
-        f"logs hint={hint}",
+        f"logs commands={hints!r}",
     )
 
 
@@ -4562,6 +4569,22 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "repository.",
             ["settings", "trust"],
         ),
+        _help_story(
+            "help-settings-deny",
+            "Learn what denying a settings file does",
+            "I run `snouty settings deny --help` before I deny a file that came with a "
+            "repository I do not trust.",
+            ["settings", "deny"],
+        ),
+        # `login` is interactive; the TTY stories run it, so this story shows
+        # only its help.
+        _help_story(
+            "help-login",
+            "Learn how to sign in",
+            "I run `snouty login --help` to learn what login asks for, what it saves "
+            "and where, and how to sign in to a second tenant.",
+            ["login"],
+        ),
         # -- docs (help-only: output depends on a downloaded docs DB) --------
         _help_story(
             "help-docs",
@@ -5172,10 +5195,11 @@ def _mock_story(
     tenant: MockTenantSpec,
     *,
     seed_files: dict[str, str] | None = None,
-    **credential: str,
+    **credential: str | None,
 ) -> Story:
     """A story on a configured machine with an isolated config, whose only
-    credential is the one that the story gives (or seeds)."""
+    credential is the one that the story gives (or seeds). A keyword argument
+    sets an environment variable, or unsets it when None."""
     return Story(
         slug,
         title,
@@ -5272,6 +5296,74 @@ def build_mock_tenant_stories() -> list[Story]:
             ANTITHESIS_API_KEY=_FAKE_API_KEY_B,
         ),
         _mock_story(
+            "doctor-registry-other",
+            "My saved registry is not the tenant's Antithesis registry",
+            "I signed in with `snouty login` before my tenant had an Antithesis registry, "
+            "and my settings file still names the registry that I used then. I want "
+            "doctor to tell me whether I should change it.",
+            "doctor reports the container registry as set, with no warning: the old "
+            "registry still works. It names the tenant's Antithesis registry, says that "
+            "I can keep the one I use, and names `snouty login` as the way to switch, "
+            "because login writes the settings file that holds the value.",
+            ["doctor"],
+            doctor_check(
+                contains=(
+                    "✓ container registry is set",
+                    f"the tenant also has an Antithesis registry, `{_TENANT_REGISTRY}`",
+                    f"you can keep using `{_REGISTRY}`, or run `snouty login` to switch",
+                    "Antithesis API reachable",
+                ),
+                absent=("ANTITHESIS_REGISTRY",),
+            ),
+            MockTenantSpec(),
+            SNOUTY_TEST_DOCTOR_ASK_REGISTRY="1",
+            seed_files={_SETTINGS: _SEED_SETTINGS_TOML},
+            ANTITHESIS_TENANT=None,
+            ANTITHESIS_REGISTRY=None,
+            ANTITHESIS_API_KEY=_FAKE_API_KEY_B,
+        ),
+        _mock_story(
+            "doctor-registry-other-env",
+            "My CI sets a registry that is not the tenant's Antithesis registry",
+            "My CI job sets ANTITHESIS_REGISTRY to the registry that we used before the "
+            "tenant had an Antithesis registry. I want doctor to tell me whether I should "
+            "change it.",
+            "doctor reports the container registry as set, with no warning. It names the "
+            "tenant's Antithesis registry, says that I can keep the one I use, and says to "
+            "set ANTITHESIS_REGISTRY to switch. It does not suggest `snouty login`, which "
+            "cannot change an environment variable.",
+            ["doctor"],
+            doctor_check(
+                contains=(
+                    "✓ container registry is set",
+                    f"the tenant also has an Antithesis registry, `{_TENANT_REGISTRY}`",
+                    f"you can keep using `{_REGISTRY}`, or set ANTITHESIS_REGISTRY to it",
+                    "Antithesis API reachable",
+                ),
+                absent=("to switch to it",),
+            ),
+            MockTenantSpec(),
+            SNOUTY_TEST_DOCTOR_ASK_REGISTRY="1",
+            ANTITHESIS_API_KEY=_FAKE_API_KEY_B,
+        ),
+        _mock_story(
+            "doctor-registry-tenant",
+            "My registry is under the tenant's Antithesis registry",
+            "I set ANTITHESIS_REGISTRY to a path under my tenant's Antithesis registry, "
+            "written with a scheme and in mixed case. I want doctor to accept it.",
+            "doctor reports the container registry as set, with no note about another "
+            "registry: a path under the tenant's registry is the tenant's registry.",
+            ["doctor"],
+            doctor_check(
+                contains=("✓ container registry is set", "Antithesis API reachable"),
+                absent=("also has an Antithesis registry",),
+            ),
+            MockTenantSpec(),
+            SNOUTY_TEST_DOCTOR_ASK_REGISTRY="1",
+            ANTITHESIS_API_KEY=_FAKE_API_KEY_B,
+            ANTITHESIS_REGISTRY=f"https://Registry.{_TENANT.title()}.antithesis.com/app",
+        ),
+        _mock_story(
             "doctor-oidc-forbidden",
             "GitHub Actions refuses the job an OIDC token",
             "My GitHub Actions job signs in with OIDC, but GitHub refuses to give it a token. "
@@ -5292,9 +5384,151 @@ def build_mock_tenant_stories() -> list[Story]:
     ]
 
 
+def _settings_error_story(
+    slug: str,
+    title: str,
+    goal: str,
+    judge: str,
+    args: list[str],
+    check: Callable[[StoryRun, Registry], tuple[bool, str]],
+    *,
+    settings_toml: str | None = None,
+    **env: str,
+) -> Story:
+    """A story whose settings hold a value that snouty cannot use: in the
+    global settings file (`settings_toml`) or in an environment variable
+    (`env`). snouty fails before it sends a request."""
+    return Story(
+        slug,
+        title,
+        goal,
+        judge,
+        args,
+        check,
+        json_capable=False,
+        expect_ok=False,
+        env={**_no_ambient_antithesis_env(), **env},
+        isolate_config=True,
+        seed_files=None if settings_toml is None else {_SETTINGS: settings_toml},
+    )
+
+
+_BAD_REGISTRY = "user@registry.example.com/acme/app"
+_BAD_TENANT = "acme corp"
+# An unclosed string, so the file is not valid TOML.
+_BAD_TOML = f'tenant = "{_TENANT}\nregistry = "{_REGISTRY}"\n'
+
+
+def build_settings_error_stories() -> list[Story]:
+    """A setting that snouty cannot use, for an ordinary command and for
+    login, which suggests a different fix."""
+    return [
+        _settings_error_story(
+            "settings-invalid-registry-file",
+            "My settings file names a registry that is not valid",
+            "I edited the registry in my settings file by hand, and wrote a user name in "
+            "it. I list my runs.",
+            "snouty fails before it contacts the tenant. The error names the `registry` "
+            "setting, the file and the bad value, says what a registry may hold, and "
+            "suggests to fix the file, or to delete it and run `snouty login`. Exit 1.",
+            ["runs", "list"],
+            fails_with(
+                "invalid setting `registry` in",
+                _SETTINGS,
+                f"`{_BAD_REGISTRY}` is not a container registry",
+                "snouty login",
+            ),
+            settings_toml=f'tenant = "{_TENANT}"\nregistry = "{_BAD_REGISTRY}"\n',
+            ANTITHESIS_API_KEY=_FAKE_API_KEY_A,
+        ),
+        _settings_error_story(
+            "settings-invalid-registry-env",
+            "ANTITHESIS_REGISTRY is not a registry",
+            "My shell sets ANTITHESIS_REGISTRY to a value that is not a registry. I look "
+            "at my settings.",
+            "snouty fails, names ANTITHESIS_REGISTRY and the bad value, and suggests to fix "
+            "or unset the variable. It does not blame or suggest to delete a settings file. "
+            "Exit 1.",
+            ["settings", "show"],
+            fails_with(
+                "invalid ANTITHESIS_REGISTRY", "fix or unset ANTITHESIS_REGISTRY"
+            ),
+            ANTITHESIS_TENANT=_TENANT,
+            ANTITHESIS_REGISTRY=_BAD_REGISTRY,
+        ),
+        _settings_error_story(
+            "settings-invalid-tenant-file",
+            "My settings file names a tenant that is not valid",
+            "I typed my tenant with a space in my settings file. I run doctor to find "
+            "what is wrong.",
+            "snouty fails, names the `tenant` setting, the file and the bad value, says "
+            "what a tenant may hold, and suggests to fix the file. Exit 1.",
+            ["doctor"],
+            fails_with(
+                "invalid setting `tenant` in",
+                _SETTINGS,
+                f"`{_BAD_TENANT}` is not a valid tenant",
+            ),
+            settings_toml=f'tenant = "{_BAD_TENANT}"\nregistry = "{_REGISTRY}"\n',
+            ANTITHESIS_API_KEY=_FAKE_API_KEY_A,
+        ),
+        _settings_error_story(
+            "settings-invalid-tenant-env-login",
+            "Log in while ANTITHESIS_TENANT is not valid",
+            "My shell sets ANTITHESIS_TENANT to a value with a space, and I run "
+            "`snouty login`.",
+            "login fails before it asks anything. The error names ANTITHESIS_TENANT and the "
+            "bad value, and says to fix or unset it, then run `snouty login` again. Exit 1.",
+            ["login"],
+            fails_with(
+                "invalid ANTITHESIS_TENANT",
+                f"`{_BAD_TENANT}` is not a valid tenant",
+                "fix or unset ANTITHESIS_TENANT, then run `snouty login` again",
+            ),
+            ANTITHESIS_TENANT=_BAD_TENANT,
+        ),
+        _settings_error_story(
+            "settings-invalid-toml",
+            "My settings file is not valid TOML",
+            "I edited my settings file by hand and left a quote open. I list my runs.",
+            "snouty fails, names the file, shows the line and column of the TOML error, "
+            "and suggests to fix the file, or to delete it and run `snouty login`. Exit 1.",
+            ["runs", "list"],
+            fails_with(
+                _SETTINGS,
+                "is not valid TOML",
+                "line 1",
+                "or delete it and run `snouty login`",
+            ),
+            settings_toml=_BAD_TOML,
+            ANTITHESIS_API_KEY=_FAKE_API_KEY_A,
+        ),
+        _settings_error_story(
+            "settings-invalid-toml-login",
+            "Log in while my settings file is not valid TOML",
+            "My settings file has an open quote, and I run `snouty login` to start again.",
+            "login fails before it asks anything. The "
+            "error names the file and the TOML error, and says to fix or delete the file, "
+            "then run `snouty login` again. Exit 1.",
+            ["login"],
+            fails_with(
+                _SETTINGS,
+                "is not valid TOML",
+                "then run `snouty login` again",
+            ),
+            settings_toml=_BAD_TOML,
+        ),
+    ]
+
+
 def build_offline_stories() -> list[Story]:
-    """The TTY and mock tenant stories, which need no external dependencies."""
-    return [*build_tty_stories(), *build_mock_tenant_stories()]
+    """The TTY, mock tenant and settings error stories, which need no external
+    dependencies."""
+    return [
+        *build_tty_stories(),
+        *build_mock_tenant_stories(),
+        *build_settings_error_stories(),
+    ]
 
 
 # ---------------------------------------------------------------------------

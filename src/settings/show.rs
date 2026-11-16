@@ -7,7 +7,7 @@ use super::Settings;
 use super::trust::trust_file_path;
 use crate::auth::credentials_file_path;
 use crate::features::{self, Feature};
-use crate::known_path::{KnownPath, KnownPathType};
+use crate::known_path::{KnownPath, KnownPathKind};
 use crate::render::{render_kv, sanitize};
 use crate::stdio;
 use crate::table::{Column, Table};
@@ -70,8 +70,8 @@ fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, 
 pub fn cmd_settings_show(settings: &Settings, json: bool) -> Result<()> {
     let rows = rows(settings, &features::enabled());
     let listed = [
-        (KnownPathType::Credentials, credentials_file_path()),
-        (KnownPathType::Trust, trust_file_path()),
+        (KnownPathKind::Credentials, credentials_file_path()),
+        (KnownPathKind::Trust, trust_file_path()),
     ]
     .into_iter()
     .filter_map(|(kind, path)| {

@@ -7,7 +7,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use color_eyre::Section;
-use color_eyre::eyre::{Report, Result, eyre};
+use color_eyre::eyre::{Result, eyre};
 use serde::Serialize;
 use toml::Table;
 
@@ -15,7 +15,7 @@ use crate::error::user_error;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum KnownPathType {
+pub enum KnownPathKind {
     /// `--settings`, `SNOUTY_SETTINGS_PATH`, or `./.snouty.toml`.
     Project,
     /// `settings.toml` in the global settings dir.
@@ -26,7 +26,7 @@ pub enum KnownPathType {
     Trust,
 }
 
-impl KnownPathType {
+impl KnownPathKind {
     /// What a message calls a file of this type.
     fn noun(self) -> &'static str {
         match self {
@@ -37,7 +37,7 @@ impl KnownPathType {
     }
 }
 
-impl fmt::Display for KnownPathType {
+impl fmt::Display for KnownPathKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Project => "project",
@@ -51,14 +51,14 @@ impl fmt::Display for KnownPathType {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct KnownPath {
     #[serde(rename = "type")]
-    pub kind: KnownPathType,
+    pub kind: KnownPathKind,
     /// Absolute, with symlinks resolved, when the file exists. Otherwise the
     /// path as given.
     pub path: PathBuf,
 }
 
 impl KnownPath {
-    pub(crate) fn new(kind: KnownPathType, path: &Path) -> Self {
+    pub(crate) fn new(kind: KnownPathKind, path: &Path) -> Self {
         Self {
             kind,
             path: fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()),
@@ -82,7 +82,7 @@ impl KnownPath {
     /// The file as a TOML table. `Ok(None)` when the file does not exist and
     /// is not `required`.
     pub(crate) fn load(self, required: bool) -> Result<Option<LoadedFile>> {
-        self.read(required)?.map(|file| file.parse()).transpose()
+        self.read(required)?.map(|file| file.load()).transpose()
     }
 }
 
@@ -93,22 +93,18 @@ pub(crate) struct KnownFile {
 }
 
 impl KnownFile {
-    /// The text as a TOML table. TOML that does not parse is an
-    /// [`InvalidFile`] error.
-    pub(crate) fn parse(&self) -> Result<LoadedFile> {
+    /// The text as a TOML table.
+    pub(crate) fn load(&self) -> Result<LoadedFile> {
         let path = self.path.clone();
         match self.text.parse::<Table>() {
             Ok(table) => Ok(LoadedFile { path, table }),
-            Err(err) => Err(InvalidFile {
-                message: format!(
-                    "{} {} is not valid TOML: {}",
-                    path.kind.noun(),
-                    path.path.display(),
-                    format!("{err:#}").trim_end()
-                ),
-                path,
-            }
-            .report()),
+            Err(err) => Err(user_error(format!(
+                "{} {} is not valid TOML: {}",
+                path.kind.noun(),
+                path.path.display(),
+                format!("{err:#}").trim_end()
+            ))
+            .suggestion(format!("fix or delete {}", path.path.display()))),
         }
     }
 }
@@ -119,39 +115,6 @@ pub(crate) struct LoadedFile {
     pub(crate) path: KnownPath,
     pub(crate) table: Table,
 }
-
-impl LoadedFile {
-    /// `err`, a fault in this file, as an [`InvalidFile`].
-    pub(crate) fn error(&self, err: &Report) -> Report {
-        InvalidFile {
-            path: self.path.clone(),
-            message: format!("{}: {err}", self.path.path.display()),
-        }
-        .report()
-    }
-}
-
-/// A file that snouty cannot use as a whole, such as TOML that does not
-/// parse. The message names the file.
-#[derive(Debug)]
-pub(crate) struct InvalidFile {
-    pub(crate) path: KnownPath,
-    message: String,
-}
-
-impl InvalidFile {
-    fn report(self) -> Report {
-        Report::new(self).suppress_backtrace(true)
-    }
-}
-
-impl fmt::Display for InvalidFile {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for InvalidFile {}
 
 pub(crate) fn read_to_string_if_file_exists(path: &Path) -> Result<Option<String>> {
     match fs::read_to_string(path) {
@@ -167,7 +130,7 @@ mod tests {
 
     #[test]
     fn a_missing_file_loads_as_none_unless_it_is_required() {
-        let path = || KnownPath::new(KnownPathType::Project, Path::new("/no/such/.snouty.toml"));
+        let path = || KnownPath::new(KnownPathKind::Project, Path::new("/no/such/.snouty.toml"));
         assert!(path().load(false).unwrap().is_none());
         let err = path().load(true).unwrap_err();
         assert_eq!(
@@ -179,10 +142,10 @@ mod tests {
     #[test]
     fn invalid_toml_is_reported_with_path() {
         let file = KnownFile {
-            path: KnownPath::new(KnownPathType::Project, Path::new("/some/.snouty.toml")),
+            path: KnownPath::new(KnownPathKind::Project, Path::new("/some/.snouty.toml")),
             text: "this is = = not toml".to_owned(),
         };
-        let msg = file.parse().unwrap_err().to_string();
+        let msg = file.load().unwrap_err().to_string();
         assert!(msg.contains("not valid TOML"), "unexpected error: {msg}");
         assert!(msg.contains(".snouty.toml"), "unexpected error: {msg}");
     }

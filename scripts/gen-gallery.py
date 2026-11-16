@@ -4941,6 +4941,10 @@ _ASK_KEY = "Please enter your API Key"
 _EMPTY_KEY_REFUSED = "An empty value is not valid."
 _ASK_REPLACE_PASSWORD = "Replace your stored username and password?"
 _PASSWORD_REFUSED = "login needs an API key or a single sign-on"
+# The terminal wraps the question to replace the seeded `_REGISTRY`, so a
+# check matches only its start.
+_ASK_REPLACE_REGISTRY = f"Replace registry `{_REGISTRY}`"
+_KEPT_REGISTRY = f"Saved tenant `{_TENANT}` and registry `{_REGISTRY}`."
 # A `credentials.toml` with a username and password, as an older snouty wrote it.
 _SEED_PASSWORD_CREDS_TOML = (
     f'[default]\ntype = "Password"\nusername = "puser"\npassword = "{_FAKE_PASSWORD}"\n'
@@ -5016,21 +5020,27 @@ def build_tty_stories() -> list[Story]:
         _tty_story(
             "login-reuse-default",
             "Re-run login and keep my stored values",
-            "I already logged in; re-running should offer my previous tenant and key back so I "
-            "can just hit enter.",
+            "I already logged in; re-running should offer my previous tenant, key and "
+            "registry back so I can just hit enter.",
             ["login"],
             (
                 (_ASK_TENANT, ENTER),
                 (_ASK_KEY, ENTER),
+                (_ASK_REPLACE_REGISTRY, ENTER),
             ),
             tty_persisted(
-                prompts=(_TENANT, f"{_ASK_KEY} (********7Qxz) kept"),
+                prompts=(
+                    _TENANT,
+                    f"{_ASK_KEY} (********7Qxz) kept",
+                    _ASK_REPLACE_REGISTRY,
+                    _KEPT_REGISTRY,
+                ),
                 # Keeping the stored key replaces nothing, and shows no new mask.
                 absent_prompts=("replacing your stored", "(********7Qxz) ********"),
                 files=(
                     (
                         _SETTINGS,
-                        (f'tenant = "{_TENANT}"', f'registry = "{_TENANT_REGISTRY}"'),
+                        (f'tenant = "{_TENANT}"', f'registry = "{_REGISTRY}"'),
                     ),
                     # Every answer was a bare Enter, so the stored key must survive.
                     (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_API_KEY_B}"')),
@@ -5051,15 +5061,18 @@ def build_tty_stories() -> list[Story]:
             (
                 (_ASK_TENANT, ENTER),
                 (_ASK_KEY, _FAKE_API_KEY_B + ENTER),
+                (_ASK_REPLACE_REGISTRY, ENTER),
             ),
             tty_persisted(
                 prompts=(
                     _ASK_KEY,
                     ", replacing your stored username and password.",
+                    _KEPT_REGISTRY,
                 ),
                 absent_prompts=(_ASK_CREDENTIALS, _ASK_REPLACE_PASSWORD),
                 files=(
                     (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_API_KEY_B}"')),
+                    (_SETTINGS, (f'registry = "{_REGISTRY}"',)),
                 ),
                 secrets_absent=(_FAKE_API_KEY_B, _FAKE_PASSWORD),
             ),
@@ -5103,12 +5116,56 @@ def build_tty_stories() -> list[Story]:
             (
                 (_ASK_TENANT, ENTER),
                 (_ASK_KEY, _FAKE_API_KEY_B + ENTER),
+                (_ASK_REPLACE_REGISTRY, ENTER),
             ),
             tty_persisted(
                 prompts=("/auth/cli/config", "< 403 Forbidden"),
                 files=(
                     (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_API_KEY_B}"')),
                 ),
+                secrets_absent=(_FAKE_API_KEY_B,),
+            ),
+            seed_files={_SETTINGS: _SEED_SETTINGS_TOML},
+        ),
+        _tty_story(
+            "login-keep-custom-registry",
+            "Re-run login and keep my own registry",
+            "I push my images to my own registry, and my tenant now also has an "
+            "Antithesis registry. I re-ran login to sign in again, and I want to keep "
+            "pushing to my own registry.",
+            ["login"],
+            (
+                (_ASK_TENANT, ENTER),
+                (_ASK_KEY, _FAKE_API_KEY_B + ENTER),
+                (_ASK_REPLACE_REGISTRY, "n" + ENTER),
+            ),
+            tty_persisted(
+                prompts=(_ASK_REPLACE_REGISTRY, "Antithesis-provided", _KEPT_REGISTRY),
+                absent_prompts=("replacing registry",),
+                files=((_SETTINGS, (f'registry = "{_REGISTRY}"',)),),
+                secrets_absent=(_FAKE_API_KEY_B,),
+            ),
+            seed_files={_SETTINGS: _SEED_SETTINGS_TOML},
+        ),
+        _tty_story(
+            "login-replace-custom-registry",
+            "Re-run login and move to the Antithesis registry",
+            "I pushed my images to my own registry. My tenant now has an Antithesis "
+            "registry, and I want to push to it from now on.",
+            ["login"],
+            (
+                (_ASK_TENANT, ENTER),
+                (_ASK_KEY, _FAKE_API_KEY_B + ENTER),
+                (_ASK_REPLACE_REGISTRY, "y" + ENTER),
+            ),
+            tty_persisted(
+                prompts=(
+                    _ASK_REPLACE_REGISTRY,
+                    f"Saved tenant `{_TENANT}` and registry `{_TENANT_REGISTRY}`, "
+                    f"replacing registry `{_REGISTRY}`.",
+                ),
+                absent_prompts=("docker login",),
+                files=((_SETTINGS, (f'registry = "{_TENANT_REGISTRY}"',)),),
                 secrets_absent=(_FAKE_API_KEY_B,),
             ),
             seed_files={_SETTINGS: _SEED_SETTINGS_TOML},
@@ -5230,7 +5287,7 @@ _SEED_EXPIRED_OAUTH = {
 
 
 def build_mock_tenant_stories() -> list[Story]:
-    """The mock tenant stories other than login."""
+    """The mock tenant stories that run without a terminal."""
     return [
         _mock_story(
             "runs-key-rejected",
@@ -5380,6 +5437,31 @@ def build_mock_tenant_stories() -> list[Story]:
                 ok=False,
             ),
             MockTenantSpec(actions=ActionsJob.REJECTS_REQUEST),
+        ),
+        Story(
+            "login-script-keeps-custom-registry",
+            "Re-run login in a script over my own registry",
+            "A setup script runs `snouty login --tenant` with an API key in the "
+            "environment. I push to my own registry, and my tenant also has an "
+            "Antithesis registry.",
+            "login keeps the saved registry, warns that the tenant has an Antithesis "
+            "registry, and names the exact command that saves it.",
+            ["login", "--tenant", _TENANT],
+            succeeds_with(
+                f"Kept registry `{_REGISTRY}`",
+                f"the Antithesis-provided container registry at {_TENANT_REGISTRY}",
+                f"snouty login --tenant {_TENANT} --registry {_TENANT_REGISTRY}",
+                _KEPT_REGISTRY,
+            ),
+            json_capable=False,
+            env={
+                **_no_ambient_antithesis_env(),
+                "ANTITHESIS_API_KEY": _FAKE_API_KEY_B,
+            },
+            isolate_config=True,
+            seed_files={_SETTINGS: _SEED_SETTINGS_TOML},
+            tenant=MockTenantSpec(),
+            stdin="",
         ),
     ]
 
@@ -5847,7 +5929,7 @@ def _run_isolated_story(sn: Snouty, story: Story) -> StoryRun:
             "SNOUTY_SETTINGS_PATH": None,
             "SNOUTY_SETTINGS_TRUST": None,
         }
-        result = sn.run(story.args, env, cwd=home)
+        result = sn.run(story.args, env, story.stdin, story.pipe, cwd=home)
         return StoryRun(story, result, None)
     finally:
         shutil.rmtree(home, ignore_errors=True)

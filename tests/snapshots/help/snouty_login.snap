@@ -11,13 +11,15 @@ terminal. Without a terminal, login checks the credential that other commands
 use, such as ANTITHESIS_API_KEY, and stores no credential.
 
 Usually login saves the registry that your tenant reports,
-`registry.<tenant>.antithesis.com`, and you do not need --registry. When the
-tenant reports none, login asks for the registry at the terminal, or keeps the
-one saved for that tenant. Use --registry to push your images to a different
-registry, such as `registry.example.com/team`: a host, optionally with a port
-and a path. That registry must be registered with your Antithesis tenant or
-provided by Antithesis. If you are not sure, contact Antithesis support. Then
-sign in to that registry with `docker login` or `podman login`.
+`registry.<tenant>.antithesis.com`, and you do not need --registry. When another
+registry is saved for the tenant, login asks whether to replace it, and the
+default keeps it. Without a terminal, login keeps it. When the tenant reports
+none, login asks for the registry at the terminal, or keeps the one saved for
+that tenant. Use --registry to push your images to a different registry, such as
+`registry.example.com/team`: a host, optionally with a port and a path. That
+registry must be registered with your Antithesis tenant or provided by
+Antithesis. If you are not sure, contact Antithesis support. Then sign in to
+that registry with `docker login` or `podman login`.
 
 NOTE: `snouty login` will offer to reuse your existing configuration values,
 including any sourced from a local .snouty.toml file or the file specified by

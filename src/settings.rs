@@ -269,11 +269,7 @@ impl SettingsSources {
             Some(path) => KnownPath::new(KnownPathKind::Project, path).load(true)?,
             None => load_default_project_file(trust_override)?,
         };
-        let global = match global_settings_dir() {
-            Some(dir) => KnownPath::new(KnownPathKind::Global, &dir.join(GLOBAL_SETTINGS_FILENAME))
-                .load(false)?,
-            None => None,
-        };
+        let global = load_global_file()?;
         // `--settings` can name the global settings file. Then it is the
         // global file only.
         let project = project.filter(|project| {
@@ -284,6 +280,14 @@ impl SettingsSources {
         Ok(Self {
             env: true,
             files: project.into_iter().chain(global).collect(),
+        })
+    }
+
+    /// The global settings file alone, without the environment variables.
+    fn global_file() -> Result<Self> {
+        Ok(Self {
+            env: false,
+            files: load_global_file()?.into_iter().collect(),
         })
     }
 
@@ -427,6 +431,13 @@ impl Settings {
 
     pub(crate) fn profile(&self) -> Option<&str> {
         self.profile.as_deref()
+    }
+
+    /// The settings that the global settings file alone gives for `profile`,
+    /// without the environment variables and the project file: the values
+    /// that `snouty login` writes.
+    pub(crate) fn resolve_global_file(profile: Option<String>) -> Result<Self> {
+        SettingsSources::global_file()?.resolve(profile)
     }
 
     /// These settings with `tenant` in place of the tenant setting.
@@ -731,6 +742,16 @@ pub fn require_setting<'a>(value: Option<&'a str>, setting: &str) -> Result<&'a 
 
 fn missing_setting(setting: &str) -> color_eyre::Report {
     eyre!("Could not resolve Antithesis {setting}. Run snouty doctor to debug.")
+}
+
+/// Load the global settings file, when it exists.
+fn load_global_file() -> Result<Option<LoadedFile>> {
+    match global_settings_dir() {
+        Some(dir) => {
+            KnownPath::new(KnownPathKind::Global, &dir.join(GLOBAL_SETTINGS_FILENAME)).load(false)
+        }
+        None => Ok(None),
+    }
 }
 
 /// Load `./.snouty.toml` when it exists and [`trust::verdict`] allows it.

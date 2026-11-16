@@ -125,6 +125,42 @@ stderr -literal 'is not a container registry'
 stderr 'nothing was saved'
 ! exists reported_url/.config/snouty/settings.toml
 
+# Without a TTY, login keeps a saved custom registry over the tenant's
+# registry, and names the command that saves the tenant's registry.
+isolate-home keep_custom
+mock-server 200 '{"auth":"antithesis","registry_url":"registry.spec-tenant.antithesis.com"}'
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
+env ANTITHESIS_TENANT=
+snouty login --tenant spec-tenant --registry registry.example.com/acme
+snouty login --tenant spec-tenant
+stderr -literal 'run `snouty login --tenant spec-tenant --registry registry.spec-tenant.antithesis.com`'
+stdout 'registry `registry.example.com/acme`\.$'
+file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
+snouty --profile prod login --tenant spec-tenant --registry registry.example.com/prod
+snouty --profile prod login --tenant spec-tenant
+stderr -literal 'run `snouty login --tenant spec-tenant --registry registry.spec-tenant.antithesis.com --profile prod`'
+# --registry saves the tenant's registry without a warning.
+snouty login --tenant spec-tenant --registry registry.spec-tenant.antithesis.com
+! stderr 'Kept registry'
+file ~/.config/snouty/settings.toml 'registry = "registry.spec-tenant.antithesis.com"'
+
+# A value in the global settings file that snouty cannot use fails the login,
+# also when an environment variable hides it from the other commands. Login
+# saves nothing.
+isolate-home hidden_fault
+snouty login --tenant spec-tenant --registry registry.example.com/acme
+cp saved_hidden_fault.toml hidden_fault/.config/snouty/settings.toml
+env SNOUTY_UPDATE_CHANNEL=stable
+snouty settings show
+! snouty login --tenant spec-tenant
+stderr 'invalid setting `update_channel` in /.*/settings\.toml'
+stderr 'Suggestion: fix or delete /.*/settings\.toml$'
+file ~/.config/snouty/settings.toml 'update_channel = "betta"'
+! snouty login --tenant spec-tenant --registry registry.example.com/other
+stderr 'invalid setting `update_channel` in /.*/settings\.toml'
+file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
+env SNOUTY_UPDATE_CHANNEL=
+
 # A tenant that cannot be reached fails the login, which names the URL and
 # saves nothing.
 isolate-home unreachable
@@ -235,6 +271,10 @@ file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
 -- saved_scheme.toml --
 tenant = "spec-tenant"
 registry = "https://registry.example.com/my-org/"
+-- saved_hidden_fault.toml --
+tenant = "spec-tenant"
+registry = "registry.example.com/acme"
+update_channel = "betta"
 -- saved_invalid.toml --
 tenant = "spec-tenant"
 registry = "not a registry"

@@ -1170,7 +1170,8 @@ fn mock_usage_json(
 /// Run ids that exist on the mock server. Nested endpoints (properties, logs,
 /// events, build logs) 404 for any other id, matching the real API and letting
 /// run-scoped commands disambiguate "run not found" from an empty resource.
-/// The routes of `run-empty` and `run-no-events` know those IDs. The streaming
+/// The routes of `run-empty` and `run-no-events` know those IDs, and the
+/// properties route knows `run-unreached`. The streaming
 /// routes know `run-stream-error`, whose response ends with a `Stream_Error`
 /// line, and the run status stream route also knows `run-stream-cut`.
 fn mock_run_known(run_id: &str) -> bool {
@@ -1439,6 +1440,16 @@ fn mock_route_list_run_properties(run_id: &str, query: Option<&str>) -> (u16, St
         return (
             200,
             r#"{"data":[{"name":"No events property","status":"Passing","is_event":false,"example_count":0,"counterexample_count":0}],"next_cursor":null}"#.to_string(),
+        );
+    }
+
+    // `run-unreached` stands in for a run that stopped in setup: a failing
+    // event property with no examples (observed on the antithesis-orbitinghail
+    // tenant, release 67, run 761650a548885eb8f1c2a7803b60ffb7-67-6).
+    if run_id == "run-unreached" {
+        return (
+            200,
+            r#"{"data":[{"id":"74801430a78b756d4ebef961dc3e4bd5","name":"Always assertions: queue actions succeed","status":"Failing","is_event":true,"is_group":false,"category":"Antithesis SDK","example_count":0,"counterexample_count":0,"examples":[],"counterexamples":[]}],"next_cursor":null}"#.to_string(),
         );
     }
 

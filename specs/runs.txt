@@ -339,6 +339,20 @@ mock-runs-server
 [!staging] stdout '"status":"Pending"'
 [!staging] ! stderr 'still being processed'
 
+# A failing property with no examples adds a note on stderr that the run did
+# not reach it. `--json` prints no note.
+mock-runs-server
+[!staging] snouty runs properties run-unreached
+[!staging] stdout '^fail +0 +0 +\S+ +.*queue actions succeed$'
+[!staging] stderr '^1 failing property has no examples, because the run did not reach it\.'
+[!staging] stderr -literal 'snouty runs show run-unreached'
+[!staging] ! stdout 'did not reach'
+
+mock-runs-server
+[!staging] snouty --json runs properties run-unreached
+[!staging] stdout '"counterexample_count":0'
+[!staging] ! stderr 'did not reach'
+
 # `snouty runs properties --failing` shows only failing properties.
 mock-runs-server
 snouty runs properties --failing $R_run_id

@@ -260,11 +260,7 @@ async fn do_cmd_login(
     )
     .await?;
     let suggestion = "run `snouty login --registry <registry>`";
-    // A saved registry of another tenant is neither offered nor kept.
-    let saved_registry = current_settings
-        .registry()
-        .map(Tagged::value)
-        .filter(|_| current_settings.tenant() == Some(&tenant_to_use));
+    let saved_registry = registry_of_tenant(current_settings, &tenant_to_use);
     let (registry_to_use, custom) = match (registry_flag, reported) {
         // --registry takes the place of the registry that the tenant reports.
         (Some(registry), _) => (registry, None),
@@ -275,16 +271,14 @@ async fn do_cmd_login(
             // `current_settings` resolved from the same file without a fault,
             // so a fault here means that the file changed since, and the
             // update below reports it.
-            let saved = Settings::resolve_global_file(profile_to_use.clone())
+            let custom = Settings::resolve_global_file(profile_to_use.clone())
                 .inspect_err(|err| debug!("cannot read the saved registry: {err:#}"))
                 .ok()
-                .filter(|saved| saved.tenant() == Some(&tenant_to_use));
-            let custom = saved
-                .as_ref()
-                .and_then(Settings::registry)
-                .map(Tagged::value)
-                .filter(|registry| **registry != reported)
-                .cloned();
+                .and_then(|saved| {
+                    registry_of_tenant(&saved, &tenant_to_use)
+                        .filter(|registry| **registry != reported)
+                        .cloned()
+                });
             match custom {
                 None => (reported, None),
                 Some(custom) if !interactive => (custom, Some(CustomRegistry::Kept { reported })),
@@ -399,6 +393,15 @@ enum CustomRegistry {
     /// Login kept the custom registry over `reported`, without a terminal
     /// to ask.
     Kept { reported: Registry },
+}
+
+/// The registry that `settings` saves for `tenant`. A saved registry of
+/// another tenant is neither offered nor kept.
+fn registry_of_tenant<'a>(settings: &'a Settings, tenant: &Tenant) -> Option<&'a Registry> {
+    settings
+        .registry()
+        .map(Tagged::value)
+        .filter(|_| settings.tenant() == Some(tenant))
 }
 
 /// How a question or a warning names the registry that the tenant reports.

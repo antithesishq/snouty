@@ -633,8 +633,8 @@ fn contains_setup_complete(content: &str) -> bool {
 ///
 /// Each container is inspected regardless of state — Antithesis only runs
 /// test commands in *running* containers, but we still inspect stopped ones
-/// (when visible) so we can fail validation with a clear error when test
-/// commands are stranded in a container whose entrypoint exited prematurely.
+/// (when visible) so we can warn when test commands are stranded in a
+/// container that exited.
 /// Supports scaled services (`replicas > 1`): per-container scratch dirs are
 /// keyed on container ID so replicas don't trample each other's extracts.
 ///
@@ -738,11 +738,8 @@ fn discover_scripts(
         return Err(err);
     }
 
-    // A service carrying test commands whose container has exited is, for this
-    // release, only a warning: a one-shot setup/init container that exits 0 is a
-    // legitimate compose pattern (e.g. `depends_on: service_completed_successfully`),
-    // and an unexpected non-zero exit surfaces as a property failure during the
-    // run itself. We can promote this to a hard error later if it proves noisy.
+    // Stranded test commands are a warning, not an error: the rest of the
+    // harness can still run.
     if !stopped_with_scripts.is_empty() {
         eprintln!(
             "{}",
@@ -816,11 +813,8 @@ fn combined_discovery_error(
     err
 }
 
-/// Advisory warning that services carrying Antithesis test commands have exited.
-/// This is intentionally not an error: a one-shot setup/init container that
-/// exits 0 is a legitimate compose pattern. Antithesis still cannot run test
-/// commands in a stopped container, so we surface it; an unexpected non-zero
-/// exit is caught as a property failure during the run itself.
+/// Warning that the test commands in these services never run, because
+/// their containers exited.
 fn stranded_scripts_warning(stopped_with_scripts: &BTreeSet<String>) -> String {
     let listing = stopped_with_scripts
         .iter()
@@ -828,11 +822,8 @@ fn stranded_scripts_warning(stopped_with_scripts: &BTreeSet<String>) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "Warning: these services contain Antithesis test commands but their containers \
-         exited; Antithesis cannot run test commands in a stopped container:\n{listing}\n\
-         If a container should stay up for the test, set its command/entrypoint to a \
-         long-running process (for example `sleep infinity` or `tail -f /dev/null`). A \
-         one-shot setup/init container that exits 0 can be left as-is."
+        "warning: the containers of these services exited, so their test commands will \
+         never run. Move the test commands to a service that keeps running:\n{listing}"
     )
 }
 
@@ -1592,17 +1583,13 @@ services:
     }
 
     #[test]
-    fn stranded_scripts_warning_lists_services_and_stays_advisory() {
+    fn stranded_scripts_warning_lists_services() {
         let mut stopped = BTreeSet::new();
         stopped.insert("init".to_string());
         stopped.insert("migrate".to_string());
         let msg = stranded_scripts_warning(&stopped);
-        // Advisory, not a failure: it warns and names every affected service,
-        // and explicitly blesses a one-shot container that exits 0.
-        assert!(msg.starts_with("Warning:"));
-        assert!(msg.contains("  init"));
-        assert!(msg.contains("  migrate"));
-        assert!(msg.contains("exits 0"));
+        assert!(msg.starts_with("warning:"));
+        assert!(msg.ends_with("\n  init\n  migrate"));
     }
 
     #[test]

@@ -4888,7 +4888,7 @@ def build_validate_stories(ephemeral: Path | None) -> list[Story]:
             "A one-shot container holds test commands but exits during startup.",
             "snouty warns those commands are stranded but still validates successfully.",
             [str(s / "stranded")],
-            succeeds_with("their containers exited", "Setup validation successful"),
+            succeeds_with("test commands will never run", "Setup validation successful"),
             needs_docker=True,
         ),
     ]

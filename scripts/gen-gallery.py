@@ -5503,7 +5503,7 @@ _BAD_TOML = f'tenant = "{_TENANT}\nregistry = "{_REGISTRY}"\n'
 
 def build_settings_error_stories() -> list[Story]:
     """A setting that snouty cannot use, for an ordinary command and for
-    login, which suggests a different fix."""
+    login."""
     return [
         _settings_error_story(
             "settings-invalid-registry-file",
@@ -5512,13 +5512,13 @@ def build_settings_error_stories() -> list[Story]:
             "it. I list my runs.",
             "snouty fails before it contacts the tenant. The error names the `registry` "
             "setting, the file and the bad value, says what a registry may hold, and "
-            "suggests to fix the file, or to delete it and run `snouty login`. Exit 1.",
+            "suggests to fix or delete the file. Exit 1.",
             ["runs", "list"],
             fails_with(
                 "invalid setting `registry` in",
                 _SETTINGS,
                 f"`{_BAD_REGISTRY}` is not a container registry",
-                "snouty login",
+                "fix or delete",
             ),
             settings_toml=f'tenant = "{_TENANT}"\nregistry = "{_BAD_REGISTRY}"\n',
             ANTITHESIS_API_KEY=_FAKE_API_KEY_A,
@@ -5560,12 +5560,12 @@ def build_settings_error_stories() -> list[Story]:
             "My shell sets ANTITHESIS_TENANT to a value with a space, and I run "
             "`snouty login`.",
             "login fails before it asks anything. The error names ANTITHESIS_TENANT and the "
-            "bad value, and says to fix or unset it, then run `snouty login` again. Exit 1.",
+            "bad value, and says to fix or unset it. Exit 1.",
             ["login"],
             fails_with(
                 "invalid ANTITHESIS_TENANT",
                 f"`{_BAD_TENANT}` is not a valid tenant",
-                "fix or unset ANTITHESIS_TENANT, then run `snouty login` again",
+                "fix or unset ANTITHESIS_TENANT",
             ),
             ANTITHESIS_TENANT=_BAD_TENANT,
         ),
@@ -5574,13 +5574,13 @@ def build_settings_error_stories() -> list[Story]:
             "My settings file is not valid TOML",
             "I edited my settings file by hand and left a quote open. I list my runs.",
             "snouty fails, names the file, shows the line and column of the TOML error, "
-            "and suggests to fix the file, or to delete it and run `snouty login`. Exit 1.",
+            "and suggests to fix or delete the file. Exit 1.",
             ["runs", "list"],
             fails_with(
                 _SETTINGS,
                 "is not valid TOML",
                 "line 1",
-                "or delete it and run `snouty login`",
+                "fix or delete",
             ),
             settings_toml=_BAD_TOML,
             ANTITHESIS_API_KEY=_FAKE_API_KEY_A,
@@ -5590,13 +5590,13 @@ def build_settings_error_stories() -> list[Story]:
             "Log in while my settings file is not valid TOML",
             "My settings file has an open quote, and I run `snouty login` to start again.",
             "login fails before it asks anything. The "
-            "error names the file and the TOML error, and says to fix or delete the file, "
-            "then run `snouty login` again. Exit 1.",
+            "error names the file and the TOML error, and says to fix or delete the file. "
+            "Exit 1.",
             ["login"],
             fails_with(
                 _SETTINGS,
                 "is not valid TOML",
-                "then run `snouty login` again",
+                "fix or delete",
             ),
             settings_toml=_BAD_TOML,
         ),

@@ -15,7 +15,7 @@ use toml::{Table, Value};
 use crate::cli::UpdateChannel;
 use crate::env;
 use crate::error::user_error;
-use crate::known_path::{InvalidFile, KnownPath, KnownPathType, LoadedFile};
+use crate::known_path::{KnownPath, KnownPathKind, LoadedFile};
 use crate::registry::Registry;
 use crate::tag::{Tag, Tagged};
 
@@ -148,76 +148,30 @@ impl Settings {
 pub enum SettingSource {
     Env(&'static str),
     /// `key`, such as `profile.prod.registry`, in the settings file at
-    /// `path`. `global` marks the global settings file, which `snouty login`
-    /// writes; the project settings file wins over it.
+    /// `path`.
     File {
-        path: PathBuf,
+        path: KnownPath,
         key: String,
-        global: bool,
     },
 }
 
-/// A setting, from `source`, whose value snouty cannot use. The message
-/// names the file or the variable.
-#[derive(Debug)]
-struct InvalidSetting {
-    source: SettingSource,
-    message: String,
-}
-
-impl InvalidSetting {
-    fn report(self) -> Report {
-        Report::new(self).suppress_backtrace(true)
-    }
-}
-
-impl fmt::Display for InvalidSetting {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for InvalidSetting {}
-
-/// `err` with a suggestion that names the fix, when `err` is an
-/// [`InvalidSetting`] or an [`InvalidFile`]. Login does not replace a setting
-/// that snouty cannot use, so for login (`is_login`) the suggestion is to fix
-/// the setting and then run login again.
-pub fn suggest_settings_fix(err: Report, is_login: bool) -> Report {
-    let path = match err.downcast_ref::<InvalidSetting>() {
-        Some(InvalidSetting {
-            source: SettingSource::Env(var),
-            ..
-        }) => {
-            let fix = format!("fix or unset {var}");
-            let suggestion = if is_login {
-                format!("{fix}, then run `snouty login` again")
-            } else {
-                fix
-            };
-            return err.suggestion(suggestion);
+/// An error for the value from `source`, which snouty cannot use because of
+/// `err`.
+fn invalid_setting(source: &SettingSource, err: impl fmt::Display) -> Report {
+    match source {
+        SettingSource::Env(var) => {
+            user_error(format!("invalid {var}: {err}")).suggestion(fix_var(var))
         }
-        Some(InvalidSetting {
-            source: SettingSource::File { path, .. },
-            ..
-        }) => path,
-        None => match err.downcast_ref::<InvalidFile>() {
-            Some(file) => &file.path.path,
-            None => return err,
-        },
-    };
-    let suggestion = if is_login {
-        format!(
-            "fix or delete {}, then run `snouty login` again",
-            path.display()
-        )
-    } else {
-        format!(
-            "fix {}, or delete it and run `snouty login`",
-            path.display()
-        )
-    };
-    err.suggestion(suggestion)
+        SettingSource::File { path, key } => user_error(format!(
+            "invalid setting `{key}` in {}: {err}",
+            path.path.display()
+        ))
+        .suggestion(path.fix()),
+    }
+}
+
+fn fix_var(var: &str) -> String {
+    format!("fix or unset {var}")
 }
 
 /// A setting's text, and where it was found.
@@ -237,19 +191,7 @@ impl Found {
     /// The value parsed by `parse`, or an error that names where it was
     /// found.
     fn parse_with<T, E: fmt::Display>(self, parse: impl FnOnce(&str) -> Result<T, E>) -> Result<T> {
-        parse(&self.value).map_err(|err| {
-            let message = match &self.source {
-                SettingSource::Env(var) => format!("invalid {var}: {err}"),
-                SettingSource::File { path, key, .. } => {
-                    format!("invalid setting `{key}` in {}: {err}", path.display())
-                }
-            };
-            InvalidSetting {
-                source: self.source,
-                message,
-            }
-            .report()
-        })
+        parse(&self.value).map_err(|err| invalid_setting(&self.source, err))
     }
 }
 
@@ -328,12 +270,20 @@ impl SettingsSources {
         // `./.snouty.toml` is optional and needs trust. (Climbing the directory
         // tree, if ever wanted, would go here.)
         let project = match project_settings_path {
-            Some(path) => KnownPath::new(KnownPathType::Project, path).load(true)?,
+            Some(path) => KnownPath::new(KnownPathKind::Project, path).load(true)?,
             None => load_default_project_file(trust_override)?,
         };
+        let global = load_global_file()?;
+        // `--settings` can name the global settings file. Then it is the
+        // global file only.
+        let project = project.filter(|project| {
+            global
+                .as_ref()
+                .is_none_or(|global| global.path.path != project.path.path)
+        });
         Ok(Self {
             env: true,
-            files: project.into_iter().chain(load_global_file()?).collect(),
+            files: project.into_iter().chain(global).collect(),
         })
     }
 
@@ -349,7 +299,7 @@ impl SettingsSources {
     fn resolve_every_profile(&self) -> Result<Vec<Settings>> {
         let mut names: Vec<&String> = Vec::new();
         for file in &self.files {
-            let profiles = profiles(&file.table).map_err(|err| file.error(&err))?;
+            let profiles = profiles(file)?;
             for name in profiles.into_iter().flat_map(Table::keys) {
                 if !names.contains(&name) {
                     names.push(name);
@@ -627,10 +577,9 @@ pub(crate) fn update_settings_in_global_file(
     let path = global_settings_dir()
         .ok_or_eyre(NO_GLOBAL_SETTINGS_DIR)?
         .join(GLOBAL_SETTINGS_FILENAME);
-    let file = KnownPath::new(KnownPathType::Global, &path);
-    let previous = file.read(false)?;
+    let previous = KnownPath::new(KnownPathKind::Global, &path).read(false)?;
     let mut contents = match &previous {
-        Some(contents) => file.parse(contents)?.table,
+        Some(file) => file.load()?.table,
         None => Table::new(),
     };
 
@@ -651,7 +600,7 @@ pub(crate) fn update_settings_in_global_file(
     write_global_toml(GLOBAL_SETTINGS_FILENAME, &contents)?;
     Ok(PreviousSettingsFile {
         path,
-        contents: previous,
+        contents: previous.map(|file| file.text),
     })
 }
 
@@ -803,7 +752,7 @@ fn missing_setting(setting: &str) -> color_eyre::Report {
 fn load_global_file() -> Result<Option<LoadedFile>> {
     match global_settings_dir() {
         Some(dir) => {
-            KnownPath::new(KnownPathType::Global, &dir.join(GLOBAL_SETTINGS_FILENAME)).load(false)
+            KnownPath::new(KnownPathKind::Global, &dir.join(GLOBAL_SETTINGS_FILENAME)).load(false)
         }
         None => Ok(None),
     }
@@ -813,23 +762,26 @@ fn load_global_file() -> Result<Option<LoadedFile>> {
 fn load_default_project_file(
     trust_override: Option<trust::TrustOverride>,
 ) -> Result<Option<LoadedFile>> {
-    let file = KnownPath::new(KnownPathType::Project, Path::new(PROJECT_SETTINGS_FILENAME));
-    let Some(contents) = file.read(false)? else {
+    let Some(file) =
+        KnownPath::new(KnownPathKind::Project, Path::new(PROJECT_SETTINGS_FILENAME)).read(false)?
+    else {
         return Ok(None);
     };
-    match trust::verdict(&file.path, contents.as_bytes(), trust_override)? {
-        trust::Verdict::Use => file.parse(&contents).map(Some),
+    match trust::verdict(&file.path.path, file.text.as_bytes(), trust_override)? {
+        trust::Verdict::Use => file.load().map(Some),
         trust::Verdict::Ignore => {
-            debug!("ignoring the denied settings file {}", file.path.display());
+            debug!(
+                "ignoring the denied settings file {}",
+                file.path.path.display()
+            );
             Ok(None)
         }
     }
 }
 
-/// Reads a setting out of one TOML table: [`string_value`] for text settings,
-/// [`integer_value`] for numeric ones. Environment variables are always plain
-/// text, so this only affects the file layers.
-type ValueReader = fn(&Table, &str, &str) -> Result<Option<String>>;
+/// Reads a setting's value out of a settings file: [`string_value`] for
+/// text settings, [`integer_value`] for numeric ones.
+type ValueReader = fn(&Value) -> Result<String, String>;
 
 /// Resolve a single text setting from `sources` with the precedence:
 /// environment variable, then the active profile in each file, then the
@@ -874,13 +826,7 @@ fn resolve_value_with(
 ) -> Result<Option<Found>> {
     if sources.env {
         for &env_var in env_vars {
-            let value = env::var(env_var).map_err(|err| {
-                InvalidSetting {
-                    source: SettingSource::Env(env_var),
-                    message: err.to_string(),
-                }
-                .report()
-            })?;
+            let value = env::var(env_var).map_err(|err| err.suggestion(fix_var(env_var)))?;
             if let Some(value) = value {
                 return Ok(Some(Found {
                     value,
@@ -890,28 +836,33 @@ fn resolve_value_with(
         }
     }
 
-    let found = |file: &LoadedFile, key: String, value: Option<String>| {
-        value.map(|value| Found {
-            value,
-            source: SettingSource::File {
-                path: file.path.path.clone(),
-                key,
-                // A project file that `--settings` names can be the global
-                // settings file itself.
-                global: sources.files.iter().any(|other| {
-                    other.path.kind == KnownPathType::Global && other.path.path == file.path.path
-                }),
+    // `key` in `table`: the table of `profile`, or the top-level table when
+    // `profile` is `None`, of the file at `path`.
+    let found = |path: &KnownPath, table: &Table, key: &str, profile: Option<&str>| {
+        let Some(value) = table.get(key) else {
+            return Ok(None);
+        };
+        let source = SettingSource::File {
+            path: path.clone(),
+            key: match profile {
+                Some(profile) => format!("{PROFILE_KEY}.{profile}.{key}"),
+                None => key.to_owned(),
             },
-        })
+        };
+        match read(value) {
+            Ok(value) => Ok(Some(Found { value, source })),
+            Err(err) => Err(invalid_setting(&source, err)),
+        }
     };
 
     // A named profile is consulted before defaults, project before global.
     if let Some(profile) = profile {
         for file in &sources.files {
+            let Some(table) = profile_table(file, profile)? else {
+                continue;
+            };
             for key in keys {
-                let value = profile_value(&file.table, profile, key, read)
-                    .map_err(|err| file.error(&err))?;
-                if let Some(found) = found(file, format!("{PROFILE_KEY}.{profile}.{key}"), value) {
+                if let Some(found) = found(&file.path, table, key, Some(profile))? {
                     return Ok(Some(found));
                 }
             }
@@ -921,8 +872,7 @@ fn resolve_value_with(
     // Finally fall back to top-level defaults, project before global.
     for file in &sources.files {
         for key in keys {
-            let value = read(&file.table, key, key).map_err(|err| file.error(&err))?;
-            if let Some(found) = found(file, (*key).to_owned(), value) {
+            if let Some(found) = found(&file.path, &file.table, key, None)? {
                 return Ok(Some(found));
             }
         }
@@ -933,66 +883,53 @@ fn resolve_value_with(
 
 /// The `profile` table of a settings file. `Ok(None)` when it is absent; an
 /// error when it is present but not a table.
-fn profiles(table: &Table) -> Result<Option<&Table>> {
-    table
+fn profiles(file: &LoadedFile) -> Result<Option<&Table>> {
+    file.table
         .get(PROFILE_KEY)
         .map(|profiles| {
-            profiles
-                .as_table()
-                .ok_or_else(|| eyre!("`{PROFILE_KEY}` must be a table of profiles"))
+            profiles.as_table().ok_or_else(|| {
+                user_error(format!(
+                    "{}: `{PROFILE_KEY}` must be a table of profiles",
+                    file.path.path.display()
+                ))
+                .suggestion(file.path.fix())
+            })
         })
         .transpose()
 }
 
-/// A `[profile.<name>]` value: `profile.<profile>.<key>`. `Ok(None)` when the
-/// `profile` section, the named profile, or the key is absent; an error when
-/// `profile`/`profile.<name>` is present but not a table, or the value fails
-/// `read`'s type check.
-fn profile_value(
-    table: &Table,
-    profile: &str,
-    key: &str,
-    read: ValueReader,
-) -> Result<Option<String>> {
-    let Some(profiles) = profiles(table)? else {
+/// The `[profile.<profile>]` table of a settings file. `Ok(None)` when the
+/// `profile` section or the named profile is absent; an error when either is
+/// present but not a table.
+fn profile_table<'a>(file: &'a LoadedFile, profile: &str) -> Result<Option<&'a Table>> {
+    let Some(selected) = profiles(file)?.and_then(|profiles| profiles.get(profile)) else {
         return Ok(None);
     };
-    let Some(selected) = profiles.get(profile) else {
-        return Ok(None);
-    };
-    let selected = selected
-        .as_table()
-        .ok_or_else(|| eyre!("profile `{profile}` must be a table"))?;
-    read(selected, key, &format!("{PROFILE_KEY}.{profile}.{key}"))
+    selected.as_table().map(Some).ok_or_else(|| {
+        user_error(format!(
+            "{}: profile `{profile}` must be a table",
+            file.path.path.display()
+        ))
+        .suggestion(file.path.fix())
+    })
 }
 
-/// Read `key` from `table` as a string, naming the offending value `display` in
-/// the error. `Ok(None)` when the key is absent; an error when it is present but
-/// holds a non-string TOML value.
-fn string_value(table: &Table, key: &str, display: &str) -> Result<Option<String>> {
-    match table.get(key) {
-        None => Ok(None),
-        Some(value) => match value.as_str() {
-            Some(value) => Ok(Some(value.to_string())),
-            None => Err(eyre!(
-                "setting `{display}` must be a string, but found {}",
-                value.type_str()
-            )),
-        },
-    }
+/// A text setting's value; an error when it is not a TOML string.
+fn string_value(value: &Value) -> Result<String, String> {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| format!("must be a string, but found {}", value.type_str()))
 }
 
-/// Read `key` from `table` as a number-like setting (a bare TOML integer or a
-/// quoted string), naming the offending value `display` in the error. The
-/// value comes back in text form; the caller parses it (see
-/// [`resolve_integer_value`]).
-fn integer_value(table: &Table, key: &str, display: &str) -> Result<Option<String>> {
-    match table.get(key) {
-        None => Ok(None),
-        Some(Value::Integer(number)) => Ok(Some(number.to_string())),
-        Some(Value::String(text)) => Ok(Some(text.clone())),
-        Some(value) => Err(eyre!(
-            "setting `{display}` must be an integer or a string, but found {}",
+/// A number-like setting's value, a bare TOML integer or a quoted string, as
+/// text; the caller parses it (see [`resolve_integer_value`]).
+fn integer_value(value: &Value) -> Result<String, String> {
+    match value {
+        Value::Integer(number) => Ok(number.to_string()),
+        Value::String(text) => Ok(text.clone()),
+        value => Err(format!(
+            "must be an integer or a string, but found {}",
             value.type_str()
         )),
     }
@@ -1050,7 +987,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&link).unwrap(), "tenant = \"new\"\n");
     }
 
-    fn loaded_file(kind: KnownPathType, path: &str, contents: &str) -> LoadedFile {
+    fn loaded_file(kind: KnownPathKind, path: &str, contents: &str) -> LoadedFile {
         LoadedFile {
             path: KnownPath {
                 kind,
@@ -1061,7 +998,7 @@ mod tests {
     }
 
     fn settings_file(contents: &str) -> LoadedFile {
-        loaded_file(KnownPathType::Project, "/test/settings.toml", contents)
+        loaded_file(KnownPathKind::Project, "/test/settings.toml", contents)
     }
 
     /// Leaves out the environment, so the files alone decide the result.
@@ -1089,119 +1026,67 @@ mod tests {
         .map(|found| found.value)
     }
 
-    #[test]
-    fn invalid_toml_is_reported_with_path() {
-        let err = KnownPath::new(KnownPathType::Project, Path::new("/some/.snouty.toml"))
-            .parse("this is = = not toml")
-            .unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("not valid TOML"), "unexpected error: {msg}");
-        assert!(msg.contains(".snouty.toml"), "unexpected error: {msg}");
-    }
-
-    // ---- profile_value / string_value / integer_value --------------------
-
-    #[test]
-    fn profile_value_reads_nested_table() {
-        let table: Table = "[profile.staging]\ntenant = \"staging-tenant\"\n"
-            .parse()
-            .unwrap();
-        assert_eq!(
-            profile_value(&table, "staging", "tenant", string_value)
-                .unwrap()
-                .as_deref(),
-            Some("staging-tenant")
-        );
-        // missing profile and missing key both resolve to None
-        assert_eq!(
-            profile_value(&table, "prod", "tenant", string_value).unwrap(),
-            None
-        );
-        assert_eq!(
-            profile_value(&table, "staging", "registry", string_value).unwrap(),
-            None
-        );
-    }
-
-    #[test]
-    fn string_value_reads_top_level_key() {
-        let table: Table = "tenant = \"acme\"\n".parse().unwrap();
-        assert_eq!(
-            string_value(&table, "tenant", "tenant").unwrap().as_deref(),
-            Some("acme")
-        );
-        assert_eq!(string_value(&table, "missing", "missing").unwrap(), None);
-    }
-
     // ---- strict TOML typing --------------------------------------------
 
-    #[test]
-    fn non_string_default_value_is_an_error() {
-        let table: Table = "tenant = 123\n".parse().unwrap();
-        let err = string_value(&table, "tenant", "tenant").unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("tenant"), "unexpected error: {msg}");
-        assert!(msg.contains("must be a string"), "unexpected error: {msg}");
+    /// The error of resolving the tenant from a project file with
+    /// `contents`.
+    fn resolve_error(profile: Option<&str>, contents: &str) -> String {
+        resolve_value(
+            "tenant",
+            ANTITHESIS_TENANT_VAR_NAME,
+            profile,
+            &sources(Some(settings_file(contents)), None),
+        )
+        .err()
+        .expect("the value should not resolve")
+        .to_string()
     }
 
     #[test]
-    fn non_string_profile_value_is_an_error() {
-        let table: Table = "[profile.p]\ntenant = true\n".parse().unwrap();
-        let err = profile_value(&table, "p", "tenant", string_value).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("profile.p.tenant"), "unexpected error: {msg}");
-        assert!(msg.contains("must be a string"), "unexpected error: {msg}");
-    }
-
-    #[test]
-    fn integer_value_accepts_a_bare_toml_integer() {
-        let table: Table = "api_cache_max_file_size = 1234\n".parse().unwrap();
+    fn a_profile_value_is_read_from_its_table() {
+        let file = "[profile.staging]\ntenant = \"staging-tenant\"\n";
         assert_eq!(
-            integer_value(&table, "api_cache_max_file_size", "api_cache_max_file_size")
-                .unwrap()
-                .as_deref(),
-            Some("1234")
+            resolve_tenant(Some("staging"), Some(settings_file(file)), None).as_deref(),
+            Some("staging-tenant")
         );
-    }
-
-    #[test]
-    fn integer_value_accepts_a_quoted_string() {
-        let table: Table = "api_cache_max_file_size = \"1234\"\n".parse().unwrap();
         assert_eq!(
-            integer_value(&table, "api_cache_max_file_size", "api_cache_max_file_size")
-                .unwrap()
-                .as_deref(),
-            Some("1234")
+            resolve_tenant(Some("prod"), Some(settings_file(file)), None),
+            None
         );
     }
 
     #[test]
-    fn non_numeric_integer_value_is_an_error() {
-        let table: Table = "api_cache_max_file_size = true\n".parse().unwrap();
-        let err = integer_value(&table, "api_cache_max_file_size", "api_cache_max_file_size")
-            .unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("must be an integer"),
-            "unexpected error: {msg}"
+    fn a_non_string_value_is_an_invalid_setting() {
+        assert_eq!(
+            resolve_error(None, "tenant = 123\n"),
+            "invalid setting `tenant` in /test/settings.toml: must be a string, but found integer"
         );
-        assert!(msg.contains("boolean"), "unexpected error: {msg}");
+        assert_eq!(
+            resolve_error(Some("p"), "[profile.p]\ntenant = true\n"),
+            "invalid setting `profile.p.tenant` in /test/settings.toml: must be a string, but found boolean"
+        );
     }
 
     #[test]
-    fn malformed_profile_section_is_an_error() {
-        // `profile` present but not a table of profiles.
-        let table: Table = "profile = \"oops\"\n".parse().unwrap();
-        let err = profile_value(&table, "p", "tenant", string_value).unwrap_err();
-        assert!(err.to_string().contains("table of profiles"));
+    fn integer_value_accepts_a_bare_toml_integer_or_a_quoted_string() {
+        assert_eq!(integer_value(&Value::Integer(1234)).unwrap(), "1234");
+        assert_eq!(integer_value(&Value::from("1234")).unwrap(), "1234");
+        assert_eq!(
+            integer_value(&Value::Boolean(true)).unwrap_err(),
+            "must be an integer or a string, but found boolean"
+        );
     }
 
     #[test]
-    fn non_table_profile_is_an_error() {
-        // The named profile exists but isn't a table.
-        let table: Table = "[profile]\np = \"oops\"\n".parse().unwrap();
-        let err = profile_value(&table, "p", "tenant", string_value).unwrap_err();
-        assert!(err.to_string().contains("profile `p` must be a table"));
+    fn a_profile_section_that_is_not_a_table_is_a_fault_in_the_file() {
+        assert_eq!(
+            resolve_error(Some("p"), "profile = \"oops\"\n"),
+            "/test/settings.toml: `profile` must be a table of profiles"
+        );
+        assert_eq!(
+            resolve_error(Some("p"), "[profile]\np = \"oops\"\n"),
+            "/test/settings.toml: profile `p` must be a table"
+        );
     }
 
     // ---- xdg_base (path resolution) ------------------------------------
@@ -1323,12 +1208,12 @@ mod tests {
         let source = |project: &str, profile: Option<&str>| {
             sources(
                 Some(loaded_file(
-                    KnownPathType::Project,
+                    KnownPathKind::Project,
                     "/work/.snouty.toml",
                     project,
                 )),
                 Some(loaded_file(
-                    KnownPathType::Global,
+                    KnownPathKind::Global,
                     "/home/settings.toml",
                     "registry = \"global.example.com\"\n",
                 )),
@@ -1341,9 +1226,11 @@ mod tests {
         assert_eq!(
             source("", None),
             Some(SettingSource::File {
-                path: PathBuf::from("/home/settings.toml"),
+                path: KnownPath {
+                    kind: KnownPathKind::Global,
+                    path: PathBuf::from("/home/settings.toml"),
+                },
                 key: "registry".to_owned(),
-                global: true,
             })
         );
         assert_eq!(
@@ -1352,9 +1239,11 @@ mod tests {
                 Some("p")
             ),
             Some(SettingSource::File {
-                path: PathBuf::from("/work/.snouty.toml"),
+                path: KnownPath {
+                    kind: KnownPathKind::Project,
+                    path: PathBuf::from("/work/.snouty.toml"),
+                },
                 key: "profile.p.registry".to_owned(),
-                global: false,
             })
         );
     }

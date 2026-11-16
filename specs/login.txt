@@ -230,22 +230,23 @@ file ~/.config/snouty/settings.toml 'tenant = "spec-tenant"'
 cp saved_invalid.toml no_endpoint/.config/snouty/settings.toml
 ! snouty settings show
 stderr 'invalid setting `registry` in .*settings.toml: `not a registry` is not a container registry'
-stderr 'Suggestion: fix .*/settings\.toml, or delete it and run `snouty login`'
+stderr 'Suggestion: fix or delete /.*/settings\.toml$'
 ! snouty login --tenant spec-tenant --registry registry.example.com/acme
 stderr 'invalid setting `registry` in .*settings.toml'
-stderr 'Suggestion: fix or delete .*/settings\.toml, then run `snouty login` again'
+stderr 'Suggestion: fix or delete /.*/settings\.toml$'
 file ~/.config/snouty/settings.toml 'registry = "not a registry"'
 # So does a settings file that is not TOML.
 cp saved_unparsable.toml no_endpoint/.config/snouty/settings.toml
 ! snouty login --tenant spec-tenant --registry registry.example.com/acme
 stderr 'settings file .*settings.toml is not valid TOML'
-stderr 'Suggestion: fix or delete .*/settings\.toml, then run `snouty login` again'
+stderr 'Suggestion: fix or delete /.*/settings\.toml$'
 # A bad environment variable is named in place of a file.
 rm no_endpoint/.config/snouty/settings.toml
 env 'ANTITHESIS_TENANT=not a host'
 ! snouty login --tenant spec-tenant --registry registry.example.com/acme
 stderr -literal 'invalid ANTITHESIS_TENANT: `not a host` is not a valid tenant'
-stderr -literal 'Suggestion: fix or unset ANTITHESIS_TENANT, then run `snouty login` again'
+stderr -literal 'Suggestion: fix or unset ANTITHESIS_TENANT'
+! stderr 'snouty login'
 env ANTITHESIS_TENANT=
 snouty login --tenant spec-tenant --registry registry.example.com/acme
 file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'

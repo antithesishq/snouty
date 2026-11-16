@@ -15,6 +15,7 @@ use crate::auth::{
 use crate::compose;
 use crate::container;
 use crate::error::rejects_credential;
+use crate::known_path::KnownPathKind;
 use crate::login::{CliOAuthConfig, REGISTRY_TIMEOUT, fetch_cli_config};
 use crate::registry::Registry;
 use crate::render::OutputOptions;
@@ -280,11 +281,11 @@ fn other_registry_check(
 ) -> Check {
     let switch = match configured.tag() {
         SettingSource::Env(var) => format!("set {var} to it"),
-        SettingSource::File { global: true, .. } => {
+        SettingSource::File { path, .. } if path.kind == KnownPathKind::Global => {
             format!("run {} to switch to it", login_command(profile))
         }
-        SettingSource::File { path, key, .. } => {
-            format!("set `{key}` in {} to it", path.display())
+        SettingSource::File { path, key } => {
+            format!("set `{key}` in {} to it", path.path.display())
         }
     };
     let configured = configured.value();
@@ -999,6 +1000,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::known_path::KnownPath;
     use crate::tag::Tag;
 
     // ---- auth_checks (env-only auth) -----------------------------------
@@ -1434,9 +1436,11 @@ mod tests {
         assert_eq!(
             next_step(
                 SettingSource::File {
-                    path: "/home/.config/snouty/settings.toml".into(),
+                    path: KnownPath {
+                        kind: KnownPathKind::Global,
+                        path: "/home/.config/snouty/settings.toml".into(),
+                    },
                     key: "profile.prod.registry".into(),
-                    global: true,
                 },
                 Some("prod")
             ),
@@ -1449,9 +1453,11 @@ mod tests {
             "you can keep using `proxy.example.com/acme`, or set ANTITHESIS_REGISTRY to it"
         );
         let project = SettingSource::File {
-            path: "/work/.snouty.toml".into(),
+            path: KnownPath {
+                kind: KnownPathKind::Project,
+                path: "/work/.snouty.toml".into(),
+            },
             key: "registry".into(),
-            global: false,
         };
         assert_eq!(
             next_step(project, None),

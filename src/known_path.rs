@@ -84,6 +84,11 @@ impl KnownPath {
     pub(crate) fn load(self, required: bool) -> Result<Option<LoadedFile>> {
         self.read(required)?.map(|file| file.load()).transpose()
     }
+
+    /// The suggestion for an error in this file.
+    pub(crate) fn fix(&self) -> String {
+        format!("fix or delete {}", self.path.display())
+    }
 }
 
 /// The text of a file, as [`KnownPath::read`] read it.
@@ -104,7 +109,7 @@ impl KnownFile {
                 path.path.display(),
                 format!("{err:#}").trim_end()
             ))
-            .suggestion(format!("fix or delete {}", path.path.display()))),
+            .suggestion(path.fix())),
         }
     }
 }

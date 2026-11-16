@@ -155,29 +155,23 @@ pub enum SettingSource {
     },
 }
 
-/// The value from `source` that snouty cannot use, because of `err`, with
-/// the fix.
+/// An error for the value from `source`, which snouty cannot use because of
+/// `err`.
 fn invalid_setting(source: &SettingSource, err: impl fmt::Display) -> Report {
     match source {
         SettingSource::Env(var) => {
-            user_error(format!("invalid {var}: {err}")).suggestion(format!("fix or unset {var}"))
+            user_error(format!("invalid {var}: {err}")).suggestion(fix_var(var))
         }
         SettingSource::File { path, key } => user_error(format!(
             "invalid setting `{key}` in {}: {err}",
             path.path.display()
         ))
-        .suggestion(fix_file(path)),
+        .suggestion(path.fix()),
     }
 }
 
-/// A fault in the settings file at `path` as a whole, such as a `profile`
-/// that is not a table, with the fix.
-fn invalid_file(path: &KnownPath, err: impl fmt::Display) -> Report {
-    user_error(format!("{}: {err}", path.path.display())).suggestion(fix_file(path))
-}
-
-fn fix_file(path: &KnownPath) -> String {
-    format!("fix or delete {}", path.path.display())
+fn fix_var(var: &str) -> String {
+    format!("fix or unset {var}")
 }
 
 /// A setting's text, and where it was found.
@@ -284,8 +278,8 @@ impl SettingsSources {
                 .load(false)?,
             None => None,
         };
-        // `--settings` can name the global settings file itself, which is
-        // then the global file only.
+        // `--settings` can name the global settings file. Then it is the
+        // global file only.
         let project = project.filter(|project| {
             global
                 .as_ref()
@@ -765,8 +759,7 @@ fn load_default_project_file(
 }
 
 /// Reads a setting's value out of a settings file: [`string_value`] for
-/// text settings, [`integer_value`] for numeric ones. Environment variables
-/// are always plain text, so this only affects the file layers.
+/// text settings, [`integer_value`] for numeric ones.
 type ValueReader = fn(&Value) -> Result<String, String>;
 
 /// Resolve a single text setting from `sources` with the precedence:
@@ -812,8 +805,7 @@ fn resolve_value_with(
 ) -> Result<Option<Found>> {
     if sources.env {
         for &env_var in env_vars {
-            let value = env::var(env_var)
-                .map_err(|err| err.suggestion(format!("fix or unset {env_var}")))?;
+            let value = env::var(env_var).map_err(|err| err.suggestion(fix_var(env_var)))?;
             if let Some(value) = value {
                 return Ok(Some(Found {
                     value,
@@ -823,14 +815,18 @@ fn resolve_value_with(
         }
     }
 
-    // `key` in `table`, which is `name` in `file`.
-    let found = |file: &LoadedFile, table: &Table, key: &str, name: String| {
+    // `key` in `table`: the table of `profile`, or the top-level table when
+    // `profile` is `None`, of the file at `path`.
+    let found = |path: &KnownPath, table: &Table, key: &str, profile: Option<&str>| {
         let Some(value) = table.get(key) else {
             return Ok(None);
         };
         let source = SettingSource::File {
-            path: file.path.clone(),
-            key: name,
+            path: path.clone(),
+            key: match profile {
+                Some(profile) => format!("{PROFILE_KEY}.{profile}.{key}"),
+                None => key.to_owned(),
+            },
         };
         match read(value) {
             Ok(value) => Ok(Some(Found { value, source })),
@@ -845,9 +841,7 @@ fn resolve_value_with(
                 continue;
             };
             for key in keys {
-                if let Some(found) =
-                    found(file, table, key, format!("{PROFILE_KEY}.{profile}.{key}"))?
-                {
+                if let Some(found) = found(&file.path, table, key, Some(profile))? {
                     return Ok(Some(found));
                 }
             }
@@ -857,7 +851,7 @@ fn resolve_value_with(
     // Finally fall back to top-level defaults, project before global.
     for file in &sources.files {
         for key in keys {
-            if let Some(found) = found(file, &file.table, key, (*key).to_owned())? {
+            if let Some(found) = found(&file.path, &file.table, key, None)? {
                 return Ok(Some(found));
             }
         }
@@ -873,10 +867,11 @@ fn profiles(file: &LoadedFile) -> Result<Option<&Table>> {
         .get(PROFILE_KEY)
         .map(|profiles| {
             profiles.as_table().ok_or_else(|| {
-                invalid_file(
-                    &file.path,
-                    format!("`{PROFILE_KEY}` must be a table of profiles"),
-                )
+                user_error(format!(
+                    "{}: `{PROFILE_KEY}` must be a table of profiles",
+                    file.path.path.display()
+                ))
+                .suggestion(file.path.fix())
             })
         })
         .transpose()
@@ -889,10 +884,13 @@ fn profile_table<'a>(file: &'a LoadedFile, profile: &str) -> Result<Option<&'a T
     let Some(selected) = profiles(file)?.and_then(|profiles| profiles.get(profile)) else {
         return Ok(None);
     };
-    selected
-        .as_table()
-        .map(Some)
-        .ok_or_else(|| invalid_file(&file.path, format!("profile `{profile}` must be a table")))
+    selected.as_table().map(Some).ok_or_else(|| {
+        user_error(format!(
+            "{}: profile `{profile}` must be a table",
+            file.path.path.display()
+        ))
+        .suggestion(file.path.fix())
+    })
 }
 
 /// A text setting's value; an error when it is not a TOML string.
@@ -1009,17 +1007,12 @@ mod tests {
 
     // ---- strict TOML typing --------------------------------------------
 
-    /// The error of resolving `key` from a project file with `contents`.
-    fn resolve_error(
-        read: ValueReader,
-        key: &str,
-        profile: Option<&str>,
-        contents: &str,
-    ) -> String {
-        resolve_value_with(
-            read,
-            &[key],
-            &[ANTITHESIS_TENANT_VAR_NAME],
+    /// The error of resolving the tenant from a project file with
+    /// `contents`.
+    fn resolve_error(profile: Option<&str>, contents: &str) -> String {
+        resolve_value(
+            "tenant",
+            ANTITHESIS_TENANT_VAR_NAME,
             profile,
             &sources(Some(settings_file(contents)), None),
         )
@@ -1044,16 +1037,11 @@ mod tests {
     #[test]
     fn a_non_string_value_is_an_invalid_setting() {
         assert_eq!(
-            resolve_error(string_value, "tenant", None, "tenant = 123\n"),
+            resolve_error(None, "tenant = 123\n"),
             "invalid setting `tenant` in /test/settings.toml: must be a string, but found integer"
         );
         assert_eq!(
-            resolve_error(
-                string_value,
-                "tenant",
-                Some("p"),
-                "[profile.p]\ntenant = true\n"
-            ),
+            resolve_error(Some("p"), "[profile.p]\ntenant = true\n"),
             "invalid setting `profile.p.tenant` in /test/settings.toml: must be a string, but found boolean"
         );
     }
@@ -1071,16 +1059,11 @@ mod tests {
     #[test]
     fn a_profile_section_that_is_not_a_table_is_a_fault_in_the_file() {
         assert_eq!(
-            resolve_error(string_value, "tenant", Some("p"), "profile = \"oops\"\n"),
+            resolve_error(Some("p"), "profile = \"oops\"\n"),
             "/test/settings.toml: `profile` must be a table of profiles"
         );
         assert_eq!(
-            resolve_error(
-                string_value,
-                "tenant",
-                Some("p"),
-                "[profile]\np = \"oops\"\n"
-            ),
+            resolve_error(Some("p"), "[profile]\np = \"oops\"\n"),
             "/test/settings.toml: profile `p` must be a table"
         );
     }

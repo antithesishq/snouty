@@ -8,8 +8,8 @@
 # config_trust.txt).
 snouty settings trust
 
-# A non-string top-level value is rejected like any invalid setting: the
-# error names the key and the file, and the fix names the file.
+# The error for a non-string value names the key and the file. The
+# suggestion names the file.
 ! snouty settings show
 stderr '^Error: invalid setting `tenant` in /.*/\.snouty\.toml: must be a string, but found integer$'
 stderr 'Suggestion: fix or delete /.*/\.snouty\.toml$'

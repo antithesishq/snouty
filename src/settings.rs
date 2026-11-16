@@ -309,9 +309,8 @@ impl SettingsRequest {
     }
 }
 
-/// The sources that settings resolve from: the environment variables, when
-/// `env` is set, then each file, most specific first. The first source that
-/// has a setting wins.
+/// The environment variables, when `env` is set, then each file, most
+/// specific first. The first source that has a setting wins.
 struct SettingsSources {
     env: bool,
     files: Vec<LoadedFile>,
@@ -853,8 +852,6 @@ fn resolve_value_with(
     profile: Option<&str>,
     sources: &SettingsSources,
 ) -> Result<Option<Found>> {
-    // The environment variable, when the sources have it, has the highest
-    // precedence.
     if sources.env {
         for &env_var in env_vars {
             let value = env::var(env_var).map_err(|err| {
@@ -1033,7 +1030,6 @@ mod tests {
         assert_eq!(fs::read_to_string(&link).unwrap(), "tenant = \"new\"\n");
     }
 
-    /// The file of type `kind` at `path`, with `contents`.
     fn loaded_file(kind: KnownPathType, path: &str, contents: &str) -> LoadedFile {
         LoadedFile {
             path: KnownPath {
@@ -1048,7 +1044,7 @@ mod tests {
         loaded_file(KnownPathType::Project, "/test/settings.toml", contents)
     }
 
-    /// The files `project`, then `global`, without the environment.
+    /// Leaves out the environment, so the files alone decide the result.
     fn sources(project: Option<LoadedFile>, global: Option<LoadedFile>) -> SettingsSources {
         SettingsSources {
             env: false,
@@ -1056,9 +1052,8 @@ mod tests {
         }
     }
 
-    /// Resolve `tenant` from the file layers alone. Each layer in the
-    /// precedence tests uses a distinct value, so the resolved value alone
-    /// proves which layer won.
+    /// Each layer in the precedence tests uses a distinct value, so the
+    /// resolved value proves which layer won.
     fn resolve_tenant(
         profile: Option<&str>,
         project: Option<LoadedFile>,

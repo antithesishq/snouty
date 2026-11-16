@@ -103,7 +103,7 @@ pub(super) enum Verdict {
     Ignore,
 }
 
-/// The verdict for the project settings file at the canonical `path`, whose content is
+/// The verdict for the project settings file at `path`, whose content is
 /// `contents`. A file that the user has not trusted, or that changed since the
 /// user trusted it, is an error that tells how to decide.
 pub(super) fn verdict(
@@ -114,6 +114,7 @@ pub(super) fn verdict(
     if let Some(TrustOverride::All) = trust_override {
         return Ok(Verdict::Use);
     }
+    let path = canonicalize(path)?;
     let Some(trust_file) = trust_file_path() else {
         return Err(user_error(format!(
             "the settings file {} is not trusted, and snouty has no place to record trust",
@@ -123,11 +124,11 @@ pub(super) fn verdict(
             "Set $XDG_CONFIG_HOME or $HOME. To skip the check, set {SETTINGS_TRUST_VAR_NAME}=all."
         )));
     };
-    match TrustStore::load(&trust_file)?.files.get(path) {
+    match TrustStore::load(&trust_file)?.files.get(&path) {
         Some(Decision::Deny) => Ok(Verdict::Ignore),
         Some(Decision::Trust { sha256 }) if *sha256 == digest(contents) => Ok(Verdict::Use),
-        Some(Decision::Trust { .. }) => Err(untrusted(path.to_owned(), Untrusted::Changed)),
-        None => Err(untrusted(path.to_owned(), Untrusted::Unknown)),
+        Some(Decision::Trust { .. }) => Err(untrusted(path, Untrusted::Changed)),
+        None => Err(untrusted(path, Untrusted::Unknown)),
     }
 }
 

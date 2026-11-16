@@ -13,7 +13,6 @@ use toml::Table;
 
 use crate::error::user_error;
 
-/// Which file a [`KnownPath`] is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum KnownPathType {
@@ -49,7 +48,6 @@ impl fmt::Display for KnownPathType {
     }
 }
 
-/// A file that snouty reads, and which file it is.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct KnownPath {
     #[serde(rename = "type")]
@@ -80,7 +78,8 @@ impl KnownPath {
         }
     }
 
-    /// `contents`, the text of this file, as a TOML table.
+    /// Parses `contents`, the text of this file. TOML that does not parse is
+    /// an [`InvalidFile`] error.
     pub fn parse(self, contents: &str) -> Result<LoadedFile> {
         match contents.parse::<Table>() {
             Ok(table) => Ok(LoadedFile { path: self, table }),

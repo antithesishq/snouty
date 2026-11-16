@@ -182,7 +182,14 @@ share.
   into the branch. Resolve the conflict, run the tests that the merge
   touches, and push.
 - **Base moved**: the base branch has new commits. Merge `origin/<branch>`
-  into the branch, run the tests that the merge touches, and push.
+  into the branch, run the tests that the merge touches, and push. Skip
+  this while the PR is in the merge queue or set to auto-merge: a push
+  removes it from the queue. Check with:
+
+  ```
+  gh api graphql -f query='{ repository(owner:"<owner>", name:"<repo>") {
+    pullRequest(number:<PR>) { isInMergeQueue autoMergeRequest { enabledAt } } } }'
+  ```
 - **All checks passed**: check that the line names your latest push. The PR
   can merge when its reviews allow. Tell the user. When a PR of a stack
   waits for this one, continue with that PR.

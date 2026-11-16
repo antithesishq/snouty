@@ -335,10 +335,13 @@ impl SettingsSources {
                 )?,
                 str::parse,
             )?,
-            base_url: parse_setting(text("base_url", ANTITHESIS_BASE_URL_VAR_NAME)?, Url::parse)?,
+            base_url: parse_setting(
+                text("base_url", ANTITHESIS_BASE_URL_VAR_NAME)?,
+                parse_base_url,
+            )?,
             https_proxy: parse_setting(
                 text("https_proxy", ANTITHESIS_HTTPS_PROXY_VAR_NAME)?,
-                Url::parse,
+                parse_proxy_url,
             )?,
             container_engine: parse_setting(
                 text("container_engine", CONTAINER_ENGINE_VAR_NAME)?,
@@ -929,6 +932,27 @@ fn integer_value(value: &Value) -> Result<String, String> {
     }
 }
 
+/// Parse a `base_url` setting: a URL with a host.
+fn parse_base_url(text: &str) -> Result<Url, String> {
+    match Url::parse(text) {
+        Ok(url) if url.has_host() => Ok(url),
+        Ok(_) => Err("expected a URL such as https://acme.antithesis.com".to_owned()),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+/// Parse an `https_proxy` setting as reqwest reads a proxy: a value without
+/// a scheme, such as `proxy.corp:3128`, is an `http://` URL.
+fn parse_proxy_url(text: &str) -> Result<Url, url::ParseError> {
+    match Url::parse(text) {
+        Ok(url) if url.has_host() => Ok(url),
+        Ok(_) | Err(url::ParseError::RelativeUrlWithoutBase) => {
+            Url::parse(&format!("http://{text}"))
+        }
+        Err(err) => Err(err),
+    }
+}
+
 /// Parse a byte-size setting — a size such as "10 MB" or "1.5GiB", or a bare
 /// byte count — into bytes. SI units are decimal (MB = 10^6 bytes); IEC
 /// units are binary (MiB = 2^20 bytes).
@@ -1340,6 +1364,23 @@ mod tests {
     }
 
     #[test]
+    fn a_proxy_without_a_scheme_is_an_http_url() {
+        for (proxy, url) in [
+            ("10.0.0.1:3128", "http://10.0.0.1:3128/"),
+            ("proxy.corp", "http://proxy.corp/"),
+            ("localhost:3128", "http://localhost:3128/"),
+            ("socks5://proxy.corp:1080", "socks5://proxy.corp:1080"),
+        ] {
+            let settings = resolve_file(&format!("https_proxy = \"{proxy}\"\n")).unwrap();
+            assert_eq!(
+                settings.https_proxy().map(Url::as_str),
+                Some(url),
+                "{proxy}"
+            );
+        }
+    }
+
+    #[test]
     fn an_unset_setting_takes_its_default() {
         let settings = resolve_file("").unwrap();
         assert_eq!(settings.https_proxy(), None);
@@ -1357,6 +1398,11 @@ mod tests {
         assert_eq!(
             error("base_url = \"example.com\"\n"),
             "invalid setting `base_url` in /test/settings.toml: relative URL without a base"
+        );
+        assert_eq!(
+            error("base_url = \"localhost:8080\"\n"),
+            "invalid setting `base_url` in /test/settings.toml: \
+             expected a URL such as https://acme.antithesis.com"
         );
         assert_eq!(
             error("https_proxy = \"http://\"\n"),

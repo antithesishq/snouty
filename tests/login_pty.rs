@@ -559,8 +559,8 @@ fn login_uses_the_base_url_of_the_settings_file() {
     assert!(seen.contains(&needle), "missing {needle:?} in {seen}");
 }
 
-/// A `base_url` that does not parse fails the same way as one that cannot be
-/// reached.
+/// A `base_url` that does not parse fails when settings resolve, and names
+/// its source.
 #[test]
 fn a_malformed_base_url_fails_before_the_api_key_prompt() {
     let (_home, session) = spawn_login(&Login {
@@ -569,7 +569,7 @@ fn a_malformed_base_url_fails_before_the_api_key_prompt() {
     });
 
     let seen = flat(&finish_with_failure(session));
-    let needle = "check that the base_url setting is correct";
+    let needle = "invalid ANTITHESIS_BASE_URL";
     assert!(seen.contains(needle), "missing {needle:?} in {seen}");
     assert!(!seen.contains("API Key"), "{seen}");
 }

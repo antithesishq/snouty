@@ -579,7 +579,15 @@ fn help_examples_pass_preflight() {
     let dir = tempfile::TempDir::new().unwrap();
     std::fs::create_dir(dir.path().join("config")).unwrap();
     std::fs::write(dir.path().join("config/docker-compose.yaml"), "").unwrap();
-    let no_programs = tempfile::TempDir::new().unwrap();
+    // A `podman` that fails, ahead of the real one on the PATH.
+    let failing_podman = tempfile::TempDir::new().unwrap();
+    let stub = failing_podman.path().join("podman");
+    std::fs::write(&stub, "#!/bin/sh\nexit 1\n").unwrap();
+    std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(std::iter::once(failing_podman.path().to_owned()).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .unwrap();
 
     for subcommand in ["launch", "debug"] {
         let output = snouty().args([subcommand, "--help"]).output().unwrap();
@@ -614,7 +622,7 @@ fn help_examples_pass_preflight() {
                 .current_dir(dir.path())
                 .env("ANTITHESIS_REGISTRY", "registry.example.com/repo")
                 .env(snouty::settings::CONTAINER_ENGINE_VAR_NAME, "podman")
-                .env("PATH", no_programs.path())
+                .env("PATH", &path)
                 .args(&args[1..])
                 .output()
                 .unwrap();

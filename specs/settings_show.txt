@@ -1,8 +1,8 @@
 # snouty settings show
 #
 # Prints each setting with the value snouty resolved for it, one row each, on
-# stdout, then a table of the settings files that snouty read and the
-# credentials file when it exists.
+# stdout, then a table of the settings files that snouty read, and the
+# credentials file and the trust file when they exist.
 # --json prints both as one JSON object: `settings`, with null for a setting
 # that is not set and has no default, and `files`.
 
@@ -39,10 +39,15 @@ set-env XDG_CONFIG_HOME ${WORK}/cfg
 snouty --settings chosen.toml settings show
 stdout '(?s)^project +/[^\n]*/chosen\.toml\nglobal +/[^\n]*/cfg/snouty/settings\.toml$'
 
-# 4. The credentials file follows the settings files, when it exists.
+# 4. The credentials file and the trust file follow the settings files, when
+#    they exist.
 cp credentials.toml cfg/snouty/credentials.toml
 snouty --settings chosen.toml settings show
 stdout '(?s)^global +/[^\n]*/cfg/snouty/settings\.toml\ncredentials +/[^\n]*/cfg/snouty/credentials\.toml$'
+! stdout '^trust '
+cp trust.toml cfg/snouty/trust.toml
+snouty --settings chosen.toml settings show
+stdout '(?s)^credentials +/[^\n]*/cfg/snouty/credentials\.toml\ntrust +/[^\n]*/cfg/snouty/trust\.toml$'
 
 # 5. --json prints the settings, keyed by setting, and the files. A size is a
 #    number of bytes.
@@ -52,12 +57,14 @@ stdout '"tenant": "acme"'
 stdout '"registry": "global-registry"'
 stdout '"profile": null'
 stdout '"api_cache_max_file_size": 1000'
-stdout '(?s)"files": \[.*"type": "project",\n +"path": "/[^\n]*/chosen\.toml".*"type": "global",\n +"path": "/[^\n]*/cfg/snouty/settings\.toml".*"type": "credentials",\n +"path": "/[^\n]*/cfg/snouty/credentials\.toml"'
+stdout '(?s)"files": \[.*"type": "project",\n +"path": "/[^\n]*/chosen\.toml".*"type": "global",\n +"path": "/[^\n]*/cfg/snouty/settings\.toml".*"type": "credentials",\n +"path": "/[^\n]*/cfg/snouty/credentials\.toml".*"type": "trust",\n +"path": "/[^\n]*/cfg/snouty/trust\.toml"'
 
 -- cfg/snouty/settings.toml --
 registry = "global-registry"
 -- credentials.toml --
 [default]
+-- trust.toml --
+[files]
 -- chosen.toml --
 [profile.staging]
 registry = "registry.example.com/staging"

@@ -1,6 +1,6 @@
 use std::{
     fmt, fs,
-    io::{ErrorKind, Write},
+    io::Write,
     ops::Deref,
     path::{Path, PathBuf},
     str::FromStr,
@@ -15,13 +15,12 @@ use toml::{Table, Value};
 use crate::cli::UpdateChannel;
 use crate::env;
 use crate::error::user_error;
+use crate::known_path::{InvalidFile, KnownPath, KnownPathType, LoadedFile};
 use crate::registry::Registry;
 use crate::tag::{Tag, Tagged};
 
-mod files;
 mod show;
 mod trust;
-pub use files::{SettingsFile, SettingsFileType};
 pub use show::cmd_settings_show;
 pub use trust::{SETTINGS_TRUST_VAR_NAME, UntrustedSettingsFile, deny, trust};
 
@@ -113,7 +112,7 @@ pub struct Settings {
     container_engine: Option<String>,
     update_channel: UpdateChannel,
     api_cache_max_file_size: u64,
-    files: Vec<SettingsFile>,
+    files: Vec<KnownPath>,
 }
 
 impl Default for Settings {
@@ -158,92 +157,66 @@ pub enum SettingSource {
     },
 }
 
-/// A setting or a settings file that holds a value snouty cannot use. The
-/// message names the file or the variable.
+/// A setting, from `source`, whose value snouty cannot use. The message
+/// names the file or the variable.
 #[derive(Debug)]
-enum SettingsError {
-    /// A setting, from `source`, whose value snouty cannot use.
-    Setting {
-        source: SettingSource,
-        message: String,
-    },
-    /// A fault in the settings file at `path` as a whole, such as TOML that
-    /// does not parse.
-    File { path: PathBuf, message: String },
+struct InvalidSetting {
+    source: SettingSource,
+    message: String,
 }
 
-impl SettingsError {
+impl InvalidSetting {
     fn report(self) -> Report {
         Report::new(self).suppress_backtrace(true)
     }
 }
 
-impl fmt::Display for SettingsError {
+impl fmt::Display for InvalidSetting {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Setting { message, .. } | Self::File { message, .. } => f.write_str(message),
-        }
+        f.write_str(&self.message)
     }
 }
 
-impl std::error::Error for SettingsError {}
+impl std::error::Error for InvalidSetting {}
 
-/// `err` with a suggestion that names the fix, when `err` is a
-/// [`SettingsError`]. Login does not replace a setting that snouty cannot
-/// use, so for login (`is_login`) the suggestion is to fix the setting and
-/// then run login again.
+/// `err` with a suggestion that names the fix, when `err` is an
+/// [`InvalidSetting`] or an [`InvalidFile`]. Login does not replace a setting
+/// that snouty cannot use, so for login (`is_login`) the suggestion is to fix
+/// the setting and then run login again.
 pub fn suggest_settings_fix(err: Report, is_login: bool) -> Report {
-    let Some(error) = err.downcast_ref::<SettingsError>() else {
-        return err;
-    };
-    let suggestion = match error {
-        SettingsError::Setting {
+    let path = match err.downcast_ref() {
+        Some(InvalidSetting {
             source: SettingSource::Env(var),
             ..
-        } => {
-            if is_login {
+        }) => {
+            let suggestion = if is_login {
                 format!("fix or unset {var}, then run `snouty login` again")
             } else {
                 format!("fix or unset {var}")
-            }
+            };
+            return err.suggestion(suggestion);
         }
-        SettingsError::Setting {
+        Some(InvalidSetting {
             source: SettingSource::File { path, .. },
             ..
-        }
-        | SettingsError::File { path, .. } => {
-            if is_login {
-                format!(
-                    "fix or delete {}, then run `snouty login` again",
-                    path.display()
-                )
-            } else {
-                format!(
-                    "fix {}, or delete it and run `snouty login`",
-                    path.display()
-                )
-            }
-        }
+        }) => path,
+        None => match err.downcast_ref::<InvalidFile>() {
+            Some(InvalidFile { path, .. }) => &path.path,
+            None => return err,
+        },
+    };
+    let suggestion = if is_login {
+        format!(
+            "fix or delete {}, then run `snouty login` again",
+            path.display()
+        )
+    } else {
+        format!(
+            "fix {}, or delete it and run `snouty login`",
+            path.display()
+        )
     };
     err.suggestion(suggestion)
-}
-
-/// A settings file that snouty read.
-#[derive(Debug)]
-struct LoadedFile {
-    table: Table,
-    path: PathBuf,
-}
-
-impl LoadedFile {
-    /// `err`, a fault in this file, as a [`SettingsError`].
-    fn error(&self, err: &Report) -> Report {
-        SettingsError::File {
-            path: self.path.clone(),
-            message: format!("{}: {err}", self.path.display()),
-        }
-        .report()
-    }
 }
 
 /// A setting's text, and where it was found.
@@ -270,7 +243,7 @@ impl Found {
                     format!("invalid setting `{key}` in {}: {err}", path.display())
                 }
             };
-            SettingsError::Setting {
+            InvalidSetting {
                 source: self.source,
                 message,
             }
@@ -315,7 +288,7 @@ impl SettingsRequest {
 
     /// See [`Settings::resolve`].
     pub fn resolve(self) -> Result<Settings> {
-        SettingsFiles::load(self.project_settings_path.as_deref())?.resolve(self.profile)
+        SettingsSources::from_ambient(self.project_settings_path.as_deref())?.resolve(self.profile)
     }
 
     /// The settings of the top-level defaults, then of each named profile:
@@ -330,21 +303,24 @@ impl SettingsRequest {
     /// left out: a caller that searches the profiles must not fail on a
     /// profile it does not use.
     pub fn resolve_every_profile(&self) -> Result<Vec<Settings>> {
-        SettingsFiles::load(self.project_settings_path.as_deref())?.resolve_every_profile()
+        SettingsSources::from_ambient(self.project_settings_path.as_deref())?
+            .resolve_every_profile()
     }
 }
 
-struct SettingsFiles {
-    project: Option<LoadedFile>,
-    global: Option<LoadedFile>,
-    /// The files that were read, most specific first.
-    files: Vec<SettingsFile>,
+/// The sources that settings resolve from: the environment variables, when
+/// `env` is set, then each file, most specific first. The first source that
+/// has a setting wins.
+struct SettingsSources {
+    env: bool,
+    files: Vec<LoadedFile>,
 }
 
-impl SettingsFiles {
-    /// Loads the project file at `project_settings_path`, else the optional
-    /// `./.snouty.toml`, and the global settings file.
-    fn load(project_settings_path: Option<&Path>) -> Result<Self> {
+impl SettingsSources {
+    /// The environment variables, then the project file at
+    /// `project_settings_path`, else the optional `./.snouty.toml`, then the
+    /// global settings file.
+    fn from_ambient(project_settings_path: Option<&Path>) -> Result<Self> {
         // Parse this even without a project file, so a bad value fails in
         // every directory.
         let trust_override = trust::TrustOverride::from_env()?;
@@ -352,36 +328,24 @@ impl SettingsFiles {
         // `./.snouty.toml` is optional and needs trust. (Climbing the directory
         // tree, if ever wanted, would go here.)
         let project = match project_settings_path {
-            Some(path) => load_settings_file(path, true)?,
+            Some(path) => KnownPath::new(KnownPathType::Project, path).load(true)?,
             None => load_default_project_file(trust_override)?,
         };
         let global = match global_settings_dir() {
-            Some(dir) => load_settings_file(&dir.join(GLOBAL_SETTINGS_FILENAME), false)?,
+            Some(dir) => KnownPath::new(KnownPathType::Global, &dir.join(GLOBAL_SETTINGS_FILENAME))
+                .load(false)?,
             None => None,
         };
-        // Most specific first: the project file overrides the global one.
-        let files = [
-            project
-                .as_ref()
-                .map(|file| SettingsFile::new(SettingsFileType::Project, &file.path)),
-            global
-                .as_ref()
-                .map(|file| SettingsFile::new(SettingsFileType::Global, &file.path)),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
         Ok(Self {
-            project,
-            global,
-            files,
+            env: true,
+            files: project.into_iter().chain(global).collect(),
         })
     }
 
     /// See [`SettingsRequest::resolve_every_profile`].
     fn resolve_every_profile(&self) -> Result<Vec<Settings>> {
         let mut names: Vec<&String> = Vec::new();
-        for file in [&self.project, &self.global].into_iter().flatten() {
+        for file in &self.files {
             let profiles = profiles(&file.table).map_err(|err| file.error(&err))?;
             for name in profiles.into_iter().flat_map(Table::keys) {
                 if !names.contains(&name) {
@@ -397,13 +361,7 @@ impl SettingsFiles {
 
     fn resolve(&self, profile: Option<String>) -> Result<Settings> {
         let resolve = |key: &str, env_var: &'static str| {
-            resolve_value(
-                key,
-                env_var,
-                profile.as_deref(),
-                self.project.as_ref(),
-                self.global.as_ref(),
-            )
+            resolve_value(key, env_var, profile.as_deref(), self)
         };
         let text = |found: Option<Found>| found.map(|found| found.value);
 
@@ -417,8 +375,7 @@ impl SettingsFiles {
             &[REGISTRY_KEY, REPOSITORY_KEY],
             &[ANTITHESIS_REGISTRY_VAR_NAME, ANTITHESIS_REPOSITORY_VAR_NAME],
             profile.as_deref(),
-            self.project.as_ref(),
-            self.global.as_ref(),
+            self,
         )?
         .map(|found| {
             let source = found.source.clone();
@@ -440,8 +397,7 @@ impl SettingsFiles {
             "api_cache_max_file_size",
             API_CACHE_MAX_FILE_SIZE_VAR_NAME,
             profile.as_deref(),
-            self.project.as_ref(),
-            self.global.as_ref(),
+            self,
         )?
         .map(|found| found.parse_with(parse_byte_size))
         .transpose()?;
@@ -457,7 +413,7 @@ impl SettingsFiles {
             container_engine,
             update_channel,
             api_cache_max_file_size,
-            files: self.files.clone(),
+            files: self.files.iter().map(|file| file.path.clone()).collect(),
         }
         .build())
     }
@@ -520,7 +476,7 @@ impl Settings {
     }
 
     /// The settings files that snouty read, most specific first.
-    pub fn files(&self) -> &[SettingsFile] {
+    pub fn files(&self) -> &[KnownPath] {
         &self.files
     }
 
@@ -567,7 +523,7 @@ pub struct SettingsBuilder {
     container_engine: Option<String>,
     update_channel: UpdateChannel,
     api_cache_max_file_size: Option<u64>,
-    files: Vec<SettingsFile>,
+    files: Vec<KnownPath>,
 }
 
 impl SettingsBuilder {
@@ -661,9 +617,10 @@ pub(crate) fn update_settings_in_global_file(
     let path = global_settings_dir()
         .ok_or_eyre(NO_GLOBAL_SETTINGS_DIR)?
         .join(GLOBAL_SETTINGS_FILENAME);
-    let previous = read_to_string_if_file_exists(&path)?;
+    let file = KnownPath::new(KnownPathType::Global, &path);
+    let previous = file.read(false)?;
     let mut contents = match &previous {
-        Some(contents) => parse_settings(contents, &path)?,
+        Some(contents) => file.parse(contents)?.table,
         None => Table::new(),
     };
 
@@ -832,52 +789,18 @@ fn missing_setting(setting: &str) -> color_eyre::Report {
     eyre!("Could not resolve Antithesis {setting}. Run snouty doctor to debug.")
 }
 
-/// Parse settings-file contents into a TOML table, attributing parse errors to
-/// the file's path.
-fn parse_settings(contents: &str, path: &Path) -> Result<Table> {
-    contents.parse::<Table>().map_err(|err| {
-        SettingsError::File {
-            path: path.to_owned(),
-            message: format!(
-                "settings file {} is not valid TOML: {}",
-                path.display(),
-                format!("{err:#}").trim_end()
-            ),
-        }
-        .report()
-    })
-}
-
-/// Load and parse a settings file. `Ok(None)` when the file simply does not
-/// exist and was not explicitly requested; an error when it exists but cannot be
-/// read or parsed, or when an explicitly-`required` file is missing.
-fn load_settings_file(path: &Path, required: bool) -> Result<Option<LoadedFile>> {
-    let contents = match read_to_string_if_file_exists(path)? {
-        Some(contents) => contents,
-        None if !required => return Ok(None),
-        None => return Err(eyre!("Settings file at {:?} was not found", path)),
-    };
-    Ok(Some(LoadedFile {
-        table: parse_settings(&contents, path)?,
-        path: path.to_owned(),
-    }))
-}
-
 /// Load `./.snouty.toml` when it exists and [`trust::verdict`] allows it.
 fn load_default_project_file(
     trust_override: Option<trust::TrustOverride>,
 ) -> Result<Option<LoadedFile>> {
-    let path = Path::new(PROJECT_SETTINGS_FILENAME);
-    let Some(contents) = read_to_string_if_file_exists(path)? else {
+    let path = KnownPath::new(KnownPathType::Project, Path::new(PROJECT_SETTINGS_FILENAME));
+    let Some(contents) = path.read(false)? else {
         return Ok(None);
     };
-    match trust::verdict(path, contents.as_bytes(), trust_override)? {
-        trust::Verdict::Use => Ok(Some(LoadedFile {
-            table: parse_settings(&contents, path)?,
-            path: path.to_owned(),
-        })),
+    match trust::verdict(&path, contents.as_bytes(), trust_override)? {
+        trust::Verdict::Use => path.parse(&contents).map(Some),
         trust::Verdict::Ignore => {
-            debug!("ignoring the denied settings file {}", path.display());
+            debug!("ignoring the denied settings file {}", path.path.display());
             Ok(None)
         }
     }
@@ -888,10 +811,10 @@ fn load_default_project_file(
 /// text, so this only affects the file layers.
 type ValueReader = fn(&Table, &str, &str) -> Result<Option<String>>;
 
-/// Resolve a single text setting with the precedence: environment variable,
-/// then the active profile (project file before global file), then top-level
-/// defaults (project file before global file). The first layer that has the
-/// key wins.
+/// Resolve a single text setting from `sources` with the precedence:
+/// environment variable, then the active profile in each file, then the
+/// top-level defaults in each file, most specific file first. The first layer
+/// that has the key wins.
 ///
 /// A layer that *has* the key but with a non-string value (or a malformed
 /// `profile` section) is a hard error rather than a silent skip — a typo like
@@ -901,10 +824,9 @@ fn resolve_value(
     key: &str,
     env_var: &'static str,
     profile: Option<&str>,
-    project: Option<&LoadedFile>,
-    global: Option<&LoadedFile>,
+    sources: &SettingsSources,
 ) -> Result<Option<Found>> {
-    resolve_value_with(string_value, &[key], &[env_var], profile, project, global)
+    resolve_value_with(string_value, &[key], &[env_var], profile, sources)
 }
 
 /// [`resolve_value`] for a numeric setting: the file layers accept a bare TOML
@@ -915,10 +837,9 @@ fn resolve_integer_value(
     key: &str,
     env_var: &'static str,
     profile: Option<&str>,
-    project: Option<&LoadedFile>,
-    global: Option<&LoadedFile>,
+    sources: &SettingsSources,
 ) -> Result<Option<Found>> {
-    resolve_value_with(integer_value, &[key], &[env_var], profile, project, global)
+    resolve_value_with(integer_value, &[key], &[env_var], profile, sources)
 }
 
 /// [`resolve_value`] for a setting with more than one name, such as a name
@@ -929,42 +850,49 @@ fn resolve_value_with(
     keys: &[&str],
     env_vars: &[&'static str],
     profile: Option<&str>,
-    project: Option<&LoadedFile>,
-    global: Option<&LoadedFile>,
+    sources: &SettingsSources,
 ) -> Result<Option<Found>> {
-    // The environment variable always has highest precedence.
-    for &env_var in env_vars {
-        let value = env::var(env_var).map_err(|err| {
-            SettingsError::Setting {
-                source: SettingSource::Env(env_var),
-                message: err.to_string(),
+    // The environment variable, when the sources have it, has the highest
+    // precedence.
+    if sources.env {
+        for &env_var in env_vars {
+            let value = env::var(env_var).map_err(|err| {
+                InvalidSetting {
+                    source: SettingSource::Env(env_var),
+                    message: err.to_string(),
+                }
+                .report()
+            })?;
+            if let Some(value) = value {
+                return Ok(Some(Found {
+                    value,
+                    source: SettingSource::Env(env_var),
+                }));
             }
-            .report()
-        })?;
-        if let Some(value) = value {
-            return Ok(Some(Found {
-                value,
-                source: SettingSource::Env(env_var),
-            }));
         }
     }
 
+    let global_path = sources
+        .files
+        .iter()
+        .find(|file| file.path.kind == KnownPathType::Global)
+        .map(|file| &file.path.path);
     let found = |file: &LoadedFile, key: String, value: Option<String>| {
         value.map(|value| Found {
             value,
             source: SettingSource::File {
-                path: file.path.clone(),
+                path: file.path.path.clone(),
                 key,
                 // A project file that `--settings` names can be the global
                 // settings file itself.
-                global: global.is_some_and(|global_file| global_file.path == file.path),
+                global: global_path == Some(&file.path.path),
             },
         })
     };
 
     // A named profile is consulted before defaults, project before global.
     if let Some(profile) = profile {
-        for file in [project, global].into_iter().flatten() {
+        for file in &sources.files {
             for key in keys {
                 let value = profile_value(&file.table, profile, key, read)
                     .map_err(|err| file.error(&err))?;
@@ -976,7 +904,7 @@ fn resolve_value_with(
     }
 
     // Finally fall back to top-level defaults, project before global.
-    for file in [project, global].into_iter().flatten() {
+    for file in &sources.files {
         for key in keys {
             let value = read(&file.table, key, key).map_err(|err| file.error(&err))?;
             if let Some(found) = found(file, (*key).to_owned(), value) {
@@ -1065,14 +993,6 @@ fn parse_byte_size(value: &str) -> Result<u64, String> {
         .map_err(|err| format!("expected a size such as \"10 MB\": {err}"))
 }
 
-pub(crate) fn read_to_string_if_file_exists(path: &Path) -> Result<Option<String>> {
-    match fs::read_to_string(path) {
-        Ok(contents) => Ok(Some(contents)),
-        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(eyre!("File at {:?} could not be read: {err:#}", path)),
-    }
-}
-
 pub(crate) fn back_up_unparsable_file(path: &Path) -> Result<PathBuf> {
     let file_name = path
         .file_name()
@@ -1092,11 +1012,6 @@ pub(crate) fn back_up_unparsable_file(path: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// An env var name guaranteed not to be set, so `resolve_value` exercises
-    /// the file layers deterministically under parallel execution (the
-    /// environment-wins case is covered end-to-end by `specs/settings.txt`).
-    const UNSET_ENV: &str = "SNOUTY_DEFINITELY_NOT_SET_ENV_VAR_98f3a";
 
     /// A restore replaces the settings file with a new one, so that a write
     /// that stops partway leaves the file whole.
@@ -1120,49 +1035,55 @@ mod tests {
         assert_eq!(fs::read_to_string(&link).unwrap(), "tenant = \"new\"\n");
     }
 
-    fn settings_file(contents: &str) -> LoadedFile {
+    /// The file of type `kind` at `path`, with `contents`.
+    fn loaded_file(kind: KnownPathType, path: &str, contents: &str) -> LoadedFile {
         LoadedFile {
+            path: KnownPath {
+                kind,
+                path: PathBuf::from(path),
+            },
             table: contents.parse().expect("test TOML should parse"),
-            path: PathBuf::from("/test/settings.toml"),
         }
     }
 
-    /// Resolve `tenant` against an env var guaranteed not to be set, so the file
-    /// layers decide the outcome. Each layer in the precedence tests uses a
-    /// distinct value, so the resolved value alone proves which layer won.
-    fn resolve_tenant(
-        profile: Option<&str>,
-        project: Option<&LoadedFile>,
-        global: Option<&LoadedFile>,
-    ) -> Option<String> {
-        resolve_value("tenant", UNSET_ENV, profile, project, global)
-            .unwrap()
-            .map(|found| found.value)
+    fn settings_file(contents: &str) -> LoadedFile {
+        loaded_file(KnownPathType::Project, "/test/settings.toml", contents)
     }
 
-    // ---- parse_settings ------------------------------------------------
+    /// The files `project`, then `global`, without the environment.
+    fn sources(project: Option<LoadedFile>, global: Option<LoadedFile>) -> SettingsSources {
+        SettingsSources {
+            env: false,
+            files: project.into_iter().chain(global).collect(),
+        }
+    }
+
+    /// Resolve `tenant` from the file layers alone. Each layer in the
+    /// precedence tests uses a distinct value, so the resolved value alone
+    /// proves which layer won.
+    fn resolve_tenant(
+        profile: Option<&str>,
+        project: Option<LoadedFile>,
+        global: Option<LoadedFile>,
+    ) -> Option<String> {
+        resolve_value(
+            "tenant",
+            ANTITHESIS_TENANT_VAR_NAME,
+            profile,
+            &sources(project, global),
+        )
+        .unwrap()
+        .map(|found| found.value)
+    }
 
     #[test]
     fn invalid_toml_is_reported_with_path() {
-        let err =
-            parse_settings("this is = = not toml", Path::new("/some/.snouty.toml")).unwrap_err();
+        let err = KnownPath::new(KnownPathType::Project, Path::new("/some/.snouty.toml"))
+            .parse("this is = = not toml")
+            .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("not valid TOML"), "unexpected error: {msg}");
         assert!(msg.contains(".snouty.toml"), "unexpected error: {msg}");
-    }
-
-    // ---- load_settings_file (filesystem) -------------------------------
-
-    #[test]
-    fn missing_default_file_is_ok() {
-        let result = load_settings_file(Path::new("/no/such/.snouty.toml"), false).unwrap();
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn missing_required_file_is_an_error() {
-        let err = load_settings_file(Path::new("/no/such/.snouty.toml"), true).unwrap_err();
-        assert!(err.to_string().contains("was not found"));
     }
 
     // ---- profile_value / string_value / integer_value --------------------
@@ -1303,7 +1224,7 @@ mod tests {
             "tenant = \"global-default\"\n[profile.p]\ntenant = \"global-profile\"\n",
         );
         assert_eq!(
-            resolve_tenant(Some("p"), Some(&project), Some(&global)).as_deref(),
+            resolve_tenant(Some("p"), Some(project), Some(global)).as_deref(),
             Some("proj-profile")
         );
     }
@@ -1313,7 +1234,7 @@ mod tests {
         let project = settings_file("tenant = \"proj-default\"\n");
         let global = settings_file("[profile.p]\ntenant = \"global-profile\"\n");
         assert_eq!(
-            resolve_tenant(Some("p"), Some(&project), Some(&global)).as_deref(),
+            resolve_tenant(Some("p"), Some(project), Some(global)).as_deref(),
             Some("global-profile")
         );
     }
@@ -1323,7 +1244,7 @@ mod tests {
         let project = settings_file("tenant = \"proj-default\"\n");
         let global = settings_file("tenant = \"global-default\"\n");
         assert_eq!(
-            resolve_tenant(None, Some(&project), Some(&global)).as_deref(),
+            resolve_tenant(None, Some(project), Some(global)).as_deref(),
             Some("proj-default")
         );
     }
@@ -1332,7 +1253,7 @@ mod tests {
     fn global_default_is_the_last_resort() {
         let global = settings_file("tenant = \"global-default\"\n");
         assert_eq!(
-            resolve_tenant(None, None, Some(&global)).as_deref(),
+            resolve_tenant(None, None, Some(global)).as_deref(),
             Some("global-default")
         );
     }
@@ -1349,7 +1270,7 @@ mod tests {
         let project =
             settings_file("tenant = \"proj-default\"\n[profile.p]\ntenant = \"proj-profile\"\n");
         assert_eq!(
-            resolve_tenant(None, Some(&project), None).as_deref(),
+            resolve_tenant(None, Some(project), None).as_deref(),
             Some("proj-default")
         );
     }
@@ -1359,16 +1280,12 @@ mod tests {
     /// The profiles that `resolve_every_profile` gives, in order, with
     /// `defaults` for the top-level defaults.
     fn every_profile(project: &str, global: &str) -> Vec<String> {
-        SettingsFiles {
-            project: Some(settings_file(project)),
-            global: Some(settings_file(global)),
-            files: Vec::new(),
-        }
-        .resolve_every_profile()
-        .unwrap()
-        .iter()
-        .map(|settings| settings.profile().unwrap_or("defaults").to_owned())
-        .collect()
+        sources(Some(settings_file(project)), Some(settings_file(global)))
+            .resolve_every_profile()
+            .unwrap()
+            .iter()
+            .map(|settings| settings.profile().unwrap_or("defaults").to_owned())
+            .collect()
     }
 
     #[test]
@@ -1390,19 +1307,19 @@ mod tests {
 
     #[test]
     fn the_registry_source_names_the_file_and_the_key() {
-        let file = |path: &str, contents: &str| LoadedFile {
-            path: PathBuf::from(path),
-            ..settings_file(contents)
-        };
         let source = |project: &str, profile: Option<&str>| {
-            SettingsFiles {
-                project: Some(file("/work/.snouty.toml", project)),
-                global: Some(file(
+            sources(
+                Some(loaded_file(
+                    KnownPathType::Project,
+                    "/work/.snouty.toml",
+                    project,
+                )),
+                Some(loaded_file(
+                    KnownPathType::Global,
                     "/home/settings.toml",
                     "registry = \"global.example.com\"\n",
                 )),
-                files: Vec::new(),
-            }
+            )
             .resolve(profile.map(str::to_owned))
             .unwrap()
             .registry()
@@ -1498,9 +1415,14 @@ mod tests {
     fn https_proxy_resolves_from_a_settings_file() {
         let project = settings_file("https_proxy = \"http://proxy.corp:8080\"\n");
         assert_eq!(
-            resolve_value("https_proxy", UNSET_ENV, None, Some(&project), None)
-                .unwrap()
-                .map(|found| found.value),
+            resolve_value(
+                "https_proxy",
+                ANTITHESIS_HTTPS_PROXY_VAR_NAME,
+                None,
+                &sources(Some(project), None)
+            )
+            .unwrap()
+            .map(|found| found.value),
             Some("http://proxy.corp:8080".to_string())
         );
     }
@@ -1523,9 +1445,14 @@ mod tests {
     fn update_channel_resolves_from_a_settings_file() {
         let project = settings_file("update_channel = \"unstable\"\n");
         assert_eq!(
-            resolve_value("update_channel", UNSET_ENV, None, Some(&project), None)
-                .unwrap()
-                .map(|found| found.value),
+            resolve_value(
+                "update_channel",
+                UPDATE_CHANNEL_VAR_NAME,
+                None,
+                &sources(Some(project), None)
+            )
+            .unwrap()
+            .map(|found| found.value),
             Some("unstable".to_string())
         );
     }
@@ -1537,10 +1464,9 @@ mod tests {
         assert_eq!(
             resolve_integer_value(
                 "api_cache_max_file_size",
-                UNSET_ENV,
+                API_CACHE_MAX_FILE_SIZE_VAR_NAME,
                 None,
-                Some(&project),
-                None
+                &sources(Some(project), None)
             )
             .unwrap()
             .map(|found| found.value),

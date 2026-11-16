@@ -9,12 +9,12 @@ Events that need a reaction:
 - a comment, a review comment, or a review
 - a failed CI check, with the job id that fetches its log
 - "all checks passed", once per head commit, when every check on it
-  concludes success, skipped, or neutral, or "has no checks": the PR can
-  merge, or the next PR of a stack can continue
+  concludes success, skipped, or neutral: the PR can merge, or the next PR
+  of a stack can continue
+- "has no checks": CI did not run on the head commit
 - a conflict with the base branch
 - a retarget to another base branch
-- the base branch tip moving to a new commit, which a stacked branch must
-  merge in
+- the base branch tip moving to a new commit, which the branch merges in
 - a merge or a close, or a reopening after a close that was printed
 
 Events that need none, which are printed for the record:

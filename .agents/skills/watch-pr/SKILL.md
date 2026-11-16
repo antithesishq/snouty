@@ -182,11 +182,13 @@ share.
   into the branch. Resolve the conflict, run the tests that the merge
   touches, and push.
 - **Base moved**: the base branch has new commits. Merge `origin/<branch>`
-  into the branch and push when the PR needs them, as a PR stacked on
-  another PR's branch does. Otherwise it needs nothing.
-- **All checks passed or no checks**: the PR can merge when its reviews
-  allow. Tell the user. When a PR of a stack waits for this one, continue
-  with that PR.
+  into the branch, run the tests that the merge touches, and push.
+- **All checks passed**: check that the line names your latest push. The PR
+  can merge when its reviews allow. Tell the user. When a PR of a stack
+  waits for this one, continue with that PR.
+- **No checks**: CI did not run on the head commit. This is not a pass.
+  Find out why, for example a conflict or a workflow that waits for
+  approval, and tell the user.
 - **Base changed**: someone retargeted the PR. Compare the branch with the
   new base, and update the description (step 4) if the content of the PR
   changed.

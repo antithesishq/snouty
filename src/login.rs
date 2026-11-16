@@ -450,7 +450,7 @@ impl<'a> TenantUrl<'a> {
     }
 }
 
-/// The next step when a credential that the user entered at the prompt fails.
+/// The next step at a terminal, where `snouty login` can prompt for a credential.
 const ENTER_AGAIN: &str =
     "run `snouty login` again, and enter an API key or sign in with single sign-on";
 

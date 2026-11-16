@@ -42,7 +42,6 @@ const PROFILE_KEY: &str = "profile";
 const REGISTRY_KEY: &str = "registry";
 /// An alias for [`REGISTRY_KEY`].
 const REPOSITORY_KEY: &str = "repository";
-/// The issue that removes the project settings file and named profiles.
 const REMOVAL_ISSUE_URL: &str = "https://github.com/antithesishq/snouty/issues/747";
 const NO_GLOBAL_SETTINGS_DIR: &str = "Could not determine global settings directory. Ensure either $XDG_CONFIG_HOME or $HOME is set.";
 
@@ -526,8 +525,8 @@ impl Settings {
         &self.files
     }
 
-    /// A warning that names the features in use that the next release
-    /// removes: the project settings file and a named profile.
+    /// A warning when these settings use a project settings file or a named
+    /// profile, which the next release removes; `None` otherwise.
     pub fn removal_warning(&self) -> Option<String> {
         let project = self
             .files

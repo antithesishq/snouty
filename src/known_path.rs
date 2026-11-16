@@ -4,6 +4,7 @@
 use std::fmt;
 use std::fs;
 use std::io::ErrorKind;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 use color_eyre::Section;
@@ -58,7 +59,7 @@ pub struct KnownPath {
 }
 
 impl KnownPath {
-    pub(crate) fn new(kind: KnownPathKind, path: &Path) -> Self {
+    pub fn new(kind: KnownPathKind, path: &Path) -> Self {
         Self {
             kind,
             path: fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()),
@@ -67,7 +68,7 @@ impl KnownPath {
 
     /// The file's text. `Ok(None)` when the file does not exist and is not
     /// `required`.
-    pub(crate) fn read(self, required: bool) -> Result<Option<KnownFile>> {
+    pub fn read(self, required: bool) -> Result<Option<KnownFile>> {
         match read_to_string_if_file_exists(&self.path)? {
             Some(text) => Ok(Some(KnownFile { path: self, text })),
             None if required => Err(user_error(format!(
@@ -81,47 +82,51 @@ impl KnownPath {
 
     /// The file as a TOML table. `Ok(None)` when the file does not exist and
     /// is not `required`.
-    pub(crate) fn load(self, required: bool) -> Result<Option<LoadedFile>> {
-        self.read(required)?.map(|file| file.load()).transpose()
+    pub fn load(self, required: bool) -> Result<Option<LoadedFile>> {
+        self.read(required)?.map(KnownFile::load).transpose()
     }
+}
 
-    /// The suggestion for an error in this file.
-    pub(crate) fn fix(&self) -> String {
-        format!("fix or delete {}", self.path.display())
+impl Deref for KnownPath {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.path
     }
 }
 
 /// The text of a file, as [`KnownPath::read`] read it.
-pub(crate) struct KnownFile {
-    pub(crate) path: KnownPath,
-    pub(crate) text: String,
+#[derive(Clone)]
+pub struct KnownFile {
+    pub path: KnownPath,
+    pub text: String,
 }
 
 impl KnownFile {
     /// The text as a TOML table.
-    pub(crate) fn load(&self) -> Result<LoadedFile> {
-        let path = self.path.clone();
+    pub fn load(self) -> Result<LoadedFile> {
+        let path = self.path;
         match self.text.parse::<Table>() {
             Ok(table) => Ok(LoadedFile { path, table }),
             Err(err) => Err(user_error(format!(
                 "{} {} is not valid TOML: {}",
                 path.kind.noun(),
-                path.path.display(),
+                path.display(),
                 format!("{err:#}").trim_end()
             ))
-            .suggestion(path.fix())),
+            .suggestion(format!("fix or delete {}", path.display()))),
         }
     }
 }
 
 /// A TOML file that snouty read.
 #[derive(Debug)]
-pub(crate) struct LoadedFile {
-    pub(crate) path: KnownPath,
-    pub(crate) table: Table,
+pub struct LoadedFile {
+    pub path: KnownPath,
+    pub table: Table,
 }
 
-pub(crate) fn read_to_string_if_file_exists(path: &Path) -> Result<Option<String>> {
+pub fn read_to_string_if_file_exists(path: &Path) -> Result<Option<String>> {
     match fs::read_to_string(path) {
         Ok(contents) => Ok(Some(contents)),
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),

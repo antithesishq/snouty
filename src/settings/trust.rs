@@ -65,7 +65,7 @@ struct TrustStore {
 
 /// Where the trust file is, or `None` when the global settings dir is
 /// unknown. The file need not exist.
-pub(crate) fn trust_file_path() -> Option<PathBuf> {
+pub fn trust_file_path() -> Option<PathBuf> {
     global_settings_dir().map(|dir| dir.join(TRUST_FILENAME))
 }
 

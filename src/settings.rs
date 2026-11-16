@@ -160,18 +160,14 @@ pub enum SettingSource {
 fn invalid_setting(source: &SettingSource, err: impl fmt::Display) -> Report {
     match source {
         SettingSource::Env(var) => {
-            user_error(format!("invalid {var}: {err}")).suggestion(fix_var(var))
+            user_error(format!("invalid {var}: {err}")).suggestion(format!("fix or unset {var}"))
         }
         SettingSource::File { path, key } => user_error(format!(
             "invalid setting `{key}` in {}: {err}",
-            path.path.display()
+            path.display()
         ))
-        .suggestion(path.fix()),
+        .suggestion(format!("fix or delete {}", path.display())),
     }
-}
-
-fn fix_var(var: &str) -> String {
-    format!("fix or unset {var}")
 }
 
 /// A setting's text, and where it was found.
@@ -279,7 +275,7 @@ impl SettingsSources {
         let project = project.filter(|project| {
             global
                 .as_ref()
-                .is_none_or(|global| global.path.path != project.path.path)
+                .is_none_or(|global| *global.path != *project.path)
         });
         Ok(Self {
             env: true,
@@ -579,7 +575,7 @@ pub(crate) fn update_settings_in_global_file(
         .join(GLOBAL_SETTINGS_FILENAME);
     let previous = KnownPath::new(KnownPathKind::Global, &path).read(false)?;
     let mut contents = match &previous {
-        Some(file) => file.load()?.table,
+        Some(file) => file.clone().load()?.table,
         None => Table::new(),
     };
 
@@ -767,13 +763,10 @@ fn load_default_project_file(
     else {
         return Ok(None);
     };
-    match trust::verdict(&file.path.path, file.text.as_bytes(), trust_override)? {
+    match trust::verdict(&file.path, file.text.as_bytes(), trust_override)? {
         trust::Verdict::Use => file.load().map(Some),
         trust::Verdict::Ignore => {
-            debug!(
-                "ignoring the denied settings file {}",
-                file.path.path.display()
-            );
+            debug!("ignoring the denied settings file {}", file.path.display());
             Ok(None)
         }
     }
@@ -826,7 +819,8 @@ fn resolve_value_with(
 ) -> Result<Option<Found>> {
     if sources.env {
         for &env_var in env_vars {
-            let value = env::var(env_var).map_err(|err| err.suggestion(fix_var(env_var)))?;
+            let value = env::var(env_var)
+                .map_err(|err| err.suggestion(format!("fix or unset {env_var}")))?;
             if let Some(value) = value {
                 return Ok(Some(Found {
                     value,
@@ -890,9 +884,9 @@ fn profiles(file: &LoadedFile) -> Result<Option<&Table>> {
             profiles.as_table().ok_or_else(|| {
                 user_error(format!(
                     "{}: `{PROFILE_KEY}` must be a table of profiles",
-                    file.path.path.display()
+                    file.path.display()
                 ))
-                .suggestion(file.path.fix())
+                .suggestion(format!("fix or delete {}", file.path.display()))
             })
         })
         .transpose()
@@ -908,9 +902,9 @@ fn profile_table<'a>(file: &'a LoadedFile, profile: &str) -> Result<Option<&'a T
     selected.as_table().map(Some).ok_or_else(|| {
         user_error(format!(
             "{}: profile `{profile}` must be a table",
-            file.path.path.display()
+            file.path.display()
         ))
-        .suggestion(file.path.fix())
+        .suggestion(format!("fix or delete {}", file.path.display()))
     })
 }
 

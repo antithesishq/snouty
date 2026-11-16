@@ -805,23 +805,34 @@ fn find_remote_pin(rt: &dyn ContainerRuntime, image: &str, prefix: &str) -> Resu
     {
         return Ok(None);
     }
+    // A digest pin is the author's choice, so only that digest counts, and the
+    // pin stays as written.
+    if let Some((_, digest)) = image.rsplit_once('@') {
+        return Ok(serves_amd64(rt, image, &repo, digest)?.then(|| image.to_string()));
+    }
     let repo_digests = rt.image_repo_digests(image)?;
     let tag = image_ref_tag(image);
     // A pull typically records several digests per repo (the per-arch
     // manifest and the manifest list) — try them all.
     for digest in digests_for_repo(&repo, &repo_digests) {
-        let amd64_ok = match rt.remote_manifest(&format!("{repo}@{digest}")) {
-            RemoteManifest::NotFound => continue,
-            RemoteManifest::List { has_amd64 } => has_amd64,
-            RemoteManifest::Single => rt.image_architecture(image)? == Architecture::Amd64,
-        };
-        if amd64_ok {
+        if serves_amd64(rt, image, &repo, &digest)? {
             return Ok(Some(format!("{repo}:{tag}@{digest}")));
         }
         // Served, but not runnable as amd64 — keep looking; the push path's
         // local arch check produces the actionable error.
     }
     Ok(None)
+}
+
+/// Whether `repo` serves `digest` in a form that the platform can run as
+/// amd64: a manifest list with an amd64 entry, or a single manifest of the
+/// local `image` when that image is amd64.
+fn serves_amd64(rt: &dyn ContainerRuntime, image: &str, repo: &str, digest: &str) -> Result<bool> {
+    Ok(match rt.remote_manifest(&format!("{repo}@{digest}")) {
+        RemoteManifest::NotFound => false,
+        RemoteManifest::List { has_amd64 } => has_amd64,
+        RemoteManifest::Single => rt.image_architecture(image)? == Architecture::Amd64,
+    })
 }
 /// Set the `image:` field of each service named in `references` to its
 /// reference. Other services keep their `image:` field.
@@ -1915,7 +1926,7 @@ services:
             "reg.example.com",
         )
         .unwrap();
-        assert!(out.contains("image: app:latest@sha256:list"), "{out}");
+        assert!(out.contains("image: app@sha256:list"), "{out}");
         assert!(rt.pushed.lock().unwrap().is_empty());
     }
 
@@ -1965,17 +1976,29 @@ services:
             skip_or_fail("docker-compose (Docker Compose v2) is not available");
             return;
         }
+        // The local store also records the digest of the per-arch manifest,
+        // which the registry serves too. The pin keeps the author's digest.
         let image = "redis@sha256:list";
         let rt = FakeRuntime {
             available_images: BTreeMap::from([(image.to_string(), true)]),
+            architectures: BTreeMap::from([(image.to_string(), "amd64".to_string())]),
             repo_digests: BTreeMap::from([(
                 image.to_string(),
-                vec!["docker.io/library/redis@sha256:list".to_string()],
+                vec![
+                    "docker.io/library/redis@sha256:child".to_string(),
+                    "docker.io/library/redis@sha256:list".to_string(),
+                ],
             )]),
-            remote_manifests: BTreeMap::from([(
-                "docker.io/library/redis@sha256:list".to_string(),
-                RemoteManifest::List { has_amd64: true },
-            )]),
+            remote_manifests: BTreeMap::from([
+                (
+                    "docker.io/library/redis@sha256:child".to_string(),
+                    RemoteManifest::Single,
+                ),
+                (
+                    "docker.io/library/redis@sha256:list".to_string(),
+                    RemoteManifest::List { has_amd64: true },
+                ),
+            ]),
             ..Default::default()
         };
         let out = pin_with_fake(
@@ -1984,10 +2007,7 @@ services:
             "reg.example.com",
         )
         .unwrap();
-        assert!(
-            out.contains("image: docker.io/library/redis:latest@sha256:list"),
-            "{out}"
-        );
+        assert!(out.contains(&format!("image: {image}\n")), "{out}");
         assert!(rt.pushed.lock().unwrap().is_empty());
     }
 

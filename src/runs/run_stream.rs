@@ -10,7 +10,7 @@
 //!   time a sample appears. An event property's sample is a moment, which is
 //!   unique across the run; a non-event property's sample is a JSON value,
 //!   unique only within its property.
-//! - `verdict <property id> passed|failed`: a `PROPERTIES_PASSED` or
+//! - `verdict <property id> passed|failed <name>`: a `PROPERTIES_PASSED` or
 //!   `PROPERTIES_FAILED` notification, unless it repeats the last verdict.
 //! - `completed <run id>`: `RUN_FINALIZED`; the stream ends.
 //! - `unknown <type> <json>`: a notification that snouty cannot decode, an
@@ -138,6 +138,7 @@ pub(super) enum Line {
     },
     Verdict {
         property_id: String,
+        name: String,
         verdict: Verdict,
     },
     Completed {
@@ -175,6 +176,7 @@ impl Line {
             }
             Self::Verdict {
                 property_id,
+                name,
                 verdict,
             } => {
                 let word = match verdict {
@@ -182,9 +184,10 @@ impl Line {
                     Verdict::Failed => style(verdict).red(),
                 };
                 format!(
-                    "{:<EVENT_WIDTH$}  {}  {word}",
+                    "{:<EVENT_WIDTH$}  {}  {word}  {}",
                     style("verdict").bold(),
-                    sanitize(property_id)
+                    sanitize(property_id),
+                    sanitize(name)
                 )
             }
             Self::Completed { run_id } => format!(
@@ -232,6 +235,7 @@ impl Line {
             Self::Verdict {
                 property_id,
                 verdict,
+                ..
             } => {
                 json!({"event": "verdict", "property_id": property_id, "verdict": verdict.to_string()})
             }
@@ -304,12 +308,13 @@ impl Denormalizer {
     /// verdict if it changed.
     fn property_lines(&mut self, property: Property, verdict: Option<Verdict>) -> Vec<Line> {
         let property_id = property_id(&property);
+        let name = property.name().to_string();
         let mut lines = Vec::new();
         if !self.properties.contains(&property_id) {
             self.properties.insert(property_id.clone());
             lines.push(Line::Property {
                 property_id: property_id.clone(),
-                name: property.name().to_string(),
+                name: name.clone(),
             });
         }
         for (kind, sample) in samples(property) {
@@ -334,6 +339,7 @@ impl Denormalizer {
         {
             lines.push(Line::Verdict {
                 property_id,
+                name,
                 verdict,
             });
         }
@@ -423,7 +429,7 @@ mod tests {
                 "sample     a1  counterexample  -100  401.25",
                 "sample     a1  counterexample  -200  402.5",
                 "sample     a1  example         -300  398.4898056755774",
-                "verdict    a1  failed",
+                "verdict    a1  failed  Property a1",
             ]
         );
     }
@@ -437,7 +443,7 @@ mod tests {
         rendered(&mut denormalizer, &found);
         assert_eq!(
             rendered(&mut denormalizer, &passed),
-            ["verdict    a1  passed"]
+            ["verdict    a1  passed  Property a1"]
         );
     }
 
@@ -473,7 +479,7 @@ mod tests {
             [
                 "property   a1  Property a1",
                 r#"sample     a1  counterexample  "old image""#,
-                "verdict    a1  passed",
+                "verdict    a1  passed  Property a1",
             ]
         );
     }

@@ -28,6 +28,11 @@ Each event under a divider renders on one line as `VTIME [source] payload`. With
 --detail, no fields are truncated, and additional fields are included in
 indented lines after the event.
 
+Examples:
+  snouty runs logs <run_id> <input_hash> <vtime>
+  snouty runs logs <run_id> <input_hash>
+  snouty runs logs <run_id> <input_hash> <vtime> --begin-vtime <begin_vtime>
+
 Usage: snouty runs logs [OPTIONS] <RUN_ID> <INPUT_HASH> [VTIME]
 
 Arguments:

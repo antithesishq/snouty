@@ -41,6 +41,8 @@ env SNOUTY_SETTINGS_TRUST=
 # 4. `settings trust` trusts ./.snouty.toml, and snouty then uses it.
 snouty settings trust
 stderr 'Trusted .*\.snouty\.toml'
+# `settings trust` warns that the next release removes it.
+stderr 'settings trust`.*snouty/issues'
 snouty settings show
 stdout 'tenant +acme'
 stdout 'base_url +https://acme\.antithesis\.com'
@@ -60,6 +62,7 @@ stdout 'base_url +https://evil\.example\.com'
 # 6. `settings deny` makes snouty ignore the file, also after it changes.
 snouty settings deny
 stderr 'Denied .*\.snouty\.toml'
+stderr 'settings deny`.*snouty/issues'
 snouty settings show
 stdout 'tenant +not set'
 ! stdout '^project '

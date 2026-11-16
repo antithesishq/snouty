@@ -609,6 +609,7 @@ pub fn filtered_path_without_binary(binary: &str) -> Option<String> {
 /// A mock Antithesis API server for development and testing.
 ///
 /// Handles:
+/// - `GET  /api/version` — API version v1, tenant release 67.0
 /// - `GET  /api/v0/runs` — paginated run listing
 /// - `GET  /api/v0/runs/{run_id}` — run detail (keyed by run id; 404 unknown)
 /// - `GET  /api/v0/runs/{run_id}/{properties,logs,build_logs}` — nested
@@ -836,6 +837,12 @@ fn mock_route(
     let ndjson = "application/x-ndjson";
 
     match (method, path_part) {
+        ("GET", "/api/version") => (
+            200,
+            r#"{"latest_api_version":"v1","release_version":"67.0"}"#.to_string(),
+            json,
+            NO_CACHE_CACHE_CONTROL,
+        ),
         ("GET", "/api/v0/registry") => (
             200,
             r#"{"auth":"antithesis","registry_url":"registry.testtenant.antithesis.com"}"#

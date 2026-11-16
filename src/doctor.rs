@@ -5,20 +5,22 @@ use serde::Serialize;
 
 use crate::api::{
     AntithesisApi, ApiVersion, HttpClient, MIN_CANCEL_RELEASE, MIN_EXEC_RELEASE,
-    MIN_LAUNCH_PARAMS_RELEASE, MIN_SEARCH_RELEASE, MIN_STREAM_RELEASE, VersionError,
-    normalize_base_url,
+    MIN_LAUNCH_PARAMS_RELEASE, MIN_REGISTRY_RELEASE, MIN_SEARCH_RELEASE, MIN_STREAM_RELEASE,
+    VersionError, normalize_base_url,
 };
 use crate::auth::{
-    AuthenticationInfo, CredentialSource, CredentialStore, OIDC_REJECTED_NEXT_STEP,
-    SourcedCredential, keychain_entry_name,
+    AuthenticationInfo, CredentialSource, CredentialStore, SourcedCredential, keychain_entry_name,
+    login_command, rejected_credential_next_step,
 };
 use crate::compose;
 use crate::container;
 use crate::error::rejects_credential;
-use crate::login::{CliOAuthConfig, fetch_cli_config};
+use crate::known_path::KnownPathKind;
+use crate::login::{CliOAuthConfig, REGISTRY_TIMEOUT, fetch_cli_config};
 use crate::registry::Registry;
 use crate::render::OutputOptions;
-use crate::settings::{Settings, Tenant};
+use crate::settings::{SettingSource, Settings, Tenant};
+use crate::tag::Tagged;
 
 /// The longest wait for the OAuth probe. Doctor only reports what the probe
 /// finds, so it does not wait as long as login does.
@@ -252,16 +254,50 @@ fn tenant_check(tenant: Option<&Tenant>) -> Check {
 /// The container registry is only needed to build and push a config image
 /// (`snouty launch --config`), so a missing one is a warning, not a failure —
 /// read-only use (`snouty runs`, `snouty debug`) doesn't need it.
-fn registry_check(registry: Option<&Registry>) -> Check {
+fn registry_check(registry: Option<&Registry>, profile: Option<&str>) -> Check {
     match registry {
         Some(_) => Check::ok(CheckId::Registry, "container registry is set"),
         None => Check::warn(CheckId::Registry, "container registry is not set")
             .note(Level::Warning, "the registry is needed for `snouty launch`")
             .note(
                 Level::Note,
-                "run `snouty login` to set it, or set ANTITHESIS_REGISTRY",
+                format!(
+                    "run {} to set it, or set ANTITHESIS_REGISTRY",
+                    login_command(profile)
+                ),
             ),
     }
+}
+
+/// The registry check when the tenant also has an Antithesis registry,
+/// `reported`, and the registry setting, `configured`, is not in it. A
+/// tenant from before release 67 can keep the registry that it used before,
+/// so this is a suggestion, not a warning. The tag of `configured` names
+/// the place where the switch happens.
+fn other_registry_check(
+    configured: &Tagged<Registry, SettingSource>,
+    reported: &Registry,
+    profile: Option<&str>,
+) -> Check {
+    let switch = match configured.tag() {
+        SettingSource::Env(var) => format!("set {var} to it"),
+        SettingSource::File { path, .. } if path.kind == KnownPathKind::Global => {
+            format!("run {} to switch to it", login_command(profile))
+        }
+        SettingSource::File { path, key } => {
+            format!("set `{key}` in {} to it", path.display())
+        }
+    };
+    let configured = configured.value();
+    Check::ok(CheckId::Registry, "container registry is set")
+        .note(
+            Level::Note,
+            format!("the tenant also has an Antithesis registry, `{reported}`"),
+        )
+        .note(
+            Level::Note,
+            format!("you can keep using `{configured}`, or {switch}"),
+        )
 }
 
 /// `selected` is the profile that the user selects, if any.
@@ -443,15 +479,6 @@ fn login_to_replace(profile: Option<&str>) -> String {
     )
 }
 
-/// `snouty login` for `profile`. A bare `snouty login` writes the default
-/// profile, so a named profile is passed on.
-fn login_command(profile: Option<&str>) -> String {
-    match profile {
-        Some(p) => format!("`snouty login --profile {p}`"),
-        None => "`snouty login`".to_owned(),
-    }
-}
-
 fn unset(variables: &[&str]) -> String {
     format!("`unset {}`", variables.join(" "))
 }
@@ -541,7 +568,10 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
     // Required settings. tenant is needed by every command; registry is
     // launch-only, so a missing one is a warning.
     checks.push(tenant_check(settings.tenant()));
-    checks.push(registry_check(settings.registry()));
+    checks.push(registry_check(
+        settings.registry().map(Tagged::value),
+        settings.profile(),
+    ));
 
     // Authentication (synchronous-only by design).
     let github_actions = crate::auth::in_github_actions();
@@ -714,23 +744,6 @@ fn version_check(
     }
 }
 
-/// The one step that fixes `in_use` when the tenant of `profile` rejects it.
-fn rejected_credential_next_step(in_use: &SourcedCredential, profile: Option<&str>) -> String {
-    match (in_use.value(), in_use.tag()) {
-        (AuthenticationInfo::GithubActionsOidc(_), _) => OIDC_REJECTED_NEXT_STEP.to_owned(),
-        // `snouty login` cannot help: the environment hides what it stores.
-        (credential, CredentialSource::Environment { variables }) => format!(
-            "set `{}` to a valid {credential}",
-            variables.join("` and `")
-        ),
-        // A named profile with no credential uses the default profile's, so
-        // the login goes to the checked profile.
-        (_, CredentialSource::Stored(_)) => {
-            format!("run {} to fix authentication", login_command(profile))
-        }
-    }
-}
-
 /// The message of the credentials check when `auth` could not be renewed,
 /// and the next step. A 5xx, a 408 or a 429 is temporary, and another 4xx
 /// refuses the credential.
@@ -850,6 +863,48 @@ pub async fn cmd_doctor(
                 let version = api.get_version().await;
                 if let Ok(version) = &version {
                     checks.extend(release_floor_checks(version));
+                    // A base_url setting most often names a proxy, which
+                    // then serves the registry too.
+                    if let Some(configured) = settings.registry()
+                        && (settings.explicit_base_url().is_none()
+                            || crate::env::test_doctor_asks_registry())
+                        && version
+                            .release
+                            .is_some_and(|release| release >= MIN_REGISTRY_RELEASE)
+                    {
+                        let reported = tokio::time::timeout(
+                            crate::env::scaled_wait(REGISTRY_TIMEOUT),
+                            api.get_registry(),
+                        )
+                        .await;
+                        match reported {
+                            Ok(Ok(reported)) => {
+                                // An answer that is not a registry gives
+                                // nothing to compare with.
+                                match reported.untag().registry_url.parse::<Registry>() {
+                                    Ok(reported) if !configured.value().is_within(&reported) => {
+                                        let check = checks
+                                            .iter_mut()
+                                            .find(|c| c.id == CheckId::Registry)
+                                            .expect("collect_checks reports the registry");
+                                        *check = other_registry_check(
+                                            configured,
+                                            &reported,
+                                            settings.profile(),
+                                        );
+                                    }
+                                    Ok(_) => {}
+                                    Err(err) => debug!("the tenant's registry is invalid: {err}"),
+                                }
+                            }
+                            // The registry check already reports what doctor can
+                            // tell without the tenant's answer.
+                            Ok(Err(err)) => {
+                                debug!("could not read the tenant's registry: {err:#}");
+                            }
+                            Err(_) => debug!("the tenant did not report its registry in time"),
+                        }
+                    }
                 }
                 api_failed = matches!(version, Err(VersionError::Unreachable(_)));
                 checks.push(version_check(&host, in_use, settings.profile(), version));
@@ -945,6 +1000,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::known_path::KnownPath;
     use crate::tag::Tag;
 
     // ---- auth_checks (env-only auth) -----------------------------------
@@ -1352,20 +1408,74 @@ mod tests {
         );
     }
 
+    fn registry(text: &str) -> Registry {
+        text.parse().unwrap()
+    }
+
     #[test]
     fn registry_check_is_ok_when_resolved() {
-        let check = registry_check(Some(&"registry.acme.antithesis.com/team".parse().unwrap()));
+        let check = registry_check(Some(&registry("registry.acme.antithesis.com/team")), None);
         assert_eq!(check.status, Status::Ok);
+    }
+
+    #[test]
+    fn another_registry_is_a_suggestion_that_names_where_to_switch() {
+        let configured = registry("proxy.example.com/acme");
+        let tenant = registry("registry.acme.antithesis.com");
+        let next_step = |source: SettingSource, profile: Option<&str>| {
+            let check =
+                other_registry_check(&configured.clone().with_tag(source), &tenant, profile);
+            assert_eq!(check.status, Status::Ok);
+            assert!(check.notes.iter().all(|note| note.level == Level::Note));
+            assert_eq!(
+                check.notes[0].text,
+                "the tenant also has an Antithesis registry, `registry.acme.antithesis.com`"
+            );
+            check.notes[1].text.clone()
+        };
+        assert_eq!(
+            next_step(
+                SettingSource::File {
+                    path: KnownPath {
+                        kind: KnownPathKind::Global,
+                        path: "/home/.config/snouty/settings.toml".into(),
+                    },
+                    key: "profile.prod.registry".into(),
+                },
+                Some("prod")
+            ),
+            "you can keep using `proxy.example.com/acme`, or run `snouty login --profile prod` to switch to it"
+        );
+        // `snouty login` writes the global settings file, which the
+        // environment and a project settings file override.
+        assert_eq!(
+            next_step(SettingSource::Env("ANTITHESIS_REGISTRY"), Some("prod")),
+            "you can keep using `proxy.example.com/acme`, or set ANTITHESIS_REGISTRY to it"
+        );
+        let project = SettingSource::File {
+            path: KnownPath {
+                kind: KnownPathKind::Project { explicit: false },
+                path: "/work/.snouty.toml".into(),
+            },
+            key: "registry".into(),
+        };
+        assert_eq!(
+            next_step(project, None),
+            "you can keep using `proxy.example.com/acme`, or set `registry` in /work/.snouty.toml to it"
+        );
     }
 
     #[test]
     fn registry_check_only_warns_when_missing() {
         // Following main's #147 decision: the registry is launch-only, so a
         // missing one is a warning, not a failure.
-        let check = registry_check(None);
+        let check = registry_check(None, Some("prod"));
         assert_eq!(check.status, Status::Warn);
         assert!(check.notes.iter().any(|n| n.text.contains("snouty launch")));
-        assert!(check.notes.iter().any(|n| n.text.contains("snouty login")));
+        assert_eq!(
+            check.notes[1].text,
+            "run `snouty login --profile prod` to set it, or set ANTITHESIS_REGISTRY"
+        );
     }
 
     // ---- release_floor_check -------------------------------------------
@@ -1503,40 +1613,22 @@ mod tests {
         }
     }
 
-    /// A stored credential gets `snouty login`, with `--profile` for a named
-    /// profile. Another source gets the step that fixes it.
     #[test]
     fn version_auth_rejection_names_the_fix_for_the_source() {
-        let note_for = |in_use: SourcedCredential, profile| {
-            version_check(
-                "tenant.antithesis.com",
-                &in_use,
-                profile,
-                Err(VersionError::Http(403)),
-            )
+        let check = version_check(
+            "tenant.antithesis.com",
+            &env_api_key_source(),
+            None,
+            Err(VersionError::Http(403)),
+        );
+        let next_step = check
             .notes
             .into_iter()
             .find(|n| n.level == Level::Note)
-            .expect("a rejection carries a next step")
-            .text
-        };
-        let note = |profile| note_for(file_api_key_source(), profile);
-        assert_eq!(note(None), "run `snouty login` to fix authentication");
+            .expect("a rejection carries a next step");
         assert_eq!(
-            note(Some("default")),
-            "run `snouty login --profile default` to fix authentication"
-        );
-        assert_eq!(
-            note(Some("staging")),
-            "run `snouty login --profile staging` to fix authentication"
-        );
-        assert_eq!(
-            note_for(env_api_key_source(), Some("staging")),
+            next_step.text,
             "set `ANTITHESIS_API_KEY` to a valid API key"
-        );
-        assert_eq!(
-            note_for(oidc_source(), None),
-            "ask Antithesis support to trust GitHub Actions OIDC tokens from this repository"
         );
     }
 

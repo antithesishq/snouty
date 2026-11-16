@@ -28,10 +28,9 @@ use snouty::params::{
     ANT_EVENT_DESCRIPTION, ANT_FAULT_EXCLUSIONS, ANT_FAULT_TOLERANCE, ANT_FILTER_LOGS_MATCHING,
     ANT_FILTER_SOURCE_MATCHING, ANT_IS_EPHEMERAL, ANT_MAX_COMPUTE_HOURS, ANT_PERFORMANCE_TIER,
     ANT_REPORT_RECIPIENTS, ANT_SETUP_TIMEOUT, ANT_SOURCE, ANT_TEST_NAME, DuplicateKey, Params,
-    VCS_PREFIX,
 };
-use snouty::run_metadata;
-use snouty::settings::Settings;
+use snouty::run_metadata::{self, Detect, RunKind};
+use snouty::settings::{RemovedFeature, Settings};
 use snouty::stdio::{self, StreamClosed};
 use snouty::validate;
 
@@ -110,9 +109,28 @@ async fn run(cli: Cli) -> Result<()> {
 
     // Resolve settings once, up front. Each command that reads settings
     // unwraps the result, so a bad settings file stops only those commands.
-    let settings = Settings::resolve(settings_path.clone(), profile.clone()).map_err(|err| {
-        snouty::settings::suggest_settings_fix(err, matches!(command, Commands::Login { .. }))
-    });
+    let settings = Settings::resolve(settings_path.clone(), profile.clone());
+    // The credential helper runs on each push or pull, a shell runs
+    // completions at each start, and the MCP server warned once already.
+    if !matches!(
+        command,
+        Commands::DockerCredential { .. } | Commands::Completions { .. }
+    ) && !snouty::mcp::in_tool_call()
+    {
+        let mut removed_features = settings
+            .as_ref()
+            .map_or_else(|_| Vec::new(), Settings::removed_features);
+        if let Commands::Settings { command } = &command {
+            match command {
+                SettingsCommands::Show => {}
+                SettingsCommands::Trust(_) => removed_features.push(RemovedFeature::Trust),
+                SettingsCommands::Deny(_) => removed_features.push(RemovedFeature::Deny),
+            }
+        }
+        if let Some(warning) = snouty::settings::removal_warning(&removed_features) {
+            eprintln!("{}", snouty::wrap_if_tty(&warning));
+        }
+    }
     let result = match command {
         Commands::Completions { shell } => cmd_completions(shell).map_err(Report::new),
         Commands::Version => cmd_version(output.json),
@@ -290,12 +308,14 @@ async fn cmd_launch(
         return Err(user_error("invalid arguments: no parameters provided"));
     }
 
-    let mut metadata = run_metadata::detect(args.config.as_deref().unwrap_or(Path::new(".")));
-    if args.no_vcs {
-        metadata.retain(|key| !key.starts_with(VCS_PREFIX));
-    }
     // A user value replaces the detected one.
-    params.merge_defaults(metadata);
+    params.merge_defaults(run_metadata::detect(
+        args.config.as_deref().unwrap_or(Path::new(".")),
+        Detect {
+            kind: RunKind::Launch,
+            vcs: !args.no_vcs,
+        },
+    ));
 
     params.validate_test_params()?;
 
@@ -465,6 +485,13 @@ async fn cmd_debug(
     params
         .extend_checked(args.params.into_iter().collect())
         .map_err(param_overrides_flag)?;
+    params.merge_defaults(run_metadata::detect(
+        Path::new("."),
+        Detect {
+            kind: RunKind::Debug,
+            vcs: !args.no_vcs,
+        },
+    ));
     // clap takes exactly one of --run-id and --session-id, but a --param can
     // add the other.
     if params.contains_key(ANT_DEBUGGING_RUN_ID) && params.contains_key(ANT_DEBUGGING_SESSION_ID) {

@@ -46,6 +46,16 @@ impl Registry {
             .parse()
             .ok()
     }
+
+    /// Whether `self` is `other` or a path under it.
+    pub fn is_within(&self, other: &Registry) -> bool {
+        let path = self.0.path().trim_end_matches('/');
+        let other_path = other.0.path().trim_end_matches('/');
+        self.authority() == other.authority()
+            && path
+                .strip_prefix(other_path)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    }
 }
 
 /// The registry without a scheme, so that `{registry}/` opens an image
@@ -104,7 +114,7 @@ impl FromStr for Registry {
 /// setting names another registry, or when the tenant or the registry is not
 /// set.
 pub fn tenant_registry(settings: &Settings) -> Option<&Registry> {
-    let registry = settings.registry()?;
+    let registry = settings.registry()?.value();
     registry
         .antithesis_tenant()?
         .eq_ignore_ascii_case(settings.tenant()?)
@@ -152,7 +162,8 @@ pub fn select_settings(
         let credential = AuthenticationInfo::for_ambient_configuration(
             settings.profile(),
             PasswordPolicy::Reject,
-        )?;
+        )?
+        .untag();
         return Ok(Some((settings, credential)));
     }
     first_with_own_credential(request.resolve_every_profile()?, tenant, |profile| {
@@ -250,6 +261,8 @@ mod tests {
     use super::*;
     use crate::api::ResponseCache;
     use crate::auth::GithubActionsOidcToken;
+    use crate::settings::{ANTITHESIS_REGISTRY_VAR_NAME, SettingSource};
+    use crate::tag::Tag;
     use crate::testutils::auth::{oauth_credential_in, paseto_expiring_in};
     use crate::testutils::fake_secrets::{
         FAKE_ACCESS_TOKEN_A, FAKE_ACCESS_TOKEN_B, FAKE_API_KEY_A, FAKE_API_KEY_B,
@@ -472,7 +485,10 @@ mod tests {
     fn settings(profile: Option<&str>, tenant: &str, registry_setting: &str) -> Settings {
         let builder = Settings::builder()
             .tenant(tenant.parse().unwrap())
-            .registry(registry(registry_setting));
+            .registry(
+                registry(registry_setting)
+                    .with_tag(SettingSource::Env(ANTITHESIS_REGISTRY_VAR_NAME)),
+            );
         match profile {
             Some(profile) => builder.profile(profile),
             None => builder,
@@ -779,6 +795,35 @@ mod tests {
             let err = given.parse::<Registry>().unwrap_err().to_string();
             assert!(err.contains(problem), "{given:?}: {err}");
         }
+    }
+
+    #[test]
+    fn a_registry_is_within_itself_or_a_registry_above_its_path() {
+        let within = |registry: &str, other: &str| {
+            registry
+                .parse::<Registry>()
+                .unwrap()
+                .is_within(&other.parse().unwrap())
+        };
+        let tenant = "registry.acme.antithesis.com";
+        assert!(within(tenant, tenant));
+        assert!(within("registry.acme.antithesis.com/", tenant));
+        assert!(within("https://registry.acme.antithesis.com", tenant));
+        assert!(within(tenant, "https://registry.acme.antithesis.com/"));
+        assert!(!within("registry.acme.antithesis.com:5000/team", tenant));
+        assert!(within("registry.acme.antithesis.com/team/app", tenant));
+        assert!(!within("registry.other.antithesis.com", tenant));
+        assert!(!within(
+            "proxy.example.com/registry.acme.antithesis.com",
+            tenant
+        ));
+        assert!(!within("registry.acme.antithesis.com.evil", tenant));
+
+        let tenant = "registry.example.com/acme";
+        assert!(within("registry.example.com/acme/app", tenant));
+        assert!(!within("registry.example.com/acmes", tenant));
+        assert!(!within("registry.example.com", tenant));
+        assert!(!within("registry.example.com/other", tenant));
     }
 
     /// Any text that parses prints as a registry that parses to itself.

@@ -1,8 +1,8 @@
 # snouty settings show
 #
 # Prints each setting with the value snouty resolved for it, one row each, on
-# stdout, then a table of the settings files that snouty read and the
-# credentials file when it exists.
+# stdout, then a table of the settings files that snouty read, and the
+# credentials file and the trust file when they exist.
 # --json prints both as one JSON object: `settings`, with null for a setting
 # that is not set and has no default, and `files`.
 
@@ -17,6 +17,7 @@ stdout '^container_engine +auto-detect$'
 stdout '^update_channel +stable$'
 stdout '^api_cache_max_file_size +10\.0 MiB$'
 stdout '^files: none$'
+! stderr 'warning'
 
 # 2. Values resolve through the usual chain. The base URL derives from the
 #    tenant. A size prints in binary units.
@@ -31,7 +32,13 @@ stdout '^base_url +https://acme\.antithesis\.com$'
 stdout '^https_proxy +http://proxy\.example\.com:3128$'
 stdout '^api_cache_max_file_size +1000 B$'
 
-# 3. The text output is a table of the settings files that snouty read:
+# 3. A profile prints one warning to stderr. A file that --settings names
+#    does not warn.
+stderr -count=1 'snouty/issues'
+stderr 'settings profiles'
+! stderr '\.snouty\.toml'
+
+# 4. The text output is a table of the settings files that snouty read:
 #    the project file, which overrides the global one, then the global file.
 stdout '^TYPE +PATH$'
 stdout '^project +/.*/chosen\.toml$'
@@ -39,12 +46,17 @@ set-env XDG_CONFIG_HOME ${WORK}/cfg
 snouty --settings chosen.toml settings show
 stdout '(?s)^project +/[^\n]*/chosen\.toml\nglobal +/[^\n]*/cfg/snouty/settings\.toml$'
 
-# 4. The credentials file follows the settings files, when it exists.
+# 5. The credentials file and the trust file follow the settings files, when
+#    they exist.
 cp credentials.toml cfg/snouty/credentials.toml
 snouty --settings chosen.toml settings show
 stdout '(?s)^global +/[^\n]*/cfg/snouty/settings\.toml\ncredentials +/[^\n]*/cfg/snouty/credentials\.toml$'
+! stdout '^trust '
+cp trust.toml cfg/snouty/trust.toml
+snouty --settings chosen.toml settings show
+stdout '(?s)^credentials +/[^\n]*/cfg/snouty/credentials\.toml\ntrust +/[^\n]*/cfg/snouty/trust\.toml$'
 
-# 5. --json prints the settings, keyed by setting, and the files. A size is a
+# 6. --json prints the settings, keyed by setting, and the files. A size is a
 #    number of bytes.
 snouty --json --settings chosen.toml settings show
 stdout '"settings": \{'
@@ -52,12 +64,21 @@ stdout '"tenant": "acme"'
 stdout '"registry": "global-registry"'
 stdout '"profile": null'
 stdout '"api_cache_max_file_size": 1000'
-stdout '(?s)"files": \[.*"type": "project",\n +"path": "/[^\n]*/chosen\.toml".*"type": "global",\n +"path": "/[^\n]*/cfg/snouty/settings\.toml".*"type": "credentials",\n +"path": "/[^\n]*/cfg/snouty/credentials\.toml"'
+stdout '(?s)"files": \[.*"type": "project",\n +"path": "/[^\n]*/chosen\.toml".*"type": "global",\n +"path": "/[^\n]*/cfg/snouty/settings\.toml".*"type": "credentials",\n +"path": "/[^\n]*/cfg/snouty/credentials\.toml".*"type": "trust",\n +"path": "/[^\n]*/cfg/snouty/trust\.toml"'
+
+# 7. A trusted ./.snouty.toml warns.
+cp chosen.toml .snouty.toml
+env SNOUTY_SETTINGS_TRUST=all
+snouty settings show
+stderr '\./\.snouty\.toml'
+stderr -count=1 'snouty/issues'
 
 -- cfg/snouty/settings.toml --
 registry = "global-registry"
 -- credentials.toml --
 [default]
+-- trust.toml --
+[files]
 -- chosen.toml --
 [profile.staging]
 registry = "registry.example.com/staging"

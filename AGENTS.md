@@ -212,8 +212,11 @@ break the logic (a branch, a condition, a request field), not a string.
 - A test does not wait out a fixed time. Pause the tokio clock
   (`start_paused`) in a unit test. For a wait inside the binary, set
   `SNOUTY_TEST_SECOND_MS`, which shortens the retry backoff, the docs connect
-  timeout, the OAuth request timeout and the MCP progress interval. Do not add a second variable of this
-  type.
+  timeout, the OAuth request timeout and the MCP progress interval.
+- The binary reads two test-only variables, both in `src/env.rs`:
+  `SNOUTY_TEST_SECOND_MS`, and `SNOUTY_TEST_DOCTOR_ASK_REGISTRY`, which makes
+  doctor ask the tenant for its registry when a base_url is set, because a mock
+  tenant is reachable only at a base_url. Do not add a third.
 
 ## Comments, changelog, and prose
 

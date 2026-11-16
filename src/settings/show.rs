@@ -3,9 +3,11 @@ use std::io::Write;
 use color_eyre::eyre::Result;
 use serde_json::{Map, Value, json};
 
-use super::{Settings, SettingsFile, SettingsFileType};
+use super::Settings;
+use super::trust::trust_file_path;
 use crate::auth::credentials_file_path;
 use crate::features::{self, Feature};
+use crate::known_path::{KnownPath, KnownPathKind};
 use crate::render::{render_kv, sanitize};
 use crate::stdio;
 use crate::table::{Column, Table};
@@ -31,7 +33,10 @@ fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, 
         text_row("tenant", settings.tenant().map(|tenant| &**tenant), NOT_SET),
         text_row(
             "registry",
-            settings.registry().map(ToString::to_string).as_deref(),
+            settings
+                .registry()
+                .map(|registry| registry.value().to_string())
+                .as_deref(),
             NOT_SET,
         ),
         text_row("base_url", settings.base_url().as_deref(), NOT_SET),
@@ -64,10 +69,17 @@ fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, 
 
 pub fn cmd_settings_show(settings: &Settings, json: bool) -> Result<()> {
     let rows = rows(settings, &features::enabled());
-    let credentials = credentials_file_path()
-        .filter(|path| path.is_file())
-        .map(|path| SettingsFile::new(SettingsFileType::Credentials, &path));
-    let files: Vec<&SettingsFile> = settings.files().iter().chain(&credentials).collect();
+    let listed = [
+        (KnownPathKind::Credentials, credentials_file_path()),
+        (KnownPathKind::Trust, trust_file_path()),
+    ]
+    .into_iter()
+    .filter_map(|(kind, path)| {
+        path.filter(|path| path.is_file())
+            .map(|path| KnownPath::new(kind, &path))
+    })
+    .collect::<Vec<_>>();
+    let files: Vec<&KnownPath> = settings.files().iter().chain(&listed).collect();
     let mut stdout = stdio::stdout();
     if json {
         let object: Map<String, Value> = rows
@@ -87,12 +99,7 @@ pub fn cmd_settings_show(settings: &Settings, json: bool) -> Result<()> {
         } else {
             let rows = files
                 .iter()
-                .map(|file| {
-                    vec![
-                        file.file_type.to_string(),
-                        sanitize(&file.path.display().to_string()),
-                    ]
-                })
+                .map(|file| vec![file.kind.to_string(), sanitize(&file.display().to_string())])
                 .collect();
             // Both columns are fixed, so the table never needs the terminal
             // width.

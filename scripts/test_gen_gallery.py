@@ -805,5 +805,44 @@ class BuildLogsTimeCheck(unittest.TestCase):
         self.assertFalse(passed, detail)
 
 
+class PropertyExamplesCheck(unittest.TestCase):
+    RUN = "e65f5c4e7ef6dd47505b5c48070b98d0-67-6"
+    DETAIL = textwrap.dedent(
+        """\
+        Name      Peak memory usage
+        Examples  showing 1 out of 22378 passing examples and 1 out of 1 failing example
+          STATUS   HASH                  VTIME
+          failing  -2397511140710350372  67.13026605779305
+          passing  2370721563506907892   5.867114728782326
+        """
+    )
+
+    def check(self, hint: str) -> tuple[bool, str]:
+        args = ["runs", "property", self.RUN, "c4386cb75c3a5407227cac7868a1249d"]
+        story = gallery.Story("s", "t", "g", "j", args, gallery.property_has_examples)
+        result = gallery.Result(args, self.DETAIL + hint, "", 0)
+        run = gallery.StoryRun(story, result, None)
+        return gallery.property_has_examples(run, gallery.Registry())
+
+    def test_passes_with_one_logs_command_for_the_run(self):
+        passed, detail = self.check(
+            f"\nview logs:\n  snouty runs logs {self.RUN} <hash> <vtime>\n"
+        )
+        self.assertTrue(passed, detail)
+
+    def test_fails_without_a_logs_command(self):
+        passed, detail = self.check("\nview logs leading up to an example:\n")
+        self.assertFalse(passed, detail)
+
+    def test_fails_with_a_logs_command_for_another_run(self):
+        passed, detail = self.check("\n  snouty runs logs <run> <hash> <vtime>\n")
+        self.assertFalse(passed, detail)
+
+    def test_fails_with_more_than_one_next_step(self):
+        line = f"  snouty runs logs {self.RUN} 1 2\n"
+        passed, detail = self.check("\n" + line + line)
+        self.assertFalse(passed, detail)
+
+
 if __name__ == "__main__":
     unittest.main()

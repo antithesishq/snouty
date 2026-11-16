@@ -315,9 +315,12 @@ pub enum Commands {
     /// Sign in and store your snouty configuration
     #[command(arg = json(JsonShape::None))]
     Login {
+        /// Your Antithesis tenant, such as acme
         #[arg(long)]
         tenant: Option<crate::settings::Tenant>,
 
+        /// The container registry to push your images to, in place of the
+        /// tenant's registry
         #[arg(long, alias = "repository")]
         registry: Option<crate::registry::Registry>,
     },
@@ -647,7 +650,7 @@ pub struct ValidateArgs {
 
 #[derive(Args)]
 pub struct DoctorArgs {
-    /// Skip the network check (don't contact the Antithesis API for versions)
+    /// Skip the checks that contact the Antithesis API
     #[arg(long)]
     pub offline: bool,
 }
@@ -832,6 +835,11 @@ pub struct DebugArgs {
     /// Report recipients (semicolon-delimited email addresses)
     #[arg(long)]
     pub recipients: Option<String>,
+
+    /// Do not record the commit, branch, repository and pull request in run
+    /// metadata
+    #[arg(long)]
+    pub no_vcs: bool,
 
     /// Extra parameters as key=value pairs (repeatable)
     #[arg(long = "param", id = "param", value_name = "PARAMS")]

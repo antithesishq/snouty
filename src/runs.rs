@@ -739,9 +739,9 @@ fn print_properties_detail(run_id: &str, properties: &[Property]) -> Result<()> 
     Ok(())
 }
 
-/// One next step for the whole listing: the `runs logs` command for the first
-/// failing moment in display order, else the first passing one. Each is the
-/// earliest moment of its property, as in the top row of its table.
+/// The `runs logs` next step for the whole listing: the earliest
+/// counterexample of the first property in display order that has one, else
+/// the earliest example. Each is the top row of its property's table.
 fn logs_hint(run_id: &str, properties: &[Property]) -> Option<String> {
     let sections = group_property_sections(properties);
     let event_properties = || {
@@ -753,7 +753,7 @@ fn logs_hint(run_id: &str, properties: &[Property]) -> Option<String> {
                 Property::NonEventProperty(_) => None,
             })
     };
-    // The top row of the property's table, so ties break the same way.
+    // Sort as the table does, so ties pick the same row.
     let earliest = |events| sorted_by_vtime(events).first().copied();
     let (status, event) = event_properties()
         .find_map(|p| earliest(&p.counterexamples))
@@ -770,11 +770,10 @@ fn logs_hint(run_id: &str, properties: &[Property]) -> Option<String> {
     ))
 }
 
-/// A note for the failing event properties with no examples and no
-/// counterexamples: the run never reached them. A run that stopped early, for
-/// example in setup, shows many of them (observed on the orbitinghail tenant,
-/// release 67: 64 of 80 properties of an incomplete run). A completed run can
-/// show some too.
+/// A note that counts the failing event properties with no examples and no
+/// counterexamples, which the run never reached. A run that stops early shows
+/// many of them (antithesis-orbitinghail tenant, release 67: 64 of 80
+/// properties of an incomplete run). A completed run can show some too.
 fn unreached_note(run_id: &str, properties: &[Property]) -> Option<String> {
     let unreached = properties
         .iter()
@@ -3317,8 +3316,6 @@ mod tests {
         );
     }
 
-    // The hint fills in the earliest failing moment of the first property in
-    // display order, and falls back to a passing moment when none fails.
     #[test]
     fn logs_hint_names_a_real_moment() {
         let passing = event_property(
@@ -3350,7 +3347,6 @@ mod tests {
         assert_eq!(logs_hint("run-1", &[system, unreached]), None);
     }
 
-    // Only a failing event property with no examples of either kind counts.
     #[test]
     fn unreached_note_counts_failing_properties_with_no_examples() {
         let unreached = || event_property("u", PropertyStatus::Failing, None, vec![], vec![]);

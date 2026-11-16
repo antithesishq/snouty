@@ -29,7 +29,7 @@ use crate::{
     },
     auth::{
         AuthenticationInfo, CredentialSource, CredentialStore, PersistableCredentials,
-        in_github_actions, is_blank_api_key, no_credentials_suggestion, persist,
+        in_github_actions, is_blank_api_key, login_command, no_credentials_suggestion, persist,
         rejected_credential_next_step,
     },
     env,
@@ -473,25 +473,22 @@ async fn fetch_registry(
     };
     // Login can replace only a credential that it stores, and only at a
     // terminal.
-    let login_again = if interactive {
-        "run `snouty login` again, and enter an API key or sign in with single sign-on"
-    } else if in_github_actions() {
-        no_credentials_suggestion(true)
-    } else {
-        "set ANTITHESIS_API_KEY, or run `snouty login` in a terminal"
+    let login_again = || {
+        let login = login_command(profile);
+        if interactive {
+            format!("run {login} again, and enter an API key or sign in with single sign-on")
+        } else if in_github_actions() {
+            no_credentials_suggestion(true).to_owned()
+        } else {
+            format!("set ANTITHESIS_API_KEY, or run {login} in a terminal")
+        }
     };
-    let (authentication, next_step) = match (new_credentials, ambient) {
-        (Some(credentials), _) => (
-            credentials.to_unrefreshable_authentication_info(),
-            login_again.to_owned(),
-        ),
+    // `None` for a credential that login can replace.
+    let (authentication, env_next_step) = match (new_credentials, ambient) {
+        (Some(credentials), _) => (credentials.to_unrefreshable_authentication_info(), None),
         (None, Some(found)) if !matches!(found.value(), AuthenticationInfo::Password { .. }) => {
-            let next_step = match found.tag() {
-                CredentialSource::Stored(_) => login_again.to_owned(),
-                CredentialSource::Environment { .. } => {
-                    rejected_credential_next_step(&found, profile)
-                }
-            };
+            let next_step = matches!(found.tag(), CredentialSource::Environment { .. })
+                .then(|| rejected_credential_next_step(&found, profile));
             (found.untag(), next_step)
         }
         (None, found) => {
@@ -499,9 +496,9 @@ async fn fetch_registry(
                 // Every later command reads the environment first, so a
                 // credential at the prompt would not replace one there.
                 Some(CredentialSource::Environment { .. }) => {
-                    "unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD"
+                    "unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD".to_owned()
                 }
-                _ => login_again,
+                _ => login_again(),
             };
             return Err(user_error(format!(
                 "login needs an API key or a single sign-on to check with `{tenant}`; nothing was saved"
@@ -530,7 +527,7 @@ async fn fetch_registry(
             Some(status) if rejects_credential(status) => Err(user_error(format!(
                 "`{tenant}` did not accept the credential; nothing was saved"
             ))
-            .suggestion(next_step)),
+            .suggestion(env_next_step.unwrap_or_else(login_again))),
             _ => Err(tenant_url.unreachable(&err).unwrap_or(err)),
         },
     }

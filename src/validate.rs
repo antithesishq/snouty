@@ -631,10 +631,9 @@ fn contains_setup_complete(content: &str) -> bool {
 /// Discover test commands across all compose containers, including stopped
 /// ones when the backend supports `compose ps -a`.
 ///
-/// Each container is inspected regardless of state — Antithesis only runs
-/// test commands in *running* containers, but we still inspect stopped ones
-/// (when visible) so we can warn when test commands are stranded in a
-/// container that exited.
+/// It also inspects stopped containers, when visible, to warn about test
+/// commands stranded in a container that exited.
+///
 /// Supports scaled services (`replicas > 1`): per-container scratch dirs are
 /// keyed on container ID so replicas don't trample each other's extracts.
 ///
@@ -738,8 +737,7 @@ fn discover_scripts(
         return Err(err);
     }
 
-    // Stranded test commands are a warning, not an error: the rest of the
-    // harness can still run.
+    // Warn, do not fail: the rest of the harness still runs.
     if !stopped_with_scripts.is_empty() {
         eprintln!(
             "{}",
@@ -813,8 +811,6 @@ fn combined_discovery_error(
     err
 }
 
-/// Warning that the test commands in these services never run, because
-/// their containers exited.
 fn stranded_scripts_warning(stopped_with_scripts: &BTreeSet<String>) -> String {
     let listing = stopped_with_scripts
         .iter()

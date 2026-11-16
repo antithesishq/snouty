@@ -36,17 +36,16 @@ pub(super) async fn cmd_runs_modules(
 ) -> Result<()> {
     api::ensure_module_list_supported(run_id)?;
     let api = AntithesisApi::new(settings, verbose)?;
-    // The status says whether more modules may load, and whether the pages
-    // can be cached for good. A run ID that names no run fails here.
+    // The status says whether more modules may load. A run ID that names no
+    // run fails here.
     let status = api.get_run(run_id).await?.untag().status;
-    let finished = status.is_terminal();
     let api = &api;
     let modules = api
-        .stream_run_modules(run_id, finished)
+        .stream_run_modules(run_id)
         .map_ok(|module| async move {
             let instances = if detail {
                 Some(
-                    api.stream_module_instances(run_id, &module.module_id, finished)
+                    api.stream_module_instances(run_id, &module.module_id)
                         .try_collect()
                         .await?,
                 )
@@ -109,17 +108,26 @@ fn render_modules_table(modules: &[ModuleInstances], detail: bool, width: usize)
     });
     let mut table = Table::builder().column(Column::new("MODULE")).column(
         Column::new("NAME")
-            .fit(Fit::TruncatePath { floor: 12 })
+            .fit(Fit::Truncate {
+                floor: 12,
+                from_left: true,
+            })
             .priority(1),
     );
     if detail {
         table = table
             .column(
                 Column::new("CONTAINER")
-                    .fit(Fit::Truncate { floor: 10 })
+                    .fit(Fit::Truncate {
+                        floor: 10,
+                        from_left: false,
+                    })
                     .priority(1),
             )
-            .column(Column::new("PROGRAM").fit(Fit::TruncatePath { floor: 19 }));
+            .column(Column::new("PROGRAM").fit(Fit::Truncate {
+                floor: 19,
+                from_left: true,
+            }));
     }
     table
         .column(Column::new("LANG"))
@@ -219,8 +227,8 @@ mod tests {
     #[test]
     fn detail_table_shortens_paths_from_the_left() {
         let table = render_modules_table(&modules(), true, 1);
-        assert!(table.contains("…/dotnet/dotnet"), "{table}");
-        assert!(table.contains("…/work"), "{table}");
+        assert!(table.contains("…hare/dotnet/dotnet "), "{table}");
+        assert!(table.contains("…ternal/work "), "{table}");
         assert!(table.contains("dotnethello "), "{table}");
         assert!(table.contains("go-20e55e2f1623 "), "{table}");
     }

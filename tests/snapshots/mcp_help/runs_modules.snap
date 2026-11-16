@@ -1,7 +1,7 @@
 ---
 source: tests/help_snapshots.rs
 ---
-List the instrumented modules that a run loaded. Use it to check that the run instrumented each component that you expect. Runs created before release 64 have no module list.
+List the instrumented modules that a run loaded. Use it to check that the run instrumented each component that you expect. Runs created before release 67 have no module list.
 
 Each row is one module in one program: MODULE, NAME, CONTAINER, PROGRAM, LANG, LOCATIONS and SYMBOLS. A module whose programs are not listed yet has a blank CONTAINER and PROGRAM.
 

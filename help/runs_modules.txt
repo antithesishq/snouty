@@ -1,4 +1,4 @@
-List the instrumented modules that a run loaded. Use it to check that the run instrumented each component that you expect. Runs created before release 64 have no module list.
+List the instrumented modules that a run loaded. Use it to check that the run instrumented each component that you expect. Runs created before release 67 have no module list.
 
 {% if cli %}
 Each row is one module: MODULE, NAME, LANG, LOCATIONS and SYMBOLS. With {{ t("--detail")? }}, each row is one module in one program, with CONTAINER and PROGRAM after NAME, and a module whose programs are not listed yet has a blank CONTAINER and PROGRAM.

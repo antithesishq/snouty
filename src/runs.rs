@@ -2757,12 +2757,18 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
         .column(Column::new("CREATED"))
         .column(
             Column::new("LAUNCHER")
-                .fit(Fit::Truncate { floor: 8 })
+                .fit(Fit::Truncate {
+                    floor: 8,
+                    from_left: false,
+                })
                 .priority(0),
         )
         .column(
             Column::new("RUN")
-                .fit(Fit::Truncate { floor: 8 })
+                .fit(Fit::Truncate {
+                    floor: 8,
+                    from_left: false,
+                })
                 .priority(1),
         )
         .render(rows, width)

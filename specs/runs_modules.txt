@@ -24,11 +24,11 @@ stdout '^\{.*"module_id":.*"num_locations":\d+.*"instances":\[\{.*"container_nam
 ! snouty runs modules ffffffffffffffffffffffffffffffff-67-0
 stderr 'run not found: ffffffffffffffffffffffffffffffff-67-0'
 
-# A run created before release 64 has no module list, and sends no request
+# A run created before release 67 has no module list, and sends no request
 # for one.
-! snouty runs modules 0123456789abcdef0123456789abcdef-63-2
-stderr 'module list is not available for run 0123456789abcdef0123456789abcdef-63-2'
-stderr 'introduced in tenant version v64'
+! snouty runs modules 0123456789abcdef0123456789abcdef-66-2
+stderr 'module list is not available for run 0123456789abcdef0123456789abcdef-66-2'
+stderr 'introduced in tenant version v67'
 
 # The rest of this file checks mock data.
 [staging] skip

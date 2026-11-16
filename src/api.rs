@@ -107,9 +107,8 @@ pub const MIN_CANCEL_RELEASE: (u64, u64) = (63, 0);
 /// `launch --setup-timeout` and `debug --duration`. `snouty doctor` checks it.
 pub const MIN_LAUNCH_PARAMS_RELEASE: (u64, u64) = (66, 0);
 
-/// The tenant release whose API this build's module list requests were
-/// written against (`src/openapi.json`, release 67.0). `runs modules` assumes
-/// the tenant meets this; `snouty doctor` checks it.
+/// The first release with a module list. `runs modules` refuses a run created
+/// on an earlier release, and `snouty doctor` warns about a tenant on one.
 pub const MIN_MODULES_RELEASE: (u64, u64) = (67, 0);
 
 /// The first tenant release that reports its registry at `GET /api/v0/registry`.
@@ -1223,22 +1222,17 @@ impl AntithesisApi {
     }
 
     /// Stream the modules that the run loaded, in the order that the server
-    /// published them. `finished` says that the run has stopped (see
-    /// [`coverage_page_policy`]).
-    ///
-    /// Observed on orbitinghail, release 67.6: runs created on releases 48
-    /// to 63 answer 404 `{"message":"Resource not found"}`, or 500 (see
-    /// [`ensure_module_list_supported`]). Some runs from release 64 on answer
-    /// the same 404, so a 404 says that the run has no module list. The
+    /// published them. A run created before [`MIN_MODULES_RELEASE`] is
+    /// refused first (see [`ensure_module_list_supported`]). A later run can
+    /// still answer 404, so a 404 says that the run has no module list. The
     /// caller reads the run first, so a run ID that names no run fails there.
     pub fn stream_run_modules<'a>(
         &'a self,
         run_id: &'a str,
-        finished: bool,
     ) -> impl futures_util::Stream<Item = Result<CoverageModule>> + 'a {
         paginate_exhaust(move |after| async move {
             let page = self
-                .fetch_run_modules_page(run_id, after.as_deref(), finished)
+                .fetch_run_modules_page(run_id, after.as_deref())
                 .await
                 .map_err(|err| match crate::error::api_error_status(&err) {
                     Some(404) => user_error(format!("run {run_id} has no module list")),
@@ -1254,7 +1248,6 @@ impl AntithesisApi {
         &self,
         run_id: &str,
         after: Option<&str>,
-        finished: bool,
     ) -> Result<Tagged<generated::types::CoverageModuleListResponse, CachePolicy>> {
         let mut request = self
             .client
@@ -1266,26 +1259,22 @@ impl AntithesisApi {
         }
         match request.send().await {
             Ok(response) => {
-                let headers = self.cache.headers_policy(response.headers());
-                let page = response.into_inner();
-                let policy = coverage_page_policy(headers, finished, page.has_more);
-                Ok(page.with_tag(policy))
+                let policy = self.cache.headers_policy(response.headers());
+                Ok(response.into_inner().with_tag(policy))
             }
             Err(err) => Err(self.client_error(err).await),
         }
     }
 
     /// Stream the programs that loaded the module `module_id` in the run.
-    /// `finished` is as in [`Self::stream_run_modules`].
     pub fn stream_module_instances<'a>(
         &'a self,
         run_id: &'a str,
         module_id: &'a str,
-        finished: bool,
     ) -> impl futures_util::Stream<Item = Result<CoverageModuleInstance>> + 'a {
         paginate_exhaust(move |after| async move {
             let page = self
-                .fetch_module_instances_page(run_id, module_id, after.as_deref(), finished)
+                .fetch_module_instances_page(run_id, module_id, after.as_deref())
                 .await?
                 .untag();
             Ok((page.data, page.has_more.then(|| page.cursor.to_string())))
@@ -1298,7 +1287,6 @@ impl AntithesisApi {
         run_id: &str,
         module_id: &str,
         after: Option<&str>,
-        finished: bool,
     ) -> Result<Tagged<generated::types::CoverageModuleInstanceListResponse, CachePolicy>> {
         let mut request = self
             .client
@@ -1311,10 +1299,8 @@ impl AntithesisApi {
         }
         match request.send().await {
             Ok(response) => {
-                let headers = self.cache.headers_policy(response.headers());
-                let page = response.into_inner();
-                let policy = coverage_page_policy(headers, finished, page.has_more);
-                Ok(page.with_tag(policy))
+                let policy = self.cache.headers_policy(response.headers());
+                Ok(response.into_inner().with_tag(policy))
             }
             Err(err) => Err(self.client_error(err).await),
         }
@@ -2057,27 +2043,10 @@ const MIN_PROPERTIES_VERSION: u32 = 52;
 /// The largest page that the module and module instance lists accept.
 const COVERAGE_PAGE_LIMIT: NonZeroU64 = NonZeroU64::new(1000).unwrap();
 
-/// The first run version with a module list (see
-/// [`AntithesisApi::stream_run_modules`]).
-const MIN_MODULES_VERSION: u32 = 64;
-
-/// The cache policy of a module or instance list page. The lists answer
-/// `no-cache`, even for a completed run (orbitinghail, release 67.6). Entries
-/// keep their positions and new ones are added after them, so once the run
-/// has stopped, a full page (`has_more`) never changes and is cached for
-/// good. The last page can still gain entries that the server publishes
-/// late, so `headers` decides for it.
-fn coverage_page_policy(headers: CachePolicy, finished: bool, has_more: bool) -> CachePolicy {
-    if finished && has_more {
-        CachePolicy::IMMUTABLE
-    } else {
-        headers
-    }
-}
-
-/// Refuse a run created before [`MIN_MODULES_VERSION`], before any request.
+/// Refuse a run created before [`MIN_MODULES_RELEASE`], before any request.
 pub(crate) fn ensure_module_list_supported(run_id: &str) -> Result<()> {
-    ensure_resource_supported(run_id, MIN_MODULES_VERSION, "module list")
+    let (major, _) = MIN_MODULES_RELEASE;
+    ensure_resource_supported(run_id, major as u32, "module list")
 }
 
 /// The tenant version that first served the run build logs resource. Runs
@@ -5515,20 +5484,6 @@ mod tests {
         assert!(
             ensure_resource_supported(&rid(51), MIN_PROPERTIES_VERSION, "run properties").is_err()
         );
-    }
-
-    #[test]
-    fn only_a_full_page_of_a_finished_run_is_immutable() {
-        let policy =
-            |finished, has_more| coverage_page_policy(CachePolicy::Uncacheable, finished, has_more);
-        assert!(matches!(
-            policy(true, true),
-            CachePolicy::Cacheable(Duration::MAX)
-        ));
-        // The last page can still gain entries, so the headers decide.
-        assert!(matches!(policy(true, false), CachePolicy::Uncacheable));
-        assert!(matches!(policy(false, true), CachePolicy::Uncacheable));
-        assert!(matches!(policy(false, false), CachePolicy::Uncacheable));
     }
 
     #[test]

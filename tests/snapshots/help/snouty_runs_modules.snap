@@ -2,7 +2,7 @@
 source: tests/help_snapshots.rs
 ---
 List the instrumented modules that a run loaded. Use it to check that the run
-instrumented each component that you expect. Runs created before release 64 have
+instrumented each component that you expect. Runs created before release 67 have
 no module list.
 
 Each row is one module: MODULE, NAME, LANG, LOCATIONS and SYMBOLS. With

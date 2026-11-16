@@ -617,10 +617,9 @@ pub(crate) fn update_settings_in_global_file(
     let path = global_settings_dir()
         .ok_or_eyre(NO_GLOBAL_SETTINGS_DIR)?
         .join(GLOBAL_SETTINGS_FILENAME);
-    let file = KnownPath::new(KnownPathType::Global, &path);
-    let previous = file.read(false)?;
+    let previous = KnownPath::new(KnownPathType::Global, &path).read(false)?;
     let mut contents = match &previous {
-        Some(contents) => file.parse(contents)?.table,
+        Some(file) => file.parse()?.table,
         None => Table::new(),
     };
 
@@ -641,7 +640,7 @@ pub(crate) fn update_settings_in_global_file(
     write_global_toml(GLOBAL_SETTINGS_FILENAME, &contents)?;
     Ok(PreviousSettingsFile {
         path,
-        contents: previous,
+        contents: previous.map(|file| file.text),
     })
 }
 
@@ -793,14 +792,18 @@ fn missing_setting(setting: &str) -> color_eyre::Report {
 fn load_default_project_file(
     trust_override: Option<trust::TrustOverride>,
 ) -> Result<Option<LoadedFile>> {
-    let file = KnownPath::new(KnownPathType::Project, Path::new(PROJECT_SETTINGS_FILENAME));
-    let Some(contents) = file.read(false)? else {
+    let Some(file) =
+        KnownPath::new(KnownPathType::Project, Path::new(PROJECT_SETTINGS_FILENAME)).read(false)?
+    else {
         return Ok(None);
     };
-    match trust::verdict(&file.path, contents.as_bytes(), trust_override)? {
-        trust::Verdict::Use => file.parse(&contents).map(Some),
+    match trust::verdict(&file.path.path, file.text.as_bytes(), trust_override)? {
+        trust::Verdict::Use => file.parse().map(Some),
         trust::Verdict::Ignore => {
-            debug!("ignoring the denied settings file {}", file.path.display());
+            debug!(
+                "ignoring the denied settings file {}",
+                file.path.path.display()
+            );
             Ok(None)
         }
     }
@@ -1067,16 +1070,6 @@ mod tests {
         )
         .unwrap()
         .map(|found| found.value)
-    }
-
-    #[test]
-    fn invalid_toml_is_reported_with_path() {
-        let err = KnownPath::new(KnownPathType::Project, Path::new("/some/.snouty.toml"))
-            .parse("this is = = not toml")
-            .unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("not valid TOML"), "unexpected error: {msg}");
-        assert!(msg.contains(".snouty.toml"), "unexpected error: {msg}");
     }
 
     // ---- profile_value / string_value / integer_value --------------------

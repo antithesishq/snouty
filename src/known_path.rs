@@ -58,7 +58,7 @@ pub struct KnownPath {
 }
 
 impl KnownPath {
-    pub fn new(kind: KnownPathType, path: &Path) -> Self {
+    pub(crate) fn new(kind: KnownPathType, path: &Path) -> Self {
         Self {
             kind,
             path: fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()),
@@ -67,54 +67,62 @@ impl KnownPath {
 
     /// The file's text. `Ok(None)` when the file does not exist and is not
     /// `required`.
-    pub fn read(&self, required: bool) -> Result<Option<String>> {
+    pub(crate) fn read(self, required: bool) -> Result<Option<KnownFile>> {
         match read_to_string_if_file_exists(&self.path)? {
+            Some(text) => Ok(Some(KnownFile { path: self, text })),
             None if required => Err(user_error(format!(
                 "the {} {} was not found",
                 self.kind.noun(),
                 self.path.display()
             ))),
-            contents => Ok(contents),
-        }
-    }
-
-    /// Parses `contents`, the text of this file. TOML that does not parse is
-    /// an [`InvalidFile`] error.
-    pub fn parse(self, contents: &str) -> Result<LoadedFile> {
-        match contents.parse::<Table>() {
-            Ok(table) => Ok(LoadedFile { path: self, table }),
-            Err(err) => Err(InvalidFile {
-                message: format!(
-                    "{} {} is not valid TOML: {}",
-                    self.kind.noun(),
-                    self.path.display(),
-                    format!("{err:#}").trim_end()
-                ),
-                path: self,
-            }
-            .report()),
+            None => Ok(None),
         }
     }
 
     /// The file as a TOML table. `Ok(None)` when the file does not exist and
     /// is not `required`.
-    pub fn load(self, required: bool) -> Result<Option<LoadedFile>> {
-        self.read(required)?
-            .map(|contents| self.parse(&contents))
-            .transpose()
+    pub(crate) fn load(self, required: bool) -> Result<Option<LoadedFile>> {
+        self.read(required)?.map(|file| file.parse()).transpose()
+    }
+}
+
+/// The text of a file, as [`KnownPath::read`] read it.
+pub(crate) struct KnownFile {
+    pub(crate) path: KnownPath,
+    pub(crate) text: String,
+}
+
+impl KnownFile {
+    /// The text as a TOML table. TOML that does not parse is an
+    /// [`InvalidFile`] error.
+    pub(crate) fn parse(&self) -> Result<LoadedFile> {
+        let path = self.path.clone();
+        match self.text.parse::<Table>() {
+            Ok(table) => Ok(LoadedFile { path, table }),
+            Err(err) => Err(InvalidFile {
+                message: format!(
+                    "{} {} is not valid TOML: {}",
+                    path.kind.noun(),
+                    path.path.display(),
+                    format!("{err:#}").trim_end()
+                ),
+                path,
+            }
+            .report()),
+        }
     }
 }
 
 /// A TOML file that snouty read.
 #[derive(Debug)]
-pub struct LoadedFile {
-    pub path: KnownPath,
-    pub table: Table,
+pub(crate) struct LoadedFile {
+    pub(crate) path: KnownPath,
+    pub(crate) table: Table,
 }
 
 impl LoadedFile {
     /// `err`, a fault in this file, as an [`InvalidFile`].
-    pub fn error(&self, err: &Report) -> Report {
+    pub(crate) fn error(&self, err: &Report) -> Report {
         InvalidFile {
             path: self.path.clone(),
             message: format!("{}: {err}", self.path.path.display()),
@@ -126,8 +134,8 @@ impl LoadedFile {
 /// A file that snouty cannot use as a whole, such as TOML that does not
 /// parse. The message names the file.
 #[derive(Debug)]
-pub struct InvalidFile {
-    pub path: KnownPath,
+pub(crate) struct InvalidFile {
+    pub(crate) path: KnownPath,
     message: String,
 }
 
@@ -166,5 +174,16 @@ mod tests {
             err.to_string(),
             "the settings file /no/such/.snouty.toml was not found"
         );
+    }
+
+    #[test]
+    fn invalid_toml_is_reported_with_path() {
+        let file = KnownFile {
+            path: KnownPath::new(KnownPathType::Project, Path::new("/some/.snouty.toml")),
+            text: "this is = = not toml".to_owned(),
+        };
+        let msg = file.parse().unwrap_err().to_string();
+        assert!(msg.contains("not valid TOML"), "unexpected error: {msg}");
+        assert!(msg.contains(".snouty.toml"), "unexpected error: {msg}");
     }
 }

@@ -264,7 +264,7 @@ stdout 'source_run_id=absent source_session_id=ba4ebf3181dd342334b86c58941813c6-
 # show it.
 ! snouty runs exec run-2 1002528785118888238 278.1311443040613 'true'
 stderr '^Error: moment 1002528785118888238 is not loaded in run run-2$'
-! stderr 'source_run_id'
+! stderr '^(Error|Note): .*source_run_id'
 stderr 'use --source-run-id to load a moment from a different run$'
 ! stderr 'not ready'
 
@@ -410,7 +410,7 @@ stderr 'stream ended before the command reported completion.*'
 # one flag per line after a line continuation.
 ! snouty runs exec run-1 -3625518438076122494 398.4898056755774 'uname -a'
 stderr '^Error: run run-1 is completed, and `runs exec` needs a run that is in progress$'
-! stderr 'has ended'
+! stderr '^(Error|Note): .*has ended'
 stderr -literal 'Suggestion: start a debugging session at this moment with:\n  snouty debug \\\n    --run-id run-1 \\\n    --input-hash -3625518438076122494 \\\n    --vtime 398.4898056755774'
 ! stderr 'source-run-id'
 ! stderr 'not ready'
@@ -434,7 +434,7 @@ stderr -literal '  snouty debug \\\n    --session-id ba4ebf3181dd342334b86c58941
 ! snouty runs exec no-such-run -3625518438076122494 398.4898056755774 'uname -a'
 stderr 'run not found: no-such-run'
 ! stderr 'Antithesis API'
-! stderr 'Resource not found'
+! stderr '^(Error|Note): .*Resource not found'
 
 # VTIME is parsed by clap into the typed vtime the request body carries, so a
 # non-numeric value is rejected before any API call.

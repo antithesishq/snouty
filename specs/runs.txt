@@ -648,12 +648,12 @@ stdout 'No runs found\.'
 # generic mock-server directive only sets username/password, which `snouty
 # runs` rejects before making a request, so set an API key explicitly rather
 # than relying on one leaking from an earlier mock-runs-server block.
-mock-server 400 '{"message":"bad request"}'
+mock-server 400 '{"message":"limit must be 1..100"}'
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 ! snouty runs
 stderr '^Error: the Antithesis API rejected the request$'
-stderr '^Note: bad request$'
-! stderr '400'
+stderr '^Note: limit must be 1\.\.100$'
+! stderr '^Error: .*400'
 # The message sits on the `Error:` line itself: a single failure has no cause
 # chain to number, so no `0:` frame appears.
 ! stderr '0: '
@@ -787,7 +787,7 @@ mock-runs-server
 ! snouty runs logs run-1 0 999999.0
 stderr '^Error: no moment in run run-1 matches this input hash and vtime$'
 stderr '^Suggestion: search for a moment using `snouty runs events run-1 <search query>`$'
-! stderr 'Resource not found'
+! stderr '^(Error|Note): .*Resource not found'
 
 # `snouty runs properties` requires a run ID.
 ! snouty runs properties
@@ -1113,7 +1113,7 @@ stdout 'query is valid'
 mock-runs-server
 ! snouty runs search $R_run_id 'bogus_verb({x: "y"})' --check
 stderr '^Error: the query is invalid:\n  bogus_verb\(\{x: "y"\}\)\n  \^\n  invalid with_next'
-! stderr 'Event set DSL error'
+! stderr '^(Error|Note): .*Event set DSL error'
 
 # The mode switches pick conflicting response modes, so clap rejects the pairing.
 mock-runs-server

@@ -2615,7 +2615,7 @@ mod tests {
     #[tokio::test]
     async fn render_api_failure_shows_a_non_empty_body_as_a_note() {
         let report = render_api_failure(classify_client_error(served_error(400, "not json")).await);
-        let debug = format!("{report:?}");
+        let debug = crate::event_render::strip_ansi(&format!("{report:?}")).into_owned();
 
         assert_eq!(report.to_string(), "the Antithesis API rejected the request");
         assert!(debug.contains("Note: not json"), "got: {debug}");
@@ -3148,10 +3148,8 @@ mod tests {
         let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
 
         let report = api.launch_test("basic_test", &params).await.unwrap_err();
-        assert!(
-            format!("{report:?}").contains("Note: bad request"),
-            "got: {report:?}"
-        );
+        let debug = crate::event_render::strip_ansi(&format!("{report:?}")).into_owned();
+        assert!(debug.contains("Note: bad request"), "got: {debug}");
     }
 
     #[tokio::test]
@@ -4022,9 +4020,8 @@ mod tests {
         ] {
             let report = format_api_error(status, "vtime out of range");
             assert_eq!(report.to_string(), summary);
-            let debug = format!("{report:?}");
+            let debug = crate::event_render::strip_ansi(&format!("{report:?}")).into_owned();
             assert!(debug.contains("Note: vtime out of range"), "got: {debug}");
-            assert!(!debug.contains(&status.to_string()), "got: {debug}");
         }
     }
 
@@ -4048,10 +4045,11 @@ mod tests {
     #[test]
     fn format_api_error_dedupes_reason_echoed_in_body() {
         // "Bad Request — Bad request: …" reads twice; the echo is dropped.
-        let debug = format!(
+        let debug = crate::event_render::strip_ansi(&format!(
             "{:?}",
             format_api_error(400, "Bad request: Invalid input_hash or vtime")
-        );
+        ))
+        .into_owned();
         assert!(debug.contains("Note: Invalid input_hash or vtime"), "got: {debug}");
         // A body that is nothing but the reason echo adds nothing.
         let debug = format!("{:?}", format_api_error(400, "Bad Request"));

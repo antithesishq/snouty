@@ -348,8 +348,6 @@ impl SettingsSources {
                 text("update_channel", UPDATE_CHANNEL_VAR_NAME)?,
                 str::parse,
             )?,
-            // A bare byte count is naturally written as a TOML integer, so the
-            // file layers accept one.
             api_cache_max_file_size: parse_setting(
                 resolve_value_with(
                     integer_value,
@@ -390,10 +388,9 @@ impl Settings {
     /// derived from the tenant; `None` when neither exists (a derived `base_url`
     /// is present exactly when the tenant is).
     pub fn base_url(&self) -> Option<Url> {
-        match self.explicit_base_url() {
-            Some(url) => Some(url.clone()),
-            None => self.tenant().map(tenant_base_url),
-        }
+        self.explicit_base_url()
+            .cloned()
+            .or_else(|| self.tenant().map(tenant_base_url))
     }
 
     /// The base URL, for a command that sends requests: an error that names
@@ -421,7 +418,7 @@ impl Settings {
     pub fn update_channel(&self) -> UpdateChannel {
         self.update_channel
             .as_ref()
-            .map_or_else(UpdateChannel::default, |channel| *channel.value())
+            .map_or_default(|channel| *channel.value())
     }
 
     /// The largest API response body, in bytes, the response cache stores;
@@ -823,7 +820,7 @@ fn resolve_value_with(
     profile: Option<&str>,
     sources: &SettingsSources,
 ) -> Result<Option<Tagged<String, SettingSource>>> {
-    if sources.0.iter().any(|layer| matches!(layer, Layer::Env)) {
+    if matches!(sources.0.first(), Some(Layer::Env)) {
         for &env_var in env_vars {
             let value = env::var(env_var)
                 .map_err(|err| err.suggestion(format!("fix or unset {env_var}")))?;

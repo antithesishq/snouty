@@ -22,35 +22,29 @@ pub enum ContainerEngine {
     Docker,
 }
 
-impl fmt::Display for UpdateChannel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_name(self, f)
-    }
+/// Implement `Display` and `FromStr` for a `ValueEnum` through its clap
+/// names.
+macro_rules! named_choice {
+    ($($choice:ty),*) => {$(
+        impl fmt::Display for $choice {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write_name(self, f)
+            }
+        }
+
+        impl FromStr for $choice {
+            type Err = String;
+
+            fn from_str(text: &str) -> Result<Self, String> {
+                parse_name(text)
+            }
+        }
+    )*};
 }
 
-impl FromStr for UpdateChannel {
-    type Err = String;
+named_choice!(UpdateChannel, ContainerEngine);
 
-    fn from_str(text: &str) -> Result<Self, String> {
-        parse_name(text)
-    }
-}
-
-impl fmt::Display for ContainerEngine {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_name(self, f)
-    }
-}
-
-impl FromStr for ContainerEngine {
-    type Err = String;
-
-    fn from_str(text: &str) -> Result<Self, String> {
-        parse_name(text)
-    }
-}
-
-/// Write the name of `value`.
+/// Write the clap name of `value`.
 fn write_name<E: ValueEnum>(value: &E, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.write_str(
         value
@@ -67,11 +61,7 @@ fn parse_name<E: ValueEnum + fmt::Display>(text: &str) -> Result<E, String> {
             .iter()
             .map(|value| format!("`{value}`"))
             .collect();
-        let names = match names.split_last() {
-            Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
-            _ => names.concat(),
-        };
-        format!("expected {names}, got `{text}`")
+        format!("expected {}, got `{text}`", names.join(" or "))
     })
 }
 

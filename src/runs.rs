@@ -753,9 +753,8 @@ fn logs_hint(run_id: &str, properties: &[Property]) -> Option<String> {
                 Property::NonEventProperty(_) => None,
             })
     };
-    fn earliest(events: &[Event]) -> Option<&Event> {
-        events.iter().min_by_key(|e| e.moment.vtime)
-    }
+    // The top row of the property's table, so ties break the same way.
+    let earliest = |events| sorted_by_vtime(events).first().copied();
     let (status, event) = event_properties()
         .find_map(|p| earliest(&p.counterexamples))
         .map(|e| ("failing", e))
@@ -3329,7 +3328,8 @@ mod tests {
             vec![event("-7", "9.5"), event("-8", "1.25")],
             vec![],
         );
-        let system = non_event_property("b system", PropertyStatus::Failing, vec![], vec![json!(1)]);
+        let system =
+            non_event_property("b system", PropertyStatus::Failing, vec![], vec![json!(1)]);
         let failing = event_property(
             "c fails",
             PropertyStatus::Failing,
@@ -3357,7 +3357,13 @@ mod tests {
         let others = [
             event_property("pass", PropertyStatus::Passing, None, vec![], vec![]),
             event_property("pending", PropertyStatus::Pending, None, vec![], vec![]),
-            event_property("fail", PropertyStatus::Failing, None, vec![], vec![event("-1", "1.0")]),
+            event_property(
+                "fail",
+                PropertyStatus::Failing,
+                None,
+                vec![],
+                vec![event("-1", "1.0")],
+            ),
             non_event_property("system", PropertyStatus::Failing, vec![], vec![]),
         ];
         assert_eq!(unreached_note("run-1", &others), None);

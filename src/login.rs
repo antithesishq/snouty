@@ -450,17 +450,13 @@ impl<'a> TenantUrl<'a> {
     }
 }
 
-/// The next step at a terminal, where `snouty login` can prompt for a credential.
-const ENTER_AGAIN: &str =
-    "run `snouty login` again, and enter an API key or sign in with single sign-on";
-
 /// `GET /api/v0/registry` at `tenant_url` with `new_credentials`, or else
 /// with the credential that later commands use. The request is also the check
 /// that the credential works. `None` means that the tenant does not serve the
 /// endpoint, which tenants before it answer with 404. The tenant
 /// authenticates a request before it routes it, so a 404 also means that it
-/// accepted the credential. `interactive` picks the next step that an error
-/// suggests.
+/// accepted the credential. `interactive` picks the next step for a
+/// credential that login itself can replace.
 async fn fetch_registry(
     settings: &Settings,
     tenant_url: &TenantUrl<'_>,
@@ -475,13 +471,27 @@ async fn fetch_registry(
         Some(_) => None,
         None => AuthenticationInfo::find_ambient(profile)?,
     };
+    // Login can replace only a credential that it stores, and only at a
+    // terminal.
+    let login_again = if interactive {
+        "run `snouty login` again, and enter an API key or sign in with single sign-on"
+    } else if in_github_actions() {
+        no_credentials_suggestion(true)
+    } else {
+        "set ANTITHESIS_API_KEY, or run `snouty login` in a terminal"
+    };
     let (authentication, next_step) = match (new_credentials, ambient) {
         (Some(credentials), _) => (
             credentials.to_unrefreshable_authentication_info(),
-            ENTER_AGAIN.to_owned(),
+            login_again.to_owned(),
         ),
         (None, Some(found)) if !matches!(found.value(), AuthenticationInfo::Password { .. }) => {
-            let next_step = rejected_credential_next_step(&found, profile);
+            let next_step = match found.tag() {
+                CredentialSource::Stored(_) => login_again.to_owned(),
+                CredentialSource::Environment { .. } => {
+                    rejected_credential_next_step(&found, profile)
+                }
+            };
             (found.untag(), next_step)
         }
         (None, found) => {
@@ -491,9 +501,7 @@ async fn fetch_registry(
                 Some(CredentialSource::Environment { .. }) => {
                     "unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD"
                 }
-                _ if interactive => ENTER_AGAIN,
-                _ if in_github_actions() => no_credentials_suggestion(true),
-                _ => "set ANTITHESIS_API_KEY, or run `snouty login` in a terminal",
+                _ => login_again,
             };
             return Err(user_error(format!(
                 "login needs an API key or a single sign-on to check with `{tenant}`; nothing was saved"

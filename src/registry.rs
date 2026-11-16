@@ -17,7 +17,7 @@ use crate::api::AntithesisApi;
 use crate::auth::{AuthenticationInfo, PasswordPolicy, RefreshableOAuthToken};
 use crate::error::user_error;
 use crate::render::sanitize;
-use crate::settings::{Settings, SettingsRequest, Tenant};
+use crate::settings::{Settings, SettingsRequest, Tenant, UnresolvedProfile};
 use crate::tag::Tagged;
 
 pub const USERNAME: &str = "snouty-token";
@@ -164,8 +164,8 @@ fn pushes_to(
 ///    `tenant`, in the order of [`SettingsRequest::resolve_every_profile`]:
 ///    the top-level defaults first, then the named profiles. A profile whose
 ///    tenant or registry fails to resolve is skipped. Use the first of them
-///    that has its own credential
-///    ([`AuthenticationInfo::find_own`]). A named profile does not use the
+///    that has its own credential ([`AuthenticationInfo::find_own`]); when
+///    that profile fails to resolve, fail with its error. A named profile does not use the
 ///    stored credential of the default profile, because that credential can
 ///    be for another tenant. When no profile matches, return `None`. When
 ///    profiles match but none has its own credential, fail: with the error
@@ -200,10 +200,11 @@ pub fn select_settings(
 
 /// The first of `profiles` whose tenant registry is the registry of `tenant`,
 /// and for whose profile `own_credential` finds a credential, with that
-/// credential. When no profile has a credential, the error of the first
+/// credential. A profile that failed to resolve but has a credential gives
+/// its error. When no profile has a credential, the error of the first
 /// profile that failed to resolve.
 fn first_with_own_credential(
-    profiles: Vec<Result<Settings>>,
+    profiles: Vec<Result<Settings, UnresolvedProfile>>,
     tenant: &str,
     mut own_credential: impl FnMut(Option<&str>) -> Result<Option<AuthenticationInfo>>,
 ) -> Result<Option<(Settings, AuthenticationInfo)>> {
@@ -212,8 +213,11 @@ fn first_with_own_credential(
     for settings in profiles {
         let settings = match settings {
             Ok(settings) => settings,
-            Err(err) => {
-                first_error.get_or_insert(err);
+            Err(UnresolvedProfile { profile, error }) => {
+                if own_credential(profile.as_deref())?.is_some() {
+                    return Err(error);
+                }
+                first_error.get_or_insert(error);
                 continue;
             }
         };
@@ -677,13 +681,17 @@ mod tests {
         ]
     }
 
-    /// A matching profile that fails to resolve does not hide a later
-    /// profile with a credential. Its error shows when no profile has one.
+    /// A matching profile that fails to resolve gives its error when it has
+    /// its own credential. Without one, it does not hide a later profile with
+    /// a credential, and its error shows when no profile has one.
     #[test]
-    fn a_broken_profile_gives_its_error_only_when_no_profile_has_a_credential() {
+    fn a_broken_profile_gives_its_error_when_it_has_a_credential_or_no_profile_does() {
         let profiles = || {
             vec![
-                Err(eyre!("broken acme-dev")),
+                Err(UnresolvedProfile {
+                    profile: Some("acme-dev".to_owned()),
+                    error: eyre!("broken acme-dev"),
+                }),
                 Ok(settings(
                     Some("acme-prod"),
                     "acme",
@@ -691,17 +699,25 @@ mod tests {
                 )),
             ]
         };
-        let stored = [(Some("acme-prod"), FAKE_API_KEY_B)];
-        let selected =
-            first_with_own_credential(profiles(), "acme", self::stored(&stored)).unwrap();
-        assert_eq!(
-            selected.and_then(|(settings, _)| settings.profile().map(str::to_owned)),
-            Some("acme-prod".to_owned())
-        );
-        let Err(err) = first_with_own_credential(profiles(), "acme", self::stored(&[])) else {
-            panic!("expected the error of the broken profile");
+        let select = |stored: &[(Option<&str>, &str)]| {
+            first_with_own_credential(profiles(), "acme", self::stored(stored))
+                .map(|selected| {
+                    selected.and_then(|(settings, _)| settings.profile().map(str::to_owned))
+                })
+                .map_err(|err| err.to_string())
         };
-        assert_eq!(err.to_string(), "broken acme-dev");
+        assert_eq!(
+            select(&[(Some("acme-prod"), FAKE_API_KEY_B)]),
+            Ok(Some("acme-prod".to_owned()))
+        );
+        assert_eq!(
+            select(&[
+                (Some("acme-dev"), FAKE_API_KEY_A),
+                (Some("acme-prod"), FAKE_API_KEY_B)
+            ]),
+            Err("broken acme-dev".to_owned())
+        );
+        assert_eq!(select(&[]), Err("broken acme-dev".to_owned()));
     }
 
     #[test]

@@ -234,10 +234,17 @@ impl SettingsRequest {
     pub fn resolve_every_profile(
         &self,
         wanted: impl Fn(Option<&Tenant>, Option<&Registry>) -> bool,
-    ) -> Result<Vec<Result<Settings>>> {
+    ) -> Result<Vec<Result<Settings, UnresolvedProfile>>> {
         SettingsSources::from_ambient(self.project_settings_path.as_deref())?
             .resolve_every_profile(wanted)
     }
+}
+
+/// A profile that failed to resolve: its name (`None` for the top-level
+/// defaults) and its error.
+pub struct UnresolvedProfile {
+    pub profile: Option<String>,
+    pub error: Report,
 }
 
 /// The settings that name the place that a profile pushes to.
@@ -308,7 +315,7 @@ impl SettingsSources {
     fn resolve_every_profile(
         &self,
         wanted: impl Fn(Option<&Tenant>, Option<&Registry>) -> bool,
-    ) -> Result<Vec<Result<Settings>>> {
+    ) -> Result<Vec<Result<Settings, UnresolvedProfile>>> {
         let mut names: Vec<&String> = Vec::new();
         for file in self.files() {
             let profiles = profiles(file)?;
@@ -326,7 +333,10 @@ impl SettingsSources {
                         wanted(to.tenant.as_ref(), to.registry.as_ref().map(Tagged::value))
                     })
             })
-            .map(|profile| self.resolve(profile))
+            .map(|profile| {
+                self.resolve(profile.clone())
+                    .map_err(|error| UnresolvedProfile { profile, error })
+            })
             .collect())
     }
 

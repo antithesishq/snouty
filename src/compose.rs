@@ -783,12 +783,9 @@ fn push_destination(image: &str, prefix: &str) -> Result<String> {
 /// digest-pinned reference to use, or `None` when the image must be pushed.
 ///
 /// Candidate digests are the local store's repo digests for that
-/// repository, or only the author's digest when `image` is digest-pinned
-/// (that pin is then kept as written). A candidate counts only when the
-/// registry confirms it serves the digest (a manifest-only round trip —
-/// never a pull or push) AND the platform can run amd64 from it: a manifest
-/// list must offer an amd64 entry, while a single manifest shares the local
-/// image's architecture, so the local image must be amd64.
+/// repository, or only the author's digest when `image` is digest-pinned.
+/// A candidate counts only when [`serves_amd64`] confirms it, with a
+/// manifest-only round trip (never a pull or push).
 ///
 /// The registry of `prefix` is asked only for an image that the author named
 /// at its push destination, whose manifest list a push would replace with
@@ -807,8 +804,6 @@ fn find_remote_pin(rt: &dyn ContainerRuntime, image: &str, prefix: &str) -> Resu
     {
         return Ok(None);
     }
-    // A digest pin is the author's choice, so only that digest counts, and the
-    // pin stays as written.
     if let Some((_, digest)) = image.rsplit_once('@') {
         return Ok(serves_amd64(rt, image, &repo, digest)?.then(|| image.to_string()));
     }
@@ -820,8 +815,7 @@ fn find_remote_pin(rt: &dyn ContainerRuntime, image: &str, prefix: &str) -> Resu
         if serves_amd64(rt, image, &repo, &digest)? {
             return Ok(Some(format!("{repo}:{tag}@{digest}")));
         }
-        // Not served, or not runnable as amd64 — keep looking; the push path's
-        // local arch check produces the actionable error.
+        // The push path's local arch check reports the actionable error.
     }
     Ok(None)
 }
@@ -1979,8 +1973,8 @@ services:
             skip_or_fail("docker-compose (Docker Compose v2) is not available");
             return;
         }
-        // The local store also records the digest of the per-arch manifest,
-        // which the registry serves too. The pin keeps the author's digest.
+        // The registry also serves the per-arch digest; the pin must keep the
+        // author's digest.
         let image = "redis@sha256:list";
         let rt = FakeRuntime {
             available_images: BTreeMap::from([(image.to_string(), true)]),

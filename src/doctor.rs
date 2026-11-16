@@ -891,7 +891,8 @@ pub async fn cmd_doctor(
                     // A base_url setting most often names a proxy, which
                     // then serves the registry too.
                     if let Some(configured) = settings.registry()
-                        && settings.explicit_base_url().is_none()
+                        && (settings.explicit_base_url().is_none()
+                            || crate::env::test_doctor_asks_registry())
                         && version
                             .release
                             .is_some_and(|release| release >= MIN_REGISTRY_RELEASE)

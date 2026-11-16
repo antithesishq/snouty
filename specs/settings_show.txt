@@ -34,8 +34,8 @@ stdout '^api_cache_max_file_size +1000 B$'
 
 # 3. A profile prints one warning to stderr. A file that --settings names
 #    does not warn.
-stderr -count=1 'issues/747'
-stderr '`staging`'
+stderr -count=1 'snouty/issues'
+stderr 'settings profiles'
 ! stderr '\.snouty\.toml'
 
 # 4. The text output is a table of the settings files that snouty read:
@@ -71,7 +71,7 @@ cp chosen.toml .snouty.toml
 env SNOUTY_SETTINGS_TRUST=all
 snouty settings show
 stderr '\./\.snouty\.toml'
-stderr -count=1 'issues/747'
+stderr -count=1 'snouty/issues'
 
 -- cfg/snouty/settings.toml --
 registry = "global-registry"

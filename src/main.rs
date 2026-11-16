@@ -106,26 +106,26 @@ async fn run(cli: Cli) -> Result<()> {
     // Resolve settings once, up front. Each command that reads settings
     // unwraps the result, so a bad settings file stops only those commands.
     let settings = Settings::resolve(settings_path.clone(), profile.clone());
-    let mut removed_features = settings
-        .as_ref()
-        .map_or_else(|_| Vec::new(), Settings::removed_features);
-    if let Commands::Settings { command } = &command {
-        match command {
-            SettingsCommands::Show => {}
-            SettingsCommands::Trust(_) => removed_features.push(RemovedFeature::Trust),
-            SettingsCommands::Deny(_) => removed_features.push(RemovedFeature::Deny),
-        }
-    }
     // The credential helper runs on each push or pull, a shell runs
     // completions at each start, and the MCP server warned once already.
-    if let Some(warning) = snouty::settings::removal_warning(&removed_features)
-        && !matches!(
-            command,
-            Commands::DockerCredential { .. } | Commands::Completions { .. }
-        )
-        && !snouty::mcp::in_tool_call()
+    if !matches!(
+        command,
+        Commands::DockerCredential { .. } | Commands::Completions { .. }
+    ) && !snouty::mcp::in_tool_call()
     {
-        eprintln!("{}", snouty::wrap_if_tty(&warning));
+        let mut removed_features = settings
+            .as_ref()
+            .map_or_else(|_| Vec::new(), Settings::removed_features);
+        if let Commands::Settings { command } = &command {
+            match command {
+                SettingsCommands::Show => {}
+                SettingsCommands::Trust(_) => removed_features.push(RemovedFeature::Trust),
+                SettingsCommands::Deny(_) => removed_features.push(RemovedFeature::Deny),
+            }
+        }
+        if let Some(warning) = snouty::settings::removal_warning(&removed_features) {
+            eprintln!("{}", snouty::wrap_if_tty(&warning));
+        }
     }
     let result = match command {
         Commands::Completions { shell } => cmd_completions(shell).map_err(Report::new),

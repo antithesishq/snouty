@@ -9,16 +9,16 @@ use std::path::{Path, PathBuf};
 
 use color_eyre::Section;
 use color_eyre::eyre::{Result, eyre};
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use toml::Table;
 
 use crate::error::user_error;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KnownPathKind {
-    /// `--settings`, `SNOUTY_SETTINGS_PATH`, or `./.snouty.toml`.
-    Project,
+    /// `--settings` or `SNOUTY_SETTINGS_PATH` (`explicit`), else
+    /// `./.snouty.toml`.
+    Project { explicit: bool },
     /// `settings.toml` in the global settings dir.
     Global,
     /// `credentials.toml` in the global settings dir.
@@ -31,7 +31,7 @@ impl KnownPathKind {
     /// What a message calls a file of this type.
     fn noun(self) -> &'static str {
         match self {
-            Self::Project | Self::Global => "settings file",
+            Self::Project { .. } | Self::Global => "settings file",
             Self::Credentials => "credentials file",
             Self::Trust => "trust file",
         }
@@ -41,11 +41,17 @@ impl KnownPathKind {
 impl fmt::Display for KnownPathKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Project => "project",
+            Self::Project { .. } => "project",
             Self::Global => "global",
             Self::Credentials => "credentials",
             Self::Trust => "trust",
         })
+    }
+}
+
+impl Serialize for KnownPathKind {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
     }
 }
 
@@ -140,7 +146,12 @@ mod tests {
 
     #[test]
     fn a_missing_file_loads_as_none_unless_it_is_required() {
-        let path = || KnownPath::new(KnownPathKind::Project, Path::new("/no/such/.snouty.toml"));
+        let path = || {
+            KnownPath::new(
+                KnownPathKind::Project { explicit: true },
+                Path::new("/no/such/.snouty.toml"),
+            )
+        };
         assert!(path().load(false).unwrap().is_none());
         let err = path().load(true).unwrap_err();
         assert_eq!(
@@ -152,7 +163,10 @@ mod tests {
     #[test]
     fn invalid_toml_is_reported_with_path() {
         let file = KnownFile {
-            path: KnownPath::new(KnownPathKind::Project, Path::new("/some/.snouty.toml")),
+            path: KnownPath::new(
+                KnownPathKind::Project { explicit: true },
+                Path::new("/some/.snouty.toml"),
+            ),
             text: "this is = = not toml".to_owned(),
         };
         let msg = file.load().unwrap_err().to_string();

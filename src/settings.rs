@@ -41,7 +41,6 @@ const PROFILE_KEY: &str = "profile";
 const REGISTRY_KEY: &str = "registry";
 /// An alias for [`REGISTRY_KEY`].
 const REPOSITORY_KEY: &str = "repository";
-const REMOVAL_ISSUE_URL: &str = "https://github.com/antithesishq/snouty/issues/747";
 const NO_GLOBAL_SETTINGS_DIR: &str = "Could not determine global settings directory. Ensure either $XDG_CONFIG_HOME or $HOME is set.";
 
 /// snouty's subdirectory under an XDG base dir: `$<xdg_var>/snouty`, falling
@@ -114,9 +113,6 @@ pub struct Settings {
     update_channel: UpdateChannel,
     api_cache_max_file_size: u64,
     files: Vec<KnownPath>,
-    /// Whether the project settings file is `./.snouty.toml`, which no flag
-    /// or variable named.
-    default_project_file: bool,
 }
 
 impl Default for Settings {
@@ -256,8 +252,6 @@ impl SettingsRequest {
 struct SettingsSources {
     env: bool,
     files: Vec<LoadedFile>,
-    /// See [`Settings::default_project_file`].
-    default_project_file: bool,
 }
 
 impl SettingsSources {
@@ -272,7 +266,9 @@ impl SettingsSources {
         // `./.snouty.toml` is optional and needs trust. (Climbing the directory
         // tree, if ever wanted, would go here.)
         let project = match project_settings_path {
-            Some(path) => KnownPath::new(KnownPathKind::Project, path).load(true)?,
+            Some(path) => {
+                KnownPath::new(KnownPathKind::Project { explicit: true }, path).load(true)?
+            }
             None => load_default_project_file(trust_override)?,
         };
         let global = load_global_file()?;
@@ -283,11 +279,9 @@ impl SettingsSources {
                 .as_ref()
                 .is_none_or(|global| *global.path != *project.path)
         });
-        let default_project_file = project_settings_path.is_none() && project.is_some();
         Ok(Self {
             env: true,
             files: project.into_iter().chain(global).collect(),
-            default_project_file,
         })
     }
 
@@ -296,7 +290,6 @@ impl SettingsSources {
         Ok(Self {
             env: false,
             files: load_global_file()?.into_iter().collect(),
-            default_project_file: false,
         })
     }
 
@@ -372,7 +365,6 @@ impl SettingsSources {
             update_channel,
             api_cache_max_file_size,
             files: self.files.iter().map(|file| file.path.clone()).collect(),
-            default_project_file: self.default_project_file,
         }
         .build())
     }
@@ -443,9 +435,11 @@ impl Settings {
     /// removes: `./.snouty.toml` and a named profile.
     pub fn removed_features(&self) -> Vec<RemovedFeature> {
         let project = self
-            .default_project_file
+            .files
+            .iter()
+            .any(|file| file.kind == KnownPathKind::Project { explicit: false })
             .then_some(RemovedFeature::DefaultProjectFile);
-        let profile = self.profile.clone().map(RemovedFeature::Profile);
+        let profile = self.profile.is_some().then_some(RemovedFeature::Profile);
         project.into_iter().chain(profile).collect()
     }
 
@@ -500,7 +494,6 @@ pub struct SettingsBuilder {
     update_channel: UpdateChannel,
     api_cache_max_file_size: Option<u64>,
     files: Vec<KnownPath>,
-    default_project_file: bool,
 }
 
 impl SettingsBuilder {
@@ -569,7 +562,6 @@ impl SettingsBuilder {
                 .api_cache_max_file_size
                 .unwrap_or(crate::api_cache::DEFAULT_MAX_FILE_SIZE),
             files: self.files,
-            default_project_file: self.default_project_file,
         }
     }
 }
@@ -578,7 +570,7 @@ impl SettingsBuilder {
 #[derive(Debug, PartialEq, Eq)]
 pub enum RemovedFeature {
     DefaultProjectFile,
-    Profile(String),
+    Profile,
     Trust,
     Deny,
 }
@@ -587,7 +579,7 @@ impl fmt::Display for RemovedFeature {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::DefaultProjectFile => write!(f, "./{PROJECT_SETTINGS_FILENAME}"),
-            Self::Profile(profile) => write!(f, "the profile `{profile}`"),
+            Self::Profile => f.write_str("settings profiles"),
             Self::Trust => f.write_str("`snouty settings trust`"),
             Self::Deny => f.write_str("`snouty settings deny`"),
         }
@@ -605,8 +597,9 @@ pub fn removal_warning(features: &[RemovedFeature]) -> Option<String> {
         format!("{} and {last}", rest.join(", "))
     };
     Some(format!(
-        "warning: snouty uses {features}, which the next snouty release \
-         removes. If you rely on this, add your use case to {REMOVAL_ISSUE_URL}"
+        "warning: the next snouty release removes support for {features}. If you \
+         rely on this, file an issue at https://github.com/antithesishq/snouty/issues \
+         or contact Antithesis support."
     ))
 }
 
@@ -816,8 +809,11 @@ fn load_global_file() -> Result<Option<LoadedFile>> {
 fn load_default_project_file(
     trust_override: Option<trust::TrustOverride>,
 ) -> Result<Option<LoadedFile>> {
-    let Some(file) =
-        KnownPath::new(KnownPathKind::Project, Path::new(PROJECT_SETTINGS_FILENAME)).read(false)?
+    let Some(file) = KnownPath::new(
+        KnownPathKind::Project { explicit: false },
+        Path::new(PROJECT_SETTINGS_FILENAME),
+    )
+    .read(false)?
     else {
         return Ok(None);
     };
@@ -1050,7 +1046,11 @@ mod tests {
     }
 
     fn settings_file(contents: &str) -> LoadedFile {
-        loaded_file(KnownPathKind::Project, "/test/settings.toml", contents)
+        loaded_file(
+            KnownPathKind::Project { explicit: true },
+            "/test/settings.toml",
+            contents,
+        )
     }
 
     /// Leaves out the environment, so the files alone decide the result.
@@ -1058,7 +1058,6 @@ mod tests {
         SettingsSources {
             env: false,
             files: project.into_iter().chain(global).collect(),
-            default_project_file: false,
         }
     }
 
@@ -1233,8 +1232,8 @@ mod tests {
         let features = |features: &[RemovedFeature]| {
             removal_warning(features).map(|warning| {
                 warning
-                    .strip_prefix("warning: snouty uses ")
-                    .and_then(|rest| rest.split_once(", which").map(|(list, _)| list.to_owned()))
+                    .strip_prefix("warning: the next snouty release removes support for ")
+                    .and_then(|rest| rest.split_once(". ").map(|(list, _)| list.to_owned()))
                     .unwrap()
             })
         };
@@ -1244,21 +1243,17 @@ mod tests {
             Some("`snouty settings trust`")
         );
         assert_eq!(
-            features(&[
-                RemovedFeature::DefaultProjectFile,
-                RemovedFeature::Profile("p".into())
-            ])
-            .as_deref(),
-            Some("./.snouty.toml and the profile `p`")
+            features(&[RemovedFeature::DefaultProjectFile, RemovedFeature::Profile]).as_deref(),
+            Some("./.snouty.toml and settings profiles")
         );
         assert_eq!(
             features(&[
                 RemovedFeature::DefaultProjectFile,
-                RemovedFeature::Profile("p".into()),
+                RemovedFeature::Profile,
                 RemovedFeature::Deny
             ])
             .as_deref(),
-            Some("./.snouty.toml, the profile `p` and `snouty settings deny`")
+            Some("./.snouty.toml, settings profiles and `snouty settings deny`")
         );
     }
 
@@ -1297,7 +1292,7 @@ mod tests {
         let source = |project: &str, profile: Option<&str>| {
             sources(
                 Some(loaded_file(
-                    KnownPathKind::Project,
+                    KnownPathKind::Project { explicit: true },
                     "/work/.snouty.toml",
                     project,
                 )),
@@ -1329,7 +1324,7 @@ mod tests {
             ),
             Some(SettingSource::File {
                 path: KnownPath {
-                    kind: KnownPathKind::Project,
+                    kind: KnownPathKind::Project { explicit: true },
                     path: PathBuf::from("/work/.snouty.toml"),
                 },
                 key: "profile.p.registry".to_owned(),

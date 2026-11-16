@@ -37,7 +37,7 @@ use crate::{
     registry::Registry,
     render::{OutputOptions, sanitize},
     settings::{
-        ANTITHESIS_PROFILE_ENV_VAR_NAME, Settings, Tenant, saved_in_global_file, tenant_base_url,
+        ANTITHESIS_PROFILE_ENV_VAR_NAME, Settings, Tenant, tenant_base_url,
         update_settings_in_global_file,
     },
     tag::{Tag, Tagged},
@@ -272,9 +272,19 @@ async fn do_cmd_login(
             let reported = reported.registry_url.parse::<Registry>().map_err(|err| {
                 user_error(format!("{err}; nothing was saved")).suggestion(suggestion)
             })?;
-            let custom = saved_in_global_file(profile_to_use.as_deref())
-                .filter(|(tenant, registry)| *tenant == tenant_to_use && *registry != reported)
-                .map(|(_, registry)| registry);
+            // `current_settings` resolved from the same file without a fault,
+            // so a fault here means that the file changed since, and the
+            // update below reports it.
+            let saved = Settings::resolve_global_file(profile_to_use.clone())
+                .inspect_err(|err| debug!("cannot read the saved registry: {err:#}"))
+                .ok()
+                .filter(|saved| saved.tenant() == Some(&tenant_to_use));
+            let custom = saved
+                .as_ref()
+                .and_then(Settings::registry)
+                .map(Tagged::value)
+                .filter(|registry| **registry != reported)
+                .cloned();
             match custom {
                 None => (reported, None),
                 Some(custom) if !interactive => (custom, Some(CustomRegistry::Kept { reported })),
@@ -1797,16 +1807,28 @@ mod tests {
     }
 
     /// Login asks nothing when the saved registry is the tenant's registry,
-    /// when it belongs to another tenant, or when another profile or the
-    /// top-level table saves it, and it saves the tenant's registry.
+    /// when it belongs to another tenant, or when only another profile saves
+    /// it, and it saves the tenant's registry.
     #[tokio::test]
     async fn login_saves_the_tenant_registry_without_a_question() -> Result<()> {
-        for (profile, tenant, registry) in [
-            (None, "mytenant", format!("https://{REGISTRY_URL}/")),
-            (None, "othertenant", CUSTOM_REGISTRY.to_owned()),
-            (Some("prod"), "mytenant", CUSTOM_REGISTRY.to_owned()),
+        for (profile, seeded) in [
+            (
+                None,
+                format!("tenant = \"mytenant\"\nregistry = \"https://{REGISTRY_URL}/\"\n"),
+            ),
+            (
+                None,
+                format!("tenant = \"othertenant\"\nregistry = \"{CUSTOM_REGISTRY}\"\n"),
+            ),
+            (
+                Some("prod"),
+                format!(
+                    "tenant = \"mytenant\"\n[profile.staging]\nregistry = \"{CUSTOM_REGISTRY}\"\n"
+                ),
+            ),
         ] {
-            let env = env_with_registry(tenant, &registry);
+            let env = LoginEnv::new();
+            env.seed(".config/snouty/settings.toml", &seeded);
             let settings = env.resolve_settings(profile)?;
             let prompter = Script::default().secret(FAKE_API_KEY_A).build();
 
@@ -1823,10 +1845,36 @@ mod tests {
             assert_eq!(
                 prompter.prompts(),
                 ["Please enter your API Key"],
-                "{tenant} {registry}"
+                "{seeded}"
             );
             assert_saved_registry(&env, REGISTRY_URL);
         }
+        Ok(())
+    }
+
+    /// A profile without its own registry pushes to the top-level one, so
+    /// login asks before it saves the tenant's registry in the profile.
+    #[tokio::test]
+    async fn login_asks_about_the_top_level_registry_of_a_profile() -> Result<()> {
+        let env = env_with_registry("mytenant", CUSTOM_REGISTRY);
+        let settings = env.resolve_settings(Some("prod"))?;
+        let prompter = Script::default()
+            .secret(FAKE_API_KEY_A)
+            .confirm(false)
+            .build();
+
+        do_cmd_login(
+            Some("mytenant".parse()?),
+            None,
+            Some("prod"),
+            &settings,
+            OutputOptions::default(),
+            &prompter,
+        )
+        .await?;
+
+        assert_eq!(prompter.prompts()[1], REPLACE_CUSTOM);
+        assert_saved_registry(&env, CUSTOM_REGISTRY);
         Ok(())
     }
 

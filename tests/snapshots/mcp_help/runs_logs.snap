@@ -12,3 +12,8 @@ Find a moment with `runs_properties`, `runs_events`, `runs_search`, or the failu
 Each event has a moment, a source, and a payload: log output, an SDK assertion, a fault, a container lifecycle change, or a test composer command.
 
 Output: a `moment INPUT_HASH` divider is emitted at the start of each branch. Each event under a divider renders on one line as `VTIME [source] payload`. No fields are truncated, and additional fields are included in indented lines after the event.
+
+Examples:
+  runs_logs {"run_id": "<run_id>", "input_hash": "<input_hash>"}
+  runs_logs {"run_id": "<run_id>", "input_hash": "-123", "vtime": <vtime>}
+  runs_logs {"run_id": "<run_id>", "input_hash": "<input_hash>", "vtime": <vtime>, "begin_vtime": <begin_vtime>}

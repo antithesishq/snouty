@@ -108,10 +108,20 @@ async fn run(cli: Cli) -> Result<()> {
     let settings = Settings::resolve(settings_path.clone(), profile.clone()).map_err(|err| {
         snouty::settings::suggest_settings_fix(err, matches!(command, Commands::Login { .. }))
     });
+    let mut removed_features = settings
+        .as_ref()
+        .map(Settings::removed_features)
+        .unwrap_or_default();
+    if let Commands::Settings { command } = &command {
+        match command {
+            SettingsCommands::Show => {}
+            SettingsCommands::Trust(_) => removed_features.push("`snouty settings trust`".into()),
+            SettingsCommands::Deny(_) => removed_features.push("`snouty settings deny`".into()),
+        }
+    }
     // The credential helper runs on each push or pull, a shell runs
     // completions at each start, and the MCP server warned once already.
-    if let Ok(settings) = &settings
-        && let Some(warning) = settings.removal_warning()
+    if let Some(warning) = snouty::settings::removal_warning(&removed_features)
         && !matches!(
             command,
             Commands::DockerCredential { .. } | Commands::Completions { .. }

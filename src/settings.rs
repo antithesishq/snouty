@@ -115,6 +115,9 @@ pub struct Settings {
     update_channel: UpdateChannel,
     api_cache_max_file_size: u64,
     files: Vec<SettingsFile>,
+    /// Whether the project settings file is `./.snouty.toml`, which no flag
+    /// or variable named.
+    default_project_file: bool,
 }
 
 impl Default for Settings {
@@ -340,6 +343,8 @@ struct SettingsFiles {
     global: Option<LoadedFile>,
     /// The files that were read, most specific first.
     files: Vec<SettingsFile>,
+    /// See [`Settings::default_project_file`].
+    default_project_file: bool,
 }
 
 impl SettingsFiles {
@@ -356,6 +361,7 @@ impl SettingsFiles {
             Some(path) => load_settings_file(path, true)?,
             None => load_default_project_file(trust_override)?,
         };
+        let default_project_file = project_settings_path.is_none() && project.is_some();
         let global = match global_settings_dir() {
             Some(dir) => load_settings_file(&dir.join(GLOBAL_SETTINGS_FILENAME), false)?,
             None => None,
@@ -376,6 +382,7 @@ impl SettingsFiles {
             project,
             global,
             files,
+            default_project_file,
         })
     }
 
@@ -459,6 +466,7 @@ impl SettingsFiles {
             update_channel,
             api_cache_max_file_size,
             files: self.files.clone(),
+            default_project_file: self.default_project_file,
         }
         .build())
     }
@@ -525,28 +533,17 @@ impl Settings {
         &self.files
     }
 
-    /// A warning when these settings use a project settings file or a named
-    /// profile, which the next release removes; `None` otherwise.
-    pub fn removal_warning(&self) -> Option<String> {
+    /// The features that these settings use and that the next release
+    /// removes: `./.snouty.toml` and a named profile.
+    pub fn removed_features(&self) -> Vec<String> {
         let project = self
-            .files
-            .iter()
-            .find(|file| file.file_type == SettingsFileType::Project)
-            .map(|file| format!("the project settings file {}", file.path.display()));
+            .default_project_file
+            .then(|| format!("./{PROJECT_SETTINGS_FILENAME}"));
         let profile = self
             .profile
             .as_ref()
             .map(|profile| format!("the profile `{profile}`"));
-        let features = match (project, profile) {
-            (Some(project), Some(profile)) => format!("{project} and {profile}"),
-            (Some(feature), None) | (None, Some(feature)) => feature,
-            (None, None) => return None,
-        };
-        Some(format!(
-            "warning: snouty uses {features}. The next snouty release removes \
-             project settings files and profiles. If you need them, add your use \
-             case to {REMOVAL_ISSUE_URL}"
-        ))
+        project.into_iter().chain(profile).collect()
     }
 
     pub(crate) fn profile(&self) -> Option<&str> {
@@ -593,6 +590,7 @@ pub struct SettingsBuilder {
     update_channel: UpdateChannel,
     api_cache_max_file_size: Option<u64>,
     files: Vec<SettingsFile>,
+    default_project_file: bool,
 }
 
 impl SettingsBuilder {
@@ -661,8 +659,24 @@ impl SettingsBuilder {
                 .api_cache_max_file_size
                 .unwrap_or(crate::api_cache::DEFAULT_MAX_FILE_SIZE),
             files: self.files,
+            default_project_file: self.default_project_file,
         }
     }
+}
+
+/// A warning that the next release removes `features`; `None` when there
+/// are none.
+pub fn removal_warning(features: &[String]) -> Option<String> {
+    let (last, rest) = features.split_last()?;
+    let features = if rest.is_empty() {
+        last.clone()
+    } else {
+        format!("{} and {last}", rest.join(", "))
+    };
+    Some(format!(
+        "warning: snouty uses {features}, which the next snouty release \
+         removes. If you rely on this, add your use case to {REMOVAL_ISSUE_URL}"
+    ))
 }
 
 /// The project settings file that the user named: the `--settings` flag
@@ -1388,6 +1402,7 @@ mod tests {
             project: Some(settings_file(project)),
             global: Some(settings_file(global)),
             files: Vec::new(),
+            default_project_file: false,
         }
         .resolve_every_profile()
         .unwrap()
@@ -1427,6 +1442,7 @@ mod tests {
                     "registry = \"global.example.com\"\n",
                 )),
                 files: Vec::new(),
+                default_project_file: false,
             }
             .resolve(profile.map(str::to_owned))
             .unwrap()

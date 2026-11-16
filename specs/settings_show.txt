@@ -32,10 +32,11 @@ stdout '^base_url +https://acme\.antithesis\.com$'
 stdout '^https_proxy +http://proxy\.example\.com:3128$'
 stdout '^api_cache_max_file_size +1000 B$'
 
-# 3. A project settings file and a profile print one warning to stderr.
+# 3. A profile prints one warning to stderr. A file that --settings names
+#    does not warn.
 stderr -count=1 'issues/747'
-stderr 'chosen\.toml'
 stderr '`staging`'
+! stderr 'chosen\.toml'
 
 # 4. The text output is a table of the settings files that snouty read:
 #    the project file, which overrides the global one, then the global file.
@@ -59,6 +60,13 @@ stdout '"registry": "global-registry"'
 stdout '"profile": null'
 stdout '"api_cache_max_file_size": 1000'
 stdout '(?s)"files": \[.*"type": "project",\n +"path": "/[^\n]*/chosen\.toml".*"type": "global",\n +"path": "/[^\n]*/cfg/snouty/settings\.toml".*"type": "credentials",\n +"path": "/[^\n]*/cfg/snouty/credentials\.toml"'
+
+# 7. A trusted ./.snouty.toml warns.
+cp chosen.toml .snouty.toml
+env SNOUTY_SETTINGS_TRUST=all
+snouty settings show
+stderr '\./\.snouty\.toml'
+stderr -count=1 'issues/747'
 
 -- cfg/snouty/settings.toml --
 registry = "global-registry"

@@ -110,8 +110,10 @@ stderr 'x86-64 \(amd64\).*'
 stderr 'image '\''.*arm-launch:latest'\'' has architecture '\''arm64'\''.*'
 ! stderr 'Pushing image:'
 
-# snouty refuses a digest-pinned image that it would push. Push a tagged
-# image first to get a real digest to pin.
+# A digest pin at its push destination that the registry serves is kept, and
+# a digest pin that snouty would push is refused. Push a tagged image first to
+# get a real digest to pin. The kept case is docker-only: podman's local
+# digest differs from its push digest, so the registry does not serve it.
 set-env REGISTRY ${ANTITHESIS_REGISTRY}
 mock-server 200 '{"runId":"run-123","statusCode":200}'
 build-image --platform linux/amd64 snouty-digest:v1 images/myapp
@@ -120,17 +122,16 @@ stderr 'Pushing image: .*/snouty-digest:v1'
 exec sh -c '"$SNOUTY_CONTAINER_ENGINE" image inspect --format "{\"ref\":{{json (index .RepoDigests 0)}}}" "$REGISTRY/snouty-digest:v1"'
 env_from_json 0 ref
 substitute digest_config/docker-compose.yaml
-mock-server 200 '{"runId":"run-123","statusCode":200}'
-! snouty launch --launcher basic_test -c digest_config --duration 30m
-stderr 'cannot push an image reference that is pinned by digest'
-stderr 'service .app. names `${R_ref@R}`'
-! stderr 'Pushing image:'
-
-# The same refusal applies below a path in the tenant registry.
+[docker] mock-server 200 '{"runId":"run-123","statusCode":200}'
+[docker] snouty launch --launcher basic_test -c digest_config --duration 30m
+[docker] stderr 'Image already in a registry, skipping push: .*/snouty-digest:latest@sha256:'
+[docker] ! stderr 'Pushing image: .*snouty-digest'
 mock-server 200 '{"runId":"run-123","statusCode":200}'
 set-env ANTITHESIS_REGISTRY ${REGISTRY}/team
 ! snouty launch --launcher basic_test -c digest_config --duration 30m
+stderr 'cannot push an image reference that is pinned by digest'
 stderr 'service .app. names `${R_ref@R}`'
+stderr -literal '`--config-image <ref>`'
 ! stderr 'Pushing image:'
 set-env ANTITHESIS_REGISTRY ${REGISTRY}
 

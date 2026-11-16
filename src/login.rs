@@ -28,9 +28,9 @@ use crate::{
         normalize_base_url,
     },
     auth::{
-        AuthenticationInfo, CredentialSource, CredentialStore, OIDC_REJECTED_NEXT_STEP,
-        PersistableCredentials, in_github_actions, is_blank_api_key, no_credentials_suggestion,
-        persist,
+        AuthenticationInfo, CredentialSource, CredentialStore, PersistableCredentials,
+        in_github_actions, is_blank_api_key, no_credentials_suggestion, persist,
+        rejected_credential_next_step,
     },
     env,
     error::{api_error_status, rejects_credential, user_error},
@@ -450,6 +450,10 @@ impl<'a> TenantUrl<'a> {
     }
 }
 
+/// The next step when a credential that the user entered at the prompt fails.
+const ENTER_AGAIN: &str =
+    "run `snouty login` again, and enter an API key or sign in with single sign-on";
+
 /// `GET /api/v0/registry` at `tenant_url` with `new_credentials`, or else
 /// with the credential that later commands use. The request is also the check
 /// that the credential works. `None` means that the tenant does not serve the
@@ -471,30 +475,26 @@ async fn fetch_registry(
         Some(_) => None,
         None => AuthenticationInfo::find_ambient(profile)?,
     };
-    let next_step = match ambient.as_ref().map(|found| (found.value(), found.tag())) {
-        // Every later command reads the environment first, so a credential
-        // at the prompt would not replace one there. A GitHub Actions OIDC
-        // token is also tagged Environment, but ANTITHESIS_API_KEY does not
-        // hold it.
-        Some((AuthenticationInfo::ApiKey { .. }, CredentialSource::Environment { .. })) => {
-            "set `ANTITHESIS_API_KEY` to a valid API key"
-        }
-        Some((AuthenticationInfo::GithubActionsOidc(_), _)) => OIDC_REJECTED_NEXT_STEP,
-        Some((AuthenticationInfo::Password { .. }, CredentialSource::Environment { .. })) => {
-            "unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD"
-        }
-        _ if interactive => {
-            "run `snouty login` again, and enter an API key or sign in with single sign-on"
-        }
-        _ if in_github_actions() => no_credentials_suggestion(true),
-        _ => "set ANTITHESIS_API_KEY, or run `snouty login` in a terminal",
-    };
-    let authentication = match (new_credentials, ambient) {
-        (Some(credentials), _) => credentials.to_unrefreshable_authentication_info(),
+    let (authentication, next_step) = match (new_credentials, ambient) {
+        (Some(credentials), _) => (
+            credentials.to_unrefreshable_authentication_info(),
+            ENTER_AGAIN.to_owned(),
+        ),
         (None, Some(found)) if !matches!(found.value(), AuthenticationInfo::Password { .. }) => {
-            found.untag()
+            let next_step = rejected_credential_next_step(&found, profile);
+            (found.untag(), next_step)
         }
-        (None, _) => {
+        (None, found) => {
+            let next_step = match found.as_ref().map(Tagged::tag) {
+                // Every later command reads the environment first, so a
+                // credential at the prompt would not replace one there.
+                Some(CredentialSource::Environment { .. }) => {
+                    "unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD"
+                }
+                _ if interactive => ENTER_AGAIN,
+                _ if in_github_actions() => no_credentials_suggestion(true),
+                _ => "set ANTITHESIS_API_KEY, or run `snouty login` in a terminal",
+            };
             return Err(user_error(format!(
                 "login needs an API key or a single sign-on to check with `{tenant}`; nothing was saved"
             ))

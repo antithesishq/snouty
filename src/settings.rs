@@ -1113,7 +1113,7 @@ mod tests {
         assert_eq!(xdg_base(None, None, ".config"), None);
     }
 
-    // ---- resolve_value precedence --------------------------------------
+    // ---- precedence ----------------------------------------------------
 
     #[test]
     fn project_profile_beats_global_profile_and_all_defaults() {

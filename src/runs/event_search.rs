@@ -53,38 +53,19 @@ impl EventOutput {
     pub(super) fn json(self) -> bool {
         matches!(self, Self::Json { .. })
     }
-
-    pub(super) fn raw(self) -> bool {
-        matches!(self, Self::Json { raw: true, .. })
-    }
 }
 
 /// Read a closed search result to its end, and give its events back in
-/// moment order: one group for each input_hash, the groups by their earliest
+/// moment order: one group for each `input_hash`, the groups by their earliest
 /// vtime, and each group's events by vtime. The server returns its matches in
 /// no fixed order. Events without a moment, such as the output of a `narrow`
-/// that drops it, go last in their server order.
+/// that drops it, go last in their server order. `--raw` keeps the server's
+/// order, so the stream passes through unchanged.
 ///
 /// An error, or a `Stream_Error` record, ends the read: the events before it
 /// come out sorted, then the error, so the command still fails after the
 /// rows it received.
-pub(super) async fn in_moment_order(mut events: JsonStream) -> JsonStream {
-    let mut sorted = Vec::new();
-    let mut error = None;
-    while let Some(item) = events.next().await {
-        match item {
-            Ok(event) if stream_error_message(&event).is_none() => sorted.push(event),
-            stop => {
-                error = Some(stop);
-                break;
-            }
-        }
-    }
-    sort_by_moment(&mut sorted);
-    stream::iter(sorted.into_iter().map(Ok).chain(error)).boxed()
-}
-
-fn sort_by_moment(events: &mut [Value]) {
+pub(super) async fn in_moment_order(mut events: JsonStream, mode: EventOutput) -> JsonStream {
     fn moment(event: &Value) -> Option<(&str, VTime)> {
         let moment = &event["moment"];
         Some((
@@ -92,19 +73,39 @@ fn sort_by_moment(events: &mut [Value]) {
             VTime::from_json(&moment["vtime"])?,
         ))
     }
+    if let EventOutput::Json { raw: true, .. } = mode {
+        return events;
+    }
+    let mut timed = Vec::new();
+    let mut untimed = Vec::new();
     let mut earliest: HashMap<String, VTime> = HashMap::new();
-    for (hash, vtime) in events.iter().filter_map(moment) {
-        earliest
-            .entry(hash.to_string())
-            .and_modify(|first| *first = (*first).min(vtime))
-            .or_insert(vtime);
+    let mut error = None;
+    while let Some(item) = events.next().await {
+        match item {
+            Ok(event) if stream_error_message(&event).is_none() => match moment(&event) {
+                Some((hash, vtime)) => {
+                    match earliest.get_mut(hash) {
+                        Some(first) => *first = (*first).min(vtime),
+                        None => {
+                            earliest.insert(hash.to_string(), vtime);
+                        }
+                    }
+                    timed.push(event);
+                }
+                None => untimed.push(event),
+            },
+            stop => {
+                error = Some(stop);
+                break;
+            }
+        }
     }
     // The sort is stable, so events at one moment keep their server order.
-    // The leading flag puts the events without a moment last.
-    events.sort_by_cached_key(|event| match moment(event) {
-        Some((hash, vtime)) => (false, Some((earliest[hash], hash.to_string(), vtime))),
-        None => (true, None),
+    timed.sort_by_cached_key(|event| {
+        moment(event).map(|(hash, vtime)| (earliest[hash], hash.to_string(), vtime))
     });
+    let events = timed.into_iter().chain(untimed).map(Ok).chain(error);
+    stream::iter(events).boxed()
 }
 
 /// Render an (already server-filtered) event stream into output lines, one
@@ -240,29 +241,26 @@ mod tests {
         json!({"moment": {"input_hash": hash, "vtime": vtime}, "output_text": text})
     }
 
-    async fn ordered(items: Vec<Result<Value>>) -> Vec<Result<Value>> {
-        in_moment_order(stream::iter(items).boxed())
+    async fn ordered(events: Vec<Value>) -> Vec<Value> {
+        let text = EventOutput::Text { detail: false };
+        in_moment_order(stream::iter(events.into_iter().map(Ok)).boxed(), text)
             .await
+            .map(Result::unwrap)
             .collect()
             .await
     }
 
     #[tokio::test]
     async fn events_group_by_input_hash_in_vtime_order() {
-        let narrowed = json!({"output_text": "no moment"});
         let events = vec![
             event("-1", "5.0", "a late"),
             event("2", "3.0", "b"),
-            narrowed.clone(),
+            json!({"output_text": "no moment"}),
             event("-1", "1.0", "a first"),
             event("-1", "2.0", "a second"),
             event("-1", "2.0", "a second, same vtime"),
         ];
-        let sorted: Vec<Value> = ordered(events.into_iter().map(Ok).collect())
-            .await
-            .into_iter()
-            .map(Result::unwrap)
-            .collect();
+        let sorted = ordered(events).await;
         let texts: Vec<&str> = sorted
             .iter()
             .map(|e| e["output_text"].as_str().unwrap())
@@ -283,16 +281,14 @@ mod tests {
     #[tokio::test]
     async fn a_stream_error_comes_after_the_events_before_it() {
         let stream_error = json!({"error": "subscriber fell behind"});
-        let items = vec![
-            Ok(event("2", "3.0", "b")),
-            Ok(event("1", "1.0", "a")),
-            Ok(stream_error.clone()),
-            Ok(event("0", "0.5", "after the error")),
+        let events = vec![
+            event("2", "3.0", "b"),
+            event("1", "1.0", "a"),
+            stream_error.clone(),
+            event("0", "0.5", "after the error"),
         ];
-        let out = ordered(items).await;
-        let values: Vec<Value> = out.into_iter().map(Result::unwrap).collect();
         assert_eq!(
-            values,
+            ordered(events).await,
             [event("1", "1.0", "a"), event("2", "3.0", "b"), stream_error]
         );
     }

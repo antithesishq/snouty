@@ -162,7 +162,8 @@ pub fn select_settings(
         let credential = AuthenticationInfo::for_ambient_configuration(
             settings.profile(),
             PasswordPolicy::Reject,
-        )?;
+        )?
+        .untag();
         return Ok(Some((settings, credential)));
     }
     first_with_own_credential(request.resolve_every_profile()?, tenant, |profile| {

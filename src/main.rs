@@ -110,8 +110,7 @@ async fn run(cli: Cli) -> Result<()> {
     });
     let mut removed_features = settings
         .as_ref()
-        .map(Settings::removed_features)
-        .unwrap_or_default();
+        .map_or_else(|_| Vec::new(), Settings::removed_features);
     if let Commands::Settings { command } = &command {
         match command {
             SettingsCommands::Show => {}

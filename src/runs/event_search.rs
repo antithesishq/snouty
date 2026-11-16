@@ -4,8 +4,10 @@
 //!
 //! Each command resolves its own backend up front — `runs events` and
 //! `runs search` the events-search endpoint, `runs logs`/`runs build-logs`
-//! their GET endpoints — and hands the resulting [`JsonStream`] here. From the stream on, the commands are
-//! identical: every event renders to one output line.
+//! their GET endpoints — and hands the resulting [`JsonStream`] here.
+//! `runs events` and `runs search` first put a closed result in moment order
+//! ([`in_moment_order`]). From then on, the commands are identical: every
+//! event renders to one output line.
 //!
 //! Nothing here filters client-side. The output of a server-side filter IS
 //! the result: the server returns a capped subset of the matches, so
@@ -57,11 +59,10 @@ impl EventOutput {
 
 /// Read a closed search result to its end, and give its events back in
 /// moment order: one group for each `input_hash`, the groups by their earliest
-/// vtime, and each group's events by vtime. The server returns its matches in
-/// no fixed order. An event without a vtime that snouty can read sorts first
-/// in its group. Events without an `input_hash`, such as the output of a
-/// `narrow` that drops it, go last in their server order. `--raw` keeps the
-/// server's order, so the stream passes through unchanged.
+/// vtime, and each group's events by vtime. A group or an event without a
+/// readable vtime sorts first. Events without an `input_hash`, such as the
+/// output of a `narrow` that drops it, go last in their server order. With
+/// `--raw`, the stream passes through unchanged.
 ///
 /// An error, or a `Stream_Error` record, ends the read: the events before it
 /// come out sorted, then the error, so the command still fails after the
@@ -100,8 +101,6 @@ pub(super) async fn in_moment_order(mut events: JsonStream, mode: EventOutput) -
         }
     }
     // The sort is stable, so events at one moment keep their server order.
-    // `None` sorts before `Some`: a group without a readable vtime goes
-    // first, and so does such an event in its group.
     grouped.sort_by(|(a_hash, a_vtime, _), (b_hash, b_vtime, _)| {
         (earliest.get(a_hash), a_hash, a_vtime).cmp(&(earliest.get(b_hash), b_hash, b_vtime))
     });

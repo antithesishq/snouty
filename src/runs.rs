@@ -1726,7 +1726,7 @@ async fn cmd_runs_search(
         api.search_run_events_query(&args.run_id, &args.query, search)
     })
     .await?;
-    // `--follow` prints each match as it arrives.
+    // `--follow` can stream without end, so it skips the sort.
     let stream = if args.follow {
         stream
     } else {

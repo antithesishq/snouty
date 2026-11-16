@@ -522,10 +522,10 @@ snouty --json runs build-logs $R_run_id
 stdout '"timestamp":"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z"'
 [!staging] stdout '"timestamp":"2025-03-20T02:01:12Z"'
 
-# `snouty runs events` filters by `--match` server-side and prints each
-# matching event as a classified block: a `moment INPUT_HASH` divider each
-# time the input_hash changes, and each event renders as one `VTIME [source] payload`
-# line (no table: rows print as the server sends them).
+# `snouty runs events` filters by `--match` server-side and prints the
+# matching events in groups, one for each input_hash, under a
+# `moment INPUT_HASH` divider. Each event renders as one
+# `VTIME [source] payload` line.
 #    Against staging the search matches `fault` and carries `--limit`: fault
 #    events are Antithesis-generated, exist in every fault-injecting run, and
 #    first appear near the start of the timeline, so the server stops after a

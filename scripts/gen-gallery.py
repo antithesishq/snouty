@@ -1650,8 +1650,8 @@ def abandon_run(sn: Snouty, run: str) -> None:
 
 def earliest_moments(rows: list[dict], n: int) -> list[dict]:
     """The `n` earliest distinct moments of the event `rows`, earliest first.
-    Search returns a sample, which is not always the earliest events, and
-    groups it by input hash."""
+    Search output is a sample, not always the earliest events, grouped by
+    input hash."""
     picked: dict[tuple[str, str], dict] = {}
     for m in sorted((r["moment"] for r in rows), key=lambda m: float(m["vtime"])):
         picked.setdefault(_moment_strs(m), m)

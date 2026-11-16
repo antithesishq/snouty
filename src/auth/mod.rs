@@ -315,9 +315,9 @@ impl AuthenticationInfo {
     pub(crate) fn for_ambient_configuration(
         profile: Option<&str>,
         policy: PasswordPolicy,
-    ) -> Result<Self> {
+    ) -> Result<SourcedCredential> {
         match Self::find(profile, Fallback::DefaultProfile)? {
-            Some(found) => Ok(apply_password_policy(found, policy)?.untag()),
+            Some(found) => apply_password_policy(found, policy),
             None => Err(user_error(NO_CREDENTIALS_MESSAGE)
                 .suggestion(no_credentials_suggestion(in_github_actions()))),
         }
@@ -379,9 +379,92 @@ fn to_header_value(content: &str, sensitive: bool) -> Result<HeaderValue> {
     Ok(hv)
 }
 
+/// `snouty login` for `profile`. A bare `snouty login` writes the default
+/// profile, so a named profile is passed on.
+pub(crate) fn login_command(profile: Option<&str>) -> String {
+    match profile {
+        Some(p) => format!("`snouty login --profile {p}`"),
+        None => "`snouty login`".to_owned(),
+    }
+}
+
+/// The one step that fixes `credential` when the tenant of `profile` rejects it.
+pub(crate) fn rejected_credential_next_step(
+    credential: &SourcedCredential,
+    profile: Option<&str>,
+) -> String {
+    match (credential.value(), credential.tag()) {
+        (AuthenticationInfo::GithubActionsOidc(_), _) => OIDC_REJECTED_NEXT_STEP.to_owned(),
+        // `snouty login` cannot help: the environment hides what it stores.
+        (credential, CredentialSource::Environment { variables }) => format!(
+            "set `{}` to a valid {credential}",
+            variables.join("` and `")
+        ),
+        // A named profile with no credential uses the default profile's, so
+        // the login goes to the selected profile.
+        (_, CredentialSource::Stored(_)) => {
+            format!("run {} to fix authentication", login_command(profile))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejected_credential_next_step_names_the_fix_for_the_source() {
+        let api_key = || AuthenticationInfo::ApiKey {
+            api_key: crate::testutils::fake_secrets::FAKE_API_KEY_A.to_owned(),
+        };
+        let stored = |profile: Option<&str>| {
+            api_key().with_tag(CredentialSource::Stored(CredentialStore::Keychain {
+                profile: profile.map(str::to_owned),
+            }))
+        };
+        assert_eq!(
+            rejected_credential_next_step(&stored(None), None),
+            "run `snouty login` to fix authentication"
+        );
+        assert_eq!(
+            rejected_credential_next_step(&stored(Some("default")), Some("default")),
+            "run `snouty login --profile default` to fix authentication"
+        );
+        // A named profile without its own credential uses the default one.
+        assert_eq!(
+            rejected_credential_next_step(&stored(None), Some("staging")),
+            "run `snouty login --profile staging` to fix authentication"
+        );
+        let env_key = api_key().with_tag(CredentialSource::Environment {
+            variables: vec![API_KEY_VAR_NAME],
+        });
+        assert_eq!(
+            rejected_credential_next_step(&env_key, Some("staging")),
+            "set `ANTITHESIS_API_KEY` to a valid API key"
+        );
+        let env_password = AuthenticationInfo::Password {
+            username: crate::testutils::fake_secrets::FAKE_USERNAME.to_owned(),
+            password: crate::testutils::fake_secrets::FAKE_PASSWORD.to_owned(),
+        }
+        .with_tag(CredentialSource::Environment {
+            variables: vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
+        });
+        assert_eq!(
+            rejected_credential_next_step(&env_password, None),
+            "set `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` to a valid username and password"
+        );
+        let oidc = AuthenticationInfo::GithubActionsOidc(GithubActionsOidcToken::new(
+            "http://127.0.0.1:1/token".to_owned(),
+            crate::testutils::fake_secrets::FAKE_OIDC_REQUEST_TOKEN.to_owned(),
+        ))
+        .with_tag(CredentialSource::Environment {
+            variables: vec![OIDC_URL_VAR_NAME, OIDC_TOKEN_VAR_NAME],
+        });
+        assert_eq!(
+            rejected_credential_next_step(&oidc, None),
+            OIDC_REJECTED_NEXT_STEP
+        );
+    }
 
     #[test]
     fn a_named_profile_uses_the_default_profile_only_with_the_fallback() {

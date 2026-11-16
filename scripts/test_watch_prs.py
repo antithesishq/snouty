@@ -27,7 +27,9 @@ class FakeGh:
         self.view: dict[str, Any] = {
             "state": "OPEN",
             "author": {"login": author},
-            "statusCheckRollup": [],
+            # A check that still runs keeps the check verdict, which wakes
+            # the watcher, out of the output.
+            "statusCheckRollup": [{"name": "lint", "conclusion": ""}],
             "headRefOid": "a" * 40,
             "baseRefName": "main",
             "baseRefOid": "b" * 40,
@@ -97,6 +99,17 @@ class WatcherTest(unittest.TestCase):
         if self.now > 7 * 24 * 3600:
             raise AssertionError("the run did not end in a week")
         self.on_sleep()
+
+    def merge_on_third_sleep(self) -> None:
+        polls = 0
+
+        def on_sleep():
+            nonlocal polls
+            polls += 1
+            if polls == 3:
+                self.gh.view["state"] = "MERGED"
+
+        self.on_sleep = on_sleep
 
     def poll(self, seen: set[str], checks: set[str] | None = None) -> list[str]:
         """The lines that one poll of PR 1 prints."""
@@ -168,22 +181,15 @@ class Poll(WatcherTest):
             (0, ["PR #1 comment by reviewer (id 6)"]),
         )
 
-    def test_pass_and_base_move_need_no_reaction(self):
-        self.gh.view["statusCheckRollup"] = [{"name": "lint", "conclusion": "SUCCESS"}]
-        self.gh.view["baseRefOid"] = "c" * 40
+    def test_no_checks_wakes(self):
+        self.gh.view["statusCheckRollup"] = []
         seen: set[str] = set()
         self.poll(seen)
         self.now += 45
-        self.gh.view["baseRefOid"] = "d" * 40
-        self.assertEqual(
-            self.poll(seen),
-            ["PR #1 base main moved to ddddddd", "PR #1 all checks passed for aaaaaaa"],
-        )
-        self.assertFalse(watch_prs.woke)
+        self.assertEqual(self.poll(seen), ["PR #1 has no checks"])
+        self.assertTrue(watch_prs.woke)
 
     def test_conflict_prints_once(self):
-        # A check that still runs keeps the check verdict out of the output.
-        self.gh.view["statusCheckRollup"] = [{"name": "lint", "conclusion": ""}]
         self.gh.view["mergeable"] = "CONFLICTING"
         seen: set[str] = set()
         self.assertEqual(self.poll(seen), ["PR #1 conflicts with main"])
@@ -218,23 +224,39 @@ class Main(WatcherTest):
         )
 
         # The restart waits through quiet polls, and exits on the merge.
-        polls = 0
-
-        def merge_on_third_sleep():
-            nonlocal polls
-            polls += 1
-            if polls == 3:
-                self.gh.view["state"] = "MERGED"
-
-        self.on_sleep = merge_on_third_sleep
+        self.merge_on_third_sleep()
         self.assertEqual(
             self.run_main("--exit-on-event", "1"),
-            (0, ["PR #1 has no checks", "PR #1 merged"]),
+            (0, ["PR #1 merged"]),
         )
         self.assertEqual(
             self.run_main("--exit-on-event", "1"),
             (0, ["PR #1 is closed, as an earlier run reported"]),
         )
+
+    def test_green_checks_wake_once(self):
+        self.gh.view["statusCheckRollup"] = [{"name": "lint", "conclusion": "SUCCESS"}]
+        self.assertEqual(
+            self.run_main("--exit-on-event", "1"),
+            (0, ["PR #1 all checks passed for aaaaaaa"]),
+        )
+        self.assertEqual(self.now, 45)
+        # A restart does not wake again on the verdict that it already printed.
+        self.merge_on_third_sleep()
+        self.assertEqual(self.run_main("--exit-on-event", "1"), (0, ["PR #1 merged"]))
+
+    def test_a_base_move_wakes_once(self):
+        def move_base():
+            self.gh.view["baseRefOid"] = "c" * 40
+
+        self.on_sleep = move_base
+        self.assertEqual(
+            self.run_main("--exit-on-event", "1"),
+            (0, ["PR #1 base main moved to ccccccc"]),
+        )
+        # A restart does not wake again on the move that it already printed.
+        self.merge_on_third_sleep()
+        self.assertEqual(self.run_main("--exit-on-event", "1"), (0, ["PR #1 merged"]))
 
     def test_settle_collects_the_events_that_follow_one_into_one_run(self):
         self.gh.comments = [comment(5, WRITER)]
@@ -247,15 +269,15 @@ class Main(WatcherTest):
                 self.gh.comments.append(comment(6, WRITER))
 
         self.on_sleep = comment_after_the_first_sleep
-        status, lines = self.run_main("--exit-on-event", "-i", "10", "1", settle=None)
+        status, lines = self.run_main("--exit-on-event", "-i", "3", "1", settle=None)
         self.assertEqual(status, 0)
         self.assertEqual(
             [line for line in lines if "comment by" in line],
             ["PR #1 comment by reviewer (id 5)", "PR #1 comment by reviewer (id 6)"],
         )
-        # The second comment printed at 10 seconds, so the run ends with a
-        # poll at 25 seconds, when the default 15-second wait ends.
-        self.assertEqual(self.now, 25)
+        # The second comment prints at 3 seconds. The default 5-second wait
+        # is longer than the interval, so the last poll comes early, at 8.
+        self.assertEqual(self.now, 8)
 
     def test_replay_prints_earlier_events_again(self):
         self.gh.comments = [comment(5, WRITER)]

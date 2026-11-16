@@ -160,8 +160,9 @@ pub trait ContainerRuntime: Send + Sync {
     /// [`remote_manifest`](Self::remote_manifest) to the registry of `auth`.
     fn use_tenant_registry_auth(&mut self, auth: TenantRegistryAuth);
 
-    /// Push the image to the registry, returning the pinned image reference
-    /// (e.g. `example.com/foo/image@sha256:...`).
+    /// Push `image_ref`, which names no digest, to the registry, and return
+    /// it pinned to the pushed digest (`name:tag@sha256:...`). The tag stays
+    /// as provenance: a run still shows which tag the digest came from.
     fn image_push(&self, image_ref: &str) -> Result<String>;
 
     /// Return whether the image is available in the local image store.
@@ -681,7 +682,7 @@ impl ContainerRuntime for PodmanRuntime {
             .wrap_err("failed to read digest file")?
             .trim()
             .to_string();
-        Ok(pinned_image_ref(image_ref, &digest))
+        Ok(format!("{image_ref}@{digest}"))
     }
 }
 
@@ -823,7 +824,7 @@ impl ContainerRuntime for DockerRuntime {
         // docker push prints "digest: sha256:... size: ..." on the last relevant line.
         let stdout = String::from_utf8_lossy(&output.stdout);
         let digest = parse_docker_push_digest(&stdout)?;
-        Ok(pinned_image_ref(image_ref, &digest))
+        Ok(format!("{image_ref}@{digest}"))
     }
 }
 
@@ -1024,17 +1025,6 @@ pub fn available_engines() -> Vec<Box<dyn ContainerRuntime>> {
         engines.push(Box::new(DockerRuntime::new("docker")));
     }
     engines
-}
-
-/// Build a pinned image reference (`name:tag@digest`) from a tagged ref and a
-/// digest. The tag is kept as human-readable provenance — when inspecting an
-/// Antithesis run, the reference still shows which tag the digest came from.
-/// If the ref already carries a digest, it's replaced.
-pub fn pinned_image_ref(image_ref: &str, digest: &str) -> String {
-    match image_ref.rfind('@') {
-        Some(at) => format!("{}@{}", &image_ref[..at], digest),
-        None => format!("{image_ref}@{digest}"),
-    }
 }
 
 /// Drop the `:tag` from a digest-pinned reference, leaving `name@digest`.
@@ -1298,16 +1288,9 @@ mod tests {
     use super::*;
     use crate::testutils::fake_secrets::FAKE_API_KEY_A;
     use crate::testutils::{OCIRegistry, require_runtimes, write_script};
-    use hegel::generators::{self, Generator};
+    use hegel::generators;
 
     use std::os::unix::process::ExitStatusExt;
-
-    /// A text generator whose output never contains `@` — for digest values,
-    /// which never carry an `@` in practice (`sha256:...`), so the
-    /// re-pinning/idempotence reasoning holds.
-    fn no_at() -> impl hegel::PrintableGenerator<String> {
-        generators::text().filter(|s: &String| !s.contains('@'))
-    }
 
     /// Expanding a repository to its canonical `registry/path` form is stable:
     /// normalizing an already-normalized repo is a no-op. Run over arbitrary
@@ -1369,19 +1352,6 @@ mod tests {
         );
         // Just exercising the slicing — the assertion is "it returned".
         let _ = image_ref_tag(&image_ref);
-    }
-
-    /// Re-pinning replaces the digest rather than appending a second one:
-    /// pinning to `d1` then `d2` is the same as pinning to `d2` directly, and
-    /// the result always ends with `@{d2}`.
-    #[hegel::test]
-    fn pinned_image_ref_replaces_digest(tc: hegel::TestCase) {
-        let image_ref = tc.draw(no_at());
-        let d1 = tc.draw(no_at());
-        let d2 = tc.draw(no_at());
-        let repinned = pinned_image_ref(&pinned_image_ref(&image_ref, &d1), &d2);
-        assert_eq!(repinned, pinned_image_ref(&image_ref, &d2));
-        assert!(repinned.ends_with(&format!("@{d2}")));
     }
 
     /// Stripping the tag from a digest-pinned reference is stable: a reference
@@ -2104,62 +2074,6 @@ tag2: digest: sha256:bbb222 size: 200
     fn parse_docker_push_digest_empty() {
         let result = parse_docker_push_digest("");
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn pinned_image_ref_keeps_tag() {
-        assert_eq!(
-            pinned_image_ref("example.com/foo/image:v1", "sha256:abc123"),
-            "example.com/foo/image:v1@sha256:abc123"
-        );
-    }
-
-    #[test]
-    fn pinned_image_ref_without_tag() {
-        assert_eq!(
-            pinned_image_ref("example.com/foo/image", "sha256:abc123"),
-            "example.com/foo/image@sha256:abc123"
-        );
-    }
-
-    #[test]
-    fn pinned_image_ref_with_port_keeps_tag() {
-        assert_eq!(
-            pinned_image_ref("localhost:5000/image:latest", "sha256:abc123"),
-            "localhost:5000/image:latest@sha256:abc123"
-        );
-    }
-
-    #[test]
-    fn pinned_image_ref_port_no_tag() {
-        assert_eq!(
-            pinned_image_ref("localhost:5000/image", "sha256:abc123"),
-            "localhost:5000/image@sha256:abc123"
-        );
-    }
-
-    #[test]
-    fn pinned_image_ref_host_port_nested_path_keeps_tag() {
-        assert_eq!(
-            pinned_image_ref("myregistry:5000/org/repo/image:v2", "sha256:abc123"),
-            "myregistry:5000/org/repo/image:v2@sha256:abc123"
-        );
-    }
-
-    #[test]
-    fn pinned_image_ref_host_port_nested_no_tag() {
-        assert_eq!(
-            pinned_image_ref("myregistry:5000/org/repo/image", "sha256:abc123"),
-            "myregistry:5000/org/repo/image@sha256:abc123"
-        );
-    }
-
-    #[test]
-    fn pinned_image_ref_replaces_existing_digest() {
-        assert_eq!(
-            pinned_image_ref("registry.example.com/team/service@sha256:old", "sha256:new"),
-            "registry.example.com/team/service@sha256:new"
-        );
     }
 
     #[test]

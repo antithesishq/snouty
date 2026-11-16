@@ -9,12 +9,13 @@ use crate::api::{
     MIN_STREAM_RELEASE, VersionError, normalize_base_url,
 };
 use crate::auth::{
-    AuthenticationInfo, CredentialSource, CredentialStore, OIDC_REJECTED_NEXT_STEP,
-    SourcedCredential, keychain_entry_name,
+    AuthenticationInfo, CredentialSource, CredentialStore, SourcedCredential, keychain_entry_name,
+    login_command, rejected_credential_next_step,
 };
 use crate::compose;
 use crate::container;
 use crate::error::rejects_credential;
+use crate::known_path::KnownPathKind;
 use crate::login::{CliOAuthConfig, REGISTRY_TIMEOUT, fetch_cli_config};
 use crate::registry::Registry;
 use crate::render::{OutputOptions, count};
@@ -281,10 +282,10 @@ fn other_registry_check(
 ) -> Check {
     let switch = match configured.tag() {
         SettingSource::Env(var) => format!("set {var} to it"),
-        SettingSource::File { global: true, .. } => {
+        SettingSource::File { path, .. } if path.kind == KnownPathKind::Global => {
             format!("run {} to switch to it", login_command(profile))
         }
-        SettingSource::File { path, key, .. } => {
+        SettingSource::File { path, key } => {
             format!("set `{key}` in {} to it", path.display())
         }
     };
@@ -477,15 +478,6 @@ fn login_to_replace(profile: Option<&str>) -> String {
         "run {} to replace it with an API key",
         login_command(profile)
     )
-}
-
-/// `snouty login` for `profile`. A bare `snouty login` writes the default
-/// profile, so a named profile is passed on.
-fn login_command(profile: Option<&str>) -> String {
-    match profile {
-        Some(p) => format!("`snouty login --profile {p}`"),
-        None => "`snouty login`".to_owned(),
-    }
 }
 
 fn unset(variables: &[&str]) -> String {
@@ -759,23 +751,6 @@ fn version_check(
     }
 }
 
-/// The one step that fixes `in_use` when the tenant of `profile` rejects it.
-fn rejected_credential_next_step(in_use: &SourcedCredential, profile: Option<&str>) -> String {
-    match (in_use.value(), in_use.tag()) {
-        (AuthenticationInfo::GithubActionsOidc(_), _) => OIDC_REJECTED_NEXT_STEP.to_owned(),
-        // `snouty login` cannot help: the environment hides what it stores.
-        (credential, CredentialSource::Environment { variables }) => format!(
-            "set `{}` to a valid {credential}",
-            variables.join("` and `")
-        ),
-        // A named profile with no credential uses the default profile's, so
-        // the login goes to the checked profile.
-        (_, CredentialSource::Stored(_)) => {
-            format!("run {} to fix authentication", login_command(profile))
-        }
-    }
-}
-
 /// The message of the credentials check when `auth` could not be renewed,
 /// and the next step. A 5xx, a 408 or a 429 is temporary, and another 4xx
 /// refuses the credential.
@@ -898,7 +873,8 @@ pub async fn cmd_doctor(
                     // A base_url setting most often names a proxy, which
                     // then serves the registry too.
                     if let Some(configured) = settings.registry()
-                        && settings.explicit_base_url().is_none()
+                        && (settings.explicit_base_url().is_none()
+                            || crate::env::test_doctor_asks_registry())
                         && version
                             .release
                             .is_some_and(|release| release >= MIN_REGISTRY_RELEASE)
@@ -1032,6 +1008,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::known_path::KnownPath;
     use crate::tag::Tag;
 
     // ---- auth_checks (env-only auth) -----------------------------------
@@ -1467,9 +1444,11 @@ mod tests {
         assert_eq!(
             next_step(
                 SettingSource::File {
-                    path: "/home/.config/snouty/settings.toml".into(),
+                    path: KnownPath {
+                        kind: KnownPathKind::Global,
+                        path: "/home/.config/snouty/settings.toml".into(),
+                    },
                     key: "profile.prod.registry".into(),
-                    global: true,
                 },
                 Some("prod")
             ),
@@ -1482,9 +1461,11 @@ mod tests {
             "you can keep using `proxy.example.com/acme`, or set ANTITHESIS_REGISTRY to it"
         );
         let project = SettingSource::File {
-            path: "/work/.snouty.toml".into(),
+            path: KnownPath {
+                kind: KnownPathKind::Project { explicit: false },
+                path: "/work/.snouty.toml".into(),
+            },
             key: "registry".into(),
-            global: false,
         };
         assert_eq!(
             next_step(project, None),
@@ -1652,40 +1633,22 @@ mod tests {
         }
     }
 
-    /// A stored credential gets `snouty login`, with `--profile` for a named
-    /// profile. Another source gets the step that fixes it.
     #[test]
     fn version_auth_rejection_names_the_fix_for_the_source() {
-        let note_for = |in_use: SourcedCredential, profile| {
-            version_check(
-                "tenant.antithesis.com",
-                &in_use,
-                profile,
-                Err(VersionError::Http(403)),
-            )
+        let check = version_check(
+            "tenant.antithesis.com",
+            &env_api_key_source(),
+            None,
+            Err(VersionError::Http(403)),
+        );
+        let next_step = check
             .notes
             .into_iter()
             .find(|n| n.level == Level::Note)
-            .expect("a rejection carries a next step")
-            .text
-        };
-        let note = |profile| note_for(file_api_key_source(), profile);
-        assert_eq!(note(None), "run `snouty login` to fix authentication");
+            .expect("a rejection carries a next step");
         assert_eq!(
-            note(Some("default")),
-            "run `snouty login --profile default` to fix authentication"
-        );
-        assert_eq!(
-            note(Some("staging")),
-            "run `snouty login --profile staging` to fix authentication"
-        );
-        assert_eq!(
-            note_for(env_api_key_source(), Some("staging")),
+            next_step.text,
             "set `ANTITHESIS_API_KEY` to a valid API key"
-        );
-        assert_eq!(
-            note_for(oidc_source(), None),
-            "ask Antithesis support to trust GitHub Actions OIDC tokens from this repository"
         );
     }
 

@@ -58,42 +58,41 @@ impl EventOutput {
 /// Read a closed search result to its end, and give its events back in
 /// moment order: one group for each `input_hash`, the groups by their earliest
 /// vtime, and each group's events by vtime. The server returns its matches in
-/// no fixed order. Events without a moment, such as the output of a `narrow`
-/// that drops it, go last in their server order. `--raw` keeps the server's
-/// order, so the stream passes through unchanged.
+/// no fixed order. An event without a vtime that snouty can read sorts first
+/// in its group. Events without an `input_hash`, such as the output of a
+/// `narrow` that drops it, go last in their server order. `--raw` keeps the
+/// server's order, so the stream passes through unchanged.
 ///
 /// An error, or a `Stream_Error` record, ends the read: the events before it
 /// come out sorted, then the error, so the command still fails after the
 /// rows it received.
 pub(super) async fn in_moment_order(mut events: JsonStream, mode: EventOutput) -> JsonStream {
-    fn moment(event: &Value) -> Option<(&str, VTime)> {
-        let moment = &event["moment"];
-        Some((
-            moment["input_hash"].as_str()?,
-            VTime::from_json(&moment["vtime"])?,
-        ))
-    }
     if let EventOutput::Json { raw: true, .. } = mode {
         return events;
     }
-    let mut timed = Vec::new();
-    let mut untimed = Vec::new();
+    let mut grouped: Vec<(String, Option<VTime>, Value)> = Vec::new();
+    let mut ungrouped = Vec::new();
     let mut earliest: HashMap<String, VTime> = HashMap::new();
     let mut error = None;
     while let Some(item) = events.next().await {
         match item {
-            Ok(event) if stream_error_message(&event).is_none() => match moment(&event) {
-                Some((hash, vtime)) => {
+            Ok(event) if stream_error_message(&event).is_none() => {
+                let moment = &event["moment"];
+                let Some(hash) = moment["input_hash"].as_str() else {
+                    ungrouped.push(event);
+                    continue;
+                };
+                let vtime = VTime::from_json(&moment["vtime"]);
+                if let Some(vtime) = vtime {
                     match earliest.get_mut(hash) {
                         Some(first) => *first = (*first).min(vtime),
                         None => {
                             earliest.insert(hash.to_string(), vtime);
                         }
                     }
-                    timed.push(event);
                 }
-                None => untimed.push(event),
-            },
+                grouped.push((hash.to_string(), vtime, event));
+            }
             stop => {
                 error = Some(stop);
                 break;
@@ -101,10 +100,17 @@ pub(super) async fn in_moment_order(mut events: JsonStream, mode: EventOutput) -
         }
     }
     // The sort is stable, so events at one moment keep their server order.
-    timed.sort_by_cached_key(|event| {
-        moment(event).map(|(hash, vtime)| (earliest[hash], hash.to_string(), vtime))
+    // `None` sorts before `Some`: a group without a readable vtime goes
+    // first, and so does such an event in its group.
+    grouped.sort_by(|(a_hash, a_vtime, _), (b_hash, b_vtime, _)| {
+        (earliest.get(a_hash), a_hash, a_vtime).cmp(&(earliest.get(b_hash), b_hash, b_vtime))
     });
-    let events = timed.into_iter().chain(untimed).map(Ok).chain(error);
+    let events = grouped
+        .into_iter()
+        .map(|(_, _, event)| event)
+        .chain(ungrouped)
+        .map(Ok)
+        .chain(error);
     stream::iter(events).boxed()
 }
 
@@ -256,6 +262,7 @@ mod tests {
             event("-1", "5.0", "a late"),
             event("2", "3.0", "b"),
             json!({"output_text": "no moment"}),
+            json!({"moment": {"input_hash": "2", "vtime": null}, "output_text": "b, no vtime"}),
             event("-1", "1.0", "a first"),
             event("-1", "2.0", "a second"),
             event("-1", "2.0", "a second, same vtime"),
@@ -272,6 +279,7 @@ mod tests {
                 "a second",
                 "a second, same vtime",
                 "a late",
+                "b, no vtime",
                 "b",
                 "no moment"
             ]

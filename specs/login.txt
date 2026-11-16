@@ -144,6 +144,20 @@ snouty login --tenant spec-tenant --registry registry.spec-tenant.antithesis.com
 ! stderr 'Kept registry'
 file ~/.config/snouty/settings.toml 'registry = "registry.spec-tenant.antithesis.com"'
 
+# A value in the global settings file that snouty cannot use fails the login,
+# also when an environment variable hides it from the other commands. Login
+# saves nothing.
+isolate-home hidden_fault
+snouty login --tenant spec-tenant --registry registry.example.com/acme
+cp saved_hidden_fault.toml hidden_fault/.config/snouty/settings.toml
+env SNOUTY_UPDATE_CHANNEL=stable
+snouty settings show
+! snouty login --tenant spec-tenant
+stderr 'invalid setting `update_channel` in /.*/settings\.toml'
+stderr 'Suggestion: fix or delete /.*/settings\.toml$'
+file ~/.config/snouty/settings.toml 'update_channel = "betta"'
+env SNOUTY_UPDATE_CHANNEL=
+
 # A tenant that cannot be reached fails the login, which names the URL and
 # saves nothing.
 isolate-home unreachable
@@ -254,6 +268,10 @@ file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
 -- saved_scheme.toml --
 tenant = "spec-tenant"
 registry = "https://registry.example.com/my-org/"
+-- saved_hidden_fault.toml --
+tenant = "spec-tenant"
+registry = "registry.example.com/acme"
+update_channel = "betta"
 -- saved_invalid.toml --
 tenant = "spec-tenant"
 registry = "not a registry"

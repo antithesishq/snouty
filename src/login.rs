@@ -268,17 +268,12 @@ async fn do_cmd_login(
             let reported = reported.registry_url.parse::<Registry>().map_err(|err| {
                 user_error(format!("{err}; nothing was saved")).suggestion(suggestion)
             })?;
-            // `current_settings` resolved from the same file without a fault,
-            // so a fault here means that the file changed since, and the
-            // update below reports it.
-            let custom = Settings::resolve_global_file(profile_to_use.clone())
-                .inspect_err(|err| debug!("cannot read the saved registry: {err:#}"))
-                .ok()
-                .and_then(|saved| {
-                    registry_of_tenant(&saved, &tenant_to_use)
-                        .filter(|registry| **registry != reported)
-                        .cloned()
-                });
+            // A fault in the global file fails login, also when the
+            // environment or a project file hides it from `current_settings`.
+            let saved = Settings::resolve_global_file(profile_to_use.clone())?;
+            let custom = registry_of_tenant(&saved, &tenant_to_use)
+                .filter(|registry| **registry != reported)
+                .cloned();
             match custom {
                 None => (reported, None),
                 Some(custom) if !interactive => (custom, Some(CustomRegistry::Kept { reported })),
@@ -1605,6 +1600,7 @@ mod tests {
                     "ANTITHESIS_HTTPS_PROXY",
                     "CONTAINER_ENGINE",
                     "SNOUTY_SETTINGS_PATH",
+                    "SNOUTY_UPDATE_CHANNEL",
                 ]
                 .into_iter()
                 .chain(crate::auth::CREDENTIAL_ENV_VARS)
@@ -1793,6 +1789,36 @@ mod tests {
 
         assert_eq!(prompter.prompts()[1], REPLACE_CUSTOM);
         assert_saved_registry(&env, CUSTOM_REGISTRY);
+        Ok(())
+    }
+
+    /// A value in the global settings file that snouty cannot use fails
+    /// login, also when an environment variable hides it from the other
+    /// commands. Login saves nothing.
+    #[tokio::test]
+    async fn login_fails_on_a_fault_in_the_global_file_that_the_environment_hides() -> Result<()> {
+        let env = LoginEnv::new();
+        let saved = format!(
+            "tenant = \"mytenant\"\nregistry = \"{CUSTOM_REGISTRY}\"\nupdate_channel = \"betta\"\n"
+        );
+        env.seed(".config/snouty/settings.toml", &saved);
+        // SAFETY: `env` holds the lock that serializes env mutation.
+        unsafe { std::env::set_var("SNOUTY_UPDATE_CHANNEL", "stable") };
+        let settings = env.resolve_settings(None)?;
+        let prompter = Script::default().secret(FAKE_API_KEY_A).build();
+
+        let err = login_with_flags(None, &settings, &prompter)
+            .await
+            .expect_err("a fault in the global file must fail the login");
+
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("invalid setting `update_channel` in")
+                && message.contains("settings.toml"),
+            "{message}"
+        );
+        assert_eq!(env.settings(), saved);
+        assert!(env.credentials().is_empty(), "{}", env.credentials());
         Ok(())
     }
 
@@ -2042,14 +2068,20 @@ mod tests {
             ".config/snouty/settings.toml",
             "profile = \"not a table\"\n",
         );
-        let prompter = Script::default()
-            .input("ptenant")
-            .secret(FAKE_API_KEY_A)
-            .build();
+        let prompter = Script::default().secret(FAKE_API_KEY_A).build();
 
-        let err = login(Some("prod"), &settings, &prompter)
-            .await
-            .expect_err("a malformed settings file must fail the login");
+        // `--registry` skips the read of the saved registry, so the fault
+        // shows only when login writes the file.
+        let err = do_cmd_login(
+            Some("ptenant".parse().unwrap()),
+            Some("myrepo".parse().unwrap()),
+            Some("prod"),
+            &settings,
+            OutputOptions::default(),
+            &prompter,
+        )
+        .await
+        .expect_err("a malformed settings file must fail the login");
 
         assert!(format!("{err:#}").contains("malformed"), "{err:#}");
         assert!(env.credentials().is_empty(), "{}", env.credentials());

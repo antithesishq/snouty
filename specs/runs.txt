@@ -392,8 +392,7 @@ snouty runs properties $R_run_id --name 'Counter value' --detail
 [!staging] ! stdout 'Details|Counter stays within safe bounds'
 # The Examples label carries the run's totals, and says how many of them the
 # table below shows, because the table is a sample.
-# One trailing next step is the runs logs command for the earliest failing
-# moment.
+# One trailing next step is the runs logs command for the top failing row.
 [!staging] stdout '^Examples  showing 1 out of 12 passing examples and 2 out of 3 failing examples$'
 [!staging] stdout '^view logs leading up to a failing example:$'
 [!staging] stdout '^  snouty runs logs \S+ -100 45\.334635781589895$'

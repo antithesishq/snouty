@@ -728,7 +728,12 @@ async fn cmd_runs_property(
         outln!("{}", serde_json::to_string(&property)?)?;
         return Ok(());
     }
-    print_properties_detail(run_id, std::slice::from_ref(&property))
+    let properties = std::slice::from_ref(&property);
+    print_properties_detail(run_id, properties)?;
+    if let Some(note) = unreached_note(run_id, properties) {
+        eprintln!("\n{}", wrap_if_tty(&note));
+    }
+    Ok(())
 }
 
 fn print_properties_detail(run_id: &str, properties: &[Property]) -> Result<()> {

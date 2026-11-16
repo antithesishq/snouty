@@ -17,8 +17,8 @@ use color_eyre::{
 use crate::config::ComposeConfig;
 use crate::container::{
     Architecture, ContainerRuntime, DISCOVERY_COMMAND_TIMEOUT, RemoteManifest, available_engines,
-    digests_for_repo, docker_is_podman, image_ref_tag, image_repo, mirror_path, normalize_repo,
-    registry_host, strip_registry,
+    digests_for_repo, docker_is_podman, image_digest, image_ref_tag, image_repo, mirror_path,
+    normalize_repo, registry_host, strip_registry,
 };
 use crate::error::user_error;
 use crate::process::{ProcessGroupChild, output_with_timeout};
@@ -804,7 +804,7 @@ fn find_remote_pin(rt: &dyn ContainerRuntime, image: &str, prefix: &str) -> Resu
     {
         return Ok(None);
     }
-    if let Some((_, digest)) = image.rsplit_once('@') {
+    if let Some(digest) = image_digest(image) {
         return Ok(serves_amd64(rt, image, &repo, digest)?.then(|| image.to_string()));
     }
     let repo_digests = rt.image_repo_digests(image)?;
@@ -879,7 +879,9 @@ fn ensure_no_digest_pushes(contents: &ComposeContents, unserved: &[&str]) -> Res
     let pinned: Vec<_> = contents
         .services
         .iter()
-        .filter(|service| service.image.contains('@') && unserved.contains(&service.image.as_str()))
+        .filter(|service| {
+            image_digest(&service.image).is_some() && unserved.contains(&service.image.as_str())
+        })
         .collect();
     if pinned.is_empty() {
         return Ok(());

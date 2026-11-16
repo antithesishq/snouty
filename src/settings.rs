@@ -535,14 +535,11 @@ impl Settings {
 
     /// The features that these settings use and that the next release
     /// removes: `./.snouty.toml` and a named profile.
-    pub fn removed_features(&self) -> Vec<String> {
+    pub fn removed_features(&self) -> Vec<RemovedFeature> {
         let project = self
             .default_project_file
-            .then(|| format!("./{PROJECT_SETTINGS_FILENAME}"));
-        let profile = self
-            .profile
-            .as_ref()
-            .map(|profile| format!("the profile `{profile}`"));
+            .then_some(RemovedFeature::DefaultProjectFile);
+        let profile = self.profile.clone().map(RemovedFeature::Profile);
         project.into_iter().chain(profile).collect()
     }
 
@@ -664,13 +661,34 @@ impl SettingsBuilder {
     }
 }
 
+/// A feature that the next release removes.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RemovedFeature {
+    DefaultProjectFile,
+    Profile(String),
+    Trust,
+    Deny,
+}
+
+impl fmt::Display for RemovedFeature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DefaultProjectFile => write!(f, "./{PROJECT_SETTINGS_FILENAME}"),
+            Self::Profile(profile) => write!(f, "the profile `{profile}`"),
+            Self::Trust => f.write_str("`snouty settings trust`"),
+            Self::Deny => f.write_str("`snouty settings deny`"),
+        }
+    }
+}
+
 /// A warning that the next release removes `features`; `None` when there
 /// are none.
-pub fn removal_warning(features: &[String]) -> Option<String> {
+pub fn removal_warning(features: &[RemovedFeature]) -> Option<String> {
     let (last, rest) = features.split_last()?;
     let features = if rest.is_empty() {
-        last.clone()
+        last.to_string()
     } else {
+        let rest: Vec<String> = rest.iter().map(ToString::to_string).collect();
         format!("{} and {last}", rest.join(", "))
     };
     Some(format!(
@@ -1390,6 +1408,42 @@ mod tests {
         assert_eq!(
             resolve_tenant(None, Some(&project), None).as_deref(),
             Some("proj-default")
+        );
+    }
+
+    // ---- removal_warning -----------------------------------------------
+
+    #[test]
+    fn removal_warning_lists_each_feature() {
+        let features = |features: &[RemovedFeature]| {
+            removal_warning(features).map(|warning| {
+                warning
+                    .strip_prefix("warning: snouty uses ")
+                    .and_then(|rest| rest.split_once(", which").map(|(list, _)| list.to_owned()))
+                    .unwrap()
+            })
+        };
+        assert_eq!(features(&[]), None);
+        assert_eq!(
+            features(&[RemovedFeature::Trust]).as_deref(),
+            Some("`snouty settings trust`")
+        );
+        assert_eq!(
+            features(&[
+                RemovedFeature::DefaultProjectFile,
+                RemovedFeature::Profile("p".into())
+            ])
+            .as_deref(),
+            Some("./.snouty.toml and the profile `p`")
+        );
+        assert_eq!(
+            features(&[
+                RemovedFeature::DefaultProjectFile,
+                RemovedFeature::Profile("p".into()),
+                RemovedFeature::Deny
+            ])
+            .as_deref(),
+            Some("./.snouty.toml, the profile `p` and `snouty settings deny`")
         );
     }
 

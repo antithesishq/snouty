@@ -36,7 +36,7 @@ stdout '^api_cache_max_file_size +1000 B$'
 #    does not warn.
 stderr -count=1 'issues/747'
 stderr '`staging`'
-! stderr 'chosen\.toml'
+! stderr '\.snouty\.toml'
 
 # 4. The text output is a table of the settings files that snouty read:
 #    the project file, which overrides the global one, then the global file.

@@ -16,3 +16,4 @@ Output: a `moment INPUT_HASH` divider is emitted at the start of each branch. Ea
 Examples:
   runs_logs {"run_id": "<run_id>", "input_hash": "<input_hash>"}
   runs_logs {"run_id": "<run_id>", "input_hash": "-123", "vtime": <vtime>}
+  runs_logs {"run_id": "<run_id>", "input_hash": "<input_hash>", "vtime": <vtime>, "begin_vtime": <begin_vtime>}

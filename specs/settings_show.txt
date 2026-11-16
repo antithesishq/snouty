@@ -32,10 +32,10 @@ stdout '^base_url +https://acme\.antithesis\.com$'
 stdout '^https_proxy +http://proxy\.example\.com:3128$'
 stdout '^api_cache_max_file_size +1000 B$'
 
-# 3. A project settings file and a named profile each warn that the next
-#    release removes them, with a link to the issue.
-stderr '(?s)warning: snouty uses the project settings file /[^\n]*/chosen\.toml\..*issues/747'
-stderr '(?s)warning: snouty uses the profile `staging`\..*issues/747'
+# 3. A project settings file and a profile print one warning to stderr.
+stderr -count=1 'issues/747'
+stderr 'chosen\.toml'
+stderr '`staging`'
 
 # 4. The text output is a table of the settings files that snouty read:
 #    the project file, which overrides the global one, then the global file.

@@ -108,13 +108,17 @@ async fn run(cli: Cli) -> Result<()> {
     let settings = Settings::resolve(settings_path.clone(), profile.clone()).map_err(|err| {
         snouty::settings::suggest_settings_fix(err, matches!(command, Commands::Login { .. }))
     });
-    // The credential helper runs on each push or pull, so it does not warn.
+    // The credential helper runs on each push or pull, a shell runs
+    // completions at each start, and the MCP server warned once already.
     if let Ok(settings) = &settings
-        && !matches!(command, Commands::DockerCredential { .. })
+        && let Some(warning) = settings.removal_warning()
+        && !matches!(
+            command,
+            Commands::DockerCredential { .. } | Commands::Completions { .. }
+        )
+        && !snouty::mcp::in_tool_call()
     {
-        for warning in settings.removal_warnings() {
-            eprintln!("{}", snouty::wrap_if_tty(&warning));
-        }
+        eprintln!("{}", snouty::wrap_if_tty(&warning));
     }
     let result = match command {
         Commands::Completions { shell } => cmd_completions(shell).map_err(Report::new),

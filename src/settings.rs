@@ -526,28 +526,28 @@ impl Settings {
         &self.files
     }
 
-    /// A warning for each feature in use that the next release removes: the
-    /// project settings file, and a named profile.
-    pub fn removal_warnings(&self) -> Vec<String> {
+    /// A warning that names the features in use that the next release
+    /// removes: the project settings file and a named profile.
+    pub fn removal_warning(&self) -> Option<String> {
         let project = self
             .files
             .iter()
-            .filter(|file| file.file_type == SettingsFileType::Project)
+            .find(|file| file.file_type == SettingsFileType::Project)
             .map(|file| format!("the project settings file {}", file.path.display()));
         let profile = self
             .profile
-            .iter()
+            .as_ref()
             .map(|profile| format!("the profile `{profile}`"));
-        project
-            .chain(profile)
-            .map(|feature| {
-                format!(
-                    "warning: snouty uses {feature}. The next snouty release removes \
-                     project settings files and profiles. If you need them, add your \
-                     use case to {REMOVAL_ISSUE_URL}"
-                )
-            })
-            .collect()
+        let features = match (project, profile) {
+            (Some(project), Some(profile)) => format!("{project} and {profile}"),
+            (Some(feature), None) | (None, Some(feature)) => feature,
+            (None, None) => return None,
+        };
+        Some(format!(
+            "warning: snouty uses {features}. The next snouty release removes \
+             project settings files and profiles. If you need them, add your use \
+             case to {REMOVAL_ISSUE_URL}"
+        ))
     }
 
     pub(crate) fn profile(&self) -> Option<&str> {

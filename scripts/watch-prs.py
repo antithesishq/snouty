@@ -470,8 +470,8 @@ def main() -> int:
     ap.add_argument(
         "--settle",
         type=int,
-        default=15,
-        help="with --exit-on-event, seconds to wait for more events after one (default 15)",
+        default=5,
+        help="with --exit-on-event, seconds to wait for more events after one (default %(default)s)",
     )
     ap.add_argument(
         "--state-dir",

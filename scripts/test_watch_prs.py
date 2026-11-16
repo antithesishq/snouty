@@ -247,15 +247,15 @@ class Main(WatcherTest):
                 self.gh.comments.append(comment(6, WRITER))
 
         self.on_sleep = comment_after_the_first_sleep
-        status, lines = self.run_main("--exit-on-event", "-i", "10", "1", settle=None)
+        status, lines = self.run_main("--exit-on-event", "-i", "3", "1", settle=None)
         self.assertEqual(status, 0)
         self.assertEqual(
             [line for line in lines if "comment by" in line],
             ["PR #1 comment by reviewer (id 5)", "PR #1 comment by reviewer (id 6)"],
         )
-        # The second comment printed at 10 seconds, so the run ends with a
-        # poll at 25 seconds, when the default 15-second wait ends.
-        self.assertEqual(self.now, 25)
+        # The second comment prints at 3 seconds. The default 5-second wait
+        # is longer than the interval, so the last poll comes early, at 8.
+        self.assertEqual(self.now, 8)
 
     def test_replay_prints_earlier_events_again(self):
         self.gh.comments = [comment(5, WRITER)]

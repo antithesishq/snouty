@@ -621,24 +621,25 @@ fn cmd_env_from_json_find(
     'lines: for line in stdout.lines() {
         let value = parse_json_line(line)?;
         for filter in filters {
-            let string_field = |field: &str| {
-                value
-                    .get(field)
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| err(format!("string field '{field}' not found in JSON")))
-            };
-            let matches = if let Some((field, excluded)) = filter.split_once("!=") {
-                string_field(field)? != excluded
-            } else if let Some((field, prefix)) = filter.split_once("^=") {
-                let actual = value.get(field).and_then(|v| v.as_str());
-                actual.is_some_and(|actual| actual.starts_with(prefix))
-            } else if let Some((field, allowed)) = filter.split_once('=') {
-                let actual = value.get(field).and_then(|v| v.as_str());
-                actual.is_some_and(|actual| allowed.split('|').any(|a| a == actual))
-            } else {
+            // The operator ends at the first `=`, so a value may hold `=`,
+            // `!=` or `^=`.
+            let Some((lhs, operand)) = filter.split_once('=') else {
                 return Err(err(format!(
                     "env_from_json_find filter '{filter}' must be <field>!=<value>, <field>^=<prefix> or <field>=<values>"
                 )));
+            };
+            let matches = if let Some(field) = lhs.strip_suffix('!') {
+                let actual = value
+                    .get(field)
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| err(format!("string field '{field}' not found in JSON")))?;
+                actual != operand
+            } else if let Some(field) = lhs.strip_suffix('^') {
+                let actual = value.get(field).and_then(|v| v.as_str());
+                actual.is_some_and(|actual| actual.starts_with(operand))
+            } else {
+                let actual = value.get(lhs).and_then(|v| v.as_str());
+                actual.is_some_and(|actual| operand.split('|').any(|a| a == actual))
             };
             if !matches {
                 continue 'lines;

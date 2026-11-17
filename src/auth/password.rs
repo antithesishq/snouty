@@ -2,7 +2,9 @@
 
 use color_eyre::{Section, eyre::Result};
 
-use super::{API_KEY_VAR_NAME, AuthenticationInfo, CredentialSource, SourcedCredential};
+use super::{
+    API_KEY_VAR_NAME, AuthenticationInfo, CredentialSource, SourcedCredential, login_command,
+};
 use crate::error::user_error;
 
 pub(crate) const USERNAME_VAR_NAME: &str = "ANTITHESIS_USERNAME";
@@ -20,19 +22,21 @@ pub(crate) enum PasswordPolicy {
     WarnDeprecated,
 }
 
-/// The one-line remediation for the username/password deprecation. The
-/// rejection suggestion and the warning on use both render it, so the wording
-/// cannot drift apart. Doctor states the deprecation in its own check.
+/// The remediation for the username/password deprecation, for a credential
+/// from `source`. The rejection and the warning both render it, so their
+/// wording cannot drift apart.
 fn password_deprecation_suggestion(source: &CredentialSource) -> String {
     let next_step = match source {
-        // `snouty login` cannot help: the environment hides what it stores.
+        // `snouty login` alone cannot help: the environment hides what it
+        // stores. The environment's API key comes before its password.
         CredentialSource::Environment { variables } => format!(
-            "`unset {}`, then run `snouty login` or set {API_KEY_VAR_NAME}",
+            "set {API_KEY_VAR_NAME}, or run `snouty login` and then `unset {}`",
             variables.join(" ")
         ),
-        CredentialSource::Stored(_) => {
-            "run `snouty login` to switch to another authentication method".to_owned()
-        }
+        CredentialSource::Stored(store) => format!(
+            "run {} to switch to another authentication method",
+            login_command(store.profile())
+        ),
     };
     format!("username/password authentication is deprecated; {next_step}")
 }

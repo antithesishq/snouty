@@ -68,7 +68,7 @@ env ANTITHESIS_TENANT=testtenant
 ! snouty runs
 stderr 'This command does not accept username/password authentication.*'
 # `snouty login` alone cannot fix it: the environment hides what login stores.
-stderr -literal '`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`, then run `snouty login` or set ANTITHESIS_API_KEY'
+stderr -literal 'set ANTITHESIS_API_KEY, or run `snouty login` and then `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`'
 
 # A username and password in the credentials file need only `snouty login`.
 isolate-home stored_password
@@ -79,6 +79,10 @@ env ANTITHESIS_PASSWORD=
 stderr 'This command does not accept username/password authentication.*'
 stderr -literal 'run `snouty login` to switch to another authentication method'
 ! stderr 'unset'
+
+# The login for a password in a named profile names that profile.
+! snouty --profile prod runs
+stderr -literal 'run `snouty login --profile prod` to switch to another authentication method'
 
 # On success, the command fetches all pages via next_cursor and prints a table
 # with relative timestamps and short status words.
@@ -1279,6 +1283,10 @@ api_key = "${FAKE_API_KEY_A}"
 
 -- stored_password/.config/snouty/credentials.toml --
 [default]
+type = "Password"
+username = "${FAKE_USERNAME}"
+password = "${FAKE_PASSWORD}"
+[profile.prod]
 type = "Password"
 username = "${FAKE_USERNAME}"
 password = "${FAKE_PASSWORD}"

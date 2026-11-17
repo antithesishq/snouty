@@ -142,7 +142,7 @@ async fn run(cli: Cli) -> Result<()> {
                 .map(|path| eprintln!("Denied {}", path.display())),
         },
         Commands::Login { tenant, registry } => {
-            cmd_login(tenant, registry, profile.as_deref(), &settings?, output).await
+            cmd_login(tenant, registry, &settings?, output).await
         }
         Commands::Launch(args) => {
             cmd_launch(args, &settings?, settings_path, profile, output).await

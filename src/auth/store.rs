@@ -355,7 +355,7 @@ pub(super) fn parse_credentials_file_toml(contents: &str, path: &Path) -> Result
         })
         .with_suggestion(|| {
             format!(
-                "fix {}, or run `snouty login` to replace it",
+                "fix {}, or delete it and run `snouty login`",
                 path.display()
             )
         })

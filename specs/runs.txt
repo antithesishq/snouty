@@ -690,12 +690,14 @@ env ANTITHESIS_PASSWORD=
 stderr 'rejected the API key'
 stderr -literal 'Suggestion: run `snouty login` to fix authentication'
 
-# A credentials file that snouty cannot parse names the file and the login
-# that replaces it.
+# A credentials file that snouty cannot parse names the file to fix, and the
+# login that follows a delete.
 isolate-home unparsable_stored
+env ANTITHESIS_API_KEY=
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
 ! snouty runs
-stderr 'credentials.toml" is not valid TOML'
-stderr -literal 'Suggestion: fix ${WORK}/unparsable_stored/.config/snouty/credentials.toml, or run `snouty login` to replace it'
+stderr -literal 'Suggestion: fix ${WORK}/unparsable_stored/.config/snouty/credentials.toml, or delete it and run `snouty login`'
 
 # An unfiltered empty result succeeds with a short note.
 [!staging] mock-runs-server

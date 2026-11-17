@@ -207,7 +207,7 @@ stderr -literal 'Suggestion: wait for it with `snouty runs wait session-loading 
 #    error names the release floor.
 mock-runs-server
 ! snouty debug --input-hash 5181922178177328213 --run-id 0df9ac1f5155c14f88ea41f5ad503e07-61-1 --vtime 404
-stderr 'API error: 404'
+stderr 'the Antithesis API did not find the requested resource'
 stderr 'tenant releases before 62\.2 do not serve the events-search API'
 ! stderr 'Requesting the Antithesis multiverse debugger'
 ! stdout 'Debugging session started'
@@ -285,11 +285,11 @@ stdout 'run-123'
 env SNOUTY_TEST_SECOND_MS=100
 
 # An error body snouty cannot make sense of (here an intermediary's HTML page)
-# never masks the status either: it is reported with the body shown for
-# debugging.
+# never masks the status either: snouty says what the status means, with the
+# body shown for debugging.
 mock-server 502 '<html><body>Bad Gateway</body></html>'
 ! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
-stderr 'API error: 502 Bad Gateway.*'
+stderr '^Error: the Antithesis API failed to complete the request$'
 stderr '.*<html><body>Bad Gateway</body></html>.*'
 
 # ANTITHESIS_EXTRA_HEADERS adds arbitrary headers to every API request (for

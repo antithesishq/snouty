@@ -259,10 +259,12 @@ stdout 'source_run_id=1f1211ea49946d4f63a92d65ee42476d-64-0 source_session_id=ab
 snouty runs exec run-2 -3625518438076122494 398.4898056755774 print-request --source-session-id ba4ebf3181dd342334b86c58941813c6-64-0
 stdout 'source_run_id=absent source_session_id=ba4ebf3181dd342334b86c58941813c6-64-0'
 
-# A cold moment without a source fails with the server's 400, and snouty
-# points at --source-run-id.
+# A cold moment without a source fails, and snouty points at
+# --source-run-id. The server's text names API parameters, so snouty does not
+# show it.
 ! snouty runs exec run-2 1002528785118888238 278.1311443040613 'true'
-stderr 'The requested moment is unavailable in this run'
+stderr '^Error: moment 1002528785118888238 is not loaded in run run-2$'
+! stderr '^(Error|Note): .*source_run_id'
 stderr 'use --source-run-id to load a moment from a different run$'
 ! stderr 'not ready'
 
@@ -312,7 +314,8 @@ stdout '(?s)^\{"status":"rewarming","percent_complete":0\}\n.*\{"status":"rewarm
 # not the moment's run). snouty names the flag. --timeout does not count the
 # rewarm, so snouty does not suggest a longer --timeout.
 ! snouty runs exec run-2 1002528785118888238 278.1311443040613 slow-rewarm --source-run-id 1f1211ea49946d4f63a92d65ee42476d-64-0
-stderr 'rewarm did not reach the target moment'
+stderr '^Error: the Antithesis API rejected the request$'
+stderr '^Note: .*rewarm did not reach the target moment'
 stderr 'check that --source-run-id names the run the moment comes from$'
 ! stderr 'raise --timeout'
 
@@ -332,11 +335,12 @@ stderr 'invalid value .* for .--source-run-id'
 
 # An unknown source fails, and snouty points at the flag.
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --source-run-id no-such-run
-stderr 'Source run .no-such-run. does not exist'
+stderr '^Error: source run no-such-run does not exist$'
 stderr 'check that --source-run-id names an existing source'
 ! stderr 'names the run the moment comes from'
 
 ! snouty runs exec run-2 -3625518438076122494 398.4898056755774 'true' --source-session-id no-such-session
+stderr '^Error: source session no-such-session does not exist$'
 stderr 'check that --source-session-id names an existing source'
 
 # An empty --container is rejected before any API call.
@@ -401,13 +405,13 @@ stdout 'partial output'
 stderr 'stream ended before the command reported completion.*'
 
 # `runs exec` needs a run that is in progress. A run that has stopped fails
-# with the server's error (verbatim from orbitinghail, release 65.0, for a
-# completed `basic_test` run), then snouty gives the run's status and the
+# (the mock answers with the error of orbitinghail, release 65.0, for a
+# completed `basic_test` run): snouty gives the run's status and the
 # `snouty debug` command that starts a debugging session at the same moment,
 # one flag per line after a line continuation.
 ! snouty runs exec run-1 -3625518438076122494 398.4898056755774 'uname -a'
-stderr '^Error: API error: 400 Bad Request — Run run-1 has ended\. Commands require an active run\.$'
-stderr '^Note: `runs exec` needs a run that is in progress\. This run is completed$'
+stderr '^Error: run run-1 is completed, and `runs exec` needs a run that is in progress$'
+! stderr '^(Error|Note): .*has ended'
 stderr -literal 'Suggestion: start a debugging session at this moment with:\n  snouty debug \\\n    --run-id run-1 \\\n    --input-hash -3625518438076122494 \\\n    --vtime 398.4898056755774'
 ! stderr 'source-run-id'
 ! stderr 'not ready'
@@ -417,7 +421,7 @@ stderr -literal 'Suggestion: start a debugging session at this moment with:\n  s
 # in its source, not in the run, so the `snouty debug` command names the
 # source.
 ! snouty runs exec run-3 1002528785118888238 278.1311443040613 'true' --source-run-id run-1
-stderr '^Note: `runs exec` needs a run that is in progress\. This run is incomplete$'
+stderr '^Error: run run-3 is incomplete, and `runs exec` needs a run that is in progress$'
 stderr -literal '  snouty debug \\\n    --run-id run-1 \\\n    --input-hash 1002528785118888238 \\\n    --vtime 278.1311443040613'
 ! stderr 'names the run the moment comes from'
 
@@ -430,8 +434,8 @@ stderr -literal '  snouty debug \\\n    --session-id ba4ebf3181dd342334b86c58941
 # translation rather than a friendly server message.
 ! snouty runs exec no-such-run -3625518438076122494 398.4898056755774 'uname -a'
 stderr 'run not found: no-such-run'
-! stderr 'API error'
-! stderr 'Resource not found'
+! stderr 'Antithesis API'
+! stderr '^(Error|Note): .*Resource not found'
 
 # VTIME is parsed by clap into the typed vtime the request body carries, so a
 # non-numeric value is rejected before any API call.

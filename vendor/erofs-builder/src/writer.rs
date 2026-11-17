@@ -76,6 +76,19 @@ enum Content {
     },
 }
 
+/// snouty: file contents that [`Writer::write_data`] has written or held,
+/// before [`Writer::add_data`] gives them a name. One `Data` can back several
+/// files, which then share its blocks.
+#[derive(Clone, Debug)]
+pub struct Data(DataKind);
+
+#[derive(Clone, Debug)]
+enum DataKind {
+    Empty,
+    Inline(Vec<u8>),
+    Blocks { addr: u32, len: u64 },
+}
+
 struct Node {
     name: String,
     meta: InodeMeta,
@@ -307,21 +320,47 @@ where
     where
         R: AsyncRead + Unpin,
     {
+        let data = self.write_data(size, data).await?;
+        self.add_data(path, meta, data).await
+    }
+
+    /// snouty: read exactly `size` bytes from `data` and write them to the
+    /// sink now, or hold them when they may be inlined. No file uses them
+    /// until [`Writer::add_data`] names them.
+    pub async fn write_data<R>(&mut self, size: u64, data: &mut R) -> io::Result<Data>
+    where
+        R: AsyncRead + Unpin,
+    {
+        Ok(Data(if size == 0 {
+            DataKind::Empty
+        } else if size <= self.block_size as u64 {
+            let mut buf = vec![0u8; size as usize];
+            data.read_exact(&mut buf).await?;
+            DataKind::Inline(buf)
+        } else {
+            DataKind::Blocks {
+                addr: self.stream_data(size, data).await?,
+                len: size,
+            }
+        }))
+    }
+
+    /// snouty: add a regular file whose contents [`Writer::write_data`]
+    /// produced.
+    pub async fn add_data(&mut self, path: &str, meta: InodeMeta, data: Data) -> io::Result<()> {
         let clean = clean(path);
         if clean.is_empty() {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid path"));
         }
         ensure_dir(&mut self.root, &mut self.paths, &clean)?;
         let mut node = Node::new(String::new(), meta);
-        node.content = if size == 0 {
-            Content::Empty
-        } else if size <= self.block_size as u64 {
-            let mut buf = vec![0u8; size as usize];
-            data.read_exact(&mut buf).await?;
-            Content::Inline(buf)
-        } else {
-            node.data_blkaddr = self.stream_data(size, data).await?;
-            Content::Streamed { len: size }
+        node.content = match data.0 {
+            DataKind::Empty => Content::Empty,
+            DataKind::Inline(buf) => Content::Inline(buf),
+            DataKind::Blocks { addr, len } => {
+                node.data_blkaddr = addr;
+                Content::Streamed { len }
+            }
         };
         insert(&mut self.root, &mut self.paths, &clean, node)
     }

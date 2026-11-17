@@ -20,6 +20,9 @@ Each change is marked with a `snouty:` comment, to keep merges small.
   sample binary needs, and the unused `crc32c` is gone.
 - `Writer::link` adds a hard link: a directory entry for an existing inode,
   which then counts it in its nlink.
+- `Writer::write_data` writes file contents without naming them, and
+  `Writer::add_data` names them later. One `Data` can back several files,
+  which share its blocks. `Writer::add_file` does both.
 - `Writer::mkdir` on a directory that already exists, for example one that
   a deeper path created implicitly, takes the new metadata. Upstream
   dropped it, which lost `trusted.overlay.opaque` on such directories.

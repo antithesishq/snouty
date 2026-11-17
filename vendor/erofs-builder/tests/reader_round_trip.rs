@@ -181,3 +181,65 @@ async fn bad_magic_is_rejected_test() {
     std::fs::write(&path, vec![0u8; 4096]).unwrap();
     assert!(Reader::open(&path).await.is_err());
 }
+
+/// snouty: contents written once with `write_data` back several files,
+/// before and after other data, as separate inodes on shared blocks.
+#[tokio::test]
+async fn written_data_backs_several_files_test() {
+    let streamed: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();
+    let mut w = Writer::new(Cursor::new(Vec::new()), CreateOptions::default())
+        .await
+        .unwrap();
+    let blocks = w
+        .write_data(streamed.len() as u64, &mut streamed.as_slice())
+        .await
+        .unwrap();
+    let inline = w.write_data(6, &mut &b"inline"[..]).await.unwrap();
+    w.add_file("between", InodeMeta::reg(0o444), 5, &mut &b"other"[..])
+        .await
+        .unwrap();
+    for dir in ["one", "two"] {
+        w.add_data(&format!("{dir}/big"), InodeMeta::reg(0o444), blocks.clone())
+            .await
+            .unwrap();
+        w.add_data(
+            &format!("{dir}/small"),
+            InodeMeta::reg(0o444),
+            inline.clone(),
+        )
+        .await
+        .unwrap();
+    }
+    let img = w.finish().await.unwrap().into_inner();
+    assert_eq!(
+        img.windows(streamed.len())
+            .filter(|window| *window == streamed.as_slice())
+            .count(),
+        1
+    );
+    let tmp = tempfile::tempdir().unwrap();
+    let img_path = tmp.path().join("img.erofs");
+    std::fs::write(&img_path, &img).unwrap();
+    let mut r = Reader::open(&img_path).await.unwrap();
+    let root = r.dirents(r.root_nid()).await.unwrap();
+    let mut nids = Vec::new();
+    for dir in ["one", "two"] {
+        let dir = root.iter().find(|d| d.name == dir).unwrap().nid;
+        for entry in r.dirents(dir).await.unwrap() {
+            let mut data = Vec::new();
+            r.read_content(entry.nid, &mut |chunk| data.extend_from_slice(chunk))
+                .await
+                .unwrap();
+            let expected: &[u8] = if entry.name == "big" {
+                &streamed
+            } else {
+                b"inline"
+            };
+            assert_eq!(data, expected, "{}", entry.name);
+            nids.push(entry.nid);
+        }
+    }
+    nids.sort();
+    nids.dedup();
+    assert_eq!(nids.len(), 4);
+}

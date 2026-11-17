@@ -14,4 +14,4 @@ pub mod writer;
 
 pub use layout::{DataLayout, FileType};
 pub use reader::{Dirent, Reader, Stat};
-pub use writer::{CreateOptions, InodeMeta, Writer, DEFAULT_BLOCK_SIZE};
+pub use writer::{CreateOptions, Data, InodeMeta, Writer, DEFAULT_BLOCK_SIZE};

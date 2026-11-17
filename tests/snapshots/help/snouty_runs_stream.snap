@@ -13,7 +13,7 @@ Each event prints as one line:
       An example or a counterexample of the property, the first time it
       arrives. A non-event property's sample is its value, as JSON.
 
-  verdict <property id> passed|failed
+  verdict <property id> passed|failed <name>
       The property passed or failed. A verdict that repeats the last verdict
       does not print.
 

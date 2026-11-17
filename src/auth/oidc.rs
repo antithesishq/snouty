@@ -151,32 +151,26 @@ async fn fetch_github_actions_oidc_credentials(
         .bearer_auth(actions_id_request_token)
         .send()
         .await
-        .map_err(|err| {
-            use std::error::Error as _;
-            // reqwest's message leaves out its cause, such as a refused
-            // connection.
-            let cause = if err.source().is_some() {
-                format!(": {}", crate::util::root_cause(&err))
-            } else {
-                String::new()
-            };
-            OidcFetchError {
-                status: None,
-                reason: format!(
-                    "the request to the GitHub Actions token endpoint failed: {err}{cause}"
-                ),
-            }
-        })?;
+        .map_err(|err| request_failed(&err))?;
     let status = response.status();
-    let body = crate::api::read_error_body(response).await;
+    let body = if status.is_success() {
+        crate::api::read_capped_body(response)
+            .await
+            .map_err(|err| request_failed(&err))?
+    } else {
+        crate::api::read_error_body(response).await
+    };
     if status.is_success()
         && let Ok(response) = serde_json::from_str::<OidcTokenResponse>(&body)
     {
         return Ok(response.value);
     }
-    // Omit a 2xx JSON body: it can carry a token under another key, and the
-    // job log does not mask it.
-    let message = if status.is_success() && serde_json::from_str::<serde_json::Value>(&body).is_ok()
+    // Omit a 2xx body that is or starts like JSON, also one cut at the cap:
+    // it can carry a token under another key, and the job log does not mask
+    // it.
+    let message = if status.is_success()
+        && (body.trim_start().starts_with(['{', '['])
+            || serde_json::from_str::<serde_json::Value>(&body).is_ok())
     {
         String::new()
     } else {
@@ -199,6 +193,20 @@ async fn fetch_github_actions_oidc_credentials(
         ),
     }
     .into())
+}
+
+/// reqwest's message leaves out its cause, such as a refused connection.
+fn request_failed(err: &reqwest::Error) -> OidcFetchError {
+    use std::error::Error as _;
+    let cause = if err.source().is_some() {
+        format!(": {}", crate::util::root_cause(err))
+    } else {
+        String::new()
+    };
+    OidcFetchError {
+        status: None,
+        reason: format!("the request to the GitHub Actions token endpoint failed: {err}{cause}"),
+    }
 }
 
 /// snouty could not get a GitHub Actions OIDC token. `status` is the
@@ -387,6 +395,40 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().len() < 100 * 1024);
+    }
+
+    #[tokio::test]
+    async fn github_actions_oidc_exchange_error_omits_a_success_json_body_cut_at_the_cap() {
+        let body = serde_json::json!({"token": FAKE_OIDC_TOKEN, "pad": "x".repeat(1024 * 1024)})
+            .to_string();
+        let (url, _requests) = spawn_oidc_token_server("/token", "200 OK", &body);
+        let err = fetch_github_actions_oidc_credentials(&url, FAKE_OIDC_REQUEST_TOKEN)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().ends_with("answered 200 OK without a token"));
+    }
+
+    #[tokio::test]
+    async fn github_actions_oidc_exchange_error_names_a_failed_success_body_read() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/token", listener.local_addr().unwrap());
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            let _ = std::io::Read::read(&mut stream, &mut request);
+            // The connection closes before the promised body arrives.
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{")
+                .unwrap();
+        });
+        let err = fetch_github_actions_oidc_credentials(&url, FAKE_OIDC_REQUEST_TOKEN)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("the request to the GitHub Actions token endpoint failed"),
+            "{err}"
+        );
     }
 
     /// A wiremock Actions token endpoint that gives `token`, and that

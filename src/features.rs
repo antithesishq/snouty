@@ -29,6 +29,8 @@
 //! - An MCP tool: end its row in the `tools!` table of `src/mcp/tools.rs`
 //!   with `unstable: X`. The MCP server leaves the tool out of its tools, of
 //!   `tool_help` and of the `snouty mcp` help while the feature is off.
+//!   Another help page that names the command must put that text in
+//!   `{% if cli %}`; its MCP render fails otherwise.
 //!
 //! When a feature becomes stable, delete its variant and each use that the
 //! build then names. Keep the rest of this module and the `Example` variant,

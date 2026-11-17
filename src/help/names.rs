@@ -82,16 +82,34 @@ impl Name {
                     }
                 }
             }
-            (Name::Command(path), Reader::Mcp) => ToolName::at(path)
-                .map(|tool| tool.to_string())
-                .ok_or_else(|| {
+            (Name::Command(path), Reader::Mcp) => {
+                let tool = ToolName::at(path).ok_or_else(|| {
                     error(format!(
                         "{text}: `snouty {}` has no MCP tool",
                         path.join(" ")
                     ))
-                }),
-            (Name::Example(example), Reader::Mcp) => Ok(example.to_call(text)?.render(indent)),
+                })?;
+                refuse_gated(page, tool, text)?;
+                Ok(tool.to_string())
+            }
+            (Name::Example(example), Reader::Mcp) => {
+                let call = example.to_call(text)?;
+                refuse_gated(page, call.tool(), text)?;
+                Ok(call.render(indent))
+            }
         }
+    }
+}
+
+/// Refuses a name of `tool` on another tool's page when an unstable
+/// feature gates `tool`: the server leaves `tool` out while the feature is
+/// off, so a call of it would fail.
+fn refuse_gated(page: HelpPage, tool: ToolName, text: &str) -> askama::Result<()> {
+    match tool.feature() {
+        Some(feature) if ToolName::at(page.path()) != Some(tool) => Err(error(format!(
+            "{text}: the unstable feature {feature} gates {tool}; put this text in {{% if cli %}}"
+        ))),
+        _ => Ok(()),
     }
 }
 
@@ -144,6 +162,26 @@ mod tests {
         Name::resolve(page, text)
             .and_then(|name| name.write(page, reader, text, None))
             .map_err(|err| err.to_string())
+    }
+
+    /// The tests gate the `version` tool behind `Feature::Example`. Only its
+    /// own page names it over MCP.
+    #[test]
+    fn only_its_own_page_names_a_gated_tool() {
+        for text in ["version", "snouty version"] {
+            assert_eq!(
+                t(HelpPage::Version, Reader::Mcp, text).as_deref(),
+                Ok("version")
+            );
+            assert_eq!(
+                t(HelpPage::Doctor, Reader::Mcp, text),
+                Err(format!(
+                    "{text}: the unstable feature example gates version; put this text in \
+                     {{% if cli %}}"
+                ))
+            );
+            assert_eq!(t(HelpPage::Doctor, Reader::Cli, text).as_deref(), Ok(text));
+        }
     }
 
     #[test]

@@ -117,6 +117,10 @@ impl ParamValue {
 }
 
 impl ToolCall {
+    pub(super) fn tool(&self) -> ToolName {
+        self.tool
+    }
+
     /// The call on one line. With `indent`, the call puts one param on each
     /// line and starts each line after the first with `indent`.
     pub(super) fn render(&self, indent: Option<&str>) -> String {

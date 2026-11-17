@@ -90,16 +90,16 @@ macro_rules! tools {
                 }
             }
 
-            /// Whether the server offers the tool while the `enabled`
-            /// features are on: a tool that a feature gates is left out
-            /// while that feature is off.
-            fn is_offered(self, enabled: &[Feature]) -> bool {
+            /// The unstable feature that gates the tool. The server leaves
+            /// the tool out while the feature is off.
+            pub(crate) fn feature(self) -> Option<Feature> {
                 const GATED: &[(ToolName, Feature)] = &[
                     $($($(#[$gate])* (ToolName::$variant, Feature::$feature),)?)*
                 ];
                 GATED
                     .iter()
-                    .all(|(tool, feature)| *tool != self || enabled.contains(feature))
+                    .find(|(tool, _)| *tool == self)
+                    .map(|(_, feature)| *feature)
             }
 
             /// Args that the tool requires and the command line does not. Mark
@@ -174,6 +174,13 @@ impl ToolName {
             tool.path().len() == path.len()
                 && tool.path().iter().zip(path).all(|(a, b)| *a == b.as_ref())
         })
+    }
+
+    /// Whether the server offers the tool while the `enabled` features are
+    /// on.
+    fn is_offered(self, enabled: &[Feature]) -> bool {
+        self.feature()
+            .is_none_or(|feature| enabled.contains(&feature))
     }
 
     pub(crate) fn spec(self) -> &'static ToolSpec {

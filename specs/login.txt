@@ -144,6 +144,19 @@ snouty login --tenant spec-tenant --registry registry.spec-tenant.antithesis.com
 ! stderr 'Kept registry'
 file ~/.config/snouty/settings.toml 'registry = "registry.spec-tenant.antithesis.com"'
 
+# Login writes the profile that ANTITHESIS_PROFILE names, and --profile
+# overrides it.
+isolate-home profile_flag
+mock-server 200 '{"auth":"antithesis","registry_url":"registry.spec-tenant.antithesis.com"}'
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
+env ANTITHESIS_PROFILE=other
+snouty login --tenant spec-tenant --registry registry.example.com/other
+file ~/.config/snouty/settings.toml '\[profile\.other\]'
+! file ~/.config/snouty/settings.toml '\[profile\.prod\]'
+snouty --profile prod login --tenant spec-tenant --registry registry.example.com/prod
+file ~/.config/snouty/settings.toml '\[profile\.prod\]\nregistry = "registry\.example\.com/prod"'
+env ANTITHESIS_PROFILE=
+
 # A value in the global settings file that snouty cannot use fails the login,
 # also when an environment variable hides it from the other commands. Login
 # saves nothing.

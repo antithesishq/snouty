@@ -23,7 +23,7 @@ use crate::{
     cli::{SimulateArgs, SimulationId},
     compose,
     config::ComposeConfig,
-    container,
+    container::{self, ImageArchive, SaveExit},
     settings::Settings,
 };
 
@@ -610,70 +610,51 @@ async fn workload_inject_disk(
     for reference in &references {
         images.inspect(reference, platform)?;
     }
-    let save = images.save_command(&references, platform)?;
-    inject_disk(Some(save), run_dir, super::images::IMAGE_TIMEOUT).await
+    let saved = images.save(&references, platform)?;
+    inject_disk(Some(saved), run_dir, super::images::IMAGE_TIMEOUT).await
 }
 
-/// Convert the archive that `save` writes to its stdout into the read-only
-/// EROFS drive that the environment imports at boot. Without `save` the
-/// drive holds an empty store.
+/// Convert the archive of a running `save` into the read-only EROFS drive
+/// that the environment imports at boot, as `save` writes it. Without one
+/// the drive holds an empty store.
 ///
 /// `save` is killed when `timeout` passes or the caller is cancelled. Its
-/// stdout then ends, which ends the conversion.
+/// archive then ends, which ends the conversion.
 async fn inject_disk(
-    save: Option<tokio::process::Command>,
+    saved: Option<(ImageArchive, SaveExit)>,
     run_dir: &Path,
     timeout: Duration,
 ) -> Result<PathBuf> {
     let disk = run_dir.join("images.erofs");
     let output = std::fs::File::create(&disk)?;
-    let converted = match save {
+    let converted = match saved {
         None => {
             tokio::task::spawn_blocking(move || {
                 crate::containers_storage::convert(Vec::<std::io::Empty>::new(), output)
             })
             .await?
         }
-        Some(mut save) => {
-            let mut child = save
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .kill_on_drop(true)
-                .spawn()
-                .wrap_err("cannot export workload images")?;
-            let stdout = std::fs::File::from(
-                child
-                    .stdout
-                    .take()
-                    .expect("stdout is piped")
-                    .into_owned_fd()?,
-            );
-            let mut stderr = child.stderr.take().expect("stderr is piped");
+        Some((archive, exit)) => {
             let converted = tokio::task::spawn_blocking(move || {
-                crate::containers_storage::convert(vec![stdout], output)
+                crate::containers_storage::convert(vec![archive], output)
             });
-            let exported = async {
-                let mut text = String::new();
-                let (converted, _, status) = tokio::join!(
-                    converted,
-                    tokio::io::AsyncReadExt::read_to_string(&mut stderr, &mut text),
-                    child.wait(),
-                );
-                (converted, text, status)
-            };
-            let Ok((converted, stderr, status)) = tokio::time::timeout(timeout, exported).await
+            let Ok((converted, saved)) =
+                tokio::time::timeout(timeout, async { tokio::join!(converted, exit.wait()) }).await
             else {
                 bail!(
                     "exporting workload images took longer than {}s",
                     timeout.as_secs()
                 );
             };
-            let failed = || eyre!("cannot export workload images: {}", stderr.trim());
-            match (converted?, status?.success()) {
-                (Ok(converted), true) => Ok(converted),
-                (Ok(_), false) => Err(failed()),
-                (Err(error), true) => Err(error),
-                (Err(error), false) => Err(error.wrap_err(failed())),
+            // A failed save ends the archive early, so its error explains a
+            // failed conversion.
+            match (converted?, saved) {
+                (Ok(converted), Ok(())) => Ok(converted),
+                (Ok(_), Err(error)) => Err(error.wrap_err("cannot export workload images")),
+                (Err(error), Ok(())) => Err(error),
+                (Err(error), Err(saved)) => {
+                    Err(error.wrap_err(format!("cannot export workload images: {saved:#}")))
+                }
             }
         }
     }
@@ -956,14 +937,21 @@ mod tests {
         assert!(format!("{error:?}").contains("XDG_CACHE_HOME"), "{error:?}");
     }
 
-    /// A `save` stand-in that runs `script` after recording its pid.
-    fn fake_save(directory: &Path, script: &str) -> tokio::process::Command {
-        let mut command = tokio::process::Command::new("sh");
-        command.arg("-c").arg(format!(
-            "echo $$ > '{}'; {script}",
-            directory.join("pid").display()
-        ));
-        command
+    /// A `save` that runs `script` after recording its pid, from an engine
+    /// whose `save` is that script.
+    fn fake_save(directory: &Path, script: &str) -> (ImageArchive, SaveExit) {
+        let engine = directory.join("engine");
+        std::fs::write(
+            &engine,
+            format!(
+                "#!/bin/sh\necho $$ > '{}'\n{script}\n",
+                directory.join("pid").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = crate::container::PodmanRuntime::new(engine.to_string_lossy());
+        container::save_images(&runtime, &["workload:test"], None).unwrap()
     }
 
     /// Wait until the fake save is dead: gone, or a zombie left to reap.

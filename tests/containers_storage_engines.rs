@@ -9,7 +9,7 @@ use std::process::Stdio;
 
 use std::path::Path;
 
-use snouty::container::ContainerRuntime;
+use snouty::container::{ContainerRuntime, save_images};
 use snouty::containers_storage::{Converted, convert};
 use snouty::erofs_builder::Reader;
 
@@ -100,30 +100,22 @@ fn import(runtime: &dyn ContainerRuntime, layer: &[u8], tag: &str) {
     );
 }
 
-/// Pipe `save` of `tags` into the converter, as simulate does.
-fn save_and_convert(
+/// Convert `save` of `tags` as it streams, as simulate does.
+async fn save_and_convert(
     runtime: &dyn ContainerRuntime,
     tags: &[&str],
     path: &Path,
 ) -> color_eyre::Result<Converted> {
-    let mut save = runtime
-        .image_save_command(tags, None)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let converted = convert(
-        vec![save.stdout.take().unwrap()],
-        std::fs::File::create(path).unwrap(),
-    );
+    let (archive, exit) = save_images(runtime, tags, None).unwrap();
+    let output = std::fs::File::create(path).unwrap();
+    let converted = tokio::task::spawn_blocking(move || convert(vec![archive], output));
+    let (converted, saved) = tokio::join!(converted, exit.wait());
+    let converted = converted.unwrap();
     // A failed conversion stops reading, which can fail save in turn, so
     // report both.
-    let output = save.wait_with_output().unwrap();
     assert!(
-        output.status.success(),
-        "{} save: {}\nconversion: {:?}",
-        runtime.name(),
-        String::from_utf8_lossy(&output.stderr).trim(),
+        saved.is_ok(),
+        "{saved:?}\nconversion: {:?}",
         converted.as_ref().err()
     );
     converted
@@ -138,7 +130,7 @@ async fn engine_save_streams_into_the_store() {
         import(runtime.as_ref(), &layer, &tag);
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("images.erofs");
-        let converted = save_and_convert(runtime.as_ref(), &[&tag], &path);
+        let converted = save_and_convert(runtime.as_ref(), &[&tag], &path).await;
         snouty::testutils::remove_test_images(&name, &[&tag]);
         assert_eq!(
             converted.unwrap(),
@@ -245,7 +237,7 @@ async fn engine_layer_on_two_parents_is_placed_twice() {
             .collect();
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("images.erofs");
-        let converted = save_and_convert(runtime.as_ref(), &tops, &path);
+        let converted = save_and_convert(runtime.as_ref(), &tops, &path).await;
         let all: Vec<&str> = tags.iter().map(String::as_str).collect();
         snouty::testutils::remove_test_images(&name, &all);
         assert_eq!(

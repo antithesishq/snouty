@@ -1,12 +1,10 @@
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::time::Duration;
 
 use color_eyre::eyre::{Context, Result, bail};
 
-use crate::container::{Architecture, ContainerRuntime};
+use crate::container::{Architecture, ContainerRuntime, ImageArchive, SaveExit};
 use crate::digest::Sha256Digest;
-use crate::process::output_async;
 use crate::runs::ReadyDisplay;
 use crate::simulate::SimulatePlatform;
 
@@ -70,29 +68,24 @@ impl Images {
     /// Pull `reference` with the engine's own registry credentials. For the
     /// Antithesis registry, those come from `snouty docker-credential`.
     async fn pull(&self, reference: &str, platform: SimulatePlatform) -> Result<()> {
-        let mut pull: tokio::process::Command = self
-            .runtime
-            .image_pull_command(reference, Some(&Architecture::from(platform)))
-            .into();
-        pull.stdin(Stdio::null());
         let mut display = ReadyDisplay::new("pulling the simulation environment image");
-        let output = output_async(pull, IMAGE_TIMEOUT);
-        tokio::pin!(output);
+        let platform = Architecture::from(platform);
+        let pull = crate::container::pull_image(
+            self.runtime.as_ref(),
+            reference,
+            Some(&platform),
+            IMAGE_TIMEOUT,
+        );
+        tokio::pin!(pull);
         let mut tick = tokio::time::interval(Duration::from_secs(1));
-        let output = loop {
+        let pulled = loop {
             tokio::select! {
-                output = &mut output => break output?,
+                pulled = &mut pull => break pulled,
                 _ = tick.tick() => display.show(),
             }
         };
         display.clear();
-        if !output.status.success() {
-            bail!(
-                "cannot pull simulation environment image {reference}: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        Ok(())
+        pulled.wrap_err_with(|| format!("cannot pull simulation environment image {reference}"))
     }
 
     async fn extract_iso(
@@ -127,22 +120,21 @@ impl Images {
         Ok(iso)
     }
 
-    /// The command that writes `references` to its stdout as one archive.
-    pub fn save_command(
+    /// Start `save` of the workload images `references` as one archive.
+    pub fn save(
         &self,
         references: &[String],
         platform: SimulatePlatform,
-    ) -> Result<tokio::process::Command> {
+    ) -> Result<(ImageArchive, SaveExit)> {
         if references.is_empty() {
             bail!("no workload images to export");
         }
         let references: Vec<&str> = references.iter().map(String::as_str).collect();
-        let mut command: tokio::process::Command = self
-            .runtime
-            .image_save_command(&references, Some(&Architecture::from(platform)))
-            .into();
-        command.stdin(Stdio::null());
-        Ok(command)
+        crate::container::save_images(
+            self.runtime.as_ref(),
+            &references,
+            Some(&Architecture::from(platform)),
+        )
     }
 }
 
@@ -251,8 +243,8 @@ esac
     async fn podman_exports_unique_image_references_as_a_multi_image_archive() {
         let directory = tempfile::tempdir().unwrap();
         let images = engine(directory.path());
-        let status = images
-            .save_command(
+        let (_, exit) = images
+            .save(
                 &[
                     "example.test/app:one".into(),
                     "example.test/app:one".into(),
@@ -260,11 +252,8 @@ esac
                 ],
                 SimulatePlatform::Amd64,
             )
-            .unwrap()
-            .status()
-            .await
             .unwrap();
-        assert!(status.success());
+        exit.wait().await.unwrap();
         let args = std::fs::read_to_string(directory.path().join("save-args")).unwrap();
         assert!(args.lines().any(|arg| arg == "--multi-image-archive"));
         assert!(!args.lines().any(|arg| arg == "--output"));
@@ -275,6 +264,6 @@ esac
             1
         );
         assert!(args.lines().any(|arg| arg == "example.test/app:two"));
-        assert!(images.save_command(&[], SimulatePlatform::Amd64).is_err());
+        assert!(images.save(&[], SimulatePlatform::Amd64).is_err());
     }
 }

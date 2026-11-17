@@ -191,33 +191,6 @@ pub trait ContainerRuntime: Send + Sync {
         }
     }
 
-    /// `pull` of `reference` with the engine's own registry credentials, for
-    /// `platform` if given. Both engines take a platform here.
-    fn image_pull_command(&self, reference: &str, platform: Option<&Architecture>) -> Command {
-        let mut command = self.command(&["pull"]);
-        if let Some(platform) = platform {
-            command.args(["--platform", &platform.linux_platform()]);
-        }
-        command.arg(reference);
-        command
-    }
-
-    /// `save` of `references` as one archive on stdout, each named once, for
-    /// `platform` if given. Docker writes an OCI-layout archive, and Podman a
-    /// Docker archive that keeps every image.
-    fn image_save_command(&self, references: &[&str], platform: Option<&Architecture>) -> Command {
-        let references: std::collections::BTreeSet<_> = references.iter().collect();
-        let mut command = self.command(&["save"]);
-        command.args(self.image_platform_args(platform));
-        if self.engine_kind() == ContainerEngine::Podman {
-            // Without --multi-image-archive Podman takes further references as
-            // tags of the first image.
-            command.args(["--format", "docker-archive", "--multi-image-archive"]);
-        }
-        command.args(references);
-        command
-    }
-
     /// The `DOCKER_HOST` value `docker-compose` should use to drive this
     /// runtime's container engine, or `None` to use docker-compose's default
     /// (the Docker daemon). Returns `Err` when the engine's API socket is
@@ -944,6 +917,107 @@ impl ContainerRuntime for DockerRuntime {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let digest = parse_docker_push_digest(&stdout)?;
         Ok(format!("{image_ref}@{digest}"))
+    }
+}
+
+/// Pull `reference` with the engine's own registry credentials, for
+/// `platform` if given. Both engines take a platform for `pull`.
+pub async fn pull_image(
+    runtime: &dyn ContainerRuntime,
+    reference: &str,
+    platform: Option<&Architecture>,
+    timeout: Duration,
+) -> Result<()> {
+    let mut pull = runtime.tokio_command(&["pull"]);
+    if let Some(platform) = platform {
+        pull.args(["--platform", &platform.linux_platform()]);
+    }
+    pull.arg(reference).stdin(std::process::Stdio::null());
+    let output = output_async(pull, timeout).await?;
+    if !output.status.success() {
+        bail!(
+            "'{} pull {reference}' failed: {}",
+            runtime.name(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// Start `save` of `references` as one archive, each named once, for
+/// `platform` if the engine takes one. Docker writes an OCI-layout archive,
+/// and Podman a Docker archive that keeps every image.
+///
+/// Read the [`ImageArchive`] while [`SaveExit::wait`] runs: `save` stops
+/// when the pipe of its stderr fills. Dropping the [`SaveExit`] kills `save`.
+pub fn save_images(
+    runtime: &dyn ContainerRuntime,
+    references: &[&str],
+    platform: Option<&Architecture>,
+) -> Result<(ImageArchive, SaveExit)> {
+    let references: std::collections::BTreeSet<_> = references.iter().collect();
+    let mut save = runtime.tokio_command(&["save"]);
+    save.args(runtime.image_platform_args(platform));
+    if runtime.engine_kind() == ContainerEngine::Podman {
+        // Without --multi-image-archive Podman takes further references as
+        // tags of the first image.
+        save.args(["--format", "docker-archive", "--multi-image-archive"]);
+    }
+    save.args(references)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = save
+        .spawn()
+        .wrap_err_with(|| format!("failed to run '{} save'", runtime.name()))?;
+    let archive = std::fs::File::from(
+        child
+            .stdout
+            .take()
+            .expect("stdout is piped")
+            .into_owned_fd()?,
+    );
+    let stderr = child.stderr.take().expect("stderr is piped");
+    Ok((
+        ImageArchive(archive),
+        SaveExit {
+            runtime: runtime.name().to_owned(),
+            child,
+            stderr,
+        },
+    ))
+}
+
+/// The archive that [`save_images`] writes, read as it is written.
+pub struct ImageArchive(std::fs::File);
+
+impl std::io::Read for ImageArchive {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+
+/// The `save` process of [`save_images`].
+pub struct SaveExit {
+    runtime: String,
+    child: tokio::process::Child,
+    stderr: tokio::process::ChildStderr,
+}
+
+impl SaveExit {
+    /// Wait for `save` to exit, and fail with its stderr when it failed.
+    pub async fn wait(mut self) -> Result<()> {
+        let mut stderr = String::new();
+        let (read, status) = tokio::join!(
+            tokio::io::AsyncReadExt::read_to_string(&mut self.stderr, &mut stderr),
+            self.child.wait(),
+        );
+        read?;
+        if !status?.success() {
+            bail!("'{} save' failed: {}", self.runtime, stderr.trim());
+        }
+        Ok(())
     }
 }
 

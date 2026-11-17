@@ -336,6 +336,14 @@ pub enum Commands {
     /// Serve snouty's run, docs, doctor and settings commands to AI agents over MCP
     #[command(arg = json(JsonShape::None))]
     Mcp(McpArgs),
+
+    /// Stand in for a gated command in the tests
+    #[cfg(test)]
+    #[command(
+        hide = !crate::features::is_enabled(crate::features::Feature::Example),
+        arg = json(JsonShape::Object),
+    )]
+    Example,
 }
 
 /// What a command prints with `--json`.

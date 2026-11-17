@@ -12,23 +12,50 @@
 //! go away, in any release. Nothing behind this gate is covered by whatever
 //! stability the rest of the CLI has.
 //!
-//! A gated command or flag needs a [`Feature`] variant, a clap `hide`
-//! attribute, and a check before dispatch: a hidden subcommand or flag is
-//! still callable, and `clap_complete` still lists it.
+//! # Gating
+//!
+//! The gate stays in the code when no feature uses it. To gate something, add
+//! a [`Feature`] variant whose doc names what it gates, then:
+//!
+//! - A command: put `hide = !features::is_enabled(Feature::X)` in its
+//!   `#[command(...)]`, and make [`require`] the first call of its dispatch
+//!   arm: `features::require(Feature::X, "snouty runs x")?;`. `hide` keeps
+//!   the command out of the help, and [`require`] refuses it, because a
+//!   hidden command is still callable.
+//! - A flag: put the same `hide` in its `#[arg(...)]`, and call [`require`]
+//!   in the dispatch arm when the flag is set:
+//!   `features::require(Feature::X, "snouty runs x --y")?;`. The MCP tool of
+//!   the command leaves out a hidden flag.
+//! - An MCP tool: end its row in the `tools!` table of `src/mcp/tools.rs`
+//!   with `unstable: X`, and gate its command. The MCP server leaves the tool
+//!   out of its tools, of `tool_help` and of the `snouty mcp` help while the
+//!   feature is off.
+//!
+//! Name a gated command or flag only on the help page of its own command
+//! (see `help/AGENTS.md`).
+//!
+//! When a feature becomes stable, delete its variant and each use that the
+//! build then names. Keep the rest of this module and the test-only
+//! `Example` variant, command, help page and tool, which test the gate.
+//!
+//! # Why an environment variable
 //!
 //! Deliberately an environment variable and not a setting. The gate has to be
-//! known before the command line is parsed, because it decides which
-//! subcommands the parser has — and a setting cannot be read that early
-//! without first parsing `--settings`/`--profile`, which would mean parsing the
-//! command line twice. An environment variable has no such dependency.
+//! known before the command line is parsed, because clap reads `hide` when it
+//! builds the parser — and a setting cannot be read that early without first
+//! parsing `--settings`/`--profile`, which would mean parsing the command
+//! line twice. An environment variable has no such dependency.
 
 use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
 
 use clap::ValueEnum;
+use color_eyre::Section;
+use color_eyre::eyre::Result;
 use log::debug;
 
 use crate::env;
+use crate::error::user_error;
 
 /// The environment variable that enables unstable features, as a
 /// comma-separated list of ids.
@@ -59,22 +86,6 @@ impl Display for Feature {
     }
 }
 
-/// The features `SNOUTY_UNSTABLE_FEATURES` enables, in the order listed.
-/// Empty when the variable is unset or names no feature this build knows.
-///
-/// Drops an unknown id: every snouty on the machine shares one exported
-/// variable, which can hold an id from a newer build or a retired one.
-///
-/// A non-Unicode value is treated as unset rather than failing the command:
-/// this is read before the parse, where there is no good way to report an
-/// error, and the cost of ignoring it is only that a feature stays off.
-pub fn enabled() -> Vec<Feature> {
-    match env::var(UNSTABLE_FEATURES_VAR_NAME) {
-        Ok(Some(value)) => parse_features_list(&value),
-        _ => Vec::new(),
-    }
-}
-
 /// Parses a comma-separated list of ids into features, in order, and drops
 /// blank entries and unknown ids. Separate from [`enabled`] so tests need not
 /// set process-global state.
@@ -93,6 +104,42 @@ fn parse_features_list(value: &str) -> Vec<Feature> {
         .collect()
 }
 
+/// The features `SNOUTY_UNSTABLE_FEATURES` enables, in the order listed.
+/// Empty when the variable is unset or names no feature this build knows.
+///
+/// Drops an unknown id: every snouty on the machine shares one exported
+/// variable, which can hold an id from a newer build or a retired one.
+///
+/// A non-Unicode value is treated as unset rather than failing the command:
+/// this is read before the parse, where there is no good way to report an
+/// error, and the cost of ignoring it is only that a feature stays off.
+pub fn enabled() -> Vec<Feature> {
+    match env::var(UNSTABLE_FEATURES_VAR_NAME) {
+        Ok(Some(value)) => parse_features_list(&value),
+        _ => Vec::new(),
+    }
+}
+
+/// Whether `feature` is enabled. Cheap enough for a clap `hide` attribute.
+pub fn is_enabled(feature: Feature) -> bool {
+    enabled().contains(&feature)
+}
+
+/// Refuses the gated `command` while `feature` is off. `command` is what the
+/// user typed to use it, such as `snouty runs x` or `snouty runs x --y`.
+pub fn require(feature: Feature, command: &str) -> Result<()> {
+    if is_enabled(feature) {
+        return Ok(());
+    }
+    Err(user_error(format!(
+        "`{command}` is an unstable feature and is not enabled"
+    ))
+    .note(format!(
+        "enable it by setting {UNSTABLE_FEATURES_VAR_NAME}={feature}"
+    ))
+    .note("an unstable feature can change or go away in any release"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,5 +153,21 @@ mod tests {
         assert!(parse_features_list("from-the-future").is_empty());
         assert!(parse_features_list("").is_empty());
         assert!(parse_features_list(" , ").is_empty());
+    }
+
+    /// The tests do not set `SNOUTY_UNSTABLE_FEATURES=example`.
+    #[test]
+    fn a_gated_command_is_refused_while_its_feature_is_off() {
+        let report = require(Feature::Example, "snouty runs x").unwrap_err();
+        let rendered = crate::error::render_report(&report);
+        let rendered = crate::event_render::strip_ansi(&rendered);
+        assert!(
+            rendered.starts_with(
+                "Error: `snouty runs x` is an unstable feature and is not enabled\n\n\
+                 Note: enable it by setting SNOUTY_UNSTABLE_FEATURES=example\n\
+                 Note: an unstable feature can change or go away in any release\n"
+            ),
+            "{rendered}"
+        );
     }
 }

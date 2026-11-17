@@ -1,0 +1,4 @@
+Stand in for a gated command in the tests. Only the tests have this page.
+
+Examples:
+  {{ t("snouty example")? }}

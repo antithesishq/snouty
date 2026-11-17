@@ -28,7 +28,9 @@ pub use tools::ToolName;
 pub(crate) use tools::{ArgRole, ParamKind, ValueType, summaries};
 
 pub(crate) use call::command_args;
-use tools::{TOOL_HELP, tool_help, tool_help_tool};
+use tools::{TOOL_HELP, find, offered, tool_help, tool_help_tool};
+
+use crate::features::{self, Feature};
 
 /// The server sets this to its own PID on each tool call's child. See
 /// [`exit_with_server`].
@@ -83,6 +85,8 @@ struct Snouty {
     globals: Arc<Globals>,
     exe: Arc<PathBuf>,
     running: Arc<Semaphore>,
+    /// The unstable features that are on, which decide the tools offered.
+    features: Arc<[Feature]>,
 }
 
 impl Snouty {
@@ -92,6 +96,7 @@ impl Snouty {
             globals: Arc::new(globals),
             exe: Arc::new(own_exe()?),
             running,
+            features: features::enabled().into(),
         })
     }
 
@@ -138,8 +143,10 @@ impl ServerHandler for Snouty {
         _request: Option<PaginatedRequestParams>,
         ctx: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + Send + '_ {
-        let tools = ToolName::ALL.iter().map(|name| name.spec().tool.clone());
-        let result = ListToolsResult::with_all_items(tools.chain([tool_help_tool()]).collect());
+        let tools = offered(&self.features).map(|name| name.spec().tool.clone());
+        let result = ListToolsResult::with_all_items(
+            tools.chain([tool_help_tool(&self.features)]).collect(),
+        );
         // Protocol 2026-07-28 requires cache hints on a list result, and
         // `with_all_items` leaves them out. These are the values that rmcp's
         // own `#[tool_handler]` list_tools sends.
@@ -155,9 +162,9 @@ impl ServerHandler for Snouty {
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
         if name == TOOL_HELP {
-            return Some(tool_help_tool());
+            return Some(tool_help_tool(&self.features));
         }
-        let name: ToolName = name.parse().ok()?;
+        let name = find(name, &self.features).ok()?;
         Some(name.spec().tool.clone())
     }
 
@@ -167,16 +174,15 @@ impl ServerHandler for Snouty {
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         if request.name == TOOL_HELP {
-            return Ok(match tool_help(request.arguments.unwrap_or_default()) {
+            let help = tool_help(request.arguments.unwrap_or_default(), &self.features);
+            return Ok(match help {
                 Ok(help) => text_result(vec![help], false),
                 Err(e) => text_result(vec![format!("invalid params: {e}")], true),
             });
         }
-        let Ok(name) = request.name.parse::<ToolName>() else {
-            return Err(ErrorData::invalid_params(
-                format!("unknown tool: {}", request.name),
-                None,
-            ));
+        let name = match find(&request.name, &self.features) {
+            Ok(name) => name,
+            Err(e) => return Err(ErrorData::invalid_params(e.to_string(), None)),
         };
         let argv = match command_args(name, &self.globals, request.arguments.unwrap_or_default()) {
             Ok(argv) => argv,

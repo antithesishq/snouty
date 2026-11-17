@@ -2,11 +2,9 @@ Show which instrumented code of a run it reached, as a tree of modules, files, c
 
 `runs coverage` is an unstable feature: its flags and output can change in any release. Enable it with `SNOUTY_UNSTABLE_FEATURES=coverage`.
 
-Each line starts with COVERAGE: the share of the instrumented locations under it that the run reached, then the reached and total counts in SI notation, such as `66.7%  2/3` or `28.7%  1.1k/4k`. 0% is yellow, and 100% green. Then comes the node, under its parent: a module with its ID, name and language; its files, sorted by path; and with {{ t("--rollup")? }} `function` or `none`, the classes or types of each file, then their functions, both in source order.
+Each line starts with the share of the locations under it that the run reached, and the reached and total counts: `66.7%  2/3`.
 
-A class is the API's class of a function: a Java or C# class, a Go method's receiver type or a Python class. For native code, it is the type of a demangled `<Type>::method`, and a `<Type as Trait>::method` shows as `Trait::method`. Free functions come first, under `(no class)`, and a file of free functions only has no class level.
-
-{{ t("--rollup")? }} sets the deepest level: `file` (the default), `function`, or `none` for every location. With `none`, a table of the function's locations hangs under each function, in source order: LOCATION, the line and column where it starts, then INPUT_HASH and VTIME, the moment where the run first reached it. Pass them as the input_hash and vtime of `{{ t("runs logs")? }}` to read the logs up to that moment. A reached location is plain, an unreached one dim, and an empty cell is `-`. Several locations can start at one place, such as the copies of a generic function, or the two outcomes of a branch; each is its own row.
+{{ t("--rollup")? }} sets the deepest level: `file` (the default), `function`, or `none` for every location. With `none`, a table of the function's locations hangs under each function, in source order: LOCATION, the line and column where it starts, then INPUT_HASH and VTIME, the moment where the run first reached it. A reached location is plain, an unreached one dim, and an empty cell is `-`. Several locations can start at one place, such as the copies of a generic function, or the two outcomes of a branch; each is its own row.
 
 Use {{ t("--module")? }} to show only a module, by the ID that `{{ t("runs modules")? }}` lists.{% if cli %} Give it more than once for more modules.{% else %} List more IDs for more modules.{% endif %} The server reads only those modules.{% if cli %} To narrow further, such as to a file, class or function, filter the {{ t("--json")? }} output, for example with `jq`.{% endif %}
 

@@ -82,31 +82,38 @@ fn session_root() -> Result<PathBuf> {
         .ok_or_eyre("cannot determine simulation state directory; set XDG_CACHE_HOME or HOME")?;
     let root = base.join("simulate");
     std::fs::create_dir_all(base.parent().expect("cache directory has a parent"))?;
-    for directory in [base.clone(), root.clone()] {
-        if !directory.exists() {
-            let mut builder = std::fs::DirBuilder::new();
-            builder.mode(0o700);
-            if let Err(error) = builder.create(&directory)
-                && error.kind() != std::io::ErrorKind::AlreadyExists
-            {
-                return Err(error.into());
-            }
-        }
-        // Other commands share the cache directory and create it with the
-        // umask. Each run directory is private, so its parents only need to
-        // be safe from other users.
-        let metadata = std::fs::symlink_metadata(&directory)?;
-        if !metadata.is_dir()
-            || metadata.uid() != nix::unistd::geteuid().as_raw()
-            || metadata.permissions().mode() & 0o022 != 0
-        {
-            bail!(
-                "simulation state directory must be owned by you and not writable by other users: {}",
-                directory.display()
-            );
-        }
-    }
+    own_directory(&base)?;
+    own_directory(&root)?;
     Ok(root)
+}
+
+/// Make `directory` a directory that only the user can write to: create it
+/// private, or take one that the user owns and remove write access for the
+/// group and others. Other commands create the shared cache directory with
+/// the umask, which leaves it group-writable under umask 002. Each run
+/// directory is private, so its parents only need to be safe from other
+/// users.
+fn own_directory(directory: &Path) -> Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.mode(0o700);
+    if let Err(error) = builder.create(directory)
+        && error.kind() != std::io::ErrorKind::AlreadyExists
+    {
+        return Err(error.into());
+    }
+    let metadata = std::fs::symlink_metadata(directory)?;
+    if !metadata.is_dir() || metadata.uid() != nix::unistd::geteuid().as_raw() {
+        return Err(crate::error::user_error(format!(
+            "simulation state directory {} is not a directory that you own",
+            directory.display()
+        ))
+        .suggestion("remove it, or set XDG_CACHE_HOME to a directory that you own"));
+    }
+    let mode = metadata.permissions().mode() & 0o7777;
+    if mode & 0o022 != 0 {
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(mode & !0o022))?;
+    }
+    Ok(())
 }
 
 fn interactive_terminal(option: &str) -> Result<()> {
@@ -918,6 +925,25 @@ mod tests {
             Ok(Environment::Image(image))
                 if image == format!("registry.example.com/team/antithesis-environment:{ENVIRONMENT_VERSION}")
         ));
+    }
+
+    #[test]
+    fn own_directory_creates_private_and_tightens_shared_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        let created = root.path().join("created");
+        own_directory(&created).unwrap();
+        assert_eq!(mode(&created), 0o700);
+        // As `snouty docs` leaves the cache directory under umask 002.
+        let shared = root.path().join("shared");
+        std::fs::create_dir(&shared).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o775)).unwrap();
+        own_directory(&shared).unwrap();
+        assert_eq!(mode(&shared), 0o755);
+        let file = root.path().join("file");
+        std::fs::write(&file, "").unwrap();
+        let error = own_directory(&file).unwrap_err();
+        assert!(format!("{error:?}").contains("XDG_CACHE_HOME"), "{error:?}");
     }
 
     /// A `save` stand-in that runs `script` after recording its pid.

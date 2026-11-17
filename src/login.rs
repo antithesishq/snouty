@@ -28,9 +28,9 @@ use crate::{
         normalize_base_url,
     },
     auth::{
-        AuthenticationInfo, CredentialSource, CredentialStore, OIDC_REJECTED_NEXT_STEP,
-        PersistableCredentials, in_github_actions, is_blank_api_key, no_credentials_suggestion,
-        persist,
+        AuthenticationInfo, CredentialSource, CredentialStore, PersistableCredentials,
+        in_github_actions, is_blank_api_key, login_command, no_credentials_suggestion, persist,
+        rejected_credential_next_step,
     },
     env,
     error::{api_error_status, rejects_credential, user_error},
@@ -455,8 +455,8 @@ impl<'a> TenantUrl<'a> {
 /// that the credential works. `None` means that the tenant does not serve the
 /// endpoint, which tenants before it answer with 404. The tenant
 /// authenticates a request before it routes it, so a 404 also means that it
-/// accepted the credential. `interactive` picks the next step that an error
-/// suggests.
+/// accepted the credential. `interactive` picks the next step for a
+/// credential that login itself can replace.
 async fn fetch_registry(
     settings: &Settings,
     tenant_url: &TenantUrl<'_>,
@@ -466,40 +466,52 @@ async fn fetch_registry(
     verbose: bool,
 ) -> Result<Option<RegistryResponse>> {
     let tenant = tenant_url.tenant;
-    // A read error of a stored credential passes through as it is.
-    let ambient = match new_credentials {
-        Some(_) => None,
-        None => AuthenticationInfo::find_ambient(profile)?,
+    // Login can replace only a credential that it stores, and only at a
+    // terminal.
+    let login_again = || {
+        let login = login_command(profile);
+        if interactive {
+            format!("run {login} again, and enter an API key or sign in with single sign-on")
+        } else if in_github_actions() {
+            no_credentials_suggestion(true).to_owned()
+        } else {
+            format!("set ANTITHESIS_API_KEY, or run {login} in a terminal")
+        }
     };
-    let next_step = match ambient.as_ref().map(|found| (found.value(), found.tag())) {
-        // Every later command reads the environment first, so a credential
-        // at the prompt would not replace one there. A GitHub Actions OIDC
-        // token is also tagged Environment, but ANTITHESIS_API_KEY does not
-        // hold it.
-        Some((AuthenticationInfo::ApiKey { .. }, CredentialSource::Environment { .. })) => {
-            "set `ANTITHESIS_API_KEY` to a valid API key"
-        }
-        Some((AuthenticationInfo::GithubActionsOidc(_), _)) => OIDC_REJECTED_NEXT_STEP,
-        Some((AuthenticationInfo::Password { .. }, CredentialSource::Environment { .. })) => {
-            "unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD"
-        }
-        _ if interactive => {
-            "run `snouty login` again, and enter an API key or sign in with single sign-on"
-        }
-        _ if in_github_actions() => no_credentials_suggestion(true),
-        _ => "set ANTITHESIS_API_KEY, or run `snouty login` in a terminal",
+    let nothing_to_check = || {
+        user_error(format!(
+            "login needs an API key or a single sign-on to check with `{tenant}`; nothing was saved"
+        ))
     };
-    let authentication = match (new_credentials, ambient) {
-        (Some(credentials), _) => credentials.to_unrefreshable_authentication_info(),
-        (None, Some(found)) if !matches!(found.value(), AuthenticationInfo::Password { .. }) => {
-            found.untag()
-        }
-        (None, _) => {
-            return Err(user_error(format!(
-                "login needs an API key or a single sign-on to check with `{tenant}`; nothing was saved"
-            ))
-            .suggestion(next_step));
-        }
+    // The next step for a rejected credential from the environment. `None`
+    // for a credential that login can replace: then it is `login_again`.
+    let (authentication, env_next_step) = match new_credentials {
+        Some(credentials) => (credentials.to_unrefreshable_authentication_info(), None),
+        // A read error of a stored credential passes through as it is.
+        None => match AuthenticationInfo::find_ambient(profile)? {
+            None => return Err(nothing_to_check().suggestion(login_again())),
+            // Login does not check with a username and password.
+            Some(found) if matches!(found.value(), AuthenticationInfo::Password { .. }) => {
+                let next_step = match found.tag() {
+                    // Every later command reads the environment first, so a
+                    // credential at the prompt would not replace one there.
+                    CredentialSource::Environment { .. } => {
+                        "unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD".to_owned()
+                    }
+                    CredentialSource::Stored(_) => login_again(),
+                };
+                return Err(nothing_to_check().suggestion(next_step));
+            }
+            Some(found) => {
+                let next_step = match found.tag() {
+                    CredentialSource::Environment { .. } => {
+                        Some(rejected_credential_next_step(&found, profile))
+                    }
+                    CredentialSource::Stored(_) => None,
+                };
+                (found.untag(), next_step)
+            }
+        },
     };
     // A cached answer would not check the credential.
     let api = AntithesisApi::build(settings, authentication, verbose, ResponseCache::Disabled)?;
@@ -522,7 +534,7 @@ async fn fetch_registry(
             Some(status) if rejects_credential(status) => Err(user_error(format!(
                 "`{tenant}` did not accept the credential; nothing was saved"
             ))
-            .suggestion(next_step)),
+            .suggestion(env_next_step.unwrap_or_else(login_again))),
             _ => Err(tenant_url.unreachable(&err).unwrap_or(err)),
         },
     }

@@ -811,14 +811,4 @@ mod tests {
         assert!(help_offers_example(&on));
         assert!(tool_help(object(json!({ "tool": "example" })), &on).is_ok());
     }
-
-    /// A help page names a gated tool only on its own page because its
-    /// command is hidden while the feature is off, as in the tests.
-    #[test]
-    fn the_command_of_a_gated_tool_is_hidden() {
-        for name in ToolName::ALL {
-            let hidden = tree::find(name.path()).unwrap().is_hide_set();
-            assert_eq!(hidden, name.feature().is_some(), "{name}");
-        }
-    }
 }

@@ -52,9 +52,10 @@ command, named for its path below `snouty` with `_` between the parts:
   any value. A command with flags but not its required args, such as
   `runs properties --detail`, names the command, and over MCP its flags drop
   out. Over MCP, `t()` refuses a command with no tool, an arg that the tool
-  leaves out, and a shell pipeline or redirect. For both readers, `t()`
-  refuses a hidden command or flag, such as one that an unstable feature
-  gates, on any page but its command's own.
+  leaves out, and a shell pipeline or redirect.
+- Name a command or flag that an unstable feature gates only on the page of
+  its own command. Another page must not name it, for either reader: most
+  readers cannot use it, and its MCP tool is not offered.
 - A command has two output modes: text output, the default, and JSON, with
   `--json`. Do not call the default "human output".
 - An MCP tool call returns the command's text output, with `--detail` when

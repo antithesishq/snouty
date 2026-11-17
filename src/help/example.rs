@@ -48,20 +48,6 @@ pub(super) fn parse(text: &str) -> askama::Result<Example> {
 }
 
 impl Example {
-    /// The path below `snouty` of the command.
-    pub(super) fn path(&self) -> &[String] {
-        &self.path
-    }
-
-    /// The args of the command that the example sets.
-    pub(super) fn flags(&self) -> Vec<&'static Arg> {
-        tree::find(&self.path)
-            .expect("the example's command exists")
-            .get_arguments()
-            .filter(|arg| from_command_line(&self.matches, arg.get_id().as_str()).is_some())
-            .collect()
-    }
-
     /// The call of the tool whose command the example runs.
     pub(super) fn to_call(&self, text: &str) -> askama::Result<ToolCall> {
         let tool = ToolName::at(&self.path).ok_or_else(|| {

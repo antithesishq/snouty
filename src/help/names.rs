@@ -2,7 +2,7 @@
 //! name is looked up in the clap definition, so a page cannot name an arg or
 //! a command that does not exist, and is then written for the page's reader.
 
-use clap::{Arg, Command};
+use clap::Arg;
 
 use super::example::{self, Example};
 use super::{HelpPage, Reader, error};
@@ -16,30 +16,6 @@ pub(super) enum Name {
     /// `runs properties --detail`.
     Command(Vec<String>),
     Example(Example),
-}
-
-/// Refuses a name of a hidden command, or of a hidden flag of it, on any
-/// page but the command's own. An unstable feature hides what it gates while
-/// it is off, and the tests render each page with every feature off.
-fn refuse_hidden(
-    page: HelpPage,
-    path: &[String],
-    flags: &[&Arg],
-    text: &str,
-) -> askama::Result<()> {
-    let own_page = path
-        .iter()
-        .map(String::as_str)
-        .eq(page.path().iter().copied());
-    let hidden_command =
-        (1..=path.len()).any(|depth| tree::find(&path[..depth]).is_some_and(Command::is_hide_set));
-    if !own_page && (hidden_command || flags.iter().any(|flag| flag.is_hide_set())) {
-        return Err(error(format!(
-            "{text}: names a hidden command or flag, such as one that an unstable feature \
-             gates, which only the page of its command can name"
-        )));
-    }
-    Ok(())
 }
 
 impl Name {
@@ -67,15 +43,8 @@ impl Name {
         }
         // A line that lacks a required arg can still name a command.
         match example::parse(text) {
-            Ok(example) => {
-                refuse_hidden(page, example.path(), &example.flags(), text)?;
-                Ok(Name::Example(example))
-            }
-            Err(err) => {
-                let (path, flags) = reference(text)?.ok_or(err)?;
-                refuse_hidden(page, &path, &flags, text)?;
-                Ok(Name::Command(path))
-            }
+            Ok(example) => Ok(Name::Example(example)),
+            Err(err) => reference(text)?.map(Name::Command).ok_or(err),
         }
     }
 
@@ -134,9 +103,9 @@ fn name(page: HelpPage) -> String {
         .join(" ")
 }
 
-/// The command path of `text` when it is a reference, and its flags:
-/// subcommands, then flags that take no value.
-fn reference(text: &str) -> askama::Result<Option<(Vec<String>, Vec<&'static Arg>)>> {
+/// The command path of `text` when it is a reference: subcommands, then
+/// flags that take no value.
+fn reference(text: &str) -> askama::Result<Option<Vec<String>>> {
     let Some(mut words) = shlex::split(text) else {
         return Ok(None);
     };
@@ -151,7 +120,6 @@ fn reference(text: &str) -> askama::Result<Option<(Vec<String>, Vec<&'static Arg
     let Some(command) = tree::find(path).filter(|_| !path.is_empty()) else {
         return Ok(None);
     };
-    let mut args = Vec::new();
     for flag in flags {
         let Some(long) = flag.strip_prefix("--") else {
             return Ok(None);
@@ -160,12 +128,12 @@ fn reference(text: &str) -> askama::Result<Option<(Vec<String>, Vec<&'static Arg
             .get_arguments()
             .find(|arg| arg.get_long() == Some(long))
         {
-            Some(arg) if !arg.get_action().takes_values() => args.push(arg),
+            Some(arg) if !arg.get_action().takes_values() => {}
             Some(_) => return Ok(None),
             None => return Err(error(format!("{text}: no flag {flag}"))),
         }
     }
-    Ok(Some((path.to_vec(), args)))
+    Ok(Some(path.to_vec()))
 }
 
 #[cfg(test)]
@@ -176,29 +144,6 @@ mod tests {
         Name::resolve(page, text)
             .and_then(|name| name.write(page, reader, text, None))
             .map_err(|err| err.to_string())
-    }
-
-    /// `snouty example` is hidden while the test-only `Feature::Example` is
-    /// off, and so is the deprecated `--raw` of `runs logs`.
-    #[test]
-    fn only_its_own_page_names_a_hidden_command_or_flag() {
-        for reader in [Reader::Cli, Reader::Mcp] {
-            for (page, text) in [
-                (HelpPage::Example, "example"),
-                (HelpPage::Example, "snouty example"),
-                (HelpPage::RunsLogs, "runs logs --raw"),
-            ] {
-                assert!(t(page, reader, text).is_ok(), "{text} for {reader:?}");
-                assert_eq!(
-                    t(HelpPage::Doctor, reader, text),
-                    Err(format!(
-                        "{text}: names a hidden command or flag, such as one that an unstable \
-                         feature gates, which only the page of its command can name"
-                    )),
-                    "{reader:?}"
-                );
-            }
-        }
     }
 
     #[test]

@@ -1,9 +1,7 @@
 //! `runs coverage`: which instrumented code a run reached, as a tree of
 //! modules, files, classes, functions and locations.
 
-mod filter;
-
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 
 use color_eyre::Section;
@@ -23,8 +21,6 @@ use crate::render::{count, sanitize};
 use crate::settings::Settings;
 use crate::table::{Column, Table, truncate_start};
 use crate::vtime::VTime;
-
-use filter::{Filter, ModuleIds};
 
 use super::ready::{self, Needs, RetryDecision, RetryPolicy};
 use super::{
@@ -59,10 +55,6 @@ pub(super) fn explain_coverage_error(run: &RunDetail, err: Report) -> Report {
     ))
 }
 
-/// The most modules that snouty requests one by one. The endpoint takes one
-/// module, so more modules read the whole run once and keep theirs.
-const MAX_MODULE_REQUESTS: usize = 8;
-
 /// A module's name and language, from the module list.
 #[derive(Clone, Default)]
 struct ModuleInfo {
@@ -81,56 +73,19 @@ pub(super) async fn cmd_runs_coverage(
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
-    let filter = Filter::new(
-        &args.module_names,
-        &args.files,
-        &args.classes,
-        &args.functions,
-    )?;
-    let ids = ModuleIds::new(&args.module_ids);
     let api = AntithesisApi::new(settings, verbose)?;
     let (api, run_id) = (&api, args.run_id.as_str());
     // Wait once, before the module list and the locations: a run ID that
     // names no run fails as such, and a starting run has no module list yet.
     ready::wait_until_ready(api, run_id, READY_POLL).await?;
 
-    // A module name filter needs the module list first, and becomes the IDs
-    // of the modules that match. Otherwise the list only labels the modules,
-    // and snouty reads it while the locations download.
-    let mut infos = None;
-    let mut selected: Option<HashSet<String>> = None;
-    let requests: Vec<Option<String>> = if filter.module_name.is_empty() {
-        if ids.include.is_empty() {
-            vec![None]
-        } else {
-            ids.include
-                .iter()
-                .filter(|id| ids.passes(id))
-                .cloned()
-                .map(Some)
-                .collect()
-        }
+    // The server filters by module, one module per request.
+    let module_ids: indexmap::IndexSet<String> = args.module_ids.into_iter().collect();
+    let requests: Vec<Option<String>> = if module_ids.is_empty() {
+        vec![None]
     } else {
-        api::ensure_module_list_supported(run_id)?;
-        let modules: Vec<CoverageModule> = api.stream_run_modules(run_id).try_collect().await?;
-        let matching: HashSet<String> = modules
-            .iter()
-            .filter(|m| ids.passes(&m.module_id) && filter.module_name.passes(&[m.name.as_str()]))
-            .map(|m| m.module_id.clone())
-            .collect();
-        infos = Some(module_infos(modules));
-        let requests = if matching.len() <= MAX_MODULE_REQUESTS {
-            let mut ids: Vec<String> = matching.iter().cloned().collect();
-            ids.sort();
-            ids.into_iter().map(Some).collect()
-        } else {
-            vec![None]
-        };
-        selected = Some(matching);
-        requests
+        module_ids.into_iter().map(Some).collect()
     };
-    let keep_module =
-        |id: &str| ids.passes(id) && selected.as_ref().is_none_or(|ids| ids.contains(id));
 
     let lines = stream::iter(requests)
         .then(|module_id| async move {
@@ -154,19 +109,14 @@ pub(super) async fn cmd_runs_coverage(
         });
     let mut modules = Modules {
         lines: lines.boxed(),
-        filter: &filter,
-        keep_module: &keep_module,
         pending: None,
     };
 
     // The API sends a module's locations together, so each module prints as
-    // soon as the next one starts, and only one is in memory.
-    let (infos, mut next) = if let Some(infos) = infos {
-        (infos, modules.next().await?)
-    } else {
-        let (infos, first) = futures_util::join!(module_infos_or_none(api, run_id), modules.next());
-        (infos, first?)
-    };
+    // soon as the next one starts, and only one is in memory. The module list
+    // labels the modules, and downloads with the first one.
+    let (infos, first) = futures_util::join!(module_infos(api, run_id), modules.next());
+    let mut next = first?;
     let render = Render {
         rollup: args.rollup,
         detail: args.detail,
@@ -206,41 +156,32 @@ pub(super) async fn cmd_runs_coverage(
     Ok(())
 }
 
-fn module_infos(modules: Vec<CoverageModule>) -> HashMap<String, ModuleInfo> {
-    modules
-        .into_iter()
-        .map(|m| {
-            let info = ModuleInfo {
-                name: Some(m.name),
-                language: m.language,
-            };
-            (m.module_id, info)
-        })
-        .collect()
-}
-
 /// The module list, to label the modules. A run without one, or a failed
 /// request, leaves the labels out.
-async fn module_infos_or_none(api: &AntithesisApi, run_id: &str) -> HashMap<String, ModuleInfo> {
+async fn module_infos(api: &AntithesisApi, run_id: &str) -> HashMap<String, ModuleInfo> {
     if api::ensure_module_list_supported(run_id).is_err() {
         return HashMap::new();
     }
     let modules: Result<Vec<CoverageModule>> = api.stream_run_modules(run_id).try_collect().await;
-    modules.map_or_else(|_| HashMap::new(), module_infos)
+    let modules = modules.unwrap_or_default().into_iter().map(|m| {
+        let info = ModuleInfo {
+            name: Some(m.name),
+            language: m.language,
+        };
+        (m.module_id, info)
+    });
+    modules.collect()
 }
 
-/// The locations of the stream that pass the filters, a module at a time.
-struct Modules<'a, S> {
+/// The locations of the stream, a module at a time.
+struct Modules<S> {
     lines: S,
-    filter: &'a Filter,
-    keep_module: &'a dyn Fn(&str) -> bool,
     /// The first location of the next module, read while finishing the last.
     pending: Option<Location>,
 }
 
-impl<S: Stream<Item = Result<Value>> + Unpin> Modules<'_, S> {
-    /// The next module with a location that passes the filters, and those
-    /// locations.
+impl<S: Stream<Item = Result<Value>> + Unpin> Modules<S> {
+    /// The next module, and its locations.
     async fn next(&mut self) -> Result<Option<(String, Vec<Location>)>> {
         let mut module: Option<(String, Vec<Location>)> = None;
         loop {
@@ -256,35 +197,10 @@ impl<S: Stream<Item = Result<Value>> + Unpin> Modules<'_, S> {
                     self.pending = Some(location);
                     return Ok(module);
                 }
-                Some((_, locations)) => {
-                    if self.passes(&location) {
-                        locations.push(location);
-                    }
-                }
-                None => {
-                    if self.passes(&location) {
-                        module = Some((location.coverage.module_id.clone(), vec![location]));
-                    }
-                }
+                Some((_, locations)) => locations.push(location),
+                None => module = Some((location.coverage.module_id.clone(), vec![location])),
             }
         }
-    }
-
-    fn passes(&self, location: &Location) -> bool {
-        let c = &location.coverage;
-        let (class, function) = split_function(c);
-        let class_names: Vec<&str> = class
-            .iter()
-            .flat_map(|(full, short)| [full.as_str(), short.as_str()])
-            .collect();
-        let file: Vec<&str> = c.file.as_deref().into_iter().collect();
-        (self.keep_module)(&c.module_id)
-            && self.filter.file.passes(&file)
-            && self.filter.class.passes(&class_names)
-            && self
-                .filter
-                .function
-                .passes(&[c.function.as_str(), function.as_str()])
     }
 }
 

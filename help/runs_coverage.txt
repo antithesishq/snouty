@@ -8,7 +8,7 @@ A class is the API's class of a function: a Java or C# class, a Go method's rece
 
 {{ t("--rollup")? }} sets the deepest level: `file` (the default), `function`, or `none` for every location. With `none`, a table of the function's locations hangs under each function, in source order: START and END of the span, as line:column, then INPUT_HASH and VTIME, the moment where the run first reached it. Pass them as the input_hash and vtime of `{{ t("runs logs")? }}` to read the logs up to that moment. A reached location is plain, an unreached one dim, and an empty cell is `-`. Several locations can share a span, such as the copies of a generic function, or the two outcomes of a branch; each is its own row.
 
-The filters keep only some of the coverage. {{ t("--module")? }} takes a module ID, which `{{ t("runs modules")? }}` lists. {{ t("--module-name")? }} takes a glob over the module's name, {{ t("--file")? }} over the file's path, {{ t("--class")? }} over the class's full or short name, and {{ t("--function")? }} over the function's name. A file glob without a `/` matches the file's base name, and in a path `*` stays within a directory and `**` crosses them. A filter's values are alternatives, and the filters together narrow the output: {{ t("--file")? }} `api.go` {{ t("--file")? }} `raft.go` {{ t("--class")? }} `Raft` keeps Raft's methods in either file. A value with a leading `!` excludes what it matches instead, such as `!**/vendor/**`; quote it in the shell. `\!` starts a value with a literal `!`. The server applies {{ t("--module")? }} and {{ t("--module-name")? }}, and snouty applies the rest while the locations download.
+Use {{ t("--module")? }} to show only a module, by the ID that `{{ t("runs modules")? }}` lists.{% if cli %} Give it more than once for more modules.{% else %} List more IDs for more modules.{% endif %} The server reads only those modules.{% if cli %} To narrow further, such as to a file, class or function, filter the {{ t("--json")? }} output, for example with `jq`.{% endif %}
 
 {% if cli %}
 VTIME is cut to five decimals, which still names a moment at or before the first reach. With {{ t("--detail")? }}, it prints whole. On a terminal, file names are shortened at the start, and other names at the end. After the output, a status line on stderr counts the locations, and gives the share reached and the run's status.
@@ -22,5 +22,5 @@ While the run is in progress, the output is the coverage up to now. The run must
 
 Examples:
   {{ t("snouty runs coverage <run_id>")? }}
-  {{ t("snouty runs coverage <run_id> --rollup function --file '!**/vendor/**'")? }}
-  {{ t("snouty runs coverage <run_id> --rollup none --module <module_id> --class Raft")? }}
+  {{ t("snouty runs coverage <run_id> --rollup function --module <module_id>")? }}
+  {{ t("snouty runs coverage <run_id> --rollup none --module <module_id>")? }}

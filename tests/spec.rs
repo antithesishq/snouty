@@ -588,10 +588,13 @@ fn cmd_env_from_json_find(
     // Stores <json_key> from the first NDJSON line that matches every filter.
     // A filter is one of:
     //   <field>!=<value>  <field> is a string other than <value>.
+    //   <field>^=<prefix> <field> is a string that starts with <prefix>.
     //   <field>=<a>|<b>   <field> is a string equal to one of the values
     //                     that `|` separates.
-    // Every line must carry each filter's <field> as a string, so a misspelled
-    // field fails instead of matching every line.
+    // A line without a `^=` or `=` filter's field does not match.
+    // For `!=`, every line must carry <field> as a string, so a misspelled
+    // field fails instead of matching every line. A misspelled `=` field
+    // matches no line, which fails too.
     //
     // With `-- <snouty args>`, a matching line counts only when snouty, run with
     // those args and `$R_<json_key>` set to the line's value, exits 0 and prints
@@ -626,12 +629,15 @@ fn cmd_env_from_json_find(
             };
             let matches = if let Some((field, excluded)) = filter.split_once("!=") {
                 string_field(field)? != excluded
+            } else if let Some((field, prefix)) = filter.split_once("^=") {
+                let actual = value.get(field).and_then(|v| v.as_str());
+                actual.is_some_and(|actual| actual.starts_with(prefix))
             } else if let Some((field, allowed)) = filter.split_once('=') {
-                let actual = string_field(field)?;
-                allowed.split('|').any(|a| a == actual)
+                let actual = value.get(field).and_then(|v| v.as_str());
+                actual.is_some_and(|actual| allowed.split('|').any(|a| a == actual))
             } else {
                 return Err(err(format!(
-                    "env_from_json_find filter '{filter}' must be <field>!=<value> or <field>=<values>"
+                    "env_from_json_find filter '{filter}' must be <field>!=<value>, <field>^=<prefix> or <field>=<values>"
                 )));
             };
             if !matches {

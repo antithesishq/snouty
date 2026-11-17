@@ -130,7 +130,7 @@ async fn tools_return_detailed_output_or_json() {
     let result = call(
         &client,
         "runs_coverage",
-        json!({ "run_id": "run-2", "rollup": "none", "classes": ["Spinner"] }),
+        json!({ "run_id": "run-2", "rollup": "none", "module_ids": ["d85d838a38496ad7233432355829abc7d2333c33"] }),
     )
     .await;
     assert_eq!(result.is_error, Some(false));
@@ -141,7 +141,7 @@ async fn tools_return_detailed_output_or_json() {
         .collect();
     assert!(all.contains("INPUT_HASH"), "{all}");
     assert!(all.contains("12.851377005412903"), "{all}");
-    assert!(!all.contains("rusthello::main"), "{all}");
+    assert!(!all.contains("go-20e55e2f1623"), "{all}");
     assert!(all.contains("the run is in progress"), "{all}");
 
     // runs_list returns what `snouty runs list --detail` prints: a block per

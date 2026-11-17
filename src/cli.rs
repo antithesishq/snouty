@@ -1083,29 +1083,13 @@ pub struct RunsCoverageArgs {
     #[arg(value_parser = parse_run_id)]
     pub run_id: String,
 
-    /// Only the module with this ID (repeatable; a leading ! excludes it)
-    #[arg(long = "module", value_name = "MODULE_ID", value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    /// Only the module with this ID (repeatable)
+    #[arg(
+        long = "module",
+        value_name = "MODULE_ID",
+        value_parser = clap::builder::NonEmptyStringValueParser::new()
+    )]
     pub module_ids: Vec<String>,
-
-    /// Only modules whose name matches this glob (repeatable; a leading !
-    /// excludes them)
-    #[arg(long = "module-name", value_name = "GLOB", value_parser = clap::builder::NonEmptyStringValueParser::new())]
-    pub module_names: Vec<String>,
-
-    /// Only files whose path matches this glob (repeatable; a leading !
-    /// excludes them)
-    #[arg(long = "file", value_name = "GLOB", value_parser = clap::builder::NonEmptyStringValueParser::new())]
-    pub files: Vec<String>,
-
-    /// Only classes or types whose name matches this glob (repeatable; a
-    /// leading ! excludes them)
-    #[arg(long = "class", value_name = "GLOB", value_parser = clap::builder::NonEmptyStringValueParser::new())]
-    pub classes: Vec<String>,
-
-    /// Only functions whose name matches this glob (repeatable; a leading !
-    /// excludes them)
-    #[arg(long = "function", value_name = "GLOB", value_parser = clap::builder::NonEmptyStringValueParser::new())]
-    pub functions: Vec<String>,
 
     /// The deepest level of the tree: files, functions, or every location
     #[arg(long, value_enum, default_value_t)]

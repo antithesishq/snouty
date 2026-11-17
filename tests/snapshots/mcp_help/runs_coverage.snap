@@ -11,7 +11,7 @@ A class is the API's class of a function: a Java or C# class, a Go method's rece
 
 `rollup` sets the deepest level: `file` (the default), `function`, or `none` for every location. With `none`, a table of the function's locations hangs under each function, in source order: START and END of the span, as line:column, then INPUT_HASH and VTIME, the moment where the run first reached it. Pass them as the input_hash and vtime of `runs_logs` to read the logs up to that moment. A reached location is plain, an unreached one dim, and an empty cell is `-`. Several locations can share a span, such as the copies of a generic function, or the two outcomes of a branch; each is its own row.
 
-The filters keep only some of the coverage. `module_ids` takes a module ID, which `runs_modules` lists. `module_names` takes a glob over the module's name, `files` over the file's path, `classes` over the class's full or short name, and `functions` over the function's name. A file glob without a `/` matches the file's base name, and in a path `*` stays within a directory and `**` crosses them. A filter's values are alternatives, and the filters together narrow the output: `files` `api.go` `files` `raft.go` `classes` `Raft` keeps Raft's methods in either file. A value with a leading `!` excludes what it matches instead, such as `!**/vendor/**`; quote it in the shell. `\!` starts a value with a literal `!`. The server applies `module_ids` and `module_names`, and snouty applies the rest while the locations download.
+Use `module_ids` to show only a module, by the ID that `runs_modules` lists. List more IDs for more modules. The server reads only those modules.
 
 VTIME prints whole. A status line under the output counts the locations, and gives the share reached and the run's status.
 
@@ -21,5 +21,5 @@ While the run is in progress, the output is the coverage up to now. The run must
 
 Examples:
   runs_coverage {"run_id": "<run_id>"}
-  runs_coverage {"run_id": "<run_id>", "files": ["!**/vendor/**"], "rollup": "function"}
-  runs_coverage {"run_id": "<run_id>", "module_ids": ["<module_id>"], "classes": ["Raft"], "rollup": "none"}
+  runs_coverage {"run_id": "<run_id>", "module_ids": ["<module_id>"], "rollup": "function"}
+  runs_coverage {"run_id": "<run_id>", "module_ids": ["<module_id>"], "rollup": "none"}

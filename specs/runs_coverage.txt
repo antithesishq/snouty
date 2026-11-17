@@ -16,15 +16,15 @@ env SNOUTY_UNSTABLE_FEATURES=coverage
 stderr 'detail'
 ! snouty runs coverage run-1 --rollup line
 stderr 'invalid value'
-! snouty runs coverage run-1 --file '[a'
-stderr 'invalid glob'
 
 # A run that has locations shows a tree per module. Only runs created after
-# the coverage API shipped have locations.
+# the coverage API shipped have locations. On staging, the gallery's runs of
+# the small Python example: a large run's locations can take minutes.
 mock-runs-server
 [!staging] snouty --json runs list
 [staging] snouty --json runs list --created-after 2026-11-13T23:00:00Z --limit 100
-env_from_json_find run_id launcher!=debugging -- runs coverage $R_run_id
+[!staging] env_from_json_find run_id launcher!=debugging -- runs coverage $R_run_id
+[staging] env_from_json_find run_id 'description^=snouty gen-gallery end-to-end run' -- runs coverage $R_run_id
 snouty runs coverage $R_run_id
 stdout '^ *\d+\.\d%  \S+/\S+ +module \S+'
 stdout '^ *\d+\.\d%  \S+/\S+ +[┣┗]━━ \S'
@@ -74,38 +74,15 @@ stdout '        4:5 +4:5 +- +-$'
 snouty runs coverage run-1 --rollup none --detail
 stdout ' 12\.84610243188217$'
 
-# The filters: a file glob without a slash matches the base name, a class
-# matches its short name, a function its name, and `!` excludes. Values of
-# one filter are alternatives, and filters narrow each other.
-snouty runs coverage run-1 --file work.rs
-stderr '^2 locations · 50\.0% reached'
-snouty runs coverage run-1 --file work.rs --file main.rs --class Spinner
-stderr '^2 locations · 50\.0% reached'
-snouty runs coverage run-1 --class '!Spinner'
-stderr '^4 locations · 75\.0% reached'
-snouty runs coverage run-1 --function 'rusthello::*'
-stderr '^3 locations · 66\.7% reached'
-snouty runs coverage run-1 --file '**/spin.go'
-stdout 'module go-20e55e2f1623 '
-! stdout 'module d85d838a'
-snouty runs coverage run-1 --file nothing.rs
-! stdout .
-stderr '^0 locations · – reached'
-
-# --module asks the server for one module, and a repeated one asks once. A
-# leading ! excludes a module instead.
+# --module asks the server for one module, and a repeated one asks once.
 snouty --verbose runs coverage run-1 --module go-20e55e2f1623 --module go-20e55e2f1623
 stderr -count=1 '^> GET .*/coverage/locations\?module_id=go-20e55e2f1623'
 stderr '^1 location · 100\.0% reached'
-snouty runs coverage run-1 --module '!d85d838a38496ad7233432355829abc7d2333c33'
-stderr '^1 location · 100\.0% reached'
 
-# --module-name reads the module list, and asks the server for the modules
-# whose names match.
-snouty --verbose runs coverage run-1 --module-name 'instrhello/*'
-stderr '^> GET .*/api/v0/runs/run-1/modules'
-stderr '^> GET .*/coverage/locations\?module_id=go-20e55e2f1623'
-stderr '^1 location · 100\.0% reached'
+# A module the run does not have prints nothing.
+snouty runs coverage run-1 --module no-such-module
+! stdout .
+stderr '^0 locations · – reached'
 
 # On a run in progress, the output is the coverage so far.
 snouty runs coverage run-2
@@ -131,9 +108,3 @@ stderr 'the server reported an error mid-stream: mock stream failure'
 
 ! snouty runs coverage no-such-run
 stderr 'run not found: no-such-run'
-
-# The run is read before the module list, so a module name filter does not
-# hide a mistyped run ID.
-! snouty --verbose runs coverage no-such-run --module-name 'instrhello/*'
-stderr 'run not found: no-such-run'
-! stderr '/modules'

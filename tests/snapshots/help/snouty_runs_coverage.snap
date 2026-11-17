@@ -31,17 +31,10 @@ reached location is plain, an unreached one dim, and an empty cell is `-`.
 Several locations can share a span, such as the copies of a generic function, or
 the two outcomes of a branch; each is its own row.
 
-The filters keep only some of the coverage. --module takes a module ID, which
-`runs modules` lists. --module-name takes a glob over the module's name, --file
-over the file's path, --class over the class's full or short name, and
---function over the function's name. A file glob without a `/` matches the
-file's base name, and in a path `*` stays within a directory and `**` crosses
-them. A filter's values are alternatives, and the filters together narrow the
-output: --file `api.go` --file `raft.go` --class `Raft` keeps Raft's methods in
-either file. A value with a leading `!` excludes what it matches instead, such
-as `!**/vendor/**`; quote it in the shell. `\!` starts a value with a literal
-`!`. The server applies --module and --module-name, and snouty applies the rest
-while the locations download.
+Use --module to show only a module, by the ID that `runs modules` lists. Give it
+more than once for more modules. The server reads only those modules. To narrow
+further, such as to a file, class or function, filter the --json output, for
+example with `jq`.
 
 VTIME is cut to five decimals, which still names a moment at or before the first
 reach. With --detail, it prints whole. On a terminal, file names are shortened
@@ -62,8 +55,8 @@ says that it waits.
 
 Examples:
   snouty runs coverage <run_id>
-  snouty runs coverage <run_id> --rollup function --file '!**/vendor/**'
-  snouty runs coverage <run_id> --rollup none --module <module_id> --class Raft
+  snouty runs coverage <run_id> --rollup function --module <module_id>
+  snouty runs coverage <run_id> --rollup none --module <module_id>
 
 Usage: snouty runs coverage [OPTIONS] <RUN_ID>
 
@@ -73,23 +66,7 @@ Arguments:
 
 Options:
       --module <MODULE_ID>
-          Only the module with this ID (repeatable; a leading ! excludes it)
-
-      --module-name <GLOB>
-          Only modules whose name matches this glob (repeatable; a leading !
-          excludes them)
-
-      --file <GLOB>
-          Only files whose path matches this glob (repeatable; a leading !
-          excludes them)
-
-      --class <GLOB>
-          Only classes or types whose name matches this glob (repeatable; a
-          leading ! excludes them)
-
-      --function <GLOB>
-          Only functions whose name matches this glob (repeatable; a leading !
-          excludes them)
+          Only the module with this ID (repeatable)
 
       --rollup <ROLLUP>
           The deepest level of the tree: files, functions, or every location

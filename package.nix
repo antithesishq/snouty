@@ -6,6 +6,9 @@
   cacert,
   cargo-nextest,
   git,
+  jq,
+  openssh,
+  python3,
 }:
 
 rustPlatform.buildRustPackage (finalAttrs: {
@@ -36,6 +39,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
       ./src
       ./templates
       ./tests
+      ./vendor
     ];
   };
 
@@ -54,23 +58,26 @@ rustPlatform.buildRustPackage (finalAttrs: {
     sqlite
   ];
 
-  # The sandbox has no container engine, so the tests that need one do not run.
-  # The shims answer the engine probes of `snouty doctor`, which specs/doctor.txt
-  # needs.
+  # The sandbox has no container engine and no QEMU, so the tests that need
+  # one do not run. The shims answer the engine probes of `snouty doctor`,
+  # which specs/doctor.txt needs.
   useNextest = true;
   cargoTestFlags = [
     "--filterset"
-    "not group(container)"
+    "not group(container) and not group(qemu)"
   ];
   preCheck = ''
     export PATH="$PWD/scripts/no-engine-shims:$PATH"
   '';
   # The sandbox has CA certificates only through SSL_CERT_FILE, which cacert
-  # sets. Some specs run git.
+  # sets. Some specs run git, and the simulate tests run Python, jq and ssh.
   nativeCheckInputs = [
     cacert
     cargo-nextest
     git
+    jq
+    openssh
+    python3
   ];
 
   # Docker and Podman run the credential helper by this name, and snouty runs

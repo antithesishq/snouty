@@ -6,10 +6,10 @@ cd "$(dirname "$0")/.." || exit 1
 . scripts/hook-lib.sh
 require shellcheck --version
 # Check *.sh files and extensionless scripts with a sh or bash shebang,
-# tracked or new.
+# tracked or new. vendor/ holds upstream code, which follows its own style.
 files=()
 while IFS= read -r -d '' f; do
-  [[ -f $f ]] || continue
+  [[ -f $f && $f != vendor/* ]] || continue
   if [[ $f == *.sh ]] || head -n1 "$f" | grep -qE '^#!.*[/ ](bash|dash|sh)( |$)'; then
     files+=("$f")
   fi

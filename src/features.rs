@@ -1,10 +1,7 @@
 //! Opt-in unstable features.
 //!
-//! A feature gates a command that isn't ready to be on for everyone — because
-//! the Antithesis API it depends on is still changing shape, or because most
-//! tenants can't serve it yet. Gating lets such a command ship in a release
-//! instead of waiting on the API, without putting it in front of users who
-//! would only hit a wall.
+//! Feature gates cover commands with unstable interfaces or dependencies.
+//! They let experimental commands ship without enabling them by default.
 //!
 //! Enable features by id in `SNOUTY_UNSTABLE_FEATURES`, a comma-separated
 //! list (see [`enabled`]). The variable says "unstable" because that is the
@@ -37,6 +34,8 @@ pub const UNSTABLE_FEATURES_VAR_NAME: &str = "SNOUTY_UNSTABLE_FEATURES";
 /// The id of a feature is its variant name in kebab-case.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
 pub enum Feature {
+    /// Local simulation is still under development.
+    Simulate,
     /// Stands in for a real feature in tests.
     #[cfg(test)]
     Example,
@@ -57,6 +56,11 @@ impl Display for Feature {
             .expect("no Feature variant is skipped");
         f.write_str(value.get_name())
     }
+}
+
+/// Whether `feature` is enabled. Cheap enough for a clap `hide` attribute.
+pub fn is_enabled(feature: Feature) -> bool {
+    enabled().contains(&feature)
 }
 
 /// The features `SNOUTY_UNSTABLE_FEATURES` enables, in the order listed.

@@ -1,0 +1,99 @@
+# Simulation is opt-in and never starts a VM during these argument checks.
+env SNOUTY_UNSTABLE_FEATURES=
+snouty --help
+! stdout 'simulate +Run'
+! snouty simulate empty --environment-image environment:latest
+stderr 'is an unstable feature and is not enabled'
+stderr 'SNOUTY_UNSTABLE_FEATURES=simulate'
+
+env SNOUTY_UNSTABLE_FEATURES=simulate
+
+! snouty simulate empty --environment-image environment:latest --memory 0
+stderr '0 is not in 1\.\.=15000'
+! snouty simulate empty --environment-image environment:latest --memory 15001
+stderr '15001 is not in 1\.\.=15000'
+! snouty simulate empty --environment-image environment:latest --disable-node-kills
+stderr 'unexpected argument'
+! snouty simulate empty --environment-image environment:latest --platform other
+stderr 'invalid value'
+
+# Fault settings are parsed before booting the simulation environment.
+! snouty simulate empty --node-kills
+stderr 'unexpected argument'
+! snouty simulate empty --fault-tolerance unknown
+stderr 'invalid value'
+! snouty simulate empty --notebook-flag unpause
+stderr 'unexpected argument'
+! snouty simulate empty --custom-scripts '[]'
+stderr 'unexpected argument'
+! snouty simulate empty --reset-custom-scripts
+stderr 'unexpected argument'
+! snouty simulate empty --fault-tolerance none --fault-exclusions ''
+stderr 'antithesis.fault_exclusions is empty'
+! snouty simulate empty --fault-exclusions '('
+stderr 'not a valid regular expression'
+! snouty simulate --attach simulate-abc --fault-exclusions x
+stderr 'cannot be used with'
+! snouty simulate --shell --fault-exclusions x
+stderr 'cannot be used with'
+
+! snouty simulate empty
+stderr 'does not contain.*docker-compose.yaml.*manifests/'
+! snouty simulate --environment-image environment:latest
+stderr 'required.*'
+stderr '<CONFIG>'
+! snouty simulate --shell --environment-image environment:latest
+stderr 'requires an interactive terminal'
+! snouty simulate --shell --platform arm64 --environment-image environment:latest
+stderr 'requires an interactive terminal'
+! snouty --json simulate --shell --environment-image environment:latest
+stderr '\-\-shell cannot be combined with \-\-json'
+! snouty simulate empty --shell --environment-image environment:latest
+stderr 'cannot be used with'
+! snouty simulate --shell --disable-restart --environment-image environment:latest
+stderr 'cannot be used with'
+! snouty simulate empty --disable-faults --environment-image environment:latest
+stderr 'unexpected argument'
+! snouty simulate --shell --fault-tolerance none --environment-image environment:latest
+stderr 'cannot be used with'
+! snouty simulate --attach ../other
+stderr 'invalid simulation ID'
+! snouty simulate empty --attach simulate-abc
+stderr 'cannot be used with'
+! snouty --json simulate --attach simulate-abc
+stderr '\-\-attach cannot be combined with \-\-json'
+! snouty simulate --attach simulate-abc
+stderr 'interactive terminal'
+! snouty simulate empty --environment-image environment:latest --timeout 0s
+stderr 'startup timeout must be greater than zero'
+! snouty simulate empty --environment-image environment:latest --timeout nonsense
+stderr 'invalid value'
+
+# Detection matches validate before requiring a container engine.
+! snouty simulate /nonexistent/path --environment-image environment:latest
+stderr 'not a directory'
+! snouty simulate empty --environment-image environment:latest
+stderr 'does not contain.*docker-compose.yaml.*manifests/'
+! snouty simulate yml_dir --environment-image environment:latest
+stderr 'rename'
+! snouty simulate ambiguous --environment-image environment:latest
+stderr 'both docker-compose.yaml and a manifests/ subdirectory'
+! snouty simulate yml_dir/docker-compose.yml --environment-image environment:latest
+stderr 'not a directory'
+! snouty simulate kubernetes --environment-image environment:latest
+stderr 'Kubernetes.*not supported'
+
+-- empty/.keep --
+-- yml_dir/docker-compose.yml --
+-- ambiguous/docker-compose.yaml --
+services: {}
+-- ambiguous/manifests/ns.yaml --
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+-- kubernetes/manifests/ns.yaml --
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo

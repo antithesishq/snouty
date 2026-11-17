@@ -1,0 +1,18 @@
+Run a Compose setup in a local Antithesis simulation environment
+
+This command is gated behind the 'simulate' unstable feature. Enable it with SNOUTY_UNSTABLE_FEATURES=simulate.
+
+After the simulation environment boots, it prints a run ID. Open a second terminal and use `{{ t("snouty simulate --attach <ID>")? }}` to open a shell in it. Leaving that shell does not stop the simulation.
+
+Accepts a directory containing docker-compose.yaml, as validate does. Kubernetes configurations are not supported. Workload images must exist in the local container engine. The simulation environment image defaults to antithesis-environment in the configured repository, at the version this release of snouty pins. An {{ t("--environment-image")? }} without a tag or digest gets that version. No API key is required.
+
+Requires Linux or macOS and QEMU 8.2 or later. Uses 1 CPU and 15000 MiB of memory by default. Use {{ t("--memory")? }} to lower its memory when the host has less RAM. The simulation environment and workload images are amd64; an ARM64 host emulates them in software, which is slower.
+
+Fault tolerance defaults to resilient. Omitted fault exclusions keep the simulation environment's setting. Failed assertions and composer commands do not stop the simulation, but cause a nonzero exit status when it stops.
+
+With {{ t("--json")? }}, emits newline-delimited events annotated with active faults and a final failure-count summary.
+
+Example:
+  {% filter cmd %}
+  snouty simulate ./config
+  {% endfilter %}

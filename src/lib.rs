@@ -8,6 +8,8 @@ pub mod cli;
 pub mod compose;
 pub mod config;
 pub mod container;
+pub mod containers_storage;
+pub mod digest;
 pub mod docker_credential;
 pub mod docs;
 pub mod doctor;
@@ -31,6 +33,7 @@ pub mod runs;
 pub mod scripts;
 #[doc(hidden)]
 pub mod settings;
+pub mod simulate;
 pub mod stdio;
 pub(crate) mod table;
 pub mod tag;

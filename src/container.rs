@@ -9,12 +9,13 @@ use base64::{Engine as _, prelude::BASE64_STANDARD};
 use chrono::Utc;
 use color_eyre::{
     Section, SectionExt,
-    eyre::{Context, OptionExt, Result, eyre},
+    eyre::{Context, OptionExt, Report, Result, bail, eyre},
 };
 
+use crate::digest::Sha256Digest;
 use crate::docker_credential::{CRED_HELPER, HELPER_NAME};
 use crate::error::user_error;
-use crate::process::output_with_timeout;
+use crate::process::{output_async, output_with_timeout};
 use crate::registry::{self, Registry};
 use crate::settings::{
     ANTITHESIS_PROFILE_ENV_VAR_NAME, CONTAINER_ENGINE_VAR_NAME, ContainerEngine,
@@ -35,22 +36,31 @@ pub const AMD64_PLATFORM: &str = "linux/amd64";
 
 /// A container image's CPU architecture, as reported by the runtime.
 ///
-/// snouty only cares whether an image is runnable on Antithesis, which is
-/// x86-64 only — so this distinguishes [`Amd64`](Self::Amd64) from everything
-/// else, keeping the raw runtime string for [`Other`](Self::Other) so error
-/// messages can name the offending architecture.
+/// Local simulation also runs ARM64 images. Other architectures keep the raw
+/// runtime string so errors can name the image's architecture.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Architecture {
     /// `amd64` (x86-64) — the only architecture Antithesis runs.
     Amd64,
+    /// `arm64` (`AArch64`) — used by local simulation.
+    Arm64,
     /// Any other architecture; carries the runtime's raw name for diagnostics.
     Other(String),
+}
+
+impl Architecture {
+    /// The platform of a Linux image of this architecture, such as
+    /// `linux/amd64`, as `--platform` takes it.
+    pub fn linux_platform(&self) -> String {
+        format!("linux/{self}")
+    }
 }
 
 impl From<&str> for Architecture {
     fn from(arch: &str) -> Self {
         match arch {
             "amd64" => Architecture::Amd64,
+            "arm64" => Architecture::Arm64,
             other => Architecture::Other(other.to_string()),
         }
     }
@@ -60,9 +70,18 @@ impl std::fmt::Display for Architecture {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Architecture::Amd64 => f.write_str("amd64"),
+            Architecture::Arm64 => f.write_str("arm64"),
             Architecture::Other(arch) => f.write_str(arch),
         }
     }
+}
+
+/// What `image inspect` reports about a local image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageDetails {
+    /// The content ID.
+    pub id: Sha256Digest,
+    pub architecture: Architecture,
 }
 
 /// The tenant registry credential that `snouty launch` presents when it
@@ -140,12 +159,56 @@ pub trait ContainerRuntime: Send + Sync {
     /// Clone into a boxed trait object.
     fn clone_box(&self) -> Box<dyn ContainerRuntime>;
 
+    /// Return a [`Command`] pre-configured with the runtime binary and given
+    /// args.
+    fn command(&self, args: &[&str]) -> Command {
+        let mut cmd = Command::new(self.name());
+        cmd.args(args);
+        cmd
+    }
+
     /// Return a [`tokio::process::Command`] pre-configured with the runtime
     /// binary and given args.
     fn tokio_command(&self, args: &[&str]) -> tokio::process::Command {
-        let mut cmd = tokio::process::Command::new(self.name());
-        cmd.args(args);
-        cmd
+        self.command(args).into()
+    }
+
+    /// The arguments that select `platform` for `image inspect` and
+    /// `image save`. Only Docker takes a platform for these commands.
+    fn image_platform_args(&self, platform: Option<&Architecture>) -> Vec<String> {
+        match (self.engine_kind(), platform) {
+            (ContainerEngine::Docker, Some(platform)) => {
+                vec!["--platform".into(), platform.linux_platform()]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// `pull` of `reference` with the engine's own registry credentials, for
+    /// `platform` if given. Both engines take a platform here.
+    fn image_pull_command(&self, reference: &str, platform: Option<&Architecture>) -> Command {
+        let mut command = self.command(&["pull"]);
+        if let Some(platform) = platform {
+            command.args(["--platform", &platform.linux_platform()]);
+        }
+        command.arg(reference);
+        command
+    }
+
+    /// `save` of `references` as one archive on stdout, each named once, for
+    /// `platform` if given. Docker writes an OCI-layout archive, and Podman a
+    /// Docker archive that keeps every image.
+    fn image_save_command(&self, references: &[&str], platform: Option<&Architecture>) -> Command {
+        let references: std::collections::BTreeSet<_> = references.iter().collect();
+        let mut command = self.command(&["save"]);
+        command.args(self.image_platform_args(platform));
+        if self.engine_kind() == ContainerEngine::Podman {
+            // Without --multi-image-archive Podman takes further references as
+            // tags of the first image.
+            command.args(["--format", "docker-archive", "--multi-image-archive"]);
+        }
+        command.args(references);
+        command
     }
 
     /// The `DOCKER_HOST` value `docker-compose` should use to drive this
@@ -165,27 +228,38 @@ pub trait ContainerRuntime: Send + Sync {
     /// as provenance: a run still shows which tag the digest came from.
     fn image_push(&self, image_ref: &str) -> Result<String>;
 
-    /// Return whether the image is available in the local image store.
-    fn image_exists(&self, image_ref: &str) -> Result<bool> {
+    /// Return whether the image is available in the local image store, for
+    /// `platform` if given.
+    fn image_exists(&self, image_ref: &str, platform: Option<&Architecture>) -> Result<bool> {
         let runtime = self.name();
-        let output = Command::new(runtime)
-            .args(["image", "inspect", image_ref])
+        let output = self
+            .command(&["image", "inspect"])
+            .args(self.image_platform_args(platform))
+            .arg(image_ref)
             .output()
             .wrap_err(format!("failed to run '{runtime} image inspect'"))?;
         image_exists_from_inspect_output(runtime, image_ref, &output)
     }
 
-    /// Return the local image architecture (for example `amd64` or `arm64`).
-    fn image_architecture(&self, image_ref: &str) -> Result<Architecture> {
+    /// Inspect a local image, for `platform` if given.
+    fn image_inspect(
+        &self,
+        image_ref: &str,
+        platform: Option<&Architecture>,
+    ) -> Result<ImageDetails> {
+        #[derive(serde::Deserialize)]
+        struct Inspect {
+            #[serde(rename = "Id")]
+            id: String,
+            #[serde(rename = "Architecture")]
+            architecture: String,
+        }
+
         let runtime = self.name();
-        let output = Command::new(runtime)
-            .args([
-                "image",
-                "inspect",
-                "--format",
-                "{{.Architecture}}",
-                image_ref,
-            ])
+        let output = self
+            .command(&["image", "inspect"])
+            .args(self.image_platform_args(platform))
+            .arg(image_ref)
             .output()
             .wrap_err(format!("failed to run '{runtime} image inspect'"))?;
 
@@ -197,19 +271,23 @@ pub trait ContainerRuntime: Send + Sync {
                 .with_section(move || stderr.trim().to_string().header("Stderr:"));
         }
 
-        let architecture = std::str::from_utf8(&output.stdout)
-            .wrap_err("failed to parse image inspect output")?
-            .trim();
-
-        if architecture.is_empty() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let images: Vec<Inspect> = serde_json::from_slice(&output.stdout).wrap_err(format!(
+            "'{runtime} image inspect {image_ref}' returned invalid JSON"
+        ))?;
+        let image = images
+            .into_iter()
+            .next()
+            .ok_or_else(|| eyre!("'{runtime} image inspect {image_ref}' returned no image"))?;
+        if image.architecture.is_empty() {
             return Err(eyre!(
                 "'{runtime} image inspect {image_ref}' returned empty architecture"
-            ))
-            .with_section(move || stderr.header("Stderr:"));
+            ));
         }
-
-        Ok(Architecture::from(architecture))
+        Ok(ImageDetails {
+            id: Sha256Digest::from_image_id(&image.id)
+                .wrap_err_with(|| format!("'{runtime} image inspect {image_ref}'"))?,
+            architecture: Architecture::from(image.architecture.as_str()),
+        })
     }
 
     /// Read the `repo@sha256:...` digest references the local store associates
@@ -825,6 +903,105 @@ impl ContainerRuntime for DockerRuntime {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let digest = parse_docker_push_digest(&stdout)?;
         Ok(format!("{image_ref}@{digest}"))
+    }
+}
+
+/// How long `create` of a container may take.
+const CREATE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long `rm` of a container may take.
+const REMOVE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Copy `source` out of `image` to `destination` on the host, through a
+/// container that is created but never started. `timeout` limits the copy.
+/// The container is removed afterwards, also when the caller is cancelled
+/// while it is being created.
+pub async fn copy_from_image(
+    runtime: &dyn ContainerRuntime,
+    image: &str,
+    platform: Option<&Architecture>,
+    source: &str,
+    destination: &Path,
+    timeout: Duration,
+) -> Result<()> {
+    let mut suffix = [0u8; 8];
+    getrandom::fill(&mut suffix).expect("failed to get random bytes");
+    let name = format!("snouty-copy-{:016x}", u64::from_ne_bytes(suffix));
+    let mut create = runtime.command(&["create"]);
+    if let Some(platform) = platform {
+        create.args(["--platform", &platform.linux_platform()]);
+    }
+    // The command never runs, but `create` needs one.
+    create.args(["--name", &name, image, "/bin/true"]);
+    let guard_runtime = runtime.clone_box();
+    // The worker owns the container once it exists, so a cancelled caller
+    // still removes it.
+    let container = tokio::task::spawn_blocking(move || {
+        let container = CreatedContainer {
+            runtime: guard_runtime,
+            name: Some(name),
+        };
+        let output = output_with_timeout(create, CREATE_TIMEOUT)?;
+        if !output.status.success() {
+            bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
+        }
+        Ok::<_, Report>(container)
+    })
+    .await?
+    .wrap_err_with(|| format!("cannot create a container from {image}"))?;
+    let mut copy = runtime.tokio_command(&["cp", &format!("{}:{source}", container.name())]);
+    copy.arg(destination).stdin(std::process::Stdio::null());
+    let output = output_async(copy, timeout).await?;
+    if !output.status.success() {
+        bail!(
+            "cannot copy {source} out of {image}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    container.remove().await
+}
+
+/// A container from [`copy_from_image`], removed on drop unless
+/// [`remove`](Self::remove) already removed it.
+struct CreatedContainer {
+    runtime: Box<dyn ContainerRuntime>,
+    name: Option<String>,
+}
+
+impl CreatedContainer {
+    fn name(&self) -> &str {
+        self.name
+            .as_deref()
+            .expect("the container is not removed yet")
+    }
+
+    async fn remove(mut self) -> Result<()> {
+        let mut command = self.runtime.tokio_command(&["rm", "--force", self.name()]);
+        command.stdin(std::process::Stdio::null());
+        let output = output_async(command, REMOVE_TIMEOUT).await?;
+        if !output.status.success() {
+            bail!(
+                "cannot remove container {}: {}",
+                self.name(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        self.name = None;
+        Ok(())
+    }
+}
+
+impl Drop for CreatedContainer {
+    fn drop(&mut self) {
+        let Some(name) = self.name.take() else { return };
+        let command = self.runtime.command(&["rm", "--force", &name]);
+        match output_with_timeout(command, REMOVE_TIMEOUT) {
+            Ok(output) if !output.status.success() => log::warn!(
+                "cannot remove container {name}: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+            Err(error) => log::warn!("cannot remove container {name}: {error}"),
+            Ok(_) => {}
+        }
     }
 }
 
@@ -1626,8 +1803,9 @@ esac
             // The config image must always be amd64: Antithesis does not support
             // arm64, and this build runs unchanged on arm hosts.
             let arch = rt
-                .image_architecture(&image_ref)
-                .unwrap_or_else(|e| panic!("{}: {e:?}", rt.name()));
+                .image_inspect(&image_ref, None)
+                .unwrap_or_else(|e| panic!("{}: {e:?}", rt.name()))
+                .architecture;
             assert_eq!(
                 arch,
                 Architecture::Amd64,

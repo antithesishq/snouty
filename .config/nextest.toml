@@ -45,6 +45,7 @@ filter = """
    + test(=engines_push_with_the_registry_auth)
    + test(=engines_push_and_pull_through_the_helper)
    + test(/_engine_.*_specs$/)
+   + binary_id(snouty::containers_storage_engines)
 """
 test-group = "container"
 # These are the slowest tests in the suite by a wide margin, and nextest

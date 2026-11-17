@@ -14,7 +14,7 @@ use color_eyre::eyre::{OptionExt, Report, Result, eyre};
 use url::Url;
 
 use crate::api::AntithesisApi;
-use crate::auth::{AuthenticationInfo, PasswordPolicy, RefreshableOAuthToken};
+use crate::auth::{AuthenticationInfo, PasswordPolicy, RefreshableOAuthToken, RenewalError};
 use crate::error::user_error;
 use crate::render::sanitize;
 use crate::settings::{Settings, SettingsRequest, Tenant, UnresolvedProfile};
@@ -290,10 +290,15 @@ async fn oauth_secret(api: &AntithesisApi, token: &RefreshableOAuthToken) -> Res
         if token.expired() {
             return Err(err);
         }
+        // The message of a renewal error says that the sign-in expired,
+        // which is not true yet, so only its next step shows.
+        let next_step = err
+            .downcast_ref::<RenewalError>()
+            .map_or_else(|| format!("{err:#}"), RenewalError::next_step);
         // A bare eprintln, not log::warn!: the notice must reach stderr
         // independent of RUST_LOG.
         eprintln!(
-            "warning: the OAuth token refresh failed, so the stored token is used until it expires: {err:#}"
+            "warning: the sign-in could not be renewed, so the stored token is used until it expires; {next_step}"
         );
     }
     Ok(token.access_token())

@@ -9,6 +9,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use color_eyre::Section;
 use color_eyre::eyre::{Report, Result};
 use log::warn;
 use reqwest::StatusCode;
@@ -129,10 +130,11 @@ impl RefreshableOAuthToken {
             return Ok(());
         }
         let Some(refresh_token) = current.refresh_token else {
-            return Err(Report::new(RenewalError {
-                failure: RenewalFailure::Refused,
-                profile: self.store.profile().map(str::to_owned),
-            }));
+            return Err(RenewalError::report(
+                RenewalFailure::Refused,
+                self.store.profile(),
+                None,
+            ));
         };
 
         let refreshed =
@@ -255,14 +257,33 @@ impl std::fmt::Display for RenewalFailure {
     }
 }
 
+impl RenewalError {
+    /// A report of `failure` for the sign-in of `profile`, caused by
+    /// `cause`. It is the user's to fix, so it has no backtrace.
+    fn report(
+        failure: RenewalFailure,
+        profile: Option<&str>,
+        cause: Option<reqwest::Error>,
+    ) -> Report {
+        let error = Self {
+            failure,
+            profile: profile.map(str::to_owned),
+        };
+        match cause {
+            Some(cause) => Report::new(cause).wrap_err(error),
+            None => Report::new(error),
+        }
+        .suppress_backtrace(true)
+    }
+
+    pub(crate) fn next_step(&self) -> String {
+        self.failure.next_step(self.profile.as_deref())
+    }
+}
+
 impl std::fmt::Display for RenewalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}; {}",
-            self.failure,
-            self.failure.next_step(self.profile.as_deref())
-        )
+        write!(f, "{}; {}", self.failure, self.next_step())
     }
 }
 
@@ -288,10 +309,7 @@ async fn refresh_oauth_token(
         let failure = err
             .status()
             .map_or(RenewalFailure::Temporary, RenewalFailure::of_status);
-        Report::new(err).wrap_err(RenewalError {
-            failure,
-            profile: profile.map(str::to_owned),
-        })
+        RenewalError::report(failure, profile, Some(err))
     };
     client
         .execute(request)

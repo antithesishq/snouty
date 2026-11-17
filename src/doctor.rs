@@ -460,7 +460,7 @@ fn password_only_check(
         in_use,
         selected,
     )
-    .note(Level::Note, password_next_step(in_use.tag()))
+    .note(Level::Note, password_next_step(in_use.tag(), selected))
 }
 
 /// The one step that frees `hidden`, a stored credential that the
@@ -1052,8 +1052,8 @@ mod tests {
     /// where they came from.
     #[test]
     fn a_password_alone_is_one_check_with_one_next_step() {
-        let notes = |source: SourcedCredential| {
-            let checks = authn_checks(&[source], None, false);
+        let notes = |source: SourcedCredential, selected: Option<&str>| {
+            let checks = authn_checks(&[source], selected, false);
             assert_eq!(
                 checks.len(),
                 1,
@@ -1084,7 +1084,7 @@ mod tests {
                 .to_owned(),
         );
         assert_eq!(
-            notes(env_password_source()),
+            notes(env_password_source(), None),
             [
                 deprecated.clone(),
                 (
@@ -1102,13 +1102,16 @@ mod tests {
             ]
         );
         assert_eq!(
-            notes(from_file(
-                AuthenticationInfo::Password {
-                    username: "user".to_owned(),
-                    password: FAKE_PASSWORD.to_owned(),
-                },
+            notes(
+                from_file(
+                    AuthenticationInfo::Password {
+                        username: "user".to_owned(),
+                        password: FAKE_PASSWORD.to_owned(),
+                    },
+                    None
+                ),
                 None
-            )),
+            ),
             [
                 deprecated,
                 (Level::Note, "read from the credentials file".to_owned()),
@@ -1119,14 +1122,17 @@ mod tests {
             ]
         );
         // A bare `snouty login` writes the default profile, so the next step
-        // names the profile that holds the password.
-        let keychain = notes(from_keychain(
-            AuthenticationInfo::Password {
-                username: "user".to_owned(),
-                password: FAKE_PASSWORD.to_owned(),
-            },
+        // names the selected profile.
+        let keychain = notes(
+            from_keychain(
+                AuthenticationInfo::Password {
+                    username: "user".to_owned(),
+                    password: FAKE_PASSWORD.to_owned(),
+                },
+                Some("prod"),
+            ),
             Some("prod"),
-        ));
+        );
         assert_eq!(
             keychain.last().unwrap(),
             &(

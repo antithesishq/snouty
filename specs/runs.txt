@@ -84,6 +84,14 @@ stderr -literal 'run `snouty login` to replace it with an API key'
 ! snouty --profile prod runs
 stderr -literal 'run `snouty login --profile prod` to replace it with an API key'
 
+# With a named profile, the login for an exported password names the profile.
+env ANTITHESIS_USERNAME=testuser
+set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
+! snouty --profile prod runs
+stderr -literal 'run `snouty login --profile prod` to store an API key, then `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`'
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
+
 # On success, the command fetches all pages via next_cursor and prints a table
 # with relative timestamps and short status words.
 mock-runs-server

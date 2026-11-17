@@ -153,6 +153,18 @@ async fn fetch_github_actions_oidc_credentials(
         .await
         .map_err(|err| request_failed(&err))?;
     let status = response.status();
+    // Name a 2xx body only when it is a page, such as the sign-in page of a
+    // proxy. Any other body can carry a token, also under another key or
+    // after a prefix, and the job log does not mask it.
+    let page = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|mime| {
+            let mime = mime.trim();
+            mime.eq_ignore_ascii_case("text/html") || mime.eq_ignore_ascii_case("text/plain")
+        });
     let body = if status.is_success() {
         crate::api::read_capped_body(response)
             .await
@@ -165,13 +177,7 @@ async fn fetch_github_actions_oidc_credentials(
     {
         return Ok(response.value);
     }
-    // Omit a 2xx body that is or starts like JSON, also one cut at the cap:
-    // it can carry a token under another key, and the job log does not mask
-    // it.
-    let message = if status.is_success()
-        && (body.trim_start().starts_with(['{', '['])
-            || serde_json::from_str::<serde_json::Value>(&body).is_ok())
-    {
+    let message = if status.is_success() && !page {
         String::new()
     } else {
         crate::api::error_body_message(&body)
@@ -362,50 +368,53 @@ mod tests {
         assert_eq!(err.chain().count(), 1);
     }
 
+    /// The error of a fetch from an Actions token endpoint that answers 200
+    /// with `body` of `content_type`.
+    async fn success_answer_error(body: String, content_type: &str) -> String {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body, content_type))
+            .mount(&server)
+            .await;
+        fetch_github_actions_oidc_credentials(
+            &format!("{}/token", server.uri()),
+            FAKE_OIDC_REQUEST_TOKEN,
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+    }
+
     #[tokio::test]
-    async fn github_actions_oidc_exchange_error_names_a_success_without_a_token() {
-        for (body, tail) in [
-            (
+    async fn github_actions_oidc_exchange_error_names_a_success_page_without_a_token() {
+        assert_eq!(
+            success_answer_error(
                 "<html>\n  <h1>Sign in</h1>\n</html>".to_owned(),
-                ": <html> <h1>Sign in</h1> </html>",
-            ),
-            (
-                serde_json::json!({"token": FAKE_OIDC_TOKEN}).to_string(),
-                "",
-            ),
-        ] {
-            let (url, _requests) = spawn_oidc_token_server("/token", "200 OK", &body);
-            let err = fetch_github_actions_oidc_credentials(&url, FAKE_OIDC_REQUEST_TOKEN)
-                .await
-                .unwrap_err();
-            assert_eq!(
-                err.to_string(),
-                format!(
-                    "failed to get a GitHub Actions OIDC token: the GitHub Actions token endpoint answered 200 OK without a token{tail}"
-                )
+                "text/html; charset=utf-8"
+            )
+            .await,
+            "failed to get a GitHub Actions OIDC token: the GitHub Actions token endpoint answered 200 OK without a token: <html> <h1>Sign in</h1> </html>"
+        );
+    }
+
+    #[tokio::test]
+    async fn github_actions_oidc_exchange_error_omits_a_success_body_that_is_not_a_page() {
+        let token = serde_json::json!({"token": FAKE_OIDC_TOKEN}).to_string();
+        for body in [token.clone(), format!("\u{feff}{token}")] {
+            assert!(
+                success_answer_error(body, "application/json")
+                    .await
+                    .ends_with("answered 200 OK without a token")
             );
         }
     }
 
     #[tokio::test]
     async fn github_actions_oidc_exchange_error_caps_a_success_body() {
-        let body = "x".repeat(1024 * 1024);
-        let (url, _requests) = spawn_oidc_token_server("/token", "200 OK", &body);
-        let err = fetch_github_actions_oidc_credentials(&url, FAKE_OIDC_REQUEST_TOKEN)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().len() < 100 * 1024);
-    }
-
-    #[tokio::test]
-    async fn github_actions_oidc_exchange_error_omits_a_success_json_body_cut_at_the_cap() {
-        let body = serde_json::json!({"token": FAKE_OIDC_TOKEN, "pad": "x".repeat(1024 * 1024)})
-            .to_string();
-        let (url, _requests) = spawn_oidc_token_server("/token", "200 OK", &body);
-        let err = fetch_github_actions_oidc_credentials(&url, FAKE_OIDC_REQUEST_TOKEN)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().ends_with("answered 200 OK without a token"));
+        let error = success_answer_error("x".repeat(1024 * 1024), "text/plain").await;
+        assert!(error.len() < 100 * 1024);
     }
 
     #[tokio::test]

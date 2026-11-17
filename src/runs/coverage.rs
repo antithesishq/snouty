@@ -510,10 +510,22 @@ fn in_source_order<'a, K: Ord>(
     groups
 }
 
-/// The width of the COVERAGE cell: the percent in 6 columns, two spaces, then
-/// reached over total in 9, which SI notation is enough for.
-const COUNTS_WIDTH: usize = 9;
-const COVERAGE_WIDTH: usize = 6 + 2 + COUNTS_WIDTH;
+/// The narrowest counts column. A module's counts set the column, so it can
+/// shift between modules; most modules' counts fit in 5 (`19/34`: 233 of
+/// 699 modules in 11 runs on orbitinghail, and 470 fit in 5 or less), so with
+/// this floor most modules line up.
+const MIN_COUNTS_WIDTH: usize = 5;
+
+/// The width of a COVERAGE cell whose counts take `counts_width`: the percent
+/// in 6 columns, two spaces, then the counts.
+fn coverage_width(counts_width: usize) -> usize {
+    6 + 2 + counts_width
+}
+
+/// `7/20`, `1.1k/4k`: reached over total, in SI notation.
+fn counts(reached: usize, total: usize) -> String {
+    format!("{}/{}", si(reached), si(total))
+}
 
 /// `50.8%`: one decimal, so that a little coverage does not round to 0%.
 fn percent(reached: usize, total: usize) -> String {
@@ -542,10 +554,11 @@ fn si(n: usize) -> String {
     n.to_string()
 }
 
-/// The COVERAGE cell: `66.7%       2/3`. 0% is yellow and 100% green.
-fn coverage(reached: usize, total: usize) -> String {
-    let counts = format!("{}/{}", si(reached), si(total));
-    let text = format!("{:>6}  {counts:>COUNTS_WIDTH$}", percent(reached, total));
+/// The COVERAGE cell: the percent, right-aligned, then the counts, left-
+/// aligned in `counts_width`: ` 66.7%  2/3 `. 0% is yellow and 100% green.
+fn coverage(reached: usize, total: usize, counts_width: usize) -> String {
+    let counts = counts(reached, total);
+    let text = format!("{:>6}  {counts:<counts_width$}", percent(reached, total));
     if reached == 0 {
         style(text).yellow().to_string()
     } else if reached == total {
@@ -575,10 +588,15 @@ impl Render {
             label.push_str("  ");
             label.push_str(&sanitize(part));
         }
-        let room = self.room("").saturating_sub(measure_text_width(&head));
+        // The counts column is as wide as the module's widest counts, which
+        // are the module's own.
+        let cw = nodes(tree)
+            .map(|n| counts(n.reached, n.total).len())
+            .fold(MIN_COUNTS_WIDTH, usize::max);
+        let room = self.room("", cw).saturating_sub(measure_text_width(&head));
         let mut lines = vec![format!(
             "{}  {}{}",
-            coverage(tree.reached, tree.total),
+            coverage(tree.reached, tree.total, cw),
             style(head).bold(),
             style(truncate_str(&label, room, "…")).dim()
         )];
@@ -593,7 +611,7 @@ impl Render {
         .into_iter();
         for (i, file) in tree.kids.iter().enumerate() {
             let last = i + 1 == tree.kids.len();
-            self.node(file, "", last, &mut tables, &mut lines);
+            self.node(file, "", last, cw, &mut tables, &mut lines);
         }
         lines.join("\n")
     }
@@ -605,6 +623,7 @@ impl Render {
         node: &Node<'_>,
         lead: &str,
         last: bool,
+        cw: usize,
         tables: &mut impl Iterator<Item = String>,
         lines: &mut Vec<String>,
     ) {
@@ -616,7 +635,7 @@ impl Render {
         } else {
             format!("{lead}{}   ", c.down)
         };
-        let room = self.room(&prefix);
+        let room = self.room(&prefix, cw);
         let text = match &node.kind {
             Kind::Module { .. } => unreachable!("a module is a root"),
             Kind::File(file) => {
@@ -631,14 +650,14 @@ impl Render {
         };
         lines.push(format!(
             "{}  {}{text}",
-            coverage(node.reached, node.total),
+            coverage(node.reached, node.total, cw),
             style(prefix).dim()
         ));
 
         match &node.kind {
             Kind::Function(_) => {
                 if let Some(table) = tables.next() {
-                    let indent = " ".repeat(COVERAGE_WIDTH + 2);
+                    let indent = " ".repeat(coverage_width(cw) + 2);
                     let lead = style(&kid_lead).dim();
                     for line in table.lines() {
                         lines.push(format!("{indent}{lead}{line}").trim_end().to_string());
@@ -656,15 +675,15 @@ impl Render {
             _ => node.kids.iter().collect(),
         };
         for (i, kid) in kids.iter().enumerate() {
-            self.node(kid, &kid_lead, i + 1 == kids.len(), tables, lines);
+            self.node(kid, &kid_lead, i + 1 == kids.len(), cw, tables, lines);
         }
     }
 
     /// The room for a node's text after the COVERAGE cell and `prefix`, on a
     /// terminal. Off one, the width is unbounded, and so is the room.
-    fn room(&self, prefix: &str) -> usize {
+    fn room(&self, prefix: &str, cw: usize) -> usize {
         self.width
-            .saturating_sub(COVERAGE_WIDTH + 2 + measure_text_width(prefix))
+            .saturating_sub(coverage_width(cw) + 2 + measure_text_width(prefix))
             .max(8)
     }
 
@@ -695,6 +714,11 @@ impl Render {
             })
             .collect()
     }
+}
+
+/// Every node of a tree.
+fn nodes<'t, 'a>(tree: &'t Node<'a>) -> Box<dyn Iterator<Item = &'t Node<'a>> + 't> {
+    Box::new(std::iter::once(tree).chain(tree.kids.iter().flat_map(nodes)))
 }
 
 /// The functions of a tree, in the order that it prints them.
@@ -810,9 +834,9 @@ mod tests {
     fn file_rollup_lists_files_under_the_module() {
         assert_eq!(
             render(CoverageRollup::File, &sample()),
-            " 50.0%        2/4  module m  app  Java\n \
-             66.7%        2/3  ┣━━ a.java\n  \
-             0.0%        0/1  ┗━━ b.go"
+            " 50.0%  2/4    module m  app  Java\n \
+             66.7%  2/3    ┣━━ a.java\n  \
+             0.0%  0/1    ┗━━ b.go"
         );
     }
 
@@ -820,12 +844,12 @@ mod tests {
     fn function_rollup_groups_methods_by_class_in_source_order() {
         let out = render(CoverageRollup::Function, &sample());
         let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines[2], "100.0%        1/1  ┃   ┣━━ (no class)");
-        assert_eq!(lines[3], "100.0%        1/1  ┃   ┃   ┗━━ helper");
-        assert_eq!(lines[4], "100.0%        1/1  ┃   ┣━━ Cache$Entry");
-        assert_eq!(lines[6], "  0.0%        0/1  ┃   ┗━━ Store");
+        assert_eq!(lines[2], "100.0%  1/1    ┃   ┣━━ (no class)");
+        assert_eq!(lines[3], "100.0%  1/1    ┃   ┃   ┗━━ helper");
+        assert_eq!(lines[4], "100.0%  1/1    ┃   ┣━━ Cache$Entry");
+        assert_eq!(lines[6], "  0.0%  0/1    ┃   ┗━━ Store");
         // A file of free functions only has no class level.
-        assert_eq!(lines[9], "  0.0%        0/1      ┗━━ main");
+        assert_eq!(lines[9], "  0.0%  0/1        ┗━━ main");
     }
 
     #[test]

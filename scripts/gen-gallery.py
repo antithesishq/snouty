@@ -2068,7 +2068,7 @@ def properties_pass_and_fail(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     )
 
 
-COVERAGE_CELL = r"\d+\.\d%  +\S+/\S+"
+COVERAGE_CELL = r"\d+\.\d%  \S+/\S+"
 
 
 def coverage_tree(rollup: str):
@@ -2079,8 +2079,8 @@ def coverage_tree(rollup: str):
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         out = sr.result.stdout
-        modules = re.findall(rf"^ *{COVERAGE_CELL}  module \S+", out, re.M)
-        nodes = re.findall(rf"^ *{COVERAGE_CELL}  [┃ ]*[┣┗]━━ \S", out, re.M)
+        modules = re.findall(rf"^ *{COVERAGE_CELL} +module \S+", out, re.M)
+        nodes = re.findall(rf"^ *{COVERAGE_CELL} +[┃ ]*[┣┗]━━ \S", out, re.M)
         tables = re.findall(r"START +END +INPUT_HASH +VTIME$", out, re.M)
         reached = re.findall(r"\d+(?::\d+)? +\S+ +-?\d+ +\d+\.?\d*$", out, re.M)
         status = re.search(

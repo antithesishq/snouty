@@ -347,14 +347,18 @@ fn persist_to_file(
 
 pub(super) fn parse_credentials_file_toml(contents: &str, path: &Path) -> Result<CredentialsFile> {
     toml::from_str::<CredentialsFile>(contents)
-        .wrap_err(format!(
-            "\"{}\" is not valid TOML or cannot be parsed as a Snouty credentials file.",
-            path.display()
-        ))
-        .suggestion(format!(
-            "fix {}, or run `snouty login` to replace it",
-            path.display()
-        ))
+        .wrap_err_with(|| {
+            format!(
+                "\"{}\" is not valid TOML or cannot be parsed as a Snouty credentials file.",
+                path.display()
+            )
+        })
+        .with_suggestion(|| {
+            format!(
+                "fix {}, or run `snouty login` to replace it",
+                path.display()
+            )
+        })
 }
 
 #[derive(Serialize, Deserialize)]

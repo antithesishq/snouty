@@ -13,14 +13,17 @@ instrumented locations that the run reached, then the reached and total counts:
 By default, each module has one row per file: FILE and COVERAGE.
 
 With --by `function`, each file has a header with its coverage, then one row per
-function, in source order: FUNCTION and COVERAGE. A function at 0% is one that
-the run never entered.
+function, in source order: FUNCTION and COVERAGE. FUNCTION has the short name of
+its class or type when it has one, such as `Handler.do_GET`, so methods of
+different classes have their own rows. A function at 0% is one that the run
+never entered.
 
 With --by `location`, each file has a header, then one row per location, in
-source order: INPUT_HASH, VTIME and LOCATION. LOCATION is the function, line and
-column. INPUT_HASH and VTIME give the moment where the run first reached the
-location, and are blank for a location that it has not reached. Pass them as the
-input_hash and vtime of `runs logs` to read the logs up to that moment.
+source order: INPUT_HASH, VTIME and LOCATION. LOCATION is the function, as in
+FUNCTION, then the line and column. INPUT_HASH and VTIME give the moment where
+the run first reached the location, and are blank for a location that it has not
+reached. Pass them as the input_hash and vtime of `runs logs` to read the logs
+up to that moment.
 
 Several locations can share a function, line and column, such as the copies of a
 generic function in native code, or the two outcomes of a branch in Python. Each

@@ -188,6 +188,20 @@ fn coverage(reached: usize, total: usize) -> String {
     }
 }
 
+/// The location's function, after the short name of its class or type when
+/// it has one: `Handler.do_GET`. The class is the last segment of a Java
+/// binary name or a C# type name; the file already says where it lives.
+fn function_name(location: &LocationCoverage) -> String {
+    let function = sanitize(&location.function);
+    match location.class.as_deref() {
+        Some(class) if !class.is_empty() => {
+            let short = class.rsplit('.').next().unwrap_or(class);
+            format!("{}.{function}", sanitize(short))
+        }
+        _ => function,
+    }
+}
+
 fn reached_count(locations: &[&LocationCoverage]) -> usize {
     locations
         .iter()
@@ -348,13 +362,14 @@ impl CoverageReport<'_> {
             .column(Column::new("COVERAGE"))
     }
 
-    /// One row per function, in source order: by the first line of its
-    /// locations, then by name.
+    /// One row per function of a class, in source order: by the first line
+    /// of its locations, then by name. Methods of different classes stay
+    /// apart even when they share a name.
     fn function_rows(locations: &[&LocationCoverage]) -> Vec<Vec<String>> {
-        let mut functions: HashMap<&str, Vec<&LocationCoverage>> = HashMap::new();
+        let mut functions: HashMap<String, Vec<&LocationCoverage>> = HashMap::new();
         for location in locations {
             functions
-                .entry(&location.function)
+                .entry(function_name(location))
                 .or_default()
                 .push(location);
         }
@@ -372,7 +387,7 @@ impl CoverageReport<'_> {
             .into_iter()
             .map(|(function, locations)| {
                 vec![
-                    sanitize(function),
+                    function,
                     coverage(reached_count(&locations), locations.len()),
                 ]
             })
@@ -406,7 +421,7 @@ impl CoverageReport<'_> {
         locations
             .into_iter()
             .map(|location| {
-                let mut place = sanitize(&location.function);
+                let mut place = function_name(location);
                 if let Some(line) = location.begin_line {
                     let _ = write!(place, ":{line}");
                     if let Some(column) = location.begin_column {
@@ -561,6 +576,26 @@ mod tests {
             assert!(measure_text_width(line) <= 30, "{line:?}");
         }
         assert!(out.contains("…"), "{out}");
+    }
+
+    #[test]
+    fn methods_of_different_classes_get_their_own_rows() {
+        let with_class = |class: &str, reached| {
+            let mut value =
+                serde_json::to_value(location("m", "a.java", "get", 1, 1, reached)).unwrap();
+            value["class"] = json!(class);
+            serde_json::from_value::<LocationCoverage>(value).unwrap()
+        };
+        let locations = vec![
+            with_class("com.example.Cache$Entry", Some("1.0")),
+            with_class("com.example.Store", None),
+        ];
+        let names = HashMap::new();
+        let out = plain(&report(&names).render(&locations, CoverageLevel::Function));
+        assert!(out.contains("Cache$Entry.get  100.0%  1/1"), "{out}");
+        assert!(out.contains("Store.get          0.0%  0/1"), "{out}");
+        let out = plain(&report(&names).render(&locations, CoverageLevel::Location));
+        assert!(out.contains("Store.get:1:1"), "{out}");
     }
 
     #[test]

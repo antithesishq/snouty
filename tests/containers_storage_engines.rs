@@ -108,7 +108,7 @@ async fn save_and_convert(
 ) -> color_eyre::Result<Converted> {
     let (archive, exit) = save_images(runtime, tags, None).unwrap();
     let output = std::fs::File::create(path).unwrap();
-    let converted = tokio::task::spawn_blocking(move || convert(vec![archive], output));
+    let converted = tokio::task::spawn_blocking(move || convert(vec![archive], output, &[]));
     let (converted, saved) = tokio::join!(converted, exit.wait());
     let converted = converted.unwrap();
     // A failed conversion stops reading, which can fail save in turn, so

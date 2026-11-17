@@ -25,6 +25,7 @@ use crate::{
     compose,
     config::ComposeConfig,
     container::{self, ImageArchive, SaveExit},
+    containers_storage::PinnedImage,
     settings::Settings,
 };
 
@@ -629,21 +630,29 @@ async fn workload_inject_disk(
     platform: super::SimulatePlatform,
 ) -> Result<PathBuf> {
     let references: Vec<_> = references.into_iter().collect();
+    let mut pins = Vec::new();
     for reference in &references {
-        images.inspect(reference, platform)?;
+        let image = images.inspect(reference, platform)?;
+        if container::image_digest(reference).is_some() {
+            pins.push(PinnedImage {
+                reference: reference.clone(),
+                image_id: image.id,
+            });
+        }
     }
     let saved = images.save(&references, platform)?;
-    inject_disk(Some(saved), run_dir, super::images::IMAGE_TIMEOUT).await
+    inject_disk(Some((saved, pins)), run_dir, super::images::IMAGE_TIMEOUT).await
 }
 
 /// Convert the archive of a running `save` into the read-only EROFS drive
-/// that the environment imports at boot, as `save` writes it. Without one
-/// the drive holds an empty store.
+/// that the environment imports at boot, as `save` writes it, and name each
+/// image that a reference pins by digest. Without one the drive holds an
+/// empty store.
 ///
 /// `save` is killed when `timeout` passes or the caller is cancelled. Its
 /// archive then ends, which ends the conversion.
 async fn inject_disk(
-    saved: Option<(ImageArchive, SaveExit)>,
+    saved: Option<((ImageArchive, SaveExit), Vec<PinnedImage>)>,
     run_dir: &Path,
     timeout: Duration,
 ) -> Result<PathBuf> {
@@ -652,13 +661,13 @@ async fn inject_disk(
     let converted = match saved {
         None => {
             tokio::task::spawn_blocking(move || {
-                crate::containers_storage::convert(Vec::<std::io::Empty>::new(), output)
+                crate::containers_storage::convert(Vec::<std::io::Empty>::new(), output, &[])
             })
             .await?
         }
-        Some((archive, exit)) => {
+        Some(((archive, exit), pins)) => {
             let converted = tokio::task::spawn_blocking(move || {
-                crate::containers_storage::convert(vec![archive], output)
+                crate::containers_storage::convert(vec![archive], output, &pins)
             });
             let Ok((converted, saved)) =
                 tokio::time::timeout(timeout, async { tokio::join!(converted, exit.wait()) }).await
@@ -1003,9 +1012,13 @@ mod tests {
     async fn a_failed_save_reports_its_stderr() {
         let directory = tempfile::tempdir().unwrap();
         let save = fake_save(directory.path(), "echo 'no such image' >&2; exit 1");
-        let error = inject_disk(Some(save), directory.path(), Duration::from_secs(10))
-            .await
-            .unwrap_err();
+        let error = inject_disk(
+            Some((save, Vec::new())),
+            directory.path(),
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap_err();
         assert!(format!("{error:#}").contains("no such image"), "{error:#}");
     }
 
@@ -1013,9 +1026,13 @@ mod tests {
     async fn a_hanging_save_is_killed_at_the_timeout() {
         let directory = tempfile::tempdir().unwrap();
         let save = fake_save(directory.path(), "exec sleep 60");
-        let error = inject_disk(Some(save), directory.path(), Duration::from_millis(500))
-            .await
-            .unwrap_err();
+        let error = inject_disk(
+            Some((save, Vec::new())),
+            directory.path(),
+            Duration::from_millis(500),
+        )
+        .await
+        .unwrap_err();
         assert!(format!("{error:#}").contains("took longer"), "{error:#}");
         assert_killed(directory.path()).await;
     }
@@ -1024,7 +1041,11 @@ mod tests {
     async fn a_cancelled_conversion_kills_save() {
         let directory = tempfile::tempdir().unwrap();
         let save = fake_save(directory.path(), "exec sleep 60");
-        let convert = inject_disk(Some(save), directory.path(), Duration::from_secs(60));
+        let convert = inject_disk(
+            Some((save, Vec::new())),
+            directory.path(),
+            Duration::from_secs(60),
+        );
         tokio::select! {
             _ = convert => panic!("conversion finished"),
             () = async {

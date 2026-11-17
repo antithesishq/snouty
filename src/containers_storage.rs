@@ -41,9 +41,21 @@ pub struct Converted {
     pub layers: usize,
 }
 
+/// A reference that pins its image by digest, such as
+/// `registry.example.com/app@sha256:…`. An archive names its images only by
+/// tag, so the store names a pinned image itself.
+pub struct PinnedImage {
+    /// The reference as the Compose file names the image.
+    pub reference: String,
+    /// The ID that `image inspect` reports for the reference: the config
+    /// digest, or with Docker's containerd store the digest of the manifest.
+    pub image_id: Sha256Digest,
+}
+
 /// Convert image archives, each read once from start to end, into one EROFS
-/// image on `output`.
-pub fn convert<R: Read>(archives: Vec<R>, output: File) -> Result<Converted> {
+/// image on `output`. Each image that one of `pins` names can be found by
+/// that reference.
+pub fn convert<R: Read>(archives: Vec<R>, output: File, pins: &[PinnedImage]) -> Result<Converted> {
     let mut store = StoreWriter::new(output)?;
     for archive in archives {
         let archive = store.read_archive(archive)?;
@@ -55,7 +67,7 @@ pub fn convert<R: Read>(archives: Vec<R>, output: File) -> Result<Converted> {
             HashMap::new()
         };
         for image in saved {
-            store.add_image(&archive, image, &manifests)?;
+            store.add_image(&archive, image, &manifests, pins)?;
         }
     }
     store.finish()
@@ -483,10 +495,42 @@ impl StoreWriter {
         archive: &SavedArchive,
         image: SavedImage,
         manifests: &HashMap<Sha256Digest, Vec<Document>>,
+        pins: &[PinnedImage],
     ) -> Result<()> {
         let config_bytes = archive.read(&image.config)?.to_vec();
         let config_digest = Sha256Digest::of(&config_bytes);
-        let names = image_names(image.repo_tags.unwrap_or_default());
+        let documents = manifests.get(&config_digest);
+        let mut names = image_names(image.repo_tags.unwrap_or_default());
+        // A pinned digest that the archive carries no manifest for, as Podman
+        // archives carry none, becomes the digest of the image, so that a
+        // lookup of the reference finds it.
+        let mut pinned_digest = None;
+        for pin in pins {
+            let Some(digest) = crate::container::image_digest(&pin.reference)
+                .and_then(|digest| digest.parse::<Sha256Digest>().ok())
+            else {
+                continue;
+            };
+            let in_archive = |wanted: &Sha256Digest| {
+                documents.is_some_and(|documents| {
+                    documents.iter().any(|document| document.digest == *wanted)
+                })
+            };
+            // The ID is the config digest, or with Docker's containerd store
+            // the digest of the manifest that the archive carries.
+            let pinned_in_archive = in_archive(&digest);
+            if pin.image_id != config_digest && !in_archive(&pin.image_id) && !pinned_in_archive {
+                continue;
+            }
+            let repo =
+                crate::container::normalize_repo(crate::container::image_repo(&pin.reference));
+            names.push(format!("{repo}@{digest}"));
+            if !pinned_in_archive {
+                pinned_digest = Some(digest);
+            }
+        }
+        names.sort();
+        names.dedup();
         if let Some(existing) = self
             .images
             .iter_mut()
@@ -495,6 +539,9 @@ impl StoreWriter {
             existing.names.extend(names);
             existing.names.sort();
             existing.names.dedup();
+            if let Some(digest) = pinned_digest {
+                existing.digest = digest;
+            }
             return Ok(());
         }
         let config: ImageConfig = serde_json::from_slice(&config_bytes)
@@ -505,7 +552,6 @@ impl StoreWriter {
             image.layers.len(),
             config.rootfs.diff_ids.len()
         );
-        let documents = manifests.get(&config_digest);
         let manifest_layers = documents
             .and_then(|documents| documents.last())
             .map(|manifest| -> Result<_> {
@@ -569,7 +615,7 @@ impl StoreWriter {
         self.directory(&directory, 0o700)?;
         let mut record = ImageRecord {
             id: config_digest.hex().to_owned(),
-            digest: documents[0].digest.clone(),
+            digest: pinned_digest.unwrap_or_else(|| documents[0].digest.clone()),
             names,
             layer: chain
                 .last()
@@ -1517,10 +1563,64 @@ mod tests {
     }
 
     fn convert_to_image(archives: &[&Path]) -> (Converted, ErofsImage) {
+        convert_pinned(archives, &[])
+    }
+
+    fn convert_pinned(archives: &[&Path], pins: &[PinnedImage]) -> (Converted, ErofsImage) {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("images.erofs");
-        let converted = convert(open(archives), File::create(&path).unwrap()).unwrap();
+        let converted = convert(open(archives), File::create(&path).unwrap(), pins).unwrap();
         (converted, ErofsImage::new(std::fs::read(&path).unwrap()))
+    }
+
+    #[test]
+    fn a_digest_pin_names_its_image() {
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = fixture();
+        let registry_digest = Sha256Digest::of(b"the manifest that the registry serves");
+        let reference = format!("registry.example.com/app@{registry_digest}");
+        let images = |pins: &[PinnedImage], archive: &Path| {
+            convert_pinned(&[archive], pins)
+                .1
+                .json("containers/overlay-images/images.json")
+        };
+
+        // A Docker archive carries no manifest: Podman, or the classic store,
+        // whose image ID is the config digest.
+        let docker = docker_archive(&fixture, directory.path(), "app:1");
+        let pin = PinnedImage {
+            reference: reference.clone(),
+            image_id: Sha256Digest::of(&fixture.config),
+        };
+        let pinned = images(std::slice::from_ref(&pin), &docker);
+        assert_eq!(
+            pinned[0]["names"],
+            serde_json::json!(["docker.io/library/app:1", reference])
+        );
+        assert_eq!(pinned[0]["digest"], registry_digest.to_string());
+
+        // The containerd store saves the platform manifest, without the
+        // index that the reference pins. Its image ID is that manifest.
+        let (oci, _, manifest_digest) = oci_archive(&fixture, directory.path());
+        let pin = PinnedImage {
+            reference: reference.clone(),
+            image_id: manifest_digest,
+        };
+        let pinned = images(std::slice::from_ref(&pin), &oci);
+        assert!(
+            pinned[0]["names"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!(reference))
+        );
+        assert_eq!(pinned[0]["digest"], registry_digest.to_string());
+
+        // A pin of another image changes nothing.
+        let other = PinnedImage {
+            reference,
+            image_id: Sha256Digest::of(b"another config"),
+        };
+        assert_eq!(images(&[other], &docker), images(&[], &docker));
     }
 
     #[test]
@@ -1829,7 +1929,7 @@ mod tests {
             .into_bytes();
         let archive = docker_archive(&fixture, directory.path(), "app:bad");
         let output = File::create(directory.path().join("images.erofs")).unwrap();
-        let error = convert(open(&[&archive]), output).unwrap_err();
+        let error = convert(open(&[&archive]), output, &[]).unwrap_err();
         assert!(format!("{error:#}").contains("but its image config says"));
     }
 
@@ -1854,7 +1954,7 @@ mod tests {
             let archive = builder.into_inner().unwrap();
             format!(
                 "{:#}",
-                convert(vec![archive.as_slice()], output).unwrap_err()
+                convert(vec![archive.as_slice()], output, &[]).unwrap_err()
             )
         };
         let error = convert_with(b"{\"not\": \"a layer\"}", &config);
@@ -1896,7 +1996,7 @@ mod tests {
             read: 0,
         };
         let output = File::create(directory.path().join("images.erofs")).unwrap();
-        convert(vec![&mut counted], output).unwrap();
+        convert(vec![&mut counted], output, &[]).unwrap();
         assert_eq!(counted.read, bytes.len());
     }
 

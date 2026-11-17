@@ -307,9 +307,15 @@ fn lock_dir() -> Option<PathBuf> {
 }
 
 /// Every snouty build computes the same token for a path, so all builds lock
-/// the same file. Paths that differ only in bytes that are not UTF-8 share a token.
+/// the same file. Spellings that `Path` compares equal, such as `a//b` and
+/// `a/./b`, share a token, and so do paths that differ only in bytes that are
+/// not UTF-8.
 fn path_lock_token(path: &Path) -> String {
-    let mut token = format!("{:x}", Sha256::digest(path.to_string_lossy().as_bytes()));
+    let normalized: PathBuf = path.components().collect();
+    let mut token = format!(
+        "{:x}",
+        Sha256::digest(normalized.to_string_lossy().as_bytes())
+    );
     token.truncate(16);
     token
 }
@@ -332,6 +338,14 @@ mod tests {
         assert_eq!(
             path_lock_token(Path::new("/home/user/.config/snouty/credentials.toml")),
             "2caa5dffc0b5a87a"
+        );
+    }
+
+    #[test]
+    fn path_lock_token_ignores_redundant_separators() {
+        assert_eq!(
+            path_lock_token(Path::new("/home/user//./.config/snouty/credentials.toml")),
+            path_lock_token(Path::new("/home/user/.config/snouty/credentials.toml")),
         );
     }
 

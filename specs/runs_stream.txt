@@ -55,7 +55,7 @@ mock-runs-server
 snouty --json runs stream run-2
 stdout '^\{"event":"property","property_id":"27a7cb0b311c8481c4ce12f3347fadbf","name":"Balance stays nonnegative"\}$'
 stdout '^\{"event":"sample","property_id":"97cf5fcafa500ed62bf109d81834c5b881a2c854","kind":"counterexample","input_hash":"-100","vtime":45\.334635781589895\}$'
-stdout '^\{"event":"verdict","property_id":"97cf5fcafa500ed62bf109d81834c5b881a2c854","verdict":"failed"\}$'
+stdout '^\{"event":"verdict","property_id":"97cf5fcafa500ed62bf109d81834c5b881a2c854","verdict":"failed","name":"Safety: Counter value stays below limit"\}$'
 stdout '^\{"event":"completed","run_id":"run-2"\}$'
 
 # A server error after the stream opens fails the command. The events before

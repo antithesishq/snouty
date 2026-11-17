@@ -234,10 +234,10 @@ impl Line {
             },
             Self::Verdict {
                 property_id,
+                name,
                 verdict,
-                ..
             } => {
-                json!({"event": "verdict", "property_id": property_id, "verdict": verdict.to_string()})
+                json!({"event": "verdict", "property_id": property_id, "verdict": verdict.to_string(), "name": name})
             }
             Self::Completed { run_id } => json!({"event": "completed", "run_id": run_id}),
             Self::Unknown(line) => json!({"event": "unknown", "data": line}),
@@ -566,7 +566,7 @@ mod tests {
             [
                 json!({"event": "property", "property_id": "a1", "name": "Property a1"}),
                 json!({"event": "sample", "property_id": "a1", "kind": "counterexample", "input_hash": "-100", "vtime": 401.25}),
-                json!({"event": "verdict", "property_id": "a1", "verdict": "failed"}),
+                json!({"event": "verdict", "property_id": "a1", "verdict": "failed", "name": "Property a1"}),
             ]
         );
         let unknown = json!({"type": "RUN_PAUSED"});

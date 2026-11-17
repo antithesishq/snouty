@@ -81,7 +81,7 @@ mock-runs-server
 mock-runs-server
 ! snouty runs wait no-such-run
 stderr '.*run not found: no-such-run.*'
-! stderr '.*API error.*'
+! stderr 'Antithesis API'
 
 # --timeout bounds the whole wait, in-flight request included. run-2 stays
 # in_progress on the mock, so a zero timeout fails immediately.

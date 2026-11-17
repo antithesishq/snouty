@@ -32,14 +32,14 @@ pub fn user_error(message: impl Into<String>) -> Report {
     Report::new(UserError(message.into())).suppress_backtrace(true)
 }
 
-/// Error carrying the HTTP status of a failed API call structurally, so callers
-/// can classify failures (e.g. "was this a 404?") without sniffing the rendered
-/// message string. The `Display` text is the human-facing message built by the
-/// api layer; the `status` is the raw HTTP status code.
+/// The HTTP status of a failed API call and the server's text, so that callers
+/// classify a failure without parsing the message. `Display` shows snouty's
+/// message, built by the api layer.
 #[derive(Debug)]
 pub struct ApiError {
     pub status: u16,
     pub message: String,
+    pub server_message: String,
 }
 
 impl std::fmt::Display for ApiError {
@@ -104,12 +104,14 @@ pub fn api_error_status(report: &Report) -> Option<u16> {
         .find_map(|cause| cause.downcast_ref::<ApiError>().map(|e| e.status))
 }
 
-/// Returns the message of the first [`ApiError`] in the report's chain, if
-/// any: the server's own text, with the status in front.
+/// Returns the server's text of the first [`ApiError`] in the report's chain,
+/// if any.
 pub fn api_error_message(report: &Report) -> Option<&str> {
-    report
-        .chain()
-        .find_map(|cause| cause.downcast_ref::<ApiError>().map(|e| e.message.as_str()))
+    report.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<ApiError>()
+            .map(|e| e.server_message.as_str())
+    })
 }
 
 #[cfg(test)]
@@ -118,17 +120,18 @@ mod tests {
 
     #[test]
     fn user_error_message_survives_added_context() {
-        let report = user_error("API error: 400").wrap_err("while listing runs");
+        let report = user_error("bad flag").wrap_err("while listing runs");
         // Alternate Display renders the full chain without a backtrace footer.
         let rendered = format!("{report:#}");
         assert!(rendered.contains("while listing runs"));
-        assert!(rendered.contains("API error: 400"));
+        assert!(rendered.contains("bad flag"));
     }
 
     fn api_error(status: u16, message: &str) -> Report {
         Report::new(ApiError {
             status,
             message: message.to_string(),
+            server_message: String::new(),
         })
     }
 
@@ -199,7 +202,7 @@ mod tests {
 
     #[test]
     fn api_error_status_reads_structured_status() {
-        let report = api_error(404, "API error: 404 Not Found — run missing");
+        let report = api_error(404, "run missing");
         assert_eq!(api_error_status(&report), Some(404));
     }
 
@@ -207,7 +210,7 @@ mod tests {
     fn api_error_status_ignores_digits_in_the_message() {
         // A 500 whose body happens to mention 404 (proxy error pages routinely
         // do) must classify by its real status, not by string-sniffing.
-        let report = api_error(500, "API error: 500 — upstream returned 404 page");
+        let report = api_error(500, "upstream returned 404 page");
         assert_eq!(api_error_status(&report), Some(500));
     }
 

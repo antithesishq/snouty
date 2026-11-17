@@ -67,8 +67,18 @@ set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
 env ANTITHESIS_TENANT=testtenant
 ! snouty runs
 stderr 'This command does not accept username/password authentication.*'
-stderr 'deprecated'
-stderr 'snouty login'
+# `snouty login` alone cannot fix it: the environment hides what login stores.
+stderr -literal '`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`, then run `snouty login` or set ANTITHESIS_API_KEY'
+
+# A username and password in the credentials file need only `snouty login`.
+isolate-home stored_password
+substitute ~/.config/snouty/credentials.toml
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
+! snouty runs
+stderr 'This command does not accept username/password authentication.*'
+stderr -literal 'run `snouty login` to switch to another authentication method'
+! stderr 'unset'
 
 # On success, the command fetches all pages via next_cursor and prints a table
 # with relative timestamps and short status words.
@@ -1266,3 +1276,9 @@ stderr 'the server reported an error mid-stream: mock stream failure'
 [default]
 type = "ApiKey"
 api_key = "${FAKE_API_KEY_A}"
+
+-- stored_password/.config/snouty/credentials.toml --
+[default]
+type = "Password"
+username = "${FAKE_USERNAME}"
+password = "${FAKE_PASSWORD}"

@@ -2,7 +2,7 @@
 
 use color_eyre::{Section, eyre::Result};
 
-use super::{AuthenticationInfo, SourcedCredential};
+use super::{API_KEY_VAR_NAME, AuthenticationInfo, CredentialSource, SourcedCredential};
 use crate::error::user_error;
 
 pub(crate) const USERNAME_VAR_NAME: &str = "ANTITHESIS_USERNAME";
@@ -21,10 +21,18 @@ pub(crate) enum PasswordPolicy {
 }
 
 /// The one-line remediation for the username/password deprecation. The
-/// rejection suggestion and the warning on use both render this constant, so
-/// the wording cannot drift apart. Doctor states the deprecation in its own
-/// check, with a next step that depends on where the password came from.
-const PASSWORD_DEPRECATION_SUGGESTION: &str = "username/password authentication is deprecated; run `snouty login` to switch to another authentication method";
+/// rejection suggestion and the warning on use both render it, so the wording
+/// cannot drift apart. Doctor states the deprecation in its own check.
+fn password_deprecation_suggestion(source: &CredentialSource) -> String {
+    match source {
+        // `snouty login` cannot help: the environment hides what it stores.
+        CredentialSource::Environment { variables } => format!(
+            "username/password authentication is deprecated; `unset {}`, then run `snouty login` or set {API_KEY_VAR_NAME}",
+            variables.join(" ")
+        ),
+        CredentialSource::Stored(_) => "username/password authentication is deprecated; run `snouty login` to switch to another authentication method".to_owned(),
+    }
+}
 
 /// Apply the caller's [`PasswordPolicy`] to a resolved credential. This is
 /// the only place that accepts or rejects username/password credentials, so
@@ -40,12 +48,13 @@ pub(super) fn apply_password_policy(
         PasswordPolicy::Reject => Err(user_error(
             "This command does not accept username/password authentication, which is only supported when launching runs (`snouty launch`, `snouty debug`)",
         )
-        .suggestion(PASSWORD_DEPRECATION_SUGGESTION)),
+        .suggestion(password_deprecation_suggestion(authn_info.tag()))),
         PasswordPolicy::WarnDeprecated => {
             // A bare eprintln, not log::warn!: the notice must reach stderr
             // on every run, independent of RUST_LOG.
             eprintln!(
-                "warning: {PASSWORD_DEPRECATION_SUGGESTION} (support will be removed in a future release)"
+                "warning: {} (support will be removed in a future release)",
+                password_deprecation_suggestion(authn_info.tag())
             );
             Ok(authn_info)
         }

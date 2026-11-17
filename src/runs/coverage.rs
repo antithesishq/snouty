@@ -1,14 +1,21 @@
-//! `runs coverage`: which instrumented code a run reached, as a tree of
-//! modules, files, classes, functions and locations.
+//! `runs coverage`: the run's coverage locations, as a tree for each module
+//! of files, classes, functions and locations.
+//!
+//! The locations arrive as NDJSON, by module. Each module becomes a
+//! [`Module`] tree, then prints as text through [`tree::render`] or as one
+//! JSON line, before the next module is read.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
+use std::iter::Sum;
+use std::ops::Add;
+use std::pin::pin;
 
 use color_eyre::Section;
 use color_eyre::eyre::{Report, Result};
-use console::{measure_text_width, style, truncate_str};
-use futures_util::{Stream, StreamExt, TryStreamExt, stream};
-use ptree::print_config::UTF_CHARS_BOLD;
+use console::{Alignment, Style, measure_text_width, pad_str};
+use futures_util::{Stream, StreamExt, TryStreamExt, future, stream};
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::OutputOptions;
@@ -19,7 +26,7 @@ use crate::cli::{CoverageRollup, RunsCoverageArgs};
 use crate::error::{api_error_status, user_error};
 use crate::render::{count, sanitize};
 use crate::settings::Settings;
-use crate::table::{Column, Table, truncate_start};
+use crate::tree::{self, Cut, Node, Span};
 use crate::vtime::VTime;
 
 use super::ready::{self, Needs, RetryDecision, RetryPolicy};
@@ -27,14 +34,567 @@ use super::{
     READY_POLL, mid_stream_error, normalize_vtime_field, stream_error_message, terminal_width,
 };
 
-/// Like the other run-scoped streams, the locations endpoint serves a run once
-/// it is ready. It can still answer 404 for a minute or more after the run
-/// reports that it is ready (orbitinghail, release 67.6). A run from before
-/// the coverage API answers 404 too, so only a run created on
-/// [`MIN_COVERAGE_RELEASE`] or later retries it. A finished run fails at
-/// once, and an unknown run fails when snouty reads it after the 404.
+/// One location: typed for the tree, and whole for `--json`, with its vtime
+/// as a JSON number.
+struct Location {
+    coverage: LocationCoverage,
+    json: Value,
+}
+
+impl TryFrom<Value> for Location {
+    type Error = Report;
+
+    /// A `Stream_Error` line fails.
+    fn try_from(mut json: Value) -> Result<Self> {
+        if let Some(message) = stream_error_message(&json) {
+            return Err(mid_stream_error(message));
+        }
+        if let Some(first_reached) = json.get_mut("first_reached") {
+            normalize_vtime_field(first_reached, "moment");
+        }
+        let coverage = LocationCoverage::deserialize(&json)?;
+        Ok(Self { coverage, json })
+    }
+}
+
+/// The locations reached, of all the locations.
+#[derive(Clone, Copy, Default)]
+struct Counts {
+    reached: u64,
+    total: u64,
+}
+
+impl Counts {
+    fn of(locations: &[Location]) -> Self {
+        let reached = locations
+            .iter()
+            .filter(|location| location.coverage.first_reached.is_some())
+            .count();
+        Self {
+            reached: reached as u64,
+            total: locations.len() as u64,
+        }
+    }
+
+    /// `66.7%`, or `–` of no locations.
+    fn percent(self) -> String {
+        if self.total == 0 {
+            "–".to_string()
+        } else {
+            format!("{:.1}%", self.reached as f64 * 100.0 / self.total as f64)
+        }
+    }
+}
+
+impl Add for Counts {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        Self {
+            reached: self.reached + other.reached,
+            total: self.total + other.total,
+        }
+    }
+}
+
+impl Sum for Counts {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::default(), Add::add)
+    }
+}
+
+/// A class's name as the API or the demangled name gives it, and its last
+/// segment.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct ClassName {
+    full: String,
+    short: String,
+}
+
+/// The offset of the `>` that closes the `<` at the start of `text`.
+fn closing_bracket(text: &str) -> Option<usize> {
+    let mut depth = 0;
+    for (index, c) in text.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The offsets where `pattern` starts in `text`, outside angle brackets.
+fn top_level_matches<'a>(text: &'a str, pattern: &'a str) -> impl Iterator<Item = usize> + 'a {
+    let mut depth = 0i32;
+    text.char_indices().filter_map(move |(index, c)| {
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            _ => {}
+        }
+        (depth == 0 && text[index..].starts_with(pattern)).then_some(index)
+    })
+}
+
+/// The last `::`-separated segment of `path`, outside angle brackets.
+fn last_segment(path: &str) -> &str {
+    top_level_matches(path, "::")
+        .last()
+        .map_or(path, |at| &path[at + "::".len()..])
+}
+
+/// The class of a location's function, and the function's name in it.
+fn split_class(location: &LocationCoverage) -> (Option<ClassName>, String) {
+    let function = &location.function;
+    if let Some(class) = location.class.as_deref().filter(|class| !class.is_empty()) {
+        let short = class.rsplit('.').next().unwrap_or(class);
+        let name = ClassName {
+            full: class.to_string(),
+            short: short.to_string(),
+        };
+        return (Some(name), function.clone());
+    }
+    // A demangled `<Type>::rest` or `<Type as Trait>::rest`.
+    let Some(close) = function
+        .starts_with('<')
+        .then(|| closing_bracket(function))
+        .flatten()
+    else {
+        return (None, function.clone());
+    };
+    let Some(rest) = function[close + 1..].strip_prefix("::") else {
+        return (None, function.clone());
+    };
+    let inner = &function[1..close];
+    let (class, function) = match top_level_matches(inner, " as ").next() {
+        Some(at) => {
+            let trait_name = last_segment(&inner[at + " as ".len()..]);
+            (&inner[..at], format!("{trait_name}::{rest}"))
+        }
+        None => (inner, rest.to_string()),
+    };
+    let name = ClassName {
+        full: class.to_string(),
+        short: last_segment(class).to_string(),
+    };
+    (Some(name), function)
+}
+
+fn none_last(value: Option<i64>) -> (bool, Option<i64>) {
+    (value.is_none(), value)
+}
+
+struct Function {
+    name: String,
+    counts: Counts,
+    locations: Vec<Location>,
+}
+
+impl Function {
+    fn new((name, mut locations): (String, Vec<Location>)) -> Self {
+        locations.sort_by_key(|location| {
+            let location = &location.coverage;
+            (
+                none_last(location.begin_line),
+                none_last(location.begin_column),
+                location.address.parse::<u64>().ok(),
+            )
+        });
+        Self {
+            name,
+            counts: Counts::of(&locations),
+            locations,
+        }
+    }
+
+    fn first_line(&self) -> Option<i64> {
+        self.locations[0].coverage.begin_line
+    }
+
+    /// Source order: by the first line, with no line last, then by name.
+    fn order(&self) -> impl Ord + '_ {
+        (none_last(self.first_line()), self.name.as_str())
+    }
+
+    /// The `first_reached` of the location that the run reached first.
+    fn first_reached(&self) -> Option<&Value> {
+        self.locations
+            .iter()
+            .filter_map(|location| {
+                let seconds = location.coverage.first_reached.as_ref()?.run_seconds;
+                Some((seconds, &location.json["first_reached"]))
+            })
+            .min_by(|(a, _), (b, _)| a.total_cmp(b))
+            .map(|(_, first_reached)| first_reached)
+    }
+}
+
+struct Class {
+    /// `None` for the free functions.
+    name: Option<ClassName>,
+    counts: Counts,
+    functions: Vec<Function>,
+}
+
+impl Class {
+    fn new((name, functions): (Option<ClassName>, BTreeMap<String, Vec<Location>>)) -> Self {
+        let mut functions: Vec<Function> = functions.into_iter().map(Function::new).collect();
+        functions.sort_by(|a, b| a.order().cmp(&b.order()));
+        Self {
+            name,
+            counts: functions.iter().map(|function| function.counts).sum(),
+            functions,
+        }
+    }
+
+    fn first_line(&self) -> Option<i64> {
+        self.functions[0].first_line()
+    }
+
+    /// The free functions first, then the classes in source order: by the
+    /// first line, with no line last, then by name.
+    fn order(&self) -> impl Ord + '_ {
+        let name = self.name.as_ref().map(|name| name.full.as_str());
+        (name.is_some(), none_last(self.first_line()), name)
+    }
+}
+
+struct File {
+    /// `None` for the locations with no file.
+    path: Option<String>,
+    counts: Counts,
+    classes: Vec<Class>,
+}
+
+impl File {
+    fn new((path, locations): (Option<String>, Vec<Location>)) -> Self {
+        let mut classes: BTreeMap<Option<ClassName>, BTreeMap<String, Vec<Location>>> =
+            BTreeMap::new();
+        for location in locations {
+            let (class, function) = split_class(&location.coverage);
+            classes
+                .entry(class)
+                .or_default()
+                .entry(function)
+                .or_default()
+                .push(location);
+        }
+        let mut classes: Vec<Class> = classes.into_iter().map(Class::new).collect();
+        classes.sort_by(|a, b| a.order().cmp(&b.order()));
+        Self {
+            path,
+            counts: classes.iter().map(|class| class.counts).sum(),
+            classes,
+        }
+    }
+}
+
+/// A module's locations, by file, class and function. Each level is in
+/// the order that the text and JSON print.
+struct Module {
+    id: String,
+    name: Option<String>,
+    language: Option<String>,
+    counts: Counts,
+    files: Vec<File>,
+}
+
+impl Module {
+    /// `locations` is not empty, and all of one module.
+    fn new(locations: Vec<Location>, labels: &HashMap<String, CoverageModule>) -> Self {
+        let id = locations[0].coverage.module_id.clone();
+        let mut files: BTreeMap<Option<String>, Vec<Location>> = BTreeMap::new();
+        for location in locations {
+            files
+                .entry(location.coverage.file.clone())
+                .or_default()
+                .push(location);
+        }
+        let files: Vec<File> = files.into_iter().map(File::new).collect();
+        let label = labels.get(&id);
+        Self {
+            name: label.map(|module| module.name.clone()),
+            language: label.and_then(|module| module.language.clone()),
+            counts: files.iter().map(|file| file.counts).sum(),
+            id,
+            files,
+        }
+    }
+
+    fn locations(&self) -> impl Iterator<Item = &Location> {
+        self.files
+            .iter()
+            .flat_map(|file| &file.classes)
+            .flat_map(|class| &class.functions)
+            .flat_map(|function| &function.locations)
+    }
+}
+
+/// `n` in at most four characters: `7`, `1.1k`, `13k`, `1.2M`.
+fn si(n: u64) -> String {
+    let Some((unit, suffix)) = [(1_000_000, "M"), (1_000, "k")]
+        .into_iter()
+        .find(|&(unit, _)| n >= unit)
+    else {
+        return n.to_string();
+    };
+    let whole = n / unit;
+    let tenth = n % unit * 10 / unit;
+    if whole < 10 && tenth > 0 {
+        format!("{whole}.{tenth}{suffix}")
+    } else {
+        format!("{whole}{suffix}")
+    }
+}
+
+/// A node with the COVERAGE cell in its gutter.
+fn node(counts: Counts, label: Vec<Span>, children: Vec<Node>) -> Node {
+    let cell = format!(
+        "{:>6}  {:<6}",
+        counts.percent(),
+        format!("{}/{}", si(counts.reached), si(counts.total))
+    );
+    let style = if counts.reached == 0 {
+        Style::new().yellow()
+    } else if counts.reached == counts.total {
+        Style::new().green()
+    } else {
+        Style::new()
+    };
+    Node {
+        gutter: style.apply_to(cell).to_string(),
+        label,
+        body: Vec::new(),
+        children,
+    }
+}
+
+/// `vtime` cut to five decimals, or whole with `detail`. Cutting never
+/// rounds up, so the text names a moment at or before the vtime. An
+/// exponent form prints whole: cutting it would change its value.
+fn vtime_text(vtime: VTime, detail: bool) -> String {
+    let mut text = vtime.to_string();
+    if let Some(point) = text.find('.')
+        && !detail
+        && !text.contains('e')
+    {
+        text.truncate(point + 6);
+    }
+    text
+}
+
+/// The cells of a row: `LOCATION`, `INPUT_HASH` and `VTIME`, or `None` for an empty cell.
+fn location_cells(location: &Location, detail: bool) -> [Option<String>; 3] {
+    let location = &location.coverage;
+    let place = match (location.begin_line, location.begin_column) {
+        (Some(line), Some(column)) => Some(format!("{line}:{column}")),
+        (Some(line), None) => Some(line.to_string()),
+        (None, _) => None,
+    };
+    let moment = location.first_reached.as_ref().map(|first| &first.moment);
+    [
+        place,
+        moment.map(|moment| sanitize(&moment.input_hash)),
+        moment.map(|moment| vtime_text(moment.vtime, detail)),
+    ]
+}
+
+const LOCATION_HEADER: [&str; 3] = ["LOCATION", "INPUT_HASH", "VTIME"];
+
+/// The location tables of one module, which share their column widths.
+struct LocationTable {
+    widths: [usize; 3],
+    detail: bool,
+}
+
+impl LocationTable {
+    fn new(module: &Module, detail: bool) -> Self {
+        let mut widths = LOCATION_HEADER.map(measure_text_width);
+        for location in module.locations() {
+            for (width, cell) in widths.iter_mut().zip(location_cells(location, detail)) {
+                *width = (*width).max(cell.as_deref().map_or(1, measure_text_width));
+            }
+        }
+        Self { widths, detail }
+    }
+
+    /// The header, then a row for each location. A `-` is an empty cell. It
+    /// is dim, and so is each cell of a location that the run did not reach.
+    fn lines(&self, locations: &[Location]) -> Vec<String> {
+        let header = self.line(LOCATION_HEADER.map(|cell| (cell, Style::new())));
+        let rows = locations.iter().map(|location| {
+            let reached = location.coverage.first_reached.is_some();
+            let cells = location_cells(location, self.detail);
+            self.line(cells.each_ref().map(|cell| match cell {
+                Some(text) if reached => (text.as_str(), Style::new()),
+                Some(text) => (text.as_str(), Style::new().dim()),
+                None => ("-", Style::new().dim()),
+            }))
+        });
+        std::iter::once(header).chain(rows).collect()
+    }
+
+    fn line(&self, cells: [(&str, Style); 3]) -> String {
+        let last = cells.len() - 1;
+        cells
+            .into_iter()
+            .zip(self.widths)
+            .enumerate()
+            .map(|(index, ((text, style), width))| {
+                let width = if index == last { 0 } else { width };
+                style
+                    .apply_to(pad_str(text, width, Alignment::Left, None))
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("  ")
+    }
+}
+
+/// How deep the text tree goes.
+enum Depth {
+    Files,
+    Functions,
+    Locations(LocationTable),
+}
+
+fn function_node(function: &Function, depth: &Depth) -> Node {
+    let label = vec![Span::new(sanitize(&function.name))];
+    let body = match depth {
+        Depth::Locations(table) => table.lines(&function.locations),
+        _ => Vec::new(),
+    };
+    Node {
+        body,
+        ..node(function.counts, label, Vec::new())
+    }
+}
+
+fn class_node(class: &Class, depth: &Depth) -> Node {
+    let label = match &class.name {
+        Some(name) => Span::new(sanitize(&name.short)).style(Style::new().cyan()),
+        None => Span::new("(no class)").style(Style::new().dim()),
+    };
+    let children = class
+        .functions
+        .iter()
+        .map(|function| function_node(function, depth))
+        .collect();
+    node(class.counts, vec![label], children)
+}
+
+fn file_node(file: &File, depth: &Depth) -> Node {
+    let path = file.path.as_deref().map_or("(no file)".into(), sanitize);
+    let label = vec![Span::new(path).style(Style::new().bold()).cut(Cut::Start)];
+    let children = match (depth, file.classes.as_slice()) {
+        (Depth::Files, _) => Vec::new(),
+        // Free functions only: no class level.
+        (_, [free]) if free.name.is_none() => free
+            .functions
+            .iter()
+            .map(|function| function_node(function, depth))
+            .collect(),
+        (_, classes) => classes
+            .iter()
+            .map(|class| class_node(class, depth))
+            .collect(),
+    };
+    node(file.counts, label, children)
+}
+
+fn module_node(module: &Module, depth: &Depth) -> Node {
+    let id = Span::new(format!("module {}", sanitize(&module.id)))
+        .style(Style::new().bold())
+        .cut(Cut::Never);
+    let about = [&module.name, &module.language]
+        .into_iter()
+        .flatten()
+        .map(|text| Span::new(format!("  {}", sanitize(text))).style(Style::new().dim()));
+    let label = std::iter::once(id).chain(about).collect();
+    let children = module
+        .files
+        .iter()
+        .map(|file| file_node(file, depth))
+        .collect();
+    node(module.counts, label, children)
+}
+
+fn function_json(function: Function, rollup: CoverageRollup) -> Value {
+    let mut json = json!({
+        "function": function.name,
+        "reached": function.counts.reached,
+        "total": function.counts.total,
+    });
+    if let Some(first_reached) = function.first_reached() {
+        json["first_reached"] = first_reached.clone();
+    }
+    if rollup == CoverageRollup::None {
+        json["locations"] = function
+            .locations
+            .into_iter()
+            .map(|location| location.json)
+            .collect();
+    }
+    json
+}
+
+fn class_json(class: Class, rollup: CoverageRollup) -> Value {
+    let functions: Value = class
+        .functions
+        .into_iter()
+        .map(|function| function_json(function, rollup))
+        .collect();
+    json!({
+        "class": class.name.map(|name| name.full),
+        "reached": class.counts.reached,
+        "total": class.counts.total,
+        "functions": functions,
+    })
+}
+
+fn file_json(file: File, rollup: CoverageRollup) -> Value {
+    let mut json = json!({
+        "file": file.path,
+        "reached": file.counts.reached,
+        "total": file.counts.total,
+    });
+    if rollup != CoverageRollup::File {
+        json["classes"] = file
+            .classes
+            .into_iter()
+            .map(|class| class_json(class, rollup))
+            .collect();
+    }
+    json
+}
+
+fn module_json(module: Module, rollup: CoverageRollup) -> Value {
+    let files: Value = module
+        .files
+        .into_iter()
+        .map(|file| file_json(file, rollup))
+        .collect();
+    json!({
+        "module_id": module.id,
+        "module_name": module.name,
+        "language": module.language,
+        "reached": module.counts.reached,
+        "total": module.counts.total,
+        "files": files,
+    })
+}
+
+/// The locations endpoint answers 404 for a while after the run is ready. A
+/// run created before [`MIN_COVERAGE_RELEASE`] answers 404 for good. The
+/// command waits for the run once, before its first request.
 pub(super) const COVERAGE_RETRY: RetryPolicy = RetryPolicy {
-    needs: Needs::Ready,
+    needs: Needs::Live,
     waiting: "waiting for the run's coverage",
     decide: |run, err| {
         RetryDecision::retry_if(
@@ -46,26 +606,54 @@ pub(super) const COVERAGE_RETRY: RetryPolicy = RetryPolicy {
 /// Annotate a locations error for `run`: a 404 from a run that will never
 /// have coverage.
 pub(super) fn explain_coverage_error(run: &RunDetail, err: Report) -> Report {
-    if api_error_status(&err) != Some(404) || run.created_on_or_after(MIN_COVERAGE_RELEASE) {
-        return err;
+    if api_error_status(&err) == Some(404) && !run.created_on_or_after(MIN_COVERAGE_RELEASE) {
+        let (major, minor) = MIN_COVERAGE_RELEASE;
+        user_error(format!("run {} has no coverage locations", run.run_id)).note(format!(
+            "coverage needs a run created on release {major}.{minor} or later"
+        ))
+    } else {
+        err
     }
-    let (major, minor) = MIN_COVERAGE_RELEASE;
-    user_error(format!("run {} has no coverage locations", run.run_id)).note(format!(
-        "coverage needs a run created on release {major}.{minor} or later"
-    ))
 }
 
-/// A module's name and language, from the module list.
-#[derive(Clone, Default)]
-struct ModuleInfo {
-    name: Option<String>,
-    language: Option<String>,
+/// The locations, which arrive by module, as one `Vec` for each module.
+fn by_module(
+    locations: impl Stream<Item = Result<Location>>,
+) -> impl Stream<Item = Result<Vec<Location>>> {
+    stream::try_unfold(Box::pin(locations.peekable()), |mut locations| async move {
+        let Some(first) = locations.next().await.transpose()? else {
+            return Ok(None);
+        };
+        let module_id = first.coverage.module_id.clone();
+        let mut module = vec![first];
+        while let Some(location) = locations
+            .as_mut()
+            .next_if(|next| {
+                next.as_ref()
+                    .is_ok_and(|next| next.coverage.module_id == module_id)
+            })
+            .await
+        {
+            module.push(location?);
+        }
+        Ok(Some((module, locations)))
+    })
 }
 
-/// One location: the record that the API sent, and its parsed fields.
-struct Location {
-    raw: Value,
-    coverage: LocationCoverage,
+/// The name and language of each module, by ID. Without them the tree
+/// shows the IDs only, so a failure gives none.
+async fn module_labels(api: &AntithesisApi, run_id: &str) -> HashMap<String, CoverageModule> {
+    let labels = async {
+        api::ensure_module_list_supported(run_id)?;
+        api.stream_run_modules(run_id)
+            .map_ok(|module| (module.module_id.clone(), module))
+            .try_collect()
+            .await
+    };
+    labels.await.unwrap_or_else(|err: Report| {
+        log::debug!("no module names: {err:#}");
+        HashMap::new()
+    })
 }
 
 pub(super) async fn cmd_runs_coverage(
@@ -73,767 +661,276 @@ pub(super) async fn cmd_runs_coverage(
     settings: &Settings,
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
-    let api = AntithesisApi::new(settings, verbose)?;
-    let (api, run_id) = (&api, args.run_id.as_str());
-    // Wait once, before the module list and the locations: a run ID that
-    // names no run fails as such, and a starting run has no module list yet.
+    let RunsCoverageArgs {
+        run_id,
+        mut module_ids,
+        rollup,
+        detail,
+    } = args;
+    let run_id = run_id.as_str();
+    let api = &AntithesisApi::new(settings, verbose)?;
     ready::wait_until_ready(api, run_id, READY_POLL).await?;
 
-    // The server filters by module, one module per request.
-    let module_ids: indexmap::IndexSet<String> = args.module_ids.into_iter().collect();
-    let requests: Vec<Option<String>> = if module_ids.is_empty() {
+    let mut seen = HashSet::new();
+    module_ids.retain(|module_id| seen.insert(module_id.clone()));
+    let requests: Vec<Option<&str>> = if module_ids.is_empty() {
         vec![None]
     } else {
-        module_ids.into_iter().map(Some).collect()
+        module_ids.iter().map(|id| Some(id.as_str())).collect()
     };
-
-    let lines = stream::iter(requests)
-        .then(|module_id| async move {
+    let locations = stream::iter(requests)
+        .then(|module_id| {
             ready::send_when_ready(
                 api,
                 run_id,
                 READY_POLL,
                 COVERAGE_RETRY,
-                || api.get_coverage_locations(run_id, module_id.as_deref()),
+                move || api.get_coverage_locations(run_id, module_id),
                 explain_coverage_error,
             )
-            .await
         })
         .try_flatten()
-        .map(|line| {
-            let value = line?;
-            match stream_error_message(&value) {
-                Some(message) => Err(mid_stream_error(message)),
-                None => Ok(value),
-            }
-        });
-    let mut modules = Modules {
-        lines: lines.boxed(),
-        pending: None,
-    };
+        .and_then(|line| future::ready(Location::try_from(line)));
+    let mut modules = pin!(by_module(locations));
+    let (labels, first) = future::join(module_labels(api, run_id), modules.try_next()).await;
 
-    // The API sends a module's locations together, so each module prints as
-    // soon as the next one starts, and only one is in memory. The module list
-    // labels the modules, and downloads with the first one.
-    let (infos, first) = futures_util::join!(module_infos(api, run_id), modules.next());
+    let width = terminal_width();
+    let mut counts = Counts::default();
+    let mut first_module = true;
     let mut next = first?;
-    let render = Render {
-        rollup: args.rollup,
-        detail: args.detail,
-        width: terminal_width(),
-    };
-    let (mut reached, mut total) = (0, 0);
-    while let Some((id, locations)) = next {
-        let info = infos.get(&id).cloned().unwrap_or_default();
-        let tree = Node::module(id, info, &locations);
+    while let Some(locations) = next {
+        let module = Module::new(locations, &labels);
         if json {
-            outln!("{}", tree.to_json(args.rollup))?;
+            outln!("{}", module_json(module, rollup))?;
         } else {
-            if total > 0 {
+            let depth = match rollup {
+                CoverageRollup::File => Depth::Files,
+                CoverageRollup::Function => Depth::Functions,
+                CoverageRollup::None => Depth::Locations(LocationTable::new(&module, detail)),
+            };
+            if !first_module {
                 outln!()?;
             }
-            outln!("{}", render.module(&tree))?;
+            outln!("{}", tree::render(&module_node(&module, &depth), width))?;
+            counts = counts + module.counts;
+            first_module = false;
         }
-        reached += tree.reached;
-        total += tree.total;
-        next = modules.next().await?;
+        next = modules.try_next().await?;
     }
-
     if json {
         return Ok(());
     }
-    let run = api.get_run(run_id).await?.untag();
-    // The generated `Display` of `RunStatus` is the wire value, `in_progress`.
-    let status_words = run.status.to_string().replace('_', " ");
+
+    let status = api.get_run(run_id).await?.untag().status;
     eprintln!(
-        "{} · {} reached · run {status_words}",
-        count(total, "location"),
-        percent(reached, total)
+        "{} · {} reached · run {}",
+        count(counts.total, "location"),
+        counts.percent(),
+        status.to_string().replace('_', " ")
     );
-    if !run.status.is_terminal() {
+    if !status.is_terminal() {
         eprintln!("the run is in progress, so re-run the command later for more coverage");
     }
     Ok(())
-}
-
-/// The module list, to label the modules. A run without one, or a failed
-/// request, leaves the labels out.
-async fn module_infos(api: &AntithesisApi, run_id: &str) -> HashMap<String, ModuleInfo> {
-    if api::ensure_module_list_supported(run_id).is_err() {
-        return HashMap::new();
-    }
-    let modules: Result<Vec<CoverageModule>> = api.stream_run_modules(run_id).try_collect().await;
-    let modules = modules.unwrap_or_default().into_iter().map(|m| {
-        let info = ModuleInfo {
-            name: Some(m.name),
-            language: m.language,
-        };
-        (m.module_id, info)
-    });
-    modules.collect()
-}
-
-/// The locations of the stream, a module at a time.
-struct Modules<S> {
-    lines: S,
-    /// The first location of the next module, read while finishing the last.
-    pending: Option<Location>,
-}
-
-impl<S: Stream<Item = Result<Value>> + Unpin> Modules<S> {
-    /// The next module, and its locations.
-    async fn next(&mut self) -> Result<Option<(String, Vec<Location>)>> {
-        let mut module: Option<(String, Vec<Location>)> = None;
-        loop {
-            let location = match self.pending.take() {
-                Some(location) => location,
-                None => match self.lines.try_next().await? {
-                    Some(value) => Location::parse(value)?,
-                    None => return Ok(module),
-                },
-            };
-            match &mut module {
-                Some((id, _)) if *id != location.coverage.module_id => {
-                    self.pending = Some(location);
-                    return Ok(module);
-                }
-                Some((_, locations)) => locations.push(location),
-                None => module = Some((location.coverage.module_id.clone(), vec![location])),
-            }
-        }
-    }
-}
-
-impl Location {
-    /// The location, with the vtime of its moment as an exact JSON number,
-    /// as other commands normalize moments.
-    fn parse(mut raw: Value) -> Result<Self> {
-        let coverage: LocationCoverage = serde_json::from_value(raw.clone())?;
-        if let Some(first) = raw.get_mut("first_reached") {
-            normalize_vtime_field(first, "moment");
-        }
-        Ok(Self { raw, coverage })
-    }
-}
-
-/// The class of a location's function, as its full and short names, and the
-/// function without it. The class is the API's `class` field: a Java binary
-/// name, a C# type name, a Go receiver's base type or a Python class; its
-/// short name is the last dot-separated segment. Without one, a demangled
-/// native name `<Type>::method` or `<Type as Trait>::method` gives the type,
-/// and the function is `method` or `Trait::method`.
-fn split_function(location: &LocationCoverage) -> (Option<(String, String)>, String) {
-    let function = sanitize(&location.function);
-    if let Some(class) = location.class.as_deref().filter(|c| !c.is_empty()) {
-        let class = sanitize(class);
-        let short = class.rsplit('.').next().unwrap_or(&class).to_string();
-        return (Some((class, short)), function);
-    }
-    match native_impl(&function) {
-        Some((ty, method)) => {
-            let short = last_segment(&ty).to_string();
-            (Some((ty, short)), method)
-        }
-        None => (None, function),
-    }
-}
-
-/// `<Type>::rest` or `<Type as Trait>::rest`, with nested brackets: the type,
-/// and `rest` or `Trait::rest`, with the trait's last path segment.
-fn native_impl(function: &str) -> Option<(String, String)> {
-    let inner = function.strip_prefix('<')?;
-    let mut depth = 1;
-    let end = inner.char_indices().find_map(|(i, c)| {
-        match c {
-            '<' => depth += 1,
-            '>' => depth -= 1,
-            _ => {}
-        }
-        (depth == 0).then_some(i)
-    })?;
-    let rest = inner[end + 1..].strip_prefix("::")?;
-    let inner = &inner[..end];
-    Some(match inner.split_once(" as ") {
-        Some((ty, tr)) => (ty.to_string(), format!("{}::{rest}", last_segment(tr))),
-        None => (inner.to_string(), rest.to_string()),
-    })
-}
-
-/// The last `::`-separated segment of a path, outside angle brackets.
-fn last_segment(path: &str) -> &str {
-    let bytes = path.as_bytes();
-    let (mut depth, mut start, mut i) = (0, 0, 0);
-    while i < bytes.len() {
-        match bytes[i] {
-            b'<' => depth += 1,
-            b'>' => depth -= 1,
-            b':' if depth == 0 && bytes.get(i + 1) == Some(&b':') => {
-                start = i + 2;
-                i += 1;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    &path[start..]
-}
-
-/// A node of the tree: a module, file, class or function, with the coverage
-/// of its locations.
-struct Node<'a> {
-    kind: Kind,
-    reached: usize,
-    total: usize,
-    kids: Vec<Node<'a>>,
-    /// A function's locations, in source order.
-    locations: Vec<&'a Location>,
-}
-
-enum Kind {
-    Module {
-        id: String,
-        info: ModuleInfo,
-    },
-    /// A file, or none when the compiler recorded none.
-    File(Option<String>),
-    /// A class's full and short names, or none for free functions.
-    Class(Option<(String, String)>),
-    Function(String),
-}
-
-impl<'a> Node<'a> {
-    fn new(kind: Kind, locations: &[&'a Location], kids: Vec<Node<'a>>) -> Self {
-        let reached = locations
-            .iter()
-            .filter(|l| l.coverage.first_reached.is_some())
-            .count();
-        Self {
-            kind,
-            reached,
-            total: locations.len(),
-            kids,
-            locations: Vec::new(),
-        }
-    }
-
-    /// A module's tree: files sorted by path, then classes and functions in
-    /// source order. Free functions come first, under a class of none.
-    fn module(id: String, info: ModuleInfo, locations: &'a [Location]) -> Self {
-        let all: Vec<&Location> = locations.iter().collect();
-        let mut files: BTreeMap<Option<String>, Vec<&Location>> = BTreeMap::new();
-        for location in &all {
-            let file = location.coverage.file.as_deref().map(sanitize);
-            files.entry(file).or_default().push(location);
-        }
-        let files = files
-            .into_iter()
-            .map(|(file, locations)| {
-                let mut classes = in_source_order(&locations, |l| split_function(&l.coverage).0);
-                // Free functions first, then the classes in source order.
-                classes.sort_by_key(|(class, _)| class.is_some());
-                let classes = classes
-                    .into_iter()
-                    .map(|(class, locations)| {
-                        Node::new(Kind::Class(class), &locations, function_nodes(&locations))
-                    })
-                    .collect();
-                Node::new(Kind::File(file), &locations, classes)
-            })
-            .collect();
-        Node::new(Kind::Module { id, info }, &all, files)
-    }
-
-    /// The tree as one JSON object, down to `rollup`.
-    fn to_json(&self, rollup: CoverageRollup) -> Value {
-        let mut value = match &self.kind {
-            Kind::Module { id, info } => json!({
-                "module_id": id,
-                "module_name": info.name,
-                "language": info.language,
-            }),
-            Kind::File(file) => json!({ "file": file }),
-            Kind::Class(class) => json!({ "class": class.as_ref().map(|(full, _)| full) }),
-            Kind::Function(function) => json!({ "function": function }),
-        };
-        value["reached"] = json!(self.reached);
-        value["total"] = json!(self.total);
-        let kids = || -> Value { self.kids.iter().map(|k| k.to_json(rollup)).collect() };
-        match &self.kind {
-            Kind::Module { .. } => value["files"] = kids(),
-            Kind::File(_) if rollup != CoverageRollup::File => value["classes"] = kids(),
-            Kind::File(_) => {}
-            Kind::Class(_) => value["functions"] = kids(),
-            Kind::Function(_) => {
-                // The first moment that reached any of the function's
-                // locations, for `runs logs`.
-                let seconds = |v: &&Value| v["run_seconds"].as_f64().unwrap_or(f64::MAX);
-                let first = self
-                    .locations
-                    .iter()
-                    .filter_map(|l| l.raw.get("first_reached"))
-                    .min_by(|a, b| seconds(a).total_cmp(&seconds(b)));
-                if let Some(first) = first {
-                    value["first_reached"] = first.clone();
-                }
-                if rollup == CoverageRollup::None {
-                    value["locations"] = self.locations.iter().map(|l| l.raw.clone()).collect();
-                }
-            }
-        }
-        value
-    }
-}
-
-/// A node per function, in source order, each with its locations in source
-/// order: by line and column, then by address.
-fn function_nodes<'a>(locations: &[&'a Location]) -> Vec<Node<'a>> {
-    in_source_order(locations, |l| split_function(&l.coverage).1)
-        .into_iter()
-        .map(|(function, mut locations)| {
-            locations.sort_by_key(|l| {
-                let c = &l.coverage;
-                let address = c.address.parse::<u64>().ok();
-                (
-                    c.begin_line.is_none(),
-                    c.begin_line,
-                    c.begin_column,
-                    address,
-                )
-            });
-            let mut node = Node::new(Kind::Function(function), &locations, Vec::new());
-            node.locations = locations;
-            node
-        })
-        .collect()
-}
-
-/// `locations` grouped by `key`, the groups in source order: by their first
-/// line, then by key.
-fn in_source_order<'a, K: Ord>(
-    locations: &[&'a Location],
-    key: impl Fn(&Location) -> K,
-) -> Vec<(K, Vec<&'a Location>)> {
-    let mut groups: BTreeMap<K, Vec<&Location>> = BTreeMap::new();
-    for location in locations {
-        groups.entry(key(location)).or_default().push(location);
-    }
-    let first_line = |ls: &[&Location]| ls.iter().filter_map(|l| l.coverage.begin_line).min();
-    let mut groups: Vec<_> = groups.into_iter().collect();
-    groups.sort_by(|(a_key, a), (b_key, b)| {
-        let (a_line, b_line) = (first_line(a), first_line(b));
-        (a_line.is_none(), a_line, a_key).cmp(&(b_line.is_none(), b_line, b_key))
-    });
-    groups
-}
-
-/// The narrowest counts column. A module's counts set the column, so it can
-/// shift between modules. Most modules' counts fit in 6 (`92/244`: 583 of 699
-/// modules in 11 runs on orbitinghail), so with this floor most modules line
-/// up.
-const MIN_COUNTS_WIDTH: usize = 6;
-
-/// The width of a COVERAGE cell whose counts take `counts_width`: the percent
-/// in 6 columns, two spaces, then the counts.
-fn coverage_width(counts_width: usize) -> usize {
-    6 + 2 + counts_width
-}
-
-/// `7/20`, `1.1k/4k`: reached over total, in SI notation.
-fn counts(reached: usize, total: usize) -> String {
-    format!("{}/{}", si(reached), si(total))
-}
-
-/// `50.8%`: one decimal, so that a little coverage does not round to 0%.
-fn percent(reached: usize, total: usize) -> String {
-    if total == 0 {
-        return "–".to_string();
-    }
-    #[allow(clippy::cast_precision_loss)]
-    let percent = 100.0 * reached as f64 / total as f64;
-    format!("{percent:.1}%")
-}
-
-/// A count in SI notation, as a gist: 7, 1.1k, 13k, 428k, 1.2M. It is cut,
-/// never rounded up, and a trailing `.0` is dropped.
-fn si(n: usize) -> String {
-    for (unit, size) in [("M", 1_000_000), ("k", 1_000)] {
-        if n >= size {
-            let whole = n / size;
-            let tenth = n % size * 10 / size;
-            return if whole < 10 && tenth > 0 {
-                format!("{whole}.{tenth}{unit}")
-            } else {
-                format!("{whole}{unit}")
-            };
-        }
-    }
-    n.to_string()
-}
-
-/// The COVERAGE cell: the percent, right-aligned, then the counts, left-
-/// aligned in `counts_width`: ` 66.7%  2/3 `. 0% is yellow and 100% green.
-fn coverage(reached: usize, total: usize, counts_width: usize) -> String {
-    let counts = counts(reached, total);
-    let text = format!("{:>6}  {counts:<counts_width$}", percent(reached, total));
-    if reached == 0 {
-        style(text).yellow().to_string()
-    } else if reached == total {
-        style(text).green().to_string()
-    } else {
-        text
-    }
-}
-
-/// The text of a module's tree: COVERAGE first on each line, then the node,
-/// under its parent with the connectors of `snouty docs tree`. On a terminal,
-/// a file loses its start and other names their end, to fit the width.
-struct Render {
-    rollup: CoverageRollup,
-    detail: bool,
-    width: usize,
-}
-
-impl Render {
-    fn module(&self, tree: &Node<'_>) -> String {
-        let Kind::Module { id, info } = &tree.kind else {
-            unreachable!("a tree's root is its module")
-        };
-        let head = format!("module {}", sanitize(id));
-        let mut label = String::new();
-        for part in [&info.name, &info.language].into_iter().flatten() {
-            label.push_str("  ");
-            label.push_str(&sanitize(part));
-        }
-        // The counts column is as wide as the module's widest counts, which
-        // are the module's own.
-        let cw = nodes(tree)
-            .map(|n| counts(n.reached, n.total).len())
-            .fold(MIN_COUNTS_WIDTH, usize::max);
-        let room = self.room("", cw).saturating_sub(measure_text_width(&head));
-        let mut lines = vec![format!(
-            "{}  {}{}",
-            coverage(tree.reached, tree.total, cw),
-            style(head).bold(),
-            style(truncate_str(&label, room, "…")).dim()
-        )];
-
-        // The location tables of one module share their column widths.
-        let mut tables = if self.rollup == CoverageRollup::None {
-            let groups = functions(tree).map(|f| self.location_rows(f)).collect();
-            location_table().render_groups(groups, usize::MAX)
-        } else {
-            Vec::new()
-        }
-        .into_iter();
-        for (i, file) in tree.kids.iter().enumerate() {
-            let last = i + 1 == tree.kids.len();
-            self.node(file, "", last, cw, &mut tables, &mut lines);
-        }
-        lines.join("\n")
-    }
-
-    /// The node's line, then its kids. A file whose only class is the free
-    /// functions has no class level: its functions hang from the file.
-    fn node(
-        &self,
-        node: &Node<'_>,
-        lead: &str,
-        last: bool,
-        cw: usize,
-        tables: &mut impl Iterator<Item = String>,
-        lines: &mut Vec<String>,
-    ) {
-        let c = UTF_CHARS_BOLD;
-        let branch = if last { c.turn_right } else { c.down_and_right };
-        let prefix = format!("{lead}{branch}{0}{0} ", c.right);
-        let kid_lead = if last {
-            format!("{lead}    ")
-        } else {
-            format!("{lead}{}   ", c.down)
-        };
-        let room = self.room(&prefix, cw);
-        let text = match &node.kind {
-            Kind::Module { .. } => unreachable!("a module is a root"),
-            Kind::File(file) => {
-                let file = file.as_deref().unwrap_or("(no file)");
-                style(truncate_start(file, room)).bold().to_string()
-            }
-            Kind::Class(Some((_, short))) => {
-                style(truncate_str(short, room, "…")).cyan().to_string()
-            }
-            Kind::Class(None) => style("(no class)").dim().to_string(),
-            Kind::Function(function) => truncate_str(function, room, "…").into_owned(),
-        };
-        lines.push(format!(
-            "{}  {}{text}",
-            coverage(node.reached, node.total, cw),
-            style(prefix).dim()
-        ));
-
-        match &node.kind {
-            Kind::Function(_) => {
-                if let Some(table) = tables.next() {
-                    let indent = " ".repeat(coverage_width(cw) + 2);
-                    let lead = style(&kid_lead).dim();
-                    for line in table.lines() {
-                        lines.push(format!("{indent}{lead}{line}").trim_end().to_string());
-                    }
-                }
-                return;
-            }
-            Kind::File(_) if self.rollup == CoverageRollup::File => return,
-            _ => {}
-        }
-        let kids: Vec<&Node<'_>> = match (&node.kind, node.kids.as_slice()) {
-            (Kind::File(_), [only]) if matches!(only.kind, Kind::Class(None)) => {
-                only.kids.iter().collect()
-            }
-            _ => node.kids.iter().collect(),
-        };
-        for (i, kid) in kids.iter().enumerate() {
-            self.node(kid, &kid_lead, i + 1 == kids.len(), cw, tables, lines);
-        }
-    }
-
-    /// The room for a node's text after the COVERAGE cell and `prefix`, on a
-    /// terminal. Off one, the width is unbounded, and so is the room.
-    fn room(&self, prefix: &str, cw: usize) -> usize {
-        self.width
-            .saturating_sub(coverage_width(cw) + 2 + measure_text_width(prefix))
-            .max(8)
-    }
-
-    /// A function's locations: LOCATION, where each starts, then the moment
-    /// where the run first reached it. An empty cell is `-`, and an
-    /// unreached location is dim.
-    fn location_rows(&self, function: &Node<'_>) -> Vec<Vec<String>> {
-        function
-            .locations
-            .iter()
-            .map(|location| {
-                let c = &location.coverage;
-                let first = c.first_reached.as_ref();
-                let cells = [
-                    span(c.begin_line, c.begin_column),
-                    first.map(|f| sanitize(&f.moment.input_hash)),
-                    first.map(|f| vtime(f.moment.vtime, self.detail)),
-                ];
-                cells
-                    .into_iter()
-                    .map(|cell| match cell {
-                        Some(text) if first.is_some() => text,
-                        Some(text) => style(text).dim().to_string(),
-                        None => style("-").dim().to_string(),
-                    })
-                    .collect()
-            })
-            .collect()
-    }
-}
-
-/// Every node of a tree.
-fn nodes<'t, 'a>(tree: &'t Node<'a>) -> Box<dyn Iterator<Item = &'t Node<'a>> + 't> {
-    Box::new(std::iter::once(tree).chain(tree.kids.iter().flat_map(nodes)))
-}
-
-/// The functions of a tree, in the order that it prints them.
-fn functions<'t, 'a>(tree: &'t Node<'a>) -> Box<dyn Iterator<Item = &'t Node<'a>> + 't> {
-    match tree.kind {
-        Kind::Function(_) => Box::new(std::iter::once(tree)),
-        _ => Box::new(tree.kids.iter().flat_map(functions)),
-    }
-}
-
-fn location_table() -> Table {
-    Table::builder()
-        .column(Column::new("LOCATION"))
-        .column(Column::new("INPUT_HASH"))
-        .column(Column::new("VTIME"))
-}
-
-/// Where a location starts: `line:column`, `line` when the API recorded no
-/// column (Java), or none when it recorded no line.
-fn span<N: std::fmt::Display>(line: Option<N>, column: Option<N>) -> Option<String> {
-    let line = line?;
-    Some(match column {
-        Some(column) => format!("{line}:{column}"),
-        None => line.to_string(),
-    })
-}
-
-/// The vtime cut to five decimals, or whole with `detail`. It never rounds:
-/// a cut vtime still names a moment at or before the location's first reach,
-/// so `runs logs` takes it.
-fn vtime(vtime: VTime, detail: bool) -> String {
-    let mut text = vtime.to_string();
-    if !detail
-        && !text.contains('e')
-        && let Some(dot) = text.find('.')
-    {
-        text.truncate((dot + 6).min(text.len()));
-    }
-    text
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn location(
-        module: &str,
-        file: &str,
-        class: Option<&str>,
-        function: &str,
-        line: u32,
-        reached: Option<&str>,
-    ) -> Location {
-        let mut value = json!({
-            "module_id": module,
-            "address": format!("{line}"),
-            "file": file,
-            "function": function,
-            "begin_line": line,
-            "begin_column": 5,
-            "end_line": line,
-            "end_column": 9,
+    fn location(json: Value) -> Location {
+        Location::try_from(json).unwrap()
+    }
+
+    fn at(function: &str, line: i64, reached: bool) -> Location {
+        let mut json = json!({
+            "module_id": "m", "address": line.to_string(), "file": "a.rs",
+            "function": function, "begin_line": line, "begin_column": 1,
         });
-        if let Some(class) = class {
-            value["class"] = json!(class);
-        }
-        if let Some(vtime) = reached {
-            value["first_reached"] = json!({
-                "run_seconds": 1.5,
-                "moment": {"input_hash": "-7", "vtime": vtime},
+        if reached {
+            json["first_reached"] = json!({
+                "run_seconds": line,
+                "moment": {"input_hash": "h", "vtime": "12.3456789"},
             });
         }
-        Location::parse(value).unwrap()
+        location(json)
     }
 
-    fn plain(text: &str) -> String {
-        console::strip_ansi_codes(text).into_owned()
+    fn class_of(function: &str, class: Option<&str>) -> (Option<(String, String)>, String) {
+        let mut json = json!({"module_id": "m", "address": "1", "function": function});
+        if let Some(class) = class {
+            json["class"] = json!(class);
+        }
+        let (name, function) = split_class(&location(json).coverage);
+        (name.map(|name| (name.full, name.short)), function)
     }
 
-    fn sample() -> Vec<Location> {
-        vec![
-            location("m", "a.java", Some("com.x.Store"), "get", 20, None),
-            location(
-                "m",
-                "a.java",
-                Some("com.x.Cache$Entry"),
-                "get",
-                10,
-                Some("12.846102431882170"),
-            ),
-            location("m", "a.java", None, "helper", 5, Some("1.0")),
-            location("m", "b.go", None, "main", 1, None),
-        ]
-    }
-
-    fn render(rollup: CoverageRollup, locations: &[Location]) -> String {
-        let info = ModuleInfo {
-            name: Some("app".into()),
-            language: Some("Java".into()),
-        };
-        let tree = Node::module("m".into(), info, locations);
-        plain(
-            &Render {
-                rollup,
-                detail: false,
-                width: usize::MAX,
-            }
-            .module(&tree),
+    fn named(full: &str, short: &str, function: &str) -> (Option<(String, String)>, String) {
+        (
+            Some((full.to_string(), short.to_string())),
+            function.to_string(),
         )
     }
 
     #[test]
-    fn file_rollup_lists_files_under_the_module() {
+    fn si_keeps_three_significant_characters() {
+        let cases = [
+            (7, "7"),
+            (999, "999"),
+            (1148, "1.1k"),
+            (4000, "4k"),
+            (13003, "13k"),
+            (428_460, "428k"),
+            (1_250_000, "1.2M"),
+        ];
+        for (n, expected) in cases {
+            assert_eq!(si(n), expected, "{n}");
+        }
+    }
+
+    #[test]
+    fn the_class_field_names_the_class() {
         assert_eq!(
-            render(CoverageRollup::File, &sample()),
-            " 50.0%  2/4     module m  app  Java\n \
-             66.7%  2/3     ┣━━ a.java\n  \
-             0.0%  0/1     ┗━━ b.go"
+            class_of("get", Some("com.x.Cache$Entry")),
+            named("com.x.Cache$Entry", "Cache$Entry", "get")
+        );
+        assert_eq!(class_of("main", Some("")), (None, "main".to_string()));
+    }
+
+    #[test]
+    fn a_demangled_type_names_the_class() {
+        assert_eq!(
+            class_of("<rusthello::Spinner>::spin", None),
+            named("rusthello::Spinner", "Spinner", "spin")
+        );
+        assert_eq!(
+            class_of("<a::Harness as a::disk::Component>::deliver", None),
+            named("a::Harness", "Harness", "Component::deliver")
+        );
+        assert_eq!(
+            class_of("<alloc::Box<dyn core::Fn<(), Output = a::B>>>::call", None),
+            named(
+                "alloc::Box<dyn core::Fn<(), Output = a::B>>",
+                "Box<dyn core::Fn<(), Output = a::B>>",
+                "call"
+            )
         );
     }
 
     #[test]
-    fn function_rollup_groups_methods_by_class_in_source_order() {
-        let out = render(CoverageRollup::Function, &sample());
-        let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines[2], "100.0%  1/1     ┃   ┣━━ (no class)");
-        assert_eq!(lines[3], "100.0%  1/1     ┃   ┃   ┗━━ helper");
-        assert_eq!(lines[4], "100.0%  1/1     ┃   ┣━━ Cache$Entry");
-        assert_eq!(lines[6], "  0.0%  0/1     ┃   ┗━━ Store");
-        // A file of free functions only has no class level.
-        assert_eq!(lines[9], "  0.0%  0/1         ┗━━ main");
+    fn other_functions_are_free() {
+        for function in ["a::b", "<a::B>", "<a::B>x", "<a::B", "<a::B> as c"] {
+            assert_eq!(class_of(function, None), (None, function.to_string()));
+        }
     }
 
     #[test]
-    fn location_rollup_hangs_a_table_under_each_function() {
-        let out = render(CoverageRollup::None, &sample());
-        assert!(
-            out.contains("┃   ┃       LOCATION  INPUT_HASH  VTIME"),
-            "{out}"
+    fn a_file_puts_free_functions_first_then_classes_in_source_order() {
+        let module = Module::new(
+            vec![
+                at("<a::Late>::f", 30, true),
+                at("<a::Early>::g", 20, false),
+                at("<a::Early>::f", 10, true),
+                at("free", 40, false),
+            ],
+            &HashMap::new(),
         );
-        assert!(
-            out.contains("┃   ┃       10:5      -7          12.84610"),
-            "{out}"
+        let file = &module.files[0];
+        let order: Vec<(Option<&str>, Vec<&str>)> = file
+            .classes
+            .iter()
+            .map(|class| {
+                (
+                    class.name.as_ref().map(|name| name.short.as_str()),
+                    class.functions.iter().map(|f| f.name.as_str()).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            order,
+            [
+                (None, vec!["free"]),
+                (Some("Early"), vec!["f", "g"]),
+                (Some("Late"), vec!["f"]),
+            ]
         );
-        assert!(out.contains("┃           20:5      -           -"), "{out}");
+        assert_eq!((module.counts.reached, module.counts.total), (2, 4));
     }
 
     #[test]
-    fn json_nests_the_tree_down_to_the_rollup() {
-        let locations = sample();
-        let tree = Node::module("m".into(), ModuleInfo::default(), &locations);
-        let file = tree.to_json(CoverageRollup::File);
-        assert_eq!(file["files"][0]["file"], "a.java");
-        assert!(file["files"][0].get("classes").is_none());
-        let functions = tree.to_json(CoverageRollup::Function);
-        let class = &functions["files"][0]["classes"][1];
-        assert_eq!(class["class"], "com.x.Cache$Entry");
-        assert_eq!(
-            class["functions"][0]["first_reached"]["moment"]["vtime"],
-            json!(12.84610243188217)
+    fn a_function_puts_its_locations_without_a_line_last() {
+        let no_line = location(json!({"module_id": "m", "address": "9", "function": "f"}));
+        let function = Function::new((
+            "f".to_string(),
+            vec![no_line, at("f", 5, false), at("f", 3, false)],
+        ));
+        let lines: Vec<Option<i64>> = function
+            .locations
+            .iter()
+            .map(|location| location.coverage.begin_line)
+            .collect();
+        assert_eq!(lines, [Some(3), Some(5), None]);
+    }
+
+    #[test]
+    fn the_text_tree_elides_a_class_level_of_free_functions_only() {
+        let module = Module::new(
+            vec![at("main", 1, true), at("step", 2, false)],
+            &HashMap::new(),
         );
-        assert!(class["functions"][0].get("locations").is_none());
-        let all = tree.to_json(CoverageRollup::None);
         assert_eq!(
-            all["files"][0]["classes"][1]["functions"][0]["locations"][0]["address"],
-            "10"
+            tree::render(&module_node(&module, &Depth::Functions), usize::MAX),
+            " 50.0%  1/2     module m\n \
+             50.0%  1/2     ┗━━ a.rs\n\
+             100.0%  1/1         ┣━━ main\n  \
+             0.0%  0/1         ┗━━ step"
         );
     }
 
     #[test]
-    fn native_names_give_the_type_and_trait() {
-        assert_eq!(
-            native_impl("<krill::disk::Disk>::budget_spend"),
-            Some(("krill::disk::Disk".into(), "budget_spend".into()))
+    fn location_tables_share_their_widths_and_dash_empty_cells() {
+        let module = Module::new(
+            vec![at("f", 1, true), at("long_line", 1000, false)],
+            &HashMap::new(),
         );
+        let table = LocationTable::new(&module, false);
+        let function = &module.files[0].classes[0].functions[0];
         assert_eq!(
-            native_impl("<a::Harness as a::disk::Component>::deliver"),
-            Some(("a::Harness".into(), "Component::deliver".into()))
+            table.lines(&function.locations),
+            [
+                "LOCATION  INPUT_HASH  VTIME",
+                "1:1       h           12.34567",
+            ]
         );
-        assert_eq!(
-            last_segment("alloc::Box<dyn core::Fn<(), Output = a::B>>"),
-            "Box<dyn core::Fn<(), Output = a::B>>"
-        );
-        assert_eq!(native_impl("alloc::boxed::box_new"), None);
+        let other = &module.files[0].classes[0].functions[1];
+        assert_eq!(table.lines(&other.locations)[1], "1000:1    -           -");
     }
 
     #[test]
-    fn counts_are_si_gists() {
-        assert_eq!(si(7), "7");
-        assert_eq!(si(1148), "1.1k");
-        assert_eq!(si(4000), "4k");
-        assert_eq!(si(13_003), "13k");
-        assert_eq!(si(428_460), "428k");
-        assert_eq!(si(1_250_000), "1.2M");
+    fn vtime_text_cuts_to_five_decimals_without_rounding() {
+        let vtime = |text: &str| text.parse::<VTime>().unwrap();
+        assert_eq!(vtime_text(vtime("12.846102431882170"), false), "12.84610");
+        assert_eq!(
+            vtime_text(vtime("12.846102431882170"), true),
+            "12.84610243188217"
+        );
+        assert_eq!(vtime_text(vtime("13.5"), false), "13.5");
+        assert_eq!(
+            vtime_text(vtime("2.3283064365386963e-10"), false),
+            "2.3283064365386963e-10"
+        );
     }
 
     #[test]
-    fn vtime_is_cut_without_rounding() {
-        let of = |text: &str| serde_json::from_value::<VTime>(Value::from(text)).unwrap();
-        assert_eq!(vtime(of("12.846109"), false), "12.84610");
-        assert_eq!(vtime(of("12.846109"), true), "12.846109");
+    fn a_function_json_has_the_first_reached_of_its_earliest_location() {
+        let module = Module::new(
+            vec![at("f", 9, true), at("f", 4, true), at("f", 6, false)],
+            &HashMap::new(),
+        );
+        let json = module_json(module, CoverageRollup::Function);
+        let function = &json["files"][0]["classes"][0]["functions"][0];
+        assert_eq!(function["first_reached"]["run_seconds"], 4);
+        assert_eq!(function["first_reached"]["moment"]["vtime"], 12.3456789);
+        assert!(function.get("locations").is_none());
     }
 }

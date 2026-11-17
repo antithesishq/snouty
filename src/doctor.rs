@@ -752,8 +752,7 @@ fn version_check(
 }
 
 /// The message of the credentials check when the GitHub Actions OIDC
-/// credential `auth` could not be renewed, and the next step. A 5xx, a 408
-/// or a 429 is temporary, and another 4xx refuses the credential.
+/// credential `auth` could not be renewed, and the next step.
 fn renewal_failure(
     auth: &AuthenticationInfo,
     status: Option<StatusCode>,
@@ -778,7 +777,7 @@ fn renewal_failure(
             "rerun the job".to_owned(),
         ),
         AuthenticationInfo::OAuth(_) => {
-            unreachable!("the error of an OAuth renewal names its own failure")
+            unreachable!("cmd_doctor classifies an OAuth renewal itself")
         }
         AuthenticationInfo::ApiKey { .. } | AuthenticationInfo::Password { .. } => {
             unreachable!("an API key and a password never expire")

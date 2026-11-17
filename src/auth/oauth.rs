@@ -209,10 +209,11 @@ async fn acquire_refresh_lock(store: &CredentialStore) -> Option<std::fs::File> 
 /// Why the tenant did not renew an OAuth sign-in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RenewalFailure {
-    /// The tenant refused the refresh token: a 4xx other than 408 and 429.
+    /// The sign-in needs a new login: the tenant answered a 4xx other than
+    /// 408 and 429.
     Refused,
-    /// The tenant can renew the sign-in later: it answered a 5xx, a 408 or a
-    /// 429, it did not answer, or snouty could not read its answer.
+    /// A later try can succeed: the tenant answered a 5xx, a 408 or a 429,
+    /// did not answer, or sent an answer that snouty cannot read.
     Temporary,
 }
 
@@ -237,7 +238,6 @@ impl RenewalFailure {
         }
     }
 
-    /// The next step for a user who signed in to `profile`.
     pub(crate) fn next_step(self, profile: Option<&str>) -> String {
         let login = login_command(profile);
         match self {
@@ -247,8 +247,8 @@ impl RenewalFailure {
     }
 }
 
-/// A failed refresh of an OAuth access token. `Display` also names the next
-/// step, because an API request keeps only the message of its error.
+/// `Display` also names the next step, because an API request keeps only
+/// the message of its error.
 #[derive(Debug)]
 pub(crate) struct RenewalError {
     pub(crate) failure: RenewalFailure,
@@ -369,8 +369,9 @@ mod tests {
         );
     }
 
-    /// The error of a refresh of a token that the store of `profile` holds,
-    /// against a tenant that answers `response`, or that does not answer.
+    /// Refreshes a token of `profile` against a tenant that answers
+    /// `response`, or that does not answer when `response` is `None`, and
+    /// returns the error.
     async fn refresh_error(profile: Option<&str>, response: Option<ResponseTemplate>) -> Report {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer};

@@ -840,14 +840,13 @@ pub async fn cmd_doctor(
                         let renewal = err
                             .downcast_ref::<RenewalError>()
                             .expect("an OAuth refresh fails with a renewal error");
-                        (renewal.failure.to_string(), renewal.next_step())
+                        (renewal.summary(), renewal.next_step())
                     } else {
                         let status = http_err.and_then(reqwest::Error::status);
-                        let (message, next_step) = renewal_failure(auth, status);
-                        (message.to_owned(), next_step)
+                        renewal_failure(auth, status)
                     };
                     check.status = Status::Error;
-                    check.message = message;
+                    message.clone_into(&mut check.message);
                     // The error names status codes and URLs, so only
                     // --verbose shows it.
                     if verbose {

@@ -130,11 +130,7 @@ impl RefreshableOAuthToken {
             return Ok(());
         }
         let Some(refresh_token) = current.refresh_token else {
-            return Err(RenewalError::report(
-                RenewalFailure::Refused,
-                self.store.profile(),
-                None,
-            ));
+            return Err(RenewalError::refused(self.store.profile()).report(None));
         };
 
         let refreshed =
@@ -206,84 +202,80 @@ async fn acquire_refresh_lock(store: &CredentialStore) -> Option<std::fs::File> 
     .flatten()
 }
 
-/// Why the tenant did not renew an OAuth sign-in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RenewalFailure {
+/// Why the tenant did not renew the OAuth sign-in of `profile`. The message
+/// also names the next step, because an API request keeps only the message
+/// of its error.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RenewalError {
     /// The sign-in needs a new login: the tenant answered a 4xx other than
-    /// 408 and 429.
-    Refused,
+    /// 408 and 429, or there is no refresh token.
+    #[error("{}; {}", self.summary(), self.next_step())]
+    Refused { profile: Option<String> },
     /// A later try can succeed: the tenant answered a 5xx, a 408 or a 429,
     /// did not answer, or sent an answer that snouty cannot read.
-    Temporary,
-}
-
-impl RenewalFailure {
-    fn of_status(status: StatusCode) -> Self {
-        if status.is_client_error()
-            && !matches!(
-                status,
-                StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
-            )
-        {
-            Self::Refused
-        } else {
-            Self::Temporary
-        }
-    }
-
-    fn next_step(self, profile: Option<&str>) -> String {
-        let login = login_command(profile);
-        match self {
-            Self::Refused => format!("run {login} to sign in again"),
-            Self::Temporary => format!("try again later, or run {login} to sign in again"),
-        }
-    }
-}
-
-/// `Display` also names the next step, because an API request keeps only
-/// the message of its error.
-#[derive(Debug)]
-pub(crate) struct RenewalError {
-    pub(crate) failure: RenewalFailure,
-    profile: Option<String>,
-}
-
-impl std::fmt::Display for RenewalFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Refused => "the sign-in expired and could not be renewed",
-            Self::Temporary => "the tenant could not renew the sign-in",
-        })
-    }
+    #[error("{}; {}", self.summary(), self.next_step())]
+    Temporary { profile: Option<String> },
 }
 
 impl RenewalError {
-    /// A report of `failure` for the sign-in of `profile`, caused by
-    /// `cause`. It is the user's to fix, so it has no backtrace.
-    fn report(failure: RenewalFailure, profile: Option<&str>, cause: Option<Report>) -> Report {
-        let error = Self {
-            failure,
+    fn refused(profile: Option<&str>) -> Self {
+        Self::Refused {
             profile: profile.map(str::to_owned),
-        };
+        }
+    }
+
+    fn temporary(profile: Option<&str>) -> Self {
+        Self::Temporary {
+            profile: profile.map(str::to_owned),
+        }
+    }
+
+    /// The error for a refresh request that failed with `err`.
+    fn of_request(err: &reqwest::Error, profile: Option<&str>) -> Self {
+        match err.status() {
+            Some(status)
+                if status.is_client_error()
+                    && !matches!(
+                        status,
+                        StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
+                    ) =>
+            {
+                Self::refused(profile)
+            }
+            _ => Self::temporary(profile),
+        }
+    }
+
+    /// A report of `self`, caused by `cause`. It is the user's to fix, so it
+    /// has no backtrace.
+    fn report(self, cause: Option<Report>) -> Report {
         match cause {
-            Some(cause) => cause.wrap_err(error),
-            None => Report::new(error),
+            Some(cause) => cause.wrap_err(self),
+            None => Report::new(self),
         }
         .suppress_backtrace(true)
     }
 
+    /// The message without the next step.
+    pub(crate) fn summary(&self) -> &'static str {
+        match self {
+            Self::Refused { .. } => "the sign-in expired and could not be renewed",
+            Self::Temporary { .. } => "the tenant could not renew the sign-in",
+        }
+    }
+
     pub(crate) fn next_step(&self) -> String {
-        self.failure.next_step(self.profile.as_deref())
+        match self {
+            Self::Refused { profile } => {
+                format!("run {} to sign in again", login_command(profile.as_deref()))
+            }
+            Self::Temporary { profile } => format!(
+                "try again later, or run {} to sign in again",
+                login_command(profile.as_deref())
+            ),
+        }
     }
 }
-
-impl std::fmt::Display for RenewalError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}; {}", self.failure, self.next_step())
-    }
-}
-
-impl std::error::Error for RenewalError {}
 
 async fn refresh_oauth_token(
     client: &reqwest::Client,
@@ -299,18 +291,14 @@ async fn refresh_oauth_token(
     // Only a damaged credentials file holds a refresh token that is not a
     // header value, and a new sign-in replaces it.
     let header = to_header_value(&format!("Bearer {refresh_token}"), true)
-        .map_err(|e| RenewalError::report(RenewalFailure::Refused, profile, Some(e)))?;
+        .map_err(|e| RenewalError::refused(profile).report(Some(e)))?;
     request
         .headers_mut()
         .insert(reqwest::header::AUTHORIZATION, header);
     request.timeout_mut().replace(Duration::from_secs(30));
 
-    let renewal_error = |err: reqwest::Error| {
-        let failure = err
-            .status()
-            .map_or(RenewalFailure::Temporary, RenewalFailure::of_status);
-        RenewalError::report(failure, profile, Some(Report::new(err)))
-    };
+    let renewal_error =
+        |err: reqwest::Error| RenewalError::of_request(&err, profile).report(Some(err.into()));
     client
         .execute(request)
         .await

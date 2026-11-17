@@ -13,6 +13,7 @@ use color_eyre::Section;
 use color_eyre::eyre::{Report, Result};
 use log::warn;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use super::{
     claims::try_get_expiry_from_token,
@@ -305,12 +306,18 @@ fn lock_dir() -> Option<PathBuf> {
     global_settings_dir().map(|dir| dir.join("locks"))
 }
 
+/// Every snouty build computes the same token for a path, so all builds lock
+/// the same file. Spellings that `Path` compares equal, such as `a//b` and
+/// `a/./b`, share a token, and so do paths that differ only in bytes that are
+/// not UTF-8.
 fn path_lock_token(path: &Path) -> String {
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    path.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    let normalized: PathBuf = path.components().collect();
+    let mut token = format!(
+        "{:x}",
+        Sha256::digest(normalized.to_string_lossy().as_bytes())
+    );
+    token.truncate(16);
+    token
 }
 
 #[cfg(test)]
@@ -324,6 +331,23 @@ mod tests {
         FAKE_ACCESS_TOKEN_A, FAKE_ACCESS_TOKEN_B, FAKE_REFRESH_TOKEN_A, FAKE_REFRESH_TOKEN_B,
     };
     use wiremock::ResponseTemplate;
+
+    /// Do not change this value: released builds lock the file that this token names.
+    #[test]
+    fn path_lock_token_is_stable() {
+        assert_eq!(
+            path_lock_token(Path::new("/home/user/.config/snouty/credentials.toml")),
+            "2caa5dffc0b5a87a"
+        );
+    }
+
+    #[test]
+    fn path_lock_token_ignores_redundant_separators() {
+        assert_eq!(
+            path_lock_token(Path::new("/home/user//./.config/snouty/credentials.toml")),
+            path_lock_token(Path::new("/home/user/.config/snouty/credentials.toml")),
+        );
+    }
 
     #[tokio::test]
     async fn refresh_retains_prior_refresh_token_when_response_omits_one() {

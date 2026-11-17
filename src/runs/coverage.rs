@@ -511,10 +511,10 @@ fn in_source_order<'a, K: Ord>(
 }
 
 /// The narrowest counts column. A module's counts set the column, so it can
-/// shift between modules; most modules' counts fit in 5 (`19/34`: 233 of
-/// 699 modules in 11 runs on orbitinghail, and 470 fit in 5 or less), so with
-/// this floor most modules line up.
-const MIN_COUNTS_WIDTH: usize = 5;
+/// shift between modules. Most modules' counts fit in 6 (`92/244`: 583 of 699
+/// modules in 11 runs on orbitinghail), so with this floor most modules line
+/// up.
+const MIN_COUNTS_WIDTH: usize = 6;
 
 /// The width of a COVERAGE cell whose counts take `counts_width`: the percent
 /// in 6 columns, two spaces, then the counts.
@@ -834,9 +834,9 @@ mod tests {
     fn file_rollup_lists_files_under_the_module() {
         assert_eq!(
             render(CoverageRollup::File, &sample()),
-            " 50.0%  2/4    module m  app  Java\n \
-             66.7%  2/3    ┣━━ a.java\n  \
-             0.0%  0/1    ┗━━ b.go"
+            " 50.0%  2/4     module m  app  Java\n \
+             66.7%  2/3     ┣━━ a.java\n  \
+             0.0%  0/1     ┗━━ b.go"
         );
     }
 
@@ -844,12 +844,12 @@ mod tests {
     fn function_rollup_groups_methods_by_class_in_source_order() {
         let out = render(CoverageRollup::Function, &sample());
         let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines[2], "100.0%  1/1    ┃   ┣━━ (no class)");
-        assert_eq!(lines[3], "100.0%  1/1    ┃   ┃   ┗━━ helper");
-        assert_eq!(lines[4], "100.0%  1/1    ┃   ┣━━ Cache$Entry");
-        assert_eq!(lines[6], "  0.0%  0/1    ┃   ┗━━ Store");
+        assert_eq!(lines[2], "100.0%  1/1     ┃   ┣━━ (no class)");
+        assert_eq!(lines[3], "100.0%  1/1     ┃   ┃   ┗━━ helper");
+        assert_eq!(lines[4], "100.0%  1/1     ┃   ┣━━ Cache$Entry");
+        assert_eq!(lines[6], "  0.0%  0/1     ┃   ┗━━ Store");
         // A file of free functions only has no class level.
-        assert_eq!(lines[9], "  0.0%  0/1        ┗━━ main");
+        assert_eq!(lines[9], "  0.0%  0/1         ┗━━ main");
     }
 
     #[test]

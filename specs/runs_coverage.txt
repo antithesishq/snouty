@@ -41,11 +41,11 @@ stdout '^\{"module_id":.*"files":\[\{"file":.*"classes":\[\{"class":.*"functions
 # with its name and language, then its files. COVERAGE leads each line.
 mock-runs-server
 snouty --verbose runs coverage run-1
-stdout -literal ' 60.0%  3/5    module d85d838a38496ad7233432355829abc7d2333c33  rusthello  native'
-stdout -literal ' 66.7%  2/3    ┣━━ src/main.rs'
-stdout -literal ' 50.0%  1/2    ┗━━ src/work.rs'
-stdout -literal '100.0%  1/1    module go-20e55e2f1623  instrhello/internal/work  Go'
-stdout -literal '100.0%  1/1    ┗━━ internal/work/spin.go'
+stdout -literal ' 60.0%  3/5     module d85d838a38496ad7233432355829abc7d2333c33  rusthello  native'
+stdout -literal ' 66.7%  2/3     ┣━━ src/main.rs'
+stdout -literal ' 50.0%  1/2     ┗━━ src/work.rs'
+stdout -literal '100.0%  1/1     module go-20e55e2f1623  instrhello/internal/work  Go'
+stdout -literal '100.0%  1/1     ┗━━ internal/work/spin.go'
 stderr '^6 locations · 66\.7% reached · run completed$'
 stderr '^> GET .*/api/v0/runs/run-1/coverage/locations$'
 ! stderr 'in progress'
@@ -54,13 +54,13 @@ stderr '^> GET .*/api/v0/runs/run-1/coverage/locations$'
 # field (Worker) or a demangled name (Spinner). A file of free functions only
 # has no class level.
 snouty runs coverage run-1 --rollup function
-stdout -literal '100.0%  1/1    ┃   ┣━━ (no class)'
-stdout -literal '100.0%  1/1    ┃   ┃   ┗━━ rusthello::main'
-stdout -literal ' 50.0%  1/2    ┃   ┗━━ Spinner'
-stdout -literal ' 50.0%  1/2    ┃       ┗━━ spin'
-stdout -literal ' 50.0%  1/2        ┗━━ rusthello::work::step'
-stdout -literal '100.0%  1/1        ┗━━ Worker'
-stdout -literal '100.0%  1/1            ┗━━ Spin'
+stdout -literal '100.0%  1/1     ┃   ┣━━ (no class)'
+stdout -literal '100.0%  1/1     ┃   ┃   ┗━━ rusthello::main'
+stdout -literal ' 50.0%  1/2     ┃   ┗━━ Spinner'
+stdout -literal ' 50.0%  1/2     ┃       ┗━━ spin'
+stdout -literal ' 50.0%  1/2         ┗━━ rusthello::work::step'
+stdout -literal '100.0%  1/1         ┗━━ Worker'
+stdout -literal '100.0%  1/1             ┗━━ Spin'
 
 # By location: a table under each function. Two locations at one span are
 # two rows, and an unreached one has a `-` for its moment.

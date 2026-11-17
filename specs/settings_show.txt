@@ -28,8 +28,8 @@ snouty --settings chosen.toml --profile staging settings show
 stdout '^profile +staging$'
 stdout '^tenant +acme$'
 stdout '^registry +registry\.example\.com/staging$'
-stdout '^base_url +https://acme\.antithesis\.com$'
-stdout '^https_proxy +http://proxy\.example\.com:3128$'
+stdout '^base_url +https://acme\.antithesis\.com/$'
+stdout '^https_proxy +http://proxy\.example\.com:3128/$'
 stdout '^api_cache_max_file_size +1000 B$'
 
 # 3. A profile prints one warning to stderr. A file that --settings names

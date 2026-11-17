@@ -874,13 +874,21 @@ impl AntithesisApi {
         verbose: bool,
         cache: ResponseCache,
     ) -> Result<Self> {
-        // base_url() is None exactly when neither an explicit base_url nor a
-        // tenant resolved; surface the tenant diagnostic, since that's what a
-        // user normally sets.
-        let base_url = normalize_base_url(crate::settings::require_setting(
-            settings.base_url().as_deref(),
-            "tenant",
-        )?);
+        let base_url = normalize_base_url(&settings.require_base_url()?);
+        Self::build_at(base_url, settings, authn_info, verbose, cache)
+    }
+
+    /// [`Self::build`] for the API at `base_url`, a URL from
+    /// [`normalize_base_url`], in place of the base URL of `settings`.
+    // Outside tests, no `ResponseCache` variant carries data to move.
+    #[allow(clippy::needless_pass_by_value)]
+    pub(crate) fn build_at(
+        base_url: String,
+        settings: &Settings,
+        authn_info: AuthenticationInfo,
+        verbose: bool,
+        cache: ResponseCache,
+    ) -> Result<Self> {
         debug!("initializing API client for {base_url}");
 
         let http = HttpClient::new(settings, verbose)?;
@@ -1779,9 +1787,8 @@ where
     })
 }
 
-pub(crate) fn normalize_base_url(base_url: impl Into<String>) -> String {
-    let base_url = base_url.into();
-    let trimmed = base_url.trim_end_matches('/');
+pub(crate) fn normalize_base_url(base_url: &reqwest::Url) -> String {
+    let trimmed = base_url.as_str().trim_end_matches('/');
     trimmed
         .strip_suffix("/api/v1")
         .unwrap_or(trimmed)
@@ -1843,7 +1850,7 @@ impl HttpClient {
             .connect_timeout(CONNECT_TIMEOUT);
 
         if let Some(proxy_address) = settings.https_proxy() {
-            let proxy = Proxy::all(proxy_address)
+            let proxy = Proxy::all(proxy_address.clone())
                 .wrap_err_with(|| eyre!("invalid proxy URL: {proxy_address}"))?;
             builder = builder.proxy(proxy);
         }

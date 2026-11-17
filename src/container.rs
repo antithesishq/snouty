@@ -17,8 +17,8 @@ use crate::error::user_error;
 use crate::process::output_with_timeout;
 use crate::registry::{self, Registry};
 use crate::settings::{
-    ANTITHESIS_PROFILE_ENV_VAR_NAME, CONTAINER_ENGINE_VAR_NAME, SNOUTY_SETTINGS_PATH_VAR_NAME,
-    Settings, mkdir,
+    ANTITHESIS_PROFILE_ENV_VAR_NAME, CONTAINER_ENGINE_VAR_NAME, ContainerEngine,
+    SNOUTY_SETTINGS_PATH_VAR_NAME, Settings, mkdir,
 };
 
 /// Wall-clock budget for each synchronous docker/podman call made while
@@ -131,11 +131,11 @@ pub trait ContainerRuntime: Send + Sync {
     /// The CLI command name (e.g. "podman" or "docker").
     fn name(&self) -> &str;
 
-    /// The underlying engine ("podman" or "docker"), independent of which binary
-    /// invokes it. These diverge only for podman-in-disguise (podman installed
-    /// as the `docker` binary), where [`name`](Self::name) is `"docker"` but the
-    /// engine is really podman.
-    fn engine_kind(&self) -> &'static str;
+    /// The underlying engine, independent of which binary invokes it. These
+    /// diverge only for podman-in-disguise (podman installed as the `docker`
+    /// binary), where [`name`](Self::name) is `"docker"` but the engine is
+    /// really podman.
+    fn engine_kind(&self) -> ContainerEngine;
 
     /// Clone into a boxed trait object.
     fn clone_box(&self) -> Box<dyn ContainerRuntime>;
@@ -578,8 +578,8 @@ impl ContainerRuntime for PodmanRuntime {
         &self.cmd
     }
 
-    fn engine_kind(&self) -> &'static str {
-        "podman"
+    fn engine_kind(&self) -> ContainerEngine {
+        ContainerEngine::Podman
     }
 
     fn clone_box(&self) -> Box<dyn ContainerRuntime> {
@@ -773,8 +773,8 @@ impl ContainerRuntime for DockerRuntime {
         &self.cmd
     }
 
-    fn engine_kind(&self) -> &'static str {
-        "docker"
+    fn engine_kind(&self) -> ContainerEngine {
+        ContainerEngine::Docker
     }
 
     fn insecure_registry_flag(&self) -> &'static str {
@@ -891,33 +891,13 @@ impl CliKind {
     }
 }
 
-/// The container engine that the settings ask for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EngineChoice {
-    Auto,
-    Podman,
-    Docker,
-}
-
-impl EngineChoice {
-    fn from_settings(settings: &Settings) -> Result<Self> {
-        match settings.container_engine() {
-            None => Ok(EngineChoice::Auto),
-            Some("podman") => Ok(EngineChoice::Podman),
-            Some("docker") => Ok(EngineChoice::Docker),
-            Some(other) => Err(eyre!(
-                "unsupported container engine '{other}': expected 'podman' or 'docker'"
-            )),
-        }
-    }
-}
-
-/// The runtime for `choice`, from what the `docker` and `podman` CLIs are.
+/// The runtime for `choice` (`None` auto-detects), from what the `docker` and
+/// `podman` CLIs are.
 /// Auto-detection prefers podman over docker, and runs a `docker` that is
 /// podman as podman. An explicit engine whose CLI is the other engine is an
 /// error.
 fn select_runtime(
-    choice: EngineChoice,
+    choice: Option<ContainerEngine>,
     docker: CliKind,
     podman: CliKind,
 ) -> Result<Box<dyn ContainerRuntime>> {
@@ -933,7 +913,7 @@ fn select_runtime(
         }
     };
     match choice {
-        EngineChoice::Podman => match podman {
+        Some(ContainerEngine::Podman) => match podman {
             CliKind::Podman => Ok(Box::new(PodmanRuntime::new("podman"))),
             CliKind::Docker => Err(user_error(
                 "the container engine setting is set to podman, but the podman binary is \
@@ -945,7 +925,7 @@ fn select_runtime(
             )
             .with_suggestion(|| install_hint("podman", docker))),
         },
-        EngineChoice::Docker => match docker {
+        Some(ContainerEngine::Docker) => match docker {
             CliKind::Docker => Ok(Box::new(DockerRuntime::new("docker"))),
             CliKind::Podman => Err(user_error(
                 "the container engine setting is set to docker, but the docker binary is \
@@ -962,7 +942,7 @@ fn select_runtime(
             )
             .with_suggestion(|| install_hint("Docker", podman))),
         },
-        EngineChoice::Auto => match (podman, docker) {
+        None => match (podman, docker) {
             (CliKind::Podman, _) => Ok(Box::new(PodmanRuntime::new("podman"))),
             (_, CliKind::Podman) => Ok(Box::new(PodmanRuntime::new("docker"))),
             (_, CliKind::Docker) => Ok(Box::new(DockerRuntime::new("docker"))),
@@ -978,8 +958,11 @@ fn select_runtime(
 ///
 /// Set `SNOUTY_CONTAINER_ENGINE=podman` or `=docker` to force a specific runtime.
 pub fn runtime(settings: &Settings) -> Result<Box<dyn ContainerRuntime>> {
-    let choice = EngineChoice::from_settings(settings)?;
-    select_runtime(choice, CliKind::probe("docker"), CliKind::probe("podman"))
+    select_runtime(
+        settings.container_engine(),
+        CliKind::probe("docker"),
+        CliKind::probe("podman"),
+    )
 }
 
 /// Warn the user which container engine snouty picked, but only when the pick
@@ -1005,7 +988,7 @@ pub fn warn_ambiguous_engine(settings: &Settings, rt: &dyn ContainerRuntime, jso
     let engine = rt.engine_kind();
     let detected = available
         .iter()
-        .map(|e| e.engine_kind())
+        .map(|e| e.engine_kind().to_string())
         .collect::<Vec<_>>()
         .join(" and ");
     eprintln!(
@@ -1740,16 +1723,25 @@ esac
 
     #[test]
     fn explicit_docker_runs_real_docker() {
-        let rt = select_runtime(EngineChoice::Docker, CliKind::Docker, CliKind::Podman).unwrap();
-        assert_eq!(rt.engine_kind(), "docker");
+        let rt = select_runtime(
+            Some(ContainerEngine::Docker),
+            CliKind::Docker,
+            CliKind::Podman,
+        )
+        .unwrap();
+        assert_eq!(rt.engine_kind(), ContainerEngine::Docker);
         assert_eq!(rt.name(), "docker");
     }
 
     #[test]
     fn explicit_docker_that_is_podman_fails() {
-        let err = select_runtime(EngineChoice::Docker, CliKind::Podman, CliKind::Podman)
-            .err()
-            .unwrap();
+        let err = select_runtime(
+            Some(ContainerEngine::Docker),
+            CliKind::Podman,
+            CliKind::Podman,
+        )
+        .err()
+        .unwrap();
         assert_eq!(
             err.to_string(),
             "the container engine setting is set to docker, but the docker binary is podman \
@@ -1764,9 +1756,13 @@ esac
 
     #[test]
     fn explicit_docker_missing_fails() {
-        let err = select_runtime(EngineChoice::Docker, CliKind::Missing, CliKind::Podman)
-            .err()
-            .unwrap();
+        let err = select_runtime(
+            Some(ContainerEngine::Docker),
+            CliKind::Missing,
+            CliKind::Podman,
+        )
+        .err()
+        .unwrap();
         assert_eq!(
             err.to_string(),
             "the container engine setting is set to docker, but 'docker --version' failed"
@@ -1776,9 +1772,13 @@ esac
 
     #[test]
     fn explicit_docker_missing_without_podman_suggests_only_install() {
-        let err = select_runtime(EngineChoice::Docker, CliKind::Missing, CliKind::Missing)
-            .err()
-            .unwrap();
+        let err = select_runtime(
+            Some(ContainerEngine::Docker),
+            CliKind::Missing,
+            CliKind::Missing,
+        )
+        .err()
+        .unwrap();
         let report = format!("{err:?}");
         assert!(report.contains("install Docker"), "got: {report}");
         assert!(!report.contains("auto-detection"), "got: {report}");
@@ -1786,16 +1786,25 @@ esac
 
     #[test]
     fn explicit_podman_runs_podman() {
-        let rt = select_runtime(EngineChoice::Podman, CliKind::Docker, CliKind::Podman).unwrap();
-        assert_eq!(rt.engine_kind(), "podman");
+        let rt = select_runtime(
+            Some(ContainerEngine::Podman),
+            CliKind::Docker,
+            CliKind::Podman,
+        )
+        .unwrap();
+        assert_eq!(rt.engine_kind(), ContainerEngine::Podman);
         assert_eq!(rt.name(), "podman");
     }
 
     #[test]
     fn explicit_podman_that_is_docker_fails() {
-        let err = select_runtime(EngineChoice::Podman, CliKind::Docker, CliKind::Docker)
-            .err()
-            .unwrap();
+        let err = select_runtime(
+            Some(ContainerEngine::Podman),
+            CliKind::Docker,
+            CliKind::Docker,
+        )
+        .err()
+        .unwrap();
         assert_eq!(
             err.to_string(),
             "the container engine setting is set to podman, but the podman binary is docker \
@@ -1807,9 +1816,13 @@ esac
     #[test]
     fn explicit_podman_missing_fails() {
         // A `docker` that is podman does not stand in for an explicit podman.
-        let err = select_runtime(EngineChoice::Podman, CliKind::Podman, CliKind::Missing)
-            .err()
-            .unwrap();
+        let err = select_runtime(
+            Some(ContainerEngine::Podman),
+            CliKind::Podman,
+            CliKind::Missing,
+        )
+        .err()
+        .unwrap();
         assert_eq!(
             err.to_string(),
             "the container engine setting is set to podman, but 'podman --version' failed"
@@ -1820,7 +1833,7 @@ esac
     #[test]
     fn explicit_podman_without_docker_suggests_only_install() {
         for podman in [CliKind::Docker, CliKind::Missing] {
-            let err = select_runtime(EngineChoice::Podman, CliKind::Missing, podman)
+            let err = select_runtime(Some(ContainerEngine::Podman), CliKind::Missing, podman)
                 .err()
                 .unwrap();
             let report = format!("{err:?}");
@@ -1832,29 +1845,33 @@ esac
     #[test]
     fn auto_prefers_podman() {
         for docker in [CliKind::Docker, CliKind::Podman, CliKind::Missing] {
-            let rt = select_runtime(EngineChoice::Auto, docker, CliKind::Podman).unwrap();
-            assert_eq!(rt.engine_kind(), "podman", "docker: {docker:?}");
+            let rt = select_runtime(None, docker, CliKind::Podman).unwrap();
+            assert_eq!(
+                rt.engine_kind(),
+                ContainerEngine::Podman,
+                "docker: {docker:?}"
+            );
             assert_eq!(rt.name(), "podman", "docker: {docker:?}");
         }
     }
 
     #[test]
     fn auto_falls_back_to_real_docker() {
-        let rt = select_runtime(EngineChoice::Auto, CliKind::Docker, CliKind::Missing).unwrap();
-        assert_eq!(rt.engine_kind(), "docker");
+        let rt = select_runtime(None, CliKind::Docker, CliKind::Missing).unwrap();
+        assert_eq!(rt.engine_kind(), ContainerEngine::Docker);
         assert_eq!(rt.name(), "docker");
     }
 
     #[test]
     fn auto_runs_podman_docker_as_podman() {
-        let rt = select_runtime(EngineChoice::Auto, CliKind::Podman, CliKind::Missing).unwrap();
-        assert_eq!(rt.engine_kind(), "podman");
+        let rt = select_runtime(None, CliKind::Podman, CliKind::Missing).unwrap();
+        assert_eq!(rt.engine_kind(), ContainerEngine::Podman);
         assert_eq!(rt.name(), "docker");
     }
 
     #[test]
     fn auto_with_nothing_installed_fails() {
-        let err = select_runtime(EngineChoice::Auto, CliKind::Missing, CliKind::Missing)
+        let err = select_runtime(None, CliKind::Missing, CliKind::Missing)
             .err()
             .unwrap();
         assert_eq!(err.to_string(), "neither podman nor docker is installed");

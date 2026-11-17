@@ -2366,8 +2366,8 @@ services:
             "fake"
         }
 
-        fn engine_kind(&self) -> &'static str {
-            "fake"
+        fn engine_kind(&self) -> crate::settings::ContainerEngine {
+            crate::settings::ContainerEngine::Docker
         }
 
         fn clone_box(&self) -> Box<dyn ContainerRuntime> {

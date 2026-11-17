@@ -227,11 +227,10 @@ async fn do_cmd_login(
         .flatten()
         .filter(|stored| !stored.value().has_blank_api_key());
 
-    let api_settings = current_settings.with_tenant(tenant_to_use.clone());
-    let tenant_url = TenantUrl::new(&api_settings, &tenant_to_use);
+    let tenant_url = TenantUrl::new(current_settings, &tenant_to_use);
 
     let new_credentials = if interactive {
-        let client = HttpClient::new(&api_settings, verbose)?;
+        let client = HttpClient::new(current_settings, verbose)?;
         prompt_for_auth(
             prompter,
             &client,
@@ -247,7 +246,7 @@ async fn do_cmd_login(
     };
 
     let reported = fetch_registry(
-        &api_settings,
+        current_settings,
         &tenant_url,
         new_credentials.as_ref(),
         profile,
@@ -406,9 +405,7 @@ impl<'a> TenantUrl<'a> {
     fn new(settings: &Settings, tenant: &'a Tenant) -> Self {
         let explicit = settings.explicit_base_url();
         Self {
-            url: normalize_base_url(
-                explicit.map_or_else(|| tenant_base_url(tenant), str::to_owned),
-            ),
+            url: normalize_base_url(&explicit.cloned().unwrap_or_else(|| tenant_base_url(tenant))),
             tenant,
             explicit: explicit.is_some(),
         }
@@ -503,7 +500,13 @@ async fn fetch_registry(
         },
     };
     // A cached answer would not check the credential.
-    let api = AntithesisApi::build(settings, authentication, verbose, ResponseCache::Disabled)?;
+    let api = AntithesisApi::build_at(
+        tenant_url.url.clone(),
+        settings,
+        authentication,
+        verbose,
+        ResponseCache::Disabled,
+    )?;
     let registry = tokio::time::timeout(env::scaled_wait(REGISTRY_TIMEOUT), api.get_registry())
         .await
         .map_err(|_| {
@@ -2001,7 +2004,7 @@ mod tests {
         let cache = ApiCache::new(
             Some(env.api_cache_dir()),
             DEFAULT_MAX_FILE_SIZE,
-            normalize_base_url(env.base_url.clone()),
+            normalize_base_url(&env.base_url.parse()?),
             false,
         );
         let cached: RegistryResponse = serde_json::from_str(REGISTRY_ANTITHESIS)?;

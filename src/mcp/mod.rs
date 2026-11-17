@@ -138,7 +138,10 @@ impl ServerHandler for Snouty {
         _request: Option<PaginatedRequestParams>,
         ctx: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + Send + '_ {
-        let tools = ToolName::ALL.iter().map(|name| name.spec().tool.clone());
+        let tools = ToolName::ALL
+            .iter()
+            .filter(|name| name.enabled())
+            .map(|name| name.spec().tool.clone());
         let result = ListToolsResult::with_all_items(tools.chain([tool_help_tool()]).collect());
         // Protocol 2026-07-28 requires cache hints on a list result, and
         // `with_all_items` leaves them out. These are the values that rmcp's
@@ -157,7 +160,7 @@ impl ServerHandler for Snouty {
         if name == TOOL_HELP {
             return Some(tool_help_tool());
         }
-        let name: ToolName = name.parse().ok()?;
+        let name: ToolName = name.parse().ok().filter(|name: &ToolName| name.enabled())?;
         Some(name.spec().tool.clone())
     }
 

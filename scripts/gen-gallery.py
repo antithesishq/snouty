@@ -217,6 +217,8 @@ class Snouty:
         self._env = dict(os.environ)
         self._env["PATH"] = f"{self._shim}{os.pathsep}{self._env.get('PATH', '')}"
         self._env["BROWSER"] = str(self._shim / "xdg-open")
+        # `runs coverage` is an unstable feature, and the gallery records it.
+        self._env["SNOUTY_UNSTABLE_FEATURES"] = "coverage"
         # The snouty children that are running, so that `kill_children` can
         # end the long ones, such as a `runs stream` in the background.
         self._children: set[pexpect.spawn | subprocess.Popen[str]] = set()
@@ -1436,11 +1438,11 @@ def _pick_coverage_module(sn: Snouty, run: str) -> str:
     no locations, or the tenant does not serve them. Only the coverage
     stories fail then, not the whole gallery."""
     try:
-        locations = sn.json_lines(["runs", "coverage", run])
+        modules = sn.json_lines(["runs", "coverage", run])
     except GalleryError as err:
         print(f"  coverage module: none ({err})", file=sys.stderr)
         return ""
-    counts = Counter(row["module_id"] for row in locations)
+    counts = {row["module_id"]: row["total"] for row in modules}
     if not counts:
         print("  coverage module: none (the run has no locations)", file=sys.stderr)
         return ""
@@ -2066,59 +2068,61 @@ def properties_pass_and_fail(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     )
 
 
-COVERAGE_CELL = r"\d+\.\d%  \d+/\d+"
+COVERAGE_CELL = r"\d+\.\d%  +\S+/\S+"
 
 
-def coverage_sections(level: str):
-    """`runs coverage --by <level>`: a `module <id>` header per module with its
-    coverage, then the level's table, and a status line on stderr. At the
-    location level, every row with a moment has an input hash and a vtime."""
-    header = {
-        "file": r"^  FILE +COVERAGE$",
-        "function": r"^    FUNCTION +COVERAGE$",
-        "location": r"^    INPUT_HASH +VTIME +LOCATION$",
-    }[level]
+def coverage_tree(rollup: str):
+    """`runs coverage --rollup <rollup>`: a module line per module, its nodes
+    under it with tree connectors, COVERAGE first on each line, and a status
+    line. With `none`, a location table hangs under the functions, and every
+    reached row has an input hash and a vtime."""
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         out = sr.result.stdout
-        modules = re.findall(rf"^module \S+.*  {COVERAGE_CELL}$", out, re.M)
-        tables = re.findall(header, out, re.M)
+        modules = re.findall(rf"^ *{COVERAGE_CELL}  module \S+", out, re.M)
+        nodes = re.findall(rf"^ *{COVERAGE_CELL}  [┃ ]*[┣┗]━━ \S", out, re.M)
+        tables = re.findall(r"START +END +INPUT_HASH +VTIME$", out, re.M)
+        reached = re.findall(r"\d+(?::\d+)? +\S+ +-?\d+ +\d+\.?\d*$", out, re.M)
         status = re.search(
-            r"^\d+ locations? · \d+\.\d% reached · run ", sr.result.stderr, re.M
+            r"^\S+ locations? · \d+\.\d% reached · run ", sr.result.combined, re.M
         )
-        rows = 0
-        if level == "location":
-            rows = len(re.findall(r"^    -?\d+ +\d+\.?\d* +\S", out, re.M))
+        ok = sr.result.ok and bool(modules) and bool(nodes) and bool(status)
+        if rollup == "none":
+            ok = ok and bool(tables) and bool(reached)
         else:
-            rows = len(re.findall(rf"^ +\S.*  {COVERAGE_CELL}$", out, re.M))
-        ok = (
-            sr.result.ok
-            and bool(modules)
-            and bool(tables)
-            and bool(rows)
-            and bool(status)
-        )
+            ok = ok and not tables
         return (
             ok,
-            f"{len(modules)} modules, {len(tables)} tables, {rows} rows, status={bool(status)}",
+            f"{len(modules)} modules, {len(nodes)} nodes, {len(tables)} tables, "
+            f"{len(reached)} reached rows, status={bool(status)}",
         )
 
     return chk
 
 
 def coverage_json(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-    """One location per line, every reached one with a numeric vtime."""
+    """One module per line, nested down to its functions, each reached
+    function with the numeric vtime of its first moment."""
     rows = [json.loads(line) for line in sr.result.stdout.splitlines() if line.strip()]
-    reached = [r for r in rows if "first_reached" in r]
-    bad = [
-        r
-        for r in reached
-        if not isinstance(r["first_reached"]["moment"]["vtime"], (int, float))
+    functions = [
+        f
+        for m in rows
+        for file in m.get("files", [])
+        for c in file.get("classes", [])
+        for f in c.get("functions", [])
     ]
-    ok = sr.result.ok and bool(rows) and all("module_id" in r for r in rows) and not bad
+    reached = [f for f in functions if "first_reached" in f]
+    bad = [
+        f
+        for f in reached
+        if not isinstance(f["first_reached"]["moment"]["vtime"], (int, float))
+    ]
+    ok = sr.result.ok and bool(rows) and all("module_id" in r for r in rows)
+    ok = ok and bool(functions) and not bad
     return (
         ok,
-        f"{len(rows)} locations, {len(reached)} reached, {len(bad)} string vtimes",
+        f"{len(rows)} modules, {len(functions)} functions, {len(reached)} reached, "
+        f"{len(bad)} string vtimes",
     )
 
 
@@ -4233,70 +4237,71 @@ def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
         Story(
             "runs-coverage-run",
             "See which files my run reached",
-            "My run is finished, and I want to see how much of each file the run reached, so I "
-            "know where to aim the workload next.",
-            "A `module <id>  <name>  <language>  <coverage>` header per module, sorted by module "
-            "ID, each over a FILE/COVERAGE table sorted by path. COVERAGE reads like "
+            "My run is finished, and I want to see how much of each module and file the run "
+            "reached, so I know where to aim the workload next.",
+            "A line per module with its ID, name and language, then its files under it with tree "
+            "connectors, sorted by path. Every line starts with COVERAGE, such as "
             "`66.7%  2/3`. A status line on stderr counts the locations and says the run "
             "completed.",
             ["runs", "coverage", x.run],
-            coverage_sections("file"),
+            coverage_tree("file"),
             json_capable=False,
         ),
         Story(
-            "runs-coverage-run--by-function",
+            "runs-coverage-run--rollup-function",
             "Find functions my run never entered",
-            "I want the functions of one module, file by file, with how much of each the run "
+            "I want the functions of one module, by file and class, with how much of each the run "
             "reached, to spot the ones at 0%.",
-            "The module's header, then a header per file with its coverage, each over a "
-            "FUNCTION/COVERAGE table in source order.",
+            "The module's line, then each file, its classes and their functions in source order, "
+            "with tree connectors and COVERAGE first on each line.",
             [
                 "runs",
                 "coverage",
                 x.run,
                 "--module",
                 f.coverage_module,
-                "--by",
+                "--rollup",
                 "function",
             ],
-            coverage_sections("function"),
+            coverage_tree("function"),
             json_capable=False,
         ),
         Story(
-            "runs-coverage-run--by-location",
+            "runs-coverage-run--rollup-none",
             "Go from a reached line to its logs",
             "I want each location of one module, with the moment the run first reached it, so "
             "I can read the logs up to that moment.",
-            "The module's header, then a header per file, each over an INPUT_HASH/VTIME/LOCATION "
-            "table in source order. A reached location has an input hash and a vtime that "
-            "`runs logs` takes; an unreached one has neither.",
+            "The module's tree down to its functions, with a START/END/INPUT_HASH/VTIME table "
+            "under each function. A reached location has an input hash and a vtime that "
+            "`runs logs` takes; an unreached one has `-` for both.",
             [
                 "runs",
                 "coverage",
                 x.run,
                 "--module",
                 f.coverage_module,
-                "--by",
-                "location",
+                "--rollup",
+                "none",
             ],
-            coverage_sections("location"),
+            coverage_tree("none"),
             json_capable=False,
         ),
         Story(
             "runs-coverage-run--json",
             "Download my run's coverage",
-            "My script wants every location of the run as JSON, to compute its own report.",
-            "One JSON object per location, as the API sends it, with the vtime of "
-            "`first_reached.moment` as a number. No status line.",
-            ["--json", "runs", "coverage", x.run],
+            "My script wants the run's coverage by function as JSON, to compute its own report.",
+            "One JSON object per module, nested by file, class and function, each function with "
+            "its counts and the first moment that reached it, the vtime as a number. No status "
+            "line.",
+            ["--json", "runs", "coverage", x.run, "--rollup", "function"],
             coverage_json,
             json_capable=False,
         ),
         _help_story(
             "help-runs-coverage",
             "Learn how to read a run's coverage",
-            "I want the help to tell me what a section and a row mean, how to choose the rows, "
-            "and how to go from a location to its logs.",
+            "I want the help to tell me what a line means, how to choose the depth of the tree, "
+            "how to filter it, and how to go from a location to its logs.",
             ["runs", "coverage"],
             ["runs", "coverage", x.run],
             samples=[
@@ -4308,8 +4313,8 @@ def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
                         x.run,
                         "--module",
                         f.coverage_module,
-                        "--by",
-                        "location",
+                        "--rollup",
+                        "none",
                     ],
                 )
             ],

@@ -1,94 +1,132 @@
 # snouty runs coverage
 #
 # runs coverage reads the run's locations
-# (`GET /api/v0/runs/{run_id}/coverage/locations`), and the module list
-# for the module headers.
+# (`GET /api/v0/runs/{run_id}/coverage/locations`), and the module list for
+# the module names. It is an unstable feature.
 
-# --by sets the text rows, and --detail is text output.
-! snouty --json runs coverage run-1 --by function
-stderr '--by sets the rows of the text output'
+# Without the feature, the command is refused.
+! snouty runs coverage run-1
+stderr '`snouty runs coverage` is an unstable feature and is not enabled'
+stderr 'SNOUTY_UNSTABLE_FEATURES=coverage'
+
+env SNOUTY_UNSTABLE_FEATURES=coverage
+
+# --detail is text output, and a rollup must be one that exists.
 ! snouty --json runs coverage run-1 --detail
 stderr 'detail'
-! snouty runs coverage run-1 --by line
+! snouty runs coverage run-1 --rollup line
 stderr 'invalid value'
+! snouty runs coverage run-1 --file '[a'
+stderr 'invalid glob'
 
-# A run that has locations lists them by file. Only runs created after the
-# coverage API shipped have locations.
+# A run that has locations shows a tree per module. Only runs created after
+# the coverage API shipped have locations.
 mock-runs-server
 [!staging] snouty --json runs list
 [staging] snouty --json runs list --created-after 2026-11-13T23:00:00Z --limit 100
 env_from_json_find run_id launcher!=debugging -- runs coverage $R_run_id
 snouty runs coverage $R_run_id
-stdout '^module \S+'
-stdout '^  FILE +COVERAGE$'
-stdout '^  \S.* +\d+\.\d%  \d+/\d+$'
-stderr '^\d+ locations? · \d+\.\d% reached · run '
-snouty runs coverage $R_run_id --by location
-stdout '^    INPUT_HASH +VTIME +LOCATION$'
-stdout '^    -?\d+ +\d+\.?\d* +\S+:\d+'
-snouty --json runs coverage $R_run_id
-stdout '^\{.*"module_id":.*"first_reached":\{.*"moment":\{"input_hash":"-?\d+","vtime":\d'
+stdout '^ *\d+\.\d%  +\S+/\S+  module \S+'
+stdout '^ *\d+\.\d%  +\S+/\S+  [┣┗]━━ \S'
+stderr '^\S+ locations? · \d+\.\d% reached · run '
+snouty runs coverage $R_run_id --rollup none
+stdout '    START +END +INPUT_HASH +VTIME$'
+snouty --json runs coverage $R_run_id --rollup function
+stdout '^\{"module_id":.*"files":\[\{"file":.*"classes":\[\{"class":.*"functions":\['
 
 # The rest of this file checks mock data.
 [staging] skip
 
-# By file: a header per module, sorted by module ID, with its name, language
-# and coverage, then its files.
+# By file, the default: a line per module, in the order the API sends them,
+# with its name and language, then its files. COVERAGE leads each line.
 mock-runs-server
 snouty --verbose runs coverage run-1
-stdout -literal 'module d85d838a38496ad7233432355829abc7d2333c33  rusthello  native   60.0%  3/5'
-stdout '^  FILE +COVERAGE$'
-stdout '^  src/main\.rs +66\.7%  2/3$'
-stdout '^  src/work\.rs +50\.0%  1/2$'
-stdout -literal 'module go-20e55e2f1623  instrhello/internal/work  Go  100.0%  1/1'
-stdout '^  internal/work/spin\.go  100\.0%  1/1$'
+stdout -literal ' 60.0%        3/5  module d85d838a38496ad7233432355829abc7d2333c33  rusthello  native'
+stdout -literal ' 66.7%        2/3  ┣━━ src/main.rs'
+stdout -literal ' 50.0%        1/2  ┗━━ src/work.rs'
+stdout -literal '100.0%        1/1  module go-20e55e2f1623  instrhello/internal/work  Go'
+stdout -literal '100.0%        1/1  ┗━━ internal/work/spin.go'
 stderr '^6 locations · 66\.7% reached · run completed$'
 stderr '^> GET .*/api/v0/runs/run-1/coverage/locations$'
-stderr '^> GET .*/api/v0/runs/run-1/modules'
 ! stderr 'in progress'
 
-# By function: a header per file, then its functions in source order.
-snouty runs coverage run-1 --by function
-stdout '^  src/main\.rs +66\.7%  2/3$'
-stdout '^    FUNCTION +COVERAGE$'
-stdout '^    rusthello::main +100\.0%  1/1$'
-stdout '^    rusthello::spin +50\.0%  1/2$'
-stdout '^    work\.Spin\.func1 +100\.0%  1/1$'
+# By function: free functions first, then each class, from the API's class
+# field (Worker) or a demangled name (Spinner). A file of free functions only
+# has no class level.
+snouty runs coverage run-1 --rollup function
+stdout -literal '100.0%        1/1  ┃   ┣━━ (no class)'
+stdout -literal '100.0%        1/1  ┃   ┃   ┗━━ rusthello::main'
+stdout -literal ' 50.0%        1/2  ┃   ┗━━ Spinner'
+stdout -literal ' 50.0%        1/2  ┃       ┗━━ spin'
+stdout -literal ' 50.0%        1/2      ┗━━ rusthello::work::step'
+stdout -literal '100.0%        1/1      ┗━━ Worker'
+stdout -literal '100.0%        1/1          ┗━━ Spin'
 
-# By location: two locations at one function, line and column are two rows.
-snouty runs coverage run-1 --by location
-stdout '^    INPUT_HASH +VTIME +LOCATION$'
-stdout '^    -3625518438076122494 +12\.84610 +rusthello::main:13:5$'
-stdout '^ +rusthello::spin:9:5$'
-stdout -count=2 'rusthello::work::step:4:5$'
+# By location: a table under each function. Two locations at one span are
+# two rows, and an unreached one has a `-` for its moment.
+snouty runs coverage run-1 --rollup none
+stdout '┃   ┃       START +END +INPUT_HASH +VTIME$'
+stdout '┃   ┃       13:5 +13:5 +-3625518438076122494 +12\.84610$'
+stdout -count=2 '        4:5 +4:5 '
+stdout '        4:5 +4:5 +- +-$'
 
 # --detail prints the vtime whole.
-snouty runs coverage run-1 --by location --detail
-stdout ' 12\.84610243188217 +rusthello::main:13:5$'
+snouty runs coverage run-1 --rollup none --detail
+stdout ' 12\.84610243188217$'
 
-# --module sends one request for each module, and a repeated one sends one.
+# The filters: a file glob without a slash matches the base name, a class
+# matches its short name, a function its name, and `!` excludes. Values of
+# one filter are alternatives, and filters narrow each other.
+snouty runs coverage run-1 --file work.rs
+stderr '^2 locations · 50\.0% reached'
+snouty runs coverage run-1 --file work.rs --file main.rs --class Spinner
+stderr '^2 locations · 50\.0% reached'
+snouty runs coverage run-1 --class '!Spinner'
+stderr '^4 locations · 75\.0% reached'
+snouty runs coverage run-1 --function 'rusthello::*'
+stderr '^3 locations · 66\.7% reached'
+snouty runs coverage run-1 --file '**/spin.go'
+stdout 'module go-20e55e2f1623 '
+! stdout 'module d85d838a'
+snouty runs coverage run-1 --file nothing.rs
+! stdout .
+stderr '^0 locations · – reached'
+
+# --module asks the server for one module, and a repeated one asks once. A
+# leading ! excludes a module instead.
 snouty --verbose runs coverage run-1 --module go-20e55e2f1623 --module go-20e55e2f1623
 stderr -count=1 '^> GET .*/coverage/locations\?module_id=go-20e55e2f1623'
-stdout '^module go-20e55e2f1623 '
-! stdout 'd85d838a'
-stderr '^1 location · 100\.0% reached · run completed$'
+stderr '^1 location · 100\.0% reached'
+snouty runs coverage run-1 --module '!d85d838a38496ad7233432355829abc7d2333c33'
+stderr '^1 location · 100\.0% reached'
+
+# --module-name reads the module list, and asks the server for the modules
+# whose names match.
+snouty --verbose runs coverage run-1 --module-name 'instrhello/*'
+stderr '^> GET .*/api/v0/runs/run-1/modules'
+stderr '^> GET .*/coverage/locations\?module_id=go-20e55e2f1623'
+stderr '^1 location · 100\.0% reached'
 
 # On a run in progress, the output is the coverage so far.
 snouty runs coverage run-2
 stderr '^6 locations · 66\.7% reached · run in progress$'
 stderr -literal 'the run is in progress, so re-run the command later for more coverage'
 
-# --json passes every location through, with the moment's vtime as a JSON
-# number, and no status line.
+# --json prints a module per line, nested down to the rollup, with each
+# vtime as a JSON number, and no status line.
 snouty --json runs coverage run-1
-stdout -count=6 '^\{"module_id":'
-stdout '"first_reached":\{"run_seconds":31\.4,"moment":\{"input_hash":"-3625518438076122494","vtime":12\.84610243188217\}\}'
+stdout -count=2 '^\{"module_id":'
+stdout '"module_name":"rusthello","language":"native","reached":3,"total":5,"files":\[\{"file":"src/main\.rs","reached":2,"total":3\}'
+! stdout '"classes"'
 ! stderr ' · run '
+snouty --json runs coverage run-1 --rollup function
+stdout '"class":"rusthello::Spinner","reached":1,"total":2,"functions":\[\{"function":"spin","reached":1,"total":2,"first_reached":\{"run_seconds":31\.4,"moment":\{"input_hash":"-3625518438076122494","vtime":12\.851377005412903\}\}\}\]'
+! stdout '"locations"'
+snouty --json runs coverage run-1 --rollup none
+stdout '"locations":\[\{"module_id":"d85d838a38496ad7233432355829abc7d2333c33","address":"1"'
 
 # A Stream_Error line fails the command.
 ! snouty --json runs coverage run-stream-error
-stdout -count=1 '^\{"module_id":'
-! stdout 'mock stream failure'
 stderr 'the server reported an error mid-stream: mock stream failure'
 
 ! snouty runs coverage no-such-run

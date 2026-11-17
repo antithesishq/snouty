@@ -26,9 +26,12 @@ use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
 
 use clap::ValueEnum;
+use color_eyre::Section;
+use color_eyre::eyre::Result;
 use log::debug;
 
 use crate::env;
+use crate::error::user_error;
 
 /// The environment variable that enables unstable features, as a
 /// comma-separated list of ids.
@@ -37,6 +40,9 @@ pub const UNSTABLE_FEATURES_VAR_NAME: &str = "SNOUTY_UNSTABLE_FEATURES";
 /// The id of a feature is its variant name in kebab-case.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
 pub enum Feature {
+    /// `snouty runs coverage`. The coverage API is new, and the command's
+    /// output and flags can still change.
+    Coverage,
     /// Stands in for a real feature in tests.
     #[cfg(test)]
     Example,
@@ -57,6 +63,26 @@ impl Display for Feature {
             .expect("no Feature variant is skipped");
         f.write_str(value.get_name())
     }
+}
+
+/// Refuses the gated command `path` while `feature` is off. A hidden
+/// subcommand is still callable, so its dispatch checks this first.
+pub fn require(feature: Feature, path: &str) -> Result<()> {
+    if is_enabled(feature) {
+        return Ok(());
+    }
+    Err(user_error(format!(
+        "`{path}` is an unstable feature and is not enabled"
+    ))
+    .note(format!(
+        "enable it by setting {UNSTABLE_FEATURES_VAR_NAME}={feature}"
+    ))
+    .note("an unstable feature can change or go away in any release"))
+}
+
+/// Whether `feature` is enabled. Cheap enough for a clap `hide` attribute.
+pub fn is_enabled(feature: Feature) -> bool {
+    enabled().contains(&feature)
 }
 
 /// The features `SNOUTY_UNSTABLE_FEATURES` enables, in the order listed.

@@ -1,28 +1,26 @@
-Show which instrumented code of a run it reached, by file, function or location. Use it to find code that the run never reached, and the moment where it first reached a location. Runs created before release 67.6 have no coverage.
+Show which instrumented code of a run it reached, as a tree of modules, files, classes and functions. Use it to find code that the run never reached, and the moment where it first reached a location. Runs created before release 67.6 have no coverage.
 
-The output has a section per module, sorted by module ID. Its header gives the module ID, its name and language, and its coverage. COVERAGE is the share of the instrumented locations that the run reached, then the reached and total counts: `66.7%  2/3`.
+`runs coverage` is an unstable feature: its flags and output can change in any release. Enable it with `SNOUTY_UNSTABLE_FEATURES=coverage`.
 
-By default, each module has one row per file: FILE and COVERAGE.
+Each line starts with COVERAGE: the share of the instrumented locations under it that the run reached, then the reached and total counts in SI notation, such as `66.7%  2/3` or `28.7%  1.1k/4k`. 0% is yellow, and 100% green. Then comes the node, under its parent: a module with its ID, name and language; its files, sorted by path; and with {{ t("--rollup")? }} `function` or `none`, the classes or types of each file, then their functions, both in source order.
 
-With {{ t("--by")? }} `function`, each file has a header with its coverage, then one row per function, in source order: FUNCTION and COVERAGE. FUNCTION has the short name of its class or type when it has one, such as `Handler.do_GET`, so methods of different classes have their own rows. A function at 0% is one that the run never entered.
+A class is the API's class of a function: a Java or C# class, a Go method's receiver type or a Python class. For native code, it is the type of a demangled `<Type>::method`, and a `<Type as Trait>::method` shows as `Trait::method`. Free functions come first, under `(no class)`, and a file of free functions only has no class level.
 
-With {{ t("--by")? }} `location`, each file has a header, then one row per location, in source order: INPUT_HASH, VTIME and LOCATION. LOCATION is the function, as in FUNCTION, then the line and column. INPUT_HASH and VTIME give the moment where the run first reached the location, and are blank for a location that it has not reached. Pass them as the input_hash and vtime of `{{ t("runs logs")? }}` to read the logs up to that moment.
+{{ t("--rollup")? }} sets the deepest level: `file` (the default), `function`, or `none` for every location. With `none`, a table of the function's locations hangs under each function, in source order: START and END of the span, as line:column, then INPUT_HASH and VTIME, the moment where the run first reached it. Pass them as the input_hash and vtime of `{{ t("runs logs")? }}` to read the logs up to that moment. A reached location is plain, an unreached one dim, and an empty cell is `-`. Several locations can share a span, such as the copies of a generic function, or the two outcomes of a branch; each is its own row.
 
-Several locations can share a function, line and column, such as the copies of a generic function in native code, or the two outcomes of a branch in Python. Each is its own row.
-
-Use {{ t("--module")? }} to show only the locations of a module.{% if cli %} Give it more than once for more modules.{% else %} List more module IDs for more modules.{% endif %} `{{ t("runs modules")? }}` lists the module IDs. While the run is in progress, the output is the coverage up to now.
+The filters keep only some of the coverage. {{ t("--module")? }} takes a module ID, which `{{ t("runs modules")? }}` lists. {{ t("--module-name")? }} takes a glob over the module's name, {{ t("--file")? }} over the file's path, {{ t("--class")? }} over the class's full or short name, and {{ t("--function")? }} over the function's name. A file glob without a `/` matches the file's base name, and in a path `*` stays within a directory and `**` crosses them. A filter's values are alternatives, and the filters together narrow the output: {{ t("--file")? }} `api.go` {{ t("--file")? }} `raft.go` {{ t("--class")? }} `Raft` keeps Raft's methods in either file. A value with a leading `!` excludes what it matches instead, such as `!**/vendor/**`; quote it in the shell. `\!` starts a value with a literal `!`. The server applies {{ t("--module")? }} and {{ t("--module-name")? }}, and snouty applies the rest while the locations download.
 
 {% if cli %}
-VTIME is cut to five decimals, which still names a moment at or before the first reach. With {{ t("--detail")? }}, it prints whole. On a terminal, file names are shortened at the start, and functions and locations at the end. After the output, a status line on stderr counts the locations, and gives the share reached and the run's status.
+VTIME is cut to five decimals, which still names a moment at or before the first reach. With {{ t("--detail")? }}, it prints whole. On a terminal, file names are shortened at the start, and other names at the end. After the output, a status line on stderr counts the locations, and gives the share reached and the run's status.
 {% else %}
 VTIME prints whole. A status line under the output counts the locations, and gives the share reached and the run's status.
 {% endif %}
 
-With {{ t("--json")? }}, every location prints as the JSON object that the API sends, on its own line, with the vtime as a JSON number: its `module_id`, `address`, `file`, `function`, and its begin and end lines and columns. A reached location has `first_reached`, with the `moment` and `run_seconds`, the time in seconds from the start of the run.{% if cli %} So `snouty runs coverage <run_id> --json > coverage.ndjson` downloads the coverage.{% endif %}
+With {{ t("--json")? }}, each module prints as one JSON object on its own line, nested like the text down to {{ t("--rollup")? }}: the module's `module_id`, `module_name`, `language`, `reached` and `total`, then `files`, each with its `classes`, each with its `functions`. A class is its full name, or null for free functions. A function has the `first_reached` moment of its earliest location, and with `none` its `locations`, as the API sends them, with each vtime as a JSON number. The counts are exact.
 
-The run must be ready or complete. If it is not, the command waits until it is ready, and says that it waits.
+While the run is in progress, the output is the coverage up to now. The run must be ready or complete. If it is not, the command waits until it is ready, and says that it waits.
 
 Examples:
   {{ t("snouty runs coverage <run_id>")? }}
-  {{ t("snouty runs coverage <run_id> --by function --module <module_id>")? }}
-  {{ t("snouty runs coverage <run_id> --by location --module <module_id>")? }}
+  {{ t("snouty runs coverage <run_id> --rollup function --file '!**/vendor/**'")? }}
+  {{ t("snouty runs coverage <run_id> --rollup none --module <module_id> --class Raft")? }}

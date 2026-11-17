@@ -1057,9 +1057,12 @@ pub enum RunsCommands {
     #[command(arg = json(JsonShape::Lines))]
     Usage(RunsUsageArgs),
 
-    /// Show which instrumented code of a run it reached, by file, function or
-    /// location
-    #[command(arg = json(JsonShape::Lines))]
+    /// Show which instrumented code of a run it reached, as a tree of modules,
+    /// files, classes and functions
+    #[command(
+        hide = !crate::features::is_enabled(crate::features::Feature::Coverage),
+        arg = json(JsonShape::Lines),
+    )]
     Coverage(RunsCoverageArgs),
     /// List the instrumented modules that a run loaded
     #[command(arg = json(JsonShape::Lines))]
@@ -1080,33 +1083,49 @@ pub struct RunsCoverageArgs {
     #[arg(value_parser = parse_run_id)]
     pub run_id: String,
 
-    /// Only list the locations of this module (repeatable)
-    #[arg(
-        long = "module",
-        value_name = "MODULE_ID",
-        value_parser = clap::builder::NonEmptyStringValueParser::new(),
-    )]
+    /// Only the module with this ID (repeatable; a leading ! excludes it)
+    #[arg(long = "module", value_name = "MODULE_ID", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub module_ids: Vec<String>,
 
-    /// What each row is: a file, a function or a location [default: file]
-    #[arg(long, value_enum)]
-    pub by: Option<CoverageLevel>,
+    /// Only modules whose name matches this glob (repeatable; a leading !
+    /// excludes them)
+    #[arg(long = "module-name", value_name = "GLOB", value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    pub module_names: Vec<String>,
+
+    /// Only files whose path matches this glob (repeatable; a leading !
+    /// excludes them)
+    #[arg(long = "file", value_name = "GLOB", value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    pub files: Vec<String>,
+
+    /// Only classes or types whose name matches this glob (repeatable; a
+    /// leading ! excludes them)
+    #[arg(long = "class", value_name = "GLOB", value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    pub classes: Vec<String>,
+
+    /// Only functions whose name matches this glob (repeatable; a leading !
+    /// excludes them)
+    #[arg(long = "function", value_name = "GLOB", value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    pub functions: Vec<String>,
+
+    /// The deepest level of the tree: files, functions, or every location
+    #[arg(long, value_enum, default_value_t)]
+    pub rollup: CoverageRollup,
 
     /// Print each vtime whole
     #[arg(short = 'd', long)]
     pub detail: bool,
 }
 
-/// The rows of `runs coverage`.
+/// The deepest level of the `runs coverage` tree.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
-pub enum CoverageLevel {
-    /// One row per file, under a header per module
+pub enum CoverageRollup {
+    /// Modules and their files
     #[default]
     File,
-    /// One row per function, under a header per module and per file
+    /// Modules, files, classes and functions
     Function,
-    /// One row per location, under a header per module and per file
-    Location,
+    /// Modules, files, classes, functions and every location
+    None,
 }
 
 #[derive(Args)]

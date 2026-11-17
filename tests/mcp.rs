@@ -48,7 +48,9 @@ fn snouty_mcp_from(exe: &Path, server: &MockApiServer, home: &Path) -> tokio::pr
         .env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1")
         .env("ANTITHESIS_TENANT", "testtenant")
         .env("ANTITHESIS_BASE_URL", server.url())
-        .env("ANTITHESIS_API_KEY", server.token());
+        .env("ANTITHESIS_API_KEY", server.token())
+        // runs_coverage is an unstable feature; the tests list and call it.
+        .env("SNOUTY_UNSTABLE_FEATURES", "coverage");
     command
 }
 
@@ -128,7 +130,7 @@ async fn tools_return_detailed_output_or_json() {
     let result = call(
         &client,
         "runs_coverage",
-        json!({ "run_id": "run-2", "by": "location" }),
+        json!({ "run_id": "run-2", "rollup": "none", "classes": ["Spinner"] }),
     )
     .await;
     assert_eq!(result.is_error, Some(false));
@@ -138,7 +140,8 @@ async fn tools_return_detailed_output_or_json() {
         .map(|c| c.as_text().unwrap().text.as_str())
         .collect();
     assert!(all.contains("INPUT_HASH"), "{all}");
-    assert!(all.contains("12.84610243188217"), "{all}");
+    assert!(all.contains("12.851377005412903"), "{all}");
+    assert!(!all.contains("rusthello::main"), "{all}");
     assert!(all.contains("the run is in progress"), "{all}");
 
     // runs_list returns what `snouty runs list --detail` prints: a block per
@@ -271,6 +274,19 @@ async fn tools_return_detailed_output_or_json() {
         "{matches}"
     );
 
+    client.cancel().await.expect("close snouty mcp");
+}
+
+/// An unstable feature's tool is listed only when the feature is on.
+#[tokio::test]
+async fn a_gated_tool_is_left_out_while_its_feature_is_off() {
+    let server = MockApiServer::start();
+    let home = TempDir::new().unwrap();
+    let mut command = snouty_mcp(&server, home.path());
+    command.env_remove("SNOUTY_UNSTABLE_FEATURES");
+    let client = connect(command).await;
+    let tools = client.list_all_tools().await.expect("tools/list");
+    assert!(tools.iter().all(|tool| tool.name != "runs_coverage"));
     client.cancel().await.expect("close snouty mcp");
 }
 

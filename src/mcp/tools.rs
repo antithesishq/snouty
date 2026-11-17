@@ -81,6 +81,17 @@ macro_rules! tools {
 
             /// Args that open a browser, stream with no end, or have no
             /// effect, such as `--json` of `docs show`.
+            /// Whether the tool's command is on: an unstable feature gates
+            /// some, and the server leaves a gated tool out until it is.
+            pub(crate) fn enabled(self) -> bool {
+                match self {
+                    ToolName::RunsCoverage => {
+                        crate::features::is_enabled(crate::features::Feature::Coverage)
+                    }
+                    _ => true,
+                }
+            }
+
             fn hidden(self) -> &'static [&'static str] {
                 match self {
                     $(ToolName::$variant => &[$($hidden),*],)*
@@ -177,10 +188,11 @@ impl ToolName {
     }
 }
 
-/// One row for each tool, `tool_help` too: its name and what it does.
+/// One row for each enabled tool, `tool_help` too: its name and what it does.
 pub(crate) fn summaries() -> Vec<(String, String)> {
     ToolName::ALL
         .into_iter()
+        .filter(|tool| tool.enabled())
         .map(|tool| (tool.to_string(), tool.spec().about.clone()))
         .chain([(TOOL_HELP.to_owned(), TOOL_HELP_ABOUT.to_owned())])
         .collect()
@@ -435,7 +447,11 @@ fn command_lines(name: ToolName, detail: bool, params: &[Param]) -> String {
 }
 
 pub(super) fn tool_help_tool() -> Tool {
-    let names: Vec<String> = ToolName::ALL.iter().map(ToString::to_string).collect();
+    let names: Vec<String> = ToolName::ALL
+        .iter()
+        .filter(|tool| tool.enabled())
+        .map(ToString::to_string)
+        .collect();
     let schema = json!({
         "type": "object",
         "properties": { TOOL_PARAM: { "type": "string", "enum": names } },

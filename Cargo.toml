@@ -111,6 +111,7 @@ inquire = { version = "0.9", default-features = false, features = ["crossterm"] 
 askama = { version = "0.16.1", default-features = false, features = ["config", "derive", "std"] }
 axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1"] }
 gix = { version = "0.90", default-features = false, features = ["sha1"] }
+globset = "0.4.21"
 
 # See the global_allocator in main.rs.
 [target.'cfg(target_env = "musl")'.dependencies]

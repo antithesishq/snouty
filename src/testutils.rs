@@ -1363,10 +1363,12 @@ fn mock_route_get_run_build_logs(run_id: &str) -> (u16, String) {
     (200, lines.join("\n") + "\n")
 }
 
-/// The locations of run-1 and run-2. The Rust module has two files; two of
-/// its locations share a function, line and column, as a generic's copies
-/// do, and only one of them is reached. The Go module has one reached
-/// location. The route filters by `module_id`, as the server does.
+/// The locations of run-1 and run-2. The Rust module has two files: a free
+/// function and a method of `Spinner`, which only its demangled name names,
+/// and two locations that share a span, as a generic's copies do, of which
+/// only one is reached. The Go module's location is a method of `Worker`,
+/// which the `class` field names. The route filters by `module_id`, as the
+/// server does.
 fn mock_route_coverage_locations(run_id: &str, query: Option<&str>) -> (u16, String) {
     let rust = "d85d838a38496ad7233432355829abc7d2333c33";
     let location = |module_id: &str,
@@ -1403,8 +1405,13 @@ fn mock_route_coverage_locations(run_id: &str, query: Option<&str>) -> (u16, Str
     }
     let locations = [
         main("1", "rusthello::main", 13, Some("12.846102431882170")),
-        main("2", "rusthello::spin", 7, Some("12.851377005412904")),
-        main("3", "rusthello::spin", 9, None),
+        main(
+            "2",
+            "<rusthello::Spinner>::spin",
+            7,
+            Some("12.851377005412904"),
+        ),
+        main("3", "<rusthello::Spinner>::spin", 9, None),
         location(rust, "4", "src/work.rs", "rusthello::work::step", 4, None),
         location(
             rust,
@@ -1414,14 +1421,18 @@ fn mock_route_coverage_locations(run_id: &str, query: Option<&str>) -> (u16, Str
             4,
             Some("13.5"),
         ),
-        location(
-            "go-20e55e2f1623",
-            "1",
-            "internal/work/spin.go",
-            "work.Spin.func1",
-            17,
-            Some("140.17209334451"),
-        ),
+        {
+            let mut go = location(
+                "go-20e55e2f1623",
+                "1",
+                "internal/work/spin.go",
+                "Spin",
+                17,
+                Some("140.17209334451"),
+            );
+            go["class"] = serde_json::json!("Worker");
+            go
+        },
     ];
     let module_id = mock_query_param(query, "module_id");
     let lines: Vec<String> = locations

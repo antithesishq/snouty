@@ -310,6 +310,7 @@ pub async fn cmd_runs(
         }
         Some(RunsCommands::Usage(args)) => usage::cmd_runs_usage(args, settings, output).await,
         Some(RunsCommands::Coverage(args)) => {
+            crate::features::require(crate::features::Feature::Coverage, "snouty runs coverage")?;
             coverage::cmd_runs_coverage(args, settings, output).await
         }
         Some(RunsCommands::Modules { run_id, detail }) => {

@@ -375,18 +375,22 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer};
 
-        let server = MockServer::start().await;
-        let base_url = match response {
+        // The server answers only while it lives, so it outlives the refresh.
+        let server = match response {
             Some(response) => {
+                let server = MockServer::start().await;
                 Mock::given(method("POST"))
                     .and(path("/auth/cli/refresh"))
                     .respond_with(response)
                     .mount(&server)
                     .await;
-                server.uri()
+                Some(server)
             }
-            None => "http://127.0.0.1:1".to_owned(),
+            None => None,
         };
+        let base_url = server
+            .as_ref()
+            .map_or_else(|| "http://127.0.0.1:1".to_owned(), MockServer::uri);
         let creds_dir = tempfile::TempDir::new().unwrap();
         let store = CredentialStore::CredentialsFile {
             path: creds_dir.path().join("credentials.toml"),

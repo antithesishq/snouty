@@ -308,15 +308,19 @@ impl Denormalizer {
     /// verdict if it changed.
     fn property_lines(&mut self, property: Property, verdict: Option<Verdict>) -> Vec<Line> {
         let property_id = property_id(&property);
-        let name = property.name().to_string();
         let mut lines = Vec::new();
         if !self.properties.contains(&property_id) {
             self.properties.insert(property_id.clone());
             lines.push(Line::Property {
                 property_id: property_id.clone(),
-                name: name.clone(),
+                name: property.name().to_string(),
             });
         }
+        // `samples` consumes the property, so a verdict that prints takes its
+        // name first.
+        let verdict = verdict
+            .filter(|&verdict| self.verdicts.insert(property_id.clone(), verdict) != Some(verdict))
+            .map(|verdict| (verdict, property.name().to_string()));
         for (kind, sample) in samples(property) {
             let new = match &sample {
                 Sample::Moment { input_hash, vtime } => {
@@ -334,9 +338,7 @@ impl Denormalizer {
                 });
             }
         }
-        if let Some(verdict) = verdict
-            && self.verdicts.insert(property_id.clone(), verdict) != Some(verdict)
-        {
+        if let Some((verdict, name)) = verdict {
             lines.push(Line::Verdict {
                 property_id,
                 name,

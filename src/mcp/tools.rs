@@ -93,13 +93,10 @@ macro_rules! tools {
             /// The unstable feature that gates the tool. The server leaves
             /// the tool out while the feature is off.
             pub(crate) fn feature(self) -> Option<Feature> {
-                const GATED: &[(ToolName, Feature)] = &[
-                    $($($(#[$gate])* (ToolName::$variant, Feature::$feature),)?)*
-                ];
-                GATED
-                    .iter()
-                    .find(|(tool, _)| *tool == self)
-                    .map(|(_, feature)| *feature)
+                match self {
+                    $($($(#[$gate])* ToolName::$variant => Some(Feature::$feature),)?)*
+                    _ => None,
+                }
             }
 
             /// Args that the tool requires and the command line does not. Mark

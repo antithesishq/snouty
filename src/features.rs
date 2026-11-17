@@ -84,24 +84,22 @@ impl Display for Feature {
     }
 }
 
-/// Refuses the gated `command` while `feature` is off. `command` is what the
-/// user typed to use it, such as `snouty runs x` or `snouty runs x --y`.
-pub fn require(feature: Feature, command: &str) -> Result<()> {
-    if is_enabled(feature) {
-        return Ok(());
-    }
-    Err(user_error(format!(
-        "`{command}` is an unstable feature and is not enabled"
-    ))
-    .note(format!(
-        "enable it by setting {UNSTABLE_FEATURES_VAR_NAME}={feature}"
-    ))
-    .note("an unstable feature can change or go away in any release"))
-}
-
-/// Whether `feature` is enabled. Cheap enough for a clap `hide` attribute.
-pub fn is_enabled(feature: Feature) -> bool {
-    enabled().contains(&feature)
+/// Parses a comma-separated list of ids into features, in order, and drops
+/// blank entries and unknown ids. Separate from [`enabled`] so tests need not
+/// set process-global state.
+fn parse_features_list(value: &str) -> Vec<Feature> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .filter_map(|id| {
+            let feature = id.parse().ok();
+            if feature.is_none() {
+                debug!("ignoring unknown feature `{id}` in {UNSTABLE_FEATURES_VAR_NAME}");
+            }
+            feature
+        })
+        .collect()
 }
 
 /// The features `SNOUTY_UNSTABLE_FEATURES` enables, in the order listed.
@@ -120,22 +118,24 @@ pub fn enabled() -> Vec<Feature> {
     }
 }
 
-/// Parses a comma-separated list of ids into features, in order, and drops
-/// blank entries and unknown ids. Separate from [`enabled`] so tests need not
-/// set process-global state.
-fn parse_features_list(value: &str) -> Vec<Feature> {
-    value
-        .split(',')
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .filter_map(|id| {
-            let feature = id.parse().ok();
-            if feature.is_none() {
-                debug!("ignoring unknown feature `{id}` in {UNSTABLE_FEATURES_VAR_NAME}");
-            }
-            feature
-        })
-        .collect()
+/// Whether `feature` is enabled. Cheap enough for a clap `hide` attribute.
+pub fn is_enabled(feature: Feature) -> bool {
+    enabled().contains(&feature)
+}
+
+/// Refuses the gated `command` while `feature` is off. `command` is what the
+/// user typed to use it, such as `snouty runs x` or `snouty runs x --y`.
+pub fn require(feature: Feature, command: &str) -> Result<()> {
+    if is_enabled(feature) {
+        return Ok(());
+    }
+    Err(user_error(format!(
+        "`{command}` is an unstable feature and is not enabled"
+    ))
+    .note(format!(
+        "enable it by setting {UNSTABLE_FEATURES_VAR_NAME}={feature}"
+    ))
+    .note("an unstable feature can change or go away in any release"))
 }
 
 #[cfg(test)]

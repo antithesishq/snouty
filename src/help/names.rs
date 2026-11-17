@@ -18,6 +18,18 @@ pub(super) enum Name {
     Example(Example),
 }
 
+/// Refuses a name of `tool` on another tool's page when an unstable
+/// feature gates `tool`: the server leaves `tool` out while the feature is
+/// off, so a call of it would fail.
+fn refuse_gated(page: HelpPage, tool: ToolName, text: &str) -> askama::Result<()> {
+    match tool.feature() {
+        Some(feature) if ToolName::at(page.path()) != Some(tool) => Err(error(format!(
+            "{text}: the unstable feature {feature} gates {tool}; put this text in {{% if cli %}}"
+        ))),
+        _ => Ok(()),
+    }
+}
+
 impl Name {
     /// The name of `text` on `page`: a flag or a positional arg of the
     /// page's command, or else a command line.
@@ -98,18 +110,6 @@ impl Name {
                 Ok(call.render(indent))
             }
         }
-    }
-}
-
-/// Refuses a name of `tool` on another tool's page when an unstable
-/// feature gates `tool`: the server leaves `tool` out while the feature is
-/// off, so a call of it would fail.
-fn refuse_gated(page: HelpPage, tool: ToolName, text: &str) -> askama::Result<()> {
-    match tool.feature() {
-        Some(feature) if ToolName::at(page.path()) != Some(tool) => Err(error(format!(
-            "{text}: the unstable feature {feature} gates {tool}; put this text in {{% if cli %}}"
-        ))),
-        _ => Ok(()),
     }
 }
 

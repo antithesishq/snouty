@@ -2,9 +2,7 @@
 
 use color_eyre::{Section, eyre::Result};
 
-use super::{
-    AuthenticationInfo, CredentialSource, SourcedCredential, login_command, login_to_replace, unset,
-};
+use super::{AuthenticationInfo, CredentialSource, SourcedCredential, login_command};
 use crate::error::user_error;
 
 pub(crate) const USERNAME_VAR_NAME: &str = "ANTITHESIS_USERNAME";
@@ -30,13 +28,16 @@ pub(crate) fn basic_auth_next_step(source: &CredentialSource, profile: Option<&s
         // `snouty login` alone cannot help: the environment hides what it
         // stores.
         CredentialSource::Environment { variables } => format!(
-            "run {} to store an API key, then {}",
+            "run {} to store an API key, then `unset {}`",
             login_command(profile),
-            unset(variables)
+            variables.join(" ")
         ),
         // A named profile with no credential uses the default profile's, so
         // the login goes to the selected profile.
-        CredentialSource::Stored(_) => login_to_replace(profile),
+        CredentialSource::Stored(_) => format!(
+            "run {} to replace it with an API key",
+            login_command(profile)
+        ),
     }
 }
 

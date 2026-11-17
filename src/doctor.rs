@@ -10,7 +10,7 @@ use crate::api::{
 };
 use crate::auth::{
     AuthenticationInfo, CredentialSource, CredentialStore, SourcedCredential, basic_auth_next_step,
-    keychain_entry_name, login_command, login_to_replace, rejected_credential_next_step, unset,
+    keychain_entry_name, login_command, rejected_credential_next_step,
 };
 use crate::compose;
 use crate::container;
@@ -351,7 +351,13 @@ fn authn_checks(
                         .note(Level::Note, crate::auth::BlankApiKey::SUGGESTION)
                 }
                 CredentialSource::Stored(store) => enrich_with_source(check, credentials, selected)
-                    .note(Level::Note, login_to_replace(store.profile())),
+                    .note(
+                        Level::Note,
+                        format!(
+                            "run {} to replace it with an API key",
+                            login_command(store.profile())
+                        ),
+                    ),
             }
         }
         AuthenticationInfo::ApiKey { .. } => {
@@ -467,8 +473,8 @@ fn password_only_check(
 /// environment variables `variables` hide.
 fn unset_to_use(variables: &[&str], hidden: &SourcedCredential, selected: Option<&str>) -> String {
     format!(
-        "{} to use the {} in {}",
-        unset(variables),
+        "`unset {}` to use the {} in {}",
+        variables.join(" "),
         hidden.value(),
         describe_source(hidden.tag(), selected)
     )

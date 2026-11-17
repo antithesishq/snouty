@@ -306,10 +306,8 @@ fn lock_dir() -> Option<PathBuf> {
     global_settings_dir().map(|dir| dir.join("locks"))
 }
 
-/// A name for the credentials file at `path` that every snouty build computes
-/// the same way, so that two builds lock the same file. A path that is not
-/// UTF-8 shares its token with paths that differ only in the bytes that are
-/// not UTF-8; such paths then only share a lock.
+/// Every snouty build computes the same token for a path, so all builds lock
+/// the same file. Paths that differ only in bytes that are not UTF-8 share a token.
 fn path_lock_token(path: &Path) -> String {
     let mut token = format!("{:x}", Sha256::digest(path.to_string_lossy().as_bytes()));
     token.truncate(16);
@@ -328,8 +326,7 @@ mod tests {
     };
     use wiremock::ResponseTemplate;
 
-    /// Every snouty build must name the same lock file for one credentials
-    /// file, so the token must never change.
+    /// Do not change this value: released builds lock the file that this token names.
     #[test]
     fn path_lock_token_is_stable() {
         assert_eq!(

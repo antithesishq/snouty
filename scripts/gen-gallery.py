@@ -2081,8 +2081,8 @@ def coverage_tree(rollup: str):
         out = sr.result.stdout
         modules = re.findall(rf"^ *{COVERAGE_CELL} +module \S+", out, re.M)
         nodes = re.findall(rf"^ *{COVERAGE_CELL} +[┃ ]*[┣┗]━━ \S", out, re.M)
-        tables = re.findall(r"START +END +INPUT_HASH +VTIME$", out, re.M)
-        reached = re.findall(r"\d+(?::\d+)? +\S+ +-?\d+ +\d+\.?\d*$", out, re.M)
+        tables = re.findall(r"LOCATION +INPUT_HASH +VTIME$", out, re.M)
+        reached = re.findall(r"\d+(?::\d+)? +-?\d+ +\d+\.?\d*$", out, re.M)
         status = re.search(
             r"^\S+ locations? · \d+\.\d% reached · run ", sr.result.combined, re.M
         )
@@ -4271,7 +4271,7 @@ def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
             "Go from a reached line to its logs",
             "I want each location of one module, with the moment the run first reached it, so "
             "I can read the logs up to that moment.",
-            "The module's tree down to its functions, with a START/END/INPUT_HASH/VTIME table "
+            "The module's tree down to its functions, with a LOCATION/INPUT_HASH/VTIME table "
             "under each function. A reached location has an input hash and a vtime that "
             "`runs logs` takes; an unreached one has `-` for both.",
             [

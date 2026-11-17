@@ -603,7 +603,7 @@ impl Render {
             .max(8)
     }
 
-    /// A function's locations: START and END of the span, then the moment
+    /// A function's locations: LOCATION, where each starts, then the moment
     /// where the run first reached it. An empty cell is `-`, and an
     /// unreached location is dim.
     fn location_rows(&self, function: &Node<'_>) -> Vec<Vec<String>> {
@@ -615,7 +615,6 @@ impl Render {
                 let first = c.first_reached.as_ref();
                 let cells = [
                     span(c.begin_line, c.begin_column),
-                    span(c.end_line, c.end_column),
                     first.map(|f| sanitize(&f.moment.input_hash)),
                     first.map(|f| vtime(f.moment.vtime, self.detail)),
                 ];
@@ -647,13 +646,13 @@ fn functions<'t, 'a>(tree: &'t Node<'a>) -> Box<dyn Iterator<Item = &'t Node<'a>
 
 fn location_table() -> Table {
     Table::builder()
-        .column(Column::new("START"))
-        .column(Column::new("END"))
+        .column(Column::new("LOCATION"))
         .column(Column::new("INPUT_HASH"))
         .column(Column::new("VTIME"))
 }
 
-/// `line:column`, `line`, or none when the API recorded no line.
+/// Where a location starts: `line:column`, `line` when the API recorded no
+/// column (Java), or none when it recorded no line.
 fn span<N: std::fmt::Display>(line: Option<N>, column: Option<N>) -> Option<String> {
     let line = line?;
     Some(match column {
@@ -772,17 +771,14 @@ mod tests {
     fn location_rollup_hangs_a_table_under_each_function() {
         let out = render(CoverageRollup::None, &sample());
         assert!(
-            out.contains("┃   ┃       START  END   INPUT_HASH  VTIME"),
+            out.contains("┃   ┃       LOCATION  INPUT_HASH  VTIME"),
             "{out}"
         );
         assert!(
-            out.contains("┃   ┃       10:5   10:9  -7          12.84610"),
+            out.contains("┃   ┃       10:5      -7          12.84610"),
             "{out}"
         );
-        assert!(
-            out.contains("┃           20:5   20:9  -           -"),
-            "{out}"
-        );
+        assert!(out.contains("┃           20:5      -           -"), "{out}");
     }
 
     #[test]

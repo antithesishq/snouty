@@ -30,7 +30,7 @@ stdout '^ *\d+\.\d%  \S+/\S+ +module \S+'
 stdout '^ *\d+\.\d%  \S+/\S+ +[┣┗]━━ \S'
 stderr '^\S+ locations? · \d+\.\d% reached · run '
 snouty runs coverage $R_run_id --rollup none
-stdout '    START +END +INPUT_HASH +VTIME$'
+stdout '    LOCATION +INPUT_HASH +VTIME$'
 snouty --json runs coverage $R_run_id --rollup function
 stdout '^\{"module_id":.*"files":\[\{"file":.*"classes":\[\{"class":.*"functions":\['
 
@@ -62,13 +62,13 @@ stdout -literal ' 50.0%  1/2         ┗━━ rusthello::work::step'
 stdout -literal '100.0%  1/1         ┗━━ Worker'
 stdout -literal '100.0%  1/1             ┗━━ Spin'
 
-# By location: a table under each function. Two locations at one span are
+# By location: a table under each function. Two locations at one place are
 # two rows, and an unreached one has a `-` for its moment.
 snouty runs coverage run-1 --rollup none
-stdout '┃   ┃       START +END +INPUT_HASH +VTIME$'
-stdout '┃   ┃       13:5 +13:5 +-3625518438076122494 +12\.84610$'
-stdout -count=2 '        4:5 +4:5 '
-stdout '        4:5 +4:5 +- +-$'
+stdout '┃   ┃       LOCATION +INPUT_HASH +VTIME$'
+stdout '┃   ┃       13:5 +-3625518438076122494 +12\.84610$'
+stdout -count=2 '        4:5 +'
+stdout '        4:5 +- +-$'
 
 # --detail prints the vtime whole.
 snouty runs coverage run-1 --rollup none --detail

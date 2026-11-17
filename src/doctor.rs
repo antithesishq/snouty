@@ -10,7 +10,7 @@ use crate::api::{
 };
 use crate::auth::{
     AuthenticationInfo, CredentialSource, CredentialStore, SourcedCredential, keychain_entry_name,
-    login_command, rejected_credential_next_step,
+    login_command, login_to_replace, password_next_step, rejected_credential_next_step,
 };
 use crate::compose;
 use crate::container;
@@ -440,21 +440,12 @@ fn hidden_credential_check(
 
 /// The single check for a username and password with no credential the API
 /// accepts behind them. It replaces the shortfall and password checks, which
-/// together suggested `snouty login` twice. The next step depends on the
-/// source: `snouty login` replaces a stored password, but an exported one
-/// still hides the new credential until the user unsets it.
+/// together suggested `snouty login` twice.
 fn password_only_check(
     in_use: &SourcedCredential,
     username: &str,
     selected: Option<&str>,
 ) -> Check {
-    let next_step = match in_use.tag() {
-        CredentialSource::Environment { variables } => format!(
-            "run `snouty login` to store an API key, then {}",
-            unset(variables)
-        ),
-        CredentialSource::Stored(store) => login_to_replace(store.profile()),
-    };
     enrich_with_source(
         Check::warn(
             CheckId::credentials(in_use),
@@ -469,15 +460,7 @@ fn password_only_check(
         in_use,
         selected,
     )
-    .note(Level::Note, next_step)
-}
-
-/// The next step for a stored password.
-fn login_to_replace(profile: Option<&str>) -> String {
-    format!(
-        "run {} to replace it with an API key",
-        login_command(profile)
-    )
+    .note(Level::Note, password_next_step(in_use.tag()))
 }
 
 fn unset(variables: &[&str]) -> String {

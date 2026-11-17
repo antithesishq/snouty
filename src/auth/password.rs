@@ -2,9 +2,7 @@
 
 use color_eyre::{Section, eyre::Result};
 
-use super::{
-    API_KEY_VAR_NAME, AuthenticationInfo, CredentialSource, SourcedCredential, login_command,
-};
+use super::{AuthenticationInfo, CredentialSource, SourcedCredential, login_to_replace};
 use crate::error::user_error;
 
 pub(crate) const USERNAME_VAR_NAME: &str = "ANTITHESIS_USERNAME";
@@ -22,23 +20,26 @@ pub(crate) enum PasswordPolicy {
     WarnDeprecated,
 }
 
-/// The remediation for the username/password deprecation, for a credential
-/// from `source`. The rejection and the warning both render it, so their
-/// wording cannot drift apart.
-fn password_deprecation_suggestion(source: &CredentialSource) -> String {
-    let next_step = match source {
+/// The one step away from a username and password from `source`. Doctor,
+/// the rejection and the warning all give it, so their advice cannot drift
+/// apart.
+pub(crate) fn password_next_step(source: &CredentialSource) -> String {
+    match source {
         // `snouty login` alone cannot help: the environment hides what it
-        // stores. The environment's API key comes before its password.
+        // stores.
         CredentialSource::Environment { variables } => format!(
-            "set {API_KEY_VAR_NAME}, or run `snouty login` and then `unset {}`",
+            "run `snouty login` to store an API key, then `unset {}`",
             variables.join(" ")
         ),
-        CredentialSource::Stored(store) => format!(
-            "run {} to switch to another authentication method",
-            login_command(store.profile())
-        ),
-    };
-    format!("username/password authentication is deprecated; {next_step}")
+        CredentialSource::Stored(store) => login_to_replace(store.profile()),
+    }
+}
+
+fn password_deprecation_suggestion(source: &CredentialSource) -> String {
+    format!(
+        "username/password authentication is deprecated; {}",
+        password_next_step(source)
+    )
 }
 
 /// Apply the caller's [`PasswordPolicy`] to a resolved credential. This is

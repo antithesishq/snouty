@@ -29,7 +29,9 @@ pub(crate) use oidc::OIDC_REJECTED_NEXT_STEP;
 #[cfg(test)]
 use oidc::{OIDC_TOKEN_VAR_NAME, OIDC_URL_VAR_NAME};
 use password::apply_password_policy;
-pub(crate) use password::{PASSWORD_VAR_NAME, PasswordPolicy, USERNAME_VAR_NAME};
+pub(crate) use password::{
+    PASSWORD_VAR_NAME, PasswordPolicy, USERNAME_VAR_NAME, password_next_step,
+};
 pub use store::initialize_credential_store;
 pub(crate) use store::{
     CredentialStore, PersistableCredentials, credentials_file_path, keychain_entry_name, persist,
@@ -386,6 +388,14 @@ pub(crate) fn login_command(profile: Option<&str>) -> String {
         Some(p) => format!("`snouty login --profile {p}`"),
         None => "`snouty login`".to_owned(),
     }
+}
+
+/// The next step for a stored credential that must go.
+pub(crate) fn login_to_replace(profile: Option<&str>) -> String {
+    format!(
+        "run {} to replace it with an API key",
+        login_command(profile)
+    )
 }
 
 /// The one step that fixes `credential` when the tenant of `profile` rejects it.

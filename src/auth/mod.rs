@@ -29,7 +29,9 @@ pub(crate) use oidc::{OIDC_REJECTED_NEXT_STEP, OidcFetchError};
 #[cfg(test)]
 use oidc::{OIDC_TOKEN_VAR_NAME, OIDC_URL_VAR_NAME};
 use password::apply_password_policy;
-pub(crate) use password::{PASSWORD_VAR_NAME, PasswordPolicy, USERNAME_VAR_NAME};
+pub(crate) use password::{
+    PASSWORD_VAR_NAME, PasswordPolicy, USERNAME_VAR_NAME, basic_auth_next_step,
+};
 pub use store::initialize_credential_store;
 pub(crate) use store::{
     CredentialStore, PersistableCredentials, credentials_file_path, keychain_entry_name, persist,
@@ -242,7 +244,7 @@ impl AuthenticationInfo {
     /// call, and `policy` applies to a username and password.
     pub(crate) fn find_own(profile: Option<&str>, policy: PasswordPolicy) -> Result<Option<Self>> {
         Self::find(profile, Fallback::None)?
-            .map(|found| Ok(apply_password_policy(found, policy)?.untag()))
+            .map(|found| Ok(apply_password_policy(found, policy, profile)?.untag()))
             .transpose()
     }
 
@@ -317,7 +319,7 @@ impl AuthenticationInfo {
         policy: PasswordPolicy,
     ) -> Result<SourcedCredential> {
         match Self::find(profile, Fallback::DefaultProfile)? {
-            Some(found) => apply_password_policy(found, policy),
+            Some(found) => apply_password_policy(found, policy, profile),
             None => Err(user_error(NO_CREDENTIALS_MESSAGE)
                 .suggestion(no_credentials_suggestion(in_github_actions()))),
         }

@@ -851,13 +851,22 @@ pub async fn cmd_doctor(
                     check.status = Status::Error;
                     message.clone_into(&mut check.message);
                     // The error names status codes and URLs, so only
-                    // --verbose shows it.
-                    if verbose {
+                    // --verbose shows it, except the endpoint's answer to a
+                    // GitHub Actions job: the job log is all that its user
+                    // can debug with.
+                    let detail = if verbose {
+                        Some(format!("{err:#}"))
+                    } else if matches!(auth, AuthenticationInfo::GithubActionsOidc(_)) {
+                        Some(err.to_string())
+                    } else {
+                        None
+                    };
+                    if let Some(text) = detail {
                         check.notes.insert(
                             0,
                             Note {
                                 level: Level::Error,
-                                text: format!("{err:#}"),
+                                text,
                             },
                         );
                     }

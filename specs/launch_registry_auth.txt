@@ -168,7 +168,7 @@ stderr 'fake docker: push registry.testtenant.antithesis.com/repo/snouty-config:
 # A failed token request stops the launch before the build.
 set-env ACTIONS_ID_TOKEN_REQUEST_URL ${ANTITHESIS_BASE_URL}/no-such-endpoint?api-version=2.0
 ! snouty launch --launcher basic_k8s_test -c k8s_config
-stderr 'failed to fetch a GitHub Actions OIDC token'
+stderr 'failed to get a GitHub Actions OIDC token: .*answered [0-9]{3} [^:]*: \{"message":'
 ! stderr 'Building config image'
 
 # The launch resolves the credential once, so a username and password warn

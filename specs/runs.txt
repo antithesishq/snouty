@@ -60,6 +60,15 @@ env GITHUB_ACTIONS=true
 stderr -literal 'Suggestion: add `id-token: write` to the job\'s `permissions` to use GitHub Actions OIDC, or set ANTITHESIS_API_KEY from a secret'
 env GITHUB_ACTIONS=
 
+# A GitHub Actions OIDC token that cannot be fetched names why.
+env ANTITHESIS_TENANT=testtenant
+set-env ACTIONS_ID_TOKEN_REQUEST_URL http://127.0.0.1:1/token?api-version=2.0
+set-env ACTIONS_ID_TOKEN_REQUEST_TOKEN ${FAKE_OIDC_REQUEST_TOKEN}
+! snouty runs
+stderr 'failed to get a GitHub Actions OIDC token: no answer from the GitHub Actions token endpoint: .*127\.0\.0\.1:1'
+env ACTIONS_ID_TOKEN_REQUEST_URL=
+env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
+
 # With only username/password configured, the command fails fast with a clear
 # message instead of sending a request the API would reject with a 403.
 env ANTITHESIS_USERNAME=testuser

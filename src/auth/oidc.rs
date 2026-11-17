@@ -7,7 +7,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::{Result, eyre};
 use serde::Deserialize;
 
 use super::{
@@ -126,6 +126,11 @@ impl GithubActionsOidcToken {
 /// Exchange the GitHub Actions OIDC *request* token for an Antithesis-audience
 /// OIDC token by calling the Actions token endpoint.
 ///
+/// The job log is all that a user in GitHub Actions has to debug with, so
+/// the error message names the endpoint's answer: its status and body, or
+/// why no answer came. A rejection keeps the [`reqwest::Error`] in the chain,
+/// for `snouty doctor` to read its status.
+///
 /// Split out from [`GithubActionsOidcToken::refresh`] so the
 /// HTTP exchange can be unit-tested against a local server without mutating the
 /// process environment (which would race other tests under threaded
@@ -142,18 +147,58 @@ async fn fetch_github_actions_oidc_credentials(
     let client = crate::api::client_builder()
         .timeout(OIDC_REQUEST_TIMEOUT)
         .build()?;
-    let response: OidcTokenResponse = client
+    let response = client
         .get(actions_id_url)
         .query(&[("audience", "antithesis")])
         .bearer_auth(actions_id_request_token)
         .send()
-        .await?
-        .error_for_status()
-        .wrap_err("failed to fetch a GitHub Actions OIDC token")?
-        .json()
-        .await?;
+        .await
+        .map_err(|err| {
+            let detail = std::iter::successors(
+                Some(&err as &(dyn std::error::Error + 'static)),
+                |err| err.source(),
+            )
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(": ");
+            eyre!(err).wrap_err(format!(
+                "{OIDC_FETCH_FAILED}: no answer from the GitHub Actions token endpoint: {detail}"
+            ))
+        })?;
+    let status = response.status();
+    let rejection = response.error_for_status_ref().err();
+    let body = response.text().await.unwrap_or_default();
+    if let Some(err) = rejection {
+        return Err(eyre!(err).wrap_err(format!(
+            "{OIDC_FETCH_FAILED}: the GitHub Actions token endpoint answered {status}{}",
+            answer(&body)
+        )));
+    }
+    serde_json::from_str::<OidcTokenResponse>(&body)
+        .map(|response| response.value)
+        .map_err(|_| {
+            eyre!(
+                "{OIDC_FETCH_FAILED}: the GitHub Actions token endpoint answered {status} without a token{}",
+                answer(&body)
+            )
+        })
+}
 
-    Ok(response.value)
+/// The first words of every error of a failed token request.
+const OIDC_FETCH_FAILED: &str = "failed to get a GitHub Actions OIDC token";
+
+/// `body` for the end of an error message: after a colon, cut to its first
+/// lines, or nothing when it is blank.
+fn answer(body: &str) -> String {
+    const MAX_CHARS: usize = 500;
+    let body = body.trim();
+    if body.is_empty() {
+        return String::new();
+    }
+    match body.char_indices().nth(MAX_CHARS) {
+        Some((offset, _)) => format!(": {}…", &body[..offset]),
+        None => format!(": {body}"),
+    }
 }
 
 #[cfg(test)]
@@ -275,17 +320,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn github_actions_oidc_exchange_errors_on_non_success_status() {
-        // A rejected request token (or any non-2xx) must surface as an error
-        // rather than letting the error body be mistaken for a token.
+    async fn github_actions_oidc_exchange_error_names_the_answer() {
+        // A rejected request token (or any non-2xx) surfaces as an error that
+        // names the endpoint's status and body.
         let (url, _requests) = spawn_oidc_token_server(
             "/token?api-version=2.0",
             "403 Forbidden",
             r#"{"message":"bad credentials"}"#,
         );
 
-        let result = fetch_github_actions_oidc_credentials(&url, FAKE_OIDC_REQUEST_TOKEN).await;
-        assert!(result.is_err(), "expected an error for a 403 response");
+        let err = fetch_github_actions_oidc_credentials(&url, FAKE_OIDC_REQUEST_TOKEN)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            r#"failed to get a GitHub Actions OIDC token: the GitHub Actions token endpoint answered 403 Forbidden: {"message":"bad credentials"}"#
+        );
+        // Doctor reads the status of the rejection.
+        assert_eq!(
+            err.downcast_ref::<reqwest::Error>()
+                .and_then(reqwest::Error::status),
+            Some(reqwest::StatusCode::FORBIDDEN)
+        );
     }
 
     /// A wiremock Actions token endpoint that gives `token`, and that

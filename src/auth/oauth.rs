@@ -13,6 +13,7 @@ use color_eyre::Section;
 use color_eyre::eyre::{Report, Result};
 use log::warn;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use super::{
     claims::try_get_expiry_from_token,
@@ -305,12 +306,14 @@ fn lock_dir() -> Option<PathBuf> {
     global_settings_dir().map(|dir| dir.join("locks"))
 }
 
+/// A name for the credentials file at `path` that every snouty build computes
+/// the same way, so that two builds lock the same file. A path that is not
+/// UTF-8 shares its token with paths that differ only in the bytes that are
+/// not UTF-8; such paths then only share a lock.
 fn path_lock_token(path: &Path) -> String {
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    path.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    let mut token = format!("{:x}", Sha256::digest(path.to_string_lossy().as_bytes()));
+    token.truncate(16);
+    token
 }
 
 #[cfg(test)]
@@ -324,6 +327,16 @@ mod tests {
         FAKE_ACCESS_TOKEN_A, FAKE_ACCESS_TOKEN_B, FAKE_REFRESH_TOKEN_A, FAKE_REFRESH_TOKEN_B,
     };
     use wiremock::ResponseTemplate;
+
+    /// Every snouty build must name the same lock file for one credentials
+    /// file, so the token must never change.
+    #[test]
+    fn path_lock_token_is_stable() {
+        assert_eq!(
+            path_lock_token(Path::new("/home/user/.config/snouty/credentials.toml")),
+            "2caa5dffc0b5a87a"
+        );
+    }
 
     #[tokio::test]
     async fn refresh_retains_prior_refresh_token_when_response_omits_one() {

@@ -60,7 +60,7 @@ env GITHUB_ACTIONS=true
 stderr -literal 'Suggestion: add `id-token: write` to the job\'s `permissions` to use GitHub Actions OIDC, or set ANTITHESIS_API_KEY from a secret'
 env GITHUB_ACTIONS=
 
-# A GitHub Actions OIDC token that cannot be fetched names why.
+# A failed GitHub Actions OIDC token request names its cause.
 env ANTITHESIS_TENANT=testtenant
 set-env ACTIONS_ID_TOKEN_REQUEST_URL http://127.0.0.1:1/token?api-version=2.0
 set-env ACTIONS_ID_TOKEN_REQUEST_TOKEN ${FAKE_OIDC_REQUEST_TOKEN}

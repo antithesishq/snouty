@@ -126,10 +126,10 @@ impl GithubActionsOidcToken {
 /// Exchange the GitHub Actions OIDC *request* token for an Antithesis-audience
 /// OIDC token by calling the Actions token endpoint.
 ///
-/// The job log is all that a user in GitHub Actions has to debug with, so
-/// the error message names the endpoint's answer: its status and body, or
-/// why no answer came. A rejection keeps the [`reqwest::Error`] in the chain,
-/// for `snouty doctor` to read its status.
+/// The error names the endpoint's status and body, or why no answer came,
+/// because the job log is all a GitHub Actions user can debug with. A
+/// rejection keeps the [`reqwest::Error`] in the chain: `snouty doctor`
+/// reads its status.
 ///
 /// Split out from [`GithubActionsOidcToken::refresh`] so the
 /// HTTP exchange can be unit-tested against a local server without mutating the
@@ -166,8 +166,8 @@ async fn fetch_github_actions_oidc_credentials(
     serde_json::from_str::<OidcTokenResponse>(&body)
         .map(|response| response.value)
         .map_err(|_| {
-            // A JSON body can carry a token under a different key, and the
-            // job log does not mask it.
+            // Omit a JSON body: it can carry a token under another key, and
+            // the job log does not mask it.
             let answer = if serde_json::from_str::<serde_json::Value>(&body).is_ok() {
                 String::new()
             } else {
@@ -179,7 +179,7 @@ async fn fetch_github_actions_oidc_credentials(
         })
 }
 
-/// The error of a token request that got no complete answer.
+/// reqwest's message leaves out its cause, such as a refused connection.
 fn request_failed(err: &reqwest::Error) -> color_eyre::Report {
     use std::error::Error as _;
     if err.source().is_none() {
@@ -192,11 +192,8 @@ fn request_failed(err: &reqwest::Error) -> color_eyre::Report {
     }
 }
 
-/// The first words of every error of a failed token request.
 const OIDC_FETCH_FAILED: &str = "failed to get a GitHub Actions OIDC token";
 
-/// `body`'s message for the end of an error message, after a colon, or
-/// nothing when it is blank.
 fn answer(body: &str) -> String {
     let message = crate::api::error_body_message(body);
     if message.is_empty() {
@@ -326,8 +323,6 @@ mod tests {
 
     #[tokio::test]
     async fn github_actions_oidc_exchange_error_names_the_answer() {
-        // A rejected request token (or any non-2xx) surfaces as an error that
-        // names the endpoint's status and body.
         let (url, _requests) = spawn_oidc_token_server(
             "/token?api-version=2.0",
             "403 Forbidden",
@@ -351,8 +346,6 @@ mod tests {
 
     #[tokio::test]
     async fn github_actions_oidc_exchange_error_names_a_success_without_a_token() {
-        // A page, such as a proxy's, is shown; JSON is not, as it can carry
-        // a token under another key.
         for (body, tail) in [
             (
                 "<html>\n  <h1>Sign in</h1>\n</html>",

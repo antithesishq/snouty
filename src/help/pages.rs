@@ -7,20 +7,21 @@ use super::template::Context;
 /// Declares [`HelpPage`] with one row per page: the variant, its template
 /// file in `help/`, and the path of its command below `snouty`.
 macro_rules! help_pages {
-    ($($variant:ident => $file:literal, [$($part:literal),*];)*) => {
+    ($($(#[$attr:meta])* $variant:ident => $file:literal, [$($part:literal),*];)*) => {
         /// One page for each `help/*.txt` template.
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum HelpPage {
-            $($variant,)*
+            $($(#[$attr])* $variant,)*
         }
 
         impl HelpPage {
-            pub const ALL: [HelpPage; [$($file),*].len()] = [$(HelpPage::$variant,)*];
+            pub const ALL: [HelpPage; [$($(#[$attr])* $file),*].len()] =
+                [$($(#[$attr])* HelpPage::$variant,)*];
 
             /// The path below `snouty` of the command whose long help this is.
             pub fn path(self) -> &'static [&'static str] {
                 match self {
-                    $(HelpPage::$variant => &[$($part),*],)*
+                    $($(#[$attr])* HelpPage::$variant => &[$($part),*],)*
                 }
             }
 
@@ -28,7 +29,7 @@ macro_rules! help_pages {
             /// [`clap::Command::defer`], which takes a function.
             pub(super) fn set_long_help(self) -> fn(clap::Command) -> clap::Command {
                 match self {
-                    $(HelpPage::$variant => |command| command.long_about(HelpPage::$variant.cli()),)*
+                    $($(#[$attr])* HelpPage::$variant => |command| command.long_about(HelpPage::$variant.cli()),)*
                 }
             }
 
@@ -36,7 +37,7 @@ macro_rules! help_pages {
                 use askama::Template;
                 let values: [(&str, &dyn std::any::Any); 1] = [("context", &context)];
                 match self {
-                    $(HelpPage::$variant => templates::$variant { cli: context.is_cli(), context }
+                    $($(#[$attr])* HelpPage::$variant => templates::$variant { cli: context.is_cli(), context }
                         .render_with_values(&values),)*
                 }
             }
@@ -45,7 +46,7 @@ macro_rules! help_pages {
         impl fmt::Display for HelpPage {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 let file = match self {
-                    $(HelpPage::$variant => $file,)*
+                    $($(#[$attr])* HelpPage::$variant => $file,)*
                 };
                 f.write_str(file.strip_suffix(".txt").unwrap_or(file))
             }
@@ -56,6 +57,7 @@ macro_rules! help_pages {
             use super::super::template::{Context, filters};
 
             $(
+                $(#[$attr])*
                 #[derive(askama::Template)]
                 #[template(path = $file, escape = "none")]
                 #[allow(dead_code, reason = "a page uses only what its template calls")]
@@ -64,6 +66,7 @@ macro_rules! help_pages {
                     pub(super) context: Context,
                 }
 
+                $(#[$attr])*
                 impl std::ops::Deref for $variant {
                     type Target = Context;
 
@@ -111,4 +114,7 @@ help_pages! {
     RunsSearch => "runs_search.txt", ["runs", "search"];
     RunsUsage => "runs_usage.txt", ["runs", "usage"];
     RunsModules => "runs_modules.txt", ["runs", "modules"];
+    // Stands in for the page of a gated command in the tests.
+    #[cfg(test)]
+    Example => "example.txt", ["example"];
 }

@@ -27,14 +27,17 @@
 //!   `features::require(Feature::X, "snouty runs x --y")?;`. The MCP tool of
 //!   the command leaves out a hidden flag.
 //! - An MCP tool: end its row in the `tools!` table of `src/mcp/tools.rs`
-//!   with `unstable: X`. The MCP server leaves the tool out of its tools, of
-//!   `tool_help` and of the `snouty mcp` help while the feature is off.
-//!   Another help page that names the command must put that text in
-//!   `{% if cli %}`; its MCP render fails otherwise.
+//!   with `unstable: X`, and gate its command. The MCP server leaves the tool
+//!   out of its tools, of `tool_help` and of the `snouty mcp` help while the
+//!   feature is off.
+//!
+//! Only the help page of a gated command can name it or its gated flags: the
+//! tests render each page with every feature off, and the render of another
+//! page that names a hidden command or flag fails.
 //!
 //! When a feature becomes stable, delete its variant and each use that the
-//! build then names. Keep the rest of this module and the `Example` variant,
-//! which tests the gate.
+//! build then names. Keep the rest of this module and the test-only
+//! `Example` variant, command, help page and tool, which test the gate.
 //!
 //! # Why an environment variable
 //!

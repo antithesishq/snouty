@@ -57,28 +57,32 @@ impl Effect {
 /// the args that the tool requires although the command does not, and the
 /// unstable [`Feature`] that gates the tool, if one does.
 macro_rules! tools {
+    (@feature) => { None };
+    (@feature $feature:ident) => { Some(Feature::$feature) };
     ($(
+        $(#[$attr:meta])*
         $variant:ident => $name:literal, $effect:ident,
         hidden: [$($hidden:literal),*], required: [$($required:literal),*]
-        $(, $(#[$gate:meta])* unstable: $feature:ident)?;
+        $(, unstable: $feature:ident)?;
     )*) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum ToolName {
-            $($variant,)*
+            $($(#[$attr])* $variant,)*
         }
 
         impl ToolName {
-            pub const ALL: [ToolName; [$($name),*].len()] = [$(ToolName::$variant,)*];
+            pub const ALL: [ToolName; [$($(#[$attr])* $name),*].len()] =
+                [$($(#[$attr])* ToolName::$variant,)*];
 
             pub fn help(self) -> HelpPage {
                 match self {
-                    $(ToolName::$variant => HelpPage::$variant,)*
+                    $($(#[$attr])* ToolName::$variant => HelpPage::$variant,)*
                 }
             }
 
             fn effect(self) -> Effect {
                 match self {
-                    $(ToolName::$variant => Effect::$effect,)*
+                    $($(#[$attr])* ToolName::$variant => Effect::$effect,)*
                 }
             }
 
@@ -86,7 +90,7 @@ macro_rules! tools {
             /// effect, such as `--json` of `docs show`.
             fn hidden(self) -> &'static [&'static str] {
                 match self {
-                    $(ToolName::$variant => &[$($hidden),*],)*
+                    $($(#[$attr])* ToolName::$variant => &[$($hidden),*],)*
                 }
             }
 
@@ -94,8 +98,7 @@ macro_rules! tools {
             /// the tool out while the feature is off.
             pub(crate) fn feature(self) -> Option<Feature> {
                 match self {
-                    $($($(#[$gate])* ToolName::$variant => Some(Feature::$feature),)?)*
-                    _ => None,
+                    $($(#[$attr])* ToolName::$variant => tools!(@feature $($feature)?),)*
                 }
             }
 
@@ -104,7 +107,7 @@ macro_rules! tools {
             /// the command's code.
             fn required(self) -> &'static [&'static str] {
                 match self {
-                    $(ToolName::$variant => &[$($required),*],)*
+                    $($(#[$attr])* ToolName::$variant => &[$($required),*],)*
                 }
             }
         }
@@ -112,7 +115,7 @@ macro_rules! tools {
         impl fmt::Display for ToolName {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str(match self {
-                    $(ToolName::$variant => $name,)*
+                    $($(#[$attr])* ToolName::$variant => $name,)*
                 })
             }
         }
@@ -142,9 +145,11 @@ tools! {
     DocsShow => "docs_show", Reads, hidden: [], required: [];
     DocsSearch => "docs_search", Reads, hidden: [], required: [];
     Doctor => "doctor", Reads, hidden: [], required: [];
-    // Gated only in the tests, which test the gate through it.
-    Version => "version", Reads, hidden: [], required: [], #[cfg(test)] unstable: Example;
+    Version => "version", Reads, hidden: [], required: [];
     SettingsShow => "settings_show", Reads, hidden: [], required: [];
+    // Stands in for a gated tool in the tests.
+    #[cfg(test)]
+    Example => "example", Reads, hidden: [], required: [], unstable: Example;
 }
 
 impl FromStr for ToolName {
@@ -539,7 +544,8 @@ mod tests {
                 | ToolName::DocsTree
                 | ToolName::Doctor
                 | ToolName::Version
-                | ToolName::SettingsShow => &[],
+                | ToolName::SettingsShow
+                | ToolName::Example => &[],
             };
             let required: Vec<&str> = name.spec().tool.input_schema["required"]
                 .as_array()
@@ -782,28 +788,37 @@ mod tests {
         }
     }
 
-    /// The tests gate `version` behind [`Feature::Example`].
     #[test]
     fn a_gated_tool_is_offered_only_while_its_feature_is_on() {
-        let help_offers_version = |enabled| {
+        let help_offers_example = |enabled| {
             let tool = tool_help_tool(enabled);
             let names = tool.input_schema["properties"][TOOL_PARAM]["enum"].clone();
-            names.as_array().unwrap().contains(&json!("version"))
+            names.as_array().unwrap().contains(&json!("example"))
         };
 
-        assert!(!offered(&[]).any(|tool| tool == ToolName::Version));
+        assert!(!offered(&[]).any(|tool| tool == ToolName::Example));
         assert!(offered(&[]).any(|tool| tool == ToolName::Doctor));
         assert_eq!(
-            find("version", &[]).unwrap_err().to_string(),
-            "unknown tool: version"
+            find("example", &[]).unwrap_err().to_string(),
+            "unknown tool: example"
         );
-        assert!(!help_offers_version(&[]));
-        assert!(tool_help(object(json!({ "tool": "version" })), &[]).is_err());
+        assert!(!help_offers_example(&[]));
+        assert!(tool_help(object(json!({ "tool": "example" })), &[]).is_err());
 
         let on = [Feature::Example];
-        assert!(offered(&on).any(|tool| tool == ToolName::Version));
-        assert_eq!(find("version", &on).unwrap(), ToolName::Version);
-        assert!(help_offers_version(&on));
-        assert!(tool_help(object(json!({ "tool": "version" })), &on).is_ok());
+        assert!(offered(&on).any(|tool| tool == ToolName::Example));
+        assert_eq!(find("example", &on).unwrap(), ToolName::Example);
+        assert!(help_offers_example(&on));
+        assert!(tool_help(object(json!({ "tool": "example" })), &on).is_ok());
+    }
+
+    /// A help page names a gated tool only on its own page because its
+    /// command is hidden while the feature is off, as in the tests.
+    #[test]
+    fn the_command_of_a_gated_tool_is_hidden() {
+        for name in ToolName::ALL {
+            let hidden = tree::find(name.path()).unwrap().is_hide_set();
+            assert_eq!(hidden, name.feature().is_some(), "{name}");
+        }
     }
 }

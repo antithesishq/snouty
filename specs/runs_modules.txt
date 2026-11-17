@@ -1,0 +1,59 @@
+# snouty runs modules
+#
+# runs modules lists a run's modules (`GET /api/v0/runs/{run_id}/modules`).
+# With --detail, it also reads the programs that loaded each one
+# (`.../modules/{module_id}/instances`).
+
+# A run with instrumented modules lists them, then the count and the run
+# status on stderr.
+mock-runs-server
+snouty --json runs list --status completed --limit 100
+env_from_json_find run_id launcher!=debugging -- runs modules $R_run_id
+snouty runs modules $R_run_id
+stdout '^MODULE +NAME +LANG +LOCATIONS +SYMBOLS$'
+stderr '^\d+ modules? · run completed$'
+snouty runs modules $R_run_id --detail
+stdout '^MODULE +NAME +CONTAINER +PROGRAM +LANG +LOCATIONS +SYMBOLS$'
+snouty --json runs modules $R_run_id
+stdout '^\{.*"module_id":.*"num_locations":\d+.*\}$'
+! stdout '"instances"'
+! stderr ' · run '
+snouty --json runs modules $R_run_id --detail
+stdout '^\{.*"module_id":.*"num_locations":\d+.*"instances":\[\{.*"container_name":.*"program_path":.*\]\}$'
+
+! snouty runs modules ffffffffffffffffffffffffffffffff-67-0
+stderr 'run not found: ffffffffffffffffffffffffffffffff-67-0'
+
+# A run created before release 67 has no module list, and sends no request
+# for one.
+! snouty runs modules 0123456789abcdef0123456789abcdef-66-2
+stderr 'module list is not available for run 0123456789abcdef0123456789abcdef-66-2'
+stderr 'introduced in tenant version v67'
+
+# The rest of this file checks mock data.
+[staging] skip
+
+# One row for each module.
+mock-runs-server
+snouty runs modules run-1
+stdout '^go-20e55e2f1623 +instrhello/internal/work +Go +9 +yes$'
+stdout '^dotnet-e798e24c32e9 +dotnethello +9 +no$'
+stderr '^3 modules · run completed$'
+
+# With --detail, one row for each program that loads a module.
+snouty runs modules run-1 --detail
+stdout '^go-20e55e2f1623 +instrhello/internal/work +driver +/usr/local/bin/driver +Go +9 +yes$'
+stdout '^go-20e55e2f1623 +instrhello/internal/work +goworker +/usr/local/bin/worker +Go +9 +yes$'
+stdout '^dotnet-e798e24c32e9 +dotnethello +dotnet +/usr/share/dotnet/dotnet +9 +no$'
+stderr '^3 modules · run completed$'
+
+# A run in progress says that more modules may load.
+snouty runs modules run-2
+stderr 'run in progress \(more modules may load\)$'
+
+# --json prints one object per module, with its instances only with --detail.
+snouty --json runs modules run-1
+stdout -count=3 '^\{"has_catalog":.*\}$'
+stdout '^\{"has_catalog":false,"module_id":"dotnet-e798e24c32e9","name":"dotnethello","num_locations":9\}$'
+snouty --json runs modules run-1 --detail
+stdout -count=3 '^\{.*"instances":\[.*\]\}$'

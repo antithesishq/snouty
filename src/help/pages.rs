@@ -111,4 +111,5 @@ help_pages! {
     RunsSearch => "runs_search.txt", ["runs", "search"];
     RunsUsage => "runs_usage.txt", ["runs", "usage"];
     RunsCoverage => "runs_coverage.txt", ["runs", "coverage"];
+    RunsModules => "runs_modules.txt", ["runs", "modules"];
 }

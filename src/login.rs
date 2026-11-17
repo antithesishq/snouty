@@ -28,18 +28,15 @@ use crate::{
         normalize_base_url,
     },
     auth::{
-        AuthenticationInfo, CredentialSource, CredentialStore, OIDC_REJECTED_NEXT_STEP,
-        PersistableCredentials, in_github_actions, is_blank_api_key, no_credentials_suggestion,
-        persist,
+        AuthenticationInfo, CredentialSource, CredentialStore, PersistableCredentials,
+        in_github_actions, is_blank_api_key, login_command, no_credentials_suggestion, persist,
+        rejected_credential_next_step,
     },
     env,
     error::{api_error_status, rejects_credential, user_error},
     registry::Registry,
     render::{OutputOptions, sanitize},
-    settings::{
-        ANTITHESIS_PROFILE_ENV_VAR_NAME, Settings, Tenant, tenant_base_url,
-        update_settings_in_global_file,
-    },
+    settings::{Settings, Tenant, tenant_base_url, update_settings_in_global_file},
     tag::{Tag, Tagged},
     util::root_cause,
 };
@@ -179,14 +176,12 @@ impl Prompter for InquirePrompter {
 pub async fn cmd_login(
     tenant: Option<Tenant>,
     registry_flag: Option<Registry>,
-    profile: Option<&str>,
     current_settings: &Settings,
     output: OutputOptions,
 ) -> Result<()> {
     do_cmd_login(
         tenant,
         registry_flag,
-        profile,
         current_settings,
         output,
         &InquirePrompter,
@@ -197,19 +192,16 @@ pub async fn cmd_login(
 async fn do_cmd_login(
     tenant: Option<Tenant>,
     registry_flag: Option<Registry>,
-    profile: Option<&str>,
     current_settings: &Settings,
     OutputOptions { verbose, .. }: OutputOptions,
     prompter: &impl Prompter,
 ) -> Result<()> {
-    let profile_to_use = profile
-        .map(str::to_owned)
-        .or_else(|| env::var(ANTITHESIS_PROFILE_ENV_VAR_NAME).ok().flatten());
+    let profile = current_settings.profile();
     let interactive = prompter.is_interactive();
     // The global file alone, which login writes. A fault in it fails login
     // before any prompt or request, also when the environment or a project
     // file hides it from `current_settings`.
-    let saved = Settings::resolve_global_file(profile_to_use.clone())?;
+    let saved = Settings::resolve_global_file(profile.map(str::to_owned))?;
 
     let tenant_to_use = match tenant {
         Some(tenant) => tenant,
@@ -229,17 +221,16 @@ async fn do_cmd_login(
     // A read error counts as nothing stored, because storing a credential
     // backs up an unparsable credentials file. A blank key cannot
     // authenticate, so it also counts as nothing stored.
-    let stored = AuthenticationInfo::stored_for_profile(profile_to_use.as_deref())
+    let stored = AuthenticationInfo::stored_for_profile(profile)
         .inspect_err(|err| debug!("no stored credentials to read: {err:#}"))
         .ok()
         .flatten()
         .filter(|stored| !stored.value().has_blank_api_key());
 
-    let api_settings = current_settings.with_tenant(tenant_to_use.clone());
-    let tenant_url = TenantUrl::new(&api_settings, &tenant_to_use);
+    let tenant_url = TenantUrl::new(current_settings, &tenant_to_use);
 
     let new_credentials = if interactive {
-        let client = HttpClient::new(&api_settings, verbose)?;
+        let client = HttpClient::new(current_settings, verbose)?;
         prompt_for_auth(
             prompter,
             &client,
@@ -255,10 +246,10 @@ async fn do_cmd_login(
     };
 
     let reported = fetch_registry(
-        &api_settings,
+        current_settings,
         &tenant_url,
         new_credentials.as_ref(),
-        profile_to_use.as_deref(),
+        profile,
         interactive,
         verbose,
     )
@@ -315,11 +306,8 @@ async fn do_cmd_login(
     // update leaves the stored credential alone. When the credential cannot
     // be stored, the settings go back, so that the profile does not name the
     // new tenant with the old credential.
-    let previous_settings = update_settings_in_global_file(
-        &tenant_to_use,
-        &registry_to_use.to_string(),
-        profile_to_use.as_deref(),
-    )?;
+    let previous_settings =
+        update_settings_in_global_file(&tenant_to_use, &registry_to_use.to_string(), profile)?;
 
     // The kind of credential login wrote, and where.
     let written = match new_credentials {
@@ -329,7 +317,7 @@ async fn do_cmd_login(
                 PersistableCredentials::Password { .. } => "username and password",
                 PersistableCredentials::OAuth { .. } => "OAuth credentials",
             };
-            match persist(credentials, profile_to_use.as_deref()) {
+            match persist(credentials, profile) {
                 Ok(store) => Some(kind.with_tag(store)),
                 Err(err) => {
                     return Err(match previous_settings.restore() {
@@ -352,7 +340,7 @@ async fn do_cmd_login(
         &tenant_to_use,
         &registry_to_use,
         replaced,
-        profile_to_use.as_deref(),
+        profile,
         written,
         stored.as_ref(),
     );
@@ -365,8 +353,8 @@ async fn do_cmd_login(
             "--registry".to_owned(),
             reported.to_string(),
         ];
-        if let Some(profile) = profile_to_use {
-            command.extend(["--profile".to_owned(), profile]);
+        if let Some(profile) = profile {
+            command.extend(["--profile".to_owned(), profile.to_owned()]);
         }
         let command = shlex::try_join(command.iter().map(String::as_str))
             .expect("arguments and environment variables hold no NUL");
@@ -417,9 +405,7 @@ impl<'a> TenantUrl<'a> {
     fn new(settings: &Settings, tenant: &'a Tenant) -> Self {
         let explicit = settings.explicit_base_url();
         Self {
-            url: normalize_base_url(
-                explicit.map_or_else(|| tenant_base_url(tenant), str::to_owned),
-            ),
+            url: normalize_base_url(&explicit.cloned().unwrap_or_else(|| tenant_base_url(tenant))),
             tenant,
             explicit: explicit.is_some(),
         }
@@ -455,8 +441,8 @@ impl<'a> TenantUrl<'a> {
 /// that the credential works. `None` means that the tenant does not serve the
 /// endpoint, which tenants before it answer with 404. The tenant
 /// authenticates a request before it routes it, so a 404 also means that it
-/// accepted the credential. `interactive` picks the next step that an error
-/// suggests.
+/// accepted the credential. `interactive` picks the next step for a
+/// credential that login itself can replace.
 async fn fetch_registry(
     settings: &Settings,
     tenant_url: &TenantUrl<'_>,
@@ -466,43 +452,61 @@ async fn fetch_registry(
     verbose: bool,
 ) -> Result<Option<RegistryResponse>> {
     let tenant = tenant_url.tenant;
-    // A read error of a stored credential passes through as it is.
-    let ambient = match new_credentials {
-        Some(_) => None,
-        None => AuthenticationInfo::find_ambient(profile)?,
+    // Login can replace only a credential that it stores, and only at a
+    // terminal.
+    let login_again = || {
+        let login = login_command(profile);
+        if interactive {
+            format!("run {login} again, and enter an API key or sign in with single sign-on")
+        } else if in_github_actions() {
+            no_credentials_suggestion(true).to_owned()
+        } else {
+            format!("set ANTITHESIS_API_KEY, or run {login} in a terminal")
+        }
     };
-    let next_step = match ambient.as_ref().map(|found| (found.value(), found.tag())) {
-        // Every later command reads the environment first, so a credential
-        // at the prompt would not replace one there. A GitHub Actions OIDC
-        // token is also tagged Environment, but ANTITHESIS_API_KEY does not
-        // hold it.
-        Some((AuthenticationInfo::ApiKey { .. }, CredentialSource::Environment { .. })) => {
-            "set `ANTITHESIS_API_KEY` to a valid API key"
-        }
-        Some((AuthenticationInfo::GithubActionsOidc(_), _)) => OIDC_REJECTED_NEXT_STEP,
-        Some((AuthenticationInfo::Password { .. }, CredentialSource::Environment { .. })) => {
-            "unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD"
-        }
-        _ if interactive => {
-            "run `snouty login` again, and enter an API key or sign in with single sign-on"
-        }
-        _ if in_github_actions() => no_credentials_suggestion(true),
-        _ => "set ANTITHESIS_API_KEY, or run `snouty login` in a terminal",
+    let nothing_to_check = || {
+        user_error(format!(
+            "login needs an API key or a single sign-on to check with `{tenant}`; nothing was saved"
+        ))
     };
-    let authentication = match (new_credentials, ambient) {
-        (Some(credentials), _) => credentials.to_unrefreshable_authentication_info(),
-        (None, Some(found)) if !matches!(found.value(), AuthenticationInfo::Password { .. }) => {
-            found.untag()
-        }
-        (None, _) => {
-            return Err(user_error(format!(
-                "login needs an API key or a single sign-on to check with `{tenant}`; nothing was saved"
-            ))
-            .suggestion(next_step));
-        }
+    // The next step for a rejected credential from the environment. `None`
+    // for a credential that login can replace: then it is `login_again`.
+    let (authentication, env_next_step) = match new_credentials {
+        Some(credentials) => (credentials.to_unrefreshable_authentication_info(), None),
+        // A read error of a stored credential passes through as it is.
+        None => match AuthenticationInfo::find_ambient(profile)? {
+            None => return Err(nothing_to_check().suggestion(login_again())),
+            // Login does not check with a username and password.
+            Some(found) if matches!(found.value(), AuthenticationInfo::Password { .. }) => {
+                let next_step = match found.tag() {
+                    // Every later command reads the environment first, so a
+                    // credential at the prompt would not replace one there.
+                    CredentialSource::Environment { .. } => {
+                        "unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD".to_owned()
+                    }
+                    CredentialSource::Stored(_) => login_again(),
+                };
+                return Err(nothing_to_check().suggestion(next_step));
+            }
+            Some(found) => {
+                let next_step = match found.tag() {
+                    CredentialSource::Environment { .. } => {
+                        Some(rejected_credential_next_step(&found, profile))
+                    }
+                    CredentialSource::Stored(_) => None,
+                };
+                (found.untag(), next_step)
+            }
+        },
     };
     // A cached answer would not check the credential.
-    let api = AntithesisApi::build(settings, authentication, verbose, ResponseCache::Disabled)?;
+    let api = AntithesisApi::build_at(
+        tenant_url.url.clone(),
+        settings,
+        authentication,
+        verbose,
+        ResponseCache::Disabled,
+    )?;
     let registry = tokio::time::timeout(env::scaled_wait(REGISTRY_TIMEOUT), api.get_registry())
         .await
         .map_err(|_| {
@@ -522,7 +526,7 @@ async fn fetch_registry(
             Some(status) if rejects_credential(status) => Err(user_error(format!(
                 "`{tenant}` did not accept the credential; nothing was saved"
             ))
-            .suggestion(next_step)),
+            .suggestion(env_next_step.unwrap_or_else(login_again))),
             _ => Err(tenant_url.unreachable(&err).unwrap_or(err)),
         },
     }
@@ -1662,20 +1666,8 @@ mod tests {
     }
 
     /// [`do_cmd_login`] without `--tenant`, `--registry`, or `--verbose`.
-    async fn login(
-        profile: Option<&str>,
-        settings: &Settings,
-        prompter: &impl Prompter,
-    ) -> Result<()> {
-        do_cmd_login(
-            None,
-            None,
-            profile,
-            settings,
-            OutputOptions::default(),
-            prompter,
-        )
-        .await
+    async fn login(settings: &Settings, prompter: &impl Prompter) -> Result<()> {
+        do_cmd_login(None, None, settings, OutputOptions::default(), prompter).await
     }
 
     /// [`do_cmd_login`] with `--tenant mytenant`, and `--registry` when
@@ -1688,7 +1680,6 @@ mod tests {
         do_cmd_login(
             Some("mytenant".parse().unwrap()),
             registry.map(|registry| registry.parse().unwrap()),
-            None,
             settings,
             OutputOptions::default(),
             prompter,
@@ -1707,7 +1698,7 @@ mod tests {
             .secret(FAKE_API_KEY_A)
             .build();
 
-        login(None, &settings, &prompter).await?;
+        login(&settings, &prompter).await?;
 
         let stored = env.settings();
         assert!(stored.contains(r#"tenant = "mytenant""#), "{stored}");
@@ -1881,7 +1872,6 @@ mod tests {
             do_cmd_login(
                 Some("mytenant".parse()?),
                 None,
-                profile,
                 &settings,
                 OutputOptions::default(),
                 &prompter,
@@ -1912,7 +1902,6 @@ mod tests {
         do_cmd_login(
             Some("mytenant".parse()?),
             None,
-            Some("prod"),
             &settings,
             OutputOptions::default(),
             &prompter,
@@ -1942,7 +1931,6 @@ mod tests {
         do_cmd_login(
             Some("mytenant".parse()?),
             None,
-            Some("prod"),
             &settings,
             OutputOptions::default(),
             &prompter,
@@ -2016,7 +2004,7 @@ mod tests {
         let cache = ApiCache::new(
             Some(env.api_cache_dir()),
             DEFAULT_MAX_FILE_SIZE,
-            normalize_base_url(env.base_url.clone()),
+            normalize_base_url(&env.base_url.parse()?),
             false,
         );
         let cached: RegistryResponse = serde_json::from_str(REGISTRY_ANTITHESIS)?;
@@ -2054,7 +2042,7 @@ mod tests {
             .secret(FAKE_API_KEY_A)
             .build();
 
-        let err = login(None, &settings, &prompter)
+        let err = login(&settings, &prompter)
             .await
             .expect_err("a credential that cannot be stored must fail the login");
 
@@ -2067,7 +2055,7 @@ mod tests {
             .input("mytenant")
             .secret(FAKE_API_KEY_A)
             .build();
-        let err = login(None, &settings, &prompter)
+        let err = login(&settings, &prompter)
             .await
             .expect_err("a credential that cannot be stored must fail the login");
         assert!(format!("{err:#}").contains("nothing was saved"), "{err:#}");
@@ -2094,7 +2082,7 @@ mod tests {
             .secret(FAKE_API_KEY_A)
             .build();
 
-        let err = login(None, &settings, &prompter)
+        let err = login(&settings, &prompter)
             .await
             .expect_err("a settings file that login cannot update must fail the login");
 
@@ -2109,14 +2097,14 @@ mod tests {
     #[tokio::test]
     async fn login_stores_no_credential_when_it_cannot_update_the_settings() -> Result<()> {
         let env = LoginEnv::new();
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings(Some("prod"))?;
         env.seed(
             ".config/snouty/settings.toml",
             "profile = \"not a table\"\n",
         );
         let prompter = Script::default().build();
 
-        let err = login(Some("prod"), &settings, &prompter)
+        let err = login(&settings, &prompter)
             .await
             .expect_err("a malformed settings file must fail the login");
 
@@ -2261,7 +2249,7 @@ mod tests {
             .secret(FAKE_API_KEY_A)
             .build();
 
-        login(None, &settings, &prompter).await?;
+        login(&settings, &prompter).await?;
 
         let creds = env.credentials();
         assert!(creds.contains(r#"type = "ApiKey""#), "{creds}");
@@ -2281,7 +2269,7 @@ mod tests {
             .secret(FAKE_API_KEY_B)
             .build();
 
-        login(Some("prod"), &settings, &prompter).await?;
+        login(&settings, &prompter).await?;
 
         let creds = env.credentials();
         assert!(creds.contains(FAKE_PASSWORD), "{creds}");
@@ -2289,7 +2277,7 @@ mod tests {
         Ok(())
     }
 
-    /// The global `--profile` flag scopes the persisted login.
+    /// The selected profile scopes the persisted login.
     #[tokio::test]
     async fn login_scopes_to_a_named_profile() -> Result<()> {
         let env = LoginEnv::new();
@@ -2299,7 +2287,7 @@ mod tests {
             .secret(FAKE_API_KEY_B)
             .build();
 
-        login(Some("prod"), &settings, &prompter).await?;
+        login(&settings, &prompter).await?;
 
         let stored = env.settings();
         assert!(stored.contains("[profile.prod]"), "{stored}");
@@ -2321,7 +2309,7 @@ mod tests {
             .secret(FAKE_API_KEY_A)
             .build();
 
-        login(None, &settings, &prompter).await?;
+        login(&settings, &prompter).await?;
 
         let (menu, default) = &prompter.selects()[0];
         assert_eq!(
@@ -2349,7 +2337,7 @@ mod tests {
             .secret("")
             .build();
 
-        login(None, &settings, &prompter).await?;
+        login(&settings, &prompter).await?;
 
         let (menu, default) = &prompter.selects()[0];
         assert_eq!(menu[*default], API_KEY);
@@ -2371,7 +2359,7 @@ mod tests {
             .secret("") // hit enter
             .build();
 
-        login(None, &settings, &prompter).await?;
+        login(&settings, &prompter).await?;
 
         assert_eq!(
             prompter.secret_hints(),
@@ -2396,7 +2384,7 @@ mod tests {
             .secret(FAKE_API_KEY_A)
             .build();
 
-        login(None, &settings, &prompter).await?;
+        login(&settings, &prompter).await?;
 
         assert_eq!(env.credentials(), seeded);
         Ok(())
@@ -2415,7 +2403,7 @@ mod tests {
             .secret(&format!(" {FAKE_API_KEY_A}\n"))
             .build();
 
-        login(None, &settings, &prompter).await?;
+        login(&settings, &prompter).await?;
 
         assert_eq!(env.credentials(), seeded);
         Ok(())
@@ -2436,7 +2424,7 @@ mod tests {
             .secret(FAKE_API_KEY_B)
             .build();
 
-        login(Some("prod"), &settings, &prompter).await?;
+        login(&settings, &prompter).await?;
 
         assert_eq!(prompter.secret_hints(), vec![None]);
         let creds = env.credentials();
@@ -2460,7 +2448,7 @@ mod tests {
             .confirm(true)
             .build();
 
-        login(None, &settings, &prompter).await?;
+        login(&settings, &prompter).await?;
 
         let creds = env.credentials();
         assert!(creds.contains(&api_key_line(FAKE_API_KEY_B)), "{creds}");
@@ -2479,7 +2467,7 @@ mod tests {
             .secret(FAKE_API_KEY_A)
             .build();
 
-        login(None, &settings, &prompter).await?;
+        login(&settings, &prompter).await?;
 
         assert_eq!(prompter.secret_hints(), vec![None]);
         let creds = env.credentials();
@@ -2534,7 +2522,7 @@ mod tests {
             .confirm(false)
             .build();
 
-        login(None, &settings, &prompter).await?;
+        login(&settings, &prompter).await?;
 
         assert_eq!(
             prompter.prompts().last().map(String::as_str),
@@ -2558,7 +2546,7 @@ mod tests {
             .secret(FAKE_API_KEY_A)
             .build();
 
-        let result = login(None, &settings, &prompter).await;
+        let result = login(&settings, &prompter).await;
         // SAFETY: as above.
         unsafe { std::env::remove_var("ANTITHESIS_API_KEY") };
         result?;
@@ -2583,7 +2571,7 @@ mod tests {
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default().input("mytenant").skip_secret().build();
 
-        let result = login(None, &settings, &prompter).await;
+        let result = login(&settings, &prompter).await;
         // SAFETY: as above.
         unsafe { std::env::remove_var("ANTITHESIS_API_KEY") };
         result?;
@@ -2605,7 +2593,7 @@ mod tests {
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default().input("mytenant").skip_secret().build();
 
-        let err = login(None, &settings, &prompter)
+        let err = login(&settings, &prompter)
             .await
             .expect_err("an unreadable credential must fail the login");
 
@@ -2626,7 +2614,7 @@ mod tests {
         let prompter = Script::default().input("mytenant").skip_select().build();
 
         assert!(
-            login(None, &settings, &prompter).await.is_err(),
+            login(&settings, &prompter).await.is_err(),
             "login without a credential must fail"
         );
 
@@ -2751,7 +2739,7 @@ mod tests {
             .input("acme")
             .secret(FAKE_API_KEY_A)
             .build();
-        login(None, &settings, &prompter).await?;
+        login(&settings, &prompter).await?;
 
         assert!(
             !env.config_dir().join("credentials.toml").exists(),
@@ -2797,7 +2785,7 @@ mod tests {
             .input("acme")
             .secret(FAKE_API_KEY_B)
             .build();
-        login(Some("prod"), &prof_settings, &prof_prompter).await?;
+        login(&prof_settings, &prof_prompter).await?;
         assert!(
             security(
                 &home,

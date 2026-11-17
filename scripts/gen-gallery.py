@@ -3427,12 +3427,11 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "runs-logs-bad-moment",
             "Try logs with a moment that doesn't exist",
             "I ask for a moment that isn't in this run; I want a clean error.",
-            "A clean error with two suggestion lines: the run exists but the moment does not; "
+            "A clean error that says no moment in the run matches, and a suggestion to "
             "search with `snouty runs events <run ID> <search query>`. Non-zero exit.",
             ["runs", "logs", d.success, "0", "999999.0"],
             fails_with(
-                "Error: API error: 404 Not Found — Resource not found",
-                "Suggestion: the run exists but no moment matches this hash and vtime\n"
+                f"Error: no moment in run {d.success} matches this input hash and vtime",
                 f"Suggestion: search for a moment using `snouty runs events {d.success} <search query>`",
             ),
             json_capable=False,
@@ -3449,7 +3448,8 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "Non-zero exit.",
             ["runs", "exec", d.success, d.logs_hash, d.logs_vtime, "uname -n"],
             fails_with(
-                "Note: `runs exec` needs a run that is in progress. This run is completed",
+                f"Error: run {d.success} is completed, and `runs exec` needs a run that is "
+                "in progress",
                 "snouty debug \\\n"
                 f"    --run-id {d.success} \\\n"
                 f"    --input-hash {d.logs_hash} \\\n"
@@ -4067,7 +4067,10 @@ def build_ready_stories(d: Discovery, x: GalleryRun, wait_ready: Result) -> list
             "how to load it: use --source-run-id to load a moment from a different run.",
             # No story loads d.fail's moment, so it stays cold in a reused run.
             ["runs", "exec", x.run, d.fail_hash, d.fail_vtime, "uname -n"],
-            fails_with("use --source-run-id to load"),
+            fails_with(
+                f"Error: moment {d.fail_hash} is not loaded in run {x.run}",
+                "use --source-run-id to load",
+            ),
         ),
         exec_story(
             "runs-exec--source-run-id",
@@ -4262,6 +4265,45 @@ def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
                 )
             ],
             align=("MODULE", "LOCATION", "FUNCTION", "HASH", "VTIME"),
+        ),
+        Story(
+            "runs-modules",
+            "Check that my run instrumented each component",
+            "I want to see which instrumented modules my run loaded, so I can spot a component "
+            "that ran uninstrumented.",
+            "One row per module, with MODULE/NAME/LANG/LOCATIONS/SYMBOLS columns and full module "
+            "IDs: the Python example's modules. Then a status line that counts the modules and "
+            "says the run completed.",
+            ["runs", "modules", x.run],
+            non_empty_table,
+        ),
+        Story(
+            "runs-modules-detail",
+            "See which containers loaded each module",
+            "I want to see which programs, in which containers, loaded each instrumented module "
+            "of my run.",
+            "One row per module per program, with MODULE/NAME/CONTAINER/PROGRAM/LANG/LOCATIONS/"
+            "SYMBOLS columns: Python modules in the bank and workload containers. Then a status "
+            "line that counts the modules and says the run completed.",
+            ["runs", "modules", x.run, "--detail"],
+            non_empty_table,
+        ),
+        _help_story(
+            "help-runs-modules",
+            "Learn how to check a run's instrumentation",
+            "I want the help to tell me what each column means, which module IDs I can predict "
+            "from my build, and why a module can be missing.",
+            ["runs", "modules"],
+            ["runs", "modules", x.run, "--detail"],
+            align=(
+                "MODULE",
+                "NAME",
+                "CONTAINER",
+                "PROGRAM",
+                "LANG",
+                "LOCATIONS",
+                "SYMBOLS",
+            ),
         ),
         Story(
             "runs-stream-run-final",

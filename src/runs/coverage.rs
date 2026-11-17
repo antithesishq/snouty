@@ -14,16 +14,14 @@ use crate::OutputOptions;
 use crate::api::{AntithesisApi, LocationCoverage, MIN_COVERAGE_RELEASE, Reach, RunDetail};
 use crate::cli::{ReachArg, RunsCoverageArgs};
 use crate::error::{api_error_status, user_error};
-use crate::render::sanitize;
+use crate::render::{count, sanitize};
 use crate::settings::Settings;
 use crate::stdio;
-use crate::table::truncate_path;
+use crate::table::truncate_start;
 use crate::vtime::VTime;
 
 use super::ready::{self, Needs, RetryDecision, RetryPolicy};
-use super::{
-    MID_STREAM_ERROR, MID_STREAM_NOTE, READY_POLL, count, run_status, stream_error_message,
-};
+use super::{MID_STREAM_ERROR, MID_STREAM_NOTE, READY_POLL, stream_error_message};
 
 /// The failure of `runs coverage` when the server ends the locations with a
 /// `Stream_Error` line. snouty exits with status 3 for it, so that a script
@@ -149,10 +147,11 @@ pub(super) async fn cmd_runs_coverage(
     }
 
     let run = api.get_run(run_id).await?.untag();
+    // The generated `Display` of `RunStatus` is the wire value, `in_progress`.
+    let status_words = run.status.to_string().replace('_', " ");
     eprintln!(
-        "{} · {}",
-        count(locations.len(), "location"),
-        run_status(&run.status)
+        "{} · run {status_words}",
+        count(locations.len(), "location")
     );
     if !run.status.is_terminal() && !follow {
         // --follow does not combine with --unreached, and the MCP tool has no
@@ -201,7 +200,7 @@ impl LocationLayout {
         }
         let mut function = sanitize(&location.function);
         if self.tty {
-            place = truncate_path(&place, LOCATION_WIDTH);
+            place = truncate_start(&place, LOCATION_WIDTH);
             function = truncate_str(&function, FUNCTION_WIDTH, "…").into_owned();
         }
         let (hash, vtime) = match &location.first_reached {

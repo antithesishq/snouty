@@ -13,9 +13,7 @@ use semver::Version;
 use snouty::OutputOptions;
 use snouty::api::AntithesisApi;
 use snouty::auth::initialize_credential_store;
-use snouty::cli::{
-    Cli, Commands, DebugArgs, LaunchArgs, SettingsCommands, UpdateArgs, UpdateChannel,
-};
+use snouty::cli::{Cli, Commands, DebugArgs, LaunchArgs, SettingsCommands, UpdateArgs};
 use snouty::compose;
 use snouty::config;
 use snouty::container;
@@ -30,7 +28,7 @@ use snouty::params::{
     ANT_REPORT_RECIPIENTS, ANT_SETUP_TIMEOUT, ANT_SOURCE, ANT_TEST_NAME, DuplicateKey, Params,
 };
 use snouty::run_metadata::{self, Detect, RunKind};
-use snouty::settings::{RemovedFeature, Settings};
+use snouty::settings::{RemovedFeature, Settings, UpdateChannel};
 use snouty::stdio::{self, StreamClosed};
 use snouty::validate;
 
@@ -146,7 +144,7 @@ async fn run(cli: Cli) -> Result<()> {
                 .map(|path| eprintln!("Denied {}", path.display())),
         },
         Commands::Login { tenant, registry } => {
-            cmd_login(tenant, registry, profile.as_deref(), &settings?, output).await
+            cmd_login(tenant, registry, &settings?, output).await
         }
         Commands::Launch(args) => {
             cmd_launch(args, &settings?, settings_path, profile, output).await

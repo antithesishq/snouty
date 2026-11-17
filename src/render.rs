@@ -282,6 +282,18 @@ fn find_words_keeping_code_spans(
     Box::new(merged.into_iter())
 }
 
+/// `n` and `noun`, plural unless `n` is 1: `1 module`, `3 events`.
+pub(crate) fn count<N: std::fmt::Display + PartialEq + From<u8> + Copy>(
+    n: N,
+    noun: &str,
+) -> String {
+    if n == N::from(1) {
+        format!("{n} {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
 pub(crate) fn sanitize(s: &str) -> String {
     let mut escaped = String::new();
     for ch in s.chars() {

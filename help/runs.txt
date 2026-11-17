@@ -1,7 +1,5 @@
 Interact with test runs
 
-List, inspect, wait on, cancel, run commands in, and read the logs, coverage and compute-hour usage of Antithesis test runs.
-
 When no subcommand is given, lists recent runs (same as `snouty runs list`).
 
 Examples:
@@ -22,3 +20,4 @@ Examples:
   snouty runs exec <run_id> <input_hash> <vtime> 'uname -a'
   snouty runs usage --rollup week
   snouty runs coverage <run_id> --reached --module <module_id>
+  snouty runs modules <run_id>

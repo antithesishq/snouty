@@ -11,16 +11,18 @@ use color_eyre::eyre::{Context, OptionExt, Report, Result, eyre};
 use log::debug;
 use tempfile::NamedTempFile;
 use toml::{Table, Value};
+use url::Url;
 
-use crate::cli::UpdateChannel;
 use crate::env;
 use crate::error::user_error;
 use crate::known_path::{KnownPath, KnownPathKind, LoadedFile};
 use crate::registry::Registry;
 use crate::tag::{Tag, Tagged};
 
+mod choice;
 mod show;
 mod trust;
+pub use choice::{ContainerEngine, UpdateChannel};
 pub use show::cmd_settings_show;
 pub use trust::{SETTINGS_TRUST_VAR_NAME, UntrustedSettingsFile, deny, trust};
 
@@ -85,40 +87,30 @@ pub fn cache_dir() -> Option<PathBuf> {
 
 /// snouty's resolved settings.
 ///
-/// Everything is resolved eagerly in [`Settings::resolve`]: the environment,
-/// the project settings file (`.snouty.toml`), and the global `settings.toml`
-/// are read once, each setting is resolved through the precedence chain, and
-/// the result is plain owned data. A settings file that exists but can't be read
-/// or parsed is a hard error at construction — so by the time a `Settings`
-/// exists, every value is either resolved or simply absent. No value is
-/// recomputed and nothing fails later, which is what lets the accessors hand out
-/// `&str`/`Option<&str>` instead of cached `Result`s.
+/// Everything is resolved eagerly in [`Settings::resolve`]: it reads the
+/// environment, the project settings file (`.snouty.toml`) and the global
+/// `settings.toml` once, resolves each setting through the precedence chain,
+/// and parses it into its type. A settings file that cannot be read or
+/// parsed, or a value that does not parse, is an error there, so nothing
+/// fails later.
+///
+/// Each value keeps the [`SettingSource`] that it came from.
 ///
 /// Every command shares the same resolved instance (threaded by reference), so a
 /// value resolves identically no matter which code path reads it.
-///
-/// `Default` is every setting unset (with the `stable` update channel and the
-/// default cache size cap) — handy when a caller needs a `Settings` without
-/// resolving anything.
-#[derive(Clone)]
+#[cfg_attr(test, derive(Default))]
 pub struct Settings {
     profile: Option<String>,
-    tenant: Option<Tenant>,
+    tenant: Option<Tagged<Tenant, SettingSource>>,
     registry: Option<Tagged<Registry, SettingSource>>,
     /// The `base_url` setting. [`Settings::base_url`] falls back to the
     /// tenant's host.
-    base_url: Option<String>,
-    https_proxy: Option<String>,
-    container_engine: Option<String>,
-    update_channel: UpdateChannel,
-    api_cache_max_file_size: u64,
+    base_url: Option<Tagged<Url, SettingSource>>,
+    https_proxy: Option<Tagged<Url, SettingSource>>,
+    container_engine: Option<Tagged<ContainerEngine, SettingSource>>,
+    update_channel: Option<Tagged<UpdateChannel, SettingSource>>,
+    api_cache_max_file_size: Option<Tagged<u64, SettingSource>>,
     files: Vec<KnownPath>,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Settings::builder().build()
-    }
 }
 
 impl Settings {
@@ -170,24 +162,19 @@ fn invalid_setting(source: &SettingSource, err: impl fmt::Display) -> Report {
     }
 }
 
-/// A setting's text, and where it was found.
-struct Found {
-    value: String,
-    source: SettingSource,
-}
-
-impl Found {
-    fn parse<T: FromStr>(self) -> Result<T>
-    where
-        T::Err: fmt::Display,
-    {
-        self.parse_with(str::parse)
-    }
-
-    /// The value parsed by `parse`, or an error that names where it was
-    /// found.
-    fn parse_with<T, E: fmt::Display>(self, parse: impl FnOnce(&str) -> Result<T, E>) -> Result<T> {
-        parse(&self.value).map_err(|err| invalid_setting(&self.source, err))
+/// Parse the text of `setting` with `parse`, and keep its source tag. An
+/// error names the source.
+fn parse_setting<T, E: fmt::Display>(
+    setting: Option<Tagged<String, SettingSource>>,
+    parse: impl FnOnce(&str) -> Result<T, E>,
+) -> Result<Option<Tagged<T, SettingSource>>> {
+    let Some(setting) = setting else {
+        return Ok(None);
+    };
+    let (text, source) = setting.into_parts();
+    match parse(&text) {
+        Ok(value) => Ok(Some(value.with_tag(source))),
+        Err(err) => Err(invalid_setting(&source, err)),
     }
 }
 
@@ -238,21 +225,42 @@ impl SettingsRequest {
     /// environment variable still overrides every profile. The profile that
     /// the user names is not used.
     ///
-    /// A profile that fails to resolve, such as one with an invalid tenant, is
-    /// left out: a caller that searches the profiles must not fail on a
-    /// profile it does not use.
-    pub fn resolve_every_profile(&self) -> Result<Vec<Settings>> {
+    /// Only the profiles whose tenant and registry `wanted` accepts are
+    /// resolved. A profile whose tenant or registry fails to resolve is left
+    /// out: a caller that searches the profiles must not fail on a profile it
+    /// does not use. A wanted profile that fails to resolve gives its error.
+    pub fn resolve_every_profile(
+        &self,
+        wanted: impl Fn(Option<&Tenant>, Option<&Registry>) -> bool,
+    ) -> Result<Vec<Result<Settings, UnresolvedProfile>>> {
         SettingsSources::from_ambient(self.project_settings_path.as_deref())?
-            .resolve_every_profile()
+            .resolve_every_profile(wanted)
     }
 }
 
-/// The environment variables, when `env` is set, then each file, most
-/// specific first. The first source that has a setting wins.
-struct SettingsSources {
-    env: bool,
-    files: Vec<LoadedFile>,
+/// A profile that failed to resolve: its name (`None` for the top-level
+/// defaults) and its error.
+pub struct UnresolvedProfile {
+    pub profile: Option<String>,
+    pub error: Report,
 }
+
+/// The settings that name the place that a profile pushes to.
+struct Destination {
+    tenant: Option<Tagged<Tenant, SettingSource>>,
+    registry: Option<Tagged<Registry, SettingSource>>,
+}
+
+/// One source of settings.
+enum Layer {
+    Env,
+    File(LoadedFile),
+}
+
+/// The sources of settings, most specific first. The first source that has a
+/// setting wins. Only the first layer can be [`Layer::Env`]:
+/// [`resolve_value_with`] looks for it there.
+struct SettingsSources(Vec<Layer>);
 
 impl SettingsSources {
     /// The environment variables, then the project file at
@@ -279,24 +287,35 @@ impl SettingsSources {
                 .as_ref()
                 .is_none_or(|global| *global.path != *project.path)
         });
-        Ok(Self {
-            env: true,
-            files: project.into_iter().chain(global).collect(),
-        })
+        Ok(Self(
+            std::iter::once(Layer::Env)
+                .chain(project.into_iter().chain(global).map(Layer::File))
+                .collect(),
+        ))
     }
 
     /// The global settings file alone, without the environment variables.
     fn global_file() -> Result<Self> {
-        Ok(Self {
-            env: false,
-            files: load_global_file()?.into_iter().collect(),
+        Ok(Self(
+            load_global_file()?.map(Layer::File).into_iter().collect(),
+        ))
+    }
+
+    /// The settings files, most specific first.
+    fn files(&self) -> impl Iterator<Item = &LoadedFile> {
+        self.0.iter().filter_map(|layer| match layer {
+            Layer::Env => None,
+            Layer::File(file) => Some(file),
         })
     }
 
     /// See [`SettingsRequest::resolve_every_profile`].
-    fn resolve_every_profile(&self) -> Result<Vec<Settings>> {
+    fn resolve_every_profile(
+        &self,
+        wanted: impl Fn(Option<&Tenant>, Option<&Registry>) -> bool,
+    ) -> Result<Vec<Result<Settings, UnresolvedProfile>>> {
         let mut names: Vec<&String> = Vec::new();
-        for file in &self.files {
+        for file in self.files() {
             let profiles = profiles(file)?;
             for name in profiles.into_iter().flat_map(Table::keys) {
                 if !names.contains(&name) {
@@ -306,75 +325,94 @@ impl SettingsSources {
         }
         Ok(std::iter::once(None)
             .chain(names.into_iter().map(|name| Some(name.clone())))
-            .filter_map(|profile| self.resolve(profile).ok())
+            .filter(|profile| {
+                self.resolve_destination(profile.as_deref())
+                    .is_ok_and(|to| {
+                        wanted(
+                            to.tenant.as_ref().map(Tagged::value),
+                            to.registry.as_ref().map(Tagged::value),
+                        )
+                    })
+            })
+            .map(|profile| {
+                self.resolve(profile.clone())
+                    .map_err(|error| UnresolvedProfile { profile, error })
+            })
             .collect())
     }
 
-    fn resolve(&self, profile: Option<String>) -> Result<Settings> {
-        let resolve = |key: &str, env_var: &'static str| {
-            resolve_value(key, env_var, profile.as_deref(), self)
-        };
-        let text = |found: Option<Found>| found.map(|found| found.value);
-
+    /// The tenant and the registry of `profile`.
+    fn resolve_destination(&self, profile: Option<&str>) -> Result<Destination> {
         // The tenant is a host name even when an explicit base_url means
         // that no request goes to the tenant's host.
-        let tenant = resolve("tenant", ANTITHESIS_TENANT_VAR_NAME)?
-            .map(Found::parse::<Tenant>)
-            .transpose()?;
-        let registry = resolve_value_with(
-            string_value,
-            &[REGISTRY_KEY, REPOSITORY_KEY],
-            &[ANTITHESIS_REGISTRY_VAR_NAME, ANTITHESIS_REPOSITORY_VAR_NAME],
-            profile.as_deref(),
-            self,
-        )?
-        .map(|found| {
-            let source = found.source.clone();
-            found
-                .parse::<Registry>()
-                .map(|registry| registry.with_tag(source))
-        })
-        .transpose()?;
-        let base_url = text(resolve("base_url", ANTITHESIS_BASE_URL_VAR_NAME)?);
-        let https_proxy = text(resolve("https_proxy", ANTITHESIS_HTTPS_PROXY_VAR_NAME)?);
-        let container_engine = text(resolve("container_engine", CONTAINER_ENGINE_VAR_NAME)?);
-        let update_channel = resolve("update_channel", UPDATE_CHANNEL_VAR_NAME)?
-            .map(Found::parse::<UpdateChannel>)
-            .transpose()?
-            .unwrap_or_default();
-        // A bare byte count is naturally written as a TOML integer, so the
-        // file layers accept one (see `resolve_integer_value`).
-        let api_cache_max_file_size = resolve_integer_value(
-            "api_cache_max_file_size",
-            API_CACHE_MAX_FILE_SIZE_VAR_NAME,
-            profile.as_deref(),
-            self,
-        )?
-        .map(|found| found.parse_with(parse_byte_size))
-        .transpose()?;
+        let tenant = parse_setting(
+            resolve_value_with(
+                string_value,
+                &["tenant"],
+                &[ANTITHESIS_TENANT_VAR_NAME],
+                profile,
+                self,
+            )?,
+            str::parse,
+        )?;
+        let registry = parse_setting(
+            resolve_value_with(
+                string_value,
+                &[REGISTRY_KEY, REPOSITORY_KEY],
+                &[ANTITHESIS_REGISTRY_VAR_NAME, ANTITHESIS_REPOSITORY_VAR_NAME],
+                profile,
+                self,
+            )?,
+            str::parse,
+        )?;
+        Ok(Destination { tenant, registry })
+    }
 
-        // A named-field literal (not the setters) so the compiler flags this
-        // site whenever a new setting is added to the builder.
-        Ok(SettingsBuilder {
-            profile,
+    fn resolve(&self, profile: Option<String>) -> Result<Settings> {
+        let name = profile.as_deref();
+        let text = |key: &str, env_var: &'static str| {
+            resolve_value_with(string_value, &[key], &[env_var], name, self)
+        };
+        let Destination { tenant, registry } = self.resolve_destination(name)?;
+        Ok(Settings {
             tenant,
             registry,
-            base_url,
-            https_proxy,
-            container_engine,
-            update_channel,
-            api_cache_max_file_size,
-            files: self.files.iter().map(|file| file.path.clone()).collect(),
-        }
-        .build())
+            base_url: parse_setting(
+                text("base_url", ANTITHESIS_BASE_URL_VAR_NAME)?,
+                parse_base_url,
+            )?,
+            https_proxy: parse_setting(
+                text("https_proxy", ANTITHESIS_HTTPS_PROXY_VAR_NAME)?,
+                parse_proxy_url,
+            )?,
+            container_engine: parse_setting(
+                text("container_engine", CONTAINER_ENGINE_VAR_NAME)?,
+                str::parse,
+            )?,
+            update_channel: parse_setting(
+                text("update_channel", UPDATE_CHANNEL_VAR_NAME)?,
+                str::parse,
+            )?,
+            api_cache_max_file_size: parse_setting(
+                resolve_value_with(
+                    integer_value,
+                    &["api_cache_max_file_size"],
+                    &[API_CACHE_MAX_FILE_SIZE_VAR_NAME],
+                    name,
+                    self,
+                )?,
+                parse_byte_size,
+            )?,
+            files: self.files().map(|file| file.path.clone()).collect(),
+            profile,
+        })
     }
 }
 
 impl Settings {
-    /// The resolved tenant, or `None` if unset. Call sites that require it turn
-    /// the `None` into an error (see [`require_setting`]); doctor reports it as-is.
+    /// The resolved tenant, or `None` if unset.
     pub fn tenant(&self) -> Option<&Tenant> {
-        self.tenant.as_ref()
+        self.tenant.as_ref().map(Tagged::value)
     }
 
     /// The resolved container registry, tagged with where it comes from, or
@@ -394,36 +432,48 @@ impl Settings {
     /// The base URL to talk to: an explicit `base_url` if set, otherwise one
     /// derived from the tenant; `None` when neither exists (a derived `base_url`
     /// is present exactly when the tenant is).
-    pub fn base_url(&self) -> Option<String> {
-        self.base_url
-            .clone()
-            .or_else(|| self.tenant.as_ref().map(tenant_base_url))
+    pub fn base_url(&self) -> Option<Url> {
+        self.explicit_base_url()
+            .cloned()
+            .or_else(|| self.tenant().map(tenant_base_url))
+    }
+
+    /// The base URL, or an error that names the tenant when there is none. A
+    /// user normally sets the tenant, not the base URL.
+    pub fn require_base_url(&self) -> Result<Url> {
+        self.base_url().ok_or_else(|| missing_setting("tenant"))
     }
 
     /// The `base_url` setting, without the fallback to the tenant's host.
-    pub(crate) fn explicit_base_url(&self) -> Option<&str> {
-        self.base_url.as_deref()
+    pub(crate) fn explicit_base_url(&self) -> Option<&Url> {
+        self.base_url.as_ref().map(Tagged::value)
     }
 
-    pub fn https_proxy(&self) -> Option<&str> {
-        self.https_proxy.as_deref()
+    pub fn https_proxy(&self) -> Option<&Url> {
+        self.https_proxy.as_ref().map(Tagged::value)
     }
 
-    pub fn container_engine(&self) -> Option<&str> {
-        self.container_engine.as_deref()
+    /// The container engine that the user chose, or `None` for
+    /// auto-detection.
+    pub fn container_engine(&self) -> Option<ContainerEngine> {
+        self.container_engine.as_ref().map(|engine| *engine.value())
     }
 
-    /// The resolved update channel; `stable` when unset. Already validated —
-    /// an invalid setting value fails in [`Settings::resolve`].
+    /// The resolved update channel; `stable` when unset.
     pub fn update_channel(&self) -> UpdateChannel {
         self.update_channel
+            .as_ref()
+            .map_or_default(|channel| *channel.value())
     }
 
     /// The largest API response body, in bytes, the response cache stores;
-    /// [`crate::api_cache::DEFAULT_MAX_FILE_SIZE`] when unset. Already
-    /// validated — an invalid setting value fails in [`Settings::resolve`].
+    /// [`crate::api_cache::DEFAULT_MAX_FILE_SIZE`] when unset.
     pub fn api_cache_max_file_size(&self) -> u64 {
         self.api_cache_max_file_size
+            .as_ref()
+            .map_or(crate::api_cache::DEFAULT_MAX_FILE_SIZE, |size| {
+                *size.value()
+            })
     }
 
     /// The settings files that snouty read, most specific first.
@@ -454,115 +504,67 @@ impl Settings {
         SettingsSources::global_file()?.resolve(profile)
     }
 
-    /// These settings with `tenant` in place of the tenant setting.
-    pub(crate) fn with_tenant(&self, tenant: Tenant) -> Self {
-        Settings {
-            tenant: Some(tenant),
-            ..self.clone()
-        }
-    }
-
     /// Start building a `Settings` from explicit values, with no environment
-    /// or filesystem IO — for callers (and tests) that already hold the
-    /// values. Set only what's needed and finish with
+    /// or filesystem IO. Set only what's needed and finish with
     /// [`SettingsBuilder::build`].
+    #[cfg(test)]
     pub fn builder() -> SettingsBuilder {
-        SettingsBuilder::default()
+        SettingsBuilder(Settings::default())
     }
 
-    /// Test-only: a `Settings` with an explicit base URL and everything else
-    /// unset, for driving [`crate::api::AntithesisApi`] against a mock server
-    /// without touching the environment.
+    /// A `Settings` with an explicit base URL and everything else unset, for
+    /// driving [`crate::api::AntithesisApi`] against a mock server without
+    /// touching the environment.
     #[cfg(test)]
     pub(crate) fn for_test_base_url(base_url: &str) -> Self {
         Self::builder().base_url(base_url).build()
     }
 }
 
-/// Builder behind [`Settings::builder`], so call sites name just the values
-/// they set instead of growing a positional argument for every new setting.
-/// It bypasses the resolution precedence chain entirely; the derived values
-/// still apply in [`SettingsBuilder::build`].
-#[derive(Default)]
-pub struct SettingsBuilder {
-    profile: Option<String>,
-    tenant: Option<Tenant>,
-    registry: Option<Tagged<Registry, SettingSource>>,
-    base_url: Option<String>,
-    https_proxy: Option<String>,
-    container_engine: Option<String>,
-    update_channel: UpdateChannel,
-    api_cache_max_file_size: Option<u64>,
-    files: Vec<KnownPath>,
-}
+/// Builds a test `Settings` without resolution. Each value except `registry`
+/// is tagged as if its environment variable set it.
+#[cfg(test)]
+pub struct SettingsBuilder(Settings);
 
+#[cfg(test)]
 impl SettingsBuilder {
     #[must_use]
     pub fn profile(mut self, value: &str) -> Self {
-        self.profile = Some(value.to_string());
+        self.0.profile = Some(value.to_string());
         self
     }
 
     #[must_use]
     pub fn tenant(mut self, value: Tenant) -> Self {
-        self.tenant = Some(value);
+        self.0.tenant = Some(value.with_tag(SettingSource::Env(ANTITHESIS_TENANT_VAR_NAME)));
         self
     }
 
     #[must_use]
     pub fn registry(mut self, value: Tagged<Registry, SettingSource>) -> Self {
-        self.registry = Some(value);
+        self.0.registry = Some(value);
         self
     }
 
     #[must_use]
     pub fn base_url(mut self, value: &str) -> Self {
-        self.base_url = Some(value.to_string());
-        self
-    }
-
-    #[must_use]
-    pub fn https_proxy(mut self, value: &str) -> Self {
-        self.https_proxy = Some(value.to_string());
-        self
-    }
-
-    #[must_use]
-    pub fn container_engine(mut self, value: &str) -> Self {
-        self.container_engine = Some(value.to_string());
-        self
-    }
-
-    #[must_use]
-    pub fn update_channel(mut self, value: UpdateChannel) -> Self {
-        self.update_channel = value;
+        self.0.base_url = Some(
+            Url::parse(value)
+                .expect("a test base URL parses")
+                .with_tag(SettingSource::Env(ANTITHESIS_BASE_URL_VAR_NAME)),
+        );
         self
     }
 
     #[must_use]
     pub fn api_cache_max_file_size(mut self, value: u64) -> Self {
-        self.api_cache_max_file_size = Some(value);
+        self.0.api_cache_max_file_size =
+            Some(value.with_tag(SettingSource::Env(API_CACHE_MAX_FILE_SIZE_VAR_NAME)));
         self
     }
 
-    /// Finish the build, applying the derived values: the cache size cap falls
-    /// back to its default. [`Settings::resolve`] and the test constructors
-    /// both finish here, so the derivation is exercised the same way
-    /// everywhere.
     pub fn build(self) -> Settings {
-        Settings {
-            profile: self.profile,
-            tenant: self.tenant,
-            registry: self.registry,
-            base_url: self.base_url,
-            https_proxy: self.https_proxy,
-            container_engine: self.container_engine,
-            update_channel: self.update_channel,
-            api_cache_max_file_size: self
-                .api_cache_max_file_size
-                .unwrap_or(crate::api_cache::DEFAULT_MAX_FILE_SIZE),
-            files: self.files,
-        }
+        self.0
     }
 }
 
@@ -733,8 +735,12 @@ fn update_table(target: &mut Table, tenant: &str, registry: &str) {
 }
 
 /// The base URL of `tenant` when no `base_url` is set.
-pub(crate) fn tenant_base_url(tenant: &Tenant) -> String {
-    format!("https://{tenant}.antithesis.com")
+pub(crate) fn tenant_base_url(tenant: &Tenant) -> Url {
+    tenant_url(tenant).expect("Tenant::from_str checks that the tenant's URL parses")
+}
+
+fn tenant_url(tenant: &str) -> Result<Url, url::ParseError> {
+    Url::parse(&format!("https://{tenant}.antithesis.com"))
 }
 
 /// An Antithesis tenant. The tenant becomes the host of the derived base URL
@@ -742,7 +748,8 @@ pub(crate) fn tenant_base_url(tenant: &Tenant) -> String {
 /// a valid DNS host name: one or more labels of ASCII letters, digits, and
 /// hyphens, with no hyphen at the start or end of a label. This refuses the
 /// URL-significant characters (`/`, `#`, `?`, `@`, `:`, whitespace, …) that
-/// would send requests to another host.
+/// would send requests to another host. The derived base URL must also
+/// parse. This refuses a label that is not valid punycode, such as `xn--a`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tenant(String);
 
@@ -759,7 +766,11 @@ impl FromStr for Tenant {
                 && !label.starts_with('-')
                 && !label.ends_with('-')
         };
-        if tenant.is_empty() || tenant.len() > 253 || !tenant.split('.').all(is_valid_label) {
+        if tenant.is_empty()
+            || tenant.len() > 253
+            || !tenant.split('.').all(is_valid_label)
+            || tenant_url(tenant).is_err()
+        {
             return Err(user_error(format!(
                 "`{tenant}` is not a valid tenant: a tenant is a host name of \
                  letters, digits, hyphens and dots"
@@ -783,14 +794,7 @@ impl fmt::Display for Tenant {
     }
 }
 
-/// Turn a missing required setting into snouty's standard "run doctor" error.
-/// The `Option` accessors stay the single source of truth; the few call sites
-/// that cannot proceed without a value funnel the `None` through here, so the
-/// message lives in one place instead of being duplicated per accessor.
-pub fn require_setting<'a>(value: Option<&'a str>, setting: &str) -> Result<&'a str> {
-    value.ok_or_else(|| missing_setting(setting))
-}
-
+/// snouty's standard "run doctor" error for a missing required setting.
 fn missing_setting(setting: &str) -> color_eyre::Report {
     eyre!("Could not resolve Antithesis {setting}. Run snouty doctor to debug.")
 }
@@ -830,56 +834,31 @@ fn load_default_project_file(
 /// text settings, [`integer_value`] for numeric ones.
 type ValueReader = fn(&Value) -> Result<String, String>;
 
-/// Resolve a single text setting from `sources` with the precedence:
+/// Resolve the text of a setting from `sources` with the precedence:
 /// environment variable, then the active profile in each file, then the
 /// top-level defaults in each file, most specific file first. The first layer
 /// that has the key wins.
 ///
-/// A layer that *has* the key but with a non-string value (or a malformed
-/// `profile` section) is a hard error rather than a silent skip — a typo like
-/// `tenant = 123` should be reported, not quietly ignored in favour of a
-/// lower-precedence value.
-fn resolve_value(
-    key: &str,
-    env_var: &'static str,
-    profile: Option<&str>,
-    sources: &SettingsSources,
-) -> Result<Option<Found>> {
-    resolve_value_with(string_value, &[key], &[env_var], profile, sources)
-}
-
-/// [`resolve_value`] for a numeric setting: the file layers accept a bare TOML
-/// integer (the natural form for a number) as well as a quoted string. The
-/// value still comes back as text — the caller owns the parse, exactly as for
-/// an environment variable.
-fn resolve_integer_value(
-    key: &str,
-    env_var: &'static str,
-    profile: Option<&str>,
-    sources: &SettingsSources,
-) -> Result<Option<Found>> {
-    resolve_value_with(integer_value, &[key], &[env_var], profile, sources)
-}
-
-/// [`resolve_value`] for a setting with more than one name, such as a name
-/// and its alias. Each layer reads the names in order, so the first name wins
-/// over a later one in the same layer, and a higher layer wins over both.
+/// A setting can have more than one name, such as a name and its alias. Each
+/// layer reads the names in order, so the first name wins over a later one
+/// in the same layer, and a higher layer wins over both.
+///
+/// A layer that has the key with a value of the wrong type, or a malformed
+/// `profile` section, is an error. Resolution does not skip to a lower layer,
+/// so a typo such as `tenant = 123` is reported.
 fn resolve_value_with(
     read: ValueReader,
     keys: &[&str],
     env_vars: &[&'static str],
     profile: Option<&str>,
     sources: &SettingsSources,
-) -> Result<Option<Found>> {
-    if sources.env {
+) -> Result<Option<Tagged<String, SettingSource>>> {
+    if matches!(sources.0.first(), Some(Layer::Env)) {
         for &env_var in env_vars {
             let value = env::var(env_var)
                 .map_err(|err| err.suggestion(format!("fix or unset {env_var}")))?;
             if let Some(value) = value {
-                return Ok(Some(Found {
-                    value,
-                    source: SettingSource::Env(env_var),
-                }));
+                return Ok(Some(value.with_tag(SettingSource::Env(env_var))));
             }
         }
     }
@@ -898,14 +877,14 @@ fn resolve_value_with(
             },
         };
         match read(value) {
-            Ok(value) => Ok(Some(Found { value, source })),
+            Ok(value) => Ok(Some(value.with_tag(source))),
             Err(err) => Err(invalid_setting(&source, err)),
         }
     };
 
     // A named profile is consulted before defaults, project before global.
     if let Some(profile) = profile {
-        for file in &sources.files {
+        for file in sources.files() {
             let Some(table) = profile_table(file, profile)? else {
                 continue;
             };
@@ -918,7 +897,7 @@ fn resolve_value_with(
     }
 
     // Finally fall back to top-level defaults, project before global.
-    for file in &sources.files {
+    for file in sources.files() {
         for key in keys {
             if let Some(found) = found(&file.path, &file.table, key, None)? {
                 return Ok(Some(found));
@@ -971,7 +950,7 @@ fn string_value(value: &Value) -> Result<String, String> {
 }
 
 /// A number-like setting's value, a bare TOML integer or a quoted string, as
-/// text; the caller parses it (see [`resolve_integer_value`]).
+/// text; the caller parses it.
 fn integer_value(value: &Value) -> Result<String, String> {
     match value {
         Value::Integer(number) => Ok(number.to_string()),
@@ -979,6 +958,35 @@ fn integer_value(value: &Value) -> Result<String, String> {
         value => Err(format!(
             "must be an integer or a string, but found {}",
             value.type_str()
+        )),
+    }
+}
+
+/// Parse a `base_url` setting: a URL with a host.
+fn parse_base_url(text: &str) -> Result<Url, String> {
+    match Url::parse(text) {
+        Ok(url) if url.has_host() => Ok(url),
+        Ok(_) => Err("expected a URL such as https://acme.antithesis.com".to_owned()),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+/// Parse an `https_proxy` setting as reqwest reads a proxy: a value without
+/// a scheme, such as `proxy.corp:3128`, is an `http://` URL. reqwest, built
+/// without its `socks` feature, accepts only an http or https proxy.
+fn parse_proxy_url(text: &str) -> Result<Url, String> {
+    let url = match Url::parse(text) {
+        Ok(url) if url.has_host() => Ok(url),
+        Ok(_) | Err(url::ParseError::RelativeUrlWithoutBase) => {
+            Url::parse(&format!("http://{text}"))
+        }
+        Err(err) => Err(err),
+    }
+    .map_err(|err| err.to_string())?;
+    match url.scheme() {
+        "http" | "https" => Ok(url),
+        scheme => Err(format!(
+            "expected an http or https proxy URL, got the scheme `{scheme}`"
         )),
     }
 }
@@ -1055,10 +1063,21 @@ mod tests {
 
     /// Leaves out the environment, so the files alone decide the result.
     fn sources(project: Option<LoadedFile>, global: Option<LoadedFile>) -> SettingsSources {
-        SettingsSources {
-            env: false,
-            files: project.into_iter().chain(global).collect(),
-        }
+        SettingsSources(project.into_iter().chain(global).map(Layer::File).collect())
+    }
+
+    /// The text of the tenant setting.
+    fn resolve_text(
+        profile: Option<&str>,
+        sources: &SettingsSources,
+    ) -> Result<Option<Tagged<String, SettingSource>>> {
+        resolve_value_with(
+            string_value,
+            &["tenant"],
+            &[ANTITHESIS_TENANT_VAR_NAME],
+            profile,
+            sources,
+        )
     }
 
     /// Each layer in the precedence tests uses a distinct value, so the
@@ -1068,14 +1087,9 @@ mod tests {
         project: Option<LoadedFile>,
         global: Option<LoadedFile>,
     ) -> Option<String> {
-        resolve_value(
-            "tenant",
-            ANTITHESIS_TENANT_VAR_NAME,
-            profile,
-            &sources(project, global),
-        )
-        .unwrap()
-        .map(|found| found.value)
+        resolve_text(profile, &sources(project, global))
+            .unwrap()
+            .map(Tagged::untag)
     }
 
     // ---- strict TOML typing --------------------------------------------
@@ -1083,15 +1097,9 @@ mod tests {
     /// The error of resolving the tenant from a project file with
     /// `contents`.
     fn resolve_error(profile: Option<&str>, contents: &str) -> String {
-        resolve_value(
-            "tenant",
-            ANTITHESIS_TENANT_VAR_NAME,
-            profile,
-            &sources(Some(settings_file(contents)), None),
-        )
-        .err()
-        .expect("the value should not resolve")
-        .to_string()
+        resolve_text(profile, &sources(Some(settings_file(contents)), None))
+            .expect_err("the value should not resolve")
+            .to_string()
     }
 
     #[test]
@@ -1164,7 +1172,7 @@ mod tests {
         assert_eq!(xdg_base(None, None, ".config"), None);
     }
 
-    // ---- resolve_value precedence --------------------------------------
+    // ---- precedence ----------------------------------------------------
 
     #[test]
     fn project_profile_beats_global_profile_and_all_defaults() {
@@ -1260,13 +1268,18 @@ mod tests {
     // ---- resolve_every_profile -----------------------------------------
 
     /// The profiles that `resolve_every_profile` gives, in order, with
-    /// `defaults` for the top-level defaults.
-    fn every_profile(project: &str, global: &str) -> Vec<String> {
+    /// `defaults` for the top-level defaults and `error` for a profile that
+    /// fails to resolve. `wanted` accepts the profiles of the tenant `acme`,
+    /// or every profile when `acme_only` is false.
+    fn every_profile(project: &str, global: &str, acme_only: bool) -> Vec<String> {
         sources(Some(settings_file(project)), Some(settings_file(global)))
-            .resolve_every_profile()
+            .resolve_every_profile(|tenant, _| !acme_only || tenant.is_some_and(|t| **t == *"acme"))
             .unwrap()
             .iter()
-            .map(|settings| settings.profile().unwrap_or("defaults").to_owned())
+            .map(|settings| match settings {
+                Ok(settings) => settings.profile().unwrap_or("defaults").to_owned(),
+                Err(_) => "error".to_owned(),
+            })
             .collect()
     }
 
@@ -1275,16 +1288,24 @@ mod tests {
         let project = "[profile.zulu]\n[profile.mike]\n";
         let global = "[profile.alpha]\n[profile.zulu]\n[profile.kilo]\n";
         assert_eq!(
-            every_profile(project, global),
+            every_profile(project, global, false),
             ["defaults", "mike", "zulu", "alpha", "kilo"]
         );
     }
 
     #[test]
-    fn every_profile_skips_a_profile_that_fails_to_resolve() {
-        let project =
-            "[profile.a]\n[profile.broken]\napi_cache_max_file_size = \"lots\"\n[profile.c]\n";
-        assert_eq!(every_profile(project, ""), ["defaults", "a", "c"]);
+    fn every_profile_skips_a_profile_whose_tenant_fails_to_resolve() {
+        let project = "[profile.a]\n[profile.broken]\ntenant = \"a/b\"\n[profile.c]\n";
+        assert_eq!(every_profile(project, "", false), ["defaults", "a", "c"]);
+    }
+
+    /// A bad value that the search does not read hides no profile: the
+    /// wanted profile gives its error, and another profile is left out.
+    #[test]
+    fn a_wanted_profile_that_fails_to_resolve_gives_its_error() {
+        let project = "[profile.acme]\ntenant = \"acme\"\ncontainer_engine = \"none\"\n\
+                       [profile.other]\ntenant = \"other\"\ncontainer_engine = \"none\"\n";
+        assert_eq!(every_profile(project, "", true), ["error"]);
     }
 
     #[test]
@@ -1335,24 +1356,21 @@ mod tests {
     // ---- accessors -----------------------------------------------------
 
     #[test]
-    fn require_setting_missing_points_at_doctor() {
-        let err = require_setting(None, "tenant").unwrap_err();
-        let msg = err.to_string();
+    fn a_missing_base_url_points_at_doctor() {
+        let msg = Settings::default()
+            .require_base_url()
+            .unwrap_err()
+            .to_string();
         assert!(msg.contains("tenant"), "unexpected error: {msg}");
         assert!(msg.contains("snouty doctor"), "unexpected error: {msg}");
-    }
-
-    #[test]
-    fn require_setting_passes_a_present_value_through() {
-        assert_eq!(require_setting(Some("acme"), "tenant").unwrap(), "acme");
     }
 
     #[test]
     fn base_url_falls_back_to_tenant_host() {
         let settings = Settings::builder().tenant("acme".parse().unwrap()).build();
         assert_eq!(
-            settings.base_url().as_deref(),
-            Some("https://acme.antithesis.com")
+            settings.base_url().map(String::from).as_deref(),
+            Some("https://acme.antithesis.com/")
         );
     }
 
@@ -1362,101 +1380,94 @@ mod tests {
             .tenant("acme".parse().unwrap())
             .base_url("https://example.test")
             .build();
-        assert_eq!(settings.base_url().as_deref(), Some("https://example.test"));
+        assert_eq!(
+            settings.base_url().map(String::from).as_deref(),
+            Some("https://example.test/")
+        );
     }
 
     #[test]
     fn base_url_without_tenant_is_none() {
-        let settings = Settings::default();
-        assert_eq!(settings.base_url().as_deref(), None);
+        assert_eq!(Settings::default().base_url(), None);
+    }
+
+    /// The settings that a project file with `contents` gives.
+    fn resolve_file(contents: &str) -> Result<Settings> {
+        sources(Some(settings_file(contents)), None).resolve(None)
     }
 
     #[test]
-    fn container_engine_absent_resolves_to_none() {
-        let settings = Settings::default();
-        assert_eq!(settings.container_engine(), None);
-    }
-
-    #[test]
-    fn container_engine_resolves_when_set() {
-        let settings = Settings::builder().container_engine("podman").build();
-        assert_eq!(settings.container_engine(), Some("podman"));
-    }
-
-    #[test]
-    fn https_proxy_absent_resolves_to_none() {
-        let settings = Settings::default();
-        assert_eq!(settings.https_proxy(), None);
-    }
-
-    #[test]
-    fn https_proxy_resolves_when_set() {
-        let settings = Settings::builder()
-            .https_proxy("http://proxy.corp:8080")
-            .build();
-        assert_eq!(settings.https_proxy(), Some("http://proxy.corp:8080"));
-    }
-
-    #[test]
-    fn https_proxy_resolves_from_a_settings_file() {
-        let project = settings_file("https_proxy = \"http://proxy.corp:8080\"\n");
+    fn each_setting_parses_into_its_type() {
+        let settings = resolve_file(
+            "https_proxy = \"http://proxy.corp:8080\"\n\
+             container_engine = \"podman\"\n\
+             update_channel = \"unstable\"\n\
+             api_cache_max_file_size = 1234\n",
+        )
+        .unwrap();
         assert_eq!(
-            resolve_value(
-                "https_proxy",
-                ANTITHESIS_HTTPS_PROXY_VAR_NAME,
-                None,
-                &sources(Some(project), None)
-            )
-            .unwrap()
-            .map(|found| found.value),
-            Some("http://proxy.corp:8080".to_string())
+            settings.https_proxy().map(Url::as_str),
+            Some("http://proxy.corp:8080/")
         );
-    }
-
-    #[test]
-    fn update_channel_absent_resolves_to_stable() {
-        let settings = Settings::default();
-        assert_eq!(settings.update_channel(), UpdateChannel::Stable);
-    }
-
-    #[test]
-    fn update_channel_resolves_when_set() {
-        let settings = Settings::builder()
-            .update_channel(UpdateChannel::Unstable)
-            .build();
+        assert_eq!(settings.container_engine(), Some(ContainerEngine::Podman));
         assert_eq!(settings.update_channel(), UpdateChannel::Unstable);
+        assert_eq!(settings.api_cache_max_file_size(), 1234);
     }
 
     #[test]
-    fn update_channel_resolves_from_a_settings_file() {
-        let project = settings_file("update_channel = \"unstable\"\n");
+    fn a_proxy_without_a_scheme_is_an_http_url() {
+        for (proxy, url) in [
+            ("10.0.0.1:3128", "http://10.0.0.1:3128/"),
+            ("proxy.corp", "http://proxy.corp/"),
+            ("localhost:3128", "http://localhost:3128/"),
+            ("https://proxy.corp:8443", "https://proxy.corp:8443/"),
+        ] {
+            let settings = resolve_file(&format!("https_proxy = \"{proxy}\"\n")).unwrap();
+            assert_eq!(
+                settings.https_proxy().map(Url::as_str),
+                Some(url),
+                "{proxy}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unset_setting_takes_its_default() {
+        let settings = resolve_file("").unwrap();
+        assert_eq!(settings.https_proxy(), None);
+        assert_eq!(settings.container_engine(), None);
+        assert_eq!(settings.update_channel(), UpdateChannel::Stable);
         assert_eq!(
-            resolve_value(
-                "update_channel",
-                UPDATE_CHANNEL_VAR_NAME,
-                None,
-                &sources(Some(project), None)
-            )
-            .unwrap()
-            .map(|found| found.value),
-            Some("unstable".to_string())
+            settings.api_cache_max_file_size(),
+            crate::api_cache::DEFAULT_MAX_FILE_SIZE
         );
     }
 
     #[test]
-    fn api_cache_max_file_size_resolves_from_a_settings_file() {
-        // The natural TOML form for a byte count is a bare integer.
-        let project = settings_file("api_cache_max_file_size = 1234\n");
+    fn a_value_that_does_not_parse_names_its_source() {
+        let error = |contents: &str| resolve_file(contents).err().unwrap().to_string();
         assert_eq!(
-            resolve_integer_value(
-                "api_cache_max_file_size",
-                API_CACHE_MAX_FILE_SIZE_VAR_NAME,
-                None,
-                &sources(Some(project), None)
-            )
-            .unwrap()
-            .map(|found| found.value),
-            Some("1234".to_string())
+            error("base_url = \"example.com\"\n"),
+            "invalid setting `base_url` in /test/settings.toml: relative URL without a base"
+        );
+        assert_eq!(
+            error("base_url = \"localhost:8080\"\n"),
+            "invalid setting `base_url` in /test/settings.toml: \
+             expected a URL such as https://acme.antithesis.com"
+        );
+        assert_eq!(
+            error("https_proxy = \"htps://proxy.corp:3128\"\n"),
+            "invalid setting `https_proxy` in /test/settings.toml: \
+             expected an http or https proxy URL, got the scheme `htps`"
+        );
+        assert_eq!(
+            error("https_proxy = \"http://\"\n"),
+            "invalid setting `https_proxy` in /test/settings.toml: empty host"
+        );
+        assert_eq!(
+            error("container_engine = \"none\"\n"),
+            "invalid setting `container_engine` in /test/settings.toml: \
+             expected `podman` or `docker`, got `none`"
         );
     }
 
@@ -1512,6 +1523,7 @@ mod tests {
             "",
             "-leadinghyphen",
             "trailinghyphen-",
+            "xn--a",
         ] {
             assert!(
                 tenant.parse::<Tenant>().is_err(),

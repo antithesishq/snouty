@@ -10,7 +10,7 @@
 //!   time a sample appears. An event property's sample is a moment, which is
 //!   unique across the run; a non-event property's sample is a JSON value,
 //!   unique only within its property.
-//! - `verdict <property id> passed|failed`: a `PROPERTIES_PASSED` or
+//! - `verdict <property id> passed|failed <name>`: a `PROPERTIES_PASSED` or
 //!   `PROPERTIES_FAILED` notification, unless it repeats the last verdict.
 //! - `completed <run id>`: `RUN_FINALIZED`; the stream ends.
 //! - `unknown <type> <json>`: a notification that snouty cannot decode, an
@@ -138,6 +138,7 @@ pub(super) enum Line {
     },
     Verdict {
         property_id: String,
+        name: String,
         verdict: Verdict,
     },
     Completed {
@@ -175,6 +176,7 @@ impl Line {
             }
             Self::Verdict {
                 property_id,
+                name,
                 verdict,
             } => {
                 let word = match verdict {
@@ -182,9 +184,10 @@ impl Line {
                     Verdict::Failed => style(verdict).red(),
                 };
                 format!(
-                    "{:<EVENT_WIDTH$}  {}  {word}",
+                    "{:<EVENT_WIDTH$}  {}  {word}  {}",
                     style("verdict").bold(),
-                    sanitize(property_id)
+                    sanitize(property_id),
+                    sanitize(name)
                 )
             }
             Self::Completed { run_id } => format!(
@@ -231,9 +234,10 @@ impl Line {
             },
             Self::Verdict {
                 property_id,
+                name,
                 verdict,
             } => {
-                json!({"event": "verdict", "property_id": property_id, "verdict": verdict.to_string()})
+                json!({"event": "verdict", "property_id": property_id, "verdict": verdict.to_string(), "name": name})
             }
             Self::Completed { run_id } => json!({"event": "completed", "run_id": run_id}),
             Self::Unknown(line) => json!({"event": "unknown", "data": line}),
@@ -312,6 +316,11 @@ impl Denormalizer {
                 name: property.name().to_string(),
             });
         }
+        // `samples` consumes the property, so a verdict that prints takes its
+        // name first.
+        let verdict = verdict
+            .filter(|&verdict| self.verdicts.insert(property_id.clone(), verdict) != Some(verdict))
+            .map(|verdict| (verdict, property.name().to_string()));
         for (kind, sample) in samples(property) {
             let new = match &sample {
                 Sample::Moment { input_hash, vtime } => {
@@ -329,11 +338,10 @@ impl Denormalizer {
                 });
             }
         }
-        if let Some(verdict) = verdict
-            && self.verdicts.insert(property_id.clone(), verdict) != Some(verdict)
-        {
+        if let Some((verdict, name)) = verdict {
             lines.push(Line::Verdict {
                 property_id,
+                name,
                 verdict,
             });
         }
@@ -423,7 +431,7 @@ mod tests {
                 "sample     a1  counterexample  -100  401.25",
                 "sample     a1  counterexample  -200  402.5",
                 "sample     a1  example         -300  398.4898056755774",
-                "verdict    a1  failed",
+                "verdict    a1  failed  Property a1",
             ]
         );
     }
@@ -437,7 +445,7 @@ mod tests {
         rendered(&mut denormalizer, &found);
         assert_eq!(
             rendered(&mut denormalizer, &passed),
-            ["verdict    a1  passed"]
+            ["verdict    a1  passed  Property a1"]
         );
     }
 
@@ -473,7 +481,7 @@ mod tests {
             [
                 "property   a1  Property a1",
                 r#"sample     a1  counterexample  "old image""#,
-                "verdict    a1  passed",
+                "verdict    a1  passed  Property a1",
             ]
         );
     }
@@ -558,7 +566,7 @@ mod tests {
             [
                 json!({"event": "property", "property_id": "a1", "name": "Property a1"}),
                 json!({"event": "sample", "property_id": "a1", "kind": "counterexample", "input_hash": "-100", "vtime": 401.25}),
-                json!({"event": "verdict", "property_id": "a1", "verdict": "failed"}),
+                json!({"event": "verdict", "property_id": "a1", "verdict": "failed", "name": "Property a1"}),
             ]
         );
         let unknown = json!({"type": "RUN_PAUSED"});

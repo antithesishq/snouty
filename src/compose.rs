@@ -17,8 +17,8 @@ use color_eyre::{
 use crate::config::ComposeConfig;
 use crate::container::{
     Architecture, ContainerRuntime, DISCOVERY_COMMAND_TIMEOUT, RemoteManifest, available_engines,
-    digests_for_repo, docker_is_podman, image_ref_tag, image_repo, mirror_path, normalize_repo,
-    registry_host, strip_registry,
+    digests_for_repo, docker_is_podman, image_digest, image_ref_tag, image_repo, mirror_path,
+    normalize_repo, registry_host, strip_registry,
 };
 use crate::error::user_error;
 use crate::process::{ProcessGroupChild, output_with_timeout};
@@ -525,6 +525,7 @@ impl DockerCompose {
 
     /// Return the `docker-compose.yaml` contents canonicalized, with each
     /// local image rewritten to a digest reference (`name:tag@sha256:...`).
+    /// A digest pin that its registry serves keeps the reference as written.
     ///
     /// The local image store is the single source of truth for what a launch
     /// runs — snouty never pulls. A local image is rewritten to the digest in
@@ -782,11 +783,9 @@ fn push_destination(image: &str, prefix: &str) -> Result<String> {
 /// digest-pinned reference to use, or `None` when the image must be pushed.
 ///
 /// Candidate digests are the local store's repo digests for that
-/// repository. A candidate counts only when the registry confirms it serves
-/// the digest (a manifest-only round trip — never a pull or push) AND the
-/// platform can run amd64 from it: a manifest list must offer an amd64 entry,
-/// while a single manifest shares the local image's architecture, so the
-/// local image must be amd64.
+/// repository, or only the author's digest when `image` is digest-pinned.
+/// A candidate counts only when [`serves_amd64`] confirms it, with a
+/// manifest-only round trip (never a pull or push).
 ///
 /// The registry of `prefix` is asked only for an image that the author named
 /// at its push destination, whose manifest list a push would replace with
@@ -805,24 +804,33 @@ fn find_remote_pin(rt: &dyn ContainerRuntime, image: &str, prefix: &str) -> Resu
     {
         return Ok(None);
     }
+    if let Some(digest) = image_digest(image) {
+        return Ok(serves_amd64(rt, image, &repo, digest)?.then(|| image.to_string()));
+    }
     let repo_digests = rt.image_repo_digests(image)?;
     let tag = image_ref_tag(image);
     // A pull typically records several digests per repo (the per-arch
     // manifest and the manifest list) — try them all.
     for digest in digests_for_repo(&repo, &repo_digests) {
-        let amd64_ok = match rt.remote_manifest(&format!("{repo}@{digest}")) {
-            RemoteManifest::NotFound => continue,
-            RemoteManifest::List { has_amd64 } => has_amd64,
-            RemoteManifest::Single => rt.image_architecture(image)? == Architecture::Amd64,
-        };
-        if amd64_ok {
+        if serves_amd64(rt, image, &repo, &digest)? {
             return Ok(Some(format!("{repo}:{tag}@{digest}")));
         }
-        // Served, but not runnable as amd64 — keep looking; the push path's
-        // local arch check produces the actionable error.
+        // The push path's local arch check reports the actionable error.
     }
     Ok(None)
 }
+
+/// Whether `repo` serves `digest` in a form that the platform can run as
+/// amd64: a manifest list with an amd64 entry, or a single manifest of the
+/// local `image` when that image is amd64.
+fn serves_amd64(rt: &dyn ContainerRuntime, image: &str, repo: &str, digest: &str) -> Result<bool> {
+    Ok(match rt.remote_manifest(&format!("{repo}@{digest}")) {
+        RemoteManifest::NotFound => false,
+        RemoteManifest::List { has_amd64 } => has_amd64,
+        RemoteManifest::Single => rt.image_architecture(image)? == Architecture::Amd64,
+    })
+}
+
 /// Set the `image:` field of each service named in `references` to its
 /// reference. Other services keep their `image:` field.
 fn rewrite_compose_images(yaml: &str, references: &BTreeMap<String, String>) -> Result<String> {
@@ -871,7 +879,9 @@ fn ensure_no_digest_pushes(contents: &ComposeContents, unserved: &[&str]) -> Res
     let pinned: Vec<_> = contents
         .services
         .iter()
-        .filter(|service| service.image.contains('@') && unserved.contains(&service.image.as_str()))
+        .filter(|service| {
+            image_digest(&service.image).is_some() && unserved.contains(&service.image.as_str())
+        })
         .collect();
     if pinned.is_empty() {
         return Ok(());
@@ -1915,7 +1925,7 @@ services:
             "reg.example.com",
         )
         .unwrap();
-        assert!(out.contains("image: app:latest@sha256:list"), "{out}");
+        assert!(out.contains("image: app@sha256:list"), "{out}");
         assert!(rt.pushed.lock().unwrap().is_empty());
     }
 
@@ -1965,17 +1975,29 @@ services:
             skip_or_fail("docker-compose (Docker Compose v2) is not available");
             return;
         }
+        // The registry also serves the per-arch digest; the pin must keep the
+        // author's digest.
         let image = "redis@sha256:list";
         let rt = FakeRuntime {
             available_images: BTreeMap::from([(image.to_string(), true)]),
+            architectures: BTreeMap::from([(image.to_string(), "amd64".to_string())]),
             repo_digests: BTreeMap::from([(
                 image.to_string(),
-                vec!["docker.io/library/redis@sha256:list".to_string()],
+                vec![
+                    "docker.io/library/redis@sha256:child".to_string(),
+                    "docker.io/library/redis@sha256:list".to_string(),
+                ],
             )]),
-            remote_manifests: BTreeMap::from([(
-                "docker.io/library/redis@sha256:list".to_string(),
-                RemoteManifest::List { has_amd64: true },
-            )]),
+            remote_manifests: BTreeMap::from([
+                (
+                    "docker.io/library/redis@sha256:child".to_string(),
+                    RemoteManifest::Single,
+                ),
+                (
+                    "docker.io/library/redis@sha256:list".to_string(),
+                    RemoteManifest::List { has_amd64: true },
+                ),
+            ]),
             ..Default::default()
         };
         let out = pin_with_fake(
@@ -1984,10 +2006,7 @@ services:
             "reg.example.com",
         )
         .unwrap();
-        assert!(
-            out.contains("image: docker.io/library/redis:latest@sha256:list"),
-            "{out}"
-        );
+        assert!(out.contains(&format!("image: {image}\n")), "{out}");
         assert!(rt.pushed.lock().unwrap().is_empty());
     }
 
@@ -2347,8 +2366,8 @@ services:
             "fake"
         }
 
-        fn engine_kind(&self) -> &'static str {
-            "fake"
+        fn engine_kind(&self) -> crate::settings::ContainerEngine {
+            crate::settings::ContainerEngine::Docker
         }
 
         fn clone_box(&self) -> Box<dyn ContainerRuntime> {

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use snouty::docker_credential::{CRED_HELPER, HELPER_NAME};
+use snouty::settings::ContainerEngine;
 use snouty::testutils::fake_secrets::{FAKE_API_KEY_A, FAKE_BCRYPT_HASH};
 use tempfile::TempDir;
 
@@ -280,7 +281,7 @@ fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRu
 
     let run = |config: &Path, action: &str| -> Output {
         let mut command = std::process::Command::new(runtime.name());
-        if runtime.engine_kind() == "podman" {
+        if runtime.engine_kind() == ContainerEngine::Podman {
             command.args([action, "--tls-verify=false", &image]);
             command.env("REGISTRY_AUTH_FILE", config.join("config.json"));
         } else {
@@ -541,7 +542,7 @@ sed '{to_host}' | exec '{helper}' "$@"
         .unwrap()
     };
 
-    let cases = if runtime.engine_kind() == "podman" {
+    let cases = if runtime.engine_kind() == ContainerEngine::Podman {
         vec![AuthCase::Podman]
     } else if docker_reads_auth_config(&real_engine) {
         vec![

@@ -5,8 +5,8 @@ use serde::Serialize;
 
 use crate::api::{
     AntithesisApi, ApiVersion, HttpClient, MIN_CANCEL_RELEASE, MIN_EXEC_RELEASE,
-    MIN_LAUNCH_PARAMS_RELEASE, MIN_REGISTRY_RELEASE, MIN_SEARCH_RELEASE, MIN_STREAM_RELEASE,
-    VersionError, normalize_base_url,
+    MIN_LAUNCH_PARAMS_RELEASE, MIN_MODULES_RELEASE, MIN_REGISTRY_RELEASE, MIN_SEARCH_RELEASE,
+    MIN_STREAM_RELEASE, VersionError, normalize_base_url,
 };
 use crate::auth::{
     AuthenticationInfo, CredentialSource, CredentialStore, SourcedCredential, keychain_entry_name,
@@ -18,7 +18,7 @@ use crate::error::rejects_credential;
 use crate::known_path::KnownPathKind;
 use crate::login::{CliOAuthConfig, REGISTRY_TIMEOUT, fetch_cli_config};
 use crate::registry::Registry;
-use crate::render::OutputOptions;
+use crate::render::{OutputOptions, count};
 use crate::settings::{SettingSource, Settings, Tenant};
 use crate::tag::Tagged;
 
@@ -143,6 +143,7 @@ enum CheckId {
     CancelRun,
     LaunchParams,
     RunStream,
+    RunModules,
     OauthConfigured,
 }
 
@@ -612,7 +613,7 @@ struct ReleaseFloor {
     consequence: &'static str,
 }
 
-const RELEASE_FLOORS: [ReleaseFloor; 5] = [
+const RELEASE_FLOORS: [ReleaseFloor; 6] = [
     ReleaseFloor {
         id: CheckId::EventsSearch,
         serves: "the events-search API",
@@ -643,6 +644,12 @@ const RELEASE_FLOORS: [ReleaseFloor; 5] = [
         serves: "property streaming",
         min: MIN_STREAM_RELEASE,
         consequence: "`runs stream` is not available",
+    },
+    ReleaseFloor {
+        id: CheckId::RunModules,
+        serves: "the run modules API",
+        min: MIN_MODULES_RELEASE,
+        consequence: "`runs modules` fails",
     },
 ];
 
@@ -911,8 +918,7 @@ pub async fn cmd_doctor(
             }
         }
 
-        // A client that fails to build (bad proxy URL or extra header) skips
-        // the API check too. Skip the probe when the tenant could be
+        // A client that fails to build skips the API check too. Skip the probe when the tenant could be
         // unreachable: the probe would only wait out its timeout. Skip it
         // when a credential works, too: that user does not need OAuth login.
         let credential_works = checks
@@ -923,7 +929,7 @@ pub async fn cmd_doctor(
             && let Some(base_url) = settings.base_url()
             && let Ok(client) = HttpClient::new(settings, verbose)
         {
-            match fetch_cli_config(&client, &normalize_base_url(base_url), OAUTH_PROBE_TIMEOUT)
+            match fetch_cli_config(&client, &normalize_base_url(&base_url), OAUTH_PROBE_TIMEOUT)
                 .await
             {
                 Ok(CliOAuthConfig::Disabled) => checks.push(
@@ -962,19 +968,20 @@ pub async fn cmd_doctor(
         eprintln!("Run `snouty settings show` to see your settings.");
         eprintln!();
 
-        let wp = if warnings == 1 { "" } else { "s" };
+        let problems = count(errors, "problem");
+        let warnings_found = count(warnings, "warning");
         if errors > 0 {
-            let ep = if errors == 1 { "" } else { "s" };
             if warnings > 0 {
                 eprintln!(
-                    "doctor found {errors} problem{ep} and {warnings} warning{wp} — \
+                    "doctor found {problems} and {warnings_found} — \
                      see the ✗ and ⚠ checks above"
                 );
             } else {
-                eprintln!("doctor found {errors} problem{ep} — see the ✗ check{ep} above");
+                let checks = if errors == 1 { "check" } else { "checks" };
+                eprintln!("doctor found {problems} — see the ✗ {checks} above");
             }
         } else if warnings > 0 {
-            eprintln!("doctor passed with {warnings} warning{wp}");
+            eprintln!("doctor passed with {warnings_found}");
         } else {
             eprintln!("All checks passed");
         }
@@ -1483,7 +1490,7 @@ mod tests {
     #[test]
     fn release_floor_check_fires_only_on_a_known_gap() {
         let version = |release: &str| ApiVersion::new("v1".into(), release.into());
-        let [search, exec, cancel, launch_params, run_stream] = &RELEASE_FLOORS;
+        let [search, exec, cancel, launch_params, run_stream, run_modules] = &RELEASE_FLOORS;
         assert!(release_floor_check(&version("62.2"), search).is_none());
         assert!(release_floor_check(&version("63.0"), search).is_none());
         // 58.11 ships the endpoint but not its contract, so it is too old.
@@ -1534,6 +1541,14 @@ mod tests {
             "{}",
             check.notes[0].text
         );
+
+        assert!(release_floor_check(&version("67.0"), run_modules).is_none());
+        let check = release_floor_check(&version("66.9"), run_modules).unwrap();
+        assert!(
+            check.notes[0].text.contains("`runs modules`"),
+            "{}",
+            check.notes[0].text
+        );
     }
 
     #[test]
@@ -1545,7 +1560,11 @@ mod tests {
                 .collect()
         };
         let (major, minor) = MIN_EXEC_RELEASE;
-        let newer = [CheckId::LaunchParams, CheckId::RunStream];
+        let newer = [
+            CheckId::LaunchParams,
+            CheckId::RunStream,
+            CheckId::RunModules,
+        ];
         assert_eq!(
             ids(format!("{}.99", major - 1)),
             [&[CheckId::ExecuteCommand][..], &newer].concat()

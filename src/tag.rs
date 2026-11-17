@@ -29,6 +29,11 @@ impl<V, T> Tagged<V, T> {
     pub fn untag(self) -> V {
         self.value
     }
+
+    /// The value and the tag.
+    pub fn into_parts(self) -> (V, T) {
+        (self.value, self.tag)
+    }
 }
 
 /// Wrap any value in a [`Tagged`].

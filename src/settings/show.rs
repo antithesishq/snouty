@@ -1,3 +1,4 @@
+use std::fmt;
 use std::io::Write;
 
 use color_eyre::eyre::Result;
@@ -11,6 +12,7 @@ use crate::known_path::{KnownPath, KnownPathKind};
 use crate::render::{render_kv, sanitize};
 use crate::stdio;
 use crate::table::{Column, Table};
+use crate::tag::Tagged;
 
 const NOT_SET: &str = "not set";
 
@@ -21,36 +23,26 @@ const NOT_SET: &str = "not set";
 fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, String)> {
     fn text_row(
         name: &'static str,
-        value: Option<&str>,
+        value: Option<impl fmt::Display>,
         unset: &str,
     ) -> (&'static str, Value, String) {
-        (name, json!(value), value.unwrap_or(unset).to_owned())
+        let text = value.map(|value| value.to_string());
+        (name, json!(text), text.unwrap_or_else(|| unset.to_owned()))
     }
 
     let max_file_size = settings.api_cache_max_file_size();
     let mut rows = vec![
         text_row("profile", settings.profile(), "default"),
-        text_row("tenant", settings.tenant().map(|tenant| &**tenant), NOT_SET),
-        text_row(
-            "registry",
-            settings
-                .registry()
-                .map(|registry| registry.value().to_string())
-                .as_deref(),
-            NOT_SET,
-        ),
-        text_row("base_url", settings.base_url().as_deref(), NOT_SET),
+        text_row("tenant", settings.tenant(), NOT_SET),
+        text_row("registry", settings.registry().map(Tagged::value), NOT_SET),
+        text_row("base_url", settings.base_url(), NOT_SET),
         text_row("https_proxy", settings.https_proxy(), NOT_SET),
         text_row(
             "container_engine",
             settings.container_engine(),
             "auto-detect",
         ),
-        text_row(
-            "update_channel",
-            Some(settings.update_channel().as_str()),
-            NOT_SET,
-        ),
+        text_row("update_channel", Some(settings.update_channel()), NOT_SET),
         (
             "api_cache_max_file_size",
             json!(max_file_size),
@@ -62,7 +54,7 @@ fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, 
     ];
     if !features.is_empty() {
         let ids: Vec<String> = features.iter().map(Feature::to_string).collect();
-        rows.push(text_row("features", Some(&ids.join(", ")), NOT_SET));
+        rows.push(text_row("features", Some(ids.join(", ")), NOT_SET));
     }
     rows
 }

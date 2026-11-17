@@ -6,7 +6,7 @@
 #   property <property id> <name>
 #   sample <property id> example|counterexample <input hash> <vtime>
 #   sample <property id> example|counterexample <value>
-#   verdict <property id> passed|failed
+#   verdict <property id> passed|failed <name>
 #   completed <run id>
 #   unknown <type> <json>
 
@@ -32,7 +32,7 @@ stderr 'run not found: run-does-not-exist'
 mock-runs-server
 snouty runs stream run-2
 stderr '^the stream of run run-2 is open$'
-stdout '(?s)\Aproperty +27a7cb0b311c8481c4ce12f3347fadbf +Balance stays nonnegative\nproperty +d2558d97fabac81ba7eb4676e47a0cba558263f8 +Peak memory stays below cap\nsample +d2558d97fabac81ba7eb4676e47a0cba558263f8 +counterexample +1340\nsample +d2558d97fabac81ba7eb4676e47a0cba558263f8 +example +820\nsample +d2558d97fabac81ba7eb4676e47a0cba558263f8 +example +910\nproperty +97cf5fcafa500ed62bf109d81834c5b881a2c854 +Safety: Counter value stays below limit\nsample +97cf5fcafa500ed62bf109d81834c5b881a2c854 +counterexample +\-100 +45\.334635781589895\nsample +97cf5fcafa500ed62bf109d81834c5b881a2c854 +counterexample +\-200 +313\.15126806590706\nsample +97cf5fcafa500ed62bf109d81834c5b881a2c854 +example +\-300 +398\.4898056755774\nverdict +97cf5fcafa500ed62bf109d81834c5b881a2c854 +failed\nproperty +5e3a0c1b9d7f4e2a8c6b0d1f3e5a7c9b +Setup completes\nsample +5e3a0c1b9d7f4e2a8c6b0d1f3e5a7c9b +example +\{"final_counter":42\}\nverdict +5e3a0c1b9d7f4e2a8c6b0d1f3e5a7c9b +passed\nverdict +27a7cb0b311c8481c4ce12f3347fadbf +passed\ncompleted +run\-2\n?\z'
+stdout '(?s)\Aproperty +27a7cb0b311c8481c4ce12f3347fadbf +Balance stays nonnegative\nproperty +d2558d97fabac81ba7eb4676e47a0cba558263f8 +Peak memory stays below cap\nsample +d2558d97fabac81ba7eb4676e47a0cba558263f8 +counterexample +1340\nsample +d2558d97fabac81ba7eb4676e47a0cba558263f8 +example +820\nsample +d2558d97fabac81ba7eb4676e47a0cba558263f8 +example +910\nproperty +97cf5fcafa500ed62bf109d81834c5b881a2c854 +Safety: Counter value stays below limit\nsample +97cf5fcafa500ed62bf109d81834c5b881a2c854 +counterexample +\-100 +45\.334635781589895\nsample +97cf5fcafa500ed62bf109d81834c5b881a2c854 +counterexample +\-200 +313\.15126806590706\nsample +97cf5fcafa500ed62bf109d81834c5b881a2c854 +example +\-300 +398\.4898056755774\nverdict +97cf5fcafa500ed62bf109d81834c5b881a2c854 +failed +Safety: Counter value stays below limit\nproperty +5e3a0c1b9d7f4e2a8c6b0d1f3e5a7c9b +Setup completes\nsample +5e3a0c1b9d7f4e2a8c6b0d1f3e5a7c9b +example +\{"final_counter":42\}\nverdict +5e3a0c1b9d7f4e2a8c6b0d1f3e5a7c9b +passed +Setup completes\nverdict +27a7cb0b311c8481c4ce12f3347fadbf +passed +Balance stays nonnegative\ncompleted +run\-2\n?\z'
 
 # A non-event property's sample is its value, as JSON.
 mock-runs-server
@@ -42,7 +42,7 @@ stdout '^sample +d2558d97fabac81ba7eb4676e47a0cba558263f8 +counterexample +1340$
 # --property streams only the events of that property.
 mock-runs-server
 snouty runs stream run-2 --property 27a7cb0b311c8481c4ce12f3347fadbf
-stdout '(?s)\Aproperty +27a7cb0b311c8481c4ce12f3347fadbf +Balance stays nonnegative\nverdict +27a7cb0b311c8481c4ce12f3347fadbf +passed\ncompleted +run\-2\n?\z'
+stdout '(?s)\Aproperty +27a7cb0b311c8481c4ce12f3347fadbf +Balance stays nonnegative\nverdict +27a7cb0b311c8481c4ce12f3347fadbf +passed +Balance stays nonnegative\ncompleted +run\-2\n?\z'
 
 # run-1 is final in the mock, and its stream sends only RUN_FINALIZED.
 mock-runs-server
@@ -55,7 +55,7 @@ mock-runs-server
 snouty --json runs stream run-2
 stdout '^\{"event":"property","property_id":"27a7cb0b311c8481c4ce12f3347fadbf","name":"Balance stays nonnegative"\}$'
 stdout '^\{"event":"sample","property_id":"97cf5fcafa500ed62bf109d81834c5b881a2c854","kind":"counterexample","input_hash":"-100","vtime":45\.334635781589895\}$'
-stdout '^\{"event":"verdict","property_id":"97cf5fcafa500ed62bf109d81834c5b881a2c854","verdict":"failed"\}$'
+stdout '^\{"event":"verdict","property_id":"97cf5fcafa500ed62bf109d81834c5b881a2c854","verdict":"failed","name":"Safety: Counter value stays below limit"\}$'
 stdout '^\{"event":"completed","run_id":"run-2"\}$'
 
 # A server error after the stream opens fails the command. The events before

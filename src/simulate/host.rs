@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::io::{BufRead, IsTerminal, Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -9,6 +9,7 @@ use std::time::Duration;
 use color_eyre::Section;
 use color_eyre::eyre::{Context, OptionExt, Result, bail, eyre};
 use futures_util::StreamExt;
+use nix::fcntl::OFlag;
 use serde::{Deserialize, Serialize};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
@@ -101,17 +102,38 @@ fn own_directory(directory: &Path) -> Result<()> {
     {
         return Err(error.into());
     }
-    let metadata = std::fs::symlink_metadata(directory)?;
-    if !metadata.is_dir() || metadata.uid() != nix::unistd::geteuid().as_raw() {
-        return Err(crate::error::user_error(format!(
+    let not_owned = || {
+        crate::error::user_error(format!(
             "simulation state directory {} is not a directory that you own",
             directory.display()
         ))
-        .suggestion("remove it, or set XDG_CACHE_HOME to a directory that you own"));
+        .suggestion("remove it, or set XDG_CACHE_HOME to a directory that you own")
+    };
+    // The check and the chmod act on one open directory, never on a symlink
+    // that someone swaps in at the path between them.
+    let opened = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags((OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW).bits())
+        .open(directory);
+    let opened = match opened {
+        Ok(opened) => opened,
+        Err(error)
+            if matches!(
+                error.raw_os_error(),
+                Some(code) if code == nix::libc::ENOTDIR || code == nix::libc::ELOOP
+            ) =>
+        {
+            return Err(not_owned());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let metadata = opened.metadata()?;
+    if !metadata.is_dir() || metadata.uid() != nix::unistd::geteuid().as_raw() {
+        return Err(not_owned());
     }
     let mode = metadata.permissions().mode() & 0o7777;
     if mode & 0o022 != 0 {
-        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(mode & !0o022))?;
+        opened.set_permissions(std::fs::Permissions::from_mode(mode & !0o022))?;
     }
     Ok(())
 }
@@ -935,6 +957,15 @@ mod tests {
         std::fs::write(&file, "").unwrap();
         let error = own_directory(&file).unwrap_err();
         assert!(format!("{error:?}").contains("XDG_CACHE_HOME"), "{error:?}");
+        // A symlink in place of the directory is refused, and its target
+        // keeps its mode.
+        let target = root.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o775)).unwrap();
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(own_directory(&link).is_err());
+        assert_eq!(mode(&target), 0o775);
     }
 
     /// A `save` that runs `script` after recording its pid, from an engine

@@ -9,8 +9,8 @@ use crate::api::{
     MIN_STREAM_RELEASE, VersionError, normalize_base_url,
 };
 use crate::auth::{
-    AuthenticationInfo, CredentialSource, CredentialStore, SourcedCredential, keychain_entry_name,
-    login_command, rejected_credential_next_step,
+    AuthenticationInfo, CredentialSource, CredentialStore, SourcedCredential, basic_auth_next_step,
+    keychain_entry_name, login_command, rejected_credential_next_step,
 };
 use crate::compose;
 use crate::container;
@@ -351,7 +351,13 @@ fn authn_checks(
                         .note(Level::Note, crate::auth::BlankApiKey::SUGGESTION)
                 }
                 CredentialSource::Stored(store) => enrich_with_source(check, credentials, selected)
-                    .note(Level::Note, login_to_replace(store.profile())),
+                    .note(
+                        Level::Note,
+                        format!(
+                            "run {} to replace it with an API key",
+                            login_command(store.profile())
+                        ),
+                    ),
             }
         }
         AuthenticationInfo::ApiKey { .. } => {
@@ -440,21 +446,12 @@ fn hidden_credential_check(
 
 /// The single check for a username and password with no credential the API
 /// accepts behind them. It replaces the shortfall and password checks, which
-/// together suggested `snouty login` twice. The next step depends on the
-/// source: `snouty login` replaces a stored password, but an exported one
-/// still hides the new credential until the user unsets it.
+/// together suggested `snouty login` twice.
 fn password_only_check(
     in_use: &SourcedCredential,
     username: &str,
     selected: Option<&str>,
 ) -> Check {
-    let next_step = match in_use.tag() {
-        CredentialSource::Environment { variables } => format!(
-            "run `snouty login` to store an API key, then {}",
-            unset(variables)
-        ),
-        CredentialSource::Stored(store) => login_to_replace(store.profile()),
-    };
     enrich_with_source(
         Check::warn(
             CheckId::credentials(in_use),
@@ -469,27 +466,15 @@ fn password_only_check(
         in_use,
         selected,
     )
-    .note(Level::Note, next_step)
-}
-
-/// The next step for a stored password.
-fn login_to_replace(profile: Option<&str>) -> String {
-    format!(
-        "run {} to replace it with an API key",
-        login_command(profile)
-    )
-}
-
-fn unset(variables: &[&str]) -> String {
-    format!("`unset {}`", variables.join(" "))
+    .note(Level::Note, basic_auth_next_step(in_use.tag(), selected))
 }
 
 /// The one step that frees `hidden`, a stored credential that the
 /// environment variables `variables` hide.
 fn unset_to_use(variables: &[&str], hidden: &SourcedCredential, selected: Option<&str>) -> String {
     format!(
-        "{} to use the {} in {}",
-        unset(variables),
+        "`unset {}` to use the {} in {}",
+        variables.join(" "),
         hidden.value(),
         describe_source(hidden.tag(), selected)
     )
@@ -1073,8 +1058,8 @@ mod tests {
     /// where they came from.
     #[test]
     fn a_password_alone_is_one_check_with_one_next_step() {
-        let notes = |source: SourcedCredential| {
-            let checks = authn_checks(&[source], None, false);
+        let notes = |source: SourcedCredential, selected: Option<&str>| {
+            let checks = authn_checks(&[source], selected, false);
             assert_eq!(
                 checks.len(),
                 1,
@@ -1105,7 +1090,7 @@ mod tests {
                 .to_owned(),
         );
         assert_eq!(
-            notes(env_password_source()),
+            notes(env_password_source(), None),
             [
                 deprecated.clone(),
                 (
@@ -1123,13 +1108,16 @@ mod tests {
             ]
         );
         assert_eq!(
-            notes(from_file(
-                AuthenticationInfo::Password {
-                    username: "user".to_owned(),
-                    password: FAKE_PASSWORD.to_owned(),
-                },
+            notes(
+                from_file(
+                    AuthenticationInfo::Password {
+                        username: "user".to_owned(),
+                        password: FAKE_PASSWORD.to_owned(),
+                    },
+                    None
+                ),
                 None
-            )),
+            ),
             [
                 deprecated,
                 (Level::Note, "read from the credentials file".to_owned()),
@@ -1140,14 +1128,17 @@ mod tests {
             ]
         );
         // A bare `snouty login` writes the default profile, so the next step
-        // names the profile that holds the password.
-        let keychain = notes(from_keychain(
-            AuthenticationInfo::Password {
-                username: "user".to_owned(),
-                password: FAKE_PASSWORD.to_owned(),
-            },
+        // names the selected profile.
+        let keychain = notes(
+            from_keychain(
+                AuthenticationInfo::Password {
+                    username: "user".to_owned(),
+                    password: FAKE_PASSWORD.to_owned(),
+                },
+                Some("prod"),
+            ),
             Some("prod"),
-        ));
+        );
         assert_eq!(
             keychain.last().unwrap(),
             &(

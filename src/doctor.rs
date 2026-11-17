@@ -752,8 +752,8 @@ fn version_check(
 }
 
 /// The message of the credentials check when the GitHub Actions OIDC
-/// credential `auth` could not be renewed, and the next step. A 5xx, a 408 or a 429 is temporary, and another 4xx
-/// refuses the credential.
+/// credential `auth` could not be renewed, and the next step. A 5xx, a 408
+/// or a 429 is temporary, and another 4xx refuses the credential.
 fn renewal_failure(
     auth: &AuthenticationInfo,
     status: Option<StatusCode>,

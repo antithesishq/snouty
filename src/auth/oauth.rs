@@ -16,8 +16,9 @@ use serde::Deserialize;
 
 use super::{
     claims::try_get_expiry_from_token,
+    login_command,
     store::{CredentialStore, PersistableCredentials, keychain_entry_name},
-    login_command, to_header_value,
+    to_header_value,
 };
 use crate::{
     error::user_error,
@@ -136,7 +137,8 @@ impl RefreshableOAuthToken {
             ));
         };
 
-        let refreshed = refresh_oauth_token(client, base_url, &refresh_token, self.store.profile()).await?;
+        let refreshed =
+            refresh_oauth_token(client, base_url, &refresh_token, self.store.profile()).await?;
         let refreshed = OAuthCredential {
             antithesis_token: refreshed.antithesis_token,
             // Per RFC 6749 §6, a refresh response without a new refresh token
@@ -317,13 +319,13 @@ fn path_lock_token(path: &Path) -> String {
 mod tests {
     use super::*;
     use crate::auth::AuthenticationInfo;
-    use wiremock::ResponseTemplate;
     use crate::testutils::auth::{
         credentials_file_in, paseto_expiring_in, public_paseto_with_claims,
     };
     use crate::testutils::fake_secrets::{
         FAKE_ACCESS_TOKEN_A, FAKE_ACCESS_TOKEN_B, FAKE_REFRESH_TOKEN_A, FAKE_REFRESH_TOKEN_B,
     };
+    use wiremock::ResponseTemplate;
 
     #[tokio::test]
     async fn refresh_retains_prior_refresh_token_when_response_omits_one() {

@@ -163,6 +163,14 @@ stderr '.*could not connect to 127.0.0.1.*'
 [!staging] ! snouty doctor --json
 [!staging] stdout '"id": "credentials",\s*"kind": "oauth",\s*"status": "error"'
 
+# A renewal that the tenant cannot make now says to try again later.
+[!staging] mock-server 500 ''
+[!staging] env ANTITHESIS_USERNAME=
+[!staging] env ANTITHESIS_PASSWORD=
+[!staging] ! snouty doctor
+[!staging] stderr '✗ .*could not renew the sign-in'
+[!staging] stderr 'NOTE: try again later, or run `snouty login`'
+
 # An expired OAuth token whose refresh gets no response means that the
 # tenant is unreachable, so doctor fails the API check.
 [!staging] env ANTITHESIS_BASE_URL=http://127.0.0.1:1

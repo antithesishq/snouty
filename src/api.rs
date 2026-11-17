@@ -2350,7 +2350,9 @@ async fn classify_client_error(err: ClientError<()>) -> ApiFailure {
                 eyre!("invalid API response payload: {err}").section(snippet.header("payload:"))
             })
         }
-        ClientError::Custom(message) => ApiFailure::Other(eyre!(message)),
+        // Only the `pre` hook builds this, for a credential that it could not
+        // renew or send, which is the user's to fix.
+        ClientError::Custom(message) => ApiFailure::Other(user_error(message)),
     }
 }
 

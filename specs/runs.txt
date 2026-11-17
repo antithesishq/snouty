@@ -722,15 +722,19 @@ env ANTITHESIS_PASSWORD=
 stderr 'rejected the API key'
 stderr -literal 'Suggestion: run `snouty login` to fix authentication'
 
-# An expired sign-in that the tenant cannot renew now says to try again later.
+# An expired sign-in that the tenant cannot renew now says to try again later,
+# with no backtrace.
 [!staging] mock-server 500 ''
 [!staging] isolate-home expired_oauth
 [!staging] substitute ~/.config/snouty/credentials.toml
 [!staging] env ANTITHESIS_API_KEY=
 [!staging] env ANTITHESIS_USERNAME=
 [!staging] env ANTITHESIS_PASSWORD=
+[!staging] env RUST_BACKTRACE=1
 [!staging] ! snouty runs
 [!staging] stderr 'could not renew the sign-in; try again later'
+[!staging] ! stderr 'BACKTRACE'
+[!staging] env RUST_BACKTRACE=
 # An expired sign-in that the tenant refuses to renew says to sign in again.
 [!staging] mock-server 401 ''
 [!staging] env ANTITHESIS_USERNAME=

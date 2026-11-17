@@ -267,6 +267,7 @@ elif name in ('qemu-system-x86_64', 'qemu-system-aarch64'):
             try:
                 child.terminate()
             except ProcessLookupError:
+                # The child exited between poll() and terminate(); wait() reaps it.
                 pass
         child.wait(timeout=5)
         sys.exit(0)

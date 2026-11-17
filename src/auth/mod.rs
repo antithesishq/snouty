@@ -24,6 +24,7 @@ use crate::{
 
 pub(crate) use api_key::{API_KEY_VAR_NAME, is_blank_api_key};
 pub use oauth::RefreshableOAuthToken;
+pub(crate) use oauth::RenewalError;
 pub use oidc::GithubActionsOidcToken;
 pub(crate) use oidc::{OIDC_REJECTED_NEXT_STEP, OidcFetchError};
 #[cfg(test)]
@@ -379,6 +380,17 @@ fn to_header_value(content: &str, sensitive: bool) -> Result<HeaderValue> {
     let mut hv = HeaderValue::from_str(content).wrap_err("failed to build Authorization header")?;
     hv.set_sensitive(sensitive);
     Ok(hv)
+}
+
+/// Whether an answer of `status` to a token request refuses the credential
+/// that asked: a 4xx other than 408 and 429. A 5xx, a 408 or a 429 is
+/// temporary, and a later try can succeed.
+pub(crate) fn refuses_renewal(status: http::StatusCode) -> bool {
+    status.is_client_error()
+        && !matches!(
+            status,
+            http::StatusCode::REQUEST_TIMEOUT | http::StatusCode::TOO_MANY_REQUESTS
+        )
 }
 
 /// `snouty login` for `profile`. A bare `snouty login` writes the default

@@ -162,8 +162,11 @@ Examples from review:
 | Then docker push signs in with your snouty credential, and docker login is not necessary. Podman also reads `${XDG_RUNTIME_DIR}/containers/auth.json`… | Then `docker push`, `docker pull`, `podman push` and `podman pull` automatically use your snouty credentials for the Antithesis docker registry. |
 
 - An error or a warning says what is wrong and the one action to take. It does
-  not name status codes, server responses or internal checks, and it does not
-  list every cause.
+  not list every cause. Most users of snouty are agents, and the goal is a
+  quick diagnosis. So an error can name the status code and the server's
+  message when they help the user find the cause and the next step, for
+  example when a service that snouty does not control rejects a request. Do
+  not name internal checks.
 - A status line is short and static: `— end of logs`.
 - Use the usual technical word ("truncated") and the user's nouns ("names",
   not "the NAME column").

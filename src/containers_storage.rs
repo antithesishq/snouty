@@ -672,6 +672,10 @@ impl StoreWriter {
                 _ => {}
             }
         }
+        // A tar archive can pad its last record past the end marker. Reading
+        // it keeps a `save` that writes the padding from failing on a closed
+        // pipe.
+        io::copy(&mut tar.into_inner(), &mut io::sink())?;
         Ok(archive)
     }
 
@@ -1866,6 +1870,34 @@ mod tests {
         let huge = vec![b' '; usize::try_from(MAX_BLOB_SIZE).unwrap() + 1];
         let error = convert_with(&fixture.layers[0].1, &huge);
         assert!(error.contains("config.json has 16777217 bytes"), "{error}");
+    }
+
+    #[test]
+    fn an_archive_is_read_to_the_end_of_its_padding() {
+        struct Counted<'a> {
+            bytes: &'a [u8],
+            read: usize,
+        }
+        impl Read for &mut Counted<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                let n = (&self.bytes[self.read..]).read(buf)?;
+                self.read += n;
+                Ok(n)
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = fixture();
+        let path = docker_archive(&fixture, directory.path(), "app:1");
+        let mut bytes = std::fs::read(path).unwrap();
+        // The zero padding that fills out a 10 KiB tar record.
+        bytes.resize(bytes.len().next_multiple_of(10240) + 10240, 0);
+        let mut counted = Counted {
+            bytes: &bytes,
+            read: 0,
+        };
+        let output = File::create(directory.path().join("images.erofs")).unwrap();
+        convert(vec![&mut counted], output).unwrap();
+        assert_eq!(counted.read, bytes.len());
     }
 
     #[test]

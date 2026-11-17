@@ -235,11 +235,10 @@ async fn do_cmd_login(
         .flatten()
         .filter(|stored| !stored.value().has_blank_api_key());
 
-    let api_settings = current_settings.with_tenant(tenant_to_use.clone());
-    let tenant_url = TenantUrl::new(&api_settings, &tenant_to_use);
+    let tenant_url = TenantUrl::new(current_settings, &tenant_to_use);
 
     let new_credentials = if interactive {
-        let client = HttpClient::new(&api_settings, verbose)?;
+        let client = HttpClient::new(current_settings, verbose)?;
         prompt_for_auth(
             prompter,
             &client,
@@ -255,7 +254,7 @@ async fn do_cmd_login(
     };
 
     let reported = fetch_registry(
-        &api_settings,
+        current_settings,
         &tenant_url,
         new_credentials.as_ref(),
         profile_to_use.as_deref(),
@@ -512,7 +511,13 @@ async fn fetch_registry(
         },
     };
     // A cached answer would not check the credential.
-    let api = AntithesisApi::build(settings, authentication, verbose, ResponseCache::Disabled)?;
+    let api = AntithesisApi::build_at(
+        tenant_url.url.clone(),
+        settings,
+        authentication,
+        verbose,
+        ResponseCache::Disabled,
+    )?;
     let registry = tokio::time::timeout(env::scaled_wait(REGISTRY_TIMEOUT), api.get_registry())
         .await
         .map_err(|_| {

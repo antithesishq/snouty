@@ -875,6 +875,20 @@ impl AntithesisApi {
         cache: ResponseCache,
     ) -> Result<Self> {
         let base_url = normalize_base_url(&settings.require_base_url()?);
+        Self::build_at(base_url, settings, authn_info, verbose, cache)
+    }
+
+    /// [`Self::build`] for the API at `base_url`, a URL from
+    /// [`normalize_base_url`], in place of the base URL of `settings`.
+    // Outside tests, no `ResponseCache` variant carries data to move.
+    #[allow(clippy::needless_pass_by_value)]
+    pub(crate) fn build_at(
+        base_url: String,
+        settings: &Settings,
+        authn_info: AuthenticationInfo,
+        verbose: bool,
+        cache: ResponseCache,
+    ) -> Result<Self> {
         debug!("initializing API client for {base_url}");
 
         let http = HttpClient::new(settings, verbose)?;

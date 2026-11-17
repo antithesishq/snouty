@@ -94,16 +94,14 @@ pub fn cache_dir() -> Option<PathBuf> {
 /// parsed, or a value that does not parse, is an error there, so nothing
 /// fails later.
 ///
-/// Each value but the tenant keeps the [`SettingSource`] that it came from.
+/// Each value keeps the [`SettingSource`] that it came from.
 ///
 /// Every command shares the same resolved instance (threaded by reference), so a
 /// value resolves identically no matter which code path reads it.
-#[derive(Clone)]
 #[cfg_attr(test, derive(Default))]
 pub struct Settings {
     profile: Option<String>,
-    /// Untagged: login replaces it with a tenant that no setting gives.
-    tenant: Option<Tenant>,
+    tenant: Option<Tagged<Tenant, SettingSource>>,
     registry: Option<Tagged<Registry, SettingSource>>,
     /// The `base_url` setting. [`Settings::base_url`] falls back to the
     /// tenant's host.
@@ -249,7 +247,7 @@ pub struct UnresolvedProfile {
 
 /// The settings that name the place that a profile pushes to.
 struct Destination {
-    tenant: Option<Tenant>,
+    tenant: Option<Tagged<Tenant, SettingSource>>,
     registry: Option<Tagged<Registry, SettingSource>>,
 }
 
@@ -330,7 +328,10 @@ impl SettingsSources {
             .filter(|profile| {
                 self.resolve_destination(profile.as_deref())
                     .is_ok_and(|to| {
-                        wanted(to.tenant.as_ref(), to.registry.as_ref().map(Tagged::value))
+                        wanted(
+                            to.tenant.as_ref().map(Tagged::value),
+                            to.registry.as_ref().map(Tagged::value),
+                        )
                     })
             })
             .map(|profile| {
@@ -364,10 +365,7 @@ impl SettingsSources {
             )?,
             str::parse,
         )?;
-        Ok(Destination {
-            tenant: tenant.map(Tagged::untag),
-            registry,
-        })
+        Ok(Destination { tenant, registry })
     }
 
     fn resolve(&self, profile: Option<String>) -> Result<Settings> {
@@ -414,7 +412,7 @@ impl SettingsSources {
 impl Settings {
     /// The resolved tenant, or `None` if unset.
     pub fn tenant(&self) -> Option<&Tenant> {
-        self.tenant.as_ref()
+        self.tenant.as_ref().map(Tagged::value)
     }
 
     /// The resolved container registry, tagged with where it comes from, or
@@ -506,15 +504,6 @@ impl Settings {
         SettingsSources::global_file()?.resolve(profile)
     }
 
-    /// These settings with `tenant` in place of the tenant setting. `tenant`
-    /// comes from `snouty login --tenant` or its prompt.
-    pub(crate) fn with_tenant(&self, tenant: Tenant) -> Self {
-        Settings {
-            tenant: Some(tenant),
-            ..self.clone()
-        }
-    }
-
     /// Start building a `Settings` from explicit values, with no environment
     /// or filesystem IO. Set only what's needed and finish with
     /// [`SettingsBuilder::build`].
@@ -532,8 +521,8 @@ impl Settings {
     }
 }
 
-/// Builds a test `Settings` without resolution. Each tagged value except
-/// `registry` is tagged as if its environment variable set it.
+/// Builds a test `Settings` without resolution. Each value except `registry`
+/// is tagged as if its environment variable set it.
 #[cfg(test)]
 pub struct SettingsBuilder(Settings);
 
@@ -547,7 +536,7 @@ impl SettingsBuilder {
 
     #[must_use]
     pub fn tenant(mut self, value: Tenant) -> Self {
-        self.0.tenant = Some(value);
+        self.0.tenant = Some(value.with_tag(SettingSource::Env(ANTITHESIS_TENANT_VAR_NAME)));
         self
     }
 

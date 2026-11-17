@@ -690,6 +690,13 @@ env ANTITHESIS_PASSWORD=
 stderr 'rejected the API key'
 stderr -literal 'Suggestion: run `snouty login` to fix authentication'
 
+# A credentials file that snouty cannot parse names the file and the login
+# that replaces it.
+isolate-home unparsable_stored
+! snouty runs
+stderr 'credentials.toml" is not valid TOML'
+stderr -literal 'Suggestion: fix ${WORK}/unparsable_stored/.config/snouty/credentials.toml, or run `snouty login` to replace it'
+
 # An unfiltered empty result succeeds with a short note.
 [!staging] mock-runs-server
 [!staging] snouty runs properties run-empty
@@ -1262,6 +1269,8 @@ stderr 'the server reported an error mid-stream: mock stream failure'
 -- probe-runs-error.ndjson --
 {"id":"run-stream-error","kind":"test"}
 {"id":"run-1","kind":"test"}
+-- unparsable_stored/.config/snouty/credentials.toml --
+[default
 -- rejected_stored/.config/snouty/credentials.toml --
 [default]
 type = "ApiKey"

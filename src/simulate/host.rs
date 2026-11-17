@@ -82,14 +82,30 @@ async fn add_entropy(environment: &Vm) -> Result<tokio::time::Instant> {
 fn session_root() -> Result<PathBuf> {
     let base = crate::settings::cache_dir()
         .ok_or_eyre("cannot determine simulation state directory; set XDG_CACHE_HOME or HOME")?;
+    private_root(base.parent().expect("cache directory has a parent"))
+}
+
+/// The directory of simulate's run directories under the cache directory
+/// `cache_home`, without symlinks, such that no other user can change a
+/// directory on the way to it: paths under it are looked up again later.
+/// The cache directory and snouty's directories in it must belong to the
+/// user, who loses nothing when they lose write access for the group. The
+/// directories above must already be safe.
+fn private_root(cache_home: &Path) -> Result<PathBuf> {
+    // Created private, so that a umask such as 002 cannot fail the checks.
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(cache_home)?;
+    let cache_home = std::fs::canonicalize(cache_home)?;
+    if let Some(parent) = cache_home.parent() {
+        no_other_writers(parent)?;
+    }
+    let base = cache_home.join("snouty");
     let root = base.join("simulate");
-    let parent = base.parent().expect("cache directory has a parent");
-    std::fs::create_dir_all(parent)?;
-    // Paths under the root are looked up again after these checks, so no
-    // other user may be able to change a directory on the way to it.
-    no_other_writers(&std::fs::canonicalize(parent)?)?;
-    own_directory(&base)?;
-    own_directory(&root)?;
+    for directory in [&cache_home, &base, &root] {
+        own_directory(directory)?;
+    }
     Ok(root)
 }
 
@@ -99,11 +115,19 @@ fn session_root() -> Result<PathBuf> {
 /// must have no symlinks.
 fn no_other_writers(path: &Path) -> Result<()> {
     let user = nix::unistd::geteuid().as_raw();
+    // In a user namespace, such as the Nix build sandbox or a rootless
+    // container, a directory of an unmapped owner, such as root outside it,
+    // shows this uid.
+    let overflow = std::fs::read_to_string("/proc/sys/kernel/overflowuid")
+        .ok()
+        .and_then(|uid| uid.trim().parse::<u32>().ok());
     for directory in path.ancestors() {
         let metadata = std::fs::metadata(directory)?;
         let mode = metadata.permissions().mode();
         let sticky = mode & 0o1000 != 0;
-        if (metadata.uid() != user && metadata.uid() != 0) || (mode & 0o022 != 0 && !sticky) {
+        let owner = metadata.uid();
+        let trusted = owner == user || owner == 0 || Some(owner) == overflow;
+        if !trusted || (mode & 0o022 != 0 && !sticky) {
             return Err(crate::error::user_error(format!(
                 "other users can change {}, so simulate cannot keep its files under it",
                 directory.display()
@@ -1003,6 +1027,32 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link).unwrap();
         assert!(own_directory(&link).is_err());
         assert_eq!(mode(&target), 0o775);
+    }
+
+    #[test]
+    fn the_private_root_survives_a_group_writable_cache_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        // Missing directories are created private.
+        let fresh = directory.path().join("home/.cache");
+        let root = private_root(&fresh).unwrap();
+        assert_eq!(
+            root,
+            std::fs::canonicalize(&fresh)
+                .unwrap()
+                .join("snouty/simulate")
+        );
+        assert_eq!(mode(&fresh), 0o700);
+        assert_eq!(mode(&root), 0o700);
+        // A cache directory that a umask of 002 left group-writable.
+        let shared = directory.path().join("shared");
+        std::fs::create_dir_all(shared.join("snouty")).unwrap();
+        for path in [shared.clone(), shared.join("snouty")] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o775)).unwrap();
+        }
+        private_root(&shared).unwrap();
+        assert_eq!(mode(&shared), 0o755);
+        assert_eq!(mode(&shared.join("snouty")), 0o755);
     }
 
     #[test]

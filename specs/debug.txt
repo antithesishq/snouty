@@ -207,7 +207,7 @@ stderr -literal 'Suggestion: wait for it with `snouty runs wait session-loading 
 #    error names the release floor.
 mock-runs-server
 ! snouty debug --input-hash 5181922178177328213 --run-id 0df9ac1f5155c14f88ea41f5ad503e07-61-1 --vtime 404
-stderr 'the Antithesis API did not find the requested item'
+stderr 'the Antithesis API did not find the requested resource'
 stderr 'tenant releases before 62\.2 do not serve the events-search API'
 ! stderr 'Requesting the Antithesis multiverse debugger'
 ! stdout 'Debugging session started'

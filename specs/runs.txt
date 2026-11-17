@@ -669,7 +669,7 @@ stderr '^Note: limit must be 1\.\.100$'
 [!staging] mock-server -header 'Retry-After: 3600' 429 ''
 [!staging] set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 [!staging] ! snouty runs
-[!staging] stderr '^Error: the Antithesis API received too many requests$'
+[!staging] stderr '^Error: you exceeded the Antithesis API rate limit$'
 [!staging] stderr '^Suggestion: retry after 3600s \(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\) to respect the server.s rate limit$'
 
 # A rejected API key from the environment names the variable to fix, because
@@ -1029,7 +1029,7 @@ mock-runs-server
 #    suggestion about the tenant release.
 mock-runs-server
 [!staging] ! snouty runs events 0df9ac1f5155c14f88ea41f5ad503e07-61-1 --match anything
-[!staging] stderr '^Error: the Antithesis API did not find the requested item$'
+[!staging] stderr '^Error: the Antithesis API did not find the requested resource$'
 [!staging] ! stderr 'run not found'
 [!staging] stderr 'tenant releases before 62\.2 do not serve the events-search API'
 [!staging] ! stderr 'waiting for the run'

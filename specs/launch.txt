@@ -383,7 +383,7 @@ stderr 'ask support@antithesis\.com for the launchers on your tenant'
 # the generic API error, because it does not show that the launcher is unknown.
 mock-server 404 '<html><body>404 Not Found</body></html>'
 ! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24
-stderr '^Error: the Antithesis API did not find the requested item$'
+stderr '^Error: the Antithesis API did not find the requested resource$'
 ! stderr 'unknown launcher'
 
 # Other errors that reach the test launcher show what the status means, and

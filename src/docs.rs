@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use color_eyre::Section;
-use color_eyre::eyre::{OptionExt, Result, bail};
+use color_eyre::eyre::{OptionExt, Result, eyre};
 use ptree::print_config::UTF_CHARS_BOLD;
 use ptree::{PrintConfig, write_tree_with};
 use rusqlite::{Connection, OpenFlags};
@@ -190,8 +190,8 @@ async fn fetch_db_if_changed() -> Result<Option<(Vec<u8>, String)>> {
     }
 
     if !status.is_success() {
-        log::debug!("the documentation server answered {status}");
-        bail!("failed to download the documentation database");
+        return Err(eyre!("failed to download the documentation database")
+            .note(format!("the documentation server answered {status}")));
     }
 
     let etag = response

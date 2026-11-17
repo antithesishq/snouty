@@ -153,12 +153,7 @@ async fn fetch_github_actions_oidc_credentials(
         .bearer_auth(actions_id_request_token)
         .send()
         .await
-        .map_err(|err| {
-            eyre!(
-                "{OIDC_FETCH_FAILED}: no answer from the GitHub Actions token endpoint: {err}: {}",
-                crate::util::root_cause(&err)
-            )
-        })?;
+        .map_err(|err| request_failed(&err))?;
     let status = response.status();
     if let Err(err) = response.error_for_status_ref() {
         let body = crate::api::read_error_body(response).await;
@@ -167,15 +162,34 @@ async fn fetch_github_actions_oidc_credentials(
             answer(&body)
         )));
     }
-    let body = response.text().await.unwrap_or_default();
+    let body = response.text().await.map_err(|err| request_failed(&err))?;
     serde_json::from_str::<OidcTokenResponse>(&body)
         .map(|response| response.value)
         .map_err(|_| {
-            eyre!(
-                "{OIDC_FETCH_FAILED}: the GitHub Actions token endpoint answered {status} without a token{}",
+            // A JSON body can carry a token under a different key, and the
+            // job log does not mask it.
+            let answer = if serde_json::from_str::<serde_json::Value>(&body).is_ok() {
+                String::new()
+            } else {
                 answer(&body)
+            };
+            eyre!(
+                "{OIDC_FETCH_FAILED}: the GitHub Actions token endpoint answered {status} without a token{answer}"
             )
         })
+}
+
+/// The error of a token request that got no complete answer.
+fn request_failed(err: &reqwest::Error) -> color_eyre::Report {
+    use std::error::Error as _;
+    if err.source().is_none() {
+        eyre!("{OIDC_FETCH_FAILED}: the request to the GitHub Actions token endpoint failed: {err}")
+    } else {
+        eyre!(
+            "{OIDC_FETCH_FAILED}: the request to the GitHub Actions token endpoint failed: {err}: {}",
+            crate::util::root_cause(err)
+        )
+    }
 }
 
 /// The first words of every error of a failed token request.
@@ -333,6 +347,30 @@ mod tests {
                 .and_then(reqwest::Error::status),
             Some(reqwest::StatusCode::FORBIDDEN)
         );
+    }
+
+    #[tokio::test]
+    async fn github_actions_oidc_exchange_error_names_a_success_without_a_token() {
+        // A page, such as a proxy's, is shown; JSON is not, as it can carry
+        // a token under another key.
+        for (body, tail) in [
+            (
+                "<html>\n  <h1>Sign in</h1>\n</html>",
+                ": <html> <h1>Sign in</h1> </html>",
+            ),
+            (r#"{"token":"secret"}"#, ""),
+        ] {
+            let (url, _requests) = spawn_oidc_token_server("/token", "200 OK", body);
+            let err = fetch_github_actions_oidc_credentials(&url, FAKE_OIDC_REQUEST_TOKEN)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "failed to get a GitHub Actions OIDC token: the GitHub Actions token endpoint answered 200 OK without a token{tail}"
+                )
+            );
+        }
     }
 
     /// A wiremock Actions token endpoint that gives `token`, and that

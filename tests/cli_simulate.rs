@@ -3,7 +3,7 @@
 use std::fs;
 use std::io::Write as _;
 use std::os::unix::fs::{PermissionsExt, symlink};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
@@ -15,7 +15,11 @@ use nix::unistd::Pid;
 use tempfile::TempDir;
 
 struct Simulation {
-    directory: TempDir,
+    /// Removes the directory when the test ends.
+    _directory: TempDir,
+    /// The directory without symlinks, as snouty reports paths in it: on
+    /// macOS the temporary directory is under the /var symlink.
+    root: PathBuf,
     child: Child,
 }
 
@@ -26,7 +30,8 @@ impl Simulation {
 
     fn start_with_api(mode: &str, api_url: &str) -> Self {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path();
+        let canonical_root = fs::canonicalize(directory.path()).unwrap();
+        let root = canonical_root.as_path();
         let bin = root.join("bin");
         fs::create_dir(&bin).unwrap();
         let python = which::which("python3").expect("simulation fixtures require Python 3");
@@ -227,11 +232,15 @@ impl Simulation {
             .stderr(fs::File::create(root.join("stderr")).unwrap())
             .spawn()
             .unwrap();
-        Self { directory, child }
+        Self {
+            _directory: directory,
+            root: canonical_root,
+            child,
+        }
     }
 
     fn root(&self) -> &Path {
-        self.directory.path()
+        &self.root
     }
 
     fn read(&self, name: &str) -> String {

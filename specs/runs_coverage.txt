@@ -131,3 +131,9 @@ stderr 'the server reported an error mid-stream: mock stream failure'
 
 ! snouty runs coverage no-such-run
 stderr 'run not found: no-such-run'
+
+# The run is read before the module list, so a module name filter does not
+# hide a mistyped run ID.
+! snouty --verbose runs coverage no-such-run --module-name 'instrhello/*'
+stderr 'run not found: no-such-run'
+! stderr '/modules'

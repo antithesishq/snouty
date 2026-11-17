@@ -90,6 +90,9 @@ pub(super) async fn cmd_runs_coverage(
     let ids = ModuleIds::new(&args.module_ids);
     let api = AntithesisApi::new(settings, verbose)?;
     let (api, run_id) = (&api, args.run_id.as_str());
+    // Wait once, before the module list and the locations: a run ID that
+    // names no run fails as such, and a starting run has no module list yet.
+    ready::wait_until_ready(api, run_id, READY_POLL).await?;
 
     // A module name filter needs the module list first, and becomes the IDs
     // of the modules that match. Otherwise the list only labels the modules,

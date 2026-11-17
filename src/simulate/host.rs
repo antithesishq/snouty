@@ -748,21 +748,31 @@ pub(super) async fn shell(args: SimulateArgs, settings: &Settings) -> Result<Exi
     let run_dir = tempfile::Builder::new()
         .prefix("snouty-simulate-")
         .tempdir()?;
-    eprintln!("Preparing simulation environment image...");
-    // Only an environment image needs a container engine.
-    let iso = match environment {
-        Environment::Iso(iso) => iso,
-        Environment::Image(image) => {
-            let runtime = container::runtime(settings)?;
-            container::warn_ambiguous_engine(settings, runtime.as_ref(), false);
-            Images::from_runtime(runtime.as_ref())
-                .environment_iso(&image, run_dir.path(), args.platform)
-                .await?
-        }
-    };
-    let inject_disk = inject_disk(None, run_dir.path(), Duration::ZERO).await?;
-    eprintln!("Booting simulation environment...");
+    // Before preparation, so that an interrupt drops it and its cleanup
+    // removes the copy container and stops a pull.
     let mut signals = Signals::install()?;
+    eprintln!("Preparing simulation environment image...");
+    let prepare = async {
+        // Only an environment image needs a container engine.
+        let iso = match environment {
+            Environment::Iso(iso) => iso,
+            Environment::Image(image) => {
+                let runtime = container::runtime(settings)?;
+                container::warn_ambiguous_engine(settings, runtime.as_ref(), false);
+                Images::from_runtime(runtime.as_ref())
+                    .environment_iso(&image, run_dir.path(), args.platform)
+                    .await?
+            }
+        };
+        let inject_disk = inject_disk(None, run_dir.path(), Duration::ZERO).await?;
+        Ok::<_, color_eyre::Report>((iso, inject_disk))
+    };
+    let (iso, inject_disk) = tokio::select! {
+        biased;
+        reason = signals.receive() => return Ok(Summary::default().exit_code(reason)),
+        prepared = prepare => prepared?,
+    };
+    eprintln!("Booting simulation environment...");
     let mut environment = tokio::select! {
         biased;
         reason = signals.receive() => return Ok(Summary::default().exit_code(reason)),

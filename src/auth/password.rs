@@ -24,14 +24,17 @@ pub(crate) enum PasswordPolicy {
 /// rejection suggestion and the warning on use both render it, so the wording
 /// cannot drift apart. Doctor states the deprecation in its own check.
 fn password_deprecation_suggestion(source: &CredentialSource) -> String {
-    match source {
+    let next_step = match source {
         // `snouty login` cannot help: the environment hides what it stores.
         CredentialSource::Environment { variables } => format!(
-            "username/password authentication is deprecated; `unset {}`, then run `snouty login` or set {API_KEY_VAR_NAME}",
+            "`unset {}`, then run `snouty login` or set {API_KEY_VAR_NAME}",
             variables.join(" ")
         ),
-        CredentialSource::Stored(_) => "username/password authentication is deprecated; run `snouty login` to switch to another authentication method".to_owned(),
-    }
+        CredentialSource::Stored(_) => {
+            "run `snouty login` to switch to another authentication method".to_owned()
+        }
+    };
+    format!("username/password authentication is deprecated; {next_step}")
 }
 
 /// Apply the caller's [`PasswordPolicy`] to a resolved credential. This is

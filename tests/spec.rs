@@ -588,10 +588,13 @@ fn cmd_env_from_json_find(
     // Stores <json_key> from the first NDJSON line that matches every filter.
     // A filter is one of:
     //   <field>!=<value>  <field> is a string other than <value>.
+    //   <field>^=<prefix> <field> is a string that starts with <prefix>.
     //   <field>=<a>|<b>   <field> is a string equal to one of the values
     //                     that `|` separates.
-    // Every line must carry each filter's <field> as a string, so a misspelled
-    // field fails instead of matching every line.
+    // A `^=` or `=` filter does not match a line without <field>, so a
+    // misspelled field matches no line and the command fails. A `!=` filter
+    // fails on a line without <field>, so a misspelled field fails instead of
+    // matching every line.
     //
     // With `-- <snouty args>`, a matching line counts only when snouty, run with
     // those args and `$R_<json_key>` set to the line's value, exits 0 and prints
@@ -618,21 +621,25 @@ fn cmd_env_from_json_find(
     'lines: for line in stdout.lines() {
         let value = parse_json_line(line)?;
         for filter in filters {
-            let string_field = |field: &str| {
-                value
+            // The operator ends at the first `=`, so a value may hold `=`,
+            // `!=` or `^=`.
+            let Some((lhs, operand)) = filter.split_once('=') else {
+                return Err(err(format!(
+                    "env_from_json_find filter '{filter}' must be <field>!=<value>, <field>^=<prefix> or <field>=<values>"
+                )));
+            };
+            let matches = if let Some(field) = lhs.strip_suffix('!') {
+                let actual = value
                     .get(field)
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| err(format!("string field '{field}' not found in JSON")))
-            };
-            let matches = if let Some((field, excluded)) = filter.split_once("!=") {
-                string_field(field)? != excluded
-            } else if let Some((field, allowed)) = filter.split_once('=') {
-                let actual = string_field(field)?;
-                allowed.split('|').any(|a| a == actual)
+                    .ok_or_else(|| err(format!("string field '{field}' not found in JSON")))?;
+                actual != operand
+            } else if let Some(field) = lhs.strip_suffix('^') {
+                let actual = value.get(field).and_then(|v| v.as_str());
+                actual.is_some_and(|actual| actual.starts_with(operand))
             } else {
-                return Err(err(format!(
-                    "env_from_json_find filter '{filter}' must be <field>!=<value> or <field>=<values>"
-                )));
+                let actual = value.get(lhs).and_then(|v| v.as_str());
+                actual.is_some_and(|actual| operand.split('|').any(|a| a == actual))
             };
             if !matches {
                 continue 'lines;

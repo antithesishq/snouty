@@ -154,26 +154,20 @@ async fn fetch_github_actions_oidc_credentials(
         .send()
         .await
         .map_err(|err| {
-            let detail = std::iter::successors(
-                Some(&err as &(dyn std::error::Error + 'static)),
-                |err| err.source(),
+            eyre!(
+                "{OIDC_FETCH_FAILED}: no answer from the GitHub Actions token endpoint: {err}: {}",
+                crate::util::root_cause(&err)
             )
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(": ");
-            eyre!(err).wrap_err(format!(
-                "{OIDC_FETCH_FAILED}: no answer from the GitHub Actions token endpoint: {detail}"
-            ))
         })?;
     let status = response.status();
-    let rejection = response.error_for_status_ref().err();
-    let body = response.text().await.unwrap_or_default();
-    if let Some(err) = rejection {
+    if let Err(err) = response.error_for_status_ref() {
+        let body = crate::api::read_error_body(response).await;
         return Err(eyre!(err).wrap_err(format!(
             "{OIDC_FETCH_FAILED}: the GitHub Actions token endpoint answered {status}{}",
             answer(&body)
         )));
     }
+    let body = response.text().await.unwrap_or_default();
     serde_json::from_str::<OidcTokenResponse>(&body)
         .map(|response| response.value)
         .map_err(|_| {
@@ -187,17 +181,14 @@ async fn fetch_github_actions_oidc_credentials(
 /// The first words of every error of a failed token request.
 const OIDC_FETCH_FAILED: &str = "failed to get a GitHub Actions OIDC token";
 
-/// `body` for the end of an error message: after a colon, cut to its first
-/// lines, or nothing when it is blank.
+/// `body`'s message for the end of an error message, after a colon, or
+/// nothing when it is blank.
 fn answer(body: &str) -> String {
-    const MAX_CHARS: usize = 500;
-    let body = body.trim();
-    if body.is_empty() {
-        return String::new();
-    }
-    match body.char_indices().nth(MAX_CHARS) {
-        Some((offset, _)) => format!(": {}…", &body[..offset]),
-        None => format!(": {body}"),
+    let message = crate::api::error_body_message(body);
+    if message.is_empty() {
+        message
+    } else {
+        format!(": {message}")
     }
 }
 
@@ -334,7 +325,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             err.to_string(),
-            r#"failed to get a GitHub Actions OIDC token: the GitHub Actions token endpoint answered 403 Forbidden: {"message":"bad credentials"}"#
+            "failed to get a GitHub Actions OIDC token: the GitHub Actions token endpoint answered 403 Forbidden: bad credentials"
         );
         // Doctor reads the status of the rejection.
         assert_eq!(

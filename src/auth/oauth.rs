@@ -260,17 +260,13 @@ impl std::fmt::Display for RenewalFailure {
 impl RenewalError {
     /// A report of `failure` for the sign-in of `profile`, caused by
     /// `cause`. It is the user's to fix, so it has no backtrace.
-    fn report(
-        failure: RenewalFailure,
-        profile: Option<&str>,
-        cause: Option<reqwest::Error>,
-    ) -> Report {
+    fn report(failure: RenewalFailure, profile: Option<&str>, cause: Option<Report>) -> Report {
         let error = Self {
             failure,
             profile: profile.map(str::to_owned),
         };
         match cause {
-            Some(cause) => Report::new(cause).wrap_err(error),
+            Some(cause) => cause.wrap_err(error),
             None => Report::new(error),
         }
         .suppress_backtrace(true)
@@ -297,19 +293,23 @@ async fn refresh_oauth_token(
 ) -> Result<OAuthRefreshResponse> {
     let mut request = reqwest::Request::new(
         reqwest::Method::POST,
-        reqwest::Url::from_str(&format!("{base_url}/auth/cli/refresh"))?,
+        reqwest::Url::from_str(&format!("{base_url}/auth/cli/refresh"))
+            .expect("a base URL with a path is a URL"),
     );
-    request.headers_mut().insert(
-        reqwest::header::AUTHORIZATION,
-        to_header_value(&format!("Bearer {refresh_token}"), true)?,
-    );
+    // Only a damaged credentials file holds a refresh token that is not a
+    // header value, and a new sign-in replaces it.
+    let header = to_header_value(&format!("Bearer {refresh_token}"), true)
+        .map_err(|e| RenewalError::report(RenewalFailure::Refused, profile, Some(e)))?;
+    request
+        .headers_mut()
+        .insert(reqwest::header::AUTHORIZATION, header);
     request.timeout_mut().replace(Duration::from_secs(30));
 
     let renewal_error = |err: reqwest::Error| {
         let failure = err
             .status()
             .map_or(RenewalFailure::Temporary, RenewalFailure::of_status);
-        RenewalError::report(failure, profile, Some(err))
+        RenewalError::report(failure, profile, Some(Report::new(err)))
     };
     client
         .execute(request)

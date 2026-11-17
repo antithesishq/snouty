@@ -294,7 +294,8 @@ async fn oauth_secret(api: &AntithesisApi, token: &RefreshableOAuthToken) -> Res
         // which is not true yet, so only its next step shows.
         let next_step = err
             .downcast_ref::<RenewalError>()
-            .map_or_else(|| format!("{err:#}"), RenewalError::next_step);
+            .expect("an OAuth refresh fails with a renewal error")
+            .next_step();
         // A bare eprintln, not log::warn!: the notice must reach stderr
         // independent of RUST_LOG.
         eprintln!(

@@ -24,7 +24,7 @@ use crate::{
 
 pub(crate) use api_key::{API_KEY_VAR_NAME, is_blank_api_key};
 pub use oauth::RefreshableOAuthToken;
-pub(crate) use oauth::{RenewalError, RenewalFailure};
+pub(crate) use oauth::RenewalError;
 pub use oidc::GithubActionsOidcToken;
 pub(crate) use oidc::OIDC_REJECTED_NEXT_STEP;
 #[cfg(test)]

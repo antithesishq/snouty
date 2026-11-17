@@ -9,8 +9,8 @@ use crate::api::{
     MIN_STREAM_RELEASE, VersionError, normalize_base_url,
 };
 use crate::auth::{
-    AuthenticationInfo, CredentialSource, CredentialStore, RenewalError, RenewalFailure,
-    SourcedCredential, keychain_entry_name, login_command, rejected_credential_next_step,
+    AuthenticationInfo, CredentialSource, CredentialStore, RenewalError, SourcedCredential,
+    keychain_entry_name, login_command, rejected_credential_next_step,
 };
 use crate::compose;
 use crate::container;
@@ -837,11 +837,10 @@ pub async fn cmd_doctor(
                             "the client uses the credential that the credentials check reports",
                         );
                     let (message, next_step) = if matches!(auth, AuthenticationInfo::OAuth(_)) {
-                        // A refresh that fails before it can ask the tenant
-                        // needs a new sign-in.
                         let failure = err
                             .downcast_ref::<RenewalError>()
-                            .map_or(RenewalFailure::Refused, |e| e.failure);
+                            .expect("an OAuth refresh fails with a renewal error")
+                            .failure;
                         (failure.to_string(), failure.next_step(settings.profile()))
                     } else {
                         let status = http_err.and_then(reqwest::Error::status);

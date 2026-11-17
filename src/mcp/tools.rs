@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 
 use crate::api::{SEARCH_MAX_LIMIT, SearchLimit};
 use crate::cli::{KVPair, tree};
+use crate::features::{self, Feature};
 use crate::help::HelpPage;
 use crate::time::{BareUnit, HumanDuration};
 use crate::vtime::VTime;
@@ -53,11 +54,13 @@ impl Effect {
 
 /// One row per tool: the variant, which also names its [`HelpPage`] and so
 /// its command, the tool name, its effect, the args that the tool leaves out,
-/// and the args that the tool requires although the command does not.
+/// the args that the tool requires although the command does not, and the
+/// unstable [`Feature`] that gates the tool, if one does.
 macro_rules! tools {
     ($(
         $variant:ident => $name:literal, $effect:ident,
-        hidden: [$($hidden:literal),*], required: [$($required:literal),*];
+        hidden: [$($hidden:literal),*], required: [$($required:literal),*]
+        $(, $(#[$gate:meta])* unstable: $feature:ident)?;
     )*) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum ToolName {
@@ -85,6 +88,18 @@ macro_rules! tools {
                 match self {
                     $(ToolName::$variant => &[$($hidden),*],)*
                 }
+            }
+
+            /// Whether the server offers the tool while the `enabled`
+            /// features are on: a tool that a feature gates is left out
+            /// while that feature is off.
+            fn is_offered(self, enabled: &[Feature]) -> bool {
+                const GATED: &[(ToolName, Feature)] = &[
+                    $($($(#[$gate])* (ToolName::$variant, Feature::$feature),)?)*
+                ];
+                GATED
+                    .iter()
+                    .all(|(tool, feature)| *tool != self || enabled.contains(feature))
             }
 
             /// Args that the tool requires and the command line does not. Mark
@@ -130,7 +145,8 @@ tools! {
     DocsShow => "docs_show", Reads, hidden: [], required: [];
     DocsSearch => "docs_search", Reads, hidden: [], required: [];
     Doctor => "doctor", Reads, hidden: [], required: [];
-    Version => "version", Reads, hidden: [], required: [];
+    // Gated only in the tests, which test the gate through it.
+    Version => "version", Reads, hidden: [], required: [], #[cfg(test)] unstable: Example;
     SettingsShow => "settings_show", Reads, hidden: [], required: [];
 }
 
@@ -176,10 +192,25 @@ impl ToolName {
     }
 }
 
-/// One row for each tool, `tool_help` too: its name and what it does.
-pub(crate) fn summaries() -> Vec<(String, String)> {
+/// The tools that the server offers while the `enabled` features are on.
+pub(super) fn offered(enabled: &[Feature]) -> impl Iterator<Item = ToolName> + '_ {
     ToolName::ALL
         .into_iter()
+        .filter(|tool| tool.is_offered(enabled))
+}
+
+/// The offered tool called `name`.
+pub(super) fn find(name: &str, enabled: &[Feature]) -> Result<ToolName> {
+    name.parse()
+        .ok()
+        .filter(|tool: &ToolName| tool.is_offered(enabled))
+        .ok_or_else(|| eyre!("unknown tool: {name}"))
+}
+
+/// One row for each tool that the server offers, `tool_help` too: its name
+/// and what it does.
+pub(crate) fn summaries() -> Vec<(String, String)> {
+    offered(&features::enabled())
         .map(|tool| (tool.to_string(), tool.spec().about.clone()))
         .chain([(TOOL_HELP.to_owned(), TOOL_HELP_ABOUT.to_owned())])
         .collect()
@@ -433,8 +464,8 @@ fn command_lines(name: ToolName, detail: bool, params: &[Param]) -> String {
     }
 }
 
-pub(super) fn tool_help_tool() -> Tool {
-    let names: Vec<String> = ToolName::ALL.iter().map(ToString::to_string).collect();
+pub(super) fn tool_help_tool(enabled: &[Feature]) -> Tool {
+    let names: Vec<String> = offered(enabled).map(|tool| tool.to_string()).collect();
     let schema = json!({
         "type": "object",
         "properties": { TOOL_PARAM: { "type": "string", "enum": names } },
@@ -457,7 +488,7 @@ pub(super) fn tool_help_tool() -> Tool {
 
 /// The MCP render of a tool's help page, after a line that names the tool's
 /// command.
-pub(super) fn tool_help(mut params: JsonObject) -> Result<String> {
+pub(super) fn tool_help(mut params: JsonObject, enabled: &[Feature]) -> Result<String> {
     let tool = match params.remove(TOOL_PARAM) {
         Some(Value::String(tool)) => tool,
         Some(_) => bail!("{TOOL_PARAM}: must be a string"),
@@ -466,7 +497,7 @@ pub(super) fn tool_help(mut params: JsonObject) -> Result<String> {
     if let Some(key) = params.keys().next() {
         bail!("unknown param: {key}");
     }
-    let name: ToolName = tool.parse()?;
+    let name = find(&tool, enabled)?;
     let spec = name.spec();
     Ok(format!(
         "The help of {name}, which runs {}.\n\n{}",
@@ -719,10 +750,14 @@ mod tests {
     #[test]
     fn tool_help_returns_the_help_page_of_each_tool() {
         for name in ToolName::ALL {
-            let help = tool_help(object(json!({ "tool": name.to_string() }))).unwrap();
+            let help = tool_help(
+                object(json!({ "tool": name.to_string() })),
+                &[Feature::Example],
+            )
+            .unwrap();
             assert!(help.ends_with(&name.help().mcp()), "{name}");
         }
-        let help = tool_help(object(json!({ "tool": "runs_logs" }))).unwrap();
+        let help = tool_help(object(json!({ "tool": "runs_logs" })), &[]).unwrap();
         assert!(
             help.starts_with(
                 "The help of runs_logs, which runs `snouty runs logs --detail`, or with `json`, \
@@ -737,9 +772,34 @@ mod tests {
             (json!({ "tool": "doctor", "x": 1 }), "unknown param: x"),
         ];
         for (call, error) in cases {
-            let result = tool_help(object(call.clone()));
+            let result = tool_help(object(call.clone()), &[]);
             let error_text = result.err().map(|e| e.to_string());
             assert_eq!(error_text.as_deref(), Some(error), "{call}");
         }
+    }
+
+    /// The tests gate `version` behind [`Feature::Example`].
+    #[test]
+    fn a_gated_tool_is_offered_only_while_its_feature_is_on() {
+        let help_offers_version = |enabled| {
+            let tool = tool_help_tool(enabled);
+            let names = tool.input_schema["properties"][TOOL_PARAM]["enum"].clone();
+            names.as_array().unwrap().contains(&json!("version"))
+        };
+
+        assert!(!offered(&[]).any(|tool| tool == ToolName::Version));
+        assert!(offered(&[]).any(|tool| tool == ToolName::Doctor));
+        assert_eq!(
+            find("version", &[]).unwrap_err().to_string(),
+            "unknown tool: version"
+        );
+        assert!(!help_offers_version(&[]));
+        assert!(tool_help(object(json!({ "tool": "version" })), &[]).is_err());
+
+        let on = [Feature::Example];
+        assert!(offered(&on).any(|tool| tool == ToolName::Version));
+        assert_eq!(find("version", &on).unwrap(), ToolName::Version);
+        assert!(help_offers_version(&on));
+        assert!(tool_help(object(json!({ "tool": "version" })), &on).is_ok());
     }
 }

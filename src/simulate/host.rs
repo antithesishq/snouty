@@ -37,7 +37,7 @@ const WORKLOAD_KIND: &str = include_str!("assets/workload-kind.sh");
 const RECREATE: &str = include_str!("assets/recreate.sh");
 const STATUS: &str = include_str!("assets/status.sh");
 const ATTACH_READY: &str = "attach-ready";
-const ENVIRONMENT_VERSION: &str = "v67.3";
+const ENVIRONMENT_VERSION: &str = "v68.0";
 const ENVIRONMENT_ISO_ENV: &str = "SNOUTY_ENVIRONMENT_ISO";
 
 #[derive(Deserialize)]

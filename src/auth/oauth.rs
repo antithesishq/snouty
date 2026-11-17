@@ -9,14 +9,15 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::{Report, Result};
 use log::warn;
+use reqwest::StatusCode;
 use serde::Deserialize;
 
 use super::{
     claims::try_get_expiry_from_token,
     store::{CredentialStore, PersistableCredentials, keychain_entry_name},
-    to_header_value,
+    login_command, to_header_value,
 };
 use crate::{
     error::user_error,
@@ -135,7 +136,7 @@ impl RefreshableOAuthToken {
             ));
         };
 
-        let refreshed = refresh_oauth_token(client, base_url, &refresh_token).await?;
+        let refreshed = refresh_oauth_token(client, base_url, &refresh_token, self.store.profile()).await?;
         let refreshed = OAuthCredential {
             antithesis_token: refreshed.antithesis_token,
             // Per RFC 6749 §6, a refresh response without a new refresh token
@@ -203,10 +204,73 @@ async fn acquire_refresh_lock(store: &CredentialStore) -> Option<std::fs::File> 
     .flatten()
 }
 
+/// Why the tenant did not renew an OAuth sign-in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RenewalFailure {
+    /// The tenant refused the refresh token: a 4xx other than 408 and 429.
+    Refused,
+    /// The tenant can renew the sign-in later: it answered a 5xx, a 408 or a
+    /// 429, it did not answer, or snouty could not read its answer.
+    Temporary,
+}
+
+impl RenewalFailure {
+    fn of_status(status: StatusCode) -> Self {
+        if status.is_client_error()
+            && !matches!(
+                status,
+                StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
+            )
+        {
+            Self::Refused
+        } else {
+            Self::Temporary
+        }
+    }
+
+    pub(crate) fn message(self) -> &'static str {
+        match self {
+            Self::Refused => "the sign-in expired and could not be renewed",
+            Self::Temporary => "the tenant could not renew the sign-in",
+        }
+    }
+
+    /// The next step for a user who signed in to `profile`.
+    pub(crate) fn next_step(self, profile: Option<&str>) -> String {
+        let login = login_command(profile);
+        match self {
+            Self::Refused => format!("run {login} to sign in again"),
+            Self::Temporary => format!("try again later, or run {login} to sign in again"),
+        }
+    }
+}
+
+/// A failed refresh of an OAuth access token. `Display` also names the next
+/// step, because an API request keeps only the message of its error.
+#[derive(Debug)]
+pub(crate) struct RenewalError {
+    pub(crate) failure: RenewalFailure,
+    profile: Option<String>,
+}
+
+impl std::fmt::Display for RenewalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}; {}",
+            self.failure.message(),
+            self.failure.next_step(self.profile.as_deref())
+        )
+    }
+}
+
+impl std::error::Error for RenewalError {}
+
 async fn refresh_oauth_token(
     client: &reqwest::Client,
     base_url: &str,
     refresh_token: &str,
+    profile: Option<&str>,
 ) -> Result<OAuthRefreshResponse> {
     let mut request = reqwest::Request::new(
         reqwest::Method::POST,
@@ -218,14 +282,23 @@ async fn refresh_oauth_token(
     );
     request.timeout_mut().replace(Duration::from_secs(30));
 
+    let renewal_error = |err: reqwest::Error| {
+        let failure = err
+            .status()
+            .map_or(RenewalFailure::Temporary, RenewalFailure::of_status);
+        Report::new(err).wrap_err(RenewalError {
+            failure,
+            profile: profile.map(str::to_owned),
+        })
+    };
     client
         .execute(request)
-        .await?
-        .error_for_status()
-        .wrap_err("the OAuth token could not be refreshed; run `snouty login`")?
-        .json::<OAuthRefreshResponse>()
         .await
-        .wrap_err("parsing the OAuth refresh response")
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(renewal_error)?
+        .json()
+        .await
+        .map_err(renewal_error)
 }
 
 fn lock_dir() -> Option<PathBuf> {
@@ -244,6 +317,7 @@ fn path_lock_token(path: &Path) -> String {
 mod tests {
     use super::*;
     use crate::auth::AuthenticationInfo;
+    use wiremock::ResponseTemplate;
     use crate::testutils::auth::{
         credentials_file_in, paseto_expiring_in, public_paseto_with_claims,
     };
@@ -254,7 +328,7 @@ mod tests {
     #[tokio::test]
     async fn refresh_retains_prior_refresh_token_when_response_omits_one() {
         use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::{Mock, MockServer};
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -293,10 +367,78 @@ mod tests {
         );
     }
 
+    /// The error of a refresh of a token that the store of `profile` holds,
+    /// against a tenant that answers `response`, or that does not answer.
+    async fn refresh_error(profile: Option<&str>, response: Option<ResponseTemplate>) -> Report {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+
+        let server = MockServer::start().await;
+        let base_url = match response {
+            Some(response) => {
+                Mock::given(method("POST"))
+                    .and(path("/auth/cli/refresh"))
+                    .respond_with(response)
+                    .mount(&server)
+                    .await;
+                server.uri()
+            }
+            None => "http://127.0.0.1:1".to_owned(),
+        };
+        let creds_dir = tempfile::TempDir::new().unwrap();
+        let store = CredentialStore::CredentialsFile {
+            path: creds_dir.path().join("credentials.toml"),
+            profile: profile.map(str::to_owned),
+        };
+        let token = RefreshableOAuthToken::new(
+            store,
+            FAKE_ACCESS_TOKEN_A.to_owned(),
+            Some(FAKE_REFRESH_TOKEN_A.to_owned()),
+        );
+        let client = crate::testutils::test_client();
+        token.refresh(&client, &base_url).await.unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn a_refused_refresh_says_to_sign_in_again() {
+        for status in [401, 403] {
+            let err = refresh_error(None, Some(ResponseTemplate::new(status))).await;
+            assert_eq!(
+                err.to_string(),
+                "the sign-in expired and could not be renewed; \
+                 run `snouty login` to sign in again"
+            );
+        }
+        let err = refresh_error(Some("staging"), Some(ResponseTemplate::new(401))).await;
+        assert_eq!(
+            err.to_string(),
+            "the sign-in expired and could not be renewed; \
+             run `snouty login --profile staging` to sign in again"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refresh_that_the_tenant_cannot_answer_says_to_try_again_later() {
+        let unreadable = ResponseTemplate::new(200).set_body_string("<html>");
+        let responses = [500, 503, 408, 429]
+            .map(|status| Some(ResponseTemplate::new(status)))
+            .into_iter()
+            .chain([Some(unreadable), None]);
+        for response in responses {
+            let err = refresh_error(None, response).await;
+            assert_eq!(
+                err.to_string(),
+                "the tenant could not renew the sign-in; \
+                 try again later, or run `snouty login` to sign in again",
+                "{err:#}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn refresh_adopts_token_persisted_by_another_process() {
         use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::{Mock, MockServer};
 
         // If our code refreshed instead of adopting the newer persisted token,
         // it would hit this endpoint — `.expect(0)` then fails the test.
@@ -346,7 +488,7 @@ mod tests {
     #[tokio::test]
     async fn auth_header_does_not_refresh_an_expired_access_token() {
         use wiremock::matchers::any;
-        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::{Mock, MockServer};
 
         let server = MockServer::start().await;
         Mock::given(any())

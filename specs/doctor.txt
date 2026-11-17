@@ -159,7 +159,7 @@ stderr '.*could not connect to 127.0.0.1.*'
 [!staging] ! stderr 'auth/cli/refresh'
 # --verbose shows the error that the renewal returned.
 [!staging] ! snouty --verbose doctor
-[!staging] stderr 'ERROR: the OAuth token could not be refreshed'
+[!staging] stderr 'ERROR: the sign-in expired and could not be renewed'
 [!staging] ! snouty doctor --json
 [!staging] stdout '"id": "credentials",\s*"kind": "oauth",\s*"status": "error"'
 

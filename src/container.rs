@@ -173,11 +173,18 @@ pub trait ContainerRuntime: Send + Sync {
         self.command(args).into()
     }
 
+    /// Whether `image inspect` and `image save` take `--platform`.
+    fn takes_image_platform(&self) -> bool {
+        false
+    }
+
     /// The arguments that select `platform` for `image inspect` and
-    /// `image save`. Only Docker takes a platform for these commands.
+    /// `image save`, when the engine takes one. Without them the engine picks
+    /// the image for the host, and callers compare the architecture that
+    /// `image inspect` reports.
     fn image_platform_args(&self, platform: Option<&Architecture>) -> Vec<String> {
-        match (self.engine_kind(), platform) {
-            (ContainerEngine::Docker, Some(platform)) => {
+        match platform {
+            Some(platform) if self.takes_image_platform() => {
                 vec!["--platform".into(), platform.linux_platform()]
             }
             _ => Vec::new(),
@@ -831,15 +838,44 @@ fn link_credential_helper(dir: &Path) -> Result<()> {
 pub struct DockerRuntime {
     cmd: String,
     registry_env: Option<TenantRegistryEnv>,
+    /// The API version of the Docker CLI, read on first use.
+    api_version: std::sync::OnceLock<Option<(u32, u32)>>,
 }
+
+/// The first Docker API version whose `image inspect` takes `--platform`.
+/// `image save` takes it from 1.48.
+const IMAGE_PLATFORM_API: (u32, u32) = (1, 49);
 
 impl DockerRuntime {
     pub fn new(cmd: impl Into<String>) -> Self {
         Self {
             cmd: cmd.into(),
             registry_env: None,
+            api_version: std::sync::OnceLock::new(),
         }
     }
+
+    fn api_version(&self) -> Option<(u32, u32)> {
+        *self.api_version.get_or_init(|| {
+            let command = self.command(&["version", "--format", "{{.Client.APIVersion}}"]);
+            let output = output_with_timeout(command, DISCOVERY_COMMAND_TIMEOUT).ok()?;
+            let version = parse_api_version(&String::from_utf8_lossy(&output.stdout));
+            if version.is_none() {
+                log::debug!(
+                    "cannot read the API version of {}: {}",
+                    self.cmd,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+            }
+            version
+        })
+    }
+}
+
+/// A Docker API version such as `1.49`.
+fn parse_api_version(text: &str) -> Option<(u32, u32)> {
+    let (major, minor) = text.trim().split_once('.')?;
+    Some((major.parse().ok()?, minor.parse().ok()?))
 }
 
 impl ContainerRuntime for DockerRuntime {
@@ -853,6 +889,11 @@ impl ContainerRuntime for DockerRuntime {
 
     fn engine_kind(&self) -> ContainerEngine {
         ContainerEngine::Docker
+    }
+
+    fn takes_image_platform(&self) -> bool {
+        self.api_version()
+            .is_some_and(|version| version >= IMAGE_PLATFORM_API)
     }
 
     fn insecure_registry_flag(&self) -> &'static str {
@@ -1847,6 +1888,17 @@ esac
         assert!(!stderr_indicates_missing_source(
             "Error: writing to destination: no such file"
         ));
+    }
+
+    #[test]
+    fn docker_api_versions_parse_and_order() {
+        assert_eq!(parse_api_version("1.49\n"), Some((1, 49)));
+        assert_eq!(parse_api_version("1.52"), Some((1, 52)));
+        assert_eq!(parse_api_version("1.5"), Some((1, 5)));
+        assert!(parse_api_version("1.5").unwrap() < IMAGE_PLATFORM_API);
+        assert!(parse_api_version("2.0").unwrap() >= IMAGE_PLATFORM_API);
+        assert_eq!(parse_api_version(""), None);
+        assert_eq!(parse_api_version("unknown"), None);
     }
 
     #[test]

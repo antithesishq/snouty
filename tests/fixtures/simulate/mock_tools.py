@@ -44,6 +44,10 @@ if name == 'docker-compose':
 elif name == 'docker':
     if args == ['--version']:
         print('Docker version 29.1.3, build fixture')
+    elif args == ['version', '--format', '{{.Client.APIVersion}}']:
+        print('1.47' if mode == 'old-docker' else '1.52')
+    elif mode == 'old-docker' and '--platform' in args[:3] and args[0] in ('image', 'save'):
+        sys.exit('unknown flag: --platform')
     elif args[:2] == ['image', 'inspect']:
         reference = args[-1]
         platform = args[3] if args[2:3] == ['--platform'] else 'linux/amd64'
@@ -161,7 +165,7 @@ elif name == 'ssh':
                 contents = "11.0 [fault_injector] [JSON] '{\"fault\":{\"name\":\"clog\",\"type\":\"network\",\"affected_nodes\":[\"workload\"],\"max_duration\":2}}'\n11.2 [workload] [JSON] '{\"antithesis_assert\":{\"message\":\"balance stays positive\",\"assert_type\":\"always\",\"must_hit\":true,\"hit\":true,\"condition\":false}}'\n"
             if mode == 'malformed-json':
                 contents = "12.0 [workload] [JSON] '{broken json}'\n12.1 [workload] [STDOUT] 'still running after malformed line'\n"
-            if mode in ('composer-failure', 'clean-once', 'missing-environment', 'default-image', 'arm64', 'poweroff-fails', 'poweroff-hangs', 'poweroff-second-interrupt'):
+            if mode in ('composer-failure', 'clean-once', 'missing-environment', 'default-image', 'arm64', 'old-docker', 'poweroff-fails', 'poweroff-hangs', 'poweroff-second-interrupt'):
                 contents = '12.0 [workload] [STDOUT] \'workload running\'\n'
             if mode.startswith('blocked-output'):
                 contents = ''

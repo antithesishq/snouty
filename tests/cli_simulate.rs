@@ -991,6 +991,22 @@ fn missing_environment_image_is_pulled_before_boot() {
     assert_eq!(simulation.finish().status.code(), Some(143));
 }
 
+/// A Docker CLI before API 1.49 rejects `--platform` on `image inspect` and
+/// `save`, so simulate leaves it out and compares the architecture instead.
+#[test]
+fn docker_without_image_platform_flags_still_simulates() {
+    let mut simulation = Simulation::start("old-docker");
+    simulation.wait_for("stdout", "workload running");
+    let save: Vec<String> = serde_json::from_str(&simulation.read("save_args")).unwrap();
+    assert!(!save.contains(&"--platform".to_owned()), "{save:?}");
+    kill(
+        Pid::from_raw(simulation.child.id().cast_signed()),
+        Signal::SIGTERM,
+    )
+    .unwrap();
+    assert_eq!(simulation.finish().status.code(), Some(143));
+}
+
 #[test]
 fn environment_inspect_failure_is_reported_without_pulling() {
     let mut simulation = Simulation::start("inspect-failure");

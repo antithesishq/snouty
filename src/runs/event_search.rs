@@ -124,8 +124,11 @@ pub(super) async fn count_query(
     if json {
         writeln!(stdout, "{}", json!({"count": count}))?;
     } else {
-        let noun = if count == 1 { "event" } else { "events" };
-        writeln!(stdout, "{count} {noun} matched the query.")?;
+        writeln!(
+            stdout,
+            "{} matched the query.",
+            crate::render::count(count, "event")
+        )?;
     }
     Ok(())
 }

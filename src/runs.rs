@@ -121,7 +121,8 @@ macro_rules! outln {
     ($($arg:tt)*) => {{ writeln!(crate::stdio::stdout(), $($arg)*) }};
 }
 
-// Declared after the macros above, so that the module can use them.
+// Declared after the macros above, so that the modules can use them.
+mod modules;
 pub mod usage;
 
 pub async fn cmd_runs(
@@ -306,6 +307,9 @@ pub async fn cmd_runs(
             cmd_runs_search(args, settings, output.verbose, mode).await
         }
         Some(RunsCommands::Usage(args)) => usage::cmd_runs_usage(args, settings, output).await,
+        Some(RunsCommands::Modules { run_id, detail }) => {
+            modules::cmd_runs_modules(&run_id, detail, settings, output).await
+        }
     }
 }
 
@@ -2785,12 +2789,18 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
         .column(Column::new("CREATED"))
         .column(
             Column::new("LAUNCHER")
-                .fit(Fit::Truncate { floor: 8 })
+                .fit(Fit::Truncate {
+                    floor: 8,
+                    from_left: false,
+                })
                 .priority(0),
         )
         .column(
             Column::new("RUN")
-                .fit(Fit::Truncate { floor: 8 })
+                .fit(Fit::Truncate {
+                    floor: 8,
+                    from_left: false,
+                })
                 .priority(1),
         )
         .render(rows, width)

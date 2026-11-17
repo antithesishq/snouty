@@ -10,7 +10,7 @@ use crate::api::{
 };
 use crate::auth::{
     AuthenticationInfo, CredentialSource, CredentialStore, SourcedCredential, keychain_entry_name,
-    login_command, login_to_replace, password_next_step, rejected_credential_next_step,
+    login_command, login_to_replace, password_next_step, rejected_credential_next_step, unset,
 };
 use crate::compose;
 use crate::container;
@@ -461,10 +461,6 @@ fn password_only_check(
         selected,
     )
     .note(Level::Note, password_next_step(in_use.tag()))
-}
-
-fn unset(variables: &[&str]) -> String {
-    format!("`unset {}`", variables.join(" "))
 }
 
 /// The one step that frees `hidden`, a stored credential that the

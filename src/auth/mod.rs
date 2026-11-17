@@ -390,6 +390,11 @@ pub(crate) fn login_command(profile: Option<&str>) -> String {
     }
 }
 
+/// The shell command that unsets `variables`, in backticks.
+pub(crate) fn unset(variables: &[&str]) -> String {
+    format!("`unset {}`", variables.join(" "))
+}
+
 /// The next step for a stored credential that must go.
 pub(crate) fn login_to_replace(profile: Option<&str>) -> String {
     format!(

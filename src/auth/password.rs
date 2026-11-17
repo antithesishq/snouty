@@ -2,7 +2,7 @@
 
 use color_eyre::{Section, eyre::Result};
 
-use super::{AuthenticationInfo, CredentialSource, SourcedCredential, login_to_replace};
+use super::{AuthenticationInfo, CredentialSource, SourcedCredential, login_to_replace, unset};
 use crate::error::user_error;
 
 pub(crate) const USERNAME_VAR_NAME: &str = "ANTITHESIS_USERNAME";
@@ -28,8 +28,8 @@ pub(crate) fn password_next_step(source: &CredentialSource) -> String {
         // `snouty login` alone cannot help: the environment hides what it
         // stores.
         CredentialSource::Environment { variables } => format!(
-            "run `snouty login` to store an API key, then `unset {}`",
-            variables.join(" ")
+            "run `snouty login` to store an API key, then {}",
+            unset(variables)
         ),
         CredentialSource::Stored(store) => login_to_replace(store.profile()),
     }

@@ -3184,15 +3184,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ptree"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "289cfd20ebec0e7ff2572e370dd7a1c9973ba666d3c38c5e747de0a4ada21f17"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "ptyprocess"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3948,7 +3939,6 @@ dependencies = [
  "prettyplease",
  "progenitor",
  "progenitor-client",
- "ptree",
  "pulldown-cmark",
  "quote",
  "regex",

@@ -175,7 +175,7 @@ impl Table {
 }
 
 /// `cell` cut at the start to at most `width` columns, behind a `…`.
-fn truncate_start(cell: &str, width: usize) -> String {
+pub(crate) fn truncate_start(cell: &str, width: usize) -> String {
     if measure_text_width(cell) <= width {
         return cell.to_string();
     }

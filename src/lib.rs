@@ -37,6 +37,7 @@ pub mod tag;
 #[doc(hidden)]
 pub mod testutils;
 pub mod time;
+pub(crate) mod tree;
 pub mod user_agent;
 pub mod util;
 pub mod validate;

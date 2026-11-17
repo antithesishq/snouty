@@ -109,13 +109,23 @@ fn save_and_convert(
     let mut save = runtime
         .image_save_command(tags, None)
         .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     let converted = convert(
         vec![save.stdout.take().unwrap()],
         std::fs::File::create(path).unwrap(),
     );
-    assert!(save.wait().unwrap().success(), "{} save", runtime.name());
+    // A failed conversion stops reading, which can fail save in turn, so
+    // report both.
+    let output = save.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{} save: {}\nconversion: {:?}",
+        runtime.name(),
+        String::from_utf8_lossy(&output.stderr).trim(),
+        converted.as_ref().err()
+    );
     converted
 }
 

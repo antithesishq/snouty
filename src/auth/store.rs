@@ -6,7 +6,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use color_eyre::eyre::{Context, OptionExt, Result, eyre};
+use color_eyre::{
+    Section,
+    eyre::{Context, OptionExt, Result, eyre},
+};
 use keyring_core::Entry;
 use log::warn;
 use serde::{Deserialize, Serialize};
@@ -343,10 +346,19 @@ fn persist_to_file(
 }
 
 pub(super) fn parse_credentials_file_toml(contents: &str, path: &Path) -> Result<CredentialsFile> {
-    toml::from_str::<CredentialsFile>(contents).wrap_err(format!(
-        "\"{}\" is not valid TOML or cannot be parsed as a Snouty credentials file.",
-        path.display()
-    ))
+    toml::from_str::<CredentialsFile>(contents)
+        .wrap_err_with(|| {
+            format!(
+                "\"{}\" is not valid TOML or cannot be parsed as a Snouty credentials file.",
+                path.display()
+            )
+        })
+        .with_suggestion(|| {
+            format!(
+                "fix {}, or delete it and run `snouty login`",
+                path.display()
+            )
+        })
 }
 
 #[derive(Serialize, Deserialize)]

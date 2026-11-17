@@ -807,7 +807,7 @@ fn render_forest(root: &TreeNode) -> String {
 
 fn render_tree(name: &str, node: &TreeNode) -> tree::Node {
     tree::Node {
-        label: vec![tree::Span::new(node_label(name, node)).cut(tree::Cut::Never)],
+        label: vec![tree::Span::new(node_label(name, node))],
         children: node
             .children
             .iter()

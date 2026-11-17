@@ -1,23 +1,21 @@
 //! A tree printed one node to a line, behind an optional gutter column:
 //!
 //! ```text
-//! 3 files  src
+//! 2 files  src
 //! 1 file   ┣━━ main.rs
 //!          ┃   a line of the body of main.rs
-//! 2 files  ┗━━ lib
+//! 1 file   ┗━━ lib
 //!              ┗━━ util.rs
 //! ```
 //!
 //! [`render`] knows nothing of what the nodes hold: every [`Node`] prints.
 
+use std::borrow::Cow;
 use std::fmt::Write as _;
 
-use console::{Style, measure_text_width, truncate_str};
+use console::{Style, measure_text_width};
 
-use crate::table::truncate_start;
-
-/// The fewest columns that a label gets, however deep its node is.
-const MIN_LABEL_WIDTH: usize = 8;
+use crate::render::Truncate;
 
 /// The branch in front of a child that has a sibling after it, and the stem
 /// under it.
@@ -27,53 +25,45 @@ const STEM: &str = "┃   ";
 const LAST_BRANCH: &str = "┗━━ ";
 const LAST_STEM: &str = "    ";
 
-/// Where a [`Span`] is cut when its label does not fit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Cut {
-    Never,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "`runs coverage` uses it next, see #735")
-    )]
-    Start,
-    End,
-}
-
 /// A part of a label, in one style.
-pub(crate) struct Span {
+#[must_use]
+pub struct Span {
     text: String,
     style: Style,
-    cut: Cut,
+    truncate: Option<Truncate>,
 }
 
 impl Span {
-    /// Plain text, cut at its end.
-    pub(crate) fn new(text: impl Into<String>) -> Self {
+    /// Plain text that is never cut.
+    pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
             style: Style::new(),
-            cut: Cut::End,
+            truncate: None,
         }
     }
 
-    #[expect(dead_code, reason = "`runs coverage` uses it next, see #735")]
-    pub(crate) fn style(self, style: Style) -> Self {
+    pub fn style(self, style: Style) -> Self {
         Self { style, ..self }
     }
 
-    pub(crate) fn cut(self, cut: Cut) -> Self {
-        Self { cut, ..self }
+    /// Cut the span to the room that the spans before it leave.
+    pub fn truncate(self, truncate: Truncate) -> Self {
+        Self {
+            truncate: Some(truncate),
+            ..self
+        }
     }
 }
 
 /// One line of the tree, then the lines of its body, then its children.
 #[derive(Default)]
-pub(crate) struct Node {
+pub struct Node {
     /// The text in front of the branches, left-aligned in a column as wide
     /// as the widest gutter of the tree. It can hold styles. When no node
     /// of the tree has a gutter, the tree has no gutter column.
     pub gutter: String,
-    /// Cut to fit the width, span by span from the left.
+    /// The spans of the line, from the left.
     pub label: Vec<Span>,
     /// Lines under the label, at the indent of the node's children. They
     /// can hold styles, and are never cut.
@@ -81,16 +71,16 @@ pub(crate) struct Node {
     pub children: Vec<Node>,
 }
 
-/// The spans of `label`, each cut to the room that the spans before it
-/// leave.
-fn fit(label: &[Span], mut room: usize) -> String {
+/// The spans of `label` in `room` columns, each cut to the room that the
+/// spans before it leave.
+fn fit_label(label: &[Span], mut room: usize) -> String {
     let mut out = String::new();
     for span in label {
-        let text = match span.cut {
-            Cut::Never => span.text.clone(),
-            Cut::Start => truncate_start(&span.text, room),
-            Cut::End => truncate_str(&span.text, room, "…").into_owned(),
-        };
+        let text = span
+            .truncate
+            .map_or(Cow::Borrowed(span.text.as_str()), |truncate| {
+                truncate.apply(room, &span.text)
+            });
         room = room.saturating_sub(measure_text_width(&text));
         let _ = write!(out, "{}", span.style.apply_to(text));
     }
@@ -125,13 +115,12 @@ impl Printer {
         let gutter = self.gutter(&node.gutter);
         let room = self
             .width
-            .saturating_sub(measure_text_width(&gutter) + measure_text_width(branch))
-            .max(MIN_LABEL_WIDTH);
+            .saturating_sub(measure_text_width(&gutter) + measure_text_width(branch));
         let dim = Style::new().dim();
         lines.push(format!(
             "{gutter}{}{}",
             dim.apply_to(branch),
-            fit(&node.label, room)
+            fit_label(&node.label, room)
         ));
         let empty = self.gutter("");
         for line in &node.body {
@@ -155,7 +144,7 @@ impl Printer {
 
 /// The tree under `root`, one line per node and body line, in `width`
 /// columns. The root has no branch.
-pub(crate) fn render(root: &Node, width: usize) -> String {
+pub fn render(root: &Node, width: usize) -> String {
     let printer = Printer {
         gutter_width: gutter_width(root),
         width,
@@ -184,6 +173,13 @@ mod tests {
         }
     }
 
+    fn cut_end(floor: usize) -> Truncate {
+        Truncate {
+            from_left: false,
+            floor,
+        }
+    }
+
     #[test]
     fn branches_follow_the_depth_and_the_last_child() {
         let root = parent(
@@ -194,15 +190,14 @@ mod tests {
                 parent("4", "b", vec![leaf("5", "b1")]),
             ],
         );
-        assert_eq!(
-            render(&root, usize::MAX),
-            "1   root\n\
-             22  ┣━━ a\n\
-             3   ┃   ┣━━ a1\n\
-             3   ┃   ┗━━ a2\n\
-             4   ┗━━ b\n\
-             5       ┗━━ b1"
-        );
+        insta::assert_snapshot!(render(&root, usize::MAX), @r"
+            1   root
+            22  ┣━━ a
+            3   ┃   ┣━━ a1
+            3   ┃   ┗━━ a2
+            4   ┗━━ b
+            5       ┗━━ b1
+        ");
     }
 
     #[test]
@@ -212,13 +207,12 @@ mod tests {
             "root",
             vec![parent("", "a", vec![leaf("", "a1")]), leaf("", "b")],
         );
-        assert_eq!(
-            render(&root, usize::MAX),
-            "root\n\
-             ┣━━ a\n\
-             ┃   ┗━━ a1\n\
-             ┗━━ b"
-        );
+        insta::assert_snapshot!(render(&root, usize::MAX), @r"
+            root
+            ┣━━ a
+            ┃   ┗━━ a1
+            ┗━━ b
+        ");
     }
 
     #[test]
@@ -237,54 +231,61 @@ mod tests {
                 },
             ],
         );
-        assert_eq!(
-            render(&root, usize::MAX),
-            "1  root\n\
-             2  ┣━━ a\n   \
-             ┃   x\n   \
-             ┃   y\n\
-             3  ┗━━ b\n       \
-             z"
-        );
+        insta::assert_snapshot!(render(&root, usize::MAX), @r"
+            1  root
+            2  ┣━━ a
+               ┃   x
+               ┃   y
+            3  ┗━━ b
+                   z
+        ");
     }
 
     #[test]
-    fn labels_are_cut_where_their_spans_say() {
+    fn spans_are_cut_where_they_say() {
         let root = Node {
-            label: vec![Span::new("id").cut(Cut::Never), Span::new(" abcdefghij")],
+            label: vec![
+                Span::new("id"),
+                Span::new(" abcdefghij").truncate(cut_end(0)),
+            ],
             children: vec![
                 Node {
-                    label: vec![Span::new("a/b/c/d/e/f.rs").cut(Cut::Start)],
+                    label: vec![Span::new("a/b/c/d/e/f.rs").truncate(Truncate {
+                        from_left: true,
+                        floor: 0,
+                    })],
                     ..Node::default()
                 },
                 Node {
-                    label: vec![Span::new("abcdefghijklmn")],
+                    label: vec![Span::new("abcdefghijklmn").truncate(cut_end(0))],
                     ..Node::default()
                 },
             ],
             ..Node::default()
         };
         // 4 columns of branch: a child label has 12 - 4 = 8.
-        assert_eq!(
-            render(&root, 12),
-            "id abcdefgh…\n\
-             ┣━━ …/e/f.rs\n\
-             ┗━━ abcdefg…"
-        );
+        insta::assert_snapshot!(render(&root, 12), @r"
+            id abcdefgh…
+            ┣━━ …/e/f.rs
+            ┗━━ abcdefg…
+        ");
     }
 
     #[test]
-    fn a_label_never_gets_fewer_than_the_minimum() {
-        let root = parent("", "root", vec![leaf("", "abcdefghijklmn")]);
-        assert_eq!(render(&root, 0), "root\n┗━━ abcdefg…");
-    }
-
-    #[test]
-    fn a_span_that_never_cuts_overflows() {
+    fn a_span_never_gets_fewer_columns_than_its_floor() {
         let root = Node {
-            label: vec![Span::new("a-long-identifier").cut(Cut::Never)],
+            label: vec![Span::new("abcdefghijklmn").truncate(cut_end(8))],
             ..Node::default()
         };
-        assert_eq!(render(&root, 10), "a-long-identifier");
+        insta::assert_snapshot!(render(&root, 0), @"abcdefg…");
+    }
+
+    #[test]
+    fn a_span_without_truncation_overflows() {
+        let root = Node {
+            label: vec![Span::new("a-long-identifier")],
+            ..Node::default()
+        };
+        insta::assert_snapshot!(render(&root, 10), @"a-long-identifier");
     }
 }

@@ -108,26 +108,13 @@ fn render_modules_table(modules: &[ModuleInstances], detail: bool, width: usize)
     });
     let mut table = Table::builder().column(Column::new("MODULE")).column(
         Column::new("NAME")
-            .fit(Fit::Truncate {
-                floor: 12,
-                from_left: true,
-            })
+            .fit(Fit::truncate_from_left(12))
             .priority(1),
     );
     if detail {
         table = table
-            .column(
-                Column::new("CONTAINER")
-                    .fit(Fit::Truncate {
-                        floor: 10,
-                        from_left: false,
-                    })
-                    .priority(1),
-            )
-            .column(Column::new("PROGRAM").fit(Fit::Truncate {
-                floor: 19,
-                from_left: true,
-            }));
+            .column(Column::new("CONTAINER").fit(Fit::truncate(10)).priority(1))
+            .column(Column::new("PROGRAM").fit(Fit::truncate_from_left(19)));
     }
     table
         .column(Column::new("LANG"))

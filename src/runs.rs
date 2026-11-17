@@ -1362,7 +1362,7 @@ fn render_properties_table(properties: &[Property]) -> String {
         .column(Column::new("✓").align(Align::Right))
         .column(Column::new("✗").align(Align::Right))
         .column(Column::new("ID"))
-        .column(Column::new("NAME").fit(Fit::Wrap { floor: 20 }));
+        .column(Column::new("NAME").fit(Fit::wrap(20)));
 
     group_property_sections(properties)
         .iter()
@@ -2787,22 +2787,8 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
         .column(Column::new("RUN ID"))
         .column(Column::new("STATUS"))
         .column(Column::new("CREATED"))
-        .column(
-            Column::new("LAUNCHER")
-                .fit(Fit::Truncate {
-                    floor: 8,
-                    from_left: false,
-                })
-                .priority(0),
-        )
-        .column(
-            Column::new("RUN")
-                .fit(Fit::Truncate {
-                    floor: 8,
-                    from_left: false,
-                })
-                .priority(1),
-        )
+        .column(Column::new("LAUNCHER").fit(Fit::truncate(8)).priority(0))
+        .column(Column::new("RUN").fit(Fit::truncate(8)).priority(1))
         .render(rows, width)
 }
 

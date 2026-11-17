@@ -1,7 +1,9 @@
 //! Terminal-safe rendering helpers shared across text output: aligned
 //! key/value blocks and control-character sanitization.
+use std::borrow::Cow;
 use std::fmt::Write as _;
 
+use console::{measure_text_width, truncate_str};
 use textwrap::core::display_width;
 
 /// The global output flags (`--json`, `--verbose`), resolved once at the
@@ -29,7 +31,7 @@ const MIN_KV_VALUE_WIDTH: usize = 20;
 /// continuation lines start at the value column. When fewer than
 /// [`MIN_KV_VALUE_WIDTH`] columns are left for the value, each row stays on one
 /// line. Pass `usize::MAX` to keep each row on one line.
-pub(crate) fn render_kv<L: AsRef<str>, V: AsRef<str>>(
+pub fn render_kv<L: AsRef<str>, V: AsRef<str>>(
     rows: &[(L, V)],
     min_label_width: usize,
     width: usize,
@@ -64,7 +66,7 @@ pub(crate) fn render_kv<L: AsRef<str>, V: AsRef<str>>(
 
 /// Prefix every line of `text` with `prefix`. A blank line stays blank, so no
 /// line ends in trailing whitespace.
-pub(crate) fn indent_lines(text: &str, prefix: &str) -> String {
+pub fn indent_lines(text: &str, prefix: &str) -> String {
     text.lines()
         .map(|line| {
             if line.is_empty() {
@@ -81,7 +83,7 @@ pub(crate) fn indent_lines(text: &str, prefix: &str) -> String {
 /// goes on its own line after a shell line continuation, so a long command
 /// fits the terminal and still pastes as one command. Each value is quoted
 /// for the shell.
-pub(crate) fn shell_command(program: &str, flags: &[(&str, &str)]) -> String {
+pub fn shell_command(program: &str, flags: &[(&str, &str)]) -> String {
     let separator = if flags.len() > 1 { " \\\n  " } else { " " };
     let mut command = program.to_string();
     for (flag, value) in flags {
@@ -142,7 +144,7 @@ pub fn wrap_if_tty(text: &str) -> String {
 }
 
 /// As [`wrap_if_tty`], for prose printed to stdout.
-pub(crate) fn wrap_stdout_if_tty(text: &str) -> String {
+pub fn wrap_stdout_if_tty(text: &str) -> String {
     wrap_for(&console::Term::stdout(), text)
 }
 
@@ -156,12 +158,12 @@ fn wrap_for(term: &console::Term, text: &str) -> String {
 /// The measure [`wrap_if_tty`] wraps stderr prose to: the terminal's width,
 /// capped at [`PROSE_WIDTH`]. `None` when stderr is not a terminal, where
 /// output keeps whole lines.
-pub(crate) fn prose_width() -> Option<usize> {
+pub fn prose_width() -> Option<usize> {
     prose_width_of(&console::Term::stderr())
 }
 
 /// As [`prose_width`], for stdout.
-pub(crate) fn stdout_prose_width() -> Option<usize> {
+pub fn stdout_prose_width() -> Option<usize> {
     prose_width_of(&console::Term::stdout())
 }
 
@@ -172,7 +174,7 @@ fn prose_width_of(term: &console::Term) -> Option<usize> {
 
 /// Whether [`wrap_text`] keeps a backtick-delimited span on one line.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CodeSpans {
+pub enum CodeSpans {
     /// Keep each span whole. For prose that snouty writes, where every
     /// backtick has a pair.
     Keep,
@@ -200,7 +202,7 @@ pub(crate) enum CodeSpans {
 /// own line. Width is
 /// measured with `textwrap`'s `display_width`: ANSI escape sequences count as
 /// zero columns and wide glyphs count as two.
-pub(crate) fn wrap_text(text: &str, width: usize, spans: CodeSpans) -> Vec<String> {
+pub fn wrap_text(text: &str, width: usize, spans: CodeSpans) -> Vec<String> {
     let mut lines = Vec::new();
     let paragraphs: Vec<&str> = text.split('\n').collect();
     for (i, paragraph) in paragraphs.iter().copied().enumerate() {
@@ -282,11 +284,39 @@ fn find_words_keeping_code_spans(
     Box::new(merged.into_iter())
 }
 
+/// How to cut text that is too wide, behind a `…`.
+#[derive(Clone, Copy, Debug)]
+pub struct Truncate {
+    /// Cut the start instead of the end, as a path should.
+    pub from_left: bool,
+    /// The fewest columns to keep, however narrow the width.
+    pub floor: usize,
+}
+
+impl Truncate {
+    /// `text` cut to at most `width` columns, or to `floor` when that is
+    /// wider.
+    pub fn apply(self, width: usize, text: &str) -> Cow<'_, str> {
+        let width = width.max(self.floor);
+        if !self.from_left {
+            return truncate_str(text, width, "…");
+        }
+        if measure_text_width(text) <= width {
+            return Cow::Borrowed(text);
+        }
+        // A tail narrows as its start moves right, so a binary search finds
+        // the longest tail that leaves a column for the `…`. Measure each
+        // tail whole: measuring one char at a time miscounts escape
+        // sequences.
+        let starts: Vec<usize> = text.char_indices().map(|(index, _)| index).collect();
+        let first = starts.partition_point(|&start| measure_text_width(&text[start..]) >= width);
+        let start = starts.get(first).copied().unwrap_or(text.len());
+        Cow::Owned(format!("…{}", &text[start..]))
+    }
+}
+
 /// `n` and `noun`, plural unless `n` is 1: `1 module`, `3 events`.
-pub(crate) fn count<N: std::fmt::Display + PartialEq + From<u8> + Copy>(
-    n: N,
-    noun: &str,
-) -> String {
+pub fn count<N: std::fmt::Display + PartialEq + From<u8> + Copy>(n: N, noun: &str) -> String {
     if n == N::from(1) {
         format!("{n} {noun}")
     } else {
@@ -294,7 +324,7 @@ pub(crate) fn count<N: std::fmt::Display + PartialEq + From<u8> + Copy>(
     }
 }
 
-pub(crate) fn sanitize(s: &str) -> String {
+pub fn sanitize(s: &str) -> String {
     let mut escaped = String::new();
     for ch in s.chars() {
         sanitize_char(&mut escaped, ch, NewlinePolicy::Escape);
@@ -305,7 +335,7 @@ pub(crate) fn sanitize(s: &str) -> String {
 /// Like [`sanitize`] but preserves real newlines instead of escaping them to
 /// literal `\n`. For multi-line free text (e.g. run descriptions) that is
 /// meant to be read as prose, not as a single table cell.
-pub(crate) fn sanitize_multiline(s: &str) -> String {
+pub fn sanitize_multiline(s: &str) -> String {
     let mut out = String::new();
     for ch in s.chars() {
         sanitize_char(&mut out, ch, NewlinePolicy::KeepNewlineDropReturn);
@@ -317,6 +347,30 @@ pub(crate) fn sanitize_multiline(s: &str) -> String {
 mod tests {
     use super::*;
     use hegel::generators::{self, Generator};
+
+    #[test]
+    fn truncate_from_left_keeps_the_end() {
+        let start = |floor| Truncate {
+            from_left: true,
+            floor,
+        };
+        let path = "/usr/share/dotnet/dotnet";
+        assert_eq!(start(0).apply(15, path), "…/dotnet/dotnet");
+        assert_eq!(start(0).apply(24, path), path);
+        assert_eq!(start(0).apply(6, "/bin/averylongname"), "…gname");
+        assert_eq!(start(8).apply(6, "/bin/averylongname"), "…ongname");
+    }
+
+    #[test]
+    fn truncate_keeps_the_start_and_the_floor() {
+        let end = Truncate {
+            from_left: false,
+            floor: 4,
+        };
+        assert_eq!(end.apply(6, "abcdefgh"), "abcde…");
+        assert_eq!(end.apply(0, "abcdefgh"), "abc…");
+        assert_eq!(end.apply(8, "abcdefgh"), "abcdefgh");
+    }
 
     /// `wrap_text` preserves the exact sequence of words — wrapping only inserts
     /// line breaks, it never drops, splits, reorders, or invents a word.

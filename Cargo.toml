@@ -89,6 +89,7 @@ rusqlite = { version = "0.41", default-features = false, features = ["bundled"] 
 console = "0.16"
 indicatif = "0.18"
 tempfile = "3"
+thiserror = "2"
 pulldown-cmark = "0.13.6"
 libc = "0.2"
 regex = "1"

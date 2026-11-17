@@ -3969,6 +3969,7 @@ dependencies = [
  "tempfile",
  "testscript-rs",
  "textwrap",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-util",
  "toml",

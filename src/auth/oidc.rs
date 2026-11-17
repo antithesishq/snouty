@@ -348,12 +348,15 @@ mod tests {
     async fn github_actions_oidc_exchange_error_names_a_success_without_a_token() {
         for (body, tail) in [
             (
-                "<html>\n  <h1>Sign in</h1>\n</html>",
+                "<html>\n  <h1>Sign in</h1>\n</html>".to_owned(),
                 ": <html> <h1>Sign in</h1> </html>",
             ),
-            (r#"{"token":"secret"}"#, ""),
+            (
+                serde_json::json!({"token": FAKE_OIDC_TOKEN}).to_string(),
+                "",
+            ),
         ] {
-            let (url, _requests) = spawn_oidc_token_server("/token", "200 OK", body);
+            let (url, _requests) = spawn_oidc_token_server("/token", "200 OK", &body);
             let err = fetch_github_actions_oidc_credentials(&url, FAKE_OIDC_REQUEST_TOKEN)
                 .await
                 .unwrap_err();

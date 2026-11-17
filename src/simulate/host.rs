@@ -117,9 +117,13 @@ fn no_other_writers(path: &Path) -> Result<()> {
     let user = nix::unistd::geteuid().as_raw();
     // In a user namespace, such as the Nix build sandbox or a rootless
     // container, a directory of an unmapped owner, such as root outside it,
-    // shows this uid.
-    let overflow = std::fs::read_to_string("/proc/sys/kernel/overflowuid")
-        .ok()
+    // shows this uid. Outside one it is the real `nobody` account, which is
+    // not trusted.
+    let in_user_namespace = std::fs::read_to_string("/proc/self/uid_map")
+        .is_ok_and(|map| map.split_whitespace().ne(["0", "0", "4294967295"]));
+    let overflow = in_user_namespace
+        .then(|| std::fs::read_to_string("/proc/sys/kernel/overflowuid").ok())
+        .flatten()
         .and_then(|uid| uid.trim().parse::<u32>().ok());
     for directory in path.ancestors() {
         let metadata = std::fs::metadata(directory)?;

@@ -20,10 +20,7 @@ use super::{
     store::{CredentialStore, PersistableCredentials, keychain_entry_name},
     to_header_value,
 };
-use crate::{
-    error::user_error,
-    settings::{global_settings_dir, mkdir},
-};
+use crate::settings::{global_settings_dir, mkdir};
 
 #[derive(Clone)]
 struct OAuthCredential {
@@ -132,9 +129,10 @@ impl RefreshableOAuthToken {
             return Ok(());
         }
         let Some(refresh_token) = current.refresh_token else {
-            return Err(user_error(
-                "the stored OAuth token cannot be refreshed, because there is no refresh token; run `snouty login`",
-            ));
+            return Err(Report::new(RenewalError {
+                failure: RenewalFailure::Refused,
+                profile: self.store.profile().map(str::to_owned),
+            }));
         };
 
         let refreshed =
@@ -231,13 +229,6 @@ impl RenewalFailure {
         }
     }
 
-    pub(crate) fn message(self) -> &'static str {
-        match self {
-            Self::Refused => "the sign-in expired and could not be renewed",
-            Self::Temporary => "the tenant could not renew the sign-in",
-        }
-    }
-
     pub(crate) fn next_step(self, profile: Option<&str>) -> String {
         let login = login_command(profile);
         match self {
@@ -255,12 +246,21 @@ pub(crate) struct RenewalError {
     profile: Option<String>,
 }
 
+impl std::fmt::Display for RenewalFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Refused => "the sign-in expired and could not be renewed",
+            Self::Temporary => "the tenant could not renew the sign-in",
+        })
+    }
+}
+
 impl std::fmt::Display for RenewalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "{}; {}",
-            self.failure.message(),
+            self.failure,
             self.failure.next_step(self.profile.as_deref())
         )
     }
@@ -417,6 +417,26 @@ mod tests {
             );
         }
         let err = refresh_error(Some("staging"), Some(ResponseTemplate::new(401))).await;
+        assert_eq!(
+            err.to_string(),
+            "the sign-in expired and could not be renewed; \
+             run `snouty login --profile staging` to sign in again"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_without_a_refresh_token_says_to_sign_in_to_its_profile() {
+        let creds_dir = tempfile::TempDir::new().unwrap();
+        let store = CredentialStore::CredentialsFile {
+            path: creds_dir.path().join("credentials.toml"),
+            profile: Some("staging".to_owned()),
+        };
+        let token = RefreshableOAuthToken::new(store, FAKE_ACCESS_TOKEN_A.to_owned(), None);
+        let client = crate::testutils::test_client();
+        let err = token
+            .refresh(&client, "http://127.0.0.1:1")
+            .await
+            .unwrap_err();
         assert_eq!(
             err.to_string(),
             "the sign-in expired and could not be renewed; \

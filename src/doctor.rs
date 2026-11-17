@@ -837,18 +837,19 @@ pub async fn cmd_doctor(
                             "the client uses the credential that the credentials check reports",
                         );
                     let (message, next_step) = if matches!(auth, AuthenticationInfo::OAuth(_)) {
-                        // A refresh that fails before it asks the tenant,
-                        // for want of a refresh token, needs a new sign-in.
+                        // A refresh that fails before it can ask the tenant
+                        // needs a new sign-in.
                         let failure = err
                             .downcast_ref::<RenewalError>()
                             .map_or(RenewalFailure::Refused, |e| e.failure);
-                        (failure.message(), failure.next_step(settings.profile()))
+                        (failure.to_string(), failure.next_step(settings.profile()))
                     } else {
                         let status = http_err.and_then(reqwest::Error::status);
-                        renewal_failure(auth, status)
+                        let (message, next_step) = renewal_failure(auth, status);
+                        (message.to_owned(), next_step)
                     };
                     check.status = Status::Error;
-                    message.clone_into(&mut check.message);
+                    check.message = message;
                     // The error names status codes and URLs, so only
                     // --verbose shows it.
                     if verbose {

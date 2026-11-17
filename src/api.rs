@@ -4910,7 +4910,7 @@ mod tests {
 
         assert!(
             format!("{report:#}").contains(
-                "the stored OAuth token cannot be refreshed, because there is no refresh token; run `snouty login`"
+                "the sign-in expired and could not be renewed; run `snouty login` to sign in again"
             ),
             "{report:#}"
         );

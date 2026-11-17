@@ -2270,11 +2270,7 @@ async fn read_error_body(mut response: reqwest::Response) -> String {
             Err(err) => return format!("<failed to read response body: {err}>"),
         }
     }
-    let body = String::from_utf8_lossy(&body).into_owned();
-    // The error shows only the message that `error_body_message` takes from
-    // the body. The full body goes only to this log.
-    debug!("API error response body: {}", sanitize_multiline(&body));
-    body
+    String::from_utf8_lossy(&body).into_owned()
 }
 
 /// The human-readable text of an error response body.
@@ -2292,6 +2288,7 @@ async fn read_error_body(mut response: reqwest::Response) -> String {
 /// endpoint puts a caret line under the offending token (see
 /// [`query_rejection`]).
 fn error_body_message(body: &str) -> String {
+    debug!("API error response body: {}", sanitize_multiline(body));
     let text = serde_json::from_str::<serde_json::Value>(body)
         .ok()
         .and_then(|value| {

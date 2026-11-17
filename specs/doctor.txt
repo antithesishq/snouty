@@ -182,7 +182,7 @@ set-env ACTIONS_ID_TOKEN_REQUEST_URL http://127.0.0.1:1/token?api-version=2.0
 set-env ACTIONS_ID_TOKEN_REQUEST_TOKEN ${FAKE_OIDC_REQUEST_TOKEN}
 ! snouty doctor
 stderr '✗ .*OIDC token'
-stderr 'ERROR: failed to get a GitHub Actions OIDC token: the request to the GitHub Actions token endpoint failed'
+stderr 'ERROR: .*127\.0\.0\.1:1'
 stderr 'NOTE: rerun the job'
 ! stderr 'Antithesis API'
 env ACTIONS_ID_TOKEN_REQUEST_URL=

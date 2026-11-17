@@ -7,7 +7,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::Result;
 use serde::Deserialize;
 
 use super::{
@@ -127,9 +127,7 @@ impl GithubActionsOidcToken {
 /// OIDC token by calling the Actions token endpoint.
 ///
 /// The error names the endpoint's status and body, or why no answer came,
-/// because the job log is all a GitHub Actions user can debug with. A
-/// rejection keeps the [`reqwest::Error`] in the chain: `snouty doctor`
-/// reads its status.
+/// because the job log is all a GitHub Actions user can debug with.
 ///
 /// Split out from [`GithubActionsOidcToken::refresh`] so the
 /// HTTP exchange can be unit-tested against a local server without mutating the
@@ -153,16 +151,32 @@ async fn fetch_github_actions_oidc_credentials(
         .bearer_auth(actions_id_request_token)
         .send()
         .await
-        .map_err(|err| request_failed(&err))?;
+        .map_err(|err| {
+            use std::error::Error as _;
+            // reqwest's message leaves out its cause, such as a refused
+            // connection.
+            let cause = if err.source().is_some() {
+                format!(": {}", crate::util::root_cause(&err))
+            } else {
+                String::new()
+            };
+            OidcFetchError::new(
+                None,
+                format!("the request to the GitHub Actions token endpoint failed: {err}{cause}"),
+            )
+        })?;
     let status = response.status();
-    if let Err(err) = response.error_for_status_ref() {
-        let body = crate::api::read_error_body(response).await;
-        return Err(eyre!(err).wrap_err(format!(
-            "{OIDC_FETCH_FAILED}: the GitHub Actions token endpoint answered {status}{}",
-            answer(&body)
-        )));
+    let body = crate::api::read_error_body(response).await;
+    if !status.is_success() {
+        return Err(OidcFetchError::new(
+            Some(status),
+            format!(
+                "the GitHub Actions token endpoint answered {status}{}",
+                answer(&body)
+            ),
+        )
+        .into());
     }
-    let body = response.text().await.map_err(|err| request_failed(&err))?;
     serde_json::from_str::<OidcTokenResponse>(&body)
         .map(|response| response.value)
         .map_err(|_| {
@@ -173,26 +187,41 @@ async fn fetch_github_actions_oidc_credentials(
             } else {
                 answer(&body)
             };
-            eyre!(
-                "{OIDC_FETCH_FAILED}: the GitHub Actions token endpoint answered {status} without a token{answer}"
+            OidcFetchError::new(
+                None,
+                format!(
+                    "the GitHub Actions token endpoint answered {status} without a token{answer}"
+                ),
             )
+            .into()
         })
 }
 
-/// reqwest's message leaves out its cause, such as a refused connection.
-fn request_failed(err: &reqwest::Error) -> color_eyre::Report {
-    use std::error::Error as _;
-    if err.source().is_none() {
-        eyre!("{OIDC_FETCH_FAILED}: the request to the GitHub Actions token endpoint failed: {err}")
-    } else {
-        eyre!(
-            "{OIDC_FETCH_FAILED}: the request to the GitHub Actions token endpoint failed: {err}: {}",
-            crate::util::root_cause(err)
+/// snouty could not get a GitHub Actions OIDC token. `status` is the status
+/// of a rejection, which `snouty doctor` reads.
+#[derive(Debug)]
+pub(crate) struct OidcFetchError {
+    pub(crate) status: Option<reqwest::StatusCode>,
+    reason: String,
+}
+
+impl OidcFetchError {
+    fn new(status: Option<reqwest::StatusCode>, reason: String) -> Self {
+        Self { status, reason }
+    }
+}
+
+impl std::fmt::Display for OidcFetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "failed to get a GitHub Actions OIDC token: {}",
+            self.reason
         )
     }
 }
 
-const OIDC_FETCH_FAILED: &str = "failed to get a GitHub Actions OIDC token";
+impl std::error::Error for OidcFetchError {}
 
 fn answer(body: &str) -> String {
     let message = crate::api::error_body_message(body);
@@ -338,10 +367,12 @@ mod tests {
         );
         // Doctor reads the status of the rejection.
         assert_eq!(
-            err.downcast_ref::<reqwest::Error>()
-                .and_then(reqwest::Error::status),
+            err.downcast_ref::<OidcFetchError>()
+                .and_then(|err| err.status),
             Some(reqwest::StatusCode::FORBIDDEN)
         );
+        // The rejection prints as one line, with no chain under it.
+        assert_eq!(err.chain().count(), 1);
     }
 
     #[tokio::test]
@@ -367,6 +398,16 @@ mod tests {
                 )
             );
         }
+    }
+
+    #[tokio::test]
+    async fn github_actions_oidc_exchange_error_caps_a_success_body() {
+        let body = "x".repeat(1024 * 1024);
+        let (url, _requests) = spawn_oidc_token_server("/token", "200 OK", &body);
+        let err = fetch_github_actions_oidc_credentials(&url, FAKE_OIDC_REQUEST_TOKEN)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().len() < 100 * 1024);
     }
 
     /// A wiremock Actions token endpoint that gives `token`, and that

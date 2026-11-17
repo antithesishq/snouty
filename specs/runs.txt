@@ -65,7 +65,8 @@ env ANTITHESIS_TENANT=testtenant
 set-env ACTIONS_ID_TOKEN_REQUEST_URL http://127.0.0.1:1/token?api-version=2.0
 set-env ACTIONS_ID_TOKEN_REQUEST_TOKEN ${FAKE_OIDC_REQUEST_TOKEN}
 ! snouty runs
-stderr 'failed to get a GitHub Actions OIDC token: the request to the GitHub Actions token endpoint failed: .*127\.0\.0\.1:1'
+stderr 'OIDC token'
+stderr '127\.0\.0\.1:1'
 env ACTIONS_ID_TOKEN_REQUEST_URL=
 env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
 

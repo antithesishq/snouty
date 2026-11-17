@@ -9,8 +9,8 @@ use crate::api::{
     MIN_STREAM_RELEASE, VersionError, normalize_base_url,
 };
 use crate::auth::{
-    AuthenticationInfo, CredentialSource, CredentialStore, SourcedCredential, keychain_entry_name,
-    login_command, rejected_credential_next_step,
+    AuthenticationInfo, CredentialSource, CredentialStore, OidcFetchError, SourcedCredential,
+    keychain_entry_name, login_command, rejected_credential_next_step,
 };
 use crate::compose;
 use crate::container;
@@ -846,7 +846,10 @@ pub async fn cmd_doctor(
                         .expect(
                             "the client uses the credential that the credentials check reports",
                         );
-                    let status = http_err.and_then(reqwest::Error::status);
+                    let status = match err.downcast_ref::<OidcFetchError>() {
+                        Some(oidc_err) => oidc_err.status,
+                        None => http_err.and_then(reqwest::Error::status),
+                    };
                     let (message, next_step) = renewal_failure(auth, settings.profile(), status);
                     check.status = Status::Error;
                     message.clone_into(&mut check.message);

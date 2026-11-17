@@ -5480,7 +5480,7 @@ mod tests {
             )
             .await
             .unwrap();
-            let lines: Vec<Value> = stream.try_collect().await.unwrap();
+            let lines: Vec<Value> = stream.untag().try_collect().await.unwrap();
             assert_eq!(lines.len(), 1);
         }
 

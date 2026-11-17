@@ -197,7 +197,7 @@ struct Function {
 }
 
 impl Function {
-    fn new((name, mut locations): (String, Vec<Location>)) -> Self {
+    fn new(name: String, mut locations: Vec<Location>) -> Self {
         locations.sort_by_key(|location| {
             let location = &location.coverage;
             (
@@ -243,8 +243,11 @@ struct Class {
 }
 
 impl Class {
-    fn new((name, functions): (Option<ClassName>, BTreeMap<String, Vec<Location>>)) -> Self {
-        let mut functions: Vec<Function> = functions.into_iter().map(Function::new).collect();
+    fn new(name: Option<ClassName>, functions: BTreeMap<String, Vec<Location>>) -> Self {
+        let mut functions: Vec<Function> = functions
+            .into_iter()
+            .map(|(name, locations)| Function::new(name, locations))
+            .collect();
         functions.sort_by(|a, b| a.order().cmp(&b.order()));
         Self {
             name,
@@ -273,7 +276,7 @@ struct File {
 }
 
 impl File {
-    fn new((path, locations): (Option<String>, Vec<Location>)) -> Self {
+    fn new(path: Option<String>, locations: Vec<Location>) -> Self {
         let mut classes: BTreeMap<Option<ClassName>, BTreeMap<String, Vec<Location>>> =
             BTreeMap::new();
         for location in locations {
@@ -285,7 +288,10 @@ impl File {
                 .or_default()
                 .push(location);
         }
-        let mut classes: Vec<Class> = classes.into_iter().map(Class::new).collect();
+        let mut classes: Vec<Class> = classes
+            .into_iter()
+            .map(|(name, functions)| Class::new(name, functions))
+            .collect();
         classes.sort_by(|a, b| a.order().cmp(&b.order()));
         Self {
             path,
@@ -316,7 +322,10 @@ impl Module {
                 .or_default()
                 .push(location);
         }
-        let files: Vec<File> = files.into_iter().map(File::new).collect();
+        let files: Vec<File> = files
+            .into_iter()
+            .map(|(path, locations)| File::new(path, locations))
+            .collect();
         let label = labels.get(&id);
         Self {
             name: label.map(|module| module.name.clone()),
@@ -678,19 +687,22 @@ pub(super) async fn cmd_runs_coverage(
     } else {
         module_ids.iter().map(|id| Some(id.as_str())).collect()
     };
-    let locations = stream::iter(requests)
-        .then(|module_id| {
-            ready::send_when_ready(
-                api,
-                run_id,
-                READY_POLL,
-                COVERAGE_RETRY,
-                move || api.get_coverage_locations(run_id, module_id),
-                explain_coverage_error,
-            )
-        })
-        .try_flatten()
-        .and_then(|line| future::ready(Location::try_from(line)));
+    let locations =
+        stream::iter(requests)
+            .then(|module_id| {
+                ready::send_when_ready(
+                    api,
+                    run_id,
+                    READY_POLL,
+                    COVERAGE_RETRY,
+                    move || async move {
+                        Ok(api.get_coverage_locations(run_id, module_id).await?.untag())
+                    },
+                    explain_coverage_error,
+                )
+            })
+            .try_flatten()
+            .and_then(|line| future::ready(Location::try_from(line)));
     let mut modules = pin!(by_module(locations));
     let (labels, first) = future::join(module_labels(api, run_id), modules.try_next()).await;
 
@@ -860,10 +872,10 @@ mod tests {
     #[test]
     fn a_function_puts_its_locations_without_a_line_last() {
         let no_line = location(json!({"module_id": "m", "address": "9", "function": "f"}));
-        let function = Function::new((
+        let function = Function::new(
             "f".to_string(),
             vec![no_line, at("f", 5, false), at("f", 3, false)],
-        ));
+        );
         let lines: Vec<Option<i64>> = function
             .locations
             .iter()

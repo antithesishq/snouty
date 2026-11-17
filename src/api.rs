@@ -1241,18 +1241,23 @@ impl AntithesisApi {
     }
 
     /// The run's instrumented locations, as NDJSON `Location_Coverage`
-    /// records: every location of `module_id`, or of every module.
+    /// records: every location of `module_id`, or of every module. Cached as
+    /// the response headers allow.
+    #[cached(stream)]
     pub async fn get_coverage_locations(
         &self,
         run_id: &str,
         module_id: Option<&str>,
-    ) -> Result<JsonStream> {
+    ) -> Result<Tagged<JsonStream, CachePolicy>> {
         let mut request = self.client.get_coverage_locations().run_id(run_id);
         if let Some(module_id) = module_id {
             request = request.module_id(module_id);
         }
         match request.send().await {
-            Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
+            Ok(response) => {
+                let policy = self.cache.headers_policy(response.headers());
+                Ok(json_lines(response.into_inner().into_inner()).with_tag(policy))
+            }
             Err(err) => Err(self.client_error(err).await),
         }
     }

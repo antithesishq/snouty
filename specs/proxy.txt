@@ -21,7 +21,7 @@ env ANTITHESIS_TENANT=testtenant
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 env ANTITHESIS_HTTPS_PROXY=http://127.0.0.1:9
 snouty settings show
-stdout '^https_proxy\s+http://127\.0\.0\.1:9$'
+stdout '^https_proxy\s+http://127\.0\.0\.1:9/$'
 
 # Clear the proxy again, so the negative control below has no proxy. snouty
 # reads an empty environment variable as unset (see `env::interpret`).

@@ -3,7 +3,6 @@ use std::io::Write;
 
 use color_eyre::eyre::Result;
 use serde_json::{Map, Value, json};
-use url::Url;
 
 use super::Settings;
 use super::trust::trust_file_path;
@@ -36,12 +35,8 @@ fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, 
         text_row("profile", settings.profile(), "default"),
         text_row("tenant", settings.tenant(), NOT_SET),
         text_row("registry", settings.registry().map(Tagged::value), NOT_SET),
-        text_row(
-            "base_url",
-            settings.base_url().as_ref().map(url_text),
-            NOT_SET,
-        ),
-        text_row("https_proxy", settings.https_proxy().map(url_text), NOT_SET),
+        text_row("base_url", settings.base_url(), NOT_SET),
+        text_row("https_proxy", settings.https_proxy(), NOT_SET),
         text_row(
             "container_engine",
             settings.container_engine(),
@@ -62,17 +57,6 @@ fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, 
         rows.push(text_row("features", Some(ids.join(", ")), NOT_SET));
     }
     rows
-}
-
-/// `url` without the trailing `/` that `Url` adds to an empty path, as a user
-/// writes it.
-fn url_text(url: &Url) -> &str {
-    let text = url.as_str();
-    if url.path() == "/" && url.query().is_none() && url.fragment().is_none() {
-        text.strip_suffix('/').unwrap_or(text)
-    } else {
-        text
-    }
 }
 
 pub fn cmd_settings_show(settings: &Settings, json: bool) -> Result<()> {

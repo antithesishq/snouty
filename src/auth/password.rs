@@ -25,7 +25,7 @@ pub(crate) enum PasswordPolicy {
 /// The one step away from a username and password from `source`, for the
 /// selected `profile`. Doctor, the rejection and the warning all give it, so
 /// their advice cannot drift apart.
-pub(crate) fn password_next_step(source: &CredentialSource, profile: Option<&str>) -> String {
+pub(crate) fn basic_auth_next_step(source: &CredentialSource, profile: Option<&str>) -> String {
     match source {
         // `snouty login` alone cannot help: the environment hides what it
         // stores.
@@ -40,10 +40,10 @@ pub(crate) fn password_next_step(source: &CredentialSource, profile: Option<&str
     }
 }
 
-fn password_deprecation_suggestion(source: &CredentialSource, profile: Option<&str>) -> String {
+fn deprecation_suggestion(source: &CredentialSource, profile: Option<&str>) -> String {
     format!(
         "username/password authentication is deprecated; {}",
-        password_next_step(source, profile)
+        basic_auth_next_step(source, profile)
     )
 }
 
@@ -62,13 +62,13 @@ pub(super) fn apply_password_policy(
         PasswordPolicy::Reject => Err(user_error(
             "This command does not accept username/password authentication, which is only supported when launching runs (`snouty launch`, `snouty debug`)",
         )
-        .suggestion(password_deprecation_suggestion(authn_info.tag(), profile))),
+        .suggestion(deprecation_suggestion(authn_info.tag(), profile))),
         PasswordPolicy::WarnDeprecated => {
             // A bare eprintln, not log::warn!: the notice must reach stderr
             // on every run, independent of RUST_LOG.
             eprintln!(
                 "warning: {} (support will be removed in a future release)",
-                password_deprecation_suggestion(authn_info.tag(), profile)
+                deprecation_suggestion(authn_info.tag(), profile)
             );
             Ok(authn_info)
         }

@@ -9,8 +9,8 @@ use crate::api::{
     MIN_STREAM_RELEASE, VersionError, normalize_base_url,
 };
 use crate::auth::{
-    AuthenticationInfo, CredentialSource, CredentialStore, SourcedCredential, keychain_entry_name,
-    login_command, login_to_replace, password_next_step, rejected_credential_next_step, unset,
+    AuthenticationInfo, CredentialSource, CredentialStore, SourcedCredential, basic_auth_next_step,
+    keychain_entry_name, login_command, login_to_replace, rejected_credential_next_step, unset,
 };
 use crate::compose;
 use crate::container;
@@ -460,7 +460,7 @@ fn password_only_check(
         in_use,
         selected,
     )
-    .note(Level::Note, password_next_step(in_use.tag(), selected))
+    .note(Level::Note, basic_auth_next_step(in_use.tag(), selected))
 }
 
 /// The one step that frees `hidden`, a stored credential that the

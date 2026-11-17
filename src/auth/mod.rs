@@ -30,7 +30,7 @@ pub(crate) use oidc::OIDC_REJECTED_NEXT_STEP;
 use oidc::{OIDC_TOKEN_VAR_NAME, OIDC_URL_VAR_NAME};
 use password::apply_password_policy;
 pub(crate) use password::{
-    PASSWORD_VAR_NAME, PasswordPolicy, USERNAME_VAR_NAME, password_next_step,
+    PASSWORD_VAR_NAME, PasswordPolicy, USERNAME_VAR_NAME, basic_auth_next_step,
 };
 pub use store::initialize_credential_store;
 pub(crate) use store::{

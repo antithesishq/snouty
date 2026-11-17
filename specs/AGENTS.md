@@ -107,7 +107,10 @@ fixture.
 - `env_from_json <line> <key>`: store a key of one NDJSON stdout line as
   `$R_<key>`.
 - `env_from_json_find <key> <filter>... [-- <snouty args>]`: store a key of
-  the first NDJSON line that matches each filter, as `$R_<key>`. With
+  the first NDJSON line that matches each filter, as `$R_<key>`. A filter is
+  `<field>=<a>|<b>` (one of the values), `<field>^=<prefix>` (starts with the
+  prefix) or `<field>!=<value>`. A `=` or `^=` filter skips a line without
+  the field, and `!=` fails on such a line. With
   `-- <snouty args>`, a matching line counts only when snouty, run with those
   args and `$R_<key>` set to that line's value, succeeds and prints to stdout.
   It skips a line where snouty prints nothing or fails with a 404, fails on

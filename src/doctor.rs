@@ -9,8 +9,9 @@ use crate::api::{
     MIN_STREAM_RELEASE, VersionError, normalize_base_url,
 };
 use crate::auth::{
-    AuthenticationInfo, CredentialSource, CredentialStore, RenewalError, SourcedCredential,
-    basic_auth_next_step, keychain_entry_name, login_command, rejected_credential_next_step,
+    AuthenticationInfo, CredentialSource, CredentialStore, OidcFetchError, RenewalError,
+    SourcedCredential, basic_auth_next_step, keychain_entry_name, login_command, refuses_renewal,
+    rejected_credential_next_step,
 };
 use crate::compose;
 use crate::container;
@@ -736,37 +737,22 @@ fn version_check(
     }
 }
 
-/// The message of the credentials check when the GitHub Actions OIDC
-/// credential `auth` could not be renewed, and the next step.
-fn renewal_failure(
-    auth: &AuthenticationInfo,
-    status: Option<StatusCode>,
-) -> (&'static str, String) {
-    let temporary = status.is_some_and(|s| {
-        s.is_server_error()
-            || matches!(
-                s,
-                StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
-            )
-    });
-    let refused = !temporary && status.is_some_and(|s| s.is_client_error());
-    match auth {
-        AuthenticationInfo::GithubActionsOidc(_) if refused => (
+/// The message of the credentials check when GitHub Actions did not issue
+/// an OIDC token, and the next step. `status` is the answer of the token
+/// endpoint, when one came.
+fn oidc_failure(status: Option<StatusCode>) -> (&'static str, String) {
+    if status.is_some_and(refuses_renewal) {
+        (
             "GitHub Actions refused to issue an OIDC token",
             "rerun the job, and check that snouty gets this job's own \
              `ACTIONS_ID_TOKEN_REQUEST_TOKEN`"
                 .to_owned(),
-        ),
-        AuthenticationInfo::GithubActionsOidc(_) => (
+        )
+    } else {
+        (
             "GitHub Actions did not issue an OIDC token",
             "rerun the job".to_owned(),
-        ),
-        AuthenticationInfo::OAuth(_) => {
-            unreachable!("cmd_doctor classifies an OAuth renewal itself")
-        }
-        AuthenticationInfo::ApiKey { .. } | AuthenticationInfo::Password { .. } => {
-            unreachable!("an API key and a password never expire")
-        }
+        )
     }
 }
 
@@ -827,19 +813,31 @@ pub async fn cmd_doctor(
                             .expect("an OAuth refresh fails with a renewal error");
                         (renewal.summary(), renewal.next_step())
                     } else {
-                        let status = http_err.and_then(reqwest::Error::status);
-                        renewal_failure(auth, status)
+                        let status = match err.downcast_ref::<OidcFetchError>() {
+                            Some(oidc_err) => oidc_err.status,
+                            None => http_err.and_then(reqwest::Error::status),
+                        };
+                        oidc_failure(status)
                     };
                     check.status = Status::Error;
                     message.clone_into(&mut check.message);
                     // The error names status codes and URLs, so only
-                    // --verbose shows it.
-                    if verbose {
+                    // --verbose shows it. A GitHub Actions job also shows the
+                    // top message, because the job log is all its user can
+                    // debug with.
+                    let detail = if verbose {
+                        Some(format!("{err:#}"))
+                    } else if matches!(auth, AuthenticationInfo::GithubActionsOidc(_)) {
+                        Some(err.to_string())
+                    } else {
+                        None
+                    };
+                    if let Some(text) = detail {
                         check.notes.insert(
                             0,
                             Note {
                                 level: Level::Error,
-                                text: format!("{err:#}"),
+                                text,
                             },
                         );
                     }
@@ -1640,10 +1638,9 @@ mod tests {
     }
 
     #[test]
-    fn renewal_failure_names_the_next_step_for_github_actions() {
-        let oidc = oidc_source().value().clone();
+    fn oidc_failure_names_the_next_step() {
         assert_eq!(
-            renewal_failure(&oidc, Some(StatusCode::FORBIDDEN)),
+            oidc_failure(Some(StatusCode::FORBIDDEN)),
             (
                 "GitHub Actions refused to issue an OIDC token",
                 "rerun the job, and check that snouty gets this job's own \
@@ -1657,7 +1654,7 @@ mod tests {
             Some(StatusCode::TOO_MANY_REQUESTS),
         ] {
             assert_eq!(
-                renewal_failure(&oidc, status),
+                oidc_failure(status),
                 (
                     "GitHub Actions did not issue an OIDC token",
                     "rerun the job".to_owned()

@@ -12,12 +12,11 @@ use chrono::{DateTime, Utc};
 use color_eyre::Section;
 use color_eyre::eyre::{Report, Result};
 use log::warn;
-use reqwest::StatusCode;
 use serde::Deserialize;
 
 use super::{
     claims::try_get_expiry_from_token,
-    login_command,
+    login_command, refuses_renewal,
     store::{CredentialStore, PersistableCredentials, keychain_entry_name},
     to_header_value,
 };
@@ -232,17 +231,10 @@ impl RenewalError {
 
     /// The error for a refresh request that failed with `err`.
     fn of_request(err: &reqwest::Error, profile: Option<&str>) -> Self {
-        match err.status() {
-            Some(status)
-                if status.is_client_error()
-                    && !matches!(
-                        status,
-                        StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
-                    ) =>
-            {
-                Self::refused(profile)
-            }
-            _ => Self::temporary(profile),
+        if err.status().is_some_and(refuses_renewal) {
+            Self::refused(profile)
+        } else {
+            Self::temporary(profile)
         }
     }
 

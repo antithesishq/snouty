@@ -2364,7 +2364,7 @@ const MAX_ERROR_BODY: usize = 64 * 1024;
 /// Read up to [`MAX_ERROR_BODY`] of an error response, chunk by chunk, and drop
 /// the rest. Truncating mid-character is fine — the result is only ever
 /// displayed, and `from_utf8_lossy` renders a split character as `U+FFFD`.
-async fn read_error_body(mut response: reqwest::Response) -> String {
+pub(crate) async fn read_error_body(mut response: reqwest::Response) -> String {
     let mut body = Vec::new();
     while body.len() < MAX_ERROR_BODY {
         match response.chunk().await {
@@ -2393,7 +2393,7 @@ async fn read_error_body(mut response: reqwest::Response) -> String {
 /// on margins. A `message` keeps its own line breaks: the events-search
 /// endpoint puts a caret line under the offending token (see
 /// [`query_rejection`]).
-fn error_body_message(body: &str) -> String {
+pub(crate) fn error_body_message(body: &str) -> String {
     debug!("API error response body: {}", sanitize_multiline(body));
     let text = serde_json::from_str::<serde_json::Value>(body)
         .ok()

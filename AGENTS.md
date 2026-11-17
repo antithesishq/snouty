@@ -97,21 +97,10 @@ that over brevity or reuse.
 
 - Order a module top to bottom: define a type or function before the code
   that uses it, so the file reads in one pass.
-- Shape a command as a pipeline: API response → a data structure that models
-  the domain → rendering. Keep each stage in its own types and functions.
-  Rendering does not parse, fetch, or decide what the data means.
-- Make rendering pure and agnostic to its content: it takes a neutral
-  structure (rows, a tree, labelled cells) and returns text, and every value
-  of that structure renders. Test it directly with constructed inputs. When a
-  renderer needs to know which domain type it draws, the structure between
-  them is wrong.
 - Give a general-purpose renderer or utility (a tree, a table) its own module,
   with no domain types, so other commands can use it.
 - Give data a type that names it. A struct with named fields, not a tuple or
   nested `Vec<Vec<…>>`; an enum, not a flag.
-- Expect the API to grow: a new field (a hit count, a rate) should be a new
-  field and a new column, not a restructure. Keep the domain model and the
-  layout separate so that this holds.
 - Name a function for what it returns or does, so its name and arguments say
   how to use it. Do not extract a function only to remove a repeated line:
   DRY is not the goal, readability is.

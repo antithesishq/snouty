@@ -92,6 +92,20 @@ All code must be simple and idiomatic.
 
 ### Structure
 
+Simple code is code whose behavior is obvious from reading it once. Aim for
+that over brevity or reuse.
+
+- Order a module top to bottom: define a type or function before the code
+  that uses it, so the file reads in one pass.
+- Give a general-purpose renderer or utility (a tree, a table) its own module,
+  with no domain types, so other commands can use it.
+- Give data a type that names it. A struct with named fields, not a tuple or
+  nested `Vec<Vec<…>>`; an enum, not a flag.
+- Name a function for what it returns or does, so its name and arguments say
+  how to use it. Do not extract a function only to remove a repeated line:
+  DRY is not the goal, readability is.
+- When a module has grown through many revisions, rewrite it from the final
+  behavior rather than patching it again.
 - Inline a function with one call site, unless it is recursive or it keeps a
   distinct responsibility out of its caller.
 - Use high-quality dependencies rather than implementing everything from scratch.

@@ -124,17 +124,22 @@ async fn tools_return_detailed_output_or_json() {
         ]
     );
 
-    // The runs_coverage tool has no follow param, so its snapshot note does
-    // not suggest --follow.
-    let result = call(&client, "runs_coverage", json!({ "run_id": "run-2" })).await;
+    // runs_coverage takes `by`, and prints whole vtimes.
+    let result = call(
+        &client,
+        "runs_coverage",
+        json!({ "run_id": "run-2", "by": "location" }),
+    )
+    .await;
     assert_eq!(result.is_error, Some(false));
     let all: String = result
         .content
         .iter()
         .map(|c| c.as_text().unwrap().text.as_str())
         .collect();
-    assert!(all.contains("partial snapshot"), "{all}");
-    assert!(!all.contains("--follow"), "{all}");
+    assert!(all.contains("INPUT_HASH"), "{all}");
+    assert!(all.contains("12.84610243188217"), "{all}");
+    assert!(all.contains("the run is in progress"), "{all}");
 
     // runs_list returns what `snouty runs list --detail` prints: a block per
     // run. The result also has a stderr block: the note that more runs may

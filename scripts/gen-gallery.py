@@ -1487,11 +1487,8 @@ class FinalCaptures:
     stream_json: Result | None = None
     # The ID of EXAMPLE_BUG_PROPERTY in the run, or "" when it has none.
     bug_prop_id: str = ""
-    # `runs coverage --reached --follow`, started right after the launch, or
-    # None when its story is not selected.
-    coverage_follow: Result | None = None
-    # A module of the run with symbols, for the `runs coverage --module`
-    # stories, or "" when the run has none.
+    # A module of the run, for the `runs coverage --module` stories, or ""
+    # when the run has none.
     coverage_module: str = ""
 
 
@@ -2069,17 +2066,60 @@ def properties_pass_and_fail(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
     )
 
 
-def all_reached(reached: bool):
-    """Every location has `first_reached` (or none has). The reached half must
-    be non-empty; the unreached half may be empty when the run reached all."""
+COVERAGE_CELL = r"\d+\.\d%  \d+/\d+"
+
+
+def coverage_sections(level: str):
+    """`runs coverage --by <level>`: a `module <id>` header per module with its
+    coverage, then the level's table, and a status line on stderr. At the
+    location level, every row with a moment has an input hash and a vtime."""
+    header = {
+        "file": r"^  FILE +COVERAGE$",
+        "function": r"^    FUNCTION +COVERAGE$",
+        "location": r"^    INPUT_HASH +VTIME +LOCATION$",
+    }[level]
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-        rows = sr.rows or []
-        bad = [r for r in rows if ("first_reached" in r) != reached]
-        ok = not bad and (bool(rows) or not reached)
-        return (ok, f"{len(rows)} locations, {len(bad)} in the wrong half")
+        out = sr.result.stdout
+        modules = re.findall(rf"^module \S+.*  {COVERAGE_CELL}$", out, re.M)
+        tables = re.findall(header, out, re.M)
+        status = re.search(
+            r"^\d+ locations? · \d+\.\d% reached · run ", sr.result.stderr, re.M
+        )
+        rows = 0
+        if level == "location":
+            rows = len(re.findall(r"^    -?\d+ +\d+\.?\d* +\S", out, re.M))
+        else:
+            rows = len(re.findall(rf"^ +\S.*  {COVERAGE_CELL}$", out, re.M))
+        ok = (
+            sr.result.ok
+            and bool(modules)
+            and bool(tables)
+            and bool(rows)
+            and bool(status)
+        )
+        return (
+            ok,
+            f"{len(modules)} modules, {len(tables)} tables, {rows} rows, status={bool(status)}",
+        )
 
     return chk
+
+
+def coverage_json(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+    """One location per line, every reached one with a numeric vtime."""
+    rows = [json.loads(line) for line in sr.result.stdout.splitlines() if line.strip()]
+    reached = [r for r in rows if "first_reached" in r]
+    bad = [
+        r
+        for r in reached
+        if not isinstance(r["first_reached"]["moment"]["vtime"], (int, float))
+    ]
+    ok = sr.result.ok and bool(rows) and all("module_id" in r for r in rows) and not bad
+    return (
+        ok,
+        f"{len(rows)} locations, {len(reached)} reached, {len(bad)} string vtimes",
+    )
 
 
 def all_launcher(value: str):
@@ -4122,26 +4162,6 @@ def stream_args(run: str) -> list[str]:
     return ["runs", "stream", run]
 
 
-def coverage_follow_args(run: str) -> list[str]:
-    return ["runs", "coverage", run, "--reached", "--follow"]
-
-
-def coverage_followed(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
-    """`runs coverage --reached --follow` from the launch to the end of the
-    run: some reached rows, and a status line that says the run completed."""
-    out = sr.result.combined
-    rows = [
-        line
-        for line in out.splitlines()
-        if re.match(r"^\S+ +\S+ +\S+ +-?\d+ +\d", line)
-    ]
-    done = re.search(r"\d+ locations? · run completed", out) is not None
-    return (
-        sr.result.ok and bool(rows) and done,
-        f"exit={sr.result.returncode}, {len(rows)} reached rows, completed={done}",
-    )
-
-
 def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
     """Stories about the gallery's run once it is final: the streams that
     followed it from its launch, and its results."""
@@ -4211,60 +4231,88 @@ def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
             json_capable=False,
         ),
         Story(
-            "runs-coverage--reached",
-            "See which code my run reached, and where first",
-            "I want the locations of one module that the run reached, with the moment of each, "
-            "so I can read the logs up to it.",
-            "One row per reached location with MODULE/LOCATION/FUNCTION/HASH/VTIME columns, every "
-            "row has a HASH and a VTIME that `runs logs` takes, and a status line counts the rows.",
-            ["runs", "coverage", x.run, "--reached", "--module", f.coverage_module],
-            all_reached(True),
-        ),
-        Story(
-            "runs-coverage--unreached",
-            "Find code that my run never reached",
-            "I want the locations of one module that the run never reached, instead of adding a "
-            "Reachable assertion and launching again.",
-            "One row per unreached location with MODULE/LOCATION/FUNCTION columns and no HASH or "
-            "VTIME, then a status line; or, when the run reached every location, only the status "
-            "line that says 0 locations.",
-            ["runs", "coverage", x.run, "--unreached", "--module", f.coverage_module],
-            all_reached(False),
-        ),
-        Story(
-            "runs-coverage-run--follow",
-            "Watch my run reach new code",
-            "I just launched a run, and I want to see each location the moment the run first "
-            "reaches it, until the run ends.",
-            "A header, then the locations reached so far, then each newly reached location as "
-            "it arrives, every row with a HASH and a VTIME, and no row without them. It ends "
-            "with a status line that counts the locations and says the run completed. Exit 0.",
-            coverage_follow_args(x.run),
-            coverage_followed,
+            "runs-coverage-run",
+            "See which files my run reached",
+            "My run is finished, and I want to see how much of each file the run reached, so I "
+            "know where to aim the workload next.",
+            "A `module <id>  <name>  <language>  <coverage>` header per module, sorted by module "
+            "ID, each over a FILE/COVERAGE table sorted by path. COVERAGE reads like "
+            "`66.7%  2/3`. A status line on stderr counts the locations and says the run "
+            "completed.",
+            ["runs", "coverage", x.run],
+            coverage_sections("file"),
             json_capable=False,
-            precaptured=f.coverage_follow,
+        ),
+        Story(
+            "runs-coverage-run--by-function",
+            "Find functions my run never entered",
+            "I want the functions of one module, file by file, with how much of each the run "
+            "reached, to spot the ones at 0%.",
+            "The module's header, then a header per file with its coverage, each over a "
+            "FUNCTION/COVERAGE table in source order.",
+            [
+                "runs",
+                "coverage",
+                x.run,
+                "--module",
+                f.coverage_module,
+                "--by",
+                "function",
+            ],
+            coverage_sections("function"),
+            json_capable=False,
+        ),
+        Story(
+            "runs-coverage-run--by-location",
+            "Go from a reached line to its logs",
+            "I want each location of one module, with the moment the run first reached it, so "
+            "I can read the logs up to that moment.",
+            "The module's header, then a header per file, each over an INPUT_HASH/VTIME/LOCATION "
+            "table in source order. A reached location has an input hash and a vtime that "
+            "`runs logs` takes; an unreached one has neither.",
+            [
+                "runs",
+                "coverage",
+                x.run,
+                "--module",
+                f.coverage_module,
+                "--by",
+                "location",
+            ],
+            coverage_sections("location"),
+            json_capable=False,
+        ),
+        Story(
+            "runs-coverage-run--json",
+            "Download my run's coverage",
+            "My script wants every location of the run as JSON, to compute its own report.",
+            "One JSON object per location, as the API sends it, with the vtime of "
+            "`first_reached.moment` as a number. No status line.",
+            ["--json", "runs", "coverage", x.run],
+            coverage_json,
+            json_capable=False,
         ),
         _help_story(
             "help-runs-coverage",
             "Learn how to read a run's coverage",
-            "I want the help to tell me what a row means, how to narrow the output to a module or "
-            "to reached code, and how to go from a location to its logs.",
+            "I want the help to tell me what a section and a row mean, how to choose the rows, "
+            "and how to go from a location to its logs.",
             ["runs", "coverage"],
-            ["runs", "coverage", x.run, "--reached", "--module", f.coverage_module],
+            ["runs", "coverage", x.run],
             samples=[
                 (
-                    "with --unreached",
+                    "by location",
                     [
                         "runs",
                         "coverage",
                         x.run,
-                        "--unreached",
                         "--module",
                         f.coverage_module,
+                        "--by",
+                        "location",
                     ],
                 )
             ],
-            align=("MODULE", "LOCATION", "FUNCTION", "HASH", "VTIME"),
         ),
         Story(
             "runs-modules",
@@ -6325,7 +6373,6 @@ def main() -> int:
 
         stream: Future[Result] | None = None
         stream_json: Future[Result] | None = None
-        coverage_follow: Future[Result] | None = None
         rewarm: Future[tuple[str, dict, dict]] | None = None
         if need_run:
             # When `--only` selects `launch`, launch a new run so the story has
@@ -6346,12 +6393,6 @@ def main() -> int:
             if selected("runs-stream-run--json"):
                 stream_json = in_background(
                     lambda: sn.run(["--json", *args_stream], timeout=STREAM_TIMEOUT)
-                )
-            if selected("runs-coverage-run--follow"):
-                coverage_follow = in_background(
-                    lambda: sn.run(
-                        coverage_follow_args(run.run), timeout=STREAM_TIMEOUT
-                    )
                 )
             if need_ready:
                 # The rewarm source is another run, so it is found while the
@@ -6425,9 +6466,6 @@ def main() -> int:
                 wait=sn.run(["runs", "wait", run.run, "--timeout", RUN_FINAL_TIMEOUT]),
                 stream=stream.result() if stream is not None else None,
                 stream_json=stream_json.result() if stream_json is not None else None,
-                coverage_follow=(
-                    coverage_follow.result() if coverage_follow is not None else None
-                ),
                 coverage_module=_pick_coverage_module(sn, run.run),
             )
             props = sn.json_lines(["runs", "properties", run.run])

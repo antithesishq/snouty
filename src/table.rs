@@ -85,16 +85,38 @@ impl Table {
     /// whole. Each row has one cell per column, and the caller sanitizes each
     /// cell.
     pub(crate) fn render(&self, rows: Vec<Vec<String>>, width: usize) -> String {
+        let widths = self.widths(&rows, width);
+        self.render_with(rows, widths)
+    }
+
+    /// Lays out each group as [`Table::render`] does, as one table with its
+    /// own headers, but with the column widths of all the groups together, so
+    /// that the tables line up.
+    pub(crate) fn render_groups(&self, groups: Vec<Vec<Vec<String>>>, width: usize) -> Vec<String> {
+        let widths = self.widths(groups.iter().flatten(), width);
+        groups
+            .into_iter()
+            .map(|rows| self.render_with(rows, widths.clone()))
+            .collect()
+    }
+
+    /// The width of each column: its widest cell or header, then shrunk until
+    /// the table fits `width`, as [`Table::render`] describes.
+    fn widths<'a>(
+        &self,
+        rows: impl IntoIterator<Item = &'a Vec<String>>,
+        width: usize,
+    ) -> Vec<usize> {
         let mut widths: Vec<usize> = self
             .columns
             .iter()
-            .enumerate()
-            .map(|(index, column)| {
-                rows.iter()
-                    .map(|row| measure_text_width(&row[index]))
-                    .fold(measure_text_width(column.header), usize::max)
-            })
+            .map(|column| measure_text_width(column.header))
             .collect();
+        for row in rows {
+            for (width, cell) in widths.iter_mut().zip(row) {
+                *width = (*width).max(measure_text_width(cell));
+            }
+        }
 
         let total = widths.iter().sum::<usize>() + GAP.len() * (widths.len() - 1);
         let mut excess = total.saturating_sub(width);
@@ -111,7 +133,10 @@ impl Table {
             widths[index] -= shrink;
             excess -= shrink;
         }
+        widths
+    }
 
+    fn render_with(&self, rows: Vec<Vec<String>>, mut widths: Vec<usize>) -> String {
         // Each row as a list of cells, and each cell as its lines.
         let header = self
             .columns
@@ -299,6 +324,19 @@ mod tests {
             }))
             .render(vec![row(&["aaaaaa", "bbbbbb"])], 12);
         assert_eq!(out.lines().nth(1), Some("aaaaaa  bbb…"));
+    }
+
+    #[test]
+    fn render_groups_shares_column_widths() {
+        let table = Table::builder()
+            .column(Column::new("A"))
+            .column(Column::new("B"));
+        let tables = table.render_groups(
+            vec![vec![row(&["x", "1"])], vec![row(&["longer", "2"])]],
+            usize::MAX,
+        );
+        assert_eq!(tables[0], "A       B\nx       1");
+        assert_eq!(tables[1], "A       B\nlonger  2");
     }
 
     #[test]

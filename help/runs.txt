@@ -19,5 +19,5 @@ Examples:
   snouty runs search <run_id> 'contains({output_text: "error"})'
   snouty runs exec <run_id> <input_hash> <vtime> 'uname -a'
   snouty runs usage --rollup week
-  snouty runs coverage <run_id> --reached --module <module_id>
+  snouty runs coverage <run_id> --by function
   snouty runs modules <run_id>

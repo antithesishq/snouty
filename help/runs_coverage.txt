@@ -1,24 +1,28 @@
-List the instrumented code locations of a run, and when the run first reached each one.
+Show which instrumented code of a run it reached, by file, function or location. Use it to find code that the run never reached, and the moment where it first reached a location. Runs created before release 67.6 have no coverage.
 
-Each row is one location: MODULE, LOCATION, FUNCTION, HASH and VTIME. MODULE is the module ID. LOCATION is the source file, line and column. HASH and VTIME give the moment where the run first reached the location, and are blank for a location that the run has not reached. Pass them as the input_hash and vtime of `{{ t("runs logs")? }}` to read the logs up to that moment.
+The output has a section per module, sorted by module ID. Its header gives the module ID, its name and language, and its coverage. COVERAGE is the share of the instrumented locations that the run reached, then the reached and total counts: `66.7%  2/3`.
 
-Use {{ t("--module")? }} to show only the locations of a module.{% if cli %} Give it more than once for more modules.{% else %} List more module IDs for more modules.{% endif %} Use {{ t("--reached")? }} to show only the locations that the run reached, and {{ t("--unreached")? }} to show only the locations that it did not reach. While the run is in progress, the output is the coverage up to now.
+By default, each module has one row per file: FILE and COVERAGE.
+
+With {{ t("--by")? }} `function`, each file has a header with its coverage, then one row per function, in source order: FUNCTION and COVERAGE. A function at 0% is one that the run never entered.
+
+With {{ t("--by")? }} `location`, each file has a header, then one row per location, in source order: INPUT_HASH, VTIME and LOCATION. LOCATION is the function, line and column. INPUT_HASH and VTIME give the moment where the run first reached the location, and are blank for a location that it has not reached. Pass them as the input_hash and vtime of `{{ t("runs logs")? }}` to read the logs up to that moment.
+
+Several locations can share a function, line and column, such as the copies of a generic function in native code, or the two outcomes of a branch in Python. Each is its own row.
+
+Use {{ t("--module")? }} to show only the locations of a module.{% if cli %} Give it more than once for more modules.{% else %} List more module IDs for more modules.{% endif %} `{{ t("runs modules")? }}` lists the module IDs. While the run is in progress, the output is the coverage up to now.
 
 {% if cli %}
-VTIME is cut to five decimals. With {{ t("--detail")? }}, it prints whole. On a terminal, a long LOCATION or FUNCTION is shortened. After the rows, a status line on stderr counts the locations, and gives the run's status.
-
-With {{ t("--follow")? }}, the command prints the locations that the run reached, then each new location as the run reaches it, until the run finishes. Without {{ t("--reached")? }}, a location prints again when the run reaches it. {{ t("--follow")? }} cannot be used with {{ t("--unreached")? }}.
+VTIME is cut to five decimals, which still names a moment at or before the first reach. With {{ t("--detail")? }}, it prints whole. On a terminal, file names are shortened at the start, and functions and locations at the end. After the output, a status line on stderr counts the locations, and gives the share reached and the run's status.
 {% else %}
-VTIME prints whole. A status line under the rows counts the locations, and gives the run's status.
+VTIME prints whole. A status line under the output counts the locations, and gives the share reached and the run's status.
 {% endif %}
 
-With {{ t("--json")? }}, each location prints as the JSON object that the API sends, on its own line. A reached location has `first_reached`, with the moment and `run_seconds`, the time in seconds from the start of the run.{% if cli %} So `snouty runs coverage <run_id> --json > coverage.ndjson` downloads the coverage. If the server reports an error during the output, snouty prints its error line, and exits with status 3.{% endif %}
+With {{ t("--json")? }}, every location prints as the JSON object that the API sends, on its own line, with the vtime as a JSON number: its `module_id`, `address`, `file`, `function`, and its begin and end lines and columns. A reached location has `first_reached`, with the `moment` and `run_seconds`, the time in seconds from the start of the run.{% if cli %} So `snouty runs coverage <run_id> --json > coverage.ndjson` downloads the coverage.{% endif %}
 
 The run must be ready or complete. If it is not, the command waits until it is ready, and says that it waits.
 
 Examples:
-  {{ t("snouty runs coverage <run_id> --reached --module <module_id>")? }}
-  {{ t("snouty runs coverage <run_id> --unreached --module <module_id>")? }}
-{%- if cli %}
-  snouty runs coverage <run_id> --reached --follow
-{%- endif %}
+  {{ t("snouty runs coverage <run_id>")? }}
+  {{ t("snouty runs coverage <run_id> --by function --module <module_id>")? }}
+  {{ t("snouty runs coverage <run_id> --by location --module <module_id>")? }}

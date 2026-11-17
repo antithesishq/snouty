@@ -123,7 +123,6 @@ macro_rules! outln {
 
 // Declared after the macros above, so that the modules can use them.
 mod coverage;
-pub use coverage::CoverageCut;
 mod modules;
 pub mod usage;
 
@@ -2400,11 +2399,9 @@ fn stream_error_message(entry: &Value) -> Option<&str> {
 
 /// The failure a `Stream_Error` line becomes.
 fn mid_stream_error(message: &str) -> color_eyre::eyre::Report {
-    eyre!("{MID_STREAM_ERROR}: {message}").note(MID_STREAM_NOTE)
+    eyre!("the server reported an error mid-stream: {message}")
+        .note("output produced before the error may be incomplete")
 }
-
-const MID_STREAM_ERROR: &str = "the server reported an error mid-stream";
-const MID_STREAM_NOTE: &str = "output produced before the error may be incomplete";
 
 /// Event lines ready to consume: a `Stream_Error` line fails the stream, and
 /// `moment.vtime` normalized to an exact JSON number. Commands whose
@@ -5477,7 +5474,7 @@ mod tests {
                 "run-1",
                 READY_POLL,
                 coverage::COVERAGE_RETRY,
-                || api.get_coverage_locations("run-1", None, None, false),
+                || api.get_coverage_locations("run-1", None),
                 |_, err| err,
             )
             .await
@@ -5513,7 +5510,7 @@ mod tests {
                 "run-1",
                 READY_POLL,
                 coverage::COVERAGE_RETRY,
-                || api.get_coverage_locations("run-1", None, None, false),
+                || api.get_coverage_locations("run-1", None),
                 |_, err| err,
             );
             let result = tokio::time::timeout(Duration::from_secs(5), send)
@@ -5550,7 +5547,7 @@ mod tests {
                 run_id,
                 READY_POLL,
                 coverage::COVERAGE_RETRY,
-                || api.get_coverage_locations(run_id, None, None, false),
+                || api.get_coverage_locations(run_id, None),
                 coverage::explain_coverage_error,
             );
             let err = tokio::time::timeout(Duration::from_secs(5), send)

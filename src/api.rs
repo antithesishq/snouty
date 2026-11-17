@@ -820,13 +820,6 @@ fn run_not_found(run_id: &str, err: Report) -> Report {
     }
 }
 
-/// Which half of a run's locations to list.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Reach {
-    Reached,
-    Unreached,
-}
-
 pub struct AntithesisApi {
     client: generated::Client,
     base_url: String,
@@ -1247,26 +1240,16 @@ impl AntithesisApi {
         }
     }
 
-    /// Open the run's per-location coverage: NDJSON `Location_Coverage`
-    /// records. `reach` keeps only one half of the locations. With `follow`,
-    /// the stream stays open until the run finishes; the server refuses
-    /// `follow` with [`Reach::Unreached`].
+    /// The run's instrumented locations, as NDJSON `Location_Coverage`
+    /// records: every location of `module_id`, or of every module.
     pub async fn get_coverage_locations(
         &self,
         run_id: &str,
         module_id: Option<&str>,
-        reach: Option<Reach>,
-        follow: bool,
     ) -> Result<JsonStream> {
         let mut request = self.client.get_coverage_locations().run_id(run_id);
         if let Some(module_id) = module_id {
             request = request.module_id(module_id);
-        }
-        if let Some(reach) = reach {
-            request = request.covered(reach == Reach::Reached);
-        }
-        if follow {
-            request = request.is_streaming(true);
         }
         match request.send().await {
             Ok(response) => Ok(json_lines(response.into_inner().into_inner())),

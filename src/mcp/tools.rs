@@ -118,7 +118,7 @@ tools! {
     RunsLogs => "runs_logs", Reads, hidden: [], required: [];
     RunsSearch => "runs_search", Reads, hidden: ["follow"], required: [];
     RunsUsage => "runs_usage", Reads, hidden: [], required: [];
-    RunsCoverage => "runs_coverage", Reads, hidden: ["follow"], required: [];
+    RunsCoverage => "runs_coverage", Reads, hidden: [], required: [];
     RunsModules => "runs_modules", Reads, hidden: [], required: [];
     // With no script, `runs exec` reads it from stdin, and a child's stdin is
     // null.

@@ -11,7 +11,7 @@ use clap::error::ErrorKind;
 use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
 use crate::api::{
-    FaultTolerance, PerformanceTier, Reach, RunStatus, SearchLimit, SourceRunId, SourceSessionId,
+    FaultTolerance, PerformanceTier, RunStatus, SearchLimit, SourceRunId, SourceSessionId,
 };
 
 use crate::docker_credential::HELPER_NAME;
@@ -1057,8 +1057,8 @@ pub enum RunsCommands {
     #[command(arg = json(JsonShape::Lines))]
     Usage(RunsUsageArgs),
 
-    /// List the instrumented code locations of a run, and when the run first
-    /// reached each one
+    /// Show which instrumented code of a run it reached, by file, function or
+    /// location
     #[command(arg = json(JsonShape::Lines))]
     Coverage(RunsCoverageArgs),
     /// List the instrumented modules that a run loaded
@@ -1088,63 +1088,25 @@ pub struct RunsCoverageArgs {
     )]
     pub module_ids: Vec<String>,
 
-    #[command(flatten)]
-    pub reach: ReachArg,
-
-    /// Keep the connection open, and print each location as the run reaches
-    /// it, until the run finishes
-    #[arg(short = 'f', long)]
-    pub follow: bool,
+    /// What each row is: a file, a function or a location [default: file]
+    #[arg(long, value_enum)]
+    pub by: Option<CoverageLevel>,
 
     /// Print each vtime whole
     #[arg(short = 'd', long)]
     pub detail: bool,
 }
 
-/// `--reached` or `--unreached`: one half of a run's locations, or both
-/// halves when neither flag is given.
-#[derive(Clone, Copy, Default)]
-pub struct ReachArg(pub Option<Reach>);
-
-impl FromArgMatches for ReachArg {
-    fn from_arg_matches(matches: &clap::ArgMatches) -> Result<Self, clap::Error> {
-        // clap makes the flags exclusive.
-        Ok(Self(if matches.get_flag("reached") {
-            Some(Reach::Reached)
-        } else if matches.get_flag("unreached") {
-            Some(Reach::Unreached)
-        } else {
-            None
-        }))
-    }
-
-    fn update_from_arg_matches(&mut self, matches: &clap::ArgMatches) -> Result<(), clap::Error> {
-        *self = Self::from_arg_matches(matches)?;
-        Ok(())
-    }
-}
-
-impl Args for ReachArg {
-    fn augment_args(cmd: clap::Command) -> clap::Command {
-        cmd.arg(
-            clap::Arg::new("reached")
-                .long("reached")
-                .action(clap::ArgAction::SetTrue)
-                .conflicts_with("unreached")
-                .help("Only list the locations that the run reached"),
-        )
-        .arg(
-            clap::Arg::new("unreached")
-                .long("unreached")
-                .action(clap::ArgAction::SetTrue)
-                .conflicts_with("follow")
-                .help("Only list the locations that the run has not reached"),
-        )
-    }
-
-    fn augment_args_for_update(cmd: clap::Command) -> clap::Command {
-        Self::augment_args(cmd)
-    }
+/// The rows of `runs coverage`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub enum CoverageLevel {
+    /// One row per file, under a header per module
+    #[default]
+    File,
+    /// One row per function, under a header per module and per file
+    Function,
+    /// One row per location, under a header per module and per file
+    Location,
 }
 
 #[derive(Args)]

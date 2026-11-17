@@ -17,10 +17,10 @@ use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::pin::Pin;
 use std::task::{Context as TaskContext, Poll, Waker};
 
+use crate::erofs_builder::layout::mode;
+use crate::erofs_builder::{CreateOptions, InodeMeta};
 use base64::Engine as _;
 use color_eyre::eyre::{Context, Result, bail, ensure, eyre};
-use erofs_builder::layout::mode;
-use erofs_builder::{CreateOptions, InodeMeta};
 use flate2::read::MultiGzDecoder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -148,7 +148,7 @@ struct StagedLayer {
 /// One entry of a staged layer, with a path relative to the layer's `diff`.
 enum Staged {
     Directory(String, InodeMeta),
-    File(String, InodeMeta, erofs_builder::Data),
+    File(String, InodeMeta, crate::erofs_builder::Data),
     Symlink(String, Vec<u8>, InodeMeta),
     Node(String, InodeMeta),
     HardLink(String, String),
@@ -435,7 +435,7 @@ impl Meta {
 }
 
 type Xattrs = BTreeMap<String, Vec<u8>>;
-type Image = erofs_builder::Writer<Blocking<io::BufWriter<File>>>;
+type Image = crate::erofs_builder::Writer<Blocking<io::BufWriter<File>>>;
 
 struct StoreWriter {
     image: Image,
@@ -450,7 +450,7 @@ impl StoreWriter {
     fn new(output: File) -> Result<Self> {
         let now = chrono::Utc::now();
         let mtime = u64::try_from(now.timestamp()).unwrap_or_default();
-        let image = run(erofs_builder::Writer::new(
+        let image = run(crate::erofs_builder::Writer::new(
             Blocking::new(io::BufWriter::new(output)),
             CreateOptions {
                 build_time: mtime,

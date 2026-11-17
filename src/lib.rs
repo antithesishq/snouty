@@ -14,6 +14,14 @@ pub mod docker_credential;
 pub mod docs;
 pub mod doctor;
 pub(crate) mod env;
+/// The vendored erofs-builder, a git subtree under vendor/ that its
+/// VENDORED.md describes. snouty compiles its sources in, instead of
+/// depending on the crate by path, so that `cargo publish` takes snouty.
+#[doc(hidden)]
+#[path = "../vendor/erofs-builder/src/lib.rs"]
+#[allow(clippy::all, clippy::pedantic)]
+#[rustfmt::skip]
+pub mod erofs_builder;
 pub mod error;
 pub mod event_render;
 pub mod event_set_dsl;

@@ -9,9 +9,9 @@ use std::process::Stdio;
 
 use std::path::Path;
 
-use erofs_builder::Reader;
 use snouty::container::ContainerRuntime;
 use snouty::containers_storage::{Converted, convert};
+use snouty::erofs_builder::Reader;
 
 fn new_header(mode: u32) -> tar::Header {
     let mut header = tar::Header::new_gnu();

@@ -1,4 +1,4 @@
-//! Async reader for images produced by this crate's [`Writer`](crate::Writer).
+//! Async reader for images produced by this crate's [`Writer`](super::Writer).
 //!
 //! Only the feature subset the writer emits is supported: uncompressed
 //! flat/inline data layouts, no xattrs, no chunked or compressed files.
@@ -8,7 +8,8 @@ use std::path::Path;
 
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _, SeekFrom};
 
-use crate::layout::{
+// snouty: `super`, so that snouty can compile this crate as its module.
+use super::layout::{
     mode, DataLayout, FileType, EROFS_I_DATALAYOUT_BIT, EROFS_I_VERSION_BIT, EROFS_SUPER_MAGIC_V1,
     EROFS_SUPER_OFFSET, SIZE_DIRENT, SIZE_INODE_COMPACT, SIZE_INODE_EXTENDED,
 };

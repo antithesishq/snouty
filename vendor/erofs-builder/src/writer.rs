@@ -3,7 +3,8 @@
 use std::collections::{HashMap, HashSet};
 use std::io;
 
-use crate::layout::*;
+// snouty: `super`, so that snouty can compile this crate as its module.
+use super::layout::*;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 
 pub const DEFAULT_BLOCK_SIZE: usize = 4096;
@@ -698,7 +699,8 @@ fn plan_layout(root: &mut Node, bs: usize, bt: u64, btn: u32) {
                 n.layout = match &n.content {
                     Content::Empty => DataLayout::FlatPlain,
                     Content::Streamed { .. } => DataLayout::FlatPlain,
-                    Content::Inline(ref d) => {
+                    // snouty: no `ref`, which edition 2024 rejects in this pattern.
+                    Content::Inline(d) => {
                         if d.is_empty() {
                             DataLayout::FlatPlain
                         } else {

@@ -4,9 +4,11 @@
 use std::collections::HashMap;
 use std::io::Cursor;
 
+// snouty: the crate is snouty's erofs_builder module.
 use erofs_builder::layout::mode;
 use erofs_builder::layout::{EROFS_SUPER_MAGIC_V1, EROFS_SUPER_OFFSET};
 use erofs_builder::{CreateOptions, InodeMeta, Writer};
+use snouty::erofs_builder;
 
 const BS: usize = 4096;
 

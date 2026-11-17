@@ -186,6 +186,19 @@ mock-server 403 ''
 stderr 'did not accept the credential; nothing was saved'
 ! exists rejected_403/.config/snouty/settings.toml
 
+# Without a terminal, a rejected stored credential names the fixes that work
+# there, for the selected profile.
+isolate-home stored_rejected
+substitute ~/.config/snouty/credentials.toml
+mock-server 401 ''
+env ANTITHESIS_API_KEY=
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
+! snouty --profile staging login --tenant spec-tenant
+stderr 'did not accept the credential; nothing was saved'
+stderr -literal 'set ANTITHESIS_API_KEY, or run `snouty login --profile staging` in a terminal'
+! exists stored_rejected/.config/snouty/settings.toml
+
 # A GitHub Actions OIDC token that the tenant rejects needs Antithesis to trust
 # it: the job already has `id-token: write`, and ANTITHESIS_API_KEY does not
 # hold the token.
@@ -280,3 +293,7 @@ tenant = "spec-tenant"
 registry = "not a registry"
 -- saved_unparsable.toml --
 tenant = "spec-tenant
+-- stored_rejected/.config/snouty/credentials.toml --
+[profile.staging]
+type = "ApiKey"
+api_key = "${FAKE_API_KEY_A}"

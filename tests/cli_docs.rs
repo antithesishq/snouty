@@ -75,6 +75,35 @@ fn docs_update_failure_with_cached_db_warns_and_uses_cache() {
         ));
 }
 
+// The status of a failed download is a note under the error.
+#[test]
+fn docs_download_failure_notes_the_status() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for mut stream in listener.incoming().flatten() {
+            let mut buf = [0u8; 8192];
+            let _ = stream.read(&mut buf);
+            let _ =
+                stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n");
+        }
+    });
+    let cache_dir = TempDir::new().unwrap();
+
+    set_docs_cache_env(&mut snouty(), &cache_dir)
+        .env("ANTITHESIS_DOCS_URL", url)
+        .args(["docs", "search", "docker"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Error: failed to download the documentation database",
+        ))
+        .stderr(predicate::str::contains(
+            "Note: the documentation server answered 503 Service Unavailable",
+        ));
+}
+
 #[test]
 fn docs_update_that_never_connects_times_out_and_uses_cache() {
     let cache_dir = TempDir::new().unwrap();

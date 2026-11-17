@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::num::NonZeroU64;
 use std::sync::Arc;
@@ -792,10 +791,18 @@ pub enum RewarmSource {
     Session(SourceSessionId),
 }
 
+impl std::fmt::Display for RewarmSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Run(id) => write!(f, "run {}", id.as_str()),
+            Self::Session(id) => write!(f, "session {}", id.as_str()),
+        }
+    }
+}
+
 /// Turn the 404 of an endpoint whose 404 can only mean a bad run ID into
-/// "run not found: X", instead of a bare "API error: 404 Not Found". Any
-/// other error passes through untouched, so a real server fault is never
-/// masked.
+/// "run not found: X". Any other error passes through untouched, so a real
+/// server fault is never masked.
 fn run_not_found(run_id: &str, err: Report) -> Report {
     if crate::error::api_error_status(&err) == Some(404) {
         user_error(format!("run not found: {run_id}"))
@@ -1435,10 +1442,11 @@ impl AntithesisApi {
         let mut report = Report::new(ApiError {
             status,
             message: format!("the Antithesis API rejected the {}", self.authentication()),
+            server_message: message.clone(),
         })
         .suppress_backtrace(true);
         if !message.is_empty() && Some(message.as_str()) != reason {
-            report = report.note(message);
+            report = report.note(cut_lines(&message));
         }
         match &self.rejected_next_step {
             Some(next_step) => report.suggestion(next_step.clone()),
@@ -1990,47 +1998,42 @@ pub(crate) fn run_version(run_id: &str) -> Option<u32> {
     version.parse::<u32>().ok()
 }
 
-fn format_api_error(status: u16, body: &str) -> Report {
+/// Build the error for an API answer of `status` whose body says `message`.
+/// The first line is snouty's own text. The server's text follows as a note,
+/// because snouty cannot know that detail. A rejected events-search query
+/// shows only the query, the caret and the reason.
+fn format_api_error(status: u16, message: &str) -> Report {
     let reason = reqwest::StatusCode::from_u16(status)
         .ok()
         .and_then(|s| s.canonical_reason())
         .unwrap_or("");
-    let body = body.trim();
+    let message = message.trim();
     // Servers often echo the status reason at the front of the body
-    // ("Bad Request — Bad request: invalid vtime"); drop the redundant echo
-    // and keep only the informative remainder.
-    let body = match body.get(..reason.len()) {
-        Some(prefix) if !reason.is_empty() && prefix.eq_ignore_ascii_case(reason) => body
+    // ("Bad request: invalid vtime"); drop the echo.
+    let detail = match message.get(..reason.len()) {
+        Some(prefix) if !reason.is_empty() && prefix.eq_ignore_ascii_case(reason) => message
             [reason.len()..]
             .trim_start_matches([':', '-', ' '])
             .trim_start(),
-        _ => body,
+        _ => message,
     };
-
-    let mut msg = format!("API error: {status}");
-    if !reason.is_empty() {
-        msg.push(' ');
-        msg.push_str(reason);
-    }
-    if !body.is_empty() {
-        // A multi-line body carries a layout of its own — a caret under the
-        // offending token, for one. It goes on its own line and takes the same
-        // indent on every line, so the caret keeps pointing at the token above
-        // it.
-        if body.contains('\n') {
-            msg.push('\n');
-            msg.push_str(&indent_lines(body, "  "));
-        } else {
-            msg.push_str(" — ");
-            msg.push_str(body);
+    let rejected_query = query_rejection(detail).filter(|_| status == 400);
+    let summary = match rejected_query {
+        // The query, the caret and the reason keep their lines and one indent,
+        // so the caret stays under the token that it marks.
+        Some(from_query) => {
+            format!("the query is invalid:\n{}", indent_lines(from_query, "  "))
         }
-    }
-    // Carry the HTTP status structurally so callers can classify the failure
-    // (e.g. "was this a 404?") without sniffing the rendered message string.
-    let report = Report::new(ApiError {
+        None => api_error_summary(status).to_string(),
+    };
+    let mut report = Report::new(ApiError {
         status,
-        message: msg,
+        message: summary,
+        server_message: message.to_string(),
     });
+    if rejected_query.is_none() && !detail.is_empty() {
+        report = report.note(cut_lines(detail));
+    }
     // A 4xx is the user's to fix (bad credentials, unknown run id, invalid
     // filter, …), so it prints as a clean message — no backtrace, even under
     // `RUST_BACKTRACE`. 5xx and other statuses are genuine faults and keep theirs.
@@ -2038,6 +2041,18 @@ fn format_api_error(status: u16, body: &str) -> Report {
         report.suppress_backtrace(true)
     } else {
         report
+    }
+}
+
+/// Snouty's text for an API answer of `status`.
+fn api_error_summary(status: u16) -> &'static str {
+    match status {
+        404 => "the Antithesis API did not find the requested resource",
+        429 => "you exceeded the Antithesis API rate limit",
+        503 => "the Antithesis API is unavailable",
+        400..=499 => "the Antithesis API rejected the request",
+        500..=599 => "the Antithesis API failed to complete the request",
+        _ => "the Antithesis API sent an unexpected response",
     }
 }
 
@@ -2085,7 +2100,6 @@ fn char_pos_to_byte_offset(body: &str, line: usize, column: usize) -> usize {
     body.len()
 }
 
-/// Render a failed API call for the user, status first.
 fn render_api_failure(failure: ApiFailure) -> Report {
     match failure {
         ApiFailure::Response {
@@ -2105,33 +2119,38 @@ fn render_api_failure(failure: ApiFailure) -> Report {
     }
 }
 
-const DSL_ERROR_MARKER: &str = "Event set DSL error: ";
+const DSL_ERROR_LABEL: &str = "Event set DSL error:";
 
-/// Break a query rejection so its caret points into the query.
+/// The query, the caret line and the reason of an events-search rejection,
+/// or `None` when `message` is not one.
 ///
-/// The server ends a prose line with the rejected query, then writes a line
-/// with one `^` whose column counts from the start of the query, then the
-/// reason (observed on tenant `orbitinghail`, release 62.2). One line break
-/// after the marker puts the query where the caret's column is right.
-///
-/// Only that exact shape is rewritten. Any other message comes back
-/// unchanged, so a change in the server's format degrades to the raw
-/// message, never to a caret under the wrong character.
-fn lay_out_dsl_error(message: &str) -> Cow<'_, str> {
-    let Some((prose, from_query)) = message.split_once(DSL_ERROR_MARKER) else {
-        return Cow::Borrowed(message);
-    };
-    if from_query
+/// The server ends a prose line with the label and the rejected query, then
+/// writes a line with one `^` whose column counts from the start of the
+/// query, then the reason (observed on tenant `orbitinghail`, release 62.2).
+/// Only that exact shape matches, so a change in the server's format degrades
+/// to the generic error, never to a caret under the wrong character.
+fn query_rejection(message: &str) -> Option<&str> {
+    let (_, rest) = message.split_once(DSL_ERROR_LABEL)?;
+    let from_query = rest.strip_prefix(' ')?;
+    from_query
         .lines()
         .nth(1)
-        .is_none_or(|line| line.trim() != "^")
-    {
-        return Cow::Borrowed(message);
-    }
-    Cow::Owned(format!(
-        "{prose}{}\n{from_query}",
-        DSL_ERROR_MARKER.trim_end()
-    ))
+        .is_some_and(|line| line.trim() == "^")
+        .then_some(from_query)
+}
+
+/// Cut each line of `text` to 200 characters, so that an enormous error page
+/// stays a usable note. Each line gets its own cut, because the last line of
+/// a message often carries the reason.
+fn cut_lines(text: &str) -> String {
+    const MAX_LEN: usize = 200;
+    text.lines()
+        .map(|line| match line.char_indices().nth(MAX_LEN) {
+            Some((offset, _)) => format!("{}…", &line[..offset]),
+            None => line.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// A client error reduced to what a user-facing message is built from.
@@ -2253,30 +2272,16 @@ async fn read_error_body(mut response: reqwest::Response) -> String {
 /// it's there. Anything else — an empty body, an HTML error page from an
 /// intermediary, the launch endpoints' `{"statusCode", "runId"}` envelope, or a
 /// shape the spec never described — is shown as it came, so the user still has
-/// something to debug with. Echoing the launch envelope is worth it even though
-/// its `statusCode` duplicates the status line: whether `runId` is present
-/// distinguishes a rejection the test launcher produced from one an intermediary
-/// made on its behalf.
+/// something to debug with. Echo the launch envelope: whether `runId` is
+/// present shows if the test launcher or an intermediary made the rejection.
 ///
-/// Runs of whitespace collapse to a single space before the cut, so that an
-/// indented error page spends its 200 characters on text rather than on
-/// margins. That collapse applies only to the unrecognized shapes. A `message`
-/// keeps its own line breaks: the events-search endpoint answers an invalid
-/// query with 400 and a caret line under the offending token (observed on
-/// tenant `orbitinghail`, release 62.2 — `… Event set DSL error: bogus_verb({x:
-/// "y"})`, then `^`, then `invalid with_next`), and a caret on one line runs
-/// into the text it points at. Every line gets the 200 characters, because
-/// the last line of such a body carries the reason.
+/// Runs of whitespace collapse to a single space in the unrecognized shapes,
+/// so that an indented error page spends its characters on text rather than
+/// on margins. A `message` keeps its own line breaks: the events-search
+/// endpoint puts a caret line under the offending token (see
+/// [`query_rejection`]).
 fn error_body_message(body: &str) -> String {
-    const MAX_LEN: usize = 200;
-
-    fn truncate(line: &str) -> String {
-        match line.char_indices().nth(MAX_LEN) {
-            Some((offset, _)) => format!("{}…", &line[..offset]),
-            None => line.to_string(),
-        }
-    }
-
+    debug!("API error response body: {}", sanitize_multiline(body));
     let text = serde_json::from_str::<serde_json::Value>(body)
         .ok()
         .and_then(|value| {
@@ -2287,14 +2292,11 @@ fn error_body_message(body: &str) -> String {
         })
         .unwrap_or_else(|| body.split_whitespace().collect::<Vec<_>>().join(" "));
 
-    // Before the per-line cut, so the query gets a line of its own.
-    let text = lay_out_dsl_error(&text);
     // `render_report` splits the error from its `Note:`/`Suggestion:` tail at
     // the first blank line, so a message that carries one prints its tail twice.
     sanitize_multiline(text.trim())
         .lines()
         .filter(|line| !line.trim().is_empty())
-        .map(truncate)
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -2318,6 +2320,11 @@ mod tests {
     use tempfile::TempDir;
     use wiremock::matchers::{body_json, method, path, query_param, query_param_is_missing};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// The report as the user sees it, without color.
+    fn plain_debug(report: &Report) -> String {
+        crate::event_render::strip_ansi(&format!("{report:?}")).into_owned()
+    }
 
     // The stream fetches a page only when an item is pulled from it, so a
     // caller that stops early never pays for the next page.
@@ -2573,29 +2580,25 @@ mod tests {
         ClientError::UnexpectedResponse(response)
     }
 
-    // The status is the whole message when the server sent no body — which is
-    // what the gateway does for some rejections, on any endpoint. The point of
-    // #180 is that the status survives that; nothing further is added.
+    // The gateway sends no body for some rejections, on any endpoint.
     #[tokio::test]
-    async fn render_api_failure_reports_the_status_for_an_empty_body() {
+    async fn render_api_failure_keeps_the_status_for_an_empty_body() {
         for status in [403, 429, 502] {
             let report = render_api_failure(classify_client_error(served_error(status, "")).await);
-            let debug = format!("{report:?}");
-
-            assert!(
-                debug.contains(&format!("API error: {status}")),
-                "the transport status must survive an empty body, got: {debug}"
-            );
+            assert_eq!(crate::error::api_error_status(&report), Some(status));
         }
     }
 
     #[tokio::test]
-    async fn render_api_failure_shows_a_non_empty_body() {
+    async fn render_api_failure_shows_a_non_empty_body_as_a_note() {
         let report = render_api_failure(classify_client_error(served_error(400, "not json")).await);
-        let debug = format!("{report:?}");
+        let debug = plain_debug(&report);
 
-        assert!(debug.contains("API error: 400"), "got: {debug}");
-        assert!(debug.contains("not json"), "got: {debug}");
+        assert_eq!(
+            report.to_string(),
+            "the Antithesis API rejected the request"
+        );
+        assert!(debug.contains("Note: not json"), "got: {debug}");
     }
 
     // The read is bounded, so a proxy answering an error with a huge page cannot
@@ -2661,7 +2664,7 @@ mod tests {
         assert!(!rendered.contains(r#"{"message""#), "got: {rendered}");
     }
 
-    // ---- lay_out_dsl_error ------------------------------------------------
+    // ---- query_rejection ---------------------------------------------------
 
     /// The `message` of a live rejection (tenant `orbitinghail`, release 62.2).
     const DSL_REJECTION: &str = "failed to execute pangolin query due to a runtime error: \
@@ -2671,13 +2674,11 @@ mod tests {
                                  expected one of: output_text, source, stream, container";
 
     #[test]
-    fn lay_out_dsl_error_starts_the_query_on_its_own_line() {
-        let laid_out = lay_out_dsl_error(DSL_REJECTION);
-        let lines: Vec<&str> = laid_out.lines().collect();
+    fn query_rejection_starts_at_the_query() {
+        let lines: Vec<&str> = query_rejection(DSL_REJECTION).unwrap().lines().collect();
         assert_eq!(
             lines,
             [
-                "failed to execute pangolin query due to a runtime error: Event set DSL error:",
                 "contains({output_txt: \"x\"})",
                 "                         ^",
                 "invalid contains",
@@ -2687,19 +2688,20 @@ mod tests {
     }
 
     #[test]
-    fn lay_out_dsl_error_leaves_every_other_shape_alone() {
-        let limit = "limit 1000 is out of the range 1..=999";
-        assert_eq!(lay_out_dsl_error(limit), limit);
-        let no_caret = "Event set DSL error: contains(\nexpected `{`";
-        assert_eq!(lay_out_dsl_error(no_caret), no_caret);
-        let last = "Bad request: Event set DSL error: bogus(";
-        assert_eq!(lay_out_dsl_error(last), last);
-        let not_a_caret = "Event set DSL error: bogus(\n^ here\ninvalid";
-        assert_eq!(lay_out_dsl_error(not_a_caret), not_a_caret);
+    fn query_rejection_matches_no_other_shape() {
+        for message in [
+            "limit 1000 is out of the range 1..=999",
+            "Event set DSL error: contains(\nexpected `{`",
+            "Bad request: Event set DSL error: bogus(",
+            "Event set DSL error: bogus(\n^ here\ninvalid",
+            "Event set DSL error:\nunexpected EOF",
+        ] {
+            assert_eq!(query_rejection(message), None, "{message}");
+        }
     }
 
     #[hegel::test]
-    fn lay_out_dsl_error_puts_the_caret_under_the_query(tc: hegel::TestCase) {
+    fn query_rejection_puts_the_caret_under_the_query(tc: hegel::TestCase) {
         let one_line = || {
             generators::text()
                 .max_size(60)
@@ -2711,13 +2713,12 @@ mod tests {
             "{}^",
             " ".repeat(tc.draw(generators::integers::<usize>().max_value(80)))
         );
-        let message = format!("Bad request: {DSL_ERROR_MARKER}{query}\n{caret}\n{reason}");
+        let message = format!("Bad request: {DSL_ERROR_LABEL} {query}\n{caret}\n{reason}");
 
-        let laid_out = lay_out_dsl_error(&message);
-        let lines: Vec<&str> = laid_out.lines().collect();
-        assert_eq!(lines[1], query);
-        assert_eq!(lines[2], caret);
-        assert_eq!(lines[3..].join("\n"), reason);
+        let lines: Vec<&str> = query_rejection(&message).unwrap().lines().collect();
+        assert_eq!(lines[0], query);
+        assert_eq!(lines[1], caret);
+        assert_eq!(lines[2..].join("\n"), reason);
     }
 
     // The standard `{"message": …}` envelope is unwrapped; anything else is
@@ -2735,18 +2736,19 @@ mod tests {
         assert_eq!(error_body_message(""), "");
     }
 
-    // An intermediary's error page is multi-line and can be enormous; collapse
-    // it onto one line and cap it so it stays a usable one-line diagnostic.
+    // An intermediary's error page is multi-line and can be enormous;
+    // collapse it onto one line, and the note caps it.
     #[test]
-    fn error_body_message_collapses_and_truncates_html() {
+    fn an_html_page_becomes_one_capped_note_line() {
         let message = error_body_message(&format!(
             "<html>\n  <body>{}</body>\n</html>\n",
             "x".repeat(500)
         ));
         assert!(message.starts_with("<html> <body>xxx"), "got: {message}");
         assert!(!message.contains('\n'), "got: {message}");
-        assert!(message.ends_with('…'), "got: {message}");
-        assert_eq!(message.chars().count(), 201);
+        let note = cut_lines(&message);
+        assert!(note.ends_with('…'), "got: {note}");
+        assert_eq!(note.chars().count(), 201);
     }
 
     #[test]
@@ -2755,23 +2757,21 @@ mod tests {
             error_body_message(
                 r#"{"message":"Event set DSL error: bogus_verb({x: \"y\"})\n^\ninvalid with_next"}"#
             ),
-            "Event set DSL error:\nbogus_verb({x: \"y\"})\n^\ninvalid with_next"
+            "Event set DSL error: bogus_verb({x: \"y\"})\n^\ninvalid with_next"
         );
     }
 
-    // A long query pushes the caret and the reason past a flat 200-character
-    // cut. Each line gets the cap, so the reason still arrives.
+    // A long first line would push the reason past a flat 200-character cut.
+    // Each line gets the cap, so the reason still arrives.
     #[test]
-    fn error_body_message_truncates_each_line_of_a_message() {
+    fn cut_lines_cuts_each_line() {
         let query = "y".repeat(500);
-        let message = error_body_message(&format!(
-            r#"{{"message":"error: {query}\n^\ninvalid verb"}}"#
-        ));
+        let message = cut_lines(&format!("error: {query}\nat verb\ninvalid verb"));
         let lines: Vec<&str> = message.lines().collect();
         assert_eq!(lines.len(), 3, "got: {message}");
         assert!(lines[0].ends_with('…'), "got: {}", lines[0]);
         assert_eq!(lines[0].chars().count(), 201);
-        assert_eq!(lines[1], "^");
+        assert_eq!(lines[1], "at verb");
         assert_eq!(lines[2], "invalid verb");
     }
 
@@ -3109,7 +3109,7 @@ mod tests {
                 "body {body:?} lost its status"
             );
             assert!(
-                format!("{report:#}").contains(&format!("API error: {status}")),
+                !format!("{report:#}").contains(&status.to_string()),
                 "body {body:?} produced: {report:#}"
             );
         }
@@ -3125,10 +3125,8 @@ mod tests {
         let params = Params::from_key_value_pairs(["antithesis.duration=30"]).unwrap();
 
         let report = api.launch_test("basic_test", &params).await.unwrap_err();
-        assert_eq!(
-            format!("{report:#}"),
-            "API error: 404 Not Found — bad request"
-        );
+        let debug = plain_debug(&report);
+        assert!(debug.contains("Note: bad request"), "got: {debug}");
     }
 
     #[tokio::test]
@@ -3970,55 +3968,99 @@ mod tests {
 
     #[test]
     fn format_api_error_carries_structured_status() {
-        use crate::error::api_error_status;
+        use crate::error::{api_error_message, api_error_status};
         // The status is read structurally, not sniffed from the message — so a
         // 500 whose body mentions "404" still classifies as a 500.
         assert_eq!(
             api_error_status(&format_api_error(404, "run not found")),
             Some(404)
         );
+        let report = format_api_error(500, "upstream returned a 404 page");
+        assert_eq!(api_error_status(&report), Some(500));
         assert_eq!(
-            api_error_status(&format_api_error(500, "upstream returned a 404 page")),
-            Some(500)
+            api_error_message(&report),
+            Some("upstream returned a 404 page")
         );
-        // And the rendered message still contains the body for the user.
-        let rendered = format!("{:#}", format_api_error(404, "run not found"));
-        assert!(rendered.contains("API error: 404"));
-        assert!(rendered.contains("run not found"));
     }
 
     #[test]
-    fn format_api_error_indents_a_multiline_body() {
-        let rendered = format!(
-            "{:#}",
-            format_api_error(
-                400,
-                "Event set DSL error: bogus_verb({x: \"y\"})\n^\ninvalid with_next"
-            )
+    fn format_api_error_opens_with_snoutys_text() {
+        for (status, summary) in [
+            (400, "the Antithesis API rejected the request"),
+            (
+                404,
+                "the Antithesis API did not find the requested resource",
+            ),
+            (409, "the Antithesis API rejected the request"),
+            (429, "you exceeded the Antithesis API rate limit"),
+            (503, "the Antithesis API is unavailable"),
+            (502, "the Antithesis API failed to complete the request"),
+            (302, "the Antithesis API sent an unexpected response"),
+        ] {
+            let report = format_api_error(status, "vtime out of range");
+            assert_eq!(report.to_string(), summary);
+            let debug = plain_debug(&report);
+            assert!(debug.contains("Note: vtime out of range"), "got: {debug}");
+        }
+    }
+
+    // An events-search rejection drops the server's prose, which names an
+    // internal engine, and keeps the query, the caret and the reason, each
+    // line with the same indent.
+    #[test]
+    fn format_api_error_reports_an_invalid_query() {
+        let message = error_body_message(
+            &serde_json::json!({
+                "message": "failed to execute pangolin query due to a runtime error: \
+                            Event set DSL error: bogus_verb({x: \"y\"})\n^\ninvalid with_next"
+            })
+            .to_string(),
         );
+        let report = format_api_error(400, &message);
         assert_eq!(
-            rendered,
-            "API error: 400 Bad Request\n  Event set DSL error: bogus_verb({x: \"y\"})\n  ^\n  invalid with_next"
+            report.to_string(),
+            "the query is invalid:\n  bogus_verb({x: \"y\"})\n  ^\n  invalid with_next"
+        );
+        assert!(!format!("{report:?}").contains("pangolin"));
+        // A caret past the per-line cut still marks the token.
+        let query = format!("contains({{output_text: \"{}\"}}).bogus()", "x".repeat(250));
+        let caret = format!("{}^", " ".repeat(query.len() - 7));
+        let message = error_body_message(
+            &serde_json::json!({
+                "message": format!(
+                    "failed to execute pangolin query due to a runtime error: \
+                     Event set DSL error: {query}\n{caret}\ninvalid bogus"
+                )
+            })
+            .to_string(),
+        );
+        let report = format_api_error(400, &message);
+        assert_eq!(
+            report.to_string(),
+            format!("the query is invalid:\n  {query}\n  {caret}\n  invalid bogus")
+        );
+        // Without the caret line, the shape is unknown, so the error is generic.
+        let report = format_api_error(400, "Event set DSL error:\nunexpected EOF");
+        assert_eq!(
+            report.to_string(),
+            "the Antithesis API rejected the request"
         );
     }
 
     #[test]
     fn format_api_error_dedupes_reason_echoed_in_body() {
-        // "Bad Request — Bad request: …" reads twice; the echo is dropped.
-        let rendered = format!(
-            "{:#}",
-            format_api_error(400, "Bad request: Invalid input_hash or vtime")
-        );
-        assert_eq!(
-            rendered,
-            "API error: 400 Bad Request — Invalid input_hash or vtime"
+        // The note drops the status reason that the server echoes.
+        let debug = plain_debug(&format_api_error(
+            400,
+            "Bad request: Invalid input_hash or vtime",
+        ));
+        assert!(
+            debug.contains("Note: Invalid input_hash or vtime"),
+            "got: {debug}"
         );
         // A body that is nothing but the reason echo adds nothing.
-        let rendered = format!("{:#}", format_api_error(400, "Bad Request"));
-        assert_eq!(rendered, "API error: 400 Bad Request");
-        // Unrelated bodies pass through untouched.
-        let rendered = format!("{:#}", format_api_error(400, "vtime out of range"));
-        assert_eq!(rendered, "API error: 400 Bad Request — vtime out of range");
+        let debug = format!("{:?}", format_api_error(400, "Bad Request"));
+        assert!(!debug.contains("Note:"), "got: {debug}");
     }
 
     // ---- response cache --------------------------------------------------

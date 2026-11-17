@@ -2,7 +2,7 @@
 
 use color_eyre::{Section, eyre::Result};
 
-use super::{AuthenticationInfo, SourcedCredential};
+use super::{AuthenticationInfo, CredentialSource, SourcedCredential, login_command};
 use crate::error::user_error;
 
 pub(crate) const USERNAME_VAR_NAME: &str = "ANTITHESIS_USERNAME";
@@ -20,18 +20,41 @@ pub(crate) enum PasswordPolicy {
     WarnDeprecated,
 }
 
-/// The one-line remediation for the username/password deprecation. The
-/// rejection suggestion and the warning on use both render this constant, so
-/// the wording cannot drift apart. Doctor states the deprecation in its own
-/// check, with a next step that depends on where the password came from.
-const PASSWORD_DEPRECATION_SUGGESTION: &str = "username/password authentication is deprecated; run `snouty login` to switch to another authentication method";
+/// The one step away from a username and password from `source`, for the
+/// selected `profile`. Doctor, the rejection and the warning all give it, so
+/// their advice cannot drift apart.
+pub(crate) fn basic_auth_next_step(source: &CredentialSource, profile: Option<&str>) -> String {
+    match source {
+        // `snouty login` alone cannot help: the environment hides what it
+        // stores.
+        CredentialSource::Environment { variables } => format!(
+            "run {} to store an API key, then `unset {}`",
+            login_command(profile),
+            variables.join(" ")
+        ),
+        // A named profile with no credential uses the default profile's, so
+        // the login goes to the selected profile.
+        CredentialSource::Stored(_) => format!(
+            "run {} to replace it with an API key",
+            login_command(profile)
+        ),
+    }
+}
+
+fn deprecation_suggestion(source: &CredentialSource, profile: Option<&str>) -> String {
+    format!(
+        "username/password authentication is deprecated; {}",
+        basic_auth_next_step(source, profile)
+    )
+}
 
 /// Apply the caller's [`PasswordPolicy`] to a resolved credential. This is
 /// the only place that accepts or rejects username/password credentials, so
-/// the whole deprecation policy lives here.
+/// the whole deprecation policy lives here. `profile` is the selected profile.
 pub(super) fn apply_password_policy(
     authn_info: SourcedCredential,
     policy: PasswordPolicy,
+    profile: Option<&str>,
 ) -> Result<SourcedCredential> {
     if !matches!(authn_info.value(), AuthenticationInfo::Password { .. }) {
         return Ok(authn_info);
@@ -40,12 +63,13 @@ pub(super) fn apply_password_policy(
         PasswordPolicy::Reject => Err(user_error(
             "This command does not accept username/password authentication, which is only supported when launching runs (`snouty launch`, `snouty debug`)",
         )
-        .suggestion(PASSWORD_DEPRECATION_SUGGESTION)),
+        .suggestion(deprecation_suggestion(authn_info.tag(), profile))),
         PasswordPolicy::WarnDeprecated => {
             // A bare eprintln, not log::warn!: the notice must reach stderr
             // on every run, independent of RUST_LOG.
             eprintln!(
-                "warning: {PASSWORD_DEPRECATION_SUGGESTION} (support will be removed in a future release)"
+                "warning: {} (support will be removed in a future release)",
+                deprecation_suggestion(authn_info.tag(), profile)
             );
             Ok(authn_info)
         }

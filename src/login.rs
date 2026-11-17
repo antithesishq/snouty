@@ -196,12 +196,12 @@ async fn do_cmd_login(
     OutputOptions { verbose, .. }: OutputOptions,
     prompter: &impl Prompter,
 ) -> Result<()> {
-    let profile_to_use = current_settings.profile().map(str::to_owned);
+    let profile = current_settings.profile();
     let interactive = prompter.is_interactive();
     // The global file alone, which login writes. A fault in it fails login
     // before any prompt or request, also when the environment or a project
     // file hides it from `current_settings`.
-    let saved = Settings::resolve_global_file(profile_to_use.clone())?;
+    let saved = Settings::resolve_global_file(profile.map(str::to_owned))?;
 
     let tenant_to_use = match tenant {
         Some(tenant) => tenant,
@@ -221,7 +221,7 @@ async fn do_cmd_login(
     // A read error counts as nothing stored, because storing a credential
     // backs up an unparsable credentials file. A blank key cannot
     // authenticate, so it also counts as nothing stored.
-    let stored = AuthenticationInfo::stored_for_profile(profile_to_use.as_deref())
+    let stored = AuthenticationInfo::stored_for_profile(profile)
         .inspect_err(|err| debug!("no stored credentials to read: {err:#}"))
         .ok()
         .flatten()
@@ -250,7 +250,7 @@ async fn do_cmd_login(
         &api_settings,
         &tenant_url,
         new_credentials.as_ref(),
-        profile_to_use.as_deref(),
+        profile,
         interactive,
         verbose,
     )
@@ -307,11 +307,8 @@ async fn do_cmd_login(
     // update leaves the stored credential alone. When the credential cannot
     // be stored, the settings go back, so that the profile does not name the
     // new tenant with the old credential.
-    let previous_settings = update_settings_in_global_file(
-        &tenant_to_use,
-        &registry_to_use.to_string(),
-        profile_to_use.as_deref(),
-    )?;
+    let previous_settings =
+        update_settings_in_global_file(&tenant_to_use, &registry_to_use.to_string(), profile)?;
 
     // The kind of credential login wrote, and where.
     let written = match new_credentials {
@@ -321,7 +318,7 @@ async fn do_cmd_login(
                 PersistableCredentials::Password { .. } => "username and password",
                 PersistableCredentials::OAuth { .. } => "OAuth credentials",
             };
-            match persist(credentials, profile_to_use.as_deref()) {
+            match persist(credentials, profile) {
                 Ok(store) => Some(kind.with_tag(store)),
                 Err(err) => {
                     return Err(match previous_settings.restore() {
@@ -344,7 +341,7 @@ async fn do_cmd_login(
         &tenant_to_use,
         &registry_to_use,
         replaced,
-        profile_to_use.as_deref(),
+        profile,
         written,
         stored.as_ref(),
     );
@@ -357,8 +354,8 @@ async fn do_cmd_login(
             "--registry".to_owned(),
             reported.to_string(),
         ];
-        if let Some(profile) = profile_to_use {
-            command.extend(["--profile".to_owned(), profile]);
+        if let Some(profile) = profile {
+            command.extend(["--profile".to_owned(), profile.to_owned()]);
         }
         let command = shlex::try_join(command.iter().map(String::as_str))
             .expect("arguments and environment variables hold no NUL");

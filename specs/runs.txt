@@ -706,6 +706,15 @@ stderr -literal 'Suggestion: run `snouty login` to fix authentication'
 [!staging] ! snouty runs
 [!staging] stderr 'sign-in expired.*; run `snouty login` to sign in again'
 
+# A credentials file that snouty cannot parse names the file to fix, and the
+# login that follows a delete.
+isolate-home unparsable_stored
+env ANTITHESIS_API_KEY=
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
+! snouty runs
+stderr -literal 'Suggestion: fix ${WORK}/unparsable_stored/.config/snouty/credentials.toml, or delete it and run `snouty login`'
+
 # An unfiltered empty result succeeds with a short note.
 [!staging] mock-runs-server
 [!staging] snouty runs properties run-empty
@@ -1278,6 +1287,8 @@ stderr 'the server reported an error mid-stream: mock stream failure'
 -- probe-runs-error.ndjson --
 {"id":"run-stream-error","kind":"test"}
 {"id":"run-1","kind":"test"}
+-- unparsable_stored/.config/snouty/credentials.toml --
+[default
 -- rejected_stored/.config/snouty/credentials.toml --
 [default]
 type = "ApiKey"

@@ -14,7 +14,7 @@
 - A `snouty runs stream` verdict line ends with the property's name, and the `--json` verdict object has a `name` key ([#761](https://github.com/antithesishq/snouty/pull/761))
 - `snouty launch --config` pushes the local images of every launch again, instead of first asking the registry whether an earlier launch pushed them ([#725](https://github.com/antithesishq/snouty/pull/725))
 - `snouty settings show` lists the trust file after the credentials file, with the type `trust` in `--json` ([#750](https://github.com/antithesishq/snouty/pull/750))
-- snouty names the OAuth refresh lock of a file-stored credential with a hash that stays the same across builds. During the upgrade, a snouty process from an earlier release, such as a running MCP server, and the new release can refresh the same credential at once, and one refresh then fails as revoked. Restart the older process before you upgrade, or run `snouty login` again if the refresh fails ([#772](https://github.com/antithesishq/snouty/pull/772))
+- snouty names the OAuth refresh lock of a file-stored credential with a hash that stays the same across builds. During the upgrade, a snouty process from an earlier release, such as a running MCP server, and the new release can refresh the same credential at once, and one refresh then fails as revoked. Restart the older process after you upgrade, and run `snouty login` again if a refresh fails ([#772](https://github.com/antithesishq/snouty/pull/772))
 
 # Version 0.10.0 (2026-11-11)
 

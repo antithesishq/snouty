@@ -83,10 +83,38 @@ fn session_root() -> Result<PathBuf> {
     let base = crate::settings::cache_dir()
         .ok_or_eyre("cannot determine simulation state directory; set XDG_CACHE_HOME or HOME")?;
     let root = base.join("simulate");
-    std::fs::create_dir_all(base.parent().expect("cache directory has a parent"))?;
+    let parent = base.parent().expect("cache directory has a parent");
+    std::fs::create_dir_all(parent)?;
+    // Paths under the root are looked up again after these checks, so no
+    // other user may be able to change a directory on the way to it.
+    no_other_writers(&std::fs::canonicalize(parent)?)?;
     own_directory(&base)?;
     own_directory(&root)?;
     Ok(root)
+}
+
+/// Refuse `path` unless it and every directory above it belong to the user
+/// or root, and no one else can write to them, except to a sticky directory
+/// such as /tmp, where no one can replace an entry of another user. `path`
+/// must have no symlinks.
+fn no_other_writers(path: &Path) -> Result<()> {
+    let user = nix::unistd::geteuid().as_raw();
+    for directory in path.ancestors() {
+        let metadata = std::fs::metadata(directory)?;
+        let mode = metadata.permissions().mode();
+        let sticky = mode & 0o1000 != 0;
+        if (metadata.uid() != user && metadata.uid() != 0) || (mode & 0o022 != 0 && !sticky) {
+            return Err(crate::error::user_error(format!(
+                "other users can change {}, so simulate cannot keep its files under it",
+                directory.display()
+            ))
+            .suggestion(format!(
+                "run `chmod go-w {}` if you own it, or set XDG_CACHE_HOME to a directory that only you can write to",
+                directory.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Make `directory` a directory that only the user can write to: create it
@@ -977,6 +1005,23 @@ mod tests {
         assert_eq!(mode(&target), 0o775);
     }
 
+    #[test]
+    fn a_directory_that_others_can_change_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(root.path()).unwrap();
+        no_other_writers(&root).unwrap();
+        let shared = root.join("shared");
+        std::fs::create_dir(&shared).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o775)).unwrap();
+        let below = shared.join("cache");
+        std::fs::create_dir(&below).unwrap();
+        let error = no_other_writers(&below).unwrap_err();
+        assert!(format!("{error:?}").contains("chmod go-w"), "{error:?}");
+        // A sticky directory, as /tmp is, protects the entries of each user.
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o1777)).unwrap();
+        no_other_writers(&below).unwrap();
+    }
+
     /// A `save` that runs `script` after recording its pid, from an engine
     /// whose `save` is that script.
     fn fake_save(directory: &Path, script: &str) -> (ImageArchive, SaveExit) {
@@ -991,7 +1036,23 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o700)).unwrap();
         let runtime = crate::container::PodmanRuntime::new(engine.to_string_lossy());
-        container::save_images(&runtime, &["workload:test"], None).unwrap()
+        // A test thread that forks while the script is open for writing
+        // makes the exec fail for a moment with ETXTBSY.
+        for _ in 0..50 {
+            match container::save_images(&runtime, &["workload:test"], None) {
+                Err(error)
+                    if error.chain().any(|cause| {
+                        cause.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                            error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                        })
+                    }) =>
+                {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                saved => return saved.unwrap(),
+            }
+        }
+        panic!("the fake engine stayed busy");
     }
 
     /// Wait until the fake save is dead: gone, or a zombie left to reap.

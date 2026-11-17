@@ -3343,6 +3343,17 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             expect_ok=False,
         ),
         Story(
+            "simulate-gated",
+            "Invoke simulation while the feature is off",
+            "I want to learn how to enable guest simulation.",
+            "A refusal names the simulate feature and its environment variable.",
+            ["simulate", "."],
+            expect_message("SNOUTY_UNSTABLE_FEATURES=simulate"),
+            json_capable=False,
+            expect_ok=False,
+            env={"SNOUTY_UNSTABLE_FEATURES": None},
+        ),
+        Story(
             "runs-search-count",
             f"Count the events that match '{kw}'",
             "A search shows only a sample of the matches; I want to know how many "
@@ -4548,6 +4559,31 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "should show that --input-hash, --vtime, and --run-id are required, and that "
             "--session-id is only for a moment that names a session ID.",
             ["debug"],
+        ),
+        # Guest command failure diagnostics need a VM or mock guest tools;
+        # tests/cli_simulate.rs covers SSH readiness, startup diagnostics, and command failures.
+        _help_story(
+            "help-simulate",
+            "Understand local simulation",
+            "I want to run a Compose setup in a local simulation environment and understand image "
+            "selection with the pinned version in the configured repository without an API key, "
+            "an --environment-image without a tag getting that version, "
+            "and the native host architecture, "
+            "Linux and macOS requirements with QEMU 8.2 or later, "
+            "setup_complete before test composer and fault injection start, "
+            "host-controlled fault rerandomization with a fresh seed and force=true, "
+            "calling add_entropy after composer readiness and every 30 seconds even after it exits, "
+            "preserving fault pauses and keeping no-command or first_-only workloads running, "
+            "repeating rollouts for driver or check templates unless --disable-restart is set, "
+            "--fault-tolerance defaulting to resilient and none keeping faults paused "
+            "through test composer, startup timeout, "
+            "configure.py options for fault tolerance and exclusions, "
+            "interruption with a brief poweroff wait and final log drain, "
+            "failure status, the runs-compatible human log rendering, and "
+            "active-fault annotations in JSON output. It should also show how to attach "
+            "a second terminal to a running simulation environment, with the ID printed after boot. "
+            "Internal testing overrides must stay out of help.",
+            ["simulate"],
         ),
         _help_story(
             "help-validate",

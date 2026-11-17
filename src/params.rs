@@ -316,6 +316,26 @@ fn validate_filter_pattern(key: &str, value: &str, suppressed: &str) -> Result<(
     Ok(())
 }
 
+#[derive(Clone, Debug)]
+pub struct FaultExclusions(String);
+
+impl std::str::FromStr for FaultExclusions {
+    type Err = color_eyre::Report;
+
+    fn from_str(value: &str) -> Result<Self> {
+        let mut params = Params::new();
+        params.insert(ANT_FAULT_EXCLUSIONS, value);
+        params.validate_test_params()?;
+        Ok(Self(value.to_owned()))
+    }
+}
+
+impl std::fmt::Display for FaultExclusions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// The OpenAPI spec gives the pattern the `regex` crate's syntax, but the
 /// server can run another version of the crate, so this is a pre-check only.
 fn validate_fault_exclusions(value: &str) -> Result<()> {
@@ -830,7 +850,7 @@ mod tests {
     fn filter_validation_never_panics(tc: hegel::TestCase) {
         let pattern = tc.draw(generators::text());
         let _ = validate_filter(&pattern);
-        let _ = validate_fault_exclusions(&pattern);
+        let _ = pattern.parse::<FaultExclusions>();
     }
 
     #[test]

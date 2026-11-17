@@ -211,7 +211,11 @@ For any one setting, snouty uses the first value it finds, highest precedence fi
 
 When a subcommand or a flag, or the Antithesis API it calls, is still changing shape, snouty can keep it behind a gate, turned on by naming its feature in `SNOUTY_UNSTABLE_FEATURES` (a comma-separated list). Anything behind this gate can change its behavior, its flags, or its id, or go away, in any release.
 
-No feature is behind this gate now. An id that snouty does not know, such as the retired `mcp` or `runs-exec`, has no effect.
+| Feature    | Enables                                                                |
+| ---------- | ---------------------------------------------------------------------- |
+| `simulate` | `snouty simulate`. Run a Compose setup in a local Antithesis simulation environment. |
+
+An id that snouty does not know, such as the retired `mcp` or `runs-exec`, has no effect.
 
 ## MCP server
 

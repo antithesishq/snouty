@@ -179,6 +179,16 @@ run = "echo '✓ test: all tests passed'"
 description = "The Rust test suite, under nextest"
 run = ["cargo nextest run", "echo '✓ test:rust passed'"]
 
+[tasks."test:qemu"]
+description = "The tests that boot a simulation environment ISO in real QEMU"
+# Builds the toy environment in tests/environment with nix, unless SNOUTY_TEST_ENVIRONMENT_ISO
+# already names an ISO, such as the /guest.iso of a simulation environment
+# image. Needs qemu-system-x86_64.
+run = [
+    'iso="${SNOUTY_TEST_ENVIRONMENT_ISO:-}" && if [ -z "$iso" ]; then iso=$(nix-build tests/environment --no-out-link); fi && SNOUTY_TEST_ENVIRONMENT_ISO="$iso" cargo nextest run --filterset "group(qemu)"',
+    "echo '✓ test:qemu passed'",
+]
+
 [tasks."test:scripts"]
 description = "Unit tests for the Python scripts"
 dir = "scripts"

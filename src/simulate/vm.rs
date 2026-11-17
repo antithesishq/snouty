@@ -1,0 +1,679 @@
+use std::fmt::Write as _;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::Duration;
+
+use crate::process::output_async;
+use color_eyre::eyre::{Context, Result, bail, eyre};
+use futures_util::StreamExt;
+use nix::sys::signal::{Signal, killpg};
+use nix::unistd::Pid;
+use tokio::time::{Instant, sleep, timeout};
+
+use super::firmware::platform_firmware;
+use super::{
+    SimulatePlatform,
+    events::{self, EventKind},
+    qmp::{self, Qmp},
+    serial::serial_lines,
+};
+
+const AUTHORIZED_KEY_FW_CFG: &str = "opt/antithesis/authorized_key";
+#[cfg(target_os = "linux")]
+const QEMU_ACCELERATOR: &str = "kvm:tcg";
+#[cfg(target_os = "macos")]
+const QEMU_ACCELERATOR: &str = "hvf:tcg";
+const BOOT_CONSOLE_ESCAPE_CODES: [&[u8]; 6] = [
+    b"\x1bc",
+    b"\x1b[?7l",
+    b"\x1b[2J",
+    b"\x1b[0m",
+    b"\x1b[18t",
+    b"\x1b[6n",
+];
+
+#[derive(Clone, Copy)]
+pub enum BootOutput {
+    Hidden,
+    Visible,
+}
+
+struct BootConsole {
+    output: BootOutput,
+    offset: u64,
+    filter: SeaBiosConsoleFilter,
+}
+
+impl BootConsole {
+    fn new(output: BootOutput) -> Self {
+        Self {
+            output,
+            offset: 0,
+            filter: SeaBiosConsoleFilter::default(),
+        }
+    }
+
+    fn flush(&mut self, path: &Path) -> Result<()> {
+        if matches!(self.output, BootOutput::Hidden) {
+            return Ok(());
+        }
+        let mut file = match File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        file.seek(SeekFrom::Start(self.offset))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        self.offset += bytes.len() as u64;
+        self.filter.write(&bytes, &mut crate::stdio::stderr())?;
+        crate::stdio::stderr().flush()?;
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct SeaBiosConsoleFilter {
+    pending: Vec<u8>,
+}
+
+impl SeaBiosConsoleFilter {
+    fn write(&mut self, bytes: &[u8], output: &mut impl Write) -> io::Result<()> {
+        self.pending.extend_from_slice(bytes);
+        let mut clean = Vec::with_capacity(self.pending.len());
+        let mut consumed = 0;
+        while consumed < self.pending.len() {
+            let remaining = &self.pending[consumed..];
+            if let Some(code) = BOOT_CONSOLE_ESCAPE_CODES
+                .iter()
+                .find(|code| remaining.starts_with(code))
+            {
+                consumed += code.len();
+            } else if BOOT_CONSOLE_ESCAPE_CODES
+                .iter()
+                .any(|code| code.starts_with(remaining))
+            {
+                break;
+            } else {
+                clean.push(self.pending[consumed]);
+                consumed += 1;
+            }
+        }
+        self.pending.drain(..consumed);
+        output.write_all(&clean)
+    }
+
+    fn finish(&mut self) {
+        self.pending.clear();
+    }
+}
+
+pub struct Vm {
+    child: Child,
+    client_key: Option<ClientKey>,
+    ssh_config: PathBuf,
+    run_dir: PathBuf,
+    instrumentation: PathBuf,
+}
+
+pub struct EnvironmentConnection<'a> {
+    run_dir: &'a Path,
+}
+
+impl<'a> EnvironmentConnection<'a> {
+    pub fn new(run_dir: &'a Path) -> Self {
+        Self { run_dir }
+    }
+
+    fn shell_command(&self) -> Command {
+        let mut command = Command::new("ssh");
+        command
+            .current_dir(self.run_dir)
+            .arg("-F")
+            .arg(self.run_dir.join("ssh_config"))
+            .args(["-o", "LogLevel=ERROR", "-tt", "environment"])
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        command
+    }
+
+    pub async fn interactive_shell(&self) -> Result<std::process::ExitStatus> {
+        let status = tokio::process::Command::from(self.shell_command())
+            .kill_on_drop(true)
+            .status()
+            .await
+            .wrap_err("failed to open a shell in the simulation environment")?;
+        Ok(status)
+    }
+
+    pub fn exec_interactive_shell(&self) -> Result<std::process::ExitCode> {
+        Err(self.shell_command().exec())
+            .wrap_err("failed to open a shell in the simulation environment")
+    }
+}
+
+/// The serial number of the inject drive, which names it
+/// `/dev/disk/by-id/virtio-antithesis-inject` in the environment. virtio-blk
+/// allows 20 bytes.
+const INJECT_DRIVE_SERIAL: &str = "antithesis-inject";
+
+impl Vm {
+    pub async fn boot(
+        iso: &Path,
+        run_dir: &Path,
+        startup_timeout: Duration,
+        boot_output: BootOutput,
+        memory_mib: u64,
+        platform: SimulatePlatform,
+        inject_disk: &Path,
+    ) -> Result<Self> {
+        let run_dir = fs::canonicalize(run_dir)?;
+        if platform != SimulatePlatform::native() {
+            eprintln!("Warning: this architecture requires software emulation on this host.");
+        } else if cfg!(target_os = "linux")
+            && OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open("/dev/kvm")
+                .is_err()
+        {
+            eprintln!("Warning: KVM is not accessible; simulation will run more slowly.");
+        }
+        let firmware = if platform == SimulatePlatform::Arm64 {
+            Some(platform_firmware(platform)?)
+        } else {
+            None
+        };
+        let deadline = Instant::now()
+            .checked_add(startup_timeout)
+            .ok_or_else(|| eyre!("startup timeout is too large"))?;
+        let client_key = ClientKey::generate(&run_dir).await?;
+        let mut command = Command::new(match platform {
+            SimulatePlatform::Amd64 => "qemu-system-x86_64",
+            SimulatePlatform::Arm64 => "qemu-system-aarch64",
+        });
+        command
+            .current_dir(&run_dir)
+            .args(["-cpu", "max", "-machine"])
+            .arg(format!(
+                "{},accel={QEMU_ACCELERATOR}",
+                match platform {
+                    SimulatePlatform::Amd64 => "q35,i8042=off",
+                    SimulatePlatform::Arm64 => "virt,gic-version=max",
+                }
+            ))
+            .args(["-nodefaults", "-smp", "1", "-m"])
+            .arg(memory_mib.to_string());
+        // The read-only EROFS image of the workload images, which the environment
+        // imports at boot. `if=virtio` cannot set the serial that names it.
+        command
+            .arg("-drive")
+            .arg(format!(
+                "file={},if=none,id=inject,format=raw,readonly=on",
+                inject_disk.display()
+            ))
+            .arg("-device")
+            .arg(format!(
+                "virtio-blk-pci,drive=inject,serial={INJECT_DRIVE_SERIAL}"
+            ));
+        if let Some(code) = &firmware {
+            command.arg("-bios").arg(code);
+        }
+        command.args(["-boot", "d", "-cdrom"]).arg(iso).args([
+            "-display",
+            "none",
+            "-vga",
+            "none",
+            "-monitor",
+            "none",
+            "-serial",
+            "file:boot.log",
+        ]);
+        match platform {
+            SimulatePlatform::Amd64 => {
+                command.args(["-serial", "file:instrumentation.log"]);
+            }
+            SimulatePlatform::Arm64 => {
+                command.args([
+                    "-chardev",
+                    "file,id=instrumentation,path=instrumentation.log",
+                    "-device",
+                    "pci-serial,chardev=instrumentation",
+                ]);
+            }
+        }
+        command
+            .arg("-fw_cfg")
+            .arg(format!(
+                "name={AUTHORIZED_KEY_FW_CFG},file={}",
+                client_key.public_key.display()
+            ))
+            .args(["-device", "virtio-net-pci,netdev=net0", "-netdev"])
+            // QEMU binds a free port and holds it; forward_ssh asks which.
+            .arg("user,id=net0,hostfwd=tcp:127.0.0.1:0-:22,restrict=yes")
+            .args(["-qmp", "stdio"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(File::create(run_dir.join("qemu.log"))?)
+            .process_group(0);
+        let mut child = command.spawn().wrap_err("failed to start QEMU")?;
+        let qmp_input = child.stdin.take().expect("QEMU stdin is piped");
+        let qmp_output = child.stdout.take().expect("QEMU stdout is piped");
+        let mut vm = Self {
+            child,
+            client_key: Some(client_key),
+            ssh_config: run_dir.join("ssh_config"),
+            instrumentation: run_dir.join("instrumentation.log"),
+            run_dir: run_dir.clone(),
+        };
+        let mut boot_console = BootConsole::new(boot_output);
+        let result = async {
+            tokio::time::timeout_at(deadline, vm.forward_ssh(qmp_output, qmp_input))
+                .await
+                .map_err(|_| {
+                    eyre!(
+                        "simulation environment startup timed out waiting for QEMU to forward SSH"
+                    )
+                })??;
+            vm.wait_ready(&mut boot_console, deadline).await
+        }
+        .await;
+        boot_console.flush(&vm.run_dir.join("boot.log"))?;
+        boot_console.filter.finish();
+        match result {
+            Ok(()) => Ok(vm),
+            Err(error) => Err(error).wrap_err(vm.boot_diagnostics()),
+        }
+    }
+
+    /// Writes the SSH configuration for the port that QEMU forwards to the
+    /// environment's sshd. QEMU keeps running when the QMP connection closes.
+    async fn forward_ssh(
+        &self,
+        output: std::process::ChildStdout,
+        input: std::process::ChildStdin,
+    ) -> Result<()> {
+        let port = async {
+            Qmp::connect(
+                tokio::process::ChildStdout::from_std(output)?,
+                tokio::process::ChildStdin::from_std(input)?,
+            )
+            .await?
+            .host_forward_port(22)
+            .await
+        }
+        .await
+        .map_err(|error| {
+            if error.is::<qmp::Disconnected>() {
+                eyre!("QEMU exited before SSH became ready")
+            } else {
+                error
+            }
+        })?;
+        let client_key = self
+            .client_key
+            .as_ref()
+            .expect("the client key lives until snouty sees QEMU exit");
+        fs::write(
+            &self.ssh_config,
+            format!(
+                "Host environment\n HostName 127.0.0.1\n Port {port}\n User root\n IdentityFile {}\n IdentitiesOnly yes\n IdentityAgent none\n UserKnownHostsFile /dev/null\n GlobalKnownHostsFile /dev/null\n StrictHostKeyChecking no\n UpdateHostKeys no\n LogLevel ERROR\n BatchMode yes\n ConnectTimeout 2\n ServerAliveInterval 5\n ServerAliveCountMax 3\n Compression no\n ControlMaster no\n ControlPath none\n",
+                client_key.identity_file.display()
+            ),
+        )?;
+        Ok(())
+    }
+
+    async fn wait_ready(
+        &mut self,
+        boot_console: &mut BootConsole,
+        deadline: Instant,
+    ) -> Result<()> {
+        tokio::time::timeout_at(deadline, async {
+            let mut lines = loop {
+                boot_console.flush(&self.run_dir.join("boot.log"))?;
+                if !self.is_running()? {
+                    bail!("QEMU exited before SSH became ready");
+                }
+                if self.instrumentation.try_exists()? {
+                    break serial_lines(&self.instrumentation, 0)?;
+                }
+                sleep(Duration::from_millis(50)).await;
+            };
+            loop {
+                boot_console.flush(&self.run_dir.join("boot.log"))?;
+                if !self.is_running()? {
+                    bail!("QEMU exited before SSH became ready");
+                }
+                tokio::select! {
+                    line = lines.next() => {
+                        let (_, line) = line.ok_or_else(|| eyre!("instrumentation stream ended before SSH readiness"))??;
+                        if matches!(events::parse_line(&line)?, Some(event) if matches!(event.kind, EventKind::SshReady)) {
+                            return Ok(());
+                        }
+                    }
+                    () = sleep(Duration::from_millis(50)) => {}
+                }
+            }
+        }).await.map_err(|_| eyre!("simulation environment startup timed out waiting for SSH readiness marker (antithesis_host.status=ssh_ready)"))??;
+        tokio::time::timeout_at(deadline, self.check_ssh_login(boot_console))
+            .await
+            .map_err(|_| {
+                eyre!("simulation environment startup timed out waiting for SSH login after readiness marker")
+            })?
+    }
+
+    /// Log in once. The environment writes the readiness marker after sshd
+    /// listens, so a failed login is an error, not a reason to retry.
+    async fn check_ssh_login(&mut self, boot_console: &mut BootConsole) -> Result<()> {
+        let mut command = self.ssh();
+        command.args(["-o", "ConnectTimeout=30", "true"]);
+        let output = output_async(command, Duration::from_secs(60));
+        tokio::pin!(output);
+        let output = loop {
+            tokio::select! {
+                result = &mut output => break result?,
+                () = sleep(Duration::from_millis(50)) => {
+                    boot_console.flush(&self.run_dir.join("boot.log"))?;
+                    if !self.is_running()? {
+                        bail!("QEMU exited before SSH became ready");
+                    }
+                }
+            }
+        };
+        if !output.status.success() {
+            bail!(
+                "SSH login to the simulation environment failed ({}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(())
+    }
+
+    fn ssh_base(&self) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new("ssh");
+        command
+            .current_dir(&self.run_dir)
+            .arg("-F")
+            .arg(&self.ssh_config);
+        command
+    }
+
+    fn ssh(&self) -> tokio::process::Command {
+        let mut command = self.ssh_base();
+        command
+            .arg("environment")
+            .stdin(Stdio::null())
+            .process_group(0)
+            .kill_on_drop(true);
+        command
+    }
+
+    pub async fn interactive_shell(&self) -> Result<std::process::ExitStatus> {
+        EnvironmentConnection::new(&self.run_dir)
+            .interactive_shell()
+            .await
+    }
+
+    pub async fn run_script(&self, script: &str) -> Result<String> {
+        let mut input = tempfile::tempfile()?;
+        std::io::Write::write_all(&mut input, script.as_bytes())?;
+        input.seek(SeekFrom::Start(0))?;
+        let mut command = self.ssh();
+        command.arg("bash -s").stdin(input);
+        let output = output_async(command, Duration::from_secs(120)).await?;
+        if !output.status.success() {
+            bail!(
+                "command in the simulation environment failed ({})\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout).trim_end(),
+                String::from_utf8_lossy(&output.stderr).trim_end()
+            );
+        }
+        String::from_utf8(output.stdout)
+            .wrap_err("command in the simulation environment returned invalid UTF-8")
+    }
+
+    pub async fn upload_config(&self, directory: &Path) -> Result<()> {
+        let archive = tempfile::NamedTempFile::new_in(&self.run_dir)?;
+        let file = archive.reopen()?;
+        let source = directory.to_owned();
+        tokio::task::spawn_blocking(move || -> io::Result<()> {
+            let mut builder = tar::Builder::new(io::BufWriter::new(file));
+            // A symlink in the configuration uploads as the file it names.
+            builder.follow_symlinks(true);
+            builder.append_dir_all(".", &source)?;
+            builder.into_inner()?.flush()
+        })
+        .await?
+        .wrap_err_with(|| format!("cannot archive {}", directory.display()))?;
+        let mut ssh = self.ssh();
+        ssh.arg("tar --extract --file=- --directory=/opt/config")
+            .stdin(File::open(archive.path())?);
+        let output = output_async(ssh, Duration::from_secs(120)).await?;
+        if !output.status.success() {
+            bail!(
+                "config upload failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(())
+    }
+
+    pub fn instrumentation_log(&self) -> &Path {
+        &self.instrumentation
+    }
+
+    pub fn is_running(&mut self) -> Result<bool> {
+        let running = self.child.try_wait()?.is_none();
+        if !running {
+            self.client_key.take();
+        }
+        Ok(running)
+    }
+
+    pub async fn wait_for_poweroff(&mut self, grace: Duration) -> Result<bool> {
+        let deadline = Instant::now() + grace;
+        loop {
+            if let Some(status) = self.child.try_wait()? {
+                self.client_key.take();
+                return Ok(status.success());
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    pub fn boot_diagnostics(&self) -> String {
+        let mut result = format!("Simulation environment logs: {}", self.run_dir.display());
+        for name in ["qemu.log", "boot.log"] {
+            if let Ok(mut file) = File::open(self.run_dir.join(name)) {
+                let _ = file
+                    .seek(SeekFrom::End(-4096))
+                    .or_else(|_| file.seek(SeekFrom::Start(0)));
+                let mut bytes = Vec::new();
+                if file.read_to_end(&mut bytes).is_ok() {
+                    write!(result, "\n{name}:\n{}", String::from_utf8_lossy(&bytes))
+                        .expect("writing to a String cannot fail");
+                }
+            }
+        }
+        result
+    }
+
+    pub async fn shutdown(&mut self) -> Result<()> {
+        if !self.is_running()? {
+            return Ok(());
+        }
+        let powered_off = timeout(Duration::from_secs(2), async {
+            // Poweroff can close SSH before it reports success.
+            if let Err(error) = self.run_script("poweroff -f\n").await {
+                log::debug!("poweroff request failed: {error:#}");
+            }
+            while self.is_running()? {
+                sleep(Duration::from_millis(50)).await;
+            }
+            Ok::<_, color_eyre::Report>(())
+        })
+        .await;
+        if let Ok(result) = powered_off {
+            result?;
+        } else {
+            killpg(
+                Pid::from_raw(self.child.id().cast_signed()),
+                Signal::SIGKILL,
+            )?;
+            self.child.wait()?;
+            self.client_key.take();
+        }
+        Ok(())
+    }
+}
+
+struct ClientKey {
+    _directory: tempfile::TempDir,
+    identity_file: PathBuf,
+    public_key: PathBuf,
+}
+
+impl ClientKey {
+    async fn generate(run_dir: &Path) -> Result<Self> {
+        let directory = tempfile::Builder::new()
+            .prefix("ssh-key-")
+            .tempdir_in(run_dir)
+            .wrap_err("failed to create temporary SSH key directory")?;
+        let private_key = directory.path().join("id_ed25519");
+        let mut command = tokio::process::Command::new("ssh-keygen");
+        command
+            .args(["-q", "-N", "", "-t", "ed25519", "-f"])
+            .arg(&private_key)
+            .stdin(Stdio::null());
+        let output = output_async(command, Duration::from_secs(10))
+            .await
+            .wrap_err("failed to generate temporary SSH key")?;
+        if !output.status.success() {
+            bail!(
+                "failed to generate temporary SSH key: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        let identity_file = private_key;
+        let public_key = directory.path().join("id_ed25519.pub");
+        Ok(Self {
+            _directory: directory,
+            identity_file,
+            public_key,
+        })
+    }
+}
+
+impl Drop for Vm {
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        let _ = killpg(
+            Pid::from_raw(self.child.id().cast_signed()),
+            Signal::SIGKILL,
+        );
+        let _ = self.child.wait();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hegel::generators;
+
+    #[test]
+    fn seabios_console_filter_removes_screen_control_codes() {
+        let mut output = Vec::new();
+        let mut filter = SeaBiosConsoleFilter::default();
+        filter
+            .write(
+                b"one\x1bc two\x1b[?7l three\x1b[2J four\x1b[0m five\x1b[18t six\x1b[6n seven",
+                &mut output,
+            )
+            .unwrap();
+        assert_eq!(output, b"one two three four five six seven");
+    }
+
+    #[hegel::test]
+    fn seabios_console_filter_is_independent_of_chunk_boundaries(tc: hegel::TestCase) {
+        let prefix = tc.draw(generators::binary());
+        let suffix = tc.draw(generators::binary());
+        let code = tc.draw(generators::sampled_from(
+            BOOT_CONSOLE_ESCAPE_CODES.map(<[u8]>::to_vec).to_vec(),
+        ));
+        let split = tc.draw(generators::integers::<usize>().max_value(code.len()));
+        let input: Vec<_> = prefix.iter().chain(&code).chain(&suffix).copied().collect();
+        let mut whole = Vec::new();
+        let mut whole_filter = SeaBiosConsoleFilter::default();
+        whole_filter.write(&input, &mut whole).unwrap();
+        whole_filter.finish();
+        let mut chunked = Vec::new();
+        let mut filter = SeaBiosConsoleFilter::default();
+        filter.write(&prefix, &mut chunked).unwrap();
+        filter.write(&code[..split], &mut chunked).unwrap();
+        filter.write(&code[split..], &mut chunked).unwrap();
+        filter.write(&suffix, &mut chunked).unwrap();
+        filter.finish();
+        assert_eq!(chunked, whole);
+    }
+
+    #[test]
+    fn dropping_vm_kills_and_reaps_its_child() {
+        let run_dir = tempfile::tempdir().unwrap();
+        let child = Command::new("sleep")
+            .arg("60")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = Pid::from_raw(child.id().cast_signed());
+        let vm = Vm {
+            child,
+            client_key: Some(ClientKey {
+                _directory: tempfile::tempdir_in(run_dir.path()).unwrap(),
+                identity_file: PathBuf::new(),
+                public_key: PathBuf::new(),
+            }),
+            ssh_config: run_dir.path().join("ssh_config"),
+            run_dir: run_dir.path().to_path_buf(),
+            instrumentation: run_dir.path().join("instrumentation.log"),
+        };
+        drop(vm);
+        assert_eq!(
+            nix::sys::wait::waitpid(pid, Some(nix::sys::wait::WaitPidFlag::WNOHANG)),
+            Err(nix::errno::Errno::ECHILD)
+        );
+    }
+
+    #[test]
+    fn reaping_qemu_removes_its_client_key_directory() {
+        let run_dir = tempfile::tempdir().unwrap();
+        let key_directory = tempfile::tempdir_in(run_dir.path()).unwrap();
+        let key_path = key_directory.path().to_path_buf();
+        let mut child = Command::new("true").spawn().unwrap();
+        child.wait().unwrap();
+        let mut vm = Vm {
+            child,
+            client_key: Some(ClientKey {
+                _directory: key_directory,
+                identity_file: PathBuf::new(),
+                public_key: PathBuf::new(),
+            }),
+            ssh_config: run_dir.path().join("ssh_config"),
+            run_dir: run_dir.path().to_path_buf(),
+            instrumentation: run_dir.path().join("instrumentation.log"),
+        };
+        assert!(!vm.is_running().unwrap());
+        assert!(!key_path.exists());
+    }
+}

@@ -9,17 +9,22 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use clap::error::ErrorKind;
 use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
+use color_eyre::Section;
+use color_eyre::eyre::Report;
 
 use crate::api::{
     FaultTolerance, PerformanceTier, RunStatus, SearchLimit, SourceRunId, SourceSessionId,
 };
 
 use crate::docker_credential::HELPER_NAME;
+use crate::error::user_error;
+use crate::features::{self, Feature};
 use crate::help::{self, Attach};
-use crate::params::MAX_SETUP_TIMEOUT_MINUTES;
+use crate::params::{FaultExclusions, MAX_SETUP_TIMEOUT_MINUTES};
 use crate::render::{self, CodeSpans};
 use crate::runs::usage::Rollup;
 use crate::settings::UpdateChannel;
+use crate::simulate::SimulatePlatform;
 use crate::stdio;
 use crate::time::{
     BareUnit, DURATION_EXAMPLES, HumanDuration, duration_error, duration_help, parse_timestamp_arg,
@@ -222,6 +227,18 @@ const EXEC_TIMEOUT: DurationFlag = DurationFlag {
     check: |timeout| require(timeout.seconds() > 0, "must be at least 1 second"),
 };
 
+const STARTUP_TIMEOUT: DurationFlag = DurationFlag {
+    name: "--timeout",
+    bare: BareUnit::Refused,
+    examples: &["30s", "5m"],
+    check: |timeout| {
+        require(
+            timeout.seconds() > 0,
+            "startup timeout must be greater than zero",
+        )
+    },
+};
+
 #[derive(Parser)]
 #[command(name = "snouty")]
 #[command(about = "CLI for the Antithesis API", long_about = None)]
@@ -282,6 +299,13 @@ pub enum Commands {
     /// Validate local Antithesis setup
     #[command(arg = json(JsonShape::None))]
     Validate(ValidateArgs),
+
+    /// Run a Compose setup in a local Antithesis simulation environment
+    #[command(
+        hide = !features::is_enabled(Feature::Simulate),
+        arg = json(JsonShape::Lines),
+    )]
+    Simulate(SimulateArgs),
 
     /// Check environment configuration
     #[command(arg = json(JsonShape::Object))]
@@ -452,6 +476,29 @@ pub fn parse() -> Cli {
     }
 }
 
+/// Refuses a gated command while its feature is off. A hidden subcommand is
+/// still callable, so dispatch checks this first.
+pub fn gated_command_error(command: &Commands, enabled: &[Feature]) -> Option<Report> {
+    let (feature, path) = match command {
+        Commands::Simulate(_) => (Feature::Simulate, "snouty simulate"),
+        _ => return None,
+    };
+    if enabled.contains(&feature) {
+        return None;
+    }
+    Some(
+        user_error(format!(
+            "`{path}` is an unstable feature and is not enabled"
+        ))
+        .note(format!(
+            "enable it by setting {}={}",
+            features::UNSTABLE_FEATURES_VAR_NAME,
+            feature
+        ))
+        .note("an unstable feature can change or go away in any release"),
+    )
+}
+
 /// clap value parser for a run ID. The ID is one segment of an API path, and
 /// a URL parser removes an empty, `.` or `..` segment, so the request would go
 /// to a different endpoint.
@@ -612,6 +659,86 @@ pub struct ValidateArgs {
 }
 
 #[derive(Args)]
+pub struct SimulateArgs {
+    /// Path to config directory containing docker-compose.yaml
+    #[arg(required_unless_present_any = ["shell", "attach"])]
+    pub config: Option<std::path::PathBuf>,
+
+    /// Container image of the simulation environment, containing /guest.iso; without a tag or
+    /// digest, uses the pinned version (default: REGISTRY/antithesis-environment)
+    #[arg(long, value_parser = validate_non_empty, conflicts_with = "attach")]
+    pub environment_image: Option<String>,
+
+    /// Simulation environment and workload image platform (default: amd64)
+    #[arg(long, hide = true, value_enum, default_value_t = SimulatePlatform::default(), conflicts_with = "attach")]
+    pub platform: SimulatePlatform,
+
+    /// Keep the stack running after composer completion, with entropy refresh and logs
+    #[arg(long, conflicts_with = "attach")]
+    pub disable_restart: bool,
+
+    /// Which faults to inject, by how much disruption the system must survive.
+    /// `none`: no faults. `resilient`: degraded network links, thread pauses,
+    /// container pauses of up to 10 seconds, CPU throttling and clock jitter.
+    /// `high_availability`: everything in `resilient`, plus network partitions
+    /// and killed or stopped containers. `legacy`: all network faults and thread
+    /// pausing.
+    #[arg(long, value_enum, default_value_t = FaultTolerance::Resilient, conflicts_with = "attach")]
+    pub fault_tolerance: FaultTolerance,
+
+    /// Containers that faults must leave alone, matched by name with a Rust regex.
+    /// Thread pausing still applies. Max 1024 characters.
+    #[arg(long, conflicts_with = "attach")]
+    pub fault_exclusions: Option<FaultExclusions>,
+
+    /// Simulation environment memory in MiB (maximum: 15000)
+    #[arg(long, default_value_t = 15000, value_parser = clap::value_parser!(u64).range(1..=15000), conflicts_with = "attach")]
+    pub memory: u64,
+
+    /// Boot the simulation environment and open a root shell without starting Compose
+    #[arg(
+        long,
+        hide = true,
+        conflicts_with_all = ["config", "disable_restart", "fault_tolerance", "fault_exclusions", "attach"]
+    )]
+    pub shell: bool,
+
+    /// Open a root shell in a running Compose simulation
+    #[arg(long, value_name = "ID", conflicts_with = "config")]
+    pub attach: Option<SimulationId>,
+
+    /// Maximum time to wait for simulation environment startup (for example, 5m or 300s)
+    #[arg(long, default_value = "5m", value_parser = |s: &str| STARTUP_TIMEOUT.parse(s), conflicts_with = "attach")]
+    pub timeout: HumanDuration,
+}
+
+#[derive(Clone, Debug)]
+pub struct SimulationId(String);
+
+impl std::str::FromStr for SimulationId {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.len() > "simulate-".len()
+            && value.starts_with("simulate-")
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            Ok(Self(value.to_owned()))
+        } else {
+            Err("invalid simulation ID")
+        }
+    }
+}
+
+impl std::fmt::Display for SimulationId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+#[derive(Args)]
 pub struct DoctorArgs {
     /// Skip the checks that contact the Antithesis API
     #[arg(long)]
@@ -736,7 +863,7 @@ pub struct LaunchArgs {
     /// pausing is machine-wide, so it still applies. Rust regex syntax: no
     /// lookaround or backreferences. Max 1024 characters.
     #[arg(long)]
-    pub fault_exclusions: Option<String>,
+    pub fault_exclusions: Option<FaultExclusions>,
 
     /// Do not record the commit, branch, repository and pull request in run
     /// metadata
@@ -1197,6 +1324,28 @@ mod tests {
     use super::*;
     use std::any::TypeId;
 
+    #[hegel::test]
+    fn simulation_ids_stay_within_the_session_directory(tc: hegel::TestCase) {
+        let bytes = tc.draw(hegel::generators::binary().max_size(64));
+        let alphabet = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let suffix: String = bytes
+            .iter()
+            .map(|byte| alphabet[*byte as usize % alphabet.len()] as char)
+            .collect();
+        let input = format!("simulate-x{suffix}");
+        let id = input.parse::<SimulationId>().unwrap();
+        let path = std::path::Path::new("sessions").join(id.to_string());
+        assert_eq!(path.parent(), Some(std::path::Path::new("sessions")));
+        assert_eq!(id.to_string(), input);
+
+        let arbitrary = tc.draw(hegel::generators::text());
+        assert!(
+            format!("simulate-/{arbitrary}")
+                .parse::<SimulationId>()
+                .is_err()
+        );
+    }
+
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("args should parse")
     }
@@ -1236,6 +1385,68 @@ mod tests {
         for tier in PerformanceTier::value_variants() {
             let name = tier.to_possible_value().expect("no variant is skipped");
             assert_eq!(name.get_name(), tier.to_string());
+        }
+    }
+
+    #[test]
+    fn launch_and_simulate_accept_the_same_fault_flags() {
+        for level in FaultTolerance::value_variants() {
+            let value = level.to_string();
+            for (command, positional) in
+                [("launch", "--launcher=basic_test"), ("simulate", "config")]
+            {
+                let cli = parse(&[
+                    "snouty",
+                    command,
+                    positional,
+                    "--fault-tolerance",
+                    &value,
+                    "--fault-exclusions",
+                    "^driver$",
+                ]);
+                let (actual, exclusions) = match cli.command {
+                    Commands::Launch(args) => (
+                        args.fault_tolerance.unwrap(),
+                        args.fault_exclusions.unwrap(),
+                    ),
+                    Commands::Simulate(args) => {
+                        (args.fault_tolerance, args.fault_exclusions.unwrap())
+                    }
+                    _ => unreachable!(),
+                };
+                assert_eq!(actual, *level);
+                assert_eq!(exclusions.to_string(), "^driver$");
+            }
+        }
+        for (command, positional) in [("launch", "--launcher=basic_test"), ("simulate", "config")] {
+            for invalid in [
+                String::new(),
+                " ".to_owned(),
+                "(".to_owned(),
+                "(?=driver)".to_owned(),
+                "é".repeat(1025),
+            ] {
+                assert!(
+                    Cli::try_parse_from([
+                        "snouty",
+                        command,
+                        positional,
+                        "--fault-exclusions",
+                        &invalid
+                    ])
+                    .is_err()
+                );
+            }
+            assert!(
+                Cli::try_parse_from([
+                    "snouty",
+                    command,
+                    positional,
+                    "--fault-exclusions",
+                    &"é".repeat(1024)
+                ])
+                .is_ok()
+            );
         }
     }
 
@@ -1527,8 +1738,9 @@ mod tests {
     }
 
     /// Every duration flag, with the path of its command.
-    const DURATION_FLAGS: [(&[&str], DurationFlag); 9] = [
+    const DURATION_FLAGS: [(&[&str], DurationFlag); 10] = [
         (&["validate"], VALIDATE_TIMEOUT),
+        (&["simulate"], STARTUP_TIMEOUT),
         (&["launch"], LAUNCH_DURATION),
         (&["launch"], SETUP_TIMEOUT),
         (&["run"], LAUNCH_DURATION),

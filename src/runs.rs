@@ -1929,7 +1929,7 @@ fn spinner(message: impl Into<std::borrow::Cow<'static, str>>) -> ProgressBar {
 
 /// What a command shows on stderr while it waits: a spinner on a terminal,
 /// else a line at once and a line each whole minute.
-enum ReadyDisplay {
+pub(crate) enum ReadyDisplay {
     Hidden,
     Spinner(ProgressBar),
     Lines {
@@ -1941,7 +1941,7 @@ enum ReadyDisplay {
 }
 
 impl ReadyDisplay {
-    fn new(waiting: &'static str) -> Self {
+    pub(crate) fn new(waiting: &'static str) -> Self {
         match ProgressMode::of_stderr() {
             ProgressMode::Hidden => Self::Hidden,
             ProgressMode::Lines => Self::Lines {
@@ -1953,7 +1953,7 @@ impl ReadyDisplay {
         }
     }
 
-    fn show(&mut self) {
+    pub(crate) fn show(&mut self) {
         if let Self::Lines {
             waiting,
             start,
@@ -1980,7 +1980,7 @@ impl ReadyDisplay {
     }
 
     /// End the display, and print nothing.
-    fn clear(&self) {
+    pub(crate) fn clear(&self) {
         if let Self::Spinner(spinner) = self {
             spinner.finish_and_clear();
         }
@@ -2430,7 +2430,7 @@ fn raw_lines(stream: JsonStream) -> impl futures_util::Stream<Item = Result<Stri
     })
 }
 
-struct FaultAnnotator {
+pub(crate) struct FaultAnnotator {
     active_fault_windows: ActiveFaultWindows,
     active_faults: Value,
 }
@@ -2450,7 +2450,7 @@ impl FaultAnnotator {
     /// Annotate one parsed log entry in place: advance the fault windows
     /// using the entry's vtime, strip ANSI from `output_text`, and attach the
     /// current `active_faults`.
-    fn annotate(&mut self, entry: &mut Value) {
+    pub(crate) fn annotate(&mut self, entry: &mut Value) {
         let mut update_faults = false;
 
         // The fault-window math runs directly in seconds. Entries without a

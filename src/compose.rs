@@ -584,7 +584,7 @@ fn partition_by_presence<'a>(
     let mut local = Vec::new();
     let mut absent = Vec::new();
     for image in images {
-        if rt.image_exists(image)? {
+        if rt.image_exists(image, None)? {
             local.push(image);
         } else {
             absent.push(image);
@@ -827,7 +827,9 @@ fn serves_amd64(rt: &dyn ContainerRuntime, image: &str, repo: &str, digest: &str
     Ok(match rt.remote_manifest(&format!("{repo}@{digest}")) {
         RemoteManifest::NotFound => false,
         RemoteManifest::List { has_amd64 } => has_amd64,
-        RemoteManifest::Single => rt.image_architecture(image)? == Architecture::Amd64,
+        RemoteManifest::Single => {
+            rt.image_inspect(image, None)?.architecture == Architecture::Amd64
+        }
     })
 }
 
@@ -1082,7 +1084,7 @@ fn images_available_in_other_engines(
         .filter_map(|engine| {
             let present: Vec<String> = images
                 .iter()
-                .filter(|image| engine.image_exists(image).unwrap_or(false))
+                .filter(|image| engine.image_exists(image, None).unwrap_or(false))
                 .cloned()
                 .collect();
             (!present.is_empty()).then(|| (engine.name().to_string(), present))
@@ -1133,7 +1135,7 @@ where
             continue;
         }
 
-        let arch = runtime.image_architecture(image)?;
+        let arch = runtime.image_inspect(image, None)?.architecture;
         if arch != Architecture::Amd64 {
             unsupported.push(format!("image '{image}' has architecture '{arch}'"));
         }
@@ -2379,14 +2381,21 @@ services:
             Ok(format!("{image_ref}@sha256:fakepushdigest"))
         }
 
-        fn image_exists(&self, image_ref: &str) -> Result<bool> {
+        fn image_exists(&self, image_ref: &str, _platform: Option<&Architecture>) -> Result<bool> {
             Ok(*self.available_images.get(image_ref).unwrap_or(&false))
         }
 
-        fn image_architecture(&self, image_ref: &str) -> Result<Architecture> {
+        fn image_inspect(
+            &self,
+            image_ref: &str,
+            _platform: Option<&Architecture>,
+        ) -> Result<crate::container::ImageDetails> {
             self.architectures
                 .get(image_ref)
-                .map(|arch| Architecture::from(arch.as_str()))
+                .map(|arch| crate::container::ImageDetails {
+                    id: crate::digest::Sha256Digest::of(image_ref.as_bytes()),
+                    architecture: Architecture::from(arch.as_str()),
+                })
                 .ok_or_else(|| eyre!("missing fake architecture for {image_ref}"))
         }
 

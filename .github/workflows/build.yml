@@ -255,8 +255,9 @@ jobs:
         timeout-minutes: 10
         run: scripts/setup-test-images.sh "${{ matrix.runtime }}"
 
+      # The test-qemu job in slow-tests.yml runs the qemu group.
       - name: Test
-        run: cargo nextest run
+        run: cargo nextest run --filterset 'not group(qemu)'
 
   # The macOS leg a pull request gets. arm64 macOS cannot run `podman machine`,
   # so the engine-backed tests run after merge in slow-tests.yml and every other

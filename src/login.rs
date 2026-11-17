@@ -2274,7 +2274,7 @@ mod tests {
         Ok(())
     }
 
-    /// The global `--profile` flag scopes the persisted login.
+    /// The selected profile scopes the persisted login.
     #[tokio::test]
     async fn login_scopes_to_a_named_profile() -> Result<()> {
         let env = LoginEnv::new();

@@ -159,9 +159,22 @@ stderr '.*could not connect to 127.0.0.1.*'
 [!staging] ! stderr 'auth/cli/refresh'
 # --verbose shows the error that the renewal returned.
 [!staging] ! snouty --verbose doctor
-[!staging] stderr 'ERROR: the OAuth token could not be refreshed'
+[!staging] stderr 'ERROR: the sign-in expired and could not be renewed'
 [!staging] ! snouty doctor --json
 [!staging] stdout '"id": "credentials",\s*"kind": "oauth",\s*"status": "error"'
+
+# A renewal that the tenant cannot make now says to try again later.
+[!staging] mock-server 500 ''
+[!staging] env ANTITHESIS_USERNAME=
+[!staging] env ANTITHESIS_PASSWORD=
+[!staging] ! snouty doctor
+[!staging] stderr '✗ .*could not renew the sign-in'
+[!staging] stderr 'NOTE: try again later, or run `snouty login`'
+
+# The next step names the profile of the credential in use, the default one
+# when the selected profile has none.
+[!staging] ! snouty --profile staging doctor
+[!staging] stderr -literal 'NOTE: try again later, or run `snouty login` to sign in again'
 
 # An expired OAuth token whose refresh gets no response means that the
 # tenant is unreachable, so doctor fails the API check.

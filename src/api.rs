@@ -2361,28 +2361,22 @@ async fn classify_client_error(err: ClientError<()>) -> ApiFailure {
 /// snouty buffer an unbounded body.
 const MAX_ERROR_BODY: usize = 64 * 1024;
 
-/// Read up to [`MAX_ERROR_BODY`] of an error response, and drop the rest. A
-/// failed read gives a message in place of the body.
-pub(crate) async fn read_error_body(response: reqwest::Response) -> String {
-    read_capped_body(response)
-        .await
-        .unwrap_or_else(|err| format!("<failed to read response body: {err}>"))
-}
-
-/// Read up to [`MAX_ERROR_BODY`] of a response, chunk by chunk, and drop the
-/// rest. Truncating mid-character is fine — the result is only ever
-/// displayed or parsed, and `from_utf8_lossy` renders a split character as
-/// `U+FFFD`.
-pub(crate) async fn read_capped_body(mut response: reqwest::Response) -> reqwest::Result<String> {
+/// Read up to [`MAX_ERROR_BODY`] of an error response, chunk by chunk, and drop
+/// the rest. Truncating mid-character is fine — the result is only ever
+/// displayed, and `from_utf8_lossy` renders a split character as `U+FFFD`.
+pub(crate) async fn read_error_body(mut response: reqwest::Response) -> String {
     let mut body = Vec::new();
     while body.len() < MAX_ERROR_BODY {
-        let Some(chunk) = response.chunk().await? else {
-            break;
-        };
-        let remaining = MAX_ERROR_BODY - body.len();
-        body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                let remaining = MAX_ERROR_BODY - body.len();
+                body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+            }
+            Ok(None) => break,
+            Err(err) => return format!("<failed to read response body: {err}>"),
+        }
     }
-    Ok(String::from_utf8_lossy(&body).into_owned())
+    String::from_utf8_lossy(&body).into_owned()
 }
 
 /// The human-readable text of an error response body.

@@ -153,52 +153,33 @@ async fn fetch_github_actions_oidc_credentials(
         .await
         .map_err(|err| request_failed(&err))?;
     let status = response.status();
-    // Name a 2xx body only when it is a page, such as the sign-in page of a
-    // proxy. Any other body can carry a token, also under another key or
-    // after a prefix, and the job log does not mask it.
-    let page = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next())
-        .is_some_and(|mime| {
-            let mime = mime.trim();
-            mime.eq_ignore_ascii_case("text/html") || mime.eq_ignore_ascii_case("text/plain")
-        });
-    let body = if status.is_success() {
-        crate::api::read_capped_body(response)
-            .await
-            .map_err(|err| request_failed(&err))?
-    } else {
-        crate::api::read_error_body(response).await
-    };
-    if status.is_success()
-        && let Ok(response) = serde_json::from_str::<OidcTokenResponse>(&body)
-    {
-        return Ok(response.value);
+    if !status.is_success() {
+        let message = crate::api::error_body_message(&crate::api::read_error_body(response).await);
+        let answer = if message.is_empty() {
+            message
+        } else {
+            format!(": {message}")
+        };
+        return Err(OidcFetchError {
+            status: Some(status),
+            reason: format!("the GitHub Actions token endpoint answered {status}{answer}"),
+        }
+        .into());
     }
-    let message = if status.is_success() && !page {
-        String::new()
-    } else {
-        crate::api::error_body_message(&body)
-    };
-    let without_token = if status.is_success() {
-        " without a token"
-    } else {
-        ""
-    };
-    let answer = if message.is_empty() {
-        message
-    } else {
-        format!(": {message}")
-    };
-    Err(OidcFetchError {
-        status: Some(status),
-        reason: format!(
-            "the GitHub Actions token endpoint answered {status}{without_token}{answer}"
-        ),
-    }
-    .into())
+    let body = response.text().await.map_err(|err| request_failed(&err))?;
+    serde_json::from_str::<OidcTokenResponse>(&body)
+        .map(|response| response.value)
+        .map_err(|_| {
+            // Omit the body: it can carry a token, and the job log does not
+            // mask it.
+            OidcFetchError {
+                status: Some(status),
+                reason: format!(
+                    "the GitHub Actions token endpoint answered {status} without a token"
+                ),
+            }
+            .into()
+        })
 }
 
 /// reqwest's message leaves out its cause, such as a refused connection.
@@ -388,33 +369,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn github_actions_oidc_exchange_error_names_a_success_page_without_a_token() {
-        assert_eq!(
-            success_answer_error(
-                "<html>\n  <h1>Sign in</h1>\n</html>".to_owned(),
-                "text/html; charset=utf-8"
-            )
-            .await,
-            "failed to get a GitHub Actions OIDC token: the GitHub Actions token endpoint answered 200 OK without a token: <html> <h1>Sign in</h1> </html>"
-        );
-    }
-
-    #[tokio::test]
-    async fn github_actions_oidc_exchange_error_omits_a_success_body_that_is_not_a_page() {
+    async fn github_actions_oidc_exchange_error_omits_a_success_body_without_a_token() {
         let token = serde_json::json!({"token": FAKE_OIDC_TOKEN}).to_string();
-        for body in [token.clone(), format!("\u{feff}{token}")] {
-            assert!(
-                success_answer_error(body, "application/json")
-                    .await
-                    .ends_with("answered 200 OK without a token")
+        for (body, content_type) in [
+            (token.clone(), "application/json"),
+            (format!("\u{feff}{token}"), "text/plain"),
+            ("<html><h1>Sign in</h1></html>".to_owned(), "text/html"),
+        ] {
+            assert_eq!(
+                success_answer_error(body, content_type).await,
+                "failed to get a GitHub Actions OIDC token: the GitHub Actions token endpoint answered 200 OK without a token"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn github_actions_oidc_exchange_error_caps_a_success_body() {
-        let error = success_answer_error("x".repeat(1024 * 1024), "text/plain").await;
-        assert!(error.len() < 100 * 1024);
     }
 
     #[tokio::test]

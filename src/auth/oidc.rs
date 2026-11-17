@@ -160,76 +160,55 @@ async fn fetch_github_actions_oidc_credentials(
             } else {
                 String::new()
             };
-            OidcFetchError::new(
-                None,
-                format!("the request to the GitHub Actions token endpoint failed: {err}{cause}"),
-            )
+            OidcFetchError {
+                status: None,
+                reason: format!(
+                    "the request to the GitHub Actions token endpoint failed: {err}{cause}"
+                ),
+            }
         })?;
     let status = response.status();
     let body = crate::api::read_error_body(response).await;
-    if !status.is_success() {
-        return Err(OidcFetchError::new(
-            Some(status),
-            format!(
-                "the GitHub Actions token endpoint answered {status}{}",
-                answer(&body)
-            ),
-        )
-        .into());
+    if status.is_success()
+        && let Ok(response) = serde_json::from_str::<OidcTokenResponse>(&body)
+    {
+        return Ok(response.value);
     }
-    serde_json::from_str::<OidcTokenResponse>(&body)
-        .map(|response| response.value)
-        .map_err(|_| {
-            // Omit a JSON body: it can carry a token under another key, and
-            // the job log does not mask it.
-            let answer = if serde_json::from_str::<serde_json::Value>(&body).is_ok() {
-                String::new()
-            } else {
-                answer(&body)
-            };
-            OidcFetchError::new(
-                None,
-                format!(
-                    "the GitHub Actions token endpoint answered {status} without a token{answer}"
-                ),
-            )
-            .into()
-        })
-}
-
-/// snouty could not get a GitHub Actions OIDC token. `status` is the status
-/// of a rejection, which `snouty doctor` reads.
-#[derive(Debug)]
-pub(crate) struct OidcFetchError {
-    pub(crate) status: Option<reqwest::StatusCode>,
-    reason: String,
-}
-
-impl OidcFetchError {
-    fn new(status: Option<reqwest::StatusCode>, reason: String) -> Self {
-        Self { status, reason }
-    }
-}
-
-impl std::fmt::Display for OidcFetchError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "failed to get a GitHub Actions OIDC token: {}",
-            self.reason
-        )
-    }
-}
-
-impl std::error::Error for OidcFetchError {}
-
-fn answer(body: &str) -> String {
-    let message = crate::api::error_body_message(body);
-    if message.is_empty() {
+    // Omit a 2xx JSON body: it can carry a token under another key, and the
+    // job log does not mask it.
+    let message = if status.is_success() && serde_json::from_str::<serde_json::Value>(&body).is_ok()
+    {
+        String::new()
+    } else {
+        crate::api::error_body_message(&body)
+    };
+    let without_token = if status.is_success() {
+        " without a token"
+    } else {
+        ""
+    };
+    let answer = if message.is_empty() {
         message
     } else {
         format!(": {message}")
+    };
+    Err(OidcFetchError {
+        status: Some(status),
+        reason: format!(
+            "the GitHub Actions token endpoint answered {status}{without_token}{answer}"
+        ),
     }
+    .into())
+}
+
+/// snouty could not get a GitHub Actions OIDC token. `status` is the
+/// endpoint's answer, which `snouty doctor` reads, or `None` when no answer
+/// came.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to get a GitHub Actions OIDC token: {reason}")]
+pub(crate) struct OidcFetchError {
+    pub(crate) status: Option<reqwest::StatusCode>,
+    reason: String,
 }
 
 #[cfg(test)]

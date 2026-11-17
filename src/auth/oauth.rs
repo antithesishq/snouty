@@ -231,7 +231,7 @@ impl RenewalFailure {
         }
     }
 
-    pub(crate) fn next_step(self, profile: Option<&str>) -> String {
+    fn next_step(self, profile: Option<&str>) -> String {
         let login = login_command(profile);
         match self {
             Self::Refused => format!("run {login} to sign in again"),

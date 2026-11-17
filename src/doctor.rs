@@ -837,11 +837,10 @@ pub async fn cmd_doctor(
                             "the client uses the credential that the credentials check reports",
                         );
                     let (message, next_step) = if matches!(auth, AuthenticationInfo::OAuth(_)) {
-                        let failure = err
+                        let renewal = err
                             .downcast_ref::<RenewalError>()
-                            .expect("an OAuth refresh fails with a renewal error")
-                            .failure;
-                        (failure.to_string(), failure.next_step(settings.profile()))
+                            .expect("an OAuth refresh fails with a renewal error");
+                        (renewal.failure.to_string(), renewal.next_step())
                     } else {
                         let status = http_err.and_then(reqwest::Error::status);
                         let (message, next_step) = renewal_failure(auth, status);

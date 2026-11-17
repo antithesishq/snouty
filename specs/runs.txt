@@ -811,6 +811,20 @@ exec cat probe-runs-capped.ndjson
 exec cat probe-runs-error.ndjson
 ! env_from_json_find id kind=test -- --json runs build-logs $R_id
 
+# The harness's `^=` and `=` filters skip a line without the field, and `!=`
+# requires the field on every line.
+exec cat find-filters.ndjson
+env_from_json_find id description^=smoke
+exec printenv R_id
+stdout '^run-3$'
+exec cat find-filters.ndjson
+env_from_json_find id 'description=nightly 2026-11-16'
+exec printenv R_id
+stdout '^run-2$'
+exec cat find-filters.ndjson
+! env_from_json_find id description^=nope
+! env_from_json_find id description!=x
+
 mock-runs-server
 ! snouty runs events no-such-run --match anything
 stderr '.*run not found: no-such-run.*'
@@ -1303,6 +1317,10 @@ stderr 'the server reported an error mid-stream: mock stream failure'
 -- probe-runs-error.ndjson --
 {"id":"run-stream-error","kind":"test"}
 {"id":"run-1","kind":"test"}
+-- find-filters.ndjson --
+{"id":"run-1"}
+{"id":"run-2","description":"nightly 2026-11-16"}
+{"id":"run-3","description":"smoke 2026-11-17T10:00:00Z"}
 -- unparsable_stored/.config/snouty/credentials.toml --
 [default
 -- rejected_stored/.config/snouty/credentials.toml --

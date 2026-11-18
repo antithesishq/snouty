@@ -76,13 +76,20 @@ impl Counts {
         }
     }
 
-    /// `66.7%`, or `–` of no locations.
+    /// `66.7%`, or `–` of no locations. Only all locations round to
+    /// `100.0%`, and only none to `0.0%`.
     fn percent(self) -> String {
         if self.total == 0 {
-            "–".to_string()
-        } else {
-            format!("{:.1}%", self.reached as f64 * 100.0 / self.total as f64)
+            return "–".to_string();
         }
+        let min = if self.reached > 0 { 0.1 } else { 0.0 };
+        let max = if self.reached < self.total {
+            99.9
+        } else {
+            100.0
+        };
+        let share = self.reached as f64 * 100.0 / self.total as f64;
+        format!("{:.1}%", share.clamp(min, max))
     }
 }
 
@@ -637,6 +644,8 @@ pub(super) fn explain_coverage_error(run: &RunDetail, err: Report) -> Report {
 }
 
 /// The locations, which arrive by module, as one `Vec` for each module.
+/// An error fails the module that it interrupts, so a module is whole or
+/// not yielded.
 fn by_module(
     locations: impl Stream<Item = Result<Location>>,
 ) -> impl Stream<Item = Result<Vec<Location>>> {
@@ -648,9 +657,9 @@ fn by_module(
         let mut module = vec![first];
         while let Some(location) = locations
             .as_mut()
-            .next_if(|next| {
-                next.as_ref()
-                    .is_ok_and(|next| next.coverage.module_id == module_id)
+            .next_if(|next| match next {
+                Ok(next) => next.coverage.module_id == module_id,
+                Err(_) => true,
             })
             .await
         {
@@ -763,6 +772,7 @@ pub(super) async fn cmd_runs_coverage(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use color_eyre::eyre::eyre;
 
     fn location(json: Value) -> Location {
         Location::try_from(json).unwrap()
@@ -812,6 +822,36 @@ mod tests {
         for (n, expected) in cases {
             assert_eq!(si(n), expected, "{n}");
         }
+    }
+
+    #[test]
+    fn percent_rounds_to_the_ends_only_at_the_ends() {
+        let percent = |reached, total| Counts { reached, total }.percent();
+        assert_eq!(percent(2, 3), "66.7%");
+        assert_eq!(percent(428_459, 428_460), "99.9%");
+        assert_eq!(percent(1, 428_460), "0.1%");
+        assert_eq!(percent(3, 3), "100.0%");
+        assert_eq!(percent(0, 3), "0.0%");
+        assert_eq!(percent(0, 0), "–");
+    }
+
+    #[tokio::test]
+    async fn an_error_fails_the_module_that_it_interrupts() {
+        let at_module = |module_id: &str| {
+            Ok(location(
+                json!({"module_id": module_id, "address": "1", "function": "f"}),
+            ))
+        };
+        let locations = stream::iter([
+            at_module("a"),
+            at_module("b"),
+            Err(eyre!("cut")),
+            at_module("b"),
+        ]);
+        let modules: Vec<Result<Vec<Location>>> = by_module(locations).collect().await;
+        assert_eq!(modules.len(), 2);
+        assert_eq!(modules[0].as_ref().unwrap().len(), 1);
+        assert!(modules[1].is_err());
     }
 
     #[test]

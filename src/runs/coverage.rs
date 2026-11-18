@@ -446,8 +446,9 @@ impl LocationTable {
 
     /// The header, then a row for each set of locations with the same
     /// cells, in the order of the first location of each, with `×N` after
-    /// a row of N > 1 locations. No lines when the only row is empty: the
-    /// function's own line says that the run reached none of them.
+    /// a row of N > 1 locations. The empty row, if any, is last. No lines
+    /// when it is the only row: the function's own line says that the run
+    /// reached none of them.
     ///
     /// A `-` is an empty cell. It is dim, and so is each cell of a location
     /// that the run did not reach.
@@ -458,7 +459,9 @@ impl LocationTable {
                 .entry(location_cells(location, self.detail))
                 .or_default() += 1;
         }
-        if rows.len() == 1 && rows.keys().flatten().all(Option::is_none) {
+        let empty = |cells: &[Option<String>; 3]| cells.iter().all(Option::is_none);
+        rows.sort_by(|a, _, b, _| empty(a).cmp(&empty(b)));
+        if rows.len() == 1 && rows.keys().all(empty) {
             return Vec::new();
         }
         let header = self.line(LOCATION_HEADER.map(|cell| (cell, Style::new())), 1);
@@ -1059,6 +1062,24 @@ mod tests {
         );
         // Only empty rows: the function's line says it all.
         assert!(table.lines(&g.locations).is_empty());
+    }
+
+    #[test]
+    fn the_empty_row_is_last() {
+        let module = Module::new(
+            vec![bare("1", "f", false), bare("2", "f", true)],
+            &HashMap::new(),
+        );
+        let table = LocationTable::new(&module, false);
+        let function = &module.files[0].classes[0].functions[0];
+        assert_eq!(
+            table.lines(&function.locations),
+            [
+                "LOCATION  INPUT_HASH  VTIME",
+                "-         h           0.5",
+                "-         -           -",
+            ]
+        );
     }
 
     #[test]

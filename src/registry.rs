@@ -48,7 +48,7 @@ impl Registry {
             .ok()
     }
 
-    /// Whether this is the registry of `tenant`.
+    /// Whether this is the Antithesis registry of `tenant`, in any case.
     pub fn is_registry_of(&self, tenant: &str) -> bool {
         self.antithesis_tenant()
             .is_some_and(|own| own.eq_ignore_ascii_case(tenant))

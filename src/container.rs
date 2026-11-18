@@ -787,8 +787,8 @@ impl ContainerRuntime for DockerRuntime {
     }
 
     /// A release older than [`DOCKER_AUTH_CONFIG_VERSION`] ignores
-    /// [`DOCKER_AUTH_CONFIG_ENV`], unless Docker's config sends `registry` to
-    /// a credential helper.
+    /// [`DOCKER_AUTH_CONFIG_ENV`]. A credential helper for `registry` gives
+    /// Docker the credential instead.
     fn docker_without_registry_auth(&self, registry: &Registry) -> Option<ReleaseVersion> {
         self.version.filter(|version| {
             *version < DOCKER_AUTH_CONFIG_VERSION && !docker_has_cred_helper(registry)
@@ -867,8 +867,7 @@ fn version_output_is_podman(stdout: &[u8]) -> bool {
         .contains("podman")
 }
 
-/// The major, minor and patch release of a tool, such as Docker or Docker
-/// Compose.
+/// The major, minor and patch release of a tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ReleaseVersion {
     major: u64,
@@ -1055,19 +1054,13 @@ struct DockerConfig {
 }
 
 /// Whether Docker's `config.json` names a credential helper for `registry`.
-/// A missing or invalid file names none. Docker also matches a key with a
-/// scheme, and hosts in any case.
+/// A missing or invalid file names none. Docker looks the helper up by the
+/// exact host of the image, which snouty writes in lowercase.
 fn docker_has_cred_helper(registry: &Registry) -> bool {
     docker_config_dir()
         .and_then(|dir| std::fs::read(dir.join("config.json")).ok())
         .and_then(|bytes| serde_json::from_slice::<DockerConfig>(&bytes).ok())
-        .is_some_and(|config| {
-            config.cred_helpers.keys().any(|key| {
-                key.trim_start_matches("https://")
-                    .trim_end_matches('/')
-                    .eq_ignore_ascii_case(registry.authority())
-            })
-        })
+        .is_some_and(|config| config.cred_helpers.contains_key(registry.authority()))
 }
 
 /// The warning for a Docker CLI of release `version` that cannot use the
@@ -2003,14 +1996,11 @@ esac
         assert_eq!(version("2.40.3").as_deref(), Some("2.40.3"));
         assert_eq!(version("v2.40.3").as_deref(), Some("2.40.3"));
         assert_eq!(version("19.03.12").as_deref(), Some("19.3.12"));
-        // Distro build-metadata and pre-release suffixes must not throw off the
-        // parse, on any component.
         assert_eq!(
             version("2.40.3+ds1-0ubuntu1~24.04.1").as_deref(),
             Some("2.40.3")
         );
         assert_eq!(version("2.24.7-rc1").as_deref(), Some("2.24.7"));
-        // Absent components read as zero, so a bare minor sorts below any patch.
         assert_eq!(version("2.24").as_deref(), Some("2.24.0"));
         assert_eq!(version("2").as_deref(), Some("2.0.0"));
         assert_eq!(version(""), None);

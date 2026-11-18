@@ -574,4 +574,4 @@ echo 'Docker version 28.3.0, build 38b7060'
 echo '2.30.0'
 
 -- helper-docker-config/config.json --
-{"credHelpers": {"https://Registry.TestTenant.antithesis.com": "snouty"}}
+{"credHelpers": {"registry.testtenant.antithesis.com": "snouty"}}

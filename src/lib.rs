@@ -24,7 +24,7 @@ pub mod ndjson;
 pub mod params;
 pub mod process;
 pub mod registry;
-pub(crate) mod render;
+pub mod render;
 pub mod run_metadata;
 pub use render::{OutputOptions, wrap_if_tty};
 pub mod runs;
@@ -32,11 +32,12 @@ pub mod scripts;
 #[doc(hidden)]
 pub mod settings;
 pub mod stdio;
-pub(crate) mod table;
+pub mod table;
 pub mod tag;
 #[doc(hidden)]
 pub mod testutils;
 pub mod time;
+pub mod tree;
 pub mod user_agent;
 pub mod util;
 pub mod validate;

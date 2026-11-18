@@ -1,13 +1,10 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write as _;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use color_eyre::Section;
 use color_eyre::eyre::{OptionExt, Result, eyre};
-use ptree::print_config::UTF_CHARS_BOLD;
-use ptree::{PrintConfig, write_tree_with};
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 use tempfile::NamedTempFile;
@@ -18,6 +15,7 @@ use crate::api::{CONNECT_TIMEOUT, client_builder};
 use crate::cli::DocsCommands;
 use crate::error::user_error;
 use crate::render::OutputOptions;
+use crate::tree;
 use crate::user_agent::user_agent;
 
 const DEFAULT_DOCS_URL: &str = "https://antithesis.com/docs";
@@ -760,7 +758,7 @@ fn tree(depth: Option<usize>, filter: Option<&str>, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    print!("{}", render_forest(&root)?);
+    print!("{}", render_forest(&root));
     Ok(())
 }
 
@@ -799,34 +797,23 @@ fn json_children<'a>(node: &'a TreeNode, path_prefix: &str) -> Vec<NodeJson<'a>>
 
 /// Render each top-level node as its own tree so the synthetic `docs` root is
 /// omitted from the user-facing output.
-fn render_forest(root: &TreeNode) -> Result<String> {
-    let settings = PrintConfig {
-        indent: 4,
-        characters: UTF_CHARS_BOLD.into(),
-        ..PrintConfig::default()
-    };
-    let mut rendered = Vec::new();
-    let child_count = root.children.len();
-
-    for (index, (name, child)) in root.children.iter().enumerate() {
-        let tree = render_tree(name, child);
-        write_tree_with(&tree, &mut rendered, &settings)?;
-        if index + 1 != child_count {
-            rendered.write_all(b"\n")?;
-        }
-    }
-
-    Ok(String::from_utf8(rendered)?)
+fn render_forest(root: &TreeNode) -> String {
+    root.children
+        .iter()
+        .map(|(name, child)| tree::render(&render_tree(name, child), usize::MAX) + "\n")
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
-fn render_tree(name: &str, node: &TreeNode) -> ptree::item::StringItem {
-    ptree::item::StringItem {
-        text: node_label(name, node),
+fn render_tree(name: &str, node: &TreeNode) -> tree::Node {
+    tree::Node {
+        label: vec![tree::Span::new(node_label(name, node))],
         children: node
             .children
             .iter()
             .map(|(child_name, child)| render_tree(child_name, child))
             .collect(),
+        ..tree::Node::default()
     }
 }
 

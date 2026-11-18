@@ -1,14 +1,14 @@
 //! Borderless tables for text output.
 
-use console::{Alignment, measure_text_width, pad_str, truncate_str};
+use console::{Alignment, measure_text_width, pad_str};
 
-use crate::render::{CodeSpans, wrap_text};
+use crate::render::{CodeSpans, Truncate, wrap_text};
 
 /// The spaces between two columns.
 const GAP: &str = "  ";
 
 #[derive(Clone, Copy)]
-pub(crate) enum Align {
+pub enum Align {
     Left,
     Right,
 }
@@ -16,19 +16,35 @@ pub(crate) enum Align {
 /// How a column gives up width when the table is wider than the terminal.
 /// No column shrinks below its header.
 #[derive(Clone, Copy)]
-pub(crate) enum Fit {
+pub enum Fit {
     /// The column is always as wide as its widest cell.
     Fixed,
-    /// Cut cells with an ellipsis, down to `floor` columns. A cell loses its
-    /// end, or its start with `from_left`, as a path should.
-    Truncate { floor: usize, from_left: bool },
+    /// Cut cells down to the truncation's floor.
+    Truncate(Truncate),
     /// Wrap cells at spaces, down to `floor` columns. Continuation lines start
     /// under the column. A word that is longer than the column stays whole,
     /// and widens the column.
     Wrap { floor: usize },
 }
 
-pub(crate) struct Column {
+impl Fit {
+    /// Cut cells at their end, down to `floor` columns.
+    pub fn truncate(floor: usize) -> Self {
+        Self::Truncate(Truncate::end(floor))
+    }
+
+    /// Cut cells at their start, down to `floor` columns, as a path should.
+    pub fn truncate_from_left(floor: usize) -> Self {
+        Self::Truncate(Truncate::start(floor))
+    }
+
+    pub fn wrap(floor: usize) -> Self {
+        Self::Wrap { floor }
+    }
+}
+
+#[must_use]
+pub struct Column {
     header: &'static str,
     align: Align,
     fit: Fit,
@@ -37,7 +53,7 @@ pub(crate) struct Column {
 
 impl Column {
     /// A left-aligned [`Fit::Fixed`] column with priority 0.
-    pub(crate) fn new(header: &'static str) -> Self {
+    pub fn new(header: &'static str) -> Self {
         Self {
             header,
             align: Align::Left,
@@ -46,34 +62,35 @@ impl Column {
         }
     }
 
-    pub(crate) fn align(self, align: Align) -> Self {
+    pub fn align(self, align: Align) -> Self {
         Self { align, ..self }
     }
 
-    pub(crate) fn fit(self, fit: Fit) -> Self {
+    pub fn fit(self, fit: Fit) -> Self {
         Self { fit, ..self }
     }
 
     /// Columns shrink in ascending priority: a column shrinks to its floor
     /// before a column with a higher priority starts to shrink. Columns with
     /// equal priority shrink left to right.
-    pub(crate) fn priority(self, priority: usize) -> Self {
+    pub fn priority(self, priority: usize) -> Self {
         Self { priority, ..self }
     }
 }
 
-pub(crate) struct Table {
+#[must_use]
+pub struct Table {
     columns: Vec<Column>,
 }
 
 impl Table {
-    pub(crate) fn builder() -> Self {
+    pub fn builder() -> Self {
         Self {
             columns: Vec::new(),
         }
     }
 
-    pub(crate) fn column(mut self, column: Column) -> Self {
+    pub fn column(mut self, column: Column) -> Self {
         self.columns.push(column);
         self
     }
@@ -84,7 +101,7 @@ impl Table {
     /// narrower than `width` does not change, so `usize::MAX` keeps every cell
     /// whole. Each row has one cell per column, and the caller sanitizes each
     /// cell.
-    pub(crate) fn render(&self, rows: Vec<Vec<String>>, width: usize) -> String {
+    pub fn render(&self, rows: Vec<Vec<String>>, width: usize) -> String {
         let mut widths: Vec<usize> = self
             .columns
             .iter()
@@ -104,7 +121,7 @@ impl Table {
             let column = &self.columns[index];
             let floor = match column.fit {
                 Fit::Fixed => continue,
-                Fit::Truncate { floor, .. } | Fit::Wrap { floor } => floor,
+                Fit::Truncate(Truncate { floor, .. }) | Fit::Wrap { floor } => floor,
             };
             let floor = floor.max(measure_text_width(column.header));
             let shrink = excess.min(widths[index].saturating_sub(floor));
@@ -124,10 +141,9 @@ impl Table {
                 cells
                     .map(|((cell, column), &width)| match column.fit {
                         Fit::Fixed => vec![cell],
-                        Fit::Truncate {
-                            from_left: true, ..
-                        } => vec![truncate_start(&cell, width)],
-                        Fit::Truncate { .. } => vec![truncate_str(&cell, width, "…").into_owned()],
+                        Fit::Truncate(truncate) => {
+                            vec![truncate.apply(width, &cell).into_owned()]
+                        }
                         Fit::Wrap { .. } => {
                             let wrapped = wrap_text(&cell, width, CodeSpans::Ignore);
                             if wrapped.is_empty() {
@@ -172,20 +188,6 @@ impl Table {
         }
         out.join("\n")
     }
-}
-
-/// `cell` cut at the start to at most `width` columns, behind a `…`.
-fn truncate_start(cell: &str, width: usize) -> String {
-    if measure_text_width(cell) <= width {
-        return cell.to_string();
-    }
-    // A tail narrows as its start moves right, so a binary search finds the
-    // longest tail that leaves a column for the `…`. Measure each tail whole:
-    // measuring one char at a time miscounts escape sequences.
-    let starts: Vec<usize> = cell.char_indices().map(|(index, _)| index).collect();
-    let first = starts.partition_point(|&start| measure_text_width(&cell[start..]) >= width);
-    let start = starts.get(first).copied().unwrap_or(cell.len());
-    format!("…{}", &cell[start..])
 }
 
 #[cfg(test)]
@@ -239,22 +241,8 @@ mod tests {
     fn columns_shrink_in_priority_order_down_to_their_floor() {
         let table = Table::builder()
             .column(Column::new("ID"))
-            .column(
-                Column::new("L")
-                    .fit(Fit::Truncate {
-                        floor: 8,
-                        from_left: false,
-                    })
-                    .priority(0),
-            )
-            .column(
-                Column::new("RUN")
-                    .fit(Fit::Truncate {
-                        floor: 0,
-                        from_left: false,
-                    })
-                    .priority(1),
-            );
+            .column(Column::new("L").fit(Fit::truncate(8)).priority(0))
+            .column(Column::new("RUN").fit(Fit::truncate(0)).priority(1));
         let rows = || vec![row(&["id-1", "launcher-name", "a-long-run-name"])];
 
         // L shrinks first, down to its floor; ID never shrinks.
@@ -269,12 +257,7 @@ mod tests {
 
     #[test]
     fn equal_priorities_shrink_left_to_right() {
-        let column = |header| {
-            Column::new(header).fit(Fit::Truncate {
-                floor: 0,
-                from_left: false,
-            })
-        };
+        let column = |header| Column::new(header).fit(Fit::truncate(0));
         let out = Table::builder()
             .column(column("A"))
             .column(column("B"))
@@ -285,42 +268,16 @@ mod tests {
     #[test]
     fn priority_beats_column_order() {
         let out = Table::builder()
-            .column(
-                Column::new("A")
-                    .fit(Fit::Truncate {
-                        floor: 0,
-                        from_left: false,
-                    })
-                    .priority(1),
-            )
-            .column(Column::new("B").fit(Fit::Truncate {
-                floor: 0,
-                from_left: false,
-            }))
+            .column(Column::new("A").fit(Fit::truncate(0)).priority(1))
+            .column(Column::new("B").fit(Fit::truncate(0)))
             .render(vec![row(&["aaaaaa", "bbbbbb"])], 12);
         assert_eq!(out.lines().nth(1), Some("aaaaaa  bbb…"));
     }
 
     #[test]
-    fn truncate_start_keeps_the_end() {
-        assert_eq!(
-            truncate_start("/usr/share/dotnet/dotnet", 15),
-            "…/dotnet/dotnet"
-        );
-        assert_eq!(
-            truncate_start("/usr/share/dotnet/dotnet", 24),
-            "/usr/share/dotnet/dotnet"
-        );
-        assert_eq!(truncate_start("/bin/averylongname", 6), "…gname");
-    }
-
-    #[test]
     fn truncate_from_left_cuts_the_start() {
         let out = Table::builder()
-            .column(Column::new("A").fit(Fit::Truncate {
-                floor: 0,
-                from_left: true,
-            }))
+            .column(Column::new("A").fit(Fit::truncate_from_left(0)))
             .render(vec![row(&["averylongname"])], 6);
         assert_eq!(out.lines().nth(1), Some("…gname"));
     }
@@ -329,7 +286,7 @@ mod tests {
         Table::builder()
             .column(Column::new("STATUS"))
             .column(Column::new("N").align(Align::Right))
-            .column(Column::new("NAME").fit(Fit::Wrap { floor }))
+            .column(Column::new("NAME").fit(Fit::wrap(floor)))
     }
 
     #[test]
@@ -372,7 +329,7 @@ mod tests {
     #[test]
     fn a_long_word_widens_its_column_for_every_row() {
         let out = Table::builder()
-            .column(Column::new("NAME").fit(Fit::Wrap { floor: 0 }))
+            .column(Column::new("NAME").fit(Fit::wrap(0)))
             .column(Column::new("N"))
             .render(vec![row(&["a very_long_word", "1"]), row(&["b", "2"])], 8);
         assert_eq!(
@@ -406,17 +363,9 @@ mod tests {
                 .column(Column::new("C").fit(fit))
         };
         let fixed = table(Fit::Fixed).render(rows.clone(), usize::MAX);
-        let truncated = table(Fit::Truncate {
-            floor: 0,
-            from_left: false,
-        })
-        .render(rows.clone(), usize::MAX);
-        let from_left = table(Fit::Truncate {
-            floor: 0,
-            from_left: true,
-        })
-        .render(rows.clone(), usize::MAX);
-        let wrapped = table(Fit::Wrap { floor: 0 }).render(rows, usize::MAX);
+        let truncated = table(Fit::truncate(0)).render(rows.clone(), usize::MAX);
+        let from_left = table(Fit::truncate_from_left(0)).render(rows.clone(), usize::MAX);
+        let wrapped = table(Fit::wrap(0)).render(rows, usize::MAX);
         assert_eq!(truncated, fixed);
         assert_eq!(from_left, fixed);
         assert_eq!(wrapped, fixed);
@@ -443,9 +392,10 @@ mod tests {
                 .min_value(first + 3)
                 .max_value(first + 80),
         );
-        let fit = Fit::Truncate {
-            floor: 0,
-            from_left: tc.draw(generators::booleans()),
+        let fit = if tc.draw(generators::booleans()) {
+            Fit::truncate_from_left(0)
+        } else {
+            Fit::truncate(0)
         };
         let out = Table::builder()
             .column(Column::new("A"))

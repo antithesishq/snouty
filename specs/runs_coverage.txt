@@ -17,9 +17,7 @@ stderr 'detail'
 ! snouty runs coverage run-1 --rollup line
 stderr 'invalid value'
 
-# A run that has locations shows a tree per module. Only runs created after
-# the coverage API shipped have locations. On staging, the gallery's runs of
-# the small Python example: a large run's locations can take minutes.
+# A run that has locations shows a tree per module.
 mock-runs-server
 [!staging] snouty --json runs list
 [staging] snouty --json runs list --created-after 2026-11-13T23:00:00Z --limit 100

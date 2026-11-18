@@ -1434,17 +1434,17 @@ def discover(sn: Snouty) -> Discovery:
 
 
 def _pick_coverage_module(sn: Snouty, run: str) -> str:
-    """The module of `run` with the fewest locations, or "" when the run has
-    no locations, or the tenant does not serve them. Only the coverage
-    stories fail then, not the whole gallery."""
+    """The module of `run` with the fewest locations among those with a
+    reached location, or "" when the run has none, or the tenant does not
+    serve them. Only the coverage stories fail then, not the whole gallery."""
     try:
         modules = sn.json_lines(["runs", "coverage", run])
     except GalleryError as err:
         print(f"  coverage module: none ({err})", file=sys.stderr)
         return ""
-    counts = {row["module_id"]: row["total"] for row in modules}
+    counts = {row["module_id"]: row["total"] for row in modules if row["reached"]}
     if not counts:
-        print("  coverage module: none (the run has no locations)", file=sys.stderr)
+        print("  coverage module: none (the run reached no location)", file=sys.stderr)
         return ""
     module = min(counts, key=lambda m: counts[m])
     print(f"  coverage module: {module}", file=sys.stderr)

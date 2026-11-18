@@ -126,24 +126,28 @@ async fn tools_return_detailed_output_or_json() {
         ]
     );
 
-    // runs_coverage takes `module_ids`, and returns a location per line.
+    // runs_coverage takes `module_ids`, and prints whole vtimes and the
+    // status line.
     let result = call(
         &client,
         "runs_coverage",
-        json!({ "run_id": "run-1", "module_ids": ["go-20e55e2f1623"] }),
+        json!({
+            "run_id": "run-2",
+            "rollup": "none",
+            "module_ids": ["d85d838a38496ad7233432355829abc7d2333c33"],
+        }),
     )
     .await;
     assert_eq!(result.is_error, Some(false));
-    let lines: Vec<Value> = text(&result)
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
+    let all: String = result
+        .content
+        .iter()
+        .map(|c| c.as_text().unwrap().text.as_str())
         .collect();
-    assert_eq!(lines.len(), 1, "{lines:?}");
-    assert_eq!(lines[0]["module_id"], "go-20e55e2f1623");
-    assert_eq!(
-        lines[0]["first_reached"]["moment"]["vtime"],
-        140.17209334451
-    );
+    assert!(all.contains("INPUT_HASH"), "{all}");
+    assert!(all.contains("12.851377005412903"), "{all}");
+    assert!(!all.contains("go-20e55e2f1623"), "{all}");
+    assert!(all.contains("the run is in progress"), "{all}");
 
     // runs_list returns what `snouty runs list --detail` prints: a block per
     // run. The result also has a stderr block: the note that more runs may

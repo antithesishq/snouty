@@ -48,9 +48,9 @@ pub(crate) use generated::types::Params as RunParams;
 pub use generated::types::{
     BuildLogLine, CoverageModule, CoverageModuleInstance, Event, EventProperty,
     ExecuteCommandRequestSourceRunId as SourceRunId,
-    ExecuteCommandRequestSourceSessionId as SourceSessionId, FaultTolerance, Moment,
-    NonEventProperty, PerformanceTier, Property, PropertyStatus, RegistryResponse, RunDetail,
-    RunDetailSubStatus, RunStatus, RunStreamNotificationType, RunSummary, UsageEntry,
+    ExecuteCommandRequestSourceSessionId as SourceSessionId, FaultTolerance, LocationCoverage,
+    Moment, NonEventProperty, PerformanceTier, Property, PropertyStatus, RegistryResponse,
+    RunDetail, RunDetailSubStatus, RunStatus, RunStreamNotificationType, RunSummary, UsageEntry,
 };
 
 /// The outcome of a launch or debugging-launch request, and the `--json` output

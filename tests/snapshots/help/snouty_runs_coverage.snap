@@ -1,25 +1,41 @@
 ---
 source: tests/help_snapshots.rs
 ---
-Print the coverage of each instrumented location of a run: whether the run
-reached it, and the moment where it first did. Use it to find code that the run
-never reached. Runs created before release 67.6 have no coverage.
+Show which instrumented code of a run it reached, as a tree of modules, files,
+classes and functions. Use it to find code that the run never reached, and the
+moment where it first reached a location. Runs created before release 67.6 have
+no coverage.
 
 `runs coverage` is an unstable feature: its flags and output can change in any
 release. Enable it with `SNOUTY_UNSTABLE_FEATURES=coverage`.
 
-Each location prints as one JSON object on its own line, by module, then
-address. It has the `module_id`, `address` and `function` of the location, and,
-when they are known, its `class`, `file`, `begin_line`, `begin_column`,
-`end_line` and `end_column`. A location that the run reached also has
-`first_reached`: the `moment` where the run first reached it, with its
-`input_hash` and `vtime`, and `run_seconds`, the seconds from the start of the
-test. The vtime is a JSON number. Several locations can start at one place, such
-as the copies of a generic function, or the two outcomes of a branch.
+Each line starts with the share of the locations under it that the run reached,
+and the reached and total counts: `66.7%  2/3`.
+
+--rollup sets the deepest level: `file` (the default), `function`, or `none` for
+every location. With `none`, a table of the function's locations hangs under
+each function, in source order: LOCATION, the line and column where it starts,
+then INPUT_HASH and VTIME, the moment where the run first reached it. A reached
+location is plain, an unreached one dim, and an empty cell is `-`. Several
+locations can start at one place, such as the copies of a generic function, or
+the two outcomes of a branch; each is its own row.
 
 Use --module to show only a module, by the ID that `runs modules` lists. Give it
-more than once for more modules. To count or group the locations, such as by
-file or function, filter the output, for example with `jq`.
+more than once for more modules. To narrow further, such as to a file, class or
+function, filter the --json output, for example with `jq`.
+
+VTIME is cut to five decimals, which still names a moment at or before the first
+reach. With --detail, it prints whole. On a terminal, file names are shortened
+at the start, and other names at the end. After the output, a status line on
+stderr counts the locations, and gives the share reached and the run's status.
+
+With --json, each module prints as one JSON object on its own line, nested like
+the text down to --rollup: the module's `module_id`, `module_name`, `language`,
+`reached` and `total`, then `files`, each with its `classes`, each with its
+`functions`. A class is its full name, or null for free functions. A function
+has the `first_reached` moment of its earliest location, and with `none` its
+`locations`, as the API sends them, with each vtime as a JSON number. The counts
+are exact.
 
 While the run is in progress, the output is the coverage up to now. The run must
 be ready or complete. If it is not, the command waits until it is ready, and
@@ -27,7 +43,8 @@ says that it waits.
 
 Examples:
   snouty runs coverage <run_id>
-  snouty runs coverage <run_id> --module <module_id>
+  snouty runs coverage <run_id> --rollup function --module <module_id>
+  snouty runs coverage <run_id> --rollup none --module <module_id>
 
 Usage: snouty runs coverage [OPTIONS] <RUN_ID>
 
@@ -38,6 +55,19 @@ Arguments:
 Options:
       --module <MODULE_ID>
           Only the module with this ID (repeatable)
+
+      --rollup <ROLLUP>
+          The deepest level of the tree: files, functions, or every location
+
+          Possible values:
+          - file:     Modules and their files
+          - function: Modules, files, classes and functions
+          - none:     Modules, files, classes, functions and every location
+          
+          [default: file]
+
+  -d, --detail
+          Print each vtime whole
 
   -h, --help
           Print help (see a summary with '-h')

@@ -145,6 +145,7 @@ pub async fn cmd_runs(
             (render.raw, render.detail)
         }
         Some(RunsCommands::Search(args)) => (args.render.raw, args.render.detail),
+        Some(RunsCommands::Coverage(args)) => (false, args.detail),
         _ => (false, false),
     };
     reject_detail_with_json(output.json, detail)?;
@@ -310,7 +311,7 @@ pub async fn cmd_runs(
         Some(RunsCommands::Usage(args)) => usage::cmd_runs_usage(args, settings, output).await,
         Some(RunsCommands::Coverage(args)) => {
             crate::features::require(crate::features::Feature::Coverage, "snouty runs coverage")?;
-            coverage::cmd_runs_coverage(args, settings, output.verbose).await
+            coverage::cmd_runs_coverage(args, settings, output).await
         }
         Some(RunsCommands::Modules { run_id, detail }) => {
             modules::cmd_runs_modules(&run_id, detail, settings, output).await

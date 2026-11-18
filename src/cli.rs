@@ -1065,7 +1065,8 @@ pub enum RunsCommands {
     #[command(arg = json(JsonShape::Lines))]
     Usage(RunsUsageArgs),
 
-    /// Print the coverage of each instrumented location of a run
+    /// Show which instrumented code of a run it reached, as a tree of modules,
+    /// files, classes and functions
     #[command(
         hide = !crate::features::is_enabled(crate::features::Feature::Coverage),
         arg = json(JsonShape::Lines),
@@ -1098,6 +1099,26 @@ pub struct RunsCoverageArgs {
         value_parser = clap::builder::NonEmptyStringValueParser::new()
     )]
     pub module_ids: Vec<String>,
+
+    /// The deepest level of the tree: files, functions, or every location
+    #[arg(long, value_enum, default_value_t)]
+    pub rollup: CoverageRollup,
+
+    /// Print each vtime whole
+    #[arg(short = 'd', long)]
+    pub detail: bool,
+}
+
+/// The deepest level of the `runs coverage` tree.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub enum CoverageRollup {
+    /// Modules and their files
+    #[default]
+    File,
+    /// Modules, files, classes and functions
+    Function,
+    /// Modules, files, classes, functions and every location
+    None,
 }
 
 #[derive(Args)]

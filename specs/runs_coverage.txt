@@ -20,7 +20,7 @@ stderr 'invalid value'
 # A run that has locations shows a tree per module.
 mock-runs-server
 [!staging] snouty --json runs list
-[staging] snouty --json runs list --created-after 2026-11-13T23:00:00Z --limit 100
+[staging] snouty --json runs list --created-after 2026-11-13T23:00:00Z --created-before 2026-11-17T19:00:00Z --limit 100
 [!staging] env_from_json_find run_id launcher!=debugging -- runs coverage $R_run_id
 [staging] env_from_json_find run_id 'description^=snouty gen-gallery end-to-end run' -- runs coverage $R_run_id
 snouty runs coverage $R_run_id

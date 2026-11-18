@@ -7,7 +7,7 @@ Show which instrumented code of a run it reached, as a tree of modules, files, c
 
 Each line starts with the share of the locations under it that the run reached, and the reached and total counts: `66.7%  2/3`.
 
-`rollup` sets the deepest level: `file` (the default), `function`, or `none` for every location. With `none`, a table of the function's locations hangs under each function, in source order: LOCATION, the line and column where it starts, then INPUT_HASH and VTIME, the moment where the run first reached it. A reached location is plain, an unreached one dim, and an empty cell is `-`. Several locations can start at one place, such as the copies of a generic function, or the two outcomes of a branch; each is its own row.
+`rollup` sets the deepest level: `file` (the default), `function`, or `none` for every location. With `none`, a table of the function's locations hangs under each function, in source order: LOCATION, the line and column where it starts, then INPUT_HASH and VTIME, the moment where the run first reached it. A reached location is plain, an unreached one dim, and an empty cell is `-`. Several locations can start at one place, such as the copies of a generic function, or the two outcomes of a branch. Identical rows print once, followed by `×N`, the number of locations.
 
 Use `module_ids` to show only a module, by the ID that `runs_modules` lists. List more IDs for more modules.
 

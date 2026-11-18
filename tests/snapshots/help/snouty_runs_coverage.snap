@@ -18,7 +18,8 @@ each function, in source order: LOCATION, the line and column where it starts,
 then INPUT_HASH and VTIME, the moment where the run first reached it. A reached
 location is plain, an unreached one dim, and an empty cell is `-`. Several
 locations can start at one place, such as the copies of a generic function, or
-the two outcomes of a branch; each is its own row.
+the two outcomes of a branch. Identical rows print once, followed by `×N`, the
+number of locations.
 
 Use --module to show only a module, by the ID that `runs modules` lists. Give it
 more than once for more modules. To narrow further, such as to a file, class or

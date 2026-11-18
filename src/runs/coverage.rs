@@ -15,6 +15,7 @@ use color_eyre::Section;
 use color_eyre::eyre::{Report, Result};
 use console::{Alignment, Style, measure_text_width, pad_str};
 use futures_util::{Stream, StreamExt, TryStreamExt, future, stream};
+use indexmap::IndexMap;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -443,36 +444,62 @@ impl LocationTable {
         Self { widths, detail }
     }
 
-    /// The header, then a row for each location. A `-` is an empty cell. It
-    /// is dim, and so is each cell of a location that the run did not reach.
+    /// The header, then a row for each set of locations with the same
+    /// cells, in the order of the first location of each, with `×N` after
+    /// a row of N > 1 locations. No lines when the only row is empty: the
+    /// function's own line says that the run reached none of them.
+    ///
+    /// A `-` is an empty cell. It is dim, and so is each cell of a location
+    /// that the run did not reach.
     fn lines(&self, locations: &[Location]) -> Vec<String> {
-        let header = self.line(LOCATION_HEADER.map(|cell| (cell, Style::new())));
-        let rows = locations.iter().map(|location| {
-            let reached = location.coverage.first_reached.is_some();
-            let cells = location_cells(location, self.detail);
-            self.line(cells.each_ref().map(|cell| match cell {
+        let mut rows: IndexMap<[Option<String>; 3], usize> = IndexMap::new();
+        for location in locations {
+            *rows
+                .entry(location_cells(location, self.detail))
+                .or_default() += 1;
+        }
+        if rows.len() == 1 && rows.keys().flatten().all(Option::is_none) {
+            return Vec::new();
+        }
+        let header = self.line(LOCATION_HEADER.map(|cell| (cell, Style::new())), 1);
+        let rows = rows.iter().map(|(cells, &count)| {
+            // Only a reached location has an input hash.
+            let reached = cells[1].is_some();
+            let cells = cells.each_ref().map(|cell| match cell {
                 Some(text) if reached => (text.as_str(), Style::new()),
                 Some(text) => (text.as_str(), Style::new().dim()),
                 None => ("-", Style::new().dim()),
-            }))
+            });
+            self.line(cells, count)
         });
         std::iter::once(header).chain(rows).collect()
     }
 
-    fn line(&self, cells: [(&str, Style); 3]) -> String {
+    /// The cells, padded to the widths. The last is padded only when
+    /// `×count` follows it.
+    fn line(&self, cells: [(&str, Style); 3], count: usize) -> String {
         let last = cells.len() - 1;
-        cells
+        let line = cells
             .into_iter()
             .zip(self.widths)
             .enumerate()
             .map(|(index, ((text, style), width))| {
-                let width = if index == last { 0 } else { width };
+                let width = if index == last && count == 1 {
+                    0
+                } else {
+                    width
+                };
                 style
                     .apply_to(pad_str(text, width, Alignment::Left, None))
                     .to_string()
             })
             .collect::<Vec<_>>()
-            .join("  ")
+            .join("  ");
+        if count > 1 {
+            format!("{line}  ×{count}")
+        } else {
+            line
+        }
     }
 }
 
@@ -510,14 +537,10 @@ fn class_node(class: &Class, depth: &Depth) -> Node {
     node(class.counts, vec![label], children)
 }
 
-fn file_node(file: &File, depth: &Depth) -> Node {
-    let path = file.path.as_deref().map_or("(no file)".into(), sanitize);
-    let label = vec![
-        Span::new(path)
-            .style(Style::new().bold())
-            .truncate(Truncate::start(MIN_LABEL)),
-    ];
-    let children = match (depth, file.classes.as_slice()) {
+/// The nodes under a file: its classes, or its functions when it has
+/// only free functions.
+fn file_children(file: &File, depth: &Depth) -> Vec<Node> {
+    match (depth, file.classes.as_slice()) {
         (Depth::Files, _) => Vec::new(),
         // Free functions only: no class level.
         (_, [free]) if free.name.is_none() => free
@@ -529,8 +552,17 @@ fn file_node(file: &File, depth: &Depth) -> Node {
             .iter()
             .map(|class| class_node(class, depth))
             .collect(),
-    };
-    node(file.counts, label, children)
+    }
+}
+
+fn file_node(file: &File, depth: &Depth) -> Node {
+    let path = file.path.as_deref().map_or("(no file)".into(), sanitize);
+    let label = vec![
+        Span::new(path)
+            .style(Style::new().bold())
+            .truncate(Truncate::start(MIN_LABEL)),
+    ];
+    node(file.counts, label, file_children(file, depth))
 }
 
 fn module_node(module: &Module, depth: &Depth) -> Node {
@@ -544,11 +576,11 @@ fn module_node(module: &Module, depth: &Depth) -> Node {
                 .truncate(Truncate::end(MIN_LABEL))
         });
     let label = std::iter::once(id).chain(about).collect();
-    let children = module
-        .files
-        .iter()
-        .map(|file| file_node(file, depth))
-        .collect();
+    let children = match module.files.as_slice() {
+        // No file at all: no file level.
+        [file] if file.path.is_none() => file_children(file, depth),
+        files => files.iter().map(|file| file_node(file, depth)).collect(),
+    };
     node(module.counts, label, children)
 }
 
@@ -731,6 +763,7 @@ pub(super) async fn cmd_runs_coverage(
 
     let width = terminal_width();
     let mut counts = Counts::default();
+    let mut without_positions = Vec::new();
     let mut first_module = true;
     let mut next = first?;
     while let Some(locations) = next {
@@ -748,6 +781,12 @@ pub(super) async fn cmd_runs_coverage(
             }
             outln!("{}", tree::render(&module_node(&module, &depth), width))?;
             counts = counts + module.counts;
+            if module
+                .locations()
+                .all(|location| location.coverage.begin_line.is_none())
+            {
+                without_positions.push(module.id);
+            }
             first_module = false;
         }
         next = modules.try_next().await?;
@@ -756,6 +795,13 @@ pub(super) async fn cmd_runs_coverage(
         return Ok(());
     }
 
+    for module_id in without_positions {
+        eprintln!(
+            "module {} has no source positions, so build it with debug info: \
+             for Rust, debug = 1 or -g; for C and C++, -g",
+            sanitize(&module_id)
+        );
+    }
     let status = api.get_run(run_id).await?.untag().status;
     eprintln!(
         "{} · {} reached · run {}",
@@ -970,6 +1016,63 @@ mod tests {
         );
         let other = &module.files[0].classes[0].functions[1];
         assert_eq!(table.lines(&other.locations)[1], "1000:1    -           -");
+    }
+
+    /// A location with no file or position, as a module without debug info
+    /// has.
+    fn bare(address: &str, function: &str, reached: bool) -> Location {
+        let mut json = json!({"module_id": "m", "address": address, "function": function});
+        if reached {
+            json["first_reached"] = json!({
+                "run_seconds": 1,
+                "moment": {"input_hash": "h", "vtime": "0.5"},
+            });
+        }
+        location(json)
+    }
+
+    #[test]
+    fn identical_rows_collapse_even_when_they_interleave() {
+        let module = Module::new(
+            vec![
+                bare("1", "f", true),
+                bare("2", "f", false),
+                bare("3", "f", false),
+                bare("4", "f", true),
+                bare("5", "f", true),
+                bare("6", "g", false),
+                bare("7", "g", false),
+            ],
+            &HashMap::new(),
+        );
+        let table = LocationTable::new(&module, false);
+        let [f, g] = &module.files[0].classes[0].functions[..] else {
+            panic!("two functions");
+        };
+        assert_eq!(
+            table.lines(&f.locations),
+            [
+                "LOCATION  INPUT_HASH  VTIME",
+                "-         h           0.5    ×3",
+                "-         -           -      ×2",
+            ]
+        );
+        // Only empty rows: the function's line says it all.
+        assert!(table.lines(&g.locations).is_empty());
+    }
+
+    #[test]
+    fn a_module_without_files_has_no_file_level() {
+        let module = Module::new(
+            vec![bare("1", "f", true), bare("2", "g", false)],
+            &HashMap::new(),
+        );
+        assert_eq!(
+            tree::render(&module_node(&module, &Depth::Functions), usize::MAX),
+            " 50.0%  1/2     module m\n\
+             100.0%  1/1     ┣━━ f\n  \
+             0.0%  0/1     ┗━━ g"
+        );
     }
 
     #[test]

@@ -2082,7 +2082,9 @@ def coverage_tree(rollup: str):
         modules = re.findall(rf"^ *{COVERAGE_CELL} +module \S+", out, re.M)
         nodes = re.findall(rf"^ *{COVERAGE_CELL} +[┃ ]*[┣┗]━━ \S", out, re.M)
         tables = re.findall(r"LOCATION +INPUT_HASH +VTIME$", out, re.M)
-        reached = re.findall(r"\d+(?::\d+)? +-?\d+ +\d+\.?\d*$", out, re.M)
+        reached = re.findall(
+            r"(?:\d+(?::\d+)?|-) +-?\d+ +\d+\.?\d*(?: +×\d+)?$", out, re.M
+        )
         status = re.search(
             r"^\S+ locations? · \d+\.\d% reached · run ", sr.result.combined, re.M
         )
@@ -4274,7 +4276,8 @@ def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
             "I can read the logs up to that moment.",
             "The module's tree down to its functions, with a LOCATION/INPUT_HASH/VTIME table "
             "under each function. A reached location has an input hash and a vtime that "
-            "`runs logs` takes; an unreached one has `-` for both.",
+            "`runs logs` takes; an unreached one has `-` for both. Identical rows print once, "
+            "with `×N`.",
             [
                 "runs",
                 "coverage",

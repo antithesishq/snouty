@@ -1393,6 +1393,34 @@ fn mock_route_coverage_locations(run_id: &str, query: Option<&str>) -> (u16, Str
     let main = |address, function, line, reached| {
         location(rust, address, "src/main.rs", function, line, reached)
     };
+    // A module built without debug info: no file and no position. Its
+    // reached locations interleave with unreached ones in address order.
+    if run_id == "run-3" {
+        let lines: Vec<String> = [
+            ("1", "antithesis_init", true),
+            ("2", "antithesis_init", false),
+            ("3", "antithesis_init", false),
+            ("4", "antithesis_init", true),
+            ("5", "antithesis_init", true),
+            ("6", "nodebug::idle", false),
+            ("7", "nodebug::idle", false),
+        ]
+        .into_iter()
+        .map(|(address, function, reached)| {
+            let mut location = serde_json::json!({
+                "module_id": "5d1e0b0e4c3f2a1b", "address": address, "function": function,
+            });
+            if reached {
+                location["first_reached"] = serde_json::json!({
+                    "run_seconds": 2.5,
+                    "moment": {"input_hash": "77", "vtime": "0.75"},
+                });
+            }
+            location.to_string() + "\n"
+        })
+        .collect();
+        return (200, lines.concat());
+    }
     if run_id == "run-stream-error" {
         let lines = [
             main("1", "rusthello::main", 13, Some("12.846102431882170")).to_string(),

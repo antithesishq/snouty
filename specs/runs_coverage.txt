@@ -100,6 +100,21 @@ stdout '"class":"rusthello::Spinner","reached":1,"total":2,"functions":\[\{"func
 snouty --json runs coverage run-1 --rollup none
 stdout '"locations":\[\{"module_id":"d85d838a38496ad7233432355829abc7d2333c33","address":"1"'
 
+# A module without files or positions: its functions hang from the module,
+# identical rows print once with a count, a function with only empty rows
+# has no table, and a note on stderr asks for debug info.
+snouty runs coverage run-3 --rollup none
+stdout -literal ' 60.0%  3/5     ┣━━ antithesis_init'
+stdout '^ +┃   -         77          0\.75   ×3$'
+stdout '^ +┃   -         -           -      ×2$'
+stdout -literal '  0.0%  0/2     ┗━━ nodebug::idle'
+! stdout '(no file)'
+! stdout '            LOCATION(?s).*LOCATION'
+stderr '^module 5d1e0b0e4c3f2a1b has no source positions'
+snouty --json runs coverage run-3 --rollup none
+stdout -count=7 '"address":'
+! stderr 'source positions'
+
 # A Stream_Error line fails the command.
 ! snouty --json runs coverage run-stream-error
 stderr 'the server reported an error mid-stream: mock stream failure'

@@ -133,6 +133,7 @@ tools! {
     RunsLogs => "runs_logs", Reads, hidden: [], required: [];
     RunsSearch => "runs_search", Reads, hidden: ["follow"], required: [];
     RunsUsage => "runs_usage", Reads, hidden: [], required: [];
+    RunsCoverage => "runs_coverage", Reads, hidden: [], required: [], unstable: Coverage;
     RunsModules => "runs_modules", Reads, hidden: [], required: [];
     // With no script, `runs exec` reads it from stdin, and a child's stdin is
     // null.
@@ -529,6 +530,7 @@ mod tests {
                 | ToolName::RunsCancel
                 | ToolName::RunsProperties
                 | ToolName::RunsBuildLogs
+                | ToolName::RunsCoverage
                 | ToolName::RunsModules => &["run_id"],
                 ToolName::RunsProperty => &["run_id", "property_id"],
                 ToolName::RunsLogs => &["run_id", "input_hash"],
@@ -762,7 +764,7 @@ mod tests {
         for name in ToolName::ALL {
             let help = tool_help(
                 object(json!({ "tool": name.to_string() })),
-                &[Feature::Example],
+                <Feature as clap::ValueEnum>::value_variants(),
             )
             .unwrap();
             assert!(help.ends_with(&name.help().mcp()), "{name}");

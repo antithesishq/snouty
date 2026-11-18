@@ -912,6 +912,9 @@ fn mock_route(
                 }
                 let (s, b) = mock_route_get_run_logs(run_id);
                 (s, b, ndjson, mock_run_terminal(run_id))
+            } else if let Some(run_id) = rest.strip_suffix("/coverage/locations") {
+                let (s, b) = mock_route_coverage_locations(run_id, query);
+                (s, b, if s == 200 { ndjson } else { json }, false)
             } else if let Some(run_id) = rest.strip_suffix("/modules") {
                 let (s, b) = mock_route_list_run_modules(run_id);
                 (s, b, json, false)
@@ -1358,6 +1361,86 @@ fn mock_route_get_run_build_logs(run_id: &str) -> (u16, String) {
         r#"{"timestamp":"2025-03-20T02:01:20Z","stream":"stdout","text":"Build complete"}"#,
     ];
     (200, lines.join("\n") + "\n")
+}
+
+/// The locations of run-1 and run-2. The Rust module has two files: a free
+/// function and a method of `Spinner`, which only its demangled name names,
+/// and two locations that share a span, as a generic's copies do, of which
+/// only one is reached. The Go module's location is a method of `Worker`,
+/// which the `class` field names. The route filters by `module_id`, as the
+/// server does.
+fn mock_route_coverage_locations(run_id: &str, query: Option<&str>) -> (u16, String) {
+    let rust = "d85d838a38496ad7233432355829abc7d2333c33";
+    let location = |module_id: &str,
+                    address: &str,
+                    file: &str,
+                    function: &str,
+                    line: u32,
+                    reached: Option<&str>| {
+        let mut location = serde_json::json!({
+            "module_id": module_id, "address": address, "file": file,
+            "function": function, "begin_line": line, "begin_column": 5,
+            "end_line": line, "end_column": 5,
+        });
+        if let Some(vtime) = reached {
+            location["first_reached"] = serde_json::json!({
+                "run_seconds": 31.4,
+                "moment": {"input_hash": "-3625518438076122494", "vtime": vtime},
+            });
+        }
+        location
+    };
+    let main = |address, function, line, reached| {
+        location(rust, address, "src/main.rs", function, line, reached)
+    };
+    if run_id == "run-stream-error" {
+        let lines = [
+            main("1", "rusthello::main", 13, Some("12.846102431882170")).to_string(),
+            MOCK_STREAM_ERROR_LINE.to_string(),
+        ];
+        return (200, lines.join("\n") + "\n");
+    }
+    if !mock_run_known(run_id) {
+        return mock_run_not_found(run_id);
+    }
+    let locations = [
+        main("1", "rusthello::main", 13, Some("12.846102431882170")),
+        main(
+            "2",
+            "<rusthello::Spinner>::spin",
+            7,
+            Some("12.851377005412904"),
+        ),
+        main("3", "<rusthello::Spinner>::spin", 9, None),
+        location(rust, "4", "src/work.rs", "rusthello::work::step", 4, None),
+        location(
+            rust,
+            "5",
+            "src/work.rs",
+            "rusthello::work::step",
+            4,
+            Some("13.5"),
+        ),
+        {
+            let mut go = location(
+                "go-20e55e2f1623",
+                "1",
+                "internal/work/spin.go",
+                "Spin",
+                17,
+                Some("140.17209334451"),
+            );
+            go["class"] = serde_json::json!("Worker");
+            go
+        },
+    ];
+    let module_id = mock_query_param(query, "module_id");
+    let lines: Vec<String> = locations
+        .into_iter()
+        .filter(|l| module_id.as_deref().is_none_or(|id| l["module_id"] == id))
+        .map(|l| l.to_string() + "\n")
+        .collect();
+    (200, lines.concat())
 }
 
 type MockModule = (

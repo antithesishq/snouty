@@ -1065,6 +1065,13 @@ pub enum RunsCommands {
     #[command(arg = json(JsonShape::Lines))]
     Usage(RunsUsageArgs),
 
+    /// Print the coverage of each instrumented location of a run
+    #[command(
+        hide = !crate::features::is_enabled(crate::features::Feature::Coverage),
+        arg = json(JsonShape::Lines),
+    )]
+    Coverage(RunsCoverageArgs),
+
     /// List the instrumented modules that a run loaded
     #[command(arg = json(JsonShape::Lines))]
     Modules {
@@ -1076,6 +1083,21 @@ pub enum RunsCommands {
         #[arg(short = 'd', long)]
         detail: bool,
     },
+}
+
+#[derive(Args)]
+pub struct RunsCoverageArgs {
+    /// Run ID
+    #[arg(value_parser = parse_run_id)]
+    pub run_id: String,
+
+    /// Only the module with this ID (repeatable)
+    #[arg(
+        long = "module",
+        value_name = "MODULE_ID",
+        value_parser = clap::builder::NonEmptyStringValueParser::new()
+    )]
+    pub module_ids: Vec<String>,
 }
 
 #[derive(Args)]

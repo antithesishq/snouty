@@ -2384,13 +2384,18 @@ fn normalize_vtime_field(entry: &mut Value, key: &str) -> Option<VTime> {
 /// own (an event's payload is arbitrary workload JSON), but data records
 /// always carry their schema's required envelope — `moment` for log/event
 /// records, `timestamp` for build log lines, `type` for run status
-/// notifications, `module_id` for coverage locations — which `Stream_Error`
-/// never has, so the envelope's absence disambiguates.
+/// notifications, and `module_id`, `address` and `function` together for
+/// coverage locations — which `Stream_Error` never has, so the envelope's
+/// absence disambiguates.
 fn stream_error_message(entry: &Value) -> Option<&str> {
     let obj = entry.as_object()?;
-    if ["moment", "timestamp", "type", "module_id"]
+    let location = ["module_id", "address", "function"]
         .iter()
-        .any(|key| obj.contains_key(*key))
+        .all(|key| obj.contains_key(*key));
+    if location
+        || ["moment", "timestamp", "type"]
+            .iter()
+            .any(|key| obj.contains_key(*key))
     {
         return None;
     }
@@ -3595,6 +3600,10 @@ mod tests {
         // stop the line from being an error.
         assert_eq!(
             msg(r#"{"error":"boom","request_id":"r-1"}"#).as_deref(),
+            Some("boom")
+        );
+        assert_eq!(
+            msg(r#"{"error":"boom","module_id":"m"}"#).as_deref(),
             Some("boom")
         );
     }

@@ -47,21 +47,21 @@ pub(super) async fn cmd_runs_coverage(
     settings: &Settings,
     verbose: bool,
 ) -> Result<()> {
-    let RunsCoverageArgs {
-        run_id,
-        mut module_ids,
-    } = args;
+    let RunsCoverageArgs { run_id, module_ids } = args;
     let run_id = run_id.as_str();
     let api = &AntithesisApi::new(settings, verbose)?;
     ready::wait_until_ready(api, run_id, READY_POLL).await?;
 
     let mut seen = HashSet::new();
-    module_ids.retain(|module_id| seen.insert(module_id.clone()));
-    let requests: Vec<Option<&str>> = if module_ids.is_empty() {
-        vec![None]
-    } else {
-        module_ids.iter().map(|id| Some(id.as_str())).collect()
-    };
+    let mut requests: Vec<Option<&str>> = module_ids
+        .iter()
+        .map(String::as_str)
+        .filter(|id| seen.insert(*id))
+        .map(Some)
+        .collect();
+    if requests.is_empty() {
+        requests.push(None);
+    }
     let locations =
         stream::iter(requests)
             .then(|module_id| {

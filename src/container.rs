@@ -1037,10 +1037,11 @@ pub fn runtime(settings: &Settings) -> Result<Box<dyn ContainerRuntime>> {
     )
 }
 
-/// The docker CLI config directory: `$DOCKER_CONFIG` if set, else
-/// `$HOME/.docker`. `None` when neither is set.
+/// The docker CLI config directory: `$DOCKER_CONFIG` if set and not empty,
+/// else `$HOME/.docker`, as the docker CLI picks it. `None` when neither is
+/// set.
 pub fn docker_config_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("DOCKER_CONFIG") {
+    if let Some(dir) = std::env::var_os("DOCKER_CONFIG").filter(|dir| !dir.is_empty()) {
         return Some(PathBuf::from(dir));
     }
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".docker"))
@@ -1054,12 +1055,19 @@ struct DockerConfig {
 }
 
 /// Whether Docker's `config.json` names a credential helper for `registry`.
-/// A missing or invalid file names none.
+/// A missing or invalid file names none. Docker also matches a key with a
+/// scheme, and hosts in any case.
 fn docker_has_cred_helper(registry: &Registry) -> bool {
     docker_config_dir()
         .and_then(|dir| std::fs::read(dir.join("config.json")).ok())
         .and_then(|bytes| serde_json::from_slice::<DockerConfig>(&bytes).ok())
-        .is_some_and(|config| config.cred_helpers.contains_key(registry.authority()))
+        .is_some_and(|config| {
+            config.cred_helpers.keys().any(|key| {
+                key.trim_start_matches("https://")
+                    .trim_end_matches('/')
+                    .eq_ignore_ascii_case(registry.authority())
+            })
+        })
 }
 
 /// The warning for a Docker CLI of release `version` that cannot use the

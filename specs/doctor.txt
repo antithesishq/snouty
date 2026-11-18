@@ -486,6 +486,14 @@ snouty doctor --offline
 stderr '^  ✓ Container runtime: docker detected$'
 env DOCKER_CONFIG=
 
+# An empty DOCKER_CONFIG is unset, as for the docker CLI.
+isolate-home empty_docker_config
+mkdir empty_docker_config/.docker
+cp helper-docker-config/config.json empty_docker_config/.docker/config.json
+env DOCKER_CONFIG=
+snouty doctor --offline
+stderr '^  ✓ Container runtime: docker detected$'
+
 # Docker 28.3.0 takes the credential.
 chmod 755 new-docker/docker
 chmod 755 new-docker/docker-compose
@@ -566,4 +574,4 @@ echo 'Docker version 28.3.0, build 38b7060'
 echo '2.30.0'
 
 -- helper-docker-config/config.json --
-{"credHelpers": {"registry.testtenant.antithesis.com": "snouty"}}
+{"credHelpers": {"https://Registry.TestTenant.antithesis.com": "snouty"}}

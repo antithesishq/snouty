@@ -345,8 +345,12 @@ async fn do_cmd_login(
         stored.as_ref(),
     );
     // `snouty launch` gives Docker the snouty credential only for the
-    // tenant's own registry.
+    // tenant's own registry, and never a username and password.
     if registry_to_use.is_registry_of(&tenant_to_use)
+        && AuthenticationInfo::available_ambient_credentials(profile)
+            .ok()
+            .and_then(|sources| sources.into_iter().next())
+            .is_none_or(|in_use| crate::registry::launch_presents_secret(in_use.value()))
         && let Ok(rt) = crate::container::runtime(current_settings)
         && let Some(version) = rt.docker_without_registry_auth(&registry_to_use)
     {

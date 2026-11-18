@@ -126,6 +126,76 @@ impl TenantRegistryEnv {
     }
 }
 
+/// The major, minor and patch release of a tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ReleaseVersion {
+    major: u64,
+    minor: u64,
+    patch: u64,
+}
+
+impl ReleaseVersion {
+    pub const fn new(major: u64, minor: u64, patch: u64) -> Self {
+        Self {
+            major,
+            minor,
+            patch,
+        }
+    }
+}
+
+/// Parses `2.40.3`, `v2.40.3` and `19.03.12`. Each component keeps its
+/// leading digits, so a distro or pre-release suffix (`40+ds1`, `7-rc1`) is
+/// dropped. A missing component reads as zero: `2.24` is 2.24.0.
+impl std::str::FromStr for ReleaseVersion {
+    type Err = std::num::ParseIntError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut parts = s.trim_start_matches('v').split('.').map(|part| {
+            let digits = part.split(|c: char| !c.is_ascii_digit()).next();
+            digits.unwrap_or_default().parse()
+        });
+        let mut next = || parts.next().unwrap_or(Ok(0));
+        Ok(Self::new(next()?, next()?, next()?))
+    }
+}
+
+impl std::fmt::Display for ReleaseVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+/// The first Docker release that reads [`DOCKER_AUTH_CONFIG_ENV`].
+const DOCKER_AUTH_CONFIG_VERSION: ReleaseVersion = ReleaseVersion::new(28, 3, 0);
+
+/// The docker CLI config directory: `$DOCKER_CONFIG` if set and not empty,
+/// else `$HOME/.docker`, as the docker CLI picks it. `None` when neither is
+/// set.
+pub fn docker_config_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("DOCKER_CONFIG").filter(|dir| !dir.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".docker"))
+}
+
+/// The part of Docker's `config.json` that names credential helpers.
+#[derive(serde::Deserialize)]
+struct DockerConfig {
+    #[serde(default, rename = "credHelpers")]
+    cred_helpers: std::collections::HashMap<String, String>,
+}
+
+/// Whether Docker's `config.json` names a credential helper for `registry`.
+/// A missing or invalid file names none. Docker looks the helper up by the
+/// exact host of the image, which snouty writes in lowercase.
+fn docker_has_cred_helper(registry: &Registry) -> bool {
+    docker_config_dir()
+        .and_then(|dir| std::fs::read(dir.join("config.json")).ok())
+        .and_then(|bytes| serde_json::from_slice::<DockerConfig>(&bytes).ok())
+        .is_some_and(|config| config.cred_helpers.contains_key(registry.authority()))
+}
+
 /// Trait representing a container runtime (podman or docker).
 pub trait ContainerRuntime: Send + Sync {
     /// The CLI command name (e.g. "podman" or "docker").
@@ -867,49 +937,6 @@ fn version_output_is_podman(stdout: &[u8]) -> bool {
         .contains("podman")
 }
 
-/// The major, minor and patch release of a tool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ReleaseVersion {
-    major: u64,
-    minor: u64,
-    patch: u64,
-}
-
-impl ReleaseVersion {
-    pub const fn new(major: u64, minor: u64, patch: u64) -> Self {
-        Self {
-            major,
-            minor,
-            patch,
-        }
-    }
-}
-
-/// Parses `2.40.3`, `v2.40.3` and `19.03.12`. Each component keeps its
-/// leading digits, so a distro or pre-release suffix (`40+ds1`, `7-rc1`) is
-/// dropped. A missing component reads as zero: `2.24` is 2.24.0.
-impl std::str::FromStr for ReleaseVersion {
-    type Err = std::num::ParseIntError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut parts = s.trim_start_matches('v').split('.').map(|part| {
-            let digits = part.split(|c: char| !c.is_ascii_digit()).next();
-            digits.unwrap_or_default().parse()
-        });
-        let mut next = || parts.next().unwrap_or(Ok(0));
-        Ok(Self::new(next()?, next()?, next()?))
-    }
-}
-
-impl std::fmt::Display for ReleaseVersion {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
-    }
-}
-
-/// The first Docker release that reads [`DOCKER_AUTH_CONFIG_ENV`].
-const DOCKER_AUTH_CONFIG_VERSION: ReleaseVersion = ReleaseVersion::new(28, 3, 0);
-
 /// The release in a banner such as `Docker version 27.4.0, build bde2b89`.
 /// The banner is the only output that does not need the daemon (see
 /// [`CliKind::probe`]).
@@ -1034,33 +1061,6 @@ pub fn runtime(settings: &Settings) -> Result<Box<dyn ContainerRuntime>> {
         CliKind::probe("docker"),
         CliKind::probe("podman"),
     )
-}
-
-/// The docker CLI config directory: `$DOCKER_CONFIG` if set and not empty,
-/// else `$HOME/.docker`, as the docker CLI picks it. `None` when neither is
-/// set.
-pub fn docker_config_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("DOCKER_CONFIG").filter(|dir| !dir.is_empty()) {
-        return Some(PathBuf::from(dir));
-    }
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".docker"))
-}
-
-/// The part of Docker's `config.json` that names credential helpers.
-#[derive(serde::Deserialize)]
-struct DockerConfig {
-    #[serde(default, rename = "credHelpers")]
-    cred_helpers: std::collections::HashMap<String, String>,
-}
-
-/// Whether Docker's `config.json` names a credential helper for `registry`.
-/// A missing or invalid file names none. Docker looks the helper up by the
-/// exact host of the image, which snouty writes in lowercase.
-fn docker_has_cred_helper(registry: &Registry) -> bool {
-    docker_config_dir()
-        .and_then(|dir| std::fs::read(dir.join("config.json")).ok())
-        .and_then(|bytes| serde_json::from_slice::<DockerConfig>(&bytes).ok())
-        .is_some_and(|config| config.cred_helpers.contains_key(registry.authority()))
 }
 
 /// The warning for a Docker CLI of release `version` that cannot use the

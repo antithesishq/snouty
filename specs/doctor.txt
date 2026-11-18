@@ -468,11 +468,24 @@ chmod 755 old-docker/docker-compose
 set-env PATH ${WORK}/old-docker
 env ANTITHESIS_TENANT=testtenant
 env ANTITHESIS_REGISTRY=registry.testtenant.antithesis.com/app
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 snouty doctor --offline
 stderr '^  ⚠ Container runtime: docker detected$'
 stderr -literal 'https://github.com/antithesishq/snouty#docker-credential-helper'
 snouty doctor --offline --json
 stdout '"id": "container_runtime",\s*"status": "warn"'
+
+# `snouty launch` gives no username and password to Docker.
+env ANTITHESIS_API_KEY=
+env ANTITHESIS_USERNAME=envuser
+set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
+snouty doctor --offline
+stderr '^  ✓ Container runtime: docker detected$'
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 
 # Another registry does not need the credential.
 env ANTITHESIS_REGISTRY=registry.example.com/app

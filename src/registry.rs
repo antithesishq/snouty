@@ -272,11 +272,20 @@ pub async fn secret(api: &AntithesisApi) -> Result<String> {
 /// for a username and password, which the registry does not accept. With
 /// `None`, the container runtime pushes with its own credentials.
 pub async fn launch_secret(api: &AntithesisApi) -> Result<Option<String>> {
-    match api.authentication() {
-        AuthenticationInfo::Password { .. } => Ok(None),
+    if launch_presents_secret(api.authentication()) {
+        secret(api).await.map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Whether [`launch_secret`] presents a secret for `auth`.
+pub fn launch_presents_secret(auth: &AuthenticationInfo) -> bool {
+    match auth {
+        AuthenticationInfo::Password { .. } => false,
         AuthenticationInfo::ApiKey { .. }
         | AuthenticationInfo::GithubActionsOidc(_)
-        | AuthenticationInfo::OAuth(_) => secret(api).await.map(Some),
+        | AuthenticationInfo::OAuth(_) => true,
     }
 }
 

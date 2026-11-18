@@ -461,6 +461,38 @@ env SNOUTY_CONTAINER_ENGINE=
 snouty doctor --offline
 stderr 'Container runtime: podman detected'
 
+# A Docker older than 28.3.0 cannot take the snouty credential for the tenant
+# registry, so doctor warns and links to the credential helper setup.
+chmod 755 old-docker/docker
+chmod 755 old-docker/docker-compose
+set-env PATH ${WORK}/old-docker
+env ANTITHESIS_TENANT=testtenant
+env ANTITHESIS_REGISTRY=registry.testtenant.antithesis.com/app
+snouty doctor --offline
+stderr '^  ⚠ Container runtime: docker detected$'
+stderr -literal 'https://github.com/antithesishq/snouty#docker-credential-helper'
+snouty doctor --offline --json
+stdout '"id": "container_runtime",\s*"status": "warn"'
+
+# Another registry does not need the credential.
+env ANTITHESIS_REGISTRY=registry.example.com/app
+snouty doctor --offline
+stderr '^  ✓ Container runtime: docker detected$'
+
+# A credential helper for the tenant registry replaces the credential.
+env ANTITHESIS_REGISTRY=registry.testtenant.antithesis.com/app
+set-env DOCKER_CONFIG ${WORK}/helper-docker-config
+snouty doctor --offline
+stderr '^  ✓ Container runtime: docker detected$'
+env DOCKER_CONFIG=
+
+# Docker 28.3.0 takes the credential.
+chmod 755 new-docker/docker
+chmod 755 new-docker/docker-compose
+set-env PATH ${WORK}/new-docker
+snouty doctor --offline
+stderr '^  ✓ Container runtime: docker detected$'
+
 -- registry_cfg/snouty/settings.toml --
 registry = "proxy.example.com/testtenant"
 -- base_url.toml --
@@ -517,3 +549,21 @@ echo 'podman version 5.4.0'
 -- podman-docker/docker-compose --
 #!/bin/sh
 echo '2.30.0'
+-- old-docker/docker --
+#!/bin/sh
+echo 'Docker version 27.4.0, build bde2b89'
+
+-- old-docker/docker-compose --
+#!/bin/sh
+echo '2.30.0'
+
+-- new-docker/docker --
+#!/bin/sh
+echo 'Docker version 28.3.0, build 38b7060'
+
+-- new-docker/docker-compose --
+#!/bin/sh
+echo '2.30.0'
+
+-- helper-docker-config/config.json --
+{"credHelpers": {"registry.testtenant.antithesis.com": "snouty"}}

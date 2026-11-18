@@ -294,6 +294,20 @@ env ANTITHESIS_TENANT=
 snouty login --tenant spec-tenant --registry registry.example.com/acme
 file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
 
+# With a Docker older than 28.3.0, login warns that `snouty launch` cannot
+# give it the credential for the tenant registry, and links to the setup.
+isolate-home old_docker
+mock-server 200 '{"auth":"antithesis","registry_url":"registry.spec-tenant.antithesis.com"}'
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
+chmod 755 old-docker/docker
+set-env PATH ${WORK}/old-docker
+snouty login --tenant spec-tenant
+stderr '^warning: Docker 27\.4\.0 '
+stderr -literal 'https://github.com/antithesishq/snouty#docker-credential-helper'
+# Another registry takes its own login, so login does not warn.
+snouty login --tenant spec-tenant --registry registry.example.com/acme
+! stderr 'Docker 27'
+
 -- saved_scheme.toml --
 tenant = "spec-tenant"
 registry = "https://registry.example.com/my-org/"
@@ -310,3 +324,6 @@ tenant = "spec-tenant
 [profile.staging]
 type = "ApiKey"
 api_key = "${FAKE_API_KEY_A}"
+-- old-docker/docker --
+#!/bin/sh
+echo 'Docker version 27.4.0, build bde2b89'

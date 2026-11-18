@@ -526,10 +526,32 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
     // command is `docker` but the engine is podman — and this must agree with
     // the engine `launch`/`validate` announce, which also uses engine_kind.
     match container::runtime(settings) {
-        Ok(rt) => checks.push(Check::ok(
-            CheckId::ContainerRuntime,
-            format!("Container runtime: {} detected", rt.engine_kind()),
-        )),
+        Ok(rt) => {
+            let detected = format!("Container runtime: {} detected", rt.engine_kind());
+            let old_docker = crate::registry::tenant_registry(settings).and_then(|registry| {
+                container::docker_without_registry_auth(rt.as_ref(), registry)
+                    .map(|version| (registry, version))
+            });
+            checks.push(match old_docker {
+                Some((registry, version)) => Check::warn(CheckId::ContainerRuntime, detected)
+                    .note(
+                        Level::Warning,
+                        format!(
+                            "Docker {version} cannot use your snouty credential to push to \
+                             `{registry}`; Docker {} or later can",
+                            container::DockerVersion::AUTH_CONFIG
+                        ),
+                    )
+                    .note(
+                        Level::Note,
+                        format!(
+                            "upgrade Docker, or set up the credential helper: {}",
+                            container::DOCKER_CREDENTIAL_HELPER_DOCS
+                        ),
+                    ),
+                None => Check::ok(CheckId::ContainerRuntime, detected),
+            });
+        }
         Err(e) => checks.push(
             Check::fail(CheckId::ContainerRuntime, "Container runtime not detected")
                 .note(Level::Error, e.to_string()),

@@ -17,7 +17,7 @@ use color_eyre::{
 use crate::config::ComposeConfig;
 use crate::container::{
     Architecture, ContainerRuntime, DISCOVERY_COMMAND_TIMEOUT, RemoteManifest, available_engines,
-    digests_for_repo, docker_is_podman, image_digest, image_ref_tag, image_repo, mirror_path,
+    digests_for_repo, docker_config_dir, docker_is_podman, image_digest, image_ref_tag, image_repo, mirror_path,
     normalize_repo, registry_host, strip_registry,
 };
 use crate::error::user_error;
@@ -243,16 +243,6 @@ const ANTITHESIS_COMPOSE_ENV: &[&str] = &[
     "USER",
 ];
 
-/// The docker CLI config directory (which holds `cli-plugins/`): `$DOCKER_CONFIG`
-/// if set, else `$HOME/.docker`. Read from snouty's own (un-scrubbed) environment.
-/// `None` when neither is set, in which case plugin lookup falls back to the
-/// system directories.
-fn docker_config_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("DOCKER_CONFIG") {
-        return Some(PathBuf::from(dir));
-    }
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".docker"))
-}
 /// Drives Docker Compose v2, independent of which runtime built or pushed the
 /// images. Compose is invoked through whichever v2 form is available (see
 /// [`ComposeCli`]); `docker_host`, when set, points it at a specific engine

@@ -160,6 +160,12 @@ pub trait ContainerRuntime: Send + Sync {
     /// [`remote_manifest`](Self::remote_manifest) to the registry of `auth`.
     fn use_tenant_registry_auth(&mut self, auth: TenantRegistryAuth);
 
+    /// The release of a Docker CLI. `None` for podman, and for a Docker
+    /// whose `--version` banner names no release.
+    fn docker_version(&self) -> Option<DockerVersion> {
+        None
+    }
+
     /// Push `image_ref`, which names no digest, to the registry, and return
     /// it pinned to the pushed digest (`name:tag@sha256:...`). The tag stays
     /// as provenance: a run still shows which tag the digest came from.
@@ -752,6 +758,7 @@ fn link_credential_helper(dir: &Path) -> Result<()> {
 #[derive(Clone)]
 pub struct DockerRuntime {
     cmd: String,
+    version: Option<DockerVersion>,
     registry_env: Option<TenantRegistryEnv>,
 }
 
@@ -759,6 +766,7 @@ impl DockerRuntime {
     pub fn new(cmd: impl Into<String>) -> Self {
         Self {
             cmd: cmd.into(),
+            version: None,
             registry_env: None,
         }
     }
@@ -775,6 +783,10 @@ impl ContainerRuntime for DockerRuntime {
 
     fn engine_kind(&self) -> ContainerEngine {
         ContainerEngine::Docker
+    }
+
+    fn docker_version(&self) -> Option<DockerVersion> {
+        self.version
     }
 
     fn insecure_registry_flag(&self) -> &'static str {
@@ -849,11 +861,56 @@ fn version_output_is_podman(stdout: &[u8]) -> bool {
         .contains("podman")
 }
 
+/// The release of a Docker CLI, without a pre-release or build suffix:
+/// `28.3.0-rc.1` is 28.3.0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DockerVersion {
+    major: u64,
+    minor: u64,
+    patch: u64,
+}
+
+impl DockerVersion {
+    /// The first release that reads [`DOCKER_AUTH_CONFIG_ENV`].
+    pub const AUTH_CONFIG: Self = Self {
+        major: 28,
+        minor: 3,
+        patch: 0,
+    };
+
+    /// The release in a banner such as `Docker version 27.4.0, build bde2b89`.
+    /// The banner is the only output that does not need the daemon (see
+    /// [`CliKind::probe`]).
+    fn from_banner(banner: &str) -> Option<Self> {
+        let (_, rest) = banner.split_once("version ")?;
+        rest.split([',', ' ', '\n']).next()?.parse().ok()
+    }
+}
+
+impl std::str::FromStr for DockerVersion {
+    type Err = semver::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let version = semver::Version::parse(s)?;
+        Ok(Self {
+            major: version.major,
+            minor: version.minor,
+            patch: version.patch,
+        })
+    }
+}
+
+impl std::fmt::Display for DockerVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
 /// What a container CLI is, from its `--version` banner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CliKind {
-    /// A banner that is not podman's.
-    Docker,
+    /// A banner that is not podman's, with the Docker release that it names.
+    Docker(Option<DockerVersion>),
     /// A podman banner, also from a CLI named `docker` (podman-docker).
     Podman,
     /// The CLI cannot run, or `--version` failed or timed out.
@@ -876,7 +933,9 @@ impl CliKind {
                 if version_output_is_podman(&output.stdout) {
                     CliKind::Podman
                 } else {
-                    CliKind::Docker
+                    CliKind::Docker(DockerVersion::from_banner(&String::from_utf8_lossy(
+                        &output.stdout,
+                    )))
                 }
             }
             Ok(output) => {
@@ -915,7 +974,7 @@ fn select_runtime(
     match choice {
         Some(ContainerEngine::Podman) => match podman {
             CliKind::Podman => Ok(Box::new(PodmanRuntime::new("podman"))),
-            CliKind::Docker => Err(user_error(
+            CliKind::Docker(_) => Err(user_error(
                 "the container engine setting is set to podman, but the podman binary is \
                  docker in disguise",
             )
@@ -926,7 +985,10 @@ fn select_runtime(
             .with_suggestion(|| install_hint("podman", docker))),
         },
         Some(ContainerEngine::Docker) => match docker {
-            CliKind::Docker => Ok(Box::new(DockerRuntime::new("docker"))),
+            CliKind::Docker(version) => Ok(Box::new(DockerRuntime {
+                version,
+                ..DockerRuntime::new("docker")
+            })),
             CliKind::Podman => Err(user_error(
                 "the container engine setting is set to docker, but the docker binary is \
                  podman in disguise",
@@ -945,7 +1007,10 @@ fn select_runtime(
         None => match (podman, docker) {
             (CliKind::Podman, _) => Ok(Box::new(PodmanRuntime::new("podman"))),
             (_, CliKind::Podman) => Ok(Box::new(PodmanRuntime::new("docker"))),
-            (_, CliKind::Docker) => Ok(Box::new(DockerRuntime::new("docker"))),
+            (_, CliKind::Docker(version)) => Ok(Box::new(DockerRuntime {
+                version,
+                ..DockerRuntime::new("docker")
+            })),
             (_, CliKind::Missing) => Err(eyre!("neither podman nor docker is installed")),
         },
     }
@@ -963,6 +1028,49 @@ pub fn runtime(settings: &Settings) -> Result<Box<dyn ContainerRuntime>> {
         CliKind::probe("docker"),
         CliKind::probe("podman"),
     )
+}
+
+/// The docker CLI config directory: `$DOCKER_CONFIG` if set, else
+/// `$HOME/.docker`. `None` when neither is set.
+pub fn docker_config_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("DOCKER_CONFIG") {
+        return Some(PathBuf::from(dir));
+    }
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".docker"))
+}
+
+/// The part of Docker's `config.json` that names credential helpers.
+#[derive(serde::Deserialize)]
+struct DockerConfig {
+    #[serde(default, rename = "credHelpers")]
+    cred_helpers: std::collections::HashMap<String, String>,
+}
+
+/// Whether Docker's `config.json` names a credential helper for `registry`.
+/// A missing or invalid file names none.
+fn docker_has_cred_helper(registry: &Registry) -> bool {
+    docker_config_dir()
+        .and_then(|dir| std::fs::read(dir.join("config.json")).ok())
+        .and_then(|bytes| serde_json::from_slice::<DockerConfig>(&bytes).ok())
+        .is_some_and(|config| config.cred_helpers.contains_key(registry.authority()))
+}
+
+/// The README section that tells how to give an older Docker the snouty
+/// credential.
+pub const DOCKER_CREDENTIAL_HELPER_DOCS: &str =
+    "https://github.com/antithesishq/snouty#docker-credential-helper";
+
+/// The release of the Docker CLI of `rt`, when `snouty launch` cannot give
+/// it the snouty credential for `registry`: the release is older than
+/// [`DockerVersion::AUTH_CONFIG`], and Docker's config sends `registry` to
+/// no credential helper.
+pub fn docker_without_registry_auth(
+    rt: &dyn ContainerRuntime,
+    registry: &Registry,
+) -> Option<DockerVersion> {
+    rt.docker_version()
+        .filter(|version| *version < DockerVersion::AUTH_CONFIG)
+        .filter(|_| !docker_has_cred_helper(registry))
 }
 
 /// Warn the user which container engine snouty picked, but only when the pick
@@ -1004,8 +1112,11 @@ pub fn available_engines() -> Vec<Box<dyn ContainerRuntime>> {
     if CliKind::probe("podman") == CliKind::Podman {
         engines.push(Box::new(PodmanRuntime::new("podman")));
     }
-    if CliKind::probe("docker") == CliKind::Docker {
-        engines.push(Box::new(DockerRuntime::new("docker")));
+    if let CliKind::Docker(version) = CliKind::probe("docker") {
+        engines.push(Box::new(DockerRuntime {
+            version,
+            ..DockerRuntime::new("docker")
+        }));
     }
     engines
 }
@@ -1725,7 +1836,7 @@ esac
     fn explicit_docker_runs_real_docker() {
         let rt = select_runtime(
             Some(ContainerEngine::Docker),
-            CliKind::Docker,
+            CliKind::Docker(None),
             CliKind::Podman,
         )
         .unwrap();
@@ -1788,7 +1899,7 @@ esac
     fn explicit_podman_runs_podman() {
         let rt = select_runtime(
             Some(ContainerEngine::Podman),
-            CliKind::Docker,
+            CliKind::Docker(None),
             CliKind::Podman,
         )
         .unwrap();
@@ -1800,8 +1911,8 @@ esac
     fn explicit_podman_that_is_docker_fails() {
         let err = select_runtime(
             Some(ContainerEngine::Podman),
-            CliKind::Docker,
-            CliKind::Docker,
+            CliKind::Docker(None),
+            CliKind::Docker(None),
         )
         .err()
         .unwrap();
@@ -1832,7 +1943,7 @@ esac
 
     #[test]
     fn explicit_podman_without_docker_suggests_only_install() {
-        for podman in [CliKind::Docker, CliKind::Missing] {
+        for podman in [CliKind::Docker(None), CliKind::Missing] {
             let err = select_runtime(Some(ContainerEngine::Podman), CliKind::Missing, podman)
                 .err()
                 .unwrap();
@@ -1844,7 +1955,7 @@ esac
 
     #[test]
     fn auto_prefers_podman() {
-        for docker in [CliKind::Docker, CliKind::Podman, CliKind::Missing] {
+        for docker in [CliKind::Docker(None), CliKind::Podman, CliKind::Missing] {
             let rt = select_runtime(None, docker, CliKind::Podman).unwrap();
             assert_eq!(
                 rt.engine_kind(),
@@ -1857,7 +1968,7 @@ esac
 
     #[test]
     fn auto_falls_back_to_real_docker() {
-        let rt = select_runtime(None, CliKind::Docker, CliKind::Missing).unwrap();
+        let rt = select_runtime(None, CliKind::Docker(None), CliKind::Missing).unwrap();
         assert_eq!(rt.engine_kind(), ContainerEngine::Docker);
         assert_eq!(rt.name(), "docker");
     }
@@ -1877,6 +1988,31 @@ esac
         assert_eq!(err.to_string(), "neither podman nor docker is installed");
     }
 
+    // Real `docker --version` banners: Docker's own builds, a distribution
+    // build with a suffix, and a release candidate.
+    #[test]
+    fn docker_version_reads_the_release_from_the_banner() {
+        let version = |banner: &str| DockerVersion::from_banner(banner).map(|v| v.to_string());
+        assert_eq!(
+            version("Docker version 27.4.0, build bde2b89\n").as_deref(),
+            Some("27.4.0")
+        );
+        assert_eq!(
+            version("Docker version 29.1.3, build 29.1.3-0ubuntu3~24.04.2\n").as_deref(),
+            Some("29.1.3")
+        );
+        assert_eq!(
+            version("Docker version 20.10.24+dfsg1, build 297e128\n").as_deref(),
+            Some("20.10.24")
+        );
+        assert_eq!(
+            DockerVersion::from_banner("Docker version 28.3.0-rc.1, build 1f8b2e4\n"),
+            Some(DockerVersion::AUTH_CONFIG)
+        );
+        assert_eq!(version("Docker version unknown\n"), None);
+        assert_eq!(version(""), None);
+    }
+
     #[test]
     fn probe_reads_the_version_banner() {
         let dir = tempfile::tempdir().unwrap();
@@ -1891,7 +2027,7 @@ esac
         );
         assert_eq!(
             probe("docker", "echo 'Docker version 27.4.0, build bde2b89'\n"),
-            CliKind::Docker
+            CliKind::Docker(Some("27.4.0".parse().unwrap()))
         );
         assert_eq!(probe("broken", "exit 1\n"), CliKind::Missing);
         assert_eq!(

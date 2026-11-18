@@ -344,6 +344,24 @@ async fn do_cmd_login(
         written,
         stored.as_ref(),
     );
+    // `snouty launch` gives Docker the snouty credential only for the
+    // tenant's own registry.
+    if registry_to_use.is_registry_of(&tenant_to_use)
+        && let Ok(rt) = crate::container::runtime(current_settings)
+        && let Some(version) =
+            crate::container::docker_without_registry_auth(rt.as_ref(), &registry_to_use)
+    {
+        eprintln!(
+            "{}",
+            crate::render::wrap_if_tty(&format!(
+                "warning: Docker {version} cannot use your snouty credential to push to \
+                 `{registry_to_use}`. Upgrade to Docker {} or later, or set up the \
+                 credential helper: {}",
+                crate::container::DockerVersion::AUTH_CONFIG,
+                crate::container::DOCKER_CREDENTIAL_HELPER_DOCS
+            ))
+        );
+    }
     if let Some(CustomRegistry::Kept { reported }) = custom {
         let mut command = vec![
             "snouty".to_owned(),
@@ -567,10 +585,7 @@ fn print_login_summary(
     }
     // The snouty credential signs in to the tenant's own registry. Any other
     // registry takes its own login.
-    let own_registry = registry
-        .antithesis_tenant()
-        .is_some_and(|own| own.eq_ignore_ascii_case(tenant));
-    if !own_registry {
+    if !registry.is_registry_of(tenant) {
         // `docker login` takes the authority, not the path after it.
         let authority = registry.authority();
         say(&format!(

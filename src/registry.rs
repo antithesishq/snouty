@@ -48,6 +48,12 @@ impl Registry {
             .ok()
     }
 
+    /// Whether this is the registry of `tenant`.
+    pub fn is_registry_of(&self, tenant: &str) -> bool {
+        self.antithesis_tenant()
+            .is_some_and(|own| own.eq_ignore_ascii_case(tenant))
+    }
+
     /// Whether `self` is `other` or a path under it.
     pub fn is_within(&self, other: &Registry) -> bool {
         let path = self.0.path().trim_end_matches('/');
@@ -123,11 +129,8 @@ fn tenant_registry_of<'a>(
     tenant: Option<&Tenant>,
     registry: Option<&'a Registry>,
 ) -> Option<&'a Registry> {
-    let registry = registry?;
-    registry
-        .antithesis_tenant()?
-        .eq_ignore_ascii_case(tenant?)
-        .then_some(registry)
+    let tenant = tenant?;
+    registry.filter(|registry| registry.is_registry_of(tenant))
 }
 
 /// Whether the tenant registry of `settings` is the registry of `tenant`.

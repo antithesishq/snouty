@@ -22,6 +22,7 @@ use sha2::{Digest, Sha256};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 
+use crate::container::OldDocker;
 use crate::{
     api::{
         AntithesisApi, CONNECT_TIMEOUT, HttpClient, RegistryResponse, ResponseCache,
@@ -344,23 +345,13 @@ async fn do_cmd_login(
         written,
         stored.as_ref(),
     );
-    // `snouty launch` gives Docker the snouty credential only for the
-    // tenant's own registry, and never a username and password.
-    if registry_to_use.is_registry_of(&tenant_to_use)
-        && AuthenticationInfo::available_ambient_credentials(profile)
-            .ok()
-            .and_then(|sources| sources.into_iter().next())
-            .is_none_or(|in_use| crate::registry::launch_presents_secret(in_use.value()))
-        && let Ok(rt) = crate::container::runtime(current_settings)
-        && let Some(version) = rt.docker_without_registry_auth(&registry_to_use)
+    if let Ok(rt) = crate::container::runtime(current_settings)
+        && let Some(old_docker) =
+            OldDocker::detect(rt.as_ref(), &tenant_to_use, &registry_to_use, profile)
     {
         eprintln!(
             "{}",
-            crate::render::wrap_if_tty(&format!(
-                "warning: {}; {}",
-                crate::container::docker_registry_auth_warning(version, &registry_to_use),
-                crate::container::docker_registry_auth_fix()
-            ))
+            crate::render::wrap_if_tty(&format!("warning: {old_docker}; {}", OldDocker::fix()))
         );
     }
     if let Some(CustomRegistry::Kept { reported }) = custom {

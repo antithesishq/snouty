@@ -12,6 +12,7 @@ use color_eyre::{
     eyre::{Context, OptionExt, Result, eyre},
 };
 
+use crate::auth::AuthenticationInfo;
 use crate::docker_credential::{CRED_HELPER, HELPER_NAME};
 use crate::error::user_error;
 use crate::process::output_with_timeout;
@@ -1063,19 +1064,56 @@ pub fn runtime(settings: &Settings) -> Result<Box<dyn ContainerRuntime>> {
     )
 }
 
-/// The warning for a Docker CLI of release `version` that cannot use the
-/// snouty credential for `registry` (see
-/// [`ContainerRuntime::docker_without_registry_auth`]).
-pub fn docker_registry_auth_warning(version: ReleaseVersion, registry: &Registry) -> String {
-    format!("Docker {version} cannot use your snouty credential to push to `{registry}`")
+/// A Docker CLI that ignores the snouty credential that `snouty launch`
+/// gives it for the tenant registry. Its `Display` is the warning.
+pub struct OldDocker<'a> {
+    version: ReleaseVersion,
+    registry: &'a Registry,
 }
 
-/// The action that fixes [`docker_registry_auth_warning`].
-pub fn docker_registry_auth_fix() -> String {
-    format!(
-        "upgrade to Docker {DOCKER_AUTH_CONFIG_VERSION} or later, or set up the credential \
-         helper: https://github.com/antithesishq/snouty#docker-credential-helper"
-    )
+impl<'a> OldDocker<'a> {
+    /// `Some` when `snouty launch` gives the Docker CLI of `rt` the snouty
+    /// credential for `registry`, and that Docker ignores it. Launch gives
+    /// the credential only for the registry of `tenant`, and only when the
+    /// credential of `profile` is not a username and password. Without a
+    /// credential, the user still has to get one that launch gives.
+    pub fn detect(
+        rt: &dyn ContainerRuntime,
+        tenant: &str,
+        registry: &'a Registry,
+        profile: Option<&str>,
+    ) -> Option<Self> {
+        if !registry.is_registry_of(tenant) {
+            return None;
+        }
+        let presents_secret = AuthenticationInfo::available_ambient_credentials(profile)
+            .ok()
+            .and_then(|sources| sources.into_iter().next())
+            .is_none_or(|in_use| registry::launch_presents_secret(in_use.value()));
+        if !presents_secret {
+            return None;
+        }
+        let version = rt.docker_without_registry_auth(registry)?;
+        Some(Self { version, registry })
+    }
+
+    /// The action that fixes the warning.
+    pub fn fix() -> String {
+        format!(
+            "upgrade to Docker {DOCKER_AUTH_CONFIG_VERSION} or later, or set up the credential \
+             helper: https://github.com/antithesishq/snouty#docker-credential-helper"
+        )
+    }
+}
+
+impl std::fmt::Display for OldDocker<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Docker {} cannot use your snouty credential to push to `{}`",
+            self.version, self.registry
+        )
+    }
 }
 
 /// Warn the user which container engine snouty picked, but only when the pick

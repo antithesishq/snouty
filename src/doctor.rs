@@ -520,14 +520,6 @@ fn enrich_with_source(
 /// resolved values themselves.
 fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>) {
     let mut checks: Vec<Check> = Vec::new();
-    let ambient = AuthenticationInfo::available_ambient_credentials(settings.profile());
-    // Without a credential, the user still has to get one that `snouty
-    // launch` presents.
-    let presents_secret = ambient.as_ref().map_or(true, |sources| {
-        sources
-            .first()
-            .is_none_or(|in_use| crate::registry::launch_presents_secret(in_use.value()))
-    });
 
     // Container runtime (for building/pushing images). Report the real engine
     // (engine_kind), not the invoking binary (name): for podman-in-disguise the
@@ -536,16 +528,22 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
     match container::runtime(settings) {
         Ok(rt) => {
             let detected = format!("Container runtime: {} detected", rt.engine_kind());
-            let old_docker = crate::registry::tenant_registry(settings)
-                .filter(|_| presents_secret)
-                .and_then(|registry| {
-                    rt.docker_without_registry_auth(registry)
-                        .map(|version| container::docker_registry_auth_warning(version, registry))
-                });
+            let old_docker =
+                settings
+                    .tenant()
+                    .zip(settings.registry())
+                    .and_then(|(tenant, registry)| {
+                        container::OldDocker::detect(
+                            rt.as_ref(),
+                            tenant,
+                            registry.value(),
+                            settings.profile(),
+                        )
+                    });
             checks.push(match old_docker {
-                Some(warning) => Check::warn(CheckId::ContainerRuntime, detected)
-                    .note(Level::Warning, warning)
-                    .note(Level::Note, container::docker_registry_auth_fix()),
+                Some(old_docker) => Check::warn(CheckId::ContainerRuntime, detected)
+                    .note(Level::Warning, old_docker.to_string())
+                    .note(Level::Note, container::OldDocker::fix()),
                 None => Check::ok(CheckId::ContainerRuntime, detected),
             });
         }
@@ -581,7 +579,7 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
 
     // Authentication (synchronous-only by design).
     let github_actions = crate::auth::in_github_actions();
-    let in_use = match ambient {
+    let in_use = match AuthenticationInfo::available_ambient_credentials(settings.profile()) {
         Ok(sources) => {
             checks.extend(authn_checks(&sources, settings.profile(), github_actions));
             sources.into_iter().next()

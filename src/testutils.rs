@@ -45,7 +45,7 @@ pub fn available_runtimes() -> Vec<Box<dyn ContainerRuntime>> {
             .is_ok_and(|o| o.status.success())
         && !docker_is_podman()
     {
-        runtimes.push(Box::new(DockerRuntime::new("docker")));
+        runtimes.push(Box::new(DockerRuntime::new("docker", None)));
     }
     runtimes
 }

@@ -529,26 +529,13 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
         Ok(rt) => {
             let detected = format!("Container runtime: {} detected", rt.engine_kind());
             let old_docker = crate::registry::tenant_registry(settings).and_then(|registry| {
-                container::docker_without_registry_auth(rt.as_ref(), registry)
-                    .map(|version| (registry, version))
+                rt.docker_without_registry_auth(registry)
+                    .map(|version| container::docker_registry_auth_warning(version, registry))
             });
             checks.push(match old_docker {
-                Some((registry, version)) => Check::warn(CheckId::ContainerRuntime, detected)
-                    .note(
-                        Level::Warning,
-                        format!(
-                            "Docker {version} cannot use your snouty credential to push to \
-                             `{registry}`; Docker {} or later can",
-                            container::DockerVersion::AUTH_CONFIG
-                        ),
-                    )
-                    .note(
-                        Level::Note,
-                        format!(
-                            "upgrade Docker, or set up the credential helper: {}",
-                            container::DOCKER_CREDENTIAL_HELPER_DOCS
-                        ),
-                    ),
+                Some(warning) => Check::warn(CheckId::ContainerRuntime, detected)
+                    .note(Level::Warning, warning)
+                    .note(Level::Note, container::docker_registry_auth_fix()),
                 None => Check::ok(CheckId::ContainerRuntime, detected),
             });
         }

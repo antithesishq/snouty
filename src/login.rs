@@ -348,17 +348,14 @@ async fn do_cmd_login(
     // tenant's own registry.
     if registry_to_use.is_registry_of(&tenant_to_use)
         && let Ok(rt) = crate::container::runtime(current_settings)
-        && let Some(version) =
-            crate::container::docker_without_registry_auth(rt.as_ref(), &registry_to_use)
+        && let Some(version) = rt.docker_without_registry_auth(&registry_to_use)
     {
         eprintln!(
             "{}",
             crate::render::wrap_if_tty(&format!(
-                "warning: Docker {version} cannot use your snouty credential to push to \
-                 `{registry_to_use}`. Upgrade to Docker {} or later, or set up the \
-                 credential helper: {}",
-                crate::container::DockerVersion::AUTH_CONFIG,
-                crate::container::DOCKER_CREDENTIAL_HELPER_DOCS
+                "warning: {}; {}",
+                crate::container::docker_registry_auth_warning(version, &registry_to_use),
+                crate::container::docker_registry_auth_fix()
             ))
         );
     }

@@ -160,9 +160,10 @@ pub trait ContainerRuntime: Send + Sync {
     /// [`remote_manifest`](Self::remote_manifest) to the registry of `auth`.
     fn use_tenant_registry_auth(&mut self, auth: TenantRegistryAuth);
 
-    /// The release of a Docker CLI. `None` for podman, and for a Docker
-    /// whose `--version` banner names no release.
-    fn docker_version(&self) -> Option<DockerVersion> {
+    /// The release of a Docker CLI that cannot use the credential of
+    /// [`use_tenant_registry_auth`](Self::use_tenant_registry_auth) for
+    /// `registry`. `None` when the runtime can use it.
+    fn docker_without_registry_auth(&self, _registry: &Registry) -> Option<ReleaseVersion> {
         None
     }
 
@@ -758,15 +759,15 @@ fn link_credential_helper(dir: &Path) -> Result<()> {
 #[derive(Clone)]
 pub struct DockerRuntime {
     cmd: String,
-    version: Option<DockerVersion>,
+    version: Option<ReleaseVersion>,
     registry_env: Option<TenantRegistryEnv>,
 }
 
 impl DockerRuntime {
-    pub fn new(cmd: impl Into<String>) -> Self {
+    pub fn new(cmd: impl Into<String>, version: Option<ReleaseVersion>) -> Self {
         Self {
             cmd: cmd.into(),
-            version: None,
+            version,
             registry_env: None,
         }
     }
@@ -785,8 +786,13 @@ impl ContainerRuntime for DockerRuntime {
         ContainerEngine::Docker
     }
 
-    fn docker_version(&self) -> Option<DockerVersion> {
-        self.version
+    /// A release older than [`DOCKER_AUTH_CONFIG_VERSION`] ignores
+    /// [`DOCKER_AUTH_CONFIG_ENV`], unless Docker's config sends `registry` to
+    /// a credential helper.
+    fn docker_without_registry_auth(&self, registry: &Registry) -> Option<ReleaseVersion> {
+        self.version.filter(|version| {
+            *version < DOCKER_AUTH_CONFIG_VERSION && !docker_has_cred_helper(registry)
+        })
     }
 
     fn insecure_registry_flag(&self) -> &'static str {
@@ -861,56 +867,63 @@ fn version_output_is_podman(stdout: &[u8]) -> bool {
         .contains("podman")
 }
 
-/// The release of a Docker CLI, without a pre-release or build suffix:
-/// `28.3.0-rc.1` is 28.3.0.
+/// The major, minor and patch release of a tool, such as Docker or Docker
+/// Compose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct DockerVersion {
+pub struct ReleaseVersion {
     major: u64,
     minor: u64,
     patch: u64,
 }
 
-impl DockerVersion {
-    /// The first release that reads [`DOCKER_AUTH_CONFIG_ENV`].
-    pub const AUTH_CONFIG: Self = Self {
-        major: 28,
-        minor: 3,
-        patch: 0,
-    };
-
-    /// The release in a banner such as `Docker version 27.4.0, build bde2b89`.
-    /// The banner is the only output that does not need the daemon (see
-    /// [`CliKind::probe`]).
-    fn from_banner(banner: &str) -> Option<Self> {
-        let (_, rest) = banner.split_once("version ")?;
-        rest.split([',', ' ', '\n']).next()?.parse().ok()
+impl ReleaseVersion {
+    pub const fn new(major: u64, minor: u64, patch: u64) -> Self {
+        Self {
+            major,
+            minor,
+            patch,
+        }
     }
 }
 
-impl std::str::FromStr for DockerVersion {
-    type Err = semver::Error;
+/// Parses `2.40.3`, `v2.40.3` and `19.03.12`. Each component keeps its
+/// leading digits, so a distro or pre-release suffix (`40+ds1`, `7-rc1`) is
+/// dropped. A missing component reads as zero: `2.24` is 2.24.0.
+impl std::str::FromStr for ReleaseVersion {
+    type Err = std::num::ParseIntError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let version = semver::Version::parse(s)?;
-        Ok(Self {
-            major: version.major,
-            minor: version.minor,
-            patch: version.patch,
-        })
+        let mut parts = s.trim_start_matches('v').split('.').map(|part| {
+            let digits = part.split(|c: char| !c.is_ascii_digit()).next();
+            digits.unwrap_or_default().parse()
+        });
+        let mut next = || parts.next().unwrap_or(Ok(0));
+        Ok(Self::new(next()?, next()?, next()?))
     }
 }
 
-impl std::fmt::Display for DockerVersion {
+impl std::fmt::Display for ReleaseVersion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
     }
+}
+
+/// The first Docker release that reads [`DOCKER_AUTH_CONFIG_ENV`].
+const DOCKER_AUTH_CONFIG_VERSION: ReleaseVersion = ReleaseVersion::new(28, 3, 0);
+
+/// The release in a banner such as `Docker version 27.4.0, build bde2b89`.
+/// The banner is the only output that does not need the daemon (see
+/// [`CliKind::probe`]).
+fn docker_version_from_banner(banner: &str) -> Option<ReleaseVersion> {
+    let (_, rest) = banner.split_once("version ")?;
+    rest.split([',', ' ', '\n']).next()?.parse().ok()
 }
 
 /// What a container CLI is, from its `--version` banner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CliKind {
     /// A banner that is not podman's, with the Docker release that it names.
-    Docker(Option<DockerVersion>),
+    Docker(Option<ReleaseVersion>),
     /// A podman banner, also from a CLI named `docker` (podman-docker).
     Podman,
     /// The CLI cannot run, or `--version` failed or timed out.
@@ -933,7 +946,7 @@ impl CliKind {
                 if version_output_is_podman(&output.stdout) {
                     CliKind::Podman
                 } else {
-                    CliKind::Docker(DockerVersion::from_banner(&String::from_utf8_lossy(
+                    CliKind::Docker(docker_version_from_banner(&String::from_utf8_lossy(
                         &output.stdout,
                     )))
                 }
@@ -985,10 +998,7 @@ fn select_runtime(
             .with_suggestion(|| install_hint("podman", docker))),
         },
         Some(ContainerEngine::Docker) => match docker {
-            CliKind::Docker(version) => Ok(Box::new(DockerRuntime {
-                version,
-                ..DockerRuntime::new("docker")
-            })),
+            CliKind::Docker(version) => Ok(Box::new(DockerRuntime::new("docker", version))),
             CliKind::Podman => Err(user_error(
                 "the container engine setting is set to docker, but the docker binary is \
                  podman in disguise",
@@ -1007,10 +1017,7 @@ fn select_runtime(
         None => match (podman, docker) {
             (CliKind::Podman, _) => Ok(Box::new(PodmanRuntime::new("podman"))),
             (_, CliKind::Podman) => Ok(Box::new(PodmanRuntime::new("docker"))),
-            (_, CliKind::Docker(version)) => Ok(Box::new(DockerRuntime {
-                version,
-                ..DockerRuntime::new("docker")
-            })),
+            (_, CliKind::Docker(version)) => Ok(Box::new(DockerRuntime::new("docker", version))),
             (_, CliKind::Missing) => Err(eyre!("neither podman nor docker is installed")),
         },
     }
@@ -1055,22 +1062,19 @@ fn docker_has_cred_helper(registry: &Registry) -> bool {
         .is_some_and(|config| config.cred_helpers.contains_key(registry.authority()))
 }
 
-/// The README section that tells how to give an older Docker the snouty
-/// credential.
-pub const DOCKER_CREDENTIAL_HELPER_DOCS: &str =
-    "https://github.com/antithesishq/snouty#docker-credential-helper";
+/// The warning for a Docker CLI of release `version` that cannot use the
+/// snouty credential for `registry` (see
+/// [`ContainerRuntime::docker_without_registry_auth`]).
+pub fn docker_registry_auth_warning(version: ReleaseVersion, registry: &Registry) -> String {
+    format!("Docker {version} cannot use your snouty credential to push to `{registry}`")
+}
 
-/// The release of the Docker CLI of `rt`, when `snouty launch` cannot give
-/// it the snouty credential for `registry`: the release is older than
-/// [`DockerVersion::AUTH_CONFIG`], and Docker's config sends `registry` to
-/// no credential helper.
-pub fn docker_without_registry_auth(
-    rt: &dyn ContainerRuntime,
-    registry: &Registry,
-) -> Option<DockerVersion> {
-    rt.docker_version()
-        .filter(|version| *version < DockerVersion::AUTH_CONFIG)
-        .filter(|_| !docker_has_cred_helper(registry))
+/// The action that fixes [`docker_registry_auth_warning`].
+pub fn docker_registry_auth_fix() -> String {
+    format!(
+        "upgrade to Docker {DOCKER_AUTH_CONFIG_VERSION} or later, or set up the credential \
+         helper: https://github.com/antithesishq/snouty#docker-credential-helper"
+    )
 }
 
 /// Warn the user which container engine snouty picked, but only when the pick
@@ -1113,10 +1117,7 @@ pub fn available_engines() -> Vec<Box<dyn ContainerRuntime>> {
         engines.push(Box::new(PodmanRuntime::new("podman")));
     }
     if let CliKind::Docker(version) = CliKind::probe("docker") {
-        engines.push(Box::new(DockerRuntime {
-            version,
-            ..DockerRuntime::new("docker")
-        }));
+        engines.push(Box::new(DockerRuntime::new("docker", version)));
     }
     engines
 }
@@ -1550,7 +1551,7 @@ esac
                 log = log.display()
             ),
         );
-        let mut rt = DockerRuntime::new(cmd.to_str().unwrap());
+        let mut rt = DockerRuntime::new(cmd.to_str().unwrap(), None);
         rt.use_tenant_registry_auth(tenant_auth());
 
         let pinned = rt
@@ -1988,11 +1989,31 @@ esac
         assert_eq!(err.to_string(), "neither podman nor docker is installed");
     }
 
+    #[test]
+    fn release_version_parses_major_minor_and_patch() {
+        let version = |s: &str| s.parse::<ReleaseVersion>().ok().map(|v| v.to_string());
+        assert_eq!(version("2.40.3").as_deref(), Some("2.40.3"));
+        assert_eq!(version("v2.40.3").as_deref(), Some("2.40.3"));
+        assert_eq!(version("19.03.12").as_deref(), Some("19.3.12"));
+        // Distro build-metadata and pre-release suffixes must not throw off the
+        // parse, on any component.
+        assert_eq!(
+            version("2.40.3+ds1-0ubuntu1~24.04.1").as_deref(),
+            Some("2.40.3")
+        );
+        assert_eq!(version("2.24.7-rc1").as_deref(), Some("2.24.7"));
+        // Absent components read as zero, so a bare minor sorts below any patch.
+        assert_eq!(version("2.24").as_deref(), Some("2.24.0"));
+        assert_eq!(version("2").as_deref(), Some("2.0.0"));
+        assert_eq!(version(""), None);
+        assert_eq!(version("garbage"), None);
+    }
+
     // Real `docker --version` banners: Docker's own builds, a distribution
     // build with a suffix, and a release candidate.
     #[test]
     fn docker_version_reads_the_release_from_the_banner() {
-        let version = |banner: &str| DockerVersion::from_banner(banner).map(|v| v.to_string());
+        let version = |banner: &str| docker_version_from_banner(banner).map(|v| v.to_string());
         assert_eq!(
             version("Docker version 27.4.0, build bde2b89\n").as_deref(),
             Some("27.4.0")
@@ -2006,8 +2027,8 @@ esac
             Some("20.10.24")
         );
         assert_eq!(
-            DockerVersion::from_banner("Docker version 28.3.0-rc.1, build 1f8b2e4\n"),
-            Some(DockerVersion::AUTH_CONFIG)
+            docker_version_from_banner("Docker version 28.3.0-rc.1, build 1f8b2e4\n"),
+            Some(DOCKER_AUTH_CONFIG_VERSION)
         );
         assert_eq!(version("Docker version unknown\n"), None);
         assert_eq!(version(""), None);

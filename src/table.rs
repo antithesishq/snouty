@@ -30,18 +30,12 @@ pub enum Fit {
 impl Fit {
     /// Cut cells at their end, down to `floor` columns.
     pub fn truncate(floor: usize) -> Self {
-        Self::Truncate(Truncate {
-            from_left: false,
-            floor,
-        })
+        Self::Truncate(Truncate::end(floor))
     }
 
     /// Cut cells at their start, down to `floor` columns, as a path should.
     pub fn truncate_from_left(floor: usize) -> Self {
-        Self::Truncate(Truncate {
-            from_left: true,
-            floor,
-        })
+        Self::Truncate(Truncate::start(floor))
     }
 
     pub fn wrap(floor: usize) -> Self {
@@ -398,10 +392,11 @@ mod tests {
                 .min_value(first + 3)
                 .max_value(first + 80),
         );
-        let fit = Fit::Truncate(Truncate {
-            from_left: tc.draw(generators::booleans()),
-            floor: 0,
-        });
+        let fit = if tc.draw(generators::booleans()) {
+            Fit::truncate_from_left(0)
+        } else {
+            Fit::truncate(0)
+        };
         let out = Table::builder()
             .column(Column::new("A"))
             .column(Column::new("B").fit(fit))

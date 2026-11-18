@@ -173,13 +173,6 @@ mod tests {
         }
     }
 
-    fn cut_end(floor: usize) -> Truncate {
-        Truncate {
-            from_left: false,
-            floor,
-        }
-    }
-
     #[test]
     fn branches_follow_the_depth_and_the_last_child() {
         let root = parent(
@@ -246,18 +239,15 @@ mod tests {
         let root = Node {
             label: vec![
                 Span::new("id"),
-                Span::new(" abcdefghij").truncate(cut_end(0)),
+                Span::new(" abcdefghij").truncate(Truncate::end(0)),
             ],
             children: vec![
                 Node {
-                    label: vec![Span::new("a/b/c/d/e/f.rs").truncate(Truncate {
-                        from_left: true,
-                        floor: 0,
-                    })],
+                    label: vec![Span::new("a/b/c/d/e/f.rs").truncate(Truncate::start(0))],
                     ..Node::default()
                 },
                 Node {
-                    label: vec![Span::new("abcdefghijklmn").truncate(cut_end(0))],
+                    label: vec![Span::new("abcdefghijklmn").truncate(Truncate::end(0))],
                     ..Node::default()
                 },
             ],
@@ -274,7 +264,7 @@ mod tests {
     #[test]
     fn a_span_never_gets_fewer_columns_than_its_floor() {
         let root = Node {
-            label: vec![Span::new("abcdefghijklmn").truncate(cut_end(8))],
+            label: vec![Span::new("abcdefghijklmn").truncate(Truncate::end(8))],
             ..Node::default()
         };
         insta::assert_snapshot!(render(&root, 0), @"abcdefg…");

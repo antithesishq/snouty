@@ -294,6 +294,22 @@ pub struct Truncate {
 }
 
 impl Truncate {
+    /// Cut the end, down to `floor` columns.
+    pub fn end(floor: usize) -> Self {
+        Self {
+            from_left: false,
+            floor,
+        }
+    }
+
+    /// Cut the start, down to `floor` columns, as a path should.
+    pub fn start(floor: usize) -> Self {
+        Self {
+            from_left: true,
+            floor,
+        }
+    }
+
     /// `text` cut to at most `width` columns, or to `floor` when that is
     /// wider.
     pub fn apply(self, width: usize, text: &str) -> Cow<'_, str> {
@@ -350,23 +366,19 @@ mod tests {
 
     #[test]
     fn truncate_from_left_keeps_the_end() {
-        let start = |floor| Truncate {
-            from_left: true,
-            floor,
-        };
         let path = "/usr/share/dotnet/dotnet";
-        assert_eq!(start(0).apply(15, path), "…/dotnet/dotnet");
-        assert_eq!(start(0).apply(24, path), path);
-        assert_eq!(start(0).apply(6, "/bin/averylongname"), "…gname");
-        assert_eq!(start(8).apply(6, "/bin/averylongname"), "…ongname");
+        assert_eq!(Truncate::start(0).apply(15, path), "…/dotnet/dotnet");
+        assert_eq!(Truncate::start(0).apply(24, path), path);
+        assert_eq!(Truncate::start(0).apply(6, "/bin/averylongname"), "…gname");
+        assert_eq!(
+            Truncate::start(8).apply(6, "/bin/averylongname"),
+            "…ongname"
+        );
     }
 
     #[test]
     fn truncate_keeps_the_start_and_the_floor() {
-        let end = Truncate {
-            from_left: false,
-            floor: 4,
-        };
+        let end = Truncate::end(4);
         assert_eq!(end.apply(6, "abcdefgh"), "abcde…");
         assert_eq!(end.apply(0, "abcdefgh"), "abc…");
         assert_eq!(end.apply(8, "abcdefgh"), "abcdefgh");

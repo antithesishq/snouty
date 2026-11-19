@@ -30,11 +30,11 @@ Options:
           Compute hours for the run, setup included, at most 1000. One compute
           hour is one core running for one hour. The minimum depends on
           --performance-tier. The server default is 48. Requires tenant version
-          66 or newer
+          67 or newer
       --setup-timeout <SETUP_TIMEOUT>
           Fail the run immediately if setup takes longer than this, in whole
           minutes with a unit, such as 10m, from 1m to 30m. The default is 5m.
-          Requires tenant version 66 or newer
+          Requires tenant version 67 or newer
       --ephemeral
           Mark the test run as ephemeral, so it does not appear in future
           reports as a historic result. A launch without --source is ephemeral

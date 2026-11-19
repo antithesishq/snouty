@@ -25,7 +25,7 @@ Alternatively, pass a pre-built config image directly:
 
 --max-compute-hours sets the run's budget of compute hours, up to 1000. One
 compute hour is one core running for one hour. The server default is 48 compute
-hours. Requires tenant version 66 or newer.
+hours. Requires tenant version 67 or newer.
 
 The tier (--performance-tier) sets how many cores the run uses: 48 on standard
 (the default), 96 on fast and 192 on turbo. The budget buys its compute hours
@@ -43,7 +43,7 @@ standard, 24 on fast and 48 on turbo.
 
 --setup-timeout sets how long setup can take before the run fails immediately.
 Use it to fail fast, and to debug a setup that takes too long. The default is 5
-minutes, and the range is 1 to 30 minutes. Requires tenant version 66 or newer.
+minutes, and the range is 1 to 30 minutes. Requires tenant version 67 or newer.
   snouty launch --launcher basic_test --config ./config --setup-timeout 10m
 
 Use --param to pass other params:
@@ -120,12 +120,12 @@ Options:
           Compute hours for the run, setup included, at most 1000. One compute
           hour is one core running for one hour. The minimum depends on
           --performance-tier. The server default is 48. Requires tenant version
-          66 or newer
+          67 or newer
 
       --setup-timeout <SETUP_TIMEOUT>
           Fail the run immediately if setup takes longer than this, in whole
           minutes with a unit, such as 10m, from 1m to 30m. The default is 5m.
-          Requires tenant version 66 or newer
+          Requires tenant version 67 or newer
 
       --ephemeral
           Mark the test run as ephemeral, so it does not appear in future

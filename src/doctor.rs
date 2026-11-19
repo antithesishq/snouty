@@ -17,7 +17,7 @@ use crate::compose;
 use crate::container;
 use crate::error::rejects_credential;
 use crate::known_path::KnownPathKind;
-use crate::login::{CliOAuthConfig, REGISTRY_TIMEOUT, fetch_cli_config};
+use crate::login::{CliOAuthConfig, TENANT_TIMEOUT, fetch_cli_config};
 use crate::registry::Registry;
 use crate::render::{OutputOptions, count};
 use crate::settings::{SettingSource, Settings, Tenant};
@@ -860,7 +860,7 @@ pub async fn cmd_doctor(
                             .is_some_and(|release| release >= MIN_REGISTRY_RELEASE)
                     {
                         let reported = tokio::time::timeout(
-                            crate::env::scaled_wait(REGISTRY_TIMEOUT),
+                            crate::env::scaled_wait(TENANT_TIMEOUT),
                             api.get_registry(),
                         )
                         .await;

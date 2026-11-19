@@ -24,8 +24,8 @@ use tokio::sync::mpsc;
 
 use crate::{
     api::{
-        AntithesisApi, CONNECT_TIMEOUT, HttpClient, RegistryResponse, ResponseCache,
-        normalize_base_url,
+        AntithesisApi, CONNECT_TIMEOUT, HttpClient, MIN_REGISTRY_RELEASE, RegistryResponse,
+        ResponseCache, VersionError, normalize_base_url,
     },
     auth::{
         AuthenticationInfo, CredentialSource, CredentialStore, PersistableCredentials,
@@ -46,10 +46,11 @@ use crate::{
 const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const _: () = assert!(OAUTH_HTTP_TIMEOUT.as_secs() > CONNECT_TIMEOUT.as_secs());
 
-/// The longest wait for the registry request. The API client has only a
-/// connect timeout, and a tenant that accepts a connection but does not answer
-/// would otherwise hold login or doctor forever.
-pub(crate) const REGISTRY_TIMEOUT: Duration = Duration::from_secs(30);
+/// The longest wait for the requests that check the credential and get the
+/// registry. The API client has only a connect timeout, and a tenant that
+/// accepts a connection but does not answer would otherwise hold login or
+/// doctor forever.
+pub const TENANT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long to wait for the browser to redirect back to the loopback server
 /// before giving up — generous enough for the user to complete an interactive
@@ -420,29 +421,38 @@ impl<'a> TenantUrl<'a> {
             .chain()
             .find_map(|cause| cause.downcast_ref::<reqwest::Error>())
             .filter(|transport| transport.is_builder() || transport.is_connect())?;
-        let check = if self.explicit {
+        Some(self.cannot_reach(root_cause(transport)))
+    }
+
+    /// The error of a URL that login cannot reach, because of `cause`.
+    fn cannot_reach(&self, cause: impl std::fmt::Display) -> Report {
+        user_error(format!(
+            "could not reach {}: {cause}; nothing was saved",
+            self.url
+        ))
+        .suggestion(self.check())
+    }
+
+    /// The next step when the URL does not answer as an Antithesis tenant.
+    fn check(&self) -> String {
+        if self.explicit {
             "check that the base_url setting is correct".to_owned()
         } else {
             format!("check that the tenant name `{}` is correct", self.tenant)
-        };
-        Some(
-            user_error(format!(
-                "could not reach {}: {}; nothing was saved",
-                self.url,
-                root_cause(transport)
-            ))
-            .suggestion(check),
-        )
+        }
     }
 }
 
-/// `GET /api/v0/registry` at `tenant_url` with `new_credentials`, or else
-/// with the credential that later commands use. The request is also the check
-/// that the credential works. `None` means that the tenant does not serve the
-/// endpoint, which tenants before it answer with 404. The tenant
-/// authenticates a request before it routes it, so a 404 also means that it
-/// accepted the credential. `interactive` picks the next step for a
-/// credential that login itself can replace.
+/// Check `new_credentials`, or else the credential that later commands use,
+/// with `GET /api/version` at `tenant_url`, then get the registry from
+/// `GET /api/v0/registry`. `None` means that the tenant does not report its
+/// registry. `interactive` picks the next step for a credential that login
+/// itself can replace.
+///
+/// The registry endpoint cannot check the credential: release 66 answers 403
+/// for it with a valid credential. The tenant authenticates a request before
+/// it routes it, so a 404 from a tenant before release 56, which has no
+/// version endpoint, also means that it accepted the credential.
 async fn fetch_registry(
     settings: &Settings,
     tenant_url: &TenantUrl<'_>,
@@ -507,29 +517,54 @@ async fn fetch_registry(
         verbose,
         ResponseCache::Disabled,
     )?;
-    let registry = tokio::time::timeout(env::scaled_wait(REGISTRY_TIMEOUT), api.get_registry())
-        .await
-        .map_err(|_| {
-            user_error(format!(
-                "timed out loading the registry configuration from {}; nothing was saved",
-                tenant_url.url
-            ))
-            .suggestion("check your network connection, and the base_url and https_proxy settings")
-        })?;
-    match registry {
-        Ok(registry) => Ok(Some(registry.untag())),
-        Err(err) => match api_error_status(&err) {
-            Some(404) => {
+    let check_and_fetch = async {
+        let release = match api.get_version().await {
+            Ok(version) => version.release,
+            Err(VersionError::Http(404)) => None,
+            Err(VersionError::Http(status)) if rejects_credential(status) => {
+                return Err(user_error(format!(
+                    "`{tenant}` did not accept the credential; nothing was saved"
+                ))
+                .suggestion(env_next_step.unwrap_or_else(login_again)));
+            }
+            Err(VersionError::Http(status)) => {
+                return Err(user_error(format!(
+                    "{} answered with HTTP {status}; nothing was saved",
+                    tenant_url.url
+                )));
+            }
+            Err(VersionError::BadResponse(err)) => {
+                return Err(user_error(format!(
+                    "{} answered, but not as an Antithesis tenant: {err}; nothing was saved",
+                    tenant_url.url
+                ))
+                .suggestion(tenant_url.check()));
+            }
+            Err(VersionError::Unreachable(cause)) => return Err(tenant_url.cannot_reach(cause)),
+        };
+        if !release.is_some_and(|release| release >= MIN_REGISTRY_RELEASE) {
+            debug!("the tenant release {release:?} does not report its registry");
+            return Ok(None);
+        }
+        match api.get_registry().await {
+            Ok(registry) => Ok(Some(registry.untag())),
+            // A proxy at the base_url can leave out the endpoint.
+            Err(err) if api_error_status(&err) == Some(404) => {
                 debug!("the tenant does not report its registry: {err:#}");
                 Ok(None)
             }
-            Some(status) if rejects_credential(status) => Err(user_error(format!(
-                "`{tenant}` did not accept the credential; nothing was saved"
+            Err(err) => Err(tenant_url.unreachable(&err).unwrap_or(err)),
+        }
+    };
+    tokio::time::timeout(env::scaled_wait(TENANT_TIMEOUT), check_and_fetch)
+        .await
+        .map_err(|_| {
+            user_error(format!(
+                "timed out waiting for {}; nothing was saved",
+                tenant_url.url
             ))
-            .suggestion(env_next_step.unwrap_or_else(login_again))),
-            _ => Err(tenant_url.unreachable(&err).unwrap_or(err)),
-        },
-    }
+            .suggestion("check your network connection, and the base_url and https_proxy settings")
+        })?
 }
 
 /// Confirm what `snouty login` saved, and the obvious next step — otherwise a
@@ -623,7 +658,7 @@ async fn prompt_for_auth(
     let url = &tenant_url.url;
     let oauth_config = fetch_cli_config(client, url, OAUTH_HTTP_TIMEOUT).await;
 
-    // The registry request after the prompt uses the same URL, so stop before
+    // The requests after the prompt use the same URL, so stop before
     // the prompt when it cannot be reached. Any other error, such as a slow
     // answer, means the host exists: login continues without single sign-on.
     if let Err(err) = &oauth_config
@@ -1378,8 +1413,8 @@ mod tests {
         FAKE_PKCE_VERIFIER, FAKE_REFRESH_TOKEN_A,
     };
     use crate::testutils::{
-        api_key_credentials, api_key_line, oauth_credentials, password_credentials,
-        spawn_login_backend,
+        LoginBackend, MockAnswer, api_key_credentials, api_key_line, oauth_credentials,
+        password_credentials,
     };
     use color_eyre::eyre::Result;
 
@@ -1576,25 +1611,44 @@ mod tests {
         }
 
         /// Isolated env whose `/auth/cli/config` returns `config_body`.
-        fn with_oauth_config(config_body: &'static str) -> Self {
-            Self::with_backend(config_body, 200, REGISTRY_ANTITHESIS)
+        fn with_oauth_config(oauth_config: &'static str) -> Self {
+            Self::with_backend(LoginBackend {
+                oauth_config,
+                registry: MockAnswer {
+                    status: 200,
+                    body: REGISTRY_ANTITHESIS,
+                },
+                ..LoginBackend::default()
+            })
         }
 
         /// Isolated env whose `/api/v0/registry` answers `status` and `body`.
         fn with_registry(status: u16, body: &'static str) -> Self {
-            Self::with_backend(OAUTH_DISABLED, status, body)
+            Self::with_backend(LoginBackend {
+                registry: MockAnswer { status, body },
+                ..LoginBackend::default()
+            })
         }
 
-        fn with_backend(
-            config_body: &'static str,
-            registry_status: u16,
-            registry_body: &'static str,
-        ) -> Self {
+        /// Isolated env whose `/api/version` answers `status` and `body`, and
+        /// whose `/api/v0/registry` answers 403, as release 66 does.
+        fn with_version(status: u16, body: &'static str) -> Self {
+            Self::with_backend(LoginBackend {
+                version: MockAnswer { status, body },
+                registry: MockAnswer {
+                    status: 403,
+                    body: r#"{"message":"Forbidden"}"#,
+                },
+                ..LoginBackend::default()
+            })
+        }
+
+        fn with_backend(backend: LoginBackend) -> Self {
             let guard = ENV_LOCK
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let home = tempfile::TempDir::new().expect("create temp HOME");
-            let base_url = spawn_login_backend(config_body, registry_status, registry_body);
+            let base_url = backend.spawn();
 
             // SAFETY: the `ENV_LOCK` guard we hold serializes every test in this
             // binary that touches process-global env, so nothing else reads or
@@ -1977,7 +2031,7 @@ mod tests {
     /// nothing.
     #[tokio::test]
     async fn login_saves_nothing_when_the_tenant_rejects_the_credential() -> Result<()> {
-        let env = LoginEnv::with_registry(401, r#"{"message":"Invalid or expired bearer token."}"#);
+        let env = LoginEnv::with_version(401, r#"{"message":"Invalid or expired bearer token."}"#);
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default().secret(FAKE_API_KEY_A).build();
 
@@ -2000,7 +2054,7 @@ mod tests {
     async fn login_does_not_read_the_registry_from_the_response_cache() -> Result<()> {
         use crate::api_cache::{ApiCache, CachePolicy, DEFAULT_MAX_FILE_SIZE};
 
-        let env = LoginEnv::with_registry(401, r#"{"message":"Invalid or expired bearer token."}"#);
+        let env = LoginEnv::with_version(401, r#"{"message":"Invalid or expired bearer token."}"#);
         let cache = ApiCache::new(
             Some(env.api_cache_dir()),
             DEFAULT_MAX_FILE_SIZE,
@@ -2137,11 +2191,14 @@ mod tests {
         Ok(())
     }
 
-    /// A tenant that does not serve the registry endpoint answers 404, and
-    /// login asks for the registry, offering the saved one.
+    /// A tenant before release 67 does not report its registry, and login
+    /// asks for it, offering the saved one.
     #[tokio::test]
     async fn login_asks_for_the_registry_when_the_tenant_does_not_report_it() -> Result<()> {
-        let env = LoginEnv::with_registry(404, r#"{"message":"Resource not found"}"#);
+        let env = LoginEnv::with_version(
+            200,
+            r#"{"latest_api_version":"v1","release_version":"66.2"}"#,
+        );
         env.seed(
             ".config/snouty/settings.toml",
             "registry = \"saved.example.com/app\"\n",
@@ -2171,7 +2228,8 @@ mod tests {
     /// login saves without its scheme and trailing `/`.
     #[tokio::test]
     async fn login_saves_the_registry_prompt_default_without_its_scheme() -> Result<()> {
-        let env = LoginEnv::with_registry(404, r#"{"message":"Resource not found"}"#);
+        // A tenant before release 56 has no version endpoint.
+        let env = LoginEnv::with_version(404, r#"{"message":"Resource not found"}"#);
         env.seed(
             ".config/snouty/settings.toml",
             "tenant = \"mytenant\"\nregistry = \"https://saved.example.com/my-org/\"\n",

@@ -28,7 +28,8 @@ use expectrl::process::unix::WaitStatus;
 use expectrl::session::OsSession;
 use snouty::testutils::fake_secrets::{FAKE_API_KEY_A, FAKE_API_KEY_B, FAKE_PASSWORD};
 use snouty::testutils::{
-    api_key_credentials, api_key_line, oauth_credentials, password_credentials, spawn_login_backend,
+    LoginBackend, MockAnswer, api_key_credentials, api_key_line, oauth_credentials,
+    password_credentials,
 };
 use support::pty::PtyCommand;
 
@@ -47,9 +48,6 @@ fn row_of_stars() -> String {
     "*".repeat(PTY_COLS as usize / 2)
 }
 
-/// The `GET /auth/cli/config` body that reports OAuth disabled for the CLI.
-const OAUTH_DISABLED: &str = r#"{"port_strategy":"disabled"}"#;
-
 /// The `GET /api/v0/registry` body of a registry that takes the Antithesis
 /// credential.
 const REGISTRY: &str =
@@ -67,10 +65,17 @@ const KEPT_ANSWER: &str = "Please enter your API Key (********9Pgw) kept";
 /// The answered API key line when a new key replaces the stored key.
 const NEW_KEY_ANSWER: &str = "Please enter your API Key (********9Pgw) ********";
 
-/// A backend that answers `GET /api/v0/registry` with [`REGISTRY`] and every
-/// other request with [`OAUTH_DISABLED`]. Returns its base URL.
+/// A backend that answers `GET /api/v0/registry` with [`REGISTRY`]. Returns
+/// its base URL.
 fn start_backend() -> String {
-    spawn_login_backend(OAUTH_DISABLED, 200, REGISTRY)
+    LoginBackend {
+        registry: MockAnswer {
+            status: 200,
+            body: REGISTRY,
+        },
+        ..LoginBackend::default()
+    }
+    .spawn()
 }
 
 /// Spawn `snouty login --tenant … --registry …` on a PTY against an
@@ -608,7 +613,7 @@ fn a_tenant_that_does_not_answer_gets_the_api_key_prompt_and_then_fails() {
 /// kept.
 #[test]
 fn a_bad_answer_at_the_registry_prompt_asks_again() {
-    let base_url = spawn_login_backend(OAUTH_DISABLED, 404, r#"{"message":"Resource not found"}"#);
+    let base_url = LoginBackend::default().spawn();
     let (home, mut session) = spawn_login(&Login {
         base_url: Some(&base_url),
         no_registry_flag: true,
@@ -640,7 +645,7 @@ fn a_bad_answer_at_the_registry_prompt_asks_again() {
 /// prompt is refused, and the prompt asks again. The pasted API key is kept.
 #[test]
 fn bare_enter_at_the_registry_prompt_asks_again() {
-    let base_url = spawn_login_backend(OAUTH_DISABLED, 404, r#"{"message":"Resource not found"}"#);
+    let base_url = LoginBackend::default().spawn();
     let (home, mut session) = spawn_login(&Login {
         base_url: Some(&base_url),
         no_registry_flag: true,
@@ -738,6 +743,11 @@ fn verbose_logs_the_oauth_requests_without_secrets() {
                 "POST",
                 "/auth/cli/token",
                 json!({"antithesis_token": FAKE_ACCESS_TOKEN_A, "refresh_token": FAKE_REFRESH_TOKEN_A}),
+            ),
+            (
+                "GET",
+                "/api/version",
+                json!({"latest_api_version": "v1", "release_version": "67.0"}),
             ),
             (
                 "GET",

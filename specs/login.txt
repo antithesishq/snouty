@@ -78,7 +78,7 @@ stderr -literal 'set ANTITHESIS_API_KEY, or run `snouty login` in a terminal'
 # A registry that the tenant reports, other than its own, is saved, and login
 # names the commands that sign in to it.
 isolate-home docker_registry
-mock-server 200 '{"auth":"docker","registry_url":"registry.example.com/acme"}'
+mock-server -release 67.0 200 '{"auth":"docker","registry_url":"registry.example.com/acme"}'
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 snouty login --tenant spec-tenant
 stdout -literal '`docker login registry.example.com`'
@@ -88,7 +88,7 @@ file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
 # `docker login` takes the registry's host: the text before the first `/`.
 # Login saves the registry as given, and never names Docker Hub for it.
 isolate-home registry_hosts
-mock-server 200 '{"auth":"antithesis","registry_url":"registry.spec-tenant.antithesis.com"}'
+mock-server -release 67.0 200 '{"auth":"antithesis","registry_url":"registry.spec-tenant.antithesis.com"}'
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 snouty login --tenant spec-tenant --registry us-central1-docker.pkg.dev/molten-verve-216720/orbitinghail-repository
 stdout -literal '`docker login us-central1-docker.pkg.dev`'
@@ -111,7 +111,7 @@ stdout -literal '`docker login registry`'
 # A registry that the tenant reports is saved without a scheme and a
 # trailing `/`.
 isolate-home reported_scheme
-mock-server 200 '{"auth":"docker","registry_url":"https://registry.example.com/acme/"}'
+mock-server -release 67.0 200 '{"auth":"docker","registry_url":"https://registry.example.com/acme/"}'
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 snouty login --tenant spec-tenant
 stdout -literal '`docker login registry.example.com`'
@@ -119,7 +119,7 @@ file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
 
 # A registry that the tenant reports must also be a registry host.
 isolate-home reported_url
-mock-server 200 '{"auth":"docker","registry_url":"user@registry.example.com"}'
+mock-server -release 67.0 200 '{"auth":"docker","registry_url":"user@registry.example.com"}'
 ! snouty login --tenant spec-tenant
 stderr -literal 'is not a container registry'
 stderr 'nothing was saved'
@@ -128,7 +128,7 @@ stderr 'nothing was saved'
 # Without a TTY, login keeps a saved custom registry over the tenant's
 # registry, and names the command that saves the tenant's registry.
 isolate-home keep_custom
-mock-server 200 '{"auth":"antithesis","registry_url":"registry.spec-tenant.antithesis.com"}'
+mock-server -release 67.0 200 '{"auth":"antithesis","registry_url":"registry.spec-tenant.antithesis.com"}'
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 env ANTITHESIS_TENANT=
 snouty login --tenant spec-tenant --registry registry.example.com/acme
@@ -147,7 +147,7 @@ file ~/.config/snouty/settings.toml 'registry = "registry.spec-tenant.antithesis
 # Login writes the profile that ANTITHESIS_PROFILE names, and --profile
 # overrides it.
 isolate-home profile_flag
-mock-server 200 '{"auth":"antithesis","registry_url":"registry.spec-tenant.antithesis.com"}'
+mock-server -release 67.0 200 '{"auth":"antithesis","registry_url":"registry.spec-tenant.antithesis.com"}'
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 env ANTITHESIS_PROFILE=other
 snouty login --tenant spec-tenant --registry registry.example.com/other
@@ -241,6 +241,16 @@ isolate-home env_password
 stderr 'nothing was saved'
 stderr -literal 'unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD'
 ! stderr 'set ANTITHESIS_API_KEY'
+
+# A tenant that does not report its registry answers 403 for the endpoint,
+# yet login accepts the credential and takes --registry.
+isolate-home registry_forbidden
+mock-server -release 66.0 403 '{"message":"Forbidden"}'
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
+snouty login --tenant spec-tenant --registry registry.example.com/acme
+file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
 
 # A tenant that does not serve the registry endpoint answers 404 after it
 # accepts the credential. Without a terminal, login keeps the tenant's saved

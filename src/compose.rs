@@ -16,9 +16,9 @@ use color_eyre::{
 
 use crate::config::ComposeConfig;
 use crate::container::{
-    Architecture, ContainerRuntime, DISCOVERY_COMMAND_TIMEOUT, ReleaseVersion, RemoteManifest,
-    available_engines, digests_for_repo, docker_config_dir, docker_is_podman, image_digest,
-    image_ref_tag, image_repo, mirror_path, normalize_repo, registry_host, strip_registry,
+    Architecture, ContainerRuntime, DISCOVERY_COMMAND_TIMEOUT, RemoteManifest, available_engines,
+    digests_for_repo, docker_config_dir, docker_is_podman, image_digest, image_ref_tag, image_repo,
+    mirror_path, normalize_repo, parse_release, registry_host, strip_registry,
 };
 use crate::error::user_error;
 use crate::process::{ProcessGroupChild, output_with_timeout};
@@ -82,8 +82,8 @@ impl ComposeForm {
                 .with_section(move || stderr.trim().to_string().header("Stderr:"));
         }
         let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        match version.parse::<ReleaseVersion>() {
-            Ok(parsed) if parsed >= MIN_COMPOSE_VERSION => Ok(version),
+        match parse_release(&version) {
+            Some(parsed) if parsed >= MIN_COMPOSE_VERSION => Ok(version),
             _ => Err(eyre!(
                 "`{self}` is Docker Compose {version}, but snouty requires v{MIN_COMPOSE_VERSION} or newer"
             ))
@@ -189,7 +189,7 @@ impl ComposeCli {
 /// v2.24.6 would pass a looser check and still ship absolute local paths —
 /// silently, and only visible once the run is on the platform. A version check
 /// that lets a broken config through is worse than no check.
-const MIN_COMPOSE_VERSION: ReleaseVersion = ReleaseVersion::new(2, 24, 7);
+const MIN_COMPOSE_VERSION: semver::Version = semver::Version::new(2, 24, 7);
 
 /// Variables that Antithesis sets in the environment of the docker-compose
 /// process and that a compose file can interpolate. Observed on tenant
@@ -2729,10 +2729,7 @@ services:
     /// broken config through.
     #[test]
     fn min_compose_version_rejects_releases_below_the_include_fix() {
-        let supported = |v: &str| {
-            v.parse::<ReleaseVersion>()
-                .is_ok_and(|p| p >= MIN_COMPOSE_VERSION)
-        };
+        let supported = |v: &str| parse_release(v).is_some_and(|p| p >= MIN_COMPOSE_VERSION);
 
         assert!(!supported("1.29.2"), "Compose v1 must be rejected");
         assert!(

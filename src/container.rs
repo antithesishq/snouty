@@ -5,6 +5,8 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
+use semver::Version;
+
 use base64::{Engine as _, prelude::BASE64_STANDARD};
 use chrono::Utc;
 use color_eyre::{
@@ -127,48 +129,17 @@ impl TenantRegistryEnv {
     }
 }
 
-/// The major, minor and patch release of a tool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ReleaseVersion {
-    major: u64,
-    minor: u64,
-    patch: u64,
-}
-
-impl ReleaseVersion {
-    pub const fn new(major: u64, minor: u64, patch: u64) -> Self {
-        Self {
-            major,
-            minor,
-            patch,
-        }
-    }
-}
-
-/// Parses `2.40.3`, `v2.40.3` and `19.03.12`. Each component keeps its
-/// leading digits, so a distro or pre-release suffix (`40+ds1`, `7-rc1`) is
-/// dropped. A missing component reads as zero: `2.24` is 2.24.0.
-impl std::str::FromStr for ReleaseVersion {
-    type Err = std::num::ParseIntError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut parts = s.trim_start_matches('v').split('.').map(|part| {
-            let digits = part.split(|c: char| !c.is_ascii_digit()).next();
-            digits.unwrap_or_default().parse()
-        });
-        let mut next = || parts.next().unwrap_or(Ok(0));
-        Ok(Self::new(next()?, next()?, next()?))
-    }
-}
-
-impl std::fmt::Display for ReleaseVersion {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
-    }
+/// Parse the release of a tool, such as `2.40.3`, `v2.40.3` or `19.03.12`.
+/// A missing component reads as zero: `2.24` is 2.24.0. Build metadata, such
+/// as `+ds1-0ubuntu1~24.04.1`, is dropped: it does not change the order of
+/// releases, and distribution builds put characters in it that semver rejects.
+pub fn parse_release(text: &str) -> Option<Version> {
+    let (release, _metadata) = text.split_once('+').unwrap_or((text, ""));
+    lenient_semver::parse(release).ok()
 }
 
 /// The first Docker release that reads [`DOCKER_AUTH_CONFIG_ENV`].
-const DOCKER_AUTH_CONFIG_VERSION: ReleaseVersion = ReleaseVersion::new(28, 3, 0);
+const DOCKER_AUTH_CONFIG_VERSION: Version = Version::new(28, 3, 0);
 
 /// The docker CLI config directory: `$DOCKER_CONFIG` if set and not empty,
 /// else `$HOME/.docker`, as the docker CLI picks it. `None` when neither is
@@ -234,7 +205,7 @@ pub trait ContainerRuntime: Send + Sync {
     /// The release of a Docker CLI that cannot use the credential of
     /// [`use_tenant_registry_auth`](Self::use_tenant_registry_auth) for
     /// `registry`. `None` when the runtime can use it.
-    fn docker_without_registry_auth(&self, _registry: &Registry) -> Option<ReleaseVersion> {
+    fn docker_without_registry_auth(&self, _registry: &Registry) -> Option<Version> {
         None
     }
 
@@ -830,12 +801,12 @@ fn link_credential_helper(dir: &Path) -> Result<()> {
 #[derive(Clone)]
 pub struct DockerRuntime {
     cmd: String,
-    version: Option<ReleaseVersion>,
+    version: Option<Version>,
     registry_env: Option<TenantRegistryEnv>,
 }
 
 impl DockerRuntime {
-    pub fn new(cmd: impl Into<String>, version: Option<ReleaseVersion>) -> Self {
+    pub fn new(cmd: impl Into<String>, version: Option<Version>) -> Self {
         Self {
             cmd: cmd.into(),
             version,
@@ -860,8 +831,8 @@ impl ContainerRuntime for DockerRuntime {
     /// A release older than [`DOCKER_AUTH_CONFIG_VERSION`] ignores
     /// [`DOCKER_AUTH_CONFIG_ENV`]. A credential helper for `registry` gives
     /// Docker the credential instead.
-    fn docker_without_registry_auth(&self, registry: &Registry) -> Option<ReleaseVersion> {
-        self.version.filter(|version| {
+    fn docker_without_registry_auth(&self, registry: &Registry) -> Option<Version> {
+        self.version.clone().filter(|version| {
             *version < DOCKER_AUTH_CONFIG_VERSION && !docker_has_cred_helper(registry)
         })
     }
@@ -941,16 +912,16 @@ fn version_output_is_podman(stdout: &[u8]) -> bool {
 /// The release in a banner such as `Docker version 27.4.0, build bde2b89`.
 /// The banner is the only output that does not need the daemon (see
 /// [`CliKind::probe`]).
-fn docker_version_from_banner(banner: &str) -> Option<ReleaseVersion> {
+fn docker_version_from_banner(banner: &str) -> Option<Version> {
     let (_, rest) = banner.split_once("version ")?;
-    rest.split([',', ' ', '\n']).next()?.parse().ok()
+    parse_release(rest.split([',', ' ', '\n']).next()?)
 }
 
 /// What a container CLI is, from its `--version` banner.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum CliKind {
     /// A banner that is not podman's, with the Docker release that it names.
-    Docker(Option<ReleaseVersion>),
+    Docker(Option<Version>),
     /// A podman banner, also from a CLI named `docker` (podman-docker).
     Podman,
     /// The CLI cannot run, or `--version` failed or timed out.
@@ -1067,7 +1038,7 @@ pub fn runtime(settings: &Settings) -> Result<Box<dyn ContainerRuntime>> {
 /// A Docker CLI that ignores the snouty credential that `snouty launch`
 /// gives it for the tenant registry. Its `Display` is the warning.
 pub struct OldDocker<'a> {
-    version: ReleaseVersion,
+    version: Version,
     registry: &'a Registry,
 }
 
@@ -1984,9 +1955,13 @@ esac
     #[test]
     fn explicit_podman_without_docker_suggests_only_install() {
         for podman in [CliKind::Docker(None), CliKind::Missing] {
-            let err = select_runtime(Some(ContainerEngine::Podman), CliKind::Missing, podman)
-                .err()
-                .unwrap();
+            let err = select_runtime(
+                Some(ContainerEngine::Podman),
+                CliKind::Missing,
+                podman.clone(),
+            )
+            .err()
+            .unwrap();
             let report = format!("{err:?}");
             assert!(report.contains("install podman"), "{podman:?}: {report}");
             assert!(!report.contains("auto-detection"), "{podman:?}: {report}");
@@ -1996,7 +1971,7 @@ esac
     #[test]
     fn auto_prefers_podman() {
         for docker in [CliKind::Docker(None), CliKind::Podman, CliKind::Missing] {
-            let rt = select_runtime(None, docker, CliKind::Podman).unwrap();
+            let rt = select_runtime(None, docker.clone(), CliKind::Podman).unwrap();
             assert_eq!(
                 rt.engine_kind(),
                 ContainerEngine::Podman,
@@ -2029,8 +2004,8 @@ esac
     }
 
     #[test]
-    fn release_version_parses_major_minor_and_patch() {
-        let version = |s: &str| s.parse::<ReleaseVersion>().ok().map(|v| v.to_string());
+    fn parse_release_reads_major_minor_and_patch() {
+        let version = |s: &str| parse_release(s).map(|v| v.to_string());
         assert_eq!(version("2.40.3").as_deref(), Some("2.40.3"));
         assert_eq!(version("v2.40.3").as_deref(), Some("2.40.3"));
         assert_eq!(version("19.03.12").as_deref(), Some("19.3.12"));
@@ -2038,7 +2013,7 @@ esac
             version("2.40.3+ds1-0ubuntu1~24.04.1").as_deref(),
             Some("2.40.3")
         );
-        assert_eq!(version("2.24.7-rc1").as_deref(), Some("2.24.7"));
+        assert_eq!(version("2.24.7-rc1").as_deref(), Some("2.24.7-rc1"));
         assert_eq!(version("2.24").as_deref(), Some("2.24.0"));
         assert_eq!(version("2").as_deref(), Some("2.0.0"));
         assert_eq!(version(""), None);
@@ -2062,9 +2037,10 @@ esac
             version("Docker version 20.10.24+dfsg1, build 297e128\n").as_deref(),
             Some("20.10.24")
         );
-        assert_eq!(
-            docker_version_from_banner("Docker version 28.3.0-rc.1, build 1f8b2e4\n"),
-            Some(DOCKER_AUTH_CONFIG_VERSION)
+        // A release candidate comes before its release.
+        assert!(
+            docker_version_from_banner("Docker version 28.3.0-rc.1, build 1f8b2e4\n")
+                .is_some_and(|v| v < DOCKER_AUTH_CONFIG_VERSION)
         );
         assert_eq!(version("Docker version unknown\n"), None);
         assert_eq!(version(""), None);
@@ -2084,7 +2060,7 @@ esac
         );
         assert_eq!(
             probe("docker", "echo 'Docker version 27.4.0, build bde2b89'\n"),
-            CliKind::Docker(Some("27.4.0".parse().unwrap()))
+            CliKind::Docker(Some(Version::new(27, 4, 0)))
         );
         assert_eq!(probe("broken", "exit 1\n"), CliKind::Missing);
         assert_eq!(

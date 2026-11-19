@@ -517,16 +517,17 @@ async fn fetch_registry(
         verbose,
         ResponseCache::Disabled,
     )?;
+    let rejected = || {
+        user_error(format!(
+            "`{tenant}` did not accept the credential; nothing was saved"
+        ))
+        .suggestion(env_next_step.clone().unwrap_or_else(login_again))
+    };
     let check_and_fetch = async {
         let version = match api.get_version().await {
             Ok(version) => Some(version),
             Err(VersionError::Http(404)) => None,
-            Err(VersionError::Http(status)) if rejects_credential(status) => {
-                return Err(user_error(format!(
-                    "`{tenant}` did not accept the credential; nothing was saved"
-                ))
-                .suggestion(env_next_step.unwrap_or_else(login_again)));
-            }
+            Err(VersionError::Http(status)) if rejects_credential(status) => return Err(rejected()),
             Err(VersionError::Http(status)) => {
                 return Err(user_error(format!(
                     "{} answered with HTTP {status}; nothing was saved",
@@ -556,6 +557,7 @@ async fn fetch_registry(
                 debug!("the tenant does not report its registry: {err:#}");
                 Ok(None)
             }
+            Err(err) if api_error_status(&err).is_some_and(rejects_credential) => Err(rejected()),
             Err(err) => Err(tenant_url.unreachable(&err).unwrap_or(err)),
         }
     };
@@ -2057,7 +2059,7 @@ mod tests {
     async fn login_does_not_read_the_registry_from_the_response_cache() -> Result<()> {
         use crate::api_cache::{ApiCache, CachePolicy, DEFAULT_MAX_FILE_SIZE};
 
-        let env = LoginEnv::with_version(401, r#"{"message":"Invalid or expired bearer token."}"#);
+        let env = LoginEnv::with_registry(401, r#"{"message":"Invalid or expired bearer token."}"#);
         let cache = ApiCache::new(
             Some(env.api_cache_dir()),
             DEFAULT_MAX_FILE_SIZE,

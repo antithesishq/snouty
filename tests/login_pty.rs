@@ -581,7 +581,7 @@ fn a_malformed_base_url_fails_before_the_api_key_prompt() {
 
 /// A tenant that accepts the connection but does not answer the OAuth
 /// configuration probe in time exists, so login continues to the API key
-/// prompt. The registry request then fails in bounded time, names the URL,
+/// prompt. The credential check then fails in bounded time, names the URL,
 /// and saves nothing.
 #[test]
 fn a_tenant_that_does_not_answer_gets_the_api_key_prompt_and_then_fails() {
@@ -600,7 +600,7 @@ fn a_tenant_that_does_not_answer_gets_the_api_key_prompt_and_then_fails() {
     send(&mut session, "\r");
     let seen = flat(&finish_with_failure(session));
     for needle in [
-        format!("timed out loading the registry configuration from {base_url}; nothing was saved"),
+        format!("timed out waiting for {base_url}; nothing was saved"),
         "check your network connection".to_owned(),
     ] {
         assert!(seen.contains(&needle), "missing {needle:?} in {seen}");

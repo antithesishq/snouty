@@ -108,7 +108,7 @@ pub const MIN_CANCEL_RELEASE: (u64, u64) = (63, 0);
 
 /// The first tenant release that honors `launch --max-compute-hours`,
 /// `launch --setup-timeout` and `debug --duration`. `snouty doctor` checks it.
-pub const MIN_LAUNCH_PARAMS_RELEASE: (u64, u64) = (66, 0);
+pub const MIN_LAUNCH_PARAMS_RELEASE: (u64, u64) = (67, 0);
 
 /// The first release with a module list. `runs modules` refuses a run created
 /// on an earlier release, and `snouty doctor` warns about a tenant on one.

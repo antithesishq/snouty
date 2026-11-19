@@ -17,7 +17,7 @@ Example:
     --duration 2h
 
 The session stays available for the time that --duration gives, from 30 minutes
-to 6 hours. Without it, the server sets the time. Requires tenant version 66 or
+to 6 hours. Without it, the server sets the time. Requires tenant version 67 or
 newer.
 
 Extra parameters can be passed with --param, as for `snouty launch`. A --param
@@ -56,7 +56,7 @@ Options:
 
       --duration <DURATION>
           How long the session stays available, from 30 minutes to 6 hours.
-          Requires tenant version 66 or newer. A duration is a whole number with
+          Requires tenant version 67 or newer. A duration is a whole number with
           an h, m or s unit, or several in that order, such as 45m, 2h or 1h30m;
           a bare number is not permitted
 

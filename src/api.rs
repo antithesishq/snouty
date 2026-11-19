@@ -111,7 +111,6 @@ pub const MIN_LAUNCH_PARAMS_RELEASE: (u64, u64) = (66, 0);
 pub const MIN_MODULES_RELEASE: (u64, u64) = (67, 0);
 
 /// The first tenant release that reports its registry at `GET /api/v0/registry`.
-/// `snouty login` and `snouty doctor` ask only a tenant on this release or later.
 pub const MIN_REGISTRY_RELEASE: (u64, u64) = (67, 0);
 
 /// Starts each debug log line that times or retries an API request. The spec harness
@@ -136,7 +135,6 @@ impl ApiVersion {
         }
     }
 
-    /// Whether the tenant reports its registry at `GET /api/v0/registry`.
     pub fn reports_registry(&self) -> bool {
         self.release
             .is_some_and(|release| release >= MIN_REGISTRY_RELEASE)

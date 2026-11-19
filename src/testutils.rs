@@ -350,7 +350,6 @@ fn container_log_tail(log: &tempfile::NamedTempFile) -> String {
     tail.chars().take(MAX_TAIL).collect()
 }
 
-/// The status and body of one answer of a mock backend.
 #[derive(Clone, Copy)]
 pub struct MockAnswer {
     pub status: u16,
@@ -1358,7 +1357,7 @@ fn mock_route_cancel_run(run_id: &str) -> (u16, String) {
     }
 }
 
-/// The `GET /api/version` body of the mock tenant, at release 67.0.
+/// The `GET /api/version` body of the mock tenant.
 pub(crate) const MOCK_VERSION_BODY: &str =
     r#"{"latest_api_version":"v1","release_version":"67.0"}"#;
 

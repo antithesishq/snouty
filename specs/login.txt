@@ -252,8 +252,8 @@ env ANTITHESIS_PASSWORD=
 snouty login --tenant spec-tenant --registry registry.example.com/acme
 file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
 
-# A tenant that does not serve the registry endpoint answers 404 after it
-# accepts the credential. Without a terminal, login keeps the tenant's saved
+# A tenant without the version endpoint answers 404 after it accepts the
+# credential. Without a terminal, login keeps the tenant's saved
 # registry, and fails without one.
 isolate-home no_endpoint
 mock-server 404 '{"message":"Resource not found"}'

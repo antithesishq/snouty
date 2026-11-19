@@ -65,8 +65,6 @@ const KEPT_ANSWER: &str = "Please enter your API Key (********9Pgw) kept";
 /// The answered API key line when a new key replaces the stored key.
 const NEW_KEY_ANSWER: &str = "Please enter your API Key (********9Pgw) ********";
 
-/// A backend that answers `GET /api/v0/registry` with [`REGISTRY`]. Returns
-/// its base URL.
 fn start_backend() -> String {
     LoginBackend {
         registry: MockAnswer {

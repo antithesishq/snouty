@@ -46,10 +46,10 @@ use crate::{
 const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const _: () = assert!(OAUTH_HTTP_TIMEOUT.as_secs() > CONNECT_TIMEOUT.as_secs());
 
-/// The longest wait for the requests that check the credential and get the
-/// registry. The API client has only a connect timeout, and a tenant that
-/// accepts a connection but does not answer would otherwise hold login or
-/// doctor forever.
+/// The longest wait for the credential check and the registry request. The
+/// API client has only a connect timeout, so a tenant that accepts a
+/// connection but does not answer would otherwise hold login or doctor
+/// forever.
 pub const TENANT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long to wait for the browser to redirect back to the loopback server
@@ -424,7 +424,6 @@ impl<'a> TenantUrl<'a> {
         Some(self.cannot_reach(root_cause(transport)))
     }
 
-    /// The error of a URL that login cannot reach, because of `cause`.
     fn cannot_reach(&self, cause: impl std::fmt::Display) -> Report {
         user_error(format!(
             "could not reach {}: {cause}; nothing was saved",
@@ -433,7 +432,8 @@ impl<'a> TenantUrl<'a> {
         .suggestion(self.check())
     }
 
-    /// The next step when the URL does not answer as an Antithesis tenant.
+    /// The suggestion for a URL that is unreachable or is not an Antithesis
+    /// tenant.
     fn check(&self) -> String {
         if self.explicit {
             "check that the base_url setting is correct".to_owned()
@@ -449,10 +449,10 @@ impl<'a> TenantUrl<'a> {
 /// registry. `interactive` picks the next step for a credential that login
 /// itself can replace.
 ///
-/// The registry endpoint cannot check the credential: release 66 answers 403
-/// for it with a valid credential. The tenant authenticates a request before
-/// it routes it, so a 404 from a tenant before release 56, which has no
-/// version endpoint, also means that it accepted the credential.
+/// The registry endpoint cannot check the credential. Release 66 answers 403
+/// for it with a valid credential. A tenant before release 56 has no version
+/// endpoint and answers 404. The tenant authenticates a request before it
+/// routes it, so that 404 also means that it accepted the credential.
 async fn fetch_registry(
     settings: &Settings,
     tenant_url: &TenantUrl<'_>,
@@ -2053,8 +2053,7 @@ mod tests {
         Ok(())
     }
 
-    /// Login never takes the registry from the response cache, which would
-    /// not check the credential.
+    /// Login never takes the registry from the response cache.
     #[tokio::test]
     async fn login_does_not_read_the_registry_from_the_response_cache() -> Result<()> {
         use crate::api_cache::{ApiCache, CachePolicy, DEFAULT_MAX_FILE_SIZE};

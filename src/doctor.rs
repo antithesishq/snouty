@@ -1529,8 +1529,8 @@ mod tests {
             check.notes[0].text
         );
 
-        assert!(release_floor_check(&version("66.0"), launch_params).is_none());
-        let check = release_floor_check(&version("65.9"), launch_params).unwrap();
+        assert!(release_floor_check(&version("67.0"), launch_params).is_none());
+        let check = release_floor_check(&version("66.9"), launch_params).unwrap();
         assert!(
             check.notes[0].text.contains("`debug --duration`"),
             "{}",

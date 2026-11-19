@@ -376,11 +376,11 @@ impl Default for LoginBackend {
             oauth_config: r#"{"port_strategy":"disabled"}"#,
             version: MockAnswer {
                 status: 200,
-                body: r#"{"latest_api_version":"v1","release_version":"67.0"}"#,
+                body: MOCK_VERSION_BODY,
             },
             registry: MockAnswer {
                 status: 404,
-                body: r#"{"message":"Resource not found"}"#,
+                body: MOCK_BARE_404_BODY,
             },
         }
     }
@@ -876,7 +876,7 @@ fn mock_route(
     match (method, path_part) {
         ("GET", "/api/version") => (
             200,
-            r#"{"latest_api_version":"v1","release_version":"67.0"}"#.to_string(),
+            MOCK_VERSION_BODY.to_string(),
             json,
             NO_CACHE_CACHE_CONTROL,
         ),
@@ -1357,6 +1357,10 @@ fn mock_route_cancel_run(run_id: &str) -> (u16, String) {
         None => (404, MOCK_CANCEL_404_BODY.to_string()),
     }
 }
+
+/// The `GET /api/version` body of the mock tenant, at release 67.0.
+pub(crate) const MOCK_VERSION_BODY: &str =
+    r#"{"latest_api_version":"v1","release_version":"67.0"}"#;
 
 /// The bare 404 body the live API sends for an unknown resource. It never
 /// names the resource.

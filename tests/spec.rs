@@ -509,14 +509,13 @@ fn cmd_mock_server(
 
             let response = if n < rate_limited {
                 "HTTP/1.1 429\r\nContent-Length: 0\r\n\r\n".to_owned()
-            } else if let Some(version_body) = &version_body
-                && buf.starts_with(b"GET /api/version ")
-            {
-                format!(
-                    "HTTP/1.1 200\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{version_body}",
-                    version_body.len(),
-                )
             } else {
+                let (status, header, body) = match &version_body {
+                    Some(version_body) if buf.starts_with(b"GET /api/version ") => {
+                        (200, "", version_body)
+                    }
+                    _ => (status, header.as_str(), &body),
+                };
                 format!(
                     "HTTP/1.1 {status}\r\n{header}Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
                     body.len(),

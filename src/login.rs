@@ -24,8 +24,8 @@ use tokio::sync::mpsc;
 
 use crate::{
     api::{
-        AntithesisApi, CONNECT_TIMEOUT, HttpClient, MIN_REGISTRY_RELEASE, RegistryResponse,
-        ResponseCache, VersionError, normalize_base_url,
+        AntithesisApi, ApiVersion, CONNECT_TIMEOUT, HttpClient, RegistryResponse, ResponseCache,
+        VersionError, normalize_base_url,
     },
     auth::{
         AuthenticationInfo, CredentialSource, CredentialStore, PersistableCredentials,
@@ -518,8 +518,8 @@ async fn fetch_registry(
         ResponseCache::Disabled,
     )?;
     let check_and_fetch = async {
-        let release = match api.get_version().await {
-            Ok(version) => version.release,
+        let version = match api.get_version().await {
+            Ok(version) => Some(version),
             Err(VersionError::Http(404)) => None,
             Err(VersionError::Http(status)) if rejects_credential(status) => {
                 return Err(user_error(format!(
@@ -542,8 +542,11 @@ async fn fetch_registry(
             }
             Err(VersionError::Unreachable(cause)) => return Err(tenant_url.cannot_reach(cause)),
         };
-        if !release.is_some_and(|release| release >= MIN_REGISTRY_RELEASE) {
-            debug!("the tenant release {release:?} does not report its registry");
+        if !version.as_ref().is_some_and(ApiVersion::reports_registry) {
+            debug!(
+                "the tenant release {:?} does not report its registry",
+                version.map(|version| version.release_version)
+            );
             return Ok(None);
         }
         match api.get_registry().await {
@@ -1413,8 +1416,8 @@ mod tests {
         FAKE_PKCE_VERIFIER, FAKE_REFRESH_TOKEN_A,
     };
     use crate::testutils::{
-        LoginBackend, MockAnswer, api_key_credentials, api_key_line, oauth_credentials,
-        password_credentials,
+        LoginBackend, MOCK_BARE_404_BODY, MockAnswer, api_key_credentials, api_key_line,
+        oauth_credentials, password_credentials,
     };
     use color_eyre::eyre::Result;
 
@@ -2229,7 +2232,7 @@ mod tests {
     #[tokio::test]
     async fn login_saves_the_registry_prompt_default_without_its_scheme() -> Result<()> {
         // A tenant before release 56 has no version endpoint.
-        let env = LoginEnv::with_version(404, r#"{"message":"Resource not found"}"#);
+        let env = LoginEnv::with_version(404, MOCK_BARE_404_BODY);
         env.seed(
             ".config/snouty/settings.toml",
             "tenant = \"mytenant\"\nregistry = \"https://saved.example.com/my-org/\"\n",

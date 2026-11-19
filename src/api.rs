@@ -135,6 +135,12 @@ impl ApiVersion {
             release,
         }
     }
+
+    /// Whether the tenant reports its registry at `GET /api/v0/registry`.
+    pub fn reports_registry(&self) -> bool {
+        self.release
+            .is_some_and(|release| release >= MIN_REGISTRY_RELEASE)
+    }
 }
 
 /// The first release whose runs report `sub_status`.

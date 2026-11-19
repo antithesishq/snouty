@@ -5,8 +5,8 @@ use serde::Serialize;
 
 use crate::api::{
     AntithesisApi, ApiVersion, HttpClient, MIN_CANCEL_RELEASE, MIN_EXEC_RELEASE,
-    MIN_LAUNCH_PARAMS_RELEASE, MIN_MODULES_RELEASE, MIN_REGISTRY_RELEASE, MIN_SEARCH_RELEASE,
-    MIN_STREAM_RELEASE, VersionError, normalize_base_url,
+    MIN_LAUNCH_PARAMS_RELEASE, MIN_MODULES_RELEASE, MIN_SEARCH_RELEASE, MIN_STREAM_RELEASE,
+    VersionError, normalize_base_url,
 };
 use crate::auth::{
     AuthenticationInfo, CredentialSource, CredentialStore, OidcFetchError, RenewalError,
@@ -855,9 +855,7 @@ pub async fn cmd_doctor(
                     if let Some(configured) = settings.registry()
                         && (settings.explicit_base_url().is_none()
                             || crate::env::test_doctor_asks_registry())
-                        && version
-                            .release
-                            .is_some_and(|release| release >= MIN_REGISTRY_RELEASE)
+                        && version.reports_registry()
                     {
                         let reported = tokio::time::timeout(
                             crate::env::scaled_wait(TENANT_TIMEOUT),

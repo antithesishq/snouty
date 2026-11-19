@@ -345,10 +345,19 @@ async fn do_cmd_login(
         written,
         stored.as_ref(),
     );
-    if let Ok(rt) = crate::container::runtime(current_settings)
-        && let Some(old_docker) =
-            OldDocker::detect(rt.as_ref(), &tenant_to_use, &registry_to_use, profile)
-    {
+    let in_use = AuthenticationInfo::available_ambient_credentials(profile)
+        .ok()
+        .and_then(|sources| sources.into_iter().next());
+    if let Some(old_docker) = OldDocker::detect(
+        &tenant_to_use,
+        &registry_to_use,
+        in_use.as_ref().map(Tagged::value),
+        |registry| {
+            crate::container::runtime(current_settings)
+                .ok()?
+                .docker_without_registry_auth(registry)
+        },
+    ) {
         eprintln!(
             "{}",
             crate::render::wrap_if_tty(&format!("warning: {old_docker}; {}", OldDocker::fix()))

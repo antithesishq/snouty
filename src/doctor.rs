@@ -520,6 +520,7 @@ fn enrich_with_source(
 /// resolved values themselves.
 fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>) {
     let mut checks: Vec<Check> = Vec::new();
+    let ambient = AuthenticationInfo::available_ambient_credentials(settings.profile());
 
     // Container runtime (for building/pushing images). Report the real engine
     // (engine_kind), not the invoking binary (name): for podman-in-disguise the
@@ -528,17 +529,19 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
     match container::runtime(settings) {
         Ok(rt) => {
             let detected = format!("Container runtime: {} detected", rt.engine_kind());
+            let in_use = ambient
+                .as_ref()
+                .ok()
+                .and_then(|sources| sources.first())
+                .map(Tagged::value);
             let old_docker =
                 settings
                     .tenant()
                     .zip(settings.registry())
                     .and_then(|(tenant, registry)| {
-                        container::OldDocker::detect(
-                            rt.as_ref(),
-                            tenant,
-                            registry.value(),
-                            settings.profile(),
-                        )
+                        container::OldDocker::detect(tenant, registry.value(), in_use, |registry| {
+                            rt.docker_without_registry_auth(registry)
+                        })
                     });
             checks.push(match old_docker {
                 Some(old_docker) => Check::warn(CheckId::ContainerRuntime, detected)
@@ -579,7 +582,7 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
 
     // Authentication (synchronous-only by design).
     let github_actions = crate::auth::in_github_actions();
-    let in_use = match AuthenticationInfo::available_ambient_credentials(settings.profile()) {
+    let in_use = match ambient {
         Ok(sources) => {
             checks.extend(authn_checks(&sources, settings.profile(), github_actions));
             sources.into_iter().next()

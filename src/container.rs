@@ -1043,28 +1043,24 @@ pub struct OldDocker<'a> {
 }
 
 impl<'a> OldDocker<'a> {
-    /// `Some` when `snouty launch` gives the Docker CLI of `rt` the snouty
-    /// credential for `registry`, and that Docker ignores it. Launch gives
-    /// the credential only for the registry of `tenant`, and only when the
-    /// credential of `profile` is not a username and password. Without a
+    /// `Some` when `snouty launch` gives Docker the snouty credential for
+    /// `registry`, and the Docker of `docker_without_registry_auth` ignores
+    /// it. Launch gives the credential only for the registry of `tenant`, and
+    /// only when `in_use` is not a username and password. Without a
     /// credential, the user still has to get one that launch gives.
+    /// `docker_without_registry_auth` runs only when launch gives the
+    /// credential, because it can probe the container engines.
     pub fn detect(
-        rt: &dyn ContainerRuntime,
         tenant: &str,
         registry: &'a Registry,
-        profile: Option<&str>,
+        in_use: Option<&AuthenticationInfo>,
+        docker_without_registry_auth: impl FnOnce(&Registry) -> Option<Version>,
     ) -> Option<Self> {
-        if !registry.is_registry_of(tenant) {
+        if !registry.is_registry_of(tenant) || !in_use.is_none_or(registry::launch_presents_secret)
+        {
             return None;
         }
-        let presents_secret = AuthenticationInfo::available_ambient_credentials(profile)
-            .ok()
-            .and_then(|sources| sources.into_iter().next())
-            .is_none_or(|in_use| registry::launch_presents_secret(in_use.value()));
-        if !presents_secret {
-            return None;
-        }
-        let version = rt.docker_without_registry_auth(registry)?;
+        let version = docker_without_registry_auth(registry)?;
         Some(Self { version, registry })
     }
 

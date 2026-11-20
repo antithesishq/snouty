@@ -533,10 +533,7 @@ echo 'podman version 5.4.0'
 echo '2.30.0'
 -- old-docker/docker --
 #!/bin/sh
-case "$1" in
---version) echo 'Docker version 27.4.0, build bde2b89' ;;
-version) printf 'Client:\n Version:           27.4.0\n API version:       1.47\n' ;;
-esac
+echo 'Docker version 27.4.0, build bde2b89'
 
 -- old-docker/docker-compose --
 #!/bin/sh
@@ -544,10 +541,7 @@ echo '2.30.0'
 
 -- new-docker/docker --
 #!/bin/sh
-case "$1" in
---version) echo 'Docker version 28.3.0, build 38b7060' ;;
-version) printf 'Client:\n Version:           28.3.0\n API version:       1.51\n' ;;
-esac
+echo 'Docker version 28.3.0, build 38b7060'
 
 -- new-docker/docker-compose --
 #!/bin/sh

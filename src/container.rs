@@ -126,11 +126,11 @@ impl TenantRegistryEnv {
     }
 }
 
-/// The first `major.minor.patch` after `Version:` in the output of
-/// `docker version` or `podman version`: the client's release.
+/// The `major.minor.patch` in a `--version` banner, such as
+/// `Docker version 27.4.0, build bde2b89`.
 fn parse_version(output: &str) -> Option<(u64, u64, u64)> {
     static VERSION: std::sync::LazyLock<regex::Regex> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r"Version:\s+(\d+)\.(\d+)\.(\d+)").unwrap());
+        std::sync::LazyLock::new(|| regex::Regex::new(r"version (\d+)\.(\d+)\.(\d+)").unwrap());
     let captures = VERSION.captures(output)?;
     let part = |i: usize| captures[i].parse().ok();
     Some((part(1)?, part(2)?, part(3)?))
@@ -147,17 +147,16 @@ pub trait ContainerRuntime: Send + Sync {
     /// really podman.
     fn engine_kind(&self) -> ContainerEngine;
 
-    /// The client's release, as `(major, minor, patch)`, from `version`. The
-    /// command also asks the daemon, and fails when the daemon does not
-    /// answer, so only its output counts.
+    /// The client's release, as `(major, minor, patch)`, from `--version`,
+    /// which the client answers without the daemon.
     fn version(&self) -> Result<(u64, u64, u64)> {
         let runtime = self.name();
         let mut command = Command::new(runtime);
-        command.arg("version");
+        command.arg("--version");
         let output = output_with_timeout(command, DISCOVERY_COMMAND_TIMEOUT)
-            .wrap_err_with(|| format!("failed to run '{runtime} version'"))?;
+            .wrap_err_with(|| format!("failed to run '{runtime} --version'"))?;
         parse_version(&String::from_utf8_lossy(&output.stdout))
-            .ok_or_else(|| eyre!("'{runtime} version' printed no version"))
+            .ok_or_else(|| eyre!("'{runtime} --version' printed no version"))
     }
 
     /// Clone into a boxed trait object.
@@ -1900,26 +1899,19 @@ esac
         assert_eq!(err.to_string(), "neither podman nor docker is installed");
     }
 
-    // Real `docker version` output: the client's release comes before the
-    // server's.
+    // Real `--version` banners.
     #[test]
-    fn parse_version_reads_the_client_release() {
-        let docker = "Client: Docker Engine - Community
- Version:           27.4.0
- API version:       1.47
- Go version:        go1.22.10
-
-Server: Docker Engine - Community
- Engine:
-  Version:          29.1.3
-";
-        assert_eq!(parse_version(docker), Some((27, 4, 0)));
-        let ubuntu = "Client:
- Version:           20.10.24+dfsg1
- API version:       1.41
-";
-        assert_eq!(parse_version(ubuntu), Some((20, 10, 24)));
-        assert_eq!(parse_version("Cannot connect to the Docker daemon"), None);
+    fn parse_version_reads_the_banner() {
+        assert_eq!(
+            parse_version("Docker version 27.4.0, build bde2b89\n"),
+            Some((27, 4, 0))
+        );
+        assert_eq!(
+            parse_version("Docker version 20.10.24+dfsg1, build 297e128\n"),
+            Some((20, 10, 24))
+        );
+        assert_eq!(parse_version("podman version 5.4.0\n"), Some((5, 4, 0)));
+        assert_eq!(parse_version(""), None);
     }
 
     #[test]

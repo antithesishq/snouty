@@ -461,6 +461,23 @@ env SNOUTY_CONTAINER_ENGINE=
 snouty doctor --offline
 stderr 'Container runtime: podman detected'
 
+# Doctor warns about a Docker older than 28.3.0.
+chmod 755 old-docker/docker
+chmod 755 old-docker/docker-compose
+set-env PATH ${WORK}/old-docker
+snouty doctor --offline
+stderr '^  ⚠ Docker 27\.4\.0 is older than 28\.3\.0$'
+stderr -literal 'https://github.com/antithesishq/snouty#docker-credential-helper'
+snouty doctor --offline --json
+stdout '"id": "docker_version",\s*"status": "warn"'
+
+# Docker 28.3.0 passes.
+chmod 755 new-docker/docker
+chmod 755 new-docker/docker-compose
+set-env PATH ${WORK}/new-docker
+snouty doctor --offline
+stderr '^  ✓ Docker 28\.3\.0$'
+
 -- registry_cfg/snouty/settings.toml --
 registry = "proxy.example.com/testtenant"
 -- base_url.toml --
@@ -515,5 +532,26 @@ this is not valid TOML {{{
 echo 'podman version 5.4.0'
 
 -- podman-docker/docker-compose --
+#!/bin/sh
+echo '2.30.0'
+-- old-docker/docker --
+#!/bin/sh
+case "$1" in
+--version) echo 'Docker version 27.4.0, build bde2b89' ;;
+version) printf 'Client:\n Version:           27.4.0\n API version:       1.47\n' ;;
+esac
+
+-- old-docker/docker-compose --
+#!/bin/sh
+echo '2.30.0'
+
+-- new-docker/docker --
+#!/bin/sh
+case "$1" in
+--version) echo 'Docker version 28.3.0, build 38b7060' ;;
+version) printf 'Client:\n Version:           28.3.0\n API version:       1.51\n' ;;
+esac
+
+-- new-docker/docker-compose --
 #!/bin/sh
 echo '2.30.0'

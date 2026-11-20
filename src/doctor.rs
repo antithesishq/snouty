@@ -20,12 +20,16 @@ use crate::known_path::KnownPathKind;
 use crate::login::{CliOAuthConfig, REGISTRY_TIMEOUT, fetch_cli_config};
 use crate::registry::Registry;
 use crate::render::{OutputOptions, count};
-use crate::settings::{SettingSource, Settings, Tenant};
+use crate::settings::{ContainerEngine, SettingSource, Settings, Tenant};
 use crate::tag::Tagged;
 
 /// The longest wait for the OAuth probe. Doctor only reports what the probe
 /// finds, so it does not wait as long as login does.
 const OAUTH_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The first Docker release that `snouty launch` can give the credential for
+/// the Antithesis registry.
+const MIN_DOCKER_VERSION: (u64, u64, u64) = (28, 3, 0);
 
 /// Outcome of a single health check. Only `Error` fails doctor; `Warn` is
 /// surfaced but the run still passes.
@@ -129,6 +133,7 @@ impl From<&AuthenticationInfo> for CredentialKind {
 #[serde(tag = "id", rename_all = "snake_case")]
 enum CheckId {
     ContainerRuntime,
+    DockerVersion,
     DockerCompose,
     Tenant,
     Registry,
@@ -251,6 +256,29 @@ fn tenant_check(tenant: Option<&Tenant>) -> Check {
             "run `snouty login` to set it, or set ANTITHESIS_TENANT or add it to a settings file",
         ),
     }
+}
+
+/// Only a push to the Antithesis registry needs [`MIN_DOCKER_VERSION`], so
+/// an older Docker is a warning.
+fn docker_version_check(version: (u64, u64, u64)) -> Check {
+    let (major, minor, patch) = version;
+    let found = format!("Docker {major}.{minor}.{patch}");
+    if version >= MIN_DOCKER_VERSION {
+        return Check::ok(CheckId::DockerVersion, found);
+    }
+    Check::warn(
+        CheckId::DockerVersion,
+        format!("{found} is older than 28.3.0"),
+    )
+    .note(
+        Level::Warning,
+        "`snouty launch` cannot give it your credential for the Antithesis registry",
+    )
+    .note(
+        Level::Note,
+        "upgrade Docker, or set up the credential helper: \
+             https://github.com/antithesishq/snouty#docker-credential-helper",
+    )
 }
 
 /// The container registry is only needed to build and push a config image
@@ -526,10 +554,19 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
     // command is `docker` but the engine is podman — and this must agree with
     // the engine `launch`/`validate` announce, which also uses engine_kind.
     match container::runtime(settings) {
-        Ok(rt) => checks.push(Check::ok(
-            CheckId::ContainerRuntime,
-            format!("Container runtime: {} detected", rt.engine_kind()),
-        )),
+        Ok(rt) => {
+            checks.push(Check::ok(
+                CheckId::ContainerRuntime,
+                format!("Container runtime: {} detected", rt.engine_kind()),
+            ));
+            if rt.engine_kind() == ContainerEngine::Docker {
+                match rt.version() {
+                    Ok(version) => checks.push(docker_version_check(version)),
+                    // The container runtime check already reports a Docker that cannot run.
+                    Err(err) => debug!("{err:#}"),
+                }
+            }
+        }
         Err(e) => checks.push(
             Check::fail(CheckId::ContainerRuntime, "Container runtime not detected")
                 .note(Level::Error, e.to_string()),

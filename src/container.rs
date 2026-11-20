@@ -1899,7 +1899,8 @@ esac
         assert_eq!(err.to_string(), "neither podman nor docker is installed");
     }
 
-    // Real `--version` banners.
+    // `--version` banners. Docker prints `Docker version <version>, build
+    // <commit>` (docker/cli `cmd/docker/docker.go`, unchanged since 2019).
     #[test]
     fn parse_version_reads_the_banner() {
         assert_eq!(
@@ -1910,7 +1911,22 @@ esac
             parse_version("Docker version 20.10.24+dfsg1, build 297e128\n"),
             Some((20, 10, 24))
         );
-        assert_eq!(parse_version("podman version 5.4.0\n"), Some((5, 4, 0)));
+        assert_eq!(
+            parse_version("Docker version 28.3.0-rc.1, build 1f8b2e4\n"),
+            Some((28, 3, 0))
+        );
+        // A Docker built without a version.
+        assert_eq!(
+            parse_version("Docker version unknown-version, build unknown-commit\n"),
+            None
+        );
+        // Podman prints cobra's default, `<binary> version <version>`.
+        assert_eq!(parse_version("podman version 4.9.3\n"), Some((4, 9, 3)));
+        assert_eq!(
+            parse_version("podman-remote version 5.4.0\n"),
+            Some((5, 4, 0))
+        );
+        assert_eq!(parse_version("podman version 6.3.0-dev\n"), Some((6, 3, 0)));
         assert_eq!(parse_version(""), None);
     }
 

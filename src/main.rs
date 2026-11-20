@@ -325,7 +325,7 @@ async fn cmd_launch(
     let api = AntithesisApi::new_for_launch(settings, verbose)?;
     if let Some((detected, name)) = config_image {
         let registry = snouty::registry::launch_registry(settings, &api).await?;
-        let config_image = format!("{registry}/{name}");
+        let image_ref = container::config_image_ref(&registry, &name);
         let mut rt = container::runtime(settings)?;
         container::warn_ambiguous_engine(settings, rt.as_ref(), json);
 
@@ -359,10 +359,10 @@ async fn cmd_launch(
                     },
                 )?;
                 let staged = compose::stage_pinned_config(compose_config.dir(), &pinned_yaml)?;
-                rt.build_and_push_config_image(staged.path(), &config_image)?
+                rt.build_and_push_config_image(staged.path(), &image_ref)?
             }
             config::Config::Kubernetes(_) => {
-                rt.build_and_push_config_image(detected.dir(), &config_image)?
+                rt.build_and_push_config_image(detected.dir(), &image_ref)?
             }
         };
         params.insert(

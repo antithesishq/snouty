@@ -844,6 +844,11 @@ pub fn new_config_image_name() -> String {
     format!("snouty-config:{ts}-{suffix}")
 }
 
+/// The reference that the config image `name` is pushed to in `registry`.
+pub fn config_image_ref(registry: &Registry, name: &str) -> String {
+    format!("{registry}/{name}")
+}
+
 /// Whether the `docker` binary is podman.
 pub fn docker_is_podman() -> bool {
     CliKind::probe("docker") == CliKind::Podman
@@ -1949,8 +1954,8 @@ esac
         );
     }
 
-    /// `launch` puts the config image under the registry, `strip_registry`
-    /// takes the address back off, and the platform never sees the address it
+    /// `config_image_ref` puts the config image under the registry,
+    /// `strip_registry` takes the address back off, and the platform never sees the address it
     /// was pushed to.
     #[test]
     fn a_generated_config_ref_strips_back_to_a_bare_name() {
@@ -1958,11 +1963,7 @@ esac
             "us-central1-docker.pkg.dev/proj/repo",
             "us-central1-docker.pkg.dev/proj/repo/",
         ] {
-            let image_ref = format!(
-                "{}/{}",
-                registry.parse::<Registry>().unwrap(),
-                new_config_image_name()
-            );
+            let image_ref = config_image_ref(&registry.parse().unwrap(), &new_config_image_name());
             let bare = strip_registry(&image_ref, registry);
             assert!(bare.starts_with("snouty-config:"), "got: {bare}");
             assert!(!bare.contains('/'), "got: {bare}");

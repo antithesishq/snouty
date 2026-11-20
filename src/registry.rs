@@ -140,7 +140,7 @@ pub async fn launch_registry(settings: &Settings, api: &AntithesisApi) -> Result
         })
 }
 
-/// [`tenant_registry`] of the `tenant` and `registry` settings.
+/// `registry`, when it is the registry of `tenant`.
 fn tenant_registry_of<'a>(
     tenant: Option<&Tenant>,
     registry: Option<&'a Registry>,

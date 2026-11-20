@@ -1,114 +1,102 @@
 # snouty
 
-A CLI for the [Antithesis](https://antithesis.com) API. See the [REST API reference](https://antithesis.com/docs/reference/rest_api/) for details on available endpoints and parameters.
+A CLI for humans and agents to use [Antithesis](https://antithesis.com).
 
-## Usage
+## Quickstart
 
-Snouty provides the following subcommands. Invoke `snouty <command> --help` to find out more.
+### With an agent
 
-- `snouty login`: sign in and store your tenant and credentials.
-- `snouty launch`: push images and kick off an Antithesis run.
-- `snouty runs`: list and inspect Antithesis test runs and their results.
-  - `snouty runs list`: list runs, with status/launcher/date filters.
-  - `snouty runs show <run_id>`: show details for a single run.
-  - `snouty runs wait [--until ready|complete] <run_id>`: poll a run until it is ready to use or complete.
-  - `snouty runs cancel <run_id>`: cancel a run that is starting or in progress.
-  - `snouty runs properties <run_id>`: list property (assertion) results.
-  - `snouty runs build-logs <run_id>`: stream a run's build logs.
-  - `snouty runs logs <run_id> <hash> [vtime]`: stream a run's logs along one branch.
-  - `snouty runs events <run_id> -m <needle>`: search events in a run.
-  - `snouty runs search <run_id> <query>`: run an event-set DSL query against a run's events.
-  - `snouty runs exec <run_id> <hash> <vtime> [script]`: run a bash script at a given moment in a run that is in progress (a test run or a debugging session). Needs tenant release 64.0 or newer.
-- `snouty debug`: start a debug session.
-- `snouty validate`: locally run and validate your docker-compose.yaml setup.
-- `snouty doctor`: check your environment is configured correctly.
-- `snouty docs`: search the Antithesis documentation locally.
-- `snouty docker-credential <action>`: the Docker and Podman credential helper for your tenant registry. See [Docker credential helper](#docker-credential-helper).
-- `snouty completions <shell>`: generate shell completion scripts.
-- `snouty version`: print version and build information.
-- `snouty update`: install the latest version. Set `update_channel = "unstable"` (or `SNOUTY_UPDATE_CHANNEL=unstable`) to also consider pre-releases; override the setting for one run with `--channel stable|unstable`.
+Give this prompt to your coding agent:
 
-Add `--json` for machine-readable output. See [COOKBOOK.md](COOKBOOK.md) for worked recipes.
+```text
+Set up Antithesis testing for this project.
+1. Install snouty (https://github.com/antithesishq/snouty) and the Antithesis plugin (https://github.com/antithesishq/antithesis-plugin).
+2. Ask me to run `snouty login` in my own terminal. When I confirm, run `snouty doctor`.
+3. Use the plugin to write and test an Antithesis workload for this system.
+4. Walk me through using `snouty` to analyze and debug this system.
+```
+
+### Manually
+
+1. Install snouty, and the [Antithesis plugin](https://github.com/antithesishq/antithesis-plugin) if you use an agent:
+
+   ```sh
+   curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
+   ```
+
+2. Sign in. Run this in your own terminal:
+
+   ```sh
+   snouty login
+   ```
+
+3. Write a workload for your system, with the plugin or from the [Antithesis docs](https://antithesis.com/docs/). Put its `docker-compose.yaml` in `./config`.
+
+4. Check the setup, then launch a run:
+
+   ```sh
+   snouty validate ./config
+   snouty launch --launcher basic_test --config ./config
+   ```
+
+5. Monitor the run and triage failures:
+
+   ```sh
+   snouty runs wait <run_id>
+   snouty runs properties --failing <run_id>
+   snouty runs show --web <run_id>
+   ```
+
+Run `snouty --help` to list the commands, and `snouty <command> --help` for details. Add `--json` for machine-readable output. See [COOKBOOK.md](COOKBOOK.md) for worked recipes.
 
 ## Requirements
 
 Commands that work with `docker-compose.yaml` files (e.g. `launch`, `validate`) require:
 
-- **Docker Compose v2** — snouty drives either the standalone `docker-compose` binary or the `docker compose` CLI plugin (bundled with Docker Desktop/Engine), whichever it finds on your `PATH`. podman-compose is no longer supported.
+- **Docker Compose v2** — snouty drives either the standalone `docker-compose` binary or the `docker compose` CLI plugin (bundled with Docker Desktop/Engine).
   - Linux: [Install Docker Compose](https://docs.docker.com/compose/install/) or check your package manager.
   - macOS: [Install Docker Desktop](https://docs.docker.com/desktop/setup/install/mac-install/) (includes Compose v2) or `brew install docker-compose`.
 - **A container engine** — Docker or Podman, used to build and push images.
 
-If both engines are installed, Podman is preferred. Override the engine with `SNOUTY_CONTAINER_ENGINE=docker` or `container_engine` in a settings file (see below); an explicit `DOCKER_HOST` in your environment is always respected.
-
-### VM-backed and remote container engines
-
-`snouty validate` bind-mounts a temp directory from this machine into each container. It watches this directory for the setup-complete event. Some container engines run inside a VM or on another machine. If the engine does not share this machine's temp directory, the engine creates the bind source on its own side and reports no error. The directory on this machine stays empty. Validate then fails with `timed out waiting for setup-complete event`, even though the system under test emits the event.
-
-There are two fixes:
-
-- Share this machine's temp directory with the engine. See the mount documentation for your engine.
-- Set `SNOUTY_TEMP_DIR` to a directory under a path the engine already shares with write access:
-
-  ```sh
-  SNOUTY_TEMP_DIR=/path/shared/with/the/vm/snouty snouty validate ./config
-  ```
-
-  `SNOUTY_TEMP_DIR` must point to an empty or non-existent directory. This prevents validate from reading events that a previous run left behind. Snouty does not remove the directory after the run, so remove it before the next run.
+If both engines are installed, Podman is preferred. You can make an explicit choice via the `container_engine` setting.
 
 ## Install snouty
 
-### Install prebuilt binaries via shell script
-
 ```sh
+# Shell script. This install can update itself, see Updating.
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/antithesishq/snouty/releases/latest/download/snouty-installer.sh | sh
-```
 
-This also allows you to update via `snouty update` later on.
-
-### Install prebuilt binaries via cargo binstall
-
-```sh
+# Prebuilt binary with cargo binstall
 cargo binstall snouty
-```
 
-### Install prebuilt binaries via npm
-
-```sh
+# Prebuilt binary with npm
 npm install -g snouty
-```
 
-The package downloads the prebuilt binary for your platform from the GitHub Release on its first run, and installs the [Docker credential helper](#docker-credential-helper).
-
-### Install snouty from source
-
-```sh
+# From source
 cargo install snouty
-```
 
-### Install snouty with Nix
-
-nixpkgs has a `snouty` package. Stable NixOS releases can have an old version, so install from nixpkgs-unstable for the latest release:
-
-```sh
+# Nix, from nixpkgs-unstable (may lag snouty releases)
 nix profile install github:NixOS/nixpkgs/nixpkgs-unstable#snouty
 ```
 
-Without flakes, use `nix-env -iA nixpkgs.snouty` on a nixpkgs-unstable channel. On NixOS, add `pkgs.snouty` to `environment.systemPackages`.
+### Updating
 
-The repository also has a Nix package. It builds snouty from source and runs its tests. This builds `main`; for a release from v0.9.0 or later, replace `main.tar.gz` with `refs/tags/v<version>.tar.gz`:
+If you installed with the [shell script](#install-snouty), run:
 
 ```sh
-nix profile install --impure --expr 'import (builtins.fetchTarball "https://github.com/antithesishq/snouty/archive/main.tar.gz") { }'
+snouty update            # latest release on your channel
+snouty update 0.6.0      # a specific release, including pre-releases
 ```
 
-### Download prebuilt binaries
+The `stable` channel (the default) installs releases only. The `unstable` channel also installs pre-releases. Set the channel with `update_channel` in a settings file or `SNOUTY_UPDATE_CHANNEL`. Override it for one update with `--channel`:
 
-| File                                                                                                                                                 | Platform            | Checksum                                                                                                                    |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| [snouty-aarch64-apple-darwin.tar.xz](https://github.com/antithesishq/snouty/releases/latest/download/snouty-aarch64-apple-darwin.tar.xz)             | Apple Silicon macOS | [checksum](https://github.com/antithesishq/snouty/releases/latest/download/snouty-aarch64-apple-darwin.tar.xz.sha256)       |
-| [snouty-aarch64-unknown-linux-musl.tar.xz](https://github.com/antithesishq/snouty/releases/latest/download/snouty-aarch64-unknown-linux-musl.tar.xz) | ARM64 Linux         | [checksum](https://github.com/antithesishq/snouty/releases/latest/download/snouty-aarch64-unknown-linux-musl.tar.xz.sha256) |
-| [snouty-x86_64-unknown-linux-musl.tar.xz](https://github.com/antithesishq/snouty/releases/latest/download/snouty-x86_64-unknown-linux-musl.tar.xz)   | x64 Linux           | [checksum](https://github.com/antithesishq/snouty/releases/latest/download/snouty-x86_64-unknown-linux-musl.tar.xz.sha256)  |
+```sh
+snouty update --channel unstable
+```
+
+To install an older version than the current one, add `--force`.
+
+If you used a different install method, update with the same tool.
 
 ### Uninstalling
 
@@ -122,222 +110,45 @@ If you set up [shell completions](#shell-completions), also remove the snouty li
 
 ## Configuration
 
-Using the API requires at least a **tenant** and a credential. `snouty launch` also needs a **registry** — the container registry it pushes the config image to, which `snouty login` sets for you. The registry is a host, optionally with a port and a path, such as `registry.example.com/team`. Docs commands need no configuration at all.
+Snouty can be configured interactively via `snouty login`.
 
-The quickest way is `snouty login`:
+Run `snouty settings show` at any point to see what snouty resolves and which settings files it reads. Run `snouty doctor` to check that your environment works.
 
-```sh
-snouty login
-```
-
-Settings can also come from environment variables or a TOML settings file. An environment variable always takes precedence.
-
-```sh
-export ANTITHESIS_TENANT="your-tenant"
-export ANTITHESIS_REGISTRY="us-central1-docker.pkg.dev/your-project/your-repo"
-export ANTITHESIS_API_KEY="your-api-key"
-```
-
-Run `snouty settings show` at any point to see what snouty resolves, and which settings files it reads. Run `snouty doctor` to check that your environment works.
-
-### Settings files
-
-Settings can instead live in a TOML file. Snouty reads two, the first taking precedence:
-
-1. A **project** settings file — `./.snouty.toml` by default. Point elsewhere with the global `--settings <path>` flag or the `SNOUTY_SETTINGS_PATH` environment variable.
-2. A **global** settings file — `settings.toml` under `$XDG_CONFIG_HOME/snouty/` (falling back to `$HOME/.config/snouty/`).
+Settings are stored in `~/.config/snouty/settings.toml` (or `$XDG_CONFIG_HOME/snouty/settings.toml` if set)
 
 ```toml
-# .snouty.toml
 tenant = "your-tenant"
-registry = "us-central1-docker.pkg.dev/your-project/your-repo"
+container_engine = "docker"
 ```
 
-A matching environment variable always overrides the file. The supported keys and their environment-variable equivalents are:
+### Settings
+
+Environment variables always take precedence.
 
 | Settings key                | Environment variable              | Purpose                                                                          |
 | --------------------------- | --------------------------------- | -------------------------------------------------------------------------------- |
 | `tenant`                    | `ANTITHESIS_TENANT`               | Your Antithesis tenant. Becomes the API host, `https://<tenant>.antithesis.com`.  |
 | `registry`                  | `ANTITHESIS_REGISTRY`             | Container registry that `snouty launch` pushes the config image to.              |
 | `base_url`                  | `ANTITHESIS_BASE_URL`             | API URL, replacing the one derived from the tenant. See the proxy section below. |
+| `https_proxy`               | `ANTITHESIS_HTTPS_PROXY`          | URL of an HTTP(S) proxy for snouty's API requests. SOCKS is not supported.      |
 | `container_engine`          | `SNOUTY_CONTAINER_ENGINE`         | Force `docker` or `podman` instead of auto-detecting.                            |
 | `update_channel`            | `SNOUTY_UPDATE_CHANNEL`           | `stable` (default) or `unstable`, for `snouty update`.                           |
-| `api_cache_max_file_size`   | `SNOUTY_API_CACHE_MAX_FILE_SIZE`  | Largest response the API cache stores, as `10 MB`, `10 MiB` or a byte count.     |
 
-A credential is never read from a settings file. `snouty login` keeps credentials apart from settings — see [Authentication](#authentication).
+### Environment variables
 
-Run `snouty settings show` to print the value that snouty resolved for each setting, the settings files it read, and the credentials file.
+These environment variables have no settings key:
 
-### Trusting a project settings file
-
-snouty uses `./.snouty.toml` only after you trust it. Until you trust or deny the file, each command that reads the settings stops with an error. A project settings file can send your credentials or images to another server: snouty sends your API key to `base_url`, sends its requests through `https_proxy`, and pushes your images to `registry` (or its alias, `repository`). Review the whole file, with every profile in it, then decide:
-
-```sh
-snouty settings trust   # use ./.snouty.toml while its content stays the same
-snouty settings deny    # ignore ./.snouty.toml
-```
-
-Each command also takes the path of a settings file. When a trusted file changes, you must trust it again. snouty keeps the decisions in `trust.toml`, next to the global settings file.
-
-A file that you name with `--settings` or `SNOUTY_SETTINGS_PATH` needs no trust, because you chose it. To use every project settings file without a check, for example in CI, set `SNOUTY_SETTINGS_TRUST=all`.
-
-### Profiles
-
-A settings file can define named profiles for switching between environments. Select one with the global `--profile <name>` flag or the `ANTITHESIS_PROFILE` environment variable (the flag wins):
-
-```toml
-# .snouty.toml
-tenant = "default-tenant"
-registry = "registry.example.com/default"
-
-[profile.staging]
-tenant = "staging-tenant"
-registry = "registry.example.com/staging"
-```
-
-```sh
-snouty --profile staging runs list
-```
-
-For any one setting, snouty uses the first value it finds, highest precedence first:
-
-1. environment variable
-2. the selected profile in the project settings file
-3. the selected profile in the global settings file
-4. the top-level default in the project settings file
-5. the top-level default in the global settings file
-
-### Unstable features
-
-When a subcommand or a flag, or the Antithesis API it calls, is still changing shape, snouty can keep it behind a gate, turned on by naming its feature in `SNOUTY_UNSTABLE_FEATURES` (a comma-separated list). Anything behind this gate can change its behavior, its flags, or its id, or go away, in any release.
-
-No feature is behind this gate now. An id that snouty does not know, such as the retired `mcp` or `runs-exec`, has no effect.
-
-## MCP server
-
-`snouty mcp` serves most of snouty's commands to AI agents as [Model Context Protocol](https://modelcontextprotocol.io) tools, over the stdio transport. The agent starts the server itself.
-
-Run `snouty login` once before you add the server. The server uses snouty's credentials and configuration to access Antithesis. The MCP server has no authentication of its own and communicates with clients only over `stdio` (stdin, stdout).
-
-Run `snouty mcp --help` to see all tools.
-
-snouty is listed in the [MCP Registry](https://registry.modelcontextprotocol.io) as `com.antithesis/snouty`.
-
-The server sets no time or output limit on a tool call. The client sets them: when it cancels a call, the server kills the call's command. Up to 8 tool calls run at the same time, and `--max-concurrent-calls` changes that number.
-
-### Claude Code
-
-```sh
-claude mcp add snouty --scope user -- snouty mcp
-```
-
-`--scope user` makes the server available in every project. Without it, the server is added only for the current project. Run `claude mcp list` to check that it connects.
-
-### Codex
-
-```sh
-codex mcp add snouty -- snouty mcp
-```
-
-Run `codex mcp list` to check it, and start a new session to use it.
-
-### Other clients
-
-A JSON config for a stdio server looks like this one. The key names can be different in your client, so refer to its documentation:
-
-```json
-{
-  "mcpServers": {
-    "snouty": {
-      "command": "snouty",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-### Debugging the MCP server
-
-1. Set `RUST_LOG=debug` in the server's environment, and add `--verbose` to its args. For example: `claude mcp add snouty -e RUST_LOG=debug -- snouty --verbose mcp`.
-2. Read the server's stderr in the client. In Claude Code, start `claude --debug` and use `/mcp` to see the server's state. The server logs each command line that it runs, as `running: snouty --json …`.
-3. Run the logged command yourself, in a terminal. It prints what the tool call returned. Set `RUST_LOG=debug` on it too, to see its own debug log: the server does not pass `RUST_LOG` to its tool calls.
-
-## Authentication
-
-Snouty accepts four kinds of credentials: OAuth tokens from a browser sign-in, an API key, a GitHub Actions OIDC token, and a deprecated username and password. On a workstation, run `snouty login` and let snouty store a credential for you. In CI and in scripts, use environment variables or GitHub Actions OIDC tokens.
-
-Snouty looks for a credential in this order, and uses the first one it finds:
-
-1. `ANTITHESIS_API_KEY` in the environment.
-2. `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` in the environment (deprecated).
-3. The credential stored for the selected `--profile`: the system keychain first, the credentials file second.
-4. The credential stored for the default profile: the system keychain first, the credentials file second.
-5. A [GitHub Actions OIDC](https://github.com/antithesishq/snouty/blob/main/CI.md#github-actions-oidc) token, when the workflow exposes one.
-
-An environment variable always wins over a stored credential. Unset `ANTITHESIS_API_KEY` when you want snouty to use what `snouty login` stored.
-
-Run `snouty doctor` to see which credential snouty resolves, and where it comes from. doctor also warns when more than one source holds a credential, and names the action that hands the run to the next source.
-
-### Browser sign-in with `snouty login`
-
-Run `snouty login` and answer its questions. `snouty login --help` has the details.
-
-Pick **Single sign-on (OAuth)** to sign in through your identity provider. Snouty binds a loopback server, opens a browser, and waits up to five minutes for the redirect to come back. It prints the sign-in URL as well, so you can open the URL by hand when it cannot open a browser for you. The exchange uses PKCE, so no shared secret is needed.
-
-Two limits are worth knowing:
-
-- The menu offers single sign-on only when your tenant enables CLI OAuth. Without it, `snouty login` asks for an API key straight away.
-- The browser must run on the same machine as snouty, because the redirect goes to `http://localhost:<port>/callback`. On a headless machine or a remote VM, either forward that port to your workstation, or use another authentication method.
-
-### Where stored credentials live
-
-On macOS, snouty stores the credential in the keychain, under the service name `snouty`. The entry is named `_default_`, or `profile_<name>` for a named profile. Set `SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE=1` to use the credentials file instead.
-
-On every other platform, snouty writes `credentials.toml` next to the global settings file, in `$XDG_CONFIG_HOME/snouty/` (falling back to `$HOME/.config/snouty/`).
-
-### API key
-
-An API key works with every command, and needs no browser.
-
-```sh
-export ANTITHESIS_API_KEY="your-api-key"
-```
-
-`snouty login` also stores an API key for you, which keeps the key out of your shell history and out of your environment.
-
-### Credential injection by an HTTPS proxy
-
-Some VM and development platforms hold your credentials for you, and inject them into outbound requests. The platform gives you a hostname that stands in for `https://<tenant>.antithesis.com`. That hostname terminates TLS, replaces the `Authorization` header with the real credential, and forwards the request. Your machine never holds the secret. Replit and exe.dev work this way; check your platform's documentation for the hostname it gives you.
-
-Point snouty at that hostname, and give it a placeholder API key:
-
-```sh
-export ANTITHESIS_BASE_URL="https://antithesis.int.example.com"
-export ANTITHESIS_API_KEY="replaced-by-proxy"
-```
-
-Three things to know:
-
-- `ANTITHESIS_BASE_URL` replaces the URL that snouty derives from the tenant, so every API request goes to the proxy instead. Snouty takes the value as given, and only trims a trailing `/` or `/api/v1`.
-- Snouty still needs *a* credential, or it stops before it sends a request. Snouty never inspects the value, so any non-empty string works. Use an obvious placeholder such as `replaced-by-proxy`, so a reader sees that the real secret is elsewhere. An empty value counts as unset, and does not work.
-- Keep `ANTITHESIS_TENANT` set. Only the derived base URL uses it, and `ANTITHESIS_BASE_URL` replaces that, but `snouty doctor` reports a missing tenant as a failure.
-
-`snouty doctor` confirms the whole setup: it reports the API key as provided, and it contacts the API through the proxy to report the API and tenant versions.
-
-`ANTITHESIS_EXTRA_HEADERS` adds headers to every API request, as one `Name: value` pair per line. Use it when the platform expects a header of its own.
-
-```sh
-export ANTITHESIS_EXTRA_HEADERS="X-Proxy-Token: abc123"
-```
+| Environment variable                         | Purpose                                                                                                         |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `ANTITHESIS_API_KEY`                         | Your API key. It takes precedence over a credential that `snouty login` stored.                                 |
+| `ANTITHESIS_GITHUB_TOKEN`                    | A GitHub token that can write commit statuses. Used by `snouty launch` to update the commit status with the Run results. |
+| `ANTITHESIS_EXTRA_HEADERS`                   | Headers to add to every API request, one `Name: value` pair per line. For example, `X-Proxy-Token: abc123` for a proxy that expects its own header. |
+| `SNOUTY_SETTINGS_PATH`                       | A settings file to use in place of `./.snouty.toml`. The file must exist.                                       |
+| `SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE` | On macOS, set to `1` to store credentials in a file, not in the keychain.                                        |
 
 ### Docker credential helper
 
-`docker-credential-snouty` gives Docker and Podman your snouty credentials for your tenant's container registry, `registry.<tenant>.antithesis.com`.
-
-> [!NOTE]
-> The tenant registry must be enabled on your tenant. Contact Antithesis support to request it.
-
-To set it up, add the registry to `credHelpers` in `~/.docker/config.json` for Docker, or in `~/.config/containers/auth.json` for Podman:
+If you use Docker older than 28.3.0, add snouty as the credential helper for your tenant registry in `~/.docker/config.json`:
 
 ```json
 {
@@ -347,23 +158,47 @@ To set it up, add the registry to `credHelpers` in `~/.docker/config.json` for D
 }
 ```
 
-The helper uses the same [settings](#settings-files) as snouty in the directory where Docker runs it, including `./.snouty.toml`. With `--profile` or `ANTITHESIS_PROFILE`, the helper uses that profile. Otherwise, it uses the first profile whose `registry` is on `registry.<tenant>.antithesis.com`.
-
-The shell script installer, the npm package and the Nix packages install `docker-credential-snouty`. For another install method, make the alias yourself, in a directory on your `PATH`:
+`docker-credential-snouty` must be on your `PATH`. The shell script, npm and Nix installs put it there. If it is not on your `PATH`, make a symlink to snouty in a directory on your `PATH`:
 
 ```sh
 ln -s "$(command -v snouty)" ~/.local/bin/docker-credential-snouty
 ```
 
-Then `docker push`, `docker pull`, `podman push` and `podman pull` automatically use your snouty credentials for the Antithesis docker registry.
+## Authentication
 
-`snouty launch --config` does not need the helper. When the `registry` setting names the tenant registry, snouty gives your credential to Docker or Podman when it pushes the images of the launch. For Docker, this needs Docker 28.3.0 or later. With an older Docker, configure the helper as shown above. For Podman, snouty gives a temporary auth file, which holds no secret, that sends Podman to `docker-credential-snouty`, and links that helper to itself in its config directory (`$XDG_CONFIG_HOME/snouty` or `~/.config/snouty`). A username and password does not work with the registry, so with it, Docker or Podman pushes with its own credentials.
+Snouty accepts three credential types: OAuth tokens, Antithesis API keys, or GitHub Actions OIDC tokens. On a workstation, run `snouty login` and let Snouty store a credential for you. In CI and in scripts, use an API key or GitHub Actions OIDC tokens.
 
-### Username and password (deprecated)
+Run `snouty doctor` to see which credential you are using or to debug authentication problems.
 
-Username and password authentication is deprecated. It works with `snouty launch` and `snouty debug` only, and both print a warning that points to `snouty login`. Every other command that talks to the API refuses it. Use `snouty login` or an API key instead.
+### Credential injection by an HTTPS proxy
 
-`snouty login` does not set up a username and password. Set `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` instead. A username and password that an older snouty stored in the credentials file still works.
+Some VM and development platforms hold your credentials for you, and inject them into outbound requests. The platform gives you a hostname that stands in for `https://<tenant>.antithesis.com`. That hostname terminates TLS, replaces the `Authorization` header with the real credential, and forwards the request. Your machine never holds the secret. Replit and exe.dev work this way; check your platform's documentation for the hostname it gives you.
+
+To configure Snouty to use a API proxy:
+
+```sh
+snouty login --base-url https://antithesis.int.example.com
+```
+
+## MCP server
+
+`snouty mcp` serves most of snouty's commands to AI agents as [Model Context Protocol](https://modelcontextprotocol.io) tools, over the stdio transport.
+
+Run `snouty login` once before you use `snouty mcp`. The server uses snouty's credentials and configuration to access Antithesis. The MCP server has no authentication of its own and communicates with clients only over `stdio` (stdin, stdout).
+
+Run `snouty mcp --help` to see all tools and usage details.
+
+snouty is listed in the [Github MCP Registry](https://github.com/mcp/com.antithesis/snouty) and the [official MCP Registry](https://registry.modelcontextprotocol.io).
+
+**Adding `snouty mcp` to your agent:**
+
+```sh
+# Claude Code
+claude mcp add snouty --scope user -- snouty mcp
+
+# Codex
+codex mcp add snouty -- snouty mcp
+```
 
 ## Running in CI
 
@@ -371,45 +206,27 @@ Username and password authentication is deprecated. It works with `snouty launch
 
 ## Shell Completions
 
-Snouty supports tab completions for bash, zsh, fish, elvish, and PowerShell. Have your shell generate them at startup, as below. A completion script saved to a file describes the snouty that wrote it, and goes stale when `snouty update` installs a new version. Open a new shell after each update to load the new completions.
-
-### Bash
+Snouty supports tab completions for bash, zsh, fish, elvish, and PowerShell.
 
 ```sh
-# Add to ~/.bashrc
+# Bash: add to ~/.bashrc
 eval "$(snouty completions bash)"
-```
 
-### Zsh
-
-```sh
-# Add to ~/.zshrc, after compinit
+# Zsh: add to ~/.zshrc, after compinit
 autoload -Uz compinit
 compinit
 source <(snouty completions zsh)
-```
 
-### Fish
-
-```fish
-# Put this line in ~/.config/fish/completions/snouty.fish
+# Fish: put this line in ~/.config/fish/completions/snouty.fish
 snouty completions fish | source
-```
 
-### Elvish
-
-```elvish
-# Add to ~/.config/elvish/rc.elv
+# Elvish: add to ~/.config/elvish/rc.elv
 if (has-external snouty) { eval (snouty completions elvish | slurp) }
-```
 
-### PowerShell
-
-```powershell
-# Add to $PROFILE
+# PowerShell: add to $PROFILE
 snouty completions powershell | Out-String | Invoke-Expression
 ```
 
-# Credits
+## Credits
 
 This project was originally developed by [orbitinghail](https://orbitinghail.dev) for use by [Graft](https://github.com/orbitinghail/graft). It was donated to Antithesis for the benefit of everyone on Feb 27, 2026.

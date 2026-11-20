@@ -128,7 +128,7 @@ impl TenantRegistryEnv {
 
 /// The `major.minor.patch` in a `--version` banner, such as
 /// `Docker version 27.4.0, build bde2b89`.
-fn parse_version(output: &str) -> Option<(u64, u64, u64)> {
+fn parse_container_engine_version(output: &str) -> Option<(u64, u64, u64)> {
     static VERSION: std::sync::LazyLock<regex::Regex> =
         std::sync::LazyLock::new(|| regex::Regex::new(r"version (\d+)\.(\d+)\.(\d+)").unwrap());
     let captures = VERSION.captures(output)?;
@@ -155,7 +155,7 @@ pub trait ContainerRuntime: Send + Sync {
         command.arg("--version");
         let output = output_with_timeout(command, DISCOVERY_COMMAND_TIMEOUT)
             .wrap_err_with(|| format!("failed to run '{runtime} --version'"))?;
-        parse_version(&String::from_utf8_lossy(&output.stdout))
+        parse_container_engine_version(&String::from_utf8_lossy(&output.stdout))
             .ok_or_else(|| eyre!("'{runtime} --version' printed no version"))
     }
 
@@ -1902,32 +1902,40 @@ esac
     // `--version` banners. Docker prints `Docker version <version>, build
     // <commit>` (docker/cli `cmd/docker/docker.go`, unchanged since 2019).
     #[test]
-    fn parse_version_reads_the_banner() {
+    fn parse_container_engine_version_reads_the_banner() {
         assert_eq!(
-            parse_version("Docker version 27.4.0, build bde2b89\n"),
+            parse_container_engine_version("Docker version 27.4.0, build bde2b89\n"),
             Some((27, 4, 0))
         );
         assert_eq!(
-            parse_version("Docker version 20.10.24+dfsg1, build 297e128\n"),
+            parse_container_engine_version("Docker version 20.10.24+dfsg1, build 297e128\n"),
             Some((20, 10, 24))
         );
         assert_eq!(
-            parse_version("Docker version 28.3.0-rc.1, build 1f8b2e4\n"),
+            parse_container_engine_version("Docker version 28.3.0-rc.1, build 1f8b2e4\n"),
             Some((28, 3, 0))
         );
         // A Docker built without a version.
         assert_eq!(
-            parse_version("Docker version unknown-version, build unknown-commit\n"),
+            parse_container_engine_version(
+                "Docker version unknown-version, build unknown-commit\n"
+            ),
             None
         );
         // Podman prints cobra's default, `<binary> version <version>`.
-        assert_eq!(parse_version("podman version 4.9.3\n"), Some((4, 9, 3)));
         assert_eq!(
-            parse_version("podman-remote version 5.4.0\n"),
+            parse_container_engine_version("podman version 4.9.3\n"),
+            Some((4, 9, 3))
+        );
+        assert_eq!(
+            parse_container_engine_version("podman-remote version 5.4.0\n"),
             Some((5, 4, 0))
         );
-        assert_eq!(parse_version("podman version 6.3.0-dev\n"), Some((6, 3, 0)));
-        assert_eq!(parse_version(""), None);
+        assert_eq!(
+            parse_container_engine_version("podman version 6.3.0-dev\n"),
+            Some((6, 3, 0))
+        );
+        assert_eq!(parse_container_engine_version(""), None);
     }
 
     #[test]

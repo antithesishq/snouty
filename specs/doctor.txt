@@ -458,12 +458,21 @@ env SNOUTY_CONTAINER_ENGINE=
 snouty doctor --offline
 stderr 'Container runtime: podman detected'
 
-# Doctor warns about a Docker older than 28.3.0.
+# Doctor warns about a Docker older than 28.3.0 when the registry is the
+# tenant registry.
 chmod 755 old-docker/docker
 chmod 755 old-docker/docker-compose
 set-env PATH ${WORK}/old-docker
+env ANTITHESIS_TENANT=testtenant
+env ANTITHESIS_REGISTRY=registry.testtenant.antithesis.com/app
 snouty doctor --offline --json
 stdout '"id": "docker_version",\s*"status": "warn"'
+
+# Another registry gets no Docker version check.
+env ANTITHESIS_REGISTRY=registry.example.com/app
+snouty doctor --offline --json
+! stdout 'docker_version'
+env ANTITHESIS_REGISTRY=registry.testtenant.antithesis.com/app
 
 # Docker 28.3.0 passes.
 chmod 755 new-docker/docker

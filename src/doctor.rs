@@ -259,8 +259,8 @@ fn tenant_check(tenant: Option<&Tenant>) -> Check {
     }
 }
 
-/// Only a push to the Antithesis registry needs [`MIN_DOCKER_VERSION`], so
-/// an older Docker is a warning.
+/// Warns when the Docker client's `version` is older than
+/// [`MIN_DOCKER_VERSION`].
 fn docker_version_check(version: (u64, u64, u64)) -> Check {
     let (major, minor, patch) = version;
     let found = format!("Docker {major}.{minor}.{patch}");
@@ -271,10 +271,6 @@ fn docker_version_check(version: (u64, u64, u64)) -> Check {
     Check::warn(
         CheckId::DockerVersion,
         format!("{found} is older than {min_major}.{min_minor}.{min_patch}"),
-    )
-    .note(
-        Level::Warning,
-        "`snouty launch` cannot give it your credential for the Antithesis registry",
     )
     .note(
         Level::Note,
@@ -561,7 +557,10 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
                 CheckId::ContainerRuntime,
                 format!("Container runtime: {} detected", rt.engine_kind()),
             ));
-            if rt.engine_kind() == ContainerEngine::Docker {
+            // Only a push to the tenant registry needs MIN_DOCKER_VERSION.
+            if rt.engine_kind() == ContainerEngine::Docker
+                && crate::registry::tenant_registry(settings).is_some()
+            {
                 match rt.version() {
                     Ok(version) => checks.push(docker_version_check(version)),
                     // The container runtime check already reports a Docker that cannot run.

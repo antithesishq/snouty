@@ -115,7 +115,6 @@ pub const MIN_LAUNCH_PARAMS_RELEASE: (u64, u64) = (67, 0);
 pub const MIN_MODULES_RELEASE: (u64, u64) = (67, 0);
 
 /// The first tenant release that reports its registry at `GET /api/v0/registry`.
-/// `snouty doctor` asks only a tenant on this release or later.
 pub const MIN_REGISTRY_RELEASE: (u64, u64) = (67, 0);
 
 /// Starts each debug log line that times or retries an API request. The spec harness
@@ -138,6 +137,12 @@ impl ApiVersion {
             release_version,
             release,
         }
+    }
+
+    /// Whether the release is known to be older than the registry endpoint.
+    pub fn predates_registry(&self) -> bool {
+        self.release
+            .is_some_and(|release| release < MIN_REGISTRY_RELEASE)
     }
 }
 
@@ -218,20 +223,6 @@ impl From<SearchLimit> for NonZeroU64 {
     fn from(limit: SearchLimit) -> Self {
         limit.0
     }
-}
-
-/// Why a `/api/version` probe failed, classified for `snouty doctor`.
-#[derive(Debug)]
-pub enum VersionError {
-    /// The server replied with a non-success HTTP status (e.g. 404 when the
-    /// endpoint is missing on an older backend, or 401/403 when auth is rejected).
-    Http(u16),
-    /// The server answered with a success status, but the body did not parse
-    /// as the version payload — typically a proxy or captive portal serving
-    /// its own page. Reachability is proven; the response is wrong.
-    BadResponse(String),
-    /// The API could not be reached at all (DNS, connection, TLS, timeout).
-    Unreachable(String),
 }
 
 impl RunStatus {
@@ -1053,34 +1044,15 @@ impl AntithesisApi {
         }
     }
 
-    /// Probe `GET /api/version` for the API and tenant release versions. The
-    /// endpoint authenticates like every endpoint other than launch, so the
-    /// probe runs only when an API key is configured; receiving any HTTP
-    /// response (success or error) doubles as proof the API is reachable, and
-    /// `snouty doctor` uses it as a connectivity check. Errors are classified
-    /// (HTTP status vs unreachable) rather than rendered, so the caller can
-    /// decide how to present each case.
-    pub async fn get_version(&self) -> std::result::Result<ApiVersion, VersionError> {
-        // The client's connect timeout (CONNECT_TIMEOUT) keeps a black-holed or
-        // unresolvable host from hanging this probe.
+    /// `GET /api/version`: the API and tenant release versions. The endpoint
+    /// authenticates like every endpoint other than launch.
+    pub async fn get_version(&self) -> Result<ApiVersion> {
         match self.client.get_version().send().await {
             Ok(response) => {
                 let v = response.into_inner();
                 Ok(ApiVersion::new(v.latest_api_version, v.release_version))
             }
-            Err(err) => Err(match err.status() {
-                Some(code) => VersionError::Http(code.as_u16()),
-                // A success response whose body did not parse also carries no
-                // status, but the server answered — most likely a proxy or
-                // captive portal serving its own page. Calling that
-                // "unreachable" would send the user debugging their network.
-                None => match err {
-                    ClientError::InvalidResponsePayload(_, err) => {
-                        VersionError::BadResponse(err.to_string())
-                    }
-                    err => VersionError::Unreachable(root_cause(&err).to_string()),
-                },
-            }),
+            Err(err) => Err(self.client_error(err).await),
         }
     }
 
@@ -3376,10 +3348,12 @@ mod tests {
             let mock_server = mock_version(status, body).await;
             let api = test_api_optionally_with_cache(&mock_server, None);
 
-            match api.get_version().await {
-                Err(VersionError::Http(code)) => assert_eq!(code, status),
-                other => panic!("expected Http({status}) for body {body:?}, got {other:?}"),
-            }
+            let err = api.get_version().await.unwrap_err();
+            assert_eq!(
+                crate::error::api_error_status(&err),
+                Some(status),
+                "{body:?}"
+            );
         }
     }
 
@@ -3390,10 +3364,8 @@ mod tests {
         let mock_server = mock_version(404, "").await;
         let api = test_api_optionally_with_cache(&mock_server, None);
 
-        match api.get_version().await {
-            Err(VersionError::Http(404)) => {}
-            other => panic!("expected Http(404), got {other:?}"),
-        }
+        let err = api.get_version().await.unwrap_err();
+        assert_eq!(crate::error::api_error_status(&err), Some(404));
     }
 
     /// A rejection names the credential, and keeps the server's text when
@@ -3477,10 +3449,8 @@ mod tests {
     /// Assert the version probe surfaced the 429, and that `attempts`
     /// requests reached `mock_server`.
     async fn expect_rate_limited(api: &AntithesisApi, mock_server: &MockServer, attempts: usize) {
-        match api.get_version().await {
-            Err(VersionError::Http(429)) => {}
-            other => panic!("expected Http(429), got {other:?}"),
-        }
+        let err = api.get_version().await.unwrap_err();
+        assert_eq!(crate::error::api_error_status(&err), Some(429));
         assert_eq!(
             mock_server.received_requests().await.unwrap().len(),
             attempts
@@ -3667,12 +3637,10 @@ mod tests {
         raw_server(resets, response).await
     }
 
-    /// Assert the version probe classified the failure as unreachable.
+    /// Assert the version probe failed in transport, with no response.
     async fn expect_unreachable(api: &AntithesisApi) {
-        match api.get_version().await {
-            Err(VersionError::Unreachable(_)) => {}
-            other => panic!("expected Unreachable, got {other:?}"),
-        }
+        let err = api.get_version().await.unwrap_err();
+        assert!(err.downcast_ref::<reqwest::Error>().is_some(), "{err:?}");
     }
 
     // A transport-level failure on a GET is retried: the first connection is

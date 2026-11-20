@@ -707,8 +707,7 @@ pub struct LaunchArgs {
     /// Suppress log lines matching this RE2 pattern during fuzzing. Matching is
     /// unanchored and case-sensitive by default (use `(?i)` for case-insensitive).
     /// Suppressed lines stay available in multiverse debugging. RE2 syntax: no
-    /// lookahead/lookbehind or backreferences. Max 1023 bytes. Requires tenant
-    /// release 59 or newer.
+    /// lookahead/lookbehind or backreferences. Max 1023 bytes.
     #[arg(long)]
     pub filter_logs_matching: Option<String>,
 

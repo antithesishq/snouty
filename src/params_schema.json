@@ -74,7 +74,7 @@
         },
         "antithesis.filter_logs_matching": {
           "type": "string",
-          "description": "RE2 pattern; the platform suppresses matching log lines during fuzzing. Matching is unanchored and case-sensitive. Suppressed lines stay available in multiverse debugging. Max 1023 bytes. Requires tenant release 59 or newer."
+          "description": "RE2 pattern; the platform suppresses matching log lines during fuzzing. Matching is unanchored and case-sensitive. Suppressed lines stay available in multiverse debugging. Max 1023 bytes."
         },
         "antithesis.filter_source_matching": {
           "type": "string",

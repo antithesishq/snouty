@@ -558,10 +558,14 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
                 format!("Container runtime: {} detected", rt.engine_kind()),
             ));
             // Only a push to the tenant registry needs MIN_DOCKER_VERSION.
+            // Without a registry setting, launch pushes to the registry that
+            // the tenant reports.
             if rt.engine_kind() == ContainerEngine::Docker
-                && settings.registry().is_some_and(|registry| {
-                    crate::registry::is_tenant_registry(settings, registry.value())
-                })
+                && settings
+                    .registry()
+                    .map_or(settings.tenant().is_some(), |registry| {
+                        crate::registry::is_tenant_registry(settings, registry.value())
+                    })
             {
                 match rt.version() {
                     Ok(version) => checks.push(docker_version_check(version)),

@@ -17,6 +17,13 @@ stderr -literal 'invalid port number'
 ! snouty login --registry user@registry.example.com
 stderr -literal 'is not a container registry'
 
+# --base-url takes a URL with a host, and refuses anything else before any
+# request.
+! snouty login --tenant spec-tenant --base-url example.com
+stderr 'invalid value .example.com. for .--base-url'
+! snouty login --tenant spec-tenant --base-url data:text
+stderr 'expected a URL such as'
+
 # And for the global --profile flag given an empty value.
 ! snouty --profile "" login
 stderr '.*Value may not be empty or whitespace.*'
@@ -154,6 +161,36 @@ file ~/.config/snouty/settings.toml '\[profile\.other\]'
 snouty --profile prod login --tenant spec-tenant --registry registry.example.com/prod
 file ~/.config/snouty/settings.toml '\[profile\.prod\]\nregistry = "registry\.example\.com/prod"'
 env ANTITHESIS_PROFILE=
+
+# Login signs in at --base-url in place of the tenant's host, and saves it
+# as the base_url setting of the profile, which later commands use.
+isolate-home base_url_flag
+mock-server -release 67.0 200 '{"auth":"antithesis","registry_url":"registry.spec-tenant.antithesis.com"}'
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
+set-env MOCK_URL ${ANTITHESIS_BASE_URL}
+env ANTITHESIS_BASE_URL=
+env ANTITHESIS_TENANT=
+snouty login --tenant spec-tenant --base-url ${MOCK_URL}/
+stdout -literal 'base URL `${MOCK_URL}`'
+file ~/.config/snouty/settings.toml '(?m)^base_url = "${MOCK_URL@R}"$'
+snouty settings show
+stdout '${MOCK_URL@R}'
+snouty --profile prod login --tenant spec-tenant --base-url ${MOCK_URL}
+file ~/.config/snouty/settings.toml '\[profile\.prod\]\n(.+\n)*base_url = "${MOCK_URL@R}"'
+# Without --base-url, login keeps the saved base_url.
+snouty login --tenant spec-tenant
+! stdout 'base URL'
+file ~/.config/snouty/settings.toml '(?m)^base_url = "${MOCK_URL@R}"$'
+set-env ANTITHESIS_BASE_URL ${MOCK_URL}
+env ANTITHESIS_TENANT=testtenant
+
+# A --base-url that cannot be reached fails the login, which names the flag
+# and saves nothing. The flag takes the place of ANTITHESIS_BASE_URL.
+isolate-home unreachable_flag
+! snouty login --tenant spec-tenant --base-url http://127.0.0.1:1
+stderr 'could not reach http://127.0.0.1:1: '
+stderr -literal 'check that the --base-url URL is correct'
+! exists unreachable_flag/.config/snouty/settings.toml
 
 # A value in the global settings file that snouty cannot use fails the login,
 # also when an environment variable hides it from the other commands. Login

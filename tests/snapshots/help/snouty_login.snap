@@ -42,6 +42,10 @@ Options:
           The container registry to push your images to, in place of the
           tenant's registry
 
+      --base-url <BASE_URL>
+          The URL to sign in at, in place of https://<tenant>.antithesis.com.
+          Login saves it as the base_url setting
+
   -h, --help
           Print help (see a summary with '-h')
 

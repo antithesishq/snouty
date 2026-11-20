@@ -324,6 +324,11 @@ pub enum Commands {
         /// tenant's registry
         #[arg(long, alias = "repository")]
         registry: Option<crate::registry::Registry>,
+
+        /// The URL to sign in at, in place of https://<tenant>.antithesis.com.
+        /// Login saves it as the base_url setting
+        #[arg(long, value_parser = crate::settings::parse_base_url)]
+        base_url: Option<url::Url>,
     },
 
     /// Give Docker or Podman the credential for the tenant's container registry

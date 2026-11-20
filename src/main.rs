@@ -139,9 +139,11 @@ async fn run(cli: Cli) -> Result<()> {
             SettingsCommands::Deny(args) => snouty::settings::deny(&args.path)
                 .map(|path| eprintln!("Denied {}", path.display())),
         },
-        Commands::Login { tenant, registry } => {
-            cmd_login(tenant, registry, &settings?, output).await
-        }
+        Commands::Login {
+            tenant,
+            registry,
+            base_url,
+        } => cmd_login(tenant, registry, base_url, &settings?, output).await,
         Commands::Launch(args) => {
             cmd_launch(args, &settings?, settings_path, profile, output).await
         }

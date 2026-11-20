@@ -13,3 +13,8 @@ A tool call has no time limit and no output limit, and the result arrives only w
 
 Example, to add snouty to Claude Code:
   claude mcp add snouty -- snouty mcp
+
+To debug the server, set RUST_LOG=debug in its environment and add {{ t("--verbose")? }}:
+  claude mcp add snouty -e RUST_LOG=debug -- snouty --verbose mcp
+
+Then read the server's stderr in the client. In Claude Code, start `claude --debug` and use `/mcp`. The server logs each command that it runs, as `running: snouty --json …`. Run a logged command in a terminal to see what its tool call returned. The server does not pass RUST_LOG to its tool calls, so set RUST_LOG on that command too.

@@ -11,6 +11,7 @@ automation. Text output is for people and may be reformatted at any time.
 
 - [Stream a run's logs at its failure moment](#stream-a-runs-logs-at-its-failure-moment)
 - [Copy private images into your registry](#copy-private-images-into-your-registry)
+- [Validate with a VM-backed or remote container engine](#validate-with-a-vm-backed-or-remote-container-engine)
 
 ## Stream a run's logs at its failure moment
 
@@ -79,3 +80,26 @@ colon. The script assumes every image names its registry host.
 Docker and podman keep separate image stores, and snouty picks podman when both
 are installed. Either launch with `SNOUTY_CONTAINER_ENGINE=docker`, or swap
 `docker` for `podman` in the script.
+
+## Validate with a VM-backed or remote container engine
+
+*snouty 0.11.0 · 2026-11-20*
+
+`snouty validate` bind-mounts a temp directory from this machine into each
+container, and watches it for the setup-complete event. When the container
+engine runs in a VM or on another machine that does not share this machine's
+temp directory, the engine makes the bind source on its own side and reports
+no error. Validate then fails with `timed out waiting for setup-complete
+event`, even though the system under test emits the event.
+
+Share this machine's temp directory with the engine (see your engine's mount
+documentation), or point `SNOUTY_TEMP_DIR` at a directory that the engine
+already shares with write access:
+
+```sh
+SNOUTY_TEMP_DIR=/path/shared/with/the/vm/snouty snouty validate ./config
+```
+
+The directory must be empty or must not exist, so that validate does not read
+events that an earlier run left behind. snouty does not remove it after the
+run, so remove it before the next run.

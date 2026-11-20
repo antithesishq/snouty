@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
+use url::Url;
 
 use crate::{
     api::{
@@ -177,12 +178,14 @@ impl Prompter for InquirePrompter {
 pub async fn cmd_login(
     tenant: Option<Tenant>,
     registry_flag: Option<Registry>,
+    base_url_flag: Option<Url>,
     current_settings: &Settings,
     output: OutputOptions,
 ) -> Result<()> {
     do_cmd_login(
         tenant,
         registry_flag,
+        base_url_flag,
         current_settings,
         output,
         &InquirePrompter,
@@ -193,6 +196,7 @@ pub async fn cmd_login(
 async fn do_cmd_login(
     tenant: Option<Tenant>,
     registry_flag: Option<Registry>,
+    base_url_flag: Option<Url>,
     current_settings: &Settings,
     OutputOptions { verbose, .. }: OutputOptions,
     prompter: &impl Prompter,
@@ -228,7 +232,7 @@ async fn do_cmd_login(
         .flatten()
         .filter(|stored| !stored.value().has_blank_api_key());
 
-    let tenant_url = TenantUrl::new(current_settings, &tenant_to_use);
+    let tenant_url = TenantUrl::new(current_settings, &tenant_to_use, base_url_flag);
 
     let new_credentials = if interactive {
         let client = HttpClient::new(current_settings, verbose)?;
@@ -308,8 +312,14 @@ async fn do_cmd_login(
     // update leaves the stored credential alone. When the credential cannot
     // be stored, the settings go back, so that the profile does not name the
     // new tenant with the old credential.
-    let previous_settings =
-        update_settings_in_global_file(&tenant_to_use, &registry_to_use.to_string(), profile)?;
+    let base_url_to_save =
+        matches!(tenant_url.source, TenantUrlSource::Flag).then_some(tenant_url.url.as_str());
+    let previous_settings = update_settings_in_global_file(
+        &tenant_to_use,
+        &registry_to_use.to_string(),
+        base_url_to_save,
+        profile,
+    )?;
 
     // The kind of credential login wrote, and where.
     let written = match new_credentials {
@@ -346,6 +356,7 @@ async fn do_cmd_login(
     print_login_summary(
         &tenant_to_use,
         &registry_to_use,
+        base_url_to_save,
         replaced,
         profile,
         written,
@@ -400,21 +411,32 @@ fn antithesis_registry(reported: &Registry) -> String {
     format!("the Antithesis-provided container registry at {reported}")
 }
 
-/// Where login signs in: the `base_url` setting that later commands call, or
-/// else the host of the tenant.
+/// Where login signs in: the `--base-url` flag, else the `base_url` setting
+/// that later commands call, else the host of the tenant.
 struct TenantUrl<'a> {
     url: String,
     tenant: &'a Tenant,
-    explicit: bool,
+    source: TenantUrlSource,
+}
+
+/// What gave the [`TenantUrl`].
+enum TenantUrlSource {
+    Flag,
+    Setting,
+    Tenant,
 }
 
 impl<'a> TenantUrl<'a> {
-    fn new(settings: &Settings, tenant: &'a Tenant) -> Self {
-        let explicit = settings.explicit_base_url();
+    fn new(settings: &Settings, tenant: &'a Tenant, flag: Option<Url>) -> Self {
+        let (url, source) = match (flag, settings.explicit_base_url()) {
+            (Some(flag), _) => (flag, TenantUrlSource::Flag),
+            (None, Some(setting)) => (setting.clone(), TenantUrlSource::Setting),
+            (None, None) => (tenant_base_url(tenant), TenantUrlSource::Tenant),
+        };
         Self {
-            url: normalize_base_url(&explicit.cloned().unwrap_or_else(|| tenant_base_url(tenant))),
+            url: normalize_base_url(&url),
             tenant,
-            explicit: explicit.is_some(),
+            source,
         }
     }
 
@@ -427,10 +449,12 @@ impl<'a> TenantUrl<'a> {
             .chain()
             .find_map(|cause| cause.downcast_ref::<reqwest::Error>())
             .filter(|transport| transport.is_builder() || transport.is_connect())?;
-        let check = if self.explicit {
-            "check that the base_url setting is correct".to_owned()
-        } else {
-            format!("check that the tenant name `{}` is correct", self.tenant)
+        let check = match self.source {
+            TenantUrlSource::Flag => "check that the --base-url URL is correct".to_owned(),
+            TenantUrlSource::Setting => "check that the base_url setting is correct".to_owned(),
+            TenantUrlSource::Tenant => {
+                format!("check that the tenant name `{}` is correct", self.tenant)
+            }
         };
         Some(
             user_error(format!(
@@ -562,6 +586,7 @@ async fn fetch_registry(
 fn print_login_summary(
     tenant: &str,
     registry: &Registry,
+    base_url: Option<&str>,
     replaced: Option<&Registry>,
     profile: Option<&str>,
     written: Option<Tagged<&str, CredentialStore>>,
@@ -575,9 +600,13 @@ fn print_login_summary(
     };
     let replacing_registry =
         replaced.map_or_default(|replaced| format!(", replacing registry `{replaced}`"));
-    say(&format!(
-        "\nSaved tenant `{tenant}` and registry `{registry}`{scope}{replacing_registry}."
-    ));
+    let saved = match base_url {
+        Some(base_url) => {
+            format!("tenant `{tenant}`, registry `{registry}` and base URL `{base_url}`")
+        }
+        None => format!("tenant `{tenant}` and registry `{registry}`"),
+    };
+    say(&format!("\nSaved {saved}{scope}{replacing_registry}."));
     match (written, stored) {
         (Some(written), _) => {
             say(&format!(
@@ -1711,7 +1740,15 @@ mod tests {
 
     /// [`do_cmd_login`] without `--tenant`, `--registry`, or `--verbose`.
     async fn login(settings: &Settings, prompter: &impl Prompter) -> Result<()> {
-        do_cmd_login(None, None, settings, OutputOptions::default(), prompter).await
+        do_cmd_login(
+            None,
+            None,
+            None,
+            settings,
+            OutputOptions::default(),
+            prompter,
+        )
+        .await
     }
 
     /// [`do_cmd_login`] with `--tenant mytenant`, and `--registry` when
@@ -1724,6 +1761,7 @@ mod tests {
         do_cmd_login(
             Some("mytenant".parse().unwrap()),
             registry.map(|registry| registry.parse().unwrap()),
+            None,
             settings,
             OutputOptions::default(),
             prompter,
@@ -1916,6 +1954,7 @@ mod tests {
             do_cmd_login(
                 Some("mytenant".parse()?),
                 None,
+                None,
                 &settings,
                 OutputOptions::default(),
                 &prompter,
@@ -1946,6 +1985,7 @@ mod tests {
         do_cmd_login(
             Some("mytenant".parse()?),
             None,
+            None,
             &settings,
             OutputOptions::default(),
             &prompter,
@@ -1974,6 +2014,7 @@ mod tests {
 
         do_cmd_login(
             Some("mytenant".parse()?),
+            None,
             None,
             &settings,
             OutputOptions::default(),

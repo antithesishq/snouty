@@ -541,24 +541,33 @@ async fn fetch_registry(
                 ))
                 .suggestion(tenant_url.check()));
             }
+            Err(VersionError::Credential(cause)) => {
+                return Err(user_error(format!("{cause}; nothing was saved")));
+            }
             Err(VersionError::Unreachable(cause)) => return Err(tenant_url.cannot_reach(cause)),
         };
-        if !version.as_ref().is_some_and(ApiVersion::reports_registry) {
-            debug!(
-                "the tenant release {:?} does not report its registry",
-                version.map(|version| version.release_version)
-            );
+        if version.as_ref().is_some_and(ApiVersion::predates_registry) {
+            debug!("the tenant release does not report its registry");
             return Ok(None);
         }
+        let release_known = version.is_some_and(|version| version.release.is_some());
         match api.get_registry().await {
             Ok(registry) => Ok(Some(registry.untag())),
-            // A proxy at the base_url can leave out the endpoint.
-            Err(err) if api_error_status(&err) == Some(404) => {
-                debug!("the tenant does not report its registry: {err:#}");
-                Ok(None)
-            }
-            Err(err) if api_error_status(&err).is_some_and(rejects_credential) => Err(rejected()),
-            Err(err) => Err(tenant_url.unreachable(&err).unwrap_or(err)),
+            Err(err) => match api_error_status(&err) {
+                // A proxy at the base_url can leave out the endpoint.
+                Some(404) => {
+                    debug!("the tenant does not report its registry: {err:#}");
+                    Ok(None)
+                }
+                // `/api/version` accepted the credential, and a tenant of an
+                // unknown release can predate the endpoint.
+                Some(status) if rejects_credential(status) && !release_known => {
+                    debug!("the tenant does not report its registry: {err:#}");
+                    Ok(None)
+                }
+                Some(status) if rejects_credential(status) => Err(rejected()),
+                _ => Err(tenant_url.unreachable(&err).unwrap_or(err)),
+            },
         }
     };
     tokio::time::timeout(env::scaled_wait(TENANT_TIMEOUT), check_and_fetch)
@@ -2195,8 +2204,9 @@ mod tests {
         Ok(())
     }
 
-    /// A tenant before release 67 does not report its registry, and login
-    /// asks for it, offering the saved one.
+    /// A tenant before release 67 answers 403 for the registry endpoint with a
+    /// valid credential. Login accepts the credential and asks for the
+    /// registry, offering the saved one.
     #[tokio::test]
     async fn login_asks_for_the_registry_when_the_tenant_does_not_report_it() -> Result<()> {
         let env = LoginEnv::with_version(
@@ -2225,6 +2235,59 @@ mod tests {
             "{stored}"
         );
         assert!(env.credentials().contains(&api_key_line(FAKE_API_KEY_A)));
+        Ok(())
+    }
+
+    /// A tenant whose release does not parse can predate the registry
+    /// endpoint. Its 403 there does not reject the credential that
+    /// `/api/version` accepted.
+    #[tokio::test]
+    async fn login_accepts_a_403_for_the_registry_from_a_tenant_of_unknown_release() -> Result<()> {
+        let env = LoginEnv::with_version(
+            200,
+            r#"{"latest_api_version":"v1","release_version":"main-abc123"}"#,
+        );
+        let settings = env.resolve_settings(None)?;
+        let prompter = Script::default()
+            .secret(FAKE_API_KEY_A)
+            .input("typed.example.com/app")
+            .build();
+
+        login_with_flags(None, &settings, &prompter).await?;
+
+        let stored = env.settings();
+        assert!(
+            stored.contains(r#"registry = "typed.example.com/app""#),
+            "{stored}"
+        );
+        assert!(env.credentials().contains(&api_key_line(FAKE_API_KEY_A)));
+        Ok(())
+    }
+
+    /// Login asks a tenant whose release does not parse for its registry.
+    #[tokio::test]
+    async fn login_saves_the_registry_of_a_tenant_of_unknown_release() -> Result<()> {
+        let env = LoginEnv::with_backend(LoginBackend {
+            version: MockAnswer {
+                status: 200,
+                body: r#"{"latest_api_version":"v1","release_version":"main-abc123"}"#,
+            },
+            registry: MockAnswer {
+                status: 200,
+                body: REGISTRY_ANTITHESIS,
+            },
+            ..LoginBackend::default()
+        });
+        let settings = env.resolve_settings(None)?;
+        let prompter = Script::default().secret(FAKE_API_KEY_A).build();
+
+        login_with_flags(None, &settings, &prompter).await?;
+
+        let stored = env.settings();
+        assert!(
+            stored.contains(&format!(r#"registry = "{REGISTRY_URL}""#)),
+            "{stored}"
+        );
         Ok(())
     }
 

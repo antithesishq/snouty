@@ -729,6 +729,9 @@ fn version_check(
                 format!("{host} answered, but the response was invalid: {err}"),
             )
         }
+        Err(VersionError::Credential(err)) => {
+            Check::fail(CheckId::Api, "could not renew the credential").note(Level::Error, err)
+        }
         // Couldn't connect at all — connectivity is broken.
         Err(VersionError::Unreachable(err)) => {
             Check::fail(CheckId::Api, "Antithesis API unreachable")
@@ -855,7 +858,7 @@ pub async fn cmd_doctor(
                     if let Some(configured) = settings.registry()
                         && (settings.explicit_base_url().is_none()
                             || crate::env::test_doctor_asks_registry())
-                        && version.reports_registry()
+                        && !version.predates_registry()
                     {
                         let reported = tokio::time::timeout(
                             crate::env::scaled_wait(TENANT_TIMEOUT),

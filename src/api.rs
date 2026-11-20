@@ -135,9 +135,10 @@ impl ApiVersion {
         }
     }
 
-    pub fn reports_registry(&self) -> bool {
+    /// Whether the release is known to be older than the registry endpoint.
+    pub fn predates_registry(&self) -> bool {
         self.release
-            .is_some_and(|release| release >= MIN_REGISTRY_RELEASE)
+            .is_some_and(|release| release < MIN_REGISTRY_RELEASE)
     }
 }
 
@@ -230,6 +231,8 @@ pub enum VersionError {
     /// as the version payload — typically a proxy or captive portal serving
     /// its own page. Reachability is proven; the response is wrong.
     BadResponse(String),
+    /// The credential could not be renewed, so no request was sent.
+    Credential(String),
     /// The API could not be reached at all (DNS, connection, TLS, timeout).
     Unreachable(String),
 }
@@ -1078,6 +1081,7 @@ impl AntithesisApi {
                     ClientError::InvalidResponsePayload(_, err) => {
                         VersionError::BadResponse(err.to_string())
                     }
+                    ClientError::Custom(message) => VersionError::Credential(message),
                     err => VersionError::Unreachable(root_cause(&err).to_string()),
                 },
             }),

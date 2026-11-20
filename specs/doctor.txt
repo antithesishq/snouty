@@ -499,6 +499,12 @@ snouty doctor --offline
 stderr '^  ✓ Container runtime: docker detected$'
 env DOCKER_CONFIG=
 
+# So does a `docker login` to the tenant registry.
+set-env DOCKER_CONFIG ${WORK}/login-docker-config
+snouty doctor --offline
+stderr '^  ✓ Container runtime: docker detected$'
+env DOCKER_CONFIG=
+
 # An empty DOCKER_CONFIG is unset, as for the docker CLI.
 isolate-home empty_docker_config
 mkdir empty_docker_config/.docker
@@ -588,3 +594,6 @@ echo '2.30.0'
 
 -- helper-docker-config/config.json --
 {"credHelpers": {"registry.testtenant.antithesis.com": "snouty"}}
+
+-- login-docker-config/config.json --
+{"auths": {"https://registry.testtenant.antithesis.com": {}}, "credsStore": "desktop"}

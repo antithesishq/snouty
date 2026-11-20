@@ -130,12 +130,15 @@ impl TenantRegistryEnv {
 }
 
 /// Parse the release of a tool, such as `2.40.3`, `v2.40.3` or `19.03.12`.
-/// A missing component reads as zero: `2.24` is 2.24.0. Build metadata, such
-/// as `+ds1-0ubuntu1~24.04.1`, is dropped: it does not change the order of
-/// releases, and distribution builds put characters in it that semver rejects.
+/// A missing component reads as zero: `2.24` is 2.24.0. The suffixes are
+/// dropped: build metadata (`+ds1-0ubuntu1~24.04.1`), whose characters semver
+/// can reject, and the part after a `-`, which is a vendor tag (`28.3.0-ce`)
+/// as often as a pre-release (`28.3.0-rc.1`).
 pub fn parse_release(text: &str) -> Option<Version> {
     let (release, _metadata) = text.split_once('+').unwrap_or((text, ""));
-    lenient_semver::parse(release).ok()
+    let mut version = lenient_semver::parse(release).ok()?;
+    version.pre = semver::Prerelease::EMPTY;
+    Some(version)
 }
 
 /// The first Docker release that reads [`DOCKER_AUTH_CONFIG_ENV`].
@@ -151,21 +154,34 @@ pub fn docker_config_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".docker"))
 }
 
-/// The part of Docker's `config.json` that names credential helpers.
+/// The parts of Docker's `config.json` that give a registry a credential:
+/// a credential helper, or an `auths` entry from `docker login`. With a
+/// `credsStore`, `docker login` also writes an empty `auths` entry.
 #[derive(serde::Deserialize)]
 struct DockerConfig {
     #[serde(default, rename = "credHelpers")]
     cred_helpers: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    auths: std::collections::HashMap<String, serde_json::Value>,
 }
 
-/// Whether Docker's `config.json` names a credential helper for `registry`.
-/// A missing or invalid file names none. Docker looks the helper up by the
-/// exact host of the image, which snouty writes in lowercase.
-fn docker_has_cred_helper(registry: &Registry) -> bool {
+/// Whether Docker's `config.json` gives `registry` a credential. A missing or
+/// invalid file gives none. Docker looks a helper up by the exact host of the
+/// image, which snouty writes in lowercase.
+fn docker_has_credential(registry: &Registry) -> bool {
     docker_config_dir()
         .and_then(|dir| std::fs::read(dir.join("config.json")).ok())
         .and_then(|bytes| serde_json::from_slice::<DockerConfig>(&bytes).ok())
-        .is_some_and(|config| config.cred_helpers.contains_key(registry.authority()))
+        .is_some_and(|config| {
+            config.cred_helpers.contains_key(registry.authority())
+                || config.auths.keys().any(|key| {
+                    // Docker reads an `auths` key as a host, also in URL form.
+                    let host = key
+                        .trim_start_matches("https://")
+                        .trim_start_matches("http://");
+                    host.split('/').next() == Some(registry.authority())
+                })
+        })
 }
 
 /// Trait representing a container runtime (podman or docker).
@@ -829,11 +845,11 @@ impl ContainerRuntime for DockerRuntime {
     }
 
     /// A release older than [`DOCKER_AUTH_CONFIG_VERSION`] ignores
-    /// [`DOCKER_AUTH_CONFIG_ENV`]. A credential helper for `registry` gives
-    /// Docker the credential instead.
+    /// [`DOCKER_AUTH_CONFIG_ENV`]. A credential for `registry` in Docker's
+    /// config, from a helper or `docker login`, takes its place.
     fn docker_without_registry_auth(&self, registry: &Registry) -> Option<Version> {
         self.version.clone().filter(|version| {
-            *version < DOCKER_AUTH_CONFIG_VERSION && !docker_has_cred_helper(registry)
+            *version < DOCKER_AUTH_CONFIG_VERSION && !docker_has_credential(registry)
         })
     }
 
@@ -2009,7 +2025,8 @@ esac
             version("2.40.3+ds1-0ubuntu1~24.04.1").as_deref(),
             Some("2.40.3")
         );
-        assert_eq!(version("2.24.7-rc1").as_deref(), Some("2.24.7-rc1"));
+        assert_eq!(version("2.24.7-rc1").as_deref(), Some("2.24.7"));
+        assert_eq!(version("28.3.0-ce").as_deref(), Some("28.3.0"));
         assert_eq!(version("2.24").as_deref(), Some("2.24.0"));
         assert_eq!(version("2").as_deref(), Some("2.0.0"));
         assert_eq!(version(""), None);
@@ -2033,10 +2050,9 @@ esac
             version("Docker version 20.10.24+dfsg1, build 297e128\n").as_deref(),
             Some("20.10.24")
         );
-        // A release candidate comes before its release.
-        assert!(
-            docker_version_from_banner("Docker version 28.3.0-rc.1, build 1f8b2e4\n")
-                .is_some_and(|v| v < DOCKER_AUTH_CONFIG_VERSION)
+        assert_eq!(
+            docker_version_from_banner("Docker version 28.3.0-rc.1, build 1f8b2e4\n"),
+            Some(DOCKER_AUTH_CONFIG_VERSION)
         );
         assert_eq!(version("Docker version unknown\n"), None);
         assert_eq!(version(""), None);

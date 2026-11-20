@@ -6,7 +6,7 @@ use serde::Serialize;
 use crate::api::{
     AntithesisApi, ApiVersion, HttpClient, MIN_CANCEL_RELEASE, MIN_EXEC_RELEASE,
     MIN_LAUNCH_PARAMS_RELEASE, MIN_MODULES_RELEASE, MIN_SEARCH_RELEASE, MIN_STREAM_RELEASE,
-    VersionError, normalize_base_url,
+    normalize_base_url,
 };
 use crate::auth::{
     AuthenticationInfo, CredentialSource, CredentialStore, OidcFetchError, RenewalError,
@@ -15,13 +15,14 @@ use crate::auth::{
 };
 use crate::compose;
 use crate::container;
-use crate::error::rejects_credential;
+use crate::error::{api_error_status, rejects_credential};
 use crate::known_path::KnownPathKind;
 use crate::login::{CliOAuthConfig, TENANT_TIMEOUT, fetch_cli_config};
 use crate::registry::Registry;
 use crate::render::{OutputOptions, count};
 use crate::settings::{SettingSource, Settings, Tenant};
 use crate::tag::Tagged;
+use crate::util::root_cause;
 
 /// The longest wait for the OAuth probe. Doctor only reports what the probe
 /// finds, so it does not wait as long as login does.
@@ -673,69 +674,47 @@ fn release_floor_check(version: &ApiVersion, floor: &ReleaseFloor) -> Option<Che
     )
 }
 
-/// Map a `GET /api/version` probe into a check. Reaching the endpoint at all —
-/// even a 404 on an older backend that lacks it — proves connectivity, so only
-/// rejected auth, an API error, or a failure to reach the API is a problem.
-/// Pure over the result so it can be unit-tested without the network.
+/// Map a `GET /api/version` probe into a check. Pure over the result so it
+/// can be unit-tested without the network.
 fn version_check(
     host: &str,
     in_use: &SourcedCredential,
     profile: Option<&str>,
-    result: std::result::Result<ApiVersion, VersionError>,
+    result: Result<ApiVersion>,
 ) -> Check {
-    match result {
-        Ok(v) => Check::ok(CheckId::Api, "Antithesis API reachable")
-            .note(
-                Level::Note,
-                format!("latest API version: {}", v.latest_api_version),
-            )
-            .note(
-                Level::Note,
-                format!("tenant release version: {}", v.release_version),
-            ),
-        // 404: the version endpoint was added in release 56, so an older tenant
-        // 404s — but the request was served, so auth and connectivity are fine.
-        // A 404 can also come from a proxy/route in front of the tenant, so we
-        // name that possibility rather than asserting the tenant is old.
-        Err(VersionError::Http(404)) => Check::ok(CheckId::Api, "Antithesis API reachable").note(
-            Level::Warning,
-            "GET /api/version returned 404 — your tenant likely predates version \
-             reporting (added in release 56); if you expect a current tenant, a \
-             proxy or route may be intercepting the request",
-        ),
-        Err(VersionError::Http(status)) if rejects_credential(status) => {
+    let err = match result {
+        Ok(v) => {
+            return Check::ok(CheckId::Api, "Antithesis API reachable")
+                .note(
+                    Level::Note,
+                    format!("latest API version: {}", v.latest_api_version),
+                )
+                .note(
+                    Level::Note,
+                    format!("tenant release version: {}", v.release_version),
+                );
+        }
+        Err(err) => err,
+    };
+    match api_error_status(&err) {
+        Some(status) if rejects_credential(status) => {
             Check::fail(CheckId::Api, "Antithesis API rejected authentication")
                 .note(Level::Error, format!("the API returned HTTP {status}"))
                 .note(Level::Note, rejected_credential_next_step(in_use, profile))
         }
-        // 5xx: we reached something, but it's erroring — connectivity is broken
-        // by a server error and auth status is unknown.
-        Err(VersionError::Http(status)) if (500..=599).contains(&status) => {
-            Check::fail(CheckId::Api, "Antithesis API unavailable").note(
-                Level::Error,
-                format!("the API returned HTTP {status} (server error)"),
-            )
-        }
-        // Any other unexpected status.
-        Err(VersionError::Http(status)) => Check::fail(CheckId::Api, "Antithesis API error").note(
+        Some(status) => Check::fail(CheckId::Api, "Antithesis API error").note(
             Level::Error,
-            format!("the API returned an unexpected HTTP {status}"),
+            format!("the API returned HTTP {status}: {err}"),
         ),
-        // The server answered, but not with the version payload — the network
-        // is fine, so don't send the user debugging connectivity.
-        Err(VersionError::BadResponse(err)) => {
-            Check::fail(CheckId::Api, "Antithesis API sent an unexpected response").note(
+        // A transport error, with no response.
+        None if err.downcast_ref::<reqwest::Error>().is_some() => {
+            Check::fail(CheckId::Api, "Antithesis API unreachable").note(
                 Level::Error,
-                format!("{host} answered, but the response was invalid: {err}"),
+                format!("could not connect to {host}: {}", root_cause(&*err)),
             )
         }
-        Err(VersionError::Credential(err)) => {
-            Check::fail(CheckId::Api, "could not renew the credential").note(Level::Error, err)
-        }
-        // Couldn't connect at all — connectivity is broken.
-        Err(VersionError::Unreachable(err)) => {
-            Check::fail(CheckId::Api, "Antithesis API unreachable")
-                .note(Level::Error, format!("could not connect to {host}: {err}"))
+        None => {
+            Check::fail(CheckId::Api, "Antithesis API error").note(Level::Error, format!("{err:#}"))
         }
     }
 }
@@ -797,12 +776,7 @@ pub async fn cmd_doctor(
                 if matches!(auth, AuthenticationInfo::OAuth(_))
                     && http_err.is_some_and(|e| e.status().is_none() && !e.is_decode())
                 {
-                    checks.push(version_check(
-                        &host,
-                        in_use,
-                        settings.profile(),
-                        Err(VersionError::Unreachable(err.root_cause().to_string())),
-                    ));
+                    checks.push(version_check(&host, in_use, settings.profile(), Err(err)));
                 } else {
                     let check = checks
                         .iter_mut()
@@ -894,7 +868,9 @@ pub async fn cmd_doctor(
                         }
                     }
                 }
-                api_failed = matches!(version, Err(VersionError::Unreachable(_)));
+                api_failed = version
+                    .as_ref()
+                    .is_err_and(|err| err.downcast_ref::<reqwest::Error>().is_some());
                 checks.push(version_check(&host, in_use, settings.profile(), version));
             }
         }
@@ -1565,7 +1541,7 @@ mod tests {
             "tenant.antithesis.com",
             &env_api_key_source(),
             None,
-            Ok(ApiVersion::new("v1".into(), "56.0".into())),
+            Ok(ApiVersion::new("v1".into(), "62.0".into())),
         );
         assert_eq!(check.status, Status::Ok);
         let notes = check
@@ -1575,28 +1551,16 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         assert!(notes.contains("v1"));
-        assert!(notes.contains("56.0"));
+        assert!(notes.contains("62.0"));
     }
 
-    #[test]
-    fn version_404_is_reachable_but_warns() {
-        let check = version_check(
-            "tenant.antithesis.com",
-            &env_api_key_source(),
-            None,
-            Err(VersionError::Http(404)),
-        );
-        assert_eq!(check.status, Status::Ok);
-        assert!(check.message.contains("reachable"));
-        // The warning explains the 404 without definitively blaming an old
-        // tenant — it names both the old-tenant and proxy possibilities.
-        let warning = check
-            .notes
-            .iter()
-            .find(|n| n.level == Level::Warning)
-            .expect("a 404 should attach a warning note");
-        assert!(warning.text.contains("404"));
-        assert!(warning.text.contains("proxy"));
+    /// An error response with `status`, as the API client reports it.
+    fn served(status: u16) -> color_eyre::Report {
+        color_eyre::Report::new(crate::error::ApiError {
+            status,
+            message: "the Antithesis API failed".to_owned(),
+            server_message: String::new(),
+        })
     }
 
     #[test]
@@ -1606,7 +1570,7 @@ mod tests {
                 "tenant.antithesis.com",
                 &env_api_key_source(),
                 None,
-                Err(VersionError::Http(status)),
+                Err(served(status)),
             );
             assert_eq!(check.status, Status::Error);
             assert_eq!(check.message, "Antithesis API rejected authentication");
@@ -1625,7 +1589,7 @@ mod tests {
             "tenant.antithesis.com",
             &env_api_key_source(),
             None,
-            Err(VersionError::Http(403)),
+            Err(served(403)),
         );
         let next_step = check
             .notes
@@ -1670,27 +1634,34 @@ mod tests {
             "tenant.antithesis.com",
             &env_api_key_source(),
             None,
-            Err(VersionError::BadResponse(
-                "invalid type: null, expected struct ApiVersion".into(),
+            Err(color_eyre::eyre::eyre!(
+                "API returned an invalid response body"
             )),
         );
         assert_eq!(check.status, Status::Error);
-        assert!(check.message.contains("unexpected response"));
         assert!(!check.message.contains("unreachable"));
-        assert!(check.notes.iter().any(|n| {
-            n.text.contains("tenant.antithesis.com")
-                && n.text
-                    .contains("invalid type: null, expected struct ApiVersion")
-        }));
+        assert!(
+            check
+                .notes
+                .iter()
+                .any(|n| n.text.contains("invalid response body"))
+        );
     }
 
-    #[test]
-    fn version_unreachable_names_the_host_and_includes_the_error() {
+    #[tokio::test]
+    async fn version_unreachable_names_the_host_and_includes_the_error() {
+        let refused = crate::api::client_builder()
+            .build()
+            .unwrap()
+            .get("http://127.0.0.1:1")
+            .send()
+            .await
+            .unwrap_err();
         let check = version_check(
             "tenant.antithesis.com",
             &env_api_key_source(),
             None,
-            Err(VersionError::Unreachable("connection refused".into())),
+            Err(color_eyre::Report::new(refused).wrap_err("failed to contact API")),
         );
         assert_eq!(check.status, Status::Error);
         assert!(check.message.contains("unreachable"));
@@ -1698,37 +1669,25 @@ mod tests {
             n.text
                 .contains("could not connect to tenant.antithesis.com")
         }));
-        assert!(
-            check
-                .notes
-                .iter()
-                .any(|n| n.text.contains("connection refused"))
-        );
     }
 
     #[test]
-    fn version_5xx_is_unavailable_with_status() {
-        let check = version_check(
-            "tenant.antithesis.com",
-            &env_api_key_source(),
-            None,
-            Err(VersionError::Http(503)),
-        );
-        assert_eq!(check.status, Status::Error);
-        assert!(check.message.contains("unavailable"));
-        assert!(check.notes.iter().any(|n| n.text.contains("503")));
-    }
-
-    #[test]
-    fn version_unexpected_status_is_an_error_with_status() {
-        let check = version_check(
-            "tenant.antithesis.com",
-            &env_api_key_source(),
-            None,
-            Err(VersionError::Http(429)),
-        );
-        assert_eq!(check.status, Status::Error);
-        assert!(check.notes.iter().any(|n| n.text.contains("429")));
+    fn version_error_status_is_an_error_with_status() {
+        for status in [404, 429, 503] {
+            let check = version_check(
+                "tenant.antithesis.com",
+                &env_api_key_source(),
+                None,
+                Err(served(status)),
+            );
+            assert_eq!(check.status, Status::Error);
+            assert!(
+                check
+                    .notes
+                    .iter()
+                    .any(|n| n.text.contains(&status.to_string()))
+            );
+        }
     }
 
     #[test]

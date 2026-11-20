@@ -78,13 +78,13 @@ stdout '"id": "credentials",\s*"kind": "password",\s*"status": "warn"'
 # 2xx: doctor reports the live API and tenant release versions. The check runs
 # only with an API key (the endpoint rejects basic auth), so set one on top of
 # the basic creds mock-server configures.
-[!staging] mock-server 200 '{"latest_api_version":"v1","release_version":"56.0"}'
+[!staging] mock-server 200 '{"latest_api_version":"v1","release_version":"62.0"}'
 [!staging] set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 [!staging] snouty doctor
 [!staging] stderr '.*Antithesis API reachable.*'
 [!staging] stderr '.*latest API version: v1.*'
-[!staging] stderr '.*tenant release version: 56.0.*'
-# The mock reports 56.0, below every release floor, so doctor warns for each one.
+[!staging] stderr '.*tenant release version: 62.0.*'
+# The mock reports 62.0, below every release floor, so doctor warns for each one.
 [!staging] stderr 'tenant release is too old for the events-search API'
 [!staging] stderr 'tenant release is too old for the cancel-run API'
 [!staging] stderr 'tenant release is too old for the execute-command .container. field'
@@ -100,15 +100,12 @@ stdout '"id": "credentials",\s*"kind": "password",\s*"status": "warn"'
 [!staging] stdout '"id": "launch_params",\s*"status": "warn"'
 [!staging] stdout '"id": "run_modules",\s*"status": "warn"'
 
-# 404: typically an older tenant predating the version endpoint, but possibly a
-# proxy/route intercepting the request — either way it's still reachable and
-# authenticated, so doctor stays green and warns without blaming the tenant.
+# A 404 for the version endpoint fails the API check.
 [!staging] mock-server 404 '{}'
 [!staging] set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
-[!staging] snouty doctor
-[!staging] stderr '.*Antithesis API reachable.*'
-[!staging] stderr '.*returned 404.*'
-[!staging] stderr '.*proxy.*'
+[!staging] ! snouty doctor
+[!staging] stderr 'Antithesis API error'
+[!staging] stderr 'HTTP 404'
 
 # 403 with an EMPTY body — exactly what the API gateway returns for a bad
 # token (content-type: text/plain, zero length). The HTTP status is what
@@ -291,7 +288,7 @@ env ANTITHESIS_API_KEY=
 
 # doctor does not warn on an answer it cannot read: it cannot tell whether
 # OAuth is enabled.
-[!staging] mock-server 200 '{"latest_api_version":"v1","release_version":"56.0"}'
+[!staging] mock-server 200 '{"latest_api_version":"v1","release_version":"62.0"}'
 [!staging] snouty doctor
 [!staging] ! stderr '^  ⚠ .*OAuth'
 

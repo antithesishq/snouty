@@ -68,7 +68,6 @@ env ANTITHESIS_API_KEY=
 env ANTITHESIS_USERNAME=
 env ANTITHESIS_PASSWORD=
 ! snouty login --tenant spec-tenant
-stderr 'nothing was saved'
 stderr -literal 'set ANTITHESIS_API_KEY, or run `snouty login` in a terminal'
 ! exists no_credential/.config/snouty/settings.toml
 
@@ -122,7 +121,6 @@ isolate-home reported_url
 mock-server -release 67.0 200 '{"auth":"docker","registry_url":"user@registry.example.com"}'
 ! snouty login --tenant spec-tenant
 stderr -literal 'is not a container registry'
-stderr 'nothing was saved'
 ! exists reported_url/.config/snouty/settings.toml
 
 # Without a TTY, login keeps a saved custom registry over the tenant's
@@ -179,7 +177,7 @@ env SNOUTY_UPDATE_CHANNEL=
 isolate-home unreachable
 env ANTITHESIS_BASE_URL=http://127.0.0.1:1
 ! snouty login --tenant spec-tenant
-stderr 'could not reach http://127.0.0.1:1: .*; nothing was saved'
+stderr 'could not reach http://127.0.0.1:1: .*'
 stderr -literal 'check that the base_url setting is correct'
 ! exists unreachable/.config/snouty/settings.toml
 
@@ -187,7 +185,7 @@ stderr -literal 'check that the base_url setting is correct'
 isolate-home rejected
 mock-server 401 '{"message":"Invalid or expired bearer token."}'
 ! snouty login --tenant spec-tenant
-stderr 'did not accept the credential; nothing was saved'
+stderr 'did not accept the credential'
 stderr -literal 'set `ANTITHESIS_API_KEY` to a valid API key'
 ! stderr 'unset it'
 ! exists rejected/.config/snouty/settings.toml
@@ -196,7 +194,7 @@ stderr -literal 'set `ANTITHESIS_API_KEY` to a valid API key'
 isolate-home rejected_403
 mock-server 403 ''
 ! snouty login --tenant spec-tenant
-stderr 'did not accept the credential; nothing was saved'
+stderr 'did not accept the credential'
 ! exists rejected_403/.config/snouty/settings.toml
 
 # Without a terminal, a rejected stored credential names the fixes that work
@@ -208,7 +206,7 @@ env ANTITHESIS_API_KEY=
 env ANTITHESIS_USERNAME=
 env ANTITHESIS_PASSWORD=
 ! snouty --profile staging login --tenant spec-tenant
-stderr 'did not accept the credential; nothing was saved'
+stderr 'did not accept the credential'
 stderr -literal 'set ANTITHESIS_API_KEY, or run `snouty login --profile staging` in a terminal'
 ! exists stored_rejected/.config/snouty/settings.toml
 
@@ -224,7 +222,7 @@ set-env GITHUB_ACTIONS true
 set-env ACTIONS_ID_TOKEN_REQUEST_URL ${ANTITHESIS_BASE_URL}/github-actions/token?api-version=2.0
 set-env ACTIONS_ID_TOKEN_REQUEST_TOKEN ${FAKE_OIDC_REQUEST_TOKEN}
 ! snouty login --tenant spec-tenant
-stderr 'did not accept the credential; nothing was saved'
+stderr 'did not accept the credential'
 stderr 'ask Antithesis support to trust GitHub Actions OIDC tokens'
 ! stderr 'unset it'
 
@@ -233,7 +231,6 @@ stderr 'ask Antithesis support to trust GitHub Actions OIDC tokens'
 isolate-home oidc_refused
 set-env ACTIONS_ID_TOKEN_REQUEST_TOKEN wrong-request-token
 ! snouty login --tenant spec-tenant
-stderr 'nothing was saved'
 ! stderr 'could not reach'
 ! stderr 'check that the'
 
@@ -247,7 +244,6 @@ set-env ANTITHESIS_USERNAME puser
 set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
 isolate-home env_password
 ! snouty login --tenant spec-tenant
-stderr 'nothing was saved'
 stderr -literal 'unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD'
 ! stderr 'set ANTITHESIS_API_KEY'
 
@@ -266,17 +262,15 @@ snouty login --tenant spec-tenant
 ! stderr 'did not accept'
 stdout 'registry `registry.example.com/acme`'
 
-# A tenant without the version endpoint answers 404 after it accepts the
-# credential. Without a terminal, login keeps the tenant's saved
-# registry, and fails without one.
+# A tenant that does not serve the registry endpoint answers 404. Without a
+# terminal, login keeps the tenant's saved registry, and fails without one.
 isolate-home no_endpoint
-mock-server 404 '{"message":"Resource not found"}'
+mock-server -release 67.0 404 '{"message":"Resource not found"}'
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 env ANTITHESIS_TENANT=
 env ANTITHESIS_USERNAME=
 env ANTITHESIS_PASSWORD=
 ! snouty login --tenant spec-tenant
-stderr 'nothing was saved'
 stderr -literal 'run `snouty login --registry <registry>`'
 ! exists no_endpoint/.config/snouty/settings.toml
 snouty login --tenant spec-tenant --registry registry.example.com/acme

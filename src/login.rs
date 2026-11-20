@@ -24,8 +24,8 @@ use tokio::sync::mpsc;
 
 use crate::{
     api::{
-        AntithesisApi, ApiVersion, CONNECT_TIMEOUT, HttpClient, RegistryResponse, ResponseCache,
-        VersionError, normalize_base_url,
+        AntithesisApi, CONNECT_TIMEOUT, HttpClient, RegistryResponse, ResponseCache,
+        normalize_base_url,
     },
     auth::{
         AuthenticationInfo, CredentialSource, CredentialStore, PersistableCredentials,
@@ -261,9 +261,10 @@ async fn do_cmd_login(
         // --registry takes the place of the registry that the tenant reports.
         (Some(registry), _) => (registry, None),
         (None, Some(reported)) => {
-            let reported = reported.registry_url.parse::<Registry>().map_err(|err| {
-                user_error(format!("{err}; nothing was saved")).suggestion(suggestion)
-            })?;
+            let reported = reported
+                .registry_url
+                .parse::<Registry>()
+                .map_err(|err| user_error(err.to_string()).suggestion(suggestion))?;
             let custom = registry_of_tenant(&saved, &tenant_to_use)
                 .filter(|registry| **registry != reported)
                 .cloned();
@@ -295,7 +296,7 @@ async fn do_cmd_login(
         (None, None) => (
             saved_registry.cloned().ok_or_else(|| {
                 user_error(format!(
-                    "login needs a container registry for `{tenant_to_use}`; nothing was saved"
+                    "login needs a container registry for `{tenant_to_use}`"
                 ))
                 .suggestion(suggestion)
             })?,
@@ -322,10 +323,15 @@ async fn do_cmd_login(
                 Ok(store) => Some(kind.with_tag(store)),
                 Err(err) => {
                     return Err(match previous_settings.restore() {
-                        Ok(()) => err.wrap_err("could not store the credential; nothing was saved"),
-                        Err(restore_err) => err.wrap_err(format!(
-                            "could not store the credential, and {restore_err:#}"
-                        )),
+                        Ok(()) => err.wrap_err("could not store the credential"),
+                        // The settings name the new tenant, with the
+                        // credential of the old one.
+                        Err(restore_err) => err
+                            .wrap_err(format!("could not store the credential, and {restore_err:#}"))
+                            .suggestion(format!(
+                                "the settings now name `{tenant_to_use}` without its credential; fix the error, then run {} again",
+                                login_command(profile)
+                            )),
                     });
                 }
             }
@@ -421,25 +427,19 @@ impl<'a> TenantUrl<'a> {
             .chain()
             .find_map(|cause| cause.downcast_ref::<reqwest::Error>())
             .filter(|transport| transport.is_builder() || transport.is_connect())?;
-        Some(self.cannot_reach(root_cause(transport)))
-    }
-
-    fn cannot_reach(&self, cause: impl std::fmt::Display) -> Report {
-        user_error(format!(
-            "could not reach {}: {cause}; nothing was saved",
-            self.url
-        ))
-        .suggestion(self.check())
-    }
-
-    /// The suggestion for a URL that is unreachable or is not an Antithesis
-    /// tenant.
-    fn check(&self) -> String {
-        if self.explicit {
+        let check = if self.explicit {
             "check that the base_url setting is correct".to_owned()
         } else {
             format!("check that the tenant name `{}` is correct", self.tenant)
-        }
+        };
+        Some(
+            user_error(format!(
+                "could not reach {}: {}",
+                self.url,
+                root_cause(transport)
+            ))
+            .suggestion(check),
+        )
     }
 }
 
@@ -449,10 +449,8 @@ impl<'a> TenantUrl<'a> {
 /// registry. `interactive` picks the next step for a credential that login
 /// itself can replace.
 ///
-/// The registry endpoint cannot check the credential. Release 66 answers 403
-/// for it with a valid credential. A tenant before release 56 has no version
-/// endpoint and answers 404. The tenant authenticates a request before it
-/// routes it, so that 404 also means that it accepted the credential.
+/// The registry endpoint cannot check the credential: release 66 answers 403
+/// for it with a valid credential.
 async fn fetch_registry(
     settings: &Settings,
     tenant_url: &TenantUrl<'_>,
@@ -476,7 +474,7 @@ async fn fetch_registry(
     };
     let nothing_to_check = || {
         user_error(format!(
-            "login needs an API key or a single sign-on to check with `{tenant}`; nothing was saved"
+            "login needs an API key or a single sign-on to check with `{tenant}`"
         ))
     };
     // The next step for a rejected credential from the environment. `None`
@@ -517,67 +515,45 @@ async fn fetch_registry(
         verbose,
         ResponseCache::Disabled,
     )?;
-    let rejected = || {
-        user_error(format!(
-            "`{tenant}` did not accept the credential; nothing was saved"
-        ))
-        .suggestion(env_next_step.clone().unwrap_or_else(login_again))
-    };
     let check_and_fetch = async {
-        let version = match api.get_version().await {
-            Ok(version) => Some(version),
-            Err(VersionError::Http(404)) => None,
-            Err(VersionError::Http(status)) if rejects_credential(status) => return Err(rejected()),
-            Err(VersionError::Http(status)) => {
-                return Err(user_error(format!(
-                    "{} answered with HTTP {status}; nothing was saved",
-                    tenant_url.url
-                )));
-            }
-            Err(VersionError::BadResponse(err)) => {
-                return Err(user_error(format!(
-                    "{} answered, but not as an Antithesis tenant: {err}; nothing was saved",
-                    tenant_url.url
-                ))
-                .suggestion(tenant_url.check()));
-            }
-            Err(VersionError::Credential(cause)) => {
-                return Err(user_error(format!("{cause}; nothing was saved")));
-            }
-            Err(VersionError::Unreachable(cause)) => return Err(tenant_url.cannot_reach(cause)),
-        };
-        if version.as_ref().is_some_and(ApiVersion::predates_registry) {
-            debug!("the tenant release does not report its registry");
+        let version = api
+            .get_version()
+            .await
+            .map_err(|err| match api_error_status(&err) {
+                Some(status) if rejects_credential(status) => {
+                    user_error(format!("`{tenant}` did not accept the credential"))
+                        .suggestion(env_next_step.unwrap_or_else(login_again))
+                }
+                _ => tenant_url.unreachable(&err).unwrap_or(err),
+            })?;
+        if version.predates_registry() {
+            debug!(
+                "release {} does not report its registry",
+                version.release_version
+            );
             return Ok(None);
         }
-        let release_known = version.is_some_and(|version| version.release.is_some());
         match api.get_registry().await {
             Ok(registry) => Ok(Some(registry.untag())),
-            Err(err) => match api_error_status(&err) {
-                // A proxy at the base_url can leave out the endpoint.
-                Some(404) => {
-                    debug!("the tenant does not report its registry: {err:#}");
-                    Ok(None)
-                }
-                // `/api/version` accepted the credential, and a tenant of an
-                // unknown release can predate the endpoint.
-                Some(status) if rejects_credential(status) && !release_known => {
-                    debug!("the tenant does not report its registry: {err:#}");
-                    Ok(None)
-                }
-                Some(status) if rejects_credential(status) => Err(rejected()),
-                _ => Err(tenant_url.unreachable(&err).unwrap_or(err)),
-            },
+            // `/api/version` already checked the credential. A proxy at the
+            // base_url can leave out the endpoint, and a tenant whose release
+            // does not parse can predate it.
+            Err(err)
+                if api_error_status(&err)
+                    .is_some_and(|status| status == 404 || rejects_credential(status)) =>
+            {
+                debug!("the tenant does not report its registry: {err:#}");
+                Ok(None)
+            }
+            Err(err) => Err(err),
         }
     };
     tokio::time::timeout(env::scaled_wait(TENANT_TIMEOUT), check_and_fetch)
         .await
         .map_err(|_| {
-            user_error(format!(
-                "timed out waiting for {}; nothing was saved",
-                tenant_url.url
-            ))
-            .suggestion("check your network connection, and the base_url and https_proxy settings")
+            user_error(format!("timed out waiting for {}", tenant_url.url)).suggestion(
+                "check your network connection, and the base_url and https_proxy settings",
+            )
         })?
 }
 
@@ -1427,8 +1403,8 @@ mod tests {
         FAKE_PKCE_VERIFIER, FAKE_REFRESH_TOKEN_A,
     };
     use crate::testutils::{
-        LoginBackend, MOCK_BARE_404_BODY, MockAnswer, api_key_credentials, api_key_line,
-        oauth_credentials, password_credentials,
+        LoginBackend, MockAnswer, api_key_credentials, api_key_line, oauth_credentials,
+        password_credentials,
     };
     use color_eyre::eyre::Result;
 
@@ -2067,7 +2043,10 @@ mod tests {
     async fn login_does_not_read_the_registry_from_the_response_cache() -> Result<()> {
         use crate::api_cache::{ApiCache, CachePolicy, DEFAULT_MAX_FILE_SIZE};
 
-        let env = LoginEnv::with_registry(401, r#"{"message":"Invalid or expired bearer token."}"#);
+        let env = LoginEnv::with_registry(
+            200,
+            r#"{"auth":"docker","registry_url":"registry.example.com/acme"}"#,
+        );
         let cache = ApiCache::new(
             Some(env.api_cache_dir()),
             DEFAULT_MAX_FILE_SIZE,
@@ -2082,13 +2061,12 @@ mod tests {
         let settings = env.resolve_settings(None)?;
         let prompter = Script::default().secret(FAKE_API_KEY_A).build();
 
-        let err = login_with_flags(None, &settings, &prompter)
-            .await
-            .expect_err("a rejected credential must fail the login");
+        login_with_flags(None, &settings, &prompter).await?;
 
+        let stored = env.settings();
         assert!(
-            format!("{err:#}").contains("did not accept the credential"),
-            "{err:#}"
+            stored.contains(r#"registry = "registry.example.com/acme""#),
+            "{stored}"
         );
         Ok(())
     }
@@ -2113,7 +2091,10 @@ mod tests {
             .await
             .expect_err("a credential that cannot be stored must fail the login");
 
-        assert!(format!("{err:#}").contains("nothing was saved"), "{err:#}");
+        assert!(
+            format!("{err:#}").contains("could not store the credential"),
+            "{err:#}"
+        );
         assert_eq!(env.settings(), seeded);
 
         // With no settings file before, none is left behind.
@@ -2125,7 +2106,10 @@ mod tests {
         let err = login(&settings, &prompter)
             .await
             .expect_err("a credential that cannot be stored must fail the login");
-        assert!(format!("{err:#}").contains("nothing was saved"), "{err:#}");
+        assert!(
+            format!("{err:#}").contains("could not store the credential"),
+            "{err:#}"
+        );
         assert!(!env.config_dir().join("settings.toml").exists());
         Ok(())
     }
@@ -2295,8 +2279,10 @@ mod tests {
     /// login saves without its scheme and trailing `/`.
     #[tokio::test]
     async fn login_saves_the_registry_prompt_default_without_its_scheme() -> Result<()> {
-        // A tenant before release 56 has no version endpoint.
-        let env = LoginEnv::with_version(404, MOCK_BARE_404_BODY);
+        let env = LoginEnv::with_version(
+            200,
+            r#"{"latest_api_version":"v1","release_version":"66.2"}"#,
+        );
         env.seed(
             ".config/snouty/settings.toml",
             "tenant = \"mytenant\"\nregistry = \"https://saved.example.com/my-org/\"\n",

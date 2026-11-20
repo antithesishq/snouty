@@ -535,7 +535,6 @@ fn an_unreachable_base_url_fails_before_the_api_key_prompt() {
     let seen = flat(&finish_with_failure(session));
     for needle in [
         format!("could not reach {refused}: "),
-        "nothing was saved".to_owned(),
         "check that the base_url setting is correct".to_owned(),
     ] {
         assert!(seen.contains(&needle), "missing {needle:?} in {seen}");
@@ -598,7 +597,7 @@ fn a_tenant_that_does_not_answer_gets_the_api_key_prompt_and_then_fails() {
     send(&mut session, "\r");
     let seen = flat(&finish_with_failure(session));
     for needle in [
-        format!("timed out waiting for {base_url}; nothing was saved"),
+        format!("timed out waiting for {base_url}"),
         "check your network connection".to_owned(),
     ] {
         assert!(seen.contains(&needle), "missing {needle:?} in {seen}");

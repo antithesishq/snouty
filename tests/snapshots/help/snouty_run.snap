@@ -49,7 +49,7 @@ Options:
           is unanchored and case-sensitive by default (use `(?i)` for
           case-insensitive). Suppressed lines stay available in multiverse
           debugging. RE2 syntax: no lookahead/lookbehind or backreferences. Max
-          1023 bytes. Requires tenant release 59 or newer
+          1023 bytes
       --filter-source-matching <FILTER_SOURCE_MATCHING>
           Suppress all output from log sources matching this RE2 pattern during
           fuzzing. A source is usually the name of the process that wrote the

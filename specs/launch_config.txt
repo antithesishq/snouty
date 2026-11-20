@@ -4,14 +4,14 @@
 # docker-compose.yaml file that will be pushed as a config image.
 
 # Without a registry setting, any error of the registry endpoint names the fix.
-set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
-mock-server 403 '{"error":"Forbidden"}'
-! snouty launch --launcher basic_test -c config
-stderr 'no container registry is configured'
-stderr -literal 'Suggestion: run `snouty login`, or set the registry setting (see https://github.com/antithesishq/snouty#settings)'
-mock-server 404 '{"error":"Not Found"}'
-! snouty launch --launcher basic_k8s_test -c k8s_config
-stderr 'no container registry is configured'
+[!staging] set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
+[!staging] mock-server 403 '{"error":"Forbidden"}'
+[!staging] ! snouty launch --launcher basic_test -c config
+[!staging] stderr 'no container registry is configured'
+[!staging] stderr -literal 'Suggestion: run `snouty login`, or set the registry setting (see https://github.com/antithesishq/snouty#settings)'
+[!staging] mock-server 404 '{"error":"Not Found"}'
+[!staging] ! snouty launch --launcher basic_k8s_test -c k8s_config
+[!staging] stderr 'no container registry is configured'
 
 # Bad input fails before the request for the registry.
 ! snouty launch --launcher basic_test -c empty

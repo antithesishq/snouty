@@ -450,18 +450,25 @@ fn cmd_mock_server(
     env: &mut testscript_rs::TestEnvironment,
     args: &[String],
 ) -> testscript_rs::Result<()> {
-    // Usage: mock-server [-header '<name>: <value>'] [-rate-limit <n>] <status> <body>
+    // Usage: mock-server [-header '<name>: <value>'] [-rate-limit <n>] [-release <version>] <status> <body>
     // Starts a TCP mock HTTP server, sets ANTITHESIS_BASE_URL and auth env vars.
     // `-rate-limit <n>` answers the first n requests with a bare 429.
-    let usage =
-        "mock-server requires [-header '<name>: <value>'] [-rate-limit <n>] <status> <body>";
+    // `-release <version>` answers `GET /api/version` with that tenant release.
+    let usage = "mock-server requires [-header '<name>: <value>'] [-rate-limit <n>] [-release <version>] <status> <body>";
     let mut header = String::new();
     let mut rate_limited = 0usize;
+    let mut version_body = None;
     let mut args = args;
     loop {
         match args {
             [flag, value, rest @ ..] if flag == "-header" => {
                 header = format!("{value}\r\n");
+                args = rest;
+            }
+            [flag, value, rest @ ..] if flag == "-release" => {
+                version_body = Some(format!(
+                    r#"{{"latest_api_version":"v1","release_version":"{value}"}}"#
+                ));
                 args = rest;
             }
             [flag, value, rest @ ..] if flag == "-rate-limit" => {
@@ -503,6 +510,12 @@ fn cmd_mock_server(
             let response = if n < rate_limited {
                 "HTTP/1.1 429\r\nContent-Length: 0\r\n\r\n".to_owned()
             } else {
+                let (status, header, body) = match &version_body {
+                    Some(version_body) if buf.starts_with(b"GET /api/version ") => {
+                        (200, "", version_body)
+                    }
+                    _ => (status, header.as_str(), &body),
+                };
                 format!(
                     "HTTP/1.1 {status}\r\n{header}Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
                     body.len(),

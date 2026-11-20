@@ -92,8 +92,9 @@ fixture.
   an isolated config dir.
 - `snouty-bg <args>`: run it in the background. It does not expand `${VAR}`,
   and it does not pass `stdin` through.
-- `mock-server [-header '<name>: <value>'] [-rate-limit <n>] <status> <body>`:
+- `mock-server [-header '<name>: <value>'] [-rate-limit <n>] [-release <version>] <status> <body>`:
   answer every request with one response, and set snouty's API URL to it.
+  With `-release`, `GET /api/version` reports that tenant release instead.
   Against staging, it forwards the real credentials.
 - `mock-runs-server [empty]`: start the mock Antithesis API, with its fixture
   runs or with none. Against the mock, it replaces the last output with the

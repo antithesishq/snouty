@@ -91,8 +91,8 @@ struct TenantRegistryEnv {
 
 impl TenantRegistryEnv {
     /// `env`, plus the registry and the `--settings` and `--profile` flags of
-    /// `auth`. The helper gets the registry because the launch can push to
-    /// the registry that the tenant reports, which no setting names.
+    /// `auth`. The helper needs the registry because no setting names the
+    /// registry that the tenant reports.
     fn new(
         auth: TenantRegistryAuth,
         mut env: Vec<(&'static str, OsString)>,
@@ -834,8 +834,8 @@ impl ContainerRuntime for DockerRuntime {
     }
 }
 
-/// A new config image name without a registry, with a unique tag: a
-/// timestamp and a random suffix.
+/// A config image name with no registry and a unique tag: a timestamp and
+/// a random suffix.
 pub fn new_config_image_name() -> String {
     let ts = Utc::now().format("%Y%m%d-%H%M%S");
     let mut buf = [0u8; 2];
@@ -844,7 +844,6 @@ pub fn new_config_image_name() -> String {
     format!("snouty-config:{ts}-{suffix}")
 }
 
-/// The reference that the config image `name` is pushed to in `registry`.
 pub fn config_image_ref(registry: &Registry, name: &str) -> String {
     format!("{registry}/{name}")
 }
@@ -1689,7 +1688,6 @@ esac
         let tag = name
             .strip_prefix("snouty-config:")
             .unwrap_or_else(|| panic!("got: {name}"));
-        // YYYYMMDD-HHMMSS-XXXX
         assert!(
             tag.len() == 20 && tag.chars().nth(8) == Some('-') && tag.chars().nth(15) == Some('-'),
             "tag format should be YYYYMMDD-HHMMSS-XXXX, got: {tag}"
@@ -1954,9 +1952,8 @@ esac
         );
     }
 
-    /// `config_image_ref` puts the config image under the registry,
-    /// `strip_registry` takes the address back off, and the platform never
-    /// sees the address it was pushed to.
+    /// `strip_registry` must undo `config_image_ref`, because the platform
+    /// never sees the registry that the image is pushed to.
     #[test]
     fn a_generated_config_ref_strips_back_to_a_bare_name() {
         for registry in [

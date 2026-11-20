@@ -111,8 +111,7 @@ impl FromStr for Registry {
     }
 }
 
-/// Whether `registry` is the registry of the tenant of `settings`. False when
-/// the tenant is not set.
+/// False when the tenant is not set.
 pub fn is_tenant_registry(settings: &Settings, registry: &Registry) -> bool {
     tenant_registry_of(settings.tenant(), Some(registry)).is_some()
 }

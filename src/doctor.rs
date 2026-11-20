@@ -266,9 +266,10 @@ fn docker_version_check(version: (u64, u64, u64)) -> Check {
     if version >= MIN_DOCKER_VERSION {
         return Check::ok(CheckId::DockerVersion, found);
     }
+    let (min_major, min_minor, min_patch) = MIN_DOCKER_VERSION;
     Check::warn(
         CheckId::DockerVersion,
-        format!("{found} is older than 28.3.0"),
+        format!("{found} is older than {min_major}.{min_minor}.{min_patch}"),
     )
     .note(
         Level::Warning,

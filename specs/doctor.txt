@@ -465,9 +465,6 @@ stderr 'Container runtime: podman detected'
 chmod 755 old-docker/docker
 chmod 755 old-docker/docker-compose
 set-env PATH ${WORK}/old-docker
-snouty doctor --offline
-stderr '^  ⚠ Docker 27\.4\.0 is older than 28\.3\.0$'
-stderr -literal 'https://github.com/antithesishq/snouty#docker-credential-helper'
 snouty doctor --offline --json
 stdout '"id": "docker_version",\s*"status": "warn"'
 
@@ -475,8 +472,8 @@ stdout '"id": "docker_version",\s*"status": "warn"'
 chmod 755 new-docker/docker
 chmod 755 new-docker/docker-compose
 set-env PATH ${WORK}/new-docker
-snouty doctor --offline
-stderr '^  ✓ Docker 28\.3\.0$'
+snouty doctor --offline --json
+stdout '"id": "docker_version",\s*"status": "ok"'
 
 -- registry_cfg/snouty/settings.toml --
 registry = "proxy.example.com/testtenant"

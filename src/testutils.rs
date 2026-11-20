@@ -350,35 +350,71 @@ fn container_log_tail(log: &tempfile::NamedTempFile) -> String {
     tail.chars().take(MAX_TAIL).collect()
 }
 
-/// Start a backend for `snouty login` that answers `GET /api/v0/registry`
-/// with `registry_status` and `registry_body`, and every other request with
-/// 200 and `config_body`. Returns its base URL. The listener thread leaks, and
-/// lives until the test process exits.
-pub fn spawn_login_backend(
-    config_body: &'static str,
-    registry_status: u16,
-    registry_body: &'static str,
-) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind the mock backend");
-    let addr = listener.local_addr().expect("mock backend address");
-    thread::spawn(move || {
-        for mut stream in listener.incoming().flatten() {
-            let Some(request) = mock_read_request(&mut stream) else {
-                continue;
-            };
-            let (status, body) = if request.starts_with("GET /api/v0/registry ") {
-                (registry_status, registry_body)
-            } else {
-                (200, config_body)
-            };
-            let response = format!(
-                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = stream.write_all(response.as_bytes());
+#[derive(Clone, Copy)]
+pub struct MockAnswer {
+    pub status: u16,
+    pub body: &'static str,
+}
+
+/// A backend for `snouty login`. The default reports release 67.0, which
+/// serves the registry endpoint, and answers it with 404.
+#[derive(Clone, Copy)]
+pub struct LoginBackend {
+    /// The body of `GET /auth/cli/config`, and of every request that has no
+    /// other answer.
+    pub oauth_config: &'static str,
+    /// The answer of `GET /api/version`.
+    pub version: MockAnswer,
+    /// The answer of `GET /api/v0/registry`.
+    pub registry: MockAnswer,
+}
+
+impl Default for LoginBackend {
+    fn default() -> Self {
+        Self {
+            oauth_config: r#"{"port_strategy":"disabled"}"#,
+            version: MockAnswer {
+                status: 200,
+                body: MOCK_VERSION_BODY,
+            },
+            registry: MockAnswer {
+                status: 404,
+                body: MOCK_BARE_404_BODY,
+            },
         }
-    });
-    format!("http://{addr}")
+    }
+}
+
+impl LoginBackend {
+    /// Start the backend, and return its base URL. The listener thread
+    /// leaks, and lives until the test process exits.
+    pub fn spawn(self) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind the mock backend");
+        let addr = listener.local_addr().expect("mock backend address");
+        thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let Some(request) = mock_read_request(&mut stream) else {
+                    continue;
+                };
+                let MockAnswer { status, body } = if request.starts_with("GET /api/version ") {
+                    self.version
+                } else if request.starts_with("GET /api/v0/registry ") {
+                    self.registry
+                } else {
+                    MockAnswer {
+                        status: 200,
+                        body: self.oauth_config,
+                    }
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        format!("http://{addr}")
+    }
 }
 
 /// A repo prefix unique to this call, so tests that share one registry — every
@@ -839,7 +875,7 @@ fn mock_route(
     match (method, path_part) {
         ("GET", "/api/version") => (
             200,
-            r#"{"latest_api_version":"v1","release_version":"67.0"}"#.to_string(),
+            MOCK_VERSION_BODY.to_string(),
             json,
             NO_CACHE_CACHE_CONTROL,
         ),
@@ -1323,6 +1359,10 @@ fn mock_route_cancel_run(run_id: &str) -> (u16, String) {
         None => (404, MOCK_CANCEL_404_BODY.to_string()),
     }
 }
+
+/// The `GET /api/version` body of the mock tenant.
+pub(crate) const MOCK_VERSION_BODY: &str =
+    r#"{"latest_api_version":"v1","release_version":"67.0"}"#;
 
 /// The bare 404 body the live API sends for an unknown resource. It never
 /// names the resource.

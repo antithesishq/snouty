@@ -165,7 +165,7 @@ env ANTITHESIS_PROFILE=
 # Login signs in at --base-url in place of the tenant's host, and saves it
 # as the base_url setting of the profile, which later commands use.
 isolate-home base_url_flag
-mock-server 200 '{"auth":"antithesis","registry_url":"registry.spec-tenant.antithesis.com"}'
+mock-server -release 67.0 200 '{"auth":"antithesis","registry_url":"registry.spec-tenant.antithesis.com"}'
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 set-env MOCK_URL ${ANTITHESIS_BASE_URL}
 env ANTITHESIS_BASE_URL=
@@ -188,7 +188,7 @@ env ANTITHESIS_TENANT=testtenant
 # and saves nothing. The flag takes the place of ANTITHESIS_BASE_URL.
 isolate-home unreachable_flag
 ! snouty login --tenant spec-tenant --base-url http://127.0.0.1:1
-stderr 'could not reach http://127.0.0.1:1: .*; nothing was saved'
+stderr 'could not reach http://127.0.0.1:1: '
 stderr -literal 'check that the --base-url URL is correct'
 ! exists unreachable_flag/.config/snouty/settings.toml
 

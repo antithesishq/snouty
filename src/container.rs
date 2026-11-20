@@ -1955,8 +1955,8 @@ esac
     }
 
     /// `config_image_ref` puts the config image under the registry,
-    /// `strip_registry` takes the address back off, and the platform never sees the address it
-    /// was pushed to.
+    /// `strip_registry` takes the address back off, and the platform never
+    /// sees the address it was pushed to.
     #[test]
     fn a_generated_config_ref_strips_back_to_a_bare_name() {
         for registry in [

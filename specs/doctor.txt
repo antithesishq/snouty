@@ -514,6 +514,7 @@ snouty doctor --offline
 stderr '^  ✓ Container runtime: docker detected$'
 
 # Docker 28.3.0 takes the credential.
+isolate-home new_docker
 chmod 755 new-docker/docker
 chmod 755 new-docker/docker-compose
 set-env PATH ${WORK}/new-docker

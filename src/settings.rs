@@ -615,12 +615,13 @@ fn explicit_settings_path(flag: Option<PathBuf>) -> Result<Option<PathBuf>> {
     }
 }
 
-/// Writes `tenant` and `registry` into the global `settings.toml`, in the
-/// table of `profile_to_update` or else the top-level table. Returns what
-/// puts the file back as it was.
+/// Writes `tenant`, `registry` and, when given, `base_url` into the global
+/// `settings.toml`, in the table of `profile_to_update` or else the top-level
+/// table. Returns what puts the file back as it was.
 pub(crate) fn update_settings_in_global_file(
     tenant: &str,
     registry: &str,
+    base_url: Option<&str>,
     profile_to_update: Option<&str>,
 ) -> Result<PreviousSettingsFile> {
     let path = global_settings_dir()
@@ -641,9 +642,14 @@ pub(crate) fn update_settings_in_global_file(
                 "The settings file at {:?} is malformed: `profile` should be a table of named profiles",
                 &path
             ))?;
-        update_table(entry_as_table_mut(profiles, profile), tenant, registry);
+        update_table(
+            entry_as_table_mut(profiles, profile),
+            tenant,
+            registry,
+            base_url,
+        );
     } else {
-        update_table(&mut contents, tenant, registry);
+        update_table(&mut contents, tenant, registry, base_url);
     }
 
     write_global_toml(GLOBAL_SETTINGS_FILENAME, &contents)?;
@@ -727,9 +733,12 @@ pub(crate) fn mkdir(path: &Path, recursive: bool, permissions: u32) -> Result<()
     Ok(())
 }
 
-fn update_table(target: &mut Table, tenant: &str, registry: &str) {
+fn update_table(target: &mut Table, tenant: &str, registry: &str, base_url: Option<&str>) {
     target.insert("tenant".to_owned(), Value::from(tenant));
     target.insert(REGISTRY_KEY.to_owned(), Value::from(registry));
+    if let Some(base_url) = base_url {
+        target.insert("base_url".to_owned(), Value::from(base_url));
+    }
     // The table never holds the alias beside `registry`.
     target.remove(REPOSITORY_KEY);
 }
@@ -963,7 +972,7 @@ fn integer_value(value: &Value) -> Result<String, String> {
 }
 
 /// Parse a `base_url` setting: a URL with a host.
-fn parse_base_url(text: &str) -> Result<Url, String> {
+pub fn parse_base_url(text: &str) -> Result<Url, String> {
     match Url::parse(text) {
         Ok(url) if url.has_host() => Ok(url),
         Ok(_) => Err("expected a URL such as https://acme.antithesis.com".to_owned()),

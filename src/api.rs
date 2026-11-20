@@ -91,6 +91,10 @@ pub const MIN_SEARCH_RELEASE: (u64, u64) = (62, 2);
 /// Only a run created on this release or later has a run status stream.
 pub const MIN_STREAM_RELEASE: (u64, u64) = (65, 3);
 
+/// Only a run created on this release or later has coverage locations: the
+/// earliest release seen to serve them (orbitinghail, release 67.6).
+pub const MIN_COVERAGE_RELEASE: (u64, u64) = (67, 6);
+
 /// The first tenant release whose execute-command API takes `container`.
 /// Earlier releases reject the field, and this release requires it. `runs exec`
 /// assumes the tenant meets this; `snouty doctor` checks it. TODO: drop this
@@ -1204,6 +1208,28 @@ impl AntithesisApi {
         let request = self.client.stream_run_status().run_id(run_id).body(body);
         match request.send().await {
             Ok(response) => Ok(json_lines(response.into_inner().into_inner())),
+            Err(err) => Err(self.client_error(err).await),
+        }
+    }
+
+    /// The run's instrumented locations, as NDJSON `Location_Coverage`
+    /// records: every location of `module_id`, or of every module. Cached as
+    /// the response headers allow.
+    #[cached(stream)]
+    pub async fn get_coverage_locations(
+        &self,
+        run_id: &str,
+        module_id: Option<&str>,
+    ) -> Result<Tagged<JsonStream, CachePolicy>> {
+        let mut request = self.client.get_coverage_locations().run_id(run_id);
+        if let Some(module_id) = module_id {
+            request = request.module_id(module_id);
+        }
+        match request.send().await {
+            Ok(response) => {
+                let policy = self.cache.headers_policy(response.headers());
+                Ok(json_lines(response.into_inner().into_inner()).with_tag(policy))
+            }
             Err(err) => Err(self.client_error(err).await),
         }
     }

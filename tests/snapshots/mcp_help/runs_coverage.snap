@@ -1,0 +1,16 @@
+---
+source: tests/help_snapshots.rs
+---
+Print the coverage of each instrumented location of a run: whether the run reached it, and the moment where it first did. Use it to find code that the run never reached. Runs created before release 67.6 have no coverage.
+
+`runs coverage` is an unstable feature: its flags and output can change in any release. Enable it with `SNOUTY_UNSTABLE_FEATURES=coverage`.
+
+Each location prints as one JSON object on its own line, by module, then address. It has the `module_id`, `address` and `function` of the location, and, when they are known, its `class`, `file`, `begin_line`, `begin_column`, `end_line` and `end_column`. A location that the run reached also has `first_reached`: the `moment` where the run first reached it, with its `input_hash` and `vtime`, and `run_seconds`, the seconds from the start of the test. The vtime is a JSON number. Several locations can start at one place, such as the copies of a generic function, or the two outcomes of a branch.
+
+Use `module_ids` to show only a module, by the ID that `runs_modules` lists. List more IDs for more modules.
+
+While the run is in progress, the output is the coverage up to now. The run must be ready or complete. If it is not, the command waits until it is ready, and says that it waits.
+
+Examples:
+  runs_coverage {"run_id": "<run_id>"}
+  runs_coverage {"run_id": "<run_id>", "module_ids": ["<module_id>"]}

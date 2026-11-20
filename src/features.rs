@@ -64,6 +64,8 @@ pub const UNSTABLE_FEATURES_VAR_NAME: &str = "SNOUTY_UNSTABLE_FEATURES";
 /// The id of a feature is its variant name in kebab-case.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
 pub enum Feature {
+    /// `snouty runs coverage` and its MCP tool, `runs_coverage`.
+    Coverage,
     /// Stands in for a real feature in tests.
     #[cfg(test)]
     Example,

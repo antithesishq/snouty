@@ -458,6 +458,29 @@ env SNOUTY_CONTAINER_ENGINE=
 snouty doctor --offline
 stderr 'Container runtime: podman detected'
 
+# Doctor warns about a Docker older than 28.3.0 when the registry is the
+# tenant registry.
+chmod 755 old-docker/docker
+chmod 755 old-docker/docker-compose
+set-env PATH ${WORK}/old-docker
+env ANTITHESIS_TENANT=testtenant
+env ANTITHESIS_REGISTRY=registry.testtenant.antithesis.com/app
+snouty doctor --offline --json
+stdout '"id": "docker_version",\s*"status": "warn"'
+
+# Another registry gets no Docker version check.
+env ANTITHESIS_REGISTRY=registry.example.com/app
+snouty doctor --offline --json
+! stdout 'docker_version'
+env ANTITHESIS_REGISTRY=registry.testtenant.antithesis.com/app
+
+# Docker 28.3.0 passes.
+chmod 755 new-docker/docker
+chmod 755 new-docker/docker-compose
+set-env PATH ${WORK}/new-docker
+snouty doctor --offline --json
+stdout '"id": "docker_version",\s*"status": "ok"'
+
 -- registry_cfg/snouty/settings.toml --
 registry = "proxy.example.com/testtenant"
 -- base_url.toml --
@@ -512,5 +535,20 @@ this is not valid TOML {{{
 echo 'podman version 5.4.0'
 
 -- podman-docker/docker-compose --
+#!/bin/sh
+echo '2.30.0'
+-- old-docker/docker --
+#!/bin/sh
+echo 'Docker version 27.4.0, build bde2b89'
+
+-- old-docker/docker-compose --
+#!/bin/sh
+echo '2.30.0'
+
+-- new-docker/docker --
+#!/bin/sh
+echo 'Docker version 28.3.0, build 38b7060'
+
+-- new-docker/docker-compose --
 #!/bin/sh
 echo '2.30.0'

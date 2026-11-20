@@ -124,28 +124,6 @@ fn launch_config_conflicts_with_param_config_image() {
 }
 
 #[test]
-fn launch_config_k8s_dir_is_accepted() {
-    // Directory with manifests/ subdirectory should pass detect_config and
-    // proceed to the ANTITHESIS_REGISTRY env-var check.
-    let dir = TempDir::new().unwrap();
-    write_manifest(dir.path());
-
-    snouty()
-        .args([
-            "launch",
-            "--launcher",
-            "basic_k8s_test",
-            "-c",
-            dir.path().to_str().unwrap(),
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "Could not resolve Antithesis registry",
-        ));
-}
-
-#[test]
 fn launch_config_rejects_empty_manifests_dir() {
     let dir = TempDir::new().unwrap();
     std::fs::create_dir(dir.path().join("manifests")).unwrap();

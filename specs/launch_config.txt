@@ -3,8 +3,7 @@
 # The --config/-c flag points to a local directory containing a
 # docker-compose.yaml file that will be pushed as a config image.
 
-# Without a registry setting, a launch asks the tenant for its registry, and
-# any error of the registry endpoint fails with the same next step.
+# Without a registry setting, any error of the registry endpoint names the fix.
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 mock-server 403 '{"error":"Forbidden"}'
 ! snouty launch --launcher basic_test -c config

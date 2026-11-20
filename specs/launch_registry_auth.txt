@@ -141,8 +141,7 @@ stderr 'Config image pushed successfully: registry.testtenant.antithesis.com/rep
 stderr 'Requesting Antithesis test run'
 env STUB_PUSH_OK=
 
-# Without a registry setting, the launch pushes to the registry that the
-# tenant reports, and the helper gives the credential for it.
+# Without a registry setting, the helper gives the credential for the reported registry.
 env ANTITHESIS_REGISTRY=
 env SNOUTY_CONTAINER_ENGINE=podman
 ! snouty launch --launcher basic_k8s_test -c k8s_config

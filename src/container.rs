@@ -1962,9 +1962,11 @@ esac
         for registry in [
             "us-central1-docker.pkg.dev/proj/repo",
             "us-central1-docker.pkg.dev/proj/repo/",
+            "https://us-central1-docker.pkg.dev/proj/repo",
         ] {
-            let image_ref = config_image_ref(&registry.parse().unwrap(), &new_config_image_name());
-            let bare = strip_registry(&image_ref, registry);
+            let registry: Registry = registry.parse().unwrap();
+            let image_ref = config_image_ref(&registry, &new_config_image_name());
+            let bare = strip_registry(&image_ref, &registry.to_string());
             assert!(bare.starts_with("snouty-config:"), "got: {bare}");
             assert!(!bare.contains('/'), "got: {bare}");
         }

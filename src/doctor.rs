@@ -559,7 +559,9 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
             ));
             // Only a push to the tenant registry needs MIN_DOCKER_VERSION.
             if rt.engine_kind() == ContainerEngine::Docker
-                && crate::registry::tenant_registry(settings).is_some()
+                && settings.registry().is_some_and(|registry| {
+                    crate::registry::is_tenant_registry(settings, registry.value())
+                })
             {
                 match rt.version() {
                     Ok(version) => checks.push(docker_version_check(version)),

@@ -128,7 +128,7 @@ Environment variables always take precedence.
 | Settings key                | Environment variable              | Purpose                                                                          |
 | --------------------------- | --------------------------------- | -------------------------------------------------------------------------------- |
 | `tenant`                    | `ANTITHESIS_TENANT`               | Your Antithesis tenant. Becomes the API host, `https://<tenant>.antithesis.com`.  |
-| `registry`                  | `ANTITHESIS_REGISTRY`             | Container registry that `snouty launch` pushes the config image to.              |
+| `registry`                  | `ANTITHESIS_REGISTRY`             | Container registry that `snouty launch` pushes the config image to. Defaults to the registry that your tenant reports. |
 | `base_url`                  | `ANTITHESIS_BASE_URL`             | API URL, replacing the one derived from the tenant. See the proxy section below. |
 | `https_proxy`               | `ANTITHESIS_HTTPS_PROXY`          | URL of an HTTP(S) proxy for snouty's API requests. SOCKS is not supported.      |
 | `container_engine`          | `SNOUTY_CONTAINER_ENGINE`         | Force `docker` or `podman` instead of auto-detecting.                            |

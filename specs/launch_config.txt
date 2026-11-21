@@ -3,14 +3,19 @@
 # The --config/-c flag points to a local directory containing a
 # docker-compose.yaml file that will be pushed as a config image.
 
-# Requires ANTITHESIS_REGISTRY when --config is used.
-! snouty launch --launcher basic_test -c config
-stderr 'Could not resolve Antithesis registry.*'
+# Without a registry setting, any error of the registry endpoint names the fix.
+[!staging] set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
+[!staging] mock-server 403 '{"error":"Forbidden"}'
+[!staging] ! snouty launch --launcher basic_test -c config
+[!staging] stderr 'no container registry is configured'
+[!staging] stderr -literal 'Suggestion: run `snouty login`, or set the registry setting (see https://github.com/antithesishq/snouty#settings)'
+[!staging] mock-server 404 '{"error":"Not Found"}'
+[!staging] ! snouty launch --launcher basic_k8s_test -c k8s_config
+[!staging] stderr 'no container registry is configured'
 
-# Kubernetes config directories (manifests/ subdirectory) are also accepted
-# by --config and likewise require ANTITHESIS_REGISTRY.
-! snouty launch --launcher basic_k8s_test -c k8s_config
-stderr 'Could not resolve Antithesis registry.*'
+# Bad input fails before the request for the registry.
+! snouty launch --launcher basic_test -c empty
+stderr '.*does not contain.*docker-compose.yaml.*manifests/.*'
 
 # Rejects a registry setting that is not a registry before it builds anything.
 env 'ANTITHESIS_REGISTRY=not a registry'

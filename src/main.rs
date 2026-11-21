@@ -285,13 +285,13 @@ async fn cmd_launch(
         params.insert(ANT_FAULT_EXCLUSIONS, fault_exclusions);
     }
 
-    let config_image_ref = if let Some(config_dir) = &args.config {
+    // The image name holds the place of the config image until the push
+    // gives its registry and digest.
+    let config_image = if let Some(config_dir) = &args.config {
         let detected = config::detect_config(config_dir)?;
-        let registry = settings.require_registry()?;
-
-        let image_ref = container::generate_image_ref(registry);
-        params.insert(ANT_CONFIG_IMAGE, &image_ref);
-        Some((detected, registry, image_ref))
+        let name = container::new_config_image_name();
+        params.insert(ANT_CONFIG_IMAGE, &name);
+        Some((detected, name))
     } else {
         None
     };
@@ -325,21 +325,23 @@ async fn cmd_launch(
     }
 
     let api = AntithesisApi::new_for_launch(settings, verbose)?;
-    if let Some((detected, registry, config_image)) = config_image_ref {
+    if let Some((detected, name)) = config_image {
+        let registry = snouty::registry::launch_registry(settings, &api).await?;
+        let image_ref = container::config_image_ref(&registry, &name);
         let mut rt = container::runtime(settings)?;
         container::warn_ambiguous_engine(settings, rt.as_ref(), json);
 
-        if let Some(tenant_registry) = snouty::registry::tenant_registry(settings) {
+        if snouty::registry::is_tenant_registry(settings, &registry) {
             // Podman gets the secret from the helper: for it, this is an early credential check.
             match snouty::registry::launch_secret(&api).await? {
                 Some(secret) => rt.use_tenant_registry_auth(container::TenantRegistryAuth {
-                    registry: tenant_registry.clone(),
+                    registry: registry.clone(),
                     secret,
                     settings_path,
                     profile,
                 }),
                 None => log::debug!(
-                    "{tenant_registry} does not accept the Antithesis credential, so the runtime pushes with its own credentials"
+                    "{registry} does not accept the Antithesis credential, so the runtime pushes with its own credentials"
                 ),
             }
         }
@@ -351,7 +353,7 @@ async fn cmd_launch(
                 let compose = compose::DockerCompose::resolve(rt.as_ref(), compose_config.clone())?;
                 let pinned_yaml = compose.pin_images(
                     rt.as_ref(),
-                    registry,
+                    &registry,
                     if args.allow_remote_images {
                         compose::MissingImages::AssumeRemote
                     } else {
@@ -359,10 +361,10 @@ async fn cmd_launch(
                     },
                 )?;
                 let staged = compose::stage_pinned_config(compose_config.dir(), &pinned_yaml)?;
-                rt.build_and_push_config_image(staged.path(), &config_image)?
+                rt.build_and_push_config_image(staged.path(), &image_ref)?
             }
             config::Config::Kubernetes(_) => {
-                rt.build_and_push_config_image(detected.dir(), &config_image)?
+                rt.build_and_push_config_image(detected.dir(), &image_ref)?
             }
         };
         params.insert(

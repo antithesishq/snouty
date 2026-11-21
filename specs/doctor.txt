@@ -472,6 +472,11 @@ stdout '"id": "docker_version",\s*"status": "warn"'
 env ANTITHESIS_REGISTRY=registry.example.com/app
 snouty doctor --offline --json
 ! stdout 'docker_version'
+
+# Without a registry setting, launch pushes to the tenant registry.
+env ANTITHESIS_REGISTRY=
+snouty doctor --offline --json
+stdout '"id": "docker_version",\s*"status": "warn"'
 env ANTITHESIS_REGISTRY=registry.testtenant.antithesis.com/app
 
 # Docker 28.3.0 passes.

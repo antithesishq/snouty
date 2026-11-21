@@ -17,8 +17,8 @@ use crate::error::user_error;
 use crate::process::output_with_timeout;
 use crate::registry::{self, Registry};
 use crate::settings::{
-    ANTITHESIS_PROFILE_ENV_VAR_NAME, CONTAINER_ENGINE_VAR_NAME, ContainerEngine,
-    SNOUTY_SETTINGS_PATH_VAR_NAME, Settings, mkdir,
+    ANTITHESIS_PROFILE_ENV_VAR_NAME, ANTITHESIS_REGISTRY_VAR_NAME, CONTAINER_ENGINE_VAR_NAME,
+    ContainerEngine, SNOUTY_SETTINGS_PATH_VAR_NAME, Settings, mkdir,
 };
 
 /// Wall-clock budget for each synchronous docker/podman call made while
@@ -90,12 +90,18 @@ struct TenantRegistryEnv {
 }
 
 impl TenantRegistryEnv {
-    /// `env`, plus the `--settings` and `--profile` flags of `auth`.
+    /// `env`, plus the registry and the `--settings` and `--profile` flags of
+    /// `auth`. The helper needs the registry because no setting names the
+    /// registry that the tenant reports.
     fn new(
         auth: TenantRegistryAuth,
         mut env: Vec<(&'static str, OsString)>,
         auth_file: Option<tempfile::NamedTempFile>,
     ) -> Self {
+        env.push((
+            ANTITHESIS_REGISTRY_VAR_NAME,
+            auth.registry.to_string().into(),
+        ));
         env.extend(
             auth.settings_path
                 .map(|path| (SNOUTY_SETTINGS_PATH_VAR_NAME, path.into_os_string())),
@@ -850,13 +856,18 @@ impl ContainerRuntime for DockerRuntime {
     }
 }
 
-/// Generate a unique image reference with a timestamp + random suffix tag.
-pub fn generate_image_ref(registry: &Registry) -> String {
+/// A config image name with no registry and a unique tag: a timestamp and
+/// a random suffix.
+pub fn new_config_image_name() -> String {
     let ts = Utc::now().format("%Y%m%d-%H%M%S");
     let mut buf = [0u8; 2];
     getrandom::fill(&mut buf).expect("failed to get random bytes");
     let suffix = format!("{:02x}{:02x}", buf[0], buf[1]);
-    format!("{registry}/snouty-config:{ts}-{suffix}")
+    format!("snouty-config:{ts}-{suffix}")
+}
+
+pub fn config_image_ref(registry: &Registry, name: &str) -> String {
+    format!("{registry}/{name}")
 }
 
 /// Whether the `docker` binary is podman.
@@ -1694,27 +1705,14 @@ esac
     }
 
     #[test]
-    fn generate_image_ref_format() {
-        let image_ref =
-            generate_image_ref(&"us-central1-docker.pkg.dev/proj/repo".parse().unwrap());
-        assert!(
-            image_ref.starts_with("us-central1-docker.pkg.dev/proj/repo/snouty-config:"),
-            "got: {image_ref}"
-        );
-        // Tag should be YYYYMMDD-HHMMSS-XXXX format (20 chars)
-        let tag = image_ref.rsplit(':').next().unwrap();
+    fn a_config_image_name_has_a_timestamp_and_random_tag() {
+        let name = new_config_image_name();
+        let tag = name
+            .strip_prefix("snouty-config:")
+            .unwrap_or_else(|| panic!("got: {name}"));
         assert!(
             tag.len() == 20 && tag.chars().nth(8) == Some('-') && tag.chars().nth(15) == Some('-'),
             "tag format should be YYYYMMDD-HHMMSS-XXXX, got: {tag}"
-        );
-    }
-
-    #[test]
-    fn generate_image_ref_drops_the_scheme_and_trailing_slash_of_the_setting() {
-        let image_ref = generate_image_ref(&"https://registry.example.com/repo/".parse().unwrap());
-        assert!(
-            image_ref.starts_with("registry.example.com/repo/snouty-config:"),
-            "got: {image_ref}"
         );
     }
 
@@ -2015,16 +2013,18 @@ esac
         );
     }
 
-    /// `generate_image_ref` spells the config image, `strip_registry` takes the
-    /// address back off, and the platform never sees the address it was pushed
-    /// to. The two have to agree on the separator for that to hold.
+    /// `strip_registry` must undo `config_image_ref`, because the platform
+    /// never sees the registry that the image is pushed to.
     #[test]
     fn a_generated_config_ref_strips_back_to_a_bare_name() {
         for registry in [
             "us-central1-docker.pkg.dev/proj/repo",
             "us-central1-docker.pkg.dev/proj/repo/",
+            "https://us-central1-docker.pkg.dev/proj/repo",
         ] {
-            let bare = strip_registry(&generate_image_ref(&registry.parse().unwrap()), registry);
+            let registry: Registry = registry.parse().unwrap();
+            let image_ref = config_image_ref(&registry, &new_config_image_name());
+            let bare = strip_registry(&image_ref, &registry.to_string());
             assert!(bare.starts_with("snouty-config:"), "got: {bare}");
             assert!(!bare.contains('/'), "got: {bare}");
         }

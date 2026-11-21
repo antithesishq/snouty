@@ -141,6 +141,15 @@ stderr 'Config image pushed successfully: registry.testtenant.antithesis.com/rep
 stderr 'Requesting Antithesis test run'
 env STUB_PUSH_OK=
 
+# Without a registry setting, the helper gives the credential for the reported registry.
+env ANTITHESIS_REGISTRY=
+env SNOUTY_CONTAINER_ENGINE=podman
+! snouty launch --launcher basic_k8s_test -c k8s_config
+stderr 'fake podman: push --digestfile=\S+ registry.testtenant.antithesis.com/snouty-config:\S+ REGISTRY_AUTH_FILE=\[set\]'
+stderr 'helper: \{"ServerURL":"registry\.testtenant\.antithesis\.com","Username":"snouty-token","Secret":"[^"]+"\}'
+env ANTITHESIS_REGISTRY=registry.testtenant.antithesis.com/repo
+env SNOUTY_CONTAINER_ENGINE=docker
+
 # Stored OAuth credentials give the credential too. The launch refreshes a
 # token whose expiry it cannot read, and the helper gives the new token.
 env ANTITHESIS_API_KEY=

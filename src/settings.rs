@@ -421,14 +421,6 @@ impl Settings {
         self.registry.as_ref()
     }
 
-    /// The container registry, for a command that pushes to it: an error
-    /// when the setting is unset.
-    pub fn require_registry(&self) -> Result<&Registry> {
-        self.registry()
-            .map(Tagged::value)
-            .ok_or_else(|| missing_setting("registry"))
-    }
-
     /// The base URL to talk to: an explicit `base_url` if set, otherwise one
     /// derived from the tenant; `None` when neither exists (a derived `base_url`
     /// is present exactly when the tenant is).

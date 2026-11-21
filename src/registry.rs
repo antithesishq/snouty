@@ -10,6 +10,7 @@
 use std::{fmt, path::PathBuf, str::FromStr};
 
 use chrono::{TimeDelta, Utc};
+use color_eyre::Section;
 use color_eyre::eyre::{OptionExt, Report, Result, eyre};
 use url::Url;
 
@@ -110,15 +111,35 @@ impl FromStr for Registry {
     }
 }
 
-/// The tenant registry that `settings` push to: the `registry` setting, when
-/// it is the registry of the tenant of the same settings. `None` when the
-/// setting names another registry, or when the tenant or the registry is not
-/// set.
-pub fn tenant_registry(settings: &Settings) -> Option<&Registry> {
-    tenant_registry_of(settings.tenant(), settings.registry().map(Tagged::value))
+/// False when the tenant is not set.
+pub fn is_tenant_registry(settings: &Settings, registry: &Registry) -> bool {
+    tenant_registry_of(settings.tenant(), Some(registry)).is_some()
 }
 
-/// [`tenant_registry`] of the `tenant` and `registry` settings.
+/// The registry that `snouty launch` pushes to: the `registry` setting, or
+/// else the registry that the tenant reports.
+///
+/// Every error of the registry endpoint gets the same message, which does not
+/// blame the credential: release 66 answers 403 to a valid credential when
+/// the tenant has no registry.
+pub async fn launch_registry(settings: &Settings, api: &AntithesisApi) -> Result<Registry> {
+    if let Some(registry) = settings.registry() {
+        return Ok(registry.value().clone());
+    }
+    api.get_registry()
+        .await
+        .and_then(|reported| reported.untag().registry_url.parse())
+        .map_err(|err| {
+            log::debug!("the tenant did not report a registry: {err:#}");
+            user_error("no container registry is configured, and the tenant did not report one")
+                .suggestion(
+                    "run `snouty login`, or set the registry setting \
+                     (see https://github.com/antithesishq/snouty#settings)",
+                )
+        })
+}
+
+/// `registry`, when it is the registry of `tenant`.
 fn tenant_registry_of<'a>(
     tenant: Option<&Tenant>,
     registry: Option<&'a Registry>,
@@ -626,17 +647,17 @@ mod tests {
             ("acme", " https://registry.acme.antithesis.com/app/ ", true),
         ];
         for (tenant, registry_setting, matches) in cases {
-            let settings = settings(None, tenant, registry_setting);
+            let settings = Settings::builder().tenant(tenant.parse().unwrap()).build();
             assert_eq!(
-                tenant_registry(&settings),
-                matches.then(|| registry(registry_setting)).as_ref(),
+                is_tenant_registry(&settings, &registry(registry_setting)),
+                matches,
                 "{tenant} {registry_setting}"
             );
         }
-        assert_eq!(
-            tenant_registry(&Settings::builder().tenant("acme".parse().unwrap()).build()),
-            None
-        );
+        assert!(!is_tenant_registry(
+            &Settings::builder().build(),
+            &registry("registry.acme.antithesis.com")
+        ));
     }
 
     fn api_key(api_key: &str) -> AuthenticationInfo {

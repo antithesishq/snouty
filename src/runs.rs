@@ -2799,6 +2799,7 @@ mod tests {
     use super::*;
     use crate::testutils::fake_secrets::{FAKE_API_KEY_A, FAKE_PASSWORD};
     use hegel::generators;
+    use jiff::SignedDuration;
 
     #[test]
     fn run_page_url_encodes_query_characters() {
@@ -4906,40 +4907,17 @@ mod tests {
     #[test]
     fn relative_time_is_compact() {
         let now = Timestamp::now();
-        assert_eq!(
-            relative_time(now - jiff::SignedDuration::from_secs(5)),
-            "5s ago"
-        );
-        assert_eq!(
-            relative_time(now - jiff::SignedDuration::from_mins(3)),
-            "3m ago"
-        );
-        assert_eq!(
-            relative_time(now - jiff::SignedDuration::from_hours(21)),
-            "21h ago"
-        );
-        assert_eq!(
-            relative_time(now - jiff::SignedDuration::from_hours(2 * 24)),
-            "2d ago"
-        );
-        assert_eq!(
-            relative_time(now - jiff::SignedDuration::from_hours(8 * 24)),
-            "1w ago"
-        );
-        assert_eq!(
-            relative_time(now - jiff::SignedDuration::from_hours(45 * 24)),
-            "1mo ago"
-        );
-        assert_eq!(
-            relative_time(now - jiff::SignedDuration::from_hours(400 * 24)),
-            "1y ago"
-        );
+        let ago = |age| relative_time(now - age);
+        assert_eq!(ago(SignedDuration::from_secs(5)), "5s ago");
+        assert_eq!(ago(SignedDuration::from_mins(3)), "3m ago");
+        assert_eq!(ago(SignedDuration::from_hours(21)), "21h ago");
+        assert_eq!(ago(SignedDuration::from_hours(2 * 24)), "2d ago");
+        assert_eq!(ago(SignedDuration::from_hours(8 * 24)), "1w ago");
+        assert_eq!(ago(SignedDuration::from_hours(45 * 24)), "1mo ago");
+        assert_eq!(ago(SignedDuration::from_hours(400 * 24)), "1y ago");
         // Clock skew: a slightly-future timestamp clamps instead of rendering
         // a negative age.
-        assert_eq!(
-            relative_time(now + jiff::SignedDuration::from_hours(1)),
-            "0s ago"
-        );
+        assert_eq!(ago(SignedDuration::from_hours(-1)), "0s ago");
     }
 
     #[test]
@@ -6227,7 +6205,7 @@ mod tests {
         }
 
         fn minutes_after_start(minutes: i64) -> Timestamp {
-            STARTED_AT.parse::<Timestamp>().unwrap() + jiff::SignedDuration::from_mins(minutes)
+            STARTED_AT.parse::<Timestamp>().unwrap() + SignedDuration::from_mins(minutes)
         }
 
         #[test]

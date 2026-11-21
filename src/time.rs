@@ -323,15 +323,13 @@ pub(crate) fn parse_timestamp_arg(text: &str) -> Result<Timestamp, String> {
                 .to_string()
         })?;
     let ambiguous = TimeZone::system().to_ambiguous_timestamp(wall_time);
-    match ambiguous.offset() {
-        AmbiguousOffset::Gap { .. } => Err(format!(
+    if matches!(ambiguous.offset(), AmbiguousOffset::Gap { .. }) {
+        return Err(format!(
             "{text} does not exist in the local timezone (a clock change skips it)"
-        )),
-        // A clock change shows the time twice: take the earlier instant.
-        AmbiguousOffset::Unambiguous { .. } | AmbiguousOffset::Fold { .. } => {
-            ambiguous.earlier().map_err(|err| err.to_string())
-        }
+        ));
     }
+    // A clock change shows the time twice: take the earlier instant.
+    ambiguous.earlier().map_err(|err| err.to_string())
 }
 
 /// The date of the local calendar day that holds `instant`.

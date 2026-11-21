@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::{Engine as _, prelude::BASE64_STANDARD};
-
 use color_eyre::{
     Section, SectionExt,
     eyre::{Context, OptionExt, Result, eyre},

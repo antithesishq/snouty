@@ -7,9 +7,9 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 
-use chrono::{DateTime, Utc};
 use clap::Arg;
 use color_eyre::eyre::{Result, bail, eyre};
+use jiff::Timestamp;
 use rmcp::model::{JsonObject, Tool, ToolAnnotations};
 use serde_json::{Value, json};
 
@@ -284,7 +284,7 @@ fn value_schema(arg: &Arg) -> (ValueType, Value) {
         (ValueType::Integer, range)
     } else if is(TypeId::of::<VTime>()) {
         (ValueType::Number, json!({}))
-    } else if is(TypeId::of::<DateTime<Utc>>()) {
+    } else if is(TypeId::of::<Timestamp>()) {
         let formats = json!({ "anyOf": [
             { "format": "date" },
             { "format": "date-time" },

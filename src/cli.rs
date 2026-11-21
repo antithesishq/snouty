@@ -6,9 +6,9 @@ use std::io::Write;
 use std::num::NonZeroU64;
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
 use clap::error::ErrorKind;
 use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
+use jiff::Timestamp;
 
 use crate::api::{
     FaultTolerance, PerformanceTier, RunStatus, SearchLimit, SourceRunId, SourceSessionId,
@@ -1101,12 +1101,12 @@ pub struct RunsUsageArgs {
     /// time, or 4 weeks with a weekly rollup, or 6 months with a monthly
     /// rollup]
     #[arg(long, value_parser = parse_timestamp_arg)]
-    pub after: Option<DateTime<Utc>>,
+    pub after: Option<Timestamp>,
 
     /// Only show runs that ended before this time, in the same forms
     /// [default: now]
     #[arg(long, value_parser = parse_timestamp_arg)]
-    pub before: Option<DateTime<Utc>>,
+    pub before: Option<Timestamp>,
 }
 
 #[derive(Args)]
@@ -1174,13 +1174,13 @@ pub struct RunsListArgs {
     /// (e.g. 2026-10-01 12:00:00), RFC 3339 time or relative time (e.g. 3
     /// days ago)
     #[arg(long, value_parser = parse_timestamp_arg)]
-    pub created_after: Option<DateTime<Utc>>,
+    pub created_after: Option<Timestamp>,
 
     /// Only show runs created at or before this date (e.g. 2026-11-01), time
     /// (e.g. 2026-11-01 12:00:00), RFC 3339 time or relative time (e.g. 3
     /// days ago)
     #[arg(long, value_parser = parse_timestamp_arg)]
-    pub created_before: Option<DateTime<Utc>>,
+    pub created_before: Option<Timestamp>,
 
     /// Maximum number of runs to display
     #[arg(short = 'n', long, default_value_t = DEFAULT_RUNS_LIMIT)]

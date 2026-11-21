@@ -79,8 +79,8 @@ fn serialize_hundredths<S: serde::Serializer>(
 /// number of periods for a very old `--after`.
 const FIRST_DAY: Date = jiff::civil::date(1970, 1, 1);
 
-/// Every day that starts a period, or follows one, is between the week of
-/// [`FIRST_DAY`] and the month of the present, so a timestamp can hold it.
+/// Each period day, and the day after the last period, is between the week of
+/// [`FIRST_DAY`] and the month after the present, so a timestamp can hold it.
 const DAY_IN_RANGE: &str = "a period day is in the range of a timestamp";
 
 impl Rollup {

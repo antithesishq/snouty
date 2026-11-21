@@ -303,7 +303,8 @@ fn parse_relative_time(text: &str, now: Timestamp) -> Option<Timestamp> {
 /// Reads a timestamp argument: a date (the start of that day), a time as
 /// snouty prints it or with a `T`, an RFC 3339 time, or a time relative to
 /// the present, such as `3 days ago`. A value without an offset is a local
-/// wall time. A wall time that a clock change skips is an error.
+/// wall time. A wall time that a clock change skips is an error, and so is a
+/// time outside the range of a timestamp.
 pub(crate) fn parse_timestamp_arg(text: &str) -> Result<Timestamp, String> {
     if let Some(time) = parse_relative_time(text, Timestamp::now()) {
         return Ok(time);
@@ -338,7 +339,8 @@ pub(crate) fn local_calendar_date(instant: Timestamp) -> Date {
 }
 
 /// The first instant of the local calendar day `date`. A few zones skip
-/// midnight: the day then starts at the end of the skipped time.
+/// midnight: the day then starts at the end of the skipped time. Fails when
+/// the day is outside the range of a timestamp.
 pub(crate) fn start_of_local_calendar_day(date: Date) -> Result<Timestamp, jiff::Error> {
     date.to_zoned(TimeZone::system()).map(|day| day.timestamp())
 }

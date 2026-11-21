@@ -318,12 +318,8 @@ mod tests {
 
     #[test]
     fn default_start_holds_at_the_first_timestamp() {
-        for rollup in [
-            None,
-            Some(Rollup::Day),
-            Some(Rollup::Week),
-            Some(Rollup::Month),
-        ] {
+        let rollups = Rollup::value_variants().iter().copied().map(Some);
+        for rollup in std::iter::once(None).chain(rollups) {
             assert_eq!(default_start(rollup, Timestamp::MIN), Timestamp::MIN);
         }
     }

@@ -110,16 +110,14 @@ impl Rollup {
 /// that suits the size of the rows.
 fn default_start(rollup: Option<Rollup>, end: Timestamp) -> Timestamp {
     match rollup {
-        None | Some(Rollup::Day) => end - SignedDuration::from_hours(7 * 24),
-        Some(Rollup::Week) => end - SignedDuration::from_hours(4 * 7 * 24),
+        None | Some(Rollup::Day) => end.checked_sub(SignedDuration::from_hours(7 * 24)),
+        Some(Rollup::Week) => end.checked_sub(SignedDuration::from_hours(4 * 7 * 24)),
         // Months are counted on the local calendar, as the periods are.
-        Some(Rollup::Month) => start_of_local_calendar_day(
-            local_calendar_date(end)
-                .checked_sub(6.months())
-                .unwrap_or(FIRST_DAY),
-        )
-        .expect(DAY_IN_RANGE),
+        Some(Rollup::Month) => local_calendar_date(end)
+            .checked_sub(6.months())
+            .and_then(start_of_local_calendar_day),
     }
+    .unwrap_or(Timestamp::MIN)
 }
 
 /// The number of usage requests in flight at one time for a list of runs.
@@ -191,7 +189,10 @@ pub(super) async fn cmd_runs_usage(
     let ends = period_ends(
         rollup,
         local_calendar_date(start),
-        local_calendar_date(end - SignedDuration::from_nanos(1)),
+        local_calendar_date(
+            end.checked_sub(SignedDuration::from_nanos(1))
+                .unwrap_or(Timestamp::MIN),
+        ),
     );
     let mut totals: BTreeMap<Date, (u64, f64)> = ends.iter().map(|end| (*end, (0, 0.0))).collect();
     if let (Some(oldest_end), Some(newest_end)) = (ends.first(), ends.last()) {
@@ -313,6 +314,18 @@ mod tests {
 
     fn date(text: &str) -> Date {
         text.parse().unwrap()
+    }
+
+    #[test]
+    fn default_start_holds_at_the_first_timestamp() {
+        for rollup in [
+            None,
+            Some(Rollup::Day),
+            Some(Rollup::Week),
+            Some(Rollup::Month),
+        ] {
+            assert_eq!(default_start(rollup, Timestamp::MIN), Timestamp::MIN);
+        }
     }
 
     #[test]

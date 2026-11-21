@@ -14,10 +14,10 @@
 //! in that order); fractional components like `1.5h` are rejected, since the
 //! bare-minutes form already covers that.
 
-use chrono::{
-    DateTime, Local, LocalResult, Months, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone,
-    Utc,
-};
+use jiff::civil::{Date, DateTime};
+use jiff::fmt::temporal::Pieces;
+use jiff::tz::{AmbiguousOffset, TimeZone};
+use jiff::{SignedDuration, Span, Timestamp};
 
 use std::error::Error;
 use std::fmt;
@@ -255,25 +255,24 @@ const DISPLAY_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
 
 /// Writes `time` as the local wall time, without the zone, such as
 /// `2026-05-27 08:25:13`.
-pub(crate) fn format_timestamp_for_display(time: DateTime<Utc>) -> String {
-    time.with_timezone(&Local)
-        .format(DISPLAY_FORMAT)
+pub(crate) fn format_timestamp_for_display(time: Timestamp) -> String {
+    TimeZone::system()
+        .to_datetime(time)
+        .strftime(DISPLAY_FORMAT)
         .to_string()
 }
 
 /// [`format_timestamp_for_display`] for an RFC 3339 string from the server.
 /// Returns the string as it is when it does not parse.
 pub(crate) fn format_rfc3339_for_display(raw: &str) -> String {
-    DateTime::parse_from_rfc3339(raw).map_or_else(
-        |_| raw.to_string(),
-        |time| format_timestamp_for_display(time.to_utc()),
-    )
+    raw.parse()
+        .map_or_else(|_| raw.to_string(), format_timestamp_for_display)
 }
 
 /// Reads a time relative to `now`: `now`, or a whole number of minutes,
 /// hours, days, weeks or months before it, such as `3 days ago`. A day is 24
 /// hours, and a month is a calendar month.
-fn parse_relative_time(text: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+fn parse_relative_time(text: &str, now: Timestamp) -> Option<Timestamp> {
     if text == "now" {
         return Some(now);
     }
@@ -286,71 +285,76 @@ fn parse_relative_time(text: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> 
     if !count.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    let count: u32 = count.parse().ok()?;
+    let count = i64::from(count.parse::<u32>().ok()?);
     let delta = match unit.strip_suffix('s').unwrap_or(unit) {
-        "minute" => TimeDelta::minutes(count.into()),
-        "hour" => TimeDelta::hours(count.into()),
-        "day" => TimeDelta::days(count.into()),
-        "week" => TimeDelta::weeks(count.into()),
-        "month" => return now.checked_sub_months(Months::new(count)),
+        "minute" => SignedDuration::from_mins(count),
+        "hour" => SignedDuration::from_hours(count),
+        "day" => SignedDuration::from_hours(count * 24),
+        "week" => SignedDuration::from_hours(count * 24 * 7),
+        "month" => {
+            let months = Span::new().try_months(count).ok()?;
+            let then = now.to_zoned(TimeZone::UTC).checked_sub(months).ok()?;
+            return Some(then.timestamp());
+        }
         _ => return None,
     };
-    now.checked_sub_signed(delta)
+    now.checked_sub(delta).ok()
 }
 
 /// Reads a timestamp argument: a date (the start of that day), a time as
 /// snouty prints it or with a `T`, an RFC 3339 time, or a time relative to
 /// the present, such as `3 days ago`. A value without an offset is a local
-/// wall time. A wall time that a clock change skips is an error.
-pub(crate) fn parse_timestamp_arg(text: &str) -> Result<DateTime<Utc>, String> {
-    if let Some(time) = parse_relative_time(text, Utc::now()) {
+/// wall time. A wall time that a clock change skips is an error, and so is a
+/// time outside the range of a timestamp.
+pub(crate) fn parse_timestamp_arg(text: &str) -> Result<Timestamp, String> {
+    let out_of_range = || {
+        format!(
+            "{text} is outside the range of a timestamp, {} to {}",
+            Timestamp::MIN,
+            Timestamp::MAX
+        )
+    };
+    if let Some(time) = parse_relative_time(text, Timestamp::now()) {
         return Ok(time);
     }
     if let Ok(time) = text.parse() {
         return Ok(time);
     }
-    if let Ok(date) = NaiveDate::parse_from_str(text, "%Y-%m-%d") {
-        return Ok(start_of_local_calendar_day(date));
+    // A time with an offset that parses only in pieces is out of range.
+    if Pieces::parse(text).is_ok_and(|pieces| pieces.offset().is_some()) {
+        return Err(out_of_range());
     }
-    let wall_time = NaiveDateTime::parse_from_str(text, DISPLAY_FORMAT)
-        // `NaiveDateTime`'s own parser reads the `T` form, and a fraction.
-        .or_else(|_| text.parse())
+    if let Ok(date) = Date::strptime("%Y-%m-%d", text) {
+        return start_of_local_calendar_day(date).map_err(|_| out_of_range());
+    }
+    let wall_time = DateTime::strptime(DISPLAY_FORMAT, text)
+        .or_else(|_| DateTime::strptime("%Y-%m-%dT%H:%M:%S%.f", text))
         .map_err(|_| {
             "expected a date (2026-10-01), a time as snouty prints it \
              (2026-10-01 12:00:00), an RFC 3339 time (2026-10-01T12:00:00Z), or a \
              relative time (now, 3 days ago)"
                 .to_string()
         })?;
-    instant_of_wall_time(wall_time).ok_or_else(|| {
-        format!("{text} does not exist in the local timezone (a clock change skips it)")
-    })
+    let ambiguous = TimeZone::system().to_ambiguous_timestamp(wall_time);
+    if matches!(ambiguous.offset(), AmbiguousOffset::Gap { .. }) {
+        return Err(format!(
+            "{text} does not exist in the local timezone (a clock change skips it)"
+        ));
+    }
+    // A clock change shows the time twice: take the earlier instant.
+    ambiguous.earlier().map_err(|_| out_of_range())
 }
 
 /// The date of the local calendar day that holds `instant`.
-pub(crate) fn local_calendar_date(instant: DateTime<Utc>) -> NaiveDate {
-    instant.with_timezone(&Local).date_naive()
+pub(crate) fn local_calendar_date(instant: Timestamp) -> Date {
+    TimeZone::system().to_datetime(instant).date()
 }
 
-/// The first instant of the local calendar day `date`.
-pub(crate) fn start_of_local_calendar_day(date: NaiveDate) -> DateTime<Utc> {
-    // A few zones skip midnight: the day then starts at its first minute that
-    // exists.
-    (0..24 * 60)
-        .find_map(|minute| {
-            instant_of_wall_time(date.and_time(NaiveTime::MIN) + TimeDelta::minutes(minute))
-        })
-        .expect("a calendar day has a minute that exists")
-}
-
-/// The instant at which the local clock shows `wall_time`, or `None` when a
-/// clock change skips it.
-fn instant_of_wall_time(wall_time: NaiveDateTime) -> Option<DateTime<Utc>> {
-    match Local.from_local_datetime(&wall_time) {
-        LocalResult::Single(time) => Some(time.to_utc()),
-        // A clock change shows the time twice: take the earlier instant.
-        LocalResult::Ambiguous(a, b) => Some(a.min(b).to_utc()),
-        LocalResult::None => None,
-    }
+/// The first instant of the local calendar day `date`. A few zones skip
+/// midnight: the day then starts at the end of the skipped time. Fails when
+/// the day is outside the range of a timestamp.
+pub(crate) fn start_of_local_calendar_day(date: Date) -> Result<Timestamp, jiff::Error> {
+    date.to_zoned(TimeZone::system()).map(|day| day.timestamp())
 }
 
 #[cfg(test)]
@@ -551,7 +555,7 @@ mod tests {
                 .min_value(0)
                 .max_value(250_000_000_000),
         );
-        let time = DateTime::from_timestamp(seconds, 0).unwrap();
+        let time = Timestamp::from_second(seconds).unwrap();
         let printed = format_timestamp_for_display(time);
         // A wall time that a clock change shows twice reads as the earlier
         // instant, so `expected` is `time` or an instant before it.
@@ -560,40 +564,28 @@ mod tests {
         assert_eq!(format_timestamp_for_display(expected), printed);
         let t_form = printed.replace(' ', "T");
         assert_eq!(parse_timestamp_arg(&t_form), Ok(expected), "{printed}");
-        assert_eq!(parse_timestamp_arg(&time.to_rfc3339()), Ok(time));
+        assert_eq!(parse_timestamp_arg(&time.to_string()), Ok(time));
         let date = local_calendar_date(time);
         assert_eq!(
-            parse_timestamp_arg(&date.format("%Y-%m-%d").to_string()),
-            Ok(start_of_local_calendar_day(date))
+            parse_timestamp_arg(&date.to_string()),
+            start_of_local_calendar_day(date).map_err(|err| err.to_string())
         );
     }
 
     #[test]
     fn parse_relative_time_counts_back_from_now() {
-        let now: DateTime<Utc> = "2026-03-31T12:00:00Z".parse().unwrap();
-        let at = |text: &str| parse_relative_time(text, now).map(|time| time.to_rfc3339());
-        assert_eq!(at("now").as_deref(), Some("2026-03-31T12:00:00+00:00"));
+        let now: Timestamp = "2026-03-31T12:00:00Z".parse().unwrap();
+        let at = |text: &str| parse_relative_time(text, now).map(|time| time.to_string());
+        assert_eq!(at("now").as_deref(), Some("2026-03-31T12:00:00Z"));
         assert_eq!(
             at("90 minutes ago").as_deref(),
-            Some("2026-03-31T10:30:00+00:00")
+            Some("2026-03-31T10:30:00Z")
         );
-        assert_eq!(
-            at("1 hour ago").as_deref(),
-            Some("2026-03-31T11:00:00+00:00")
-        );
-        assert_eq!(
-            at("3 days ago").as_deref(),
-            Some("2026-03-28T12:00:00+00:00")
-        );
-        assert_eq!(
-            at("2 weeks ago").as_deref(),
-            Some("2026-03-17T12:00:00+00:00")
-        );
+        assert_eq!(at("1 hour ago").as_deref(), Some("2026-03-31T11:00:00Z"));
+        assert_eq!(at("3 days ago").as_deref(), Some("2026-03-28T12:00:00Z"));
+        assert_eq!(at("2 weeks ago").as_deref(), Some("2026-03-17T12:00:00Z"));
         // February has no day 31: a month ends on its last day.
-        assert_eq!(
-            at("1 month ago").as_deref(),
-            Some("2026-02-28T12:00:00+00:00")
-        );
+        assert_eq!(at("1 month ago").as_deref(), Some("2026-02-28T12:00:00Z"));
         for text in [
             "",
             "ago",
@@ -606,6 +598,14 @@ mod tests {
             "1.5 hours ago",
         ] {
             assert_eq!(at(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_time_outside_the_range_of_a_timestamp_names_the_range() {
+        for text in ["-9999-01-01", "9999-12-31 23:59:59", "9999-12-31T23:59:59Z"] {
+            let err = parse_timestamp_arg(text).unwrap_err();
+            assert!(err.contains("outside the range of a timestamp"), "{err}");
         }
     }
 

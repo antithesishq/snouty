@@ -9,9 +9,9 @@
 
 use std::{fmt, path::PathBuf, str::FromStr};
 
-use chrono::{TimeDelta, Utc};
 use color_eyre::Section;
 use color_eyre::eyre::{OptionExt, Report, Result, eyre};
+use jiff::{SignedDuration, Timestamp};
 use url::Url;
 
 use crate::api::AntithesisApi;
@@ -25,7 +25,7 @@ pub const USERNAME: &str = "snouty-token";
 
 /// A registry client uses one secret for a whole push, so a token that
 /// [`secret`] returns must outlive the push.
-const TOKEN_MIN_LIFETIME: TimeDelta = TimeDelta::hours(2);
+const TOKEN_MIN_LIFETIME: SignedDuration = SignedDuration::from_hours(2);
 
 /// A container registry to push images to: a host, with an optional port
 /// and path, such as `registry.example.com:5000/team`.
@@ -306,7 +306,7 @@ pub async fn launch_secret(api: &AntithesisApi) -> Result<Option<String>> {
 async fn oauth_secret(api: &AntithesisApi, token: &RefreshableOAuthToken) -> Result<String> {
     let near_expiry = token
         .expires_at()
-        .is_none_or(|expires_at| expires_at - Utc::now() <= TOKEN_MIN_LIFETIME);
+        .is_none_or(|expires_at| expires_at.duration_since(Timestamp::now()) <= TOKEN_MIN_LIFETIME);
     if near_expiry && let Err(err) = api.refresh_authentication().await {
         if token.expired() {
             return Err(err);
@@ -445,7 +445,7 @@ mod tests {
         let server = MockServer::start().await;
         mount_refresh(&server, FAKE_ACCESS_TOKEN_A, 0).await;
         let dir = tempfile::TempDir::new().unwrap();
-        let fresh = paseto_expiring_in(TimeDelta::minutes(125));
+        let fresh = paseto_expiring_in(SignedDuration::from_mins(125));
         let auth = oauth_credential_in(dir.path(), &fresh, Some(FAKE_REFRESH_TOKEN_A));
 
         assert_eq!(secret(&api(&server.uri(), auth)).await.unwrap(), fresh);
@@ -458,7 +458,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let auth = oauth_credential_in(
             dir.path(),
-            paseto_expiring_in(TimeDelta::minutes(119)),
+            paseto_expiring_in(SignedDuration::from_mins(119)),
             Some(FAKE_REFRESH_TOKEN_A),
         );
 
@@ -486,14 +486,18 @@ mod tests {
     async fn without_a_refresh_token_only_an_unexpired_token_is_used() {
         let dir = tempfile::TempDir::new().unwrap();
         for valid in [
-            paseto_expiring_in(TimeDelta::days(1000)),
-            paseto_expiring_in(TimeDelta::minutes(119)),
+            paseto_expiring_in(SignedDuration::from_hours(1000 * 24)),
+            paseto_expiring_in(SignedDuration::from_mins(119)),
         ] {
             let auth = oauth_credential_in(dir.path(), &valid, None);
             assert_eq!(secret(&api(NO_SERVER, auth)).await.unwrap(), valid);
         }
 
-        let auth = oauth_credential_in(dir.path(), paseto_expiring_in(-TimeDelta::days(1)), None);
+        let auth = oauth_credential_in(
+            dir.path(),
+            paseto_expiring_in(-SignedDuration::from_hours(24)),
+            None,
+        );
         let err = secret(&api(NO_SERVER, auth)).await.unwrap_err();
         assert_eq!(
             err.to_string(),
@@ -522,7 +526,7 @@ mod tests {
         .unwrap();
         let auth = oauth_credential_in(
             dir.path(),
-            paseto_expiring_in(TimeDelta::minutes(119)),
+            paseto_expiring_in(SignedDuration::from_mins(119)),
             Some(FAKE_REFRESH_TOKEN_A),
         );
 
@@ -542,11 +546,11 @@ mod tests {
             .await;
         let dir = tempfile::TempDir::new().unwrap();
 
-        let valid = paseto_expiring_in(TimeDelta::minutes(119));
+        let valid = paseto_expiring_in(SignedDuration::from_mins(119));
         let auth = oauth_credential_in(dir.path(), &valid, Some(FAKE_REFRESH_TOKEN_A));
         assert_eq!(secret(&api(&server.uri(), auth)).await.unwrap(), valid);
 
-        let expired = paseto_expiring_in(-TimeDelta::days(1));
+        let expired = paseto_expiring_in(-SignedDuration::from_hours(24));
         let auth = oauth_credential_in(dir.path(), &expired, Some(FAKE_REFRESH_TOKEN_A));
         let err = secret(&api(&server.uri(), auth)).await.unwrap_err();
         assert!(err.to_string().contains("snouty login"), "{err}");

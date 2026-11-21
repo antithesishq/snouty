@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::{Engine as _, prelude::BASE64_STANDARD};
-use chrono::Utc;
 use color_eyre::{
     Section, SectionExt,
     eyre::{Context, OptionExt, Result, eyre},
@@ -859,7 +858,7 @@ impl ContainerRuntime for DockerRuntime {
 /// A config image name with no registry and a unique tag: a timestamp and
 /// a random suffix.
 pub fn new_config_image_name() -> String {
-    let ts = Utc::now().format("%Y%m%d-%H%M%S");
+    let ts = jiff::Timestamp::now().strftime("%Y%m%d-%H%M%S");
     let mut buf = [0u8; 2];
     getrandom::fill(&mut buf).expect("failed to get random bytes");
     let suffix = format!("{:02x}{:02x}", buf[0], buf[1]);

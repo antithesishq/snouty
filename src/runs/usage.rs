@@ -4,11 +4,12 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 
-use chrono::{DateTime, Datelike, Days, Months, NaiveDate, TimeDelta, Utc};
 use clap::ValueEnum;
 use color_eyre::Section;
 use color_eyre::eyre::Result;
 use futures_util::{StreamExt, TryStreamExt, stream};
+use jiff::civil::Date;
+use jiff::{SignedDuration, Timestamp, ToSpan};
 use log::debug;
 use serde::Serialize;
 
@@ -34,8 +35,8 @@ pub enum Rollup {
 struct UsageRow {
     run_id: String,
     hours: f64,
-    start_time: DateTime<Utc>,
-    end_time: DateTime<Utc>,
+    start_time: Timestamp,
+    end_time: Timestamp,
 }
 
 impl From<UsageEntry> for UsageRow {
@@ -55,9 +56,9 @@ struct PeriodUsage {
     /// The first day of the period. The table shows it; the JSON leaves it
     /// out, because `date` with the rollup names the period.
     #[serde(skip)]
-    start: NaiveDate,
+    start: Date,
     /// The last day of the period.
-    date: NaiveDate,
+    date: Date,
     runs: u64,
     /// The exact sum. The JSON rounds it to hundredths, so that it shows no
     /// floating-point noise; the table rounds it once, to one decimal.
@@ -76,48 +77,47 @@ fn serialize_hundredths<S: serde::Serializer>(
 
 /// No usage predates the Unix epoch, so no period does. This also bounds the
 /// number of periods for a very old `--after`.
-const FIRST_DAY: NaiveDate = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+const FIRST_DAY: Date = jiff::civil::date(1970, 1, 1);
+
+/// Each period day, and the day after the last period, is between the week of
+/// [`FIRST_DAY`] and the month after the present, so a timestamp can hold it.
+const DAY_IN_RANGE: &str = "a period day is in the range of a timestamp";
 
 impl Rollup {
     /// The first day of the period that holds `date`.
-    fn period_start(self, date: NaiveDate) -> NaiveDate {
+    fn period_start(self, date: Date) -> Date {
         match self {
             Rollup::Day => date,
-            Rollup::Week => date - Days::new(u64::from(date.weekday().num_days_from_monday())),
-            Rollup::Month => date.with_day(1).expect("every month has a first day"),
+            Rollup::Week => date - date.weekday().to_monday_zero_offset().days(),
+            Rollup::Month => date.first_of_month(),
         }
     }
 
     /// The last day of the period that holds `date`. A period that ends after
     /// the last representable date ends on that date.
-    fn period_end(self, date: NaiveDate) -> NaiveDate {
+    fn period_end(self, date: Date) -> Date {
         match self {
-            Rollup::Day => Some(date),
-            Rollup::Week => date.checked_add_days(Days::new(
-                6 - u64::from(date.weekday().num_days_from_monday()),
-            )),
-            Rollup::Month => date
-                .with_day(1)
-                .and_then(|first| first.checked_add_months(Months::new(1)))
-                .and_then(|next| next.pred_opt()),
+            Rollup::Day => date,
+            Rollup::Week => date
+                .checked_add((6 - date.weekday().to_monday_zero_offset()).days())
+                .unwrap_or(Date::MAX),
+            Rollup::Month => date.last_of_month(),
         }
-        .unwrap_or(NaiveDate::MAX)
     }
 }
 
 /// Where the output starts when `--after` is not set: a time before `end`
 /// that suits the size of the rows.
-fn default_start(rollup: Option<Rollup>, end: DateTime<Utc>) -> DateTime<Utc> {
+fn default_start(rollup: Option<Rollup>, end: Timestamp) -> Timestamp {
     match rollup {
-        None | Some(Rollup::Day) => end - TimeDelta::weeks(1),
-        Some(Rollup::Week) => end - TimeDelta::weeks(4),
+        None | Some(Rollup::Day) => end.checked_sub(SignedDuration::from_hours(7 * 24)),
+        Some(Rollup::Week) => end.checked_sub(SignedDuration::from_hours(4 * 7 * 24)),
         // Months are counted on the local calendar, as the periods are.
-        Some(Rollup::Month) => start_of_local_calendar_day(
-            local_calendar_date(end)
-                .checked_sub_months(Months::new(6))
-                .unwrap_or(FIRST_DAY),
-        ),
+        Some(Rollup::Month) => local_calendar_date(end)
+            .checked_sub(6.months())
+            .and_then(start_of_local_calendar_day),
     }
+    .unwrap_or(Timestamp::MIN)
 }
 
 /// The number of usage requests in flight at one time for a list of runs.
@@ -168,7 +168,7 @@ pub(super) async fn cmd_runs_usage(
 
     // No run ends after the present, so a later `--before` selects the same
     // runs.
-    let now = Utc::now();
+    let now = Timestamp::now();
     let end = before.map_or(now, |time| time.min(now));
     let start = after.unwrap_or_else(|| default_start(rollup, end));
 
@@ -189,15 +189,21 @@ pub(super) async fn cmd_runs_usage(
     let ends = period_ends(
         rollup,
         local_calendar_date(start),
-        local_calendar_date(end - TimeDelta::nanoseconds(1)),
+        local_calendar_date(
+            end.checked_sub(SignedDuration::from_nanos(1))
+                .unwrap_or(Timestamp::MIN),
+        ),
     );
-    let mut totals: BTreeMap<NaiveDate, (u64, f64)> =
-        ends.iter().map(|end| (*end, (0, 0.0))).collect();
+    let mut totals: BTreeMap<Date, (u64, f64)> = ends.iter().map(|end| (*end, (0, 0.0))).collect();
     if let (Some(oldest_end), Some(newest_end)) = (ends.first(), ends.last()) {
         // The default start shows the whole of its period. A filter cuts its
         // period.
-        let first = start_of_local_calendar_day(rollup.period_start(*oldest_end));
-        let last = start_of_local_calendar_day(*newest_end + Days::new(1));
+        let first =
+            start_of_local_calendar_day(rollup.period_start(*oldest_end)).expect(DAY_IN_RANGE);
+        let last = newest_end
+            .tomorrow()
+            .and_then(start_of_local_calendar_day)
+            .expect(DAY_IN_RANGE);
         let after = after.map_or(first, |time| time.max(first));
         let before = before.map_or(last, |time| time.min(last));
         let entries = api.stream_usage(after, Some(before));
@@ -224,13 +230,13 @@ pub(super) async fn cmd_runs_usage(
 
 /// The last days of the periods from the one that holds `oldest` to the one
 /// that holds `newest`, oldest first.
-fn period_ends(rollup: Rollup, oldest: NaiveDate, newest: NaiveDate) -> Vec<NaiveDate> {
+fn period_ends(rollup: Rollup, oldest: Date, newest: Date) -> Vec<Date> {
     let last = rollup.period_end(newest);
     let mut ends = Vec::new();
     let mut end = rollup.period_end(oldest.max(FIRST_DAY));
     while end <= last {
         ends.push(end);
-        let Some(next) = end.succ_opt() else { break };
+        let Ok(next) = end.tomorrow() else { break };
         end = rollup.period_end(next);
     }
     ends
@@ -306,8 +312,16 @@ mod tests {
     use super::*;
     use hegel::generators::{self, Generator};
 
-    fn date(text: &str) -> NaiveDate {
+    fn date(text: &str) -> Date {
         text.parse().unwrap()
+    }
+
+    #[test]
+    fn default_start_holds_at_the_first_timestamp() {
+        let rollups = Rollup::value_variants().iter().copied().map(Some);
+        for rollup in std::iter::once(None).chain(rollups) {
+            assert_eq!(default_start(rollup, Timestamp::MIN), Timestamp::MIN);
+        }
     }
 
     #[test]
@@ -342,7 +356,7 @@ mod tests {
         );
     }
 
-    fn dates(texts: &[&str]) -> Vec<NaiveDate> {
+    fn dates(texts: &[&str]) -> Vec<Date> {
         texts.iter().map(|text| date(text)).collect()
     }
 
@@ -379,22 +393,26 @@ mod tests {
     fn period_end_closes_the_period_of_date(tc: hegel::TestCase) {
         let rollup =
             tc.draw(generators::sampled_from(Rollup::value_variants().to_vec()).print_as_debug());
-        let days = tc.draw(generators::integers::<u64>().max_value(200_000));
-        let date = date("1900-01-01") + Days::new(days);
+        let days = tc.draw(
+            generators::integers::<i64>()
+                .min_value(0)
+                .max_value(200_000),
+        );
+        let date = date("1900-01-01") + days.days();
         let end = rollup.period_end(date);
         let start = rollup.period_start(date);
         assert!(start <= date && date <= end);
         assert_eq!(rollup.period_start(end), start);
-        assert!(rollup.period_end(start - Days::new(1)) < start);
+        assert!(rollup.period_end(start.yesterday().unwrap()) < start);
         assert!(end >= date);
         assert_eq!(rollup.period_end(end), end);
-        let next = end.succ_opt().unwrap();
+        let next = end.tomorrow().unwrap();
         assert!(rollup.period_end(next) > end);
         match rollup {
             Rollup::Day => assert_eq!(end, date),
-            Rollup::Week => assert_eq!(next.weekday(), chrono::Weekday::Mon),
+            Rollup::Week => assert_eq!(next.weekday(), jiff::civil::Weekday::Monday),
             Rollup::Month => assert_eq!(next.day(), 1),
         }
-        assert!((end - date).num_days() < 31);
+        assert!((end - date).get_days() < 31);
     }
 }

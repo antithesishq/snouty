@@ -2,10 +2,10 @@
 //! signature.
 
 use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 
 /// Try to parse the supplied string as a PASETO token and return the `exp` claim
-pub(super) fn try_get_expiry_from_token(token: &str) -> Option<DateTime<Utc>> {
+pub(super) fn try_get_expiry_from_token(token: &str) -> Option<Timestamp> {
     let mut parts = token.splitn(4, '.');
     let _version = parts.next()?;
     let purpose = parts.next()?;
@@ -17,13 +17,13 @@ pub(super) fn try_get_expiry_from_token(token: &str) -> Option<DateTime<Utc>> {
 }
 
 /// The `exp` claim of a JWT, such as a GitHub Actions OIDC token.
-pub(super) fn try_get_expiry_from_jwt(token: &str) -> Option<DateTime<Utc>> {
+pub(super) fn try_get_expiry_from_jwt(token: &str) -> Option<Timestamp> {
     expiry_of_claims(token.split('.').nth(1)?)
 }
 
 /// The `exp` claim of `payload`, the base64url claims of a token. The JSON
 /// object can be followed by other bytes, such as the signature of a PASETO.
-fn expiry_of_claims(payload: &str) -> Option<DateTime<Utc>> {
+fn expiry_of_claims(payload: &str) -> Option<Timestamp> {
     let bytes = BASE64_URL_SAFE_NO_PAD.decode(payload).ok()?;
     // A map, not a struct with an `exp` field, which serde would also read
     // from an array such as `[0]`.
@@ -34,12 +34,12 @@ fn expiry_of_claims(payload: &str) -> Option<DateTime<Utc>> {
     parse_exp_claim(claims.get("exp")?)
 }
 
-fn parse_exp_claim(exp: &serde_json::Value) -> Option<DateTime<Utc>> {
+fn parse_exp_claim(exp: &serde_json::Value) -> Option<Timestamp> {
     if let Some(text) = exp.as_str() {
-        return Some(DateTime::parse_from_rfc3339(text).ok()?.with_timezone(&Utc));
+        return text.parse().ok();
     }
     if let Some(secs) = exp.as_u64() {
-        return DateTime::from_timestamp(i64::try_from(secs).ok()?, 0);
+        return Timestamp::from_second(i64::try_from(secs).ok()?).ok();
     }
     None
 }
@@ -57,9 +57,7 @@ mod tests {
     fn expiry_parsed_from_public_paseto_rfc3339_exp() {
         let token =
             public_paseto_with_claims(br#"{"sub":"user","exp":"2039-01-01T00:00:00+00:00"}"#);
-        let expected = DateTime::parse_from_rfc3339("2039-01-01T00:00:00+00:00")
-            .unwrap()
-            .with_timezone(&Utc);
+        let expected = "2039-01-01T00:00:00Z".parse().unwrap();
         assert_eq!(try_get_expiry_from_token(&token), Some(expected));
     }
 
@@ -68,7 +66,7 @@ mod tests {
         let token = public_paseto_with_claims(br#"{"exp":2145916800}"#);
         assert_eq!(
             try_get_expiry_from_token(&token),
-            DateTime::from_timestamp(2_145_916_800, 0)
+            Timestamp::from_second(2_145_916_800).ok()
         );
     }
 
@@ -112,7 +110,7 @@ mod tests {
         // synthetic tokens above whose "signature" is 64 zero bytes.
         assert_eq!(
             try_get_expiry_from_token(FAKE_PASETO_A),
-            DateTime::from_timestamp(CANONICAL_VECTOR_EXP_UNIX, 0)
+            Timestamp::from_second(CANONICAL_VECTOR_EXP_UNIX).ok()
         );
     }
 
@@ -123,7 +121,7 @@ mod tests {
         // Enterprises"). Confirms the 4th `.`-delimited segment is ignored.
         assert_eq!(
             try_get_expiry_from_token(FAKE_PASETO_B),
-            DateTime::from_timestamp(CANONICAL_VECTOR_EXP_UNIX, 0)
+            Timestamp::from_second(CANONICAL_VECTOR_EXP_UNIX).ok()
         );
     }
 
@@ -145,16 +143,15 @@ mod tests {
     /// segment is the base64url of a JSON value, followed for a PASETO
     /// (`signed`) by the bytes of a signature, or text that is not
     /// base64url-no-pad. Only an object with an `exp` of an RFC
-    /// 3339 string, or of a whole number of seconds that chrono can hold, has
+    /// 3339 string, or of a whole number of seconds that a timestamp can hold, has
     /// an expiry.
-    fn claims_segment(tc: &hegel::TestCase, signed: bool) -> (String, Option<DateTime<Utc>>) {
-        let instant = DateTime::from_timestamp(
+    fn claims_segment(tc: &hegel::TestCase, signed: bool) -> (String, Option<Timestamp>) {
+        let instant = Timestamp::from_second(
             tc.draw(
                 generators::integers::<i64>()
                     .min_value(0)
                     .max_value(1 << 35),
             ),
-            0,
         )
         .unwrap();
         let n = tc.draw(generators::integers::<u64>());
@@ -164,10 +161,10 @@ mod tests {
                 Some(json!(n)),
                 i64::try_from(n)
                     .ok()
-                    .and_then(|s| DateTime::from_timestamp(s, 0)),
+                    .and_then(|s| Timestamp::from_second(s).ok()),
             ),
-            2 => (Some(json!(instant.to_rfc3339())), Some(instant)),
-            3 => (Some(json!(-instant.timestamp() - 1)), None),
+            2 => (Some(json!(instant.to_string())), Some(instant)),
+            3 => (Some(json!(-instant.as_second() - 1)), None),
             4 => (Some(json!(tc.draw(generators::floats::<f64>()))), None),
             5 => (
                 Some(json!(format!("x{}", tc.draw(generators::text())))),

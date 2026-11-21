@@ -1408,8 +1408,8 @@ impl AntithesisApi {
     /// select on the end time of a run: `[ended_after, ended_before)`.
     pub fn stream_usage(
         &self,
-        ended_after: chrono::DateTime<chrono::Utc>,
-        ended_before: Option<chrono::DateTime<chrono::Utc>>,
+        ended_after: jiff::Timestamp,
+        ended_before: Option<jiff::Timestamp>,
     ) -> impl futures_util::Stream<Item = Result<UsageEntry>> + '_ {
         paginate_limited(
             u64::MAX,
@@ -1779,9 +1779,9 @@ pub struct RunsFilterOptions {
     pub launcher: Option<String>,
     /// Runs created after this time. The server leaves out a run created at
     /// this time (observed on the antithesis-orbitinghail tenant, release 67).
-    pub created_after: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_after: Option<jiff::Timestamp>,
     /// Runs created at or before this time, on the same tenant.
-    pub created_before: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_before: Option<jiff::Timestamp>,
 }
 
 fn paginate_exhaust<'a, T, F, Fut>(mut fetch: F) -> impl futures_util::Stream<Item = Result<T>> + 'a
@@ -2256,7 +2256,7 @@ enum ApiFailure {
 /// The `Retry-After` of an error response, and the time that it names.
 struct RetryAfter {
     seconds: u32,
-    at: chrono::DateTime<chrono::Utc>,
+    at: jiff::Timestamp,
 }
 
 impl RetryAfter {
@@ -2264,7 +2264,7 @@ impl RetryAfter {
         let seconds = retry_after_seconds(headers)?;
         Some(Self {
             seconds,
-            at: chrono::Utc::now() + chrono::TimeDelta::seconds(seconds.into()),
+            at: jiff::Timestamp::now() + jiff::SignedDuration::from_secs(seconds.into()),
         })
     }
 }
@@ -2272,7 +2272,7 @@ impl RetryAfter {
 /// `30s (2026-10-22T03:47:27Z)`: the wait, and the time in RFC 3339 UTC.
 impl std::fmt::Display for RetryAfter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let at = self.at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let at = self.at.strftime("%Y-%m-%dT%H:%M:%SZ");
         write!(f, "{}s ({at})", self.seconds)
     }
 }
@@ -3497,9 +3497,9 @@ mod tests {
         rate_limit(&mock_server, u64::MAX, "3600").await;
         let api = test_api_optionally_with_cache(&mock_server, None);
 
-        let before = chrono::Utc::now();
+        let before = jiff::Timestamp::now();
         let report = api.get_run("run-1").await.unwrap_err();
-        let after = chrono::Utc::now();
+        let after = jiff::Timestamp::now();
 
         assert_eq!(crate::error::api_error_status(&report), Some(429));
         let rendered = format!("{report:?}");
@@ -3508,10 +3508,10 @@ mod tests {
             .and_then(|(_, rest)| rest.split_once(") to respect the server's rate limit"))
             .map_or_else(
                 || panic!("no retry time in: {rendered}"),
-                |(at, _)| chrono::DateTime::parse_from_rfc3339(at).unwrap(),
+                |(at, _)| at.parse::<jiff::Timestamp>().unwrap(),
             );
-        let hour = chrono::TimeDelta::hours(1);
-        let second = chrono::TimeDelta::seconds(1);
+        let hour = jiff::SignedDuration::from_hours(1);
+        let second = jiff::SignedDuration::from_secs(1);
         assert!(before + hour - second <= retry_at && retry_at <= after + hour);
     }
 
@@ -4830,7 +4830,7 @@ mod tests {
         let creds_dir = TempDir::new().unwrap();
         let auth = oauth_credential_in(
             creds_dir.path(),
-            paseto_expiring_in(-chrono::TimeDelta::minutes(1)),
+            paseto_expiring_in(-jiff::SignedDuration::from_mins(1)),
             Some(FAKE_REFRESH_TOKEN_A),
         );
         let api = AntithesisApi::build(
@@ -4865,7 +4865,7 @@ mod tests {
         let creds_dir = TempDir::new().unwrap();
         let auth = oauth_credential_in(
             creds_dir.path(),
-            paseto_expiring_in(-chrono::TimeDelta::minutes(1)),
+            paseto_expiring_in(-jiff::SignedDuration::from_mins(1)),
             None,
         );
         let api = AntithesisApi::build(
@@ -4937,7 +4937,7 @@ mod tests {
         let creds_dir = TempDir::new().unwrap();
         let auth = oauth_with_newer_stored_token(
             &creds_dir,
-            paseto_expiring_in(-chrono::TimeDelta::minutes(1)),
+            paseto_expiring_in(-jiff::SignedDuration::from_mins(1)),
         );
         let api = AntithesisApi::build(
             &Settings::for_test_base_url(&mock_server.uri()),
@@ -5197,8 +5197,8 @@ mod tests {
     async fn oidc_401_or_403_fetches_a_new_token_and_retries_once() {
         for status in [401, 403] {
             let server = MockServer::start().await;
-            let first = jwt_expiring_in(chrono::TimeDelta::minutes(5));
-            let second = jwt_expiring_in(chrono::TimeDelta::minutes(6));
+            let first = jwt_expiring_in(jiff::SignedDuration::from_mins(5));
+            let second = jwt_expiring_in(jiff::SignedDuration::from_mins(6));
             let api = oidc_api(&server, &first, &second).await;
             mount_run_for_oidc_token(&server, &first, status).await;
             mount_run_for_oidc_token(&server, &second, 200).await;
@@ -5214,8 +5214,8 @@ mod tests {
     #[tokio::test]
     async fn a_token_that_expires_during_a_rate_limit_wait_is_refreshed_after_its_403() {
         let server = MockServer::start().await;
-        let first = jwt_expiring_in(chrono::TimeDelta::minutes(5));
-        let second = jwt_expiring_in(chrono::TimeDelta::minutes(6));
+        let first = jwt_expiring_in(jiff::SignedDuration::from_mins(5));
+        let second = jwt_expiring_in(jiff::SignedDuration::from_mins(6));
         let api = oidc_api(&server, &first, &second).await;
         Mock::given(path("/api/v0/runs/run-1"))
             .respond_with(ResponseTemplate::new(429))

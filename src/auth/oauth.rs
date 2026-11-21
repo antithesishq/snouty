@@ -8,9 +8,9 @@ use std::{
     time::Duration,
 };
 
-use chrono::{DateTime, Utc};
 use color_eyre::Section;
 use color_eyre::eyre::{Report, Result};
+use jiff::Timestamp;
 use log::warn;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -83,14 +83,14 @@ impl RefreshableOAuthToken {
 
     /// When the expiry of the access token is known, the time at which it
     /// expires: its `exp` claim.
-    pub(crate) fn expires_at(&self) -> Option<DateTime<Utc>> {
+    pub(crate) fn expires_at(&self) -> Option<Timestamp> {
         try_get_expiry_from_token(&self.current().antithesis_token)
     }
 
     /// Whether the expiry of the access token is known and in the past.
     pub(crate) fn expired(&self) -> bool {
         self.expires_at()
-            .is_some_and(|expires_at| Utc::now() >= expires_at)
+            .is_some_and(|expires_at| Timestamp::now() >= expires_at)
     }
 
     /// Replaces the access token with a newer one, in every clone: the one
@@ -555,7 +555,7 @@ mod tests {
                 refresh_token: Some(FAKE_REFRESH_TOKEN_B.to_owned()),
             })
             .unwrap();
-        let expired_token = paseto_expiring_in(-chrono::TimeDelta::minutes(1));
+        let expired_token = paseto_expiring_in(-jiff::SignedDuration::from_mins(1));
         let token = RefreshableOAuthToken::new(
             store,
             expired_token.clone(),
@@ -575,8 +575,8 @@ mod tests {
         let oauth = |token: String| {
             RefreshableOAuthToken::new(store.clone(), token, Some(FAKE_REFRESH_TOKEN_A.to_owned()))
         };
-        assert!(oauth(paseto_expiring_in(-chrono::TimeDelta::minutes(1))).expired());
-        assert!(!oauth(paseto_expiring_in(chrono::TimeDelta::minutes(1))).expired());
+        assert!(oauth(paseto_expiring_in(-jiff::SignedDuration::from_mins(1))).expired());
+        assert!(!oauth(paseto_expiring_in(jiff::SignedDuration::from_mins(1))).expired());
         // An access token whose expiry cannot be read.
         assert!(!oauth(FAKE_ACCESS_TOKEN_A.to_owned()).expired());
     }

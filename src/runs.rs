@@ -15,7 +15,7 @@ use log::debug;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 
 use crate::api::{
     AntithesisApi, Event, EventProperty, ExecOutput, ExecRequest, MIN_STREAM_RELEASE, Moment,
@@ -381,8 +381,8 @@ fn terminal_width() -> usize {
 /// Compact relative age for the runs table ("21h ago", "2d ago"), trading
 /// prose ("21 hours ago") for column width. Rough by design: largest whole
 /// unit only. Future timestamps (clock skew) clamp to "0s ago".
-fn relative_time(then: DateTime<Utc>) -> String {
-    let secs = (Utc::now() - then).num_seconds().max(0);
+fn relative_time(then: Timestamp) -> String {
+    let secs = Timestamp::now().duration_since(then).as_secs().max(0);
     let (value, unit) = match secs {
         s if s < 60 => (s, "s"),
         s if s < 3600 => (s / 60, "m"),
@@ -405,10 +405,10 @@ fn format_minutes(raw: &str) -> String {
 }
 
 /// Wall-clock time the run was (or has been) active, rendered through
-/// [`HumanDuration`] in `h`/`m`/`s` units. A still-running run counts up to `end` (`Utc::now()` at the call
+/// [`HumanDuration`] in `h`/`m`/`s` units. A still-running run counts up to `end` (`Timestamp::now()` at the call
 /// site). Returns `None` on clock skew (a negative span).
-fn elapsed_duration(started: DateTime<Utc>, end: DateTime<Utc>) -> Option<HumanDuration> {
-    let secs = (end - started).num_seconds();
+fn elapsed_duration(started: Timestamp, end: Timestamp) -> Option<HumanDuration> {
+    let secs = end.duration_since(started).as_secs();
     (secs >= 0).then(|| HumanDuration::from_seconds(secs as u64))
 }
 
@@ -486,7 +486,8 @@ async fn cmd_runs_wait(
             eprintln!("run {run_id} is {label}");
             last_status = Some(label);
         }
-        if !warned_over_schedule && let Some(warning) = over_schedule_warning(run, Utc::now()) {
+        if !warned_over_schedule && let Some(warning) = over_schedule_warning(run, Timestamp::now())
+        {
             eprintln!("warning: {warning}");
             warned_over_schedule = true;
         }
@@ -612,7 +613,7 @@ async fn fetch_run_after(
 /// duration (`antithesis.duration`); the wall clock also spans provisioning,
 /// setup, and teardown, so some overshoot is normal. Runs that haven't started
 /// or record no usable scheduled duration never warn.
-fn over_schedule_warning(run: &RunDetail, now: DateTime<Utc>) -> Option<String> {
+fn over_schedule_warning(run: &RunDetail, now: Timestamp) -> Option<String> {
     let scheduled = run.requested_duration()?.parse::<HumanDuration>().ok()?;
     let elapsed = elapsed_duration(run.started_at?, run.completed_at.unwrap_or(now))?;
     // A zero schedule would flag every run that has run at all.
@@ -1437,7 +1438,8 @@ fn print_run_detail(run: &RunDetail) -> Result<()> {
         rows.push(("Setup Timeout", format_minutes(raw)));
     }
     if let Some(started) = run.started_at
-        && let Some(elapsed) = elapsed_duration(started, run.completed_at.unwrap_or_else(Utc::now))
+        && let Some(elapsed) =
+            elapsed_duration(started, run.completed_at.unwrap_or_else(Timestamp::now))
     {
         rows.push(("Elapsed", elapsed.to_string()));
     }
@@ -2797,6 +2799,7 @@ mod tests {
     use super::*;
     use crate::testutils::fake_secrets::{FAKE_API_KEY_A, FAKE_PASSWORD};
     use hegel::generators;
+    use jiff::SignedDuration;
 
     #[test]
     fn run_page_url_encodes_query_characters() {
@@ -4903,17 +4906,18 @@ mod tests {
 
     #[test]
     fn relative_time_is_compact() {
-        let now = Utc::now();
-        assert_eq!(relative_time(now - chrono::Duration::seconds(5)), "5s ago");
-        assert_eq!(relative_time(now - chrono::Duration::minutes(3)), "3m ago");
-        assert_eq!(relative_time(now - chrono::Duration::hours(21)), "21h ago");
-        assert_eq!(relative_time(now - chrono::Duration::days(2)), "2d ago");
-        assert_eq!(relative_time(now - chrono::Duration::days(8)), "1w ago");
-        assert_eq!(relative_time(now - chrono::Duration::days(45)), "1mo ago");
-        assert_eq!(relative_time(now - chrono::Duration::days(400)), "1y ago");
+        let now = Timestamp::now();
+        let ago = |age| relative_time(now - age);
+        assert_eq!(ago(SignedDuration::from_secs(5)), "5s ago");
+        assert_eq!(ago(SignedDuration::from_mins(3)), "3m ago");
+        assert_eq!(ago(SignedDuration::from_hours(21)), "21h ago");
+        assert_eq!(ago(SignedDuration::from_hours(2 * 24)), "2d ago");
+        assert_eq!(ago(SignedDuration::from_hours(8 * 24)), "1w ago");
+        assert_eq!(ago(SignedDuration::from_hours(45 * 24)), "1mo ago");
+        assert_eq!(ago(SignedDuration::from_hours(400 * 24)), "1y ago");
         // Clock skew: a slightly-future timestamp clamps instead of rendering
         // a negative age.
-        assert_eq!(relative_time(now + chrono::Duration::hours(1)), "0s ago");
+        assert_eq!(ago(SignedDuration::from_hours(-1)), "0s ago");
     }
 
     #[test]
@@ -4927,8 +4931,8 @@ mod tests {
 
     #[test]
     fn elapsed_is_wall_clock_with_second_precision() {
-        let started: DateTime<Utc> = "2025-03-20T02:01:12Z".parse().unwrap();
-        let end: DateTime<Utc> = "2025-03-20T02:31:45Z".parse().unwrap();
+        let started: Timestamp = "2025-03-20T02:01:12Z".parse().unwrap();
+        let end: Timestamp = "2025-03-20T02:31:45Z".parse().unwrap();
         assert_eq!(
             elapsed_duration(started, end).unwrap().to_string(),
             "30m33s"
@@ -6200,8 +6204,8 @@ mod tests {
             .unwrap()
         }
 
-        fn minutes_after_start(minutes: i64) -> DateTime<Utc> {
-            STARTED_AT.parse::<DateTime<Utc>>().unwrap() + chrono::Duration::minutes(minutes)
+        fn minutes_after_start(minutes: i64) -> Timestamp {
+            STARTED_AT.parse::<Timestamp>().unwrap() + SignedDuration::from_mins(minutes)
         }
 
         #[test]

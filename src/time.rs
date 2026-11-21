@@ -15,6 +15,7 @@
 //! bare-minutes form already covers that.
 
 use jiff::civil::{Date, DateTime};
+use jiff::fmt::temporal::Pieces;
 use jiff::tz::{AmbiguousOffset, TimeZone};
 use jiff::{SignedDuration, Span, Timestamp};
 
@@ -306,14 +307,25 @@ fn parse_relative_time(text: &str, now: Timestamp) -> Option<Timestamp> {
 /// wall time. A wall time that a clock change skips is an error, and so is a
 /// time outside the range of a timestamp.
 pub(crate) fn parse_timestamp_arg(text: &str) -> Result<Timestamp, String> {
+    let out_of_range = || {
+        format!(
+            "{text} is outside the range of a timestamp, {} to {}",
+            Timestamp::MIN,
+            Timestamp::MAX
+        )
+    };
     if let Some(time) = parse_relative_time(text, Timestamp::now()) {
         return Ok(time);
     }
     if let Ok(time) = text.parse() {
         return Ok(time);
     }
+    // A time with an offset that parses only in pieces is out of range.
+    if Pieces::parse(text).is_ok_and(|pieces| pieces.offset().is_some()) {
+        return Err(out_of_range());
+    }
     if let Ok(date) = Date::strptime("%Y-%m-%d", text) {
-        return start_of_local_calendar_day(date).map_err(|err| err.to_string());
+        return start_of_local_calendar_day(date).map_err(|_| out_of_range());
     }
     let wall_time = DateTime::strptime(DISPLAY_FORMAT, text)
         .or_else(|_| DateTime::strptime("%Y-%m-%dT%H:%M:%S%.f", text))
@@ -330,7 +342,7 @@ pub(crate) fn parse_timestamp_arg(text: &str) -> Result<Timestamp, String> {
         ));
     }
     // A clock change shows the time twice: take the earlier instant.
-    ambiguous.earlier().map_err(|err| err.to_string())
+    ambiguous.earlier().map_err(|_| out_of_range())
 }
 
 /// The date of the local calendar day that holds `instant`.
@@ -590,8 +602,11 @@ mod tests {
     }
 
     #[test]
-    fn a_date_before_the_range_of_a_timestamp_is_an_error() {
-        assert!(parse_timestamp_arg("-9999-01-01").is_err());
+    fn a_time_outside_the_range_of_a_timestamp_names_the_range() {
+        for text in ["-9999-01-01", "9999-12-31 23:59:59", "9999-12-31T23:59:59Z"] {
+            let err = parse_timestamp_arg(text).unwrap_err();
+            assert!(err.contains("outside the range of a timestamp"), "{err}");
+        }
     }
 
     #[test]

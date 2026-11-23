@@ -46,7 +46,7 @@ bytesize = "2"
 # tokio-runtime instead of the default async-std. No mmap: cacache uses it only
 # to write small entries, and it pulls in memmap2 0.5 (RUSTSEC-2026-0186).
 cacache = { version = "13", default-features = false, features = ["tokio-runtime"] }
-jiff = { version = "0.2", features = ["serde"] }
+jiff = { version = "1", features = ["serde"] }
 clap = { version = "4", features = ["derive", "wrap_help"] }
 clap_complete = "4"
 getrandom = "0.4"
@@ -110,7 +110,7 @@ inquire = { version = "0.9", default-features = false, features = ["crossterm"] 
 # `config` reads askama.toml, at build time only.
 askama = { version = "0.16.1", default-features = false, features = ["config", "derive", "std"] }
 axum = { version = "0.8.9", default-features = false, features = ["tokio", "http1"] }
-gix = { version = "0.90", default-features = false, features = ["sha1"] }
+gix = { version = "0.91", default-features = false, features = ["sha1"] }
 
 # See the global_allocator in main.rs.
 [target.'cfg(target_env = "musl")'.dependencies]

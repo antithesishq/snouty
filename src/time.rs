@@ -293,7 +293,10 @@ fn parse_relative_time(text: &str, now: Timestamp) -> Option<Timestamp> {
         "week" => SignedDuration::from_hours(count * 24 * 7),
         "month" => {
             let months = Span::new().try_months(count).ok()?;
-            let then = now.to_zoned(TimeZone::UTC).checked_sub(months).ok()?;
+            let then = now
+                .to_zoned_datetime(TimeZone::UTC)
+                .checked_sub(months)
+                .ok()?;
             return Some(then.timestamp());
         }
         _ => return None,
@@ -354,7 +357,8 @@ pub(crate) fn local_calendar_date(instant: Timestamp) -> Date {
 /// midnight: the day then starts at the end of the skipped time. Fails when
 /// the day is outside the range of a timestamp.
 pub(crate) fn start_of_local_calendar_day(date: Date) -> Result<Timestamp, jiff::Error> {
-    date.to_zoned(TimeZone::system()).map(|day| day.timestamp())
+    date.to_zoned_datetime(TimeZone::system())
+        .map(|day| day.timestamp())
 }
 
 #[cfg(test)]

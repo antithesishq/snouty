@@ -306,7 +306,7 @@ pub async fn launch_secret(api: &AntithesisApi) -> Result<Option<String>> {
 async fn oauth_secret(api: &AntithesisApi, token: &RefreshableOAuthToken) -> Result<String> {
     let near_expiry = token
         .expires_at()
-        .is_none_or(|expires_at| expires_at.duration_since(Timestamp::now()) <= TOKEN_MIN_LIFETIME);
+        .is_none_or(|expires_at| expires_at - Timestamp::now() <= TOKEN_MIN_LIFETIME);
     if near_expiry && let Err(err) = api.refresh_authentication().await {
         if token.expired() {
             return Err(err);

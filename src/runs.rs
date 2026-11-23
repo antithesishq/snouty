@@ -382,7 +382,7 @@ fn terminal_width() -> usize {
 /// prose ("21 hours ago") for column width. Rough by design: largest whole
 /// unit only. Future timestamps (clock skew) clamp to "0s ago".
 fn relative_time(then: Timestamp) -> String {
-    let secs = Timestamp::now().duration_since(then).as_secs().max(0);
+    let secs = (Timestamp::now() - then).as_secs().max(0);
     let (value, unit) = match secs {
         s if s < 60 => (s, "s"),
         s if s < 3600 => (s / 60, "m"),
@@ -408,7 +408,7 @@ fn format_minutes(raw: &str) -> String {
 /// [`HumanDuration`] in `h`/`m`/`s` units. A still-running run counts up to `end` (`Timestamp::now()` at the call
 /// site). Returns `None` on clock skew (a negative span).
 fn elapsed_duration(started: Timestamp, end: Timestamp) -> Option<HumanDuration> {
-    let secs = end.duration_since(started).as_secs();
+    let secs = (end - started).as_secs();
     (secs >= 0).then(|| HumanDuration::from_seconds(secs as u64))
 }
 

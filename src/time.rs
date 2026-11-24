@@ -303,8 +303,9 @@ fn parse_relative_time(text: &str, now: Timestamp) -> Option<Result<Timestamp, S
 /// snouty prints it or in another ISO 8601 form, an RFC 3339 time, or a time
 /// relative to the present, such as `3 days ago`. A value without an offset is a local
 /// wall time. A wall time that a clock change skips is an error, and so is a
-/// time outside the range of a timestamp.
+/// time outside the range of a timestamp. Surrounding whitespace is ignored.
 pub(crate) fn parse_timestamp_arg(text: &str) -> Result<Timestamp, String> {
+    let text = text.trim();
     if let Some(time) = parse_relative_time(text, Timestamp::now()) {
         return time;
     }
@@ -624,6 +625,30 @@ mod tests {
             "2026-10-01 12:00:00.5",
         ] {
             assert_eq!(parse_timestamp_arg(text).ok(), local(text).ok(), "{text}");
+        }
+    }
+
+    #[test]
+    fn parse_timestamp_arg_ignores_surrounding_whitespace() {
+        for text in [
+            "now",
+            "3 days ago",
+            "2026-10-01",
+            "2026-10-01 12:00:00",
+            "2026-10-01T12:00:00Z",
+        ] {
+            let padded = format!(" {text}\t");
+            let (padded, text) = (parse_timestamp_arg(&padded), parse_timestamp_arg(text));
+            // `now` and `3 days ago` read the clock, so compare them loosely.
+            assert_eq!(padded.is_ok(), text.is_ok(), "{text:?}");
+            assert!(
+                padded
+                    .unwrap()
+                    .duration_since(text.unwrap())
+                    .abs()
+                    .as_secs()
+                    < 5
+            );
         }
     }
 

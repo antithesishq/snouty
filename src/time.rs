@@ -15,6 +15,8 @@
 //! bare-minutes form already covers that.
 
 use jiff::civil::Date;
+use jiff::fmt::StdFmtWrite;
+use jiff::fmt::friendly::{Designator, Spacing, SpanPrinter};
 use jiff::fmt::temporal::Pieces;
 use jiff::tz::{AmbiguousOffset, TimeZone};
 use jiff::{Span, Timestamp};
@@ -160,25 +162,12 @@ impl fmt::Display for HumanDuration {
     /// Minimized `h`/`m`/`s` form: each nonzero component in order (e.g.
     /// `1h30m`, `1m30s`, `1h1m1s`), or `0s` for zero.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let total = self.seconds();
-        let (hours, mins, secs) = (
-            total / SECS_PER_HOUR,
-            (total % SECS_PER_HOUR) / SECS_PER_MINUTE,
-            total % SECS_PER_MINUTE,
-        );
-        if total == 0 {
-            return f.write_str("0s");
-        }
-        if hours != 0 {
-            write!(f, "{hours}h")?;
-        }
-        if mins != 0 {
-            write!(f, "{mins}m")?;
-        }
-        if secs != 0 {
-            write!(f, "{secs}s")?;
-        }
-        Ok(())
+        const PRINTER: SpanPrinter = SpanPrinter::new()
+            .designator(Designator::Compact)
+            .spacing(Spacing::None);
+        PRINTER
+            .print_unsigned_duration(&self.0, StdFmtWrite(f))
+            .map_err(|_| fmt::Error)
     }
 }
 

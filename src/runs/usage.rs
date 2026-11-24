@@ -8,7 +8,7 @@ use clap::ValueEnum;
 use color_eyre::Section;
 use color_eyre::eyre::Result;
 use futures_util::{StreamExt, TryStreamExt, stream};
-use jiff::civil::Date;
+use jiff::civil::{Date, ISOWeekDate};
 use jiff::{SignedDuration, Timestamp, ToSpan};
 use log::debug;
 use serde::Serialize;
@@ -84,11 +84,15 @@ const FIRST_DAY: Date = jiff::civil::date(1970, 1, 1);
 const DAY_IN_RANGE: &str = "a period day is in the range of a timestamp";
 
 impl Rollup {
-    /// The first day of the period that holds `date`.
+    /// The first day of the period that holds `date`. A period that starts
+    /// before the first representable date starts on that date.
     fn period_start(self, date: Date) -> Date {
         match self {
             Rollup::Day => date,
-            Rollup::Week => date - date.weekday().to_monday_zero_offset().days(),
+            Rollup::Week => date
+                .iso_week_date()
+                .first_of_week()
+                .map_or(Date::MIN, ISOWeekDate::date),
             Rollup::Month => date.first_of_month(),
         }
     }
@@ -99,8 +103,9 @@ impl Rollup {
         match self {
             Rollup::Day => date,
             Rollup::Week => date
-                .checked_add((6 - date.weekday().to_monday_zero_offset()).days())
-                .unwrap_or(Date::MAX),
+                .iso_week_date()
+                .last_of_week()
+                .map_or(Date::MAX, ISOWeekDate::date),
             Rollup::Month => date.last_of_month(),
         }
     }

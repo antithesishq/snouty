@@ -380,14 +380,10 @@ fn terminal_width() -> usize {
 }
 
 /// Compact relative age for the runs table ("21h ago", "2d ago"), trading
-/// prose ("21 hours ago") for column width. The age counts calendar years,
-/// months and days in the time zone of `now`, so a run from the same day last
-/// month is `1mo ago`, and shows only its largest whole unit. Under a month,
-/// seven or more days show as weeks. A future time (clock skew) shows as
-/// `0s ago`.
+/// prose ("21 hours ago") for column width. Shows only the largest whole
+/// unit of the calendar age in the time zone of `now`; under a month, seven
+/// or more days show as weeks. A future time (clock skew) shows as `0s ago`.
 fn relative_time(then: Timestamp, now: &ZonedDateTime) -> String {
-    // Two timestamps differ by far less than the largest span, so `until`
-    // cannot fail.
     let age = then
         .to_zoned_datetime(now.time_zone().clone())
         .until((Unit::Year, now))
@@ -4931,12 +4927,12 @@ mod tests {
         assert_eq!(ago("2026-03-01T13:00:00Z"), "0s ago");
     }
 
-    /// Months and years are calendar months and years, not 30 and 365 days.
+    /// Months and years are calendar months and years.
     #[test]
     fn relative_time_counts_calendar_months_and_years() {
         let now: ZonedDateTime = "2026-03-01T12:00:00+00:00[UTC]".parse().unwrap();
         let ago = |then: &str| relative_time(then.parse().unwrap(), &now);
-        // 29 days, which 30-day months counted as 4 weeks.
+        // 29 days, but one calendar month.
         assert_eq!(ago("2026-01-31T12:00:00Z"), "1mo ago");
         assert_eq!(ago("2026-02-01T12:00:00Z"), "1mo ago");
         assert_eq!(ago("2026-02-01T12:00:01Z"), "3w ago");

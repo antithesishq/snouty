@@ -15,7 +15,8 @@ use log::debug;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use jiff::Timestamp;
+use jiff::tz::TimeZone;
+use jiff::{Timestamp, Unit, ZonedDateTime};
 
 use crate::api::{
     AntithesisApi, Event, EventProperty, ExecOutput, ExecRequest, MIN_STREAM_RELEASE, Moment,
@@ -379,19 +380,31 @@ fn terminal_width() -> usize {
 }
 
 /// Compact relative age for the runs table ("21h ago", "2d ago"), trading
-/// prose ("21 hours ago") for column width. Rough by design: largest whole
-/// unit only. Future timestamps (clock skew) clamp to "0s ago".
-fn relative_time(then: Timestamp) -> String {
-    let secs = (Timestamp::now() - then).as_secs().max(0);
-    let (value, unit) = match secs {
-        s if s < 60 => (s, "s"),
-        s if s < 3600 => (s / 60, "m"),
-        s if s < 86_400 => (s / 3600, "h"),
-        s if s < 7 * 86_400 => (s / 86_400, "d"),
-        s if s < 30 * 86_400 => (s / (7 * 86_400), "w"),
-        s if s < 365 * 86_400 => (s / (30 * 86_400), "mo"),
-        s => (s / (365 * 86_400), "y"),
-    };
+/// prose ("21 hours ago") for column width. The age counts calendar years,
+/// months and days in the time zone of `now`, so a run from the same day last
+/// month is `1mo ago`, and shows only its largest whole unit. Under a month,
+/// seven or more days show as weeks. A future time (clock skew) shows as
+/// `0s ago`.
+fn relative_time(then: Timestamp, now: &ZonedDateTime) -> String {
+    // Two timestamps differ by far less than the largest span, so `until`
+    // cannot fail.
+    let age = then
+        .to_zoned_datetime(now.time_zone().clone())
+        .until((Unit::Year, now))
+        .expect("the age of a timestamp fits in a span");
+    let days = i64::from(age.get_days());
+    let (value, unit) = [
+        (i64::from(age.get_years()), "y"),
+        (i64::from(age.get_months()), "mo"),
+        (days / 7, "w"),
+        (days, "d"),
+        (i64::from(age.get_hours()), "h"),
+        (age.get_minutes(), "m"),
+        (age.get_seconds(), "s"),
+    ]
+    .into_iter()
+    .find(|&(value, _)| value > 0)
+    .unwrap_or((0, "s"));
     format!("{value}{unit} ago")
 }
 
@@ -2750,6 +2763,7 @@ fn merge_fault_windows(
 }
 
 fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
+    let now = Timestamp::now().to_zoned_datetime(TimeZone::system());
     let rows: Vec<Vec<String>> = runs
         .iter()
         .map(|run| {
@@ -2772,7 +2786,7 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
             vec![
                 sanitize(&run.run_id),
                 run.status.to_string(),
-                relative_time(run.created_at),
+                relative_time(run.created_at, &now),
                 match run.launcher.as_str() {
                     "" => "-".to_string(),
                     launcher => sanitize(launcher),
@@ -4906,18 +4920,44 @@ mod tests {
 
     #[test]
     fn relative_time_is_compact() {
-        let now = Timestamp::now();
-        let ago = |age| relative_time(now - age);
-        assert_eq!(ago(SignedDuration::from_secs(5)), "5s ago");
-        assert_eq!(ago(SignedDuration::from_mins(3)), "3m ago");
-        assert_eq!(ago(SignedDuration::from_hours(21)), "21h ago");
-        assert_eq!(ago(SignedDuration::from_hours(2 * 24)), "2d ago");
-        assert_eq!(ago(SignedDuration::from_hours(8 * 24)), "1w ago");
-        assert_eq!(ago(SignedDuration::from_hours(45 * 24)), "1mo ago");
-        assert_eq!(ago(SignedDuration::from_hours(400 * 24)), "1y ago");
-        // Clock skew: a slightly-future timestamp clamps instead of rendering
-        // a negative age.
-        assert_eq!(ago(SignedDuration::from_hours(-1)), "0s ago");
+        let now: ZonedDateTime = "2026-03-01T12:00:00+00:00[UTC]".parse().unwrap();
+        let ago = |then: &str| relative_time(then.parse().unwrap(), &now);
+        assert_eq!(ago("2026-03-01T11:59:55Z"), "5s ago");
+        assert_eq!(ago("2026-03-01T11:57:00Z"), "3m ago");
+        assert_eq!(ago("2026-02-28T15:00:00Z"), "21h ago");
+        assert_eq!(ago("2026-02-27T12:00:00Z"), "2d ago");
+        assert_eq!(ago("2026-02-21T12:00:00Z"), "1w ago");
+        // Clock skew: a slightly-future timestamp shows no age.
+        assert_eq!(ago("2026-03-01T13:00:00Z"), "0s ago");
+    }
+
+    /// Months and years are calendar months and years, not 30 and 365 days.
+    #[test]
+    fn relative_time_counts_calendar_months_and_years() {
+        let now: ZonedDateTime = "2026-03-01T12:00:00+00:00[UTC]".parse().unwrap();
+        let ago = |then: &str| relative_time(then.parse().unwrap(), &now);
+        // 29 days, but a whole calendar month: January has no day 32.
+        assert_eq!(ago("2026-01-31T12:00:00Z"), "1mo ago");
+        assert_eq!(ago("2026-02-01T12:00:00Z"), "1mo ago");
+        assert_eq!(ago("2026-02-01T12:00:01Z"), "3w ago");
+        // 364 days back is 11 months, and 365 is a calendar year.
+        assert_eq!(ago("2025-03-02T12:00:00Z"), "11mo ago");
+        assert_eq!(ago("2025-03-01T12:00:00Z"), "1y ago");
+        assert_eq!(ago("2024-03-01T12:00:00Z"), "2y ago");
+    }
+
+    /// A day is a calendar day in the zone of `now`, so the day of a clock
+    /// change counts as one day.
+    #[test]
+    fn relative_time_counts_local_calendar_days() {
+        let now: ZonedDateTime = "2026-03-09T12:00:00-04:00[America/New_York]"
+            .parse()
+            .unwrap();
+        // The clocks went forward on 2026-03-08, so 47 hours make 2 days.
+        assert_eq!(
+            relative_time("2026-03-07T12:00:00-05:00".parse().unwrap(), &now),
+            "2d ago"
+        );
     }
 
     #[test]

@@ -4916,7 +4916,10 @@ mod tests {
 
     #[test]
     fn relative_time_is_compact() {
-        let now: ZonedDateTime = "2026-03-01T12:00:00+00:00[UTC]".parse().unwrap();
+        let now = "2026-03-01T12:00:00Z"
+            .parse::<Timestamp>()
+            .unwrap()
+            .to_zoned_datetime(TimeZone::UTC);
         let ago = |then: &str| relative_time(then.parse().unwrap(), &now);
         assert_eq!(ago("2026-03-01T11:59:55Z"), "5s ago");
         assert_eq!(ago("2026-03-01T11:57:00Z"), "3m ago");
@@ -4930,7 +4933,10 @@ mod tests {
     /// Months and years are calendar months and years.
     #[test]
     fn relative_time_counts_calendar_months_and_years() {
-        let now: ZonedDateTime = "2026-03-01T12:00:00+00:00[UTC]".parse().unwrap();
+        let now = "2026-03-01T12:00:00Z"
+            .parse::<Timestamp>()
+            .unwrap()
+            .to_zoned_datetime(TimeZone::UTC);
         let ago = |then: &str| relative_time(then.parse().unwrap(), &now);
         // 29 days, but one calendar month.
         assert_eq!(ago("2026-01-31T12:00:00Z"), "1mo ago");
@@ -4943,12 +4949,15 @@ mod tests {
     }
 
     /// A day is a calendar day in the zone of `now`, so the day of a clock
-    /// change counts as one day.
+    /// change counts as one day. The zone is a POSIX rule, because the Nix
+    /// build has no time zone database.
     #[test]
     fn relative_time_counts_local_calendar_days() {
-        let now: ZonedDateTime = "2026-03-09T12:00:00-04:00[America/New_York]"
-            .parse()
-            .unwrap();
+        let new_york = TimeZone::posix("EST5EDT,M3.2.0,M11.1.0").unwrap();
+        let now = "2026-03-09T12:00:00-04:00"
+            .parse::<Timestamp>()
+            .unwrap()
+            .to_zoned_datetime(new_york);
         // The clocks went forward on 2026-03-08, so 47 hours make 2 days.
         assert_eq!(
             relative_time("2026-03-07T12:00:00-05:00".parse().unwrap(), &now),

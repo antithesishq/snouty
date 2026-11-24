@@ -2272,8 +2272,7 @@ impl RetryAfter {
 /// `30s (2026-10-22T03:47:27Z)`: the wait, and the time in RFC 3339 UTC.
 impl std::fmt::Display for RetryAfter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let at = self.at.strftime("%Y-%m-%dT%H:%M:%SZ");
-        write!(f, "{}s ({at})", self.seconds)
+        write!(f, "{}s ({:.0})", self.seconds, self.at)
     }
 }
 

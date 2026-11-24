@@ -4936,7 +4936,7 @@ mod tests {
     fn relative_time_counts_calendar_months_and_years() {
         let now: ZonedDateTime = "2026-03-01T12:00:00+00:00[UTC]".parse().unwrap();
         let ago = |then: &str| relative_time(then.parse().unwrap(), &now);
-        // 29 days, but a whole calendar month: January has no day 32.
+        // 29 days, which 30-day months counted as 4 weeks.
         assert_eq!(ago("2026-01-31T12:00:00Z"), "1mo ago");
         assert_eq!(ago("2026-02-01T12:00:00Z"), "1mo ago");
         assert_eq!(ago("2026-02-01T12:00:01Z"), "3w ago");

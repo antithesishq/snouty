@@ -1,0 +1,51 @@
+# snouty runs coverage
+#
+# runs coverage reads the run's locations
+# (`GET /api/v0/runs/{run_id}/coverage/locations`). It is an unstable
+# feature.
+
+# Without the feature, the command is refused.
+! snouty runs coverage run-1
+stderr '`snouty runs coverage` is an unstable feature and is not enabled'
+stderr 'SNOUTY_UNSTABLE_FEATURES=coverage'
+
+env SNOUTY_UNSTABLE_FEATURES=coverage
+
+# A run that has locations prints one per line.
+mock-runs-server
+[!staging] snouty --json runs list
+[staging] snouty --json runs list --created-after 2026-11-13T23:00:00Z --created-before 2026-11-17T19:00:00Z --limit 100
+[!staging] env_from_json_find run_id launcher!=debugging -- runs coverage $R_run_id
+[staging] env_from_json_find run_id 'description^=snouty gen-gallery end-to-end run' -- runs coverage $R_run_id
+snouty runs coverage $R_run_id
+stdout '^\{"module_id":"[^"]+","address":"\d+",.*"function":'
+stdout '"first_reached":\{"run_seconds":[\d.]+,"moment":\{"input_hash":"-?\d+","vtime":[\d.e-]+\}\}'
+
+# The rest of this file checks mock data.
+[staging] skip
+
+# A line per location, in the order the API sends them, with each vtime as
+# a JSON number. --json prints the same.
+mock-runs-server
+snouty --verbose runs coverage run-1
+stdout -count=6 '^\{"module_id":'
+stdout '^\{"module_id":"d85d838a38496ad7233432355829abc7d2333c33","address":"1",.*"vtime":12\.84610243188217\}\}\}$'
+stderr '^> GET .*/api/v0/runs/run-1/coverage/locations$'
+snouty --json runs coverage run-1
+stdout -count=6 '^\{"module_id":'
+
+# --module asks the server for one module, and a repeated one asks once.
+snouty --verbose runs coverage run-1 --module go-20e55e2f1623 --module go-20e55e2f1623
+stderr -count=1 '^> GET .*/coverage/locations\?module_id=go-20e55e2f1623'
+stdout -count=1 '^\{"module_id":"go-20e55e2f1623"'
+
+# A module the run does not have prints nothing.
+snouty runs coverage run-1 --module no-such-module
+! stdout .
+
+# A Stream_Error line fails the command.
+! snouty runs coverage run-stream-error
+stderr 'the server reported an error mid-stream: mock stream failure'
+
+! snouty runs coverage no-such-run
+stderr 'run not found: no-such-run'

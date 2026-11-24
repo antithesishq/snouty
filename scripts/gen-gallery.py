@@ -217,6 +217,8 @@ class Snouty:
         self._env = dict(os.environ)
         self._env["PATH"] = f"{self._shim}{os.pathsep}{self._env.get('PATH', '')}"
         self._env["BROWSER"] = str(self._shim / "xdg-open")
+        # `runs coverage` is an unstable feature, and the gallery records it.
+        self._env["SNOUTY_UNSTABLE_FEATURES"] = "coverage"
         # The snouty children that are running, so that `kill_children` can
         # end the long ones, such as a `runs stream` in the background.
         self._children: set[pexpect.spawn | subprocess.Popen[str]] = set()
@@ -1431,6 +1433,27 @@ def discover(sn: Snouty) -> Discovery:
     return disc
 
 
+def _pick_coverage_module(sn: Snouty, run: str) -> str:
+    """The module of `run` with the fewest locations among those with a
+    reached location, or "" when the run has none, or the tenant does not
+    serve them. Only the coverage stories fail then, not the whole gallery."""
+    try:
+        locations = sn.json_lines(["runs", "coverage", run])
+    except GalleryError as err:
+        print(f"  coverage module: none ({err})", file=sys.stderr)
+        return ""
+    reached = {loc["module_id"] for loc in locations if "first_reached" in loc}
+    counts = Counter(
+        loc["module_id"] for loc in locations if loc["module_id"] in reached
+    )
+    if not counts:
+        print("  coverage module: none (the run reached no location)", file=sys.stderr)
+        return ""
+    module = min(counts, key=lambda m: counts[m])
+    print(f"  coverage module: {module}", file=sys.stderr)
+    return module
+
+
 @dataclass
 class GalleryRun:
     """The gallery's own run of the example project, which the run stories
@@ -1469,6 +1492,9 @@ class FinalCaptures:
     stream_json: Result | None = None
     # The ID of EXAMPLE_BUG_PROPERTY in the run, or "" when it has none.
     bug_prop_id: str = ""
+    # A module of the run, for the `runs coverage --module` story, or ""
+    # when the run has none.
+    coverage_module: str = ""
 
 
 EXAMPLE_DIR = Path(__file__).resolve().parent.parent / "examples" / "antithesis"
@@ -2043,6 +2069,34 @@ def properties_pass_and_fail(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         has_p and has_f and no_desc,
         f"{len(rows)} props, passing={has_p} failing={has_f} no description={no_desc}",
     )
+
+
+def coverage_locations(module: str = ""):
+    """`runs coverage`: one JSON object per location, each with its module,
+    address and function, and at least one reached location with the numeric
+    vtime of its first moment. With `module`, every location is of it."""
+
+    def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
+        rows = _ndjson(sr.result.stdout)
+        keyed = [r for r in rows if {"module_id", "address", "function"} <= r.keys()]
+        reached = [r for r in rows if "first_reached" in r]
+        string_vtimes = [
+            r
+            for r in reached
+            if not isinstance(r["first_reached"]["moment"]["vtime"], (int, float))
+        ]
+        modules = {r.get("module_id") for r in rows}
+        ok = sr.result.ok and bool(rows) and len(keyed) == len(rows)
+        ok = ok and bool(reached) and not string_vtimes
+        if module:
+            ok = ok and modules == {module}
+        return (
+            ok,
+            f"{len(rows)} locations in {len(modules)} modules, {len(reached)} reached, "
+            f"{len(string_vtimes)} string vtimes",
+        )
+
+    return chk
 
 
 def all_launcher(value: str):
@@ -3461,6 +3515,16 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             expect_ok=False,
         ),
         Story(
+            "runs-coverage-unknown",
+            "Wrong run ID — coverage reports a clean error",
+            "I pass a run id that doesn't exist; I want a clean error.",
+            "A clean `run not found` error, not a crash or a stack trace. Exit 1.",
+            ["runs", "coverage", UNKNOWN_RUN],
+            fails_with("run not found"),
+            json_capable=False,
+            expect_ok=False,
+        ),
+        Story(
             "runs-build-logs-unknown",
             "Wrong run ID — build-logs reports a clean error",
             "I pass a run id that doesn't exist; I want a clean error.",
@@ -4143,6 +4207,36 @@ def build_final_stories(x: GalleryRun, f: FinalCaptures) -> list[Story]:
             ["runs", "property", x.run, f.bug_prop_id],
             bug_property,
             json_capable=False,
+        ),
+        Story(
+            "runs-coverage-run",
+            "Download which code my run reached",
+            "My run is finished, and my script wants each instrumented location with the moment "
+            "the run first reached it, to compute its own coverage report.",
+            "One JSON object per location, by module then address, each with its module ID, "
+            "address and function, and its file and lines when known. A reached location has "
+            "`first_reached`, with an input hash and a vtime as a JSON number.",
+            ["runs", "coverage", x.run],
+            coverage_locations(),
+            json_capable=False,
+        ),
+        Story(
+            "runs-coverage-run--module",
+            "Read the coverage of one module",
+            "I want the locations of only one module of my run, to see which of its functions "
+            "the run never entered.",
+            "Only that module's locations, one JSON object per line.",
+            ["runs", "coverage", x.run, "--module", f.coverage_module],
+            coverage_locations(f.coverage_module),
+            json_capable=False,
+        ),
+        _help_story(
+            "help-runs-coverage",
+            "Learn how to read a run's coverage",
+            "I want the help to tell me what a line holds, how to choose a module, and how to "
+            "count the locations by file or function.",
+            ["runs", "coverage"],
+            ["runs", "coverage", x.run, "--module", f.coverage_module],
         ),
         Story(
             "runs-modules",
@@ -6296,6 +6390,7 @@ def main() -> int:
                 wait=sn.run(["runs", "wait", run.run, "--timeout", RUN_FINAL_TIMEOUT]),
                 stream=stream.result() if stream is not None else None,
                 stream_json=stream_json.result() if stream_json is not None else None,
+                coverage_module=_pick_coverage_module(sn, run.run),
             )
             props = sn.json_lines(["runs", "properties", run.run])
             final.bug_prop_id = property_id_named(props, EXAMPLE_BUG_PROPERTY)

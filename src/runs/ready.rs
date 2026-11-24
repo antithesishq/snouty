@@ -46,6 +46,26 @@ pub(super) struct RetryPolicy {
     pub decide: fn(&RunDetail, &Report) -> RetryDecision,
 }
 
+/// Wait until the run is ready or has ended, showing that it waits. A run
+/// ID that names no run fails here.
+pub(super) async fn wait_until_ready(
+    api: &AntithesisApi,
+    run_id: &str,
+    poll: Duration,
+) -> Result<()> {
+    let mut waiting: Option<ReadyDisplay> = None;
+    let run = wait_for_run(api, run_id, poll, WaitUntil::Ready, |_| {
+        waiting
+            .get_or_insert_with(|| ReadyDisplay::new("waiting for the run to be ready"))
+            .show();
+    })
+    .await?;
+    if let Some(waiting) = waiting {
+        waiting.finish(&run);
+    }
+    Ok(())
+}
+
 /// Send `send` once the run meets `policy.needs`, and send again every
 /// `poll` while the run has not ended and `policy` decides
 /// [`RetryDecision::Retry`]. The run is read after each error, for `decide`
@@ -64,16 +84,7 @@ where
 {
     // A run never leaves Ready, so one wait before the first send is enough.
     if let Needs::Ready = policy.needs {
-        let mut waiting: Option<ReadyDisplay> = None;
-        let run = wait_for_run(api, run_id, poll, WaitUntil::Ready, |_| {
-            waiting
-                .get_or_insert_with(|| ReadyDisplay::new("waiting for the run to be ready"))
-                .show();
-        })
-        .await?;
-        if let Some(waiting) = waiting {
-            waiting.finish(&run);
-        }
+        wait_until_ready(api, run_id, poll).await?;
     }
     let mut retrying: Option<ReadyDisplay> = None;
     loop {

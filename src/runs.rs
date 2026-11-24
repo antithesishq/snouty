@@ -123,6 +123,7 @@ macro_rules! outln {
 }
 
 // Declared after the macros above, so that the modules can use them.
+mod coverage;
 mod modules;
 pub mod usage;
 
@@ -308,6 +309,10 @@ pub async fn cmd_runs(
             cmd_runs_search(args, settings, output.verbose, mode).await
         }
         Some(RunsCommands::Usage(args)) => usage::cmd_runs_usage(args, settings, output).await,
+        Some(RunsCommands::Coverage(args)) => {
+            crate::features::require(crate::features::Feature::Coverage, "snouty runs coverage")?;
+            coverage::cmd_runs_coverage(args, settings, output.verbose).await
+        }
         Some(RunsCommands::Modules { run_id, detail }) => {
             modules::cmd_runs_modules(&run_id, detail, settings, output).await
         }
@@ -2390,13 +2395,18 @@ fn normalize_vtime_field(entry: &mut Value, key: &str) -> Option<VTime> {
 /// own (an event's payload is arbitrary workload JSON), but data records
 /// always carry their schema's required envelope — `moment` for log/event
 /// records, `timestamp` for build log lines, `type` for run status
-/// notifications — which `Stream_Error` never has, so the envelope's absence
-/// disambiguates.
+/// notifications, and `module_id`, `address` and `function` together for
+/// coverage locations — which `Stream_Error` never has, so the envelope's
+/// absence disambiguates.
 fn stream_error_message(entry: &Value) -> Option<&str> {
     let obj = entry.as_object()?;
-    if ["moment", "timestamp", "type"]
+    let location = ["module_id", "address", "function"]
         .iter()
-        .any(|key| obj.contains_key(*key))
+        .all(|key| obj.contains_key(*key));
+    if location
+        || ["moment", "timestamp", "type"]
+            .iter()
+            .any(|key| obj.contains_key(*key))
     {
         return None;
     }
@@ -3605,6 +3615,10 @@ mod tests {
             msg(r#"{"error":"boom","request_id":"r-1"}"#).as_deref(),
             Some("boom")
         );
+        assert_eq!(
+            msg(r#"{"error":"boom","module_id":"m"}"#).as_deref(),
+            Some("boom")
+        );
     }
 
     #[test]
@@ -3621,6 +3635,11 @@ mod tests {
         // A build log line is identified by its `timestamp`.
         assert_eq!(
             msg(r#"{"error":"x","timestamp":"2025-03-20T02:01:12Z"}"#),
+            None
+        );
+        // A coverage location is identified by its `module_id`.
+        assert_eq!(
+            msg(r#"{"error":"x","module_id":"m","address":"1","function":"f"}"#),
             None
         );
         // `error` under output_text (or any nested position) is not the signal.
@@ -5466,6 +5485,128 @@ mod tests {
                 ),
                 "got: {debug}"
             );
+        }
+
+        // The locations endpoint answers 404 while the run starts, and for a
+        // while after the run is ready.
+        #[tokio::test(start_paused = true)]
+        async fn coverage_waits_while_the_run_starts() {
+            let server = mock_get_run(
+                "run-1",
+                200,
+                json!({
+                    "run_id": "run-1",
+                    "status": "in_progress",
+                    "sub_status": "Ready",
+                    "created_at": "2025-03-20T02:00:00Z",
+                    "launcher": "nightly"
+                }),
+            )
+            .await;
+            let locations = "/api/v0/runs/run-1/coverage/locations";
+            Mock::given(method("GET"))
+                .and(path(locations))
+                .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "nope"})))
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(locations))
+                .respond_with(ResponseTemplate::new(200).set_body_string(
+                    "{\"module_id\":\"m\",\"address\":\"1\",\"function\":\"f\"}\n",
+                ))
+                .mount(&server)
+                .await;
+            let api = test_api(&server.uri());
+            let stream = ready::send_when_ready(
+                &api,
+                "run-1",
+                READY_POLL,
+                coverage::COVERAGE_RETRY,
+                || api.get_coverage_locations("run-1", None),
+                |_, err| err,
+            )
+            .await
+            .unwrap();
+            let lines: Vec<Value> = stream.untag().try_collect().await.unwrap();
+            assert_eq!(lines.len(), 1);
+        }
+
+        // A finished run's 404 fails at once. A retry would wait
+        // READY_POLL, longer than the timeout. The clock is not paused: a
+        // paused clock advances while the request waits.
+        #[tokio::test]
+        async fn coverage_fails_a_404_from_a_finished_run() {
+            let server = mock_get_run(
+                "run-1",
+                200,
+                json!({
+                    "run_id": "run-1",
+                    "status": "completed",
+                    "created_at": "2025-03-20T02:00:00Z",
+                    "launcher": "nightly"
+                }),
+            )
+            .await;
+            Mock::given(method("GET"))
+                .and(path("/api/v0/runs/run-1/coverage/locations"))
+                .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "nope"})))
+                .mount(&server)
+                .await;
+            let api = test_api(&server.uri());
+            let send = ready::send_when_ready(
+                &api,
+                "run-1",
+                READY_POLL,
+                coverage::COVERAGE_RETRY,
+                || api.get_coverage_locations("run-1", None),
+                |_, err| err,
+            );
+            let result = tokio::time::timeout(Duration::from_secs(5), send)
+                .await
+                .expect("the 404 fails without a retry");
+            assert_eq!(api_error_status(&result.err().unwrap()), Some(404));
+        }
+
+        // A 404 from a run of a release before coverage fails at once, and
+        // names the release that coverage needs.
+        #[tokio::test]
+        async fn coverage_fails_a_404_from_a_run_before_coverage() {
+            let run_id = "ffffffffffffffffffffffffffffffff-67-0";
+            let server = mock_get_run(
+                run_id,
+                200,
+                json!({
+                    "run_id": run_id,
+                    "status": "in_progress",
+                    "sub_status": "Ready",
+                    "created_at": "2025-03-20T02:00:00Z",
+                    "launcher": "nightly"
+                }),
+            )
+            .await;
+            Mock::given(method("GET"))
+                .and(path(format!("/api/v0/runs/{run_id}/coverage/locations")))
+                .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "nope"})))
+                .mount(&server)
+                .await;
+            let api = test_api(&server.uri());
+            let send = ready::send_when_ready(
+                &api,
+                run_id,
+                READY_POLL,
+                coverage::COVERAGE_RETRY,
+                || api.get_coverage_locations(run_id, None),
+                coverage::explain_coverage_error,
+            );
+            let err = tokio::time::timeout(Duration::from_secs(5), send)
+                .await
+                .expect("the 404 fails without a retry")
+                .err()
+                .unwrap();
+            let debug = strip_ansi(&format!("{err:?}")).into_owned();
+            assert!(debug.contains("has no coverage locations"), "{debug}");
+            assert!(debug.contains("release 67.6 or later"), "{debug}");
         }
 
         // A missing run keeps the plain "run not found" with no moment talk.

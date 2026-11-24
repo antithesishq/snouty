@@ -48,7 +48,9 @@ fn snouty_mcp_from(exe: &Path, server: &MockApiServer, home: &Path) -> tokio::pr
         .env("SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE", "1")
         .env("ANTITHESIS_TENANT", "testtenant")
         .env("ANTITHESIS_BASE_URL", server.url())
-        .env("ANTITHESIS_API_KEY", server.token());
+        .env("ANTITHESIS_API_KEY", server.token())
+        // runs_coverage is an unstable feature; the tests list and call it.
+        .env("SNOUTY_UNSTABLE_FEATURES", "coverage");
     command
 }
 
@@ -109,6 +111,7 @@ async fn tools_return_detailed_output_or_json() {
             "runs_logs",
             "runs_search",
             "runs_usage",
+            "runs_coverage",
             "runs_modules",
             "runs_exec",
             "runs_events",
@@ -121,6 +124,25 @@ async fn tools_return_detailed_output_or_json() {
             "settings_show",
             "tool_help",
         ]
+    );
+
+    // runs_coverage takes `module_ids`, and returns a location per line.
+    let result = call(
+        &client,
+        "runs_coverage",
+        json!({ "run_id": "run-1", "module_ids": ["go-20e55e2f1623"] }),
+    )
+    .await;
+    assert_eq!(result.is_error, Some(false));
+    let lines: Vec<Value> = text(&result)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["module_id"], "go-20e55e2f1623");
+    assert_eq!(
+        lines[0]["first_reached"]["moment"]["vtime"],
+        140.17209334451
     );
 
     // runs_list returns what `snouty runs list --detail` prints: a block per

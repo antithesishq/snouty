@@ -295,7 +295,7 @@ mock-runs-server
 [!staging] stderr 'created_after=2026-11-01T05%3A30%3A00Z'
 
 # A bad time names the forms that the flag takes.
-! snouty runs list --created-after '2025-03-20 11:00'
+! snouty runs list --created-after '20 March 2025'
 stderr '2026-10-01 12:00:00'
 
 # `snouty runs show` doesn't print the run page URL — `snouty runs show --web`

@@ -14,12 +14,12 @@
 //! in that order); fractional components like `1.5h` are rejected, since the
 //! bare-minutes form already covers that.
 
-use jiff::civil::{Date, DateTime};
+use jiff::civil::Date;
 use jiff::fmt::StdFmtWrite;
 use jiff::fmt::friendly::{Designator, Spacing, SpanPrinter};
 use jiff::fmt::temporal::Pieces;
 use jiff::tz::{AmbiguousOffset, TimeZone};
-use jiff::{SignedDuration, Span, Timestamp};
+use jiff::{Span, Timestamp};
 
 use std::error::Error;
 use std::fmt;
@@ -258,83 +258,75 @@ pub(crate) fn format_rfc3339_for_display(raw: &str) -> String {
         .map_or_else(|_| raw.to_string(), format_timestamp_for_display)
 }
 
-/// Reads a time relative to `now`: `now`, or a whole number of minutes,
-/// hours, days, weeks or months before it, such as `3 days ago`. A day is 24
-/// hours, and a month is a calendar month.
-fn parse_relative_time(text: &str, now: Timestamp) -> Option<Timestamp> {
+fn out_of_range(text: &str) -> String {
+    format!(
+        "{text} is outside the range of a timestamp, {} to {}",
+        Timestamp::MIN,
+        Timestamp::MAX
+    )
+}
+
+/// Reads a time relative to `now`: `now`, or a span before it in the
+/// friendly or ISO 8601 form of [`Span`], such as `3 days ago`, `1h30m ago`
+/// or `-P2W`. A day is 24 hours, and a month is a calendar month. Returns
+/// `None` when `text` is not a span.
+fn parse_relative_time(text: &str, now: Timestamp) -> Option<Result<Timestamp, String>> {
     if text == "now" {
-        return Some(now);
+        return Some(Ok(now));
     }
-    let mut words = text.split_ascii_whitespace();
-    let (Some(count), Some(unit), Some("ago"), None) =
-        (words.next(), words.next(), words.next(), words.next())
-    else {
-        return None;
-    };
-    if !count.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
+    let span: Span = text.parse().ok()?;
+    if !span.is_negative() {
+        return Some(Err(format!(
+            "{text} is not in the past: add `ago`, such as `3 days ago`"
+        )));
     }
-    let count = i64::from(count.parse::<u32>().ok()?);
-    let delta = match unit.strip_suffix('s').unwrap_or(unit) {
-        "minute" => SignedDuration::from_mins(count),
-        "hour" => SignedDuration::from_hours(count),
-        "day" => SignedDuration::from_hours(count * 24),
-        "week" => SignedDuration::from_hours(count * 24 * 7),
-        "month" => {
-            let months = Span::new().try_months(count).ok()?;
-            let then = now
-                .to_zoned_datetime(TimeZone::UTC)
-                .checked_sub(months)
-                .ok()?;
-            return Some(then.timestamp());
-        }
-        _ => return None,
-    };
-    now.checked_sub(delta).ok()
+    let then = now
+        .to_zoned_datetime(TimeZone::UTC)
+        .checked_add(span)
+        .map(|then| then.timestamp())
+        .map_err(|_| out_of_range(text));
+    Some(then)
 }
 
 /// Reads a timestamp argument: a date (the start of that day), a time as
-/// snouty prints it or with a `T`, an RFC 3339 time, or a time relative to
-/// the present, such as `3 days ago`. A value without an offset is a local
+/// snouty prints it or in another ISO 8601 form, an RFC 3339 time, or a time
+/// relative to the present, such as `3 days ago`. A value without an offset is a local
 /// wall time. A wall time that a clock change skips is an error, and so is a
-/// time outside the range of a timestamp.
+/// time outside the range of a timestamp. Surrounding whitespace is ignored.
 pub(crate) fn parse_timestamp_arg(text: &str) -> Result<Timestamp, String> {
-    let out_of_range = || {
-        format!(
-            "{text} is outside the range of a timestamp, {} to {}",
-            Timestamp::MIN,
-            Timestamp::MAX
-        )
-    };
+    let text = text.trim();
     if let Some(time) = parse_relative_time(text, Timestamp::now()) {
-        return Ok(time);
+        return time;
     }
     if let Ok(time) = text.parse() {
         return Ok(time);
     }
-    // A time with an offset that parses only in pieces is out of range.
-    if Pieces::parse(text).is_ok_and(|pieces| pieces.offset().is_some()) {
-        return Err(out_of_range());
+    let expected = || {
+        "expected a date (2026-10-01), a time as snouty prints it \
+         (2026-10-01 12:00:00), an RFC 3339 time (2026-10-01T12:00:00Z), or a \
+         relative time (now, 3 days ago)"
+            .to_string()
+    };
+    let pieces = Pieces::parse(text).map_err(|_| expected())?;
+    // A time with an offset that does not parse as a timestamp is out of
+    // range.
+    if pieces.offset().is_some() {
+        return Err(out_of_range(text));
     }
-    if let Ok(date) = Date::strptime("%Y-%m-%d", text) {
-        return start_of_local_calendar_day(date).map_err(|_| out_of_range());
+    if pieces.time_zone_annotation().is_some() {
+        return Err(expected());
     }
-    let wall_time = DateTime::strptime(DISPLAY_FORMAT, text)
-        .or_else(|_| DateTime::strptime("%Y-%m-%dT%H:%M:%S%.f", text))
-        .map_err(|_| {
-            "expected a date (2026-10-01), a time as snouty prints it \
-             (2026-10-01 12:00:00), an RFC 3339 time (2026-10-01T12:00:00Z), or a \
-             relative time (now, 3 days ago)"
-                .to_string()
-        })?;
-    let ambiguous = TimeZone::system().to_ambiguous_timestamp(wall_time);
+    let Some(time) = pieces.time() else {
+        return start_of_local_calendar_day(pieces.date()).map_err(|_| out_of_range(text));
+    };
+    let ambiguous = TimeZone::system().to_ambiguous_timestamp(pieces.date().to_datetime(time));
     if matches!(ambiguous.offset(), AmbiguousOffset::Gap { .. }) {
         return Err(format!(
             "{text} does not exist in the local timezone (a clock change skips it)"
         ));
     }
     // A clock change shows the time twice: take the earlier instant.
-    ambiguous.earlier().map_err(|_| out_of_range())
+    ambiguous.earlier().map_err(|_| out_of_range(text))
 }
 
 /// The date of the local calendar day that holds `instant`.
@@ -568,35 +560,94 @@ mod tests {
     #[test]
     fn parse_relative_time_counts_back_from_now() {
         let now: Timestamp = "2026-03-31T12:00:00Z".parse().unwrap();
-        let at = |text: &str| parse_relative_time(text, now).map(|time| time.to_string());
-        assert_eq!(at("now").as_deref(), Some("2026-03-31T12:00:00Z"));
-        assert_eq!(
-            at("90 minutes ago").as_deref(),
-            Some("2026-03-31T10:30:00Z")
-        );
-        assert_eq!(at("1 hour ago").as_deref(), Some("2026-03-31T11:00:00Z"));
-        assert_eq!(at("3 days ago").as_deref(), Some("2026-03-28T12:00:00Z"));
-        assert_eq!(at("2 weeks ago").as_deref(), Some("2026-03-17T12:00:00Z"));
-        // February has no day 31: a month ends on its last day.
-        assert_eq!(at("1 month ago").as_deref(), Some("2026-02-28T12:00:00Z"));
+        let at = |text: &str| {
+            parse_relative_time(text, now).map(|time| time.map(|time| time.to_string()))
+        };
+        for (text, expected) in [
+            ("now", "2026-03-31T12:00:00Z"),
+            ("90 minutes ago", "2026-03-31T10:30:00Z"),
+            ("1 hour ago", "2026-03-31T11:00:00Z"),
+            ("1.5 hours ago", "2026-03-31T10:30:00Z"),
+            ("1h30m ago", "2026-03-31T10:30:00Z"),
+            ("3 days ago", "2026-03-28T12:00:00Z"),
+            ("3d ago", "2026-03-28T12:00:00Z"),
+            ("-3 days", "2026-03-28T12:00:00Z"),
+            ("-P3D", "2026-03-28T12:00:00Z"),
+            ("2 weeks ago", "2026-03-17T12:00:00Z"),
+            ("2 weeks 3 days ago", "2026-03-14T12:00:00Z"),
+            // February has no day 31: a month ends on its last day.
+            ("1 month ago", "2026-02-28T12:00:00Z"),
+            ("1 year ago", "2025-03-31T12:00:00Z"),
+        ] {
+            assert_eq!(at(text), Some(Ok(expected.to_string())), "{text}");
+        }
+        for text in ["3 days", "+3 days", "0 days ago", "P3D"] {
+            let err = at(text).unwrap().unwrap_err();
+            assert!(err.contains("not in the past"), "{text}: {err}");
+        }
+        let err = at("19000 years ago").unwrap().unwrap_err();
+        assert!(err.contains("outside the range of a timestamp"), "{err}");
         for text in [
             "",
             "ago",
-            "3 days",
             "days ago",
             "-3 days ago",
             "+3 days ago",
             "3 fortnights ago",
             "3 days ago now",
-            "1.5 hours ago",
+            "2026-03-31",
         ] {
             assert_eq!(at(text), None, "{text}");
         }
     }
 
+    /// A wall time without seconds, or with a fraction, is a local time.
+    #[test]
+    fn parse_timestamp_arg_reads_a_wall_time_at_any_precision() {
+        let local = |text: &str| {
+            let time = jiff::civil::DateTime::from_str(text).unwrap();
+            TimeZone::system().to_ambiguous_timestamp(time).earlier()
+        };
+        for text in [
+            "2026-10-01 12:00",
+            "2026-10-01T12:00",
+            "2026-10-01 12:00:00.5",
+        ] {
+            assert_eq!(parse_timestamp_arg(text).ok(), local(text).ok(), "{text}");
+        }
+    }
+
+    #[test]
+    fn parse_timestamp_arg_ignores_surrounding_whitespace() {
+        for text in [
+            "now",
+            "3 days ago",
+            "2026-10-01",
+            "2026-10-01 12:00:00",
+            "2026-10-01T12:00:00Z",
+        ] {
+            let padded = format!(" {text}\t");
+            let (padded, text) = (parse_timestamp_arg(&padded), parse_timestamp_arg(text));
+            // `now` and `3 days ago` read the clock, so compare them loosely.
+            assert_eq!(padded.is_ok(), text.is_ok(), "{text:?}");
+            assert!(
+                padded
+                    .unwrap()
+                    .duration_since(text.unwrap())
+                    .abs()
+                    .as_secs()
+                    < 5
+            );
+        }
+    }
+
     #[test]
     fn a_time_outside_the_range_of_a_timestamp_names_the_range() {
-        for text in ["-9999-01-01", "9999-12-31 23:59:59", "9999-12-31T23:59:59Z"] {
+        for text in [
+            "-009999-01-01",
+            "9999-12-31 23:59:59",
+            "9999-12-31T23:59:59Z",
+        ] {
             let err = parse_timestamp_arg(text).unwrap_err();
             assert!(err.contains("outside the range of a timestamp"), "{err}");
         }
@@ -604,8 +655,10 @@ mod tests {
 
     #[test]
     fn parse_timestamp_arg_names_the_forms_it_accepts() {
-        let err = parse_timestamp_arg("2026-10-01 12:00").unwrap_err();
-        assert!(err.contains("2026-10-01 12:00:00"), "{err}");
+        for text in ["2026-10-01 noon", "2026-10-01T12:00[UTC]"] {
+            let err = parse_timestamp_arg(text).unwrap_err();
+            assert!(err.contains("2026-10-01 12:00:00"), "{text}: {err}");
+        }
     }
 
     #[hegel::test]

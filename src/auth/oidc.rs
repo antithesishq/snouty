@@ -6,8 +6,8 @@ use std::{
     time::Duration,
 };
 
-use chrono::{DateTime, Utc};
 use color_eyre::eyre::Result;
+use jiff::Timestamp;
 use serde::Deserialize;
 
 use super::{
@@ -62,7 +62,7 @@ pub struct GithubActionsOidcToken {
 struct FetchedToken {
     token: String,
     /// The `exp` claim of the token, when snouty can read it.
-    expires_at: Option<DateTime<Utc>>,
+    expires_at: Option<Timestamp>,
 }
 
 impl std::fmt::Debug for GithubActionsOidcToken {
@@ -107,7 +107,7 @@ impl GithubActionsOidcToken {
         self.current().is_none_or(|fetched| {
             fetched
                 .expires_at
-                .is_none_or(|expires_at| Utc::now() >= expires_at)
+                .is_none_or(|expires_at| Timestamp::now() >= expires_at)
         })
     }
 
@@ -460,7 +460,7 @@ mod tests {
 
     #[tokio::test]
     async fn github_actions_oidc_token_is_reused_before_its_exp() {
-        let token = jwt_expiring_in(chrono::TimeDelta::minutes(5));
+        let token = jwt_expiring_in(jiff::SignedDuration::from_mins(5));
         let (server, auth) = oidc_credential_fetching(&token, 1).await;
         two_requests(&auth, &token).await;
         server.verify().await;
@@ -468,7 +468,7 @@ mod tests {
 
     #[tokio::test]
     async fn github_actions_oidc_token_is_fetched_again_past_its_exp() {
-        let token = jwt_expiring_in(-chrono::TimeDelta::minutes(1));
+        let token = jwt_expiring_in(-jiff::SignedDuration::from_mins(1));
         let (server, auth) = oidc_credential_fetching(&token, 2).await;
         two_requests(&auth, &token).await;
         server.verify().await;

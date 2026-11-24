@@ -81,6 +81,15 @@ fn generate_api_client(out_dir: &Path) {
         "crate::vtime::VTime",
         std::iter::empty::<progenitor::TypeImpl>(),
     );
+    // typify maps a date-time onto chrono by default; snouty uses jiff.
+    let timestamp_schema: schemars::schema::SchemaObject =
+        serde_json::from_value(serde_json::json!({"type": "string", "format": "date-time"}))
+            .unwrap();
+    settings.with_conversion(
+        timestamp_schema,
+        "::jiff::Timestamp",
+        std::iter::empty::<progenitor::TypeImpl>(),
+    );
     // `launch` sends each value's `Display` form, the snake_case wire value, so
     // clap must name each value the same way. typify puts patch attributes
     // before derives, and `#[value]` must follow its derive, so the derive goes
@@ -108,6 +117,10 @@ fn generate_api_client(out_dir: &Path) {
         content.contains("pub vtime: crate::vtime::VTime"),
         "generated client does not use crate::vtime::VTime for Moment.vtime; \
          the with_conversion schema match no longer applies"
+    );
+    assert!(
+        !content.contains("::chrono::"),
+        "generated client uses chrono; the date-time with_conversion no longer applies"
     );
 
     // The API cache buries this hash in every cache key: the generated file

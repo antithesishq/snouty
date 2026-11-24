@@ -1064,7 +1064,7 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
     // time, and `created_before` includes it.
     let time = |key| {
         mock_query_param(query, key)
-            .map(|t| chrono::DateTime::parse_from_rfc3339(&t).expect("an RFC 3339 time"))
+            .map(|t| t.parse::<jiff::Timestamp>().expect("an RFC 3339 time"))
     };
     let (created_after, created_before) = (time("created_after"), time("created_before"));
 
@@ -1086,7 +1086,7 @@ fn mock_route_list_runs(query: Option<&str>, empty: bool) -> (u16, String) {
         {
             continue;
         }
-        let created_at = chrono::DateTime::parse_from_rfc3339(created).unwrap();
+        let created_at = created.parse::<jiff::Timestamp>().unwrap();
         if created_after.is_some_and(|after| created_at <= after)
             || created_before.is_some_and(|before| created_at > before)
         {
@@ -1180,13 +1180,13 @@ fn mock_route_list_usage(query: Option<&str>, empty: bool) -> String {
     }
     let time_param = |key| {
         mock_query_param(query, key)
-            .map(|t| chrono::DateTime::parse_from_rfc3339(&t).expect("an RFC 3339 time"))
+            .map(|t| t.parse::<jiff::Timestamp>().expect("an RFC 3339 time"))
     };
     let (after, before) = (time_param("start_time"), time_param("end_time"));
     let entries: Vec<_> = MOCK_USAGE
         .iter()
         .filter(|(_, _, _, end)| {
-            let end = chrono::DateTime::parse_from_rfc3339(end).unwrap();
+            let end = end.parse::<jiff::Timestamp>().unwrap();
             after.is_none_or(|t| end >= t) && before.is_none_or(|t| end < t)
         })
         .collect();
@@ -1267,7 +1267,7 @@ fn mock_route_get_run(run_id: &str) -> (u16, String) {
         let mut body = serde_json::json!({
             "run_id": run_id,
             "status": status,
-            "created_at": chrono::Utc::now().to_rfc3339(),
+            "created_at": jiff::Timestamp::now().to_string(),
             "launcher": crate::api::DEBUGGING_LAUNCHER,
         });
         if let Some(sub_status) = sub_status {

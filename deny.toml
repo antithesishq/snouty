@@ -23,6 +23,10 @@ ignore = [
     # still require nix 0.26.
     # https://rustsec.org/advisories/RUSTSEC-2026-0441
     { id = "RUSTSEC-2026-0441", reason = "unmaintained, tests only; expectrl 0.9.0 still requires nix 0.26" },
+    # chrono is unmaintained. snouty uses jiff, but rmcp 3.11.0, the latest,
+    # still requires chrono, and turns on schemars' chrono04 feature.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0543
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained, no upgrade available; rmcp 3.11.0 still requires chrono" },
 ]
 
 [licenses]
@@ -88,6 +92,12 @@ skip = [
     { crate = "block-buffer@0.10", reason = "digest 0.10" },
     { crate = "crypto-common@0.1", reason = "digest 0.10" },
     { crate = "cpufeatures@0.2", reason = "sha2 0.10, sha1 and sha-1" },
+    # gix 0.91 is on parking_lot 0.13. crossterm 0.29 (under inquire) and
+    # prodash 31.0.1 (under gix-utils), both the latest, are on parking_lot 0.12.
+    { crate = "parking_lot@0.12", reason = "crossterm and prodash" },
+    { crate = "parking_lot_core@0.9", reason = "parking_lot 0.12" },
+    { crate = "lock_api@0.4", reason = "parking_lot 0.12" },
+    { crate = "redox_syscall@0.5", reason = "parking_lot_core 0.9" },
 ]
 
 [sources]

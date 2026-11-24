@@ -251,12 +251,13 @@ const DURATION_PATTERN: &str =
 const KV_PAIR_PATTERN: &str = "^[^=]+=";
 
 /// Matches a timestamp without an offset, as snouty prints it, or with
-/// fewer digits of seconds.
-const TIMESTAMP_PATTERN: &str = r"^\d{4}-\d\d-\d\d[ T]\d\d:\d\d(:\d\d(\.\d+)?)?$";
+/// fewer digits of seconds. The parser ignores surrounding whitespace, and so
+/// do both patterns.
+const TIMESTAMP_PATTERN: &str = r"^\s*\d{4}-\d\d-\d\d[ T]\d\d:\d\d(:\d\d(\.\d+)?)?\s*$";
 
 /// Matches a time relative to the present, such as `3 days ago` or
 /// `-1h30m`. The pattern is looser than the parser.
-const RELATIVE_TIME_PATTERN: &str = r"^(now|-.+|.+ago)$";
+const RELATIVE_TIME_PATTERN: &str = r"^\s*(now|-.+|.+ago)\s*$";
 
 impl ValueType {
     fn of(arg: &Arg) -> Self {

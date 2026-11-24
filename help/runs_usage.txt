@@ -15,11 +15,11 @@ With {{ t("run_ids")? }}, the output has one row for each run, in the order that
 {{ t("--after")? }} and {{ t("--before")? }} select runs by the time that they ended: {{ t("--after")? }} includes a run that ended at that time, and {{ t("--before")? }} does not. {{ t("--before")? }} defaults to now. {{ t("--after")? }} defaults to 1 week before {{ t("--before")? }}. With {{ t("--rollup")? }}, it defaults to 4 weeks before for weeks, and 6 months before for months.
 
 Each takes one of these forms:
-  a relative time    `now`, `5 hours ago`, `3 days ago`, `2 weeks ago`
+  a relative time    `now`, `5 hours ago`, `1h30m ago`, `3 days ago`, `2 weeks ago`
   a date             `2026-10-01`, which is the start of that day
   a time             `2026-10-01 12:00:00`
   an RFC 3339 time   `2026-10-01T12:00:00Z`
-A relative time counts minutes, hours, days, weeks or months. A date or a time without a zone is in the local timezone.
+A relative time counts seconds, minutes, hours, days, weeks, months or years, alone or together. A date or a time without a zone is in the local timezone.
 
 The rows are in the order in which the runs ended, oldest first. With {{ t("--rollup")? }}, the oldest period is first.
 

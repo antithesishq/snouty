@@ -250,11 +250,14 @@ const DURATION_PATTERN: &str =
 
 const KV_PAIR_PATTERN: &str = "^[^=]+=";
 
-/// Matches a timestamp without an offset, as snouty prints it.
-const TIMESTAMP_PATTERN: &str = r"^\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d(\.\d+)?$";
+/// Matches a timestamp without an offset, as snouty prints it, or with
+/// fewer digits of seconds. The parser ignores surrounding whitespace, and so
+/// do both patterns.
+const TIMESTAMP_PATTERN: &str = r"^\s*\d{4}-\d\d-\d\d[ T]\d\d:\d\d(:\d\d(\.\d+)?)?\s*$";
 
-/// Matches a time relative to the present, such as `3 days ago`.
-const RELATIVE_TIME_PATTERN: &str = r"^(now|\d+\s+(minute|hour|day|week|month)s?\s+ago)$";
+/// Matches a time relative to the present, such as `3 days ago` or
+/// `-1h30m`. The pattern is looser than the parser.
+const RELATIVE_TIME_PATTERN: &str = r"^\s*(now|-.+|.+ago)\s*$";
 
 impl ValueType {
     fn of(arg: &Arg) -> Self {
@@ -712,6 +715,18 @@ mod tests {
             for bare in [BareUnit::Minutes, BareUnit::Seconds] {
                 assert_eq!(HumanDuration::parse(&text, bare), Ok(parsed), "{text:?}");
             }
+        }
+    }
+
+    /// A relative time that parses matches the relative time pattern.
+    #[hegel::test]
+    fn relative_time_pattern_matches_what_parses(tc: hegel::TestCase) {
+        let text = tc.draw(hegel::generators::from_regex(
+            r"[-+]?([0-9]{1,3}(\.5)? ?(s|m|h|d|w|mo|y|hours?|days?|weeks?|months?) ?){1,2}(ago)?",
+        ));
+        let pattern = regex::Regex::new(RELATIVE_TIME_PATTERN).unwrap();
+        if crate::time::parse_timestamp_arg(&text).is_ok() {
+            assert!(pattern.is_match(&text), "{text:?}");
         }
     }
 

@@ -176,9 +176,9 @@ mod tests {
     /// `VALUE`. A Python `True`, `False`, or `None` is not a value either, and
     /// nor is a GitHub Actions permission such as `"id-token": "write"`, or
     /// the login kind of `GET /api/v0/registry`, such as `"auth": "docker"`.
-    /// So is the name that gh-aw gives to the variable of an MCP script
-    /// secret, `GH_AW_MCP_SCRIPTS_ENV_<hex>_<hex>`, whose lowercase hex fails
-    /// the uppercase test.
+    /// The name that gh-aw gives to the variable of an MCP script secret,
+    /// `GH_AW_MCP_SCRIPTS_ENV_<hex>_<hex>`, is also not a value. Its lowercase
+    /// hex fails the uppercase test.
     fn allowed(value: &str) -> bool {
         let names_a_variable = value
             .strip_prefix('$')

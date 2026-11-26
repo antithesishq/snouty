@@ -57,6 +57,7 @@ jobs:
         uses: ./.github/actions/setup-tools
         with:
           toolchain: ${{ env.VERSION }}
+          components: clippy, rustfmt
           cache: "false"
           mise-cache: "false"
           mise-tools: github:foresterre/cargo-msrv

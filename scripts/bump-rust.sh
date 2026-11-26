@@ -14,6 +14,7 @@ cd "$(dirname "$0")/.."
 version=$1
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a stable Rust version: $version" >&2; exit 1; }
 newest=${version%.*}
+git diff --quiet HEAD || { echo "the tree has uncommitted changes" >&2; exit 1; }
 current=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
 [[ -n $current ]] || { echo "no rust-version in Cargo.toml" >&2; exit 1; }
 
@@ -47,6 +48,8 @@ if git diff --quiet -- '*.rs'; then
   exit 0
 fi
 
+# Linux only, like the msrv job. cargo-msrv tries the last patch release of
+# each minor; a patch release adds no API, so the minor alone is kept.
 floor=$(cargo msrv find --min "$current" --max "$newest" --output-format minimal --no-log \
   -- cargo check --workspace --all-targets --locked)
 [[ $floor =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "unexpected cargo-msrv result: $floor" >&2; exit 1; }

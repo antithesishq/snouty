@@ -169,6 +169,7 @@ jobs:
     env:
       # The Linux release binaries are musl builds, with musl-only
       # dependencies, and nothing is gnu-only, so one musl check covers both.
+      # The macOS-only code is not checked on the MSRV.
       CARGO_BUILD_TARGET: x86_64-unknown-linux-musl
     steps:
       # musl-gcc compiles the aws-lc and mimalloc C sources. The test job says

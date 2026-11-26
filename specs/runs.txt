@@ -1023,8 +1023,7 @@ mock-runs-server
 snouty --json runs events $R_run_id --match parallel_driver_fetch
 [!staging] stdout '"vtime":401\.75'
 
-# Three events match and two print, with a note on stderr that the events
-# are a random sample.
+# Three events match and two print.
 mock-runs-server
 [!staging] snouty runs events $R_run_id --match parallel_driver_fetch --limit 2
 [!staging] stdout '400\.5'
@@ -1142,7 +1141,7 @@ snouty --json runs search $R_run_id 'contains({output_text: "parallel_driver_fet
 [!staging] stdout '"vtime":400\.5'
 [!staging] ! stdout '"vtime":401\.75'
 
-# In text mode a note on stderr says the events are a random sample.
+# Text mode prints the sample note.
 mock-runs-server
 [!staging] snouty runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --limit 1
 [!staging] stdout '400\.5'

@@ -2008,7 +2008,7 @@ def rows_at_most_with_run_cells(limit: int):
 def rows_at_most_with_sample_note(limit: int):
     """`rows_at_most`, plus the note that the events are a random sample.
 
-    The note claims more events may match, so it belongs only when the server
+    The note implies more events match, so it belongs only when the server
     filled the limit, and it replaces the end-of-stream marker. Fewer rows than
     asked for means the result set is exhausted: the marker appears and the
     note must be absent.

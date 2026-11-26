@@ -45,11 +45,9 @@ mod run_stream;
 use event_search::EventOutput;
 use ready::{Needs, RetryDecision, RetryPolicy};
 
-/// Print `note` to stderr under a limited command's output. The command asks
-/// the server for at most `limit` rows and cannot tell whether more match, so
-/// the note describes the limit instead of a truncation.
+/// Print `note` to stderr under a limited command's output.
 ///
-/// It only applies when the server filled the limit. Fewer rows than asked for
+/// It only applies when the server filled `limit`. Fewer rows than asked for
 /// means the result set is exhausted, and the note would send the user back for
 /// rows that do not exist, so `shown` below `limit` prints nothing. Callers
 /// print it in text mode only. `blank_line_before` sets the note apart from
@@ -71,11 +69,10 @@ fn limit_note(shown: usize, limit: NonZeroU64, blank_line_before: bool, note: &s
 ///
 /// Commentary goes to stderr and only in text mode: under `--json` the rows
 /// are the whole answer. An empty stream gets `empty_message`. A stream that
-/// filled its `limit` gets a note that the events are a random sample, because
-/// the server samples moments at random, and any other stream gets an end
-/// marker, so a quiet stream doesn't read as one cut short. Either one is set
-/// apart by a blank line because the text rendering separates its moment
-/// blocks with blank lines.
+/// filled its `limit` gets a note that the events are a random sample, and any
+/// other stream gets an end marker, so a quiet stream doesn't read as one cut
+/// short. Either one is set apart by a blank line because the text rendering
+/// separates its moment blocks with blank lines.
 async fn print_event_lines(
     mut lines: BoxStream<'_, Result<String>>,
     output: EventOutput,

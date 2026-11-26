@@ -2018,8 +2018,7 @@ def rows_at_most_with_sample_note(limit: int):
         n = len(sr.rows or [])
         noun = "event" if limit == 1 else "events"
         noted = (
-            f"Showing a random sample of {limit} matching {noun}."
-            in sr.result.combined
+            f"Showing a random sample of {limit} matching {noun}." in sr.result.combined
         )
         ended = END_OF_STREAM in sr.result.combined
         filled = n == limit

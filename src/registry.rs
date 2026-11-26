@@ -15,7 +15,7 @@ use jiff::{SignedDuration, Timestamp};
 use url::Url;
 
 use crate::api::AntithesisApi;
-use crate::auth::{AuthenticationInfo, PasswordPolicy, RefreshableOAuthToken, RenewalError};
+use crate::auth::{AuthenticationInfo, RefreshableOAuthToken, RenewalError};
 use crate::error::user_error;
 use crate::render::sanitize;
 use crate::settings::{Settings, Tenant};
@@ -160,7 +160,8 @@ fn pushes_to_tenant(settings: &Settings, tenant: &str) -> bool {
 
 /// The settings and the credential for the registry of `tenant`, or `None`
 /// when the settings push to another registry. `settings_path` is the
-/// `--settings` flag. The credential is the one that every command finds.
+/// `--settings` flag. The credential is the one that every command finds,
+/// unchecked: [`secret`] refuses a username and password.
 ///
 /// The search makes no network call.
 pub fn select_settings(
@@ -171,8 +172,14 @@ pub fn select_settings(
     if !pushes_to_tenant(&settings, tenant) {
         return Ok(None);
     }
-    let credential = AuthenticationInfo::for_ambient_configuration(PasswordPolicy::Reject)?.untag();
-    Ok(Some((settings, credential)))
+    // Docker shows only the message of an error, so it names the next step.
+    let credential = AuthenticationInfo::find_ambient()?.ok_or_else(|| {
+        user_error(format!(
+            "no credential found; {}",
+            crate::auth::no_credentials_suggestion(crate::auth::in_github_actions())
+        ))
+    })?;
+    Ok(Some((settings, credential.untag())))
 }
 
 /// The registry secret, which the credential helper returns as `Secret` with

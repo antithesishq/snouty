@@ -68,8 +68,8 @@ stderr 'unexpected argument .--profile.'
 # 10. ANTITHESIS_PROFILE fails every command that reads the settings.
 env ANTITHESIS_PROFILE=prod
 ! snouty settings show
-stderr 'ANTITHESIS_PROFILE is set'
-stderr -literal 'Suggestion: unset ANTITHESIS_PROFILE'
+stderr 'unset ANTITHESIS_PROFILE'
+stderr -literal 'name that file with --settings'
 env ANTITHESIS_PROFILE=
 
 -- .snouty.toml --

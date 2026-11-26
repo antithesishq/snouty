@@ -119,10 +119,10 @@ impl Settings {
         // Fail, so that it does not silently run against this one.
         if env::var("ANTITHESIS_PROFILE")?.is_some() {
             return Err(user_error(
-                "ANTITHESIS_PROFILE is set, but snouty no longer has settings profiles",
+                "snouty no longer has settings profiles; unset ANTITHESIS_PROFILE",
             )
             .suggestion(
-                "unset ANTITHESIS_PROFILE, and name the profile's settings file with --settings",
+                "to keep the settings of a profile, copy its keys to the top level of a settings file, and name that file with --settings",
             ));
         }
         // An empty `SNOUTY_SETTINGS_PATH` is unset; it would otherwise name

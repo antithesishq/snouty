@@ -3,15 +3,12 @@
 # A tenant must be a host name wherever it comes from, even when an explicit
 # base_url means that no request goes to the tenant's host.
 
-# The project file is used only once the user trusts it (see
-# config_trust.txt).
-snouty settings trust
-
 # A tenant with a path separator in a file fails, and names the file by its
 # absolute path.
+env SNOUTY_SETTINGS_PATH=evil.toml
 ! snouty doctor
-stderr 'invalid setting `tenant` in /.*/\.snouty\.toml: `evil.com/x` is not a valid tenant'
-stderr 'Suggestion: fix or delete /.*/\.snouty\.toml$'
+stderr 'invalid setting `tenant` in /.*/evil\.toml: `evil.com/x` is not a valid tenant'
+stderr 'Suggestion: fix or delete /.*/evil\.toml$'
 
 # An explicit base URL does not make it valid.
 env ANTITHESIS_BASE_URL=https://api.example.com
@@ -24,5 +21,5 @@ env 'ANTITHESIS_TENANT=a b'
 stderr -literal 'invalid ANTITHESIS_TENANT: `a b` is not a valid tenant'
 stderr -literal 'Suggestion: fix or unset ANTITHESIS_TENANT'
 
--- .snouty.toml --
+-- evil.toml --
 tenant = "evil.com/x"

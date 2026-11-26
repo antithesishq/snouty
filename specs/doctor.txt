@@ -168,11 +168,6 @@ stderr '.*could not connect to 127.0.0.1.*'
 [!staging] stderr '✗ .*could not renew the sign-in'
 [!staging] stderr 'NOTE: try again later, or run `snouty login`'
 
-# The next step names the profile of the credential in use, the default one
-# when the selected profile has none.
-[!staging] ! snouty --profile staging doctor
-[!staging] stderr -literal 'NOTE: try again later, or run `snouty login` to sign in again'
-
 # An expired OAuth token whose refresh gets no response means that the
 # tenant is unreachable, so doctor fails the API check.
 [!staging] env ANTITHESIS_BASE_URL=http://127.0.0.1:1
@@ -212,12 +207,12 @@ env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
 [!staging] snouty doctor --json
 [!staging] stdout '"id": "registry",\s*"status": "ok"'
 
-# A base_url in a settings file profile is a base_url too.
+# A base_url in a settings file is a base_url too.
 [!staging] set-env BASE_URL ${ANTITHESIS_BASE_URL}
 [!staging] substitute base_url.toml
 [!staging] env ANTITHESIS_BASE_URL=
 [!staging] env SNOUTY_SETTINGS_PATH=base_url.toml
-[!staging] snouty --verbose --profile proxied doctor
+[!staging] snouty --verbose doctor
 [!staging] stderr 'GET .*/api/version'
 [!staging] ! stderr '/api/v0/registry'
 [!staging] env SNOUTY_SETTINGS_PATH=
@@ -322,13 +317,8 @@ stdout '"text": "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API 
 ! stdout '"id": "basic_auth"'
 ! stdout '${FAKE_API_KEY_A@R}|${FAKE_PASSWORD@R}'
 
-# A password stored in a named profile is replaced with `snouty login`, also
-# when the default profile holds an API key.
 env ANTITHESIS_USERNAME=
 env ANTITHESIS_PASSWORD=
-snouty --profile prod doctor
-stderr -literal 'run `snouty login --profile prod` to replace it with an API key'
-! stderr 'hiding your API key'
 
 # A username and password stored in the credentials file: `snouty login`
 # replaces them, so it is the only next step. A warning does not fail doctor.
@@ -349,12 +339,6 @@ snouty doctor --json
 stdout '"id": "credentials",\s*"kind": "password",\s*"status": "warn"'
 ! stdout '"id": "basic_auth"'
 ! stdout '${FAKE_PASSWORD@R}'
-
-# A bare `snouty login` writes the default profile, so for a password stored
-# under a named profile the next step names that profile.
-snouty --profile prod doctor
-stderr '^      NOTE: read from the `prod` profile of the credentials file$'
-stderr '^      NOTE: run `snouty login --profile prod` to replace it with an API key$'
 
 # A credentials file snouty cannot parse sits behind the exported API key. No
 # command reads that far, so doctor reports the key it uses and stays green
@@ -385,23 +369,22 @@ snouty doctor --offline --json
 stdout '"id": "credentials",\s*"kind": "oauth",\s*"status": "ok"'
 ! stdout '${FAKE_ACCESS_TOKEN_A@R}'
 
-# A stored credential hides only its fallbacks, the default profile and a
-# GitHub Actions OIDC token, so doctor does not warn.
+# A stored credential hides only its fallback, a GitHub Actions OIDC token,
+# so doctor does not warn.
 set-env ACTIONS_ID_TOKEN_REQUEST_URL http://127.0.0.1:1/token
 set-env ACTIONS_ID_TOKEN_REQUEST_TOKEN ${FAKE_OIDC_REQUEST_TOKEN}
-snouty --profile prod doctor --offline
+snouty doctor --offline
 stderr '^  ✓ OAuth credentials used$'
-stderr 'read from the `prod` profile'
 ! stderr '⚠ .*credential'
 env ACTIONS_ID_TOKEN_REQUEST_URL=
 env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
 
 # An exported API key hides the stored credential, so doctor warns.
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
-snouty --profile prod doctor --offline
+snouty doctor --offline
 stderr '⚠ the environment hides a stored credential'
-stderr -literal '`unset ANTITHESIS_API_KEY` to use the OAuth credentials in the `prod` profile'
-snouty --profile prod doctor --offline --json
+stderr -literal '`unset ANTITHESIS_API_KEY` to use the OAuth credentials in the credentials file'
+snouty doctor --offline --json
 stdout '"id": "credential_sources",\s*"status": "warn"'
 env ANTITHESIS_API_KEY=
 
@@ -489,27 +472,16 @@ stdout '"id": "docker_version",\s*"status": "ok"'
 -- registry_cfg/snouty/settings.toml --
 registry = "proxy.example.com/testtenant"
 -- base_url.toml --
-[profile.proxied]
 base_url = "${BASE_URL}"
 -- credential_conflict/.config/snouty/credentials.toml --
 [default]
 type = "ApiKey"
 api_key = "${FAKE_API_KEY_A}"
 
-[profile.prod]
-type = "Password"
-username = "prod-user"
-password = "${FAKE_PASSWORD}"
-
 -- stored_password/.config/snouty/credentials.toml --
 [default]
 type = "Password"
 username = "storeduser"
-password = "${FAKE_PASSWORD}"
-
-[profile.prod]
-type = "Password"
-username = "prod-user"
 password = "${FAKE_PASSWORD}"
 
 -- empty_api_key/.config/snouty/credentials.toml --
@@ -521,10 +493,6 @@ api_key = ""
 [default]
 type = "OAuth"
 antithesis_token = "${FAKE_ACCESS_TOKEN_A}"
-
-[profile.prod]
-type = "OAuth"
-antithesis_token = "${FAKE_ACCESS_TOKEN_B}"
 
 -- expired_oauth/.config/snouty/credentials.toml --
 [default]

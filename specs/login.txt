@@ -24,10 +24,6 @@ stderr 'invalid value .example.com. for .--base-url'
 ! snouty login --tenant spec-tenant --base-url data:text
 stderr 'expected a URL such as'
 
-# And for the global --profile flag given an empty value.
-! snouty --profile "" login
-stderr '.*Value may not be empty or whitespace.*'
-
 # Without a TTY, login cannot ask for the tenant, and names the flag.
 isolate-home no_tenant
 ! snouty login
@@ -141,29 +137,13 @@ snouty login --tenant spec-tenant
 stderr -literal 'run `snouty login --tenant spec-tenant --registry registry.spec-tenant.antithesis.com`'
 stdout 'registry `registry.example.com/acme`\.$'
 file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
-snouty --profile prod login --tenant spec-tenant --registry registry.example.com/prod
-snouty --profile prod login --tenant spec-tenant
-stderr -literal 'run `snouty login --tenant spec-tenant --registry registry.spec-tenant.antithesis.com --profile prod`'
 # --registry saves the tenant's registry without a warning.
 snouty login --tenant spec-tenant --registry registry.spec-tenant.antithesis.com
 ! stderr 'Kept registry'
 file ~/.config/snouty/settings.toml 'registry = "registry.spec-tenant.antithesis.com"'
 
-# Login writes the profile that ANTITHESIS_PROFILE names, and --profile
-# overrides it.
-isolate-home profile_flag
-mock-server -release 67.0 200 '{"auth":"antithesis","registry_url":"registry.spec-tenant.antithesis.com"}'
-set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
-env ANTITHESIS_PROFILE=other
-snouty login --tenant spec-tenant --registry registry.example.com/other
-file ~/.config/snouty/settings.toml '\[profile\.other\]'
-! file ~/.config/snouty/settings.toml '\[profile\.prod\]'
-snouty --profile prod login --tenant spec-tenant --registry registry.example.com/prod
-file ~/.config/snouty/settings.toml '\[profile\.prod\]\nregistry = "registry\.example\.com/prod"'
-env ANTITHESIS_PROFILE=
-
 # Login signs in at --base-url in place of the tenant's host, and saves it
-# as the base_url setting of the profile, which later commands use.
+# as the base_url setting, which later commands use.
 isolate-home base_url_flag
 mock-server -release 67.0 200 '{"auth":"antithesis","registry_url":"registry.spec-tenant.antithesis.com"}'
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
@@ -175,8 +155,6 @@ stdout -literal 'base URL `${MOCK_URL}`'
 file ~/.config/snouty/settings.toml '(?m)^base_url = "${MOCK_URL@R}"$'
 snouty settings show
 stdout '${MOCK_URL@R}'
-snouty --profile prod login --tenant spec-tenant --base-url ${MOCK_URL}
-file ~/.config/snouty/settings.toml '\[profile\.prod\]\n(.+\n)*base_url = "${MOCK_URL@R}"'
 # Without --base-url, login keeps the saved base_url.
 snouty login --tenant spec-tenant
 ! stdout 'base URL'
@@ -235,16 +213,16 @@ stderr 'did not accept the credential'
 ! exists rejected_403/.config/snouty/settings.toml
 
 # Without a terminal, a rejected stored credential names the fixes that work
-# there, for the selected profile.
+# there.
 isolate-home stored_rejected
 substitute ~/.config/snouty/credentials.toml
 mock-server 401 ''
 env ANTITHESIS_API_KEY=
 env ANTITHESIS_USERNAME=
 env ANTITHESIS_PASSWORD=
-! snouty --profile staging login --tenant spec-tenant
+! snouty login --tenant spec-tenant
 stderr 'did not accept the credential'
-stderr -literal 'set ANTITHESIS_API_KEY, or run `snouty login --profile staging` in a terminal'
+stderr -literal 'set ANTITHESIS_API_KEY, or run `snouty login` in a terminal'
 ! exists stored_rejected/.config/snouty/settings.toml
 
 # A GitHub Actions OIDC token that the tenant rejects needs Antithesis to trust
@@ -362,6 +340,6 @@ registry = "not a registry"
 -- saved_unparsable.toml --
 tenant = "spec-tenant
 -- stored_rejected/.config/snouty/credentials.toml --
-[profile.staging]
+[default]
 type = "ApiKey"
 api_key = "${FAKE_API_KEY_A}"

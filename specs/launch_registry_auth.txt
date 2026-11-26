@@ -21,7 +21,7 @@
 # the auth file, because podman with it ignores its own auth files. The
 # helper gives the credential of the
 # settings of the launch: it runs in the working directory of the launch,
-# and the launch gives it its --settings and --profile.
+# and the launch gives it its --settings.
 #
 # The fake engine below gives the --version banner of its engine, builds, and
 # fails each other command. Its push fails with its arguments, which
@@ -59,7 +59,7 @@ env SNOUTY_CONTAINER_ENGINE=podman
 stderr 'fake podman: push --digestfile=\S+ registry.acme.antithesis.com/repo/snouty-config:\S+ REGISTRY_AUTH_FILE=\[set\] DOCKER_AUTH_CONFIG=\[\]'
 stderr 'auth file: /\S+ \{"credHelpers":\{"registry.acme.antithesis.com":"snouty"\}\}$'
 stderr -literal 'helper dir: ${WORK}/config/snouty docker-credential-snouty'
-stderr 'settings: profile=\[\] path=\[\]$'
+stderr 'settings: path=\[\]$'
 stderr 'helper: \{"ServerURL":"registry\.acme\.antithesis\.com","Username":"snouty-token","Secret":"${FAKE_API_KEY_A@R}"\}'
 exists config/snouty/docker-credential-snouty
 exec ls -ld config/snouty
@@ -74,36 +74,19 @@ stderr '^warning: failed to link the credential helper to snouty: .*Is a directo
 stderr 'fake podman: push --digestfile=\S+ registry.acme.antithesis.com/repo/snouty-config:\S+ REGISTRY_AUTH_FILE=\[\] DOCKER_AUTH_CONFIG=\[\]'
 rm config/snouty/docker-credential-snouty
 
-# The helper resolves the settings of the launch: the --settings file and the
-# --profile. Without the profile, the helper would refuse, because two
-# profiles use the registry. Docker gets them too, for a helper that its
-# config runs.
+# The helper resolves the settings of the launch: the --settings file.
+# Without it, the helper would find no tenant registry. Docker gets it too,
+# for a helper that its config runs.
 env ANTITHESIS_TENANT=
 env ANTITHESIS_REGISTRY=
-! snouty launch --settings two-profiles.toml --profile b --launcher basic_k8s_test -c k8s_config
-stderr 'settings: profile=\[b\] path=\[two-profiles\.toml\]$'
+! snouty launch --settings acme.toml --launcher basic_k8s_test -c k8s_config
+stderr 'settings: path=\[acme\.toml\]$'
 stderr 'helper: \{"ServerURL":"registry\.acme\.antithesis\.com","Username":"snouty-token","Secret":"${FAKE_API_KEY_A@R}"\}'
 env SNOUTY_CONTAINER_ENGINE=docker
-! snouty launch --settings two-profiles.toml --profile b --launcher basic_k8s_test -c k8s_config
+! snouty launch --settings acme.toml --launcher basic_k8s_test -c k8s_config
 stderr 'DOCKER_AUTH_CONFIG=\[set\]'
-stderr 'settings: profile=\[b\] path=\[two-profiles\.toml\]$'
-env SNOUTY_CONTAINER_ENGINE=podman
-
-# The helper runs in the working directory of the launch, so it reads the
-# same ./.snouty.toml. The trust decisions are in the global settings dir, so
-# the helper also uses the file only because the user trusts it. An untrusted
-# file stops the launch before the build.
-cd project
-! snouty launch --launcher basic_k8s_test -c ../k8s_config
-stderr 'is not trusted'
-! stderr 'fake podman'
-snouty settings trust
-! snouty launch --launcher basic_k8s_test -c ../k8s_config
-stderr 'settings: profile=\[\] path=\[\]$'
-stderr 'helper: \{"ServerURL":"registry\.acme\.antithesis\.com","Username":"snouty-token","Secret":"${FAKE_API_KEY_A@R}"\}'
-cd .
+stderr 'settings: path=\[acme\.toml\]$'
 env ANTITHESIS_TENANT=acme
-env SNOUTY_CONTAINER_ENGINE=docker
 
 # The tenant registry does not accept a username and password, so snouty
 # gives no credential, and the runtime pushes with its own.
@@ -217,7 +200,7 @@ case "$1" in
       exit 0
     fi
     echo "fake $engine: $* REGISTRY_AUTH_FILE=[${REGISTRY_AUTH_FILE:+set}] DOCKER_AUTH_CONFIG=[${DOCKER_AUTH_CONFIG:+set}]" >&2
-    echo "settings: profile=[${ANTITHESIS_PROFILE-}] path=[${SNOUTY_SETTINGS_PATH-}]" >&2
+    echo "settings: path=[${SNOUTY_SETTINGS_PATH-}]" >&2
     if [ -n "$REGISTRY_AUTH_FILE" ]; then
       echo "auth file: $REGISTRY_AUTH_FILE $(cat "$REGISTRY_AUTH_FILE")" >&2
       helper_dir=${PATH%%:*}
@@ -230,15 +213,7 @@ case "$1" in
     exit 1;;
   *) echo "fake $engine: $1" >&2; exit 1;;
 esac
--- two-profiles.toml --
-[profile.a]
-tenant = "acme"
-registry = "registry.acme.antithesis.com/repo"
-
-[profile.b]
-tenant = "acme"
-registry = "registry.acme.antithesis.com/repo"
--- project/.snouty.toml --
+-- acme.toml --
 tenant = "acme"
 registry = "registry.acme.antithesis.com/repo"
 -- k8s_config/manifests/ns.yaml --

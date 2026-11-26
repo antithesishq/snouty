@@ -4,15 +4,11 @@
 # command resolves settings up front), naming the offending key — rather than
 # being silently dropped and resurfacing later as a confusing "not set".
 
-# The project file is used only once the user trusts it (see
-# config_trust.txt).
-snouty settings trust
-
 # The error for a non-string value names the key and the file. The
 # suggestion names the file.
-! snouty settings show
-stderr '^Error: invalid setting `tenant` in /.*/\.snouty\.toml: must be a string, but found integer$'
-stderr 'Suggestion: fix or delete /.*/\.snouty\.toml$'
+! snouty --settings integer.toml settings show
+stderr '^Error: invalid setting `tenant` in /.*/integer\.toml: must be a string, but found integer$'
+stderr 'Suggestion: fix or delete /.*/integer\.toml$'
 
 # A base_url, https_proxy or container_engine that does not parse fails at
 # startup, and the error names its source.
@@ -29,7 +25,7 @@ env ANTITHESIS_HTTPS_PROXY=
 stderr '^Error: invalid setting `container_engine` in /.*/engine\.toml: '
 stderr 'Suggestion: fix or delete /.*/engine\.toml$'
 
--- .snouty.toml --
+-- integer.toml --
 tenant = 123
 -- valid.toml --
 tenant = "acme"

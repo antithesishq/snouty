@@ -52,14 +52,19 @@ use ready::{Needs, RetryDecision, RetryPolicy};
 /// rows that do not exist, so `shown` below `limit` prints nothing. Callers
 /// print it in text mode only. `blank_line_before` sets the note apart from
 /// output whose blocks are separated by blank lines.
-fn limit_note(shown: usize, limit: NonZeroU64, blank_line_before: bool, note: &str) {
+fn limit_note(
+    shown: usize,
+    limit: NonZeroU64,
+    blank_line_before: bool,
+    note: std::fmt::Arguments<'_>,
+) {
     if (shown as u64) < limit.get() {
         return;
     }
     if blank_line_before {
         eprintln!();
     }
-    eprintln!("{}", wrap_if_tty(note));
+    eprintln!("{}", wrap_if_tty(&note.to_string()));
 }
 
 /// Print a rendered event stream, then the text-mode commentary under it.
@@ -99,7 +104,7 @@ async fn print_event_lines(
             seen,
             limit,
             true,
-            &format!(
+            format_args!(
                 "Showing a random sample of {}.",
                 count(limit.get(), "matching event")
             ),
@@ -365,7 +370,7 @@ async fn cmd_runs_list(
         runs.len(),
         args.limit,
         args.detail,
-        &format!(
+        format_args!(
             "Showing up to {} results. Additional results may be available.",
             args.limit
         ),

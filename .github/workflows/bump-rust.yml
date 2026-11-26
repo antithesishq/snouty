@@ -6,6 +6,10 @@ name: bump rust
 # The org does not let GITHUB_TOKEN open pull requests, so this pushes the
 # `bump-rust` branch and files an issue with a link that opens the pull
 # request. A pull request that a person opens runs CI as usual.
+#
+# The bump compiles every dependency, so it runs in a job with a read-only
+# token. The publish job, which holds the write token, compiles nothing: it
+# applies the bump job's patch and pushes it.
 on:
   schedule:
     - cron: "0 8 * * 1"
@@ -21,9 +25,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
-      contents: write
-      issues: write
+      contents: read
       pull-requests: read
+    outputs:
+      new: ${{ steps.rust.outputs.new }}
+      version: ${{ steps.rust.outputs.version }}
+      msrv: ${{ steps.bump.outputs.msrv }}
+      sha: ${{ steps.rust.outputs.sha }}
     steps:
       - uses: samueldr/lix-gha-installer-action@a0fee77b2a98bb7c5c0ed7ae6d6ad4903dbdad0d # v2026-06-15
 
@@ -39,49 +47,80 @@ jobs:
 
       - name: Read the newest stable Rust
         id: rust
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           json=$(nix-instantiate --eval --json -E '(import ./nixpkgs.nix { }).rust-bin.stable.latest.default.version')
           version=$(jq -r . <<< "$json")
           [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "unexpected Rust version: $json" >&2; exit 1; }
-          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           # The overlay pin moves only with a new Rust release, so that a week
           # with no release asks nothing of anyone.
           if grep -qx "channel = \"$version\"" rust-toolchain.toml; then
             echo "Already on Rust $version"
-          else
-            echo "new=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          # Leave an open pull request alone: a force-push would drop any fix
+          # pushed to it. The next run after it merges bumps again. The lookup
+          # is on its own line, so that a failed one stops the step.
+          open_pr=$(gh pr list --head bump-rust --state open --json number --jq '.[].number')
+          if [ -n "$open_pr" ]; then
+            echo "A bump-rust pull request is already open"
+            exit 0
+          fi
+          echo "new=true" >> "$GITHUB_OUTPUT"
 
-      # The job holds a write token, so it uses no cache.
       - if: steps.rust.outputs.new == 'true'
         uses: ./.github/actions/setup-tools
         with:
-          toolchain: ${{ env.VERSION }}
+          toolchain: ${{ steps.rust.outputs.version }}
           components: clippy, rustfmt
-          cache: "false"
-          mise-cache: "false"
           mise-tools: github:foresterre/cargo-msrv
 
       - name: Bump Rust, and rust-version when it simplifies the code
         id: bump
         if: steps.rust.outputs.new == 'true'
-        run: scripts/bump-rust.sh "$VERSION"
+        env:
+          VERSION: ${{ steps.rust.outputs.version }}
+        run: |
+          scripts/bump-rust.sh "$VERSION"
+          git diff --binary HEAD > "$RUNNER_TEMP/bump.patch"
+
+      - if: steps.rust.outputs.new == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bump-patch
+          path: ${{ runner.temp }}/bump.patch
+          retention-days: 1
+
+  publish:
+    needs: bump
+    if: needs.bump.outputs.new == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.bump.outputs.sha }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bump-patch
+          path: ${{ runner.temp }}
 
       - name: Push the branch and file the issue
-        if: steps.rust.outputs.new == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          MSRV: ${{ steps.bump.outputs.msrv }}
+          VERSION: ${{ needs.bump.outputs.version }}
+          MSRV: ${{ needs.bump.outputs.msrv }}
         run: |
           branch=bump-rust
-          # Leave an open pull request alone: a force-push would drop any fix
-          # pushed to it. The next run after it merges bumps again. The lookup
-          # is on its own line, so that a failed one stops the step.
-          open_pr=$(gh pr list --head "$branch" --state open --json number --jq '.[].number')
-          if [ -n "$open_pr" ]; then
-            echo "A $branch pull request is already open"
-            exit 0
-          fi
+          git apply --index "$RUNNER_TEMP/bump.patch"
           title="Bump Rust to $VERSION, and rust-overlay with it"
           body="Pins the toolchain to Rust $VERSION, the newest stable release in the updated rust-overlay pin. \`rust-version\` is $MSRV."
           if ! git diff --quiet HEAD -- Cargo.toml; then
@@ -90,7 +129,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
-          git commit -am "$title"
+          git commit -m "$title"
           git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
 
           # One open issue at a time: a later run updates it.

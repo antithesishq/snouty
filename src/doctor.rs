@@ -9,9 +9,9 @@ use crate::api::{
     normalize_base_url,
 };
 use crate::auth::{
-    AuthenticationInfo, CredentialSource, CredentialStore, OidcFetchError, RenewalError,
-    SourcedCredential, UnsupportedPassword, keychain_entry_name, login_command, refuses_renewal,
-    rejected_credential_next_step,
+    AuthenticationInfo, CredentialSource, CredentialStore, OidcFetchError, PASSWORD_VAR_NAME,
+    RenewalError, SourcedCredential, USERNAME_VAR_NAME, UnsupportedPassword, keychain_entry_name,
+    login_command, refuses_renewal, rejected_credential_next_step,
 };
 use crate::compose;
 use crate::container;
@@ -555,9 +555,22 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
             None
         }
         Err(ref err) if let Some(password) = err.downcast_ref::<UnsupportedPassword>() => {
+            // Variables that hide a stored credential need only an unset: the
+            // user already ran `snouty login` (issue #292).
+            let hidden = matches!(password, UnsupportedPassword::Environment { .. })
+                .then(|| AuthenticationInfo::stored_behind_environment(settings.profile()))
+                .flatten();
+            let next_step = match hidden {
+                Some(hidden) => unset_to_use(
+                    &[USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
+                    &hidden,
+                    settings.profile(),
+                ),
+                None => password.suggestion(),
+            };
             checks.push(
                 Check::fail(CheckId::Credentials { kind: None }, err.to_string())
-                    .note(Level::Note, password.suggestion()),
+                    .note(Level::Note, next_step),
             );
             None
         }

@@ -28,8 +28,7 @@ pub use oidc::GithubActionsOidcToken;
 pub(crate) use oidc::{OIDC_REJECTED_NEXT_STEP, OidcFetchError};
 #[cfg(test)]
 use oidc::{OIDC_TOKEN_VAR_NAME, OIDC_URL_VAR_NAME};
-pub(crate) use password::UnsupportedPassword;
-use password::{PASSWORD_VAR_NAME, USERNAME_VAR_NAME};
+pub(crate) use password::{PASSWORD_VAR_NAME, USERNAME_VAR_NAME, UnsupportedPassword};
 pub use store::initialize_credential_store;
 pub(crate) use store::{
     CredentialStore, PersistableCredentials, credentials_file_path, keychain_entry_name, persist,
@@ -135,9 +134,17 @@ pub(crate) type SourcedCredential = Tagged<AuthenticationInfo, CredentialSource>
 /// at once, and the first in resolution order then wins.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CredentialLookup<'a> {
-    Environment,
-    Keychain { profile: Option<&'a str> },
-    CredentialsFile { profile: Option<&'a str> },
+    /// `profile` is the selected profile, which the fix of a username and
+    /// password names.
+    Environment {
+        profile: Option<&'a str>,
+    },
+    Keychain {
+        profile: Option<&'a str>,
+    },
+    CredentialsFile {
+        profile: Option<&'a str>,
+    },
     GithubActionsOidc,
 }
 
@@ -159,7 +166,7 @@ impl<'a> CredentialLookup<'a> {
                 Self::Keychain { profile: None },
                 Self::CredentialsFile { profile: None },
             ]);
-        [Self::Environment]
+        [Self::Environment { profile }]
             .into_iter()
             .chain(profile.into_iter().flat_map(|profile| {
                 [
@@ -177,7 +184,7 @@ impl<'a> CredentialLookup<'a> {
 
     fn resolve(self) -> Result<Option<SourcedCredential>> {
         match self {
-            Self::Environment => AuthenticationInfo::try_from_env(),
+            Self::Environment { profile } => AuthenticationInfo::try_from_env(profile),
             Self::Keychain { .. } | Self::CredentialsFile { .. } => Ok(self
                 .resolve_stored()?
                 .map(|found| found.map_tag(CredentialSource::Stored))),
@@ -190,14 +197,14 @@ impl<'a> CredentialLookup<'a> {
         let store = match self {
             Self::Keychain { profile } => Some(CredentialStore::keychain(profile)),
             Self::CredentialsFile { profile } => CredentialStore::credentials_file(profile),
-            Self::Environment | Self::GithubActionsOidc => None,
+            Self::Environment { .. } | Self::GithubActionsOidc => None,
         };
         store.map_or(Ok(None), CredentialStore::resolve)
     }
 }
 
 impl AuthenticationInfo {
-    fn try_from_env() -> Result<Option<SourcedCredential>> {
+    fn try_from_env(profile: Option<&str>) -> Result<Option<SourcedCredential>> {
         if let Some(api_key) = env::var(API_KEY_VAR_NAME)? {
             // An API key holds no whitespace, and a CI secret often ends in a
             // newline. `snouty login` trims a pasted key the same way.
@@ -214,8 +221,11 @@ impl AuthenticationInfo {
             )));
         }
 
-        if env::var(USERNAME_VAR_NAME)?.is_some() || env::var(PASSWORD_VAR_NAME)?.is_some() {
-            return Err(UnsupportedPassword::Environment.into_report());
+        if env::var(USERNAME_VAR_NAME)?.is_some() && env::var(PASSWORD_VAR_NAME)?.is_some() {
+            return Err(UnsupportedPassword::Environment {
+                profile: profile.map(str::to_owned),
+            }
+            .into_report());
         }
 
         Ok(None)
@@ -261,6 +271,17 @@ impl AuthenticationInfo {
             }
         }
         Ok(found)
+    }
+
+    /// The first stored credential that every command would use for
+    /// `profile` if the environment held none. A blank API key and a place
+    /// that cannot be read are skipped: doctor only names the result as the
+    /// credential that the environment hides.
+    pub(crate) fn stored_behind_environment(profile: Option<&str>) -> Option<SourcedCredential> {
+        CredentialLookup::in_resolution_order(profile, Fallback::DefaultProfile)
+            .filter_map(|lookup| lookup.resolve_stored().ok().flatten())
+            .find(|stored| !stored.value().has_blank_api_key())
+            .map(|stored| stored.map_tag(CredentialSource::Stored))
     }
 
     /// Whether this is a blank API key (see [`is_blank_api_key`]).
@@ -441,7 +462,9 @@ mod tests {
     fn a_named_profile_uses_the_default_profile_only_with_the_fallback() {
         use CredentialLookup::{CredentialsFile, Environment, GithubActionsOidc, Keychain};
         let own = [
-            Environment,
+            Environment {
+                profile: Some("acme-prod"),
+            },
             Keychain {
                 profile: Some("acme-prod"),
             },
@@ -471,7 +494,7 @@ mod tests {
             assert_eq!(
                 CredentialLookup::in_resolution_order(None, fallback).collect::<Vec<_>>(),
                 [
-                    CredentialLookup::Environment,
+                    CredentialLookup::Environment { profile: None },
                     CredentialLookup::Keychain { profile: None },
                     CredentialLookup::CredentialsFile { profile: None },
                     CredentialLookup::GithubActionsOidc,

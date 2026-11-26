@@ -301,6 +301,18 @@ stdout '"id": "credentials",\s*"status": "error"'
 ! snouty --profile prod doctor
 stderr -literal 'NOTE: create an API key, then run `snouty login --profile prod` to replace the username and password'
 
+# Exported variables that hide a stored API key need only an unset.
+isolate-home credential_conflict
+substitute ~/.config/snouty/credentials.toml
+env ANTITHESIS_USERNAME=testuser
+set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
+! snouty doctor
+stderr '^  ✗ snouty no longer accepts a username and password'
+stderr -literal 'NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in the credentials file'
+! stderr 'then run .snouty login'
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
+
 # A credentials file snouty cannot parse sits behind the exported API key. No
 # command reads that far, so doctor reports the key it uses and stays green
 # rather than failing on a file that stops nothing. `--offline` is needed here:
@@ -428,6 +440,11 @@ registry = "proxy.example.com/testtenant"
 -- base_url.toml --
 [profile.proxied]
 base_url = "${BASE_URL}"
+-- credential_conflict/.config/snouty/credentials.toml --
+[default]
+type = "ApiKey"
+api_key = "${FAKE_API_KEY_A}"
+
 -- stored_password/.config/snouty/credentials.toml --
 [default]
 type = "Password"

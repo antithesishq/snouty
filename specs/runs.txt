@@ -75,6 +75,8 @@ env ANTITHESIS_TENANT=testtenant
 ! snouty runs
 stderr 'snouty no longer accepts a username and password'
 stderr -literal 'Suggestion: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`, then run `snouty login` or set ANTITHESIS_API_KEY'
+! snouty --profile prod runs
+stderr -literal 'then run `snouty login --profile prod` or set ANTITHESIS_API_KEY'
 env ANTITHESIS_USERNAME=
 env ANTITHESIS_PASSWORD=
 

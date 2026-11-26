@@ -243,6 +243,15 @@ stderr 'did not accept the credential'
 stderr -literal 'set ANTITHESIS_API_KEY, or run `snouty login --profile staging` in a terminal'
 ! exists stored_rejected/.config/snouty/settings.toml
 
+# Without a terminal, a stored username and password names the fixes that
+# work there.
+isolate-home stored_password
+substitute ~/.config/snouty/credentials.toml
+! snouty login --tenant spec-tenant
+stderr 'snouty no longer accepts the stored username and password'
+stderr -literal 'set ANTITHESIS_API_KEY, or run `snouty login` in a terminal'
+! exists stored_password/.config/snouty/settings.toml
+
 # A GitHub Actions OIDC token that the tenant rejects needs Antithesis to trust
 # it: the job already has `id-token: write`, and ANTITHESIS_API_KEY does not
 # hold the token.
@@ -355,3 +364,9 @@ tenant = "spec-tenant
 [profile.staging]
 type = "ApiKey"
 api_key = "${FAKE_API_KEY_A}"
+
+-- stored_password/.config/snouty/credentials.toml --
+[default]
+type = "Password"
+username = "${FAKE_USERNAME}"
+password = "${FAKE_PASSWORD}"

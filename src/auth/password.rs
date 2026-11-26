@@ -12,11 +12,10 @@ pub(crate) const PASSWORD_VAR_NAME: &str = "ANTITHESIS_PASSWORD";
 /// doctor` reads this error to report it as a credentials check.
 #[derive(Debug)]
 pub(crate) enum UnsupportedPassword {
-    Environment,
+    /// `profile` is the selected profile.
+    Environment { profile: Option<String> },
     /// An older snouty stored it for `profile`.
-    Stored {
-        profile: Option<String>,
-    },
+    Stored { profile: Option<String> },
 }
 
 impl UnsupportedPassword {
@@ -30,9 +29,10 @@ impl UnsupportedPassword {
 
     pub(crate) fn suggestion(&self) -> String {
         match self {
-            Self::Environment => format!(
-                "`unset {USERNAME_VAR_NAME} {PASSWORD_VAR_NAME}`, then run `snouty login` \
-                 or set ANTITHESIS_API_KEY"
+            Self::Environment { profile } => format!(
+                "`unset {USERNAME_VAR_NAME} {PASSWORD_VAR_NAME}`, then run {} or set \
+                 ANTITHESIS_API_KEY",
+                login_command(profile.as_deref())
             ),
             Self::Stored { profile } => format!(
                 "create an API key, then run {} to replace the username and password",
@@ -45,7 +45,7 @@ impl UnsupportedPassword {
 impl std::fmt::Display for UnsupportedPassword {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Environment => write!(
+            Self::Environment { .. } => write!(
                 f,
                 "snouty no longer accepts a username and password from \
                  {USERNAME_VAR_NAME} and {PASSWORD_VAR_NAME}"

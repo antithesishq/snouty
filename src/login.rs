@@ -30,8 +30,8 @@ use crate::{
     },
     auth::{
         AuthenticationInfo, CredentialSource, CredentialStore, PersistableCredentials,
-        in_github_actions, is_blank_api_key, login_command, no_credentials_suggestion, persist,
-        rejected_credential_next_step,
+        UnsupportedPassword, in_github_actions, is_blank_api_key, login_command,
+        no_credentials_suggestion, persist, rejected_credential_next_step,
     },
     env,
     error::{api_error_status, rejects_credential, user_error},
@@ -506,22 +506,31 @@ async fn fetch_registry(
     };
     // The next step for a rejected credential from the environment. `None`
     // for a credential that login can replace: then it is `login_again`.
-    let (authentication, env_next_step) = match new_credentials {
-        Some(credentials) => (credentials.to_unrefreshable_authentication_info(), None),
-        // A read error of a stored credential passes through as it is.
-        None => match AuthenticationInfo::find_ambient(profile)? {
-            None => return Err(nothing_to_check().suggestion(login_again())),
-            Some(found) => {
-                let next_step = match found.tag() {
-                    CredentialSource::Environment { .. } => {
-                        Some(rejected_credential_next_step(&found, profile))
+    let (authentication, env_next_step) =
+        match new_credentials {
+            Some(credentials) => (credentials.to_unrefreshable_authentication_info(), None),
+            // A read error of a stored credential passes through as it is, except
+            // a stored username and password, which login itself replaces.
+            None => match AuthenticationInfo::find_ambient(profile).map_err(|err| {
+                match err.downcast_ref::<UnsupportedPassword>() {
+                    Some(UnsupportedPassword::Stored { .. }) => {
+                        user_error(err.to_string()).suggestion(login_again())
                     }
-                    CredentialSource::Stored(_) => None,
-                };
-                (found.untag(), next_step)
-            }
-        },
-    };
+                    _ => err,
+                }
+            })? {
+                None => return Err(nothing_to_check().suggestion(login_again())),
+                Some(found) => {
+                    let next_step = match found.tag() {
+                        CredentialSource::Environment { .. } => {
+                            Some(rejected_credential_next_step(&found, profile))
+                        }
+                        CredentialSource::Stored(_) => None,
+                    };
+                    (found.untag(), next_step)
+                }
+            },
+        };
     // A cached answer would not check the credential.
     let api = AntithesisApi::build_at(
         tenant_url.url.clone(),

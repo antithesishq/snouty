@@ -553,6 +553,7 @@ sed '{to_host}' | exec '{helper}' "$@"
             "ANTITHESIS_TENANT",
             "ANTITHESIS_REGISTRY",
             "ANTITHESIS_REPOSITORY",
+            "ANTITHESIS_PROFILE",
             "ANTITHESIS_USERNAME",
             "ANTITHESIS_PASSWORD",
             "ANTITHESIS_HTTPS_PROXY",

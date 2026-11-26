@@ -115,6 +115,16 @@ impl Settings {
     /// exist. A settings file that exists but cannot be read or parsed is an
     /// error.
     pub fn resolve(settings_path: Option<PathBuf>) -> Result<Self> {
+        // A profile selected the tenant and the credential, so a leftover
+        // selection must not run against the top-level tenant unnoticed.
+        if env::var("ANTITHESIS_PROFILE")?.is_some() {
+            return Err(user_error(
+                "ANTITHESIS_PROFILE is set, but snouty no longer has settings profiles",
+            )
+            .suggestion(
+                "unset ANTITHESIS_PROFILE, and name the profile's settings file with --settings",
+            ));
+        }
         // An empty `SNOUTY_SETTINGS_PATH` is unset; it would otherwise name
         // an empty path that must, and cannot, exist.
         let settings_path = match settings_path {

@@ -65,6 +65,13 @@ stdout '^registry +new-env$'
 ! snouty --profile prod settings show
 stderr 'unexpected argument .--profile.'
 
+# 10. ANTITHESIS_PROFILE fails every command that reads the settings.
+env ANTITHESIS_PROFILE=prod
+! snouty settings show
+stderr 'ANTITHESIS_PROFILE is set'
+stderr -literal 'Suggestion: unset ANTITHESIS_PROFILE'
+env ANTITHESIS_PROFILE=
+
 -- .snouty.toml --
 tenant = "acme"
 -- global.toml --

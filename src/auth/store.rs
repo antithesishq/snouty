@@ -20,7 +20,7 @@ use crate::{
 
 const CREDENTIALS_FILENAME: &str = "credentials.toml";
 /// The name of snouty's entry in the system keychain.
-pub(crate) const KEYCHAIN_ENTRY_NAME: &str = "_default_";
+pub const KEYCHAIN_ENTRY_NAME: &str = "_default_";
 
 /// A place that `snouty login` stores the credential. An OAuth refresh writes
 /// the new token back to the same place.
@@ -218,22 +218,25 @@ fn keychain_entry() -> Result<Option<Entry>> {
     }
 }
 
-/// Deletes the credentials file when it holds a credential, which the one
-/// in the keychain replaces.
+/// Removes the credential from the credentials file, which the one in the
+/// keychain replaces.
 fn clear_from_file_if_present() {
     let Some(path) = credentials_file_path() else {
         return;
     };
     if let Ok(Some(contents)) = read_to_string_if_file_exists(&path)
-        && let Ok(creds_file) = parse_credentials_file_toml(&contents, &path)
-        && creds_file.default.is_some()
+        && let Ok(mut creds_file) = parse_credentials_file_toml(&contents, &path)
+        && creds_file.default.take().is_some()
     {
-        match std::fs::remove_file(&path) {
+        let rewritten = toml::to_string_pretty(&creds_file)
+            .map_err(Into::into)
+            .and_then(|text| write_atomically(&path, text.as_bytes()));
+        match rewritten {
             Ok(()) => warn!(
-                "The supplied credentials were stored in the keychain, but the user credentials file also held a credential. Deleted the credentials file in favor of what was committed to the keychain."
+                "The supplied credentials were stored in the keychain, but the user credentials file also held a credential. Cleared it from the credentials file in favor of what was committed to the keychain."
             ),
             Err(err) => warn!(
-                "The supplied credentials were stored in the keychain, but the stale credentials file at {} could not be deleted: {err:#}. The plaintext credential remains on disk.",
+                "The supplied credentials were stored in the keychain, but the stale credential could not be removed from the credentials file at {}: {err:#}. The plaintext credential remains on disk.",
                 path.display()
             ),
         }
@@ -247,22 +250,22 @@ fn persist_to_file(credentials: PersistableCredentials, path: &Path) -> Result<(
 
     mkdir(settings_dir, true, 0o700)?;
 
-    if let Some(contents) = read_to_string_if_file_exists(path)?
-        && parse_credentials_file_toml(&contents, path).is_err()
-    {
-        let backup = back_up_unparsable_file(path)?;
+    let mut file = match read_to_string_if_file_exists(path)? {
+        None => CredentialsFile::default(),
+        Some(contents) => parse_credentials_file_toml(&contents, path).or_else(|_| {
+            let backup = back_up_unparsable_file(path)?;
         // Same shape as the settings repair note: paths on their own
         // lines, since they are what the user may copy and what made
         // the one-line form overflow.
-        eprintln!(
-            "warning: the existing credentials file could not be parsed; a new one will be written.\n  kept as a backup: {}\n  will be rewritten: {}",
-            backup.display(),
-            path.display(),
-        );
-    }
-    let file = CredentialsFile {
-        default: Some(credentials),
+            eprintln!(
+                "warning: the existing credentials file could not be parsed; a new one will be written.\n  kept as a backup: {}\n  will be rewritten: {}",
+                backup.display(),
+                path.display(),
+            );
+            Ok::<_, color_eyre::Report>(CredentialsFile::default())
+        })?,
     };
+    file.default = Some(credentials);
     write_atomically(path, toml::to_string_pretty(&file)?.as_bytes())
 }
 
@@ -283,16 +286,54 @@ fn parse_credentials_file_toml(contents: &str, path: &Path) -> Result<Credential
 }
 
 /// The credentials file. It keeps the credential in a `[default]` table, the
-/// layout of earlier releases.
-#[derive(Serialize, Deserialize)]
+/// layout of earlier releases. A rewrite keeps the other top-level tables,
+/// such as the `[profile.*]` credentials of an earlier release, so that it
+/// loses no secret that the user can still read.
+#[derive(Default, Serialize, Deserialize)]
 struct CredentialsFile {
     default: Option<PersistableCredentials>,
+    #[serde(flatten)]
+    other: toml::Table,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutils::fake_secrets::{FAKE_ACCESS_TOKEN_A, FAKE_REFRESH_TOKEN_A};
+    use crate::testutils::fake_secrets::{
+        FAKE_ACCESS_TOKEN_A, FAKE_API_KEY_A, FAKE_API_KEY_B, FAKE_REFRESH_TOKEN_A,
+    };
+
+    /// A new credential replaces `[default]`, and keeps the other tables of
+    /// the file, such as the profiles of an earlier release.
+    #[test]
+    fn a_rewrite_keeps_the_other_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.toml");
+        std::fs::write(
+            &path,
+            format!(
+                "[default]\ntype = \"ApiKey\"\napi_key = \"{FAKE_API_KEY_A}\"\n\
+                 [profile.prod]\ntype = \"ApiKey\"\napi_key = \"{FAKE_API_KEY_B}\"\n"
+            ),
+        )
+        .unwrap();
+        persist_to_file(
+            PersistableCredentials::ApiKey {
+                api_key: FAKE_ACCESS_TOKEN_A.to_owned(),
+            },
+            &path,
+        )
+        .unwrap();
+        let written: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(
+            written["default"]["api_key"].as_str(),
+            Some(FAKE_ACCESS_TOKEN_A)
+        );
+        assert_eq!(
+            written["profile"]["prod"]["api_key"].as_str(),
+            Some(FAKE_API_KEY_B)
+        );
+    }
 
     /// A new OAuth credential is checked with the header that it sends once
     /// it is stored, and without a store that a refresh could write to.

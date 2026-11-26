@@ -1667,6 +1667,7 @@ mod tests {
                 // list cannot drift from what ambient resolution actually reads.
                 for key in [
                     "XDG_CONFIG_HOME",
+                    "ANTITHESIS_PROFILE",
                     "ANTITHESIS_TENANT",
                     "ANTITHESIS_REGISTRY",
                     "ANTITHESIS_REPOSITORY",

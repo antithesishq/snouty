@@ -115,8 +115,8 @@ impl Settings {
     /// exist. A settings file that exists but cannot be read or parsed is an
     /// error.
     pub fn resolve(settings_path: Option<PathBuf>) -> Result<Self> {
-        // A profile selected the tenant and the credential, so a leftover
-        // selection must not run against the top-level tenant unnoticed.
+        // In earlier releases ANTITHESIS_PROFILE selected another tenant.
+        // Fail, so that it does not silently run against this one.
         if env::var("ANTITHESIS_PROFILE")?.is_some() {
             return Err(user_error(
                 "ANTITHESIS_PROFILE is set, but snouty no longer has settings profiles",

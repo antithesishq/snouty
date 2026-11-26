@@ -179,9 +179,9 @@ pub(crate) fn snouty() -> Command {
     let _ = std::fs::create_dir_all(&cache_dir);
     cmd.env("SNOUTY_API_CACHE_DIR", &cache_dir);
 
-    // Global settings can't leak (HOME/XDG_CONFIG_HOME aren't forwarded, so the
-    // lookup resolves to nothing). A test that wants settings names a file
-    // with --settings or SNOUTY_SETTINGS_PATH.
+    // HOME and XDG_CONFIG_HOME are not forwarded, so no global settings leak
+    // in. Run in an empty directory, so that no file of the working tree
+    // affects a test.
     let empty_dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("empty-cwd");
     let _ = std::fs::create_dir_all(&empty_dir);
     cmd.current_dir(empty_dir);

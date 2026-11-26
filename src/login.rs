@@ -221,7 +221,6 @@ async fn do_cmd_login(
         )?,
     };
 
-    // The stored credential, which a new credential replaces.
     // A read error counts as nothing stored, because storing a credential
     // backs up an unparsable credentials file. A blank key cannot
     // authenticate, so it also counts as nothing stored.

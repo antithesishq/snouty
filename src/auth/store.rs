@@ -19,7 +19,8 @@ use crate::{
 };
 
 const CREDENTIALS_FILENAME: &str = "credentials.toml";
-/// The name of snouty's entry in the system keychain.
+/// The keychain entry name of the default profile of earlier releases, so
+/// that an upgrade finds the stored credential.
 pub const KEYCHAIN_ENTRY_NAME: &str = "_default_";
 
 /// A place that `snouty login` stores the credential. An OAuth refresh writes
@@ -254,9 +255,7 @@ fn persist_to_file(credentials: PersistableCredentials, path: &Path) -> Result<(
         None => CredentialsFile::default(),
         Some(contents) => parse_credentials_file_toml(&contents, path).or_else(|_| {
             let backup = back_up_unparsable_file(path)?;
-        // Same shape as the settings repair note: paths on their own
-        // lines, since they are what the user may copy and what made
-        // the one-line form overflow.
+            // Each path is on its own line, so that the user can copy it.
             eprintln!(
                 "warning: the existing credentials file could not be parsed; a new one will be written.\n  kept as a backup: {}\n  will be rewritten: {}",
                 backup.display(),
